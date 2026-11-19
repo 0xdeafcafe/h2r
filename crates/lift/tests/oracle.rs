@@ -575,6 +575,33 @@ mod harness {
     }
 
     #[test]
+    fn xlat_uses_unsigned_al_and_a_32_bit_base() {
+        let mut gpr = GPR;
+        gpr[0] = 0x1234_56ff;
+        // Both bases put EBX + unsigned AL at the start of a page. One
+        // crosses a page boundary and the other wraps at 4 GiB.
+        for (base, address) in [(DATA - 0xff, DATA), (u32::MAX - 0xfe, 0)] {
+            gpr[3] = base;
+            for bytes in [&[0xd7][..], &[0x64, 0xd7]] {
+                let before = state(gpr, CODE_ADDRESS, 2 | STATUS_FLAGS);
+                let mut after = before.clone();
+                after["eax"] = json!(0x1234_56a5u32);
+                after["eip"] = json!(CODE_ADDRESS + bytes.len() as u32);
+                let mut f = fixture("xlat", bytes, before.clone(), after, STATUS_FLAGS);
+                f["memory"] = json!([[address, [0xa5]]]);
+                assert_eq!(outcome(&f), Ok(Ok(())));
+
+                f["memory"] = json!([]);
+                f["outcome"]["state"] = before;
+                f["outcome"]["stop"] = json!({
+                    "Fault": {"PageFault": {"address": address, "access": "Read", "protection": false}}
+                });
+                assert_eq!(outcome(&f), Ok(Ok(())));
+            }
+        }
+    }
+
+    #[test]
     fn a_wrong_x87_or_mxcsr_expectation_is_caught() {
         let mut f = nop();
         f["outcome"]["state"]["x87"]["control"] = json!(0x037f);

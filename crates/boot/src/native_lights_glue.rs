@@ -322,7 +322,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("cannot consume sorted light entries"));
         }
         reservation.commit();
-        timeline::native::Stage::Lights.count(timeline::native::Metric::Suppressed, count as u64);
         order.previous = (!isolated).then_some((serial, gel, targets, key));
         Ok(split)
     }

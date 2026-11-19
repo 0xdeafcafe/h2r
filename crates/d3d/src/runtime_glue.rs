@@ -244,7 +244,7 @@ where
                             drop(guest);
                             return deliver_push_callback(cpu, ctx, &dev, cb, addr);
                         }
-                        Ok(None) => match abi::call(&e, &mut d, &mut mem, &regs) {
+                        Ok(None) => match d.call_residual_entry(&e, &mut mem, &regs) {
                             Ok(o) => {
                                 apply(cpu, o);
                                 let destroys = d.take_pending_destroys();

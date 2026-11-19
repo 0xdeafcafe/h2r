@@ -217,6 +217,23 @@ The client gets the **stack of open screens**, not pixels:
 Two layers. The **map** is static and comes from the tags. The **world** is
 what is alive now.
 
+**Audio routing** (`h2 agent audio.voices`, no parameters). Available with
+DirectSound. The result has `distance_reverb` (host enhancement enabled),
+`reverb_active` (audible environment configured), and `voices`. Each
+playing buffer, queued unpaused stream and playing mix-in has a mixer
+`id`, `kind`, `volume_mb` and `distance_units` (listener-relative
+world units, null for an unpositioned voice). Match a stream's output
+`bin` to a mix-in's `input_bin` to find the positioned emitter.
+
+`direct_gain` and `room_gain` are linear low-frequency gains including
+voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
+additional loss at `reference_hz`. Each ordered entry in `bins` has
+its raw `bin`, `volume_mb` and its linear `gain` including that pair's
+volume and path gain. These are routing settings before spatial panning,
+master gain and the reverb return. A disabled environment or unconnected
+bus can have a configured send gain and deliver silence. Plain stereo
+routing has `bins: null`.
+
 **Map** (`world.map`). One call gives the shape of the level as a summary:
 
 ```json
@@ -835,6 +852,17 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
+- **Native renderer counters.** `profile.counters` and `profile.capture`
+  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
+  capture CSV includes native columns with activity in its window. The
+  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
+  `native_<stage>_` prefix includes examined and suppressed guest items,
+  refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
+  groups created, upload bytes and pipeline misses. Per-view columns
+  distinguish reference and display ranges attempted and committed and
+  invariant failures. For instance, `native_world_v1_display_recorded` can
+  be positive while `native_world_v1_display_ranges` is zero when the
+  display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
   Frame captures include `native_lights_worker_round_trips` for synchronous
   light reservations and `native_lights_reference_passes` /
   `native_lights_display_passes` for committed light runs encoded on each
@@ -967,6 +995,14 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
+- **Residual render census.** With
+  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
+  `render.stats` includes `counters.residual`. It lists completed
+  present numbers and, for each view kind, the invocation count and
+  distinct Direct3D entry and return-PC pairs, with ordinary backend
+  draw attempts. Use the stage counters
+  in the same reply to identify submitted native draws. See the
+  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`

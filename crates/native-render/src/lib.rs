@@ -19,6 +19,11 @@
 
 pub mod camera;
 pub mod cull;
+pub mod decal;
+#[cfg(feature = "gpu")]
+pub mod decal_gpu;
+pub mod effect_geometry;
+pub mod effect_immediate;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -52,8 +57,13 @@ pub mod object_nodes;
 pub mod object_program;
 #[cfg(feature = "gpu")]
 pub mod object_program_gpu;
+#[cfg(feature = "gpu")]
+pub mod object_state;
 pub mod object_streams;
 pub mod objects;
+pub mod particles;
+#[cfg(feature = "gpu")]
+pub mod particle_gpu;
 pub mod post;
 #[cfg(feature = "gpu")]
 pub mod screen_gpu;
@@ -64,3 +74,6 @@ pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_gpu;
 pub mod world;
+pub mod world_layers;
+#[cfg(feature = "gpu")]
+pub mod world_layers_gpu;

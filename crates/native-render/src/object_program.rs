@@ -78,7 +78,8 @@ pub fn object_layer3(material: &tags::material::Material) -> Result<&tags::mater
 /// (no engine-driven render or stage states, no blending); where it does
 /// not set the cull mode it culls nothing, unless the pass is given the
 /// device's cull, which it inherits ([`sets_cull`],
-/// `MaterialProgram::inherits_cull`, `LitObjects::set_inherited_cull`).
+/// `MaterialProgram::inherits_cull`; the pass resolves every field it
+/// leaves at the layer-3 call, `object_state::resolve`).
 pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_state::PassState, String> {
     if !imp.engine_render_states.is_empty() {
         return Err("engine-driven render states".into());

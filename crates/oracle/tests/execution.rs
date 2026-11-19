@@ -7,6 +7,32 @@ fn execute(bytes: &[u8], state: CpuState) -> Outcome {
     o
 }
 
+#[test]
+fn xlat_fixtures_read_the_seeded_table() {
+    let mut inputs = fixtures::Inputs::new(fixtures::DEFAULT_SEED);
+    let encodings = fixtures::encodings();
+    for name in ["xlat", "xlat-fs"] {
+        let encoding = encodings.iter().find(|e| e.name == name).unwrap();
+        // The 25 edge inputs and 12 seeded random inputs of the XLAT sweep.
+        for n in 0..37 {
+            let edge = (n < fixtures::EDGES.len()).then_some(n);
+            let (initial, memory) = inputs.state(edge, encoding);
+            let address = initial.ebx + u32::from(initial.eax as u8);
+            let (base, bytes) = &memory[0];
+            let byte = bytes[(address - *base) as usize];
+            let outcome = run(&encoding.bytes, initial.clone(), &memory);
+            assert_eq!(outcome.stop, Stop::Completed, "{name} case {n}");
+            assert_eq!(outcome.reads, [MemoryRead { address, size: 1 }]);
+            assert!(outcome.writes.is_empty());
+            let mut expected = initial;
+            expected.eax = (expected.eax & !0xff) | u32::from(byte);
+            expected.eip += encoding.bytes.len() as u32;
+            assert_eq!(outcome.state, expected, "{name} case {n}");
+            assert_eq!(outcome.defined_flags, EFLAGS_MASK);
+        }
+    }
+}
+
 // Expected constants below are worked by hand from SDM pseudocode, never
 // produced by the lifter or a second implementation of its arithmetic helpers.
 #[test]

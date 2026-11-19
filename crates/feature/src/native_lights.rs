@@ -218,7 +218,6 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
 fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     finish_candidate();
     reference::next_light();
-    timeline::native::Stage::Lights.count(timeline::native::Metric::Examined, 1);
     let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
     let esp = entry.esp;
     let (Ok(handle), Ok(shadow), Ok(weight)) = (mem.u32(esp.wrapping_add(4)),

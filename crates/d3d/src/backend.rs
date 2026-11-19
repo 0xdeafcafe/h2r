@@ -288,6 +288,10 @@ pub trait ExternalPass: Send {
     /// The per-copy reservation checks their range count before commit.
     fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
+    /// Number of suppressed guest items represented by this reservation. Most
+    /// geometry promises one range per item; multi-range effects override it.
+    fn items(&self, ranges: usize) -> usize { ranges }
+
     /// Potential guest-visible writes. Read-only probes use the default.
     fn writes(&self) -> ExternalWrites {
         ExternalWrites::default()
@@ -421,7 +425,7 @@ pub struct ExternalPlan {
 impl ExternalPlan {
     pub(crate) fn complete(&self, copy: TargetCopy, actual: usize) -> bool {
         if self.ranges != 0 && self.ranges == actual { return true; }
-        self.stage.invariant(self.view);
+        self.stage.invariant(self.view, copy == TargetCopy::Display);
         static LOGGED: std::sync::Mutex<Vec<(timeline::native::Stage, u32, TargetCopy)>> = std::sync::Mutex::new(Vec::new());
         let mut seen = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
         let key = (self.stage, self.view.min(4), copy);
@@ -458,6 +462,12 @@ impl<S> ExternalSurfaces<S> {
     }
 }
 
+/// All pinned targets, or the physical copy whose attachments could not be resolved.
+pub enum ExternalCopies {
+    Ready(Vec<ExternalAttachments>),
+    Missing(TargetCopy),
+}
+
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
     pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
@@ -488,6 +498,9 @@ impl ExternalAttachments {
 
 /// Sealed commands for a single physical target. Only complete recordings can be committed.
 pub struct ExternalRecording {
+    pub stage: timeline::native::Stage,
+    pub view: u32,
+    pub items: usize,
     pub copy: TargetCopy,
     pub ranges: usize,
     pub commands: ExternalCommands,
@@ -546,6 +559,11 @@ pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPas
 /// Available only at an ordered draw boundary, after D3D resolved the draw.
 pub struct DrawSnapshot<'a> {
     pub draw: &'a ResolvedDraw,
+    pub vertex_shader: u32,
+    pub pixel_shader: u32,
+    /// Raw guest bindings, including bound stages the draw does not sample.
+    pub bound_textures: [u32; 4],
+    pub sampled_stages: [bool; 4],
     pub palettes: [u32; 4],
     pub palette_entries: [Option<Vec<u32>>; 4],
     pub color_header: u32,
@@ -553,7 +571,25 @@ pub struct DrawSnapshot<'a> {
 }
 
 pub trait DrawAdmission: Send + Sync {
+    /// Attribute selection time and draws declined by this ownership filter.
+    /// A dispatcher spanning several stages can account for its own filters.
+    fn stage(&self) -> Option<timeline::native::Stage> { None }
+
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)>;
+}
+
+pub(crate) fn admit_draw(
+    admission: &dyn DrawAdmission, snapshot: &DrawSnapshot<'_>,
+) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
+    use timeline::native::{Metric, Timer};
+    let stage = admission.stage();
+    let _timer = stage.map(|s| Timer::start(s, Metric::PrepareNs));
+    let candidate = admission.admit(snapshot);
+    if candidate.is_none() && let Some(s) = stage {
+        s.count(Metric::Examined, 1);
+        s.count(Metric::RefusedOwnership, 1);
+    }
+    candidate
 }
 
 /// A render-to-texture level an [`ExternalPass`] samples
@@ -1011,8 +1047,8 @@ pub trait Backend: Send {
     fn external_attachments(
         &mut self, _surfaces: ExternalSurfaces<Self::Surface>, _textures: [Option<&Self::Texture>; 4],
         _copy: TargetCopy,
-    ) -> Result<Option<Vec<ExternalAttachments>>, String> {
-        Ok(None)
+    ) -> Result<ExternalCopies, String> {
+        Ok(ExternalCopies::Missing(_copy))
     }
 
     /// Prepare all target copies before recording any of them. Record into
@@ -1021,17 +1057,57 @@ pub trait Backend: Send {
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        let preparing = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
-        let Some(targets) = self.external_attachments(surfaces, textures, copy)? else { return Ok(None) };
+        use timeline::native::{Metric, Timer};
+        let item_count = pass.lock().map_err(|_| "native pass poisoned")?.items(plan.ranges) as u64;
+        plan.stage.count(Metric::Examined, item_count);
+        let refuse = |reason| { plan.stage.count(reason, item_count); Ok(None) };
+        let preparing = Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
+        if plan.ranges == 0 { return refuse(Metric::RefusedRanges); }
+        let (x, y, w, h) = request.rect;
+        let (sw, sh) = request.surface_size;
+        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw)
+            || y.checked_add(h).is_none_or(|b| b > sh)
+        {
+            return refuse(Metric::RefusedResources);
+        }
+        if surfaces.slots.len() != surfaces.slot_sizes.len()
+            || surfaces.slots.iter().zip(&surfaces.slot_sizes).any(|(s, size)| match (s, size) {
+                (None, None) => false,
+                (Some(_), Some((w, h))) => *w == 0 || *h == 0,
+                _ => true,
+            })
+        {
+            return refuse(Metric::RefusedResources);
+        }
+        let targets = match self.external_attachments(surfaces, textures, copy) {
+            Ok(ExternalCopies::Ready(targets)) => targets,
+            Ok(ExternalCopies::Missing(copy)) => {
+                plan.stage.copy_refused(plan.view, copy == TargetCopy::Display);
+                return refuse(Metric::RefusedResources);
+            }
+            Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
+        };
+        if !matches!(targets.as_slice(), [one] if one.copy == copy)
+            && !matches!(targets.as_slice(), [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
+        {
+            return refuse(Metric::RefusedResources);
+        }
         let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
-        let mut prepared = Vec::new();
+        let mut failure = None;
+        let mut prepared = Vec::with_capacity(targets.len());
         for target in targets {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let mut encoder = target.device.create_command_encoder(&Default::default());
             let ready = pass.prepare_copy(&target.target(request, &mut encoder)).is_ok();
-            if pollster::block_on(scope.pop()).is_some() || !ready { return Ok(None); }
-            prepared.push((target, encoder));
+            let invalid = pollster::block_on(scope.pop()).is_some();
+            if !ready || invalid {
+                plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
+                failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedInputs });
+            } else {
+                prepared.push((target, encoder));
+            }
         }
+        if let Some(why) = failure { return refuse(why); }
         drop(preparing);
         let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
         let mut recordings = Vec::with_capacity(prepared.len());
@@ -1057,11 +1133,17 @@ pub trait Backend: Send {
                     (ranges, ExternalCommands::Standalone(encoder.finish()))
                 }
             };
-            if pollster::block_on(scope.pop()).is_some() || !plan.complete(target.copy, ranges) {
-                return Ok(None);
+            plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
+            let invalid = pollster::block_on(scope.pop()).is_some();
+            let complete = plan.complete(target.copy, ranges);
+            if invalid || !complete {
+                plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
+                failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedRanges });
+                continue;
             }
-            recordings.push(ExternalRecording { copy: target.copy, ranges, commands, uploads: target.uploads });
+            recordings.push(ExternalRecording { stage: plan.stage, view: plan.view, items: item_count as usize, copy: target.copy, ranges, commands, uploads: target.uploads });
         }
+        if let Some(why) = failure { return refuse(why); }
         Ok(Some(recordings))
     }
 
@@ -1452,6 +1534,8 @@ pub struct RecordingBackend {
     /// by default). Taken, a pass is recorded in
     /// [`external`](Self::external), not encoded (there is no GPU).
     pub external_passes: bool,
+    /// Synthetic host error during confirmed attachment lookup.
+    pub external_prepare_error: Option<String>,
     /// The external passes taken: `(colour, depth)` surfaces, in order.
     pub external: Vec<(u32, u32)>,
     /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
@@ -1771,6 +1855,15 @@ impl Backend for RecordingBackend {
         };
         self.calls.push(Recorded::ReadSurface { surface, len });
         Ok(vec![self.readback_fill; len])
+    }
+
+    fn external_attachments(
+        &mut self, _: ExternalSurfaces<Self::Surface>, _: [Option<&Self::Texture>; 4], copy: TargetCopy,
+    ) -> Result<ExternalCopies, String> {
+        match &self.external_prepare_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(ExternalCopies::Missing(copy)),
+        }
     }
 
     fn supports_external_pass(&self) -> bool {

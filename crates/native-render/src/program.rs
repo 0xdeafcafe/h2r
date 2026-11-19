@@ -6,7 +6,6 @@
 //! GPU side for [`crate::gpu::GpuWorld`].
 
 use std::collections::HashMap;
-use wgpu::util::DeviceExt;
 
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, InputFetch, VertexOptions, VertexUniforms};
@@ -873,7 +872,7 @@ impl Gpu {
             immediate_size: 0,
         });
         let buffer = |label, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
                 label: Some(label),
                 size: size as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -882,7 +881,7 @@ impl Gpu {
         };
         let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
         let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program uniforms"),
             layout: &uniforms_layout,
             entries: &[
@@ -932,7 +931,7 @@ impl Gpu {
                 resource: wgpu::BindingResource::Sampler(&self.samplers[*n]),
             });
         }
-        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        Some(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program textures"),
             layout: &self.textures_layout,
             entries: &entries,
@@ -981,7 +980,7 @@ fn render_pipeline(
         .collect();
     let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("native world program"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -1094,12 +1093,12 @@ impl Rigid {
             let start = i * stride as usize;
             v.write_bytes(&mut initial[start..start + VertexUniforms::SIZE]);
         }
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let buffer = gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
             label: Some("native world rigid vertex"),
             contents: &initial,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world rigid uniforms"),
             layout: &uniforms_layout,
             entries: &[

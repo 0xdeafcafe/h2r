@@ -86,7 +86,8 @@ impl<'a> MaskPreview<'a> {
         let items = guest.read_u32(list.checked_add(0x14)?)?;
         if list == 0 || first > count || count - first > MAX_ITEMS { return None; }
         items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
-        Some(Self { guest, reads: Default::default(), edits: Default::default(), failed: false.into() })
+        let reads = [(CURRENT_LIST, list), (list + 0xc, first), (list + 4, count), (list + 0x14, items)].into();
+        Some(Self { guest, reads: std::cell::RefCell::new(reads), edits: Default::default(), failed: false.into() })
     }
 
     pub fn finish(self) -> Option<MaskPlan> {
@@ -99,8 +100,9 @@ impl<'a> MaskPreview<'a> {
 impl GuestRead for MaskPreview<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> {
         if let Some(v) = self.edits.get(&addr) { return Some(*v); }
+        if let Some(v) = self.reads.borrow().get(&addr) { return Some(*v); }
         let Some(v) = self.guest.read_u32(addr) else { self.failed.set(true); return None };
-        if self.reads.borrow_mut().insert(addr, v).is_some_and(|old| old != v) { self.failed.set(true); }
+        self.reads.borrow_mut().insert(addr, v);
         Some(v)
     }
 }
@@ -114,6 +116,14 @@ impl GuestWrite for MaskPreview<'_> {
 }
 
 impl MaskPlan {
+    /// Reopen a detached mask walk to restore declined items in the overlay.
+    /// Applying the resulting plan still validates the original read set.
+    pub fn edit(self, guest: &dyn GuestRead) -> MaskPreview<'_> {
+        MaskPreview {
+            guest, reads: self.reads.into(), edits: self.edits.into_iter().collect(), failed: false.into(),
+        }
+    }
+
     /// Revalidate the list identity, item words and masks, then apply the edits.
     /// If a write faults, put the original words back before D3D proceeds.
     pub fn apply(&self, guest: &mut dyn GuestWrite) -> bool {

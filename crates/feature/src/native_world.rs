@@ -154,17 +154,16 @@ impl GuestWrite for Mem<'_> {
 }
 
 /// The exact part sequence corresponding to the reversible mask edits, including duplicates.
-pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner) -> bool)
+pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8) -> bool)
     -> Option<(skip::MaskPlan, Cleared, Vec<(Owner, u8)>)>
 {
     let mut preview = skip::MaskPreview::new(mem)?;
     let selected = std::cell::RefCell::new(Vec::new());
     let cleared = skip::clear_parts(&mut preview, LIGHTMAP_LAYER, &|owner, part, shader| {
         use timeline::native::{Metric, Stage};
-        Stage::World.count(Metric::Examined, 1);
-        let accepted = keep(owner) && parts.get(&(owner, part)) == Some(&shader);
+        let accepted = keep(owner, part) && parts.get(&(owner, part)) == Some(&shader);
         if accepted { selected.borrow_mut().push((owner, part)); }
-        else { Stage::World.count(Metric::RefusedOwnership, 1); }
+        else { Stage::World.count(Metric::Examined, 1); Stage::World.count(Metric::RefusedOwnership, 1); }
         accepted
     })?;
     Some((preview.finish()?, cleared, selected.into_inner()))

@@ -144,6 +144,13 @@ fn the_world_draws_lit_with_the_games_w_depth() {
     }));
     let arena = gfx::ring::UploadPool::default().begin();
     let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };
+    let color_format = color.format();
+    let depth_format = depth.format();
+    let front = [(Owner::Cluster(0), 0)];
+    let back = [(Owner::Cluster(1), 0)];
+    assert!(gpu.prepare_parts(&ctx.device, color_format, depth_format, &front, &camera()));
+    assert!(!gpu.prepare_parts(&ctx.device, color_format, depth_format, &back, &camera()));
+    assert!(!gpu.prepare_parts(&ctx.device, color_format, depth_format, &[(Owner::Cluster(0), 99)], &camera()));
     let stats = gpu.prepare(&mut uploads, &camera(), DepthRule::D24);
     assert_eq!((stats.visible, stats.total), (1, 2));
     let viewport = PassViewport {

@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
@@ -307,6 +306,7 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
     for (level, bytes) in std::iter::once(&image.rgba).chain(&image.mips).enumerate() {
         let level = level as u32;
         let (w, h) = ((size.width >> level).max(1), (size.height >> level).max(1));
+        gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &t,
@@ -344,6 +344,7 @@ fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &
         let level = level as u32;
         let (w, h) = ((image.width >> level).max(1), (image.height >> level).max(1));
         let (w, h) = (w.next_multiple_of(4), h.next_multiple_of(4));
+        gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &t,
@@ -376,7 +377,7 @@ impl GpuWorld {
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
                 usage,
@@ -413,7 +414,7 @@ impl GpuWorld {
             bytemuck::cast_slice(&slot_bytes),
             wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
         );
-        let frame = device.create_buffer(&wgpu::BufferDescriptor {
+        let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native world frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -457,7 +458,7 @@ impl GpuWorld {
                 },
             ],
         });
-        let frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let frame_group = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world frame"),
             layout: &frame_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -501,7 +502,7 @@ impl GpuWorld {
                 wgpu::BufferUsages::UNIFORM,
             );
             let page = lit.unwrap_or_else(|| white.clone());
-            batch_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            batch_groups.push(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("native world batch"),
                 layout: &batch_layout,
                 entries: &[
@@ -754,7 +755,7 @@ impl GpuWorld {
                 immediate_size: 0,
             });
             let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
                 label: Some("native world"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
@@ -797,18 +798,47 @@ impl GpuWorld {
         })
     }
 
-    /// The frame's camera: culls on the CPU and writes the uniform and the
-    /// slots' instance counts.
+    /// Resolve all geometry and program bindings the guest's selected parts need
+    /// on this attachment pair, including the per-placement uniform offset.
+    pub fn prepare_parts(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        parts: &[(Owner, u8)], camera: &RenderCamera,
+    ) -> bool {
+        let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
+        self.prepare_pipelines(device, color, depth);
+        parts.iter().all(|part| {
+            let Some(&i) = self.part_slots.get(part) else { return false };
+            let draw = &self.world.draws[i];
+            if draw.index_count == 0 || !self.owners.keeps(draw.owner) || (self.culls && !frustum.may_see(&draw.bounds)) {
+                return false;
+            }
+            let Some(p) = &self.programs else { return true };
+            let state = &self.stencil.state;
+            p.batch(draw.batch as usize, draw.material, color, depth, state).is_some()
+                && match draw.owner {
+                    Owner::Cluster(_) => true,
+                    Owner::Instance(n) => p.rigid(draw.material, n, color, depth, state).is_some(),
+                }
+        })
+    }
+
+    fn prepare_pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
+        self.pipeline(device, color, depth);
+        if let Some(p) = &mut self.programs {
+            p.pipelines(device, color, depth, &self.stencil.state, self.inherited_cull);
+        }
+    }
+
+    /// The same visibility test for guest admission and indirect arguments.
+    /// Material programs supply the depth range. The fixed stage uses the camera's range.
+    pub fn draw_frustum(vp: &crate::camera::Mat4, programs: bool) -> Frustum {
+        if programs { Frustum::sides(vp) } else { Frustum::from_view_projection(vp) }
+    }
+
+    /// The frame's camera: culls on the CPU and writes the uniform and the slots' instance counts.
     pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
-        // The material programs clip as the D3D path does: cull by the
-        // sides and the eye only (`Frustum::sides`). Stage 1 draws with
-        // the render camera's own range.
-        let frustum = if self.programs.is_some() {
-            Frustum::sides(&view_proj)
-        } else {
-            Frustum::from_view_projection(&view_proj)
-        };
+        let frustum = Self::draw_frustum(&view_proj, self.has_programs());
         let stats = if self.culls {
             cull(&self.world, &frustum, &mut self.slots)
         } else {
@@ -878,6 +908,7 @@ impl GpuWorld {
         if let Some(parts) = parts {
             for part in parts {
                 let Some(&slot) = self.part_slots.get(part) else { return 0 };
+                if self.slots[slot].instance_count == 0 { return 0; }
                 let batch = self.world.draws[slot].batch as usize;
                 if let Some((last_batch, _, end)) = spans.last_mut() && *last_batch == batch && *end == slot {
                     *end += 1;
@@ -891,10 +922,7 @@ impl GpuWorld {
                 (i, first, first + b.draw_count as usize)
             }));
         }
-        self.pipeline(device, color_format, depth_format);
-        if let Some(p) = &mut self.programs {
-            p.pipelines(device, color_format, depth_format, &self.stencil.state, self.inherited_cull);
-        }
+        self.prepare_pipelines(device, color_format, depth_format);
         let pipeline = &self.pipelines[&(color_format, depth_format)];
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

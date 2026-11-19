@@ -4,7 +4,7 @@
 //! consume the real target-13 surface through Outputs::binding_after.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 
 use engine::memory::GuestMemory;
 use feature::native_gels::{Call, Host};
@@ -101,6 +101,7 @@ struct Pending {
 struct Glue<B: d3d::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     replacements: Arc<Replacements>,
+    admission_registered: Once,
     loaded: Arc<Mutex<Loaded>>,
     pending: Mutex<Option<Pending>>,
     outputs: Arc<Outputs>,
@@ -197,6 +198,11 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
             .map_err(|_| "gel map generation lock")?
             .generation;
         let view = mem.u32(0x004b_a050).map_err(|e| format!("view: {e:?}"))?;
+        // Only the enabled feature's replacement path reaches here. Keep
+        // disabled/compare-only runs out of the device's admission list.
+        self.admission_registered.call_once(|| {
+            device.add_draw_admission(self.replacements.clone());
+        });
         self.replacements.arm(pending.key, target, view, generation);
         *self
             .outputs
@@ -643,12 +649,10 @@ pub fn install<B: d3d::Backend + Send + 'static>(
 ) -> Arc<Outputs> {
     let outputs = Arc::new(Outputs::default());
     let replacements = Arc::new(Replacements::default());
-    if let Ok(mut device) = device.lock() {
-        device.add_draw_admission(replacements.clone());
-    }
     feature::native_gels::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         replacements,
+        admission_registered: Once::new(),
         loaded: Arc::new(Mutex::new(Loaded::default())),
         pending: Mutex::new(None),
         outputs: Arc::clone(&outputs),

@@ -10,7 +10,6 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::Frustum;
@@ -121,7 +120,7 @@ fn render_pipeline(
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint8x4, 4 => Float32x4
     ];
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("native models"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -198,6 +197,7 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::T
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    gfx::churn::upload_bytes(image.rgba.len());
     queue.write_texture(
         t.as_image_copy(),
         &image.rgba,
@@ -212,7 +212,7 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::T
 }
 
 fn storage(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
         label: Some(label),
         size: size.max(64),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -277,7 +277,7 @@ impl GpuModels {
                 },
             ],
         });
-        let frame = device.create_buffer(&wgpu::BufferDescriptor {
+        let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native models frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -325,7 +325,7 @@ impl GpuModels {
         nodes: &wgpu::Buffer,
         instances: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native models frame"),
             layout,
             entries: &[
@@ -355,7 +355,7 @@ impl GpuModels {
         base_map: &mut dyn FnMut(u16) -> Option<Image>,
     ) -> u32 {
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
                 usage,
@@ -376,7 +376,7 @@ impl GpuModels {
         let vertices = init("native model vertices", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
         let indices = init("native model indices", bytemuck::cast_slice(&idx), wgpu::BufferUsages::INDEX);
         let inverses = init("native model inverses", bytemuck::cast_slice(&inv), wgpu::BufferUsages::STORAGE);
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native model"),
             layout: &self.model_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -401,7 +401,7 @@ impl GpuModels {
     }
 
     fn material_group(&self, device: &wgpu::Device, view: &wgpu::TextureView) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native model material"),
             layout: &self.material_layout,
             entries: &[
@@ -642,7 +642,7 @@ impl GpuModels {
             light: [l.direction[0], l.direction[1], l.direction[2], l.diffuse],
         };
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
                 usage,
