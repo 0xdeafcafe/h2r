@@ -730,6 +730,23 @@ impl feature::Feature for Bots {
             },
         );
 
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::SIMULATION_SLOT_ACTION,
+            "phantoms: sample the pad for this simulation tick",
+            move |c| {
+                let slot = c.arg_u32("slot").unwrap_or(0);
+                let rt = Arc::clone(c.ctx.runtime());
+                if !phantoms.owns_action_slot(&*rt.memory(), slot) {
+                    return Ok(Flow::Continue);
+                }
+                let phantoms = phantoms.clone();
+                c.answer_async(move |cx| {
+                    Box::pin(async move { phantoms.slot_action(cx, slot).await })
+                })
+            },
+        );
+
         // A game starting from the session with phantoms planned: this
         // console must start it as the distributed server, or phantoms
         // never join (docs/game/bots.md §5.1, "Hosting the game").
