@@ -4,6 +4,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import { eventBits } from "./events.mjs";
 import { Connection } from "./stream.mjs";
 const dir = process.argv[2];
 if (!dir) throw Error("pass bench_match_wire's TELEMETRY_BENCH_OUT directory");
@@ -14,6 +15,12 @@ const files = readdirSync(dir)
   .sort();
 const frames = files.flatMap((f) => JSON.parse(readFileSync(join(dir, f))));
 assert.equal(frames.length, 9000);
+console.log(
+  JSON.stringify({
+    empirical_MP_random_draws_marginal_B_player_s:
+      eventBits(frames) / (8 * 9600),
+  }),
+);
 // Removing only the cross-player predictor keeps this a same-data ablation.
 for (const [interval, shareAim] of [
   [150, true],
