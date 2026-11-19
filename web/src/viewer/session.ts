@@ -64,6 +64,7 @@ export function createReplaySession(
   let liveEdge = (_now: number) => 0;
   let liveFrame: ReturnType<typeof liveFrameSource> | null = null;
   let sought = 0;
+  let archive: ArchiveWindow | undefined;
   const tickAt = (now: number) => playback.tickAt(now, playback.followingLive ? liveEdge(now) : 0);
 
   // Explicit replay controls also apply in other tabs on this game. A new
@@ -118,7 +119,6 @@ export function createReplaySession(
     sought = performance.now();
     reflect(sought);
 
-    let archive: ArchiveWindow | undefined;
     let archiveFramesChanged: (() => void) | undefined;
     let pendingWindow: Promise<void> | null = null;
     let recordingOpen = false;
@@ -165,7 +165,7 @@ export function createReplaySession(
         const index = await api.chunks(id, signal, revision);
         if (signal.aborted) return;
         if (index?.archive_sha256) {
-          const window = new ArchiveWindow(index, c => api.chunk(id, c, signal));
+          const window = new ArchiveWindow(index, (c, segmentSignal) => api.chunk(id, c, AbortSignal.any([signal, segmentSignal])));
           const bounds = new ReplayTimeline([], [], window.segments);
           const clock = playback.clock;
           const seconds = Number(Array.isArray(time) ? time[0] : time);
@@ -241,8 +241,9 @@ export function createReplaySession(
   const frame = (now: number): MapFrame => {
     if (playback.followingLive && liveFrame) return liveFrame(now);
     const tl = playback.clock?.timeline;
-    if (!tl) return { players: [], markers: [], seen: null };
-    return replayFrame(tl, tickAt(now), roster());
+    const tick = tickAt(now);
+    if (!tl || (archive && !archive.ready(tick))) return { players: [], markers: [], seen: null };
+    return replayFrame(tl, tick, roster());
   };
 
   const changed = (now: number) => {

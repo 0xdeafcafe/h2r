@@ -200,7 +200,9 @@ export async function recordingFrames(bytes: Uint8Array, meta: RecordingChunk, i
       throw new PackError("archive game or tick differs from index");
     last = tick;
     // Replay sampling only uses cut presence. Keep exact source integers in decodeArchive.
-    return Object.assign(f, {tick, ...(typeof f.cut === "bigint" ? {cut:Number(f.cut)} : {})}) as Frame;
+    f.tick = tick;
+    if (typeof f.cut === "bigint") f.cut = Number(f.cut);
+    return f as Frame;
   });
   if (last !== meta.to_tick) throw new PackError("archive last tick differs from index");
   return output;
