@@ -4,7 +4,7 @@
 use engine::memory::{FlatMemory, GuestMemory};
 use engine::render_loop::{Regs, Step, layer};
 use native_render::camera::GuestRead;
-use native_render::light_list::{HANDLER_RETURN, sorted};
+use native_render::light_list::{HANDLER_RETURN, sorted_at};
 use native_render::skip::{GEOMETRY_BUILD, GEOMETRY_DRAW, RENDER_RECORDS};
 
 struct Read<'a>(&'a FlatMemory);
@@ -12,7 +12,7 @@ impl GuestRead for Read<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> { self.0.u32(addr).ok() }
 }
 
-fn dispatches(confirm: bool, writable: bool) -> Vec<u32> {
+fn dispatches(confirm: bool, writable: bool, caller: u32) -> Vec<u32> {
     let mut m = FlatMemory::new(0x400000, 0x280000);
     let (list, table, sentinel, stack) = (0x500000, 0x501000, 0x502000, 0x640000);
     let mut r = Regs { edi: list, ebx: 12, esp: stack, esi: 991, ..Default::default() };
@@ -46,11 +46,11 @@ fn dispatches(confirm: bool, writable: bool) -> Vec<u32> {
             Step::Call { target, site, cleanup } => {
                 assert_eq!((target, site, cleanup), (GEOMETRY_DRAW, HANDLER_RETURN, 28));
                 let esp = r.esp - 4;
-                m.set_u32(esp, site).unwrap();
+                m.set_u32(esp, caller).unwrap();
                 let mut skip = false;
                 if first {
                     first = false;
-                    let plan = sorted(&Read(&m), list, r.ebx, esp, r.esi).unwrap();
+                    let plan = sorted_at(&Read(&m), list, r.ebx, esp, r.esi, caller).unwrap();
                     let prefix = plan.entries.iter().take_while(|e| e.geometry.is_some()).count();
                     assert_eq!(prefix, 2);
                     if confirm {
@@ -70,7 +70,8 @@ fn dispatches(confirm: bool, writable: bool) -> Vec<u32> {
 
 #[test]
 fn a_split_consumes_only_its_confirmed_sorted_prefix() {
-    assert_eq!(dispatches(true, true), [2, 1]);
-    assert_eq!(dispatches(true, false), [3, 3, 2, 1], "fault before commit");
-    assert_eq!(dispatches(false, true), [3, 3, 2, 1], "second copy refused");
+    assert_eq!(dispatches(true, true, 0xfeed1234), [2, 1], "ported loop continuation");
+    assert_eq!(dispatches(true, true, HANDLER_RETURN), [2, 1]);
+    assert_eq!(dispatches(true, false, HANDLER_RETURN), [3, 3, 2, 1], "fault before commit");
+    assert_eq!(dispatches(false, true, HANDLER_RETURN), [3, 3, 2, 1], "second copy refused");
 }

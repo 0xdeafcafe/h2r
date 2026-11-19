@@ -56,9 +56,14 @@ pub const HANDLER_RETURN: u32 = 0x0003_bc90;
 /// Earlier excluded slots are allowed. An earlier actual draw has already
 /// claimed this layer and prevents a whole-light takeover.
 pub fn sorted(mem: &dyn GuestRead, list: u32, layer: u32, esp: u32, esi: u32) -> Result<SortedLayer, &'static str> {
+    sorted_at(mem, list, layer, esp, esi, HANDLER_RETURN)
+}
+
+/// The same ABI when the layer-loop port pushed its authenticated continuation token.
+pub fn sorted_at(mem: &dyn GuestRead, list: u32, layer: u32, esp: u32, esi: u32, caller: u32) -> Result<SortedLayer, &'static str> {
     let unread = "unreadable sorted light list";
     let word = |p: u32, n: u32| mem.read_u32(p.checked_add(n)?);
-    if word(esp, 0) != Some(HANDLER_RETURN) || word(esp, 28) != Some(esi)
+    if word(esp, 0) != Some(caller) || word(esp, 28) != Some(esi)
         || word(esp, 16) != Some(layer) || !matches!(layer, 12 | 13) {
         return Err("outside the sorted light geometry call");
     }

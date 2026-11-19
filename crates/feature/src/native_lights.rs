@@ -263,18 +263,23 @@ fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
     });
 }
 
-fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32) -> bool {
-    let Some(c) = CANDIDATE.with_borrow_mut(|slot| slot.take_if(|c| c.inside_layer)) else { return false; };
+fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32, port_caller: impl FnOnce(u32) -> bool) -> Option<u32> {
+    let c = CANDIDATE.with_borrow_mut(|slot| slot.take_if(|c| c.inside_layer))?;
+    let caller = mem.u32(esp).ok();
+    let caller = match caller {
+        Some(pc) if pc == light_list::HANDLER_RETURN || port_caller(pc) => pc,
+        _ => { refused("outside the sorted light geometry call"); return None; }
+    };
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some(host) = host else { return refused("no light host"); };
-    let Some(view_target) = VIEW_TARGET.get() else { return refused("light view target unavailable"); };
-    let accepted = match light_list::sorted(&Ro(mem), LIGHT_LIST, c.layer, esp, *esi) {
+    let Some(host) = host else { refused("no light host"); return None; };
+    let Some(view_target) = VIEW_TARGET.get() else { refused("light view target unavailable"); return None; };
+    let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, c.layer, esp, *esi, caller) {
         Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, shader_gel: c.shader_gel, view_target,
             sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }, esi),
         Err(why) => refused(why),
     };
     if !accepted { reference::refused(c.light); }
-    accepted
+    accepted.then_some(caller)
 }
 
 pub struct NativeLights;
@@ -314,12 +319,15 @@ impl Feature for NativeLights {
         b.raw()
             .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
                 let rt = Arc::clone(c.ctx.runtime());
-                if !geometry(&mut *rt.memory(), c.cpu.esp, &mut c.cpu.esi) {
+                let Some(caller) = geometry(&mut *rt.memory(), c.cpu.esp, &mut c.cpu.esi, |pc| {
+                    c.ctx.live_continuations().iter().any(|k| k.token == pc
+                        && k.target == skip::GEOMETRY_DRAW && k.origin == crate::render_loop::SORTED_HANDLER)
+                }) else {
                     return Ok(Flow::Continue);
-                }
+                };
                 // sorted() already checked the return address on this locked stack.
                 c.cpu.esp = c.cpu.esp.wrapping_add(32);
-                Ok(Flow::Return(runtime::TransferAbi::ret(light_list::HANDLER_RETURN)))
+                Ok(Flow::Return(runtime::TransferAbi::ret(caller)))
             })
             .context_only();
         b.raw()

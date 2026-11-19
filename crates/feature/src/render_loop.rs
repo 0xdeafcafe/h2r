@@ -282,6 +282,9 @@ fn run<P: Port>(
     follow(m, step, cpu, ctx, &mut mem)
 }
 
+/// Matches the sole geometry dispatch site in the sorted layer loop.
+pub(crate) const SORTED_HANDLER: &str = "render.layer_entries.sorted_handler";
+
 /// Makes the call `step` asks for, or returns.
 fn follow<P: Port>(
     mut m: P,
@@ -295,13 +298,20 @@ fn follow<P: Port>(
             m.done();
             Ok(TransferAbi::ret(to))
         }
-        Step::Call { target, .. } => ctx.call_guest(cpu, mem, target, move |cpu, ctx| {
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let mut r = regs(cpu);
-            let step = m.resume(&mut r, &mut *mem).map_err(fault)?;
-            store(cpu, &r);
-            follow(m, step, cpu, ctx, &mut mem)
-        }),
+        Step::Call { target, site, .. } => {
+            let resume = move |cpu: &mut CpuAbi, ctx: &mut ExecCtx| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let mut r = regs(cpu);
+                let step = m.resume(&mut r, &mut *mem).map_err(fault)?;
+                store(cpu, &r);
+                follow(m, step, cpu, ctx, &mut mem)
+            };
+            if site == native_render::light_list::HANDLER_RETURN {
+                ctx.call_guest_named(cpu, mem, target, SORTED_HANDLER, resume)
+            } else {
+                ctx.call_guest(cpu, mem, target, resume)
+            }
+        }
     }
 }
