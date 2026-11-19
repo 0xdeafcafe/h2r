@@ -48,6 +48,12 @@ use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 /// or the referenced tag's group. Checked before [`KNOWN`].
 const ALLOWED: &[Rule] = &[
     (
+        "mode",
+        "materials[].shader",
+        "emblem",
+        "(a) the player biped's emblem material: Halo 2's, which draws the player's own emblem and colours (h1models::emblem)",
+    ),
+    (
         "*",
         "*",
         "none-word",
@@ -654,7 +660,14 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
             let (g, name) = base.name(id).unwrap_or_else(|| {
                 panic!("{map} {group} {tag} {p}: {id:?} is in neither the tree nor the base")
             });
-            out.push(leak(&p, g.to_string(), name.to_owned()));
+            // The emblem material is Halo 2's on purpose: it draws the
+            // player's own emblem and colours.
+            let what = if name == h1objects::convert::EMBLEM_SHADER {
+                "emblem".to_owned()
+            } else {
+                g.to_string()
+            };
+            out.push(leak(&p, what, name.to_owned()));
         }
         // Role values still there.
         let Some(r) = &record else {
