@@ -174,3 +174,55 @@ fn status_session_and_game_lines_from_their_answers() {
         "bots-test: game g1 on lockout: 3 players, 2 bots (1 with an account)"
     );
 }
+
+#[test]
+fn wait_clang_runs_clangs_build_and_settings_come_from_the_play_data() {
+    let o = opts(&["test"]);
+    assert!(!o.wait_clang);
+    assert_eq!(o.settings_from, PathBuf::from("/tmp/t/h2boot-data"));
+    let g = plan(&o, "http://s", Path::new("/r"), Path::new("/a.sock"));
+    assert!(!g.args.iter().any(|a| a == "--tier"));
+
+    let o = opts(&[
+        "test",
+        "--wait-clang",
+        "--settings-from",
+        "/d",
+        "--",
+        "--fps",
+        "60",
+    ]);
+    assert!(o.wait_clang);
+    assert_eq!(o.settings_from, PathBuf::from("/d"));
+    let g = plan(&o, "http://s", Path::new("/r"), Path::new("/a.sock"));
+    let a = g.args.join(" ");
+    assert!(a.ends_with("--tier clang --fps 60"), "{a}");
+    assert!(err(&["test", "--settings-from"]).contains("--settings-from needs a value"));
+}
+
+#[test]
+fn only_the_graphics_section_is_copied() {
+    let text = "[graphics]\nfps = 120\nrender_scale = 2\n\n[live]\nvisibility = \"friends\"\n\n[clankers]\nenabled = true\n";
+    let (out, n) = graphics_only(text).unwrap().unwrap();
+    assert_eq!(n, 2);
+    let back: toml::Table = out.parse().unwrap();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back["graphics"]["fps"].as_integer(), Some(120));
+    assert_eq!(back["graphics"]["render_scale"].as_integer(), Some(2));
+    assert_eq!(graphics_only("[live]\nvisibility = 1\n").unwrap(), None);
+    assert_eq!(graphics_only("").unwrap(), None);
+    assert!(graphics_only("[graphics\n").is_err());
+}
+
+#[test]
+fn a_background_build_is_running_while_its_log_changes() {
+    use std::time::{Duration, SystemTime};
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+    assert!(still_writing(now - Duration::from_secs(5), now));
+    assert!(still_writing(now - Duration::from_secs(119), now));
+    assert!(!still_writing(now - Duration::from_secs(121), now));
+    assert!(
+        still_writing(now + Duration::from_secs(1), now),
+        "a clock skew"
+    );
+}

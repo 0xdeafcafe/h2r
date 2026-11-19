@@ -22,7 +22,9 @@ pub const LOCAL_PORTS: usize = 3;
 
 /// Whether a game's stderr line goes into the merged log.
 pub fn wanted(line: &str) -> bool {
-    const KEEP: [&str; 13] = [
+    const KEEP: [&str; 15] = [
+        "needs a code to sign in",
+        "live: sign-in",
         "bots:",
         "clankers:",
         "live: playing as",
@@ -261,6 +263,34 @@ fn read_game(text: &str) -> Option<(usize, usize)> {
     Some((bots, accounts))
 }
 
+/// A hosted Live session: the HLE's `live: session ... advertised`.
+fn is_advertised(text: &str) -> bool {
+    text.starts_with("live: session ") && text.contains(" advertised")
+}
+
+/// The players' screen mode a run ended in when it was not Xbox Live: the
+/// last `ui: screen 0x1e ..., mode N` with N not 3, unless the Xbox Live
+/// menu or a Live session came after it. Its name and line.
+fn ended_off_live(l: &Log) -> Option<(&'static str, String)> {
+    let mut ended = None;
+    for (raw, t) in l.raw.iter().zip(&l.texts) {
+        if let Some(mode) = t
+            .strip_prefix("ui: screen 0x1e")
+            .and_then(|r| r.rsplit_once(", mode "))
+            .and_then(|(_, m)| m.trim().parse::<u32>().ok())
+        {
+            ended = match mode {
+                1 => Some(("Split Screen", raw.to_string())),
+                2 => Some(("System Link", raw.to_string())),
+                _ => None,
+            };
+        } else if t.starts_with("ui: screen 0xba") || is_advertised(t) {
+            ended = None;
+        }
+    }
+    ended
+}
+
 const TROUBLE: [&str; 7] = [
     "panicked",
     "guest thread exited",
@@ -325,33 +355,76 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         l.last(6, |t| t.starts_with("clankers: ")),
     ));
 
-    // 3. Hosting a Live custom game.
-    let hosting = l.first(|t| {
-        t.starts_with("coop-live: lobby mode 2")
-            || (t.starts_with("live: session ") && t.contains(" advertised"))
+    // 3. On Xbox Live: the players' screen in Xbox Live mode, or the Xbox
+    // Live menu. A run that ended in another mode says which.
+    let ended = ended_off_live(&l);
+    let live = l.first(|t| {
+        t.starts_with("ui: screen 0xba")
+            || t.starts_with("custom games: xbox live menu tag")
+            || (t.starts_with("ui: screen 0x1e") && t.ends_with(", mode 3"))
     });
-    checks.push(match hosting {
-        Some((line, t)) => check(
-            "hosting a Live custom game (pregame lobby)",
-            true,
-            t.to_string(),
-            vec![line],
+    checks.push(match (live, &ended) {
+        (Some((line, t)), None) => check("on Xbox Live", true, t.to_string(), vec![line]),
+        (_, Some((mode, line))) => check(
+            "on Xbox Live",
+            false,
+            format!("not on Xbox Live: ended in {mode}"),
+            vec![line.clone()],
         ),
-        None => {
+        (None, None) => {
             let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
             lines.extend(l.last(1, |t| t.starts_with("ui: screen")));
             check(
-                "hosting a Live custom game (pregame lobby)",
+                "on Xbox Live",
                 false,
-                "no `coop-live: lobby mode 2` and no `live: session ... advertised`: the menus \
-                 never reached Xbox Live > Custom Game; the last presses and screen follow"
+                "never on Xbox Live (no players' screen in mode 3, no Xbox Live menu `0xba`): \
+                 the last presses and screen follow"
                     .into(),
                 lines,
             )
         }
     });
 
-    // 4. The roster: the server's bot accounts for the whole count.
+    // 4. Hosting a Live custom game: the HLE advertised the session. A
+    // lobby (`coop-live: lobby mode 2`) alone is any custom game, Split
+    // Screen and System Link too.
+    let hosting = l.first(is_advertised);
+    checks.push(match hosting {
+        Some((line, t)) => check(
+            "hosting a Live custom game (session advertised)",
+            true,
+            t.to_string(),
+            vec![line],
+        ),
+        None => {
+            let lobby = l.first(|t| t.starts_with("coop-live: lobby mode 2"));
+            let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
+            lines.extend(l.last(1, |t| t.starts_with("ui: screen")));
+            let detail = match (&lobby, &ended) {
+                (Some(_), Some((mode, _))) => format!(
+                    "a custom game lobby opened in {mode}, not on Xbox Live: no \
+                     `live: session ... advertised`"
+                ),
+                (Some((l2, _)), None) => {
+                    lines.insert(0, l2.clone());
+                    "a custom game lobby opened (lobby mode 2) but the HLE advertised no Live \
+                     session: it is not a Live game"
+                        .into()
+                }
+                (None, _) => "no `live: session ... advertised`: the menus never reached Xbox \
+                              Live > Custom Game; the last presses and screen follow"
+                    .into(),
+            };
+            check(
+                "hosting a Live custom game (session advertised)",
+                false,
+                detail,
+                lines,
+            )
+        }
+    });
+
+    // 5. The roster: the server's bot accounts for the whole count.
     let asked =
         l.first(|t| t.starts_with(&format!("clankers: asking Live for {} bots", plan.count)));
     let rostered = l.first(|t| t.starts_with("clankers: Live rostered bots for session "));
@@ -381,7 +454,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         ),
     });
 
-    // 5. Each local bot signed in through the join gate.
+    // 6. Each local bot signed in through the join gate.
     let mut where_ = Vec::new();
     let mut lines = Vec::new();
     let mut missing = Vec::new();
@@ -423,7 +496,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         lines,
     ));
 
-    // 6. Each local bot on Live as its own bot account.
+    // 7. Each local bot on Live as its own bot account.
     let mut lines = Vec::new();
     let mut missing = Vec::new();
     let mut names = Vec::new();
@@ -468,7 +541,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         lines,
     ));
 
-    // 7. Start Game with the bots in: the start state.
+    // 8. Start Game with the bots in: the start state.
     let ready =
         l.first(|t| t.starts_with("bots: start state 9") || t.starts_with("bots: start state 10"));
     checks.push(match ready {
@@ -490,7 +563,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 8. Gameplay on a map.
+    // 9. Gameplay on a map.
     let play = l.first(|t| {
         read_status(t).is_some_and(|(phase, mode, map)| {
             phase == "gameplay"
@@ -525,7 +598,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         }
     });
 
-    // 9. The phantoms joined.
+    // 10. The phantoms joined.
     let want = plan.phantoms();
     let joined: BTreeSet<&str> = l.texts.iter().filter_map(|t| phantom_joined(t)).collect();
     let failed = l.last(3, phantom_failed);
@@ -567,7 +640,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         )
     });
 
-    // 10. The session's player count reached the host and every bot.
+    // 11. The session's player count reached the host and every bot.
     let most = l.texts.iter().filter_map(|t| read_session(t)).max();
     let need = 1 + plan.count as u64;
     checks.push(check(
@@ -583,7 +656,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         l.last(2, |t| t.starts_with("bots-test: session ")),
     ));
 
-    // 11. Telemetry: the game record has the bots.
+    // 12. Telemetry: the game record has the bots.
     let best = l.texts.iter().filter_map(|t| read_game(t)).max();
     checks.push(check(
         "game record: the bots with bot: true",
