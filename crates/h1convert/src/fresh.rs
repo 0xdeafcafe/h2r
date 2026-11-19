@@ -788,10 +788,13 @@ pub struct Pruned {
     /// long); their own words name tags too, as datums only.
     pub partly_walked: Vec<TagId>,
     /// [`prune_pinned`]: the tags nothing reaches kept only because a
-    /// kept tag's block sits in their bytes ([`Reach::Holds`]), and how
-    /// many words in them named a dropped tag and were nulled.
+    /// kept tag's block sits in their bytes ([`Reach::Holds`]); and how
+    /// many words of the kept pinned tags named a dropped tag and were
+    /// nulled (a holder's own references, and stale words no array of a
+    /// reached tag covers: a removed placement's, an emptied block's old
+    /// elements).
     pub holders: Vec<TagId>,
-    pub holder_words: usize,
+    pub nulled_words: usize,
 }
 
 impl Pruned {
@@ -1570,7 +1573,9 @@ fn null_unplaced(set: &mut TagSet, is_base: impl Fn(u32) -> bool) -> usize {
 /// A tag nothing reaches whose bytes hold a kept tag's block (retail block
 /// data shared between tags) is kept whole for those bytes, and each word
 /// of it naming a dropped tag is nulled, so it keeps nothing
-/// ([`Pruned::holders`]). Only pinned payloads are dropped (the others
+/// ([`Pruned::holders`]). So is every word of a kept pinned tag naming a
+/// dropped one: a stale word no array covers keeps nothing, and the map
+/// keeps no word naming a tag it lacks ([`Pruned::nulled_words`]). Only pinned payloads are dropped (the others
 /// hold no base metadata).
 /// `first` is the first slot the conversion added.
 pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
@@ -1655,18 +1660,25 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             continue;
         };
         if holder[i] {
-            for w in bytes.as_chunks_mut::<4>().0 {
-                if gone.contains(&u32::from_le_bytes(*w)) {
-                    *w = u32::MAX.to_le_bytes();
-                    out.holder_words += 1;
-                }
-            }
             out.holders.push(t.id);
             continue;
         }
         out.freed += bytes.len() as u64;
         *out.groups.entry(t.group.to_string()).or_default() += 1;
         s.tag = None;
+    }
+    // What stays names no dropped tag: a word of a kept pinned tag naming
+    // one is one no array the reach walked covers (or a holder's own), so
+    // nothing reads it; nulled as the engine finds a reference to nothing.
+    for s in &mut set.slots {
+        if let Some(TagPayload::Pinned { bytes, .. }) = s.tag.as_mut().map(|t| &mut t.payload) {
+            for w in bytes.as_chunks_mut::<4>().0 {
+                if gone.contains(&u32::from_le_bytes(*w)) {
+                    *w = u32::MAX.to_le_bytes();
+                    out.nulled_words += 1;
+                }
+            }
+        }
     }
     out
 }
@@ -1910,7 +1922,7 @@ mod pinned_prune_tests {
         let after = bytes(&mut set, 8).clone();
         assert_eq!(after[..0x3c], before[..0x3c]);
         assert_eq!(after[0x3c..0x40], u32::MAX.to_le_bytes());
-        assert_eq!(p.holder_words, 1);
+        assert_eq!(p.nulled_words, 1);
         assert_eq!(
             set.pinned.as_ref().unwrap().unowned.len(),
             2,
@@ -1959,6 +1971,27 @@ mod pinned_prune_tests {
         assert_eq!(p.why.get(&id(9)), Some(&Reach::Datum { by: id(N) }));
         assert!(set.slots[5].tag.is_none());
         assert_eq!(bytes(&mut set, 8)[0x3c..0x40], u32::MAX.to_le_bytes());
+    }
+
+    /// A stale word of a kept tag (one no array of it covers: a removed
+    /// placement's, an emptied block's old elements) keeps nothing, and is
+    /// nulled when the tag it names is dropped, so the map holds no word
+    /// naming a tag it lacks (V: the pinned Blood Gulch scenario still
+    /// named the base's dropped powerups, vehicles, ambience, reverbs and
+    /// decorators).
+    #[test]
+    fn a_stale_word_naming_a_dropped_tag_is_nulled() {
+        let mut set = set();
+        // The scenario's stale word too: past every block (none here).
+        put(bytes(&mut set, 0), 0x3f0, id(9).0);
+        let p = prune_pinned(&mut set, N, &NOTHING, &[id(6)]);
+        assert!(set.slots[8].tag.is_none() && set.slots[9].tag.is_none());
+        // `MGS2`'s stale datum of tag 8, after its element.
+        assert_eq!(bytes(&mut set, 6)[0xa8..0xac], u32::MAX.to_le_bytes());
+        assert_eq!(bytes(&mut set, 0)[0x3f0..0x3f4], u32::MAX.to_le_bytes());
+        assert_eq!(p.nulled_words, 2);
+        // A word naming a kept tag stays.
+        assert_eq!(bytes(&mut set, 6)[0x18..0x1c], id(7).0.to_le_bytes());
     }
 
     /// A pinned scenario's object palette keeps the entries a placement

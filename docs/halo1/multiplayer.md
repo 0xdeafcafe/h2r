@@ -686,6 +686,11 @@ tag and every reference in it, and the wraith model kept the wraith.
 A size-0 tag (an alias) reads its root in another tag's bytes, so a
 reached alias makes that tag its holder the same way; otherwise the
 pinned map's alias pointed at freed bytes.
+Every word of a kept pinned tag that names a dropped tag is nulled
+(`Pruned::nulled_words`): stale words no walked array covers keep
+nothing, and the pinned Blood Gulch scenario still named the base's
+dropped powerups, vehicles, ambience, reverbs and decorators through
+them.
 An array below the root that doesn't read (outside the
 metadata, implausibly long) is skipped, and the tag's own words then
 name tags as datums only (`Pruned::partly_walked`). Only a field the

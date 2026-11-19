@@ -1727,9 +1727,9 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             // because a kept tag's block sits in their bytes.
             let holders: Vec<String> = pruned.holders.iter().map(|id| label(*id)).collect();
             eprintln!(
-                "{sandbox:?}: {} holders of shared blocks ({} words naming dropped tags nulled): {holders:?}",
+                "{sandbox:?}: {} holders of shared blocks; {} words naming dropped tags nulled: {holders:?}",
                 holders.len(),
-                pruned.holder_words
+                pruned.nulled_words
             );
         }
         let (done, _) = p
