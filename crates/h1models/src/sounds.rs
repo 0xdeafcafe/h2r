@@ -144,8 +144,9 @@ pub fn add_sound_events(
     let anims = root
         .fixups
         .iter_mut()
+        .filter(|f| f.offset == H2_ANIMATIONS)
         .find_map(|f| match &mut f.kind {
-            FixupKind::Block { child, .. } if f.offset == H2_ANIMATIONS => Some(child),
+            FixupKind::Block { child, .. } => Some(child),
             _ => None,
         })
         .ok_or(Error::Invalid("converted graph has no animations".into()))?;
