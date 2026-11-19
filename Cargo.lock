@@ -676,6 +676,7 @@ dependencies = [
  "variants",
  "vfs",
  "voice",
+ "wgpu",
  "x87",
  "xapi",
  "xbe",

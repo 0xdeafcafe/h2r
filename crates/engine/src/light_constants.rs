@@ -179,6 +179,9 @@ pub enum Error {
     X87(u32),
     /// An integer division by zero (`#DE` in the original).
     Divide,
+    /// A loop the original would run on for too long or for ever (the
+    /// blur's steps at infinity): the port stops at its budget.
+    Unbounded,
 }
 
 impl From<MemFault> for Error {

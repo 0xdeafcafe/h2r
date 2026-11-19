@@ -292,6 +292,19 @@ points! { ALL;
     /// context, stack `(light datum, &position, shadow byte, weight)`,
     /// `ret 0x10`; its only caller is `RENDER_DYNAMIC_LIGHTS`.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [fn(definition: eax, context: ecx, light: stack 0, position: stack 1, shadow: stack 2, weight: stack 3) ret 16]; "docs/graphics/e3-lighting.md";
+    /// `render_screen_effects`: the view's post passes, the last call of
+    /// `render_scene_passes` (`0x0002c322`, after layer 17 and
+    /// `0x00020770`): the colour pass over the view's target (`0x000214f0`,
+    /// when `colour` is set), the scenario's screen effects (`0x0002d140`
+    /// per entry) and `0x0002df00` (when `late` is set). Stack `(late byte,
+    /// colour byte)`, `ret 8`.
+    RENDER_SCREEN_EFFECTS @ 0x0001_3870: [fn(late: stack 0, colour: stack 1) ret 8]; "docs/graphics/native-renderer.md";
+    /// `render_screen_effects`' colour pass, a glow (`0x000214f0`): the
+    /// view's target down-sampled into target 7, blurred between 7 and 8
+    /// (`0x000211a0`) and blended back. Stack: the seven words
+    /// `0x000138b3`..`0x000139b5` push (`engine::colour_pass::Arguments`),
+    /// `ret 0x1c`.
+    COLOUR_PASS @ 0x0002_14f0: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3, a4: stack 4, a5: stack 5, a6: stack 6) ret 28]; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

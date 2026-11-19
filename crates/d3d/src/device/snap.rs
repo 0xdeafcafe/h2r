@@ -566,6 +566,9 @@ impl<B: Backend> Device<B> {
         if self.pending_external.is_some() {
             why.push("an external pass is asked for".into());
         }
+        if self.swallowing.is_some() {
+            why.push("a swallow of planned draws is armed".into());
+        }
         if self.hw.zpass_count_enable {
             why.push("a visibility test is counting".into());
         }
@@ -703,6 +706,7 @@ impl<B: Backend> Device<B> {
             // Quiesce.
             pending_grid: _,
             pending_external: _,
+            swallowing: _,
             display,
             // Written back by save_snapshot, then dropped by a load.
             rtt: _,

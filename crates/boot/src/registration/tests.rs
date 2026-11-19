@@ -13,7 +13,7 @@ use super::{AgentSource, CoreInputs, LateInputs, register_core, register_late};
 use crate::lockstep_glue;
 
 /// Every switch that adds hooks, on.
-pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_lights=on";
+pub(crate) const ALL_ON: &str = "impl.engine=on,impl.render=on,render-timing,render-loop,occlusion,impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_lights=on,impl.render.native_post=on";
 /// Added to [`ALL_ON`]: the native world (on by default) off.
 pub(crate) const NATIVE_WORLD_OFF: &str = "impl.render.native_world=off";
 
