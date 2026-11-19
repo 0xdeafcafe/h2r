@@ -344,11 +344,7 @@ impl Live {
                     ));
                     expected.push((tag_stream, 0));
                 }
-                events.push(self.server_event(
-                    stream,
-                    ISSUED,
-                    serde_json::to_value(&bot).expect("serializes"),
-                ));
+                events.push(self.server_event(stream, ISSUED, bot.event_data()));
                 match self.store.append(events, &expected).await {
                     Ok(recorded) => {
                         last = recorded.last().map_or(last, |e| e.position);

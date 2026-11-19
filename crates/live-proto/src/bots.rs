@@ -88,6 +88,16 @@ pub struct Issued {
     pub personality: Personality,
 }
 
+impl Issued {
+    /// Encode the seed as decimal text before signing. Canonical JSON numbers
+    /// use IEEE doubles, which cannot represent every u64.
+    pub fn event_data(&self) -> serde_json::Value {
+        let mut data = serde_json::json!(self);
+        data["personality"]["seed"] = self.personality.seed.to_string().into();
+        data
+    }
+}
+
 /// `BotsRostered` data: the bots a session's host may run, from this
 /// event on (a later one replaces it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,6 +255,7 @@ pub struct BotRank {
 /// included, so it plays the same way every game.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Personality {
+    #[serde(deserialize_with = "read_seed")]
     pub seed: u64,
     pub aggression: f32,
     pub caution: f32,
@@ -252,6 +263,20 @@ pub struct Personality {
     pub teamwork: f32,
     /// 0 never taunts (docs/game/bots.md §3.5).
     pub taunt: f32,
+}
+
+// Rosters and old BotIssued events carry a number. New events carry decimal text.
+fn read_seed<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Seed {
+        Number(u64),
+        Text(String),
+    }
+    match Seed::deserialize(d)? {
+        Seed::Number(n) => Ok(n),
+        Seed::Text(s) => s.parse().map_err(serde::de::Error::custom),
+    }
 }
 
 impl Default for Personality {
@@ -428,6 +453,24 @@ mod tests {
         r.check().unwrap();
         let back: Roster = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn issued_seed_survives_canonical_json() {
+        let bot = Issued {
+            xuid: Xuid(SERVER_XUID_MARK | 1),
+            gamertag: Gamertag::new("Bolt").unwrap(),
+            persistent: true,
+            emblem: Emblem::default(),
+            colors: Colors::default(),
+            personality: Personality {
+                seed: u64::MAX,
+                ..Default::default()
+            },
+        };
+        let signed_data = crate::jcs::canonicalize(&bot.event_data());
+        let back: Issued = serde_json::from_str(&signed_data).unwrap();
+        assert_eq!(back, bot);
     }
 
     #[test]
