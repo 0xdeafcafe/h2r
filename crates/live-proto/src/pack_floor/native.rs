@@ -5,6 +5,7 @@ use super::super::*;
 use super::arithmetic::{Bits, Coder, Input, Output};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+#[cfg(test)]
 use std::time::{Duration, Instant};
 const HIT_LIST: usize = LIST_COUNT;
 const LISTS_WITH_HITS: usize = LIST_COUNT + 1;
@@ -74,15 +75,39 @@ fn number(input: &mut &[u8]) -> u64 {
     }
     panic!("bad research packet")
 }
-fn blob<T: Bits>(r: &mut Coder<T>, ctx: usize, input: &[u8]) -> Vec<u8> {
+trait Symbols {
+    const WRITING: bool;
+    fn bit(&mut self, ctx: usize, want: bool) -> bool;
+    fn uint(&mut self, ctx: usize, want: u64) -> u64;
+    fn signed(&mut self, ctx: usize, want: i64) -> i64 {
+        unzigzag(self.uint(ctx, zigzag(want)))
+    }
+    fn literal(&mut self, want: u8) -> u8;
+}
+impl<T: Bits> Symbols for Coder<'_, T> {
+    const WRITING: bool = T::WRITING;
+    #[inline]
+    fn bit(&mut self, c: usize, v: bool) -> bool {
+        self.bit(c, v)
+    }
+    #[inline]
+    fn uint(&mut self, c: usize, v: u64) -> u64 {
+        self.uint(c, v)
+    }
+    #[inline]
+    fn literal(&mut self, v: u8) -> u8 {
+        self.literal(v)
+    }
+}
+fn blob<T: Symbols>(r: &mut T, ctx: usize, input: &[u8]) -> Vec<u8> {
     let n = r.uint(ctx, input.len() as u64) as usize;
     assert!(n <= 1 << 20);
     (0..n)
         .map(|i| r.literal(input.get(i).copied().unwrap_or(0)))
         .collect()
 }
-fn dictionary<T: Bits>(
-    r: &mut Coder<T>,
+fn dictionary<T: Symbols>(
+    r: &mut T,
     ctx: usize,
     source: Option<&Val>,
     prev: i64,
@@ -140,9 +165,52 @@ fn travel_base(vel: Option<&FieldHistory>, dt: u64, regular: bool) -> Option<[i6
 }
 
 impl History {
-    fn fields<T: Bits>(
+    fn read_frame<T: Symbols>(&mut self, r: &mut T, dt: u64, seq: u64) -> Frame {
+        if r.bit(META, false) {
+            self.meta = serde_json::from_slice(&blob(r, META + 1, &[])).unwrap();
+        }
+        let mut refs = References::default();
+        let lists = std::array::from_fn(|j| self.fields(r, j, None, dt, &mut refs));
+        let hits = self.fields(r, HIT_LIST, None, dt, &mut refs);
+        self.tick += dt;
+        self.seq = seq + 1;
+        let (game, bsp, cut, cinematic) = &self.meta;
+        frame_of(
+            game,
+            self.tick,
+            bsp.map(u64::from),
+            *cut,
+            *cinematic,
+            &lists,
+            &hits,
+        )
+        .unwrap()
+    }
+
+    fn write_frame<T: Symbols>(&mut self, r: &mut T, frame: &Frame, src: &Lists, dt: u64) {
+        let meta = (&frame.game_id, frame.bsp, frame.cut, frame.cinematic);
+        if r.bit(
+            META,
+            meta != (&self.meta.0, self.meta.1, self.meta.2, self.meta.3),
+        ) {
+            let data = serde_json::to_vec(&meta).unwrap();
+            blob(r, META + 1, &data);
+            self.meta = (frame.game_id.clone(), frame.bsp, frame.cut, frame.cinematic);
+        }
+        let mut refs = References::default();
+        for (list, rows) in src
+            .lists
+            .iter()
+            .chain(std::iter::once(&src.hits))
+            .enumerate()
+        {
+            self.fields(r, list, Some(rows), dt, &mut refs);
+        }
+    }
+
+    fn fields<T: Symbols>(
         &mut self,
-        r: &mut Coder<T>,
+        r: &mut T,
         list: usize,
         src: Option<&[Entity]>,
         dt: u64,
@@ -215,8 +283,8 @@ impl History {
     }
 }
 #[allow(clippy::too_many_arguments)]
-fn channel<T: Bits>(
-    r: &mut Coder<T>,
+fn channel<T: Symbols>(
+    r: &mut T,
     ctx: usize,
     field: &Field,
     h: &mut FieldHistory,
@@ -319,30 +387,8 @@ impl Connection {
         let mut payload = Vec::new();
         var(&mut payload, seq * 2 + u64::from(key));
         var(&mut payload, dt);
-        let meta = (&frame.game_id, frame.bsp, frame.cut, frame.cinematic);
         let mut r = Coder::new(Output::default(), &mut self.model);
-        if r.bit(
-            META,
-            meta != (
-                &self.history.meta.0,
-                self.history.meta.1,
-                self.history.meta.2,
-                self.history.meta.3,
-            ),
-        ) {
-            let data = serde_json::to_vec(&meta).unwrap();
-            blob(&mut r, META + 1, &data);
-            self.history.meta = (frame.game_id.clone(), frame.bsp, frame.cut, frame.cinematic);
-        }
-        let mut refs = References::default();
-        for (list, rows) in src
-            .lists
-            .iter()
-            .chain(std::iter::once(&src.hits))
-            .enumerate()
-        {
-            self.history.fields(&mut r, list, Some(rows), dt, &mut refs);
-        }
+        self.history.write_frame(&mut r, frame, &src, dt);
         payload.extend(r.finish());
         self.history.seq = seq + 1;
         self.history.tick = frame.tick;
@@ -363,25 +409,7 @@ impl Connection {
         }
         let dt = number(&mut body);
         let mut r = Coder::new(Input::new(body), &mut self.model);
-        if r.bit(META, false) {
-            self.history.meta = serde_json::from_slice(&blob(&mut r, META + 1, &[])).unwrap();
-        }
-        let mut refs = References::default();
-        let lists = std::array::from_fn(|j| self.history.fields(&mut r, j, None, dt, &mut refs));
-        let hits = self.history.fields(&mut r, HIT_LIST, None, dt, &mut refs);
-        self.history.tick += dt;
-        self.history.seq = seq + 1;
-        let (game, bsp, cut, cinematic) = &self.history.meta;
-        frame_of(
-            game,
-            self.history.tick,
-            bsp.map(u64::from),
-            *cut,
-            *cinematic,
-            &lists,
-            &hits,
-        )
-        .unwrap()
+        self.history.read_frame(&mut r, dt, seq)
     }
     fn snapshot(&self) -> Vec<u8> {
         let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -494,3 +522,7 @@ fn bench_live_floor_native() {
         );
     }
 }
+
+#[cfg(feature = "live-floor-bench")]
+#[path = "speed.rs"]
+pub(super) mod speed;

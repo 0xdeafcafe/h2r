@@ -341,7 +341,10 @@ fn dvel(q: [i64; 3]) -> [f64; 3] {
 
 /// An object id: a datum (8 hex digits), a player (`p<index>`) or text.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(test, feature = "live-floor-bench"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 enum Id {
     Datum(u32),
     Player(u32),
@@ -378,7 +381,10 @@ impl Id {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    any(test, feature = "live-floor-bench"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 enum Val {
     None,
     Bool(bool),
@@ -2646,3 +2652,10 @@ mod tests;
 #[cfg(test)]
 #[path = "pack_floor.rs"]
 pub(crate) mod floor;
+
+// Integration benches link the regular library: the v7 control has no
+// cfg(test) bit-accounting or alternate-grid hooks.
+#[cfg(feature = "live-floor-bench")]
+#[doc(hidden)]
+#[path = "pack_speed.rs"]
+pub mod speed;

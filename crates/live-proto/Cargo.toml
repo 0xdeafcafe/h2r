@@ -6,6 +6,9 @@ version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+live-floor-bench = []
+
 [dependencies]
 # MapId and the map package manifest (docs/game/maps.md §5).
 content.workspace = true

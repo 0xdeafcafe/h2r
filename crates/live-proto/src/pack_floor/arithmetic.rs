@@ -149,3 +149,12 @@ impl Coder<'_, Output> {
         self.io.writer.finish()
     }
 }
+
+#[cfg(feature = "live-floor-bench")]
+impl Coder<'_, Output> {
+    /// Replay captured, already-modelled decisions for the isolated entropy
+    /// backend cost. This path does not update or read a probability table.
+    pub(super) fn profiled_split(&mut self, p: u16, b: bool) {
+        self.split(u64::from(p), b);
+    }
+}
