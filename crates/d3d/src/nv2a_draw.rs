@@ -42,6 +42,10 @@ impl NativeDrawProgram {
     ) -> Result<Self, String> {
         static TABLE: std::sync::LazyLock<RenderStateTable> =
             std::sync::LazyLock::new(RenderStateTable::default);
+        let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
+        if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
+            return Err("a sampled stage has no resolved texture view".into());
+        }
         let KeyParts {
             key,
             def,

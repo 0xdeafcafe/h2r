@@ -255,11 +255,12 @@ impl ExternalPass for Replacement {
         let ranges = self.pass.record_ranges(target);
         if self.context.compare && ranges != 0 {
             eprintln!(
-                "native-world-layers: recorded frame={} layer={} view={} geometry={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x} samples_texaccum={}",
+                "native-world-layers: recorded frame={} layer={} view={} geometry={:?} indices={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x} samples_texaccum={}",
                 self.context.frame,
                 self.context.layer.number,
                 self.context.layer.view,
                 self.geometry,
+                self.context.index_count,
                 self.color,
                 self.depth,
                 self.samples_texaccum,
@@ -314,8 +315,9 @@ pub(crate) fn compare_draw(
         (t, t.surface == Some(c.target[0]), stages)
     });
     eprintln!(
-        "native-world-layers: d3d frame={frame} layer={} site={:?} layer_return={:#010x} list={:#010x} indexed_return={:#010x} geometry={:?} primitive={:?} indices={:?} vertices={} vs={shader:x?} inputs={:#06x} attachments={color:?}/{depth:?} guest={:#010x}/{:#010x} texaccum={texaccum:?} texture_ids={textures:?} clip={:?} pixels={:?} w={w_buffer} w_clip={w_clip:?} clamp={} z={:?}/{:?}/{} stencil_off={} stencil={:?} color_write={:?} cull={:?}/{:?} alpha={}/{:?}/{} {outcome:?}",
+        "native-world-layers: d3d frame={frame} layer={} view={} site={:?} layer_return={:#010x} list={:#010x} indexed_return={:#010x} geometry={:?} primitive={:?} indices={:?} vertices={} vs={shader:x?} inputs={:#06x} attachments={color:?}/{depth:?} guest={:#010x}/{:#010x} texaccum={texaccum:?} texture_ids={textures:?} clip={:?} pixels={:?} w={w_buffer} w_clip={w_clip:?} clamp={} z={:?}/{:?}/{} stencil_off={} stencil={:?} color_write={:?} cull={:?}/{:?} alpha={}/{:?}/{} {outcome:?}",
         layer.number,
+        layer.view,
         layer.site,
         layer.caller_return,
         layer.list,
