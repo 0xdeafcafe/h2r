@@ -1070,9 +1070,13 @@ skipped light never reaches.
    - **Engine textures** (`0x00019530`, a jump table at `0x00019b68`
      indexed by id - 1; Code): ids 1, 9 and 14 are bitmaps from the
      globals' rasterizer data (`[0x00485a80]`, set by `0x00022590` from
-     `matg +0x10c`, the block's first element), the datums at `+0xc`,
-     `+4` and `+0x14`; S from how the light passes sample them, 1 is the
+     the `matg` block at `+0x108`: it tests the count `[eax+0x108]` and
+     keeps the address `[eax+0x10c]`, the first element, or zero), the
+     datums at `+0xc`, `+4` and `+0x14` (each the datum word of a tag
+     reference); S from how the light passes sample them, 1 is the
      vector normalization cube map and 9 the distance attenuation volume.
+     V on 03a: the block's count is 1; the bitmaps are a swizzled
+     `Xrgb8888` cube and a swizzled `Ay8` volume, both with mips.
      Id 10 is the light's own texture: with `[0x004858c8]` zero or no
      definition, `0x000196d3` (not traced); definition flag `0x80000`
      redirects to id 18; a definition `+0xe0` other than -1, with
@@ -1171,9 +1175,14 @@ skipped light never reaches.
      `native_render::light_gpu` uploads the cube and volume
      (`LayeredImage`, `layered_texture`) and draws a compiled pass with
      one uniform group per light (`LightGpu`); `boot::native_lights_glue`
-     reads the light textures' bitmaps from `matg +0x10c`
-     (`light_bitmaps`, `light_textures`) and says which lights are
-     drawable (constants, no shadow).
+     reads the light textures' bitmaps from the `matg +0x108` block
+     (`light_bitmaps`, `matg_light_bitmaps` over the ordinary metadata,
+     `light_textures`; `layered` takes a cube's six level-0 faces and a
+     volume's one level 0 of face 0, as `assets::decode_image` gives
+     them) and says which lights are drawable (constants, no shadow).
+     The first wiring read the block one word late (the address as the
+     count, the next field as the address), so neither texture loaded
+     and every pass sampling them stayed on D3D.
    - **Host wiring** (Code; `boot::native_lights_glue`). Texture 10, the
      gel (`0x00019530`'s id-10 case, `engine::light_passes::gel`): with
      the context's first word non-zero (`[0x004858c8]`, copied by
@@ -1216,6 +1225,19 @@ skipped light never reaches.
      - Uniforms: one buffer per run, each draw's vertex and pixel uniforms
        at aligned dynamic offsets (`light_gpu::uniforms_layout`,
        `run_layout`), one group for the run.
+     - Diagnostics (stderr, `native-lights:`). At load: each light
+       texture loads with its size and layers, or says why not (no datum,
+       the tag does not read, does not decode, or the wrong shape with
+       the faces and level-0 sizes it has); the surfaces left to D3D split
+       into opaque D3D draws, opaque unread shaders, transparent lit and
+       transparent unread. At run time `plan` says why a light keeps its
+       D3D passes (`Keep`: no world, no constants, shadowed, meets a
+       surface left to D3D, no material, a refused pass with why, or an
+       unloaded texture: which), `accepts` counts the answers (`Tally`),
+       says each reason the first time, and every 1800 lights prints the
+       lights planned and the kept ones by reason, most first. The
+       feature's own line (drawn natively, runs, meeting an object) only
+       prints when a run opens.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
