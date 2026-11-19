@@ -5,6 +5,9 @@
 mod job;
 mod source;
 
+pub(crate) const REQUESTED: &str = "ReplayArchiveRequested";
+const DEFERRED: &str = "ReplayArchiveDeferred";
+
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -27,12 +30,23 @@ pub(crate) struct Recording {
     pub legacy_frames: u64,
     pub next_version: u64,
     pub requested: bool,
+    retry_at: i64,
     pub published: bool,
     pub rolled_back: bool,
     pub parts: Arc<Vec<job::Part>>,
 }
 
 impl Recording {
+    pub(crate) fn due(&self, ended: bool) -> Option<i64> {
+        (ended
+            && self.requested
+            && !self.published
+            && !self.rolled_back
+            && self.chunks + self.legacy_frames > 0
+            && self.retry_at != i64::MAX)
+            .then_some(self.retry_at)
+    }
+
     pub(crate) fn observe(&mut self, event: &crate::store::RecordedEvent) {
         use live_proto::{
             chunk::FRAME_CHUNK,
@@ -42,6 +56,7 @@ impl Recording {
         match event.body.kind.as_str() {
             GAME_FRAME | FRAME_CHUNK | GAME_ENDED => {
                 self.position = event.position;
+                self.retry_at = 0;
                 self.parts = Arc::default();
                 self.published = false;
                 self.rolled_back = false;
@@ -52,7 +67,12 @@ impl Recording {
                     self.legacy_frames += 1;
                 }
             }
-            job::REQUESTED => self.requested = true,
+            REQUESTED => self.requested = true,
+            DEFERRED => {
+                if event.body.data["source_position"].as_u64() == Some(self.position) {
+                    self.retry_at = event.body.data["retry_at"].as_i64().unwrap_or(i64::MAX);
+                }
+            }
             job::PART => {
                 let Ok(part) = serde_json::from_value::<job::Part>(event.body.data.clone()) else {
                     return;
@@ -251,4 +271,55 @@ pub(crate) async fn segment(
         bytes,
     )
         .into_response())
+}
+
+/// The native timer and the Durable Object alarm each claim at most one
+/// segment. A restart resumes from the last signed part. Historic games
+/// without a request remain available for an operator's migration dry run.
+pub(crate) async fn advance(live: &Live, now: i64) {
+    let Ok(_slot) = live.archive_work.try_lock() else {
+        return;
+    };
+    let candidate = {
+        let model = live.model.read();
+        model
+            .games
+            .values()
+            .filter_map(|g| {
+                let r = &g.recording;
+                let due = r.due(g.ended.is_some())?;
+                (due <= now).then_some((r.position, g.started.game_id.clone(), r.next_version))
+            })
+            .min_by_key(|(position, _, _)| *position)
+    };
+    let Some((position, id, version)) = candidate else {
+        return;
+    };
+    if let Err(err) = job::step(
+        live,
+        &id,
+        job::Request {
+            mode: job::Mode::Apply,
+            source_position: Some(position),
+            cursor: None,
+        },
+    )
+    .await
+    {
+        if err.code == live_proto::ErrorCode::Conflict {
+            return;
+        }
+        // Retry transient storage failures. An invalid recording is seen
+        // again on source revision or on an explicit admin step.
+        let retry_at = if err.code == live_proto::ErrorCode::Unavailable {
+            now + 60
+        } else {
+            i64::MAX
+        };
+        let entry =
+            serde_json::json!({"source_position":position,"retry_at":retry_at,"error":err.message});
+        if let Err(e) = job::append(live, &id, version, vec![(DEFERRED, entry)]).await {
+            eprintln!("live: could not defer replay archive {id}: {e}");
+        }
+    }
 }

@@ -336,3 +336,38 @@ async fn fragmented_chunks_resume_at_first_unread_object() {
         assert_eq!(frames.iter().map(|f| f.tick).collect::<Vec<_>>(), expected);
     }
 }
+
+#[tokio::test]
+async fn end_of_new_game_queues_a_verified_archive_on_the_shared_alarm() {
+    let h = common::start_driven(Arc::new(MemoryStore::new()), Policy::default()).await;
+    let host = h.create("Host").await;
+    let id = h.start_game(&host, two_player_game(&host)).await;
+    let author = live_proto::Author::parse(&host.author).unwrap();
+    let frame = live_proto::game::Frame {
+        game_id: id.clone(),
+        tick: 40,
+        ..Default::default()
+    };
+    h.live.ingest_frame(&author, frame.clone()).await.unwrap();
+    let url = format!("/v1/games/{id}/chunks?format=archive");
+    assert!(h.get(&url).await.json().get("archive_sha256").is_none());
+    let end = h.batch(
+        &host,
+        &id,
+        &[("GameEnded", json!({"tick":40,"reason":"finished"}))],
+    );
+    assert_eq!(
+        h.post_batch(&host, &id, end).await.status,
+        StatusCode::CREATED
+    );
+    assert!(h.get(&url).await.json().get("archive_sha256").is_none());
+    assert!(h.live.sweep_due().is_some_and(|at| at <= common::now()));
+    h.live.sweep().await;
+    let index = h.get(&url).await.json();
+    let digest = index["archive_sha256"].as_str().unwrap();
+    let segment = h.get(&format!("/v1/games/{id}/archive/{digest}/0")).await;
+    live_proto::archive::verify(&[frame], &segment.body).unwrap();
+    let head = h.live.store().head().await.unwrap();
+    h.live.sweep().await;
+    assert_eq!(h.live.store().head().await.unwrap(), head);
+}

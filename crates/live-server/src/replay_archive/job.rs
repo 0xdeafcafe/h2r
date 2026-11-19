@@ -17,7 +17,6 @@ pub(super) const BACKUP: &str = "backup/frames-pre-v7/";
 pub(super) const PART: &str = "ReplayArchivePart";
 pub(super) const PUBLISHED: &str = "ReplayArchivePublished";
 pub(super) const ROLLED_BACK: &str = "ReplayArchiveRolledBack";
-pub(super) const REQUESTED: &str = "ReplayArchiveRequested";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Segment {
@@ -201,7 +200,7 @@ fn page<'a>(
 
 // CAS on the actual game stream checks the entire read/write interval,
 // including a delayed FrameChunk and concurrent processors on another host.
-async fn append(
+pub(super) async fn append(
     live: &Live,
     id: &str,
     revision: u64,

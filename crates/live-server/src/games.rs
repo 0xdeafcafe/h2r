@@ -468,7 +468,7 @@ impl Live {
         }
         // The batch's events share its JWS (one copy, not one an event).
         let jws: Arc<str> = jws.into();
-        let events: Vec<NewEvent> = bodies
+        let mut events: Vec<NewEvent> = bodies
             .into_iter()
             .enumerate()
             .map(|(i, body)| NewEvent {
@@ -481,6 +481,7 @@ impl Live {
         if ends {
             // The last frames' chunk goes in before the end.
             self.flush_frames(game_id).await;
+            events.insert(events.len() - 1, self.server_event(stream, crate::replay_archive::REQUESTED, json!({})));
         }
         let recorded = self.store.append(events, &[]).await?;
         let last = recorded.last().map_or(0, |e| e.position);
@@ -622,16 +623,17 @@ impl Live {
     pub(crate) async fn stored_chunk(&self, id: &str, meta: &ChunkMeta) -> Result<Bytes, ApiError> {
         let from_tick = meta.from_tick;
         let mut bytes = None;
+        let mut unavailable = None;
         if let Some(b) = self.blobs() {
             match b.private.get(&chunk_key(id, from_tick)).await {
                 Ok(found) => bytes = found,
-                Err(e) => eprintln!("live: frame chunk of {id}: {e}"),
+                Err(e) => unavailable = Some(ApiError::new(live_proto::ErrorCode::Unavailable, e.to_string())),
             }
         }
         if bytes.is_none() {
             bytes = self.store.blob(&meta.sha256).await?.map(Bytes::from);
         }
-        let bytes = bytes.ok_or_else(|| not_found("the chunk is not stored"))?;
+        let bytes = bytes.ok_or_else(|| unavailable.unwrap_or_else(|| not_found("the chunk is not stored")))?;
         if sign::hex(&Sha256::digest(&bytes)) != meta.sha256 {
             eprintln!("live: frame chunk {from_tick} of {id} does not match its hash");
             return Err(not_found("the chunk is not stored"));
@@ -985,7 +987,9 @@ impl Live {
             .values()
             .filter(|v| v.state == "open")
             .map(|v| v.last_activity + policy.session_idle_s);
+        let archive = s.games.values().filter_map(|g| g.recording.due(g.ended.is_some())).min();
         presence.chain(games).chain(sessions).min().map(|d| d + 1)
+            .into_iter().chain(archive).min()
     }
 
     /// The managers: expire quiet presence and end idle games, as the
@@ -995,6 +999,7 @@ impl Live {
         let now = now();
         self.flush_usage().await;
         self.sweep_sessions(now).await;
+        crate::replay_archive::advance(self, now).await;
         let policy = self.policy();
         let (expired, idle): (Vec<_>, Vec<_>) = {
             let s = self.model.read();
@@ -1034,6 +1039,7 @@ impl Live {
                 winner: None,
                 players,
             };
+            events.push(self.server_event(game::stream(&id), crate::replay_archive::REQUESTED, json!({})));
             events.push(self.server_event(
                 game::stream(&id),
                 game::GAME_ENDED,
