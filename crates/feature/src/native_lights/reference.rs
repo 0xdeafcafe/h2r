@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use engine::light_constants::global as globals;
-use engine::light_passes::{self, global::PASS_FLAGS};
+use engine::light_passes::global::PASS_FLAGS;
 use engine::memory::GuestMemory;
 use native_render::lights::Light;
 use native_render::skip;
@@ -38,12 +38,8 @@ pub(super) fn refused(light: Light) {
     }
 }
 
-pub(super) fn layer_end(mem: &dyn GuestMemory, ret: u32) {
-    // The tail zeroes the flags at 0x00031511. Object shadows and
-    // first-person lighting also use this list, from different callers.
-    if !(light_passes::RENDER_LIGHT_PASSES..0x0003_1511).contains(&ret)
-        || mem.u32(skip::CURRENT_LIST).ok() != Some(super::LIGHT_LIST)
-    {
+pub(super) fn layer_end(mem: &dyn GuestMemory) {
+    if mem.u32(skip::CURRENT_LIST).ok() != Some(super::LIGHT_LIST) {
         return;
     }
     let mut sample = SAMPLE.lock().unwrap_or_else(|e| e.into_inner());

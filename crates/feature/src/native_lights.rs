@@ -124,10 +124,10 @@ pub trait Host: Send + Sync {
     /// when it cannot say (nothing is skipped then).
     fn target(&self) -> Option<[u32; 8]>;
     /// When probing this plan, keep the guest draw as the reference.
-    fn probe(&self, _plan: &Self::Plan) -> bool {
+    fn probe(&self, _mem: &mut dyn GuestMemory, _plan: &Self::Plan) -> bool {
         false
     }
-    fn end_layer(&self, _mem: &dyn GuestMemory) {}
+    fn end_layer(&self, _mem: &mut dyn GuestMemory) {}
     /// For a light it does not draw whole ([`Host::prepare`] no, or its
     /// sphere meets a live object): the world shaders (tag indices) whose
     /// surfaces it draws natively for `light`, while the light's D3D passes
@@ -146,7 +146,7 @@ struct Installed<H: Host> {
 trait Hooks: Send + Sync {
     fn new_view(&self) -> Option<[u32; 8]>;
     fn draw(&self, mem: &mut dyn GuestMemory, light: Light) -> bool;
-    fn end_layer(&self, mem: &dyn GuestMemory);
+    fn end_layer(&self, mem: &mut dyn GuestMemory);
 }
 static HOST: Mutex<Option<Arc<dyn Hooks>>> = Mutex::new(None);
 
@@ -372,7 +372,7 @@ impl<H: Host> Hooks for Installed<H> {
         self.host.target()
     }
 
-    fn end_layer(&self, mem: &dyn GuestMemory) {
+    fn end_layer(&self, mem: &mut dyn GuestMemory) {
         self.host.end_layer(mem);
     }
 
@@ -396,7 +396,7 @@ impl<H: Host> Hooks for Installed<H> {
             TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
             return refused("view target unavailable or changed");
         }
-        if host.probe(&plan) {
+        if host.probe(mem, &plan) {
             return false;
         }
         let (Ok(near), Ok(far)) = (mem.u32(TAIL_CLIP[0]), mem.u32(TAIL_CLIP[1])) else {
@@ -607,11 +607,15 @@ impl Feature for NativeLights {
         if compare {
             b.raw()
                 .observe_before(&points::LAYER_END, "native_lights_compare_end", |o| {
-                    let guest = o.guest();
-                    reference::layer_end(&*guest, guest.u32(o.cpu.esp).unwrap_or(0));
+                    let mut guest = o.guest();
+                    let ret = guest.u32(o.cpu.esp).unwrap_or(0);
+                    if !(native_render::lights::RENDER_LIGHT_PASSES..0x0003_1511).contains(&ret) {
+                        return;
+                    }
+                    reference::layer_end(&*guest);
                     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     if let Some(h) = host {
-                        h.end_layer(&*guest);
+                        h.end_layer(&mut *guest);
                     }
                 })
                 .context_only();

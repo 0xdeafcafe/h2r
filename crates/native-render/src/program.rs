@@ -69,10 +69,8 @@ pub const WORLD_FETCH: [InputFetch; 16] = {
     f
 };
 
-/// [`INPUTS`] with the frame and lighting vector as floats (the
-/// [`WorldVertex`] fields): what the native lights read, from the placed
-/// copy of the world (`crate::light_gpu`; their programs translate with
-/// float fetch).
+/// Float layout of the placed world's frame and lighting vector.
+/// Cluster material and light programs use [`INPUTS`] and [`WORLD_FETCH`].
 pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
     (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),

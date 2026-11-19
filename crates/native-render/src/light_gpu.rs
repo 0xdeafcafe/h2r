@@ -189,14 +189,14 @@ impl LightGpu {
         queue: &wgpu::Queue,
         program: LightProgram,
         uniforms_layout: &wgpu::BindGroupLayout,
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
     ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
         for (n, s) in program.stages.iter().enumerate() {
             if let LightStage::Bitmap { .. } = s
                 && program.dims[n].is_some()
             {
-                let mut image = stage_image(*s)?;
+                let mut image = stage_image(n, *s)?;
                 bias_signed(&mut image, program.signed[n]);
                 stage_views[n] = Some(texture(device, queue, &image, "native light stage"));
             }
@@ -465,7 +465,7 @@ impl LightSet {
         depth: wgpu::TextureFormat,
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<(wgpu::BindGroup, Vec<Prepared>)> {
         let mut ready = Vec::new();
@@ -575,7 +575,7 @@ impl LightSet {
         target_size: (u32, u32),
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> usize {
         let Some((uniforms, prepared)) = self.prepare(device, queue, color_format, depth_format, view, draws, stage_image, gel_image) else {

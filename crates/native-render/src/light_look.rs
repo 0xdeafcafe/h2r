@@ -319,6 +319,15 @@ pub struct LightProgram {
     pub inherits_cull: bool,
 }
 
+/// Vertex fetch for the world-space light classification.
+pub fn vertex_options() -> shaders::vsh::VertexOptions {
+    shaders::vsh::VertexOptions {
+        provided_inputs: crate::program::INPUT_MASK,
+        input_fetch: crate::program::WORLD_FETCH,
+        ..Default::default()
+    }
+}
+
 /// The texture a light stage binds: instance bitmaps and the gel as 2D
 /// (S: the lit passes' instance bitmaps are 2D), the normalization map as
 /// a cube, the attenuation map as a volume (`project3d` on 03a).
@@ -334,6 +343,7 @@ pub fn stage_dim(stage: LightStage) -> Option<TextureDim> {
 /// Translates `look` with its vertex program `microcode` (the world-space
 /// classification), or says why the light keeps its D3D passes.
 pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram, String> {
+    let options = vertex_options();
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
@@ -343,8 +353,8 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
-        provided_inputs: crate::program::INPUT_MASK,
-        input_fetch: crate::program::WORLD_FETCH,
+        provided_inputs: options.provided_inputs,
+        input_fetch: options.input_fetch,
         w_buffer: true,
     })?;
     crate::program::pixel_parity(&t.def, &look.stage_states, t.dims.map(|d| d.is_some()))?;

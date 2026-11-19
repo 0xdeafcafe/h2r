@@ -92,6 +92,7 @@ struct Stub {
     refuse: Mutex<bool>,
     tails: Mutex<Vec<[u32; 2]>>,
     refuse_tail: Mutex<bool>,
+    probe: Mutex<bool>,
     /// The bound target moved off the view's (say, to a shadow target).
     moved: Mutex<bool>,
 }
@@ -100,6 +101,9 @@ impl Host for Stub {
     type Plan = Light;
     fn prepare(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Light> {
         (light.definition == 0xe000_0010).then_some(*light)
+    }
+    fn probe(&self, _mem: &mut dyn GuestMemory, _plan: &Light) -> bool {
+        std::mem::take(&mut *self.probe.lock().unwrap())
     }
     fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool {
         assert_eq!(camera.far, 1024.0);
@@ -318,4 +322,17 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(native_lights::object_refusals(), 1);
     assert_eq!(native_lights::counts(), (15, 7, 5));
+
+    native_lights::new_view();
+    dirty(&mut m);
+    *stub.probe.lock().unwrap() = true;
+    let tails = stub.tails.lock().unwrap().len();
+    let esp = call(&mut m, a, false);
+    assert!(!native_lights::on_light(&mut m, esp));
+    assert!(untouched(&m), "the comparison sample takes the original path");
+    assert_eq!(stub.tails.lock().unwrap().len(), tails);
+    assert_eq!(native_lights::counts(), (16, 7, 5));
+    let esp = call(&mut m, b, false);
+    assert!(native_lights::on_light(&mut m, esp));
+    assert_eq!(native_lights::counts(), (17, 8, 6));
 }

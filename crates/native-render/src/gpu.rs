@@ -650,8 +650,8 @@ impl GpuWorld {
     }
 
     /// Records one run of lights' draws over the world's parts (each
-    /// draw's index ranges, which `boot` picks from the parts whose bounds
-    /// meet the light's sphere), added into the target over the depth
+    /// draw's index ranges from the active gathered cluster items),
+    /// added into the target over the depth
     /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
     /// Returns how many ranges were drawn.
     #[allow(clippy::too_many_arguments)]
@@ -667,7 +667,7 @@ impl GpuWorld {
         target_size: (u32, u32),
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> usize {
         let Some(set) = self.lights.as_mut() else { return 0 };
