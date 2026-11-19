@@ -41,7 +41,7 @@ use crate::reverb::{Allpass, Delay, I3dl2Listener, Reverb};
 
 /// The section's tag.
 pub const SECTION: Tag = Tag::new("audio");
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 type Error = snapshot::Error;
 
@@ -492,6 +492,7 @@ fn put_fx_state(w: &mut Writer, f: &FxState) {
         coeffs: _,
         cached: _,
         shelf_z,
+        room_z,
         phase_off,
     } = f;
     w.u64(*clock).u64(*env_start);
@@ -502,13 +503,13 @@ fn put_fx_state(w: &mut Writer, f: &FxState) {
             put_f64(w, *v);
         }
     }
-    for v in shelf_z {
+    for v in shelf_z.iter().chain(room_z) {
         put_f64(w, *v);
     }
     put_f64(w, *phase_off);
 }
 
-fn get_fx_state(r: &mut Reader<'_>) -> Result<FxState, Error> {
+fn get_fx_state(r: &mut Reader<'_>, version: u32) -> Result<FxState, Error> {
     let mut f = FxState {
         clock: r.u64()?,
         env_start: r.u64()?,
@@ -522,6 +523,11 @@ fn get_fx_state(r: &mut Reader<'_>) -> Result<FxState, Error> {
     }
     for v in &mut f.shelf_z {
         *v = get_f64(r)?;
+    }
+    if version >= 2 {
+        for v in &mut f.room_z {
+            *v = get_f64(r)?;
+        }
     }
     f.phase_off = get_f64(r)?;
     Ok(f)
@@ -552,7 +558,7 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
     put_fx_state(w, fx_state);
 }
 
-fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
+fn get_buffer(r: &mut Reader<'_>, version: u32) -> Result<SoundBuffer, Error> {
     let format = get_format(r)?;
     let data = r.blob()?.to_vec();
     let mut b =
@@ -568,7 +574,7 @@ fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
         return Err(corrupt("loop region outside its buffer"));
     }
     b.pos = get_f64(r)?;
-    b.fx_state = get_fx_state(r)?;
+    b.fx_state = get_fx_state(r, version)?;
     Ok(b)
 }
 
@@ -626,7 +632,7 @@ fn put_stream(w: &mut Writer, s: &Stream) {
     });
 }
 
-fn get_stream(r: &mut Reader<'_>) -> Result<Stream, Error> {
+fn get_stream(r: &mut Reader<'_>, version: u32) -> Result<Stream, Error> {
     let format = get_format(r)?;
     let mut s = Stream::new(format).map_err(|e| corrupt(format!("stream: {e}")))?;
     s.params = get_params(r)?;
@@ -648,7 +654,7 @@ fn get_stream(r: &mut Reader<'_>) -> Result<Stream, Error> {
     s.paused = r.bool()?;
     s.next_id = r.u64()?;
     s.completed = r.list(9, |r| Ok((PacketId(r.u64()?), get_status(r)?)))?;
-    s.fx_state = get_fx_state(r)?;
+    s.fx_state = get_fx_state(r, version)?;
     s.dry_at = get_opt(r, |r| r.u64())?;
     Ok(s)
 }
@@ -666,11 +672,11 @@ fn put_mix_in(w: &mut Writer, m: &MixIn) {
     put_fx_state(w, fx_state);
 }
 
-fn get_mix_in(r: &mut Reader<'_>) -> Result<MixIn, Error> {
+fn get_mix_in(r: &mut Reader<'_>, version: u32) -> Result<MixIn, Error> {
     let mut m = MixIn::new(r.u32()?);
     m.params = get_params(r)?;
     m.playing = r.bool()?;
-    m.fx_state = get_fx_state(r)?;
+    m.fx_state = get_fx_state(r, version)?;
     Ok(m)
 }
 
@@ -886,6 +892,7 @@ impl Mixer {
             reverb,
             reverb_in: _,
             direct: _,
+            room: _,
             clock,
             // Diagnostics.
             health: _,
@@ -920,13 +927,13 @@ impl Mixer {
         }
     }
 
-    fn get(r: &mut Reader<'_>) -> Result<LoadedMixer, Error> {
+    fn get(r: &mut Reader<'_>, version: u32) -> Result<LoadedMixer, Error> {
         let sample_rate = r.u32()?;
         let master_mb = get_i32(r)?;
         let listener = get_listener(r)?;
-        let buffers = r.list(5, |r| Ok((BufferId(r.u32()?), get_buffer(r)?)))?;
-        let streams = r.list(5, |r| Ok((StreamId(r.u32()?), get_stream(r)?)))?;
-        let mix_ins = r.list(5, |r| Ok((MixInId(r.u32()?), get_mix_in(r)?)))?;
+        let buffers = r.list(5, |r| Ok((BufferId(r.u32()?), get_buffer(r, version)?)))?;
+        let streams = r.list(5, |r| Ok((StreamId(r.u32()?), get_stream(r, version)?)))?;
+        let mix_ins = r.list(5, |r| Ok((MixInId(r.u32()?), get_mix_in(r, version)?)))?;
         let next_id = r.u32()?;
         let reverb = get_opt(r, get_reverb)?;
         let clock = r.u64()?;
@@ -972,9 +979,14 @@ impl Mixer {
     /// check other sections too before it changes anything: decodes the
     /// section and checks it fits this mixer. Changes nothing.
     pub fn check_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<LoadedMixer, SnapshotError> {
-        let bytes = snapshot.require(SECTION, VERSION..=VERSION)?;
+        let (version, bytes) = snapshot
+            .section(SECTION)?
+            .ok_or(Error::MissingSection(SECTION))?;
+        if !(1..=VERSION).contains(&version) {
+            return Err(Error::SectionVersion(SECTION, version).into());
+        }
         let mut r = Reader::new(&bytes, "audio");
-        let s = Self::get(&mut r)?;
+        let s = Self::get(&mut r, version)?;
         r.finish()?;
         if s.sample_rate != self.sample_rate {
             return Err(SnapshotError::Mismatch(format!(
@@ -1003,6 +1015,7 @@ impl Mixer {
             reverb,
             reverb_in: _,
             direct: _,
+            room: _,
             clock,
             health: _,
             taps,

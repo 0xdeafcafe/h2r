@@ -112,6 +112,7 @@ fn scene() -> (Mixer, StreamId) {
         }),
     );
     b.set_i3dl2_source(Some(I3dl2Source {
+        room_hf: -900,
         obstruction_hf: -1500,
         obstruction_lf_ratio: 0.2,
         ..I3dl2Source::default()

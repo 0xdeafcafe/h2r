@@ -423,6 +423,12 @@ impl I3dl2Source {
         mb_gain(self.room as f32 + self.occlusion_hf as f32 * self.occlusion_lf_ratio)
     }
 
+    /// HF loss relative to the room's low frequencies. Only occlusion
+    /// contributes to both paths. Its LF share is already in room_gain.
+    pub fn room_shelf_db(&self) -> f32 {
+        (self.room_hf as f32 + self.occlusion_hf as f32 * (1.0 - self.occlusion_lf_ratio)) / 100.0
+    }
+
     /// The direct path's high-frequency attenuation relative to its low
     /// frequencies, in dB (<= 0), as a one-pole shelf at the HF reference.
     pub fn shelf_db(&self) -> f32 {
@@ -431,7 +437,11 @@ impl I3dl2Source {
 
     /// True when the direct path is the plain open path.
     pub fn is_open(&self) -> bool {
-        self.direct_lf_mb() == 0.0 && self.shelf_db() == 0.0 && self.room_gain() == 1.0
+        self.direct_lf_mb() == 0.0
+            && self.shelf_db() == 0.0
+            && self.room_gain() == 1.0
+            && self.room_shelf_db() == 0.0
+            && self.room_rolloff == 0.0
     }
 }
 
@@ -602,6 +612,7 @@ pub struct FxState {
     /// Inputs the cached `coeffs` were built from.
     pub(crate) cached: Option<(FilterSpec, i32, u32)>,
     pub(crate) shelf_z: [f64; 2],
+    pub(crate) room_z: [f64; 2],
     /// Stream 3D/LFO pitch effects move the *read* position by this many
     /// frames, bounded by [`MAX_PHASE_OFFSET`], instead of changing the
     /// consumption rate (see `pitch_mult`).
@@ -622,6 +633,7 @@ impl Default for FxState {
             coeffs: [None; 2],
             cached: None,
             shelf_z: [0.0; 2],
+            room_z: [0.0; 2],
             phase_off: 0.0,
         }
     }
@@ -721,25 +733,47 @@ impl FxState {
     /// direct path is then `src` itself). Obstruction and the direct HF level
     /// belong to the direct path only, so the room send is taken from `src`.
     pub fn direct_shelf(&mut self, fx: &VoiceFx, src: &[f32], dst: &mut [f32], rate: u32) -> bool {
-        let Some(db) = fx.i3dl2.map(|i| i.shelf_db()).filter(|&d| d < 0.0) else {
-            return false;
-        };
-        let a = shelf_pole(db, f64::from(DEFAULT_HF_REFERENCE_HZ), f64::from(rate));
-        for (s, d) in src
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .zip(dst.as_chunks_mut::<2>().0)
-        {
-            for ch in 0..2 {
-                // y = (1 - a) x + a y1, DC gain 1.
-                let y = flush64((1.0 - a) * f64::from(s[ch]) + a * self.shelf_z[ch]);
-                self.shelf_z[ch] = y;
-                d[ch] = y as f32;
-            }
-        }
-        true
+        let db = fx.i3dl2.map_or(0.0, |i| i.shelf_db());
+        filter_path(
+            &mut self.shelf_z,
+            db,
+            DEFAULT_HF_REFERENCE_HZ,
+            rate,
+            src,
+            dst,
+        )
     }
+}
+
+/// Render the HF loss for one signal path. A bypass clears that path's
+/// history so enabling it again cannot replay samples from a prior sound.
+pub(crate) fn filter_path(
+    z: &mut [f64; 2],
+    db: f32,
+    reference: f32,
+    rate: u32,
+    src: &[f32],
+    dst: &mut [f32],
+) -> bool {
+    if db >= 0.0 {
+        *z = [0.0; 2];
+        return false;
+    }
+    let a = shelf_pole(db, f64::from(reference), f64::from(rate));
+    for (s, d) in src
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<2>().0)
+    {
+        for ch in 0..2 {
+            // y = (1 - a) x + a y1, DC gain 1.
+            let y = flush64((1.0 - a) * f64::from(s[ch]) + a * z[ch]);
+            z[ch] = y;
+            d[ch] = y as f32;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

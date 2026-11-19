@@ -163,11 +163,6 @@ macro_rules! voice_setters {
         pub(crate) fn fx_clock(&self) -> u64 {
             self.fx_state.clock
         }
-        /// The I3DL2 direct path of `src` into `dst`; false if the source has
-        /// no direct-path shelf (the direct path is then `src`).
-        pub(crate) fn direct_shelf(&mut self, src: &[f32], dst: &mut [f32], rate: u32) -> bool {
-            self.fx_state.direct_shelf(&self.params.fx, src, dst, rate)
-        }
         /// Sets the Doppler pitch ratio for the next render.
         #[allow(dead_code)]
         pub(crate) fn set_doppler_pitch(&mut self, ratio: f64) {
@@ -911,6 +906,18 @@ impl Default for Listener {
             rolloff_factor: 1.0,
             doppler_factor: 1.0,
         }
+    }
+}
+
+impl Listener {
+    pub(crate) fn source_distance(&self, src: &Source3d) -> Option<f32> {
+        let rel = match src.mode {
+            Mode3d::Disabled => return None,
+            Mode3d::HeadRelative => src.position,
+            Mode3d::Normal => src.position.sub(self.position),
+        };
+        let distance = rel.len();
+        distance.is_finite().then_some(distance)
     }
 }
 

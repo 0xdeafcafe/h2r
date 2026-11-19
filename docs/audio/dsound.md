@@ -260,6 +260,46 @@ only, never the list; null takes the send out and keeps the rest. The shim
 used to send such a stream to the mix-in alone, at unity, so a sound in a
 submix played at full level and unpanned however far away it was.
 
+#### What changes the room send
+
+The distance/cone evaluator (`0x12ad30`, distance curve at `0x12ac20`)
+takes a listener-relative vector. In `0x129aa0` its magnitude-dependent
+gain either contributes dB to the common channel gain, or goes into the
+submix gain term. `0x12a1b0` copies the separate sound-class room trim
+(class `+0x10`) into channel `+0x14` and the spatial terms into channel
+`+0x18` and `+0x28`. The panner does not measure distance again. For
+example, `0x2af920` builds speaker pairs from per-speaker terms, and its
+bin-10 pair from the sum of its input record's `+4` and `+8` dB terms,
+with an additional trim in the two-channel case. `0x2af7b0` selects
+another panner by flags, `0x2af800` appends a specified bin, and
+`0x2afb80` handles layout-dependent pairs. A change in a common gain
+affects direct and wet together. The *absolute* bin-10 level can change
+with the game mix even with a fixed source room descriptor.
+
+At `0x129790` the submix position is transformed for the assigned
+listener. Separately, the game combines a class room trim with a
+transmission term when acoustic inputs are available. `0x220e00` submits
+position and smooths obstruction and occlusion into submix `+0x30`
+and `+0x2c`. `0x2211e0` converts those to losses and combines the
+room trim with the global room level. It writes that same result to
+`lRoom` and `lRoomHF`, zero to source room rolloff, and fixed LF ratios
+(zero obstruction LF loss, partial occlusion LF loss). At `0x2aef65`
+the panner forwards the global descriptor prepared by `0x220fd0`, also
+with equal room fields and zero source room rolloff. `0x2ae7a0` builds
+a fade envelope. Neither source setter derives a room HF slope from
+geometric distance. Moving across an acoustic boundary can still change
+both levels and coloration.
+
+The retail library copies all nine fields at `0x37c0e9`. Its voice
+calculator (`0x37ae57`, I3DL2 helper `0x38368b`) splits each loss
+by its LF ratio, adding obstruction only on the direct path. The helper
+uses the room level again for the wet HF coefficient. The two room fields
+agree at both Halo setters. Its distance term multiplies voice distance
+by both room factors, so Halo's zero source factor disables that term.
+The software model uses the named roomHF field and an inverse-distance
+room curve for general I3DL2 inputs. Nonzero source rolloff with finite
+3D distances is a model for other callers, outside the verified Halo case.
+
 ### Notification and callback contracts
 
 - **Packet completion.** `Process` writes `E_PENDING` (`0x8000000A`) to
@@ -829,7 +869,7 @@ builder (`0x220200..0x220700`) fills `SetFilter` (`0x2203e9`) and two
 | `SetLFO(pDesc)` | `dwLFO`, `dwDelay`, `dwDelta`, `lPitchModulation`, `lFilterCutOffRange`, `lAmplitudeModulation` | `dwLFO` 1 = pitch LFO (Halo's first call, pitch only), otherwise the filter/amplitude LFO (second call). Delay `/1500` s, rate `delta·1500/65536` Hz, triangle from 0 after the delay. Depth units **assumed**: pitch 1/128 octave, cutoff 1/16 octave, amplitude 1/16 dB (Halo scales its tag floats by 128, 16, 16 and clamps to a signed byte) |
 | `SetEG(pDesc)` | `dwEG`, `dwMode`, `dwDelay`, `dwAttack`, `dwHold`, `dwDecay`, `dwRelease`, `dwSustain`, `lPitchScale`, `lFilterCutOff` | generator 1 = amplitude (Halo's fade: mode 2, attack and release set, sustain `0xff`); modes 1..5 pick the start stage, 0 bypasses. Times in 1/93.75 s (Halo multiplies seconds by 93.75). Release not entered. Generator 0 (pitch/filter) counted, not applied |
 | `SetHeadroom(mB)` | scalar | the voice is attenuated by `mB` (0..6000); Halo passes 0 |
-| `SetI3DL2Source(pDesc, apply)` | `DSI3DL2BUFFER`, 9 dwords: direct, directHF, room, roomHF, roomRolloff, obstruction (HF, LF ratio), occlusion (HF, LF ratio) | direct level = `direct + Σ HF·LFratio` (broadband gain), HF level = `direct + directHF + obstruction + occlusion` as a one-pole high-frequency shelf referenced to 5 kHz; room send gain = `room + occlusion·LFratio`. `roomHF`, `roomRolloff` unused |
+| `SetI3DL2Source(pDesc, apply)` | `DSI3DL2BUFFER`, 9 dwords: direct, directHF, room, roomHF, roomRolloff, obstruction (HF, LF ratio), occlusion (HF, LF ratio) | direct level = `direct + Σ HF·LFratio` (broadband gain), HF level = `direct + directHF + obstruction + occlusion` as a one-pole high-frequency shelf referenced to 5 kHz; room LF = `room + occlusion·LFratio`; room HF = `room + roomHF + occlusion`. Both paths use the environment HF reference. Room rolloff scales the positioned send beyond min distance (see above) |
 | `SetOutputBuffer(pBuffer)` | guest pointer or null | a mix-in replaces the stream's bins with its input bin at `1 / channels`; later `SetMixBins` pairs play alongside it and `SetMixBinVolumes` scales it; null takes the send out; a non-mix-in is counted (see "Distance attenuation") |
 | `SetDopplerFactor` (buffer, listener) | float | scales the Doppler shift (see `docs/audio/audio.md`). No guest call sets a velocity (Halo never calls `SetVelocity`), so the shift is 1 for Halo; the machinery is tested in `audio` |
 | `XAudioSetEffectData(9, type 12)` | `DSI3DL2LISTENER`, 12 dwords | `Mixer::set_reverb` (index = the `reverbIndex` of the last `XAudioDownloadEffectsImage`) |
@@ -883,8 +923,7 @@ Left out, on purpose:
   without a level effect; on the MCPX the bin gives back what it takes, and
   the float mix does not clip until the output stage.
 - **Pitch and filter envelope**, **second DLS2 cutoff/damping pair**, **LFO
-  waveforms other than triangle**, **room rolloff** and **`roomHF`** of a
-  source, **crosstalk-cancellation**, **HRTF**.
+  waveforms other than triangle**, **crosstalk-cancellation**, **HRTF**.
 - **Doppler on mix-ins**: a mix-in has no samples to resample.
 
 Assumptions to check against hardware or xemu: the MULTI selector bits,
