@@ -1,5 +1,8 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
+#[path = "tunnel_host.rs"]
+mod tunnel_host;
+
 use crate::{NetworkConfig, host, qos, qos_memory::QosMemory, traffic};
 use runtime::{Runtime, guest::Access};
 use std::{
@@ -382,6 +385,10 @@ impl Network {
                     Err(10093)
                 };
             }
+        }
+        // Dedicated host tunnel hook. Returning None preserves native XNet.
+        if let Some(result) = tunnel_host::dispatch(self, op, a, rt) {
+            return result;
         }
         match op {
             Socket => {
