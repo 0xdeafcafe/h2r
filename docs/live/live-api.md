@@ -404,6 +404,71 @@ Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handl
 - Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
 
+## Web Theater
+
+Films use the [game's spectator track](replay-fidelity.md). These routes
+store pins and clip ranges alongside the game log. Playback still uses
+the game's chunk or archive endpoints.
+
+| Method and path | Token scope | Result |
+|---|---|---|
+| `GET /v1/films?player=<xuid>&kind=recent` | public or `read` | Up to 25 of the player's visible games, newest first. |
+| `GET /v1/films?player=<xuid>&kind=saved` | public or `read` | Games pinned by that player, newest game first. |
+| `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
+| `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
+| `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
+| `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
+| `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
+| `GET /v1/clips/{id}` | public or `read` | The clip. |
+| `DELETE /v1/clips/{id}` | `films.write` | Delete a clip as its author or an admin. Returns 204. |
+
+Each list is `{items, next, position}`. Saved films and clip lists take
+`limit` (default 100, max 1000). Pass `next` back as `cursor` until it is null.
+Recent films have `next: null`. The game record supplies each film:
+
+```json
+{ "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
+  "variant": "Team Slayer", "started_at": "2026-11-19T19:30:00Z",
+  "duration_s": 230, "result": "win" }
+```
+
+`variant` can be null. For a finished game, `duration_s` measures whole
+seconds from the start and end ticks. Old games without a start tick use
+elapsed wall time, with zero for lost games from that era. Live games have
+`duration_s: null`. The player's `result` is `win`, `loss`, `draw` or null
+when there is no result for that player. On an authored clip's film, the
+result is for the author if they played.
+
+A clip is:
+
+```json
+{ "id": "jjXBkYPKW79VveEmdu81PA", "game": "9ab0", "from_tick": 530,
+  "to_tick": 1430, "title": "Last stand", "by": "0009a1b2c3d4e5f6",
+  "pov": 1, "camera": "follow", "created_ms": 1795116900000 }
+```
+
+Send `{from_tick, to_tick, title, pov?, camera?}` to create one. The server
+sets `id`, `game`, `by` and Unix `created_ms`. Clip ticks are nonnegative
+JSON safe integers, and `to_tick - from_tick` must be 900–9000 ticks
+inclusive (30 seconds to five minutes at 30 Hz). The optional `pov` is a
+player slot and `camera` is a name of up to 64 letters, digits,
+underscores or hyphens. The title is plain text. The server strips
+control and bidirectional formatting characters, collapses whitespace
+and requires 1–60 Unicode characters. An account may create at most 20
+clips per UTC day. A deleted clip still counts that day. Further creates
+return 429.
+
+Film and clip reads follow [game visibility](#co-op-games), including
+when an optional `read` bearer is sent on a public server. Hidden games
+and their clips are omitted from lists and read as 404 by id. Public
+link previews at `/theater/<game>` and `/theater/<game>/clip/<id>` follow
+anonymous visibility. The server-signed Theater mutation events are
+visible in the log to admins and the operator.
+
+A game's archive is exempt from pruning while any player has it saved.
+Archive inventory and detail expose this as `pinned`. The current
+retention policy keeps all recordings.
+
 ## Stats summary
 
 `GET /v1/stats/summary?window=` (default `7d`) feeds the stats site's home

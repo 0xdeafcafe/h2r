@@ -43,6 +43,7 @@ pub mod default_motd;
 pub mod dispatch;
 pub mod emblem;
 pub mod filestore;
+mod films;
 pub mod games;
 pub mod guard;
 pub mod hold;

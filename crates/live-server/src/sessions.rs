@@ -378,7 +378,7 @@ impl Live {
             .collect()
     }
 
-    fn viewer_of(&self, author: &Author) -> Viewer {
+    pub(crate) fn viewer_of(&self, author: &Author) -> Viewer {
         if matches!(author, Author::Server(_)) {
             return Viewer::Operator;
         }
@@ -395,7 +395,7 @@ impl Live {
 /// Whether `viewer` may read a log event (`GET /v1/events`, `/v1/stream`):
 /// a game's events follow [`crate::model::Game::shows_to`], a session's
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
-/// in it counts), and every other event is public.
+/// in it counts). Theater mutations are visible to admins and the operator.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
     if viewer.is_admin() {
         return true;
@@ -406,7 +406,8 @@ pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
     if let Some(id) = stream.strip_prefix("session-") {
         return session_shows_to(s, id, viewer);
     }
-    true
+    // Theater reads use the current game visibility and current clip state.
+    stream != crate::films::STREAM
 }
 
 /// What presence says instead of a hidden game's or session's activity.
