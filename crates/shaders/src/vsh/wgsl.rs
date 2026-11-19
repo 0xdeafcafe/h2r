@@ -315,7 +315,12 @@ fn xvs_fixup(p: vec4f) -> vec4f {
         // a = hi / (hi - lo) is 0 at w = lo and equals w at w = hi, and it
         // is linear in the clip coordinates, so the rasterizer's
         // 0 <= z <= w clip is exactly lo <= w <= hi.
-        // Clamped instead: z = w / 2 is always inside.
+        // Clamped instead: z = w / 2 is always inside for w > 0. The
+        // stored depth is w, from the fragment stage, so z only decides
+        // clipping. Such a draw's pipeline also leaves depth unclipped
+        // (gfx::translate::primitive_state, with DEPTH_CLIP_CONTROL), as
+        // the NV2A keeps what lies outside the range; z then decides
+        // nothing there.
         let lo = xvs.clip.x;
         let hi = xvs.clip.y;
         let z = select(hi / (hi - lo) * (w - lo), 0.5 * w, xvs.clip.w != 0.0);

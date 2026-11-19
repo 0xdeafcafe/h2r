@@ -283,10 +283,12 @@ radiosity parameters), and the haze drowned Halo 1's maps in cyan.
 
 **Loading.** The viewer draws the level as soon as `map.glb` has loaded,
 untextured (each look shows its class material), then fetches the
-pictures six at a time (`textures3d.ts` `deferTextures`,
-`streamTextures`) and swaps each in when it arrives: the images are
-decoded off the main thread (`createImageBitmap`, no flip, no colour
-conversion). Placed objects of one model are instanced (below). Every
+pictures sixteen at a time (`textures3d.ts` `deferTextures`,
+`streamTextures`; `PICTURES_AT_ONCE` in `scene.ts`) and swaps each in
+when it arrives: the images are decoded off the main thread
+(`createImageBitmap`, no flip, no colour conversion). Player, weapon and
+vehicle models wait for `map.glb` (`ModelLibrary.hold`), so they don't
+share its bandwidth. Placed objects of one model are instanced (below). Every
 art URL the site builds carries the manifest's `source` stamp (`?v=<first
 16 characters>`, `web/src/map/geometry.ts`); the picture and sky URLs
 keep it. The art server (`crates/live-server/src/art.rs`) answers a
@@ -311,6 +313,47 @@ fully textured, ms):
 
 The geometry is most of the wait; gzip takes Outskirts' to about a third
 on the wire.
+
+**Performance (measured 2026-11-19).** `bun run bench:viewer` (in `web/`,
+after `bun run build`; `web/bench/viewer.bench.ts`) serves the built site
+locally with the API and art from live.forbes.red, opens a game's page
+with `?view=3d&perf` in headless Chrome and reports the load (requests,
+bytes on the wire, ms to the first frame with the level and to fully
+textured; median of cold runs, then one warm) and, with the replay
+playing, draw calls, triangles and CPU ms per frame in `update()` and in
+`draw()` (three.js's submission, not GPU time), with AO on and off.
+`--profile` adds the functions the page spent its time in; `--census`
+the visible meshes; `--timeline` every request. `?perf` puts the scene on
+`window.h2Viewer`; the scene marks `h2-viewer:first-map-frame` and
+`h2-viewer:textured` with User Timing. On a 10-core Mac (cold, cache
+off; load times swing with the network, by a second or two):
+
+| | before | after |
+|---|---|---|
+| Old Mombasa (AI, 5 zones): first frame / textured | 5037 / 17017 ms | 2385 / 6398 ms |
+| Old Mombasa, AO on: draw calls, draw ms | 3762, 19.6 (p95 20.9) | 1931, 9.8 (p95 10.5) |
+| Old Mombasa: update ms | 1.3 (p95 18.3) | 1.1 (p95 1.3) |
+| Cyclotron (4 players): first frame / textured | 1654 / 5011 ms | 1413 / 2838 ms |
+| Cyclotron, AO on: draw calls, draw ms | 931, 5.1 (p95 5.5) | 497, 3.2 (p95 3.4) |
+
+What changed: the ambient occlusion reads the depth the scene was drawn
+with (the composer's target has a depth texture, `aopass.ts`) instead of
+drawing the whole scene again for its own depth and normals, which also
+had three look each mesh's program up again (skinned, instanced and plain
+meshes shared that one material); the world matrices are updated once a
+frame, not once per pass and again for the labels; floor probes for
+bipeds' feet (`ground.ts`) go to a grid of the level's triangles
+(`floorgrid.ts`) rather than raycasting every triangle of the level (the
+update's 12 to 18 ms spikes on a campaign level); pictures sixteen at a
+time (each is a round trip of 100 to 300 ms to the art host, so six at a
+time was latency-bound: a campaign level's 197 took 12 s), and models
+after the level. What is left, by the profile: the shadow pass redraws
+every caster each frame though the level never moves (about half the
+remaining draw calls; a cached static shadow map would halve them), and
+three's per-object program checks (`getProgram`) between skinned and
+plain meshes in that pass. A campaign level with its AI is ~1900 draw
+calls, of which the AI's skinned meshes are about 450 (223 meshes, drawn
+and shadowed).
 
 `web/src/viewer/textures3d.ts` keeps both materials of every textured
 mesh (the look and the class material its primitive's `flat` names), so

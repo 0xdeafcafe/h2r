@@ -181,6 +181,9 @@ export default function Viewer3D(props: Viewer3DProps) {
       return;
     }
     const s = scene;
+    // `?perf` in the address: the scene on window for the perf harness
+    // (web/bench/viewer.bench.ts) to read its renderer's counts.
+    if (/[?&]perf\b/.test(location.search)) (window as unknown as { h2Viewer?: ViewerScene }).h2Viewer = s;
     s.onAoDropped = () => setAo(false);
     s.onFlyChange = setFlying;
     s.onFlySpeed = (label) => hint(label);

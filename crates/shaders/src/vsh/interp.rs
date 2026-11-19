@@ -276,7 +276,9 @@ pub fn fixup(pos: Vec4, surface: [f32; 2], z_max: f32) -> Vec4 {
 /// written by the fragment stage.
 ///
 /// With `clamp` (`D3DDCC_DEPTHCLAMP`) nothing is culled by the range: z is
-/// `w / 2`, and the fragment stage clamps the stored w instead.
+/// `w / 2`, and the fragment stage clamps the stored w instead. The
+/// pipeline leaves such a draw's depth unclipped where the device can
+/// (`gfx::translate::primitive_state`), so z then decides nothing.
 pub fn fixup_w_buffer(pos: Vec4, surface: [f32; 2], clip: [f32; 2], clamp: bool) -> Vec4 {
     let [lo, hi] = clip;
     let p = fixup(pos, surface, 1.0);

@@ -25,12 +25,20 @@ pub struct FrameParams {
     /// a PNG when the pass ends: at most [`FrameParams::MAX_SNAPS`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub snap: Vec<usize>,
+    /// Vertex shader constant registers (D3D numbering, -96..=95) to
+    /// record on each listed draw: at most [`FrameParams::MAX_CONSTANTS`],
+    /// and only with `draws`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constants: Vec<i32>,
 }
 
 impl FrameParams {
     pub const DEFAULT_DRAWS: usize = 2000;
     pub const MAX_DRAWS: usize = 20_000;
     pub const MAX_SNAPS: usize = 4;
+    pub const MAX_CONSTANTS: usize = 32;
+    /// The constant registers, D3D numbering (hardware register = this + 96).
+    pub const CONSTANT_REGISTERS: std::ops::RangeInclusive<i32> = -96..=95;
 }
 
 /// `render.frame`'s answer.
@@ -144,6 +152,48 @@ pub struct DrawRecord {
     pub program: bool,
     pub blend: bool,
     pub depth_write: bool,
+    /// The vertex side: `fvf 0x…` (fixed function) or `prog @start
+    /// n=slots #hash` (a vertex program; the hash is of its words, so one
+    /// program reads the same in every draw and frame).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vs: String,
+    /// How the draw tests and stores depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<DepthRecord>,
+    /// The constant registers asked for (`FrameParams::constants`), by
+    /// D3D register number, as the draw saw them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub constants: BTreeMap<i32, [f32; 4]>,
+}
+
+/// A draw's depth state: the render states, the viewport's depth range
+/// and the NV2A registers that map the vertex's z or w into the stored
+/// depth.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DepthRecord {
+    /// `D3DRS_ZENABLE`: `off`, `z` or `w` (`D3DZB_USEW`).
+    pub mode: String,
+    /// Whether the draw is W-buffered as drawn: `SET_CONTROL0`'s
+    /// z-perspective bit once pushed, else `mode` is `w`. The stored depth
+    /// is then the vertex's w, clipped (or clamped) to `clip`, over `full`.
+    pub w: bool,
+    /// `D3DRS_ZFUNC` (`Less`, `LessEqual`, `Always`, ...).
+    pub func: String,
+    /// `D3DRS_ZWRITEENABLE`.
+    pub write: bool,
+    /// The D3D viewport's `[MinZ, MaxZ]`.
+    pub viewport: [f32; 2],
+    /// `SET_VIEWPORT_SCALE` z and `SET_VIEWPORT_OFFSET` z.
+    pub scale: [f32; 2],
+    /// `[SET_CLIP_MIN, SET_CLIP_MAX]` as pushed (depth units).
+    pub clip: [f32; 2],
+    /// The depth target's full scale (16777215 for D24S8), the stored
+    /// depth's 1.0; 0 with no depth target.
+    pub full: f32,
+    /// `D3DRS_DEPTHCLIPCONTROL` clamps out-of-range depth instead of
+    /// culling it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clamp: bool,
 }
 
 fn is_zero(v: &u32) -> bool {
@@ -187,4 +237,61 @@ pub struct RenderStats {
     pub paths: BTreeMap<String, u64>,
     /// The frame-stats window's per-frame means of the render counters.
     pub counters: Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_draw_without_depth_or_constants_prints_neither() {
+        let d = DrawRecord::default();
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v.get("depth").is_none());
+        assert!(v.get("constants").is_none());
+        assert!(v.get("vs").is_none());
+    }
+
+    #[test]
+    fn depth_and_constants_round_trip_with_register_keys() {
+        let d = DrawRecord {
+            vs: "prog @0 n=12 #0011aabb".into(),
+            depth: Some(DepthRecord {
+                mode: "w".into(),
+                w: true,
+                func: "LessEqual".into(),
+                write: true,
+                viewport: [0.0, 1.0],
+                scale: [16777215.0, 0.0],
+                clip: [0.0, 16777215.0],
+                full: 16777215.0,
+                clamp: false,
+            }),
+            constants: BTreeMap::from([
+                (-38, [1.0, 0.0, 0.0, 0.0]),
+                (58, [320.0, -240.0, 1.0, 1.0]),
+            ]),
+            ..DrawRecord::default()
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(
+            v["constants"]["-38"],
+            serde_json::json!([1.0, 0.0, 0.0, 0.0])
+        );
+        assert_eq!(v["depth"]["func"], "LessEqual");
+        assert!(v["depth"].get("clamp").is_none(), "clamp only when on");
+        let back: DrawRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(back, d);
+    }
+
+    #[test]
+    fn constants_arm_as_a_register_list() {
+        let p: FrameParams = serde_json::from_value(serde_json::json!({
+            "arm": true,
+            "draws": true,
+            "constants": [-96, 95],
+        }))
+        .unwrap();
+        assert_eq!(p.constants, vec![-96, 95]);
+    }
 }

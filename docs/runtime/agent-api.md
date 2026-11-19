@@ -854,7 +854,8 @@ level without a restart.
 
 ```sh
 h2 agent frame                     # the next whole frame: passes, totals, paths
-h2 agent frame draws               # ... and every draw
+h2 agent frame draws               # ... and every draw, with its depth state
+h2 agent frame constants -38..-35,58,59   # ... and those vertex constants on each
 h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
 h2 agent render                    # interp, pipelined render, native paths
 ```
@@ -866,7 +867,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
 `crates/feature/tests/render_loop.rs`; not run against the game):
 
 - **Recording.** `render.frame {"arm": true, "draws", "max_draws",
-  "snap"}` arms the recorder; the next present starts the frame and the
+  "constants", "snap"}` arms the recorder; the next present starts the frame and the
   one after ends it, then it disarms. `render.frame {}` reads the state
   and the last frame (`frame.seq` is the arming's number). `h2 agent
   frame` does both and waits up to 10 s; a paused or loading game
@@ -884,6 +885,29 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   during the frame. Surfaces are the backend's handles as text. With
   `draws`, each draw (at most `max_draws`, 2000 by default; `truncated`
   says when there were more).
+- **A draw.** Its pass, D3D entry, primitive, vertex and index counts,
+  outcome, texture formats, whether it has a pixel program, blends or
+  writes depth; `vs`, the vertex side: `fvf 0x…`, or `prog @start n=slots
+  #hash` for a vertex program (the low 32 bits of the words' FNV-1a hash,
+  the same in every frame, so one program's draws can be picked out);
+  and `depth`, how it tests and stores depth: `mode` (`D3DRS_ZENABLE`:
+  `off`, `z`, `w`), `w` (W-buffered as drawn: `SET_CONTROL0`'s
+  z-perspective bit once pushed, else `mode`), `func` and `write`
+  (`D3DRS_ZFUNC`, `D3DRS_ZWRITEENABLE`), `viewport` (the D3D viewport's
+  `[MinZ, MaxZ]`), `scale` (`SET_VIEWPORT_SCALE` z and
+  `SET_VIEWPORT_OFFSET` z), `clip` (`[SET_CLIP_MIN, SET_CLIP_MAX]`),
+  `full` (the depth target's full scale, 16777215 for D24S8; 0 with no
+  depth target) and `clamp` (`D3DRS_DEPTHCLIPCONTROL` clamps out-of-range
+  depth rather than culling it; shown only when on). A W-buffered draw of
+  a vertex program stores its w clipped (or clamped) to `clip`, over
+  `full`; a z-buffered one its z over `full`.
+- **Constants.** `constants` (with `draws`; at most 32 registers, D3D
+  numbering -96..=95, hardware register = number + 96) records those
+  vertex shader constant registers on each listed draw, as it saw them:
+  `"constants": {"-38": [x, y, z, w], ...}`. Only on request: the block
+  is the draw's own (shared with the backend), copied out per listed
+  draw. `h2 agent frame constants -38..-35,58` takes ranges and implies
+  `draws`; `max N` sets `max_draws`.
 - **Snapshots.** `snap` (at most 4 pass numbers): when such a pass ends
   (the next pass starts, or the present), its colour target is read back
   as BGRA and written as a PNG under the cache directory's `frames/`
