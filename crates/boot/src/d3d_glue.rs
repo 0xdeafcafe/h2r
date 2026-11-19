@@ -951,7 +951,7 @@ impl d3d::backend::Backend for Headless {
     fn external_attachments(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: d3d::TargetCopy,
-    ) -> Result<Option<Vec<d3d::backend::ExternalAttachments>>, String> {
+    ) -> Result<d3d::ExternalCopies, String> {
         self.0.external_attachments(surfaces, textures, copy)
     }
 

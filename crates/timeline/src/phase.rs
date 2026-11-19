@@ -160,11 +160,11 @@ pub enum Counter {
 }
 
 /// Number of [`Counter`]s.
-pub const COUNTERS: usize = 17 + crate::native::COLUMNS;
+pub const COUNTERS: usize = Counter::ALL.len() + crate::native::COLUMNS;
 /// Every field in a frame, in storage and CSV order.
 pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
     Counter::ALL.into_iter().map(|c| (c as usize, c.label()))
-        .chain(crate::native::labels().iter().enumerate().map(|(i, s)| (17 + i, s.as_str())))
+        .chain(crate::native::labels().iter().enumerate().map(|(i, s)| (Counter::ALL.len() + i, s.as_str())))
 }
 
 impl Counter {
@@ -1114,7 +1114,7 @@ impl Recorder {
             );
         }
         out += "\n  mean per frame:";
-        for (i, label) in counter_columns().filter(|(i, _)| *i < 17 || self.count_sum[*i] > 0) {
+        for (i, label) in counter_columns().filter(|(i, _)| *i < Counter::ALL.len() || self.count_sum[*i] > 0) {
             out += &format!(
                 " {} {:.1}",
                 label,
@@ -1128,7 +1128,7 @@ impl Recorder {
                 out += &format!(" {} {:.1}", p.label(), w.phase_ns[p as usize] as f64 / 1e6);
             }
             out += " |";
-            for (i, label) in counter_columns().filter(|(i, _)| *i < 17 || w.counts[*i] > 0) {
+            for (i, label) in counter_columns().filter(|(i, _)| *i < Counter::ALL.len() || w.counts[*i] > 0) {
                 out += &format!(" {} {}", label, w.counts[i]);
             }
             out += "\n";
@@ -1232,6 +1232,9 @@ impl Summary {
             .filter(|&p| p != Phase::Render || self.phase_ms[p as usize] > 0.0)
         {
             s += &format!(" {} {:.1}", p.label(), self.phase_ms[p as usize]);
+        }
+        for (i, label) in counter_columns().skip(Counter::ALL.len()).filter(|(i, _)| self.count_mean[*i] > 0.) {
+            s += &format!(" {label} {:.1}", self.count_mean[i]);
         }
         s
     }

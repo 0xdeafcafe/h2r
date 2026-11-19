@@ -113,6 +113,7 @@ fn scene() -> (Mixer, StreamId, MixInId) {
         }),
     );
     b.set_i3dl2_source(Some(I3dl2Source {
+        room_hf: -900,
         obstruction_hf: -1500,
         obstruction_lf_ratio: 0.2,
         ..I3dl2Source::default()
@@ -253,22 +254,32 @@ fn a_mixer_at_another_rate_refuses_the_section_unchanged() {
 
 #[test]
 fn headphone_filter_snapshot_keeps_history_and_an_in_progress_ramp() {
-    let (mut source, stream, mix) = scene();
-    source.set_hrtf(true);
-    render(&mut source, 2);
-    source.mix_in_mut(mix).unwrap().set_source_3d(Some(Source3d {
-        position: Vec3::new(2.0, 1.0, -1.0),
-        ..Source3d::default()
-    }));
-    source.render(&mut [0.0; 30]);
-    let file = save(&source);
-    let snapshot = Snapshot::open(&file, &key()).unwrap();
-    let mut loaded = Mixer::new(RATE);
-    assert!(matches!(
-        loaded.load_snapshot(&snapshot),
-        Err(SnapshotError::Mismatch(_))
-    ));
-    loaded.set_hrtf(true);
-    loaded.load_snapshot(&snapshot).unwrap();
-    assert_eq!(carry_on(&mut loaded, stream), carry_on(&mut source, stream));
+    for distance_reverb in [false, true] {
+        let (mut source, stream, mix) = scene();
+        source.set_hrtf(true);
+        source.set_distance_reverb(distance_reverb);
+        render(&mut source, 2);
+        source.mix_in_mut(mix).unwrap().set_source_3d(Some(Source3d {
+            position: Vec3::new(2.0, 1.0, -1.0),
+            ..Source3d::default()
+        }));
+        source.render(&mut [0.0; 30]);
+        let file = save(&source);
+        let snapshot = Snapshot::open(&file, &key()).unwrap();
+        let mut loaded = Mixer::new(RATE);
+        assert!(matches!(
+            loaded.load_snapshot(&snapshot),
+            Err(SnapshotError::Mismatch(_))
+        ));
+        loaded.set_hrtf(true);
+        if distance_reverb {
+            assert!(matches!(
+                loaded.load_snapshot(&snapshot),
+                Err(SnapshotError::Mismatch(_))
+            ));
+            loaded.set_distance_reverb(true);
+        }
+        loaded.load_snapshot(&snapshot).unwrap();
+        assert_eq!(carry_on(&mut loaded, stream), carry_on(&mut source, stream));
+    }
 }
