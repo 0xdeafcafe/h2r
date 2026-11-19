@@ -3464,7 +3464,6 @@ name = "live-proto"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "cc",
  "chacha20poly1305",
  "content",
  "ed25519-dalek",

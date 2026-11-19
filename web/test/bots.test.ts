@@ -8,6 +8,7 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
 import { createHash } from "node:crypto";
 import clankerKernel from "../src/lib/clanker-kernel.json";
+import appearanceCorpus from "../../crates/live-proto/tests/fixtures/clanker-appearance.json";
 import { applyAccountsSnapshot, applyEvents, initialState, standings, type AccountState, type GameState, type LiveState } from "../src/state/reducer";
 import { gameHistory, playedWith, serviceRecord, type ServiceRecord } from "../src/state/derive";
 import { clankerAppearance } from "../src/lib/gameart";
@@ -54,8 +55,8 @@ function botGame(): LiveState {
   return s;
 }
 
-test("the browser kernel is generated from the current native source", async () => {
-  const source = await Bun.file(new URL("../../crates/live-proto/src/clanker_appearance.c", import.meta.url)).arrayBuffer();
+test("the browser kernel is generated from its current C source", async () => {
+  const source = await Bun.file(new URL("../src/lib/clanker_appearance.c", import.meta.url)).arrayBuffer();
   expect(createHash("sha256").update(new Uint8Array(source)).digest("hex")).toBe(clankerKernel.sourceSha256);
 });
 
@@ -75,13 +76,13 @@ test("the web mock and native roster share the 8,192-name appearance vector", ()
   expect(clankerAppearance("  RUSTY\tlugnut  ")).toEqual(clankerAppearance("Rusty Lugnut"));
   expect(clankerAppearance("ÅNGSTRÖM")).toEqual(clankerAppearance("ångström"));
   let hash = 2166136261;
-  for (let i = 0; i < 8192; i++) {
-    const { emblem, colours } = clankerAppearance(`Clanker ${i}`);
+  for (let i = 0; i < appearanceCorpus.count; i++) {
+    const { emblem, colours } = clankerAppearance(`${appearanceCorpus.prefix}${i}`);
     for (const index of [emblem!.fg!, emblem!.bg!, colours!.primary!, colours!.secondary!, colours!.tertiary!, colours!.quaternary!]) {
       hash = Math.imul(hash ^ index, 16777619);
     }
   }
-  expect(hash >>> 0).toBe(4171212491);
+  expect(hash >>> 0).toBe(appearanceCorpus.fingerprint);
 });
 
 describe("bots in the game record", () => {

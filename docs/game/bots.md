@@ -31,10 +31,11 @@ colours from the other, using four different retail palette indices.
 Rusty Lugnut has foreground 1, background 30 and profile colours
 10, 11, 13, 16. The server recomputes looks when projecting every
 `BotIssued`, including old signed events, so existing accounts migrate
-without rewriting their log or changing their personality. The web mock
-calls the same kernel compiled as inline WebAssembly. The Rust and web
-tests pin the same 8,192-name fingerprint. After changing
-`crates/live-proto/src/clanker_appearance.c`, regenerate the browser module
+without rewriting their log or changing their personality. The game and
+both Live homes use the pure Rust implementation. The web mock uses a C
+mirror compiled as inline WebAssembly. Rust and browser tests read the
+same 8,192-name fixture and check its fingerprint. After changing
+`web/src/lib/clanker_appearance.c`, regenerate the browser module
 with `python3 scripts/clanker-web-kernel.py` using LLVM clang and wasm-ld.
 The web tests check the source digest.
 
