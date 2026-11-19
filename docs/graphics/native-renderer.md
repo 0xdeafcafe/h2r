@@ -102,7 +102,15 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
   programs draw with them (`ViewInputs::w_clip`). The objects',
   transparents' and lights' passes still take the whole range (S: the
-  same gap for anything far in a cinematic). A placement's placed copy is
+  same gap for anything far in a cinematic). That did not close the
+  02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
+  To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
+  line per pass (the first 8, then every 250th: the clip, whether draws
+  are W-buffered, the render camera and its view-projection beside the
+  constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
+  draws every part without the CPU cull. A view whose draws are not
+  W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
+  path (counted in the log): the programs write and clip w. A placement's placed copy is
   unscaled, as the game draws it (`load`), so its bounds are where it
   draws. The
   result is written as `instance_count` 0 or 1 into the indirect buffer
