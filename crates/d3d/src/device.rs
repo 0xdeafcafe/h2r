@@ -818,7 +818,7 @@ pub struct TracedDraw {
     pub target: u32,
     /// [`Stats::draws`] before it.
     pub draws: u64,
-    /// A pushed draw's fate: `drawn` (nothing armed), `dropped`,
+    /// An immediate draw's fate: `drawn` (nothing armed), `held`,
     /// `observed`, or `mismatch` (it ended the swallow).
     pub fate: Option<&'static str>,
 }

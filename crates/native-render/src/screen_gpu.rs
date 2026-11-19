@@ -1039,6 +1039,80 @@ mod tests {
     }
 
     #[test]
+    fn target_one_keeps_its_live_format_and_pixels_across_partial_passes() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let size = (8, 8);
+        let extent = wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 };
+        let make = |format| {
+            ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("screen target format and load regression"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let main = make(wgpu::TextureFormat::Rgba8Unorm);
+        let level = make(wgpu::TextureFormat::Bgra8Unorm);
+        let original = [51, 102, 153, 204];
+        ctx.queue.write_texture(
+            level.as_image_copy(),
+            &original.repeat(64),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(32), rows_per_image: Some(8) },
+            extent,
+        );
+        let mut red = program([E; 4]);
+        red.wgsl = "
+            @vertex fn vs_main(@location(0) position: vec4f) -> @builtin(position) vec4f {
+                return position;
+            }
+            @fragment fn fs_main() -> @location(0) vec4f {
+                return vec4f(1.0);
+            }
+        ".into();
+        red.state.color_writes = wgpu::ColorWrites::RED;
+        let mut blue = red.clone();
+        blue.state.color_writes = wgpu::ColorWrites::BLUE;
+        let strip = |left, right| {
+            vec![(left, 1.0), (left, -1.0), (right, 1.0), (right, -1.0)]
+                .into_iter()
+                .map(|(x, y)| StripVertex { position: [x, y, 0.0, 1.0], texcoords: [[0.0; 4]; 4] })
+                .collect()
+        };
+        let left = [strip(-1.0, -0.25)];
+        let right = [strip(0.25, 1.0)];
+        let draw = |key, program, strips| ScreenDraw {
+            key, program, strips, dest: Dest::Target1 { guest: size }, values: [0; 4], convolutions: &[],
+        };
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        let color = main.create_view(&Default::default());
+        let target1 = level.create_view(&Default::default());
+        let target = ScreenTarget {
+            device: &ctx.device,
+            queue: &ctx.queue,
+            encoder: &mut encoder,
+            color: &color,
+            target1: Some(&target1),
+            convolutions: [None; 3],
+            guest_size: size,
+            size,
+            z_scale: 1.0,
+        };
+        let draws = [draw((0, 0, 0), &red, &left[..]), draw((0, 1, 0), &blue, &right[..])];
+        assert_eq!(ScreenSet::new().encode(target, &draws, None, &mut |_| None), Ok(2));
+        ctx.queue.submit([encoder.finish()]);
+        let px = gfx::readback::read_texture(&ctx, &level, wgpu::TextureAspect::All, 4, size);
+        assert_eq!(&px[..4], [51, 102, 255, 204], "the second pass kept the first pass and its other channels");
+        assert_eq!(&px[16..20], original, "the gap kept its existing pixels");
+        assert_eq!(&px[28..32], [255, 102, 153, 204], "the blue write used the actual BGRA target");
+    }
+
+    #[test]
     fn the_uniforms_are_the_targets() {
         let p = program([ScreenStage::Engine(5), ScreenStage::Bitmap { bitmap: map::TagId(1), image: 0 }, ScreenStage::Engine(3), E]);
         let v = screen_vertex(&p.vertex, (640, 480), (1280, 960), 16_777_215.0);

@@ -2255,6 +2255,8 @@ uses D3D for that call.
    same-shape draws from a different End caller. GPU tests compare
    both colour attachments after a failed encode and check that a
    successful replacement writes the intermediate back to the guest.
+   The screen renderer's GPU test covers masked writes and pixels
+   preserved between partial passes into a BGRA intermediate.
 
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
