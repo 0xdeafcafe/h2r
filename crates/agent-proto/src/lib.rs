@@ -156,6 +156,15 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
+    /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
+    /// the speed-up so far, frames skipped, and the end once over.
+    pub const MATCH_STATUS: &str = "match.status";
+    /// Sim mode: the match report as it would be written now
+    /// (`h2-sim-report/1`, docs/runtime/sim.md §6).
+    pub const MATCH_REPORT: &str = "match.report";
+    /// Sim mode: end the match at the next slice boundary, as `stopped`.
+    pub const MATCH_STOP: &str = "match.stop";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.

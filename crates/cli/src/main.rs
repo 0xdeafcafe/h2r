@@ -14,6 +14,7 @@ mod agent_hot_cmd;
 mod agent_run;
 mod agent_sim;
 mod testmap_cmd;
+mod sim_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -105,6 +106,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           background; F5 restarts into it (docs/runtime/app.md)
   settings list|get|set   our settings (field of view, frame rate, ...) in
                           <data>/settings.toml (docs/game/settings-menu.md)
+  sim run <match.toml>    a bot match without rendering, faster than real time,
+                          ending in a JSON report (docs/runtime/sim.md)
+  sim batch <batch.toml>  many matches in parallel, A/B tuning compared;
+                          sim compare <dir> prints the comparison again
   lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
                           (docs/game/high-framerate.md)
   coop-probe diff <a> <b> compare two H2_COOP_PROBE hash logs: first tick and pool
@@ -314,6 +319,9 @@ fn main() -> Result<()> {
     }
     if cmd == "live" {
         return live_cmd::run(args.collect());
+    }
+    if cmd == "sim" {
+        return sim_cmd::run(args.collect());
     }
     if cmd == "lockstep" {
         std::process::exit(lockstep_cmd::run(args.collect())?);

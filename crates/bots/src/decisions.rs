@@ -18,12 +18,18 @@ pub(crate) fn distance(a: Vec3, b: Vec3) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+/// The decisions' sense of the fight for a skill, with the thinking
+/// brain's tuning over it when it has one ([`crate::tuning`]).
 pub(crate) fn awareness(skill: Skill) -> f32 {
-    match skill {
+    let base = match skill {
         Skill::Easy => 0.3,
         Skill::Normal => 0.65,
         Skill::Heroic => 0.85,
         Skill::Legendary => 1.0,
+    };
+    match crate::tuning::current() {
+        Some(t) => t.awareness(base),
+        None => base,
     }
 }
 

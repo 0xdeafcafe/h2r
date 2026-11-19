@@ -52,8 +52,19 @@ impl Skill {
         })
     }
 
-    /// The aim model's numbers for this skill (section 3.4's table).
+    /// The aim model's numbers for this skill (section 3.4's table), with
+    /// the thinking brain's tuning over them when it has one
+    /// ([`crate::tuning`]).
     pub fn aim(self) -> Aim {
+        let base = self.base_aim();
+        match crate::tuning::current() {
+            Some(t) => t.aim(base),
+            None => base,
+        }
+    }
+
+    /// Section 3.4's table row, untuned.
+    pub fn base_aim(self) -> Aim {
         match self {
             Skill::Easy => Aim {
                 reaction: 14,
