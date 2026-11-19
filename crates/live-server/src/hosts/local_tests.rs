@@ -177,3 +177,25 @@ async fn polling_forgets_an_exited_child() {
     assert!(!provider.alive(&pid).await.unwrap());
     assert!(!provider.children.lock().unwrap().contains_key(&pid));
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retrying_a_failed_launch_cannot_return_a_dead_pid() {
+    let root = crate::blobs::tests::temp_dir("host-retry");
+    let mut provider = LocalProvider::new(&root);
+    provider.bin = Some("/usr/bin/true".into());
+    let lease = lease("hl-exit");
+    let pid = provider.start(&lease, &boot()).await.unwrap();
+    provider
+        .children
+        .lock()
+        .unwrap()
+        .get_mut(&pid)
+        .unwrap()
+        .child
+        .wait()
+        .unwrap();
+    assert!(provider.start(&lease, &boot()).await.is_err());
+    assert!(!provider.alive(&pid).await.unwrap());
+    std::fs::remove_dir_all(root).unwrap();
+}

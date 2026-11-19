@@ -151,8 +151,16 @@ impl HostProvider for LocalProvider {
 
     async fn start(&self, lease: &HostLease, boot: &HostBoot) -> Result<String, HostError> {
         let mut children = self.children.lock().unwrap();
-        if let Some((pid, _)) = children.iter().find(|(_, host)| host.lease_id == lease.id) {
-            return Ok(pid.clone());
+        if let Some((pid, host)) = children
+            .iter_mut()
+            .find(|(_, host)| host.lease_id == lease.id)
+        {
+            let pid = pid.clone();
+            if host.child.try_wait()?.is_some() {
+                children.remove(&pid);
+                return Err(HostError::new("local host already exited"));
+            }
+            return Ok(pid);
         }
         let slot = (0..=u16::MAX)
             .find(|slot| children.values().all(|host| host.slot != *slot))
