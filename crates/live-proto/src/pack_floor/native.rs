@@ -41,6 +41,8 @@ struct History {
     cold: [Vec<Entity>; LISTS_WITH_HITS],
     #[serde(skip)]
     held_lists: u8,
+    #[serde(skip)]
+    held_players: u32,
     strings: Vec<Val>,
     #[serde(skip)]
     ids: HashMap<Val, usize>,
@@ -82,6 +84,7 @@ fn number(input: &mut &[u8]) -> u64 {
 trait Symbols {
     const WRITING: bool;
     const SPARSE: bool = false;
+    const HOT: bool = false;
     fn bit(&mut self, ctx: usize, want: bool) -> bool;
     fn uint(&mut self, ctx: usize, want: u64) -> u64;
     fn signed(&mut self, ctx: usize, want: i64) -> i64 {
@@ -148,17 +151,44 @@ fn dictionary<T: Symbols>(
 #[derive(Default)]
 struct References {
     positions: Vec<Val>,
-    first_aim: Option<([f64; 3], f64)>,
+    first_aim: Option<([f64; 3], u64)>,
 }
 struct RowContext {
     direction: Option<[u32; 2]>,
     travel: Option<[i64; 3]>,
     hit: bool,
+    fixed_presence: bool,
 }
-fn direction_base(first: Option<([f64; 3], f64)>, yaw: Option<&Val>) -> Option<[u32; 2]> {
+fn direction_base<T: Symbols>(
+    first: Option<([f64; 3], u64)>,
+    yaw: Option<&Val>,
+) -> Option<[u32; 2]> {
     let (v, base) = first?;
     let Val::Int(y) = yaw? else { return None };
-    crate::archive::rotated(v, dyaw(*y) - base).ok()
+    if T::HOT {
+        // Headings already lie on this 14-bit grid. One immutable quarter
+        // wave replaces two polynomial evaluations per cross-player prediction.
+        static WAVE: std::sync::OnceLock<Box<[f64]>> = std::sync::OnceLock::new();
+        let table = WAVE.get_or_init(|| {
+            (0..=4096)
+                .map(|i| crate::archive::predictor_sin(i as f64 * TAU / 16384.))
+                .collect()
+        });
+        let sin = |q: u64| {
+            let i = (q & 4095) as usize;
+            match (q >> 12) & 3 {
+                0 => table[i],
+                1 => table[4096 - i],
+                2 => -table[i],
+                _ => -table[4096 - i],
+            }
+        };
+        let q = y.wrapping_sub(base);
+        let s = sin(q);
+        let c = sin(q.wrapping_add(4096));
+        return oct([v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]]).ok();
+    }
+    crate::archive::rotated(v, dyaw(*y) - dyaw(base)).ok()
 }
 fn travel_base(vel: Option<&FieldHistory>, dt: u64, regular: bool) -> Option<[i64; 3]> {
     let vel = vel.filter(|v| v.present && dt <= PREDICT_TICKS)?;
@@ -281,6 +311,7 @@ impl History {
                 direction: None,
                 travel: travel_base(velocity.map(|vi| &hist[vi]), dt, is_unit),
                 hit: list == HIT_LIST,
+                fixed_presence: false,
             };
             let held = grouped
                 && r.bit(
@@ -289,6 +320,11 @@ impl History {
                         let prior = &cache[i];
                         if prior.is_empty() {
                             return false;
+                        }
+                        if T::HOT && list == 0 {
+                            // The projection cache already compared all cold
+                            // fields and the optional motion-column shape.
+                            return self.held_players & (1 << i) != 0;
                         }
                         let mut bits = full_mask ^ hot_mask;
                         while bits != 0 {
@@ -305,12 +341,46 @@ impl History {
                 e.clone_from(&cache[i]);
             }
             let mut mask = if held { hot_mask } else { full_mask };
+            if T::WRITING && T::HOT && list == 0 && held {
+                let src = source.unwrap();
+                // Schema and column offsets are constants in the common loop.
+                // Decoder below uses the same field order and ordinary grammar.
+                macro_rules! emit {
+                    ($j:expr,$fixed:expr) => {{
+                        ctx.fixed_presence = $fixed;
+                        channel(
+                            r,
+                            $j * WIDTH,
+                            &PLAYER[$j],
+                            &mut hist[$j],
+                            Some(&src[$j]),
+                            &ctx,
+                            &refs.positions,
+                            &mut self.strings,
+                            &mut self.ids,
+                        );
+                    }};
+                }
+                emit!(2, false);
+                emit!(3, false);
+                ctx.direction = direction_base::<T>(refs.first_aim, src.get(3));
+                emit!(6, true);
+                ctx.direction = None;
+                emit!(8, false);
+                emit!(13, true);
+                emit!(14, false);
+                emit!(16, true);
+                emit!(20, true);
+                mask = 0;
+            }
             while mask != 0 {
                 let j = mask.trailing_zeros() as usize;
                 mask &= mask - 1;
                 let field = &schema[j];
+                ctx.fixed_presence = T::HOT && held && list == 0 && matches!(j, 6 | 13 | 16 | 20);
                 if is_unit && j == aim {
-                    ctx.direction = direction_base(refs.first_aim, source.unwrap_or(&e).get(3));
+                    ctx.direction =
+                        direction_base::<T>(refs.first_aim, source.unwrap_or(&e).get(3));
                 } else {
                     ctx.direction = None;
                 }
@@ -345,7 +415,7 @@ impl History {
                 && is_unit
                 && let (Val::Dir(q), Val::Int(y)) = (&actual[aim], &actual[3])
             {
-                refs.first_aim = Some((unoct(*q), dyaw(*y)));
+                refs.first_aim = Some((unoct(*q), *y));
             }
             if !T::WRITING {
                 out.push(e);
@@ -358,6 +428,7 @@ impl History {
     }
 }
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 fn channel<T: Symbols>(
     r: &mut T,
     ctx: usize,
@@ -370,7 +441,13 @@ fn channel<T: Symbols>(
     ids: &mut HashMap<Val, usize>,
 ) -> Val {
     let was = h.present;
-    if field.opt && !r.bit(ctx + usize::from(was), src.is_some_and(|v| *v != Val::None)) {
+    if field.opt
+        && !(if T::HOT && row.fixed_presence {
+            was
+        } else {
+            r.bit(ctx + usize::from(was), src.is_some_and(|v| *v != Val::None))
+        })
+    {
         *h = FieldHistory::default();
         return Val::None;
     }

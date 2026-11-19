@@ -158,11 +158,13 @@ fn finish(spans: &[Span], out: &mut Vec<u8>) {
     out.splice(at..at, state.to_le_bytes());
 }
 
-struct Tape<'a, E, const SPARSE: bool, const BINARY: bool> {
+struct Tape<'a, E, const SPARSE: bool, const BINARY: bool, const HOT: bool> {
     engine: E,
     t: &'a mut Tables,
 }
-impl<E: Engine, const SPARSE: bool, const BINARY: bool> Tape<'_, E, SPARSE, BINARY> {
+impl<E: Engine, const SPARSE: bool, const BINARY: bool, const HOT: bool>
+    Tape<'_, E, SPARSE, BINARY, HOT>
+{
     #[inline]
     fn uniform(&mut self, bits: u32, want: u64) -> u64 {
         let shift = 12 - bits;
@@ -175,9 +177,12 @@ impl<E: Engine, const SPARSE: bool, const BINARY: bool> Tape<'_, E, SPARSE, BINA
         u64::from(sym)
     }
 }
-impl<E: Engine, const SPARSE: bool, const BINARY: bool> Symbols for Tape<'_, E, SPARSE, BINARY> {
+impl<E: Engine, const SPARSE: bool, const BINARY: bool, const HOT: bool> Symbols
+    for Tape<'_, E, SPARSE, BINARY, HOT>
+{
     const WRITING: bool = E::WRITE;
     const SPARSE: bool = SPARSE;
+    const HOT: bool = HOT;
     #[inline]
     fn bit(&mut self, ctx: usize, want: bool) -> bool {
         let p = self.t.binary[ctx];
@@ -266,6 +271,7 @@ pub(super) struct Ans<
     const FORWARD: bool = false,
     const BINARY: bool = false,
     const PACKED_KEY: bool = false,
+    const HOT: bool = false,
 > {
     projection: projection::Projection,
     pub(super) h: History,
@@ -278,7 +284,8 @@ impl<
     const FORWARD: bool,
     const BINARY: bool,
     const PACKED_KEY: bool,
-> Ans<CACHE, SPARSE, FORWARD, BINARY, PACKED_KEY>
+    const HOT: bool,
+> Ans<CACHE, SPARSE, FORWARD, BINARY, PACKED_KEY, HOT>
 {
     pub(super) fn encode(&mut self, f: &Frame, key: bool) -> Vec<u8> {
         let seq = self.h.seq;
@@ -302,18 +309,19 @@ impl<
         }
         let dt = f.tick - self.h.tick;
         let raw;
-        let (src, held) = if CACHE {
+        let (src, held, players) = if CACHE {
             self.projection.get(f).unwrap()
         } else {
             raw = Lists::of(f).unwrap();
-            (&raw, 0)
+            (&raw, 0, 0)
         };
         self.h.held_lists = if key { 0 } else { held };
+        self.h.held_players = if key { 0 } else { players };
         let mut payload = Vec::with_capacity(128);
         var(&mut payload, seq * 2 + u64::from(key));
         var(&mut payload, dt);
         if FORWARD {
-            let mut r = Tape::<_, SPARSE, BINARY> {
+            let mut r = Tape::<_, SPARSE, BINARY, HOT> {
                 engine: ByteWriter::new(&mut payload),
                 t: &mut self.tables,
             };
@@ -321,7 +329,7 @@ impl<
             r.engine.finish();
         } else {
             self.spans.clear();
-            let mut r = Tape::<_, SPARSE, BINARY> {
+            let mut r = Tape::<_, SPARSE, BINARY, HOT> {
                 engine: Writer(&mut self.spans),
                 t: &mut self.tables,
             };
@@ -353,7 +361,7 @@ impl<
         }
         let dt = number(&mut body);
         if FORWARD {
-            let mut r = Tape::<_, SPARSE, BINARY> {
+            let mut r = Tape::<_, SPARSE, BINARY, HOT> {
                 engine: ByteReader::new(body),
                 t: &mut self.tables,
             };
@@ -361,7 +369,7 @@ impl<
             r.engine.finished();
             return f;
         }
-        let mut r = Tape::<_, SPARSE, BINARY> {
+        let mut r = Tape::<_, SPARSE, BINARY, HOT> {
             engine: Reader::new(body),
             t: &mut self.tables,
         };
@@ -371,10 +379,11 @@ impl<
     }
     fn seed_key(&mut self, f: &Frame, seq: u64) {
         // Both ends seed from the decoded v7 key, including its exact grids.
-        struct Seed<const S: bool>;
-        impl<const S: bool> Symbols for Seed<S> {
+        struct Seed<const S: bool, const F: bool>;
+        impl<const S: bool, const F: bool> Symbols for Seed<S, F> {
             const WRITING: bool = true;
             const SPARSE: bool = S;
+            const HOT: bool = F;
             fn bit(&mut self, _: usize, v: bool) -> bool {
                 v
             }
@@ -386,7 +395,7 @@ impl<
             }
         }
         self.h
-            .write_frame(&mut Seed::<SPARSE>, f, &Lists::of(f).unwrap(), 0);
+            .write_frame(&mut Seed::<SPARSE, HOT>, f, &Lists::of(f).unwrap(), 0);
         self.h.seq = seq + 1;
         self.h.tick = f.tick;
         // Raw projection survives a key; a static-list hold on the next

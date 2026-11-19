@@ -12,7 +12,10 @@ pub(super) struct Projection {
     machines: Vec<FrameMachine>,
 }
 fn same_player(a: &FramePlayer, b: &FramePlayer) -> bool {
-    a.index == b.index
+    a.aim.is_some() == b.aim.is_some()
+        && a.vel.is_some() == b.vel.is_some()
+        && a.shield.is_some() == b.shield.is_some()
+        && a.index == b.index
         && a.alive == b.alive
         && a.vehicle == b.vehicle
         && a.species == b.species
@@ -58,16 +61,20 @@ fn project_rows<T: Clone>(
     same: fn(&T, &T) -> bool,
     hot: fn(&T, &mut Entity) -> Result<()>,
     full: fn(&T) -> Result<Entity>,
-) -> Result<()> {
+) -> Result<u32> {
     if raw.len() > max {
         return Err(PackError::Value("too many entities"));
     }
     old.truncate(raw.len());
     out.truncate(raw.len());
+    let mut held = 0u32;
     for (i, row) in raw.iter().enumerate() {
         if let Some(prev) = old.get_mut(i) {
             if same(row, prev) {
                 hot(row, &mut out[i])?;
+                if i < 32 {
+                    held |= 1 << i;
+                }
             } else {
                 out[i] = full(row)?;
                 prev.clone_from(row);
@@ -77,7 +84,7 @@ fn project_rows<T: Clone>(
             old.push(row.clone());
         }
     }
-    Ok(())
+    Ok(held)
 }
 fn static_list<T: Clone + PartialEq>(
     raw: &[T],
@@ -94,9 +101,9 @@ fn static_list<T: Clone + PartialEq>(
     Ok(false)
 }
 impl Projection {
-    pub(super) fn get(&mut self, f: &Frame) -> Result<(&Lists, u8)> {
+    pub(super) fn get(&mut self, f: &Frame) -> Result<(&Lists, u8, u32)> {
         let lists = &mut self.src.lists;
-        project_rows(
+        let held_players = project_rows(
             &f.players,
             &mut self.players,
             &mut lists[0],
@@ -141,6 +148,7 @@ impl Projection {
         Ok((
             &self.src,
             (u8::from(m) << 3) | (u8::from(o) << 4) | (u8::from(i) << 6),
+            held_players,
         ))
     }
 }

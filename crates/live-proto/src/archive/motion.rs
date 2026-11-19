@@ -7,7 +7,7 @@ use super::{Error, Result};
 
 /// Range reduction and a Taylor polynomial, using only IEEE binary64
 /// operations shared with JS. Trig library approximations differ by platform.
-pub(super) fn sin(x: f64) -> f64 {
+pub(crate) fn sin(x: f64) -> f64 {
     use std::f64::consts::{FRAC_PI_2, PI, TAU};
     let mut a = x - TAU * (x / TAU + 0.5).floor();
     if a > FRAC_PI_2 {

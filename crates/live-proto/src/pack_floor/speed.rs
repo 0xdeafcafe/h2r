@@ -43,6 +43,10 @@ type PackedKey = ans::Ans<true, true, true, false, true>;
 codec!(ByteSymbols);
 codec!(ByteBits);
 codec!(PackedKey);
+type HotSymbols = ans::Ans<true, true, true, false, true, true>;
+type HotBits = ans::Ans<true, true, true, true, true, true>;
+codec!(HotSymbols);
+codec!(HotBits);
 fn check<C: Codec>(frames: &[Frame]) {
     let mut tx = C::default();
     let mut rx = C::default();
@@ -71,6 +75,8 @@ pub fn verify() {
         check::<ByteSymbols>(&scene);
         check::<ByteBits>(&scene);
         check::<PackedKey>(&scene);
+        check::<HotSymbols>(&scene);
+        check::<HotBits>(&scene);
     }
 }
 fn timed<T>(d: &mut Duration, f: impl FnOnce() -> T) -> T {
@@ -141,6 +147,8 @@ pub fn compare() {
     measure::<ByteSymbols>(&frames, "byte range symbols");
     measure::<ByteBits>(&frames, "byte range bits");
     measure::<PackedKey>(&frames, "byte symbols + v7 key");
+    measure::<HotSymbols>(&frames, "hot symbols + v7 key");
+    measure::<HotBits>(&frames, "hot bits + v7 key");
 }
 
 #[derive(Clone, Copy)]
