@@ -66,9 +66,11 @@ fn plan_with_pipeline(switches: &str) -> String {
 }
 
 #[test]
-fn it_is_on_by_default_and_keeps_pipelining() {
-    assert!(native_world::DEFAULT);
+fn it_is_off_by_default_and_on_keeps_pipelining() {
+    assert!(!native_world::DEFAULT);
     let text = plan_with_pipeline("");
+    assert!(!text.contains("native_world"), "{text}");
+    let text = plan_with_pipeline("impl.render.native_world=on");
     assert!(text.contains("native_world_skip"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
 }

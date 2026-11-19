@@ -267,8 +267,9 @@ The crate `native-render` (`crates/native-render`):
   `crates/d3d/tests/external_pass.rs` (direct, render thread, E1, and a
   backend that cannot).
 - **The feature `native-world`** (`crates/feature/src/native_world.rs`,
-  on by default, `H2_FEATURES=impl.render.native_world=off` turns it off,
-  exact key). `LAYER_DRAW` is an opaque point, so the hook is one
+  off by default (the A/B on screen showed the stage 1 look, base map
+  times lightmap, far from the D3D path), `H2_FEATURES=impl.render.native_world=on`
+  turns it on, exact key). `LAYER_DRAW` is an opaque point, so the hook is one
   observer before it: it first sets back the bits the last layer 3
   cleared (on items that still hold the mask it left), then, with layer 3
   current, reads the camera and the active BSP (`0x004e0348`) and asks the
@@ -288,7 +289,7 @@ The crate `native-render` (`crates/native-render`):
   entry, in render order, with that entry's memory.
   Tests: `crates/feature/tests/native_world.rs` (the plan with
   `render-timing`, deep, and the layer-draw port all on; alone, the chain
-  runs on the render thread; on by default with pipelining placed; the
+  runs on the render thread; off by default, and on with pipelining placed; the
   switch off places nothing; the skip and its restore at the next layer
   draw on synthetic memory, and a rebuilt list left alone);
   `crates/boot/src/render_thread.rs` (the default plan's `LAYER_DRAW`
