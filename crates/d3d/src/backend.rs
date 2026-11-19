@@ -265,7 +265,7 @@ pub trait ExternalPass: Send {
     /// Records the pass, on the thread that owns the GPU. Called once per
     /// copy of the targets: twice under the render scale (the 1x
     /// reference and the scaled view), with the same frame each time.
-    fn encode(&mut self, target: ExternalTarget<'_>);
+    fn encode(&mut self, target: ExternalTarget<'_>) { self.record_ranges(target); }
 
     /// Validate stage-specific resources on this copy before recording.
     fn prepare_copy(&mut self, _target: &ExternalTarget<'_>) -> Result<(), &'static str> {
@@ -438,6 +438,32 @@ impl<S> ExternalSurfaces<S> {
                 None => Some(None),
             }).collect::<Option<_>>()?,
         })
+    }
+}
+
+/// GPU handles pinned for a complete prepare/record transaction.
+pub struct ExternalAttachments {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub color: wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
+    pub depth: wgpu::TextureView,
+    pub depth_format: wgpu::TextureFormat,
+    pub size: (u32, u32),
+    pub sampled: Vec<Option<SampledLevel>>,
+    pub slots: Vec<Option<ExternalColor>>,
+    pub stages: [Option<wgpu::TextureView>; 4],
+    pub copy: TargetCopy,
+}
+
+impl ExternalAttachments {
+    fn target<'a>(&'a self, request: ExternalPassRequest, encoder: &'a mut wgpu::CommandEncoder) -> ExternalTarget<'a> {
+        ExternalTarget {
+            device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
+            depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
+            z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
+            slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+        }
     }
 }
 
@@ -914,18 +940,44 @@ pub trait Backend: Send {
         let _ = (surface, request, sink);
         Ok(false)
     }
-    /// Record on the owning thread into disposable encoders. A refusal drops
-    /// every physical copy before the guest changes its masks.
-    fn prepare_external(
-        &mut self,
-        _surfaces: ExternalSurfaces<Self::Surface>,
-        _request: ExternalPassRequest,
-        _textures: [Option<&Self::Texture>; 4],
-        _plan: &ExternalPlan,
+    /// Pin the actual resources for every live copy. No pass has run yet.
+    fn external_attachments(
+        &mut self, _surfaces: ExternalSurfaces<Self::Surface>, _textures: [Option<&Self::Texture>; 4],
         _copy: TargetCopy,
-        _pass: SharedReplacement,
-    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+    ) -> Result<Option<Vec<ExternalAttachments>>, String> {
         Ok(None)
+    }
+
+    /// Prepare all target copies before recording any of them. Record into
+    /// disposable command buffers and check validation before releasing the guest draw.
+    fn prepare_external(
+        &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        let preparing = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
+        let Some(targets) = self.external_attachments(surfaces, textures, copy)? else { return Ok(None) };
+        let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
+        let mut prepared = Vec::new();
+        for target in targets {
+            let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = target.device.create_command_encoder(&Default::default());
+            let ready = pass.prepare_copy(&target.target(request, &mut encoder)).is_ok();
+            if pollster::block_on(scope.pop()).is_some() || !ready { return Ok(None); }
+            prepared.push((target, encoder));
+        }
+        drop(preparing);
+        let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
+        let mut recordings = Vec::with_capacity(prepared.len());
+        for (target, mut encoder) in prepared {
+            let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let ranges = pass.record_ranges(target.target(request, &mut encoder));
+            let commands = encoder.finish();
+            if pollster::block_on(scope.pop()).is_some() || !plan.complete(target.copy, ranges) {
+                return Ok(None);
+            }
+            recordings.push(ExternalRecording { copy: target.copy, ranges, commands });
+        }
+        Ok(Some(recordings))
     }
 
     /// Splice an already validated recording into submission order. A backend
