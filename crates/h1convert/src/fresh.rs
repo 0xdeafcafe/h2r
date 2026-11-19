@@ -1058,6 +1058,113 @@ fn pinned_block(set: &mut TagSet, at: u32) -> Option<(u32, u32, u32)> {
     (count > 0 && count < 0x10000).then_some((field, count, elements))
 }
 
+/// What a pinned set reaches ([`reachable`] from `keep`, the scenario,
+/// the globals and `roots`), with what a pinned map holds beyond datums:
+/// metadata no tag owns (blocks the scenario editor grew) is live when a
+/// reached tag's word, or a live region's, points into it, and its datums
+/// are reached; a base tag (slot under `first`) that a reached tag's or a
+/// live region's word points into is reached, with what it reaches.
+/// `roots` gains those tags; returns the slots reached and how many tags
+/// were kept for a pointer.
+fn pinned_reach(
+    set: &TagSet,
+    keep: &Keep,
+    first: usize,
+    roots: &mut Vec<TagId>,
+) -> (Vec<bool>, usize) {
+    let n = set.slots.len();
+    let regions: Vec<(u32, u32, Vec<u32>)> = set.pinned.as_ref().map_or(Vec::new(), |p| {
+        let mut v: Vec<(u32, u32, Vec<u32>)> = p
+            .unowned
+            .iter()
+            .map(|(a, b)| {
+                let words = b
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|w| u32::from_le_bytes(*w))
+                    .collect();
+                (*a, *a + b.len() as u32, words)
+            })
+            .collect();
+        v.sort_by_key(|r| r.0);
+        v
+    });
+    let find = |ranges: &[(u32, u32, usize)], w: u32| {
+        let k = ranges.partition_point(|r| r.0 <= w);
+        (k > 0 && w < ranges[k - 1].1).then(|| ranges[k - 1].2)
+    };
+    let region_ranges: Vec<(u32, u32, usize)> = regions
+        .iter()
+        .enumerate()
+        .map(|(k, r)| (r.0, r.1, k))
+        .collect();
+    let mut by_pointer = 0;
+    loop {
+        let seen = reachable(set, keep, roots);
+        let mut tags: Vec<(u32, u32, usize)> = set
+            .slots
+            .iter()
+            .enumerate()
+            .take(first)
+            .filter(|(i, _)| !seen[*i])
+            .filter_map(|(i, s)| match &s.tag.as_ref()?.payload {
+                TagPayload::Pinned { address, bytes } => {
+                    Some((*address, *address + bytes.len() as u32, i))
+                }
+                _ => None,
+            })
+            .collect();
+        tags.sort_unstable();
+        let mut words = Vec::new();
+        for (i, s) in set.slots.iter().enumerate() {
+            if seen[i]
+                && let Some(t) = &s.tag
+            {
+                named(&t.payload, &mut words);
+            }
+        }
+        // Live regions, and their words in turn.
+        let mut live = vec![false; regions.len()];
+        let mut k = 0;
+        while k < words.len() {
+            if let Some(r) = find(&region_ranges, words[k])
+                && !live[r]
+            {
+                live[r] = true;
+                words.extend_from_slice(&regions[r].2);
+            }
+            k += 1;
+        }
+        let mut new = std::collections::BTreeSet::new();
+        for &w in &words {
+            if let Some(i) = find(&tags, w) {
+                new.insert(i);
+            }
+        }
+        let pointed = new.len();
+        for (r, region) in regions.iter().enumerate() {
+            if !live[r] {
+                continue;
+            }
+            for &w in &region.2 {
+                let i = (w & 0xffff) as usize;
+                if i < n && !seen[i] && set.slots[i].tag.as_ref().is_some_and(|t| t.id.0 == w) {
+                    new.insert(i);
+                }
+            }
+        }
+        if new.is_empty() {
+            return (seen, by_pointer);
+        }
+        by_pointer += pointed;
+        roots.extend(
+            new.into_iter()
+                .filter_map(|i| Some(set.slots[i].tag.as_ref()?.id)),
+        );
+    }
+}
+
 /// [`prune_with`] for a pinned set: the map `Prepared::assemble` builds
 /// keeps the base's metadata in place, every retail tag of it, reached or
 /// not, and puts what the conversion built after it, so a level that adds
@@ -1068,9 +1175,8 @@ fn pinned_block(set: &mut TagSet, at: u32) -> Option<(u32, u32, u32)> {
 /// when something else reaches it. Then every pinned base tag nothing
 /// reaches is dropped, its bytes free for the built tags
 /// (`TagSet::reuse_free_space`). A pinned tag keeps addresses into other
-/// tags' bytes, which reachability (datums) doesn't see: a tag whose bytes
-/// a kept tag's word (or the metadata no tag owns) points into is kept,
-/// with what it reaches. Only pinned payloads are dropped (the others hold
+/// tags' bytes and into metadata no tag owns, which reachability (datums)
+/// doesn't see ([`pinned_reach`]). Only pinned payloads are dropped (the others hold
 /// no base metadata). `first` is the first slot the conversion added.
 pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]) -> Pruned {
     let mut out = Pruned::default();
@@ -1088,21 +1194,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             }
         }
     }
-    // Blocks the scenario editor grew lie in metadata no tag owns: the
-    // datums there are the scenario's (or a gap's, which keeps no more
-    // than it should not drop).
     let mut roots = extra.to_vec();
-    if let Some(p) = &set.pinned {
-        let n = set.slots.len();
-        for (_, b) in &p.unowned {
-            for w in b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)) {
-                let k = (w & 0xffff) as usize;
-                if k < n && set.slots[k].tag.as_ref().is_some_and(|t| t.id.0 == w) {
-                    roots.push(TagId(w));
-                }
-            }
-        }
-    }
     if let Some((field, count, elements)) = pinned_block(set, SCENARIO_RESOURCES) {
         let list: Option<Vec<u32>> = (0..count)
             .map(|k| read_word(set, elements + 4 * k))
@@ -1112,7 +1204,7 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             for k in 0..count {
                 write_word(set, elements + 4 * k, u32::MAX);
             }
-            let seen = reachable(set, keep, &roots);
+            let (seen, _) = pinned_reach(set, keep, first, &mut roots.clone());
             let kept: Vec<u32> = list
                 .iter()
                 .copied()
@@ -1127,52 +1219,8 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let seen = loop {
-        let seen = reachable(set, keep, &roots);
-        // The pinned base tags to drop, by address.
-        let mut ranges: Vec<(u32, u32, usize)> = set
-            .slots
-            .iter()
-            .enumerate()
-            .take(first)
-            .filter(|(i, _)| !seen[*i])
-            .filter_map(|(i, s)| match &s.tag.as_ref()?.payload {
-                TagPayload::Pinned { address, bytes } => {
-                    Some((*address, *address + bytes.len() as u32, i))
-                }
-                _ => None,
-            })
-            .collect();
-        ranges.sort_unstable();
-        let mut words = Vec::new();
-        for (i, s) in set.slots.iter().enumerate() {
-            if seen[i]
-                && let Some(t) = &s.tag
-            {
-                named(&t.payload, &mut words);
-            }
-        }
-        if let Some(p) = &set.pinned {
-            for (_, b) in &p.unowned {
-                words.extend(b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)));
-            }
-        }
-        let mut hit = std::collections::BTreeSet::new();
-        for w in words {
-            let k = ranges.partition_point(|r| r.0 <= w);
-            if k > 0 && w < ranges[k - 1].1 {
-                hit.insert(ranges[k - 1].2);
-            }
-        }
-        if hit.is_empty() {
-            break seen;
-        }
-        out.kept_by_pointer += hit.len();
-        roots.extend(
-            hit.into_iter()
-                .filter_map(|i| Some(set.slots[i].tag.as_ref()?.id)),
-        );
-    };
+    let (seen, by_pointer) = pinned_reach(set, keep, first, &mut roots);
+    out.kept_by_pointer = by_pointer;
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;
@@ -1191,4 +1239,100 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
         }
     }
     out
+}
+
+#[cfg(test)]
+mod pinned_prune_tests {
+    use super::*;
+    use map::CacheType;
+    use map::build::{PinnedImage, Slot, TagEntry};
+
+    const BASE: u32 = 0x8000_0000;
+
+    fn id(i: usize) -> TagId {
+        TagId(((0xe174 + i as u32) << 16) | i as u32)
+    }
+
+    fn put(bytes: &mut [u8], at: usize, w: u32) {
+        bytes[at..at + 4].copy_from_slice(&w.to_le_bytes());
+    }
+
+    /// A pinned set: a scenario, globals and four base tags, each at its
+    /// address; metadata no tag owns at `+0xa00` and `+0xc00`.
+    fn set() -> TagSet {
+        let mut set = TagSet::new(CacheType::Multiplayer, "m", "s");
+        let tags: [(&[u8; 4], &str, u32, usize); 6] = [
+            (b"scnr", "s", 0, 0x400),
+            (b"matg", "globals", 0x400, 0x40),
+            (b"bitm", "pointed", 0x800, 0x40),
+            (b"shad", "named from a live gap", 0x900, 0x40),
+            (b"bitm", "named from a dead gap", 0xb00, 0x40),
+            (b"mode", "nothing", 0xd00, 0x40),
+        ];
+        for (i, (g, name, at, len)) in tags.iter().enumerate() {
+            set.slots.push(Slot {
+                name: Some((*name).into()),
+                tag: Some(TagEntry {
+                    id: id(i),
+                    group: FourCC(**g),
+                    payload: TagPayload::Pinned {
+                        address: BASE + at,
+                        bytes: vec![0; *len],
+                    },
+                }),
+            });
+        }
+        set.scenario = id(0);
+        set.globals = id(1);
+        let mut live = vec![0u8; 0x10];
+        put(&mut live, 4, id(3).0);
+        let mut dead = vec![0u8; 0x10];
+        put(&mut dead, 4, id(4).0);
+        set.pinned = Some(PinnedImage {
+            header: Vec::new(),
+            file: Vec::new(),
+            tables: [(0, 0); 5],
+            index: Vec::new(),
+            index_entries_end: 0,
+            index_size: 0,
+            bsp_size: 0,
+            metadata_base: BASE,
+            metadata_size: 0x1000,
+            unowned: vec![(BASE + 0xa00, live), (BASE + 0xc00, dead)],
+        });
+        // The scenario points into tag 2's bytes and into the first gap.
+        if let Some(TagPayload::Pinned { bytes, .. }) =
+            set.slots[0].tag.as_mut().map(|t| &mut t.payload)
+        {
+            put(bytes, 0x10, BASE + 0x804);
+            put(bytes, 0x14, BASE + 0xa00);
+        }
+        set
+    }
+
+    const NOTHING: Keep<'static> = Keep {
+        palettes: &[],
+        groups: &[],
+        prefixes: &[],
+    };
+
+    /// A pinned map holds what no datum names: a kept tag's address into
+    /// another tag's bytes, and datums in metadata no tag owns that a kept
+    /// tag points into (blocks the scenario editor grew). Those stay; a
+    /// gap nothing points into keeps nothing, and the rest is dropped.
+    #[test]
+    fn a_pinned_set_keeps_what_its_addresses_reach() {
+        let mut set = set();
+        let p = prune_pinned(&mut set, 6, &NOTHING, &[]);
+        let kept: Vec<bool> = set.slots.iter().map(|s| s.tag.is_some()).collect();
+        assert_eq!(kept, [true, true, true, true, false, false]);
+        assert_eq!(p.tags(), 2);
+        assert_eq!(p.freed, 0x80);
+        assert_eq!(p.kept_by_pointer, 1);
+        // A conversion's tag (from `first` on) is never dropped.
+        let mut set = super::pinned_prune_tests::set();
+        prune_pinned(&mut set, 5, &NOTHING, &[]);
+        assert!(set.slots[5].tag.is_some());
+        assert!(set.slots[4].tag.is_none());
+    }
 }

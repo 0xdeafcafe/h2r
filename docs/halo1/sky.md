@@ -326,7 +326,12 @@ times with pair 1. The copies set each swapped parameter's pair to Halo
 1's scale; `sky_one_alpha_env`'s three pairs all take the picture's (its
 other stages hold uniform default bitmaps). The masked star layers of the
 night and dusk domes, Halo 1's per-map colour functions and `schi`
-animation are not carried over.
+animation are not carried over. Only the bitmaps a copy draws are added
+(`SkyTemplates::drawn`): the picture, a cloud layer's mask and tile (its
+tile alone on the shared layout). Until then every map's bitmap was
+added, so Blood Gulch's clear afternoon added its dome's `detail star
+twinkle`, which nothing named: the pinned map held it and the fresh map
+left it out.
 
 Fields with **no Halo 2 home** (kept readable on the Halo 1 side, listed
 here for the next pass):

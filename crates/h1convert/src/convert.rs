@@ -835,6 +835,21 @@ impl Prepared {
         };
         let section = structure.write(&mut set, self.sbsp, self.ltmp)?;
 
+        // The scenario's own edits (none depends on the layout), before
+        // the pruning below, so the base's sky, decorators and ambience
+        // they replace are no longer named.
+        {
+            let scenario = set.scenario;
+            let tag = set.tag_mut(scenario).ok_or(Error::Invalid("no scenario"))?;
+            let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
+                return Err(Error::Invalid("the base scenario should be pinned"));
+            };
+            park_trigger_volumes(bytes, *address)?;
+            crate::sky::patch_scenario(bytes, *address, &skies)?;
+            clear_base_blocks(bytes)?;
+            crate::ambience::patch_scenario(bytes, *address, &ambience)?;
+        }
+
         // The base's metadata stays where it is and the conversion's goes
         // after it, so the base's tags nothing reaches any more (the
         // placements the conversion removed, their weapons' effects...)
@@ -851,9 +866,9 @@ impl Prepared {
             &keep,
         );
 
-        // The scenario stays pinned, so its descriptor is patched with the
-        // new region's place: build once to learn it (it doesn't depend on
-        // the scenario's bytes), patch, build again.
+        // The scenario stays pinned, so its BSP descriptor is patched with
+        // the new region's place: build once to learn it (it doesn't
+        // depend on the scenario's bytes), patch, build again.
         let (_, layout) = set.build()?;
         let (file_offset, size) = layout.bsps[section];
         let scenario = set.scenario;
@@ -861,10 +876,6 @@ impl Prepared {
         let map::build::TagPayload::Pinned { address, bytes } = &mut tag.payload else {
             return Err(Error::Invalid("the base scenario should be pinned"));
         };
-        park_trigger_volumes(bytes, *address)?;
-        crate::sky::patch_scenario(bytes, *address, &skies)?;
-        clear_base_blocks(bytes)?;
-        crate::ambience::patch_scenario(bytes, *address, &ambience)?;
         let (at, _, _) = bsp_descriptor(bytes, *address)?;
         let off = at.wrapping_sub(*address) as usize;
         bytes[off..off + 4].copy_from_slice(&file_offset.to_le_bytes());

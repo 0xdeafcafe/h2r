@@ -658,9 +658,14 @@ every pinned base tag not reached from the scenario, the globals,
 `fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
 and the Halo 2 HUDs is dropped, its slot left empty and its bytes free
 for built tags (`TagSet::reuse_free_space`). What a pinned map holds
-beyond datums is kept too: a tag whose bytes a kept tag's word, or the
-metadata no tag owns (blocks the scenario editor grew), points into, and
-every datum in that unowned metadata. On the fresh map Blood Gulch drops
+beyond datums is kept too (`fresh::pinned_reach`): metadata no tag owns
+(blocks the scenario editor grew) is live when a kept tag's word, or a
+live gap's, points into it, and its datums are kept; a base tag whose
+bytes such a word points into is kept, with what it reaches. A gap
+nothing points into keeps nothing. The scenario's own edits (trigger
+volumes parked, Halo 1's skies and ambience, the base's light fixtures
+and decorators emptied) are made before this, so the base's sky,
+ambience and decorators they replace go too. On the fresh map Blood Gulch drops
 510 of Coagulation's tags (0x74698 bytes, most of it three `jmad`s and
 retail shaders and bitmaps); `sandbox_disc::pinned_bloodgulch_fits_its_tag_memory`
 prints the pinned map's tag memory and checks no kept tag names a dropped
