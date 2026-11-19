@@ -835,6 +835,7 @@ impl d3d::ExternalPass for RunPass {
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,
+            w_clip: None,
         };
         gpu.encode_lights(
             t.device,

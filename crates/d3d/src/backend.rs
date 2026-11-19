@@ -274,12 +274,30 @@ pub trait ExternalPass: Send {
     /// the backend gets the pass.
     fn view_constants(&mut self, _constants: &[[f32; 4]; VIEW_CONSTANTS]) {}
 
+    /// The W-buffer's clip as a W-buffered draw issued now would take it
+    /// ([`DepthClip`]), for a pass that runs the game's vertex programs.
+    /// Called once, on the device's thread, with
+    /// [`ExternalPass::view_constants`].
+    fn depth_clip(&mut self, _clip: DepthClip) {}
+
     /// Whether the pass draws colour only (a full-screen post pass): the
     /// device then issues it with no depth bound, and the backend gives it
     /// a scratch depth ([`ExternalTarget::depth`]) it must not rely on.
     fn colour_only(&self) -> bool {
         false
     }
+}
+
+/// The W-buffer's clip of a W-buffered vertex-program draw, as the D3D path
+/// draws it (`nv2a::w_clip_range`, `D3DRS_DEPTHCLIPCONTROL`): the vertex's
+/// w held to `range` (depth units, `[SET_CLIP_MIN, SET_CLIP_MAX]`, or the
+/// whole range when that is empty), and with `clamp` out-of-range depth
+/// clamped to it rather than culled. The game sets both per view
+/// (`0x00015720`); a cinematic's range reaches past its camera's far.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthClip {
+    pub range: [f32; 2],
+    pub clamp: bool,
 }
 
 /// How many vertex constants [`ExternalPass::view_constants`] gives: the

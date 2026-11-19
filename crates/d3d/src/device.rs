@@ -2015,19 +2015,29 @@ impl<B: Backend> Device<B> {
             return Err(ExternalRefusal::NoDepth);
         }
         let d = self.header_desc(mem, self.render_target).map_err(|_| ExternalRefusal::Header)?;
-        let dev = mem.read_u32(self.cfg.layout.p_device).map_err(|_| ExternalRefusal::Header)?;
-        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).map_err(|_| ExternalRefusal::Header)?);
+        let z_scale = self.guest_z_scale(mem).ok_or(ExternalRefusal::Header)?;
         let v = self.viewport;
         Ok(crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: (d.width, d.height),
-            z_scale: if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 },
+            z_scale,
         })
+    }
+
+    /// The device's depth full scale (`+0x948`), the D24 one when it is
+    /// not a positive finite number; `None` when it does not read.
+    fn guest_z_scale(&self, mem: &dyn GuestMemory) -> Option<f32> {
+        let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
+        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
+        Some(if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 })
     }
 
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
+        if let Some(z_max) = self.guest_z_scale(mem) {
+            pass.depth_clip(self.depth_clip(mem, z_max));
+        }
         let colour_only = pass.colour_only();
         let issued = match self.external_ready(mem, colour_only) {
             Err(why) => Err(why),
@@ -2048,6 +2058,20 @@ impl<B: Backend> Device<B> {
         match issued {
             Ok(()) => self.stats.external_passes += 1,
             Err(why) => self.refuse_external(why),
+        }
+    }
+
+    /// The W-buffer's clip a W-buffered vertex-program draw recorded now
+    /// takes, for an external pass standing in for such draws: the pushed
+    /// clip range as the D3D path reads it (`nv2a::w_clip_range`, the whole
+    /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
+    /// guest's render-state array (unreadable: no clamp).
+    pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
+        let slot = RenderStateTable::default().canonical_to_guest(crate::nv2a::RS_DEPTHCLIPCONTROL);
+        let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
+        crate::backend::DepthClip {
+            range: crate::nv2a::w_clip_range(&self.hw, z_max),
+            clamp: crate::nv2a::clamps_depth(control),
         }
     }
 
