@@ -6,6 +6,8 @@
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { plugin } from "bun";
+import { createHash } from "node:crypto";
+import clankerKernel from "../src/lib/clanker-kernel.json";
 import { applyAccountsSnapshot, applyEvents, initialState, standings, type AccountState, type GameState, type LiveState } from "../src/state/reducer";
 import { gameHistory, playedWith, serviceRecord, type ServiceRecord } from "../src/state/derive";
 import { clankerAppearance } from "../src/lib/gameart";
@@ -51,6 +53,23 @@ function botGame(): LiveState {
   ]);
   return s;
 }
+
+test("the browser kernel is generated from the current native source", async () => {
+  const source = await Bun.file(new URL("../../crates/live-proto/src/clanker_appearance.c", import.meta.url)).arrayBuffer();
+  expect(createHash("sha256").update(new Uint8Array(source)).digest("hex")).toBe(clankerKernel.sourceSha256);
+});
+
+test("fresh processes give equivalent gamertags the same profile", () => {
+  const module = new URL("../src/lib/gameart.ts", import.meta.url).href;
+  const script = `import { clankerAppearance } from ${JSON.stringify(module)};
+    console.log(JSON.stringify(clankerAppearance(process.argv[1])));`;
+  const lookup = (name: string) => {
+    const child = Bun.spawnSync([process.execPath, "--eval", script, name]);
+    expect(child.exitCode).toBe(0);
+    return JSON.parse(child.stdout.toString());
+  };
+  expect(lookup("  RUSTY\tlugnut ")).toEqual(lookup("Rusty Lugnut"));
+});
 
 test("the web mock and native roster share the 8,192-name appearance vector", () => {
   expect(clankerAppearance("  RUSTY\tlugnut  ")).toEqual(clankerAppearance("Rusty Lugnut"));

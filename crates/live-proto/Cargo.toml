@@ -6,6 +6,9 @@ version.workspace = true
 license.workspace = true
 publish = false
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 # MapId and the map package manifest (docs/game/maps.md §5).
 content.workspace = true

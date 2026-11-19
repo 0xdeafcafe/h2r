@@ -192,44 +192,38 @@ pub struct Colors {
     pub secondary: u8,
 }
 
-/// Retail profile palette indices. Each foreground mask comes from the opposite
-/// brightness group to both background masks. These groups are based on the
-/// swatches in the extracted game-art manifest.
-const LIGHT: [u8; 4] = [0, 4, 13, 16];
-const DARK: [u8; 4] = [2, 7, 10, 11];
+unsafe extern "C" {
+    fn clanker_appearance(name: *const u8, len: usize, out: *mut u8);
+}
 
-/// Canonical looks for a Live gamertag (ASCII). Pin the integer operations:
-/// persisted accounts, the game and web replays must agree across releases.
+/// The game, server and browser use the same freestanding kernel on the
+/// normalized UTF-8 gamertag. Its six output bytes are a stable wire contract.
 pub fn appearance(name: &str) -> (Emblem, Colors) {
-    let mut h = 2_166_136_261u32;
-    for (i, word) in name.to_lowercase().split_whitespace().enumerate() {
-        if i != 0 {
-            h = (h ^ u32::from(b' ')).wrapping_mul(16_777_619);
+    let lowercase = name.to_lowercase();
+    let mut normalized = String::with_capacity(lowercase.len());
+    for word in lowercase.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
         }
-        for b in word.bytes() {
-            h = (h ^ u32::from(b)).wrapping_mul(16_777_619);
-        }
+        normalized.push_str(word);
     }
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x2c1b3c6d);
-    h ^= h >> 12;
-    let (front, back) = if h & (1 << 11) == 0 {
-        (LIGHT, DARK)
-    } else {
-        (DARK, LIGHT)
-    };
-    let pair = |group: [u8; 4], bits: u32| {
-        let first = bits & 3;
-        let second = (first + 1 + (bits >> 2) % 3) % 4;
-        (group[first as usize], group[second as usize])
-    };
-    let (primary, secondary) = pair(front, h >> 12);
-    let (background, accent) = pair(back, h >> 20);
+    let mut fields = [0u8; 6];
+    // SAFETY: both buffers outlive the call. The kernel reads exactly len
+    // input bytes and writes six bytes to the disjoint output buffer.
+    unsafe { clanker_appearance(normalized.as_ptr(), normalized.len(), fields.as_mut_ptr()) };
+    let [
+        foreground,
+        background,
+        primary,
+        secondary,
+        tertiary,
+        quaternary,
+    ] = fields;
     (
         Emblem {
-            foreground: (h & 63) as u8,
-            background: ((h >> 6) & 31) as u8,
-            colors: [secondary, background, accent],
+            foreground,
+            background,
+            colors: [secondary, tertiary, quaternary],
         },
         Colors { primary, secondary },
     )
@@ -348,6 +342,8 @@ mod tests {
 
     #[test]
     fn clanker_appearance_spreads_names_and_contrasts_masks() {
+        const LIGHT: [u8; 4] = [0, 4, 13, 16];
+        const DARK: [u8; 4] = [2, 7, 10, 11];
         let mut fg = [0; 64];
         let mut bg = [0; 32];
         let mut looks = std::collections::HashSet::new();

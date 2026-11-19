@@ -32,7 +32,11 @@ Rusty Lugnut has foreground 1, background 30 and profile colours
 10, 11, 13, 16. The server recomputes looks when projecting every
 `BotIssued`, including old signed events, so existing accounts migrate
 without rewriting their log or changing their personality. The web mock
-and the Rust tests pin the same 8,192-name fingerprint.
+calls the same kernel compiled as inline WebAssembly. The Rust and web
+tests pin the same 8,192-name fingerprint. After changing
+`crates/live-proto/src/clanker_appearance.c`, regenerate the browser module
+with `python3 scripts/clanker-web-kernel.py` using LLVM clang and wasm-ld.
+The web tests check the source digest.
 
 **Retail trace.** The main-menu tags identify the pregame lobby as
 `0x0e`, the expanded/collapsed Live Y menus as `0x1a/0x1b`, and their
