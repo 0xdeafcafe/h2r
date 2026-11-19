@@ -49,10 +49,13 @@
 //!   port), joined or not.
 //!
 //! - Phantom peers ([`bots::phantom::global`], docs/game/bots.md §5.1):
-//!   before each `RENDER_FRAME`, once a multiplayer game this console hosts
-//!   runs, pending phantoms are written into the session and the game makes
-//!   their players; each joined phantom's pad becomes its action. When the
-//!   game ends they leave the session and wait for the next.
+//!   before each `RENDER_FRAME`, while this console hosts a pregame lobby
+//!   (System Link or Xbox Live) or a multiplayer game, pending phantoms are
+//!   written into the session as joining peers, so the lobby lists them
+//!   and the game makes their players; each joined phantom's pad becomes
+//!   its action in a game. When this console hosts no session any more
+//!   they leave it and wait for the next (`H2_PHANTOM_LOBBY=0`: they join
+//!   only a running game and leave when it ends).
 //!
 //! **The join gate.** A bot is signed in only while its own slot has no
 //! profile, a human has one to copy, no game runs ([`to_sign_in`]) and
@@ -695,6 +698,26 @@ impl feature::Feature for Bots {
             },
         );
 
+        // A phantom's machine has no simulation view, so the game's "is
+        // this machine in the game" says no and its player never spawns
+        // (docs/game/bots.md §5.1, "Phantoms in the game"): yes for a
+        // phantom with a peer in the session.
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::MACHINE_IN_GAME,
+            "phantoms: their machines are in the game",
+            move |c| {
+                let at = c.cpu.eax;
+                let rt = Arc::clone(c.ctx.runtime());
+                let id = rt.memory().read::<6>(at);
+                if !id.is_ok_and(|id| phantoms.stands_for(id)) {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.eax = (c.cpu.eax & !0xff) | 1;
+                Ok(Flow::Return(c.ret(0)?))
+            },
+        );
+
         // A game starting from the session with phantoms planned: this
         // console must start it as the distributed server, or phantoms
         // never join (docs/game/bots.md §5.1, "Hosting the game").
@@ -751,7 +774,13 @@ impl feature::Feature for Bots {
                 let rt = Arc::clone(c.ctx.runtime());
                 crate::clankers::frame(f, || {
                     let mem = rt.memory();
-                    bots::phantom::session::host_team(&*mem).ok().flatten()
+                    // In the lobby this console hosts, its session
+                    // player's team (no player datum before a game, and a
+                    // stale one after); else its player's.
+                    let s = bots::phantom::session::lobby_host_team(&*mem)
+                        .ok()
+                        .flatten();
+                    s.or_else(|| bots::phantom::session::host_team(&*mem).ok().flatten())
                 });
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
@@ -766,6 +795,17 @@ impl feature::Feature for Bots {
                 }
                 if bots == 0 {
                     return Ok(Flow::Continue);
+                }
+                // The local bots' names carry the bot mark, as phantoms'
+                // do (docs/game/bots.md §8.2.2), on the session's host.
+                match bots::phantom::session::mark_local_bots(&mut *mem, bots) {
+                    Ok(slots) if !slots.is_empty() => {
+                        eprintln!(
+                            "bots: the bot mark on local bots' names (session players {slots:?})"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("bots: bot mark: fault at {:#x}", e.addr),
                 }
                 // The join gate, per port, logged when it changes; a bot it
                 // lets through presses nothing (the sign-in is before

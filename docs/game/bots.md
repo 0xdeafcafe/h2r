@@ -1379,6 +1379,150 @@ its class 4.
    entries above it moved down, the last cleared, `S+0x54` - 1, counters
    + 1. Not done: its tail call `0x5a2e0`. Phantoms leave last first.
 
+**Phantoms in the pregame lobby** (traced 2026-11-19 from the
+disassembly, built; no run yet). The user's ask: "it won't let me add 7
+clankers, only 3 max in a pregame lobby". The Count row was never capped
+(`clankers.count` is 1 to 15, every value a choice); the lobby showed only
+the 3 local bots because phantoms entered the session only once a game
+ran. They now join the lobby as a real peer does.
+
+- **What a real peer's join does on the host.** The join request message
+  (`0x630f0`, from `0x63080`, which first asks the session's listener at
+  `[S+0x78a8]`, vtable `+0`) calls the host's join `0x5c720(S, &xnaddr,
+  n, ids, …)`: an existing peer with that MAC (`0x5f6f0`) is checked and,
+  if stale, removed (`0x5fe20`); its players' reservations are claimed
+  (`0x62f40`, `0x62eb0`); the peer is added (`0x5fbd0(S, count, &xnaddr,
+  1, channel, &nonce)`: cleared, both names empty, map status `+0x88` and
+  `+0x8c` 0, the hopper statuses `+0xac..+0xec` 0, the 8 bytes at `+0xf0`
+  from the request, the user slots -1; then the channel entry `0x5f900`);
+  both counters + 1. The matchmaking join (`0x6d4c0`) calls the same
+  `0x5c720`.
+- **Its properties.** Every console builds its own `0xc8`-byte peer
+  properties (`0x658c0`, throttled by `[0x4cecc0]`): `+0` name (15 units,
+  `0x4cd86a`), `+0x20` a second name (31 units, `0x4cd88a`; both set by
+  `0x645d0` from the lobby's profiles), `+0x60` the map status
+  (`[0x4cd8f8]`: 1 failed, 2 loading, 3 and 4 loaded), `+0x64` its
+  progress (`[0x4cd8fc]`), `+0x68` `[0x4cf968]`, `+0x70` from `0x64480`,
+  `+0x84` sixteen hopper statuses (`0x192df0` each), `+0xc4` from
+  `0x73b10`. On the host `0x5a790` writes them into its own peer (`+0x24`
+  = 1, `+0x28` the `0xc8` bytes); a client sends them as message `0x1a`,
+  and the host's handler `0x5ed90` copies them into the sender's peer
+  whole, sets its `+0x24` and bumps both counters.
+- **Its players.** `0x60000(peer, user, id)`: a slot holding another id
+  is cleared; an id already in the session is refused (`0x5f890`); the
+  listener's veto (`[S+0x78a8]` vtable `+0xc`, the object at
+  `0x527fe8`, set by `0x58ee0`; another creator `0x59ad0` sets its own)
+  may refuse; without a reservation for the id (`0x62f40`) a free slot is
+  needed: `0x62e30` = most players `+0x4994` less players `+0x1118` less
+  the reservations held and not taken (`+0x7668`, 16 × `0x24`: `+0`
+  held, `+1` taken). Then `0x600f0`, counters + 1. The phantom path
+  writes the same records directly (never through the listener: the
+  in-game phantoms of runs 6c never went through it either), and now
+  counts the reservations as `0x62e30` does.
+- **Effective configurations.** The host recomputes every session
+  player's effective configuration from its requested one (`0x65cb0`,
+  from `0x65770`) whenever the lobby's variant (`S+0x4db0`, a `0x130`-byte
+  `variants::record`) or the membership number changes: the name stays the
+  effective one once set (made unique by `0x7f660` the first time), the
+  look (`+0x40..+0x7b`, `+0x7d..+0x81`) is the requested one, and the team
+  (`+0x7c`) is the requested one clamped to 0..7 in a team game
+  (`variant +0x48` bit 0) or the player's slot in free for all, when
+  `[S+0x14]` is 1; otherwise the effective team and handicap stay. So a
+  phantom's requested team is what the lobby shows; both are written.
+- **What the lobby's start reads of each peer.** The start state's map
+  check (`0x652a0`) skips status 0, but the countdown's end (`0x6e410`,
+  life-cycle state 1 via `0x6e1e0`'s table at `0x6e2e0`) wants every
+  peer's map status above 2, else it calls `0x5bf10` with the unready
+  peers' mask instead of starting (`0x5a220(2)`); in matchmaking
+  (`S+0x49a4` > 1) it asks `0x66050`, which wants each peer's status for
+  the hopper `[peer + 0xac + hopper*4]` to be 1 (0 gives 14, 3 gives 2),
+  each player's level byte (`+0x129`, the effective configuration's
+  `+0x81`) at least the hopper's `+0x5e4`, and the party (`S+0x1118`)
+  within the hopper's bounds (`0x193250`: type 2 at most 1, unranked free
+  for all and teams the playlist's size, so a clanker playlist's bots fit).
+  A phantom's peer with the host's properties passes all of these.
+- **Recipe, as built** (`bots::phantom::session`, `Phantoms::tick`). In a
+  pregame lobby (`lobby::pregame`: session type 1 or 2, state 3 to 8) in
+  state 5, distributed (protocol 2: System Link or Xbox Live; Split
+  Screen's session is protocol 0) and this console's (`+0x40` =
+  `+0x72d8`), with no game running (`host_lobby`): steps 1 and 2 above,
+  with the configuration from this console's first session player's
+  requested one (`config_in`; no player datum exists before the first
+  game), then the properties (`sync_props`): this console's own `0xc8`
+  bytes with the phantom's gamertag in both names, `+0x24` 1, both
+  counters + 1, kept equal every frame (a map load on the host is the
+  phantom's too). The join line is `bots: phantom G joins (peer N, in the
+  pregame lobby)`.
+- **Teams.** A phantom with no team asked for (the Clankers page's
+  bots; a Clankermatch's come balanced) goes, in a team game, to the team
+  with the fewest session players of red, blue and any other a player is
+  on, the lowest on a tie (`lobby_team`). Each lobby frame, a phantom on
+  a team with two more players than the smallest moves there
+  (`rebalance`, `bots: phantom G changes team A -> B to keep the teams
+  even`), so a human changing team or the variant turning into a team
+  game is followed. A difference of one never moves anyone.
+- **Staying.** A phantom stays in the session from the lobby into the
+  game (the game's player diff makes its player at the start, as for any
+  remote peer) and back to the lobby after it. It leaves when the session
+  is no longer one this console hosts live (`owned_session`: state 5,
+  distributed, `+0x40` = `+0x72d8`): leaving the lobby, a host migration.
+  The first frames of a game, which are not hosted yet, keep it. A
+  phantom whose peer the game itself took out joins again (`... is no
+  longer in the session: it joins again`), and a stale peer with its
+  machine id is taken out before it joins, so it is never in twice.
+  Lowering the count or Off removes it through `remove_peer` (§5.1 step
+  6), in the lobby as in a game.
+- **The switch.** `H2_PHANTOM_LOBBY=0` (or `off`, `false`, `no`) keeps
+  the old way: phantoms join only a running game this console hosts and
+  leave when it ends. On by default.
+- **Not traced; for a run:** what a real client does with a phantom peer
+  in the lobby (it opens channels to every peer's XNADDR: "Clients and
+  the phantom's address" below now applies in the lobby too); whether the
+  matchmaking state machine starts the countdown on a session-player count
+  it polls (the lobby summary `0x7e210`) or only on join events; whether
+  the lobby roster draws anything from a peer's second name (`+0x48`).
+
+**Phantoms in the game** (traced 2026-11-19 after the user's
+Clankermatch: "the GAME OVER scoreboard lists all 7 clankers; only local
+Clankers 1 to 3 were ever in the world; map loading got slower"; built,
+no run yet).
+
+- **Why they never spawned.** Each tick the player update `0x14d2a0`
+  (from `0x14d3a0`, in turn from `0x137fe0`) sets every player's flag bit
+  0 (`+2`) from `0x686e0(&player +0x14)`, "is this machine in the game":
+  1 with no simulation (`[0x4cf770]` 0), 1 for this console's own machine
+  (the world's `+0xd`), else the byte `+0x78` of the machine's
+  simulation view (`0x6ad40`: the world's entities of kind `0x14` whose
+  `+0x14` is the machine id), 0 with no view. The spawn pass
+  (`0x14d3a0`) takes only players with bit 0 set, not leaving (bit 1),
+  with no unit (`+0x2c` -1), and, on anything but a distributed client
+  (`[0x4e6948]+0xc` not 4), whose respawn check `0x15dd40` passes; it
+  spawns one of them at random through `0x14f2e0`. A phantom has no
+  channel, so no view, so bit 0 stayed 0: its player was made (it was on
+  the scoreboard) but never spawned. **Fix:** `MACHINE_IN_GAME`
+  (`0x686e0`, its only caller is `0x14d2a0`) is hooked
+  (`boot::bot_glue`): for a machine id that is a phantom of the books
+  with a peer in the session (`Phantoms::stands_for`), it answers 1 at
+  once. Every other machine goes to the game's own code.
+- **Why loading got slower.** When a server's world starts (state 3 at
+  `+0x18`, entered by `0x6b1f0`, which sets the wait mask `+0x20` to the
+  whole machine set `[[0x4cf780]+0x1c]` and the time `+0x1c`), `0x69c80`
+  holds it until every machine in the mask but its own (`+0x14`) has a
+  joined view, or until the timeout `[0x4ced4c]` (a run-time value) has
+  passed, and only then moves to state 4 (`0x6b2a0`). The machine set is
+  the session's peers (`0x83f00`), phantoms included, and no phantom ever
+  has a view: every game start waited the whole timeout. **Fix:** each
+  frame `Phantoms::tick` first clears the phantoms' bits from the wait
+  mask of a starting server world (mode 2 or 4, state 3;
+  `session::unwait_phantoms`, machine `i` is the set's id at `+0x24 +
+  6i`), once per start: `bots: phantoms: the game's start waits for real
+  consoles only (machines 0x0007 -> 0x0005)`. Real consoles are still
+  waited for.
+- **Actions.** Unchanged: a spawned phantom's unit takes the action the
+  bots write in its simulation slot (step 5 above). Until now no phantom
+  had a unit, so none of it was seen; `facing` reads the unit, so a
+  phantom without one is skipped.
+
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
 turns from the unit's facing: yaw minus x, pitch plus y, at 3 rad/s
@@ -1397,15 +1541,15 @@ each k is is not traced. So a phantom does not jump, crouch or melee yet.
 - **Clients and the phantom's address.** A real client opens a channel to
   every peer's XNADDR (`0x5cb80` → `0x76aa0`, `0x5d237`) and its drop loop
   (`0x5a090` → `0x5fda0`) runs in state 5, which is the running game too.
-  So on a client a phantom may be dropped locally, in the lobby or in the
-  game. If a run shows it, our network layer has to answer for phantom
+  So on a client a phantom may be dropped locally, in the lobby (where
+  phantoms now are from the start) or in the game. If a run shows it, our network layer has to answer for phantom
   addresses on clients. The host is safe: its loop drops only connected
   peers.
-- What the lobby's ready check (`0x5f970`) reads from a peer's properties
-  (phantoms leave the session when the game ends, so they are not in the
-  lobby yet), and what `0x62e30` and the veto object at `[S+0x78a8]`
-  refuse. (`+0x72d8` is the local peer, `+0x40` the host: see "Hosting the
-  game".)
+- The veto at `[S+0x78a8]` vtable `+0xc` (the object at `0x527fe8`):
+  its vtable is set at run time, so what it refuses is not read; phantoms
+  never go through it ("Phantoms in the pregame lobby"). `0x5f970` is a
+  channel's teardown, not a ready check, and `0x62e30` is the free-slot
+  count, now honoured.
 - Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
   phantom wears the host's until then.
 
@@ -1521,9 +1665,12 @@ and Difficulty; that is the one kit ask expected.
 
 **Joining the lobby.** When the host's pre-game lobby opens with
 `clankers.enabled`, the bot driver adds the bots one by one: as local slots
-up to 3 (stages 1 to 4), and as phantoms after stage 6. The host, and every
+up to 3 (stages 1 to 4), and the rest as phantoms, which join the lobby
+this console hosts as peers (§5.1, "Phantoms in the pregame lobby"), up to
+Count 15 (the session's most players permitting). The host, and every
 client, sees them in the lobby's player list with their names and team
-colours. Changing the page in the lobby adds or removes bots.
+colours, teams kept even. Changing the page in the lobby adds or removes
+bots.
 
 ## 8. Clankermatch
 
@@ -1566,7 +1713,16 @@ playlist's size, so Clankermatch needs stage 6.
    wherever a bot's name appears:
    - in the game, the host writes `⚙ ` + tag into the player configuration's
      UTF-16 name (player `+0x44`), which is what the lobby, scoreboard and
-     carnage report draw;
+     carnage report draw. A phantom gets it in its configuration; a local
+     bot (whose name comes from its profile) gets it in its session
+     player's effective configuration, on the session's host, each frame
+     a bot port's player lacks it (`session::mark_local_bots`, from the
+     bot glue: `bots: the bot mark on local bots' names (session players
+     [1, 2, 3])`). Only the effective name is written: the host's pass
+     (`0x65cb0`) keeps an effective name once set and takes the rest from
+     the requested configuration, so the profile cannot undo it, and the
+     clients and the game's player take the effective one. Before this
+     (the user's run, 2026-11-19) local Clankers had no mark;
    - on the site, it is drawn from the server's bot flag.
 
    The server knows which accounts are bots (§9). Every client patches the
@@ -1747,8 +1903,9 @@ For a clanker hopper (`live_hle::clankermatch`):
    `clankers::max_local` bots go on the free controller ports 1 to 3 and
    sign in to the lobby as local players (the bot glue's lobby gate, as in
    a Live custom game), with the roster's first bot accounts and its
-   skills; the rest are phantoms, which enter the session once the game
-   runs. `max_local` is up to three in free for all and, in a team
+   skills; the rest are phantoms, which join the lobby this console hosts
+   as peers (§5.1, "Phantoms in the pregame lobby"; with
+   `H2_PHANTOM_LOBBY=0`, once the game runs). `max_local` is up to three in free for all and, in a team
    playlist, no more than fill the human's team (`players / teams - 1`:
    three in Clanker Teams, one in Clanker Doubles), since a console's
    players are one party on one team. Nobody is seated before the roster
@@ -1855,12 +2012,13 @@ run yet).**
   phantom's (valid, not connected, channel -1) is what the host's join
   writes. `[S+0x78a8]` is set to the global `0x527fe8` at the session's
   setup (`0x58f07`); what it refuses is not traced.
-- **Phantoms in the lobby: not done.** A phantom peer written into a
-  matchmaking lobby would read hopper status 0 (state 14) and hold the
-  start, and `S+0x4980` is a matchmaking state there, not 4. Writing the
-  peer's hopper status 1 might pass `0x66050`, but what else reads the
-  peer (the hopper data a real peer downloads, the veto object) is not
-  traced, so phantoms stay out of the lobby; local bots carry the start.
+- **Phantoms in the lobby: built** (§5.1, "Phantoms in the pregame
+  lobby"). A phantom's peer carries this console's own properties, so its
+  hopper status is the host's (1) and `0x66050` passes; its map status is
+  the host's, so the countdown's end (`0x6e410`) does too. `S+0x4980` is
+  not read for the lobby join (it matters only to the in-game player
+  diff, and is 4 once the game runs). The fill's first line now says `N
+  phantoms join the lobby as peers`.
 - **To see in a run:** whether a local bot signing in while this console
   hosts restarts the search (the party changed) or just fills the lobby;
   whether the game balances a matchmade team game itself at the start
@@ -1891,9 +2049,10 @@ run yet).**
    on Xbox Live (bot account ...)` for the local bots, then `bots:` gate
    and sign-in lines for ports 1 to 3 in the `lobby`; `clankers:
    <gamertag> (phantom, rostered) on (...)` for the rest: on the books.
-8. `bots: phantom <gamertag> joins (peer N)` once the game runs: in the
-   session. `bots: phantom ... waits: ...` names why a running game
-   refused one.
+8. `bots: phantom <gamertag> joins (peer N, in the pregame lobby)` in
+   the lobby, before the countdown. `bots: phantom ... waits: not a lobby
+   it can join (...)` names why a lobby refused one, `... waits: this
+   console is not the game's host yet (...)` why a running game did.
 
 **Run:** whether the game hosts after an empty search in every playlist
 type, or needs the server's matcher to say "you host" (`MatchProposed`
@@ -1911,7 +2070,12 @@ time, `max_local`, balanced teams around the host's party, the handoff,
 the end with the local bots off, a refused roster), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
-team), `-p live-hle --lib clankermatch` (the delay and the run),
+team; `phantom::session::tests::lobby`: the lobby this console hosts, the
+reservations, the peer properties, the configuration, the teams, the
+switch, and a phantom joining the lobby, staying for the game, leaving,
+rejoining and waiting; `phantom::session::tests::in_game`: the start's
+wait without phantom machines, a phantom standing in the game, the bot
+mark on local bots), `-p live-hle --lib clankermatch` (the delay and the run),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
@@ -3817,7 +3981,7 @@ failure:
 | 7 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |
 | 8 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
 | 9 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
-| 10 | Phantoms joined | `bots: phantom G joins (peer K)` for each phantom, and no phantom failure |
+| 10 | Phantoms joined the pregame lobby | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom, and no phantom failure; one that joined only once the game ran fails, saying so |
 | 11 | The Live session holds 1 + N players | the session's filled slots, or the players the host reported joining (§9.5), reach 1 + N |
 | 12 | The game record has the bots | at least N players with `bot: true` on the server's game record |
 
@@ -3843,9 +4007,9 @@ non-zero on a failure).
 - `--map` only checks the map played. The menus are not driven through
   Game Setup's Change Map, so the game plays the lobby's default map; a
   `--map` other than that fails step 9, saying which map was played.
-- The phantoms join when the game starts, not in the lobby (§5.1); step 11
-  counts the most filled slots, and the most joined players, the server
-  saw over the whole run. Retail Halo 2 fills no slots (0 in run
+- The phantoms join the pregame lobby (§5.1, "Phantoms in the pregame
+  lobby"); step 11 counts the most filled slots, and the most joined
+  players, the server saw over the whole run. Retail Halo 2 fills no slots (0 in run
   20261119-005001), so on a Live run the joined players are what counts.
 - `h2 play` builds the game into `--out` when `--out` has none, or has one
   from another image. Run it with the same `H2_OPT` as that build, or the
@@ -3921,7 +4085,7 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | 9 | The lobby reached the playlist's fewest players | the most filled or joined players the server's session showed between the hosting line and the start |
 | 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` after the hosting line |
 | 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
-| 12 | Phantoms joined after the start | `bots: phantom G joins (peer K)` for each phantom, all after the start, none before, and no phantom failure |
+| 12 | Phantoms joined the lobby before the start | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom before the start, and no phantom failure |
 | 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |
 | 14 | After the game, the local bots leave | `clankers: clankermatch: the game is over: the bots go` (or `this console hosts another game`) after gameplay, then `clankers: Clanker P off` for each local port |
 
@@ -3934,8 +4098,8 @@ the fill missed it (the HLE did not read the advertisement's hopper as a
 clanker one); for 7 the ports never seated (the roster) or seated but not
 signed in (their last join gate lines); for 9 and 10 whether the lobby was
 short of players or full and still not started (the game's matchmaking
-start); for 12 phantoms that joined before the start (a phantom cannot be
-a lobby player, §5.1); for 13 the kind recorded; for 14 that the console
+start); for 12 phantoms that joined only once the game ran (the lobby
+join off, or the lobby not seen as this console's) or not at all; for 13 the kind recorded; for 14 that the console
 still hosts the session, or which bots did not sign off.
 
 **Tests:** `cargo test -p cli bots_` (the verdict from log lines, the

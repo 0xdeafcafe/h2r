@@ -97,7 +97,8 @@ const fn choice(value: i64, name: &'static str, label: &'static str) -> Choice {
 pub static ENABLED: Def = def(
     "clankers.enabled",
     "Clankers",
-    "Bots join custom games: up to 3 on this machine's free controller ports \
+    "Bots join custom games: the first 3 on this machine's free controller \
+     ports, the rest as players of their own; all show in the pregame lobby \
      (docs/game/bots.md).",
     Kind::Bool,
     Value::Bool(false),
@@ -105,7 +106,8 @@ pub static ENABLED: Def = def(
 pub static COUNT: Def = def(
     "clankers.count",
     "Count",
-    "How many bots join. Up to 3 play for now, one per free controller port.",
+    "How many bots join, up to 15: the first 3 on free controller ports, the \
+     rest as players of their own.",
     Kind::Int {
         valid: 1..=15,
         steps: &[],
@@ -184,9 +186,9 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(
         &ENABLED,
         "Clankers",
-        "Bots join this game, on the free controller ports.",
+        "Bots join this game and show in the lobby.",
     ),
-    ChoiceRow::new(&COUNT, "Count", "How many bots join. Up to 3 play for now."),
+    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15."),
     ChoiceRow::new(
         &DIFFICULTY,
         "Difficulty",
@@ -444,8 +446,9 @@ const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
 /// How many of a Clankermatch's `bots` go on this console's free
 /// controller ports (docs/game/bots.md §8.4): local bots sign in to the
 /// lobby as session players, so the lobby reaches the playlist's fewest
-/// players and the game starts it, which phantoms (in a game only) cannot
-/// do. A console's players are one party, on one team in a team game, so
+/// players and the game starts it (phantoms now join the lobby too, §5.1;
+/// with `H2_PHANTOM_LOBBY=0` they join only the game, and the local bots
+/// alone carry the start). A console's players are one party, on one team in a team game, so
 /// a team playlist takes no more than fill the human's team (a team of
 /// `players / teams`); free for all takes up to the three free ports.
 pub fn max_local(bots: usize, players: u32, teams: u32) -> usize {
@@ -1337,15 +1340,16 @@ impl Driver {
                             String::new()
                         }
                     ));
-                    // Which bots sit in the lobby and which join the game
+                    // Which bots are local and which phantoms
                     // (docs/game/bots.md §8.4): local bots sign in to the
-                    // lobby as session players, so it reaches the
-                    // playlist's fewest players and starts; a phantom
-                    // enters the session only once the game runs (§5.1).
+                    // lobby as session players; phantoms join the lobby
+                    // this console hosts as peers (§5.1, "Phantoms in the
+                    // pregame lobby"). Both count toward the playlist's
+                    // fewest players, so the game starts it.
                     let local = max_local(bots, mark.players, mark.teams);
                     log.push(format!(
                         "clankermatch: {local} local bots join the lobby on free controller ports; \
-                         {} phantoms join when the game starts (\"bots: phantom ... joins\")",
+                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\")",
                         bots - local
                     ));
                     *fill = Some(Fill {

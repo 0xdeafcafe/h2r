@@ -816,3 +816,644 @@ mod books {
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "B's peer taken back out");
     }
 }
+
+/// Phantoms in the pregame lobby (docs/game/bots.md §5.1, "Phantoms in
+/// the pregame lobby").
+mod lobby {
+    use super::*;
+    use crate::lobby as l;
+    use crate::phantom::{Identity, Phantoms, State, lobby_wanted, machine_id};
+
+    /// The hopper the lobby's peers report on.
+    const HOPPER: u32 = 8;
+
+    /// A Live custom game lobby this console hosts: [`hosted`]'s session
+    /// with no game running, a pregame lobby (type 2, state 5),
+    /// distributed, this console's peer 0 the host, its session player in
+    /// slot 0 (requested configuration `0x10 + i`, team 0), and its peer's
+    /// properties: name "Tester", map loaded (4), hopper 8 ready (1).
+    fn lobby() -> FakeGuest {
+        let mut g = hosted();
+        g.put_u32(points::GAME_TIME.base, 0);
+        g.put_u8(l::LOBBY_ON, 1)
+            .put_u32(l::SESSION_TYPE, 2)
+            .put_u32(l::MAP_FAILED_HERE, 0)
+            .put_u32(S + PROTOCOL, PROTOCOL_DISTRIBUTED)
+            .put_u32(S + LOCAL_PEER, 0)
+            .put_u32(S + HOST_PEER, 0)
+            .put_u32(S + PEERS + PEER_PLAYERS, 1);
+        let host = S + PLAYERS;
+        for i in 0..CONFIG_SIZE as u32 {
+            g.put_u8(host + P_REQUESTED + i, 0x10 + i as u8);
+            g.put_u8(host + P_EFFECTIVE + i, 0x10 + i as u8);
+        }
+        g.put_u8(host + P_REQUESTED + CONFIG_TEAM as u32, 0)
+            .put_u8(host + P_EFFECTIVE + CONFIG_TEAM as u32, 0)
+            .put_u32(host + P_PEER, 0);
+        let p = S + PEERS;
+        for (i, u) in "Tester".encode_utf16().enumerate() {
+            g.put_u16(p + PEER_NAME + 2 * i as u32, u);
+        }
+        g.put_u8(p + PEER_PROPS_SET, 1)
+            .put_u32(p + PEER_MAP_STATUS, 4)
+            .put_u32(p + PEER_MAP_STATUS + 4, 100)
+            .put_u32(p + PEER_HOPPERS + 4 * HOPPER, 1);
+        g
+    }
+
+    fn make_team_game(g: &mut FakeGuest) {
+        g.put_u32(S + VARIANT + VARIANT_FLAGS, 1);
+    }
+
+    fn idle() -> Box<dyn crate::local::PadSource> {
+        Box::new(|_: &crate::local::Frame<'_>| HostPadState {
+            right_trigger: 1.0,
+            ..Default::default()
+        })
+    }
+
+    fn who(xuid: u64, tag: &str) -> Identity {
+        Identity {
+            xuid,
+            gamertag: tag.into(),
+            ..Default::default()
+        }
+    }
+
+    fn team_of(g: &FakeGuest, slot: u32) -> (u8, u8) {
+        let a = S + PLAYERS + slot * PLAYER_SIZE + CONFIG_TEAM as u32;
+        (
+            g.u8(a + P_REQUESTED).unwrap(),
+            g.u8(a + P_EFFECTIVE).unwrap(),
+        )
+    }
+
+    #[test]
+    fn the_lobby_this_console_hosts_takes_phantoms() {
+        let g = lobby();
+        assert_eq!(host_lobby(&g), Ok(S));
+        assert_eq!(owned_session(&g), Some(S));
+
+        // Not a pregame lobby: no lobby facts, another session type, a
+        // running game (the game's own check decides then).
+        let mut menus = lobby();
+        menus.put_u8(l::LOBBY_ON, 0);
+        assert_eq!(host_lobby(&menus), Err(NotNow::Wait));
+        let mut other = lobby();
+        other.put_u32(l::SESSION_TYPE, 3);
+        assert_eq!(host_lobby(&other), Err(NotNow::Wait));
+        let mut game = lobby();
+        game.put_u32(points::GAME_TIME.base, TIME);
+        assert_eq!(host_lobby(&game), Err(NotNow::Wait));
+
+        // A lobby, but not one a phantom can join: say why.
+        let mut leaving = lobby();
+        leaving.put_u32(S + STATE, 6);
+        assert!(
+            matches!(host_lobby(&leaving), Err(NotNow::NotHost(w)) if w.contains("not live (state 6")),
+        );
+        let mut split = lobby();
+        split.put_u32(S + PROTOCOL, 0);
+        assert!(matches!(host_lobby(&split), Err(NotNow::NotHost(w)) if w.contains("protocol 0")),);
+        assert_eq!(owned_session(&split), None);
+        let mut client = lobby();
+        client.put_u32(S + LOCAL_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert_eq!(
+            host_lobby(&client),
+            Err(NotNow::NotHost(
+                "this console does not host it (session host peer 0, this console's peer 1)".into()
+            ))
+        );
+        assert_eq!(owned_session(&client), None);
+    }
+
+    #[test]
+    fn reservations_keep_player_slots_free() {
+        let mut g = lobby();
+        g.put_u32(S + MAX_PLAYERS, 4);
+        assert_eq!(free_player_slots(&g, S).unwrap(), 3);
+        // One held, not taken; one taken (the player is in): only the
+        // first counts (0x62e30).
+        g.put_u8(S + RESERVATIONS, 1)
+            .put_u8(S + RESERVATIONS + RESERVATION_SIZE, 1)
+            .put_u8(S + RESERVATIONS + RESERVATION_SIZE + 1, 1);
+        assert_eq!(free_player_slots(&g, S).unwrap(), 2);
+        g.put_u8(S + RESERVATIONS + 2 * RESERVATION_SIZE, 1)
+            .put_u8(S + RESERVATIONS + 3 * RESERVATION_SIZE, 1);
+        assert_eq!(free_player_slots(&g, S).unwrap(), 0);
+        add_peer(&mut g, S, MAC_A, "A").unwrap();
+        assert_eq!(
+            add_player(&mut g, S, 1, player_id(1, MAC_A), &[0; CONFIG_SIZE]).unwrap(),
+            None,
+            "the reserved slots are not a phantom's"
+        );
+    }
+
+    #[test]
+    fn a_phantoms_properties_are_this_consoles_with_its_name() {
+        let mut g = lobby();
+        add_peer(&mut g, S, MAC_A, "Rusty Lugnut").unwrap();
+        let before = counters(&g);
+        assert!(sync_props(&mut g, S, 1, "Rusty Lugnut").unwrap());
+        let p = S + PEERS + PEER_SIZE;
+        assert_eq!(g.u8(p + PEER_PROPS_SET).unwrap(), 1);
+        assert_eq!(g.u32(p + PEER_MAP_STATUS).unwrap(), 4, "the map loaded");
+        assert_eq!(g.u32(p + PEER_MAP_STATUS + 4).unwrap(), 100);
+        assert_eq!(
+            g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(),
+            1,
+            "the hopper ready, as 0x66050 wants"
+        );
+        for at in [PEER_NAME, PEER_NAME2] {
+            assert_eq!(g.u16(at + p).unwrap(), u16::from(b'R'));
+            assert_eq!(g.u16(at + p + 2 * 11).unwrap(), u16::from(b't'));
+            assert_eq!(g.u16(at + p + 2 * 12).unwrap(), 0, "not the host's name");
+        }
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+        // The same again: nothing written.
+        assert!(!sync_props(&mut g, S, 1, "Rusty Lugnut").unwrap());
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+        // This console loads another map: the phantom follows.
+        g.put_u32(S + PEERS + PEER_MAP_STATUS, 2);
+        assert!(sync_props(&mut g, S, 1, "Rusty Lugnut").unwrap());
+        assert_eq!(g.u32(p + PEER_MAP_STATUS).unwrap(), 2);
+        let f = l::facts(&g).unwrap();
+        assert_eq!(l::map_status(&f.maps), 2);
+    }
+
+    #[test]
+    fn the_configuration_is_the_hosts_session_players() {
+        let g = lobby();
+        let c = config_in(&g, S, "Rusty Lugnut", None).unwrap().unwrap();
+        assert_eq!(c[0x40], 0x50, "the host's requested configuration");
+        assert_eq!(u16::from_le_bytes([c[0], c[1]]), MARK as u16);
+        assert_eq!(c[CONFIG_TEAM], 0);
+        let c = config_in(&g, S, "Rusty Lugnut", Some(1)).unwrap().unwrap();
+        assert_eq!(c[CONFIG_TEAM], 1);
+        // No session player of its own: the player datum's (the game's).
+        let mut g = hosted();
+        g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX);
+        let c = config_in(&g, S, "X", None).unwrap().unwrap();
+        assert_eq!(c[0x40], 0x80);
+    }
+
+    #[test]
+    fn a_new_phantom_goes_to_the_smaller_team() {
+        let mut g = lobby();
+        make_team_game(&mut g);
+        assert!(team_game(&g, S).unwrap());
+        assert_eq!(lobby_team(&g, S).unwrap(), 1, "the host is red");
+        g.put_u8(S + PLAYERS + P_EFFECTIVE + CONFIG_TEAM as u32, 1);
+        assert_eq!(lobby_team(&g, S).unwrap(), 0);
+        // A human on green (team 3): green counts as a team too.
+        g.put_u32(S + PLAYER_MASK, 0b11).put_u8(
+            S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE + CONFIG_TEAM as u32,
+            3,
+        );
+        g.put_u8(S + PLAYERS + P_EFFECTIVE + CONFIG_TEAM as u32, 0);
+        assert_eq!(lobby_team(&g, S).unwrap(), 1, "red 1, blue 0, green 1");
+        assert_eq!(lobby_host_team(&g).unwrap(), Some(0));
+    }
+
+    #[test]
+    fn rebalance_moves_a_phantom_only_for_two_or_more() {
+        let mut g = lobby();
+        make_team_game(&mut g);
+        // Host red, phantoms on peers 1 to 3 all red: 4 to 0.
+        for (i, mac) in [MAC_A, MAC_B, [0xc1, 0xa4, 0, 0, 0, 3]]
+            .into_iter()
+            .enumerate()
+        {
+            let p = add_peer(&mut g, S, mac, "B").unwrap().unwrap();
+            let mut c = [0; CONFIG_SIZE];
+            c[CONFIG_TEAM] = 0;
+            add_player(&mut g, S, p, player_id(i as u64 + 1, mac), &c).unwrap();
+        }
+        let moved = rebalance(&mut g, S, &[1, 2, 3]).unwrap();
+        assert_eq!(moved, vec![(1, 0, 1), (2, 0, 1)], "2 against 2");
+        assert_eq!(team_of(&g, 1), (1, 1), "requested and effective");
+        assert_eq!(team_of(&g, 3), (0, 0));
+        assert!(rebalance(&mut g, S, &[1, 2, 3]).unwrap().is_empty(), "even");
+        // The host goes blue: 1 red against 3 blue, so one comes back.
+        g.put_u8(S + PLAYERS + P_EFFECTIVE + CONFIG_TEAM as u32, 1);
+        assert_eq!(rebalance(&mut g, S, &[1, 2, 3]).unwrap(), vec![(1, 1, 0)]);
+        // A phantom with its own team (not movable) stays put.
+        assert!(rebalance(&mut g, S, &[]).unwrap().is_empty());
+        // Not a team game: nothing moves.
+        g.put_u32(S + VARIANT + VARIANT_FLAGS, 0);
+        g.put_u8(
+            S + PLAYERS + 2 * PLAYER_SIZE + P_EFFECTIVE + CONFIG_TEAM as u32,
+            5,
+        );
+        assert!(rebalance(&mut g, S, &[1, 2, 3]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_lobby_switch_reads_off_values() {
+        assert!(lobby_wanted(None));
+        assert!(lobby_wanted(Some("1")));
+        assert!(lobby_wanted(Some("on")));
+        for off in ["0", "off", "OFF", " false ", "no"] {
+            assert!(!lobby_wanted(Some(off)), "{off}");
+        }
+    }
+
+    #[test]
+    fn a_phantom_joins_the_lobby_stays_for_the_game_and_comes_back() {
+        let ph = Phantoms::default();
+        let h = ph
+            .add(who(0x000e_0000_0000_0001, "Rusty Lugnut"), None, idle())
+            .unwrap();
+        let mac = machine_id(h);
+        let mut g = lobby();
+
+        // The lobby: a peer with the host's properties and a player.
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Rusty Lugnut joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
+        let p = S + PEERS + PEER_SIZE;
+        assert_eq!(g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(), 1);
+        assert_eq!(g.u32(p + PEER_MAP_STATUS).unwrap(), 4);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        let cfg = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        assert_eq!(
+            g.u16(cfg).unwrap(),
+            MARK as u16,
+            "listed by its marked name"
+        );
+        assert_eq!(g.u8(cfg + 0x40).unwrap(), 0x50, "the host's look");
+        assert_eq!(
+            ph.list()[0].state,
+            State::Pending,
+            "no player datum before the game"
+        );
+        // The start checks see every peer with the map.
+        assert_eq!(l::expected(&l::facts(&g).unwrap()), l::READY);
+        // Nothing more the next frames.
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+
+        // The game loads: its first frames are not hosted yet. The
+        // phantom stays in the session and says nothing.
+        g.put_u32(points::GAME_TIME.base, TIME)
+            .put_u32(SIM + SIM_MODE, 5);
+        assert!(ph.tick(&mut g, 2).unwrap().is_empty());
+        assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
+
+        // Hosted: no second join; the game makes its player; it plays.
+        g.put_u32(SIM + SIM_MODE, WORLD_DIST_SERVER);
+        assert!(ph.tick(&mut g, 3).unwrap().is_empty());
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "made once");
+        game_makes(&mut g, 1, mac, [1.0, 0.0, 0.0]);
+        ph.tick(&mut g, 4).unwrap();
+        assert_eq!(ph.player(h), Some(1));
+        let slot = slot_of(&g, mac).unwrap().unwrap();
+        assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
+
+        // The game ends, back in the lobby: still in the session, no
+        // action written there.
+        g.put_u32(points::GAME_TIME.base, 0);
+        g.put_u32(slot + SLOT_STAMP, 7);
+        assert!(ph.tick(&mut g, 5).unwrap().is_empty());
+        assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
+        assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 7);
+
+        // No lobby screen (the carnage report, say), but the session is
+        // still this console's: kept.
+        g.put_u8(l::LOBBY_ON, 0);
+        assert!(ph.tick(&mut g, 6).unwrap().is_empty());
+        assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
+        g.put_u8(l::LOBBY_ON, 1);
+
+        // The host leaves the lobby (the session no longer live): off the
+        // session's books; a dead session is left alone.
+        g.put_u32(S + STATE, 7);
+        ph.tick(&mut g, 7).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+        // Live again with the old peer still there: it is made anew, never
+        // twice.
+        g.put_u32(S + STATE, STATE_LIVE);
+        let log = ph.tick(&mut g, 8).unwrap();
+        assert!(
+            log[0].contains("Rusty Lugnut joins (peer 1, in the pregame lobby)"),
+            "{log:?}"
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_session_this_console_no_longer_hosts_loses_its_phantoms() {
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+        // Another console became the host (host migration).
+        g.put_u32(S + HOST_PEER, 1);
+        let log = ph.tick(&mut g, 1).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), None);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 1);
+        assert!(log.iter().all(|l| !l.contains("joins")), "{log:?}");
+    }
+
+    #[test]
+    fn a_lower_count_takes_a_phantom_out_of_the_lobby() {
+        let ph = Phantoms::default();
+        let a = ph.add(who(1, "A"), None, idle()).unwrap();
+        let b = ph.add(who(2, "B"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 3);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 3);
+        ph.remove(a).unwrap();
+        ph.tick(&mut g, 1).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(a)).unwrap(), None);
+        assert_eq!(find_peer(&g, S, machine_id(b)).unwrap(), Some(1));
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        // Off: the last one goes too.
+        ph.remove(b).unwrap();
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 1);
+        assert!(ph.is_empty());
+    }
+
+    #[test]
+    fn phantoms_balance_the_teams_as_they_join_and_follow_the_humans() {
+        let ph = Phantoms::default();
+        for x in 1..=3 {
+            ph.add(who(x, &format!("Bot {x}")), None, idle()).unwrap();
+        }
+        // One with its own team stays on it.
+        ph.add(who(9, "Red Bot"), Some(0), idle()).unwrap();
+        let mut g = lobby();
+        make_team_game(&mut g);
+        ph.tick(&mut g, 0).unwrap();
+        // Host red; Bot 1 blue, Bot 2 red, Bot 3 blue, Red Bot red.
+        assert_eq!(team_of(&g, 1), (1, 1));
+        assert_eq!(team_of(&g, 2), (0, 0));
+        assert_eq!(team_of(&g, 3), (1, 1));
+        assert_eq!(team_of(&g, 4), (0, 0));
+        // The host goes blue: 2 red against 3 blue is fine.
+        g.put_u8(S + PLAYERS + P_EFFECTIVE + CONFIG_TEAM as u32, 1);
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        // A human joins blue (a real peer): 2 against 4, one bot crosses.
+        g.put_u32(S + PLAYER_MASK, 0b10_0001_1111).put_u8(
+            S + PLAYERS + 9 * PLAYER_SIZE + P_EFFECTIVE + CONFIG_TEAM as u32,
+            1,
+        );
+        let log = ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Bot 1 changes team 1 -> 0 to keep the teams even".to_owned()]
+        );
+        assert_eq!(team_of(&g, 1), (0, 0));
+    }
+
+    #[test]
+    fn a_phantom_the_game_took_out_joins_again() {
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        remove_peer(&mut g, S, 1).unwrap();
+        let log = ph.tick(&mut g, 1).unwrap();
+        assert_eq!(
+            log,
+            vec![
+                "bots: phantom A is no longer in the session: it joins again".to_owned(),
+                "bots: phantom A joins (peer 1, in the pregame lobby)".to_owned(),
+            ]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_lobby_this_console_joined_makes_them_wait() {
+        let ph = Phantoms::default();
+        ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = lobby();
+        g.put_u32(S + LOCAL_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec![
+                "bots: phantom A waits: not a lobby it can join (this console does not host it \
+                 (session host peer 0, this console's peer 1))"
+                    .to_owned()
+            ]
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "nothing written");
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty(), "said once");
+    }
+
+    #[test]
+    fn with_the_lobby_join_off_they_wait_for_the_game_and_leave_with_it() {
+        let ph = Phantoms::default();
+        ph.set_lobby(false);
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = lobby();
+        assert!(ph.tick(&mut g, 0).unwrap().is_empty());
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1, "not in the lobby");
+        g.put_u32(points::GAME_TIME.base, TIME);
+        let log = ph.tick(&mut g, 1).unwrap();
+        assert_eq!(log, vec!["bots: phantom A joins (peer 1)".to_owned()]);
+        g.put_u32(points::GAME_TIME.base, 0);
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            find_peer(&g, S, machine_id(h)).unwrap(),
+            None,
+            "out with the game"
+        );
+    }
+}
+
+/// Phantoms in the game: spawning, the start's wait, the bot mark on
+/// local bots (docs/game/bots.md §5.1, "Phantoms in the game").
+mod in_game {
+    use super::*;
+    use crate::phantom::{Identity, Phantoms, machine_id};
+
+    const SET: u32 = 0x0076_0000;
+    const REAL: [u8; 6] = [0x00, 0x50, 0xf2, 9, 9, 9];
+
+    /// [`hosted`]'s game starting: the world in state 3 waiting for
+    /// machines 0 to 2 (the host, `ids[1]`, `ids[2]`).
+    fn starting(ids: [[u8; 6]; 2]) -> FakeGuest {
+        let mut g = hosted();
+        g.put_u32(SIM + SIM_STATE, SIM_STARTING)
+            .put_u32(SIM + SIM_WAIT, 0b111)
+            .put_u32(MACHINES, SET)
+            .map(SET, 0x100)
+            .put_u32(SET + MACHINES_MASK, 0b111);
+        g.put(SET + MACHINES_IDS, &HOST_MAC);
+        g.put(SET + MACHINES_IDS + 6, &ids[0]);
+        g.put(SET + MACHINES_IDS + 12, &ids[1]);
+        g
+    }
+
+    #[test]
+    fn the_start_stops_waiting_for_phantom_machines() {
+        let mut g = starting([MAC_A, REAL]);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), Some((0b111, 0b101)));
+        assert_eq!(
+            g.u32(SIM + SIM_WAIT).unwrap(),
+            0b101,
+            "the real console still waited for"
+        );
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None, "once");
+
+        // Real consoles only: nothing changes.
+        let mut g = starting([REAL, [0x00, 0x50, 0xf2, 8, 8, 8]]);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        // Not starting (state 4, views joining), or a client's world.
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_STATE, 4);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_MODE, 5);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        // A synchronous server waits the same way.
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_MODE, 2);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), Some((0b111, 0b001)));
+    }
+
+    #[test]
+    fn the_tick_says_the_start_no_longer_waits() {
+        let ph = Phantoms::default();
+        let h = ph
+            .add(
+                Identity {
+                    xuid: 1,
+                    gamertag: "A".into(),
+                    ..Default::default()
+                },
+                None,
+                Box::new(|_: &crate::local::Frame<'_>| HostPadState::default()),
+            )
+            .unwrap();
+        let mut g = starting([machine_id(h), REAL]);
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log[0],
+            "bots: phantoms: the game's start waits for real consoles only (machines 0x0007 -> 0x0005)"
+        );
+        assert!(
+            !ph.tick(&mut g, 1)
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("start waits"))
+        );
+    }
+
+    #[test]
+    fn a_phantom_in_the_session_stands_in_the_game() {
+        let ph = Phantoms::default();
+        let who = |x: u64| Identity {
+            xuid: x,
+            gamertag: format!("B{x}"),
+            ..Default::default()
+        };
+        let idle = || -> Box<dyn crate::local::PadSource> {
+            Box::new(|_: &crate::local::Frame<'_>| HostPadState::default())
+        };
+        let a = ph.add(who(1), None, idle()).unwrap();
+        assert!(
+            !ph.stands_for(machine_id(a)),
+            "on the books, not in the session"
+        );
+        let mut g = hosted();
+        ph.tick(&mut g, 0).unwrap();
+        assert!(ph.stands_for(machine_id(a)));
+        assert!(!ph.stands_for(HOST_MAC), "a console answers for itself");
+        assert!(!ph.stands_for(machine_id(crate::phantom::PhantomHandle(99))));
+        ph.remove(a).unwrap();
+        assert!(!ph.stands_for(machine_id(a)));
+    }
+
+    /// [`hosted`]'s session with a local bot on controller 1 in slot 1
+    /// (effective name "Clanker 1", requested "Profile") and the human on
+    /// controller 0 in slot 0.
+    fn with_local_bot() -> FakeGuest {
+        let mut g = hosted();
+        g.put_u32(S + PLAYER_MASK, 0b11)
+            .put_u32(S + PLAYER_COUNT, 2)
+            .put_u32(S + PEERS + PEER_SLOTS + 4, 1)
+            .put_u32(S + PEERS + PEER_PLAYERS, 2);
+        let name = |g: &mut FakeGuest, at: u32, s: &str| {
+            for (i, u) in s.encode_utf16().enumerate() {
+                g.put_u16(at + 2 * i as u32, u);
+            }
+        };
+        let human = S + PLAYERS;
+        name(&mut g, human + P_EFFECTIVE, "Tester");
+        let bot = S + PLAYERS + PLAYER_SIZE;
+        g.put_u32(bot + P_PEER, 0)
+            .put_u32(bot + P_USER, 1)
+            .put_u32(bot + P_CONTROLLER, 1);
+        name(&mut g, bot + P_EFFECTIVE, "Clanker 1");
+        name(&mut g, bot + P_REQUESTED, "Profile");
+        g
+    }
+
+    fn name_at(g: &FakeGuest, at: u32) -> Vec<u16> {
+        (0..CONFIG_NAME_UNITS as u32)
+            .map(|i| g.u16(at + 2 * i).unwrap())
+            .take_while(|&u| u != 0)
+            .collect()
+    }
+
+    #[test]
+    fn a_local_bot_gets_the_bot_mark_on_the_host() {
+        let mut g = with_local_bot();
+        let before = counters(&g);
+        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
+        let bot = S + PLAYERS + PLAYER_SIZE;
+        assert_eq!(name_at(&g, bot + P_EFFECTIVE), marked_name("Clanker 1"));
+        assert_eq!(
+            name_at(&g, bot + P_REQUESTED),
+            "Profile".encode_utf16().collect::<Vec<_>>(),
+            "the requested name is the profile's"
+        );
+        assert_eq!(
+            name_at(&g, S + PLAYERS + P_EFFECTIVE),
+            "Tester".encode_utf16().collect::<Vec<_>>(),
+            "the human is no bot"
+        );
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+        // Marked once.
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+    }
+
+    #[test]
+    fn the_bot_mark_waits_for_the_host_and_a_bots_port() {
+        // Not this console's session: its host's configurations win.
+        let mut g = with_local_bot();
+        g.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        // Port 1 is no bot's.
+        let mut g = with_local_bot();
+        assert!(mark_local_bots(&mut g, 0b100).unwrap().is_empty());
+        // No live session.
+        let mut g = with_local_bot();
+        g.put_u32(S + STATE, 6);
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        // A long name keeps the mark within the 15 units.
+        let mut g = with_local_bot();
+        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        for (i, u) in "Fifteen Chars!!".encode_utf16().enumerate() {
+            g.put_u16(bot + 2 * i as u32, u);
+        }
+        mark_local_bots(&mut g, 0b10).unwrap();
+        let n = name_at(&g, bot);
+        assert_eq!(n.len(), 15);
+        assert_eq!(n[0], MARK as u16);
+    }
+}
