@@ -60,7 +60,13 @@ for (const prefix of ["mp16", "campaign"]) {
   }
   const median = (a: number[]) => a.sort((x, y) => x-y)[a.length>>1];
   const payload = buffers.reduce((total, b) => total + b.length, 0);
+  // Guard the concrete 10-minute multiplayer and 30-second campaign runs,
+  // including immutable index node overhead, against their stored v7 inputs.
+  const source = prefix === "mp16" ? 1322664 : 173708;
+  assert.equal(count, prefix === "mp16" ? 9000 : 450);
+  assert.ok((payload + indexBytes) * 4 <= source, `${prefix} exceeds a quarter of its stored v7 size`);
   console.log(JSON.stringify({scene:prefix, frames:count, segments:files.length,
+    stored_v7_bytes:source, fraction_of_stored_v7:(payload + indexBytes) / source,
     bytes:payload, index_bytes:indexBytes, node_source_position:revision,
     bytes_per_player_minute:(payload + indexBytes) / (playerSamples / (15 * 60)),
     first_bytes:buffers[0]!.length,
