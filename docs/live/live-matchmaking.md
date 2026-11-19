@@ -1185,9 +1185,12 @@ keeps that console on the join path.
 
 When the queue returns `Queue::Join`, the Live HLE looks up the published
 session. The session’s `matchmaking.host_lease` identifies the lease even
-for clients whose first queue reply is `Queue::Join`. If the session
-detail has no assignment, a client that saw the lease while waiting can
-use that assignment when the queue sets `frames_from_host`. The HLE reads
+for clients whose first queue reply is `Queue::Join`. The assignment must
+match the queued hopper, include the client in its roster, and name the
+session’s host XUID. If the session detail has no assignment, a client
+that saw the lease while waiting can use that assignment when the queue
+sets `frames_from_host`. A waiting assignment can carry XUID zero until
+the host publishes. The HLE reads
 `GET /v1/hosts/{lease}` with the roster member’s `read` bearer. The lease’s
 `assignment_id` must match `Assignment.id` and the endpoint’s `session_id`
 must match `Queue::Join.session_id`. The dedicated session can have its own

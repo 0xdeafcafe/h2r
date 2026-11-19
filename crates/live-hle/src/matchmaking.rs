@@ -118,16 +118,15 @@ pub(crate) fn join_assignment<'a>(
     frames_from_host: bool,
 ) -> Option<&'a Assignment> {
     let assignment = match &row.matchmaking {
-        Some(assignment) => assignment,
-        // The endpoint must still name this published session. Waiting is
-        // only a way to find the lease if the advertisement lacks metadata.
-        None if frames_from_host => waiting.filter(|a| a.host_lease.is_some())?,
-        None => return None,
+        Some(assignment) if assignment.host == row.host_xuid => assignment,
+        // Waiting can name XUID zero until the host publishes. The lease
+        // endpoint must then confirm the exact published session ID.
+        None if frames_from_host => waiting.filter(|a| {
+            a.host_lease.is_some() && (a.host == Xuid(0) || a.host == row.host_xuid)
+        })?,
+        _ => return None,
     };
-    (assignment.hopper == hopper
-        && assignment.host == row.host_xuid
-        && assignment.members.contains(&me))
-        .then_some(assignment)
+    (assignment.hopper == hopper && assignment.members.contains(&me)).then_some(assignment)
 }
 
 #[derive(Deserialize)]
@@ -584,11 +583,14 @@ mod tests {
 
     #[test]
     fn a_cached_reservation_applies_only_to_a_dedicated_join_missing_metadata() {
-        let waiting = assignment();
+        let mut waiting = assignment();
         let bare = row(None);
         assert_eq!(join_assignment(&bare, Some(&waiting), HOPPER, ME, true), Some(&waiting));
         assert!(join_assignment(&bare, Some(&waiting), HOPPER, ME, false).is_none());
         assert!(join_assignment(&bare, Some(&waiting), HOPPER, Xuid(99), true).is_none());
+        waiting.host = Xuid(0);
+        assert_eq!(join_assignment(&bare, Some(&waiting), HOPPER, ME, true), Some(&waiting));
+        assert!(join_assignment(&row(Some(waiting.clone())), None, HOPPER, ME, true).is_none());
 
         let mut peer = assignment();
         peer.host_lease = None;
