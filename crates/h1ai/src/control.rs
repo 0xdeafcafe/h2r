@@ -334,19 +334,24 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
                 continue;
             };
             if squad.flags & 0x18 != 0 || squad.delay.is_finite() && squad.delay > 0.0 {
-                control.combat_timers.insert(index, CombatTimer {
-                    flags: squad.flags,
-                    seconds: squad.delay,
-                });
+                control.combat_timers.insert(
+                    index,
+                    CombatTimer {
+                        flags: squad.flags,
+                        seconds: squad.delay,
+                    },
+                );
             }
             if squad.flags & 0x20 != 0 {
                 control.automatic_migration.insert(index);
-                if plan.ai.squads[usize::from(index)].initial_order < 0
-                    && let Some(order) =
-                        build_order(plan, opts, ei as u16, squad, index, Operation::Attack)
-                {
-                    plan.ai.squads[usize::from(index)].initial_order = order as i16;
-                }
+            }
+            // An empty squad can acquire actors through scripts or auto
+            // migration and then be given a runtime follow target.
+            if plan.ai.squads[usize::from(index)].initial_order < 0
+                && !plan.ai.zones[ei].areas.is_empty()
+                && let Some(order) = build_order(plan, opts, ei as u16, squad, index, Operation::Attack)
+            {
+                plan.ai.squads[usize::from(index)].initial_order = order as i16;
             }
         }
     }
