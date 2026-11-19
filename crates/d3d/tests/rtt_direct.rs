@@ -769,13 +769,18 @@ fn leaving_an_unwritten_level_does_not_read_it_again() {
     assert_eq!(stats.rtt_leave_reads_skipped, 5, "{stats:?}");
 }
 
-/// Samples the texture headers it is made with.
+/// Samples the texture headers it is made with. Colour only: `recorded`
+/// leaves the back buffer bound with no depth (`set_render_target(back,
+/// 0)`), where a pass that needs depth is refused (`NoDepth`).
 struct Samples(Vec<u32>);
 
 impl d3d::ExternalPass for Samples {
     fn encode(&mut self, _t: d3d::ExternalTarget<'_>) {}
     fn sampled(&self) -> Vec<u32> {
         self.0.clone()
+    }
+    fn colour_only(&self) -> bool {
+        true
     }
 }
 
@@ -790,7 +795,7 @@ fn an_external_pass_samples_a_drawn_level_in_place() {
     let nothing = MISC + 0x7300;
     d.request_external_pass(Box::new(Samples(vec![TEX_HEADER, nothing])));
     d.drain_until_callback(&mut m).unwrap();
-    assert_eq!(d.stats().external_passes, 1);
+    assert_eq!(d.stats().external_passes, 1, "refusals {:?}", d.stats().external_refusals);
     let sampled = &d.backend.external_sampled;
     assert_eq!(sampled.len(), 1);
     assert_eq!(sampled[0].len(), 2, "one per header, in order");
