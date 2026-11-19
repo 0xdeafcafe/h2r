@@ -423,28 +423,33 @@ pub(super) async fn teleport(
     unsupported_only: bool,
 ) -> Result<(), EntryError> {
     for motion in cx.read(|m| teleports(m, reference, unsupported_only))? {
-        if motion.unseat {
-            cx.call(GuestCall::new(UNIT_DETACH_FROM_PARENT).eax(motion.unit))
-                .await?;
-        }
-        let (sy, cy) = motion.yaw.sin_cos();
-        let (sp, cp) = motion.pitch.sin_cos();
-        let pose = [
-            motion.position,
-            [cy * cp, sy * cp, sp],
-            [-cy * sp, -sy * sp, cp],
-        ];
-        let base = cx.entry().esp.wrapping_sub(36);
-        let args = [motion.unit, base, base + 12, base + 24, 0, 1, 1, 0, 0]
-            .into_iter()
-            .chain(pose.into_iter().flatten().map(f32::to_bits));
-        let result = cx
-            .call(GuestCall::new(OBJECT_SET_TRANSFORM).args(args))
+        teleport_unit(cx, motion).await?;
+    }
+    Ok(())
+}
+
+async fn teleport_unit(cx: &Cx, motion: Teleport) -> Result<(), EntryError> {
+    if motion.unseat {
+        cx.call(GuestCall::new(UNIT_DETACH_FROM_PARENT).eax(motion.unit))
             .await?;
-        if result.eax as u8 != 0 {
-            cx.call(GuestCall::new(OBJECT_WAKE_PHYSICS).eax(motion.unit))
-                .await?;
-        }
+    }
+    let (sy, cy) = motion.yaw.sin_cos();
+    let (sp, cp) = motion.pitch.sin_cos();
+    let pose = [
+        motion.position,
+        [cy * cp, sy * cp, sp],
+        [-cy * sp, -sy * sp, cp],
+    ];
+    let base = cx.entry().esp.wrapping_sub(36);
+    let args = [motion.unit, base, base + 12, base + 24, 0, 1, 1, 0, 0]
+        .into_iter()
+        .chain(pose.into_iter().flatten().map(f32::to_bits));
+    let result = cx
+        .call(GuestCall::new(OBJECT_SET_TRANSFORM).args(args))
+        .await?;
+    if result.eax as u8 != 0 {
+        cx.call(GuestCall::new(OBJECT_WAKE_PHYSICS).eax(motion.unit))
+            .await?;
     }
     Ok(())
 }
@@ -453,6 +458,48 @@ pub(super) async fn teleport(
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn teleports_unseat_transform_and_wake_the_same_unit() {
+        use engine::entry::{EntryFuture, Regs, Ret, testing};
+
+        const STACK: u32 = 0x800100;
+        const UNIT: u32 = 0x8a00_0123;
+        let run = testing::run(
+            &|cx| -> EntryFuture {
+                Box::pin(async move {
+                    teleport_unit(&cx, Teleport {
+                        unit: UNIT,
+                        position: [1.0, 2.0, 3.0],
+                        yaw: 0.0,
+                        pitch: 0.0,
+                        unseat: true,
+                    }).await?;
+                    Ok(Ret::new(0, 0))
+                })
+            },
+            FakeGuest::new(),
+            Regs { esp: STACK, ..Default::default() },
+            |call, _| match call.target {
+                UNIT_DETACH_FROM_PARENT | OBJECT_WAKE_PHYSICS => {
+                    assert_eq!(call.eax, Some(UNIT));
+                    Regs::default()
+                }
+                OBJECT_SET_TRANSFORM => {
+                    let pose = STACK - 36;
+                    assert_eq!(call.args[..9], [UNIT, pose, pose + 12, pose + 24, 0, 1, 1, 0, 0]);
+                    let floats: Vec<_> = call.args[9..].iter().map(|&bits| f32::from_bits(bits)).collect();
+                    assert_eq!(floats, [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+                    Regs { eax: 1, ..Default::default() }
+                }
+                _ => panic!("unexpected native call"),
+            },
+        );
+        assert_eq!(run.calls.iter().map(|call| call.target).collect::<Vec<_>>(), [
+            UNIT_DETACH_FROM_PARENT, OBJECT_SET_TRANSFORM, OBJECT_WAKE_PHYSICS,
+        ]);
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+    }
 
     #[test]
     fn maneuver_keeps_cyclic_edges_and_skips_a_disabled_platoon() {

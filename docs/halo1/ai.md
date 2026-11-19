@@ -61,7 +61,7 @@ Squad (`e8`), V for everything the converter uses:
 | `24`, `26` | initial, return state (`u16`) |
 | `28` | flags (`u32`, R) |
 | `2c` | unique leader type (`u16`, R) |
-| `4c` | maneuver-to squad (`i16`) |
+| `4e` | maneuver-to squad (`i16`, read by retail Halo 1 at `0x0013e191`) |
 | `50` | delay, seconds (`f32`) |
 | `54`..`6c` | firing position groups (`u32` masks, bit 0 = A): attacking, attacking search, attacking guard, defending, defending search, defending guard, pursuing (S order) |
 | `7c`, `7e` | actors on normal, on legendary (`i16`) |

@@ -74,10 +74,16 @@ The source playfight exception to the character behavior predicate at
 `0x00163c8c` still needs a Halo 2 equivalent. Timer release uses the
 Halo 2 active/visible perception states, and movement holds leave the
 Halo 2 behavior evaluator running. The aim/movement-state override on
-Halo 1 platoon flag `0x1` remains open. The converter reserves space for
-migration destinations first. A lean rebuild that removes empty squads
-can still remove a destination. The native follow collector still needs
-firing-position areas in the current BSP.
+Halo 1 platoon flag `0x1` remains open until its Halo 2 equivalent is
+identified. The native follow collector still needs firing-position
+areas in the current BSP. The unsupported-only teleport uses native
+contact state in place of Halo 1's two-metre ray, and start selection
+uses available converted starts with no cross-call reservation pool.
+
+During integration, keep `maneuver_targets` and
+`automatic_migration_targets` when adopting the squad-roster lane's
+retention strategy. The squad budget and lean conversion can still
+remove empty destinations.
 
 Conversations and command lists have separate converter lanes.
 
