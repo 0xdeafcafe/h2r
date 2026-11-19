@@ -350,8 +350,10 @@ A chunk carries packed records as they are, so a new packed frame version
 changes nothing here. A chunk inflates to at most 16 MiB. `GET
 /v1/games/{id}/chunks` lists a game's chunks and `GET
 /v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
-check as the game. A seek reads the index once and fetches the one chunk
-whose window holds the tick.
+check as the game. The binary response is the stored blob byte for byte.
+An explicit `?format=json` returns a JSON array of its decoded frames. The
+query gives each representation its own URL in the edge cache. A seek reads
+the index once and fetches the one chunk whose window holds the tick.
 
 ## Read endpoints
 
@@ -369,7 +371,7 @@ whose window holds the tick.
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. The JSON read (`format=json`) is gone: `400` |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |

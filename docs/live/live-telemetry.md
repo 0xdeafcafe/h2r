@@ -638,8 +638,9 @@ Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 (frame chunks, [live-api.md](live-api.md#frame-chunks); before them
 `GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
-and `/frames` for older games). JSON stays for JSON stream readers and for
-events; the JSON frames read is gone.
+and `/frames` for older games). JSON readers can request `?format=json`
+on an individual chunk or the legacy frame page. Live JSON readers use
+`/v1/stream?frames=json`. See the [precision and transfer measurements](../engine/live-telemetry.md).
 `crates/live-proto/src/pack.rs` writes and reads it;
 `web/src/api/pack.ts` reads it; the golden vectors in
 `web/test/fixtures/pack` (written by the Rust tests from invented frames,
@@ -665,10 +666,10 @@ without padding.
 
 | value | wire | quantisation |
 |---|---|---|
-| position | three `seg(16)` | 1/512 world unit (about 6 mm), coordinates under 10^9 |
-| position in a delta | three `seg(7)`: the difference from the previous frame's quantised value | |
-| yaw | `u(12)` | a turn in 4096 steps; read back in (-π, π] |
-| direction (aim, forward, up) | two `u(12)` | octahedral: x and y of `v / (|x|+|y|+|z|)`, folded when z < 0, each mapped from -1..1 to 0..4094 (2047 is 0, so the axes are exact); read back unit length |
+| position | three `seg(16)` | 1/1024 world unit (about 3 mm), coordinates under 10^9 |
+| position in a delta | each axis gets one nonzero bit followed by `seg(1)` for a nonzero residual against the base | same grid |
+| yaw | `u(14)` absolute | a turn in 16,384 steps, read back in (-π, π] |
+| direction (aim, forward, up) | two absolute `u(14)` components | octahedral x and y, folded at z < 0, mapped to 0..16382. The midpoint 8191 gives exact cardinal axes |
 | speed | `eg(6)` | 1/16 unit a second |
 | hit amount | `eg(6)` | 1/256 of a vitality |
 | shots | `eg(1)` | |
@@ -676,8 +677,7 @@ without padding.
 | actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
 | grenade | `u(1)` | `frag`, `plasma` |
 | device position | `u(10)` | 0..1 in 1023 steps |
-| velocity | three `seg(8)`; in a delta three `seg(4)`, the difference from the previous quantised value | 1/64 unit a second |
-| predicted position (version 6, in a delta) | three `seg(3)`: the error of the prediction below | |
+| velocity | three `seg(8)` absolute. With a base, each axis gets one nonzero bit and `seg(1)` for a nonzero difference | 1/128 unit a second |
 | fire | `eg(1)` | a tick mask, bit k a shot k ticks before the frame's tick (0 is not sent) |
 | body | `u(6)` | 0..1 in 63 steps |
 | shield | `eg(3)` | 1/32 of a shield, at most 4 |
@@ -698,7 +698,7 @@ when present.
 
 | field | wire |
 |---|---|
-| version | `u(4)`, 6 (5 still reads: a cinematic frame of version 4's, with the bit; 4: no projectiles, items or vehicle velocity, no prediction; 3: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
+| version | `u(4)`, 7 (6 has the same lists with the earlier quantisers and delta grammar. 5 still reads: a cinematic frame of version 4's, with the bit; 4: no projectiles, items or vehicle velocity, no prediction; 3: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
 | keyframe | `u(1)` |
 | stream id | `eg(0)` |
 | sequence | `eg(8)`, one more each frame of the stream |
@@ -708,7 +708,7 @@ when present.
 | **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
 | bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
 | **both (version 3):** cut | `u(1)` present, then `eg(16)`: the engine tick a campaign revert or restart came back to; on that one frame only |
-| **both (versions 5 and 6):** cinematic | `u(1)`: a cinematic is playing ([Cinematics](#cinematics)); every version 6 frame has it, version 5 was written only for cinematic frames (always 1) |
+| **both (versions 5–7):** cinematic | `u(1)`: a cinematic is playing ([Cinematics](#cinematics)); every version 6 or 7 frame has it, version 5 was written only for cinematic frames (always 1) |
 | new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
 | players | list |
 | vehicles | list |
@@ -719,18 +719,71 @@ when present.
 | projectiles (version 6) | list |
 | items (version 6) | list |
 
-A list in a keyframe is `eg(2)` count, then each entity whole: its fields in
-order. In a delta it is `eg(2)` count, then, until that many entities:
+A keyframe list starts with an `eg(2)` count followed by each entity's
+fields in schema order. A delta also starts with the count. V7 follows with
+these opcodes, shown in the order the decoder reads their bits.
 
-- `0`, `eg(2)` run-1: the next run of entities are the previous frame's,
-  unchanged, taken in order from the cursor (the cursor moves past them);
-- `1`, `1`, `seg(0)` index of the previous entity relative to the cursor,
-  then one bit per non-key field (changed), then each changed field (a
-  position as a difference); the cursor moves past that entity;
-- `1`, `0`: a new entity, whole.
+| bits | entity |
+|---|---|
+| `1` | Edit the previous entity at the cursor. |
+| `00` | Run of predicted or unchanged entities beginning at the cursor. `eg(2)` gives the run length minus one. |
+| `010` | New entity with all its fields. |
+| `011` | Edit a previous entity at a signed `seg(0)` displacement from the cursor. |
 
-Entities are matched by their key fields (below). A field "changed" is a
-change in its quantised value, so jitter below the quantum costs nothing.
+After an edit or run the cursor moves past the last referenced entity.
+Before v7, a run starts with `0`, a new entity with `10`, and every edit
+with `11` and an explicit displacement. Each edit sends its mask and the
+values of the selected fields in schema order.
+
+Entity keys match an edit to its base even after a reorder. V7 remembers the
+previous matched edit mask in each list, initially zero. Runs and new entities
+leave that mask intact. For players and actors each five-bit group carries four
+bits of the XOR of the current and previous masks, least significant group
+first. The fifth bit requests another group. The last of five possible groups
+must end the mask. An unchanged mask costs a single zero group. The field
+orders, using the zero-based indices from the entity table, are:
+
+| list | four fields per group, first group on the left |
+|---|---|
+| player | 14,16,3,8 / 13,2,6,11 / 20,9,10,7 / 1,4,5,12 / 15,17,18,19 |
+| actor | 14,16,3,6 / 13,2,4,11 / 20,9,10,5 / 1,7,8,12 / 15,17,18,19 |
+
+For the other lists a zero bit reuses the preceding edit mask and a one bit
+starts an explicit mask, one bit per non-key field in schema order.
+
+**Version 7 prediction.** For a gap of 1–30 ticks, advance the positions of
+players, actors, vehicles and projectiles with known velocity. With velocity
+`a` in 1/128-unit/s quanta, a constant velocity gives a displacement of
+`round_half_away(a * 8 * dt / 30)` position quanta per axis.
+
+For players and datum-ID actors, two equal successive spans allow an additional
+prediction when the same numeric key occupied the previous slot both times.
+Keep that slot's actual yaw, aim and velocity from one sample earlier. Predict
+each field as twice the previous value minus the older one. Wrap yaw modulo
+16384 and clamp each oct coordinate to 0..16382. Aim and velocity each require
+two present values. When velocity can be predicted, use the mean of the last
+actual velocity and predicted velocity for displacement, or
+`round_half_away((a + b) * 4 * dt / 30)`. A keyframe clears all history.
+A gap greater than 30 ticks disables prediction for that span.
+
+Runs inherit the predicted state. Edits correct every difference from the
+quantised endpoint. A changed yaw or oct component with a base uses
+`0, seg(0)` for differences in −64..63 or `1, u(14)` for an absolute
+component. Without a base it uses `u(14)`. Yaw differences wrap at one turn.
+A matched unit's present animation phase with a present base and a span of
+1–30 ticks uses one bit after the presence bit. A one advances the base by
+16 quanta per tick. A zero precedes an absolute `eg(4)`.
+
+V7 hit positions can reuse the exact quantised position of a player in the
+same frame. When there are players, a one bit followed by a four-bit ordinal
+selects one from the current wire-order list. A zero bit precedes the three
+absolute coordinates for other hits. When the player list is empty the three
+absolute coordinates follow directly.
+
+**Versions 1–6.** Position uses 1/512 unit, velocity 1/64 unit/s, yaw 12
+bits and each oct component 12 bits (maximum 4094). All edits send an
+explicit mask. Plain position differences use three `seg(7)`, velocity
+differences three `seg(4)`, and directions and yaw carry absolute codes.
 
 **Prediction (version 6).** In a delta, the changed position of an entity
 whose previous version had a velocity (players, actors, vehicles,
@@ -765,7 +818,7 @@ doubles (exact: every term stays under 2^31).
 
 An encoder starts with a keyframe and sends one again every N frames (the
 game: 150; the server's reader stream: 15), when the game id changes, when
-the tick goes backwards, and when the string table would pass 4096 strings.
+the tick goes backwards, at a v7 checkpoint cut, and when the string table would pass 4096 strings.
 A decoder keeps the last frame and string table per stream id; a delta
 whose sequence is not the next one it expects (a dropped frame, or joining
 mid-stream) is a gap: it drops deltas until the next keyframe. The reader
@@ -776,39 +829,18 @@ encoder as it was.
 
 ### Compatibility
 
-The version is the first four bits; a decoder refuses versions it does not
-know. Version 6 (2026-11-19) is written for every frame: it carries the
-cinematic bit always (so a cutscene is deltas, not a keyframe each way),
-vehicles' velocity, the projectile and item lists and position prediction.
-A decoder from before it refuses version 6 frames, so the server and the
-web page must be deployed before a game build that sends it (the Worker's
-decoder is `live-proto`'s, the page's `pack.ts`; recorded chunks keep
-their bytes and are read by the same decoders). Every older version still
-decodes: `web/test/fixtures/pack/v4-multiplayer` and `v4-cinematic` are
-the streams version 4's encoder wrote (versions 4 and 5), tested on both
-sides. Version 5 was version 4 with the frame's cinematic bit, and only a
-cinematic frame is written in it: an encoder moving between the two sends
-a keyframe (a delta follows a frame of its own version), and a decoder from
-before version 5 refuses only the cutscene's frames, waits for the next
-keyframe and reads on. `web/test/fixtures/pack/cinematic` is a stream in
-and out of a cutscene. Version 4 (units' animation) is written now; version 3 added units'
-velocity, fire ticks, vitality, seat and action ticks, hits' ticks and the
-frame's cut. Decoders still read versions 3, 2 and 1 (recorded frames, an older game's stream), and a delta only
-applies to a frame of its own version. `web/test/fixtures/pack/v1-multiplayer`
-, `v2-multiplayer` and `v3-multiplayer` are older streams both decoders are tested on. Version
-3 costs about 25% more on the sample frames when every field is filled
-(multiplayer deltas 226 to 282 bytes, campaign 651 to 788); the senders
-fill them from capture onwards (docs/live/replay-fidelity.md, step 4), and
-an absent field is one bit. Version 4's animation on every unit adds about
-a sixth again (multiplayer deltas 324 bytes, campaign 931): the frame is
-sent whole until the chunk codec predicts it. Recorded `GameFrame` events written before packed frames hold the
-JSON frame (no `packed` field) and stay readable: the server's
-`?format=json` returns them as they are, `?format=packed` packs them on
-the fly, and the web's `recordedFrame` reads both. The ingest socket takes
-the JSON `frame` message as before, and `/v1/stream` sends JSON frames
-unless asked for `?frames=packed`. A recorded frame is signed by the
-server's event signature over `{tick, source, packed}`, so the signature
-covers the packed bytes.
+The first four bits select the decoder. Version 7 writes all seven
+entity lists introduced through v6. A delta requires the preceding sequence
+number and a base of the same version. Live subscribers recover at a
+keyframe, and each recorded chunk begins with one. Rust and web fixtures
+cover versions 1 through 7, including a v6 stream with vehicle velocities,
+projectiles and dropped items. Recorded chunks keep their original bytes.
+An old JSON `GameFrame` and a later base64-packed one are both readable
+through the legacy frame page.
+
+Deploy the web reader first, then the server and Worker, then reinstall the
+game sender. Existing senders work with the updated readers. Clients that
+consume JSON can keep using the JSON representations.
 
 ## Telemetry cost
 
