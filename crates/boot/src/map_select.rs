@@ -298,35 +298,25 @@ impl Catalogue {
 
 // ---- reading the list ----
 
-/// Slot offsets (map-pack.md 8.1): id, English name (32 UTF-16 units), the
-/// scenario path, the sort order.
-const SLOT_NAME: usize = 0xc;
-const NAME_UNITS: usize = 32;
-const SLOT_PATH: usize = 0xb4c;
-const PATH_LEN: usize = 0x100;
-const SLOT_SORT: usize = 0xc4c;
+/// Slot offsets (map-pack.md 8.1), for the tests' slots: the English
+/// name, the scenario path, the sort order (`tags::ui_levels`).
+#[cfg(test)]
+const SLOT_NAME: usize = tags::ui_levels::MP_NAME;
+#[cfg(test)]
+const SLOT_PATH: usize = tags::ui_levels::MP_PATH;
+#[cfg(test)]
+const SLOT_SORT: usize = tags::ui_levels::MP_SORT;
 
 /// A used slot of `mainmenu.map`'s multiplayer list as a [`Map`]; `None`
-/// for a free one (id `-1`) or a short one.
+/// for a free one (id `-1`) or a short one. The slot is read by
+/// `tags::ui_levels::mp_level`, as the Live catalog and the editor read it.
 pub fn map_of_slot(slot: &[u8]) -> Option<Map> {
-    let slot = slot.get(..content::map_list::SLOT_LEN)?;
-    let u32_at = |at: usize| u32::from_le_bytes(slot[at..at + 4].try_into().unwrap());
-    let id = u32_at(0);
-    if id == u32::MAX {
-        return None;
-    }
-    let units: Vec<u16> = slot[SLOT_NAME..SLOT_NAME + NAME_UNITS * 2]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .take_while(|&u| u != 0)
-        .collect();
-    let path = &slot[SLOT_PATH..SLOT_PATH + PATH_LEN];
-    let path = &path[..path.iter().position(|&b| b == 0).unwrap_or(PATH_LEN)];
+    let l = tags::ui_levels::mp_level(slot)?;
     Some(Map {
-        id,
-        name: String::from_utf16_lossy(&units),
-        sort: u32_at(SLOT_SORT) as i32,
-        path: String::from_utf8_lossy(path).into_owned(),
+        id: l.id,
+        name: l.name,
+        sort: l.sort,
+        path: l.path,
         replaces: None,
     })
 }

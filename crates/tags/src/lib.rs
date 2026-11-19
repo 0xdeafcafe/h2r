@@ -18,6 +18,9 @@ pub mod edit;
 pub mod rebuild;
 /// A new `bitm` from RGBA pixels, shaped like an existing one.
 pub mod rgba_bitmap;
+/// The main menu's level lists (multiplayer maps and campaign levels) in
+/// the globals tag: names, descriptions, pictures.
+pub mod ui_levels;
 /// Typed tag definitions: every field named or an explicit unknown span;
 /// see `docs/formats/tag-definitions.md`.
 pub mod defs;
