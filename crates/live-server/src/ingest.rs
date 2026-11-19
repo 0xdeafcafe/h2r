@@ -1,5 +1,6 @@
 //! `GET /v1/ingest`: the game's WebSocket (docs/live/live-api.md, Streams). The
-//! first message is `{kind: "auth", token}` with `lxm: games.write`; then
+//! first message is `{kind: "auth", token}` with `games.write` for accounts
+//! or `telemetry.ingest` for a leased host. It then accepts
 //! `frame`, `events` (one batch JWS) and `ping` messages, and binary
 //! messages of packed frames (docs/live/live-telemetry.md, Packed frames). Each `events`
 //! batch is answered with `appended` or `error`; frames are answered only
@@ -12,21 +13,15 @@
 
 use std::sync::Arc;
 
-use live_proto::sign::{TOKEN_LEEWAY_S, Token};
-use live_proto::{Author, ClientMessage, ErrorCode, IngestReply, lxm, pack};
+use live_proto::sign::TOKEN_LEEWAY_S;
+use live_proto::{ClientMessage, ErrorCode, IngestReply, pack};
 use serde::{Deserialize, Serialize};
 
 use crate::app::{ApiError, Live};
 use crate::games::reply_error;
-use crate::http::{MAX_WS_MESSAGE, auth_message};
+use crate::host_identity::{Publisher, TELEMETRY_INGEST}; // dh-identity
+use crate::http::MAX_WS_MESSAGE;
 use crate::stream::{CLOSE_UNAUTHORIZED, Out};
-
-fn author_of(token_text: &str) -> Option<Author> {
-    let ClientMessage::Auth { token } = serde_json::from_str(token_text).ok()? else {
-        return None;
-    };
-    Author::parse(&Token::parse(&token).ok()?.claims.iss)
-}
 
 fn json(reply: &IngestReply) -> Out {
     Out::Text(serde_json::to_string(reply).expect("serializes").into())
@@ -45,7 +40,7 @@ pub struct IngestSession {
     live: Arc<Live>,
     /// Who the socket writes as, and its token's `exp`; `None` until the
     /// auth message.
-    author: Option<(Author, i64)>,
+    author: Option<(Publisher, i64)>,
     /// The packed frames' decoder. Not kept across a wake: a resumed
     /// socket's frames are refused until the sender's next keyframe, as
     /// after any gap.
@@ -66,7 +61,7 @@ impl IngestSession {
         s.author = r
             .author
             .as_deref()
-            .and_then(Author::parse)
+            .and_then(Publisher::from_attachment)
             .map(|a| (a, r.expires));
         s
     }
@@ -85,7 +80,13 @@ impl IngestSession {
 
     /// When the token runs out (unix seconds, leeway included).
     pub fn deadline(&self) -> Option<i64> {
-        self.author.as_ref().map(|(_, exp)| exp + TOKEN_LEEWAY_S)
+        self.author.as_ref().map(|(publisher, exp)| {
+            if publisher.peer().is_some() {
+                exp + TOKEN_LEEWAY_S
+            } else {
+                *exp
+            }
+        })
     }
 
     /// `Some` when the token has run out at `now`.
@@ -105,45 +106,55 @@ impl IngestSession {
         if text.len() > MAX_WS_MESSAGE {
             return vec![Out::Close(1009, "message too large".into())];
         }
-        let Some((author, _)) = &self.author else {
-            return match auth_message(&self.live, text, lxm::GAMES_WRITE) {
-                Ok(exp) => {
-                    self.author = Some((author_of(text).expect("authenticated"), exp));
+        if let Some(out) = self.expired(crate::app::now()) {
+            return vec![out];
+        }
+        let message = serde_json::from_str::<ClientMessage>(text);
+        if let Ok(ClientMessage::Auth { token }) = &message {
+            return match self.live.publisher(Some(token), TELEMETRY_INGEST) {
+                Ok((author, _, exp)) => {
+                    if self.author.as_ref().is_some_and(|(old, _)| *old != author) {
+                        return vec![json(&reply_error(&crate::app::forbidden(
+                            "a socket keeps its author",
+                        )))];
+                    }
+                    self.author = Some((author, exp));
                     Vec::new()
                 }
                 Err(e) => vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
             };
+        }
+        let Some((author, _)) = &self.author else {
+            return vec![Self::auth_timed_out()];
         };
-        let author = author.clone();
         let live = &self.live;
-        let reply = match serde_json::from_str::<ClientMessage>(text) {
-            Ok(ClientMessage::Auth { .. }) => match auth_message(live, text, lxm::GAMES_WRITE) {
-                // A fresh token must be the same author's.
-                Ok(exp) if author_of(text).as_ref() == Some(&author) => {
-                    self.author = Some((author, exp));
-                    None
-                }
-                Ok(_) => Some(Err(ApiError::new(
-                    ErrorCode::Forbidden,
-                    "a socket keeps its author",
-                ))),
-                Err(e) => return vec![Out::Close(CLOSE_UNAUTHORIZED, e.message)],
-            },
+        let reply = match message {
+            Ok(ClientMessage::Auth { .. }) => unreachable!("handled above"),
             Ok(ClientMessage::Frame { frame }) => {
                 live.meter(
-                    crate::usage::author_xuid(&author),
+                    author.xuid(),
                     crate::usage::metric::UP_FRAMES,
                     text.len() as u64,
                 )
                 .await;
-                live.ingest_frame(&author, *frame).await.err().map(Err)
+                live.ingest_frame_with_machine_baseline(author, *frame, false)
+                    .await
+                    .err()
+                    .map(Err)
             }
             Ok(ClientMessage::Events { game_id, jws }) => Some(
-                live.append_game_batch(&author, &game_id, &jws)
+                live.append_publisher_batch(author, &game_id, &jws)
                     .await
                     .map(|position| IngestReply::Appended { game_id, position }),
             ),
-            Ok(ClientMessage::Ping) => live.ping_as(&author).err().map(Err),
+            Ok(ClientMessage::Ping) => match author {
+                Publisher::Peer(a) => live.ping_as(a).err().map(Err),
+                Publisher::Host(subject) => {
+                    live.model
+                        .touch_service_sessions(subject, crate::app::now());
+                    None
+                }
+            },
             Err(e) => Some(Err(ApiError::new(
                 ErrorCode::Invalid,
                 format!("message: {e}"),
@@ -164,12 +175,15 @@ impl IngestSession {
         if bytes.len() > MAX_WS_MESSAGE {
             return vec![Out::Close(1009, "message too large".into())];
         }
+        if let Some(out) = self.expired(crate::app::now()) {
+            return vec![out];
+        }
         let Some((author, _)) = &self.author else {
             return vec![Self::auth_timed_out()];
         };
         self.live
             .meter(
-                crate::usage::author_xuid(author),
+                author.xuid(),
                 crate::usage::metric::UP_FRAMES,
                 bytes.len() as u64,
             )

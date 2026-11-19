@@ -457,6 +457,14 @@ pub fn install(
         TelemetrySinkConfig::Server { base_url, account } => {
             Telemetry::new(session, ServerSink::new(base_url.clone(), account.clone())?)
         }
+        TelemetrySinkConfig::Host { base_url, token, game } => {
+            let sink = ServerSink::for_host(base_url.clone(), token.clone())?;
+            if let Some(game) = game {
+                Telemetry::new(session.with_sim(game.clone()), sink.with_sim(game, None))
+            } else {
+                Telemetry::new(session, sink)
+            }
+        }
         TelemetrySinkConfig::Simulation {
             base_url,
             account,
@@ -480,7 +488,9 @@ pub fn install(
 fn signed_in(config: &TelemetryConfig) -> Option<live_proto::Xuid> {
     match &config.sink {
         TelemetrySinkConfig::Server { account, .. } => live_proto::Xuid::parse(&account.xuid).ok(),
-        TelemetrySinkConfig::File(_) | TelemetrySinkConfig::Simulation { .. } => None,
+        TelemetrySinkConfig::File(_)
+        | TelemetrySinkConfig::Simulation { .. }
+        | TelemetrySinkConfig::Host { .. } => None,
     }
 }
 
@@ -489,6 +499,17 @@ mod tests {
     use super::*;
     use crate::event::{GameInfo, PlayerState};
     use crate::memory::fixture;
+
+    #[test]
+    fn host_telemetry_has_no_signed_in_player() {
+        let secret = "test-private-host-credential";
+        let config = TelemetryConfig::for_host("https://live.example".into(), secret.into(), None)
+            .unwrap();
+        assert!(config.enabled);
+        assert!(signed_in(&config).is_none());
+        assert!(!format!("{config:?}").contains(secret));
+        assert!(TelemetryConfig::for_host("http://live.example".into(), secret.into(), None).is_err());
+    }
 
     #[test]
     fn observer_failure_disables_without_panicking() {
@@ -605,6 +626,7 @@ mod tests {
                 id: "1".into(),
                 session_id: Some("0123456789abcdef".into()),
                 clankers: false,
+                frames_from_host: false,
             })
         }));
         let mut guest = fixture::memory();

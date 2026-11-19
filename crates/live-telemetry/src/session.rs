@@ -76,6 +76,7 @@ struct Match {
     game_id: String,
     map: String,
     campaign: bool,
+    frames_from_host: bool,
     /// The engine's tick at the last sample.
     tick: u64,
     /// Added to the engine's tick for every tick the match sends. A
@@ -191,6 +192,8 @@ pub struct Playlist {
     /// A clanker hopper (docs/game/bots.md §8): the game is a
     /// Clankermatch, recorded as `kind: "clankermatch"`.
     pub clankers: bool,
+    /// Live assigned this client to a session where the host uploads the frames.
+    pub frames_from_host: bool,
 }
 
 /// The Clankers a host runs (docs/game/bots.md §6, §9): every bot goes
@@ -392,6 +395,10 @@ impl Session {
         } else {
             self.playlist.clone()
         };
+        // Only the account-backed Live uploader has a signed-in player. A
+        // local JSONL capture still records the client's view of this game.
+        let frames_from_host = self.signed_in.is_some()
+            && playlist.as_ref().is_some_and(|p| p.frames_from_host);
         let kind = match (campaign, &playlist) {
             (true, _) => "campaign",
             (false, Some(p)) if p.clankers => "clankermatch",
@@ -457,7 +464,8 @@ impl Session {
         self.current = Some(Match {
             game_id,
             map: info.map.clone(),
-            campaign: info.mode == "campaign",
+            campaign,
+            frames_from_host,
             tick: info.tick,
             tick_offset: 0,
             sent_tick: info.tick,
@@ -561,15 +569,6 @@ impl Session {
             link(signed_in, bots, &mut linked, sim);
             Self::roster_changed(&mut self.output, current, &snapshot.players, linked);
         }
-        for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
-            if let Some(o) = object.as_ref().filter(|_| player.unit != u32::MAX) {
-                current
-                    .player_units
-                    .insert(player.player.index, (player.unit, o.pos, yaw(o.forward)));
-                current.player_bodies.insert(player.unit);
-            }
-        }
-
         let scores = snapshot.scores();
         if snapshot.has_stats
             && snapshot.tick >= current.last_score_tick + current.tick_rate
@@ -590,6 +589,21 @@ impl Session {
             current.last_emitted_teams = snapshot.teams.clone();
             current.last_score_tick = snapshot.tick;
             current.sent_tick = current.sent_tick.max(clock);
+        }
+
+        current.cinematic = snapshot.cinematic;
+        // dh-identity: the joined client's one frame-upload gate. Scores,
+        // joins, leaves and the end of the game still go through as usual.
+        if current.frames_from_host {
+            return;
+        }
+        for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
+            if let Some(o) = object.as_ref().filter(|_| player.unit != u32::MAX) {
+                current
+                    .player_units
+                    .insert(player.player.index, (player.unit, o.pos, yaw(o.forward)));
+                current.player_bodies.insert(player.unit);
+            }
         }
 
         let mut shots = BTreeMap::new();
@@ -625,7 +639,6 @@ impl Session {
                 .add(snapshot.tick, *n);
         }
 
-        current.cinematic = snapshot.cinematic;
         if snapshot.cinematic {
             // A cutscene: the scripts move puppets about, teleport the
             // players and kill whom they like. Nothing it does is play, so
@@ -2675,6 +2688,7 @@ mod tests {
             id: "3".into(),
             session_id: Some("0123456789abcdef".into()),
             clankers: false,
+            frames_from_host: false,
         }));
         session.start(&info(), vec![player(0, 0)]);
         let game = started(&mut session);
@@ -2690,6 +2704,7 @@ mod tests {
             id: "9".into(),
             session_id: Some("00000000000000c1".into()),
             clankers: true,
+            frames_from_host: false,
         }));
         session.start(&info(), vec![player(0, 0)]);
         let game = started(&mut session);
@@ -2702,6 +2717,55 @@ mod tests {
         let game = started(&mut session);
         assert_eq!(game.kind.as_deref(), Some("campaign"));
         assert_eq!(game.playlist, None);
+    }
+
+    #[test]
+    fn dedicated_join_skips_frames_only_for_the_joined_game() {
+        let mut session = Session::new("test", None).with_signed_in(Some(live_proto::Xuid(1)));
+        let playlist = Playlist {
+            name: None,
+            id: "3".into(),
+            session_id: Some("0123456789abcdef".into()),
+            clankers: false,
+            frames_from_host: true,
+        };
+        session.set_playlist(Some(playlist.clone()));
+        session.start(&info(), vec![player(0, 0)]);
+        session.take_output();
+
+        // The next game's decision cannot change delivery mid-match.
+        session.set_playlist(None);
+        let scored = snapshot(30, vec![player(0, 1), player(1, 0)]);
+        session.sample(&scored);
+        let output = session.take_output();
+        assert!(output.iter().all(|o| matches!(o, Output::Event(_))));
+        let event_kinds: Vec<_> = output.iter().filter_map(|o| match o {
+            Output::Event(e) => Some(e.kind.as_str()),
+            Output::Frame(_) => None,
+        }).collect();
+        assert!(event_kinds.contains(&live_proto::game::SCORE_CHANGED));
+        assert!(event_kinds.contains(&live_proto::game::PLAYER_JOINED));
+        let mut cinematic = scored.clone();
+        cinematic.tick = 32;
+        cinematic.cinematic = true;
+        session.sample(&cinematic);
+        assert!(frames(&mut session).is_empty());
+        session.end(&scored);
+        assert!(kinds(&mut session).iter().any(|k| k == live_proto::game::GAME_ENDED));
+
+        session.set_playlist(Some(Playlist {
+            frames_from_host: false,
+            ..playlist.clone()
+        }));
+        session.start(&info(), vec![]);
+        session.sample(&snapshot(2, vec![]));
+        assert_eq!(frames(&mut session).len(), 1, "the next peer game uploads frames");
+
+        let mut local_capture = Session::new("test", None);
+        local_capture.set_playlist(Some(playlist));
+        local_capture.start(&info(), vec![]);
+        local_capture.sample(&snapshot(2, vec![]));
+        assert_eq!(frames(&mut local_capture).len(), 1, "local capture still records");
     }
 
     fn actor(slot: u32, pos: [f64; 3], team: i16) -> crate::event::ActorState {

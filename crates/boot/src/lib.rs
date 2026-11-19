@@ -1254,6 +1254,8 @@ fn run_configured(
             hle.matchmade().map(|(id, session)| telemetry::Playlist {
                 name: None,
                 id: id.to_string(),
+                // dh-identity: latch the queue's decision for this game.
+                frames_from_host: hle.frames_from_host(&session),
                 session_id: Some(session),
                 clankers: hle.clanker_hoppers().contains(id),
             })
