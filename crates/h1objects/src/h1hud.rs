@@ -740,28 +740,26 @@ fn weapon_chain(
     Ok(())
 }
 
-/// A crosshair's state flags, shown zoomed or not: Halo 2's battle rifle
-/// reticle's (V: `ui\hud\battle_rifle` widget 3, `hud_reticles`, which
-/// stays in the scope).
-pub const AIM_STATE: [u8; 20] = [
-    0x30, 0, 0, 0, 0x03, 0, 0, 0, 0, 0, 0x11, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
-];
+/// A crosshair's state flags, based on Halo 2's battle rifle reticle,
+/// which stays in the scope.
+pub const AIM_STATE: [u8; 20] = primary_weapon_state([
+    0x30, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
-/// A zoomed-only crosshair's state flags: Halo 2's scope masks' (V:
-/// `ui\hud\sniper_rifle` and `battle_rifle` widget 0, the scope masks,
-/// `+0x08` bit `0x40`).
-pub const ZOOM_STATE: [u8; 20] = [
-    0x90, 0x01, 0, 0, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0,
-];
+/// A zoomed-only crosshair's state flags, based on Halo 2's scope masks
+/// (V: `ui\hud\sniper_rifle` and `battle_rifle` widget 0 hide unzoomed).
+pub const ZOOM_STATE: [u8; 20] = primary_weapon_state([
+    0x90, 0x01, 0, 0, 0x01, 0, 0, 0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
 
 /// Halo 2's state word C (`+0x0c` show, `+0x14` hide), as the HUD draw
 /// builds it for a weapon HUD (E `0x0013a050`, `edi`; the weapon's HUD
 /// state from `0x0013afa9`, filled by `0x00100520` from the weapon object)
 /// and the gate `0x0013ac87` finishes it from the widget's thresholds:
 ///
-/// - `0x01`, `0x02`, `0x04`: which of the unit's weapon HUDs is drawn (1,
-///   2, 3; V: retail single-weapon widgets show on `0x01` and hide on
-///   `0x06`, the dual-wielded left ones show on `0x02`);
+/// - `0x01`, `0x02`, `0x04`: primary, off-hand, and stowed weapon
+///   (E: `0x00139ca0`, `0x00139d00`, `0x00139dba`; V: retail panels
+///   show on `0x01` or `0x02`, and backpack icons on `0x04`);
 /// - `0x08`: threshold `+0x18` (a byte, as a float) above the battery's
 ///   age, a fraction (`0x0013ac8f`): set at any threshold of 1 or more
 ///   while the battery lasts, so it is no "low battery";
@@ -783,22 +781,34 @@ pub const ZOOM_STATE: [u8; 20] = [
 /// state 1..6, is read only by Halo 2's own low-ammunition message,
 /// `0x0013ab3e`), and none says the battery is low.
 pub mod weapon_word_c {
+    pub const PRIMARY: u16 = 0x01;
+    pub const OFF_HAND: u16 = 0x02;
+    pub const BACKPACK: u16 = 0x04;
     pub const LOADED_BELOW: u16 = 0x10;
     pub const RESERVE_BELOW: u16 = 0x20;
     pub const OVERHEATED: u16 = 0x40;
     pub const NOTHING_TO_FIRE: u16 = 0x80;
 }
 
+/// Halo 1 has one weapon panel. Use the retail primary panel's slot
+/// exclusion even when another show word matches (the gate ORs the show
+/// words, then applies every hide word).
+const fn primary_weapon_state(mut state: [u8; 20]) -> [u8; 20] {
+    state[12] |= (weapon_word_c::OFF_HAND | weapon_word_c::BACKPACK) as u8;
+    state
+}
+
+const WEAPON_PANEL_STATE: [u8; 20] = primary_weapon_state(STATE);
+
 /// The gate state of a warning shown while `show` (word C) is set and
 /// `hide` is not, with thresholds `loaded` (`+0x19`) and `reserve`
 /// (`+0x1a`). Hidden where the aim crosshair is ([`AIM_STATE`]: word B
-/// `0x11`, word C `0x04`).
+/// `0x11` and the other weapon slots).
 pub const fn warning_state(show: u16, hide: u16, loaded: u8, reserve: u8) -> [u8; 20] {
-    let hide = hide | 0x04;
-    [
+    primary_weapon_state([
         0, 0, 0, 0, show as u8, (show >> 8) as u8, 0, 0, 0, 0, 0x11, 0, hide as u8,
         (hide >> 8) as u8, 0, 0, 0, loaded, reserve, 0,
-    ]
+    ])
 }
 
 /// Halo 1's "Reload" (warning 3: rounds in reserve, loaded at or below the
@@ -819,13 +829,15 @@ pub const EMPTY_STATE: [u8; 20] = warning_state(weapon_word_c::NOTHING_TO_FIRE, 
 /// `0x0013a127`, the unit's zoom level `+0x3c`).
 pub const ZOOM_LEVELS: usize = 2;
 
-/// The state of the zoom-level readout at each level: Halo 2's own (V:
-/// `ui\hud\sniper_rifle` widgets 7 and 8, its "5x" and "10x": shown on
-/// word A `0x90` and hidden on `0x140`, shown on `0x110` and hidden on
-/// `0xc0`; word C `0x01`, hidden on `0x04`).
+/// The state of the zoom-level readout at each level, based on the retail
+/// sniper rifle's two readouts.
 pub const ZOOM_LEVEL_STATES: [[u8; 20]; ZOOM_LEVELS] = [
-    [0x90, 0, 0, 0, 0x01, 0, 0, 0, 0x40, 0x01, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
-    [0x10, 0x01, 0, 0, 0x01, 0, 0, 0, 0xc0, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0],
+    primary_weapon_state([
+        0x90, 0, 0, 0, 0x01, 0, 0, 0, 0x40, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]),
+    primary_weapon_state([
+        0x10, 0x01, 0, 0, 0x01, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ]),
 ];
 
 /// The widget of Halo 1's zoom-level readout (crosshair type 1) at zoom
@@ -1001,12 +1013,16 @@ pub fn weapon_widget(
     }
     let bitmap = bitmap.ok_or(Skip::NothingDrawn)?;
     let (name, inputs, shader, state) = match &e.kind {
-        WeaponEntryKind::Static(_) => ("h1_weapon_static", [0; 4], plain, STATE),
-        // Shown always: drawn as a static is.
-        WeaponEntryKind::Overlay(..) => ("h1_weapon_overlay", [0; 4], plain, STATE),
+        WeaponEntryKind::Static(_) => {
+            ("h1_weapon_static", [0; 4], plain, WEAPON_PANEL_STATE)
+        }
+        // Shown always on the active weapon.
+        WeaponEntryKind::Overlay(..) => {
+            ("h1_weapon_overlay", [0; 4], plain, WEAPON_PANEL_STATE)
+        }
         WeaponEntryKind::Meter(s, _) => {
             let input = weapon_meter_input(*s).ok_or(Skip::MeterState(*s))?;
-            ("h1_weapon_meter", [input, 0, 0, 0], meter, STATE)
+            ("h1_weapon_meter", [input, 0, 0, 0], meter, WEAPON_PANEL_STATE)
         }
         WeaponEntryKind::Crosshair(t, flags) => match *t {
             crosshair_type::AIM if flags & OVERLAY_WHEN_UNZOOMED != 0 => {
@@ -1686,8 +1702,8 @@ pub fn weapon_number_input(s: WeaponState) -> Option<u8> {
 
 /// The text widget for weapon HUD number `e`, or why it has none: Halo 2
 /// text on [`weapon_number_input`], standing where Halo 1's number does
-/// ([`number_point`], as the grenade count), with the weapon's other
-/// widgets' state flags ([`STATE`]).
+/// ([`number_point`], as the grenade count), with the same state flags as
+/// the rest of the weapon panel.
 ///
 /// The number's scale is not the element's: Halo 1's number draw takes
 /// its scale from its eighth argument (E `0x000e1b3d`), which the weapon
@@ -1730,7 +1746,7 @@ pub fn weapon_number(
     Ok(TextWidget {
         name: "h1_weapon_number".to_owned(),
         inputs: [input, 0, 0, 0],
-        state: STATE,
+        state: WEAPON_PANEL_STATE,
         anchor: n.anchor,
         flags: TEXT_NUMBER,
         shader,
@@ -1832,7 +1848,10 @@ mod tests {
         let t = weapon_number(&e, 9, 12, TagId(7)).unwrap();
         assert_eq!(t.inputs, [0x33, 0, 0, 0]);
         assert_eq!((t.flags, t.string, t.justification), (TEXT_NUMBER, TEXT_INPUT1, JUSTIFY_RIGHT));
-        assert_eq!((t.anchor, t.state, t.shader), (Anchor::TopLeft, STATE, TagId(7)));
+        assert_eq!(
+            (t.anchor, t.state, t.shader),
+            (Anchor::TopLeft, WEAPON_PANEL_STATE, TagId(7)),
+        );
         // Three cells from 29: the last ends at 29 + 2 * 9; the ink centred
         // on the digit sprite's rows 3..15.
         assert_eq!(t.offset, (47, -2));
@@ -1866,7 +1885,7 @@ mod tests {
         assert_eq!(w.inputs, [0x36, 0, 0, 0]);
         assert_eq!(w.shader, TagId(2));
         assert_eq!((w.anchor, w.offset, w.registration), (Anchor::TopLeft, (6, 21), [0.0, 0.0]));
-        assert_eq!(w.state, STATE);
+        assert_eq!(w.state, WEAPON_PANEL_STATE);
         let heat = entry(WeaponEntryKind::Meter(WeaponState::Heat, [0, 1, 0]));
         assert_eq!(weapon_widget(&heat, Some(TagId(1)), TagId(2), TagId(3)).unwrap().inputs[0], 0x31);
         let battery = entry(WeaponEntryKind::Meter(WeaponState::Battery, [0, 1, 0]));
@@ -1895,14 +1914,75 @@ mod tests {
         assert_eq!(weapon_widget(&c, Some(TagId(1)), TagId(2), TagId(3)), Err(Skip::CrosshairType(9)));
     }
 
+    fn gate_words(state: &[u8; 20], words: [u16; 4]) -> bool {
+        let matches = |start| {
+            words.iter().enumerate().any(|(i, &word)| {
+                let at = start + 2 * i;
+                u16::from_le_bytes([state[at], state[at + 1]]) & word != 0
+            })
+        };
+        matches(0) && !matches(8)
+    }
+
+    #[test]
+    fn only_the_primary_weapon_draws_a_halo1_weapon_hud() {
+        use WeaponState::{LoadedAmmo, TotalAmmo};
+        use crosshair_type::{AIM, NO_AMMO, RELOAD, ZOOM_LEVEL};
+        use weapon_word_c::{BACKPACK, LOADED_BELOW, NOTHING_TO_FIRE, OFF_HAND, PRIMARY};
+
+        let bitmap_state = |kind| {
+            weapon_widget(&entry(kind), Some(TagId(1)), TagId(2), TagId(3))
+                .unwrap()
+                .state
+        };
+        let text = weapon_number(&number_entry(TotalAmmo, false), 9, 12, TagId(3)).unwrap();
+        let zoom = entry(WeaponEntryKind::Crosshair(ZOOM_LEVEL, OVERLAY_WHEN_ZOOMED));
+        let panel = [
+            bitmap_state(WeaponEntryKind::Static(TotalAmmo)),
+            bitmap_state(WeaponEntryKind::Meter(LoadedAmmo, [0, 1, 0])),
+            bitmap_state(WeaponEntryKind::Overlay(
+                TotalAmmo,
+                overlay_shown::ALWAYS,
+                0,
+                0,
+            )),
+            text.state,
+        ];
+        let reticle = bitmap_state(WeaponEntryKind::Crosshair(AIM, 0));
+        let scope = bitmap_state(WeaponEntryKind::Crosshair(AIM, OVERLAY_WHEN_ZOOMED));
+        let reload = bitmap_state(WeaponEntryKind::Warning(RELOAD, 0, 10));
+        let no_ammo = bitmap_state(WeaponEntryKind::Warning(NO_AMMO, 0, 0));
+        let zoom_state = |level| {
+            zoom_widget(&zoom, level, Some(TagId(1)), TagId(3))
+                .unwrap()
+                .state
+        };
+        let centre = [
+            (reticle, 0x50, 0),
+            (scope, 0x90, 0),
+            (reload, 0x40, LOADED_BELOW),
+            (no_ammo, 0x40, NOTHING_TO_FIRE),
+            (zoom_state(0), 0x90, 0),
+            (zoom_state(1), 0x110, 0),
+        ];
+        for (state, a, c) in panel
+            .into_iter()
+            .map(|state| (state, 0x1040, 0))
+            .chain(centre)
+        {
+            assert!(gate_words(&state, [a, 0, c | PRIMARY, 0]));
+            assert!(!gate_words(&state, [a, 0, c | OFF_HAND, 0]));
+            assert!(!gate_words(&state, [a, 0, c | BACKPACK, 0]));
+        }
+    }
+
     /// Halo 2's gate (E `0x0013ac87`) over a widget's 20 state bytes, for a
     /// weapon HUD drawn first (word C `0x01`) whose weapon has `loaded`
     /// and `reserve` rounds and a battery of `age`: word C's threshold bits
     /// as the gate sets them, `0x80` as `0x0013a22b` does (a magazine of
     /// 60), the overheat bit given.
     fn gate(state: &[u8; 20], loaded: i16, reserve: i16, age: f32, overheated: bool) -> bool {
-        let word = |i: usize| u16::from_le_bytes([state[2 * i], state[2 * i + 1]]);
-        let mut c: u16 = 0x01;
+        let mut c = weapon_word_c::PRIMARY;
         if f32::from(state[16]) > age {
             c |= 0x08;
         }
@@ -1920,9 +2000,7 @@ mod tests {
         }
         // Words A, B and D as for an unzoomed player with the weapon out
         // (none of the warnings' words).
-        let w = [0x0040u16, 0, c, 0];
-        let any = |base: usize| (0..4).any(|i| word(base + i) & w[i] != 0);
-        any(0) && !any(4)
+        gate_words(state, [0x40, 0, c, 0])
     }
 
     #[test]
@@ -1964,7 +2042,7 @@ mod tests {
         // Hidden where the aim crosshair hides (AIM_STATE's hide words).
         assert_eq!(&EMPTY_STATE[8..16], &AIM_STATE[8..16]);
         assert_eq!(reload_state(4)[10..12], AIM_STATE[10..12]);
-        assert_eq!(reload_state(4)[12] & 0x04, 0x04);
+        assert_eq!(reload_state(4)[12], 0x26);
     }
 
     #[test]
@@ -2055,7 +2133,7 @@ mod tests {
         o.sequence = 0;
         o.colour = 0xffe6f0ff;
         let w = weapon_widget(&o, Some(TagId(1)), TagId(2), TagId(3)).unwrap();
-        assert_eq!((w.shader, w.inputs, w.state), (TagId(3), [0; 4], STATE));
+        assert_eq!((w.shader, w.inputs, w.state), (TagId(3), [0; 4], WEAPON_PANEL_STATE));
         assert_eq!((w.anchor, w.offset, w.sequence), (Anchor::TopLeft, (53, 4), 0));
         assert_eq!(w.registration, registration(Anchor::TopLeft));
         // Shown on a condition only, or animated: no widget.

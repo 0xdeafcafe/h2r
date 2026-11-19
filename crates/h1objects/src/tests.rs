@@ -59,6 +59,57 @@ fn templates_pick_the_role_and_the_more_specific_name_first() {
 }
 
 #[test]
+fn weapon_zoom_rebuilds_from_the_halo1_tag() {
+    use crate::{arsenal, h1};
+    use h1map::testing::{self, BASE, Opts, put};
+
+    for (levels, range) in [(0i16, [1.5f32, 3.0]), (1, [2.5, 2.5]), (2, [2.25, 7.5])] {
+        let mut fixture = testing::build(&Opts::default());
+        // Use the last tag slot for a synthetic weapon root.
+        let slot = fixture.data_at.len() - 1;
+        let index = h1map::HEADER_LEN;
+        let entry = index + 0x24 + slot * h1map::TAG_ENTRY_LEN;
+        let root = fixture.file.len();
+        put(&mut fixture.file, entry, testing::group(b"weap"));
+        put(
+            &mut fixture.file,
+            entry + 0x14,
+            BASE + (root - index) as u32,
+        );
+        fixture.file.resize(root + h1::WEAP_SIZE, 0);
+        let length = fixture.file.len();
+        put(&mut fixture.file, 8, length as u32);
+        put(&mut fixture.file, 0x14, (length - index) as u32);
+        fixture.file[root + 0x3da..root + 0x3dc].copy_from_slice(&levels.to_le_bytes());
+        put(&mut fixture.file, root + 0x3dc, range[0].to_bits());
+        put(&mut fixture.file, root + 0x3e0, range[1].to_bits());
+
+        let map = h1map::H1Map::from_decompressed(fixture.file).unwrap();
+        let tag = &map.tags()[slot];
+        let weapon = h1::Weapon::read(&map, tag).unwrap();
+        let built = arsenal::weapon(
+            &weapon,
+            &arsenal::weapon_bytes(&map, tag).unwrap(),
+            &arsenal::WeaponParts::default(),
+            &arsenal::Role::default(),
+        )
+        .unwrap();
+        let bytes = &built.bytes;
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            i16::from_le_bytes(bytes[0x1fe..0x200].try_into().unwrap()),
+            levels,
+        );
+        let expected_range = if levels == 0 { [0.0, 0.0] } else { range };
+        assert_eq!(
+            [f32::from_bits(word(0x200)), f32::from_bits(word(0x204))],
+            expected_range,
+        );
+        assert_eq!(word(0x12c) & (1 << 16) != 0, levels == 0);
+    }
+}
+
+#[test]
 fn collision_moves_node_bsps_under_region_permutations() {
     // Region "body" has two permutations; node 0 holds a BSP for each,
     // node 1 (no region) none, node 2 one for the first only.

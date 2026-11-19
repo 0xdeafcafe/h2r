@@ -886,6 +886,23 @@ vehicle keeps its own colour (the Scorpion's grey). Proof:
 `tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
 and `tests/rebuild_disc.rs`.
 
+### Weapon zoom
+
+`arsenal::weapon` transfers Halo 1's magnification count and range
+from `weap +0x3da` and `+0x3dc` to Halo 2's `+0x1fe` (`i16`) and
+`+0x200` (two `f32` values). The engine checks the count at
+`0x001010cd` and reads the range at `0x00101103` and `0x0010111c`.
+Blood Gulch's pistol keeps one level and the sniper rifle keeps two.
+An unscoped weapon has zero levels and a zero range, like the retail
+magnum and shotgun on Coagulation and Zanzibar.
+
+The older Blood Gulch serve had zero magnification fields on both the
+assault rifle and the sniper (`h2 agent edit get`). A zero count still
+lets Halo 2 use the player's binocular zoom. Converted unscoped weapons set `weap +0x12c` bit 16 to skip that
+fallback (E `0x000c89c1..0x000c89df`). This keeps the assault rifle
+and other unscoped Halo 1 weapons at the unzoomed field of view.
+Scope HUD conversion is described in [hud.md](hud.md#scope-mask).
+
 ### Ammunition counter (**Built**, converter version 95)
 
 The assault rifle's first-person model shows the rounds loaded on two
@@ -970,10 +987,10 @@ speed (Halo 1's are slower than the Halo 2 templates').
 - **Unit and vehicle tuning:** speeds, acceleration, seats, cameras,
   boarding; `bipd`/`vehi` keep the template's. Halo 1 `phys` (mass points)
   is read but not used: the template's `phmo` is.
-- **Weapon:** zoom levels (template's kept; the magnum happens to be 2x
-  like the pistol), ready time, chamber time, charging (plasma pistol),
-  first-person model and animations, the HUD (`wphi` vs `nhdt`), firing
-  effects and sounds: all the template's.
+- **Weapon:** ready time, chamber time, charging (plasma pistol), firing
+  effects and sounds. The [HUD conversion](hud.md#weapon-huds) covers
+  the weapon panel and crosshairs. Scope masks need the screen effect
+  block.
 - **Projectile:** material responses and every effect and sound: the
   template's. Contrails are Halo 1's (above).
 - **Equipment:** non-health powerup and grenade type values (template's).

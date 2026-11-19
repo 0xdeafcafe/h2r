@@ -28,7 +28,7 @@ struct item 0x12c
   0x124 tagref detonation_effect -- S: effe group words on retail items; Halo 1 item +0x2f8
 group weap 0x31c
   0x0 struct item item -- the item layer
-  0x12c u32 weapon_flags -- E: bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
+  0x12c u32 weapon_flags -- E: bit 16 suppresses binocular zoom (0xc89c1..0xc89df), bits 22 and 23 permit the off hand (0xcd8a8..0xcd8d7, 0xcdaee..0xcdb0d)
   0x130 unknown 0x4
   0x134 unknown 0x4
   0x138 unknown 0x4
@@ -69,9 +69,9 @@ group weap 0x31c
   0x1e4 tagref ref_1e4
   0x1ec tagref ref_1ec
   0x1f4 tagref ref_1f4
-  0x1fc unknown 0x4
-  0x200 unknown 0x4
-  0x204 unknown 0x4
+  0x1fc unknown 0x2
+  0x1fe i16 magnification_levels -- E: 0x1010cd bounds the scoped zoom level, 0xc89ca chooses between scoped and binocular zoom
+  0x200 f32[2] magnification_range -- E: 0x101103 and 0x10111c read the lower and upper zoom magnification
   0x208 unknown 0x4
   0x20c unknown 0x4
   0x210 unknown 0x4

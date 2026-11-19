@@ -36,6 +36,10 @@ pub const WEAPON_TYPE: u32 = 2;
 pub const EQUIPMENT_TYPE: u32 = 3;
 pub const PROJECTILE_TYPE: u32 = 5;
 
+/// `weap +0x12c` bit 16 skips the engine's fallback to binocular zoom
+/// when a held weapon has no scope (E `0xc89c1..0xc89df`).
+const NO_BINOCULAR_ZOOM: u32 = 1 << 16;
+
 /// The blocks whose elements take pooled role words, per group.
 pub const WEAPON_BLOCKS: &[&str] = &["magazines", "barrels", "barrels.block_e4"];
 
@@ -622,6 +626,18 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     for (path, at) in WEAPON_WORDS {
         word(&mut r, path, u32_at(b, *at))?;
     }
+    let levels = w.magnification_levels.max(0);
+    set(&mut r, "magnification_levels", Val::Int(levels.into()))?;
+    if levels == 0 {
+        set(&mut r, "weapon_flags", Val::Int(NO_BINOCULAR_ZOOM.into()))?;
+    } else {
+        set(
+            &mut r,
+            "magnification_range",
+            Val::floats(&w.magnification_range),
+        )?;
+    }
+
     // Magazines.
     let md = d.child("magazines").expect("weap magazines");
     let mut mags = Vec::new();
