@@ -707,6 +707,7 @@ impl<B: Backend> Device<B> {
             pending_grid: _,
             pending_external: _,
             admissions: _, // Host services, retained across guest loads.
+            residual: _,
             swallowing: _,
             swallow_mismatch: _,
             trace: _,

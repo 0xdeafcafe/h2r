@@ -2980,3 +2980,26 @@ inputs and stencil setup stay in place. The native pass consumes the
 resolved packet and records the full range on both live target copies
 before the handoff replaces the D3D draw. Other layer-2 handlers and
 unknown callers retain their own D3D submission.
+
+### Attachment and visibility entry paths
+
+The residual switch also selects the native entry path for clears,
+target binds and visibility finish/results. Their ordering boundary is
+the runtime's existing drain. A one-use marker lets these handlers
+consume that drain instead of reading the push cursor a second time.
+Callbacks, dirty-range processing, deferred destruction and ABI return
+writes still run through the common adapter.
+
+A whole-viewport, unmasked clear uses the native attachment load
+operations directly, without building a rectangle list. Partial or
+channel-masked clears use the existing rectangle renderer. Target
+binds among device-owned surfaces skip reference staging while retaining
+the surface lookup, write-back order and viewport behavior. Title-owned
+surfaces retain the usual reference, parent and destruction rules.
+
+Visibility issuance and results use the existing GPU pixel counter and
+report slots. The inline begin still drains before the counted draw.
+Finish and result calls retain index validation, pending answers, GPU
+timestamps and the normal write order. Counted geometry stays with the
+counting renderer. Draw admission only replaces ranges for which a
+complete recording can be reserved, including every live target copy.
