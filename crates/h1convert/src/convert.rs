@@ -732,7 +732,7 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
-        let (_, bytes, _) = self.assemble(base, mopp)?;
+        let (_, bytes, _) = self.assemble(base, mopp, false)?;
         let manifest = self.manifest(&bytes);
         Ok(Converted {
             name: map_name(&self.h1_name),
@@ -743,16 +743,24 @@ impl Prepared {
 
     /// The pinned map: the set it was built from (the base decomposed,
     /// with everything converted added), its bytes, and the converted
-    /// structure's BSP section.
+    /// structure's BSP section. An `intermediate` one (for
+    /// [`Prepared::build_fresh`], which lays every tag out anew and takes
+    /// the BSP from the set) may outgrow the base's BSP space: placed
+    /// scenery merged into the level's collision
+    /// ([`halo1::merge_scenery_collision`]) grows Boarding Action's region
+    /// past Beaver Creek's, and the pinned metadata cannot move up to make
+    /// room (`map::build::TagSet::check_bsp_space`).
     pub(crate) fn assemble<R: Read + Seek>(
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
+        intermediate: bool,
     ) -> Result<(TagSet, Vec<u8>, usize)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        set.check_bsp_space = !intermediate;
         // The vehicle collections the placements build first (their
         // datums were picked from the first added slot), then the
         // converted objects.

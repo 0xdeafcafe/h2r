@@ -100,7 +100,7 @@ pub struct Fresh {
 impl Prepared {
     /// The converted map with nothing pinned (see the module docs).
     pub fn build_fresh<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Fresh> {
-        let (pinned, bytes, section) = self.assemble(base, mopp)?;
+        let (pinned, bytes, section) = self.assemble(base, mopp, true)?;
         let mut src = Map::from_reader(Cursor::new(&bytes[..]))?;
         let mut fresh = unpinned_copy(&pinned);
         // The pinned map keeps the base's file prefix, so the base's own

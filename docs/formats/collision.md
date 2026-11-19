@@ -77,7 +77,12 @@ inferred from the biped's Havok shapes, not traced through the biped's
 movement code). No engine path that puts an object's slots in the Havok
 world has been found, and scenery gets no rigid body from a `phmo`
 either (rigid bodies, below): on converted Blood Gulch the player walked
-through boulders with slots (version 84) and with a `phmo` (version 90).
+through boulders with slots (version 84) and with a `phmo` (version 90). Since
+converter version 96 a converted map makes its placed scenery solid as
+structure instead: each placement's collision BSP, moved to its place, is
+merged into the structure's collision BSP (`h1convert::scenery_collision`,
+docs/halo1/multiplayer.md, "Collision"), whose surfaces Havok meets
+through the structure's MOPP code.
 
 **The rule (V, `retail_static_scenery_carries_bsp_physics`, every map on
 the disc: 7,033 permutations, 280 slots):** a `coll`'s permutations have

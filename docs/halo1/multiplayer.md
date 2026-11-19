@@ -91,6 +91,87 @@ polygon, on 50,000 random points (open or solid, and which leaf), on 20,000
 random segments and 20,000 segments from open space (where each first
 enters solid, compared exactly), and on a ray down from every spawn point.
 
+**Placed scenery joins it** (converter version 96,
+`h1convert::scenery_collision`). For each scenery placement there from the
+start, its object's collision (`h1objects::coll::object_bsps`: each
+collision node's BSP for permutation 0 of its region, the one a converted
+placement draws, placed by the render model's default pose) is moved to
+the placement (position, then yaw, pitch and roll as `Rz(yaw) ·
+Ry(−pitch) · Rx(roll)`, the record's `+0x14` as it is drawn) and merged:
+
+- **Moving a BSP.** Vertices and planes move rigidly. A 2D tree is written
+  in its reference plane's projection (the dominant normal axis dropped,
+  [collision.md](../formats/collision.md), "What the engine does with a
+  BSP"), which a rotation changes; each 2D line is carried over exactly
+  (new 2D point, lifted onto the moved plane, moved back, projected the old
+  way: an affine map), so every 2D walk finds what it found before.
+- **Merging.** The piece's planes, 2D nodes, surfaces, edges, vertices and
+  references are appended (surfaces take collision material 0, every
+  converted collision material being the base's one template; no
+  breakable surface), and one copy of the piece's 3D tree. Then each of
+  the level's open leaves the piece's solid reaches (inside its bounding
+  box, its vertices' box 0.05 out) is replaced by six nodes testing that
+  box, whose outside keeps the level's leaf and whose inside is the
+  copy. Inside that leaf's cell the piece decides solid or open,
+  everywhere else the level does: the union. The box keeps a piece whose
+  tree calls unbounded space solid (an open mesh) inside it. Each open
+  leaf of the copy carries, before its own references, those of every
+  level leaf it stands in whose planes its cell there touches (cells are
+  the box clipped by the level's path planes and the piece's, convex
+  polyhedra in `f64`): a ray that leaves the piece's open space into the
+  level's solid looks the surface up in the leaf it leaves, and the
+  matcher tries each reference on the crossed plane, keeping a surface
+  only when the point is on its polygon, so a reference a cell doesn't
+  border costs a lookup and gives no false hit. A copied leaf is in the
+  cluster of the first level leaf it stands in (`sbsp +0x2c`, the sound
+  and visibility cluster). The level's own blocks keep their indices;
+  nothing is renumbered. So a merge grows the level by one tree and six
+  nodes per level leaf. Version 92 as first written copied the whole
+  tree into every level leaf the box reached instead: Blood Gulch's
+  12,071 nodes became 51,007 for 25 placements, past what the pinned
+  build's BSP space holds.
+- **Room.** What the merge adds is the pieces themselves: Boarding
+  Action's 21 placements with collision take its collision BSP from
+  311,492 bytes to 537,388, and its structure region past Beaver Creek's
+  BSP space (its `sbsp` and `ltmp` are 655,344 bytes on the disc). A pinned map can't grow that space: every region loads
+  at one base right under the metadata, and pinned metadata keeps its
+  addresses. The fresh build doesn't need it to: it takes the converted
+  BSP from the set, not from the pinned intermediate's bytes, and lays
+  every tag out anew with a BSP space sized to its own region. So the
+  intermediate it builds is built with `check_bsp_space` off
+  (`Prepared::assemble`; [map-builder.md](../formats/map-builder.md),
+  "Pinned maps"), and a `--pinned` Boarding Action is refused with
+  "BSP space outgrew the pinned metadata base", as before.
+- **Havok.** The structure's MOPP code is built over every structure
+  surface after the merge (`structure_mopp`), so the rocks' surfaces are
+  keyed with the level's.
+- **Limits.** A merge that would pass what the packed fields hold (32,768
+  planes and 2D nodes, 32,767 surfaces, 65,535 references, edges and
+  vertices, 255 references a leaf) is refused whole, the level left as it
+  was, and listed with the unresolved placements; that object stays
+  walk-through.
+
+Proof: `h1convert/src/scenery_collision_tests.rs` (invented: a moved box
+hit on every face, 2D-split face included, after turns about all three
+axes; a box merged into a floor-and-wall level is solid, its top hit from
+above, the floor and the wall still hit from inside its gate box but off
+it, rays away from it unchanged, the structure MOPP code returning it; two
+overlapping boxes; a box in solid ground adding nothing; a merge that
+doesn't fit changing nothing) and
+`h1objects/tests/scenery_collision_disc.rs` (Blood Gulch on Coagulation:
+a point inside `boulder_doublewide` that the level alone leaves open is
+solid, a ray from above stops on the rock's top where the rock alone is
+hit and not on the ground, the MOPP code returns that surface there, the
+ground is found as before around the rock, and a 121 by 121 grid of
+vertical rays away from every placed object meets the level exactly as
+before; every multiplayer map merges every placement, validates (the level's own
+surfaces may hold material `0xffff`, none, as retail structure BSPs do),
+and keys every surface in its MOPP code; each prints its node growth and
+collision BSP bytes before and after; Boarding Action, merged again
+piece by piece, grows by each piece's own blocks once, six gate planes a
+piece, six gate nodes a level leaf it is put in and the references its
+copied leaves carry, and by nothing else).
+
 ## Halo 2 sandbox table (**Built** as `h1convert::sandbox`)
 
 Halo 1 items are recognised by plain words in their tag path; the Halo 2
@@ -1269,6 +1350,17 @@ tags are added after the vehicle collections, which are added first.
 `scen` with a render model and every placement keeps Halo 1's place:
 Blood Gulch 50 placements on 19 entries, Battle Creek 30 on 9, none left
 out.
+
+**Placed scenery is solid as structure (Built, converter version 96:
+`h1convert::scenery_collision`, `convert::halo1::merge_scenery_collision`).**
+The engine gives scenery no Havok body, so a placed rock or tree drawn as
+scenery was walked through ([objects.md](objects.md), "Collision for
+Havok"). Retail Halo 2 builds its rocks into the structure, and so does the
+conversion now: in both sandboxes, every scenery placement there from the
+start whose object has a collision model (decided by the `coll`, not the
+name: Blood Gulch's boulders and trees among them) has that collision
+merged into the level's collision BSP, and the object still draws as
+scenery. "Collision" (above) has how.
 
 **Object and scenery textures (Built, `textures::ModelTemplate`).**
 Each Halo 1 model shader gets a Halo 2 `shad` copy: the base's first

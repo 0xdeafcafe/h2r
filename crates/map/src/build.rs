@@ -440,6 +440,16 @@ pub struct TagSet {
     /// true). Off for a caller that checks the built size itself, to say
     /// by how much it is over.
     pub check_file_size: bool,
+    /// Refuse BSP regions larger than a pinned map's BSP space (default
+    /// true). Pinned metadata keeps its addresses, so its base cannot move
+    /// up to make room: a larger region runs into the metadata's virtual
+    /// range, and the engine, which loads every region at the same base
+    /// below the metadata, cannot load the map. Off only for an
+    /// intermediate map that is read back offline and laid out anew (the
+    /// reader finds BSP tags through their own regions, so the overlap is
+    /// harmless there): `h1convert`'s fresh build, whose final map has no
+    /// pinned base and sizes its BSP space to its regions.
+    pub check_bsp_space: bool,
 }
 
 /// Where things went in a built map.
@@ -524,6 +534,7 @@ impl TagSet {
             largest_built_first: false,
             check_tag_memory: true,
             check_file_size: true,
+            check_bsp_space: true,
         }
     }
     /// Declare a group and its ancestors (no-op if already declared).
@@ -748,6 +759,7 @@ impl TagSet {
             largest_built_first: false,
             check_tag_memory: true,
             check_file_size: true,
+            check_bsp_space: true,
             header_template: None,
             low_detail: None,
             pinned: Some(PinnedImage {
@@ -1367,7 +1379,7 @@ impl<'a> Builder<'a> {
         let computed_base = u64::from(bsp_base) + u64::from(max_bsp);
         let metadata_base = match pin {
             Some(p) => {
-                if computed_base > u64::from(p.metadata_base) {
+                if set.check_bsp_space && computed_base > u64::from(p.metadata_base) {
                     return Err(Error::Invalid("BSP space outgrew the pinned metadata base"));
                 }
                 p.metadata_base

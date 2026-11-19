@@ -390,9 +390,6 @@ pub enum PhysicsKind {
     /// As a device, with a biped's rigid body words
     /// ([`crate::rebuild::BIPED_BODY`]); no stand-in.
     Biped,
-    /// As a device, with the base's scenery rigid body words
-    /// ([`crate::rebuild::scenery_body`]); no stand-in.
-    Scenery(crate::rebuild::BodyWords),
 }
 
 /// The ragdoll constraints of a built biped: its bodies joined over
@@ -883,12 +880,6 @@ pub struct Converter<'a> {
     pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
     /// Scenery role words ([`Self::scenery_role`]), computed once.
     scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
-    /// The base's scenery rigid body words ([`Self::scenery_body`]),
-    /// computed once.
-    scenery_body: Option<Option<crate::rebuild::BodyWords>>,
-    /// The base's rigid bodies' sizes and size classes
-    /// ([`crate::rebuild::size_classes`]), read once.
-    size_classes: Option<Vec<(f32, u16)>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
     /// under ([`Self::weapon_class`]), computed once.
     weapon_classes: Option<HashMap<String, String>>,
@@ -933,8 +924,6 @@ impl<'a> Converter<'a> {
             decals_open: Vec::new(),
             dialogue_bytes: 0,
             scenery_role: None,
-            scenery_body: None,
-            size_classes: None,
             weapon_classes: None,
         }
     }
@@ -1568,12 +1557,13 @@ impl<'a> Converter<'a> {
                 None => "none (the template has no phmo)".into(),
             },
         );
-        // Havok sees static scenery through the phmo or, with none, through
-        // the coll's BSP physics slots (crate::coll). Retail writes slots
-        // only for scenery: its weapons, equipment, devices and bipeds
-        // without a phmo have none. Scenery whose Halo 1 collision is
-        // solid gets a built phmo (Self::scenery), so no slots.
-        let slots = scenery && !has_phmo && self.scenery_physics(obj)?.is_none();
+        // Retail writes the coll's BSP physics slots (crate::coll) exactly
+        // for scenery with no phmo: its weapons, equipment, devices and
+        // bipeds without a phmo have none. Converted scenery has no phmo:
+        // the engine gives scenery no Havok body, so a placed scenery
+        // object's collision joins the level's instead
+        // (h1convert::scenery_collision).
+        let slots = scenery && !has_phmo;
         let coll = match obj.collision {
             Some(c) => {
                 let t = self.h1_tag(c)?;
@@ -1799,21 +1789,23 @@ impl<'a> Converter<'a> {
     /// no template: every scenery object (the template path was removed in
     /// converter version 50). Its `hlmt` and `mode` materials are written
     /// from their definitions; its unknown spans take the base's scenery
-    /// role words ([`crate::rebuild::SceneryRole`]). Havok sees it through
-    /// its `coll`'s BSP physics slots, as retail static scenery (no
-    /// `phmo`; docs/halo1/objects.md, "Collision for Havok").
+    /// role words ([`crate::rebuild::SceneryRole`]). Its `coll` has BSP
+    /// physics slots, as retail static scenery with no `phmo`; neither
+    /// makes scenery solid (the engine gives scenery no Havok body), so
+    /// each placement's collision is merged into the level's
+    /// (`h1convert::scenery_collision`; docs/halo1/objects.md, "Collision
+    /// for Havok").
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
         let mut object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
         rep.physics = Some(match object.collision {
-            Some(_) => "none: the coll's BSP physics slots (no solid Halo 1 collision, or no retail scenery phmo on the base)".into(),
+            Some(_) => {
+                "none: the coll's BSP physics slots; placements' collision joins the level's".into()
+            }
             None => "none (no Halo 1 collision)".into(),
         });
-        if let Some(kind) = self.scenery_physics(&object)? {
-            self.object_physics(&mut rep, hlmt, &object, &tag.name, kind)?;
-        }
         let predicted = self.predicted(hlmt);
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
         let (root, roles) = crate::provenance::capture(|| {
@@ -1843,37 +1835,6 @@ impl<'a> Converter<'a> {
         );
         self.tree.note_roles(id, roles);
         Ok(id)
-    }
-
-    /// The physics a scenery object is built: [`PhysicsKind::Scenery`] with
-    /// the base's scenery body words when the base has any
-    /// ([`crate::rebuild::scenery_body`]) and the object's Halo 1
-    /// collision holds solid space under a model (the cells
-    /// [`Self::built_physics`] makes bodies of); `None` keeps the `coll`'s
-    /// BSP physics slots alone.
-    fn scenery_physics(&mut self, obj: &h1::Object) -> Result<Option<PhysicsKind>> {
-        let (Some(c), Some(_)) = (obj.collision, obj.model) else {
-            return Ok(None);
-        };
-        let words = match self.scenery_body {
-            Some(w) => w,
-            None => {
-                let w = crate::rebuild::scenery_body(self.base)?.map(|(w, _)| w);
-                self.scenery_body = Some(w);
-                w
-            }
-        };
-        let Some(words) = words else {
-            return Ok(None);
-        };
-        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
-        for n in &coll.nodes {
-            let Some(src) = n.bsps.first() else { continue };
-            if !crate::physics::solid_cells(&h1convert::collision::convert(src)?).is_empty() {
-                return Ok(Some(PhysicsKind::Scenery(words)));
-            }
-        }
-        Ok(None)
     }
 
     /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
@@ -3387,7 +3348,7 @@ impl<'a> Converter<'a> {
                     mass,
                 }]
             }
-            PhysicsKind::Device | PhysicsKind::Biped | PhysicsKind::Scenery(_) => parts
+            PhysicsKind::Device | PhysicsKind::Biped => parts
                 .into_iter()
                 .map(|(node, cells)| {
                     let total = cells.len();
@@ -3424,7 +3385,6 @@ impl<'a> Converter<'a> {
         );
         let words = match kind {
             PhysicsKind::Biped => crate::rebuild::BIPED_BODY,
-            PhysicsKind::Scenery(w) => w,
             PhysicsKind::Vehicle { .. } | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
         };
         let joints = if kind == PhysicsKind::Biped {
@@ -3437,17 +3397,8 @@ impl<'a> Converter<'a> {
             (PhysicsKind::Biped, n) => format!("{how}; ragdoll of {n} constraints (crate::ragdoll)"),
             _ => how,
         };
-        // Scenery bodies take their own size class (`+0x1e`) by their size,
-        // as the base's (crate::rebuild::size_class).
-        if matches!(kind, PhysicsKind::Scenery(_)) && self.size_classes.is_none() {
-            self.size_classes = Some(crate::rebuild::size_classes(self.base)?);
-        }
-        let classes: &[(f32, u16)] = match kind {
-            PhysicsKind::Scenery(_) => self.size_classes.as_deref().unwrap_or(&[]),
-            _ => &[],
-        };
         Ok(Some((
-            crate::rebuild::physics_model_sized(&bodies, &nodes, words, &joints, classes)?,
+            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
             how,
         )))
     }
