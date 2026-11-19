@@ -60,6 +60,7 @@ mod tests {
     use super::*;
     use crate::{CpuAbi, ExecCtxOpaque, TransferAbi};
 
+    #[allow(unsafe_code)]
     unsafe extern "C" fn body(
         _: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32,
     ) -> TransferAbi {
