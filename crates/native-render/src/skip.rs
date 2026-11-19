@@ -45,7 +45,7 @@ pub const ITEM_SIZE: u32 = 0x18;
 /// The lightmap layer the native world replaces in stage 1.
 pub const LIGHTMAP_LAYER: u32 = 3;
 /// Items walked at most (the list's capacity is far below).
-const MAX_ITEMS: u32 = 1 << 16;
+pub const MAX_ITEMS: u32 = 1 << 16;
 /// The geometry draw (an item's `+4`) that switches the stencil.
 pub const GEOMETRY_DRAW: u32 = 0x0004_d0b0;
 /// The render record's `+0` bit that marks an item's pixels in the
@@ -62,6 +62,84 @@ pub struct Cleared {
     pub layer: u32,
     /// Item addresses.
     pub items: Vec<u32>,
+}
+
+/// A preview of a guest mask walk. Reads see earlier edits, but the guest sees
+/// nothing until every GPU copy has been reserved and the original words still match.
+pub struct MaskPreview<'a> {
+    guest: &'a dyn GuestRead,
+    reads: std::cell::RefCell<std::collections::BTreeMap<u32, u32>>,
+    edits: std::collections::BTreeMap<u32, u32>,
+    failed: std::cell::Cell<bool>,
+}
+
+pub struct MaskPlan {
+    reads: std::collections::BTreeMap<u32, u32>,
+    edits: Vec<(u32, u32)>,
+}
+
+impl<'a> MaskPreview<'a> {
+    pub fn new(guest: &'a dyn GuestRead) -> Option<Self> {
+        let list = guest.read_u32(CURRENT_LIST)?;
+        let first = guest.read_u32(list.checked_add(0xc)?)?;
+        let count = guest.read_u32(list.checked_add(4)?)?;
+        let items = guest.read_u32(list.checked_add(0x14)?)?;
+        if list == 0 || first > count || count - first > MAX_ITEMS { return None; }
+        items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+        let reads = [(CURRENT_LIST, list), (list + 0xc, first), (list + 4, count), (list + 0x14, items)].into();
+        Some(Self { guest, reads: std::cell::RefCell::new(reads), edits: Default::default(), failed: false.into() })
+    }
+
+    pub fn finish(self) -> Option<MaskPlan> {
+        let reads = self.reads.into_inner();
+        let edits = self.edits.into_iter().filter(|(k, v)| reads.get(k) != Some(v)).collect();
+        (!self.failed.get()).then_some(MaskPlan { reads, edits })
+    }
+}
+
+impl GuestRead for MaskPreview<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        if let Some(v) = self.edits.get(&addr) { return Some(*v); }
+        if let Some(v) = self.reads.borrow().get(&addr) { return Some(*v); }
+        let Some(v) = self.guest.read_u32(addr) else { self.failed.set(true); return None };
+        self.reads.borrow_mut().insert(addr, v);
+        Some(v)
+    }
+}
+
+impl GuestWrite for MaskPreview<'_> {
+    fn write_u32(&mut self, addr: u32, value: u32) -> Option<()> {
+        self.read_u32(addr)?;
+        self.edits.insert(addr, value);
+        Some(())
+    }
+}
+
+impl MaskPlan {
+    /// Reopen a detached mask walk to restore declined items in the overlay.
+    /// Applying the resulting plan still validates the original read set.
+    pub fn edit(self, guest: &dyn GuestRead) -> MaskPreview<'_> {
+        MaskPreview {
+            guest, reads: self.reads.into(), edits: self.edits.into_iter().collect(), failed: false.into(),
+        }
+    }
+
+    /// Revalidate the list identity, item words and masks, then apply the edits.
+    /// If a write faults, put the original words back before D3D proceeds.
+    pub fn apply(&self, guest: &mut dyn GuestWrite) -> bool {
+        if !self.reads.iter().all(|(&a, &v)| guest.read_u32(a) == Some(v)) { return false; }
+        for (i, &(a, value)) in self.edits.iter().enumerate() {
+            if guest.write_u32(a, value).is_none() {
+                for &(addr, _) in self.edits[..=i].iter().rev() {
+                    let old = self.reads[&addr];
+                    assert!(guest.read_u32(addr) == Some(old) || guest.write_u32(addr, old).is_some(),
+                        "native mask rollback failed at {addr:#x}");
+                }
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Whether the item at `item` is BSP geometry (cluster or instance).
@@ -306,6 +384,37 @@ mod tests {
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m
+    }
+
+    #[test]
+    fn mask_preview_rechecks_identity_and_rolls_back_a_write_fault() {
+        struct Fault(Mem, u32);
+        impl GuestRead for Fault {
+            fn read_u32(&self, a: u32) -> Option<u32> { self.0.read_u32(a) }
+        }
+        impl GuestWrite for Fault {
+            fn write_u32(&mut self, a: u32, v: u32) -> Option<()> {
+                if a == self.1 { None } else { self.0.write_u32(a, v) }
+            }
+        }
+        let mut guest = Fault(scene(), ITEMS + ITEM_SIZE + 0x10);
+        let mut preview = MaskPreview::new(&guest).unwrap();
+        let a = ITEMS + 0x10;
+        let b = a + ITEM_SIZE;
+        let original = [guest.read_u32(a), guest.read_u32(b)];
+        preview.read_u32(CURRENT_LIST).unwrap();
+        preview.write_u32(a, 2).unwrap();
+        preview.write_u32(b, 0).unwrap();
+        let plan = preview.finish().unwrap();
+        assert_eq!([guest.read_u32(a), guest.read_u32(b)], original);
+        assert!(!plan.apply(&mut guest));
+        assert_eq!([guest.read_u32(a), guest.read_u32(b)], original);
+        guest.1 = 0;
+        guest.0.w(CURRENT_LIST, LIST + 4);
+        assert!(!plan.apply(&mut guest));
+        guest.0.w(CURRENT_LIST, LIST);
+        assert!(plan.apply(&mut guest));
+        assert_eq!([guest.read_u32(a), guest.read_u32(b)], [Some(2), Some(0)]);
     }
 
     #[test]

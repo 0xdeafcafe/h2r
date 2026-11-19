@@ -10,6 +10,9 @@
 //!   that changed on another machine meanwhile is left for the next sync.
 //! - Offline, pushes queue (the queue is kept on disk), and the
 //!   [`Worker`] tries again later with a growing pause.
+//! - A damaged meta file (an empty or torn `SaveMeta.xbx` or
+//!   `TitleMeta.xbx`, [`crate::meta_damaged`]) is never uploaded, and one
+//!   downloaded is never written; each is a line in the report.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -22,7 +25,7 @@ use crate::merge::{self, Action, Step, Why};
 use crate::remote::{Remote, RemoteError};
 use crate::state::{Places, State};
 use crate::watch::{self, Debouncer};
-use crate::{KIND_SAVE, Key, LocalItem, Sha256, StorageItem, now_ms};
+use crate::{KIND_SAVE, Key, LocalItem, Sha256, StorageItem, meta_damaged, now_ms};
 
 /// What a sync or push did. `lines` are for stderr, one per change.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -39,6 +42,8 @@ pub struct Report {
     /// Left for the next sync: the server's copy changed meanwhile.
     pub deferred: usize,
     pub failed: usize,
+    /// Damaged meta files not uploaded, or not written here.
+    pub damaged: usize,
     pub offline: bool,
     pub unsupported: bool,
     /// Containers waiting for the server.
@@ -60,6 +65,7 @@ impl Report {
             (self.conflicts, "conflict copies kept"),
             (self.deferred, "left for next time"),
             (self.failed, "failed"),
+            (self.damaged, "damaged meta files skipped"),
         ] {
             if n > 0 {
                 parts.push(format!("{n} {what}"));
@@ -160,6 +166,10 @@ impl<R: Remote> Engine<R> {
         };
         let mut out = BTreeSet::new();
         for k in local.keys().chain(self.state.base.keys()) {
+            // Damaged: unchanged, as in the merge (never uploaded).
+            if local.get(k).is_some_and(|l| l.damaged) {
+                continue;
+            }
             let now = local.get(k).map(|l| l.sha256);
             let then = self.state.base.get(k).and_then(|b| b.sha256);
             if now != then {
@@ -228,7 +238,7 @@ impl<R: Remote> Engine<R> {
         let r = remote.get(key);
         let r_version = r.map_or(0, |r| r.version);
         let r_hash = r.filter(|r| !r.deleted).and_then(|r| r.sha256);
-        let needs_server = !matches!(step.action, Action::Agree);
+        let needs_server = !matches!(step.action, Action::Agree | Action::Leave);
         if needs_server && report.offline {
             if matches!(step.action, Action::Push { .. } | Action::DeleteRemote { .. }) {
                 queue.insert(group_key(key));
@@ -243,9 +253,16 @@ impl<R: Remote> Engine<R> {
             Why::RemoteNewer => "CONFLICT: changed on both, the other machine's is newer",
             Why::LocalNewer => "CONFLICT: changed on both, this machine's is newer",
             Why::ContainerFollows => "CONFLICT: its save was decided as a whole",
+            Why::LocalDamaged => "damaged here, replaced by the cloud's copy",
         };
         match step.action {
             Action::Agree => self.state.agree(key, r_version, r_hash),
+            Action::Leave => {
+                report.damaged += 1;
+                report.lines.push(format!(
+                    "{key}: damaged here (empty or torn), and the cloud has no copy; not uploaded"
+                ));
+            }
             Action::Pull { keep_local } => {
                 let r = r.expect("a pull has a server item");
                 if keep_local {
@@ -279,6 +296,17 @@ impl<R: Remote> Engine<R> {
                     report
                         .lines
                         .push(format!("{key}: not downloaded: the bytes do not match their hash"));
+                    return;
+                }
+                if meta_damaged(&key.name, &bytes) {
+                    report.damaged += 1;
+                    report.lines.push(format!(
+                        "{key}: not downloaded: the cloud's copy is damaged (empty or torn)"
+                    ));
+                    // This machine's good copy mends the cloud's.
+                    if let Some(l) = local.get(key).filter(|l| !l.damaged) {
+                        self.upload(key, l, r_version, "the cloud's copy was damaged", queue, report);
+                    }
                     return;
                 }
                 match self.local.write(key, &bytes, r.modified) {
@@ -371,6 +399,13 @@ impl<R: Remote> Engine<R> {
                 return;
             }
         };
+        if meta_damaged(&key.name, &bytes) {
+            report.damaged += 1;
+            report
+                .lines
+                .push(format!("{key}: not uploaded: damaged here (empty or torn)"));
+            return;
+        }
         match self.remote.put(key, &bytes, if_match, l.modified) {
             Ok(item) => {
                 self.state.agree(key, item.version, item.sha256);

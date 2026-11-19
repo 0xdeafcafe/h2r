@@ -399,6 +399,16 @@ fn installed_lists_campaigns_with_maps_and_says_why_not() {
     std::fs::write(root.join("halo1").join(cl::MANIFEST_FILE), HALO1).unwrap();
     std::fs::write(root.join("halo1/a10.map"), b"x").unwrap();
     std::fs::write(root.join("halo1/a30.map"), b"x").unwrap();
+    std::fs::write(
+        root.join("halo1/import.stamp"),
+        concat!(
+            "converter=90\n",
+            "sha256=0000000000000000000000000000000000000000000000000000000000000000\n",
+            "size=1\nmtime=0\n",
+            "map a10 ok\nmap a30 ok\nmap a50 failed conversion error\n",
+        ),
+    )
+    .unwrap();
     // The fixture: retail maps, from the disc.
     std::fs::create_dir_all(root.join("test")).unwrap();
     std::fs::write(root.join("test").join(cl::MANIFEST_FILE), FIXTURE).unwrap();

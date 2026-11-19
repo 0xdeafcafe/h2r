@@ -13,7 +13,7 @@
 //!   state (clocks, envelope start, Doppler, filter and shelf memory, the
 //!   pitch offset), the reverb and the binaural filters are saved bit for bit, so
 //!   a load renders exactly the PCM the saving mixer would have.
-//! * **Check**: the sample rate and whether binaural filtering is enabled.
+//! * **Check**: the sample rate and the binaural and distance-reverb settings.
 //! * **Rebuild**: the decoded copy of a buffer's bytes (decoded again),
 //!   cached filter coefficients (recomputed from the same inputs on the
 //!   next frame, so bit-equal), and the render scratch.
@@ -41,8 +41,9 @@ use crate::reverb::{Allpass, Delay, I3dl2Listener, Reverb};
 
 /// The section's tag.
 pub const SECTION: Tag = Tag::new("audio");
-const VERSION: u32 = 1;
-const VERSION_HRTF: u32 = 2;
+// Master wrote version 1 for stereo and version 2 for binaural. Both
+// predate per-voice room filter memory. Version 3 records the switches.
+const VERSION: u32 = 3;
 
 type Error = snapshot::Error;
 
@@ -493,6 +494,7 @@ fn put_fx_state(w: &mut Writer, f: &FxState) {
         coeffs: _,
         cached: _,
         shelf_z,
+        room_z,
         phase_off,
     } = f;
     w.u64(*clock).u64(*env_start);
@@ -503,13 +505,13 @@ fn put_fx_state(w: &mut Writer, f: &FxState) {
             put_f64(w, *v);
         }
     }
-    for v in shelf_z {
+    for v in shelf_z.iter().chain(room_z) {
         put_f64(w, *v);
     }
     put_f64(w, *phase_off);
 }
 
-fn get_fx_state(r: &mut Reader<'_>) -> Result<FxState, Error> {
+fn get_fx_state(r: &mut Reader<'_>, version: u32) -> Result<FxState, Error> {
     let mut f = FxState {
         clock: r.u64()?,
         env_start: r.u64()?,
@@ -523,6 +525,11 @@ fn get_fx_state(r: &mut Reader<'_>) -> Result<FxState, Error> {
     }
     for v in &mut f.shelf_z {
         *v = get_f64(r)?;
+    }
+    if version >= 3 {
+        for v in &mut f.room_z {
+            *v = get_f64(r)?;
+        }
     }
     f.phase_off = get_f64(r)?;
     Ok(f)
@@ -554,7 +561,7 @@ fn put_buffer(w: &mut Writer, b: &SoundBuffer) {
     put_fx_state(w, fx_state);
 }
 
-fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
+fn get_buffer(r: &mut Reader<'_>, version: u32) -> Result<SoundBuffer, Error> {
     let format = get_format(r)?;
     let data = r.blob()?.to_vec();
     let mut b =
@@ -570,7 +577,7 @@ fn get_buffer(r: &mut Reader<'_>) -> Result<SoundBuffer, Error> {
         return Err(corrupt("loop region outside its buffer"));
     }
     b.pos = get_f64(r)?;
-    b.fx_state = get_fx_state(r)?;
+    b.fx_state = get_fx_state(r, version)?;
     Ok(b)
 }
 
@@ -628,7 +635,7 @@ fn put_stream(w: &mut Writer, s: &Stream) {
     });
 }
 
-fn get_stream(r: &mut Reader<'_>) -> Result<Stream, Error> {
+fn get_stream(r: &mut Reader<'_>, version: u32) -> Result<Stream, Error> {
     let format = get_format(r)?;
     let mut s = Stream::new(format).map_err(|e| corrupt(format!("stream: {e}")))?;
     s.params = get_params(r)?;
@@ -650,7 +657,7 @@ fn get_stream(r: &mut Reader<'_>) -> Result<Stream, Error> {
     s.paused = r.bool()?;
     s.next_id = r.u64()?;
     s.completed = r.list(9, |r| Ok((PacketId(r.u64()?), get_status(r)?)))?;
-    s.fx_state = get_fx_state(r)?;
+    s.fx_state = get_fx_state(r, version)?;
     s.dry_at = get_opt(r, |r| r.u64())?;
     Ok(s)
 }
@@ -672,11 +679,16 @@ fn put_mix_in(w: &mut Writer, m: &MixIn) {
     }
 }
 
-fn get_mix_in(r: &mut Reader<'_>, hrtf: bool, rate: u32) -> Result<MixIn, Error> {
+fn get_mix_in(
+    r: &mut Reader<'_>,
+    version: u32,
+    hrtf: bool,
+    rate: u32,
+) -> Result<MixIn, Error> {
     let mut m = MixIn::new(r.u32()?);
     m.params = get_params(r)?;
     m.playing = r.bool()?;
-    m.fx_state = get_fx_state(r)?;
+    m.fx_state = get_fx_state(r, version)?;
     if hrtf {
         m.hrtf = Some(get_hrtf(r, rate)?);
     }
@@ -966,8 +978,7 @@ impl Mixer {
     pub fn save_snapshot(&self, out: &mut SnapshotWriter) -> Result<(), SnapshotError> {
         let mut w = Writer::new();
         self.put(&mut w);
-        let version = if self.hrtf { VERSION_HRTF } else { VERSION };
-        out.section(SECTION, version, SectionCodec::Zstd, w.into_bytes())?;
+        out.section(SECTION, VERSION, SectionCodec::Zstd, w.into_bytes())?;
         Ok(())
     }
 
@@ -976,7 +987,7 @@ impl Mixer {
             // Checked: the loading mixer runs at the host's rate.
             sample_rate,
             master_mb,
-            hrtf: _,
+            hrtf,
             listener,
             buffers,
             streams,
@@ -987,11 +998,14 @@ impl Mixer {
             reverb,
             reverb_in: _,
             direct: _,
+            room: _,
+            distance_reverb,
             clock,
             // Diagnostics.
             health: _,
             taps,
         } = self;
+        w.bool(*hrtf).bool(*distance_reverb);
         w.u32(*sample_rate);
         put_i32(w, *master_mb);
         put_listener(w, listener);
@@ -1021,13 +1035,15 @@ impl Mixer {
         }
     }
 
-    fn get(r: &mut Reader<'_>, hrtf: bool) -> Result<LoadedMixer, Error> {
+    fn get(r: &mut Reader<'_>, version: u32, hrtf: bool) -> Result<LoadedMixer, Error> {
         let sample_rate = r.u32()?;
         let master_mb = get_i32(r)?;
         let listener = get_listener(r)?;
-        let buffers = r.list(5, |r| Ok((BufferId(r.u32()?), get_buffer(r)?)))?;
-        let streams = r.list(5, |r| Ok((StreamId(r.u32()?), get_stream(r)?)))?;
-        let mix_ins = r.list(5, |r| Ok((MixInId(r.u32()?), get_mix_in(r, hrtf, sample_rate)?)))?;
+        let buffers = r.list(5, |r| Ok((BufferId(r.u32()?), get_buffer(r, version)?)))?;
+        let streams = r.list(5, |r| Ok((StreamId(r.u32()?), get_stream(r, version)?)))?;
+        let mix_ins = r.list(5, |r| {
+            Ok((MixInId(r.u32()?), get_mix_in(r, version, hrtf, sample_rate)?))
+        })?;
         let next_id = r.u32()?;
         let reverb = get_opt(r, get_reverb)?;
         let clock = r.u64()?;
@@ -1073,18 +1089,22 @@ impl Mixer {
     /// check other sections too before it changes anything: decodes the
     /// section and checks it fits this mixer. Changes nothing.
     pub fn check_snapshot(&self, snapshot: &Snapshot<'_>) -> Result<LoadedMixer, SnapshotError> {
-        let (version, bytes) = snapshot.section(SECTION)?.ok_or(Error::MissingSection(SECTION))?;
-        if !matches!(version, VERSION | VERSION_HRTF) {
+        let (version, bytes) = snapshot
+            .section(SECTION)?
+            .ok_or(Error::MissingSection(SECTION))?;
+        if !(1..=VERSION).contains(&version) {
             return Err(Error::SectionVersion(SECTION, version).into());
         }
-        let hrtf = version == VERSION_HRTF;
-        if hrtf != self.hrtf {
-            return Err(SnapshotError::Mismatch(
-                "different binaural filtering setting".into(),
-            ));
-        }
         let mut r = Reader::new(&bytes, "audio");
-        let s = Self::get(&mut r, hrtf)?;
+        let (hrtf, distance_reverb) = match version {
+            1 => (false, false),
+            2 => (true, false),
+            _ => (r.bool()?, r.bool()?),
+        };
+        if hrtf != self.hrtf || distance_reverb != self.distance_reverb {
+            return Err(SnapshotError::Mismatch("different audio feature settings".into()));
+        }
+        let s = Self::get(&mut r, version, hrtf)?;
         r.finish()?;
         if s.sample_rate != self.sample_rate {
             return Err(SnapshotError::Mismatch(format!(
@@ -1114,6 +1134,9 @@ impl Mixer {
             reverb,
             reverb_in: _,
             direct: _,
+            room: _,
+            // Host configuration, checked before loading.
+            distance_reverb: _,
             clock,
             health: _,
             taps,
@@ -1127,5 +1150,41 @@ impl Mixer {
         *reverb = s.reverb;
         *clock = s.clock;
         *taps = s.taps;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_mix_in_reads_binaural_history_immediately_after_the_pitch_offset() {
+        for version in [1, 2] {
+            let mut w = Writer::new();
+            let mix = MixIn::new(17);
+            w.u32(mix.input_bin());
+            put_params(&mut w, mix.params());
+            w.bool(true);
+            // Both legacy versions end FxState with eight biquad delays,
+            // two direct filter delays and the stream pitch offset.
+            w.u64(19).u64(0);
+            put_f64(&mut w, 1.0);
+            for _ in 0..10 {
+                put_f64(&mut w, 0.0);
+            }
+            put_f64(&mut w, 2.5);
+            if version == 2 {
+                let mut h = Hrtf::new(48_000);
+                h.history[0] = 0.75;
+                put_hrtf(&mut w, &h);
+            }
+            let bytes = w.into_bytes();
+            let mut r = Reader::new(&bytes, "audio");
+            let loaded = get_mix_in(&mut r, version, version == 2, 48_000).unwrap();
+            r.finish().unwrap();
+            assert_eq!(loaded.fx_state.phase_off, 2.5);
+            assert_eq!(loaded.fx_state.room_z, [0.0; 2]);
+            assert_eq!(loaded.hrtf.map(|h| h.history[0]), (version == 2).then_some(0.75));
+        }
     }
 }

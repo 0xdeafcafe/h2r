@@ -24,7 +24,7 @@ use crate::dsound::{
     BufferId, Listener, MixIn, SoundBuffer, Spatial, Stream, StreamId, VoiceOutput, VoiceParams,
     mb_to_gain,
 };
-use crate::fx::headroom_gain;
+use crate::fx::{DEFAULT_HF_REFERENCE_HZ, FxState, filter_path, headroom_gain};
 use crate::hrtf::Hrtf;
 use crate::reverb::{I3dl2Listener, Reverb};
 use crate::route::{self, Dest};
@@ -33,6 +33,25 @@ use crate::route::{self, Dest};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MixInId(pub(crate) u32);
 
+/// A main-output voice's current routing parameters for inspection.
+#[derive(Debug)]
+pub struct VoiceLevels {
+    pub id: u32,
+    pub kind: &'static str,
+    pub input_bin: Option<u32>,
+    pub distance_units: Option<f32>,
+    pub volume_mb: i32,
+    /// Raw guest pairs, in routing order. None is plain stereo.
+    pub bins: Option<Vec<(u32, i32)>>,
+    /// Broadband gains including voice volume and headroom, before bin
+    /// volume, output panning and master volume.
+    pub direct_gain: f32,
+    pub room_gain: f32,
+    pub direct_hf_db: f32,
+    pub room_hf_db: f32,
+    pub reference_hz: f32,
+}
+
 /// Mixes voices to interleaved stereo `f32` at a fixed host rate.
 #[derive(Debug)]
 pub struct Mixer {
@@ -40,6 +59,7 @@ pub struct Mixer {
     pub(crate) master_mb: i32,
     pub(crate) hrtf: bool,
     pub(crate) listener: Listener,
+    pub(crate) distance_reverb: bool,
     pub(crate) buffers: BTreeMap<BufferId, SoundBuffer>,
     pub(crate) streams: BTreeMap<StreamId, Stream>,
     pub(crate) mix_ins: BTreeMap<MixInId, MixIn>,
@@ -52,6 +72,7 @@ pub struct Mixer {
     /// renders (see [`Mixer::reserve_block`]).
     pub(crate) reverb_in: Vec<f32>,
     pub(crate) direct: Vec<f32>,
+    pub(crate) room: Vec<f32>,
     /// Frames rendered since creation: the clock [`StreamHealth`] uses.
     pub(crate) clock: u64,
     pub(crate) health: StreamHealth,
@@ -94,6 +115,7 @@ impl Mixer {
             master_mb: 0,
             hrtf: false,
             listener: Listener::default(),
+            distance_reverb: false,
             buffers: BTreeMap::new(),
             streams: BTreeMap::new(),
             mix_ins: BTreeMap::new(),
@@ -102,6 +124,7 @@ impl Mixer {
             reverb: None,
             reverb_in: Vec::new(),
             direct: Vec::new(),
+            room: Vec::new(),
             clock: 0,
             health: StreamHealth::default(),
             taps: Vec::new(),
@@ -189,11 +212,64 @@ impl Mixer {
     pub fn reserve_block(&mut self, frames: usize) {
         self.scratch.reserve(frames * 2);
         self.direct.reserve(frames * 2);
+        self.room.reserve(frames * 2);
         self.reverb_in.reserve(frames);
     }
 
     pub fn reverb(&self) -> Option<&I3dl2Listener> {
         self.reverb.as_ref().map(Reverb::params)
+    }
+
+    /// Enables additional wet level and direct HF loss with source distance.
+    /// This host enhancement is off by default.
+    pub fn set_distance_reverb(&mut self, enabled: bool) {
+        self.distance_reverb = enabled;
+    }
+
+    /// Whether the optional host distance cue is enabled.
+    pub fn distance_reverb(&self) -> bool {
+        self.distance_reverb
+    }
+
+    /// Inspect routing without rendering or advancing filter state.
+    pub fn voice_levels(&self) -> Vec<VoiceLevels> {
+        let mut rows = Vec::new();
+        let mut record = |id, kind, input_bin, p: &VoiceParams| {
+            let paths = VoicePaths::new(&self.listener, p, self.reverb(), self.distance_reverb);
+            let gain = mb_to_gain(p.volume_mb) * headroom_gain(p.fx.headroom_mb);
+            rows.push(VoiceLevels {
+                id,
+                kind,
+                input_bin,
+                distance_units: p
+                    .spatial
+                    .as_ref()
+                    .and_then(|s| self.listener.source_distance(s)),
+                volume_mb: p.volume_mb,
+                bins: p.mix_bins.clone(),
+                direct_gain: gain * paths.direct_gain,
+                room_gain: gain * paths.room_gain,
+                direct_hf_db: paths.direct_hf_db,
+                room_hf_db: paths.room_hf_db,
+                reference_hz: paths.reference_hz,
+            });
+        };
+        for (id, b) in &self.buffers {
+            if b.is_playing() {
+                record(id.0, "buffer", None, b.params());
+            }
+        }
+        for (id, s) in &self.streams {
+            if s.is_audible() {
+                record(id.0, "stream", None, s.params());
+            }
+        }
+        for (id, m) in &self.mix_ins {
+            if m.is_playing() {
+                record(id.0, "mix_in", Some(m.input_bin()), m.params());
+            }
+        }
+        rows
     }
 
     /// Master volume in millibels.
@@ -315,6 +391,7 @@ impl Mixer {
                 done: false,
             })
             .collect();
+        let environment = self.reverb().copied();
         let reverb_live = self
             .reverb
             .as_ref()
@@ -331,7 +408,9 @@ impl Mixer {
         let mut rin = std::mem::take(&mut self.reverb_in);
         let mut direct = std::mem::take(&mut self.direct);
         direct.resize(frames * 2, 0.0);
+        let mut room = std::mem::take(&mut self.room);
         if reverb_live {
+            room.resize(frames * 2, 0.0);
             rin.clear();
             rin.resize(frames, 0.0);
         }
@@ -356,14 +435,15 @@ impl Mixer {
             b.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (b.fx_clock() - c0) as usize;
             b.apply_fx(&mut scratch[..produced * 2], c0, rate);
-            // Only the frames the voice produced: the shelf state advances with the
-            // voice's own clock, so a block's padding never leaks a tail.
-            let has_direct =
-                b.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = b.format().channels() as usize;
             if !to_side(side.as_deref_mut(), &params, &scratch, master) {
                 let mut cx = Route {
                     listener: &self.listener,
+                    direct: &mut direct,
+                    room: &mut room,
+                    distance_reverb: self.distance_reverb,
+                    environment,
+                    rate,
                     master,
                     buses: &mut buses,
                     taps: &mut taps,
@@ -374,8 +454,8 @@ impl Mixer {
                     &mut cx,
                     &params,
                     channels,
-                    &scratch,
-                    has_direct.then_some(&direct[..produced * 2]),
+                    &scratch[..produced * 2],
+                    &mut b.fx_state,
                     out,
                     None,
                 );
@@ -409,10 +489,6 @@ impl Mixer {
             s.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (s.fx_clock() - c0) as usize;
             s.apply_fx(&mut scratch[..produced * 2], c0, rate);
-            // Only the frames the voice produced: the shelf state advances with the
-            // voice's own clock, so a block's padding never leaks a tail.
-            let has_direct =
-                s.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = s.format().channels() as usize;
             if s.pending() == 0 {
                 // Ran out: dry from the first frame it did not fill.
@@ -421,6 +497,11 @@ impl Mixer {
             if !to_side(side.as_deref_mut(), &params, &scratch, master) {
                 let mut cx = Route {
                     listener: &self.listener,
+                    direct: &mut direct,
+                    room: &mut room,
+                    distance_reverb: self.distance_reverb,
+                    environment,
+                    rate,
                     master,
                     buses: &mut buses,
                     taps: &mut taps,
@@ -431,8 +512,8 @@ impl Mixer {
                     &mut cx,
                     &params,
                     channels,
-                    &scratch,
-                    has_direct.then_some(&direct[..produced * 2]),
+                    &scratch[..produced * 2],
+                    &mut s.fx_state,
                     out,
                     None,
                 ) {
@@ -451,9 +532,13 @@ impl Mixer {
             let c0 = mix.fx_clock();
             mix.apply_fx(&mut scratch, c0, rate);
             mix.advance_clock(frames as u64);
-            let has_direct = mix.direct_shelf(&scratch, &mut direct, rate);
             let mut cx = Route {
                 listener: &self.listener,
+                direct: &mut direct,
+                room: &mut room,
+                distance_reverb: self.distance_reverb,
+                environment,
+                rate,
                 master,
                 buses: &mut buses,
                 taps: &mut taps,
@@ -465,7 +550,7 @@ impl Mixer {
                 &params,
                 1,
                 &scratch,
-                has_direct.then_some(&direct[..]),
+                &mut mix.fx_state,
                 out,
                 mix.hrtf.as_mut(),
             );
@@ -481,6 +566,7 @@ impl Mixer {
         self.scratch = scratch;
         self.reverb_in = rin;
         self.direct = direct;
+        self.room = room;
         self.clock += frames as u64;
     }
 
@@ -544,9 +630,76 @@ struct Bus {
     done: bool,
 }
 
+/// Per-voice transfer before individual mix-bin volumes and panning.
+struct VoicePaths {
+    direct_gain: f32,
+    room_gain: f32,
+    direct_hf_db: f32,
+    room_hf_db: f32,
+    reference_hz: f32,
+}
+
+impl VoicePaths {
+    fn new(
+        listener: &Listener,
+        voice: &VoiceParams,
+        env: Option<&I3dl2Listener>,
+        distance_reverb: bool,
+    ) -> Self {
+        let source = voice.fx.i3dl2.unwrap_or_default().sane();
+        let reference_hz = env.map_or(DEFAULT_HF_REFERENCE_HZ, |e| e.hf_reference);
+        let reference_hz = if reference_hz.is_nan() {
+            DEFAULT_HF_REFERENCE_HZ
+        } else {
+            reference_hz.clamp(20.0, 20_000.0)
+        };
+        let mut room_gain = source.room_gain();
+        let mut direct_hf_db = source.shelf_db();
+        if let Some(sp) = &voice.spatial
+            && let Some(distance) = listener.source_distance(sp)
+        {
+            if distance_reverb {
+                // World units are map-scale dependent. Ten metres is the
+                // half-strength point of this bounded, host-chosen curve.
+                let metres = f64::from(distance) * f64::from(listener.distance_factor);
+                if metres.is_finite() && metres > 0.0 {
+                    let amount = (metres / (10.0 + metres)) as f32;
+                    room_gain *= crate::fx::mb_gain(600.0 * amount);
+                    direct_hf_db -= 12.0 * amount;
+                }
+            }
+            let min = sp.min_distance.max(1e-6);
+            let d = distance.min(sp.max_distance.max(min));
+            if d > min {
+                let rolloff = source.room_rolloff
+                    + env.map_or(0.0, |e| {
+                        if e.room_rolloff.is_nan() {
+                            0.0
+                        } else {
+                            e.room_rolloff.clamp(0.0, 10.0)
+                        }
+                    });
+                room_gain *= min / (min + rolloff * (d - min));
+            }
+        }
+        Self {
+            direct_gain: source.direct_gain(),
+            room_gain,
+            direct_hf_db,
+            room_hf_db: source.room_shelf_db(),
+            reference_hz,
+        }
+    }
+}
+
 /// What routing a voice needs from the mixer.
 struct Route<'a> {
     listener: &'a Listener,
+    direct: &'a mut [f32],
+    room: &'a mut [f32],
+    environment: Option<I3dl2Listener>,
+    distance_reverb: bool,
+    rate: u32,
     master: f32,
     buses: &'a mut [Bus],
     /// The captured bins; this render's frames are each one's last `frames`
@@ -566,15 +719,48 @@ fn route_voice(
     p: &VoiceParams,
     channels: usize,
     src: &[f32],
-    direct_src: Option<&[f32]>,
+    fx: &mut FxState,
     out: &mut [f32],
     hrtf: Option<&mut Hrtf>,
 ) -> bool {
-    // The direct path (speakers and mix-in sends) may be shelved by an I3DL2
-    // source's obstruction; the reverb send always takes `src`.
-    let dsrc = direct_src.unwrap_or(src);
     let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
+    let paths = VoicePaths::new(listener, p, cx.environment.as_ref(), cx.distance_reverb);
+    let direct = paths.direct_gain;
+    let room = paths.room_gain;
+    let filtered = filter_path(
+        &mut fx.shelf_z,
+        paths.direct_hf_db,
+        paths.reference_hz,
+        cx.rate,
+        src,
+        cx.direct,
+    );
+    let dsrc = if filtered {
+        &cx.direct[..src.len()]
+    } else {
+        src
+    };
+    let wet_routed = cx.reverb_in.is_some()
+        && p.mix_bins
+            .as_ref()
+            .is_some_and(|bins| bins.iter().any(|&(bin, _)| bin == route::I3DL2));
+    if !wet_routed {
+        fx.room_z = [0.0; 2];
+    }
+    let wet_src = if wet_routed
+        && filter_path(
+            &mut fx.room_z,
+            paths.room_hf_db,
+            paths.reference_hz,
+            cx.rate,
+            src,
+            cx.room,
+        ) {
+        &cx.room[..src.len()]
+    } else {
+        src
+    };
     let binaural = hrtf.and_then(|hrtf| {
         let direction = p.spatial.as_ref().and_then(|s| listener.head_direction(s));
         if let Some(direction) = direction {
@@ -584,11 +770,6 @@ fn route_voice(
             None
         }
     });
-    // I3DL2 source shaping: the direct level applies to everything but the
-    // reverb send, the room level to the reverb send alone.
-    let (direct, room) =
-        p.fx.i3dl2
-            .map_or((1.0, 1.0), |i| (i.direct_gain(), i.room_gain()));
     let hr = headroom_gain(p.fx.headroom_mb);
     let Some(bins) = &p.mix_bins else {
         // A plain DirectSound voice: volume and pan, then the 3D panning.
@@ -675,7 +856,7 @@ fn route_voice(
             }
             Dest::Reverb => {
                 if let Some(input) = cx.reverb_in.as_deref_mut() {
-                    for (acc, frame) in input.iter_mut().zip(src.as_chunks::<2>().0) {
+                    for (acc, frame) in input.iter_mut().zip(wet_src.as_chunks::<2>().0) {
                         *acc += frame[ch] * g * room;
                     }
                 }
@@ -1294,6 +1475,171 @@ mod tests {
         b.set_headroom(600);
         b.play(true);
         assert!((first(&mut m, 2).0 - 0.25).abs() < 0.002);
+    }
+
+    // Measure the feed to the reverberator separately from the direct output.
+    // The first reflection is delayed beyond the entire measurement.
+    fn path_energy(
+        hz: f64,
+        source: I3dl2Source,
+        spatial: Source3d,
+        bin_mb: i32,
+        env_rolloff: f32,
+    ) -> (f64, f64) {
+        let mut m = Mixer::new(48_000);
+        m.set_reverb(Some(I3dl2Listener {
+            reflections_delay: 0.3,
+            room_rolloff: env_rolloff,
+            ..env_params()
+        }));
+        let mut b =
+            SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(hz, 0.1))
+                .unwrap();
+        b.set_source_3d(Some(spatial));
+        b.set_i3dl2_source(Some(source));
+        b.set_mix_bins(Some(vec![(6, 0), (route::I3DL2, bin_mb)]));
+        b.play(false);
+        m.add_buffer(b);
+        let mut direct = vec![0.0; 4800 * 2];
+        m.render(&mut direct);
+        let energy = |s: &[f32]| s.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+        (energy(&direct[480..]), energy(&m.reverb_in[240..]))
+    }
+
+    #[test]
+    fn room_hf_and_occlusion_shape_the_send_obstruction_only_shapes_direct() {
+        let measure = |hz, source, bin| path_energy(hz, source, Source3d::default(), bin, 0.0);
+        let open = I3dl2Source::default();
+        let db = |power: f64, reference: f64| 10.0 * (power / reference).log10();
+        for hz in [50.0, 5000.0] {
+            let (direct, wet) = measure(hz, open, 0);
+            let blocked = measure(
+                hz,
+                I3dl2Source {
+                    obstruction_hf: -2000,
+                    ..open
+                },
+                0,
+            );
+            let occluded = measure(
+                hz,
+                I3dl2Source {
+                    occlusion_hf: -2000,
+                    occlusion_lf_ratio: 0.25,
+                    ..open
+                },
+                0,
+            );
+            let room = measure(
+                hz,
+                I3dl2Source {
+                    room: -300,
+                    room_hf: -1200,
+                    ..open
+                },
+                -600,
+            );
+            assert_eq!(blocked.1, wet);
+            assert_eq!(room.0, direct);
+            let high = hz == 5000.0;
+            let loss = if high { -20.0 } else { -5.0 };
+            assert!((db(blocked.0, direct) - if high { -20.0 } else { 0.0 }).abs() < 0.2);
+            assert!((db(occluded.0, direct) - loss).abs() < 0.2);
+            assert!((db(occluded.1, wet) - loss).abs() < 0.2);
+            assert!((db(room.1, wet) - if high { -21.0 } else { -9.0 }).abs() < 0.2);
+        }
+    }
+
+    #[test]
+    fn positioned_mix_in_distance_changes_wet_balance_and_direct_brightness_only_when_enabled() {
+        let measure = |enabled, hrtf, position| {
+            let mut m = Mixer::new(48_000);
+            m.set_distance_reverb(enabled);
+            m.set_hrtf(hrtf);
+            m.set_reverb(Some(env_params()));
+            let mut bus = MixIn::new(17);
+            bus.set_mix_bins(Some(vec![(6, 0), (10, -600)]));
+            bus.set_source_3d(Some(Source3d {
+                position,
+                min_distance: f32::MAX,
+                max_distance: f32::MAX,
+                rolloff_factor: 0.0,
+                ..Default::default()
+            }));
+            bus.play();
+            m.add_mix_in(bus);
+            let mut stream = Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap();
+            stream.set_mix_bins(Some(vec![(17, -900)]));
+            let mut impulse = [0u8; 128];
+            impulse[..2].copy_from_slice(&16384i16.to_le_bytes());
+            stream.submit(&impulse).unwrap();
+            m.add_stream(stream);
+            let mut out = vec![0.0; 4800 * 2];
+            m.render(&mut out);
+            let energy = |s: &[f32]| s.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+            // Split the actual stereo output before the first room reflection.
+            // At Nyquist the alternating sum of an impulse response is its HF
+            // gain. Divide by the DC sum to measure coloration independent of level.
+            let (early, tail) = out.split_at(2 * 240);
+            let left = early.chunks_exact(2).map(|frame| f64::from(frame[0]));
+            let dc: f64 = left.clone().sum();
+            let hf: f64 = left
+                .enumerate()
+                .map(|(i, x)| if i % 2 == 0 { x } else { -x })
+                .sum();
+            (energy(early), energy(tail), (hf / dc).abs(), m.reverb_in)
+        };
+        let origin = Vec3::default();
+        let far = Vec3::new(0.0, 0.0, 30.0);
+        let near = measure(false, false, origin);
+        assert!(near.0 > 0.0 && near.1 > 0.0);
+        assert_eq!(measure(false, false, far), near);
+        assert_eq!(measure(true, false, origin), near);
+        let distant = measure(true, false, far);
+        assert!(distant.1 > near.1 && distant.0 / distant.1 < near.0 / near.1);
+        assert!(distant.2 < 0.5 * near.2);
+
+        // Turn the emitter to the left to engage the binaural ear filters.
+        // Distance darkens the direct impulse in headphones too. Bin 10
+        // receives the same samples with either ear renderer.
+        let left = Vec3::new(-30.0, 0.0, 0.0);
+        let pan = measure(true, false, left);
+        let headphones = measure(true, true, left);
+        let headphones_no_distance = measure(false, true, left);
+        assert_ne!(pan.0, headphones.0);
+        assert!(headphones.2 < 0.5 * headphones_no_distance.2);
+        assert!(headphones.1 > headphones_no_distance.1);
+        assert_eq!(pan.3, headphones.3);
+    }
+
+    #[test]
+    fn room_rolloff_respects_min_and_max_and_halos_disabled_distance_range() {
+        let source = I3dl2Source {
+            room_rolloff: 0.5,
+            ..Default::default()
+        };
+        let wet = |distance, min| {
+            path_energy(
+                500.0,
+                source,
+                Source3d {
+                    position: Vec3::new(0.0, 0.0, distance),
+                    min_distance: min,
+                    max_distance: 8.0,
+                    rolloff_factor: 0.0,
+                    ..Default::default()
+                },
+                0,
+                0.5,
+            )
+            .1
+        };
+        let near = wet(1.0, 2.0);
+        assert!(near > 0.0);
+        assert_eq!(near, wet(2.0, 2.0));
+        assert!((wet(8.0, 2.0) / near - 1.0 / 16.0).abs() < 1e-5);
+        assert_eq!(wet(80.0, 2.0), wet(8.0, 2.0));
+        assert_eq!(wet(80.0, f32::MAX), near);
     }
 
     #[test]

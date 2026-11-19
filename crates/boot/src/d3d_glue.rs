@@ -199,6 +199,7 @@ pub fn install_headless(
                 // `frame-N-e3.png` are a pair from the same frame.
                 let scale = scale.max(2);
                 let reference = configure_gfx(
+                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(shots("-1x", 0, None)),
                 );
                 // Every shadow-map frame is compared between the views; the
@@ -263,9 +264,10 @@ pub fn install_headless(
                     e3_shots(ctx, store, id, flags, gamma);
                 };
                 let retail = configure_gfx(
+                    "retail",
                     d3d::GfxBackend::new(share_context(&ctx)).on_present(retail_hook),
                 );
-                let e3 = configure_gfx(d3d::GfxBackend::new(ctx).on_present(e3_hook));
+                let e3 = configure_gfx("e3", d3d::GfxBackend::new(ctx).on_present(e3_hook));
                 if interp.is_some() {
                     eprintln!(
                         "d3d: in-between frames are off under the lighting A/B (H2_BOOT_GFX_LIGHTING_AB)"
@@ -298,11 +300,13 @@ pub fn install_headless(
                 // In-between frames show on the view; the reference's
                 // replay hook keeps its `-1x` swap count the guest's.
                 let reference = configure_gfx(
+                    "reference",
                     d3d::GfxBackend::new(share_context(&ctx))
                         .on_present(shots("-1x", shadow_shots, None))
                         .on_present_replay(|_, _, _, _, _| {}),
                 );
                 let view = configure_gfx(
+                    "display",
                     d3d::GfxBackend::new(ctx)
                         .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                         .on_present_replay(between.hook(dir.clone(), "")),
@@ -320,11 +324,15 @@ pub fn install_headless(
                     install_with_report(rt, b, Some(report))
                 };
             }
-            let backend = configure_gfx(
+            let mut backend = configure_gfx(
+                "reference",
                 d3d::GfxBackend::new(ctx)
                     .on_present(shots("", shadow_shots, Some(Arc::clone(&between))))
                     .on_present_replay(between.hook(dir.clone(), "")),
             );
+            if interp.is_none() {
+                crate::native_shadows_glue::configure_single(&mut backend);
+            }
             // Backend work (shader preparation, encoding, uploads,
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
@@ -502,7 +510,8 @@ impl BetweenShots {
 
 #[cfg(feature = "gpu")]
 /// `h2 run`'s settings for a headless `GfxBackend`.
-fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    crate::native_shadows_glue::configure(&mut backend, copy);
     // Merged render passes are the default, with the fast rule
     // (alpha-tested draws merged too; a few edge pixels can differ
     // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
@@ -528,7 +537,7 @@ fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
 
 #[cfg(feature = "gpu")]
 /// Another handle to `ctx`'s device and queue, for a second backend on it.
-fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
+pub(crate) fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
     gfx::GfxContext {
         instance: ctx.instance.clone(),
         adapter: ctx.adapter.clone(),
@@ -999,6 +1008,25 @@ impl d3d::backend::Backend for Headless {
     }
     // The native renderer's pass (docs/graphics/native-renderer.md):
     // nothing to draw into headless.
+    #[cfg(feature = "gpu")]
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.0.external_attachments(surfaces, textures, copy)
+    }
+
+    fn prepare_external(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
+        self.0.commit_external(recording);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.0.supports_external_pass()
     }
@@ -1228,6 +1256,9 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     {
         crate::native_world_glue::install(&device);
         crate::native_objects_glue::install(&device);
+        crate::native_decals_glue::install(&device);
+        crate::native_particles_glue::install(&device);
+        crate::native_first_person_glue::install(&device);
     }
     let mut out = None;
     rt.edit_dispatch(|d| {
@@ -1251,6 +1282,10 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .map(|e| e.0)
         .collect();
     install_write_barrier(rt, &device, &entries)?;
+    #[cfg(feature = "gpu")]
+    crate::native_world_layers_glue::install(rt, &device);
+    #[cfg(feature = "gpu")]
+    crate::native_residual_glue::install(rt, &device, &r.implemented);
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();

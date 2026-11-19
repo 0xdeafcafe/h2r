@@ -13,6 +13,7 @@ mod map_override;
 mod packages;
 mod path;
 mod rewrite;
+pub mod save_meta;
 mod state;
 mod status;
 mod types;
@@ -191,8 +192,24 @@ impl Vfs {
         if !(3..=5).contains(&config.utility_partition) {
             return Err(Error::InvalidParameter);
         }
-        // `Vfs` implements Drop, so no struct update from a default.
-        let mut vfs = Self::default();
+        // Before anything opens U:'s files: a profile whose SaveMeta.xbx
+        // was left damaged is made visible again (docs/runtime/xapi.md
+        // "Damaged save metadata").
+        let udata = config
+            .data_root
+            .join("disk")
+            .join("Partition1")
+            .join("UDATA")
+            .join(format!("{:08X}", config.title_id));
+        match save_meta::repair_saves(&udata, &config.data_root) {
+            Ok(done) => {
+                for repair in done {
+                    eprintln!("vfs: {repair}");
+                }
+            }
+            Err(e) => eprintln!("vfs: damaged saves not repaired: {e}"),
+        }
+        let mut vfs = Self::new();
         vfs.content_maps = config.content_maps.clone();
         for partition in 1..=5 {
             let name = format!("Partition{partition}");

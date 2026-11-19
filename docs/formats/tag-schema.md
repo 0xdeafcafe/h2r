@@ -139,6 +139,14 @@ Then, on offsets still free:
    converted Blood Gulch's assault rifle read back with no flashlight
    effect at `+0x244` (`h1objects/tests/weapon_sounds_disc.rs`;
    `schema::tests::weapon_slots_retail_leaves_empty_are_tag_references`).
+11. **Device change colours (Built).** Retail `ctrl` and `mach` leave the
+    shared `obje +0xac` block empty. Rebuilt Halo 1 devices can fill it, so
+    `infer::apply_device_change_colors` takes the layout from
+    `defs/obje.txt`: `0x10`-byte slots with child blocks at `+0` and `+8`.
+    The address at `+0xb0` was the word fresh a30 refused on its holo
+    control. `device_change_color_pointers_are_relocatable` uses synthetic
+    bytes with that address for both groups and checks that the schema
+    follows the block and both children.
 
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They

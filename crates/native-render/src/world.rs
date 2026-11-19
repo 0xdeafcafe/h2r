@@ -375,8 +375,6 @@ impl WorldBuilder {
                 // it turns with the placement (the game's program dots the
                 // two together).
                 lighting: placed_lighting,
-                // Read by nothing that draws the placed copy (the lights
-                // read the floats, `crate::program::FLOAT_INPUTS`).
                 packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
             });
         }

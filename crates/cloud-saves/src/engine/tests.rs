@@ -13,6 +13,11 @@ const META: &str = "0123456789AB/SaveMeta.xbx";
 const PROFILE: &str = "0123456789AB/profile";
 const VARIANT: &str = "BBBBBBBBBBBB/slayer";
 
+/// `SaveMeta.xbx` naming `name`, as the game writes it.
+fn meta(name: &str) -> Vec<u8> {
+    vfs::save_meta::encode_save_meta(&name.encode_utf16().collect::<Vec<_>>())
+}
+
 /// One machine: its data root and engine.
 struct Machine {
     data: PathBuf,
@@ -93,7 +98,7 @@ fn stamps_are_utc_dates() {
 fn a_new_machine_gets_the_accounts_saves_before_the_game_starts() {
     let remote = FakeRemote::default();
     let mut a = Machine::new("a", &remote);
-    a.write(META, b"Name=Chief", 1000);
+    a.write(META, &meta("Chief"), 1000);
     a.write(PROFILE, b"profile bytes", 1000);
     a.write(VARIANT, b"slayer variant", 1000);
     let r = a.engine.sync();
@@ -103,7 +108,7 @@ fn a_new_machine_gets_the_accounts_saves_before_the_game_starts() {
     let mut b = Machine::new("b", &remote);
     let r = b.engine.sync();
     assert_eq!((r.pulled, r.pushed, r.conflicts), (3, 0, 0), "{r:?}");
-    assert_eq!(b.read(META).unwrap(), b"Name=Chief");
+    assert_eq!(b.read(META).unwrap(), meta("Chief"));
     assert_eq!(b.read(VARIANT).unwrap(), b"slayer variant");
     // The modification time comes along, so a later conflict compares the
     // writers' times.
@@ -120,7 +125,7 @@ fn a_new_machine_gets_the_accounts_saves_before_the_game_starts() {
 fn changes_travel_both_ways_and_only_changed_files_upload() {
     let remote = FakeRemote::default();
     let mut a = Machine::new("a", &remote);
-    a.write(META, b"Name=Chief", 1000);
+    a.write(META, &meta("Chief"), 1000);
     a.write(PROFILE, b"v1", 1000);
     a.engine.sync();
     let mut b = Machine::new("b", &remote);
@@ -141,7 +146,7 @@ fn changes_travel_both_ways_and_only_changed_files_upload() {
 fn a_conflict_keeps_the_newer_and_a_copy_of_the_other() {
     let remote = FakeRemote::default();
     let mut a = Machine::new("a", &remote);
-    a.write(META, b"Name=Chief", 1000);
+    a.write(META, &meta("Chief"), 1000);
     a.write(PROFILE, b"v1", 1000);
     a.engine.sync();
     let mut b = Machine::new("b", &remote);
@@ -207,7 +212,7 @@ fn offline_changes_queue_survive_a_restart_and_upload_later() {
     remote.set_offline(true);
     // Signing in with the server down: nothing lost, the change queued.
     a.write(VARIANT, b"slayer 2", 2000);
-    a.write(META, b"Name=Chief", 2000);
+    a.write(META, &meta("Chief"), 2000);
     let r = a.engine.sync();
     assert!(r.offline);
     assert_eq!(r.queued, 2, "{r:?}");
@@ -252,6 +257,83 @@ fn a_push_in_play_never_overwrites_another_machines_change() {
     assert_eq!(r.conflicts, 1, "{r:?}");
     assert_eq!(a.read(PROFILE).unwrap(), b"elsewhere");
     assert_eq!(a.conflicts()[0].1, b"here");
+}
+
+#[test]
+fn an_emptied_save_meta_is_mended_from_the_cloud_and_never_uploaded() {
+    let remote = FakeRemote::default();
+    let mut a = Machine::new("a", &remote);
+    a.write(META, &meta("Chief"), 1000);
+    a.write(PROFILE, b"profile", 1000);
+    a.engine.sync();
+    let mut b = Machine::new("b", &remote);
+    b.engine.sync();
+    // B is killed between XCreateSaveGame's truncate and its write: the
+    // file is empty and newer than anything.
+    b.write(META, b"", 9000);
+    let writes = remote.writes().len();
+    // In play, the push refuses it.
+    let r = b.engine.push(&[Key::save("0123456789AB")]);
+    assert_eq!((r.pushed, r.damaged), (0, 1), "{r:?}");
+    assert!(r.lines.iter().any(|l| l.contains("not uploaded")), "{:?}", r.lines);
+    // At the next sign-in the cloud's good copy comes back over it.
+    let r = b.engine.sync();
+    assert_eq!((r.pulled, r.pushed, r.conflicts, r.deleted), (1, 0, 0, 0), "{r:?}");
+    assert_eq!(b.read(META).unwrap(), meta("Chief"));
+    assert_eq!(remote.bytes(META).unwrap(), meta("Chief"));
+    assert_eq!(remote.writes().len(), writes, "nothing went up");
+    assert!(b.conflicts().is_empty());
+    assert_eq!(b.engine.sync().summary(), "up to date");
+    // A torn one on a machine that never synced: the same.
+    let mut c = Machine::new("c", &remote);
+    c.write(META, &meta("Chief")[..7], 9000);
+    let r = c.engine.sync();
+    assert_eq!((r.pulled, r.pushed, r.conflicts), (2, 0, 0), "{r:?}");
+    assert_eq!(c.read(META).unwrap(), meta("Chief"));
+    assert_eq!(remote.writes().len(), writes);
+}
+
+#[test]
+fn a_damaged_meta_in_the_cloud_is_not_written_here() {
+    let remote = FakeRemote::default();
+    let mut a = Machine::new("a", &remote);
+    a.write(META, &meta("Chief"), 1000);
+    a.engine.sync();
+    // An older build pushed an emptied file.
+    remote.seed(META, b"", 9000);
+    let mut b = Machine::new("b", &remote);
+    let r = b.engine.sync();
+    assert_eq!((r.pulled, r.damaged), (0, 1), "{r:?}");
+    assert!(
+        r.lines.iter().any(|l| l.contains("not downloaded") && l.contains("damaged")),
+        "{:?}",
+        r.lines
+    );
+    assert_eq!(b.read(META), None);
+    // A machine with the good copy puts it back.
+    let r = a.engine.sync();
+    assert_eq!((r.pulled, r.pushed, r.damaged), (0, 1, 1), "{r:?}");
+    assert_eq!(a.read(META).unwrap(), meta("Chief"));
+    assert_eq!(remote.bytes(META).unwrap(), meta("Chief"));
+    let r = b.engine.sync();
+    assert_eq!(r.pulled, 1, "{r:?}");
+    assert_eq!(b.read(META).unwrap(), meta("Chief"));
+}
+
+#[test]
+fn a_good_save_meta_edit_is_still_uploaded() {
+    let remote = FakeRemote::default();
+    let mut a = Machine::new("a", &remote);
+    a.write(META, &meta("Chief"), 1000);
+    a.engine.sync();
+    let mut no_copy = meta("Chief");
+    no_copy.extend("NoCopy=1\r\n".encode_utf16().flat_map(u16::to_le_bytes));
+    a.write(META, &no_copy, 2000);
+    let r = a.engine.push(&[Key::save("0123456789AB")]);
+    assert_eq!((r.pushed, r.damaged), (1, 0), "{r:?}");
+    assert_eq!(remote.bytes(META).unwrap(), no_copy);
+    let r = a.engine.sync();
+    assert_eq!(r.summary(), "up to date", "{r:?}");
 }
 
 #[test]
@@ -380,7 +462,7 @@ fn the_worker_pushes_what_the_game_writes_through_the_vfs() {
     v.set_change_observer(Some(worker.observer()));
     // XCreateSaveGame, then the payload in two writes, in the guest's case.
     make_dir(&mut v, "U:\\0123456789AB");
-    write_through(&mut v, "U:\\0123456789AB\\SaveMeta.xbx", b"Name=Chief");
+    write_through(&mut v, "U:\\0123456789AB\\SaveMeta.xbx", &meta("Chief"));
     write_through(&mut v, "U:\\0123456789ab\\profile", b"part one");
     write_through(&mut v, "U:\\0123456789AB\\profile", b"part two");
     // Cache partitions and T: are not saves.

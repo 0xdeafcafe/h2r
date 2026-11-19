@@ -1492,9 +1492,9 @@ impl State {
             .iter()
             .map(|p| (p.label().to_owned(), round(s.phase_ms[*p as usize])))
             .collect();
-        let counts = timeline::phase::Counter::ALL
-            .iter()
-            .map(|c| (c.label().to_owned(), round(s.count_mean[*c as usize])))
+        let counts = timeline::phase::counter_columns()
+            .filter(|&(i, _)| i < timeline::phase::Counter::ALL.len() || s.count_mean[i] > 0.0)
+            .map(|(i, label)| (label.to_owned(), round(s.count_mean[i])))
             .collect();
         Ok(Counters {
             at: self.at(),

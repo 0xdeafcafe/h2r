@@ -1991,14 +1991,15 @@ const X_ONLY: [u32; 1] = [crate::list_class::X_BUTTON];
 /// ([`page_layout`]).
 pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
     [
-        ListClass::with_rows(
-            "mods-screen",
-            SCREEN,
-            Arc::new(ListRows::new(Arc::clone(repo))),
+        crate::skulls_menu::level_select_list(
+            ListClass::with_rows(
+                "mods-screen",
+                SCREEN,
+                Arc::new(ListRows::new(Arc::clone(repo))),
+            ),
+            crate::skulls_menu::LIST_LAYOUT,
         )
-        .layout(crate::skulls_menu::LIST_LAYOUT)
         .description(crate::skulls_menu::DESCRIPTION_TEXT)
-        .frame(crate::skulls_menu::FRAME)
         .picture(LIST_PICTURE)
         .action_buttons(&X_ONLY)
         .action(list_action(repo))
@@ -2010,14 +2011,15 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
             })
         })
         .footer(Slots::id(LIST_FOOTER)),
-        ListClass::with_rows("mods-pack", PACK, Arc::new(PackRows::new(Arc::clone(repo))))
-            .layout(crate::skulls_menu::LIST_LAYOUT)
-            .description(crate::skulls_menu::DESCRIPTION_TEXT)
-            .frame(crate::skulls_menu::FRAME)
-            .picture(LIST_PICTURE)
-            .action_buttons(&X_ONLY)
-            .action(pack_action(repo))
-            .footer(Slots::id(PACK_FOOTER)),
+        crate::skulls_menu::level_select_list(
+            ListClass::with_rows("mods-pack", PACK, Arc::new(PackRows::new(Arc::clone(repo)))),
+            crate::skulls_menu::LIST_LAYOUT,
+        )
+        .description(crate::skulls_menu::DESCRIPTION_TEXT)
+        .picture(LIST_PICTURE)
+        .action_buttons(&X_ONLY)
+        .action(pack_action(repo))
+        .footer(Slots::id(PACK_FOOTER)),
         ListClass::with_rows(
             "mods-detail",
             DETAIL,

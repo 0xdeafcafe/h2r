@@ -80,6 +80,19 @@ pub struct LocalItem {
     /// When it last changed, Unix milliseconds (the file's modification
     /// time).
     pub modified: i64,
+    /// A `SaveMeta.xbx` or `TitleMeta.xbx` whose bytes are damaged (empty
+    /// or torn: [`meta_damaged`]). The merge treats it as unchanged since
+    /// the last sync, so the server's copy replaces it; it is never
+    /// uploaded, and never deleted on the server.
+    pub damaged: bool,
+}
+
+/// Whether the save item `name` is a meta file and `bytes` are damaged:
+/// not UTF-16LE with a byte-order mark and a `Name=` line. The game never
+/// writes one so; a process killed between XCreateSaveGame's truncate and
+/// its write leaves it.
+pub fn meta_damaged(name: &str, bytes: &[u8]) -> bool {
+    vfs::save_meta::is_meta_file(name) && vfs::save_meta::meta_damaged(bytes)
 }
 
 /// Unix milliseconds now.

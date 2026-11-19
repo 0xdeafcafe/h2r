@@ -79,7 +79,7 @@ pub const ACTIVE_BSP: u32 = 0x004e_0348;
 /// The world parts the native world draws, by owner (cluster or
 /// placement) and part index in its section, each with its material's
 /// shader by tag index (the low word of the datum an item's `+8` holds).
-pub type PartSet = HashMap<(Owner, u8), u16>;
+pub type PartSet = HashMap<(Owner, u8), u32>;
 
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
@@ -88,7 +88,7 @@ pub trait Host: Send + Sync {
     /// the stencil. Asks for the native pass when a world for `bsp` is
     /// ready and the device can draw it; returns the parts it draws, or
     /// `None` to leave the world to the D3D path.
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Arc<PartSet>>;
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -153,6 +153,22 @@ impl GuestWrite for Mem<'_> {
     }
 }
 
+/// The exact part sequence corresponding to the reversible mask edits, including duplicates.
+pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8) -> bool)
+    -> Option<(skip::MaskPlan, Cleared, Vec<(Owner, u8)>)>
+{
+    let mut preview = skip::MaskPreview::new(mem)?;
+    let selected = std::cell::RefCell::new(Vec::new());
+    let cleared = skip::clear_parts(&mut preview, LIGHTMAP_LAYER, &|owner, part, shader| {
+        use timeline::native::{Metric, Stage};
+        let accepted = keep(owner, part) && parts.get(&(owner, part)) == Some(&shader);
+        if accepted { selected.borrow_mut().push((owner, part)); }
+        else { Stage::World.count(Metric::Examined, 1); Stage::World.count(Metric::RefusedOwnership, 1); }
+        accepted
+    })?;
+    Some((preview.finish()?, cleared, selected.into_inner()))
+}
+
 /// The observer before the layer draw, on any guest memory: the last layer
 /// 3's bits back, then this layer's skip.
 pub fn before_layer(mem: &mut dyn GuestMemory) {
@@ -184,13 +200,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let (Some(camera), Some(bsp)) = (RenderCamera::read(&m, RENDER_CAMERA), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
-    let Some(parts) = host.ask(&*m.0, bsp, &camera, &stencil) else {
-        return;
-    };
-    let cleared = skip::clear_parts(&mut m, LIGHTMAP_LAYER, &|owner, part, shader| {
-        parts.get(&(owner, part)) == Some(&(shader as u16))
-    });
-    if let Some(c) = cleared {
+    if let Some(c) = host.ask(m.0, bsp, &camera, &stencil) {
         DRAWN.fetch_add(1, Ordering::Relaxed);
         ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
         let views = VIEWS.load(Ordering::Relaxed);

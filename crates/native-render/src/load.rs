@@ -6,7 +6,7 @@
 use std::io::{Read, Seek};
 
 use map::{Map, TagId};
-use tags::geometry::{RawSource, Section, TagView};
+use tags::geometry::{RawSource, Section, TagView, VertexKind};
 use tags::lighting::{VertexLighting, vertex_lighting};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
@@ -66,6 +66,12 @@ pub fn bsp_shaders<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> Result<Vec<T
 /// A decoded section as builder input; `None` when its vertices do not
 /// decode.
 pub fn section_input(s: &Section) -> Option<SectionInput> {
+    let tangent_frame = VertexKind::TangentFrame;
+    if let Some(frame) = s.stream(tangent_frame)
+        && tangent_frame.expected_stride().is_some_and(|stride| frame.stride < stride)
+    {
+        return None;
+    }
     let v = s.vertices(None).ok()?;
     if v.positions.len() != s.vertex_count() {
         return None;

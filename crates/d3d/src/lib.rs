@@ -62,10 +62,15 @@ pub mod vblank;
 pub mod vertex_cache;
 
 pub use backend::{
+    DrawAdmission, DrawSnapshot, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
     Backend, ChannelMask, DepthGridRequest, DepthGridResult, DepthClip, DepthGridSink, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
-pub use device::{DepthScale, Device, DeviceConfig, ExternalRefusal, OcclusionSink, GuestRange, PresentParameters, Stats, Swallow, Traced, TracedDraw, WritebackCause, WritebackCauses};
+pub use device::{
+    DepthScale, Device, DeviceConfig, DrawScope, ExternalRefusal, GuestRange, OcclusionSink, PreparedExternal,
+    PresentParameters, Stats, Swallow, SwallowCall, SwallowOriginal, SwallowPass, SwallowRefusal,
+    SwallowTarget, Traced, TracedDraw, WritebackCause, WritebackCauses,
+};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
 #[cfg(feature = "gpu")]
@@ -81,7 +86,7 @@ pub use runtime_glue::register;
 #[cfg(feature = "gpu")]
 pub use scaled::{LightingAb, ScaledBackend, lighting_ab, render_scale};
 #[cfg(feature = "gpu")]
-pub use backend::{ExternalTarget, SampledLevel};
+pub use backend::{ExternalColor, ExternalCopies, ExternalTarget, SampledLevel};
 pub use shader::ShaderInputs;
 #[cfg(feature = "gpu")]
 pub use shader::ShaderProvider;

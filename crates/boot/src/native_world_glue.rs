@@ -45,7 +45,6 @@ use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassVi
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
-use native_render::transparent_gpu::{TransparentProgram, TransparentSet};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
@@ -73,28 +72,34 @@ pub struct CpuWorld {
     /// stage 1's program.
     pub programs_on: bool,
     pub stage_images: StageImages,
-    /// Transparent materials (`impl.render.native_transparents`): each
-    /// one's layer-15 passes, compiled.
-    pub transparents: HashMap<u16, Vec<TransparentProgram>>,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
+#[cfg_attr(test, derive(Default))]
 pub struct Ready {
     cpu: Mutex<Option<CpuWorld>>,
     gpu: Mutex<Option<GpuWorld>>,
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
-    /// The transparent parts the native pass draws, with their shader's
-    /// tag index (`native_transparents_glue`).
-    pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
+    part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
+    programs_on: bool,
+    /// The fog of this load (`native_fog_glue`, `impl.render.native_fog`):
+    /// the compiled layer-16 passes, their fog words and the parts the
+    /// fog pass draws. `None` with the fog off.
+    pub(crate) fog: Option<Arc<crate::native_fog_glue::FogView>>,
+    /// The water edge blend of this load (`native_water_glue`,
+    /// `impl.render.native_water`): the compiled layer-6 passes, their
+    /// supplies and the parts the water pass draws. `None` with the
+    /// water off.
+    pub(crate) water: Option<Arc<crate::native_water_glue::WaterData>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
-    palettes: StagePalettes,
+    pub(crate) palettes: StagePalettes,
 }
 
 /// The current (map, BSP) and its world.
@@ -103,6 +108,15 @@ pub struct Ready {
 /// its first play space share `0x800e6010`), so the address alone loaded
 /// the play space's world for the cinematic's BSP.
 pub(crate) type State = Arc<Mutex<(Option<(String, u32, u16)>, Load)>>;
+
+/// Match the guest's active BSP even if it changed before the next layer 3.
+pub(crate) fn current_ready<'a>(state: &'a (Option<(String, u32, u16)>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
+    let (Some((map, bsp, index)), Load::Ready(ready)) = state else { return None };
+    (mem.u32(feature::native_world::ACTIVE_BSP).ok() == Some(*bsp)
+        && active_bsp_index(mem) == Some(*index)
+        && crate::health::loaded_map_name(mem).ok().as_ref() == Some(map))
+        .then_some(ready)
+}
 
 pub(crate) enum Load {
     Idle,
@@ -118,7 +132,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<Arc<PartSet>> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() || bsp == 0 {
             return None;
@@ -186,9 +200,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         };
         let mut d = self.device.lock().ok()?;
-        if !d.can_external_pass() {
+        if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
+        let planning = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::PrepareNs);
         // The programs write w as depth and clip w (`xps_w_depth`): a view
         // whose draws store z instead (`SET_CONTROL0` without
         // z-perspective) is the D3D path's.
@@ -216,6 +231,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         };
+        let drained_plan = native_render::skip::stencil_plan(&feature::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)?;
+        if &drained_plan != plan { return None; }
         let Some(stencil) = pass_stencil(&stencil, plan) else {
             let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n % 600 == 0 {
@@ -229,36 +246,57 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        d.request_external_pass(Box::new(WorldPass {
+        let diag = Diagnostics::get();
+        let frustum = (!diag.no_cull).then(|| GpuWorld::draw_frustum(&camera.view_projection(), ready.programs_on));
+        let (masks, cleared, selected) = feature::native_world::plan_parts(
+            &feature::native_world::Mem(mem), &ready.parts, |owner, part| {
+                diag.owners.keeps(owner) && frustum.is_none_or(|f| ready.part_bounds.get(&(owner, part)).is_some_and(|b| f.may_see(b)))
+            },
+        )?;
+        let ranges = selected.len();
+        if ranges == 0 { return None; }
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
+        let pass = Box::new(WorldPass {
+            selected,
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
             w_clip: None,
             clip: None,
             traced: false,
+            probed: false,
             stencil,
             cull,
-        }));
-        let owners = Diagnostics::get().owners;
-        if owners == Owners::All {
-            return Some(Arc::clone(&ready.parts));
+            frame: d.swap_count().wrapping_add(1),
+        });
+        drop(planning);
+        let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok()??;
+        if !masks.apply(&mut feature::native_world::Mem(mem)) {
+            timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
+            return None;
         }
-        Some(Arc::new(ready.parts.iter().filter(|((o, _), _)| owners.keeps(*o)).map(|(&k, &v)| (k, v)).collect()))
+        reservation.commit();
+        Some(cleared)
     }
 }
 
-/// Installs the host on the device (with the occlusion capture), and the
-/// transparents' host over the same world.
+/// Installs the world host and the other native stages on the device.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     feature::native_world::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::clone(&state),
     }));
-    crate::native_transparents_glue::install(device, Arc::clone(&state));
-    crate::native_lights_glue::install(device, state);
+    crate::native_transparents_glue::install(device);
+    crate::native_fog_glue::install(device, Arc::clone(&state));
+    crate::native_water_glue::install(device, Arc::clone(&state));
+    let gels = crate::native_gels_glue::install(device);
+    crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
+    crate::native_shadows_glue::install(device);
+    crate::native_hud_glue::install(device);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that
@@ -280,7 +318,6 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         programs,
         programs_on,
         stage_images,
-        transparents,
     } = cpu;
     // With programs on, stage 1's groups are never drawn: no copy of the
     // lightmap pages for them (the programs upload their own).
@@ -289,7 +326,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
     });
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
-        Stage::Empty | Stage::Lightmap => None,
+        Stage::Empty | Stage::Lightmap | Stage::Engine(_) => None,
     };
     if programs_on {
         // Set even when empty: with programs on, a batch without one is
@@ -302,10 +339,14 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         );
         g.set_programs(set);
     }
-    if !transparents.is_empty() {
-        let set = TransparentSet::new(device, queue, g.world(), transparents, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-        eprintln!("native-transparents: {} transparent materials uploaded", set.len());
-        g.set_transparents(set);
+    // The fog set rides the same upload (`native_fog_glue`), after the
+    // world's images are in.
+    if let Some(fog) = ready.fog.as_ref().filter(|f| !f.programs.is_empty()) {
+        crate::native_fog_glue::upload_fog(fog, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+    }
+    // The water set rides the same upload (`native_water_glue`).
+    if let Some(water) = ready.water.as_ref().filter(|w| !w.programs.is_empty()) {
+        crate::native_water_glue::upload_water(water, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
     }
     *gpu = Some(g);
     gpu
@@ -313,6 +354,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
 
 /// One view's world pass.
 struct WorldPass {
+    selected: Vec<(Owner, u8)>,
     ready: Arc<Ready>,
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
@@ -328,6 +370,12 @@ struct WorldPass {
     /// Whether this pass was traced (it encodes once per copy of the
     /// targets).
     traced: bool,
+    /// Whether this pass was probed by frame ([`Probe::frames`]).
+    probed: bool,
+    /// The frame the pass is shown in: the device's swap count at the
+    /// layer-3 call plus one, the number of the frame shot
+    /// (`frame-NNNNN.png`) that shows it (`Device::swap_count`).
+    frame: u32,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
     /// The device's cull at the layer-3 call ([`inherited_cull`]; `None`:
@@ -351,6 +399,26 @@ pub(crate) fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::F
     (p.cull_mode, p.front_face)
 }
 
+impl WorldPass {
+    fn configure(&self, gpu: &mut GpuWorld, t: &d3d::ExternalTarget<'_>) {
+        let diag = Diagnostics::get();
+        gpu.set_cull(!diag.no_cull);
+        gpu.set_owners(diag.owners);
+        let (placements, clusters) = diag.inherit_cull;
+        gpu.set_inherited_cull(native_render::program::InheritedCull {
+            device: self.cull,
+            placements,
+            clusters,
+        });
+        let (state, marked) = &self.stencil;
+        let mut stencil = PassStencil::from_device(state, t.depth_format);
+        if stencil != PassStencil::default() {
+            stencil.marked = marked.clone();
+        }
+        gpu.set_stencil(stencil);
+    }
+}
+
 impl d3d::ExternalPass for WorldPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
@@ -361,15 +429,25 @@ impl d3d::ExternalPass for WorldPass {
         self.clip = Some(clip);
     }
 
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        let mut guard = upload(&self.ready, t);
+        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+        if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
+        self.configure(gpu, t);
+        gpu.prepare_parts(t.device, t.color_format, t.depth_format, &self.selected, &self.camera)
+            .then_some(()).ok_or("world part or program binding unavailable")
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: true }
+    }
+
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
+
+    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
-        let Some(gpu) = gpu.as_mut() else { return };
-        let (placements, clusters) = Diagnostics::get().inherit_cull;
-        gpu.set_inherited_cull(native_render::program::InheritedCull {
-            device: self.cull,
-            placements,
-            clusters,
-        });
+        let Some(gpu) = gpu.as_mut() else { return 0 };
+        self.configure(gpu, &t);
         if gpu.has_programs() {
             // The programs read the view from the device's constants: a
             // pass issued without them draws nothing rather than a world
@@ -378,7 +456,7 @@ impl d3d::ExternalPass for WorldPass {
                 if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     eprintln!("native-world: a pass came without the device's view constants; it draws nothing");
                 }
-                return;
+                return 0;
             };
             let view = ViewInputs {
                 constants,
@@ -387,39 +465,38 @@ impl d3d::ExternalPass for WorldPass {
                 z_scale: t.z_scale,
                 w_clip: self.w_clip,
             };
-            gpu.prepare_programs(t.queue, &view);
+            gpu.prepare_programs(&mut t.encoder_uploads(), &view);
             if let Some(dump) = Diagnostics::get().dump {
-                arm_dump(&self.ready, gpu, &view, dump);
+                arm_dump(&self.ready, gpu, &view, dump, self.frame);
             }
         }
         let diag = Diagnostics::get();
-        gpu.set_cull(!diag.no_cull);
-        gpu.set_owners(diag.owners);
+        let full_scale = t.z_scale;
         let culled = gpu.prepare(
-            t.queue,
+            &mut t.encoder_uploads(),
             &self.camera,
             DepthRule {
-                full_scale: t.z_scale,
+                full_scale,
                 floor: true,
             },
         );
-        if diag.trace
+        let traced = diag.trace
             && !std::mem::replace(&mut self.traced, true)
-            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled)
-            && let Some(at) = diag.probe
-        {
-            let [_, _, width, height] = t.viewport;
-            let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
-            eprintln!("native-world probe at {at:?}: {} parts: {hits:?}", hits.len());
+            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled, self.frame);
+        if let Some(Probe { at, frames }) = diag.probe {
+            // On each traced pass, or on every pass of the frames asked.
+            let asked = match frames {
+                None => traced,
+                Some((first, last)) => (first..=last).contains(&self.frame) && !std::mem::replace(&mut self.probed, true),
+            };
+            if asked {
+                let [_, _, width, height] = t.viewport;
+                let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
+                eprintln!("native-world probe frame {} at {at:?}: {} parts: {hits:?}", self.frame, hits.len());
+            }
         }
-        let (state, marked) = &self.stencil;
-        let mut stencil = PassStencil::from_device(state, t.depth_format);
-        if stencil != PassStencil::default() {
-            stencil.marked = marked.clone();
-        }
-        gpu.set_stencil(stencil);
         let [x, y, width, height] = t.viewport;
-        gpu.encode(
+        let recorded = gpu.encode_parts(
             t.device,
             t.encoder,
             t.color,
@@ -428,11 +505,13 @@ impl d3d::ExternalPass for WorldPass {
             t.depth_format,
             PassViewport { x, y, width, height },
             t.size,
+            Some(&self.selected),
         );
         let unbound = gpu.unbound_batches();
         if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
             eprintln!("native-world: {unbound} batch draws left out: their material program could not be bound");
         }
+        recorded
     }
 }
 
@@ -451,21 +530,23 @@ struct Diagnostics {
     /// Passes between traced ones after the first [`TRACE_FIRST`].
     trace_every: u64,
     no_cull: bool,
-    /// `H2_NATIVE_WORLD_PROBE=x,y` (guest pixels, with the trace on): the
-    /// parts whose triangles cover that pixel, on each traced pass
-    /// ([`probe`]).
-    probe: Option<(f32, f32)>,
+    /// `H2_NATIVE_WORLD_PROBE=x,y[@first[-last]]` (guest pixels): the
+    /// parts whose triangles cover that pixel ([`probe`]), on each traced
+    /// pass, or with frames on every pass shown in those frames (the frame
+    /// shots' numbers; no trace needed).
+    probe: Option<Probe>,
     /// `H2_NATIVE_WORLD_OWNERS=clusters|placements`: only those sections'
     /// parts drawn natively, the rest left to the D3D path (their items
     /// not skipped): which kind a difference belongs to.
     owners: Owners,
-    /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes]`: the uniforms
+    /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes][#frame]`: the uniforms
     /// the native pass draws that placement's rigid draws of the material
     /// (each of its materials without one) with, against the D3D path's draws of it
     /// ([`arm_dump`]; with `H2_NATIVE_WORLD_OWNERS=clusters`, so that the
     /// D3D path draws the placement), armed after that many of the world's
     /// passes (0 without one: the first, while the game may still be
-    /// streaming the bitmaps in at low detail).
+    /// streaming the bitmaps in at low detail), and with `#frame` not
+    /// before the first pass shown in that frame or later.
     dump: Option<Dump>,
     /// `H2_NATIVE_WORLD_INHERIT_CULL=none|placements|all` (all without
     /// it): whose draws of a pass that does not set `CULLMODE` take the
@@ -480,6 +561,17 @@ struct Dump {
     instance: u32,
     material: Option<u16>,
     after: u64,
+    /// The first frame it may arm in ([`WorldPass::frame`]).
+    frame: Option<u32>,
+}
+
+/// [`Diagnostics::probe`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Probe {
+    pub(crate) at: (f32, f32),
+    /// The frames (first, last, inclusive) to probe every pass of;
+    /// `None`: the traced passes.
+    frames: Option<(u32, u32)>,
 }
 
 impl Diagnostics {
@@ -496,7 +588,7 @@ impl Diagnostics {
                 dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
                 inherit_cull: parse_inherit_cull(std::env::var("H2_NATIVE_WORLD_INHERIT_CULL").ok().as_deref()),
             };
-            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
+            if d.trace || d.no_cull || d.probe.is_some() || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, true) || d.trace_every != TRACE_EVERY {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -521,6 +613,7 @@ fn trace(
     clip: Option<d3d::DepthClip>,
     t: &d3d::ExternalTarget<'_>,
     culled: native_render::cull::CullStats,
+    frame: u32,
 ) -> bool {
     let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n >= TRACE_FIRST && n % Diagnostics::get().trace_every != 0 {
@@ -529,7 +622,7 @@ fn trace(
     let vp = camera.view_projection();
     let constants = view.map(|c| [c[0], c[1], c[2], c[3]]);
     eprintln!(
-        "native-world trace {n}: z_scale {} clip {:?} camera pos {:?} fwd {:?} fov {} near {} far {} vp {:?} c0..3 {:?} viewport {:?} guest {:?} size {:?} cull {}/{}",
+        "native-world trace {n} frame {frame}: z_scale {} clip {:?} camera pos {:?} fwd {:?} fov {} near {} far {} vp {:?} c0..3 {:?} viewport {:?} guest {:?} size {:?} cull {}/{}",
         t.z_scale,
         clip,
         camera.position,
@@ -548,9 +641,12 @@ fn trace(
     true
 }
 
-/// `"x,y"` as a probe pixel.
-/// `placement[:material][@passes]` ([`Diagnostics::dump`]).
+/// `placement[:material][@passes][#frame]` ([`Diagnostics::dump`]).
 fn parse_dump(v: &str) -> Option<Dump> {
+    let (v, frame) = match v.split_once('#') {
+        Some((v, f)) => (v, Some(f.trim().parse::<u32>().ok()?)),
+        None => (v, None),
+    };
     let (v, after) = match v.split_once('@') {
         Some((v, n)) => (v, n.trim().parse::<u64>().ok()?),
         None => (v, 0),
@@ -559,7 +655,7 @@ fn parse_dump(v: &str) -> Option<Dump> {
         Some((i, m)) => (i, Some(m.trim().parse::<u16>().ok()?)),
         None => (v, None),
     };
-    Some(Dump { instance: instance.trim().parse::<u32>().ok()?, material, after })
+    Some(Dump { instance: instance.trim().parse::<u32>().ok()?, material, after, frame })
 }
 
 /// The world [`arm_dump`] counts passes of (its `Ready`'s address), the
@@ -578,14 +674,14 @@ static DUMPED: Mutex<(usize, u64, bool)> = Mutex::new((0, 0, false));
 /// native pass may not draw. Draws of the placement natively are skipped
 /// on the D3D path, so this wants the placements left to it
 /// (`H2_NATIVE_WORLD_OWNERS=clusters`).
-fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after }: Dump) {
+fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after, frame }: Dump, now: u32) {
     let key = Arc::as_ptr(ready) as usize;
     let mut dumped = DUMPED.lock().unwrap_or_else(|e| e.into_inner());
     if dumped.0 != key {
         *dumped = (key, 0, false);
     }
     dumped.1 += 1;
-    if dumped.2 || dumped.1 <= after {
+    if dumped.2 || dumped.1 <= after || frame.is_some_and(|f| now < f) {
         return;
     }
     dumped.2 = true;
@@ -610,7 +706,7 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
                 .map(|(n, c)| format!("c[{n}] {c:?}"))
                 .collect();
             eprintln!(
-                "native-world dump {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}; cull {:?} front {:?}",
+                "native-world dump frame {now} {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}; cull {:?} front {:?}",
                 d.words.len(),
                 read.join(", "),
                 d.vertex.defaults,
@@ -632,6 +728,7 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
                 textures: d.textures,
                 primitive: d.pipeline.0,
                 depth: (d.pipeline.1.0, d.pipeline.1.1, Default::default()),
+                color: None,
                 draws: 4,
             }
         })
@@ -654,10 +751,23 @@ fn parse_trace_every(v: Option<&str>) -> u64 {
     v.and_then(|v| v.trim().parse::<u64>().ok()).filter(|&n| n > 0).unwrap_or(TRACE_EVERY)
 }
 
-fn parse_probe(v: &str) -> Option<(f32, f32)> {
+/// `"x,y[@first[-last]]"` as a probe pixel and the frames to probe
+/// ([`Diagnostics::probe`]).
+pub(crate) fn parse_probe(v: &str) -> Option<Probe> {
+    let (v, frames) = match v.split_once('@') {
+        Some((v, f)) => {
+            let (first, last) = f.split_once('-').unwrap_or((f, f));
+            let (first, last) = (first.trim().parse::<u32>().ok()?, last.trim().parse::<u32>().ok()?);
+            if first > last {
+                return None;
+            }
+            (v, Some((first, last)))
+        }
+        None => (v, None),
+    };
     let (x, y) = v.split_once(',')?;
     let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
-    (x.is_finite() && y.is_finite()).then_some((x, y))
+    (x.is_finite() && y.is_finite()).then_some(Probe { at: (x, y), frames })
 }
 
 /// One part under a probed pixel ([`probe`]).
@@ -710,7 +820,7 @@ fn probe(world: &World, view_proj: &native_render::camera::Mat4, size: (f32, f32
 /// pixel outside its edges: the view depth there (interpolated
 /// perspective-correctly) and the signed distance in pixels to its
 /// nearest edge (negative outside).
-fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
+pub(crate) fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
     let [a, b, c] = [v[0], v[1], v[2]];
     let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
     if area.abs() < 1e-6 {
@@ -789,6 +899,10 @@ pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Optio
 /// The hook's guest memory as the device reads it, read-only.
 pub(crate) struct ReadMemory<'a>(pub(crate) &'a dyn GuestMemory);
 
+impl native_render::camera::GuestRead for ReadMemory<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> { self.0.u32(addr).ok() }
+}
+
 impl d3d::GuestMemory for ReadMemory<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
         self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
@@ -826,7 +940,7 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 /// `0x0011c1b0` and `0x00137d40` index the block with it
 /// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
 /// or unread.
-fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
+pub(crate) fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
     let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
     u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
 }
@@ -935,23 +1049,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         }
         Default::default()
     };
-    // The skip is per part (an item names its cluster or placement and
-    // part, `skip::clear_parts`), so every native material is drawn
-    // natively whatever other materials share its shader. The lights'
-    // split is per shader (`feature::native_lights`), so they take only
-    // the materials whose shader is native whole.
-    let whole = whole_shader_materials(&world.materials(), &shaders, &native);
-    // A native material's instanced placements draw natively only with
-    // its rigid program ([`drawn_natively`]); the lights, whose native
-    // passes would meet the ones left to D3D, take only materials whose
-    // every placement draws natively.
     let rigid: HashSet<u16> = programs.iter().filter(|(_, p)| p.rigid.is_some()).map(|(&m, _)| m).collect();
-    let instanced: HashSet<u16> = world
-        .draws
-        .iter()
-        .filter(|d| matches!(d.owner, Owner::Instance(_)) && !rigid.contains(&d.material))
-        .map(|d| d.material)
-        .collect();
     if programs_on {
         log_coverage(&mut map, &world, &shaders, &native, refused);
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
@@ -974,31 +1072,44 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             );
         }
     }
-    // Transparent materials: each one's layer-15 passes where they all
-    // translate, and the parts the native pass can draw.
-    let transparents_on = feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s));
-    let (transparents, transparent_parts) = if transparents_on {
-        crate::native_transparents_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder)
-    } else {
-        Default::default()
-    };
-    // The lights' part, over the whole world: the parts of materials left
-    // to D3D, or sharing a shader with one (the lights' split skips by
-    // shader), are where native lights cannot draw.
+    // The sorted geometry entries identify individual cluster parts and their full shader datums.
     let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
     let lights = if lights_on {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| whole.contains(&m) && !instanced.contains(&m))
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m), &decoder.palettes)
             .map(Arc::new)
     } else {
         None
     };
     // The screen effects are not the world's: `native_post_glue` loads
     // them itself, with or without the native world.
+    // The fog (layer 16), over the whole world before its draws are kept:
+    // a material that stays on the D3D path for layer 3 may still fog
+    // natively.
+    let fog_on = feature::Switches::from_env().is_ok_and(|s| feature::native_fog::on(&s));
+    let fog = if fog_on {
+        Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
+    } else {
+        None
+    };
+    // The water/camouflage census (`native_water_glue`), read-only: with
+    // the water switch on, before the world's draws are kept.
+    if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+        crate::native_water_glue::census(&mut map, &shaders, &world);
+    }
+    // The water edge blend (layer 6), over the world's transparent parts
+    // before its draws are kept.
+    let water = if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+        Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
+    } else {
+        None
+    };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
     let parts = part_set(&world, &shaders);
+    let part_bounds = world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect();
     Ok(Ready {
+        part_bounds, programs_on,
         cpu: Mutex::new(Some(CpuWorld {
             world,
             base_maps,
@@ -1006,11 +1117,11 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             programs,
             programs_on,
             stage_images,
-            transparents,
         })),
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
-        transparent_parts: Arc::new(transparent_parts),
+        fog,
+        water,
         lights,
         palettes: decoder.used().clone(),
     })
@@ -1033,32 +1144,14 @@ fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Ima
     )
 }
 
-/// Of the world's materials (`materials`, by BSP index; `shaders` the
-/// shader of each), those in `native` whose shader no other material
-/// outside `native` uses: what a skip by shader (the lights' split) may
-/// clear.
-fn whole_shader_materials(materials: &[u16], shaders: &[TagId], native: &HashSet<u16>) -> HashSet<u16> {
-    let shader = |m: u16| shaders.get(usize::from(m)).map(|s| s.0 as u16);
-    let refused: HashSet<u16> = materials
-        .iter()
-        .filter(|&&m| !native.contains(&m))
-        .filter_map(|&m| shader(m))
-        .collect();
-    materials
-        .iter()
-        .copied()
-        .filter(|m| native.contains(m) && shader(*m).is_some_and(|s| !refused.contains(&s)))
-        .collect()
-}
-
 /// The skip's table: each part the world draws (by owner and part index),
-/// with its material's shader by tag index. `world` holds only native
+/// with its material's full shader datum. `world` holds only native
 /// materials' draws ([`keep_draws`]).
 fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
     world
         .draws
         .iter()
-        .filter_map(|d| Some(((d.owner, d.part), shaders.get(usize::from(d.material))?.0 as u16)))
+        .filter_map(|d| Some(((d.owner, d.part), shaders.get(usize::from(d.material))?.0)))
         .collect()
 }
 
@@ -1267,6 +1360,8 @@ pub(crate) struct StageDecoder {
     expanded_at: HashMap<(TagId, u32), usize>,
     /// Images that do not decode at any stage.
     failed: HashSet<(TagId, u32)>,
+    /// Cached images whose D3D coordinates are in texels.
+    linear: HashSet<(TagId, u32)>,
 }
 
 impl StageDecoder {
@@ -1299,9 +1394,23 @@ impl StageDecoder {
         stage: usize,
         refuse_linear: bool,
     ) -> Result<bool, String> {
-        self.take(images, (bitmap, image), stage, &mut |palette| {
-            decode_stage(map, files, bitmap, image as usize, stage, palette, refuse_linear)
-        })
+        let key = (bitmap, image);
+        if refuse_linear && self.linear.contains(&key) {
+            return Err(format!("stage {stage} bitmap is a linear texture"));
+        }
+        let mut linear = false;
+        let decoded = self.take(images, key, stage, &mut |palette| {
+            let (image, expanded, layout) = decode_stage(map, files, bitmap, image as usize, stage, palette)?;
+            linear = layout == gfx::format::Layout::Linear;
+            if refuse_linear && linear {
+                return Err(StageRefusal::Here("is a linear texture"));
+            }
+            Ok((image, expanded))
+        });
+        if linear && decoded.is_ok() {
+            self.linear.insert(key);
+        }
+        decoded
     }
 
     /// [`decode`](Self::decode) with the decode itself as `decode` (given
@@ -1320,6 +1429,7 @@ impl StageDecoder {
             if stage == 3 || *palette != self.palettes[at] {
                 return Err(format!("stage {stage} bitmap is palettized and was expanded through another stage's palette"));
             }
+            self.used[stage].clone_from(palette);
             return Ok(true);
         }
         if images.contains_key(&key) {
@@ -1357,10 +1467,9 @@ enum StageRefusal {
 
 /// Image `index` of a stage's bitmap at stage `stage`, and whether it was
 /// expanded through the stage's palette; or why the stage cannot have it:
-/// it does not decode, it is a linear texture (addressed in texels on the
-/// D3D path, `tex_scale`, where the programs here take normalised
-/// coordinates; only with `refuse_linear`), or it is palettized and the
-/// stage has no palette for it ([`stage_image`]).
+/// it does not decode, or it is palettized and the stage has no palette
+/// for it ([`stage_image`]). The caller uses the layout to refuse linear
+/// textures where the native path cannot use the D3D texel coordinates.
 fn decode_stage<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -1368,18 +1477,15 @@ fn decode_stage<R: std::io::Read + std::io::Seek>(
     index: usize,
     stage: usize,
     palette: &Option<Vec<u32>>,
-    refuse_linear: bool,
-) -> Result<(Image, bool), StageRefusal> {
+) -> Result<(Image, bool, gfx::format::Layout), StageRefusal> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| StageRefusal::Image("does not read"))?.data else {
         return Err(StageRefusal::Image("is not a bitmap"));
     };
     let image = b.images.get(index).ok_or(StageRefusal::Image("has no such image"))?;
     let (d, blocks) = assets::decode_image_blocks(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
-    if refuse_linear && d.desc.format.layout() == gfx::format::Layout::Linear {
-        return Err(StageRefusal::Here("is a linear texture"));
-    }
+    let layout = d.desc.format.layout();
     let (image, palettized) = stage_image(image.format, d.levels, stage, palette)?;
-    Ok((with_blocks(image, blocks), palettized))
+    Ok((with_blocks(image, blocks), palettized, layout))
 }
 
 /// `image` with its BC blocks, when the D3D path uploads the bitmap as BC
@@ -1444,6 +1550,29 @@ fn stage_image(
     Ok((image, palette.is_some()))
 }
 
+/// A light stage uses normalized 2D coordinates. Decode all mip levels
+/// with the same palette and BC rules as the world's material pass.
+pub(crate) fn light_image<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    id: TagId,
+    index: usize,
+    stage: usize,
+    palette: &Option<Vec<u32>>,
+) -> Option<(Image, bool)> {
+    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else { return None };
+    let image = b.images.get(index)?;
+    if image.kind != tags::TextureKind::D2 {
+        return None;
+    }
+    let (d, blocks) = assets::decode_image_blocks(image, files).ok()?;
+    if d.desc.format.layout() == gfx::format::Layout::Linear {
+        return None;
+    }
+    let (image, palettized) = stage_image(image.format, d.levels, stage, palette).ok()?;
+    Some((with_blocks(image, blocks), palettized))
+}
+
 /// The first image of a bitmap as RGBA, with its mip chain.
 pub(crate) fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
     decode_image(map, files, id, 0)
@@ -1495,20 +1624,6 @@ mod tests {
     }
 
     #[test]
-    fn a_skip_by_shader_takes_only_materials_whose_shader_is_native_whole() {
-        // Materials 0..4; 1 and 3 share shader 0xe000_0011. 1 translates,
-        // 3 does not: a skip by shader (the lights' split) would clear 3's
-        // items too, so it takes 0 and 2 only.
-        let shaders = [0xe000_0010, 0xe000_0011, 0xe000_0012, 0xe000_0011, 0xe000_0014].map(TagId);
-        let translated: HashSet<u16> = [0, 1, 2].into_iter().collect();
-        let whole = whole_shader_materials(&[0, 1, 2, 3, 4], &shaders, &translated);
-        assert_eq!(whole, [0, 2].into_iter().collect::<HashSet<u16>>());
-        // A material without a shader is never taken.
-        let whole = whole_shader_materials(&[0, 9], &shaders, &[0, 9].into_iter().collect());
-        assert_eq!(whole, [0].into_iter().collect::<HashSet<u16>>());
-    }
-
-    #[test]
     fn an_untranslated_material_keeps_its_d3d_draws_and_a_translated_one_is_skipped() {
         // The world as the loader leaves it with programs on: material 7
         // translated, materials 8 and 9 refused, 9 sharing 7's shader. 8
@@ -1540,7 +1655,7 @@ mod tests {
         let w = keep_draws(world.clone(), &|d| translated.contains(&d.material) && drawn_natively(d, &HashSet::new()));
         assert!(w.draws.iter().all(|d| d.material == 7), "8 and 9 are not drawn natively (no stage 1 look)");
         let parts = part_set(&w, &shaders);
-        let want: PartSet = [((Owner::Cluster(0), 0), 0x107)].into_iter().collect();
+        let want: PartSet = [((Owner::Cluster(0), 0), 0xe000_0107)].into_iter().collect();
         assert_eq!(parts, want, "7's cluster part by owner and index, with its shader; not 9's, which shares it, nor the placement's");
         // Batched again over what is left: one batch, one draw.
         let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
@@ -1551,7 +1666,7 @@ mod tests {
         let rigid: HashSet<u16> = [7].into_iter().collect();
         let w = keep_draws(world, &|d| translated.contains(&d.material) && drawn_natively(d, &rigid));
         let parts = part_set(&w, &shaders);
-        let want: PartSet = [((Owner::Cluster(0), 0), 0x107), ((Owner::Instance(3), 1), 0x107)].into_iter().collect();
+        let want: PartSet = [((Owner::Cluster(0), 0), 0xe000_0107), ((Owner::Instance(3), 1), 0xe000_0107)].into_iter().collect();
         assert_eq!(parts, want);
         let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
         assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);
@@ -1587,7 +1702,13 @@ mod tests {
 
     #[test]
     fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
-        let dump = |instance, material, after| Some(Dump { instance, material, after });
+        let dump = |instance, material, after| Some(Dump { instance, material, after, frame: None });
+        assert_eq!(parse_dump("500#2000"), Some(Dump { instance: 500, material: None, after: 0, frame: Some(2000) }));
+        assert_eq!(
+            parse_dump("500:173@3#2000"),
+            Some(Dump { instance: 500, material: Some(173), after: 3, frame: Some(2000) })
+        );
+        assert_eq!(parse_dump("500#"), None);
         assert_eq!(parse_dump("282"), dump(282, None, 0));
         assert_eq!(parse_dump(" 282 : 107 "), dump(282, Some(107), 0));
         assert_eq!(parse_dump("282:107@600"), dump(282, Some(107), 600));
@@ -1609,7 +1730,12 @@ mod tests {
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
-        assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
+        let probe_at = |at, frames| Some(Probe { at, frames });
+        assert_eq!(parse_probe("520, 80"), probe_at((520.0, 80.0), None));
+        assert_eq!(parse_probe("350,380@2000"), probe_at((350.0, 380.0), Some((2000, 2000))));
+        assert_eq!(parse_probe("350,380@1990-2010"), probe_at((350.0, 380.0), Some((1990, 2010))));
+        assert_eq!(parse_probe("350,380@2010-1990"), None, "an empty range");
+        assert_eq!(parse_probe("350,380@x"), None);
         assert_eq!(parse_probe("520"), None);
         assert_eq!(parse_probe("x,1"), None);
         // A screen triangle (0,0) (10,0) (0,10), view depths 2, 4, 4; both
@@ -1857,6 +1983,8 @@ mod tests {
         assert_eq!(d.used(), &[None, None, Some(normals()), None]);
         assert_eq!(d.take(&mut images, bump, 1, &mut |pal| { decodes += 1; p8(1)(pal) }), Ok(true));
         assert_eq!(decodes, 1, "expanded once");
+        assert_eq!(d.used(), &[None, Some(normals()), Some(normals()), None]);
+        assert!(!palettes_hold(d.used(), &|s| (s == 2).then(normals)));
         assert!(d.take(&mut images, bump, 0, &mut |pal| p8(0)(pal)).is_err(), "no palette at stage 0");
         assert!(d.take(&mut images, bump, 3, &mut |pal| p8(3)(pal)).is_err(), "the lightmap's stage");
 

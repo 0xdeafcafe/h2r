@@ -186,7 +186,7 @@ The default stereo mix uses a simple DirectSound panner.
   `min / (min + rolloff·(d − min))` for `d > min`, `d` capped at the max
   distance (beyond it the level holds), `rolloff = listener × source` rolloff
   factors. Halo 2 sets min and max to `FLT_MAX` and rolloff 0, and attenuates
-  through `SetVolume` itself, so its mix-ins come out at unity.
+  through voice and mix-bin volumes, so its mix-ins come out at unity.
 - **Cone**: unity inside half the inner angle, the outside volume (mB)
   beyond half the outer angle, linear in mB between (the DS3D model). Only
   a 360° inner angle (the default) or a zero orientation disables it; a
@@ -232,6 +232,20 @@ HRIR files or game data.
 
 [brown-duda]: https://escholarship.org/uc/item/0cr9d23p
 
+### Optional distance reverb
+
+`H2_FEATURES=audio.distance_reverb=on` enables extra depth for positioned
+voices. It uses the length of the listener-relative position in metres,
+before the DS3D min/max clamp. For distance `d`, the mixer adds
+`6 × d/(10+d)` dB to an existing room send and subtracts
+`12 × d/(10+d)` dB from the direct HF level. At ten metres this gives
++3 dB wet and −6 dB at the HF reference. These are host tuning choices.
+The switch defaults off. Unpositioned streams keep their game mix. When
+a stream feeds a positioned mix-in, the cue applies there. Both switches can
+be enabled with `H2_FEATURES=audio.hrtf=on,audio.distance_reverb=on`.
+The direct HF filter runs before binaural rendering. Bin 10 feeds the room
+reverb through its own filter.
+
 ### Voice effects
 
 `crate::fx` (per-voice) and `crate::reverb` (one per mixer). Every effect is
@@ -255,9 +269,15 @@ change playback rate by design).
   memory so an idle render with a reverb allocates nothing (`tests/alloc.rs`).
 - **Headroom** (`SetHeadroom`): attenuates the voice by its millibels.
 - **I3DL2 source** (`SetI3DL2Source`): direct-path level, obstruction and
-  occlusion (low-frequency share = HF level × LF ratio) as a gain plus a
-  one-pole high-frequency shelf at 5 kHz, and the room send level. The shelf
-  runs over the frames a voice produced, so block size never shows in the tail.
+  occlusion use each effect's LF ratio to split its loss between broadband
+  attenuation and HF filtering. Bin 10 has its own filter state. It hears
+  room, roomHF and occlusion. Obstruction and directHF affect the direct
+  output. Each one-pole response reaches the requested loss at the
+  environment's HF reference (5 kHz by default). Both paths advance only
+  over frames actually produced. The send retains its own bin volume.
+  For a positioned source the model applies the inverse distance law above
+  to the room path using the sum of source and environment room rolloff.
+  Halo's positioned mix-ins stay inside their minimum distance.
   Streams keep 514 frames of completed-packet history for pitch-modulated
   reads that reach behind the front packet.
 - **Reverb** (`Reverb`, `I3dl2Listener`): early-reflection taps, a

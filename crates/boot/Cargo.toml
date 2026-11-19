@@ -43,6 +43,7 @@ wgpu = { version = "30", optional = true }
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
 native-render = { path = "../native-render", optional = true }
+shaders = { path = "../shaders", optional = true }
 serde.workspace = true
 x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
@@ -82,7 +83,7 @@ perf = { path = "../perf", optional = true }
 
 [features]
 default = ["gpu", "movie-playback", "local-io"]
-gpu = ["gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:hot-render"]
+gpu = ["gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
 movie-playback = ["bink-hle/playback", "dep:movies"]
 local-io = ["dep:voice"]
 perf = ["dep:perf"]

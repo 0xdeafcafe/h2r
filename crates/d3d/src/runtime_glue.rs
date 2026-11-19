@@ -220,7 +220,9 @@ where
             // guard and lock taken again was a gate handshake and a mutex
             // round trip on every D3D call).
             let (error, fault) = {
-                let mut guest = ctx.memory();
+                // The post guard also checks the context's live return
+                // continuation while this guest-memory guard is held.
+                let mut guest = ctx.runtime().memory();
                 let mut mem = GuestAdapter::new(&mut guest);
                 match dev.lock() {
                     Err(_) => (
@@ -234,17 +236,29 @@ where
                     Ok(mut d) => match {
                         // H2_POST_TRACE: the entry and its caller, before
                         // the draws its drain executes.
-                        if d.tracing() {
-                            d.trace_call(e.name, mem.read_u32(regs.esp).unwrap_or(0));
+                        let ret = (d.tracing() || d.swallowing())
+                            .then(|| mem.read_u32(regs.esp).unwrap_or(0));
+                        if let Some(ret) = ret {
+                            d.trace_call(e.name, ret);
                         }
-                        d.drain_until_callback(&mut mem)
+                        ret.map_or(Ok(()), |ret| {
+                            d.swallow_caller(&mem, regs.esp, ret, |token| {
+                                ctx.live_continuations()
+                                    .iter()
+                                    .any(|c| c.token == token && c.origin == "feature: after hooks")
+                            })
+                        })
+                        .and_then(|()| d.drain_until_callback(&mut mem))
                     } {
                         Ok(Some(cb)) => {
                             drop(d);
                             drop(guest);
                             return deliver_push_callback(cpu, ctx, &dev, cb, addr);
                         }
-                        Ok(None) => match abi::call(&e, &mut d, &mut mem, &regs) {
+                        Ok(None) => match d
+                            .swallow_before_entry(e.name)
+                            .and_then(|()| d.call_residual_entry(&e, &mut mem, &regs))
+                        {
                             Ok(o) => {
                                 apply(cpu, o);
                                 let destroys = d.take_pending_destroys();
@@ -269,9 +283,15 @@ where
                                     ret.target_pc,
                                 );
                             }
-                            Err(err) => (err, mem.take_fault()),
+                            Err(err) => {
+                                d.swallow_entry_failed(e.name);
+                                (err, mem.take_fault())
+                            }
                         },
-                        Err(err) => (err, mem.take_fault()),
+                        Err(err) => {
+                            d.swallow_entry_failed(e.name);
+                            (err, mem.take_fault())
+                        }
                     },
                 }
             };

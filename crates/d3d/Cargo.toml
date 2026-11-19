@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["gpu"]
 # The guest device and software recorder need no GPU or window system.
-gpu = ["gfx/gpu", "dep:wgpu", "dep:hot-render", "dep:serde_json"]
+gpu = ["gfx/gpu", "dep:wgpu", "dep:hot-render", "dep:serde_json", "dep:pollster"]
 
 [dependencies]
 gfx = { path = "../gfx", default-features = false }
@@ -31,8 +31,9 @@ bytemuck = "1"
 # Machine snapshots: the d3d section (src/device/snap.rs).
 snapshot = { path = "../snapshot" }
 
+pollster = { version = "1", optional = true }
+
 [dev-dependencies]
-pollster = "1"
 # The synthetic text before and after (tests/glyph_text.rs, H2_FONT_HD_PNG).
 png = "0.18"
 # The MSL back end alone, timed in tests/pipeline_cost.rs.

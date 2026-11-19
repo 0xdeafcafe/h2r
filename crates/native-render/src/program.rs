@@ -69,10 +69,8 @@ pub const WORLD_FETCH: [InputFetch; 16] = {
     f
 };
 
-/// [`INPUTS`] with the frame and lighting vector as floats (the
-/// [`WorldVertex`] fields): what the native lights read, from the placed
-/// copy of the world (`crate::light_gpu`; their programs translate with
-/// float fetch).
+/// Float layout of the placed world's frame and lighting vector.
+/// Cluster material and light programs use [`INPUTS`] and [`WORLD_FETCH`].
 pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
     (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),
@@ -207,15 +205,26 @@ pub fn compile_pass(
 ///   native pass does not have (fog, bump matrices, the eye, borders).
 pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgram, String> {
     world_parity(&pass.look)?;
-    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    let set = set_constants(&pass.look.vertex_constants);
-    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
-        return Err(format!("vertex program reads c[{c}], which the native pass does not set"));
-    }
+    world_constants_read(&pass.look, microcode)?;
     let mut p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
+}
+
+/// [`compile_world`]'s constants check on its own: every vertex constant
+/// the pass's program reads is one the native pass sets (the view's
+/// `c[0..18]`, the instance's, the model rows `c[50..52]` and the
+/// decompression rows), and none is addressed relative to `a0.x`. Used
+/// by the passes that compile through [`compile_pass`] directly (the fog
+/// layer's, `crate::fog_gpu`).
+pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), String> {
+    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+    let set = set_constants(&look.vertex_constants);
+    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
+        return Err(format!("vertex program reads c[{c}], which the native pass does not set"));
+    }
+    Ok(())
 }
 
 /// `pass` with its vertex program's rigid classification `microcode`
@@ -225,16 +234,28 @@ pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgr
 /// rows `c[50..52]`: the D3D path places a placement's vertices with them
 /// on the GPU, and the native pass uploads the same rows per placement.
 pub fn compile_rigid(pass: &WorldPass, microcode: &[u8]) -> Result<RigidProgram, String> {
+    compile_pass_rigid(&pass.look, pass.state.alpha_test, microcode)
+}
+
+/// [`compile_rigid`] for any pass look (the fog layer's placements,
+/// `crate::fog_gpu`): the rigid checks (the model rows `c[50..52]` read,
+/// every constant one the native pass sets) and the compile with the
+/// pass's own alpha test.
+pub fn compile_pass_rigid(
+    look: &crate::look::PassLook,
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    microcode: &[u8],
+) -> Result<RigidProgram, String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("rigid vertex program: {e:?}"))?;
     let read = constants_read(&program)?;
     if !(MODEL_ROWS..MODEL_ROWS + 3).all(|c| read.contains(&(c as u8))) {
         return Err("the rigid vertex program does not read the model rows c[50..52]".into());
     }
-    let set = set_constants(&pass.look.vertex_constants);
+    let set = set_constants(&look.vertex_constants);
     if let Some(c) = read.into_iter().find(|&c| !set(c)) {
         return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
     }
-    let p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+    let p = compile_pass(look, microcode, alpha_test)?;
     let words = microcode[4..4 + 16 * program.instructions.len()]
         .chunks_exact(4)
         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -270,7 +291,7 @@ pub fn rigid_vertex(base: &VertexUniforms, view: &ViewInputs, rows: &ModelRows) 
 
 /// Whether the native world sets constant `c` (hardware numbering) for a
 /// pass with instance constants `instance`.
-fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
+pub(crate) fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
     move |c| {
         let c = usize::from(c);
         c < VIEW_CONSTANTS
@@ -319,6 +340,11 @@ pub fn constants_read(program: &vsh::Program) -> Result<Vec<u8>, String> {
 ///   the border in the shader).
 pub fn world_parity(look: &PassLook) -> Result<(), String> {
     let def = PixelShaderDef::from_bytes(&look.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    pixel_parity(&def, &look.stage_states, look.textures.map(|s| s != Stage::Empty))
+}
+
+/// Pixel dependencies that neither the world nor the light pass supplies.
+pub(crate) fn pixel_parity(def: &PixelShaderDef, stages: &[StageStates], sampled: [bool; 4]) -> Result<(), String> {
     let c = def.decode();
     let Some(f) = c.final_combiner else {
         return Err("no final combiner (D3D builds one from the fog and specular states)".into());
@@ -341,9 +367,8 @@ pub fn world_parity(look: &PassLook) -> Result<(), String> {
             return Err(format!("stage {n} texture mode {m:?} reads device state"));
         }
     }
-    for (n, s) in look.stage_states.iter().enumerate().take(4) {
-        let sampled = look.textures[n] != Stage::Empty;
-        if sampled && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
+    for (n, s) in stages.iter().enumerate().take(4) {
+        if sampled[n] && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
             return Err(format!("stage {n} addresses the border"));
         }
     }
@@ -770,10 +795,13 @@ pub(crate) struct Gpu {
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    /// The pass's own pipelines by target formats ([`Gpu::pipeline`]):
+    /// the fog and water layers' passes, whose state is each pass's own
+    /// (`crate::fog_gpu`, `crate::water_gpu`).
+    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
 }
 
 /// A world or rigid pipeline's key: target formats, stencil state and the
@@ -870,7 +898,7 @@ impl Gpu {
             immediate_size: 0,
         });
         let buffer = |label, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor {
+            gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
                 label: Some(label),
                 size: size as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -879,7 +907,7 @@ impl Gpu {
         };
         let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
         let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program uniforms"),
             layout: &uniforms_layout,
             entries: &[
@@ -899,14 +927,27 @@ impl Gpu {
             samplers,
             stage_views,
             stage_info,
-            pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
+            pipelines: HashMap::new(),
         })
     }
 
     /// The texture group with `page` bound where the program samples the
     /// lightmap; `None` when a sampled stage has nothing to bind.
     pub(crate) fn textures(&self, device: &wgpu::Device, page: Option<&wgpu::TextureView>) -> Option<wgpu::BindGroup> {
+        self.textures_supplied(device, page, &HashMap::new())
+    }
+
+    /// [`Gpu::textures`] with `supplied` views at their stages: the
+    /// engine-texture stages (the water edge blend's scene copy and
+    /// reflections, supplied per view by the reservation), stage number
+    /// to view. A supplied stage must not be a bitmap stage.
+    pub(crate) fn textures_supplied(
+        &self,
+        device: &wgpu::Device,
+        page: Option<&wgpu::TextureView>,
+        supplied: &HashMap<usize, wgpu::TextureView>,
+    ) -> Option<wgpu::BindGroup> {
         let mut views = Vec::new();
         for (n, d) in self.program.dims.iter().enumerate() {
             if d.is_none() {
@@ -914,6 +955,7 @@ impl Gpu {
             }
             let view = match self.program.stages[n] {
                 Stage::Lightmap => page?.clone(),
+                Stage::Engine(_) => supplied.get(&n)?.clone(),
                 _ => self.stage_views[n].clone()?,
             };
             views.push((n, view));
@@ -929,7 +971,7 @@ impl Gpu {
                 resource: wgpu::BindingResource::Sampler(&self.samplers[*n]),
             });
         }
-        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        Some(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program textures"),
             layout: &self.textures_layout,
             entries: &entries,
@@ -940,6 +982,22 @@ impl Gpu {
     pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
+    }
+
+    /// [`Gpu::prepare`] with the pixel uniforms `pixel` in place of the
+    /// program's own, written through the submission's upload arena (the
+    /// reservation path records into an isolated encoder, where a queue
+    /// write would escape cancellation): for a pass whose pixel state is
+    /// resolved per view (the fog layer's `PixelUniforms::fog` and
+    /// `fog_color`, `crate::fog_gpu`).
+    pub(crate) fn prepare_with(
+        &self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        pixel: &PixelUniforms,
+    ) {
+        uploads.write(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
+        uploads.write(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
 
     /// Makes the pipeline for these target formats: the world's opaque
@@ -978,7 +1036,7 @@ fn render_pipeline(
         .collect();
     let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("native world program"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -1020,7 +1078,7 @@ pub(crate) struct Rigid {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
-    uniforms: wgpu::BindGroup,
+    pub(crate) uniforms: wgpu::BindGroup,
     /// Bytes between slots (the device's offset alignment).
     stride: u64,
     /// Per slot, ascending: the placement and its rows.
@@ -1057,9 +1115,12 @@ pub fn rigid_slot_bytes(base: &VertexUniforms, view: &ViewInputs, slots: &[(u32,
 impl Rigid {
     /// Uploads `gpu`'s rigid program for `material`'s placements in
     /// `world`; `None` without one, or with no placement to draw.
-    fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
+    pub(crate) fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
+        Self::with_slots(device, gpu, rigid_slots(world, material)?)
+    }
+
+    pub(crate) fn with_slots(device: &wgpu::Device, gpu: &Gpu, slots: Vec<(u32, ModelRows)>) -> Option<Self> {
         let program = gpu.program.rigid.clone()?;
-        let slots = rigid_slots(world, material)?;
         if slots.is_empty() {
             return None;
         }
@@ -1084,13 +1145,19 @@ impl Rigid {
             bind_group_layouts: &[Some(&uniforms_layout), Some(&gpu.textures_layout)],
             immediate_size: 0,
         });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let mut initial = vec![0; (stride * (slots.len() as u64 - 1) + size) as usize];
+        for (i, (_, rows)) in slots.iter().enumerate() {
+            let mut v = program.vertex.clone();
+            v.constants[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(rows);
+            let start = i * stride as usize;
+            v.write_bytes(&mut initial[start..start + VertexUniforms::SIZE]);
+        }
+        let buffer = gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
             label: Some("native world rigid vertex"),
-            size: stride * (slots.len() as u64 - 1) + size,
+            contents: &initial,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world rigid uniforms"),
             layout: &uniforms_layout,
             entries: &[
@@ -1109,15 +1176,48 @@ impl Rigid {
     }
 
     /// The frame's view and rows in every slot.
-    fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
-        let bytes = rigid_slot_bytes(&self.program.vertex, view, &self.slots, self.stride as usize);
-        queue.write_buffer(&self.buffer, 0, &bytes);
+    pub(crate) fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
+        let v = frame_vertex(&self.program.vertex, view).to_bytes();
+        // Only c[0..18] and the viewport/clip tail depend on the view.
+        // Every placement keeps its own original c[50..53] in the GPU block.
+        let tail = VertexUniforms::SIZE - 32;
+        uploads.repeat(&self.buffer, 0, self.stride, self.slots.len(), &v[..VIEW_CONSTANTS * 16]);
+        uploads.repeat(&self.buffer, tail as u64, self.stride, self.slots.len(), &v[tail..]);
     }
 
     /// The dynamic offset of `instance`'s slot.
-    fn offset(&self, instance: u32) -> Option<u32> {
+    pub(crate) fn offset(&self, instance: u32) -> Option<u32> {
         let n = self.slots.binary_search_by_key(&instance, |s| s.0).ok()?;
         u32::try_from(n as u64 * self.stride).ok()
+    }
+
+    /// Makes the pipeline for these formats, state and cull (another
+    /// stage's passes: the fog layer's, `crate::fog_gpu`, whose state is
+    /// each pass's own).
+    pub(crate) fn pipeline_for(
+        &mut self,
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        state: Option<&PassState>,
+        cull: Option<Cull>,
+        stencil: &wgpu::StencilState,
+    ) {
+        let (module, layout) = (&self.module, &self.layout);
+        self.pipelines
+            .entry((color, depth, stencil.clone(), cull))
+            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, cull, stencil.clone()));
+    }
+
+    /// The pipeline those keys name, when made.
+    pub(crate) fn pipeline_at(
+        &self,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        cull: Option<Cull>,
+        stencil: &wgpu::StencilState,
+    ) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.get(&(color, depth, stencil.clone(), cull))
     }
 }
 
@@ -1172,12 +1272,13 @@ impl ProgramSet {
     }
 
     /// The frame's uniforms for every material.
-    pub fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         for g in self.materials.values() {
-            g.prepare(queue, view);
+            uploads.write(&g.vertex_buffer, 0, &frame_vertex(&g.program.vertex, view).to_bytes());
+            uploads.write(&g.pixel_buffer, 0, &frame_pixel(&g.program.pixel, view).to_bytes());
         }
         for r in self.rigid.values() {
-            r.prepare(queue, view);
+            r.prepare(uploads, view);
         }
     }
 
@@ -1315,7 +1416,8 @@ mod tests {
         let regs: Vec<u32> = INPUTS.iter().map(|i| i.0).collect();
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
-        assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
+        assert_eq!(INPUTS[6], (6, 20, wgpu::VertexFormat::Float32x2));
+        assert_eq!(FLOAT_INPUTS[6].1, 20, "the lights still read the float coordinate");
         assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
         assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
         // The packed registers are words, decoded in the shader.

@@ -673,6 +673,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "shaders",
  "sim",
  "snapshot",
  "tags",
@@ -3889,6 +3890,7 @@ version = "0.1.0"
 dependencies = [
  "analyze",
  "bytemuck",
+ "d3d",
  "gfx",
  "ir",
  "lift",
@@ -3896,6 +3898,7 @@ dependencies = [
  "pollster",
  "shaders",
  "tags",
+ "timeline",
  "wgpu",
  "xbe",
 ]

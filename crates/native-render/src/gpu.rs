@@ -6,14 +6,13 @@
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
-use crate::transparent_gpu::TransparentSet;
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -244,6 +243,7 @@ impl Owners {
 }
 
 pub struct GpuWorld {
+    part_slots: std::collections::HashMap<(Owner, u8), usize>,
     world: World,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
@@ -270,9 +270,10 @@ pub struct GpuWorld {
     /// Materials drawn with their own programs ([`crate::program`]); the
     /// rest draw with stage 1's.
     programs: Option<ProgramSet>,
-    /// The transparent materials the sorted transparents' runs draw
-    /// ([`crate::transparent_gpu`]).
-    transparents: Option<TransparentSet>,
+    /// The fog materials layer 16 draws ([`crate::fog_gpu`]).
+    fog: Option<FogSet>,
+    /// The water materials layer 6 draws ([`crate::water_gpu`]).
+    water: Option<crate::water_gpu::WaterSet>,
     /// The light passes (stage 4), once a light needs them.
     lights: Option<LightSet>,
     /// Batches left out of a pass because their material program could
@@ -306,6 +307,7 @@ pub(crate) fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image,
     for (level, bytes) in std::iter::once(&image.rgba).chain(&image.mips).enumerate() {
         let level = level as u32;
         let (w, h) = ((size.width >> level).max(1), (size.height >> level).max(1));
+        gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &t,
@@ -343,6 +345,7 @@ fn block_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image, b: &
         let level = level as u32;
         let (w, h) = ((image.width >> level).max(1), (image.height >> level).max(1));
         let (w, h) = (w.next_multiple_of(4), h.next_multiple_of(4));
+        gfx::churn::upload_bytes(bytes.len());
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &t,
@@ -375,7 +378,7 @@ impl GpuWorld {
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
                 usage,
@@ -412,7 +415,7 @@ impl GpuWorld {
             bytemuck::cast_slice(&slot_bytes),
             wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
         );
-        let frame = device.create_buffer(&wgpu::BufferDescriptor {
+        let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native world frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -456,7 +459,7 @@ impl GpuWorld {
                 },
             ],
         });
-        let frame_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let frame_group = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world frame"),
             layout: &frame_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -500,7 +503,7 @@ impl GpuWorld {
                 wgpu::BufferUsages::UNIFORM,
             );
             let page = lit.unwrap_or_else(|| white.clone());
-            batch_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            batch_groups.push(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
                 label: Some("native world batch"),
                 layout: &batch_layout,
                 entries: &[
@@ -528,8 +531,9 @@ impl GpuWorld {
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
         slots.shrink_to_fit();
+        let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
         Self {
-            world,
+            part_slots, world,
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
             culls: true,
@@ -547,7 +551,8 @@ impl GpuWorld {
             shader,
             pipelines: HashMap::new(),
             programs: None,
-            transparents: None,
+            fog: None,
+            water: None,
             lights: None,
             unbound_batches: 0,
         }
@@ -563,42 +568,69 @@ impl GpuWorld {
         &self.world
     }
 
-    /// Draws the world's transparent parts of `set`'s materials from now on.
-    pub fn set_transparents(&mut self, set: TransparentSet) {
-        self.transparents = Some(set);
+    /// Draws the world's layer-16 passes of `set`'s materials from now on.
+    pub fn set_fog(&mut self, set: FogSet) {
+        self.fog = Some(set);
     }
 
-    /// The transparent materials, when they are uploaded.
-    pub fn transparents(&self) -> Option<&TransparentSet> {
-        self.transparents.as_ref()
+    /// The fog materials, when they are uploaded.
+    pub fn fog(&self) -> Option<&FogSet> {
+        self.fog.as_ref()
     }
 
-    /// Records one run of sorted transparent entries, each a part
-    /// `(owner, part index)`, in order: every pass of each, blended into
-    /// the target over the depth (loaded and kept). Entries whose part or
-    /// material the set does not draw are skipped (the host accepts none
-    /// such). Returns how many were drawn.
+    /// Draws the water edge blend of `set`'s materials from now on.
+    pub fn set_water(&mut self, set: crate::water_gpu::WaterSet) {
+        self.water = Some(set);
+    }
+
+    /// The water materials, when they are uploaded.
+    pub fn water(&self) -> Option<&crate::water_gpu::WaterSet> {
+        self.water.as_ref()
+    }
+
+    /// The water uniforms for one view ([`WaterSet::prepare`]), through
+    /// the submission's upload arena.
+    pub fn prepare_water(
+        &mut self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.water.as_ref() {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's water edge blend (layer 6) in reservation
+    /// order, each selected part with every pass
+    /// of its material's layer-6 set, blended into the target over the
+    /// depth (loaded and kept). The view copy for the stages that sample
+    /// the scene is made first ([`WaterSet::make_copy`]); `sampled` are
+    /// the render targets' views in the set's `targets` order. Returns
+    /// how many parts were drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_transparents(
+    pub fn encode_water(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
-        view: &ViewInputs,
-        entries: &[(Owner, u8)],
+        target_copy: d3d::TargetCopy,
+        selected: &[(Owner, u8)],
+        sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
-        let Some(set) = self.transparents.as_mut() else { return 0 };
+        let Some(set) = self.water.as_mut() else { return 0 };
         set.pipelines(device, color_format, depth_format);
-        set.prepare(queue, view);
+        let copy = set
+            .samples_view
+            .then(|| set.make_copy(device, encoder, color, target_copy));
         let set = &*set;
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native transparents"),
+            label: Some("native water"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color,
                 depth_slice: None,
@@ -626,19 +658,83 @@ impl GpuWorld {
         // The programs carry the game's viewport in their constants: the
         // pass covers the whole target, as the world's programs do.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        let mut drawn = 0;
-        for &(owner, part) in entries {
-            if let Some(t) = self.world.transparent(owner, part)
-                && set.draw(&mut pass, t, color_format, depth_format)
-            {
-                drawn += 1;
-            }
-        }
-        drawn
+        set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
     }
 
+    /// The fog uniforms for one view ([`FogSet::prepare`]), through the
+    /// submission's upload arena (the reservation records into an
+    /// isolated encoder, where a queue write would escape cancellation).
+    pub fn prepare_fog(
+        &mut self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.fog.as_ref() {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's planar fog (layer 16) in reservation order,
+    /// each selected part with
+    /// every pass of its material's layer-16 set, blended into the target
+    /// over the depth (loaded and kept). The uniforms are
+    /// [`GpuWorld::prepare_fog`]'s. Returns how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fog(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+    ) -> usize {
+        let Some(set) = self.fog.as_mut() else { return 0 };
+        set.pipelines(device, color_format, depth_format);
+        let set = &*set;
+        let has_stencil = depth_format.has_stencil_aspect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native fog"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // The programs carry the game's viewport in their constants: the
+        // pass covers the whole target, as the world's programs do. The
+        // buffer is the program vertices (the layer-3 programs' own):
+        // clusters' are their placed world positions, and a placement's
+        // unplaced local coordinates, which its rigid program places with
+        // its rows.
+        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        set.draw(&mut pass, color_format, depth_format, selected)
+    }
     /// Draws lights with `set` from now on.
     pub fn set_lights(&mut self, set: LightSet) {
         self.lights = Some(set);
@@ -650,38 +746,30 @@ impl GpuWorld {
     }
 
     /// Records one run of lights' draws over the world's parts (each
-    /// draw's index ranges, which `boot` picks from the parts whose bounds
-    /// meet the light's sphere), added into the target over the depth
+    /// draw's index ranges from the active gathered cluster items),
+    /// added into the target over the depth
     /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
     /// Returns how many ranges were drawn.
     #[allow(clippy::too_many_arguments)]
-    pub fn encode_lights(
+    pub fn prepare_lights(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
-        target_size: (u32, u32),
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> usize {
-        let Some(set) = self.lights.as_mut() else { return 0 };
-        set.encode(
+    ) -> Option<crate::light_gpu::LightBundles> {
+        let set = self.lights.as_mut()?;
+        set.bundles(
             device,
             queue,
-            encoder,
-            &self.vertices,
+            &self.program_vertices,
             &self.indices,
-            color,
             color_format,
-            depth,
             depth_format,
-            target_size,
             view,
             draws,
             stage_image,
@@ -745,9 +833,9 @@ impl GpuWorld {
 
     /// The frame's view for the programs' uniforms (the device's view
     /// constants, the target's sizes and depth scale).
-    pub fn prepare_programs(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare_programs(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         if let Some(p) = &self.programs {
-            p.prepare(queue, view);
+            p.prepare(uploads, view);
         }
     }
 
@@ -760,7 +848,7 @@ impl GpuWorld {
                 immediate_size: 0,
             });
             let attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x2, 3 => Float32x3];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
                 label: Some("native world"),
                 layout: Some(&layout),
                 vertex: wgpu::VertexState {
@@ -803,18 +891,47 @@ impl GpuWorld {
         })
     }
 
-    /// The frame's camera: culls on the CPU and writes the uniform and the
-    /// slots' instance counts.
-    pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &RenderCamera, depth: DepthRule) -> CullStats {
+    /// Resolve all geometry and program bindings the guest's selected parts need
+    /// on this attachment pair, including the per-placement uniform offset.
+    pub fn prepare_parts(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        parts: &[(Owner, u8)], camera: &RenderCamera,
+    ) -> bool {
+        let frustum = Self::draw_frustum(&camera.view_projection(), self.has_programs());
+        self.prepare_pipelines(device, color, depth);
+        parts.iter().all(|part| {
+            let Some(&i) = self.part_slots.get(part) else { return false };
+            let draw = &self.world.draws[i];
+            if draw.index_count == 0 || !self.owners.keeps(draw.owner) || (self.culls && !frustum.may_see(&draw.bounds)) {
+                return false;
+            }
+            let Some(p) = &self.programs else { return true };
+            let state = &self.stencil.state;
+            p.batch(draw.batch as usize, draw.material, color, depth, state).is_some()
+                && match draw.owner {
+                    Owner::Cluster(_) => true,
+                    Owner::Instance(n) => p.rigid(draw.material, n, color, depth, state).is_some(),
+                }
+        })
+    }
+
+    fn prepare_pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
+        self.pipeline(device, color, depth);
+        if let Some(p) = &mut self.programs {
+            p.pipelines(device, color, depth, &self.stencil.state, self.inherited_cull);
+        }
+    }
+
+    /// The same visibility test for guest admission and indirect arguments.
+    /// Material programs supply the depth range. The fixed stage uses the camera's range.
+    pub fn draw_frustum(vp: &crate::camera::Mat4, programs: bool) -> Frustum {
+        if programs { Frustum::sides(vp) } else { Frustum::from_view_projection(vp) }
+    }
+
+    /// The frame's camera: culls on the CPU and writes the uniform and the slots' instance counts.
+    pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
-        // The material programs clip as the D3D path does: cull by the
-        // sides and the eye only (`Frustum::sides`). Stage 1 draws with
-        // the render camera's own range.
-        let frustum = if self.programs.is_some() {
-            Frustum::sides(&view_proj)
-        } else {
-            Frustum::from_view_projection(&view_proj)
-        };
+        let frustum = Self::draw_frustum(&view_proj, self.has_programs());
         let stats = if self.culls {
             cull(&self.world, &frustum, &mut self.slots)
         } else {
@@ -839,9 +956,9 @@ impl GpuWorld {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
         };
-        queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&u));
+        uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
         if !self.slots.is_empty() {
-            queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
+            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
         }
         stats
     }
@@ -862,10 +979,43 @@ impl GpuWorld {
         viewport: PassViewport,
         target_size: (u32, u32),
     ) {
-        self.pipeline(device, color_format, depth_format);
-        if let Some(p) = &mut self.programs {
-            p.pipelines(device, color_format, depth_format, &self.stencil.state, self.inherited_cull);
+        self.encode_parts(device, encoder, color, color_format, depth, depth_format, viewport, target_size, None);
+    }
+
+    /// Record precisely the guest's ordered part sequence, including repeated
+    /// parts. Adjacent slots in the same batch may share a multi-draw.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_parts(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        viewport: PassViewport,
+        target_size: (u32, u32),
+        parts: Option<&[(Owner, u8)]>,
+    ) -> usize {
+        let mut spans = Vec::<(usize, usize, usize)>::new();
+        if let Some(parts) = parts {
+            for part in parts {
+                let Some(&slot) = self.part_slots.get(part) else { return 0 };
+                if self.slots[slot].instance_count == 0 { return 0; }
+                let batch = self.world.draws[slot].batch as usize;
+                if let Some((last_batch, _, end)) = spans.last_mut() && *last_batch == batch && *end == slot {
+                    *end += 1;
+                } else {
+                    spans.push((batch, slot, slot + 1));
+                }
+            }
+        } else {
+            spans.extend(self.world.batches.iter().enumerate().map(|(i, b)| {
+                let first = b.first_draw as usize;
+                (i, first, first + b.draw_count as usize)
+            }));
         }
+        self.prepare_pipelines(device, color_format, depth_format);
         let pipeline = &self.pipelines[&(color_format, depth_format)];
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -895,7 +1045,7 @@ impl GpuWorld {
             multiview_mask: None,
         });
         if self.slots.is_empty() {
-            return;
+            return 0;
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         // Which pipeline is bound: None before the first batch, Some(false)
@@ -903,7 +1053,10 @@ impl GpuWorld {
         // per run).
         let mut own: Option<bool> = None;
         let mut unbound = 0u64;
-        for (i, (b, group)) in self.world.batches.iter().zip(&self.batch_groups).enumerate() {
+        let mut recorded = 0;
+        for (i, first, last) in spans {
+            let b = &self.world.batches[i];
+            let group = &self.batch_groups[i];
             let programs = self.programs.as_ref();
             let program = programs.and_then(|p| p.batch(i, b.material, color_format, depth_format, &self.stencil.state));
             if let (Some(p), Some((program, uniforms, textures))) = (programs, program) {
@@ -919,8 +1072,7 @@ impl GpuWorld {
                 // them before each of its draws (`0x0004d830`). A section
                 // the game draws in stencil mode 2 is a run of its own, with
                 // that reference.
-                let first = b.first_draw as usize;
-                let draws = &self.world.draws[first..first + b.draw_count as usize];
+                let draws = &self.world.draws[first..last];
                 let mut k = 0;
                 while k < draws.len() {
                     let owner = draws[k].owner;
@@ -954,6 +1106,7 @@ impl GpuWorld {
                         pass.set_stencil_reference(reference);
                     }
                     pass.multi_draw_indexed_indirect(&self.indirect, (first + k) as u64 * SLOT_SIZE, (end - k) as u32);
+                    recorded += end - k;
                     k = end;
                 }
                 continue;
@@ -973,10 +1126,12 @@ impl GpuWorld {
                 own = Some(false);
                 pass.set_bind_group(1, group, &[]);
             }
-            pass.multi_draw_indexed_indirect(&self.indirect, u64::from(b.first_draw) * SLOT_SIZE, b.draw_count);
+            pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (last - first) as u32);
+            recorded += last - first;
         }
         drop(pass);
         self.unbound_batches += unbound;
+        recorded
     }
 }
 

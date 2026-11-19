@@ -65,17 +65,50 @@ pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
 #[cfg(feature = "gpu")]
+pub mod native_decals_glue;
+#[cfg(feature = "gpu")]
+pub mod native_first_person_glue;
+#[cfg(feature = "gpu")]
+pub mod native_first_person_load;
+#[cfg(feature = "gpu")]
+pub mod native_fog_glue;
+#[cfg(feature = "gpu")]
+pub mod native_gels_glue;
+#[cfg(feature = "gpu")]
+mod native_gels_load;
+#[cfg(feature = "gpu")]
+mod native_gels_replace;
+#[cfg(feature = "gpu")]
+pub mod native_hud_glue;
+#[cfg(feature = "gpu")]
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
+mod native_shadows_draw;
+#[cfg(feature = "gpu")]
+mod native_shadows_scope;
+mod native_shadows_probe;
+#[cfg(feature = "gpu")]
+pub mod native_shadows_glue;
+#[cfg(feature = "gpu")]
 pub mod native_objects_glue;
+#[cfg(feature = "gpu")]
+pub mod native_particles_glue;
+#[cfg(feature = "gpu")]
+mod native_particles_admission;
 #[cfg(feature = "gpu")]
 pub mod native_post_glue;
 #[cfg(feature = "gpu")]
 pub mod native_post_load;
 #[cfg(feature = "gpu")]
+mod native_residual_glue;
+#[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
 #[cfg(feature = "gpu")]
+pub mod native_water_glue;
+#[cfg(feature = "gpu")]
 pub mod native_world_glue;
+#[cfg(feature = "gpu")]
+mod native_world_layers_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
@@ -1441,6 +1474,15 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
+    if opts.d3d && let Some(b) = &mut host.gfx {
+        native_shadows_glue::configure(b, "reference");
+        if let Some((view, _)) = &mut host.gfx_view {
+            native_shadows_glue::configure(view, "display");
+        } else if interp.is_none() {
+            native_shadows_glue::configure_single(b);
+        }
+    }
+    #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -1524,11 +1566,11 @@ fn run_configured(
             (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
         }
     };
-    if let Some(audio) = &ds
-        && !clock_only_audio
-        && features.switches().audio_hrtf()
-    {
-        audio.mixer().lock().unwrap().set_hrtf(true);
+    if let Some(audio) = &ds && !clock_only_audio {
+        let mixer = audio.mixer();
+        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        mixer.set_hrtf(features.switches().audio_hrtf());
+        mixer.set_distance_reverb(features.switches().distance_reverb());
     }
     if bots && let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
@@ -1627,6 +1669,9 @@ fn run_configured(
     let agent = late.agent;
     if let (Some(theater), Some(a)) = (&theater, &agent) {
         theater.connect(&a.agent);
+    }
+    if let (Some(a), Some(audio)) = (&agent, &ds) {
+        dsound_glue::add_agent_methods(&a.agent, audio.mixer());
     }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).

@@ -13,6 +13,52 @@ use std::sync::{Arc, Mutex};
 
 use dsound::{DirectSound, Hle, Layout};
 
+/// Read-only routing view for comparing one emitter at several distances.
+pub(crate) fn add_agent_methods(agent: &agent::Agent, mixer: Arc<Mutex<audio::Mixer>>) {
+    agent.add_method(
+        agent_proto::method::AUDIO_VOICES,
+        agent::Access::Read,
+        move |params| voice_levels(&mixer, params),
+    );
+}
+
+fn voice_levels(
+    mixer: &Mutex<audio::Mixer>,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, agent_proto::RpcError> {
+    use serde_json::json;
+    if !(params.is_null() || params.as_object().is_some_and(|p| p.is_empty())) {
+        return Err(agent_proto::RpcError::new(
+            agent_proto::code::INVALID_PARAMS,
+            "audio.voices takes no params",
+        ));
+    }
+    let (rows, distance_reverb, reverb_active) = {
+        let m = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            m.voice_levels(),
+            m.distance_reverb(),
+            m.reverb().is_some_and(|e| !e.is_silent()),
+        )
+    };
+    let voices = rows.into_iter().map(|v| {
+        let bins = v.bins.map(|pairs| pairs.into_iter().map(|(bin, mb)| {
+            let path_gain = if bin == audio::route::I3DL2 { v.room_gain } else { v.direct_gain };
+            json!({ "bin": bin, "volume_mb": mb, "gain": audio::dsound::mb_to_gain(mb) * path_gain })
+        }).collect::<Vec<_>>());
+        json!({
+            "id": v.id, "kind": v.kind, "input_bin": v.input_bin,
+            "distance_units": v.distance_units, "volume_mb": v.volume_mb, "bins": bins,
+            "direct_gain": v.direct_gain, "room_gain": v.room_gain,
+            "direct_hf_db": v.direct_hf_db, "room_hf_db": v.room_hf_db,
+            "reference_hz": v.reference_hz
+        })
+    }).collect::<Vec<_>>();
+    Ok(
+        json!({ "distance_reverb": distance_reverb, "reverb_active": reverb_active, "voices": voices }),
+    )
+}
+
 struct KernelEvents(Arc<kernel::Kernel>);
 
 /// A pinned kernel event; dropping it releases the pin.
@@ -465,6 +511,42 @@ pub fn describe(a: &Audio) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn audio_voices_reports_the_positioned_bus_and_its_input_stream() {
+        use super::voice_levels;
+        use audio::dsound::{Source3d, Vec3};
+        use serde_json::json;
+        use std::sync::Mutex;
+        let mut m = audio::Mixer::new(48_000);
+        let format = audio::WaveFormat::pcm16(1, 48_000).unwrap();
+        let mut bus = audio::MixIn::new(17);
+        bus.set_source_3d(Some(Source3d {
+            position: Vec3::new(0.0, 3.0, 4.0),
+            ..Default::default()
+        }));
+        bus.set_mix_bins(Some(vec![(6, 0), (10, -1000)]));
+        bus.play();
+        m.add_mix_in(bus);
+        let mut stream = audio::Stream::new(format).unwrap();
+        stream.set_mix_bins(Some(vec![(17, -2000)]));
+        stream.submit(&[0; 16]).unwrap();
+        m.add_stream(stream);
+        m.add_mix_in(audio::MixIn::new(18)); // stopped
+        let m = Mutex::new(m);
+        assert!(voice_levels(&m, json!({"id": 0})).is_err());
+        let result = voice_levels(&m, json!({})).unwrap();
+        let voices = result["voices"].as_array().unwrap();
+        assert_eq!(voices.len(), 2);
+        assert_eq!(result["distance_reverb"], false);
+        assert_eq!(result["reverb_active"], false);
+        assert_eq!(voices[0]["kind"], "stream");
+        assert!(voices[0]["distance_units"].is_null());
+        assert_eq!(voices[0]["bins"][0]["bin"], voices[1]["input_bin"]);
+        assert_eq!(voices[1]["kind"], "mix_in");
+        assert_eq!(voices[1]["distance_units"], 5.0);
+        assert!((voices[1]["bins"][1]["gain"].as_f64().unwrap() - 10f64.powf(-0.5)).abs() < 1e-6);
+    }
+
     #[test]
     fn latency_override_sets_the_target_and_room_to_grow() {
         let d = dsound::Playout::default();

@@ -219,6 +219,29 @@ impl LocaleTable {
     }
 }
 
+const MATG_LOCALES: usize = 0x188;
+const LOCALE_INDEX_STRIDE: u64 = 8;
+
+/// The exact byte count for the locale file-offset field at `field` in the
+/// `matg` root. Returns `None` for other fields or a truncated descriptor.
+/// The loader at 0x1a01e0 uses count times eight for the index and the
+/// descriptor's byte count for text. An empty locale may still have offsets.
+pub fn matg_locale_raw_len(root: &[u8], field: u32) -> Option<u64> {
+    let at = (field as usize).checked_sub(MATG_LOCALES)?;
+    let stride = LocaleDescriptor::SIZE;
+    if at >= Language::ALL.len() * stride {
+        return None;
+    }
+    let offset = at % stride;
+    let start = field as usize - offset;
+    let d = LocaleDescriptor::decode(root.get(start..start + stride)?).ok()?;
+    match offset {
+        0x10 => Some(u64::from(d.count) * LOCALE_INDEX_STRIDE),
+        0x14 => Some(u64::from(d.data_size)),
+        _ => None,
+    }
+}
+
 /// All nine locales for one map, loaded with map-relative file offsets.
 #[derive(Clone, Debug)]
 pub struct Localization {
@@ -239,13 +262,16 @@ impl Localization {
             return Err(Error::Invalid("short matg locales"));
         }
         // Only the embedded descriptors are needed, not matg's child payloads.
-        let descriptor_bytes = map.read_file_range(location.file_offset()? + 0x188, 9 * 0x1c)?;
+        let descriptor_bytes = map.read_file_range(
+            location.file_offset()? + MATG_LOCALES as u64,
+            (Language::ALL.len() * LocaleDescriptor::SIZE) as u64,
+        )?;
         let mut descriptors = Vec::new();
         let mut tables = Vec::new();
         let mut total = 0u64;
         for b in descriptor_bytes.as_chunks::<{ LocaleDescriptor::SIZE }>().0 {
             let d = LocaleDescriptor::decode(b)?;
-            let index_size = u64::from(d.count) * 8;
+            let index_size = u64::from(d.count) * LOCALE_INDEX_STRIDE;
             total += index_size + u64::from(d.data_size);
             if total > MAX_BYTES {
                 return Err(map::Error::Limit.into());

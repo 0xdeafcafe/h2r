@@ -142,16 +142,17 @@ pub fn class(
         let flow = Arc::clone(&flow);
         Box::pin(async move { freed(&cx, &flow, page).await })
     });
-    ListClass::with_rows(skulls_menu::FEATURE, SCREEN, screen)
-        .description(block)
-        .picture(picture)
-        .frame(skulls_menu::FRAME)
-        .layout(layout)
-        .action(act)
-        .action_buttons(&[])
-        .sideways()
-        .on_free(on_free)
-        .footer(skulls_menu::FOOTER_ID)
+    skulls_menu::level_select_list(
+        ListClass::with_rows(skulls_menu::FEATURE, SCREEN, screen),
+        layout,
+    )
+    .description(block)
+    .picture(picture)
+    .action(act)
+    .action_buttons(&[])
+    .sideways()
+    .on_free(on_free)
+    .footer(skulls_menu::FOOTER_ID)
 }
 
 /// A difficulty press kept while the page is up: what to run to start.

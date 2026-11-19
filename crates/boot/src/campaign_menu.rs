@@ -129,11 +129,12 @@ pub fn class() -> Option<ListClass> {
 /// The picker's class over `rows`: the level select's list, bracket,
 /// picture and description ([`PICTURE`]).
 pub fn picker_class(rows: Arc<PickerRows>) -> ListClass {
-    ListClass::with_rows("campaigns-screen", SCREEN, rows)
-        .layout(crate::skulls_menu::LIST_LAYOUT)
-        .description(crate::skulls_menu::DESCRIPTION_TEXT)
-        .frame(crate::skulls_menu::FRAME)
-        .picture(PICTURE)
+    crate::skulls_menu::level_select_list(
+        ListClass::with_rows("campaigns-screen", SCREEN, rows),
+        crate::skulls_menu::LIST_LAYOUT,
+    )
+    .description(crate::skulls_menu::DESCRIPTION_TEXT)
+    .picture(PICTURE)
 }
 
 /// The picker's rows.

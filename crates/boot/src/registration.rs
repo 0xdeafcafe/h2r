@@ -82,6 +82,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
+    features
+        .add(&crate::list_class::ScrollArrowLayout)
+        .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
     map_select::install(features, i.live.clone()).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
@@ -333,6 +336,22 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
+    // Planar fog, layer 16, on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_fog=on, off by default;
+    // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
+    // observer sits inside render-timing's and the world's; the fog
+    // materials load with the world (native_world_glue's worker,
+    // native_fog_glue's load).
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_fog::NativeFog)
+        .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
+    // Water edge blend (layer 6) and the water, camouflage and hologram
+    // census. The layer observer is enabled by impl.render.native_water.
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_water::NativeWater)
+        .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
     // Objects' render models on the native GPU renderer, skinned on the
     // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
     // docs/graphics/native-renderer.md, stage 2). Its observers on the
@@ -342,16 +361,40 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
-    // The sorted transparents' geometry on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_transparents=on, off by default;
-    // docs/graphics/native-renderer.md, stage 3): a context-only skip on
-    // the geometry entries' handler, in the game's sort order. Its host
-    // (native_transparents_glue, installed with the world's) draws the
-    // native world's transparent parts; everything else keeps its D3D draw.
+    // The first-person arms and weapon on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_first_person=on, off by default):
+    // both 0x0003fdf0 layer-3 draws, with the light and transparent calls
+    // between and after them left in guest order.
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_first_person::NativeFirstPerson)
+        .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_world_layers::NativeWorldLayers)
+        .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_residual::NativeResidual)
+        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
+    // Mark the sorted geometry entries so their resolved indexed draws
+    // can use a cached vertex binding in the game's order (off by default).
     #[cfg(feature = "gpu")]
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    // Dynamic decals in their seven observed pass positions
+    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // docs/graphics/native-decals-research.md). Only a fully resolved callback
+    // is replaced; all others keep their D3D draws.
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_decals::NativeDecals)
+        .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_particles::NativeParticles)
+        .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
     // The dynamic lights on the native GPU renderer
     // (H2_FEATURES=impl.render.native_lights=on, off by default;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
@@ -363,6 +406,15 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    // Shader-driven gels: observe target-13 production before light consumption.
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_gels::NativeGels)
+        .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_shadows::NativeShadows)
+        .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     // The view's post passes on the native GPU renderer
     // (H2_FEATURES=impl.render.native_post=on, off by default;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at
@@ -377,6 +429,16 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
+    // The HUD's and the UI's screen draws on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_hud=on, off by default, or
+    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
+    // context-only hooks on the screen-quad batch (text) and the HUD shader
+    // quad. Its host (native_hud_glue) draws accepted quads natively and
+    // pairs the plans for D3D draws in compare mode.
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_hud::NativeHud)
+        .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

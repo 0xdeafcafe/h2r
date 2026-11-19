@@ -1,14 +1,10 @@
 //! The `native-post` feature (docs/graphics/native-renderer.md, stage 5):
-//! its plan (one context-only hook on the colour pass that the pipelined
-//! render runs on its own thread, render-timing or not; none with the
-//! switch off unless the A/B asks for it) and its body on synthetic guest
-//! memory: the host gets the call's seven words, the caller's
-//! floating-point state and the mode; the call always runs.
+//! Its entry and exit hooks and the call identity reported to the host.
 
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_post::{self, Fp, Host, NativePost, ScreenEffect};
+use feature::native_post::{self, CallSite, Fp, Host, NativePost, PostCall, ScreenEffect};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 
@@ -52,15 +48,14 @@ fn its_snapshot_policy_is_stateless_on_or_off() {
 }
 
 #[test]
-fn its_chain_runs_on_the_render_thread() {
+fn the_colour_pass_has_a_return_boundary() {
     let plan = placed("impl.render.native_post=on").expect("placed");
     let chain = plan
         .chains
         .values()
         .find(|c| c.point.name == "COLOUR_PASS")
         .expect("placed at COLOUR_PASS");
-    assert!(!chain.needs_shadow(), "nothing after the body");
-    assert!(chain.render_thread().is_ok());
+    assert!(chain.needs_shadow(), "the return continuation closes the call");
 }
 
 const ESP: u32 = 0x0060_0000;
@@ -68,19 +63,24 @@ const ESP: u32 = 0x0060_0000;
 #[derive(Default)]
 struct Stub {
     arm: Mutex<bool>,
-    seen: Mutex<Vec<([u32; 7], Fp, bool)>>,
-    effects: Mutex<Vec<(ScreenEffect, Fp)>>,
+    seen: Mutex<Vec<(CallSite, [u32; 7], Fp, bool)>>,
+    effects: Mutex<Vec<(CallSite, ScreenEffect, Fp)>>,
+    finished: Mutex<Vec<(PostCall, u32)>>,
 }
 
 impl Host for Stub {
-    fn colour_pass(&self, _mem: &mut dyn GuestMemory, args: [u32; 7], fp: Fp, native: bool) -> bool {
-        self.seen.lock().unwrap().push((args, fp, native));
+    fn colour_pass(&self, _mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
+        self.seen.lock().unwrap().push((site, args, fp, native));
         *self.arm.lock().unwrap()
     }
 
-    fn screen_effect(&self, _mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        self.effects.lock().unwrap().push((call, fp));
+    fn screen_effect(&self, _mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
+        self.effects.lock().unwrap().push((site, call, fp));
         *self.arm.lock().unwrap()
+    }
+
+    fn finish(&self, _: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
+        self.finished.lock().unwrap().push((kind, esp));
     }
 }
 
@@ -88,6 +88,7 @@ impl Host for Stub {
 fn the_host_gets_the_calls_words() {
     let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
     m.set_u32(ESP, 0x0001_39ba).unwrap();
+    let site = CallSite { kind: PostCall::Colour, esp: ESP, ret: 0x0001_39ba };
     let args = [0x407f_7cee, 0x3f00_0000, 0x3e00_0000, 0x3e80_0000, 0, 1, 0x0000_0100];
     for (i, a) in args.iter().enumerate() {
         m.set_u32(ESP + 4 + 4 * i as u32, *a).unwrap();
@@ -101,10 +102,10 @@ fn the_host_gets_the_calls_words() {
     let stub = Arc::new(Stub::default());
     native_post::set_host(stub.clone());
     assert!(!native_post::on_colour_pass(&mut m, ESP, fp, false));
-    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((args, fp, false)));
+    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp, false)));
     *stub.arm.lock().unwrap() = true;
     assert!(native_post::on_colour_pass(&mut m, ESP, fp, true));
-    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((args, fp, true)));
+    assert_eq!(stub.seen.lock().unwrap().last().copied(), Some((site, args, fp, true)));
     // An unreadable stack: the host is not asked.
     let asked = stub.seen.lock().unwrap().len();
     assert!(!native_post::on_colour_pass(&mut m, 0x0001_0000, fp, true));
@@ -123,7 +124,11 @@ fn the_host_gets_the_calls_words() {
         rows: 2,
         corners: 0x0060_2000,
     };
-    assert_eq!(stub.effects.lock().unwrap().last().copied(), Some((want, fp)));
+    let site = CallSite { kind: PostCall::Screen, esp: ESP, ret: 0x0001_3b0c };
+    assert_eq!(stub.effects.lock().unwrap().last().copied(), Some((site, want, fp)));
+    native_post::finish(&mut m, PostCall::Colour, ESP + 32);
+    native_post::finish(&mut m, PostCall::Screen, ESP + 20);
+    assert_eq!(*stub.finished.lock().unwrap(), [(PostCall::Colour, ESP), (PostCall::Screen, ESP)]);
     assert!(!native_post::on_screen_effect(&mut m, 0, 0x0001_0000, fp), "an unreadable stack");
 
     let after = native_post::counts();
@@ -142,8 +147,7 @@ fn the_screen_effect_hook_is_the_switchs_only() {
         .values()
         .find(|c| c.point.name == "SCREEN_EFFECT")
         .expect("placed at SCREEN_EFFECT");
-    assert!(!chain.needs_shadow(), "nothing after the body");
-    assert!(chain.render_thread().is_ok());
+    assert!(chain.needs_shadow(), "the return continuation closes the call");
 }
 
 /// `H2_POST_TRACE`: a count (empty: the default), `,after` to note the

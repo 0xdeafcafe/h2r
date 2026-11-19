@@ -566,6 +566,9 @@ impl<B: Backend> Device<B> {
         if !self.pending_external.is_empty() {
             why.push("an external pass is asked for".into());
         }
+        if self.scoped_admission.as_ref().is_some_and(|(s, _)| !s.closed.load(AtomicOrdering::Acquire)) {
+            why.push("a native draw is scoped to a guest call".into());
+        }
         if self.swallowing.is_some() {
             why.push("a swallow of planned draws is armed".into());
         }
@@ -706,6 +709,10 @@ impl<B: Backend> Device<B> {
             // Quiesce.
             pending_grid: _,
             pending_external: _,
+            admissions: _, // Host services, retained across guest loads.
+            scoped_admission: _, // Quiesce the call before saving.
+            residual: _,
+            indexed_geometry: _,
             swallowing: _,
             swallow_mismatch: _,
             trace: _,
@@ -835,6 +842,7 @@ impl<B: Backend> Device<B> {
         let s = Saved::get(&bytes)?;
         self.check(&s)?;
         self.drop_host_caches()?;
+        self.scoped_admission = None;
         self.apply(s)
     }
 

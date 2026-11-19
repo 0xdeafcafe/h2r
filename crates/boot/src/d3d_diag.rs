@@ -710,6 +710,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
+            #[cfg(feature = "gpu")]
+            crate::native_world_layers_glue::sample_surface(surface, id);
             Tracked { id, inner }
         }))
     }
@@ -739,6 +741,25 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    #[cfg(feature = "gpu")]
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
+    }
+
+    fn prepare_external(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
+    }
+
+    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
+        self.inner.commit_external(recording);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.inner.supports_external_pass()
     }
@@ -932,7 +953,20 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        #[cfg(feature = "gpu")]
+        crate::native_residual_glue::backend_draw(draw.entry);
         let r = self.inner.draw(color, depth, draw, inner);
+        #[cfg(feature = "gpu")]
+        if crate::native_world_layers_glue::comparing() {
+            crate::native_world_layers_glue::compare_draw(
+                self.in_frame,
+                draw,
+                color,
+                depth,
+                std::array::from_fn(|n| textures[n].map(|t| t.id)),
+                &r,
+            );
+        }
         if probing {
             self.probe.draw(probe_draw(color, depth, draw, &r));
         }
@@ -1044,10 +1078,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> (Result<DrawOutcome, String>, Vec<StreamBytes>) {
         // Capturing, logging and the sweep diagnostic read the draw after
         // the inner backend has drawn it.
+        #[cfg(feature = "gpu")]
+        let comparing = crate::native_world_layers_glue::comparing();
+        #[cfg(not(feature = "gpu"))]
+        let comparing = false;
         if self.capturing().is_some()
             || self.logging()
             || self.sweep.is_some()
             || self.probe.armed()
+            || comparing
         {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
@@ -1055,6 +1094,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        #[cfg(feature = "gpu")]
+        crate::native_residual_glue::backend_draw(draw.entry);
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)
