@@ -818,6 +818,13 @@ pub struct VehicleRole {
     /// empty when a marker is not found. A rebuilt vehicle's points are
     /// paired with them by position ([`crate::convert::sphere_order`]).
     pub hover_at: Vec<[f32; 3]>,
+    /// Whether most members with friction points have wheel or tread
+    /// shapes in their physics models ([`member_wheel_shapes`]): a
+    /// rebuilt vehicle's body then holds its wheels and treads above its
+    /// hull's lowest point ([`crate::convert::held_wheels`]), and leaves
+    /// them out otherwise. V, coagulation: the scorpion's yes, the
+    /// warthog's no.
+    pub wheel_shapes: bool,
     /// The engine gears, `+0x268`: the element count most members with
     /// gears hold and each element's majority words, every 4-byte field
     /// (raw curve pointers included, kept as the words they are: the
@@ -1057,6 +1064,14 @@ pub fn vehicle_role(
         [(_, root)] => member_hover(base, root, d, hat, hdef)?,
         _ => (Vec::new(), Vec::new()),
     };
+    let (mut with, mut wheeled) = (0, 0);
+    for (_, root) in &members {
+        if let Some(w) = member_wheel_shapes(base, root, d, fat, fdef)? {
+            with += 1;
+            wheeled += usize::from(w);
+        }
+    }
+    let wheel_shapes = with > 0 && 2 * wheeled > with;
     let (gat, gdef) = block(VEHI_GEARS)?;
     // Gears: the count most members with gears hold, each element's
     // majority over the members of that count.
@@ -1105,8 +1120,67 @@ pub fn vehicle_role(
         hover: all_elements(base, &members, hat, hdef)?,
         hover_each,
         hover_at,
+        wheel_shapes,
         gears,
     }))
+}
+
+/// The polyhedra block of a `phmo` root and its element size
+/// (`tags::collision::PhysicsModel`); each element's shape-space box is
+/// its centre at `+0x40` and half extents at `+0x30`.
+pub const PHMO_POLYHEDRA: usize = 0x70;
+pub const POLYHEDRON_SIZE: usize = 0x100;
+
+/// Whether a base vehicle's physics model has wheel or tread shapes: its
+/// polyhedra reach out sideways (`|y|`) at least as far as the nearest
+/// of its friction points' markers ([`VEHI_FRICTION`],
+/// [`marker_positions`]); a vehicle with friction points and no `phmo`
+/// has none. `None` when it has no friction points or a marker is not
+/// found.
+///
+/// V, coagulation: the scorpion's tread polyhedra reach 1.13 either side
+/// past its tread markers; the warthog's one polyhedron reaches 0.43, inside
+/// its wheel markers, and its other shape is a bumper box (boxes are not
+/// read). Printed by `tests/vehicle_rebuild_disc.rs`,
+/// `wheels_and_treads_are_solid_above_the_hull`.
+pub fn member_wheel_shapes(
+    base: &crate::base::Base,
+    root: &[u8],
+    d: &StructDef,
+    at: usize,
+    e: &StructDef,
+) -> Result<Option<bool>> {
+    let marker_at = field_offset(e, FRICTION_MARKER)? as usize;
+    let mut names = Vec::new();
+    while let Some(x) = base.element(root, at, e.size as usize, names.len())? {
+        names.push(crate::base::u32_at(&x, marker_at));
+    }
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let Some(spots) = marker_positions(base, root, d, &names)? else {
+        return Ok(None);
+    };
+    let inner = spots
+        .iter()
+        .map(|p| p[1].abs())
+        .fold(f32::INFINITY, f32::min);
+    let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
+        return Ok(Some(false));
+    };
+    let Some(phmo) = base.reference(&base.root(hlmt)?, crate::convert::h2::HLMT_PHYSICS_MODEL)
+    else {
+        return Ok(Some(false));
+    };
+    let p = base.root(phmo)?;
+    let f = |b: &[u8], o: usize| f32::from_le_bytes(b[o..o + 4].try_into().expect("4"));
+    let mut reach = 0.0f32;
+    let mut i = 0;
+    while let Some(x) = base.element(&p, PHMO_POLYHEDRA, POLYHEDRON_SIZE, i)? {
+        reach = reach.max(f(&x, 0x44).abs() + f(&x, 0x34).abs());
+        i += 1;
+    }
+    Ok(Some(reach >= inner))
 }
 
 /// A base vehicle's hover points ([`VEHI_HOVER`], element `e` at `at` of

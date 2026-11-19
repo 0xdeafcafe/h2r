@@ -739,6 +739,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         hover: None,
         hover_each: Vec::new(),
         hover_at: Vec::new(),
+        wheel_shapes: false,
         gears: vec![vec![
             ("unknown_0".into(), 0x4795_6a00),
             ("raw_14".into(), 0x4000_1234),

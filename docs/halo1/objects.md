@@ -464,8 +464,9 @@ solid Halo 1 collision gets a built `phmo` and no slots
 definitions"). Vehicles likewise meet bipeds through their `phmo`: the
 converted scorpion's treads, in its `coll` but left out of its `phmo`
 through version 85, were walked through; since 86 a vehicle's wheels and
-treads are in its body above the hull's lowest point (tag-definitions.md,
-`convert::held_wheels`).
+treads are in its body above the hull's lowest point where its retail
+role's physics models have wheel shapes (the scorpion's treads; not the
+warthog's tires; tag-definitions.md, `convert::held_wheels`).
 
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each

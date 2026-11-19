@@ -372,8 +372,11 @@ pub const DENSITY: f32 = 28_317.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhysicsKind {
     /// One body on the object, of Halo 1's `phys` mass; a stand-in
-    /// sphere when the collision gives nothing.
-    Vehicle,
+    /// sphere when the collision gives nothing. `wheels`: its wheels and
+    /// treads are held in the body above the hull's lowest point
+    /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
+    /// else left out.
+    Vehicle { wheels: bool },
     /// One body per collision node, riding that node.
     Device,
     /// As a device, with a biped's rigid body words
@@ -2246,7 +2249,14 @@ impl<'a> Converter<'a> {
             },
         );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
-        self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Vehicle)?;
+        let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
+        self.object_physics(
+            &mut rep,
+            hlmt,
+            &u.object,
+            &tag.name,
+            PhysicsKind::Vehicle { wheels },
+        )?;
         let predicted = self.predicted(&u.object)?;
         let (markers, bounds) = match u.object.model {
             Some(m) => {
@@ -2749,7 +2759,7 @@ impl<'a> Converter<'a> {
         }
         let (phmo, how) = match self.built_physics(obj, kind)? {
             Some((block, how)) => (block, how),
-            None if kind == PhysicsKind::Vehicle => {
+            None if matches!(kind, PhysicsKind::Vehicle { .. }) => {
                 let (radius, mass, material) = STAND_IN_SPHERE;
                 (
                     crate::rebuild::sphere_physics(radius, [0.0, 0.0, radius], mass, material)?,
@@ -2847,18 +2857,19 @@ impl<'a> Converter<'a> {
             }
         };
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
-        let mut wheels_held: Option<(usize, f32)> = None;
+        let mut wheels_note = String::new();
         let bodies = match kind {
-            PhysicsKind::Vehicle => {
+            PhysicsKind::Vehicle { wheels: hold } => {
                 let phys = match obj.physics {
                     Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
                     None => None,
                 };
                 // Wheels and treads are held above the hull's lowest
-                // point: Halo 2 holds a vehicle up on its friction points
+                // point where the role's physics models have them (the
+                // scorpion's treads), else left out (the warthog's tires):
+                // Halo 2 holds a vehicle up on its friction points
                 // (springs at the wheel markers) and its body rides clear
-                // of the ground, but what of them is above the hull is
-                // solid (`held_wheels`).
+                // of the ground (`held_wheels`).
                 let wheels = phys
                     .as_ref()
                     .map(|p| wheel_nodes(p, &model.nodes))
@@ -2878,13 +2889,20 @@ impl<'a> Converter<'a> {
                     (hull, wheel_parts)
                 };
                 // One piece per wheel node at most.
-                let total = parts.iter().map(|p| p.1.len()).sum::<usize>() + wheel_parts.len();
+                let total = parts.iter().map(|p| p.1.len()).sum::<usize>()
+                    + if hold { wheel_parts.len() } else { 0 };
                 let mut pieces = Vec::new();
                 for (node, cells) in parts {
                     let m = place(node);
                     pieces.extend(cap(cells, total).iter().map(|h| h.transformed(&m)));
                 }
-                if !wheel_parts.is_empty() {
+                if !hold && !wheel_parts.is_empty() {
+                    wheels_note = format!(
+                        " ({} wheel and tread nodes left out: the role's physics models have no wheel shapes)",
+                        wheel_parts.len()
+                    );
+                }
+                if hold && !wheel_parts.is_empty() {
                     let wheel_parts: Vec<_> = wheel_parts
                         .into_iter()
                         .map(|(node, cells)| {
@@ -2898,7 +2916,10 @@ impl<'a> Converter<'a> {
                         .map(|v| v[2])
                         .fold(f32::INFINITY, f32::min);
                     let held = held_wheels(&wheel_parts, floor);
-                    wheels_held = Some((held.len(), floor));
+                    wheels_note = format!(
+                        " ({} wheel and tread pieces, held above the hull's lowest point {floor:.3})",
+                        held.len()
+                    );
                     pieces.extend(held);
                 }
                 let mass = phys
@@ -2945,17 +2966,12 @@ impl<'a> Converter<'a> {
             } else {
                 ""
             },
-            match wheels_held {
-                Some((n, floor)) => format!(
-                    " ({n} wheel and tread pieces, held above the hull's lowest point {floor:.3})"
-                ),
-                None => String::new(),
-            }
+            wheels_note
         );
         let words = match kind {
             PhysicsKind::Biped => crate::rebuild::BIPED_BODY,
             PhysicsKind::Scenery(w) => w,
-            PhysicsKind::Vehicle | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
         };
         let joints = if kind == PhysicsKind::Biped {
             biped_ragdoll(&model.nodes, &bodies)
@@ -3397,7 +3413,7 @@ pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String
 /// shapes clear of the ground (V: the retail warthog's and scorpion's
 /// physics models' lowest points are 0.18 and 0.22 above the origin; the
 /// warthog's has no wheel shape, the scorpion's has its treads above
-/// that, [`held_wheels`]). Built whole into the body, the converted
+/// that, [`held_wheels`], by the role). Built whole into the body, the converted
 /// warthog's tires spawned up to 0.14 into Blood Gulch's ground (a game
 /// run, `havok.contacts`), and Havok threw it over.
 pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16> {
@@ -3431,8 +3447,9 @@ pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16>
         .collect()
 }
 
-/// A vehicle's wheels and treads in its body (object space, `wheels` one
-/// list of convex pieces per wheel node): each node's pieces cut at `floor`,
+/// A vehicle's wheels and treads in its body, where its role's physics
+/// models have wheel shapes ([`crate::rebuild::VehicleRole::wheel_shapes`];
+/// object space, `wheels` one list of convex pieces per wheel node): each node's pieces cut at `floor`,
 /// the lowest point of the rest of the body, and what is left enclosed in
 /// one piece; a node with nothing above `floor` gives none.
 ///

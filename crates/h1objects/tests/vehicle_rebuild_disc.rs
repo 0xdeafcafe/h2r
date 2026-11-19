@@ -43,10 +43,12 @@
 //!   the label's enter animation.
 //! - `wheels_and_treads_are_solid_above_the_hull`: the retail scorpion's
 //!   `phmo` reaches past 1.0 either side (its treads) and stays 0.2 above
-//!   the origin; the converted Blood Gulch scorpion's and warthog's reach
-//!   as far as their Halo 1 wheel and tread collision does, and nothing
-//!   of them is under their hull's lowest point; the ghost has no wheel
-//!   nodes.
+//!   the origin; the base's scorpion has wheel shapes and its warthog
+//!   none (`member_wheel_shapes`), and the converted vehicles' roles say
+//!   the same; the converted Blood Gulch scorpion's body reaches as far
+//!   as its Halo 1 tread collision does, the warthog's no further than
+//!   its hull, and nothing of either is under the hull's lowest point;
+//!   the ghost has no wheel nodes.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -1100,7 +1102,11 @@ fn reach(points: impl Iterator<Item = [f32; 3]>) -> (f32, f32) {
 }
 
 /// The scorpion's treads are in its body, above its hull's lowest point,
-/// as retail's are; the warthog's tires the same; the ghost has none.
+/// as retail's are; the warthog's tires stay out, as retail's do; the
+/// ghost has no wheel nodes. Which by the base: the retail scorpion's
+/// physics model has tread shapes, the warthog's no wheel shape
+/// ([`h1objects::rebuild::member_wheel_shapes`]), and the converted
+/// vehicles' roles say so.
 ///
 /// The user walked through the converted scorpion's treads on Blood Gulch
 /// (2026-11-19): its `coll` carried them, its `phmo` (versions 77 to 85)
@@ -1131,12 +1137,31 @@ fn wheels_and_treads_are_solid_above_the_hull() {
     );
     println!("retail scorpion phmo: widest {y}, lowest {z}");
     assert!(y > 1.0 && z > 0.2, "retail scorpion: {y} {z}");
+    // The base's vehicles with wheel shapes: the scorpion, not the warthog.
+    let d = def(b"vehi");
+    let fat = offset(d, VEHI_FRICTION, 0) as usize;
+    let fdef = d.child(VEHI_FRICTION).unwrap();
+    for (retail_name, want) in [
+        ("objects\\vehicles\\scorpion\\scorpion", true),
+        ("objects\\vehicles\\warthog\\warthog", false),
+    ] {
+        let t = base
+            .tags
+            .iter()
+            .find(|t| t.1 == FourCC(*b"vehi") && t.2 == retail_name)
+            .unwrap();
+        let root = base.root(t.0).unwrap();
+        let got = h1objects::rebuild::member_wheel_shapes(&base, &root, d, fat, fdef).unwrap();
+        println!("retail {retail_name}: wheel shapes {got:?}");
+        assert_eq!(got, Some(want), "{retail_name}");
+    }
 
     let h1 = h1_level("bloodgulch").unwrap();
-    for (name, wheels_expected) in [
-        ("vehicles\\scorpion\\scorpion_mp", true),
-        ("vehicles\\warthog\\warthog", true),
-        ("vehicles\\ghost\\ghost_mp", false),
+    // (name, has wheel nodes, holds them)
+    for (name, wheels_expected, held) in [
+        ("vehicles\\scorpion\\scorpion_mp", true, true),
+        ("vehicles\\warthog\\warthog", true, false),
+        ("vehicles\\ghost\\ghost_mp", false, false),
     ] {
         let t = h1
             .tags()
@@ -1191,8 +1216,16 @@ fn wheels_and_treads_are_solid_above_the_hull() {
         let (hull_y, floor) = reach(hull_pts.into_iter());
         let (wheel_y, _) = reach(wheel_pts.into_iter());
 
-        // The converted body.
+        // The converted body, and its role's say.
         let mut c = Converter::new(&h1, &base);
+        let b = h1.tag_data(t).unwrap();
+        let h1_type = u16::from_le_bytes([b[H1_VEHICLE_TYPE], b[H1_VEHICLE_TYPE + 1]]);
+        let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
+        assert_eq!(
+            role.as_ref().is_some_and(|r| r.wheel_shapes),
+            held,
+            "{name}: the role's wheel shapes"
+        );
         let vid = c.object(t).unwrap();
         let r = read_back(local(&c.tree, vid).unwrap(), name);
         let h = defs::from_built(
@@ -1220,11 +1253,17 @@ fn wheels_and_treads_are_solid_above_the_hull() {
             z >= floor - 0.01,
             "{name}: built lowest {z} under the hull's {floor}"
         );
-        // ...and the wheels' sides in it.
-        if wheels_expected && wheel_y > hull_y {
+        // ...and the wheels' sides in it where held, out of it where not.
+        if held && wheel_y > hull_y {
             assert!(
                 y >= wheel_y - 0.01,
                 "{name}: built widest {y}, the wheels reach {wheel_y}"
+            );
+        }
+        if wheels_expected && !held {
+            assert!(
+                y <= hull_y + 0.01,
+                "{name}: built widest {y}, past the hull's {hull_y}"
             );
         }
     }
