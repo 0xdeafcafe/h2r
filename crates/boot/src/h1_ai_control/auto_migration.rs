@@ -185,11 +185,12 @@ pub(super) fn plan(
     }
     let carriers: BTreeSet<_> = deferred.iter().filter(|d| members.contains(&d.squad))
         .map(|d| d.squad).collect();
-    let mut participants = carriers.clone();
+    let mut participants = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut occupied_orders = std::collections::BTreeMap::new();
     for &squad in members {
-        if !has(m, start, ALLOWED, squad)? && !carriers.contains(&squad) {
+        let allowed = has(m, start, ALLOWED, squad)?;
+        if !allowed && !carriers.contains(&squad) {
             continue;
         }
         let (Some(definition), Some(runtime)) = (
@@ -198,17 +199,17 @@ pub(super) fn plan(
         ) else {
             continue;
         };
-        participants.insert(squad);
         let current = m.u16(runtime + 0x2a)?;
-        occupied_orders.insert(squad, current);
-        if has(m, start, ALLOWED, squad)? && has(m, start, ENABLED, squad)? {
-            // Keep the native destination selectable while its carrier
-            // currently runs another destination's order.
-            let order = if current == u16::MAX || deferred.contains(&Destination { squad, order: current }) {
-                m.u16(definition + 0x42)?
-            } else {
-                current
-            };
+        let initial = m.u16(definition + 0x42)?;
+        let virtual_order = deferred.contains(&Destination { squad, order: current });
+        if allowed || virtual_order {
+            participants.insert(squad);
+            occupied_orders.insert(squad, if current == u16::MAX { initial } else { current });
+        }
+        if allowed && has(m, start, ENABLED, squad)? {
+            // A carrier's authored order stays eligible after a migration
+            // has installed one of the orders it hosts.
+            let order = if current == u16::MAX || virtual_order { initial } else { current };
             candidates.push(Destination { squad, order });
         }
     }

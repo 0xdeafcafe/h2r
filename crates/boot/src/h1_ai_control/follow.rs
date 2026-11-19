@@ -158,7 +158,7 @@ struct ActiveFollows {
     migrations: Vec<auto_migration::Migration>,
 }
 
-fn active_follows(m: &dyn GuestMemory, base: u32, deferred: &[auto_migration::Destination]) -> R<ActiveFollows> {
+fn active_follows(m: &dyn GuestMemory, base: u32, deferred: Option<&[auto_migration::Destination]>) -> R<ActiveFollows> {
     let mut active = ActiveFollows {
         follows: Vec::new(),
         migrations: Vec::new(),
@@ -181,10 +181,12 @@ fn active_follows(m: &dyn GuestMemory, base: u32, deferred: &[auto_migration::De
         let candidates = targets(m, mode, m.u32(at + TARGET)?)?;
         let radius = m.f32(at + RADIUS)?;
         let members = squads(m, AI_GROUP | group)?;
-        let anchors: Vec<_> = candidates.iter().map(|t| t.position).collect();
-        active
-            .migrations
-            .extend(auto_migration::plan(m, start, &members, deferred, &anchors, radius)?);
+        if let Some(deferred) = deferred {
+            let anchors: Vec<_> = candidates.iter().map(|t| t.position).collect();
+            active.migrations.extend(auto_migration::plan(
+                m, start, &members, deferred, &anchors, radius,
+            )?);
+        }
         for squad in members {
             let Some(runtime) = squad_control::runtime(m, squad)? else {
                 continue;
@@ -210,13 +212,13 @@ fn active_follows(m: &dyn GuestMemory, base: u32, deferred: &[auto_migration::De
 
 pub(super) async fn tick(cx: &Cx, base: u32, encoded: u32) -> Result<(), EntryError> {
     let deferred = cx.read(|m| auto_migration::read_destinations(m, encoded))?;
-    let active = cx.read(|m| active_follows(m, base, &deferred))?;
+    let active = cx.read(|m| active_follows(m, base, Some(&deferred)))?;
     let moves = !active.migrations.is_empty();
     for migration in active.migrations {
         auto_migration::apply(cx, migration).await?;
     }
     let follows = if moves {
-        cx.read(|m| active_follows(m, base, &[]))?.follows
+        cx.read(|m| active_follows(m, base, None))?.follows
     } else {
         active.follows
     };

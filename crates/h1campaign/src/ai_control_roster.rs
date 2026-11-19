@@ -91,6 +91,25 @@ pub(crate) fn prepare(
             .or_else(|| keep.range((ei, 0)..=(ei, usize::MAX)).next().map(|&(_, si)| si))
         {
             carriers.insert(ei, si);
+            continue;
+        }
+        // An initially empty encounter can still have migration destinations.
+        // Give it a carrier before retaining an unrelated, unnamed empty row.
+        let replace = optional.iter().rev().find(|&&(priority, e, s)| {
+            priority == 2
+                && keep.contains(&(e, s))
+                && carriers.get(&e) != Some(&s)
+                && !automatic_rows.get(&e).is_some_and(|rows| rows.contains(&s))
+        });
+        if let Some(&(_, e, s)) = replace {
+            keep.remove(&(e, s));
+            hidden.insert((ei, overflow));
+            carriers.insert(ei, overflow);
+        } else {
+            return Err(invalid(format!(
+                "no native squad can carry automatic AI destinations in {}",
+                source.encounters[ei].name,
+            )));
         }
     }
     let mut output = 0;
