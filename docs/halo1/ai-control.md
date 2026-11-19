@@ -19,7 +19,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_magically_see_unit` | Maps to `ai_magically_see_object` (305). Halo 2's callee `0x00273d30` accepts a bare squad index. `boot::h1_ai_control` enumerates member squads for a converted encounter and calls that routine for each. |
 | `ai_magically_see_players` | Halo 1 `0x00141f10` walks the player records and reads each unit at `+0x34`. Converted scripts use descriptor 300, a discarded `(ai) -> void` entry unused in the Halo 2 map survey. On a Halo 1 campaign map the hook evaluates the argument through `0x00209d50`, walks Halo 2's occupied player records and sends live player units to the same native awareness routine as 305. Halo 2 updates its existing perception records. |
 | `ai_attack`, `ai_defend` | Halo 1 `0x0013eee0` resolves an encounter to all its platoons and a squad to its own platoon. The compiler selects each member's attacking or defending order with `ai_set_orders` (333). The orders use the firing position groups at Halo 1 squad `+0x54` and `+0x60`. Halo 2 `0x00275cb0` dispatches the order to the given squad. |
-| `ai_retreat`, `ai_maneuver`, `ai_maneuver_enable` | The two explicit requests share Halo 1 callee `0x001404e0`. The converter retains the requested maneuver destinations at squad `+0x4c` where the squad budget permits and emits native migrations. Each platoon with a scripted enable switch gets one boolean HaloScript global, initially enabled, to gate its explicit migrations. |
+| `ai_retreat`, `ai_maneuver`, `ai_maneuver_enable` | The two explicit requests share Halo 1 callee `0x001404e0`. The converter retains the requested maneuver destinations at squad `+0x4c` where the squad budget permits and snapshots the original actors before issuing native migrations, including reciprocal and cyclic routes. Each platoon with a scripted enable switch gets one boolean HaloScript global, initially enabled, to gate its explicit migrations. |
 | `ai_follow_target_players`, `ai_follow_target_ai`, `ai_follow_target_disable` | Halo 1's setters (`0x000efd90` to `0x000eff19`) update the encounter selected by the low word. Halo 2 order flag `0x10` chooses the closest player (`0x00204489`), and `0x20` follows the order of squad `+0x4e` (`0x00204f09`). The four retail Halo 1 AI-target calls name a squad in the same encounter. The leader's own follow link clears before its peers follow it. Disabling follow selects each squad's ordinary order. Follow orders default to 4 m, as in several of Halo 2's campaign orders. |
 | `ai_follow_distance` | A single finite literal before the encounter's only follow call in the same `begin` becomes that order's radius. This is the c20 campaign shape. Halo 1 `0x000efd71` stores that literal on the encounter. Halo 2 `0x00204668` reads the radius from order `+0x50`. |
 | `ai_migrate` | Halo 2's 308 accepts encounter sources and bare squad destinations. It rejects group destinations at `0x002a54cc`. The converter resolves literal Halo 1 encounter and platoon destinations per source squad, preferring compatible variants and character types as in the selector at `0x001402a0`. Literal platoon sources expand to their member squads. |
@@ -29,6 +29,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
 | `ai_go_to_vehicle` | Calls the seat-specific form of Halo 2's `ai_vehicle_enter` (343, `0x002a5ec0`), with native pathing and seat assignment through `0x00274a50`. A string literal resolves through the existing scenario seat mapping. Rebuilt transport labels such as `p_riderlm` keep their row and side. The two-argument overload (344) selects seats without the mapping. |
+| `ai_vehicle_encounter`, `ai_vehicle_enterable_*`, `ai_going_to_vehicle` | Use salted vehicle handles and persistent HaloScript globals for the registry. Halo 1 `0x00140e70` assigns the vehicle and moves its occupants. Halo 1 `0x0013f2d0` defaults boarding distance to 8 m and the setters add team, actor-type or squad criteria. The continuous control uses Halo 2 `0x00274a50` to pick seats and request native boarding. It moves riders to the assigned squad with `0x001e3400`. The count reads queued type `0x4c` commands and their vehicle dwords as written at `0x00274d47` and copied to the actor queue at `0x001a81de`. The converted registry holds 128 simultaneous vehicle records on maps using the setters. |
 | `ai_status` | Preserves the existing combat-status ladder and comparison lowering in `h1scripts::compile`. The translation survey now counts it as an adapter. The mapping of Halo 1 status 6 to Halo 2 visible status is described in [scripts.md](scripts.md). |
 | `ai_living_fraction` | Binds Halo 2's 327. `0x002a59a0` divides living actors by spawned actors, using the counted result of `0x00273f30`. |
 | `ai_detach`, `ai_braindead_by_unit` | Binds native 288 (`0x002a4f20`), which detaches the unit's actor, and 312 (`0x002a55f0`), which calls `0x00274f30` for the object list and its attached units. |
@@ -50,6 +51,7 @@ hooks. All other builtin bindings use their retail evaluator directly.
 
 | Slot | Retail descriptor | Use in converted maps |
 |---|---|---|
+| 241 | `(unit) -> short`, evaluator `0x002a4310` | A marked `ai_going_to_vehicle` call counts pending boarders. Unmarked calls still count the unit’s grenades. |
 | 300 | `(ai) -> void`, discard evaluator `0x002ab6c0` | A function-head data word starting with `0x4831` selects the converted operation and argument types. An older converted map's unmarked call still gives player awareness. |
 | 305 | `(ai, object) -> void`, evaluator `0x002a53b0` | Group-aware object awareness. |
 
@@ -60,10 +62,7 @@ or Agent API method.
 
 ## Open
 
-The remaining campaign calls need runtime behavior for `ai_attach_free`, vehicle encounter
-assignment and opportunistic boarding (`ai_vehicle_encounter`,
-`ai_vehicle_enterable_distance`, `ai_vehicle_enterable_actor_type`,
-`ai_vehicle_enterable_disable`, `ai_going_to_vehicle`), automatic
+The remaining campaign calls need runtime behavior for `ai_attach_free`, automatic
 migration targeting (`ai_automatic_migration_target`), linked activation
 (`ai_link_activation`), `ai_playfight`, actor-local target preferences
 (`ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing`),
@@ -72,7 +71,7 @@ Halo 1's automatic platoon triggers open.
 
 Other unsupported forms include a dynamic follow radius, following an
 arbitrary unit or another encounter, `ai_go_to_vehicle_override`,
-and a maneuver with a stripped destination or cyclic migration edges.
+and a maneuver with a stripped destination.
 The follow, maneuver and order conversions use Halo 2's native behavior
 for the resulting squads. In particular, selecting an attack, defend or
 follow order replaces the previous order. Halo 1 could keep follow state

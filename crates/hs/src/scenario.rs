@@ -328,10 +328,13 @@ impl Scenario {
                     if function.flags & 2 == 0 {
                         let head = self.node(Datum(n.data))?;
                         let mut argument = head.next;
-                        let parameters = if n.opcode == crate::h1_ai_slots::CONTROL
-                            && self.string(head.string_offset)? == crate::h1_ai_slots::CONTROL_TOKEN
+                        let parameters = if matches!(
+                            n.opcode,
+                            crate::h1_ai_slots::CONTROL | crate::h1_ai_slots::VEHICLE_COUNT
+                        ) && self.string(head.string_offset)? == crate::h1_ai_slots::CONTROL_TOKEN
                         {
                             let operation = crate::h1_ai_slots::Operation::from_marker(head.data)
+                                .filter(|op| op.slot() == n.opcode)
                                 .ok_or_else(|| invalid(format!("node {i}: unknown Halo 1 AI operation")))?;
                             operation.parameters()
                         } else {

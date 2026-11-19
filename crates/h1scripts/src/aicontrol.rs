@@ -23,6 +23,13 @@ pub struct Binding {
 
 pub const BINDINGS: &[Binding] = &[
     Binding {
+        name: "ai_going_to_vehicle",
+        index: hs::h1_ai_slots::VEHICLE_COUNT,
+        evaluator: hs::h1_ai_slots::VEHICLE_COUNT_EVALUATOR,
+        returns: "short",
+        arguments: &["unit"],
+    },
+    Binding {
         name: "ai_grenades",
         index: 280,
         evaluator: 0x002a_4d70,

@@ -1,6 +1,6 @@
 //! Views and immediate operations over Halo 2's native actor and squad data.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use engine::{
     DatumHandle,
@@ -10,6 +10,7 @@ use engine::{
     view::{Record, objects},
 };
 use feature::points;
+use hs::h1_ai_slots::ManeuverEdge;
 use live_telemetry::layout as unit;
 
 use super::{AI_KIND, NONE, SQUAD_COUNT, SQUAD_SIZE, SQUADS, squads};
@@ -218,6 +219,56 @@ pub(super) async fn move_actor(cx: &Cx, actor: Actor, destination: u32) -> Resul
     Ok(())
 }
 
+pub(super) async fn maneuver(cx: &Cx, encoded: u32) -> Result<(), EntryError> {
+    if matches!(encoded, 0 | NONE) {
+        return Ok(());
+    }
+    let moves = cx.read(|m| {
+        let scnr = m.u32(points::SCENARIO.base)?;
+        let count = m.u32(scnr + SQUAD_COUNT)?;
+        let encoded = m.cstr(encoded, count as usize * ManeuverEdge::WIDTH)?;
+        let Some(routes) = enabled_routes(m, &encoded, count)? else {
+            return Ok(Vec::new());
+        };
+        Ok(all(m)?
+            .into_iter()
+            .filter_map(|actor| routes.get(&actor.squad).map(|&to| (actor, to)))
+            .collect::<Vec<_>>())
+    })?;
+    for (actor, to) in moves {
+        move_actor(cx, actor, to).await?;
+    }
+    Ok(())
+}
+
+fn enabled_routes(
+    m: &dyn GuestMemory,
+    encoded: &[u8],
+    count: u32,
+) -> R<Option<BTreeMap<u32, u32>>> {
+    let rows = encoded.chunks_exact(ManeuverEdge::WIDTH);
+    if !rows.remainder().is_empty() {
+        return Ok(None);
+    }
+    let mut routes = BTreeMap::new();
+    for record in rows {
+        let Some(route) = ManeuverEdge::decode(record) else {
+            return Ok(None);
+        };
+        let (from, to) = (u32::from(route.from), u32::from(route.to));
+        if from >= count || to >= count {
+            return Ok(None);
+        }
+        if let Some(index) = route.enabled_by
+            && !super::state::boolean(m, index)?
+        {
+            continue;
+        }
+        routes.insert(from, to);
+    }
+    Ok(Some(routes))
+}
+
 fn start_for_reference(m: &dyn GuestMemory, squad: u32, index: u32) -> R<Option<u32>> {
     let Some(record) = squad_record(m, squad)? else {
         return Ok(None);
@@ -336,4 +387,27 @@ pub(super) async fn teleport(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::testing::FakeGuest;
+
+    #[test]
+    fn maneuver_keeps_cyclic_edges_and_skips_a_disabled_platoon() {
+        const GLOBALS: u32 = 0x004f_9380;
+        const ARRAY: u32 = 0x800100;
+        const DATA: u32 = 0x810000;
+        let mut guest = FakeGuest::new();
+        guest
+            .put_u32(GLOBALS, ARRAY)
+            .put_u32(ARRAY + 0x44, DATA)
+            .put_u8(DATA + (0x41d + 13) * 8 + 4, 0);
+        let routes = b"00000001ffff00010000ffff00020001000d";
+        assert_eq!(
+            enabled_routes(&guest, routes, 3).unwrap().unwrap(),
+            BTreeMap::from([(0, 1), (1, 0)])
+        );
+    }
 }

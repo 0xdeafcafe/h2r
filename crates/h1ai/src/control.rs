@@ -304,11 +304,7 @@ fn platoon_actions(
             }
         }
     }
-    if operation == Operation::Maneuver {
-        order_migrations(actions)
-    } else {
-        Some(actions)
-    }
+    Some(actions)
 }
 
 // Move a destination's original actors first if it is itself a source.

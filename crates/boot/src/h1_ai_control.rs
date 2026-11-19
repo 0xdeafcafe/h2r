@@ -8,6 +8,8 @@ use feature::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
+mod state;
+mod vehicles;
 
 const NONE: u32 = u32::MAX;
 const AI_GROUP: u32 = 0x4000_0000;
@@ -47,7 +49,22 @@ impl feature::Feature for AiControl {
                 {
                     return Ok(Flow::Continue);
                 }
-                let Some(operation) = call_operation(call) else {
+                let Some(operation) = call_operation(call, MAGICALLY_SEE_PLAYERS) else {
+                    return Ok(Flow::Continue);
+                };
+                call.answer_async(move |cx| Box::pin(dispatch(cx, operation)))
+            },
+        );
+        b.raw().before(
+            &points::HS_UNIT_GRENADE_COUNT,
+            "count actors trying to enter a Halo 1 vehicle",
+            |call| {
+                if call.arg_u32("opcode") != Some(u32::from(h1_ai_slots::VEHICLE_COUNT))
+                    || !is_converted_campaign(call)
+                {
+                    return Ok(Flow::Continue);
+                }
+                let Some(operation) = call_operation(call, h1_ai_slots::VEHICLE_COUNT) else {
                     return Ok(Flow::Continue);
                 };
                 call.answer_async(move |cx| Box::pin(dispatch(cx, operation)))
@@ -115,7 +132,7 @@ fn squads(m: &dyn GuestMemory, ai: u32) -> Result<Vec<u32>, MemFault> {
 
 /// Retail's fixed evaluator and return routines use these same arrays.
 /// Check the salted nodes before interpreting a spare head-atom word.
-fn call_operation(call: &mut feature::Call<'_>) -> Option<Operation> {
+fn call_operation(call: &mut feature::Call<'_>, opcode: u16) -> Option<Operation> {
     use engine::{DatumHandle, datum::DatumArray};
 
     let thread = call.arg_u32("thread")?;
@@ -129,13 +146,13 @@ fn call_operation(call: &mut feature::Call<'_>) -> Option<Operation> {
     let expression = nodes.try_get(m, DatumHandle(expression)).ok()??;
     let head = m.u32(expression + 16).ok()?;
     let head = nodes.try_get(m, DatumHandle(head)).ok()??;
-    if m.u16(head + 2).ok()? != MAGICALLY_SEE_PLAYERS || m.u16(head + 4).ok()? != 2 {
+    if m.u16(head + 2).ok()? != opcode || m.u16(head + 4).ok()? != 2 {
         return None;
     }
     match m.u32(head + 16).ok()? {
         // Older converted maps used the stock one-argument profile.
-        0 => Some(Operation::SeePlayers),
-        marker => Operation::from_marker(marker),
+        0 if opcode == MAGICALLY_SEE_PLAYERS => Some(Operation::SeePlayers),
+        marker => Operation::from_marker(marker).filter(|op| op.slot() == opcode),
     }
 }
 
@@ -221,9 +238,10 @@ async fn see(cx: Cx, opcode: u16) -> Result<Ret, EntryError> {
 }
 
 async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
-    let Some(args) = arguments(&cx, MAGICALLY_SEE_PLAYERS, Some(op.parameters())).await? else {
+    let Some(args) = arguments(&cx, op.slot(), Some(op.parameters())).await? else {
         return Ok(Ret::new(0, 12));
     };
+    let mut value = 0;
     if op == Operation::SeePlayers {
         awareness(&cx, args[0], None).await?;
     } else if cx.read(actors::active)? {
@@ -255,10 +273,19 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             Operation::Teleport | Operation::TeleportUnsupported => {
                 actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
             }
-            Operation::SeePlayers => unreachable!(),
+            Operation::Maneuver => actors::maneuver(&cx, args[0]).await?,
+            Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
+            Operation::VehicleCount => value = cx.read(|m| vehicles::count(m, args[0]))?,
+            operation if operation.uses_vehicle_registry() => {
+                vehicles::configure(&cx, operation, &args)?;
+                if operation == Operation::VehicleEncounter {
+                    vehicles::assign(&cx, args[0], args[1]).await?;
+                }
+            }
+            _ => unreachable!(),
         }
     }
-    complete(&cx, 0).await
+    complete(&cx, value).await
 }
 
 #[cfg(test)]
