@@ -83,6 +83,7 @@ perf = { path = "../perf", optional = true }
 perf = ["dep:perf"]
 
 [dev-dependencies]
+shaders = { path = "../shaders" }
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 

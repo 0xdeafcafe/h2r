@@ -69,6 +69,9 @@ pub mod post;
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
+#[cfg(feature = "gpu")]
+pub mod shadow_gpu;
+pub mod shadows;
 pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
