@@ -2018,6 +2018,7 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
         object: [0; 4],
         unit: [1, 0, 0, 0],
         vehicle: [0, 12, 35, 0],
+        ..Default::default()
     };
     let mut engine = h1_function(3, 0, [0.0, 1.0]);
     engine.flags = 4;
@@ -2093,7 +2094,8 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
         tag: TagId(0xe100_0007),
         marker: String::new(),
         primary_scale: "c_out".into(),
-        h1_primary: 3,
+        secondary_scale: "b_out".into(),
+        change_colour: 0,
     }];
     let d = def(b"vehi").unwrap();
     let mut r = defs::default_record(d);
@@ -2105,6 +2107,8 @@ fn rebuilt_vehicle_holds_its_functions_and_primary_scales() {
     assert_eq!(r.at("unit.obje.functions[0].string_c"), Some(&Val::text("a_out")));
     assert_eq!(r.at("unit.obje.functions[0].data_14"), Some(&Val::Data(vec![0; 0x14])));
     assert_eq!(r.at("unit.obje.attachments[0].string_10"), Some(&Val::text("c_out")));
+    assert_eq!(r.at("unit.obje.attachments[0].string_14"), Some(&Val::text("b_out")));
+    assert_eq!(r.at("unit.obje.attachments[0].change_colour"), Some(&Val::Int(0)));
 }
 
 #[test]

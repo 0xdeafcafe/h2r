@@ -14,6 +14,7 @@ use h1map::{H1Map, Tag, TagId as H1TagId};
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};
+use tags::effects::function::{Function, FunctionType};
 
 use crate::h1::{reference, tag_bytes};
 use crate::{Error, Result};
@@ -747,6 +748,26 @@ pub fn particle_system(
     role: &EmitterRole,
     duration: f32,
 ) -> Result<Record> {
+    particle_system_at_rate(
+        p,
+        part,
+        particle,
+        role,
+        [spawn_rate(p.count, duration); 2],
+        None,
+    )
+}
+
+/// Emitter rate in particles per tick, optionally multiplied by the
+/// owning effect's primary object function.
+fn particle_system_at_rate(
+    p: &H1EffectParticle,
+    part: &H1Particle,
+    particle: TagId,
+    role: &EmitterRole,
+    rate: [f32; 2],
+    scale_rate: Option<bool>,
+) -> Result<Record> {
     let sd = def(b"effe")?.child("events.particle_systems").expect("effe particle systems");
     let ed = sd.child("emitters").expect("emitters");
     let mut s = defs::default_record(sd);
@@ -766,7 +787,7 @@ pub fn particle_system(
     set(&mut e, "emission_shape", Val::Int(0))?;
     let alpha = mid([p.tint[0][0], p.tint[1][0]]);
     let props: [(&str, f32, Option<u32>); 9] = [
-        ("property_8", spawn_rate(p.count, duration), None),
+        ("property_8", rate[0], None),
         ("lifespan", mid(part.lifespan), None),
         ("property_28", mid(p.velocity), None),
         ("property_38", 0.0, None),
@@ -777,7 +798,38 @@ pub fn particle_system(
         ("velocity_input", p.velocity_cone.to_degrees(), None),
     ];
     for (f, v, c) in props {
-        set(&mut e, f, Val::Struct(constant_property(role, f, v, c)?))?;
+        let mut property = constant_property(role, f, v, c)?;
+        if f == "property_8"
+            && let Some(scale) = scale_rate
+        {
+            set(
+                &mut property,
+                "output_modifier",
+                Val::Int(if scale { 2 } else { 0 }),
+            )?;
+            // E 0x00248eac reads effect +0x6c (selector 9); 0x001795e3
+            // updates that scalar from the attachment's primary function.
+            set(
+                &mut property,
+                "modifier_input",
+                Val::Int(if scale { 9 } else { -1 }),
+            )?;
+            if rate[0] != rate[1] {
+                // Selector 4 reads the system's normalised event time
+                // (0x00248e65, assigned at 0x001752f6).
+                let ramp = Function {
+                    kind: FunctionType::Identity,
+                    flags: 0,
+                    sub_types: [0; 2],
+                    range: rate,
+                    unknown_0c: [0; 8],
+                    payload: Vec::new(),
+                };
+                set(&mut property, "input", Val::Int(4))?;
+                set(&mut property, "function", Val::Data(ramp.to_bytes()))?;
+            }
+        }
+        set(&mut e, f, Val::Struct(property))?;
     }
     set(&mut s, "emitters", Val::Block(vec![e]))?;
     Ok(s)
@@ -808,13 +860,20 @@ pub fn particle_system(
 // duration plus transition as lifespan, its radius and colour. The
 // state sequence (fire turning to smoke), the creation physics and its
 // constants (no proven meaning: explosion `0.03 0.08 200`, jet
-// `45 0.0355 1`), the system states and the rotation rate are not
-// carried: the particles start still at the part's location.
+// `45 0.0355 1`) and rotation rate are not carried. For object
+// attachments we also use the system states’ emission rates and timing
+// ([`attached_particle_effect`]).
 
 /// Halo 1 `pctl` sizes.
 pub const H1_PCTL_SIZE: usize = 0x68;
 pub const H1_PCTL_TYPE: usize = 0x80;
 pub const H1_PCTL_PARTICLE_STATE: usize = 0x178;
+const H1_PCTL_SYSTEM_STATE: usize = 0xc0;
+// E (Halo 1) 0x0010fc27 scales the emission rate by the attachment output.
+const H1_SCALE_RATE: u32 = 0x1000;
+// E (Halo 1) 0x0010edbf: on the last state, stop, wrap or reverse.
+const H1_LOOP_STATES: u32 = 1;
+const H1_REVERSE_AT_END: u32 = 2;
 
 /// One particle state of a Halo 1 particle system type.
 #[derive(Clone, Debug, PartialEq)]
@@ -829,11 +888,21 @@ pub struct H1ParticleState {
     pub blend: u16,
 }
 
-/// A Halo 1 particle system type: its initial count and particle states.
+/// The emission phase of a Halo 1 particle system type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1EmitterState {
+    pub duration: [f32; 2],
+    pub transition: [f32; 2],
+    pub particles_per_second: f32,
+}
+
+/// A Halo 1 particle system type, with separate emitter and particle states.
 #[derive(Clone, Debug, PartialEq)]
 pub struct H1ParticleType {
     pub name: String,
+    pub flags: u32,
     pub initial_count: u16,
+    pub emitter_states: Vec<H1EmitterState>,
     pub states: Vec<H1ParticleState>,
 }
 
@@ -849,7 +918,21 @@ pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleTyp
     let h = |x: &[u8], o: usize| u16::from_le_bytes([x[o], x[o + 1]]);
     let mut out = Vec::new();
     let Some(tb) = h1map::Block::read(b, 0x5c) else { return Ok(out) };
-    for t in map.block(tb, H1_PCTL_TYPE)?.to_vec().chunks_exact(H1_PCTL_TYPE) {
+    for t in map.block(tb, H1_PCTL_TYPE)?.chunks_exact(H1_PCTL_TYPE) {
+        let mut emitter_states = Vec::new();
+        if let Some(sb) = h1map::Block::read(t, 0x68) {
+            for s in map
+                .block(sb, H1_PCTL_SYSTEM_STATE)?
+                .chunks_exact(H1_PCTL_SYSTEM_STATE)
+            {
+                emitter_states.push(H1EmitterState {
+                    duration: [f(s, 0x20), f(s, 0x24)],
+                    transition: [f(s, 0x28), f(s, 0x2c)],
+                    // E (Halo 1) 0x0010f6a5 uses this rate times the timestep.
+                    particles_per_second: f(s, 0x58),
+                });
+            }
+        }
         let mut states = Vec::new();
         if let Some(sb) = h1map::Block::read(t, 0x74) {
             for s in map.block(sb, H1_PCTL_PARTICLE_STATE)?.chunks_exact(H1_PCTL_PARTICLE_STATE) {
@@ -866,7 +949,13 @@ pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleTyp
                 });
             }
         }
-        out.push(H1ParticleType { name: name32(t), initial_count: h(t, 0x24), states });
+        out.push(H1ParticleType {
+            name: name32(t),
+            flags: u32::from_le_bytes(t[0x20..0x24].try_into().expect("4")),
+            initial_count: h(t, 0x24),
+            emitter_states,
+            states,
+        });
     }
     Ok(out)
 }
@@ -903,5 +992,208 @@ impl H1ParticleState {
             radius: self.radius,
             tint: self.colour,
         }
+    }
+}
+
+/// A native effect for one attached particle type. Each type has its own
+/// clock. An initial burst plays once. Later events follow the emission states,
+/// including pauses and the source loop mode.
+pub(crate) fn attached_particle_effect(
+    ty: &H1ParticleType,
+    states: &[(TagId, H1ParticleState)],
+    marker: &str,
+    role: &EmitterRole,
+) -> Result<Option<Block>> {
+    if states.is_empty() {
+        return Ok(None);
+    }
+    let d = def(b"effe")?;
+    let mut r = defs::default_record(d);
+    let mut location = defs::default_record(d.child("locations").expect("effe locations"));
+    set(&mut location, "marker", Val::text(marker))?;
+    set(&mut r, "locations", Val::Block(vec![location]))?;
+    let ev_def = d.child("events").expect("effe events");
+    let event = |bounds: [f32; 2], rate: [f32; 2], scale: bool| -> Result<Record> {
+        let mut ev = defs::default_record(ev_def);
+        set(
+            &mut ev,
+            "duration_bounds",
+            Val::floats(&bounds.map(|v| v.max(TICK))),
+        )?;
+        let systems = if rate[0] > 0.0 || rate[1] > 0.0 {
+            states
+                .iter()
+                .map(|(tag, state)| {
+                    particle_system_at_rate(
+                        &state.as_effect_particle(0, 0),
+                        &state.as_particle(),
+                        *tag,
+                        role,
+                        rate,
+                        Some(scale),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        set(&mut ev, "particle_systems", Val::Block(systems))?;
+        Ok(ev)
+    };
+    let mut events = Vec::new();
+    if ty.initial_count != 0 {
+        events.push(event([TICK; 2], [f32::from(ty.initial_count); 2], false)?);
+    }
+    let first_phase = events.len();
+    let phases = &ty.emitter_states;
+    let loops = ty.flags & H1_LOOP_STATES != 0;
+    if phases.iter().any(|s| s.particles_per_second > 0.0) {
+        let scale = ty.flags & H1_SCALE_RATE != 0;
+        let mut order: Vec<_> = (0..phases.len()).collect();
+        if loops && ty.flags & H1_REVERSE_AT_END != 0 {
+            order.extend((0..phases.len()).rev());
+        }
+        for (i, &index) in order.iter().enumerate() {
+            let s = &phases[index];
+            let rate = s.particles_per_second.max(0.0) * TICK;
+            let next = order.get(i + 1).or_else(|| loops.then(|| &order[0]));
+            let [lo, hi] = s.duration;
+            let [a, b] = s.transition;
+            if let Some(&next) = next {
+                let next_rate = phases[next].particles_per_second.max(0.0) * TICK;
+                if rate == next_rate {
+                    events.push(event([lo + a, hi + b], [rate; 2], scale)?);
+                    continue;
+                }
+                if hi > 0.0 {
+                    events.push(event(s.duration, [rate; 2], scale)?);
+                }
+                if b > 0.0 {
+                    events.push(event(s.transition, [rate, next_rate], scale)?);
+                }
+            } else {
+                events.push(event(s.duration, [rate; 2], scale)?);
+            }
+        }
+    }
+    let loop_start = if loops && events.len() > first_phase {
+        first_phase as i64
+    } else {
+        -1
+    };
+    if events.is_empty() {
+        return Ok(None);
+    }
+    set(&mut r, "loop_start_event", Val::Int(loop_start))?;
+    set(&mut r, "events", Val::Block(events))?;
+    defs::to_built(d, &r, &mut |_| None)
+        .map(Some)
+        .map_err(|e| Error::Invalid(e.to_string()))
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn attached_particle_effect_uses_burst_and_emitter_states() {
+        let d = def(b"effe").unwrap();
+        let emitter_def = d.child("events.particle_systems.emitters").unwrap();
+        let mut constants = Vec::new();
+        for field in EMITTER_PROPERTIES {
+            let mut r = defs::default_record(emitter_def.child(field).unwrap());
+            let mut constant = vec![0; FunctionType::Constant.blob_len().unwrap()];
+            constant[0] = FunctionType::Constant.to_byte();
+            r.set("function", Val::Data(constant)).unwrap();
+            constants.push((field, r));
+        }
+        let role = EmitterRole {
+            system: vec![],
+            emitter: vec![],
+            constants,
+        };
+        let state = H1ParticleState {
+            name: "smoke".into(),
+            duration: [0.5, 0.75],
+            transition: [0.25, 0.5],
+            bitmap: None,
+            sequence: 0,
+            radius: [1.0, 2.0],
+            colour: [[1.0; 4]; 2],
+            blend: 0,
+        };
+        let tag = TagId(0xe100_0007);
+        let mut ty = H1ParticleType {
+            name: "test".into(),
+            flags: H1_LOOP_STATES | H1_SCALE_RATE,
+            initial_count: 3,
+            emitter_states: vec![
+                H1EmitterState {
+                    duration: [1.0, 2.0],
+                    transition: [0.25, 0.5],
+                    particles_per_second: 30.0,
+                },
+                H1EmitterState {
+                    duration: [2.0, 3.0],
+                    transition: [0.0; 2],
+                    particles_per_second: 0.0,
+                },
+            ],
+            states: vec![],
+        };
+        let states = [(tag, state)];
+        let root = attached_particle_effect(&ty, &states, "burn", &role)
+            .unwrap()
+            .unwrap();
+        let effect = defs::from_built(d, &root).unwrap();
+        assert_eq!(effect.at("loop_start_event"), Some(&Val::Int(1)));
+        assert_eq!(effect.at("locations[0].marker"), Some(&Val::text("burn")));
+        let events = block_of(&effect, "events");
+        assert_eq!(events.len(), 4);
+        for (ev, bounds, rate, modifier) in [
+            (&events[0], [TICK; 2], [3.0; 2], -1),
+            (&events[1], [1.0, 2.0], [1.0; 2], 9),
+            (&events[2], [0.25, 0.5], [1.0, 0.0], 9),
+        ] {
+            assert_eq!(ev.at("duration_bounds"), Some(&Val::floats(&bounds)));
+            assert_eq!(ev.at("particle_systems[0].location"), Some(&Val::Int(0)));
+            assert!(matches!(ev.at("particle_systems[0].particle"),
+                Some(Val::Ref { target: defs::Target::Id(id), .. }) if *id == tag
+            ));
+            let property = "particle_systems[0].emitters[0].property_8";
+            assert_eq!(
+                ev.at(&format!("{property}.modifier_input")),
+                Some(&Val::Int(modifier))
+            );
+            let Some(Val::Data(curve)) = ev.at(&format!("{property}.function")) else {
+                panic!("missing rate curve")
+            };
+            let curve = Function::parse(curve).unwrap();
+            assert_eq!(curve.range, rate);
+            if rate[0] != rate[1] {
+                assert_eq!(ev.at(&format!("{property}.input")), Some(&Val::Int(4)));
+                assert_eq!(curve.evaluate(0.5, 0.0), 0.5);
+            }
+        }
+        assert_eq!(
+            events[3].at("duration_bounds"),
+            Some(&Val::floats(&[2.0, 3.0]))
+        );
+        assert!(block_of(&events[3], "particle_systems").is_empty());
+
+        ty.flags = 0;
+        let root = attached_particle_effect(&ty, &states, "burn", &role)
+            .unwrap()
+            .unwrap();
+        let finite = defs::from_built(d, &root).unwrap();
+        assert_eq!(finite.at("loop_start_event"), Some(&Val::Int(-1)));
+
+        ty.initial_count = 0;
+        ty.emitter_states.clear();
+        assert!(
+            attached_particle_effect(&ty, &states, "burn", &role)
+                .unwrap()
+                .is_none()
+        );
     }
 }

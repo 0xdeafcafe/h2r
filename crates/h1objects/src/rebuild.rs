@@ -2967,13 +2967,14 @@ pub fn reference_fields(d: &StructDef) -> Vec<String> {
     out
 }
 
-/// `bipd` fields a rebuilt biped never takes from its counterpart: the
-/// model is Halo 1's.
-pub const BIPED_OWN: &[&str] = &["unit.obje.model"];
-/// Taken from the counterpart with its references though they hold
-/// none: attachments and change colours name the object's functions
-/// (`obje +0x64`, matched by name, `0x000bac20`), so the functions come
-/// with them.
+/// The rebuilt biped's Halo 1 object references.
+pub const BIPED_OWN: &[&str] = &[
+    "unit.obje.model",
+    "unit.obje.attachments",
+    "unit.obje.creation_effect",
+];
+/// Other counterpart fields that can name object functions still use
+/// the counterpart's functions when the source supplies none.
 pub const BIPED_WITH_REFERENCES: &[&str] = &["unit.obje.functions"];
 /// `bipd +0x1a0`, the HUD interfaces (one `nhdt` reference each,
 /// [`crate::health_hud::UNIT_HUD_INTERFACES`]).
@@ -3205,15 +3206,20 @@ pub fn part_type_group(group: [u8; 4]) -> [u8; 4] {
 /// tag for (`None` leaves the part out), each with Halo 1's creation
 /// medium, location, flags, velocity, cone, angular velocity, radius
 /// modifier and scale words (the two parts hold them in the same order,
-/// `h1::EffectPart`). Particles, the loop events and the flags are not
-/// carried (no Halo 2 meaning established); everything else is the
-/// definition's default.
+/// `h1::EffectPart`). The loop start is shared (E 0x001791ae reads it);
+/// Halo 1's loop stop and flags have no established Halo 2 equivalent.
+/// Particle systems are written by the caller.
 pub fn effect(
     e: &h1::Effect,
     target: &mut dyn FnMut(&h1::EffectPart) -> Option<PartTarget>,
 ) -> Result<Block> {
     let d = def(b"effe")?;
     let mut r = defs::default_record(d);
+    set(
+        &mut r,
+        "loop_start_event",
+        Val::Int(e.loop_start_event.into()),
+    )?;
     let loc_def = d.child("locations").expect("effe locations");
     let locations = e
         .locations
@@ -3274,8 +3280,8 @@ pub fn effect(
 }
 
 /// One attachment of a rebuilt object: the attached tag (`ligh`, `lsnd`,
-/// `effe` or `cont`; E `0x000bed2a` builds these), its marker and its
-/// primary scale.
+/// `effe` or `cont`; E `0x000bed2a` builds these) and its marker,
+/// change-colour slot and function names.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AttachmentSpec {
     pub group: [u8; 4],
@@ -3286,8 +3292,9 @@ pub struct AttachmentSpec {
     /// object whose functions block holds the name may set it: a name
     /// nothing evaluates is 0, and a looping sound at 0 is off.
     pub primary_scale: String,
-    /// Halo 1's primary scale (`+0x30`): 0 none, 1 to 4 output A to D.
-    pub h1_primary: u16,
+    pub secondary_scale: String,
+    /// Halo 2's zero-based object change-colour slot (-1 on lights without one).
+    pub change_colour: i16,
 }
 
 /// The attachment primary scale field (`obje +0x94` element `+0x10`).
@@ -3385,7 +3392,9 @@ pub fn object_effects(
         let mut x = defs::default_record(e);
         set(&mut x, "type", Val::tag(FourCC(a.group), a.tag))?;
         set(&mut x, "marker", Val::text(&a.marker))?;
+        set(&mut x, "change_colour", Val::Int(a.change_colour.into()))?;
         set(&mut x, ATTACHMENT_PRIMARY_SCALE, Val::text(&a.primary_scale))?;
+        set(&mut x, "string_14", Val::text(&a.secondary_scale))?;
         out.push(x);
     }
     set(r, &format!("{path}.attachments"), Val::Block(out))?;

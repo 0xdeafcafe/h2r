@@ -10,7 +10,7 @@ use tags::defs::{self, DefError, Defs, Val};
 
 use super::Converter;
 use crate::h1::{self, Equipment};
-use crate::{Error, Result, functions, rebuild};
+use crate::{Error, Result, rebuild};
 
 const EQUIPMENT: [u8; 4] = *b"eqip";
 const HEADER: &str = "item.obje";
@@ -35,15 +35,7 @@ impl Converter<'_> {
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
         let predicted = self.predicted(hlmt);
         let mut root = equipment_values(e, b, hlmt)?;
-        let (mut attachments, creation) = self.object_effects(b, &e.object, &mut rep)?;
-        let inputs = h1::FunctionInputs::read(b, e.object.object_type);
-        let mut notes = Vec::new();
-        let converted = functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
-        for a in &mut attachments {
-            a.primary_scale = functions::primary_scale(a.h1_primary, &converted);
-        }
-        let functions: Vec<_> = converted.into_iter().flatten().collect();
-        rep.no_home.extend(notes);
+        let (attachments, creation, functions) = self.object_attachments(b, &e.object, &mut rep)?;
         rebuild::object_effects(&EQUIPMENT, &mut root, HEADER, &attachments, creation)?;
         rebuild::object_functions(&EQUIPMENT, &mut root, HEADER, &functions)?;
         rebuild::predicted_resources(&EQUIPMENT, &mut root, HEADER, &predicted)?;

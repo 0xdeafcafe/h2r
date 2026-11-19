@@ -202,6 +202,38 @@ carried: the state sequence, the creation physics and its constants (no
 proven meaning), the system states, the rotation rate. The particles
 start still at the part's location.
 
+### Object attachments
+
+**Built.** Every converted object kind uses Halo 1's `obje +0x140`
+block for its marker attachments. Halo 2's attachment dispatcher
+(`0x000bed2a`) creates lights, effects, contrails and looping sounds.
+Their tags and marker names come from Halo 1, and the scales name the
+converted object functions. Light fixtures use the same path on the
+machines they become. The attachment reader also carries the
+change-colour selector, translated to the same slots as the object's
+colours. Halo 2's effect updater skips colour slot 0 (`0x00179610`).
+The converter reports source functions that lack a supported curve or
+engine input.
+
+Halo 2 does not dispatch `pctl` attachments directly. Each emitting
+particle type becomes an attached `effe` with the source marker as its
+location, an optional initial burst, and native emitter events. Halo 1
+reads the emission-state rate in particles per second (`pctl` state
+`+0x58`, E `0x0010f6a5`); Halo 2 reads particles per tick
+(`0x00247100`). State durations, timed transitions and loop mode
+come from Halo 1. Halo 2 evaluates the transition rates over native
+event time. The existing particle-state conversion supplies the
+textures, sizes, tints and lifetimes. Each state still has its own
+particle appearance, and the source particle physics and minimum
+population timing are unconverted.
+
+On a30 the entry pod's `burn` marker carries `burning big debris`,
+starting at zero particles and emitting 30 per second (V).
+`effects_disc::entry_lifepod_burns_at_its_halo1_marker_and_rate`
+checks the model marker, the effect loop, the two visible states and
+the emitter rate. `placed_object_builders_keep_halo1_attachments`
+checks the attachment paths across object kinds.
+
 ### `cont` (root `0x144`) and contrail attachments
 
 `h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
@@ -309,7 +341,8 @@ mass, center of mass and inertia tensor. The axis limits and accelerations
 feed the native vehicle functions at `0x000f32f5` and `0x000f3562` (E).
 The docked pod keeps its stationary body and source lights. a30's entry pod
 attaches its own `lifeboat` loop, including the source track samples,
-through `h1sounds::looping`. The plain and docked tags carry no engine
+through `h1sounds::looping`, and its reentry fire through the native
+`effe` attachment on `burn`. The plain and docked tags carry no engine
 loop (V). Offline checks are in `vehicle_rebuild_disc` and
 `h1campaign/tests/disc.rs`.
 

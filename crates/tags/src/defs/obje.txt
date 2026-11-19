@@ -45,9 +45,10 @@ struct obje 0xbc
   0x94 block attachments 0x18 align 4 -- E 0x000b8c82 indexes x0x18; 0x000bed2a builds each by its +0 class
     0x0 tagref type -- E 0x000bed2a switches on the class: ligh, lsnd, effe, cont built; lens, MGS2, tdtl skipped
     0x8 string marker -- E accessor 0x000b8c40 loads element +8 by attachment index (0x000b8c8b)
-    0xc unknown 0x4
-    0x10 string string_10
-    0x14 string string_14
+    0xc i16 change_colour -- E 0x000bed2a passes this signed index; -1 for an uncoloured light, 0 skips the effect colour update
+    0xe unknown 0x2
+    0x10 string string_10 -- E 0x000bedea: primary function name
+    0x14 string string_14 -- E 0x000bedea: secondary function name for effects
   0x9c block widgets 0x8 align 4 -- V: one reference per element (clwd, tdtl seen); name D
     0x0 tagref widget -- V: the widget tag
   0xa4 unknown 0x8 -- a block (objects.md, V) empty on every disc instance: element unknown

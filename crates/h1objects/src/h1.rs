@@ -1151,7 +1151,7 @@ impl Effect {
 
 /// One attachment of a Halo 1 object (`obje +0x140`, `0x48`): the
 /// attached tag at `+0`, the model marker it rides at `+0x10` (32
-/// characters) and its primary scale at `+0x30`.
+/// characters), two output scales and a change-colour selector.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Attachment {
     pub group: Group,
@@ -1163,6 +1163,10 @@ pub struct Attachment {
     /// 1, its taillights 2 and its engine sound 3, which are the outputs
     /// its functions name `headlights`, `taillights` and `speed`.
     pub primary_scale: u16,
+    /// `+0x32`: same output indices as the primary scale.
+    pub secondary_scale: u16,
+    /// `+0x34`: 0 none, 1 to 4 change colour A to D.
+    pub change_colour: u16,
 }
 
 /// Every attachment of the object in `b` (a tag's bytes from `obje +0`).
@@ -1174,6 +1178,8 @@ pub fn attachments(map: &H1Map, b: &[u8]) -> Result<Vec<Attachment>> {
             tag: reference(map, e, 0),
             marker: name32(e, 0x10),
             primary_scale: u16_at(e, 0x30),
+            secondary_scale: u16_at(e, 0x32),
+            change_colour: u16_at(e, 0x34),
         })
         .collect())
 }
@@ -1247,11 +1253,13 @@ pub struct FunctionInputs {
     pub object: [u16; 4],
     pub unit: [u16; 4],
     pub vehicle: [u16; 4],
+    pub weapon: [u16; 4],
+    pub device: [u16; 4],
 }
 
 impl FunctionInputs {
     /// The inputs of the object in `b` whose type is `object_type`
-    /// ([`OBJECT_TYPES`]): units and vehicles read their own.
+    /// ([`OBJECT_TYPES`]): units, vehicles, weapons and devices read their own.
     pub fn read(b: &[u8], object_type: u16) -> Self {
         let four = |at: usize| -> [u16; 4] {
             if b.len() >= at + 8 {
@@ -1265,6 +1273,17 @@ impl FunctionInputs {
             object: four(0x108),
             unit: if unit { four(0x198) } else { [0; 4] },
             vehicle: if object_type == 1 { four(0x31c) } else { [0; 4] },
+            // E (Halo 1) 0x000bec67 and 0x00117c49, respectively.
+            weapon: if object_type == 2 {
+                four(0x330)
+            } else {
+                [0; 4]
+            },
+            device: if matches!(object_type, 7..=9) {
+                four(0x198)
+            } else {
+                [0; 4]
+            },
         }
     }
 }

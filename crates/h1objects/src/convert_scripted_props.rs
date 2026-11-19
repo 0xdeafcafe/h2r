@@ -60,8 +60,9 @@ impl Converter<'_> {
         let predicted = self.predicted(hlmt);
         rebuild::predicted_resources(&group, &mut r, "object", &predicted)?;
         rebuild::object_change_colors(&group, &mut r, "object", &obj.change_colours)?;
-        let (attachments, creation) = self.object_effects(b, &obj, &mut rep)?;
+        let (attachments, creation, functions) = self.object_attachments(b, &obj, &mut rep)?;
         rebuild::object_effects(&group, &mut r, "object", &attachments, creation)?;
+        rebuild::object_functions(&group, &mut r, "object", &functions)?;
         let root =
             defs::to_built(d, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))?;
         self.tree.reports.push(rep);
