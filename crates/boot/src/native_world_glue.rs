@@ -380,7 +380,7 @@ impl d3d::ExternalPass for WorldPass {
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
 
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
         let (placements, clusters) = Diagnostics::get().inherit_cull;
@@ -406,7 +406,7 @@ impl d3d::ExternalPass for WorldPass {
                 z_scale: t.z_scale,
                 w_clip: self.w_clip,
             };
-            gpu.prepare_programs(t.queue, &view);
+            gpu.prepare_programs(&mut t.encoder_uploads(), &view);
             if let Some(dump) = Diagnostics::get().dump {
                 arm_dump(&self.ready, gpu, &view, dump);
             }
@@ -415,11 +415,12 @@ impl d3d::ExternalPass for WorldPass {
         // The guest list already did visibility selection for these exact parts.
         gpu.set_cull(false);
         gpu.set_owners(diag.owners);
+        let full_scale = t.z_scale;
         let culled = gpu.prepare(
-            t.queue,
+            &mut t.encoder_uploads(),
             &self.camera,
             DepthRule {
-                full_scale: t.z_scale,
+                full_scale,
                 floor: true,
             },
         );

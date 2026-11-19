@@ -361,8 +361,15 @@ pub struct ExternalTarget<'a> {
     pub sampled: &'a [Option<SampledLevel>],
     /// Indexed live colour surfaces in the same order as the plan's slots.
     pub slots: &'a [Option<ExternalColor>],
+    pub uploads: &'a gfx::ring::SubmissionUploads,
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+}
+
+impl ExternalTarget<'_> {
+    pub fn encoder_uploads(&mut self) -> gfx::ring::EncoderUploads<'_> {
+        gfx::ring::EncoderUploads { device: self.device, queue: self.queue, arena: self.uploads, encoder: self.encoder }
+    }
 }
 
 /// Bound colour and depth/stencil writes. RTT mirrors and aliases follow these writes.
@@ -443,6 +450,7 @@ impl<S> ExternalSurfaces<S> {
 
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
+    pub uploads: gfx::ring::SubmissionUploads,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub color: wgpu::TextureView,
@@ -462,7 +470,7 @@ impl ExternalAttachments {
             device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
             depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
-            slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+            uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
         }
     }
 }
@@ -472,6 +480,7 @@ pub struct ExternalRecording {
     pub copy: TargetCopy,
     pub ranges: usize,
     pub commands: wgpu::CommandBuffer,
+    pub uploads: gfx::ring::SubmissionUploads,
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
@@ -975,7 +984,7 @@ pub trait Backend: Send {
             if pollster::block_on(scope.pop()).is_some() || !plan.complete(target.copy, ranges) {
                 return Ok(None);
             }
-            recordings.push(ExternalRecording { copy: target.copy, ranges, commands });
+            recordings.push(ExternalRecording { copy: target.copy, ranges, commands, uploads: target.uploads });
         }
         Ok(Some(recordings))
     }

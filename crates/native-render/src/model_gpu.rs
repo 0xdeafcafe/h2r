@@ -463,7 +463,7 @@ impl GpuModels {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
         camera: &RenderCamera,
         depth: DepthRule,
         objects: &[ObjectInput<'_>],
@@ -479,7 +479,7 @@ impl GpuModels {
             ambient: [l.ambient[0], l.ambient[1], l.ambient[2], 1.0],
             light: [l.direction[0], l.direction[1], l.direction[2], l.diffuse],
         };
-        queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&u));
+        uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
         let node_bytes: &[u8] = bytemuck::cast_slice(&self.current.nodes);
         let inst_bytes: &[u8] = bytemuck::cast_slice(&self.current.instances);
         let mut regroup = false;
@@ -495,10 +495,10 @@ impl GpuModels {
             self.frame_group = Self::frame_group(device, &self.frame_layout, &self.frame, &self.nodes, &self.instances);
         }
         if !node_bytes.is_empty() {
-            queue.write_buffer(&self.nodes, 0, node_bytes);
+            uploads.write(&self.nodes, 0, node_bytes);
         }
         if !inst_bytes.is_empty() {
-            queue.write_buffer(&self.instances, 0, inst_bytes);
+            uploads.write(&self.instances, 0, inst_bytes);
         }
         &self.current
     }

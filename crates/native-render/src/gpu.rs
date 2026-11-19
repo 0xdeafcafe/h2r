@@ -747,9 +747,9 @@ impl GpuWorld {
 
     /// The frame's view for the programs' uniforms (the device's view
     /// constants, the target's sizes and depth scale).
-    pub fn prepare_programs(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare_programs(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         if let Some(p) = &self.programs {
-            p.prepare(queue, view);
+            p.prepare(uploads, view);
         }
     }
 
@@ -807,7 +807,7 @@ impl GpuWorld {
 
     /// The frame's camera: culls on the CPU and writes the uniform and the
     /// slots' instance counts.
-    pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &RenderCamera, depth: DepthRule) -> CullStats {
+    pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
         // The material programs clip as the D3D path does: cull by the
         // sides and the eye only (`Frustum::sides`). Stage 1 draws with
@@ -841,9 +841,9 @@ impl GpuWorld {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
         };
-        queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&u));
+        uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
         if !self.slots.is_empty() {
-            queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
+            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
         }
         stats
     }
