@@ -66,6 +66,9 @@ pub struct ModEntry {
     pub pack: Option<String>,
     /// That pack's info, when the server lists it.
     pub pack_info: Option<ModPack>,
+    /// What the pack is: the entry's own `pack.description`, else its
+    /// info's description.
+    pub pack_description: Option<String>,
 }
 
 /// A map pack, as its maps' page shows it.
@@ -308,7 +311,7 @@ struct RawEntry {
     #[serde(default)]
     contents: Vec<String>,
     #[serde(default)]
-    pack: Option<String>,
+    pack: Option<RawPackRef>,
     #[serde(default)]
     pack_name: Option<String>,
 }
@@ -379,9 +382,45 @@ fn text(v: Option<String>) -> Option<String> {
 struct RawCredits {
     #[serde(default)]
     authors: Vec<String>,
+    /// The release a credit names (a pack's name), the pack when the
+    /// entry names none.
+    #[serde(default)]
+    release: Option<String>,
+}
+
+/// A mod's pack: its name, or an object with a name and a description.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawPackRef {
+    Name(String),
+    Pack {
+        name: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+}
+
+/// `s` trimmed, or None when blank.
+fn some_text(s: Option<&str>) -> Option<String> {
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 impl RawEntry {
+    /// The pack's name and description: `pack`, else the credit's release.
+    fn pack(&self) -> (Option<String>, Option<String>) {
+        match &self.pack {
+            Some(RawPackRef::Name(n)) if !n.trim().is_empty() => (some_text(Some(n)), None),
+            Some(RawPackRef::Pack { name, description }) if !name.trim().is_empty() => {
+                (some_text(Some(name)), some_text(description.as_deref()))
+            }
+            _ => (
+                some_text(self.credits.as_ref().and_then(|c| c.release.as_deref())),
+                None,
+            ),
+        }
+    }
     /// `credits.authors` as one line, else `credit`; blanks are none.
     fn credit_line(&self) -> Option<String> {
         let authors: Vec<&str> = self
@@ -428,13 +467,23 @@ impl From<RawPage> for ModPage {
             items: r
                 .items
                 .into_iter()
-                .map(|e| ModEntry {
-                    pack_info: e
-                        .pack
-                        .as_deref()
-                        .and_then(|id| packs.iter().find(|p| p.id == id))
-                        .cloned(),
-                    pack: text(e.pack_name.clone()).or_else(|| text(e.pack.clone())),
+                .map(|e| {
+                    let (named, described) = e.pack();
+                    let pack_info = match &e.pack {
+                        Some(RawPackRef::Name(id)) => packs.iter().find(|p| p.id == id.trim()).cloned(),
+                        _ => None,
+                    };
+                    let pack = text(e.pack_name.clone())
+                        .or_else(|| pack_info.as_ref().map(|p| p.name.clone()))
+                        .or(named);
+                    let pack_description =
+                        described.or_else(|| pack_info.as_ref().and_then(|p| p.description.clone()));
+                    (e, pack, pack_info, pack_description)
+                })
+                .map(|(e, pack, pack_info, pack_description)| ModEntry {
+                    pack_info,
+                    pack,
+                    pack_description,
                     credit: e.credit_line(),
                     id: e.id,
                     name: e.name,
@@ -553,6 +602,38 @@ mod tests {
         assert_eq!(e.credit, None);
     }
 
+    #[test]
+    fn a_pack_reads_as_a_name_an_object_or_the_credits_release() {
+        let page: ModPage = serde_json::from_value(serde_json::json!({
+            "items": [
+                {"id": ID, "name": "A", "author": "M", "base": "lockout", "pack": " Phantom Mappack "},
+                {"id": ID, "name": "B", "author": "M", "base": "lockout",
+                 "pack": {"name": "AI Revision", "description": "Bots that think. "}},
+                {"id": ID, "name": "C", "author": "M", "base": "lockout",
+                 "credits": {"authors": ["X"], "release": "Hockey Fans"}},
+                {"id": ID, "name": "D", "author": "M", "base": "lockout", "pack": " ",
+                 "credits": {"release": "DoorM4n Legacy"}},
+                {"id": ID, "name": "E", "author": "M", "base": "lockout"}
+            ]
+        }))
+        .unwrap();
+        let packs: Vec<(Option<&str>, Option<&str>)> = page
+            .items
+            .iter()
+            .map(|e| (e.pack.as_deref(), e.pack_description.as_deref()))
+            .collect();
+        assert_eq!(
+            packs,
+            [
+                (Some("Phantom Mappack"), None),
+                (Some("AI Revision"), Some("Bots that think.")),
+                (Some("Hockey Fans"), None),
+                (Some("DoorM4n Legacy"), None),
+                (None, None),
+            ]
+        );
+    }
+
     fn entry(position: Option<u64>) -> ModEntry {
         ModEntry {
             id: ID.parse().unwrap(),
@@ -573,6 +654,7 @@ mod tests {
             contents: Vec::new(),
             pack: None,
             pack_info: None,
+            pack_description: None,
         }
     }
 

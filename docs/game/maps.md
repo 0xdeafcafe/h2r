@@ -846,18 +846,38 @@ game" below.
 - **The screens** (`boot::mods_screen`, our list class, laid out as the
   level select is: list on the left with its bracket, picture top right,
   description under it, as the campaign picker). **Mods**: one row per
-  map (at most 40, newest first), its name and "New", "Installed" or the
-  download's "N%". The focused map's picture is on the right and under
+  map (at most 40, newest first), its name and its state as a mark after
+  it: a star (U+2605) when new, a tick (U+2713) when installed, a down
+  arrow (U+2193) and the percentage while downloading; nothing when it is
+  only on the server. Halo 2's fonts have none of the three, so they are
+  drawn into every font as the bot mark's gear is (`font::mod_marks`,
+  added by `bot_mark::GearRewrite` with the gear, the capitals' height;
+  drawn here from polygons, nothing copied). The focused map's picture is on the right and under
   it four lines: "On Lockout, by Modder", its size and downloads, what it
   changes ("Has vehicles, scripted events", or "What it changes isn't
   listed"), and its state ("X downloads it, A opens its page",
   "Downloading N%", "Installed: A for its page", or why a download
   failed). **A** opens the map's page; **X** downloads the focused map
   there and then (an installed one is left alone). The footer reads
-  `(A) DETAILS  (X) DOWNLOAD  (B) BACK`. With no list the one row says
-  why: "Loading...", "Sign in to Live first", "Live is off", "Live is
-  busy" or "Can't reach the server"; A asks again. The **map's page** is
-  below.
+  `(A) DETAILS  (X) DOWNLOAD  (B) BACK`. Every row is something to
+  press: with no list the one row is "Loading...", "Try Again" (its
+  description says why: "Sign in to Live first", "Live is off", "Live is
+  busy" or "Can't reach the server") or "Refresh" (no mods yet); A asks
+  again. The **map's page** is below.
+- **Map packs.** Maps the server lists with the same pack (an entry's
+  `pack`, a name or `{name, description}`; else its credit's `release`)
+  are one row of Mods, at the place of its newest map: the pack's name,
+  and a star, a tick, the downloads' percentage together, or "N maps".
+  Its summary: "N maps, by <makers>", what it is (the pack's
+  description, else "On <base maps>"), "<size> in all, K installed",
+  "A opens it, X downloads all". A pack with one map listed is that
+  map's row. **A** opens the pack's own list (`mods.pack`, the same
+  layout, titled with the pack's name): first **Download All (N)** (N the
+  maps not here; "Downloading N%" while they run, "All Installed" after),
+  whose description is the pack's summary, then its maps, each as the
+  list shows it, A opening its page (B back to the pack). **X** on a map
+  downloads it; on Download All, or on the pack's row of Mods, every map
+  of it not here or under way. A snapshot keeps the open pack.
 - **Installing.** Download runs `MapGate::install` on a thread of its own
   (`h2-live-mod`): the join's own checks and path (the manifest from
   `/v1/maps/{id}`, the base checked against the disc, each layer from
@@ -883,39 +903,67 @@ game" below.
   "A mod's name and picture"). A mod that is a new map is installed as
   a content package then, and the game's own content scan runs again
   before the list is built.
-- **Not built.** Paging past 40, the ui_kit preview of these two screens,
-  the mod's own preview image for a map not downloaded yet (below), and
+- **Previews.** The three screens are in the UI kit's inventory (`mods`,
+  `mods.pack`, `mods.detail`; `h2 ui preview mods.detail`), over invented
+  entries with an invented three-map pack (`mods_screen::spec`).
+- **Not built.** Paging past 40, the mod's own preview image for a map not downloaded yet (below), and
   updates (a new version of a mod is another `MapId`; nothing links the
   two yet).
 
 ### A mod's page
 
-**Built** (lane "mods-pages"); not run in the game yet.
+**Built** (lanes "mods-pages", then "mods-page-look"); not run in the game
+yet.
 
-The page is titled with the map's name, laid out as the list is. Its rows,
-one line each:
+**Why this layout.** The first page was a list of rows (Download, then
+Map, By, Size and the rest, then `[x] Vehicles`...), most of them not
+pressable: a selectable list whose rows do nothing, which no retail
+screen does. Every screen tag in `mainmenu.map` was read for a retail
+place that shows information that isn't pressed (2026-11-19): the
+postgame carnage report (16, 185: tables of players on list skins),
+the level select (11) and map select (17: list, picture, a description),
+the variant select (15), the Xbox Live menu (186) and the matchmaking
+playlists (219: list, picture, a white heading and a pale body), the
+message dialogs (211, 215, 218: actions in a short list beside a body),
+the matchmaking progress screen (210) and the **pregame lobby** (14).
+The lobby is the one that shows a chosen map's details: two buttons at
+the top (Start Game, Game Setup) are all that is selectable; under them
+a status text on its panel (`lobby_display`), the game's settings and
+the map's picture (`unknown_map`, 220 by 207), and on the right a
+two-column table (each row a white name, left, and a pale-blue value,
+right, 22 units apart from `[177 118 157 276]`). Matchmaking (pane 3)
+shows the same details block, so it is the game's own "game details"
+look. A mod's page is built on it
+(`crates/boot/src/mods_screen/page_layout.rs`; each rectangle, font,
+colour, animation and depth bias is the lobby tag's own unless noted):
 
-| Row | Says | Its description (under the picture) |
+| Part | Lobby original | On a mod's page |
 |---|---|---|
-| Action | `Download`, `Downloading N%`, `Remove`, `Remove? Press again`, a refusal (`Needs Lockout from your disc`) or `Remove failed` | what A or X will do, or the download's progress, or why it failed |
-| `Map: Lockout` | the base map (a Map Pack map by its game name) | the mod's description (200 characters at most) and `By <publisher>.` |
-| `By: Modder`, `Size: 3.4 MB`, `Downloads: 12`, `Published: 2026-11-18`, `Version: 1.2` | (Downloads, Published and Version only when the server has them) | the same |
-| `For: CTF, Slayer` (or `any game type`) | the game types it is made for | `Made for CTF, Slayer.` |
-| `[x] Vehicles` ... `[ ] AI` | one row per `live_proto::maps::FEATURES`, ticked when the mod has it; one row `Changes: not listed` when the server lists none | what the feature means, or `not in this mod` |
-| `[x] Map Pack map` | ticked for a Map Pack base | which disc the base comes from (`h2 import-mappack` for the Map Pack) |
-| `[x] Joins get it` | always ticked | guests who join a game on it download it on the way in |
+| Action | the buttons `[173 -274 153 -118]` on `name_field` (338 by 35 at (-279, 174)) | the page's only row, a skin-0 item at anchor (-262, 147) on `name_field`: `Download`, `Downloading N%`, `Remove`, `Remove? Press again`, a refusal or `Remove failed` |
+| Body | status text `[135 -258 61 45]`, font 1, pale blue, on `lobby_display` (512 by 128 at (-283, 149)) | the mod's description, one paragraph, 140 characters at most (4 lines; bottom 59) |
+| Status | the "open" line `[75 -260 55 70]` | the action's description, one line of 40 characters at most, `[55 -258 36 45]` in the Live menu's hint blue: `A or X downloads it: 3.4 MB.`, `25% of 3.4 MB. You can leave.`, `Needs the Map Pack's Relic. A retries.`, `Press A or X again to remove it.`, `Installed: pick it in Change Map.`, `Not removed: <why>` |
+| Picture | `unknown_map` at (-152, 32), animation 14 | the same widget at (-258, 30), so no text runs over it (the lobby's settings lines do); its bitmap is the base map's slot picture as on the list |
+| Table | the player rows, names white and left (bias 6), values pale blue and right (bias 5) | up to ten facts: `Map`, `By` (the credit, else the uploader), `Shared By` (the uploader, when the credit names someone else), `Size`, `Downloads`, `Published`, `Version` (the last three when the server has them), `For` (game types, or `any game type`), `From` (`Your disc` or `Map Pack`), `Joins` (`Get it too`); right edge 272, the title-safe area's; each row 20 characters at most, the value cut with `...` |
+| Checklist | (the lobby's settings lines) | row 11 of the table column, `What It Changes` in white, then four rows of two: `[x] Vehicles  [ ] Weapons` ... `[ ] Geometry  [ ] AI`; `Not listed` when the server lists none |
 
-**A** on the first row, or **X** anywhere on the page, downloads the map;
-on a map that is here they remove it, on a second press (the first turns
-the row to `Remove? Press again`; opening the page again forgets it).
+Only the action is a row, so the focus never lands on information. The
+title is the mod's name, and the footer reads `(A)(X) DOWNLOAD  (B)
+BACK`, or `REMOVE` for an installed map. In game the texts are text
+widgets of the page's own (`ListClass::panel`, `list_class::PanelText`):
+made from their blocks when the pane is built, their strings set from
+the `mod texts` slots then and again whenever the description is set
+(a download's progress, an install, a removal).
+
+**A** on the action, or **X**, downloads the map; on a map that is here
+they remove it, on a second press (the first turns the row to `Remove?
+Press again`; opening the page again forgets it).
 Remove (`MapGate::remove`) deletes only a `live-<id>` directory of
 `<data>/maps` (one the Mods screen or a join wrote; a package put there by
 hand is refused) and its line in `active.toml`, then tells the boot as an
 install does: the VFS rescans and the map select and slots follow (the
 base map's slot gets its own name and picture back). A Remove of a
 derived map (a new map, not a mod of one) leaves the content package
-`boot::new_maps` made of it. The footer reads `(A) SELECT  (X) DOWNLOAD
-(B) BACK`, or `REMOVE` for an installed map.
+`boot::new_maps` made of it.
 
 **The picture** on both screens is the base map's slot picture in the
 multiplayer map list (`mod_slots::pictures`: the slot's bitmap datum,
@@ -998,19 +1046,35 @@ server is updated):
    it, changing with the focus. Footer: `(A) DETAILS  (X) DOWNLOAD  (B)
    BACK`, glyphs drawn as buttons.
 2. X on a map not here: stderr `mods: downloading <name> (<id>)`; the row
-   reads `<name>  N%` then `<name>  Installed`, the summary's last line
-   follows. X on an installed map logs `mods: <name> is installed; its
+   reads `<name>  ↓ N%` (an arrow, not a box or a gap) then `<name>  ✓`,
+   the summary's last line follows; new maps end in a star. X on an installed map logs `mods: <name> is installed; its
    page removes it`. Start does nothing.
-3. A on a map: its page, titled with its name; the rows as in "A mod's
-   page", the checklist ticked as published; the picture stays the map's
-   as the focus moves; each row's description under it.
-4. X (or A on the first row) on a map not here downloads it; on an
+3. A on a map: its page, titled with its name, laid out as the pregame
+   lobby (compare with the lobby itself): the one action row where the
+   lobby's Start Game / Game Setup buttons are, on their backing; the
+   description on the lobby's panel and the status line under it; the
+   map's picture under that, nothing over it; the facts table on the
+   right where the lobby's players are, names white and left, values
+   pale blue and right, then `What It Changes` and the ticks in two
+   columns. Up and down do nothing (one row). Note anything clipped, a
+   text missing (a panel widget not made logs `no panel text N`), or
+   the texts not sliding with the page.
+4. X (or A on the action) on a map not here downloads it; the status
+   line follows the progress; on an
    installed one the first press reads `Remove? Press again`, the second
    logs `mods: <name> (<id>) removed`, the row reads `Download`, the
    footer `DOWNLOAD`; `<data>/maps/live-<16 hex>/` is gone and
    `active.toml` no longer names it; Change Map no longer lists it.
 5. After installing a mod with an image and backing out to the list,
    re-open Mods: its picture is the mod's own (the slot's refill).
+6. A pack (a server with two or more maps of one pack, e.g. a mappack
+   imported with its release): one row, its name and a star or "N maps";
+   its summary says how many maps and by whom. A opens it, titled with
+   its name: Download All (N) first, then the maps. A on a map opens its
+   page and B comes back to the pack. A on Download All logs `mods:
+   <pack>: downloading N maps`; the row shows the pack's percentage, then
+   All Installed, and the pack's row on Mods a tick. X on a pack's row on
+   Mods does the same as Download All.
 
 ## 6. Plan
 

@@ -434,6 +434,32 @@ what is drawn beneath it, and input and closing there. The tag (layout 2
 header, panel, cells) and the text questions in "What stays unverifiable
 offline" need the next run, once serving the tag is built.
 
+## Panel texts: information that isn't a row
+
+A page that shows facts (a mod's page: docs/game/maps.md "A mod's
+page") keeps them out of its list: its rows are only what A does
+something with, as retail's lists are. The rest is the screen's own
+texts and art, from a retail screen that shows information the same
+way (for a mod's page, the pregame lobby, screen 14):
+
+- `ScreenSpec::panel` (retail backings, `Layer::Panel` widgets
+  `panel.N`, held neither to a list nor to their pixels, as a modal's
+  panel is) and `ScreenSpec::texts` (`PaneText`: id, rectangle, font,
+  colour, left or right, the string), drawn by `view_of` after the
+  rows and the art and checked like any text (fit, overlap, safe area,
+  contrast).
+- In game, `ListClass::panel(Panel { art, texts })`: the art made
+  bitmap widgets and each `PanelText` a text block of the class's page
+  (justification and the retail block's depth bias kept) made a text
+  widget by the pane builder's text step when the pane is built; their
+  strings come from `Rows::panel_text(i)` and are set then and again
+  whenever the description is (`Rows::live_text`'s redraw). Only a
+  class with a description shows them.
+- The test `ui_kit::screens::tests::a_mods_page_is_the_lobby_layout_with_one_action`
+  draws the page and holds every part where the lobby has it; the disc
+  test holds the layout's constants to the lobby tag's blocks and draws
+  it again on the disc's geometry.
+
 ## The Dialog kind
 
 Built 2026-11-18: `KitScreen::dialog(base, opener)` (and

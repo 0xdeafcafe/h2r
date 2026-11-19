@@ -514,6 +514,23 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
             },
         });
     }
+    for (k, a) in s.panel.iter().enumerate() {
+        w.push(Widget {
+            id: format!("panel.{k}"),
+            rect: [
+                a.at[1],
+                a.at[0],
+                a.at[1] - a.size[1] as i16,
+                a.at[0] + a.size[0] as i16,
+            ],
+            layer: Layer::Panel,
+            alpha: 255,
+            kind: Kind::Art {
+                art: a.art,
+                size: a.size,
+            },
+        });
+    }
     let text = |id: String, r: Rect, font: i16, j: u8, text: String, colour: [u8; 3]| Widget {
         id,
         rect: [r.top, r.left, r.bottom, r.right],
@@ -605,6 +622,18 @@ pub fn view_of(s: &ScreenSpec, g: &Geometry, m: &dyn Metrics, state: &str) -> Vi
                 size: a.size,
             },
         });
+    }
+    for t in &s.texts {
+        let [top, left, bottom, right] = t.rect;
+        let lines = wrap(&t.text, i32::from(right - left), &|x| m.width(t.font, x));
+        w.push(text(
+            t.id.clone(),
+            rect(top, left, bottom, right),
+            t.font,
+            u8::from(t.right),
+            lines.join("\n"),
+            rgb(t.colour),
+        ));
     }
     if let (Some(d), Some(t)) = (s.description, s.description_text()) {
         let [top, left, bottom, right] = d.rect;
