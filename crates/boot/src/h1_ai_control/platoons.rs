@@ -8,7 +8,7 @@ use engine::{
 };
 use hs::h1_ai_slots::{MAX_PLATOON_TEXT, PlatoonRule, PlatoonTrigger, decode_words};
 
-use super::{NONE, actors, speech, squad_control, state};
+use super::{NONE, actors, speech, squad_control, state, uncover};
 
 const SQUAD_TOTAL: u32 = 8;
 const SQUAD_LIVING: u32 = 0x0a;
@@ -183,6 +183,9 @@ pub(super) async fn tick(cx: &Cx, argument: u32) -> Result<(), EntryError> {
     }
     for (actor, to, flags) in moves {
         actors::move_actor(cx, actor, to).await?;
+        if flags & 1 != 0 {
+            uncover::maneuver(cx, actor).await?;
+        }
         speech::maneuver(cx, actor.unit, flags & 2 != 0).await?;
     }
     Ok(())

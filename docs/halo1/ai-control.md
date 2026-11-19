@@ -70,13 +70,24 @@ or Agent API method.
 
 ## Open
 
-The source playfight exception to the character behavior predicate at
-`0x00163c8c` still needs a Halo 2 equivalent. Timer release uses the
-Halo 2 active/visible perception states, and movement holds leave the
-Halo 2 behavior evaluator running. The aim/movement-state override on
-Halo 1 platoon flag `0x1` remains open until its Halo 2 equivalent is
-identified. The native follow collector still needs firing-position
-areas in the current BSP. The reservation hook covers native random spawn
+**Built.** Halo 1 `0x00163c8c` skips the actor definition's time and
+vitality tests when playfighting, then checks actor restrictions. Halo 2
+presearch at `0x001b44d0` uses a character search block and a tracked
+target. During playfight it skips that character prerequisite while
+preserving the live target and behavior safety checks. Halo 2's usual
+uncover rank at `0x001b84a0` has no matching character time or vitality
+tests.
+
+**Built.** Platoon flag `0x1` requests uncover once per actor migration.
+Halo 1 queues it at `0x0014ff6d` and consumes it at `0x001673d0`.
+Halo 2 behavior 35 uses native installer `0x001a80e0` and the uncover
+record at `0x0047e908`. The native initializer requires a tracked
+interest. A targetless Halo 1 request uses the point selector
+`0x0016e070`, which has no equivalent in this initializer.
+
+Timer release uses the Halo 2 active/visible perception states, and
+movement holds leave the Halo 2 behavior evaluator running. The native
+follow collector still needs firing-position areas in the current BSP. The reservation hook covers native random spawn
 selection. Native explicit start placement bypasses that selector.
 
 The converter retains empty maneuver destinations first, followed by

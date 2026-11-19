@@ -41,7 +41,7 @@ pub(super) fn set(cx: &Cx, reference: u32, enabled: bool, base: u32) -> R<()> {
     })
 }
 
-fn playing_actor(m: &dyn GuestMemory, handle: u32) -> R<Option<actors::Actor>> {
+pub(super) fn playing_actor(m: &dyn GuestMemory, handle: u32) -> R<Option<actors::Actor>> {
     let Some(base) = state::hook_base(m, Registry::Playfight)? else {
         return Ok(None);
     };

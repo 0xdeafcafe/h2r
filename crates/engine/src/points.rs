@@ -228,6 +228,8 @@ points! { ALL;
     AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], hot; "docs/halo1/ai-control.md";
     /// The actor's contribution to outgoing damage calculation.
     AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
+    /// Selects the uncover behavior from presearch when a tracked target is available.
+    AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], hot; "docs/halo1/ai-control.md";
     /// Starts a firing burst, setting the actor timer and angular spread.
     AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
     /// Chooses the pause between bursts and saves it in the actor timer.
