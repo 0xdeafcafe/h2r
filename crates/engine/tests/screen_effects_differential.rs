@@ -8,7 +8,17 @@
 //! - `drawn`: `0x00013870` from `0x000139ba` (after the colour pass) to the
 //!   end of its screen-effect loop, `0x00022710` and `0x00134fc0` lifted
 //!   inside and `0x0002d140` stubbed (`ret 0x10`, recorded: EAX the datum
-//!   and the four values), over random gates and entries.
+//!   and the four values), over random gates and entries;
+//! - `screen_effect::plan`: `0x0002d140` from its entry to its return,
+//!   `0x0001dd60` lifted inside; stubbed: `0x00016610` (the template pass,
+//!   drawing; its arguments recorded), `0x0001ddd0` (the size recorded and
+//!   stored as it stores it), the blur `0x000211a0` and `0x00021360`
+//!   (their registers and arguments recorded; the blur returning
+//!   `glow::blur`'s result, `0x00021360` its first target), the push
+//!   buffer's flush, `End` and the draw-state reset; over random egor
+//!   passes, offsets, convolutions, targets and windows. The template
+//!   passes, the words the strips push, the `End`s, the sizes set and the
+//!   convolutions must be the plan's.
 //!
 //! The evaluator's wave and shape tables are the image's (read from it,
 //! never copied). Results are bit-equal, except where the evaluator port
@@ -31,6 +41,8 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::memory::{GuestMemory, MemFault};
+use engine::glow::{self, BlurArgs};
+use engine::screen_effect::{self as fx, Convolution};
 use engine::screen_effects::{self as se, Drawn};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
@@ -134,7 +146,7 @@ impl Lifted<'_> {
         mem: &mut FlatMemory,
         exits: &[u32],
         stubs: &Stubs,
-        seen: &mut dyn FnMut(u32, &Cpu, &FlatMemory),
+        seen: &mut dyn FnMut(u32, &mut Cpu, &mut FlatMemory),
     ) -> Result<u32, String> {
         let mut pc = cpu.eip;
         let mut steps = 0;
@@ -398,7 +410,7 @@ fn drawn_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             let esp = STACK_TOP - 0x400;
             let mut c = cpu(&mut r, esp, LOOP.0);
             let mut got = Vec::new();
-            let mut record = |pc: u32, c: &Cpu, m: &FlatMemory| {
+            let mut record = |pc: u32, c: &mut Cpu, m: &mut FlatMemory| {
                 if pc == SCREEN_EFFECT {
                     let values = word(m, c.gpr[4] + 4);
                     got.push((c.gpr[0], [0, 4, 8, 12].map(|o| word(m, values + o))));
@@ -413,6 +425,332 @@ fn drawn_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
     }
     eprintln!("entries drawn: {seen:#?}");
     for k in ["0 drawn", "1 drawn", "2 drawn"] {
+        assert!(seen.contains_key(k), "{k} never seen: widen the states");
+    }
+}
+
+const EFFECT: u32 = 0x0002_d140;
+const TEMPLATE_PASS: u32 = 0x0001_6610;
+const SET_SIZE: u32 = 0x0001_ddd0;
+const BLUR: u32 = 0x0002_11a0;
+const WIDE: u32 = 0x0002_1360;
+const FLUSH: u32 = 0x0040_0fa0;
+const SPACE: u32 = 0x003f_aae0;
+const END: u32 = 0x003f_b480;
+const RESET: u32 = 0x0001_6b10;
+/// The push buffer: `+0` where the next word goes, `+4` its end.
+const PUSH: u32 = 0x0040_7488;
+
+const TT: u32 = 0x0380_0000;
+const EGOR: u32 = 0x0390_0000;
+const SDEF: u32 = 0x0391_0000;
+const TDEF: u32 = 0x0392_0000;
+const X: u32 = 0x0393_0000;
+const PASSES: u32 = 0x0394_0000;
+const OFFSETS: u32 = 0x0395_0000;
+const CONVS: u32 = 0x0396_0000;
+const VECTOR: u32 = 0x0397_0000;
+const PB: u32 = 0x0398_0000;
+const BUF: u32 = 0x03a0_0000;
+const VALUES: u32 = 0x03b0_0000;
+const CORNERS: u32 = 0x03b0_0100;
+const DATUM: u32 = 0xe000_0003;
+const SHADER: u32 = 0xe001_0005;
+
+/// What the original called, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Did {
+    /// `0x00016610`'s six arguments.
+    Pass([u32; 6]),
+    /// `0x0001ddd0`: ECX the target, ESI the width, EDI the height.
+    Size(u32, i32, i32),
+    /// The blur: EAX, then its first seven stack words.
+    Blur(u32, [u32; 7]),
+    /// `0x00021360`: EAX, ECX, XMM0, then its first four stack words.
+    Wide(u32, i32, u32, [u32; 4]),
+}
+
+/// A finite float in 0..top.
+fn finite(r: &mut Rng, top: f32) -> u32 {
+    (r.below(1 << 20) as f32 / (1 << 20) as f32 * top).to_bits()
+}
+
+fn stack_arg(m: &FlatMemory, c: &Cpu, i: u32) -> u32 {
+    word(m, c.gpr[4] + 4 + 4 * i)
+}
+
+/// A random egor and the state `0x0002d140` reads; returns the datum, the
+/// values and the corners (2 x 2).
+fn effect_world(r: &mut Rng, m: &mut FlatMemory) -> (u32, [u32; 4], Vec<[u32; 4]>) {
+    put(m, fx::TAG_TABLE, TT);
+    put(m, TT + 3 * 16 + 8, EGOR);
+    put(m, TT + 5 * 16, 0x7264_6873);
+    put(m, TT + 5 * 16 + 8, SDEF);
+    put(m, SDEF + 0x24, SDEF + 0x100);
+    put(m, SDEF + 0x100, 0xe002_0006);
+    put(m, TT + 6 * 16 + 8, TDEF);
+    put(m, TDEF + 0x5c, X);
+    put(m, X + 4, X + 0x100);
+    let at = r.below(4);
+    put16(m, X + 0x100, (r.u32() as u16 & 0xfe00) | at as u16);
+    put(m, X + 0xc, X + 0x200);
+    put16(m, X + 0x200 + 2 * at + 0x1e, (r.below(5) << 9) as u16 | r.below(0x1ff) as u16);
+    put(m, EGOR + 0x44, SHADER);
+    let passes = r.below(4);
+    put(m, EGOR + 0x88, passes);
+    put(m, EGOR + 0x8c, PASSES);
+    for i in 0..passes {
+        let p = PASSES + i * fx::PASS_SIZE;
+        put16(m, p + 8, if r.below(3) == 0 { 0xffff } else { r.below(6) as u16 });
+        for b in 0..4 {
+            m.bytes[(p + 0xc + b) as usize] = [0xff, 0, 1, 2, 5][r.below(5) as usize];
+        }
+        for s in 0..4 {
+            put16(m, p + 0x50 + 2 * s, r.below(5) as u16);
+        }
+        let offsets = OFFSETS + i * 0x100;
+        put(m, p + 0x58, [0u32, 1, 2, 0xffff_ffff][r.below(4) as usize]);
+        put(m, p + 0x5c, offsets);
+        for s in 0..4 {
+            put16(m, offsets + 2 * s, r.below(4) as u16);
+            for k in 0..4 {
+                let v = r.float(2.0);
+                put(m, offsets + 8 + 0x10 * s + 4 * k, v);
+            }
+        }
+        put16(m, p + 0x60, r.below(4) as u16);
+        let convs = r.below(3);
+        put(m, p + 0xa4, convs);
+        let base = CONVS + i * 0x200;
+        put(m, p + 0xa8, base);
+        for n in 0..convs {
+            let c = base + n * fx::CONVOLUTION_SIZE;
+            // `0x00021360`'s result is not planned: only the last.
+            let mut flags = r.below(8) as u16;
+            if n == 0 && convs > 1 {
+                flags &= !4;
+            }
+            put16(m, c, flags);
+            put(m, c + 0x44, finite(r, 5.0));
+            put(m, c + 0x48, r.float(2.0));
+            put(m, c + 0x4c, finite(r, 1.0));
+            put(m, c + 0x50, r.u32());
+            put(m, c + 0x54, r.u32());
+            put(m, c + 0x58, [0.125f32, 0.25, 0.5, 1.0, 2.0][r.below(5) as usize].to_bits());
+        }
+    }
+    put(m, fx::constant::VECTOR, VECTOR);
+    for k in 0..4 {
+        let v = r.float(3.0);
+        put(m, VECTOR + 4 * k, v);
+    }
+    put(m, fx::constant::OFFSET_SCALE, [1.0f32, 2.0, 0.5][r.below(3) as usize].to_bits());
+    // The window (top, left, bottom, right): mostly the screen.
+    let w: [u16; 4] = match r.below(10) {
+        0 => [0, 0, 0, 640],
+        1 => [0, 640, 480, 0],
+        2 => [10, 20, 401, 603],
+        _ => [0, 0, 480, 640],
+    };
+    for (o, v) in w.iter().enumerate() {
+        put16(m, fx::WINDOW + 2 * o as u32, *v);
+    }
+    put(m, fx::TARGET_OVERRIDE, u32::from(r.below(12) == 0));
+    for t in [0u32, 1, 0x19, 0x1a, 0x1b] {
+        let e = fx::TARGETS + t * fx::TARGET_STRIDE;
+        put(m, e + 0x88, if r.below(4) == 0 { 0 } else { 0x0100_0000 });
+        m.bytes[(e + 0x95) as usize] = u8::from(r.below(6) == 0);
+        put(m, e + 0x80, [640u32, 320, 1280, 100][r.below(4) as usize]);
+        put(m, e + 0x84, [480u32, 240, 960, 50][r.below(4) as usize]);
+    }
+    put(m, PUSH, PB);
+    put(m, PB, BUF);
+    put(m, PB + 4, BUF + 0x0008_0000);
+    let value =|r: &mut Rng| if r.below(3) == 0 { 0 } else { r.float(1.0) };
+    let values = [value(r), value(r), r.float(1.0), r.float(1.0)];
+    let corners = (0..4)
+        .map(|_| [r.float(700.0), r.float(700.0), r.float(1.0), r.float(1.0)])
+        .collect();
+    (if r.below(16) == 0 { u32::MAX } else { DATUM }, values, corners)
+}
+
+/// The plan's calls, in the original's order (before the restores).
+fn expected(e: &fx::Effect) -> Vec<Did> {
+    let mut v = Vec::new();
+    for p in &e.passes {
+        if let Some((w, h)) = p.size {
+            v.push(Did::Size(1, w, h));
+        }
+        v.push(Did::Pass([e.shader, 15, p.implementation, p.selector as u32, u32::from(p.kind != 0), 0]));
+        for c in &p.convolutions {
+            match c {
+                Convolution::Kept { .. } => {}
+                Convolution::Blur { size, args, .. } => {
+                    v.push(Did::Size(args.dest, size.0, size.1));
+                    v.push(Did::Size(args.other, size.0, size.1));
+                    v.push(Did::Blur(
+                        args.source,
+                        [args.steps, args.scale, args.growth, args.dest, args.other, args.last, 1],
+                    ));
+                }
+                Convolution::Wide {
+                    size,
+                    source,
+                    taps,
+                    scale,
+                    words,
+                    dest,
+                    other,
+                } => {
+                    v.push(Did::Size(*dest, size.0, size.1));
+                    v.push(Did::Size(*other, size.0, size.1));
+                    v.push(Did::Wide(*source, *taps, *scale, [words[0], words[1], *dest, *other]));
+                }
+            }
+        }
+    }
+    v
+}
+
+/// The four sizes `0x0002d140` puts back at its end: targets 1, `0x19`,
+/// `0x19` (`0x1a`'s size) and `0x1b`, each as it found it (0 x 0 without
+/// a surface).
+fn restores(m: &FlatMemory) -> Vec<Did> {
+    let size = |t: u32| {
+        let e = fx::TARGETS + t * fx::TARGET_STRIDE;
+        if word(m, e + 0x88) != 0 && m.bytes[(e + 0x95) as usize] == 0 {
+            (word(m, e + 0x80) as i32, word(m, e + 0x84) as i32)
+        } else {
+            (0, 0)
+        }
+    };
+    [(1, 1), (0x19, 0x19), (0x19, 0x1a), (0x1b, 0x1b)]
+        .into_iter()
+        .map(|(t, from)| {
+            let (w, h) = size(from);
+            Did::Size(t, w, h)
+        })
+        .collect()
+}
+
+#[test]
+fn effect_plans_match_the_lifted_original() {
+    if !with_image(effect_cases) {
+        eprintln!("SKIPPED effect_plans_match_the_lifted_original: no XBE (set H2_XBE)");
+    }
+}
+
+fn effect_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
+    lifted.lift(EFFECT);
+    let stubs: Stubs = [
+        (TEMPLATE_PASS, 0x18),
+        (SET_SIZE, 0),
+        (BLUR, 0x28),
+        (WIDE, 0x20),
+        (FLUSH, 0),
+        (SPACE, 4),
+        (END, 0),
+        (RESET, 0),
+    ]
+    .into_iter()
+    .collect();
+    let depth = word(image, fx::constant::DEPTH);
+    let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    for seed in seeds() {
+        for n in 0..256u32 {
+            let mut r = Rng(seed.wrapping_mul(0x5851_f42d_4c95_7f2d) ^ u64::from(n));
+            let mut m = image.clone();
+            let (datum, values, corners) = effect_world(&mut r, &mut m);
+            let want = fx::plan(&Eng(&m), datum, values, 2, 2, &corners, 0x1f80, 0x027f)
+                .unwrap_or_else(|e| panic!("seed {seed} case {n}: {e:?}"));
+            let restored = restores(&m);
+
+            for (i, v) in values.iter().enumerate() {
+                put(&mut m, VALUES + 4 * i as u32, *v);
+            }
+            for (i, c) in corners.iter().enumerate() {
+                for (k, v) in c.iter().enumerate() {
+                    put(&mut m, CORNERS + 16 * i as u32 + 4 * k as u32, *v);
+                }
+            }
+            let esp = STACK_TOP - 0x400;
+            for (i, v) in [HARNESS_EXIT, VALUES, 2, 2, CORNERS].iter().enumerate() {
+                put(&mut m, esp + 4 * i as u32, *v);
+            }
+            let mut c = cpu(&mut r, esp, EFFECT);
+            c.gpr[0] = datum;
+            let mut did = Vec::new();
+            let mut ends = 0usize;
+            let mut record = |pc: u32, c: &mut Cpu, m: &mut FlatMemory| match pc {
+                TEMPLATE_PASS => {
+                    did.push(Did::Pass(std::array::from_fn(|i| stack_arg(m, c, i as u32))));
+                    c.gpr[0] = (c.gpr[0] & !0xff) | 1;
+                }
+                SET_SIZE => {
+                    let (t, w, h) = (c.gpr[1], c.gpr[6], c.gpr[7]);
+                    did.push(Did::Size(t, w as i32, h as i32));
+                    let e = fx::TARGETS.wrapping_add(t.wrapping_mul(fx::TARGET_STRIDE));
+                    put(m, e + 0x80, w);
+                    put(m, e + 0x84, h);
+                }
+                BLUR => {
+                    let words: [u32; 7] = std::array::from_fn(|i| stack_arg(m, c, i as u32));
+                    did.push(Did::Blur(c.gpr[0], words));
+                    let args = BlurArgs {
+                        source: c.gpr[0],
+                        steps: words[0],
+                        scale: words[1],
+                        growth: words[2],
+                        dest: words[3],
+                        other: words[4],
+                        last: words[5],
+                    };
+                    c.gpr[0] = glow::blur(&Eng(&*m), &args, 0x1f80).map(|b| b.result).unwrap_or(u32::MAX);
+                }
+                WIDE => {
+                    let words: [u32; 4] = std::array::from_fn(|i| stack_arg(m, c, i as u32));
+                    did.push(Did::Wide(c.gpr[0], c.gpr[1] as i32, c.xmm[0] as u32, words));
+                    c.gpr[0] = words[2];
+                }
+                END => ends += 1,
+                _ => {}
+            };
+            lifted
+                .run(&mut c, &mut m, &[HARNESS_EXIT], &stubs, &mut record)
+                .unwrap_or_else(|e| panic!("seed {seed} case {n}: {e}"));
+            let pushed: Vec<u32> = (BUF..word(&m, PB)).step_by(4).map(|a| word(&m, a)).collect();
+            let Some(want) = want else {
+                assert!(
+                    did.is_empty() && pushed.is_empty() && ends == 0,
+                    "seed {seed} case {n}: the plan returns at once, the original {did:x?}"
+                );
+                *seen.entry("returned".into()).or_default() += 1;
+                continue;
+            };
+            let mut expect = expected(&want);
+            expect.extend(restored);
+            assert_eq!(did, expect, "seed {seed} case {n}: the calls\nplan {want:#x?}");
+            let words: Vec<u32> = want.passes.iter().flat_map(|p| p.pushed(depth).concat()).collect();
+            assert_eq!(pushed, words, "seed {seed} case {n}: the strips\nplan {want:#x?}");
+            assert_eq!(ends, want.passes.iter().map(|p| p.strips.len()).sum::<usize>(), "seed {seed} case {n}: Ends");
+            *seen.entry(format!("{} passes", want.passes.len().min(2))).or_default() += 1;
+            for p in &want.passes {
+                *seen.entry(format!("kind {}", p.kind)).or_default() += 1;
+                for c in &p.convolutions {
+                    let k = match c {
+                        Convolution::Kept { .. } => "kept",
+                        Convolution::Blur { .. } => "blur",
+                        Convolution::Wide { .. } => "wide",
+                    };
+                    *seen.entry(k.into()).or_default() += 1;
+                }
+            }
+        }
+    }
+    eprintln!("effect plans: {seen:#?}");
+    for k in [
+        "returned", "0 passes", "1 passes", "2 passes", "kind 0", "kind 1", "kind 2", "kind 3", "kept", "blur", "wide",
+    ] {
         assert!(seen.contains_key(k), "{k} never seen: widen the states");
     }
 }

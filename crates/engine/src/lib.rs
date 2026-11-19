@@ -43,6 +43,7 @@ pub mod memory;
 pub mod points;
 pub mod render;
 pub mod render_loop;
+pub mod screen_effect;
 pub mod screen_effects;
 pub mod shadow_constants;
 pub mod tags;

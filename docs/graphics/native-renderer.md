@@ -1915,7 +1915,7 @@ its own thread, and render-timing does not matter (the call runs).
    - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call. Traced (Code,
-   `h2 disasm`); nothing built yet.
+   `h2 disasm`); slice (a) built (below).
    - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
      as four floats twice (the corners), then per entry of the scenario
      block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
@@ -1982,6 +1982,33 @@ its own thread, and render-timing does not matter (the call runs).
      `0x000139ba` with `0x0002d140` stubbed, against the lifted
      original; types 9 and 10 within 1e-3, where the evaluator port
      approximates).
+   - **Built: what each draws** (`engine::screen_effect::plan`, one call
+     of `0x0002d140` as an `Effect`): the shader and layer 15's
+     implementation count (the template datum the shader's `+0x24`
+     points at, its definition's `+0x5c` element: the word at
+     `[+4] & 0x1ff`, then the word that many plus 15 into `[+0xc]`, its
+     high 7 bits; `Err(Data)` for `MTRP`/`3trp`, which go through a
+     virtual call). Per pass that draws: its index, implementation and
+     selector (`0x00016610`'s third and fourth arguments; skipped as the
+     original skips them), its target kind and target 1's size (window
+     width and height, halved or quartered toward zero), the strips (per
+     row of corners, per column the corner and the one below; four
+     texture coordinates by kind, 0 the corner's uv, 1 the window
+     fraction, 2 pixels from the window's top left, 3 the corner's x and
+     y, 4 the vector at `[[0x004687c0]]`, z 0 and w 1 except kind 4; plus
+     the offsets `+0x5c` when `+0x58` is above 0, u and v times
+     `[0x004b9de4]` when the set's flag bit 0 is set; the position raw,
+     from the window's top left, or that times `[0x0045dbbc]` or
+     `[0x0045dc20]`) and `Pass::pushed`, the exact words; and its
+     convolutions (kept, the blur with `glow::blur`'s draws, or
+     `0x00021360`'s registers and arguments), each with its size (the
+     area cap: x87 `fild`, `fdivr`, `fsqrt`, `_ftol2` toward zero, both
+     64 when either side is under 64). At the end the original sets
+     target `0x19` twice, the second time to `0x1a`'s saved size (as it
+     does; a native draw need not copy it). Tests: unit tests, and
+     `effect_plans_match_the_lifted_original` (`0x0002d140` lifted, its
+     callees stubbed and recorded: the template passes, every size set,
+     the convolution calls and the words pushed must be the plan's).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
