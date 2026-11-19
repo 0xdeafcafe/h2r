@@ -2272,8 +2272,26 @@ its own thread, and render-timing does not matter (the call runs).
      call with nothing missing as the glow is armed: one swallow of its
      strips (slot 0, `SET_BEGIN_END` 6, twice the columns), a probe
      first, then the pass in place of the strips; a mismatch after a
-     screen swallow keeps every later call on D3D. Every call still
-     misses the stand-ins, so none is armed yet.
+     screen swallow keeps every later call on D3D.
+   - **Traced: the end of the call draws nothing**
+     (`0x0002dae8..0x0002db64`): `0x0001ddd0` writes the sizes of
+     targets 1, `0x19` and `0x1b` back into the target table (`+0x80`,
+     `+0x84`, the surface words `+0x14`, `+0x28`) from what
+     `0x0002d26e..0x0002d344` saved on entry (0 for a target without a
+     surface; `0x19` is written twice, the second time with `0x1a`'s
+     saved size, and `0x1a` never), `0x00016b10` applies the last pass's
+     restore states and clears the draw-state cache at `0x00485b48`,
+     `[0x004670bc]` is set and `0x00485a78`/`7c` cleared. The game runs
+     it on both paths, so the stand-ins for `0x19`..`0x1b` are missing
+     only for a call with a drawn (blur or wide) convolution, which
+     renders into them; a pass sampling them (engine textures 24 and 25)
+     is not drawable on its own. A call of passes into the bound target
+     with every convolution kept, the shape of
+     `effects\screen_effects\desaturate` (one pass, kind 0, none
+     convolved, stage 0 the view), now misses nothing and is armed with
+     the switch on: a probe on its first call, its strips dropped for the
+     native pass after. The blur (`kind` 1 and a convolution in its first
+     pass) stays on D3D.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

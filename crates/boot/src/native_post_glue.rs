@@ -41,8 +41,11 @@
 //! twice the columns, into the bound target), a [`ScreenProbe`] first
 //! (observed, nothing dropped), then the [`ScreenPass`] in place of the
 //! strips; a swallow that ends early keeps every later call on the D3D
-//! path. Until the stand-ins are in, every call misses them, so nothing
-//! is armed; each reason is counted and logged once.
+//! path. The stand-ins are missing only for a call with a drawn
+//! convolution (the end of the call draws nothing: [`missing`]), so a
+//! call of passes into the bound target with nothing convolved
+//! (`desaturate`'s shape) is armed with the switch on; each reason the
+//! rest are refused for is counted and logged once.
 //!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
@@ -156,7 +159,9 @@ pub enum Missing {
     Blur,
     /// A wide convolution (`0x00021360`, `engine::screen_grid`).
     Wide,
-    /// The stand-ins for targets `0x19` to `0x1b` the call sets at its end.
+    /// Stand-ins for targets `0x19` to `0x1b`, which a drawn convolution
+    /// renders into (and a later pass samples through engine textures 24
+    /// and 25, which [`pass_drawable`] refuses on its own).
     StandIns,
 }
 
@@ -205,13 +210,22 @@ pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool)
         for c in &p.convolutions {
             match c {
                 Convolution::Kept { .. } => {}
-                Convolution::Blur { .. } => m.push(Missing::Blur),
-                Convolution::Wide { .. } => m.push(Missing::Wide),
+                Convolution::Blur { .. } => m.extend([Missing::Blur, Missing::StandIns]),
+                Convolution::Wide { .. } => m.extend([Missing::Wide, Missing::StandIns]),
             }
         }
     }
-    // The restores at the end run whenever the call gets past its gates.
-    m.push(Missing::StandIns);
+    // The end of the call (`0x0002dae8..0x0002db64`, Code) draws nothing:
+    // `0x0001ddd0` writes the sizes of targets 1, 0x19 and 0x1b back (the
+    // table at `0x004b4b58`: `+0x80`/`+0x84` and the surface words
+    // `+0x14`, `+0x28`), from those `0x0002d26e..0x0002d344` saved on
+    // entry (0 for a target without a surface); 0x19 is written twice,
+    // the second time with 0x1a's saved size, and 0x1a never, as the
+    // original does. `0x00016b10` applies the
+    // last pass's restore states (`0x00018900`) and clears the draw-state
+    // cache at `0x00485b48`, `[0x004670bc]` is set and the results
+    // `0x00485a78`/`7c` cleared. The game runs all of it on both paths, so
+    // an effect whose convolutions are all kept needs no stand-ins.
     m.sort();
     m.dedup();
     m
@@ -962,11 +976,14 @@ mod tests {
         };
         let no: &dyn Fn(&screen_effect::Pass) -> bool = &|_| false;
         let yes: &dyn Fn(&screen_effect::Pass) -> bool = &|_| true;
-        assert_eq!(missing(&effect(vec![]), no), vec![Missing::StandIns], "the restores always run");
+        assert_eq!(missing(&effect(vec![]), no), vec![], "the restores at the end draw nothing");
         let e = effect(vec![pass(0, vec![Convolution::Kept { result: 1 }]), pass(2, vec![])]);
-        assert_eq!(missing(&e, no), vec![Missing::TemplatePass, Missing::PassTarget, Missing::StandIns]);
-        assert_eq!(missing(&e, yes), vec![Missing::PassTarget, Missing::StandIns], "the template pass draws");
-        assert_eq!(missing(&effect(vec![pass(0, vec![])]), yes), vec![Missing::StandIns]);
+        assert_eq!(missing(&e, no), vec![Missing::TemplatePass, Missing::PassTarget]);
+        assert_eq!(missing(&e, yes), vec![Missing::PassTarget], "the template pass draws");
+        // desaturate's shape: one pass into the bound target, nothing
+        // convolved.
+        assert_eq!(missing(&effect(vec![pass(0, vec![])]), yes), vec![], "armed");
+        assert_eq!(missing(&effect(vec![pass(0, vec![Convolution::Kept { result: 0 }])]), yes), vec![], "a kept one draws nothing");
     }
 
     const EGOR: TagId = TagId(0xe000_0001);
