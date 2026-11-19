@@ -118,6 +118,8 @@ const USAGE: &str = "usage: h2 live <command> [options]
   frames migrate --dry-run|--apply|--verify [--checkpoint FILE] [--delay-ms N]
                  [--server URL] [--data DIR | --as GAMERTAG]
                           plan, publish or verify finished-game replay archives
+  frames status GAME [--server URL] [--data DIR | --as GAMERTAG]
+                          show archive progress and the current rollback digests
   frames rollback GAME --archive-sha256 HASH --backup-sha256 HASH
                  [--server URL] [--data DIR | --as GAMERTAG]
                           restore the matching original replay index
@@ -194,6 +196,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
         ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
         ("frames", Some("migrate")) => crate::live_frames::migrate(rest.shift()),
+        ("frames", Some("status")) => crate::live_frames::status(rest.shift()),
         ("frames", Some("rollback")) => crate::live_frames::rollback(rest.shift()),
         ("store", Some("copy")) => store_copy(rest.shift()),
         ("store", Some("check")) => store_check(rest.shift()),

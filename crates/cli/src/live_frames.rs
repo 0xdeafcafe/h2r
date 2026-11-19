@@ -416,6 +416,30 @@ pub(crate) fn migrate(mut args: Args) -> Result<()> {
     );
     Ok(())
 }
+fn detail(remote: &mut Remote, id: &str) -> Result<serde_json::Value> {
+    let req = remote
+        .client
+        .agent
+        .get(&remote.client.url(&format!("{ROOT}/{}", path_part(id))));
+    remote.request(req, None)
+}
+
+/// Read the digests even when the original apply receipt was lost, or a
+/// background job published the archive.
+pub(crate) fn status(mut args: Args) -> Result<()> {
+    const STATUS: &str = "h2 live frames status GAME [--server URL] [--as GAMERTAG | --data DIR]";
+    let mut remote = Remote::from_args(&mut args)?;
+    let [id]: [String; 1] = args
+        .positional_for(STATUS)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!(STATUS))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&detail(&mut remote, &id)?)?
+    );
+    Ok(())
+}
+
 pub(crate) fn rollback(mut args: Args) -> Result<()> {
     let archive = args.take("--archive-sha256")?.context(ROLLBACK)?;
     let backup = args.take("--backup-sha256")?.context(ROLLBACK)?;
@@ -666,11 +690,7 @@ mod server_test {
             data_dir.to_str().unwrap().into(),
         ]))
         .unwrap();
-        let req = remote
-            .client
-            .agent
-            .get(&remote.client.url("/admin/replay-archives/historic"));
-        let info: serde_json::Value = remote.request(req, None).unwrap();
+        let info = detail(&mut remote, "historic").unwrap();
         live_cmd::run(vec![
             "frames".into(),
             "rollback".into(),

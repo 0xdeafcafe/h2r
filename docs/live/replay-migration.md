@@ -52,7 +52,13 @@ A failure prints the game ID and reason. Per-game failures remain in the checkpo
 
 Keep original frame objects, signed recording events, archive indexes and backups throughout this release. Private blob storage keeps copies of original chunk bytes and signed index/frame rows under `backup/frames-pre-v7/`. Each backup index names its predecessor. The native inline blob store addresses equivalent objects by SHA-256. The original event rows and chunks remain available to serve rollback and to repeat verification.
 
-Publication records both the archive index SHA-256 and backup index SHA-256. The CLI prints both in the apply and verify receipts. Rollback checks them against the current game pointer and records the switch back to the retained source. Set the three variables below from the receipt for that game.
+Publication records both the archive index SHA-256 and backup index SHA-256. The CLI prints both in the apply and verify receipts. To recover the digests for an automatic job or a missing receipt, read the signed-in admin status.
+
+```sh
+h2 live frames status "${GAME_ID:?set the game ID}" --server https://live.forbes.red --as "${H2_LIVE_ADMIN:?set the local admin gamertag}"
+```
+
+Rollback checks the two digests against the current game pointer and records the switch back to the retained source. Set the variables below from the receipt or the status reply for that game.
 
 ```sh
 h2 live frames rollback "${GAME_ID:?set the game ID}" --archive-sha256 "${ARCHIVE_SHA256:?set the archive digest}" --backup-sha256 "${BACKUP_SHA256:?set the backup digest}" --server https://live.forbes.red --as "${H2_LIVE_ADMIN:?set the local admin gamertag}"
