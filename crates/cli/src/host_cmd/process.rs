@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs::{self, DirBuilder};
 use std::io::{self, Read};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -218,10 +218,14 @@ impl Drop for Scratch {
 
 pub(super) fn bind_address(base_port: u16) -> Result<SocketAddrV4> {
     let ip = match std::env::var("H2_XNET_ADDR") {
-        Ok(value) => *value
-            .parse::<SocketAddrV4>()
-            .context("H2_XNET_ADDR must be IPv4:port")?
-            .ip(),
+        Ok(value) => value
+            .to_socket_addrs()
+            .context("H2_XNET_ADDR must be IPv4:port or a hostname:port resolving to IPv4")?
+            .find_map(|addr| match addr {
+                SocketAddr::V4(addr) => Some(*addr.ip()),
+                SocketAddr::V6(_) => None,
+            })
+            .context("H2_XNET_ADDR has no IPv4 address")?,
         Err(std::env::VarError::NotPresent) => route_ip().unwrap_or(Ipv4Addr::LOCALHOST),
         Err(error) => return Err(error).context("reading H2_XNET_ADDR"),
     };

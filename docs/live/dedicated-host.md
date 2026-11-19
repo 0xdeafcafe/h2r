@@ -601,13 +601,17 @@ Setup, from the environment:
 | `LIVE_FLY_APP` | The Fly app the machines live in. Required. |
 | `LIVE_FLY_IMAGE` | The host image each machine runs (the `linux/amd64` image from `deploy/host`). Required. |
 | `LIVE_FLY_REGION` | Where a lease with no region runs. Default `iad`. |
+| `LIVE_FLY_PUBLIC_IP` | The app's dedicated IPv4 advertised to clients. Required for UDP leases. |
 | `LIVE_FLY_PORTS` | The UDP range lease windows are picked from, as `30000-44000`. Default `30000-44000`. |
 | `LIVE_FLY_API` | The API base, so a test can point the provider at a fake. Default `https://api.fly.io`. |
 
 **UDP needs the app's dedicated IPv4.** Allocate one
 (`fly ips allocate-v4`, $2/month) and the machine's host process must
-bind `fly-global-services`: the provider sets `H2_XNET_BIND` to that
-address in the machine env. Each machine claims a 7-port window
+bind `fly-global-services`. The provider sets `H2_XNET_ADDR` to that
+name and the window's base port, `H2_BASE_PORT` to the base port, and
+`H2_PUBLIC_ADDR` to the app's dedicated IPv4. The supervisor resolves
+the bind name before passing a numeric address to the game.
+Each machine claims a 7-port window
 (`base..base+6`, the game's channels and QoS) as one UDP service per
 port with external matching internal, chosen deterministically from the
 lease id and aligned inside `LIVE_FLY_PORTS`, so a restarted lease comes
@@ -620,8 +624,8 @@ The machine: guest `performance` 1×2048 MiB for a Small lease, 2×4096
 for Large; `auto_destroy` so a host that ends by itself (match over,
 last client gone) removes its machine; `restart: no` so a crashed host
 is not restarted — the lifecycle reads the failure and falls back. The
-machine env carries `H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`,
-`H2_DATA_SHA` (the boot contract) and `H2_XNET_BIND`; its metadata names
+machine env also carries `H2_LEASE`, `H2_HOST_LEASE_JSON`, `H2_LIVE`,
+`H2_TOKEN`, `H2_DATA_URL` and `H2_DATA_SHA`. Its metadata names
 the lease for `fly machines status`. `start` returns the machine id as
 the provider ref — the host registers itself and answers the lease when
 it is up; nothing waits. `stop` deletes the machine with force; a

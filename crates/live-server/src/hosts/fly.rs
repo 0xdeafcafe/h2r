@@ -15,13 +15,14 @@
 //!
 //! UDP on Fly needs a dedicated IPv4 on the app and the game listening
 //! on `fly-global-services`, so that address rides in the machine env
-//! as `H2_XNET_BIND` and the machine claims a 7-port window
+//! as `H2_XNET_ADDR` and the machine claims a 7-port window
 //! (`base..base+6`) picked deterministically from the lease id, aligned
 //! so two concurrent hosts either use disjoint windows or the second
 //! create is refused by Fly and mapped to an error the lifecycle can
 //! fall back from.
 
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -166,6 +167,8 @@ pub struct FlyConfig {
     /// The UDP range (`lo..=hi`) lease windows are picked from;
     /// $LIVE_FLY_PORTS as `30000-44000`.
     pub ports: (u16, u16),
+    /// Dedicated Fly IPv4, $LIVE_FLY_PUBLIC_IP. Required for UDP leases.
+    pub public_ip: Option<Ipv4Addr>,
     /// The API base, $LIVE_FLY_API — overridable so the provider can be
     /// pointed at a fake in a test.
     pub api: String,
@@ -175,7 +178,8 @@ impl FlyConfig {
     /// Reads `LIVE_FLY_TOKEN`, `LIVE_FLY_APP` and `LIVE_FLY_IMAGE`
     /// (all required) and the optional `LIVE_FLY_REGION`
     /// (default `iad`), `LIVE_FLY_PORTS` (default `30000-44000`) and
-    /// `LIVE_FLY_API` (default `https://api.fly.io`).
+    /// `LIVE_FLY_API` (default `https://api.fly.io`). `LIVE_FLY_PUBLIC_IP`
+    /// is the app's dedicated IPv4 for UDP.
     pub fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Result<Self, HostError> {
         let need = |name: &str| {
             env(name).filter(|v| !v.trim().is_empty()).ok_or_else(|| {
@@ -193,6 +197,14 @@ impl FlyConfig {
             region: env("LIVE_FLY_REGION").filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| DEFAULT_REGION.to_string()),
             ports,
+            public_ip: env("LIVE_FLY_PUBLIC_IP")
+                .filter(|ip| !ip.trim().is_empty())
+                .map(|ip| {
+                    ip.trim().parse().map_err(|_| {
+                        config_error("LIVE_FLY_PUBLIC_IP must be the app's dedicated IPv4")
+                    })
+                })
+                .transpose()?,
             api: env("LIVE_FLY_API").filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| API.to_string()),
         };
@@ -316,18 +328,31 @@ pub fn services(base: u16) -> Vec<MachineService> {
 /// The env the host process boots with: the lease it serves, where it
 /// registers and with what credential, its game data, and the address
 /// it must bind for Fly's UDP to reach it.
-pub fn machine_env(lease: &HostLease, boot: &HostBoot) -> Result<BTreeMap<String, String>, HostError> {
+pub fn machine_env(
+    lease: &HostLease,
+    boot: &HostBoot,
+    base: u16,
+    public_ip: Option<Ipv4Addr>,
+) -> Result<BTreeMap<String, String>, HostError> {
     let lease_json = serde_json::to_string(lease)
         .map_err(|_| config_error("could not encode Fly host lease"))?;
-    Ok(BTreeMap::from([
+    let mut env = BTreeMap::from([
         ("H2_LEASE".to_string(), lease.id.clone()),
         ("H2_HOST_LEASE_JSON".to_string(), lease_json),
         ("H2_LIVE".to_string(), boot.live_url.clone()),
         ("H2_TOKEN".to_string(), boot.token.clone()),
         ("H2_DATA_URL".to_string(), boot.data_url.clone()),
         ("H2_DATA_SHA".to_string(), boot.data_sha256.clone()),
-        ("H2_XNET_BIND".to_string(), GLOBAL_BIND.to_string()),
-    ]))
+        ("H2_BASE_PORT".to_string(), base.to_string()),
+    ]);
+    if lease.transport == Transport::Udp {
+        let public_ip = public_ip
+            .filter(|ip| !ip.is_unspecified() && !ip.is_broadcast() && !ip.is_multicast())
+            .ok_or_else(|| config_error("Fly UDP needs LIVE_FLY_PUBLIC_IP (the app's dedicated IPv4)"))?;
+        env.insert("H2_XNET_ADDR".into(), format!("{GLOBAL_BIND}:{base}"));
+        env.insert("H2_PUBLIC_ADDR".into(), public_ip.to_string());
+    }
+    Ok(env)
 }
 
 /// `POST /v1/apps/{app}/machines` for this lease: region from the lease
@@ -352,7 +377,7 @@ pub fn create_request(
         config: MachineConfig {
             image: fly.image.clone(),
             guest: guest(&lease.class),
-            env: machine_env(lease, boot)?,
+            env: machine_env(lease, boot, base, fly.public_ip)?,
             auto_destroy: true,
             restart: MachineRestart {
                 policy: "no".to_string(),
@@ -594,6 +619,7 @@ mod tests {
             image: "registry.forbes.red/h2-host:97".to_string(),
             region: "iad".to_string(),
             ports: DEFAULT_PORTS,
+            public_ip: Some(Ipv4Addr::new(203, 0, 113, 42)),
             api: "https://api.fly.io".to_string(),
         }
     }
@@ -727,7 +753,7 @@ mod tests {
     #[test]
     fn machine_env_carries_the_lease_the_boot_and_the_bind() {
         let lease = lease();
-        let env = machine_env(&lease, &boot()).unwrap();
+        let env = machine_env(&lease, &boot(), 31_000, config().public_ip).unwrap();
         assert_eq!(
             env,
             BTreeMap::from([
@@ -743,7 +769,9 @@ mod tests {
                     "https://blobs.forbes.red/host-data.tar.zst?sig=1".to_string()
                 ),
                 ("H2_DATA_SHA".to_string(), "deadbeefcafe".to_string()),
-                ("H2_XNET_BIND".to_string(), GLOBAL_BIND.to_string()),
+                ("H2_BASE_PORT".to_string(), "31000".to_string()),
+                ("H2_XNET_ADDR".to_string(), "fly-global-services:31000".to_string()),
+                ("H2_PUBLIC_ADDR".to_string(), "203.0.113.42".to_string()),
             ])
         );
     }
@@ -777,7 +805,9 @@ mod tests {
                         "H2_TOKEN": "host-jwt",
                         "H2_DATA_URL": "https://blobs.forbes.red/host-data.tar.zst?sig=1",
                         "H2_DATA_SHA": "deadbeefcafe",
-                        "H2_XNET_BIND": "fly-global-services",
+                        "H2_BASE_PORT": base.to_string(),
+                        "H2_XNET_ADDR": format!("fly-global-services:{base}"),
+                        "H2_PUBLIC_ADDR": "203.0.113.42",
                     },
                     "auto_destroy": true,
                     "restart": {"policy": "no"},
@@ -793,9 +823,17 @@ mod tests {
         let mut lease = lease();
         lease.transport = Transport::Tunnel;
         lease.region = None;
-        let request = create_request(&lease, &boot(), &config()).unwrap();
+        let mut fly = config();
+        fly.public_ip = None;
+        let request = create_request(&lease, &boot(), &fly).unwrap();
         assert_eq!(request.region, "iad");
         assert!(request.config.services.is_empty());
+        assert!(!request.config.env.contains_key("H2_XNET_ADDR"));
+        assert!(!request.config.env.contains_key("H2_PUBLIC_ADDR"));
+
+        lease.transport = Transport::Udp;
+        let error = create_request(&lease, &boot(), &fly).unwrap_err();
+        assert!(error.to_string().contains("LIVE_FLY_PUBLIC_IP"));
     }
 
     #[test]
@@ -807,12 +845,14 @@ mod tests {
                 "LIVE_FLY_IMAGE" => Some("registry.forbes.red/h2-host:97".to_string()),
                 "LIVE_FLY_REGION" => Some("lhr".to_string()),
                 "LIVE_FLY_PORTS" => Some("31000-32000".to_string()),
+                "LIVE_FLY_PUBLIC_IP" => Some("203.0.113.42".to_string()),
                 _ => None,
             }
         };
         let fly = FlyConfig::from_env(&env).unwrap();
         assert_eq!(fly.region, "lhr");
         assert_eq!(fly.ports, (31_000, 32_000));
+        assert_eq!(fly.public_ip, config().public_ip);
         assert_eq!(fly.api, API);
 
         let without_app = |k: &str| match k {
