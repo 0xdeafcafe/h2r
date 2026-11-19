@@ -2008,6 +2008,145 @@ skipped light never reaches.
 8. **The live A/B**, as the other stages': the same frame with the switch
    on and off, `external_passes_dropped` steady, and the light site's ms.
 
+## Stage 4b: water, fog and camouflage (design)
+
+The sol review's work item 7: the scene-list layers that are not the
+world's, the objects' or the lights' — water (6), planar fog (16), active
+camouflage (18, 19) and the hologram (21) — plus the scene-copy and
+reflection inputs water may read. Everything here draws through the same
+layer draw (`0x00044550`) over the same scene list (`0x004c1a48`) as
+layer 3, so the skip is the world's shape: clear the layer's bit on the
+items the native pass draws, restore at the next layer draw, and ask for
+one external pass per view.
+
+### The census (Code, from the lifted `render_scene_passes` and `layer draw` ports, `engine::render_loop::scene`/`layer`; the pass counts from the disc, e3-lighting.md "Pass taxonomy")
+
+The late passes of `render_scene_passes` (`0x0002bcd0`), in order
+(view kinds 1 and 2's mode 2 skips them; the fog byte `0x00485a76`
+gates the player chain after):
+
+| Calls | What | Evidence |
+|---|---|---|
+| `0x00025d50`, then the layer draw of 16 | **Planar fog.** `0x25d50` (no stack cleanup) runs between the state call at `0x0002c0bc`'s return and the layer-16 begin at `0x0002c0d6`; the layer draw is at `0x0002c0e0` (returns `0x0002c0e9`). Its content is not read (S: the fog render states and any per-view constants; whatever it pushes is in the device's state before the layer begins, so a native pass asked at the layer draw reads it after the drain). | Code: the block machine `0x0002c0cc`..`0x0002c0ee` |
+| `0x0003ba90(esi, ecx=6)`, the layer draw of 6, `0x0003c3c0(al, 1)` | **The water edge blend.** Unless bit 4 of `[0x004b9fe0]` is set, when `0x0003c3c0(0, 0)` runs instead and layer 6 does not draw. `0x0003ba90` (`ret 4`) returns AL, stored and passed back to `0x0003c3c0` (`ret 8`). `0x0003c3c0` contains the alpha-only clear `0x3c515` with EAX `0x10` (d3d.md, "Channels"): the teardown clears the bound target's alpha, so the water edge blend's mask is the alpha channel the draws before it left. Both wrappers' content is otherwise not read. | Code: `0x0002c0ee`..`0x0002c137`; d3d.md |
+
+- **Layer 16's own gate** (Code, the layer-draw port `0x00044582`): the
+  layer draw draws layer 16 only when `[0x0048574c] == 3` or either fog
+  byte `0x00485a75`/`0x00485a76` is set (the same test as layers in
+  `DRAWN_LAYERS` `0x00bffdee`, which holds bits 16, 18, 19 and 21). A
+  native fog pass must apply the same gate or it fogs views the game
+  left clear.
+- **By caller and material.** The layer-16 items are the scene list's
+  structure and object items with bit 16 set — every shader with a
+  layer-16 pass (16,668 resolved `(lod, layer)` passes on the disc's 30
+  maps, against layer 3's 16,622: the fog pass is a per-material pass
+  like the lightmap one, drawn where the same geometry drew in layer 3).
+  Layer 6 has two passes on the whole disc: the water templates'
+  (`shader_templates\...\water_pool`, `water_pool_static`; a water
+  surface is a kind-4 transparent part, structure-bsp.md "Observations
+  from the disc", so the surfaces themselves are stage 3's, and layer 6
+  is only the edge blend over them). Layers 18 and 19 (111 and 30
+  passes) are the active-camouflage materials', layer 21 (6) the
+  hologram's; their items are object render records, stage 2's.
+- **Scene-copy and reflection inputs.** A template pass binds its stages
+  from the instance bitmaps or the engine textures
+  (`ResolvedImplementation::textures`); the engine-texture table
+  (`0x00019530`, the jump table at `0x00019b68`, traced for the screen
+  effects) names every render target a pass can sample: 5 the view's
+  bound target (a scene copy), 2 and 3 target 1 (the texaccum), 6
+  target 3, 13 target 9 (the shadow map), 8 target 10. Whether the
+  water templates' layer-6 or layer-15 passes bind one, and which, is
+  read at load by the fog/water glue's census (`H2_NATIVE_WATER_CENSUS`,
+  below) and must be answered before any water pass is drawn: a pass
+  sampling a target the native side has no copy of stays on the D3D
+  path. **Attachment lifetime**: the only explicit copy the native
+  renderer makes today is the screen effects' (`screen_gpu`: a copy of
+  the bound colour taken before each pass that samples engine texture
+  5). The fog pass draws before layer 6 and touches no target but the
+  bound one; the water edge blend reads the alpha of the bound target
+  (the teardown clears it after), so its native pass, when built, must
+  run inside the wrapper's window — before `0x0003c3c0`'s clear — which
+  the ask-at-the-layer-draw ordering gives it (the pass is issued at
+  the next D3D entry, and the teardown's clear is an entry).
+
+### Planar fog (built)
+
+`impl.render.native_fog` (off by default), `feature::native_fog` and
+`boot::native_fog_glue`, `native_render::fog`/`fog_gpu`. The most
+self-contained of the four: the same geometry the native world already
+loaded, drawn with each material's own translated layer-16 pass.
+
+- **The look** (`fog::fog_pass`): every pass of the material's layer 16
+  at the first level of detail, in order, each through
+  `look::implementation_look` (a fog pass is exactly the "combiner that
+  reads the fog register" that layer 3's `world_parity` refuses: its
+  colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
+  state at the layer). It refuses what layer 3 refuses — per-draw
+  engine inputs, engine textures other than the lightmap, animated
+  passes, engine-driven render or stage states, a definition without
+  its own final combiner (D3D builds one from the fog and specular
+  states; first slice), bump-env/BRDF modes, border addressing — but
+  not the fog register: the pass supplies it.
+- **The fog state** (`fog::FogWords`): the effective fog unit of a draw
+  is the implementation's own render states overlaid on the device's
+  (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`,
+  `FOGTABLEMODE`, `FOGSTART`, `FOGEND`, `FOGDENSITY`, `RANGEFOGENABLE`,
+  read through `Device::render_state` as `stencil_state` reads the
+  stencil). The glue resolves it at the layer-16 call and fills the
+  programs' `PixelUniforms::fog` and `fog_color`; unreadable, the view
+  stays on the D3D path. The vertex side needs nothing: the pass's own
+  program writes `oFog` as the D3D path's does (the translated module is
+  the D3D path's, text for text), and the constants check is the
+  world's (a constant outside the view's `c[0..18]`, the instance's,
+  `c[50..52]` and `c[172]` keeps the material on D3D — `0x25d50`'s
+  uploads, if any are outside that set, will show as these refusals).
+- **The skip** (`feature::native_fog`): one context-only observer before
+  `LAYER_DRAW`, after the world's. It restores the last skip, then when
+  the current layer is 16, the caller is the late passes' call
+  (`[esp] == 0x0002c0e9`), the layer-draw's own gate holds
+  (`[0x0048574c] == 3` or a fog byte set) and the list holds a BSP item
+  in the layer, asks the host; on accept it clears bit 16 of the
+  structure items the host draws (clusters only in the first slice:
+  a placement's fog needs the rigid program and per-placement rows, as
+  its layer 3 does, and stays on the D3D path, by count in the load's
+  log) and remembers them for the restore at the next layer draw.
+  Objects' layer-16 items are never cleared: their fog is stage 2's.
+- **The draw** (`fog_gpu::FogSet`, `GpuWorld::encode_fog`): the world's
+  parts whose material compiled, each with its layer-16 passes in
+  order, blended over the loaded depth with the pass's own
+  `PassState` (the 03a fog passes are `ZFUNC` equal without depth
+  writes — the depth the world's native pass already wrote bit for
+  bit). The list order between blended items does not matter under the
+  equal test: only the surface that wrote a pixel's depth passes, so
+  different parts' fog never overlaps but at shared edges (S: coplanar
+  ties, as the world's).
+- **The A/B and diagnostics.** `H2_NATIVE_FOG_COMPARE=<cluster|placement
+  index>:<part>[:<material>]` leaves that part's items to the D3D path
+  and arms `d3d::uniform_compare` for its layer-16 draws, as the
+  objects' compare does; the load line names the materials that stayed
+  on D3D and why, and every 1,800 layer-16 views a line with the skip
+  counts.
+
+### Water and the rest (the census first)
+
+`impl.render.native_water` (off by default), `feature::native_water`:
+in its first slice it only counts. With
+`H2_NATIVE_WATER_CENSUS=<layers>` (default `6`; `6,18,19,21` or `all`)
+each layer draw of a named layer prints, once per layer per view kind,
+the census by caller and material: items in the layer, split structure
+(BSP cluster or placement, through the render record's `+4`) against
+object, the shaders by tag index, and the water wrappers' gates (bit 4
+of `0x004b9fe0`, `0x0003ba90`'s return). At load (with the native world
+on, which loads the BSP) the glue lists every material with a pass in a
+census layer, its template's stage sources — bitmap against engine
+texture, and which engine texture: the scene-copy and reflection inputs
+the pass would sample — and the count of parts. Nothing is skipped and
+nothing is drawn natively: drawing the water edge blend needs the
+wrapper (`0x0003ba90`/`0x0003c3c0`) traced, its alpha-channel window
+established, and the layers 18/19/21 camo and hologram passes resolved;
+each is a slice after the census has run on a water level (03b's lake,
+05a Delta Halo's fountains and ocean, 08a's delta).
+
 ## Stage 5: post and HUD (design)
 
 What the game draws after a view's scene comes in three groups: the
