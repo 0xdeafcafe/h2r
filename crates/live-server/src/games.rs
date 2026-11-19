@@ -124,6 +124,49 @@ impl IngestState {
     }
 }
 
+/// One trained v8 writer per game, shared by its negotiated subscribers.
+struct CausalStream {
+    encoder: pack::Encoder,
+    history: crate::packed::Pending,
+    pending: crate::packed::Pending,
+}
+
+impl CausalStream {
+    fn new(sid: u64) -> Self {
+        Self {
+            encoder: pack::Encoder::with_version(sid, 150, pack::LIVE_VERSION)
+                .expect("supported live version"),
+            history: Default::default(),
+            pending: Default::default(),
+        }
+    }
+
+    fn encode(
+        &mut self,
+        frame: &Frame,
+        baseline: &BTreeMap<u16, game::MachinePosition>,
+    ) -> (u64, bool, Option<Vec<u8>>) {
+        let seq = self.encoder.next_seq();
+        match self
+            .encoder
+            .encode_with_machine_baseline(frame, Some(baseline))
+        {
+            Ok((bytes, key)) => {
+                if key {
+                    self.history = Default::default();
+                }
+                self.history.push(seq, key, &bytes);
+                self.pending.push(seq, key, &bytes);
+                (seq, key, Some(bytes))
+            }
+            Err(e) => {
+                eprintln!("live: v8 frame of {} does not pack: {e}", frame.game_id);
+                (seq, false, None)
+            }
+        }
+    }
+}
+
 struct FrameClock {
     last_sent: Instant,
     sim_tick: Option<u64>,
@@ -140,7 +183,12 @@ struct FrameClock {
     // Retain closed chunks until their signed index is durable.
     writes: VecDeque<(ChunkMeta, Bytes)>,
     write_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The game's packed live stream.
+    causal: Option<CausalStream>,
+    /// A new version can start at the last published tick even if ingest
+    /// has already observed newer, throttled machine changes.
+    latest: Option<Arc<LiveFrame>>,
+    published_positions: BTreeMap<u16, game::MachinePosition>,
+    /// The game's legacy packed live stream.
     pack: pack::Encoder,
     /// Its frames since the last keyframe, for readers that join.
     since_key: Vec<Arc<LiveFrame>>,
@@ -160,6 +208,9 @@ impl FrameClock {
             chunks: ChunkWriter::default(),
             writes: VecDeque::new(),
             write_lock: Default::default(),
+            causal: None,
+            latest: None,
+            published_positions: BTreeMap::new(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
             pending: Default::default(),
@@ -168,37 +219,115 @@ impl FrameClock {
 
     /// Packs a sent frame into the game's stream and keeps it for readers
     /// that join before the next keyframe.
-    fn publish(&mut self, mut frame: Frame) -> Arc<LiveFrame> {
-        let seq = self.pack.next_seq();
-        let (packed, keyframe) = match self
-            .pack
-            .encode_with_machine_baseline(&frame, Some(&self.machine_positions))
-        {
-            Ok((bytes, key)) => (Some(bytes), key),
-            Err(e) => {
-                eprintln!("live: frame of {} does not pack: {e}", frame.game_id);
-                (None, false)
-            }
+    #[cfg(test)]
+    fn publish(&mut self, frame: Frame) -> Arc<LiveFrame> {
+        self.publish_versions(frame, [true, false], &Default::default())
+    }
+
+    fn publish_versions(
+        &mut self,
+        mut frame: Frame,
+        versions: [bool; 2],
+        next_sid: &std::sync::atomic::AtomicU64,
+    ) -> Arc<LiveFrame> {
+        let [v7, v8] = versions;
+        let legacy = v7 || !v8;
+        let causal = if v8 {
+            let stream = self.causal.get_or_insert_with(|| {
+                CausalStream::new(next_sid.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+            });
+            let (seq, key, bytes) = stream.encode(&frame, &self.machine_positions);
+            Some((stream.encoder.sid(), seq, key, bytes))
+        } else {
+            self.causal = None;
+            None
         };
+        let (sid, seq, keyframe, packed) = if legacy {
+            let seq = self.pack.next_seq();
+            let (packed, key) = match self
+                .pack
+                .encode_with_machine_baseline(&frame, Some(&self.machine_positions))
+            {
+                Ok((bytes, key)) => (Some(bytes), key),
+                Err(e) => {
+                    eprintln!("live: frame of {} does not pack: {e}", frame.game_id);
+                    (None, false)
+                }
+            };
+            (self.pack.sid(), seq, key, packed)
+        } else {
+            self.since_key.clear();
+            self.pack.force_keyframe();
+            causal.expect("v8 requested")
+        };
+        if keyframe || !frame.machine_positions.is_empty() || frame.cut.is_some() {
+            self.published_positions.clone_from(&self.machine_positions);
+        }
         if keyframe {
             frame.machine_positions = self.machine_positions.values().copied().collect();
         }
         let live = Arc::new(LiveFrame {
             frame,
-            sid: self.pack.sid(),
+            sid,
             seq,
             keyframe,
             packed,
             json: Default::default(),
         });
-        if keyframe {
-            self.since_key.clear();
+        if legacy {
+            if keyframe {
+                self.since_key.clear();
+            }
+            if let Some(bytes) = &live.packed {
+                self.pending.push(seq, keyframe, bytes);
+                self.since_key.push(Arc::clone(&live));
+            }
         }
-        if let Some(packed) = &live.packed {
-            self.pending.push(seq, keyframe, packed);
-            self.since_key.push(Arc::clone(&live));
-        }
+        self.latest = Some(Arc::clone(&live));
         live
+    }
+
+    fn join(
+        &mut self,
+        v8: bool,
+        next_sid: &std::sync::atomic::AtomicU64,
+        follow: &mut crate::packed::Follow,
+        out: &mut Vec<u8>,
+    ) {
+        let Some(latest) = &self.latest else { return };
+        if v8 {
+            let causal = self.causal.get_or_insert_with(|| {
+                let sid = next_sid.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let mut stream = CausalStream::new(sid);
+                stream.encode(&latest.frame, &self.published_positions);
+                stream
+            });
+            causal.history.replay(causal.encoder.sid(), follow, out);
+        } else {
+            if self.since_key.is_empty() {
+                self.pack.force_keyframe();
+                let seq = self.pack.next_seq();
+                if let Ok((bytes, true)) = self
+                    .pack
+                    .encode_with_machine_baseline(&latest.frame, Some(&self.published_positions))
+                {
+                    let mut frame = latest.frame.clone();
+                    frame.machine_positions = self.published_positions.values().copied().collect();
+                    self.pending.push(seq, true, &bytes);
+                    self.since_key.push(Arc::new(LiveFrame {
+                        frame,
+                        sid: self.pack.sid(),
+                        seq,
+                        keyframe: true,
+                        packed: Some(bytes),
+                        json: Default::default(),
+                    }));
+                }
+            }
+            for frame in &self.since_key {
+                follow.take_frame(frame, out);
+            }
+        }
     }
 
     fn observe_machines(&mut self, frame: &Frame) {
@@ -228,6 +357,9 @@ impl FrameClock {
             // Sim recording and live fan-out can consume the reset on different frames.
             self.record_machine_reset = true;
             self.pack.force_keyframe();
+            if let Some(stream) = &mut self.causal {
+                stream.encoder.force_keyframe();
+            }
         }
         frame.machine_positions.retain(|m| {
             if self.machine_positions.get(&m.i) == Some(m) {
@@ -651,7 +783,11 @@ impl Live {
                             state.record(&frame)
                         };
                         if !sim.deferred && state.admit_live(&mut frame, now) {
-                            let _ = self.frames.send(state.publish(frame));
+                            let _ = self.frames.send(state.publish_versions(
+                                frame,
+                                self.packed.versions(&game_id),
+                                &self.ingest.next_sid,
+                            ));
                         }
                         chunk
                     } else {
@@ -660,7 +796,11 @@ impl Live {
                         }
                         let closed = state.record(&frame);
                         // Sent under the game's lock: its frames go out in order.
-                        let _ = self.frames.send(state.publish(frame));
+                        let _ = self.frames.send(state.publish_versions(
+                            frame,
+                            self.packed.versions(&game_id),
+                            &self.ingest.next_sid,
+                        ));
                         closed
                     };
                     if let Some(c) = closed {
@@ -874,6 +1014,7 @@ impl Live {
         };
         let readers = self.packed.has_readers();
         let mut batches = Vec::new();
+        let mut causal_batches = Vec::new();
         for (id, clock) in clocks {
             let mut clock = clock.lock().unwrap();
             let sid = clock.pack.sid();
@@ -882,9 +1023,19 @@ impl Live {
             {
                 batches.push(b);
             }
+            if let Some(stream) = &mut clock.causal
+                && let Some(mut b) = stream.pending.take(&id, stream.encoder.sid())
+                && readers
+            {
+                b.version = pack::LIVE_VERSION;
+                causal_batches.push(b);
+            }
         }
         if !batches.is_empty() {
             self.packed.publish(batches);
+        }
+        if !causal_batches.is_empty() {
+            self.packed.publish(causal_batches);
         }
     }
 
@@ -897,6 +1048,36 @@ impl Live {
     /// The packed fan-out, for stream readers.
     pub fn packed(&self) -> &crate::packed::Hub {
         &self.packed
+    }
+
+    pub(crate) fn join_packed(
+        &self,
+        games: &[String],
+        v8: bool,
+        viewer: crate::sessions::Viewer,
+        follow: &mut crate::packed::Follow,
+        out: &mut Vec<u8>,
+    ) {
+        let clocks: Vec<_> = self
+            .ingest
+            .games
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, _)| {
+                (games.is_empty() && !crate::sim_runs::is_sim_id(id)) || games.contains(id)
+            })
+            .map(|(id, clock)| (id.clone(), Arc::clone(clock)))
+            .collect();
+        let visible = self.games_show(clocks.iter().map(|(id, _)| id.as_str()), viewer);
+        for ((_, clock), show) in clocks.into_iter().zip(visible) {
+            if show {
+                clock
+                    .lock()
+                    .unwrap()
+                    .join(v8, &self.ingest.next_sid, follow, out);
+            }
+        }
     }
 
     /// Each live game's packed frames since its last keyframe (all games,

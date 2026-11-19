@@ -45,6 +45,7 @@
 // --seed N: then grows the log by 2N events (friend requests, declined),
 // paced under the write rate, so a restarted hub has a log to replay. --cold-only: steps 1, 2 and 6.
 import { decodeArchive } from "../../../web/src/api/archive";
+import { FrameDecoder, records } from "../../../web/src/api/pack";
 import { decodeChunk } from "../../../web/src/api/chunk";
 import { canonicalJson } from "../../../web/src/state/verify";
 import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../web/src/state/account";
@@ -133,13 +134,14 @@ type Msg = {
 function subscribe(query: string, path = "/v1/stream") {
   const ws = new WebSocket(`${base.replace(/^http/, "ws")}${path}${query}`);
   const got: Msg[] = [];
-  let binary = 0;
+  ws.binaryType = "arraybuffer";
+  const binary: Uint8Array[] = [];
   const waiters: (() => void)[] = [];
   let closed: { code: number; reason: string } | null = null;
   const poke = () => waiters.splice(0).forEach((w) => w());
   ws.onmessage = (m) => {
     if (typeof m.data === "string") got.push(JSON.parse(m.data));
-    else binary++;
+    else binary.push(new Uint8Array(m.data as ArrayBuffer));
     poke();
   };
   ws.onclose = (c) => {
@@ -179,7 +181,7 @@ function subscribe(query: string, path = "/v1/stream") {
   // The first binary message (packed frames), within `ms`.
   const untilBinary = async (ms = 5000) => {
     const end = Date.now() + ms;
-    while (binary === 0) {
+    while (!binary.length) {
       if (closed) throw new Error(`closed ${closed.code} ${closed.reason}`);
       const left = end - Date.now();
       if (left <= 0) throw new Error("no binary message in time");
@@ -188,6 +190,7 @@ function subscribe(query: string, path = "/v1/stream") {
         setTimeout(ok, left);
       });
     }
+    return binary.shift()!;
   };
   return { ws, got, opened, until, close, untilBinary };
 }
@@ -340,11 +343,25 @@ let archiveGame = "";
   const gameId: string = JSON.parse(started.body).game_id;
   const json = subscribe(`?stream=game-${gameId}&games=${gameId}&exclude=GameFrame`);
   const packed = subscribe(`?games=${gameId}&frames=packed`);
+  const causal = subscribe(`?games=${gameId}&frames=packed&frame_version=8`);
   const game = subscribe("", "/v1/ingest");
   try {
-    await Promise.all([json.opened, packed.opened, game.opened]);
+    await Promise.all([json.opened, packed.opened, causal.opened, game.opened]);
     await json.until((m) => m.kind === "caught_up");
     await packed.until((m) => m.kind === "caught_up");
+    await causal.until((m) => m.kind === "caught_up");
+    const legacyDecoder = new FrameDecoder(), causalDecoder = new FrameDecoder();
+    const checkSubscribers = async (tick: number, key: boolean) => {
+      const read = async (socket: typeof packed, version: number, decoder: FrameDecoder) => {
+        const rs = records(await socket.untilBinary());
+        if (rs.length !== 1 || (rs[0]![0]! & 15) !== version) throw new Error("wrong subscriber version");
+        const d = decoder.decode(rs[0]!);
+        if (d.keyframe !== key || d.frame.tick !== tick) throw new Error("wrong subscriber frame");
+        return d.frame;
+      };
+      const [old, current] = await Promise.all([read(packed, 7, legacyDecoder), read(causal, 8, causalDecoder)]);
+      if (canonicalJson(old) !== canonicalJson(current)) throw new Error("v7/v8 subscriber frames differ");
+    };
     game.ws.send(JSON.stringify({ kind: "auth", token: await writeToken() }));
     const frame = (tick: number) => JSON.stringify({
       kind: "frame",
@@ -352,11 +369,12 @@ let archiveGame = "";
     });
     game.ws.send(frame(30));
     await json.until((m) => m.kind === "frame" && m.frame?.tick === 30);
-    await packed.untilBinary();
+    await checkSubscribers(30, true);
     // Two disjoint source chunks force two alarm steps and a durable cursor.
     await Bun.sleep(80);
     game.ws.send(frame(960));
     await json.until((m) => m.kind === "frame" && m.frame?.tick === 960);
+    await checkSubscribers(960, false);
     // Every reply on the ingest socket is a refusal.
     const refused = game.got.filter((m) => m.kind === "error");
     if (refused.length) throw new Error(`refused: ${JSON.stringify(refused)}`);
