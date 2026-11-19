@@ -261,6 +261,9 @@ pub struct KitScreen {
     guard: OpenerGuard,
     /// Shown as a dialog of rows on a retail dialog, over its opener.
     dialog: Option<(DialogBase, Opener)>,
+    /// Quick Options' header: the page's help line and its icon
+    /// ([`KitScreen::header`]).
+    header: Option<(String, u16)>,
     /// [`KitTexts`]' feature id, made once.
     texts_id: OnceLock<&'static str>,
 }
@@ -287,6 +290,7 @@ impl KitScreen {
             typing: Mutex::new(None),
             guard: OpenerGuard::default(),
             dialog: None,
+            header: None,
             texts_id: OnceLock::new(),
         }
     }
@@ -315,6 +319,18 @@ impl KitScreen {
     pub fn dialog(mut self, base: DialogBase, opener: Opener) -> Self {
         self.dialog = Some((base, opener));
         self.style = base.style();
+        self
+    }
+    /// Quick Options' header on a page of ours (docs/game/ui-builder.md
+    /// "A page's header"), as Quick Options has its own at the top: `help`,
+    /// one line on what the page is for, in the base's help line
+    /// ([`DialogBase::help`]) in place of the focused row's description,
+    /// and icon `icon` of `mp_games2.bitm` ([`crate::ui_kit::dialog::icon`])
+    /// in its game type picture ([`DialogBase::picture`]) beside it. The
+    /// rows keep their descriptions for the value picker A opens. A base
+    /// with no picture shows the line alone.
+    pub fn header(mut self, help: &str, icon: u16) -> Self {
+        self.header = Some((help.into(), icon));
         self
     }
     /// The focused row's description (and the legend) in `block`.
@@ -385,13 +401,21 @@ impl KitScreen {
     fn footer_slot(&self) -> u32 {
         self.description_slot(self.rows.len())
     }
-    /// The slots the screen needs: fails the build of its class when its
-    /// family is too small.
-    pub fn slots(&self) -> u32 {
+    fn header_slot(&self) -> u32 {
         self.footer_slot()
             + 1
             + u32::from(self.row_label.is_some())
             + u32::from(self.row_help.is_some())
+    }
+    /// Where its header's icon goes: its dialog base's picture.
+    fn header_picture(&self) -> Option<(crate::list_class::PictureSpec, u16)> {
+        let (_, icon) = self.header.as_ref()?;
+        Some((self.dialog?.0.picture()?, *icon))
+    }
+    /// The slots the screen needs: fails the build of its class when its
+    /// family is too small.
+    pub fn slots(&self) -> u32 {
+        self.header_slot() + u32::from(self.header.is_some())
     }
     fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         m.lock().unwrap_or_else(|e| e.into_inner())
@@ -535,6 +559,9 @@ impl KitScreen {
         if let Some(b) = self.description_block() {
             c = c.description(b);
         }
+        if let Some((picture, _)) = self.header_picture() {
+            c = c.picture(picture);
+        }
         if let Some(l) = self.layout {
             c = c.layout(l);
         }
@@ -624,6 +651,9 @@ impl Rows for KitScreen {
     }
     fn description(&self, row: i16) -> Option<u32> {
         let i = usize::try_from(row).ok().filter(|i| *i < self.rows.len())?;
+        if let Some((help, _)) = &self.header {
+            return Some(self.texts.set(self.header_slot(), help));
+        }
         let spec = ScreenSpec {
             focus: i,
             ..self.spec()
@@ -634,6 +664,9 @@ impl Rows for KitScreen {
     fn write_texts(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         self.poll_keyboard(m)?;
         self.texts.write(m)
+    }
+    fn picture_image(&self) -> Option<u16> {
+        self.header_picture().map(|(_, icon)| icon)
     }
     /// Asked as the screen opens: the opener guard starts, and the log
     /// gets the screen as [`ScreenSpec::log_line`] writes it.
@@ -663,6 +696,10 @@ impl Describe for KitScreen {
         ];
         s.scrolls = self.scrolls;
         s.footer = true;
+        s.help = self.header.as_ref().map(|(help, _)| help.clone());
+        if let Some((_, icon)) = self.header_picture() {
+            s.art.push(crate::ui_kit::dialog::quick_icon(icon));
+        }
         if let Some((base, opener)) = self.dialog {
             let list = self
                 .layout
