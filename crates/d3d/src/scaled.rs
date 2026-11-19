@@ -1655,6 +1655,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn reusable_external_attachments(&self) -> bool {
+        self.reference.reusable_external_attachments() && self.view.reusable_external_attachments()
+    }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,

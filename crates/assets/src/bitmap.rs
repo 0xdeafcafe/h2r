@@ -309,6 +309,13 @@ pub fn decode_image(image: &Image, files: &mut ResourceFiles) -> Result<DecodedI
     Ok(DecodedImage { desc, lod, levels, data_len: declared, layout_len })
 }
 
+/// Read the descriptor and encoded layout bytes of the highest-resolution
+/// LOD, for callers that cache decoded textures by content.
+pub fn image_bytes(image: &Image, files: &mut ResourceFiles) -> Result<(TextureDesc, Vec<u8>)> {
+    let (desc, _, data, _, _) = read_image(image, files)?;
+    Ok((desc, data))
+}
+
 /// A DXT image's levels as BC blocks, as the D3D path uploads them when
 /// the host takes BC textures (`gfx::texture::decode_texture` with
 /// `bc_supported`): the GPU then decodes them, which rounds the

@@ -1680,6 +1680,8 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn reusable_external_attachments(&self) -> bool { true }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
@@ -1736,8 +1738,8 @@ impl Backend for GfxBackend {
             recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
         }
         match recording.commands {
-            crate::backend::ExternalCommands::Bundles { setup, targets, color, depth, stencil, draws } =>
-                self.append_native(recording.copy, setup, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } =>
+                self.append_native(recording.copy, targets, color, depth, stencil, draws),
             crate::backend::ExternalCommands::Standalone(commands) => {
                 self.finish_native_run();
                 if let Some((enc, _)) = self.open.take() {
@@ -1749,7 +1751,7 @@ impl Backend for GfxBackend {
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        if self.external_prefix.len() >= MAX_ENCODED_PASSES {
+        if self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes) >= MAX_ENCODED_PASSES {
             self.submit_open();
         }
     }

@@ -1,10 +1,9 @@
 //! Stage 4's GPU side: a compiled light pass ([`crate::light_look`]) with
 //! its stage textures, the engine's light textures (the normalization cube
-//! and the attenuation volume, once per map; the gel per light), and one
-//! uniform group per light it draws, since each light has its own frame
-//! constants (docs/graphics/native-renderer.md, "Stage 4").
+//! and the attenuation volume), and dynamic uniform offsets for the lights
+//! in each ordered run (docs/graphics/native-renderer.md, "Stage 4").
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Mutex};
 
 use shaders::psh::PixelUniforms;
 use shaders::vsh::VertexUniforms;
@@ -152,6 +151,40 @@ pub fn layered_texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Layer
     })
 }
 
+/// One decoded engine texture shared by worlds, objects and view copies.
+/// Its GPU view is reused while the same device is active.
+pub struct StaticLightTexture {
+    image: LayeredImage,
+    view: Mutex<Option<(wgpu::Device, wgpu::TextureView)>>,
+}
+
+impl StaticLightTexture {
+    pub fn new(image: LayeredImage) -> Self {
+        Self { image, view: Mutex::new(None) }
+    }
+
+    pub fn image(&self) -> &LayeredImage {
+        &self.image
+    }
+
+    pub fn view(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+        let mut cached = self.view.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((owner, view)) = cached.as_ref()
+            && owner == device
+        {
+            return view.clone();
+        }
+        let label = match self.image.dim {
+            TextureDim::Cube => "native light normalization",
+            TextureDim::D3 => "native light attenuation",
+            TextureDim::D2 => "native light texture",
+        };
+        let view = layered_texture(device, queue, &self.image, label);
+        *cached = Some((device.clone(), view.clone()));
+        view
+    }
+}
+
 /// The engine's light textures for the map (texture ids 1 and 9, from the
 /// globals' rasterizer bitmaps); a pass sampling one that is missing is
 /// not drawn.
@@ -177,6 +210,7 @@ pub struct LightGpu {
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
+    static_groups: HashMap<Option<u32>, wgpu::BindGroup>,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>), wgpu::RenderPipeline>,
 }
 
@@ -242,6 +276,7 @@ impl LightGpu {
             textures_layout,
             samplers,
             stage_views,
+            static_groups: HashMap::new(),
             pipelines: HashMap::new(),
         })
     }
@@ -284,12 +319,11 @@ impl LightGpu {
     /// Makes the pipeline for these target formats, with the pass's own
     /// blend, depth and cull state.
     pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>) -> &wgpu::RenderPipeline {
-        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
-            .iter()
-            .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
-            .collect();
         let (module, layout, s) = (&self.module, &self.layout, self.program.state);
         self.pipelines.entry((color, depth, cull)).or_insert_with(|| {
+            let attributes = INPUTS.map(|(location, offset, format)| wgpu::VertexAttribute {
+                format, offset, shader_location: location,
+            });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native light pass"),
                 layout: Some(layout),
@@ -342,8 +376,11 @@ pub fn light_gpu_key(p: &LightProgram) -> u64 {
 
 fn same_gpu_pass(a: &LightProgram, b: &LightProgram) -> bool {
     a.wgsl == b.wgsl
-        && format!("{:?}", (&a.stages, &a.samplers, &a.dims, &a.signed, &a.state))
-            == format!("{:?}", (&b.stages, &b.samplers, &b.dims, &b.signed, &b.state))
+        && a.stages == b.stages
+        && a.samplers == b.samplers
+        && a.dims == b.dims
+        && a.signed == b.signed
+        && a.state == b.state
 }
 
 /// The uniforms group's layout: the vertex and pixel uniforms, each at a
@@ -369,11 +406,16 @@ pub fn uniforms_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 /// offsets for draw `i` of `count`, each block aligned to `align`, and the
 /// buffer's size.
 pub fn run_layout(count: usize, align: u64) -> (Vec<[u32; 2]>, u64) {
+    let (pixel, stride) = uniform_layout(align);
+    let offsets = (0..count as u64).map(|i| [(i * stride) as u32, (i * stride + pixel) as u32]).collect();
+    (offsets, count as u64 * stride)
+}
+
+fn uniform_layout(align: u64) -> (u64, u64) {
     let align = align.max(1);
     let up = |n: u64| n.div_ceil(align) * align;
-    let (v, p) = (up(VertexUniforms::SIZE as u64), up(PixelUniforms::SIZE as u64));
-    let offsets = (0..count as u64).map(|i| [(i * (v + p)) as u32, (i * (v + p) + v) as u32]).collect();
-    (offsets, count as u64 * (v + p))
+    let pixel = up(VertexUniforms::SIZE as u64);
+    (pixel, pixel + up(PixelUniforms::SIZE as u64))
 }
 
 /// One light's draw of one lit pass: the pass resolved with the light's
@@ -422,6 +464,47 @@ pub struct LightSet {
     uniforms_layout: wgpu::BindGroupLayout,
     gels: HashMap<u32, Option<wgpu::TextureView>>,
     passes: HashMap<u64, Option<LightGpu>>,
+    uniforms: [Option<RunUniforms>; 2],
+}
+
+// A light can consume several uniform blocks. Grow by whole pages when
+// a run exceeds this many draws, retaining old pages in their bundles.
+const UNIFORM_PAGE_DRAWS: u64 = 256;
+
+struct RunUniforms {
+    key: Option<u64>,
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    next: u64,
+}
+
+impl RunUniforms {
+    fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, key: Option<u64>, size: u64) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native light run uniforms"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let entry = |binding, size| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(size),
+            }),
+        };
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native light run uniforms"),
+            layout,
+            entries: &[entry(0, VertexUniforms::SIZE as u64), entry(1, PixelUniforms::SIZE as u64)],
+        });
+        Self { key, buffer, group, next: 0 }
+    }
+
+    fn fits(&self, key: u64, bytes: u64) -> bool {
+        self.key == Some(key) && bytes <= self.buffer.size() - self.next
+    }
 }
 
 /// A light draw made ready before the render pass: its pipeline, its
@@ -435,17 +518,17 @@ struct Prepared {
 }
 
 impl LightSet {
-    /// Uploads the engine's light textures (`None`: missing; passes that
-    /// sample one are not drawn).
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, normalization: Option<&LayeredImage>, attenuation: Option<&LayeredImage>) -> Self {
+    /// Get the engine's light texture views once for this world.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, normalization: Option<&StaticLightTexture>, attenuation: Option<&StaticLightTexture>) -> Self {
         Self {
             textures: LightTextures {
-                normalization: normalization.map(|i| layered_texture(device, queue, i, "native light normalization")),
-                attenuation: attenuation.map(|i| layered_texture(device, queue, i, "native light attenuation")),
+                normalization: normalization.map(|i| i.view(device, queue)),
+                attenuation: attenuation.map(|i| i.view(device, queue)),
             },
             uniforms_layout: uniforms_layout(device),
             gels: HashMap::new(),
             passes: HashMap::new(),
+            uniforms: [None, None],
         }
     }
 
@@ -458,17 +541,8 @@ impl LightSet {
         self.len() == 0
     }
 
-    fn gel(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, datum: u32, image: &mut dyn FnMut(u32) -> Option<Image>) -> Option<wgpu::TextureView> {
-        self.gels
-            .entry(datum)
-            .or_insert_with(|| image(datum).map(|i| texture(device, queue, &i, "native light gel")))
-            .clone()
-    }
-
-    /// The draws' texture groups and one uniforms group for the run (one
-    /// buffer, each draw's uniforms at its own offsets), their passes made
-    /// (with pipelines for these formats) as needed. If any draw is
-    /// missing a resource, return before recording any of them.
+    /// Resolve pipelines and texture groups before allocating uniform
+    /// space. A failed draw leaves all earlier packets intact.
     #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
@@ -478,75 +552,84 @@ impl LightSet {
         depth: wgpu::TextureFormat,
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
+        batch: Option<u64>,
+        copy: d3d::TargetCopy,
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> Option<(wgpu::BindGroup, Vec<Prepared>, wgpu::Buffer, Vec<u8>)> {
+    ) -> Option<(wgpu::BindGroup, Vec<Prepared>, LightBundles)> {
         let mut ready = Vec::new();
         for d in draws {
             if d.ranges.is_empty() {
                 continue;
             }
-            let gel = match (d.gel_view, d.gel) {
-                (Some(view), _) => Some(view.clone()),
-                (None, Some(g)) if d.program.stages.contains(&LightStage::Gel) => self.gel(device, queue, g, &mut *gel_image),
-                _ => None,
-            };
-            let stale = self.passes.get(&d.key).is_some_and(|p| p.as_ref().is_some_and(|p| !same_gpu_pass(&p.program, d.program)));
-            if stale || !self.passes.contains_key(&d.key) {
-                let p = LightGpu::new(device, queue, d.program.clone(), &self.uniforms_layout, &mut *stage_image);
-                self.passes.insert(d.key, p);
+            let reads_gel = d.program.stages.iter().zip(d.program.dims)
+                .any(|(stage, dim)| *stage == LightStage::Gel && dim.is_some());
+            let static_gel = if reads_gel && d.gel_view.is_none() { Some(d.gel?) } else { None };
+            let layout = &self.uniforms_layout;
+            let mut make = || LightGpu::new(device, queue, d.program.clone(), layout, &mut *stage_image);
+            let cached = self.passes.entry(d.key).or_insert_with(&mut make);
+            if cached.as_ref().is_some_and(|p| !same_gpu_pass(&p.program, d.program)) {
+                *cached = make();
             }
-            // The host accepts this light only after checking every sampled
-            // stage against the very same immutable map assets.
-            let pass = self.passes.get_mut(&d.key)?.as_mut()?;
-            let pipeline = pass.pipeline(device, color, depth, d.cull).clone();
-            let textures = pass.textures(device, &self.textures, gel.as_ref())?;
-            ready.push((d, pipeline, textures));
+            let pass = cached.as_mut()?;
+            let textures = if let Some(view) = d.gel_view.filter(|_| reads_gel) {
+                pass.textures(device, &self.textures, Some(view))?
+            } else if let Some(group) = pass.static_groups.get(&static_gel) {
+                group.clone()
+            } else {
+                let gel = match static_gel {
+                    Some(g) => self.gels.entry(g)
+                        .or_insert_with(|| gel_image(g).map(|i| texture(device, queue, &i, "native light gel")))
+                        .as_ref(),
+                    None => None,
+                };
+                let group = pass.textures(device, &self.textures, gel)?;
+                pass.static_groups.insert(static_gel, group.clone());
+                group
+            };
+            ready.push((d, pass.pipeline(device, color, depth, d.cull).clone(), textures));
         }
         if ready.is_empty() {
             return None;
         }
-        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
-        let (offsets, size) = run_layout(ready.len(), align);
-        let mut bytes = vec![0u8; size as usize];
-        for ((d, _, _), o) in ready.iter().zip(&offsets) {
-            let (vertex, pixel) = d.uniforms(view);
-            let (vertex, pixel) = (vertex.to_bytes(), pixel.to_bytes());
-            let (v, p) = (o[0] as usize, o[1] as usize);
-            bytes[v..v + vertex.len()].copy_from_slice(&vertex);
-            bytes[p..p + pixel.len()].copy_from_slice(&pixel);
-        }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("native light run uniforms"),
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let entry = |binding: u32, size: usize| wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: wgpu::BufferSize::new(size as u64),
-            }),
+
+        let (pixel, stride) = uniform_layout(u64::from(device.limits().min_uniform_buffer_offset_alignment));
+        let size = ready.len() as u64 * stride;
+        let max_size = device.limits().max_buffer_size.min(u64::from(u32::MAX));
+        if size > max_size { return None; }
+        let slot = &mut self.uniforms[usize::from(copy == d3d::TargetCopy::Display)];
+        let mut private;
+        let uniforms = if let Some(key) = batch {
+            if slot.as_ref().is_none_or(|u| !u.fits(key, size)) {
+                let capacity = (stride * UNIFORM_PAGE_DRAWS).max(size).min(max_size);
+                *slot = Some(RunUniforms::new(device, &self.uniforms_layout, batch, capacity));
+            }
+            slot.as_mut()?
+        } else {
+            private = RunUniforms::new(device, &self.uniforms_layout, None, size);
+            &mut private
         };
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native light run uniforms"),
-            layout: &self.uniforms_layout,
-            entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
-        });
-        let prepared = ready
-            .into_iter()
-            .zip(offsets)
-            .map(|((d, pipeline, textures), offsets)| Prepared {
-                pipeline,
-                blend_constant: d.program.state.blend_constant,
-                offsets,
-                textures,
-                ranges: d.ranges.clone(),
-            })
-            .collect();
-        Some((group, prepared, buffer, bytes))
+        let offset = uniforms.next;
+        uniforms.next += size;
+        let mut bytes = vec![0u8; size as usize];
+        let prepared = ready.into_iter().zip(bytes.chunks_exact_mut(stride as usize))
+            .enumerate().map(|(i, ((draw, pipeline, textures), bytes))| {
+                let (vertex, pixel_uniforms) = draw.uniforms(view);
+                vertex.write_bytes(&mut bytes[..VertexUniforms::SIZE]);
+                let p = pixel as usize;
+                pixel_uniforms.write_bytes(&mut bytes[p..p + PixelUniforms::SIZE]);
+                let start = offset + i as u64 * stride;
+                Prepared {
+                    pipeline,
+                    blend_constant: draw.program.state.blend_constant,
+                    offsets: [start as u32, (start + pixel) as u32],
+                    textures,
+                    ranges: draw.ranges.clone(),
+                }
+            }).collect();
+        Some((uniforms.group.clone(), prepared, LightBundles {
+            buffer: uniforms.buffer.clone(), offset, bytes, groups: Vec::new(), ranges: 0,
+        }))
     }
 
     /// Record each blend group before the guest can consume any entries.
@@ -554,11 +637,14 @@ impl LightSet {
     pub fn bundles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue,
         vertices: &wgpu::Buffer, indices: &wgpu::Buffer,
         color: wgpu::TextureFormat, depth: wgpu::TextureFormat, view: &ViewInputs,
-        draws: &[LightDraw<'_>], stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
+        draws: &[LightDraw<'_>], batch: Option<u64>, copy: d3d::TargetCopy,
+        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<LightBundles> {
-        let (uniforms, prepared, buffer, bytes) = self.prepare(device, queue, color, depth, view, draws, stage_image, gel_image)?;
         if vertices.size() == 0 || indices.size() == 0 { return None; }
+        let (uniforms, prepared, mut recorded) = self.prepare(
+            device, queue, color, depth, view, draws, batch, copy, stage_image, gel_image,
+        )?;
         let mut groups = Vec::with_capacity(prepared.len());
         let mut ranges = 0;
         for draw in &prepared {
@@ -581,28 +667,109 @@ impl LightSet {
             }
             groups.push((draw.blend_constant, bundle.finish(&Default::default())));
         }
-        Some(LightBundles { groups, ranges, buffer, bytes })
+        recorded.groups = groups;
+        recorded.ranges = ranges;
+        Some(recorded)
     }
 }
 
 pub struct LightBundles {
     buffer: wgpu::Buffer,
+    offset: u64,
     bytes: Vec<u8>,
-    pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
-    pub ranges: usize,
+    groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
+    ranges: usize,
 }
 
 impl LightBundles {
-    /// Initialize the private uniform buffer from the submission arena.
-    /// Each member of a merged light run retains a distinct destination.
-    pub fn upload(&self, uploads: &mut gfx::ring::EncoderUploads<'_>) {
-        uploads.write(&self.buffer, 0, &self.bytes);
+    /// Defer the copies into the shared uniform buffer until the run encodes.
+    pub fn into_packet(self, target: &d3d::ExternalTarget<'_>, run: u64, scissor: [u32; 4]) -> d3d::backend::ExternalBundles {
+        let (source, source_offset) = target.uploads.stage(target.device, target.queue, &self.bytes);
+        d3d::backend::ExternalBundles {
+            run,
+            scissor,
+            groups: self.groups,
+            ranges: self.ranges,
+            upload: Some(d3d::backend::ExternalBundleUpload {
+                source,
+                source_offset,
+                destination: self.buffer,
+                destination_offset: self.offset,
+                bytes: self.bytes.len() as u64,
+            }),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consecutive_lights_share_gpu_resources_and_take_distinct_uniform_ranges() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let (device, queue) = (&ctx.device, &ctx.queue);
+        let cube = StaticLightTexture::new(LayeredImage::cube(
+            (0..6).map(|f| (f, 1, 1, vec![0; 4])).collect(),
+        ).unwrap());
+        let volume = StaticLightTexture::new(LayeredImage::volume(1, 1, 1, vec![0; 4]).unwrap());
+        let mut set = LightSet::new(device, queue, Some(&cube), Some(&volume));
+        let other_view = LightSet::new(device, queue, Some(&cube), Some(&volume));
+        assert_eq!(set.textures.normalization, other_view.textures.normalization);
+        assert_eq!(set.textures.attenuation, other_view.textures.attenuation);
+
+        let program = LightProgram {
+            wgsl: "
+                @vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0.0, 0.0, 0.0, 1.0); }
+                @fragment fn fs_main() -> @location(0) vec4f { return vec4f(1.0); }
+            ".into(),
+            words: Vec::new(),
+            inputs: 0,
+            def: Default::default(),
+            pixel_options: Default::default(),
+            stages: [LightStage::Normalization, LightStage::Attenuation, LightStage::Empty, LightStage::Empty],
+            samplers: [None; 4],
+            dims: [Some(TextureDim::Cube), Some(TextureDim::D3), None, None],
+            signed: [[false; 4]; 4],
+            vertex: VertexUniforms::default(),
+            pixel: PixelUniforms::default(),
+            colours: Vec::new(),
+            state: crate::pass_state::PassState {
+                blend: None,
+                blend_constant: wgpu::Color::BLACK,
+                color_writes: wgpu::ColorWrites::ALL,
+                depth_write: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                primitive: wgpu::PrimitiveState::default(),
+                alpha_test: None,
+            },
+            inherits_cull: false,
+        };
+        let view = ViewInputs {
+            constants: [[0.; 4]; d3d::VIEW_CONSTANTS], guest_size: (8, 8), size: (8, 8),
+            z_scale: 1., w_clip: None,
+        };
+        let draw = LightDraw {
+            program: &program, key: light_gpu_key(&program), cull: None, colours: [[0.; 3]; 2],
+            frame: &[0; FRAME_DWORDS], gel: None, gel_view: None, gel_scale: None, ranges: vec![0..3],
+        };
+        let mut prepare = |key| set.prepare(
+            device, queue, wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Depth32Float,
+            &view, std::slice::from_ref(&draw), Some(key), d3d::TargetCopy::Reference,
+            &mut |_, _| panic!("no stage bitmap"), &mut |_| panic!("no gel"),
+        ).unwrap();
+        let (a, first, upload_a) = prepare(1);
+        let (b, second, upload_b) = prepare(1);
+        let (c, third, upload_c) = prepare(2);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(upload_a.buffer, upload_b.buffer);
+        assert_eq!(upload_b.offset, upload_a.bytes.len() as u64);
+        assert_eq!(upload_c.offset, 0);
+        assert!(first[0].offsets[1] < second[0].offsets[0]);
+        assert_eq!(first[0].pipeline, third[0].pipeline);
+        assert_eq!(first[0].textures, third[0].textures);
+    }
 
     #[test]
     fn linear_target_coordinates_only_scale_the_gel_stages() {

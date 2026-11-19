@@ -795,6 +795,8 @@ impl GpuWorld {
         depth_format: wgpu::TextureFormat,
         view: &ViewInputs,
         draws: &[LightDraw<'_>],
+        batch: Option<u64>,
+        copy: d3d::TargetCopy,
         stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<crate::light_gpu::LightBundles> {
@@ -808,6 +810,8 @@ impl GpuWorld {
             depth_format,
             view,
             draws,
+            batch,
+            copy,
             stage_image,
             gel_image,
         )

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use feature::native_objects::{NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::gpu::Image;
-use native_render::light_gpu::LayeredImage;
+use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::look;
 use native_render::model::{Model, ModelInput, ModelSectionInput};
@@ -30,7 +30,7 @@ pub(crate) struct CpuModel {
     pub(crate) definition: u32,
     pub(crate) nodes: usize,
     pub(crate) lit: LitModelInput,
-    pub(crate) normalization: Option<Arc<LayeredImage>>,
+    pub(crate) normalization: Option<Arc<StaticLightTexture>>,
 }
 
 #[derive(Default)]
@@ -144,7 +144,7 @@ struct Opened {
     decoder: StageDecoder,
     images: StageImages,
     lib: Option<Option<tags::material::ShaderLibrary>>,
-    normalization: Option<Option<Arc<LayeredImage>>>,
+    normalization: Option<Option<Arc<StaticLightTexture>>>,
     formats: Option<StreamFormats>,
     lightmap: Option<Result<Image, String>>,
 }
@@ -437,8 +437,7 @@ fn lit_parts(
                 lib.metadata(),
                 &mut opened.raw.0,
             )
-            .0
-            .map(Arc::new),
+            .0,
             None => None,
         };
         opened.normalization = Some(cube);

@@ -76,9 +76,9 @@ impl d3d::ExternalPass for Begin {
                     LightStage::Gel => world.gels.get(&d.gel?)?,
                     stage => {
                         let image = if stage == LightStage::Normalization {
-                            world.normalization.as_ref()?
+                            world.normalization.as_ref()?.image()
                         } else {
-                            world.attenuation.as_ref()?
+                            world.attenuation.as_ref()?.image()
                         };
                         return Some(format!("{stage:?} Rgba8Unorm {}x{}x{} levels {}", image.width, image.height, image.layers, 1 + image.mips.len()));
                     }

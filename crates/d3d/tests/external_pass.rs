@@ -639,6 +639,9 @@ fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
     assert_eq!(d.backend.draws().len(), 1);
 }
 
+// The GfxBackend bundle pass counters are shared by all contexts.
+static PAINT_TESTS: Mutex<()> = Mutex::new(());
+
 /// Record a synthetic full-screen triangle. The caller's scissor and
 /// constant blend colour distinguish execution order and scaled copies.
 struct Paint {
@@ -650,6 +653,8 @@ struct Paint {
 }
 
 impl ExternalPass for Paint {
+    fn batch_key(&self) -> Option<u64> { Some(self.run) }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: false }
     }
@@ -697,6 +702,7 @@ impl ExternalPass for Paint {
         let scale = t.size.0 / t.guest_size.0;
         self.bundles[usize::from(display)] = Some(d3d::backend::ExternalBundles {
             run: self.run, ranges: 1, scissor: [self.x * scale, 0, 8 * scale, t.size.1],
+            upload: None,
             groups: vec![(self.color, b.finish(&Default::default()))],
         });
         Ok(())
@@ -709,6 +715,7 @@ impl ExternalPass for Paint {
 
 #[test]
 fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
+    let _serial = PAINT_TESTS.lock().unwrap();
     let Some(reference) = backend() else { return };
     let ctx = &reference.ctx;
     let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
@@ -738,4 +745,42 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
             assert_eq!(pixels[at..at+4], rgba, "{scale}x at {x}");
         }
     }
+}
+
+#[test]
+fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
+    let _serial = PAINT_TESTS.lock().unwrap();
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let before = d.backend.waits().reads;
+    for (x, color) in [(0, wgpu::Color::WHITE), (2, wgpu::Color::BLACK), (4, wgpu::Color::WHITE)] {
+        let pass = Paint { run: 17, x, color, refuse_display: false, bundles: [None, None] };
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
+        d.prepare_external_pass(&mut m, plan, Box::new(pass)).unwrap().unwrap().commit();
+    }
+    assert_eq!(d.backend.waits().reads - before, 1, "one attachment pin for three reservations");
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    for (x, rgba) in [(0, [255; 4]), (2, [0, 0, 0, 255]), (4, [255; 4]), (12, [0, 255, 0, 255])] {
+        assert_eq!(pixels[x * 4..x * 4 + 4], rgba, "pixel {x}");
+    }
+}
+
+#[test]
+fn intervening_d3d_work_revalidates_attachments_even_with_the_same_run_key() {
+    let _serial = PAINT_TESTS.lock().unwrap();
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    let paint = |x| Box::new(Paint { run: 17, x, color: wgpu::Color::WHITE, refuse_display: false, bundles: [None, None] });
+    let light = || d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) };
+    let before = d.backend.waits().reads;
+    d.prepare_external_pass(&mut m, light(), paint(0)).unwrap().unwrap().commit();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    d.prepare_external_pass(&mut m, light(), paint(4)).unwrap().unwrap().commit();
+    assert_eq!(d.backend.waits().reads - before, 2);
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255], "clear follows the first light");
+    assert_eq!(&pixels[16..20], &[255; 4], "second light follows the clear");
 }
