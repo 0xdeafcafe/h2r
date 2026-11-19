@@ -549,6 +549,14 @@ its own Durable Objects (so its own log), bucket and key:
 without the route (to copy the log into before the switch), `production`
 with it (the switch). Both need `--yes-production`.
 
+Every environment declares the dedicated host containers, built from
+`deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
+that image is staged, deploy with `--no-hosts`: the script writes
+`wrangler.nohosts.toml` beside `wrangler.toml` without the `[[containers]]`
+blocks and with `LIVE_MAX_HOSTS = "0"`, so Live refuses host launches and
+everything else deploys. Without the image and without the flag it stops
+before deploying.
+
 `deploy.sh` prints each step as it goes:
 
 1. **Toolchain.** Rust from rust-toolchain.toml with the wasm32 target and
