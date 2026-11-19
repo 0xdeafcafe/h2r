@@ -131,32 +131,25 @@ async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::b
         let resp: worker::HttpResponse = index.try_into()?;
         return Ok(resp.map(axum::body::Body::new));
     }
-    let html = index.text().await?;
-    let mut meta = page_meta::describe_static(path);
-    if let Some(url) = crate::site::page_meta_url(path) {
-        let hub = env
-            .durable_object(HUB)?
-            .id_from_name(HUB_NAME)?
-            .get_stub()?;
-        if let Ok(mut r) = hub.fetch_with_str(&url).await
-            && r.status_code() == 200
-            && let Ok(m) = r.json::<page_meta::PageMeta>().await
-        {
-            meta = m;
-        }
-    }
     let body = if *req.method() == http::Method::HEAD {
         String::new()
     } else {
-        // A game page's header, pre-rendered above the app (page_header),
-        // as the hub's answer carries it.
-        match &meta.header {
-            Some(header) => live_server::page_header::inject(
-                &page_meta::page_html(&html, &meta, &origin, path),
-                header,
-            ),
-            None => page_meta::page_html(&html, &meta, &origin, path),
-        }
+        let html = index.text().await?;
+        crate::site::app_html(&html, &origin, path, |url| async move {
+            let hub = env
+                .durable_object(HUB)
+                .ok()?
+                .id_from_name(HUB_NAME)
+                .ok()?
+                .get_stub()
+                .ok()?;
+            let mut response = hub.fetch_with_str(&url).await.ok()?;
+            if response.status_code() != 200 {
+                return None;
+            }
+            response.text().await.ok()
+        })
+        .await
     };
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")

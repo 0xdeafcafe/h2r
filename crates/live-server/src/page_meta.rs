@@ -639,10 +639,14 @@ pub fn inject(html: &str, tags: &str) -> String {
     html.to_string()
 }
 
-/// The page's HTML: `index` with the tags for `meta`.
+/// The page's HTML with its link preview and, when supplied, game header.
 pub fn page_html(index: &str, meta: &PageMeta, origin: &str, path: &str) -> String {
     let names = Names::from_html(index);
-    inject(index, &render(meta, &names, origin, path))
+    let html = inject(index, &render(meta, &names, origin, path));
+    match &meta.header {
+        Some(header) => crate::page_header::inject(&html, header),
+        None => html,
+    }
 }
 
 /// Where the server is reached from outside, for absolute URLs: the
