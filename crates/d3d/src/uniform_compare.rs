@@ -55,8 +55,12 @@ pub struct Expected {
 }
 
 struct Armed {
-    expected: Expected,
+    /// The candidates: one per material the other renderer draws the
+    /// placement with ([`arm_all`]).
+    expected: Vec<Expected>,
     others: u32,
+    /// Draws still to compare (the candidates' [`Expected::draws`] summed).
+    remaining: u32,
 }
 
 static ARMED: AtomicBool = AtomicBool::new(false);
@@ -64,8 +68,42 @@ static EXPECTED: Mutex<Option<Armed>> = Mutex::new(None);
 
 /// Compares the next draws with `expected`'s rows (replacing any armed).
 pub fn arm(expected: Expected) {
-    *EXPECTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Armed { expected, others: 0 });
+    arm_all(vec![expected]);
+}
+
+/// [`arm`] with several candidates for the same rows (a placement's
+/// materials, which may share one vertex program): each D3D draw is
+/// compared with the candidate whose pixel shader it is ([`pick`]).
+/// Nothing is armed when `candidates` is empty.
+pub fn arm_all(candidates: Vec<Expected>) {
+    if candidates.is_empty() {
+        return;
+    }
+    let remaining = candidates.iter().map(|e| e.draws).sum::<u32>().max(1);
+    *EXPECTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Armed { expected: candidates, others: 0, remaining });
     ARMED.store(true, Ordering::Release);
+}
+
+/// The candidate a D3D draw with vertex program `words` and pixel shader
+/// `def` and `options` pairs with: of those with its program, the one
+/// whose definition and options differ from the draw's in the fewest
+/// fields (the first of a tie), with that count; `None` when none has its
+/// program.
+pub fn pick<'a>(
+    candidates: &'a [Expected],
+    words: &[u32],
+    (def, options): (&PixelShaderDef, &PixelOptions),
+) -> Option<(&'a Expected, usize)> {
+    let (def, options) = (format!("{def:?}"), format!("{options:?}"));
+    candidates
+        .iter()
+        .filter(|e| same_program(words, &e.words))
+        .map(|e| {
+            let n = field_differences(&def, &format!("{:?}", e.def)).len()
+                + field_differences(&options, &format!("{:?}", e.pixel_options)).len();
+            (e, n)
+        })
+        .min_by_key(|&(_, n)| n)
 }
 
 /// Whether a comparison waits for its draws.
@@ -91,27 +129,34 @@ pub(crate) fn observe(
     }
     let mut guard = EXPECTED.lock().unwrap_or_else(|e| e.into_inner());
     let Some(armed) = guard.as_mut() else { return };
-    let e = &armed.expected;
-    if !rows_match(vertex, &e.vertex) {
+    let Some(first) = armed.expected.first() else { return };
+    if !rows_match(vertex, &first.vertex) {
         return;
     }
-    if !same_program(words, &e.words) {
+    let Some((e, differ)) = pick(&armed.expected, words, pixel_shader) else {
         if armed.others < OTHER_PROGRAMS {
             armed.others += 1;
             eprintln!(
                 "uniform-compare {}: a D3D draw with the rows and another program ({} words, {:#018x})",
-                e.label,
+                first.label,
                 words.len(),
                 crate::shader::Microcode::hash_words(words)
             );
         }
         return;
+    };
+    if armed.expected.len() > 1 {
+        eprintln!(
+            "uniform-compare {}: paired by its pixel shader among {} candidates ({differ} pixel shader and option fields differ)",
+            e.label,
+            armed.expected.len()
+        );
     }
     for line in compare(e, words, vertex, pixel, options, pixel_shader, pipeline, samplers, textures) {
         eprintln!("{line}");
     }
-    armed.expected.draws = armed.expected.draws.saturating_sub(1);
-    if armed.expected.draws == 0 {
+    armed.remaining = armed.remaining.saturating_sub(1);
+    if armed.remaining == 0 {
         *guard = None;
         ARMED.store(false, Ordering::Release);
     }
@@ -423,6 +468,25 @@ mod tests {
         assert!(lines[9].starts_with("  stage 1 d3d texture none, other Rgba8Unorm 4x4, sampler d3d SamplerKey"), "{}", lines[9]);
         assert!(lines[9].contains("min: Nearest") && lines[9].contains("min: Linear"), "{}", lines[9]);
         assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn a_draw_pairs_with_the_candidate_whose_pixel_shader_it_is() {
+        let a = Expected { label: "material 107".into(), ..expected() };
+        let mut b = Expected { label: "material 108".into(), ..expected() };
+        b.def.compare_mode = 1;
+        b.pixel_options.stipple = true;
+        let candidates = [a.clone(), b.clone()];
+        let pair = |def: &PixelShaderDef, options: &PixelOptions| {
+            pick(&candidates, &a.words, (def, options)).map(|(e, n)| (e.label.clone(), n))
+        };
+        assert_eq!(pair(&a.def, &a.pixel_options), Some(("material 107".into(), 0)));
+        assert_eq!(pair(&b.def, &b.pixel_options), Some(("material 108".into(), 0)));
+        assert_eq!(pair(&b.def, &a.pixel_options), Some(("material 107".into(), 1)), "a tie goes to the first");
+        let mut closest = b.def.clone();
+        closest.final_inputs_abcd ^= 1;
+        assert_eq!(pair(&closest, &b.pixel_options), Some(("material 108".into(), 1)), "the closest");
+        assert_eq!(pick(&candidates, &a.words[4..], (&a.def, &a.pixel_options)).map(|(e, _)| e.label.clone()), None, "another program");
     }
 
     #[test]

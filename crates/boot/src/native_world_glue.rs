@@ -226,6 +226,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         };
+        // The cull layer 3 starts in: what the passes that do not set
+        // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
+        let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
         d.request_external_pass(Box::new(WorldPass {
             ready: Arc::clone(&ready),
             camera: *camera,
@@ -234,6 +237,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             clip: None,
             traced: false,
             stencil,
+            cull,
         }));
         let owners = Diagnostics::get().owners;
         if owners == Owners::All {
@@ -326,6 +330,25 @@ struct WorldPass {
     traced: bool,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
+    /// The device's cull at the layer-3 call ([`inherited_cull`]; `None`:
+    /// it did not read).
+    cull: Option<native_render::program::Cull>,
+}
+
+/// `CULLMODE` and `FRONTFACE` as the D3D path's pipeline takes them
+/// (`gfx::translate::primitive_state`).
+fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::FrontFace)) -> native_render::program::Cull {
+    let rs = gfx::state::RenderState {
+        cull_mode: cull,
+        front_face: front,
+        ..Default::default()
+    };
+    let p = gfx::translate::primitive_state(
+        &rs,
+        wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
+    );
+    (p.cull_mode, p.front_face)
 }
 
 impl d3d::ExternalPass for WorldPass {
@@ -341,6 +364,12 @@ impl d3d::ExternalPass for WorldPass {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return };
+        let (placements, clusters) = Diagnostics::get().inherit_cull;
+        gpu.set_inherited_cull(native_render::program::InheritedCull {
+            device: self.cull,
+            placements,
+            clusters,
+        });
         if gpu.has_programs() {
             // The programs read the view from the device's constants: a
             // pass issued without them draws nothing rather than a world
@@ -428,12 +457,18 @@ struct Diagnostics {
     owners: Owners,
     /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes]`: the uniforms
     /// the native pass draws that placement's rigid draws of the material
-    /// (its lowest without one) with, against the D3D path's draws of it
+    /// (each of its materials without one) with, against the D3D path's draws of it
     /// ([`arm_dump`]; with `H2_NATIVE_WORLD_OWNERS=clusters`, so that the
     /// D3D path draws the placement), armed after that many of the world's
     /// passes (0 without one: the first, while the game may still be
     /// streaming the bitmaps in at low detail).
     dump: Option<Dump>,
+    /// `H2_NATIVE_WORLD_INHERIT_CULL=none|placements|all` (placements
+    /// without it): whose draws of a pass that does not set `CULLMODE`
+    /// take the device's cull at the layer-3 call, as (placements,
+    /// clusters) (`native_render::program::InheritedCull`); the others
+    /// cull nothing.
+    inherit_cull: (bool, bool),
 }
 
 /// [`Diagnostics::dump`].
@@ -455,8 +490,9 @@ impl Diagnostics {
                 probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
                 owners: std::env::var("H2_NATIVE_WORLD_OWNERS").ok().and_then(|v| Owners::parse(&v)).unwrap_or_default(),
                 dump: std::env::var("H2_NATIVE_WORLD_DUMP").ok().and_then(|v| parse_dump(&v)),
+                inherit_cull: parse_inherit_cull(std::env::var("H2_NATIVE_WORLD_INHERIT_CULL").ok().as_deref()),
             };
-            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() {
+            if d.trace || d.no_cull || d.owners != Owners::All || d.dump.is_some() || d.inherit_cull != (true, false) {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -527,11 +563,16 @@ fn parse_dump(v: &str) -> Option<Dump> {
 static DUMPED: Mutex<(usize, u64, bool)> = Mutex::new((0, 0, false));
 
 /// Once per loaded world: prints the uniforms the native pass draws
-/// placement `instance`'s rigid draws of `material` with in this frame,
-/// and arms `d3d::uniform_compare` with them, which prints, for the D3D
-/// path's next draws with the same rows and program, every read constant,
-/// read input and uniform that differs. Draws of the placement natively
-/// are skipped on the D3D path, so this wants the placements left to it
+/// placement `instance`'s rigid draws of `material` (of each of its
+/// materials without one) with in this frame, and arms
+/// `d3d::uniform_compare` with them, which prints, for the D3D path's next
+/// draws with the same rows and program, every read constant, read input
+/// and uniform that differs; with several materials, each D3D draw is
+/// compared with the one whose pixel shader it is
+/// (`d3d::uniform_compare::pick`: a placement's materials can share a
+/// vertex program). A D3D draw no material pairs with exactly is one the
+/// native pass may not draw. Draws of the placement natively are skipped
+/// on the D3D path, so this wants the placements left to it
 /// (`H2_NATIVE_WORLD_OWNERS=clusters`).
 fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after }: Dump) {
     let key = Arc::as_ptr(ready) as usize;
@@ -546,43 +587,62 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
     dumped.2 = true;
     let draws = gpu.rigid_uniforms(instance, view);
     let materials: Vec<u16> = draws.iter().map(|d| d.material).collect();
-    let Some(d) = draws.into_iter().find(|d| material.is_none_or(|m| m == d.material)) else {
+    let chosen: Vec<_> = draws.into_iter().filter(|d| material.is_none_or(|m| m == d.material)).collect();
+    if chosen.is_empty() {
         eprintln!("native-world dump: placement {instance} has no rigid draws of {material:?} here (materials {materials:?})");
         return;
-    };
-    let label = format!("placement {instance} material {}", d.material);
-    let read: Vec<String> = d
-        .vertex
-        .constants
-        .iter()
-        .enumerate()
-        .skip(d3d::VIEW_CONSTANTS)
-        .filter(|(_, c)| **c != [0.0; 4])
-        .map(|(n, c)| format!("c[{n}] {c:?}"))
+    }
+    let candidates = chosen
+        .into_iter()
+        .map(|d| {
+            let label = format!("placement {instance} material {}", d.material);
+            let read: Vec<String> = d
+                .vertex
+                .constants
+                .iter()
+                .enumerate()
+                .skip(d3d::VIEW_CONSTANTS)
+                .filter(|(_, c)| **c != [0.0; 4])
+                .map(|(n, c)| format!("c[{n}] {c:?}"))
+                .collect();
+            eprintln!(
+                "native-world dump {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}; cull {:?} front {:?}",
+                d.words.len(),
+                read.join(", "),
+                d.vertex.defaults,
+                d.vertex.w_clip,
+                d.vertex.w_clamp,
+                d.vertex.shift,
+                d.pipeline.0.cull_mode,
+                d.pipeline.0.front_face
+            );
+            d3d::uniform_compare::Expected {
+                label,
+                words: d.words,
+                vertex: d.vertex,
+                pixel: d.pixel,
+                samplers: d.samplers,
+                options: d.options,
+                def: d.def,
+                pixel_options: d.pixel_options,
+                textures: d.textures,
+                primitive: d.pipeline.0,
+                depth: (d.pipeline.1.0, d.pipeline.1.1, Default::default()),
+                draws: 4,
+            }
+        })
         .collect();
-    eprintln!(
-        "native-world dump {label} (materials {materials:?}): {} program words; beyond the view's: {}; defaults {:?}; w_clip {:?} clamp {} shift {}",
-        d.words.len(),
-        read.join(", "),
-        d.vertex.defaults,
-        d.vertex.w_clip,
-        d.vertex.w_clamp,
-        d.vertex.shift
-    );
-    d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
-        label,
-        words: d.words,
-        vertex: d.vertex,
-        pixel: d.pixel,
-        samplers: d.samplers,
-        options: d.options,
-        def: d.def,
-        pixel_options: d.pixel_options,
-        textures: d.textures,
-        primitive: d.pipeline.0,
-        depth: (d.pipeline.1.0, d.pipeline.1.1, Default::default()),
-        draws: 4,
-    });
+    d3d::uniform_compare::arm_all(candidates);
+}
+
+/// [`Diagnostics::inherit_cull`]: placements only without a value or with
+/// one it does not know.
+fn parse_inherit_cull(v: Option<&str>) -> (bool, bool) {
+    match v.map(str::trim) {
+        Some("none") => (false, false),
+        Some("all") => (true, true),
+        _ => (true, false),
+    }
 }
 
 fn parse_probe(v: &str) -> Option<(f32, f32)> {
@@ -1526,6 +1586,15 @@ mod tests {
         assert_eq!(parse_dump("282:"), None);
         assert_eq!(parse_dump("282@"), None);
         assert_eq!(parse_dump("girder"), None);
+        assert_eq!(parse_inherit_cull(None), (true, false));
+        assert_eq!(parse_inherit_cull(Some("none")), (false, false));
+        assert_eq!(parse_inherit_cull(Some(" all ")), (true, true));
+        assert_eq!(parse_inherit_cull(Some("clusters")), (true, false));
+        // The D3D draws of placement 282 on 03a: `CULL_CW`, front face `CW`.
+        use gfx::state::{CullMode, FrontFace};
+        assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
+        assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
+        assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
         assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
         assert_eq!(parse_probe("520"), None);
         assert_eq!(parse_probe("x,1"), None);

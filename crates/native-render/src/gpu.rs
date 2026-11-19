@@ -247,6 +247,9 @@ pub struct GpuWorld {
     world: World,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
+    /// The cull the next pass's inheriting programs draw with
+    /// ([`GpuWorld::set_inherited_cull`]).
+    inherited_cull: crate::program::InheritedCull,
     /// Whether [`GpuWorld::prepare`] culls on the CPU ([`GpuWorld::set_cull`]).
     culls: bool,
     /// Which sections' parts it draws ([`GpuWorld::set_owners`]).
@@ -528,6 +531,7 @@ impl GpuWorld {
         Self {
             world,
             stencil: PassStencil::default(),
+            inherited_cull: crate::program::InheritedCull::default(),
             culls: true,
             owners: Owners::All,
             vertices,
@@ -691,6 +695,16 @@ impl GpuWorld {
         self.stencil = stencil;
     }
 
+    /// The cull the material programs whose pass does not set `CULLMODE`
+    /// draw with from the next pass (and [`GpuWorld::rigid_uniforms`]
+    /// reports; [`crate::program::InheritedCull`]).
+    pub fn set_inherited_cull(&mut self, cull: crate::program::InheritedCull) {
+        self.inherited_cull = cull;
+        if let Some(p) = &mut self.programs {
+            p.set_cull(cull);
+        }
+    }
+
     /// Whether [`GpuWorld::prepare`] culls by the frustum (on by default).
     /// Off, every draw is drawn and the programs' own clipping alone
     /// decides: a diagnostic, telling a part culled on the CPU from one
@@ -707,7 +721,8 @@ impl GpuWorld {
     }
 
     /// Draws `programs`' materials with their own programs from now on.
-    pub fn set_programs(&mut self, programs: ProgramSet) {
+    pub fn set_programs(&mut self, mut programs: ProgramSet) {
+        programs.set_cull(self.inherited_cull);
         self.programs = Some(programs);
     }
 
@@ -849,7 +864,7 @@ impl GpuWorld {
     ) {
         self.pipeline(device, color_format, depth_format);
         if let Some(p) = &mut self.programs {
-            p.pipelines(device, color_format, depth_format, &self.stencil.state);
+            p.pipelines(device, color_format, depth_format, &self.stencil.state, self.inherited_cull);
         }
         let pipeline = &self.pipelines[&(color_format, depth_format)];
         let has_stencil = depth_format.has_stencil_aspect();

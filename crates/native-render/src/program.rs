@@ -113,6 +113,10 @@ pub struct MaterialProgram {
     /// draws with the opaque world's (depth test `LessEqual` and write, no
     /// blend, no cull).
     pub state: Option<PassState>,
+    /// The pass does not set `CULLMODE` and culls as the device does when
+    /// layer 3 is drawn ([`crate::look::WorldPass::inherits_cull`],
+    /// [`InheritedCull`]).
+    pub inherits_cull: bool,
     /// The pass with its vertex program's rigid classification, which
     /// draws the material's instanced placements ([`compile_rigid`]);
     /// `None` leaves them to the D3D path.
@@ -183,6 +187,7 @@ pub fn compile_pass(
         def: t.def,
         pixel_options: t.pixel_options,
         state: None,
+        inherits_cull: false,
         rigid: None,
     })
 }
@@ -209,6 +214,7 @@ pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgr
     }
     let mut p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
     p.state = Some(pass.state);
+    p.inherits_cull = pass.inherits_cull;
     Ok(p)
 }
 
@@ -529,12 +535,42 @@ pub fn signed_channels(color_sign: u32) -> [bool; 4] {
     [bit(29), bit(30), bit(31), bit(28)]
 }
 
+/// A cull mode and the winding that faces front, as `gfx`'s
+/// `primitive_state` gives them for `CULLMODE` and `FRONTFACE`.
+pub type Cull = (Option<wgpu::Face>, wgpu::FrontFace);
+
+/// The cull the device holds when the native world pass is asked for (the
+/// layer-3 call), for the passes that do not set `CULLMODE` and inherit it
+/// ([`MaterialProgram::inherits_cull`]), and which draws take it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InheritedCull {
+    /// `None`: not known; such passes cull nothing.
+    pub device: Option<Cull>,
+    /// The placements' rigid draws take it (the D3D path's draws of a
+    /// placement were compared: `d3d::uniform_compare`).
+    pub placements: bool,
+    /// The clusters' draws take it too (not compared: S, that the
+    /// structure draw does not set its own between).
+    pub clusters: bool,
+}
+
+impl InheritedCull {
+    /// The cull a program's draws of a cluster (`cluster`) or placement
+    /// take: the device's where the program inherits it and those draws
+    /// take it, otherwise its pass's own (`None`).
+    pub fn of(&self, inherits: bool, cluster: bool) -> Option<Cull> {
+        let takes = if cluster { self.clusters } else { self.placements };
+        if inherits && takes { self.device } else { None }
+    }
+}
+
 /// The primitive and the depth write and compare a program's pipeline
 /// draws with ([`render_pipeline`]): its pass's state, or the opaque
-/// world's (a triangle list, no cull, `LessEqual` and write). No depth
-/// bias: the polygon offset is the fragment's (`PixelUniforms::depth`).
-pub fn pipeline_state(state: Option<&PassState>) -> (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)) {
-    let primitive = state.map_or(
+/// world's (a triangle list, no cull, `LessEqual` and write), with `cull`
+/// over its cull and winding ([`InheritedCull::of`]). No depth bias: the
+/// polygon offset is the fragment's (`PixelUniforms::depth`).
+pub fn pipeline_state(state: Option<&PassState>, cull: Option<Cull>) -> (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)) {
+    let mut primitive = state.map_or(
         wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             cull_mode: None,
@@ -542,6 +578,10 @@ pub fn pipeline_state(state: Option<&PassState>) -> (wgpu::PrimitiveState, (bool
         },
         |s| s.primitive,
     );
+    if let Some((cull_mode, front_face)) = cull {
+        primitive.cull_mode = cull_mode;
+        primitive.front_face = front_face;
+    }
     let depth = state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
     (primitive, depth)
 }
@@ -731,10 +771,14 @@ pub(crate) struct Gpu {
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     stage_info: [Option<String>; 4],
     pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
-    /// The world's pipelines, by target formats and the stencil state the
-    /// layer draws with ([`ProgramSet::pipelines`]).
-    world_pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState), wgpu::RenderPipeline>,
+    /// The world's pipelines, by target formats, the stencil state the
+    /// layer draws with and the cull ([`ProgramSet::pipelines`]).
+    world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
 }
+
+/// A world or rigid pipeline's key: target formats, stencil state and the
+/// inherited cull it was made with ([`InheritedCull::of`]).
+type PipelineKey = (wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState, Option<Cull>);
 
 /// The materials drawn with their own programs, and each batch's texture
 /// group (its lightmap page bound where the pass samples the lightmap).
@@ -745,6 +789,9 @@ pub struct ProgramSet {
     /// Per batch of the world: the texture group, when the batch's
     /// material has a program.
     batch_groups: Vec<Option<wgpu::BindGroup>>,
+    /// The cull the passes that inherit it draw with
+    /// ([`ProgramSet::pipelines`]).
+    cull: InheritedCull,
 }
 
 pub(crate) fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -907,13 +954,14 @@ impl Gpu {
         let (module, layout) = (&self.module, &self.layout);
         self.pipelines
             .entry((color, depth))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, wgpu::StencilState::default()));
+            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
     }
 }
 
 /// A program's pipeline over the world vertex ([`INPUTS`]): the world's
-/// opaque state without `state`, a pass's own with it; `stencil` the
-/// stencil test and write.
+/// opaque state without `state`, a pass's own with it, `cull` over its
+/// cull ([`pipeline_state`]); `stencil` the stencil test and write.
+#[allow(clippy::too_many_arguments)]
 fn render_pipeline(
     device: &wgpu::Device,
     module: &wgpu::ShaderModule,
@@ -921,13 +969,14 @@ fn render_pipeline(
     color: wgpu::TextureFormat,
     depth: wgpu::TextureFormat,
     state: Option<&PassState>,
+    cull: Option<Cull>,
     stencil: wgpu::StencilState,
 ) -> wgpu::RenderPipeline {
     let attributes: Vec<wgpu::VertexAttribute> = INPUTS
         .iter()
         .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
         .collect();
-    let (primitive, (depth_write, depth_compare)) = pipeline_state(state);
+    let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("native world program"),
@@ -976,7 +1025,7 @@ pub(crate) struct Rigid {
     stride: u64,
     /// Per slot, ascending: the placement and its rows.
     slots: Vec<(u32, ModelRows)>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState), wgpu::RenderPipeline>,
+    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
 }
 
 /// The placements `material`'s draws in `world` name, ascending, each with
@@ -1110,7 +1159,7 @@ impl ProgramSet {
                 g.textures(device, page.as_ref())
             })
             .collect();
-        Self { materials, rigid, batch_groups }
+        Self { materials, rigid, batch_groups, cull: InheritedCull::default() }
     }
 
     /// How many materials draw with their own programs.
@@ -1132,24 +1181,35 @@ impl ProgramSet {
         }
     }
 
-    /// Makes the pipelines for these target formats and the stencil state
-    /// the layer draws with (before the pass).
+    /// Makes the pipelines for these target formats, the stencil state
+    /// the layer draws with and the cull the passes that inherit it take
+    /// (before the pass; [`ProgramSet::batch`] and [`ProgramSet::rigid`]
+    /// then give those).
     pub fn pipelines(
-        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
+        &mut self,
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState,
+        cull: InheritedCull,
     ) {
+        self.cull = cull;
         for g in self.materials.values_mut() {
             let state = g.program.state;
+            let c = cull.of(g.program.inherits_cull, true);
             let (module, layout) = (&g.module, &g.layout);
             g.world_pipelines
-                .entry((color, depth, stencil.clone()))
-                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), stencil.clone()));
+                .entry((color, depth, stencil.clone(), c))
+                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), c, stencil.clone()));
         }
         for (m, r) in &mut self.rigid {
-            let state = self.materials.get(m).and_then(|g| g.program.state);
+            let program = self.materials.get(m).map(|g| &g.program);
+            let state = program.and_then(|p| p.state);
+            let c = cull.of(program.is_some_and(|p| p.inherits_cull), false);
             let (module, layout) = (&r.module, &r.layout);
             r.pipelines
-                .entry((color, depth, stencil.clone()))
-                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), stencil.clone()));
+                .entry((color, depth, stencil.clone(), c))
+                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), c, stencil.clone()));
         }
     }
 
@@ -1161,7 +1221,8 @@ impl ProgramSet {
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, &wgpu::BindGroup)> {
         let g = self.materials.get(&material)?;
         let textures = self.batch_groups.get(index)?.as_ref()?;
-        Some((g.world_pipelines.get(&(color, depth, stencil.clone()))?, &g.uniforms, textures))
+        let cull = self.cull.of(g.program.inherits_cull, true);
+        Some((g.world_pipelines.get(&(color, depth, stencil.clone(), cull))?, &g.uniforms, textures))
     }
 
     /// The rigid pipeline, uniforms and dynamic offset placement
@@ -1172,12 +1233,19 @@ impl ProgramSet {
         &self, material: u16, instance: u32, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, u32)> {
         let r = self.rigid.get(&material)?;
-        Some((r.pipelines.get(&(color, depth, stencil.clone()))?, &r.uniforms, r.offset(instance)?))
+        let cull = self.cull.of(self.materials.get(&material)?.program.inherits_cull, false);
+        Some((r.pipelines.get(&(color, depth, stencil.clone(), cull))?, &r.uniforms, r.offset(instance)?))
     }
 
     /// How many materials draw their placements with rigid programs.
     pub fn rigid_len(&self) -> usize {
         self.rigid.len()
+    }
+
+    /// The cull the passes that inherit it draw with, until the next
+    /// [`ProgramSet::pipelines`] gives another.
+    pub fn set_cull(&mut self, cull: InheritedCull) {
+        self.cull = cull;
     }
 
     /// What placement `instance`'s draws of each material take in a frame
@@ -1204,7 +1272,7 @@ impl ProgramSet {
                     def: program.def.clone(),
                     pixel_options: program.pixel_options,
                     textures: self.materials.get(&material)?.stage_info.clone(),
-                    pipeline: pipeline_state(program.state.as_ref()),
+                    pipeline: pipeline_state(program.state.as_ref(), self.cull.of(program.inherits_cull, false)),
                 })
             })
             .collect();
@@ -1232,7 +1300,8 @@ pub struct RigidUniforms {
     /// lightmap, an engine texture or nothing).
     pub textures: [Option<String>; 4],
     /// The pipeline's primitive and depth write and compare
-    /// ([`pipeline_state`]).
+    /// ([`pipeline_state`], with the cull of the last
+    /// [`ProgramSet::pipelines`]).
     pub pipeline: (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)),
 }
 
@@ -1512,7 +1581,29 @@ mod tests {
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: Some((wgpu::CompareFunction::Greater, 0x40)),
         };
-        WorldPass { look, state }
+        WorldPass { look, state, inherits_cull: false }
+    }
+
+    #[test]
+    fn a_pass_that_inherits_its_cull_takes_the_device_s() {
+        let cw: Cull = (Some(wgpu::Face::Front), wgpu::FrontFace::Cw);
+        let cull = InheritedCull { device: Some(cw), placements: true, clusters: false };
+        assert_eq!(cull.of(true, false), Some(cw), "a placement");
+        assert_eq!(cull.of(true, true), None, "a cluster, unless asked");
+        assert_eq!(cull.of(false, false), None, "a pass that sets its own");
+        assert_eq!(InheritedCull { clusters: true, ..cull }.of(true, true), Some(cw));
+        assert_eq!(InheritedCull { device: None, ..cull }.of(true, false), None, "not known");
+        let mut pass = world_pass(final_look(false));
+        let (primitive, depth) = pipeline_state(Some(&pass.state), cull.of(true, false));
+        assert_eq!((primitive.cull_mode, primitive.front_face), cw);
+        assert_eq!(depth, (true, wgpu::CompareFunction::LessEqual));
+        pass.state.primitive.front_face = wgpu::FrontFace::Ccw;
+        assert_eq!(pipeline_state(Some(&pass.state), None).0, pass.state.primitive, "its own without one");
+        let world = pipeline_state(None, None).0;
+        assert_eq!((world.topology, world.cull_mode), (wgpu::PrimitiveTopology::TriangleList, None));
+        pass.inherits_cull = true;
+        let p = compile_world(&pass, &plain_program()).expect("compiles");
+        assert!(p.inherits_cull);
     }
 
     #[test]
@@ -1620,15 +1711,22 @@ mod tests {
         let pass = world_pass(final_look(false));
         let p = compile_pass(&pass.look, &microcode, pass.state.alpha_test).expect("compiles");
         let words: Vec<u32> = microcode[4..].chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
-        let d3d = |fetch: [InputFetch; 16]| {
+        let d3d_with = |fetch: [InputFetch; 16], def: &PixelShaderDef| {
             let program = vsh::Program::from_words(ProgramKind::Normal, &words).unwrap();
             let options = VertexOptions { provided_inputs: INPUT_MASK, flat_shading: false, input_fetch: fetch };
             let vs = vsh::translate(&program, &options).unwrap();
-            shaders::link(&vs, &psh::translate(&p.def, &p.pixel_options)).unwrap()
+            shaders::link(&vs, &psh::translate(def, &p.pixel_options)).unwrap()
         };
+        let d3d = |fetch: [InputFetch; 16]| d3d_with(fetch, &p.def);
         assert_eq!(p.wgsl, d3d(WORLD_FETCH));
         assert!(p.wgsl.contains("xvs_normpacked3"), "v2 and v5 decoded in the shader");
         assert_ne!(p.wgsl, d3d([InputFetch::Float; 16]), "floats were another module");
+        // The D3D path's definition carries the device's final-combiner
+        // latch (`explicit_final`); with the final combiner's inputs set,
+        // as a world pass's are, it translates to the same module.
+        assert!(p.def.final_inputs_abcd != 0 || p.def.final_inputs_efg != 0);
+        let latched = PixelShaderDef { explicit_final: true, ..p.def.clone() };
+        assert_eq!(p.wgsl, d3d_with(WORLD_FETCH, &latched));
         shaders::validate(&p.wgsl).expect("valid WGSL");
     }
 
