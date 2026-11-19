@@ -642,10 +642,26 @@ Halo ring were already built this way.
   named as the mass point (`tire_front_left`), at the mass point's
   position in its node's space. V: Halo 1's mass point positions are in
   object space (each warthog tire point lies within its radius of its
-  tire node's default position). A point that grips the ground (Halo 1
-  powered mass point flag bit 0: the warthog's tires, the scorpion's
-  treads; the ghost's antigravity points hold bit 6) rides the root node
-  (0); any other point rides its own node. No marker is rotated. V: the
+  tire node's default position). Every point rides the root node (0),
+  at its Halo 1 position (since converter version 94). Through version
+  93 only a point that grips the ground (Halo 1 powered mass point flag
+  bit 0: the warthog's tires, the scorpion's treads) did; any other
+  rode its own node, and the ghost's antigravity points (bit 6) put its
+  back point, `hull back seat`, on the seat node. A hover point whose
+  marker is on another node gives no lift (game run, 2026-11-19,
+  converted Blood Gulch): with a driver the ghost rode nose up at 19.9
+  degrees on its tail, its origin 0.17 above the ground; the back point
+  at eight times its strength changed nothing, while zeroing the front
+  pair dropped the nose, and the back point named any node-0 marker
+  lifted the tail. The same marker moved live to node 0 at the same
+  place in the object (node 0 translation (-0.643, 0, -0.091)) held the
+  ghost at pitch -7.7, 0.33 above the ground, as the retail ghost rides
+  (pitch -7.9, 0.39), and it drove. V: every friction and hover marker
+  of every vehicle on coagulation, beavercreek and 05a_deltaapproach
+  (83 points) is on node 0 (`every_powered_point_rides_the_root_node`).
+  The point's region is unchanged: a gripping point's is the root
+  node's collision region, any other's its own node's. No marker is
+  rotated. V: the
   retail warthog's four tire markers are on node 0, 0.23 below it (the
   wheel centres, 0.19 above the origin, where Halo 1's tire points are),
   facing out along their axles; the scorpion's tread markers are on

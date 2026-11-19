@@ -2,7 +2,8 @@
 //!
 //! One Halo 2 section per Halo 1 geometry. Each Halo 1 part becomes a
 //! triangle-list part (strips are unrolled, degenerate joins dropped), so
-//! winding does not depend on strip parity. Vertices are written in Halo 2's
+//! winding does not depend on strip parity; a sky's model keeps strips, in
+//! Halo 2's parity ([`ModelOptions::strips`]). Vertices are written in Halo 2's
 //! compressed form: s16 positions and texture coordinates against the model's
 //! one compression record, packed tangent frames, and one or two node
 //! indices (through a per-section node map) with u8 weights.
@@ -49,6 +50,15 @@ pub struct ModelOptions {
     /// The Halo 2 `shad` tag for each Halo 1 shader block entry; missing or
     /// [`TagId::NULL`] leaves the material's shader null.
     pub shaders: Vec<TagId>,
+    /// Write each part as a triangle strip in Halo 2's parity
+    /// ([`h1::h2_strip`]) instead of a list: for a sky's model. The sky
+    /// draw (`0x0004c690`, called from the sky pass `0x0003ede0`) draws
+    /// every part as a strip whatever its flags: `0x0004c974` pushes
+    /// primitive 6 (triangle strip) to `DrawIndexedVertices` with the
+    /// part's first index (`+6`) and count (`+8`). A list drawn that way
+    /// joins each triangle to the next two: Blood Gulch's ring drew as
+    /// white slabs across the sky.
+    pub strips: bool,
 }
 
 /// The marker names Halo 2's engine looks up by string IDs written in its
@@ -166,7 +176,7 @@ pub fn convert_model(model: &Model, name: &str, opts: &ModelOptions) -> Result<C
     let mut raw = Vec::new();
     let mut sections = Vec::new();
     for (gi, g) in model.geometries.iter().enumerate() {
-        let (section, bytes) = build_section(model, gi, g, pos, uv)?;
+        let (section, bytes) = build_section(model, gi, g, pos, uv, opts.strips)?;
         raw.push((bytes, 0x10));
         sections.push(section(RawId(raw.len() - 1)));
     }
@@ -421,6 +431,7 @@ fn build_section(
     g: &h1::Geometry,
     pos: [f32; 6],
     uv: [f32; 4],
+    strips: bool,
 ) -> Result<(SectionFn, Vec<u8>)> {
     // Node map: the nodes this geometry's vertices use, ascending.
     let mut used: Vec<i16> = g
@@ -487,7 +498,12 @@ fn build_section(
         let tris = h1::strip_triangles(&p.strip);
         triangles += tris.len();
         let first_index = indices.len();
-        indices.extend(tris.iter().flatten().map(|&i| i + first_vertex as u16));
+        let base = first_vertex as u16;
+        if strips {
+            indices.extend(h1::h2_strip(&p.strip).into_iter().map(|i| i + base));
+        } else {
+            indices.extend(tris.iter().flatten().map(|&i| i + base));
+        }
         let count = indices.len() - first_index;
         if indices.len() > 0xffff {
             return Err(Error::Unsupported(format!(
@@ -506,7 +522,7 @@ fn build_section(
         let put16 =
             |b: &mut [u8], at: usize, v: u16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
         put16(&mut part, 0, kind);
-        put16(&mut part, 2, PART_TRIANGLE_LIST);
+        put16(&mut part, 2, if strips { 0 } else { PART_TRIANGLE_LIST });
         put16(
             &mut part,
             4,
@@ -535,9 +551,13 @@ fn build_section(
             part[0x20 + 4 * a..0x24 + 4 * a].copy_from_slice(&w.to_le_bytes());
         }
         parts.extend(part);
+        // A strip part keeps an empty placeholder subpart, as retail's do
+        // (docs/formats/map-format.md, `MODEL_SECTION`).
         let mut sub = vec![0u8; SUBPART_LEN];
-        put16(&mut sub, 0, first_index as u16);
-        put16(&mut sub, 2, count as u16);
+        if !strips {
+            put16(&mut sub, 0, first_index as u16);
+            put16(&mut sub, 2, count as u16);
+        }
         put16(&mut sub, 4, u16::MAX);
         put16(&mut sub, 6, pi as u16);
         subparts.extend(sub);

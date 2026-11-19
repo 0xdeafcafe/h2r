@@ -6,7 +6,7 @@
 // The golden vectors in test/fixtures/pack, written by the Rust encoder,
 // prove the two agree.
 
-import type { Frame, FrameActor, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer, FrameProjectile, FrameVehicle } from "./types";
+import type { Frame, FrameActor, FrameHit, FrameItem, FrameMachine, FrameObject, FramePlayer, FrameProjectile, FrameVehicle, MachinePosition } from "./types";
 
 /** Version 7 refines linear and angular precision, reuses edit masks and
  *  predicts unchanged motion. Version 6 carries the cinematic bit on every
@@ -98,6 +98,8 @@ export class BitReader {
     }
     return v;
   }
+
+  remaining(): number { return this.end - this.pos; }
 
   bit(): boolean {
     const pos = this.pos;
@@ -758,6 +760,11 @@ export class FrameDecoder {
     if (lists[5]?.length) frame.projectiles = lists[5] === prev.lists[5] ? prior!.projectiles : lists[5].map(projectileFrom);
     if (lists[6]?.length) frame.items = lists[6] === prev.lists[6] ? prior!.items : lists[6].map(itemFrom);
     if (hits.length) frame.hits = hits.map(hitOf);
+    if (version === PACK_VERSION) {
+      const positions = readMachinePositions(r);
+      if (positions) frame.machine_positions = positions;
+      if (keyframe) markMachineBaseline(frame);
+    }
     state.frame = frame;
     if (state.bsp !== null) frame.bsp = state.bsp;
     if (cut !== null) frame.cut = cut;
@@ -765,6 +772,31 @@ export class FrameDecoder {
     this.streams.set(sid, state);
     return frame;
   }
+}
+
+// Keep the full-baseline signal from the v7 keyframe outside the JSON frame.
+const machineBaselines = new WeakSet<Frame>();
+export function isMachineBaseline(frame: Frame): boolean { return machineBaselines.has(frame); }
+/** Restores the v7 keyframe boundary when an archive returns sparse frame JSON. */
+export function markMachineBaseline(frame: Frame): void { machineBaselines.add(frame); }
+
+function readMachinePositions(r: BitReader): MachinePosition[] | undefined {
+  let positions: MachinePosition[] | undefined;
+  if (r.remaining() > 7) {
+    const count = r.eg(2) + 1;
+    if (count > 255) throw new PackError("too many machine positions");
+    positions = [];
+    let next = 0;
+    for (let n = 0; n < count; n++) {
+      const i = next + r.eg(3);
+      if (i > 0x7fff) throw new PackError("machine position index out of range");
+      positions.push({ i, p: r.bits(8) });
+      next = i + 1;
+    }
+  }
+  const padding = r.remaining();
+  if (padding > 7 || r.bits(padding) !== 0) throw new PackError("bad machine position padding");
+  return positions;
 }
 
 /** The records of a container (LEB128 length, then the bytes). */

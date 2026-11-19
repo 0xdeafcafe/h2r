@@ -282,6 +282,37 @@ reaches about a million units; retail Halo 2 skies reach 2.8 million
 (Delta Approach's, 14,200 units at scale 200).
 `real_h1_disc_every_sky_stays_behind_its_level` checks every sky.
 
+### Strips
+
+The sky draw draws every part of the sky's model as a triangle strip,
+whatever the part's flags: `0x0004c690` (called from the sky pass
+`0x0003ede0`) pushes primitive 6 at `0x0004c974` to `DrawIndexedVertices`
+with the part's first index (`+6`) and count (`+8`). **E**. Object models
+go through another draw, which honours the list flag `0x8` (map-format.md,
+"Render-model geometry"), so converted models are lists everywhere else.
+
+Until converter version 93 the sky's parts were lists too. Drawn as strips,
+each triangle was joined to the next two, and `render.frame` on Blood
+Gulch showed the sky's five draws as `TriangleStrip`. The dome's extra
+triangles lie on the dome, so they did not show; the planets are one quad
+each and come out whole. The ring did: its long triangles span the white
+haze where it meets the horizon, its lit inner face and its dark sides, and
+the joins between them drew as white slabs with smeared streaks rising over
+the canyon, the sides as two thin bands crossing overhead. The ring's
+material was right all along (`sotr`, blend 0, one DXT3 atlas at scale 1,
+drawn by `sky_one_alpha_env` from stage 3 with source one and destination
+one minus source alpha: Halo 1's picture and blend).
+
+A sky's model is now converted with `h1models::mode::ModelOptions::strips`:
+each part is Halo 1's own strip behind one repeat of its first index
+(`h1models::h1::h2_strip`). Halo 1's strips have the opposite parity to
+Halo 2's (models.md, "Strips"); the repeat shifts every window by one, so
+Halo 2 reads Halo 1's triangles in order and wound alike, and the first
+window repeats an index and is skipped. Each strip part keeps an empty
+placeholder subpart, as retail's do. `h1convert/tests/bloodgulch_ring.rs`
+converts Blood Gulch onto Coagulation and checks the ring's material and
+that every sky part is a strip of Halo 1's triangles.
+
 ### Edge-on triangles
 
 The triangles `nearest_surface` leaves out are dropped from the converted
@@ -419,6 +450,7 @@ There is no CLI here; the crate is a library step of the campaign import
 cargo test -p h1sky                                   # invented bytes
 H1_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h1
 H2_ISO=<iso> cargo test -p h1sky -- --ignored --nocapture real_h2
+H1_ISO=<iso> H2_DISC=<iso> cargo test --release -p h1convert --test bloodgulch_ring -- --ignored --nocapture
 ```
 
 `real_h1_disc_a30_bloodgulch_round_trip` converts both skies with their

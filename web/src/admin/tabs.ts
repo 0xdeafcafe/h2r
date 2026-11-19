@@ -3,12 +3,13 @@
 // importing an account, the server itself) is on the dashboard's server
 // screens (src/dash/Server.tsx).
 
-export interface AdminTab { id: "motd" | "hopper" | "content"; label: string }
+export interface AdminTab { id: "motd" | "hopper" | "content" | "training"; label: string }
 
 export const ADMIN_TABS: readonly AdminTab[] = [
   { id: "motd", label: "Message of the Day" },
   { id: "hopper", label: "Playlists" },
   { id: "content", label: "Custom content" },
+  { id: "training", label: "Clanker Training" },
 ];
 
 /** The tab a `?tab=` asks for; the first one for anything else (an old

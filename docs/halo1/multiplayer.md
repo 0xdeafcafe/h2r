@@ -1339,11 +1339,10 @@ here; retail's ammunition bags are alpha-tested without a reflection
 too): the plants' and trees' leaves (DXT3, three quarters clear), the
 ammunition bags and the weapon and ammunition decals, which drew as solid
 cards on the opaque copy (a live frame shows the broadleaf's leaves as
-dark green cards). Inferred, not yet shown live: pointing the broadleaf's
-leaf materials at an alpha-tested shader drawing its leaf texture (ours,
-or retail's `br_ammo_bag` with the texture swapped in) left the cards
-whole, so the object path's alpha test, or the live edit reaching it,
-needs its own look. Proof:
+dark green cards). The stem alone still left the cards whole: its depth
+and shadow passes cut by the bump map's alpha, and from converter
+version 92 the bump slot holds a flat bump cut out where the base is
+(objects.md "Cut-out model shaders"). Proof:
 `a_model_shader_tiles_its_detail_by_its_scale`,
 `a_model_shader_cuts_out_where_its_base_is_clear`, and
 `tests/model_shaders_disc.rs`,

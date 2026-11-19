@@ -1623,12 +1623,13 @@ pub const SOSO_NOT_ALPHA_TESTED: u16 = 1 << 2;
 /// [`h1_has_alpha`]) has anything to cut; an opaque one keeps the plain
 /// stem. Before converter version 84 every `soso` drew opaque: Blood
 /// Gulch's leaves are solid dark green cards in a live frame, the clear
-/// part of their texture (62 % of the broadleaf's) drawn too. A cut-out
-/// live is not shown yet: pointing the broadleaf's leaf materials at an
-/// alpha-tested shader drawing its leaf texture (ours, or retail's
-/// `br_ammo_bag` with the texture swapped in) left the cards whole, so
-/// the object path's alpha test (or the edit reaching it) needs a look of
-/// its own.
+/// part of their texture (62 % of the broadleaf's) drawn too. The stem
+/// alone left the cards whole: its depth and shadow passes kill by its
+/// bump map's alpha (slot 0), not the base's, so the object converter
+/// binds a flat bump cut out where the base is
+/// (`h1bitmaps::mask::cutout_bump`, converter version 92; shown live on
+/// Blood Gulch's whitebark tree, docs/halo1/objects.md "Cut-out model
+/// shaders").
 pub fn soso_alpha_tested(flags: u16, base_has_alpha: bool) -> bool {
     flags & SOSO_NOT_ALPHA_TESTED == 0 && base_has_alpha
 }
@@ -2370,6 +2371,13 @@ pub fn rgb_color(c: [f32; 3]) -> u32 {
 /// × 1000>`.
 pub fn brightness_mask_name(name: &str, gain: f32) -> String {
     format!("{name}_brightness_{}", (gain * 1000.0).round() as u32)
+}
+
+/// The name of the bump map cut out by the base map `name`'s alpha that
+/// an alpha-tested model shader binds in its bump slot
+/// (`h1bitmaps::mask::cutout_bump`): `<name>_alpha_test_bump`.
+pub fn cutout_bump_name(name: &str) -> String {
+    format!("{name}_alpha_test_bump")
 }
 
 /// One `sotr` stage's size, and its fields (`d`: the stage): `+0` flags

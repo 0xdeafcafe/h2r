@@ -13,8 +13,8 @@ const RFC = {
 };
 
 describe("the stats admin keeps only Halo's things", () => {
-  test("message of the day, playlists and custom content; no service tabs", () => {
-    expect(ADMIN_TABS.map((t) => t.id)).toEqual(["motd", "hopper", "content"]);
+  test("game tools and Clanker Training; no service tabs", () => {
+    expect(ADMIN_TABS.map((t) => t.id)).toEqual(["motd", "hopper", "content", "training"]);
     expect(ADMIN_TABS.some((t) => /import|account|invite|server/i.test(t.label))).toBe(false);
   });
 

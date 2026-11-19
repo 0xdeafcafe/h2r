@@ -304,6 +304,15 @@ impl Phantoms {
             .and_then(|p| p.info.player)
     }
 
+    pub fn brain_view(&self, handle: PhantomHandle) -> Option<crate::BrainView> {
+        self.lock()
+            .list
+            .iter()
+            .find(|p| p.info.handle == handle)?
+            .source
+            .brain_view()
+    }
+
     /// Marks a phantom failed (the game thread could not make it).
     pub fn fail(&self, handle: PhantomHandle, why: impl Into<String>) {
         if let Some(p) = self

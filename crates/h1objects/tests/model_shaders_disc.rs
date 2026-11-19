@@ -712,3 +712,205 @@ fn bloodgulch_assault_rifle_counter_shows_the_rounds_loaded() {
         eprintln!("material {k} (permutation {p}): {name}, frame from {input}");
     }
 }
+
+/// Blood Gulch's trees and plants: each leaf `soso` (DXT3, three quarters
+/// clear) draws on `tex_bump_alpha_test_single_pass` with its leaf bitmap
+/// in slot 2, the base the colour pass alpha-tests, and in slot 0, the
+/// bump, a flat bump map whose alpha is 0 exactly where the leaf's is
+/// below a half and 255 elsewhere (`h1bitmaps::mask::cutout_bump`). The
+/// stem's depth and shadow passes kill by slot 0's alpha, as retail's
+/// `bush_vine` on coagulation shows: with the default bump there (opaque),
+/// the whitebark's leaf canopies drew as whole, near-black cards
+/// (converter version 92).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha() {
+    use std::collections::HashSet;
+    use tags::defs::{Target, Val};
+    use tags::material::{ShaderLibrary, TextureSource};
+    let h1 = h1_map("bloodgulch");
+    let mut base_map = h2_map("coagulation");
+
+    // Retail: on the cut-out stem, the stages that alpha-kill sample
+    // bitmap 0 (bush_vine_bmp) and the alpha-tested passes sample
+    // bitmap 2 (bush_vine) at stage 0.
+    let vine = base_map
+        .tag(map::TagQuery::NameInGroup(
+            "scenarios\\objects\\nature\\trees\\bush_vine\\shaders\\bush_vine",
+            tags::shader::SHAD,
+        ))
+        .expect("coagulation's bush_vine")
+        .id;
+    let mut lib = ShaderLibrary::read(&mut base_map).unwrap();
+    let slots: Vec<TagId> = {
+        let s = lib.shader(vine).unwrap();
+        s.compiled()
+            .unwrap()
+            .bitmaps
+            .iter()
+            .map(|b| b.bitmap)
+            .collect()
+    };
+    let m = lib.material(vine, None).unwrap();
+    let (mut killed, mut tested) = (HashSet::new(), HashSet::new());
+    for i in m
+        .layers
+        .iter()
+        .flat_map(|l| &l.passes)
+        .flat_map(|p| &p.implementations)
+    {
+        let alpha_test = i.render_states.iter().any(|r| {
+            tags::shader::render_state_name(r.state) == Some("ALPHATESTENABLE") && r.value != 0
+        });
+        for (st, t) in i.textures.iter().enumerate() {
+            let Some(TextureSource::Bitmap { bitmap, .. }) = t.as_ref().map(|t| t.source) else {
+                continue;
+            };
+            if i.stage_states
+                .get(st)
+                .is_some_and(|s| s.alpha_kill & 4 != 0)
+            {
+                killed.insert(bitmap);
+            }
+            if alpha_test && st == 0 {
+                tested.insert(bitmap);
+            }
+        }
+    }
+    assert_eq!(
+        killed,
+        HashSet::from([slots[0]]),
+        "the depth passes kill by the bump"
+    );
+    assert_eq!(
+        tested,
+        HashSet::from([slots[2]]),
+        "the colour pass tests the base"
+    );
+
+    let library = h1convert::shad::Library::read(&mut base_map);
+    let cut = library
+        .stem(&h1convert::shad::TEX_BUMP_ALPHA_TEST)
+        .expect("the base has tex_bump_alpha_test_single_pass");
+    let base = Base::read(&mut base_map).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    for name in [
+        "scenery\\trees\\tree_desert_whitebark\\tree_desert_whitebark",
+        "scenery\\trees\\tree_desert_dead\\tree_desert_dead",
+        "scenery\\shrubs\\shrub_large\\shrub_large",
+        "scenery\\plants\\plant fern\\plant fern",
+        "scenery\\plants\\plant_broadleaf_short\\plant_broadleaf_short",
+    ] {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.group == Group::new(b"scen") && t.name == name)
+            .unwrap_or_else(|| panic!("{name}"));
+        conv.object(t).unwrap();
+    }
+    let tree = &conv.tree;
+    let named = |id: TagId| {
+        (id.0 & 0xffff_0000 == local(0).0 & 0xffff_0000)
+            .then(|| {
+                tree.tags
+                    .get((id.0 & 0xffff) as usize)
+                    .map(|(n, _)| n.as_str())
+            })
+            .flatten()
+    };
+    let leaves = [
+        "scenery\\trees\\tree_desert_whitebark\\shaders\\whitebark_leaves",
+        "scenery\\trees\\tree_leafy\\shaders\\tree_leafy_leaves",
+        "scenery\\plants\\plant fern\\shaders\\plant fern",
+        "scenery\\plants\\plant_broadleaf_tall\\shaders\\broadleaf top",
+        "scenery\\plants\\plant_broadleaf_tall\\shaders\\broadleaf bottom",
+    ];
+    let mut seen = Vec::new();
+    for (name, c) in tree.tags.iter().filter(|(_, c)| c.group.0 == *b"shad") {
+        let mut refs = Vec::new();
+        tag_refs(&c.root, &mut refs);
+        if !refs.contains(&cut) {
+            assert!(!leaves.contains(&name.as_str()), "{name}: alpha-tested");
+            continue;
+        }
+        let rec = tags::defs::from_built(h1convert::shad::shad_def(), &c.root).unwrap();
+        let slot = |k: usize| match rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap")) {
+            Some(Val::Datum(Target::Id(id))) => named(*id),
+            _ => None,
+        };
+        let leaf = slot(2).unwrap_or_else(|| panic!("{name}: its own base in slot 2"));
+        let bump = slot(0)
+            .unwrap_or_else(|| panic!("{name}: a bump of its own in slot 0, not the default"));
+        eprintln!("{name}: base {leaf}, bump {bump}");
+        assert_eq!(bump, h1convert::shad::cutout_bump_name(leaf), "{name}");
+        leaf_alpha_cuts_the_bump(&h1, tree, leaf, bump);
+        seen.push(name.as_str());
+    }
+    for l in leaves {
+        assert!(
+            seen.contains(&l),
+            "{l}: on the cut-out stem with its cut-out bump"
+        );
+    }
+}
+
+/// The converted bump `bump` (in `tree`) is DXT5 of the Halo 1 leaf
+/// bitmap `leaf`'s size and chain, its top level's alpha 0 exactly where
+/// the leaf's is below 128 and 255 elsewhere, every texel the flat normal.
+fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &str, bump: &str) {
+    use h1bitmaps::BitmapExt;
+    let (_, conv) = tree.tags.iter().find(|(n, _)| n == bump).expect("the bump");
+    assert_eq!(conv.group.0, *b"bitm");
+    let images = conv
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            FixupKind::Block { child, .. } if f.offset == 0x44 => Some(child),
+            _ => None,
+        })
+        .expect("images block");
+    let img = h1map::bitmap::Image::parse(&images.bytes).unwrap();
+    assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == leaf && t.group == Group::new(b"bitm"))
+        .unwrap();
+    let source = h1map::bitmap::Bitmap::read(h1, t).unwrap();
+    let s = &source.images[0];
+    assert_eq!(
+        (img.width, img.height, img.mip_count),
+        (s.width, s.height, s.mip_count)
+    );
+    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let top = got.iter().find(|l| l.level == 0 && l.face == 0).unwrap();
+    let want = source.decode(h1, 0, 0).unwrap();
+    assert_eq!((top.width, top.height), (want.width, want.height));
+    let n = (top.width * top.height) as usize;
+    let mut clear = 0;
+    for k in 0..n {
+        let a = want.rgba[k * 4 + 3];
+        let expect = if a >= h1bitmaps::mask::CUTOUT_THRESHOLD {
+            255
+        } else {
+            0
+        };
+        assert_eq!(
+            top.rgba[k * 4 + 3],
+            expect,
+            "{bump} texel {k}: leaf alpha {a}"
+        );
+        let normal = &top.rgba[k * 4..k * 4 + 3];
+        assert!(
+            normal[0].abs_diff(128) <= 1 && normal[1].abs_diff(128) <= 1 && normal[2] == 255,
+            "{normal:?}"
+        );
+        clear += usize::from(expect == 0);
+    }
+    eprintln!("{bump}: {clear} of {n} texels cut");
+    assert!(
+        clear > n / 4 && clear < n,
+        "{leaf}: a cut-out, not all or nothing"
+    );
+}

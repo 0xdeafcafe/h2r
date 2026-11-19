@@ -5,11 +5,13 @@
 //! where to go relative to where the player looks, and the vehicle turns
 //! to go there. So the driver looks where it wants to go (a carrot down
 //! the route, or the infantry it means to run over) and pushes the stick
-//! that way, as on foot; its speed comes down for a sharp turn. The nav
-//! mesh is the bipeds' (section 3.2): a vehicle follows the same paths
-//! with a wider reach and a look-ahead.
+//! that way, as on foot; its speed comes down for a sharp turn. Ground
+//! routes use chassis-width walk portals, with room for the wheels and
+//! hull checked again before cutting a corner.
 
+use super::Spec;
 use crate::brain::Vec3;
+use crate::cache::MapData;
 
 /// A route point within this (XY) is passed.
 pub const REACHED: f32 = 1.5;
@@ -99,6 +101,79 @@ impl Route {
                 .unwrap_or(first),
         )
     }
+
+    /// Follow the route in order. Only cut a corner if the direct span
+    /// still fits the chassis, even when a waypoint is already nearby.
+    pub fn carrot_clear(&mut self, at: Vec3, clear: impl Fn(Vec3) -> bool) -> Option<Vec3> {
+        while self.next + 1 < self.points.len()
+            && dist_xy(at, self.points[self.next]) < REACHED
+            && clear(self.points[self.next + 1])
+        {
+            self.next += 1;
+        }
+        let first = *self.points.get(self.next)?;
+        if self.next + 1 == self.points.len() && dist_xy(at, first) <= ARRIVED {
+            self.next += 1;
+            return None;
+        }
+        if !clear(first) {
+            return None;
+        }
+        Some(
+            self.points[self.next + 1..]
+                .iter()
+                .copied()
+                .take(3)
+                .take_while(|p| dist_xy(*p, at) <= CARROT && clear(*p))
+                .last()
+                .unwrap_or(first),
+        )
+    }
+}
+
+/// The lanes under the wheels and hull all stay on drivable ground, and
+/// the chassis fits under overhead geometry and between walls.
+pub fn clear(map: &MapData, spec: Spec, from: Vec3, to: Vec3) -> bool {
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let length = dx.hypot(dy);
+    if length < 0.01 {
+        return true;
+    }
+    let side = [
+        -dy * spec.half_width / length,
+        dx * spec.half_width / length,
+    ];
+    let Some((_, center)) = map.nav.nearest(from, 0.25, 0.45, 1.5) else {
+        return false;
+    };
+    let steps = (length / 0.45).ceil() as u32;
+    for lane in [-1.0, 0.0, 1.0] {
+        let [sx, sy] = side.map(|v| lane * v);
+        let mut last = None;
+        let mut z = center[2];
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let probe = [from[0] + dx * t + sx, from[1] + dy * t + sy, z + 0.35];
+            let Some(poly) = map.nav.locate(probe, 0.70) else {
+                return false;
+            };
+            let floor = map.nav.polys[poly as usize].z_at(probe);
+            let q = [probe[0], probe[1], floor];
+            let up = |p: Vec3, h: f32| [p[0], p[1], p[2] + h];
+            if !map.walls.clear(up(q, 0.12), up(q, spec.height))
+                || last.is_some_and(|p| {
+                    !map.walls.clear(up(p, 0.26), up(q, 0.26))
+                        || !map.walls.clear(up(p, spec.height), up(q, spec.height))
+                })
+            {
+                return false;
+            }
+            last = Some(q);
+            z = floor;
+        }
+    }
+    true
 }
 
 /// How far the throttle goes for a turn `off` radians from the aim.
@@ -194,6 +269,7 @@ pub enum Leave {
     Stranded,
     /// Where it was going needs feet.
     There,
+    Flanked,
 }
 
 pub fn leave(r: &Ride) -> Option<Leave> {

@@ -10,6 +10,7 @@
 
 import { deflateSync } from "node:zlib";
 import { EMBLEM_COLOURS, type GameArtManifest } from "../src/lib/gameart";
+import { compositeEmblem, mockEmblemSpec } from "./emblem";
 import { MAPS } from "./maps";
 import { LEVELS } from "./coop";
 
@@ -213,6 +214,7 @@ export interface MockGameArt {
   manifest: GameArtManifest;
   /** The bytes of a file the manifest names, or null. */
   file(name: string): Promise<{ bytes: Uint8Array; type: string } | null>;
+  emblem(path: string): Uint8Array | null;
 }
 
 /** Builds the fake manifest. `packDir` is web/public/art. Pictures are drawn
@@ -268,6 +270,11 @@ export function mockGameArt(packDir: string): MockGameArt {
   const done = new Map<string, Promise<Uint8Array>>();
   return {
     manifest,
+    emblem(path) {
+      const spec = mockEmblemSpec(path, manifest);
+      if (!spec) return null;
+      return encodePng(compositeEmblem(background(spec.bg), foreground(spec.fg), spec), 96, 96);
+    },
     async file(name) {
       const draw = make.get(name);
       if (!draw) return null;

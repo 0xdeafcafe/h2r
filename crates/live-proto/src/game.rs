@@ -105,9 +105,35 @@ impl Appearance {
     }
 }
 
+/// Private headless simulation metadata carried by the normal game start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimGame {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    /// Decimal u64, including seeds larger than JavaScript's exact integer range.
+    pub seed: String,
+    pub gametype: String,
+    pub pace: String,
+    /// Resolved bot specs from the match config, with inline tuning.
+    pub bots: Vec<serde_json::Value>,
+    /// This match's recording is sent after simulation finishes.
+    #[serde(default)]
+    pub deferred: bool,
+}
+
+/// Sim recordings' stable game id, also used when retrying a start.
+pub fn sim_game_id(run_id: &str) -> String {
+    format!("sim-{run_id}")
+}
+
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewGame {
+    /// Present only for private admin training games.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimGame>,
+
     #[serde(default)]
     pub console: Option<String>,
     pub map: String,
@@ -451,6 +477,8 @@ pub const MAX_FRAME_ACTIONS: usize = 8;
 pub const MAX_FRAME_HITS: usize = 64;
 /// Most machines one frame may carry.
 pub const MAX_FRAME_MACHINES: usize = 128;
+/// Most placed devices whose travel is retained, fitting the packed count byte.
+pub const MAX_MACHINE_POSITIONS: usize = u8::MAX as usize;
 /// Fastest `speed` accepted, game units a second.
 pub const MAX_FRAME_SPEED: f64 = 1000.0;
 
@@ -490,10 +518,13 @@ pub struct Frame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bsp: Option<u32>,
     /// Machines (doors, elevators, the scarab, ...) that moved since the
-    /// previous frame; all of them in a game's first frame and in every
-    /// recorded frame. At most [`MAX_FRAME_MACHINES`].
+    /// previous frame; all of them in a game's first frame and at chunk
+    /// starts. At most [`MAX_FRAME_MACHINES`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<FrameMachine>,
+    /// Changed travel values for placed machines, keyed by scenario index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub machine_positions: Vec<MachinePosition>,
     /// Scenario placements that are not where the scenario put them: moved
     /// by more than a small epsilon, or gone (destroyed, picked up, not
     /// created). Every such placement, each frame, ordered by kind then
@@ -702,6 +733,15 @@ pub struct FrameHit {
     pub ago: Option<u32>,
 }
 
+/// A placed machine's travel, independent of its world pose and tag name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MachinePosition {
+    /// Index into the scenario's machine placements.
+    pub i: u16,
+    /// Normalized device position, rounded to 0..255.
+    pub p: u8,
+}
+
 /// A device machine or other big scripted mover.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FrameMachine {
@@ -716,7 +756,7 @@ pub struct FrameMachine {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub up: [f64; 3],
-    /// Device position, 0 to 1 (door or elevator travel).
+    /// Legacy device position, 0 to 1. New senders use `Frame::machine_positions`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<f64>,
 }
@@ -1169,6 +1209,17 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
     if frame.machines.len() > MAX_FRAME_MACHINES {
         return Err(format!("at most {MAX_FRAME_MACHINES} machines"));
     }
+    if frame.machine_positions.len() > MAX_MACHINE_POSITIONS {
+        return Err(format!("at most {MAX_MACHINE_POSITIONS} machine positions"));
+    }
+    if frame
+        .machine_positions
+        .iter()
+        .any(|m| m.i > i16::MAX as u16)
+        || frame.machine_positions.windows(2).any(|w| w[0].i >= w[1].i)
+    {
+        return Err("machine positions must be ordered by placement index, each once".into());
+    }
     validate_objects(&frame.objects)?;
     validate_projectiles(&frame.projectiles)?;
     validate_items(&frame.items)?;
@@ -1354,6 +1405,7 @@ pub struct FrameCarry {
     actions: Vec<(Shooter, Vec<(String, Option<u64>)>)>,
     hits: Vec<(FrameHit, Option<u64>)>,
     machines: Vec<FrameMachine>,
+    machine_positions: Vec<MachinePosition>,
     cut: Option<u64>,
 }
 
@@ -1414,8 +1466,19 @@ impl FrameCarry {
             }
         }
         if frame.cut.is_some() {
+            self.machine_positions.clear();
             self.cut = frame.cut;
         }
+        if !frame.machine_positions.is_empty() {
+            let mut positions = frame.machine_positions.clone();
+            merge_machine_positions(&mut positions, self.machine_positions.drain(..));
+            self.machine_positions = positions;
+        }
+    }
+
+    /// A fresh machine baseline supersedes travel in throttled frames.
+    pub fn clear_machine_positions(&mut self) {
+        self.machine_positions.clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1424,7 +1487,23 @@ impl FrameCarry {
             && self.actions.is_empty()
             && self.hits.is_empty()
             && self.machines.is_empty()
+            && self.machine_positions.is_empty()
             && self.cut.is_none()
+    }
+}
+
+/// Keep newer device samples when folding in the preceding frame.
+fn merge_machine_positions(
+    newer: &mut Vec<MachinePosition>,
+    earlier: impl IntoIterator<Item = MachinePosition>,
+) {
+    for m in earlier {
+        if newer.len() >= MAX_MACHINE_POSITIONS {
+            break;
+        }
+        if let Err(i) = newer.binary_search_by_key(&m.i, |p| p.i) {
+            newer.insert(i, m);
+        }
     }
 }
 
@@ -1560,6 +1639,7 @@ impl Frame {
             }
         }
         if self.cut.is_none() {
+            merge_machine_positions(&mut self.machine_positions, carry.machine_positions);
             self.cut = carry.cut;
         }
     }

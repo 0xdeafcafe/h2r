@@ -900,7 +900,7 @@ pub fn gltf_trs(m: &Mat4) -> ([f32; 3], [f32; 4]) {
 }
 
 /// A game-space frame in glTF axes, as a matrix.
-fn to_gltf_frame(m: &Mat4) -> Mat4 {
+pub(crate) fn to_gltf_frame(m: &Mat4) -> Mat4 {
     mat_mul(&mat_mul(&AXES, m), &invert_rigid(&AXES))
 }
 
@@ -2343,7 +2343,7 @@ const BIPD: FourCC = FourCC(*b"bipd");
 const WEAP: FourCC = FourCC(*b"weap");
 
 /// Raw blocks and animation resources through the art extractor's files.
-struct Res<'a>(&'a mut ResourceFiles);
+pub(crate) struct Res<'a>(pub(crate) &'a mut ResourceFiles);
 impl Res<'_> {
     fn read(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
         self.0.read(p.file, p.offset, size).map_err(|e| match e {
@@ -2641,7 +2641,7 @@ pub fn vertex_nodes(node_map: &[u8], local: Option<[u8; 4]>) -> [usize; 4] {
 
 /// The pieces of the chosen sections, with section-local node indices
 /// mapped to model nodes and unused vertices dropped.
-fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<Piece> {
+pub(crate) fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<Piece> {
     let mut out = Vec::new();
     for &si in sections {
         let Some(section) = geo.sections.get(si) else {

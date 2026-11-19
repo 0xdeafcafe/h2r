@@ -1,7 +1,9 @@
+import { compositeEmblem } from "../mock/emblem";
+import { emblemPath } from "../src/lib/emblem";
 import { describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import {
-  compositeEmblem, countKeys, emblemCacheKey, emblemChoice, gameArt, gameArtRoot, gametypeKey, levelForExp,
+  countKeys, emblemChoice, gameArt, gameArtRoot, gametypeKey, levelForExp,
   artBase, emblemFromIndices, emblemPalette, loadGameArt, mapKey, normaliseMask, medalKey, weaponKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
 } from "../src/lib/gameart";
 import { MEDALS, RANKS } from "../src/state/derive";
@@ -219,7 +221,7 @@ describe("emblem compositing", () => {
       expect(e.secondary).not.toBe(e.primary);
       expect(e.background).not.toBe(e.primary);
       expect(e.background2).not.toBe(e.background);
-      seen.add(emblemCacheKey(e));
+      seen.add(emblemPath("seed", null, e));
     }
     expect(seen.size).toBeGreaterThan(190);
     const few = emblemChoice("x", 3, 2);
@@ -244,9 +246,9 @@ describe("emblem compositing", () => {
 
   test("the cache key tells layers and colours apart", () => {
     const e: EmblemSpec = { fg: 1, bg: 2, primary: [1, 2, 3], secondary: [4, 5, 6], background: [7, 8, 9], background2: [0, 0, 0] };
-    expect(emblemCacheKey(e)).toBe(emblemCacheKey({ ...e }));
-    expect(emblemCacheKey({ ...e, fg: 2 })).not.toBe(emblemCacheKey(e));
-    expect(emblemCacheKey({ ...e, primary: [1, 2, 4] })).not.toBe(emblemCacheKey(e));
+    expect(emblemPath("p", null, e)).toBe(emblemPath("p", null, { ...e }));
+    expect(emblemPath("p", null, { ...e, fg: 2 })).not.toBe(emblemPath("p", null, e));
+    expect(emblemPath("p", null, { ...e, primary: [1, 2, 4] })).not.toBe(emblemPath("p", null, e));
     expect(parseHexColour("#ff8000")).toEqual([255, 128, 0]);
     expect(parseHexColour("nope")).toBeNull();
   });

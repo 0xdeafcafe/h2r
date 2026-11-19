@@ -2,7 +2,7 @@ import { gameMapTitle, packageLookup } from "../state/maps";
 import { isHalo1Map, mapTitle } from "../state/gameart";
 import { identity } from "../state/identity";
 import { reportMap } from "../admin/content";
-import { For, Show, createMemo, createSignal, createEffect, on } from "solid-js";
+import { For, Show, createMemo, createSignal, createEffect, on, onCleanup } from "solid-js";
 import { A, useParams, useSearchParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { isCampaign, type GameState, type Kill } from "../state/reducer";
@@ -26,6 +26,8 @@ import { TICKS_PER_SECOND } from "../state/frames";
 import GameViewer from "../viewer/GameViewer";
 import Transport, { replayKey } from "../viewer/Transport";
 import { createReplaySession } from "../viewer/session";
+import { emblemOrigin } from "../lib/emblem";
+import { gameHeaderModel, showGameHeader } from "./gameHeader";
 import "../styles/stats-game.css";
 import { STATS_ROOT, statsPath } from "../routes";
 
@@ -39,6 +41,16 @@ export default function Game() {
     if (mode === "snapshot") return;
     void live.ensureGame(id).then((ok) => setMissing(!ok && !live.state.games[id]));
   }));
+  // The pre-rendered header above the app (gameHeader.ts): kept as the
+  // page shipped it while it is still this game, rewritten in place when
+  // the game moves on, hidden when there is no game to show.
+  createEffect(() => {
+    const g = game();
+    if (g) showGameHeader(gameHeaderModel(g, emblemOrigin(live.server().base, location.origin)));
+    else if (missing()) showGameHeader(null);
+    else showGameHeader(undefined);
+  });
+  onCleanup(() => showGameHeader(null));
   const crumb = () => {
     const g = game();
     if (g?.status !== "ended") return "Game Details";
@@ -200,7 +212,8 @@ function Side(props: { game: GameState; scores: GameState; kills: Kill[]; at?: s
   );
 }
 
-function GameView(props: { game: GameState }) {
+/** The shared live and recorded game viewer, also embedded in Uplink. */
+export function GameView(props: { game: GameState; embedded?: boolean }) {
   const [search] = useSearchParams<{ t?: string | string[] }>();
   const [hover, setHover] = createSignal<number | null>(null);
   const roster = createMemo(() => rosterFor(props.game));
@@ -252,7 +265,7 @@ function GameView(props: { game: GameState }) {
 
   return (
     <>
-      <PageTitle />
+      <Show when={!props.embedded}><PageTitle /></Show>
       <GameViewer
         game={props.game}
         title={viewerTitle(props.game)}
@@ -269,14 +282,16 @@ function GameView(props: { game: GameState }) {
       >
         <Legend game={props.game} />
       </GameViewer>
-      <Side
-        game={props.game}
-        scores={snapshot()}
-        kills={kills()}
-        at={isLive() || !timeline()?.frames.length ? undefined : `at ${clock((tick() - timeline()!.startTick) / TICKS_PER_SECOND)}`}
-        onHover={setHover}
-      />
-      <Overview game={props.game} />
+      <Show when={!props.embedded}>
+        <Side
+          game={props.game}
+          scores={snapshot()}
+          kills={kills()}
+          at={isLive() || !timeline()?.frames.length ? undefined : `at ${clock((tick() - timeline()!.startTick) / TICKS_PER_SECOND)}`}
+          onHover={setHover}
+        />
+        <Overview game={props.game} />
+      </Show>
     </>
   );
 }

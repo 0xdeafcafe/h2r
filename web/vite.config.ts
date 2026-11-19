@@ -19,6 +19,7 @@ export default defineConfig({
       // Optional game art; no forwarding headers, so a local server still sees a loopback client.
       // H2_GAME_ART_URL points just this at another server (say, a real one beside the mock).
       "/art/game": { target: process.env.H2_GAME_ART_URL ?? mock },
+      "^/art/emblem/": { target: process.env.H2_GAME_ART_URL ?? mock },
     },
   },
   build: {
