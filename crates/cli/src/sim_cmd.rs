@@ -49,9 +49,9 @@ Choose a stored admin account with --as, or leave it off if there is only one.
 child processes, --parallel at once (default: half the cores), each with its own
 data directory under <out>/runs/<id>/ (removed after unless --keep-data;
 its bots/ linked to --data's), and writes <out>/compare.json and
-compare.txt. With mode = "seat_swap" each combination plays twice, once
+compare.txt. With mode = \"seat_swap\" each combination plays twice, once
 with each seat layout, and compare.json includes their paired differences.
-With mode = "arm_swap" each plays twice with the arms exchanged, so both
+With mode = \"arm_swap\" each plays twice with the arms exchanged, so both
 arms play every seat. skills = [...] adds a run per skill with every bot
 at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
