@@ -536,83 +536,45 @@ impl LightSet {
         Some((group, prepared))
     }
 
-    /// Records `draws` into `pass` (the world's vertex and index buffers
-    /// bound), after [`Self::prepare`]. Returns how many ranges were drawn.
-    fn record(
-        pass: &mut wgpu::RenderPass<'_>,
-        uniforms: &wgpu::BindGroup,
-        prepared: &[Prepared],
-    ) -> usize {
-        let mut drawn = 0;
-        for p in prepared {
-            pass.set_pipeline(&p.pipeline);
-            pass.set_bind_group(0, uniforms, &p.offsets);
-            pass.set_bind_group(1, &p.textures, &[]);
-            pass.set_blend_constant(p.blend_constant);
-            for r in &p.ranges {
-                pass.draw_indexed(r.clone(), 0, 0..1);
-                drawn += 1;
-            }
-        }
-        drawn
-    }
-
-    /// [`Self::prepare`] then [`Self::record`] in one render pass over
-    /// `color` and `depth` (both loaded and kept), the viewport the whole
-    /// target as the programs expect.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        vertices: &wgpu::Buffer,
-        indices: &wgpu::Buffer,
-        color: &wgpu::TextureView,
-        color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
-        depth_format: wgpu::TextureFormat,
-        target_size: (u32, u32),
-        view: &ViewInputs,
-        draws: &[LightDraw<'_>],
-        stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
+    /// Record each blend group before the guest can consume any entries.
+    /// The enclosing pass supplies its scissor and dynamic blend constant.
+    pub fn bundles(&mut self, device: &wgpu::Device, queue: &wgpu::Queue,
+        vertices: &wgpu::Buffer, indices: &wgpu::Buffer,
+        color: wgpu::TextureFormat, depth: wgpu::TextureFormat, view: &ViewInputs,
+        draws: &[LightDraw<'_>], stage_image: &mut dyn FnMut(usize, LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> usize {
-        let Some((uniforms, prepared)) = self.prepare(device, queue, color_format, depth_format, view, draws, stage_image, gel_image) else {
-            return 0;
-        };
-        let has_stencil = depth_format.has_stencil_aspect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native lights"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
+    ) -> Option<LightBundles> {
+        let (uniforms, prepared) = self.prepare(device, queue, color, depth, view, draws, stage_image, gel_image)?;
+        if vertices.size() == 0 || indices.size() == 0 { return None; }
+        let mut groups = Vec::with_capacity(prepared.len());
+        let mut ranges = 0;
+        for draw in &prepared {
+            let mut bundle = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                label: Some("native light geometry"), color_formats: &[Some(color)],
+                depth_stencil: Some(wgpu::RenderBundleDepthStencil {
+                    format: depth, depth_read_only: false, stencil_read_only: !depth.has_stencil_aspect(),
                 }),
-                stencil_ops: has_stencil.then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-        Self::record(&mut pass, &uniforms, &prepared)
+                sample_count: 1, multiview: None,
+            });
+            bundle.set_vertex_buffer(0, vertices.slice(..));
+            bundle.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            bundle.set_pipeline(&draw.pipeline);
+            bundle.set_bind_group(0, &uniforms, &draw.offsets);
+            bundle.set_bind_group(1, &draw.textures, &[]);
+            for range in &draw.ranges {
+                if range.is_empty() || u64::from(range.end) > indices.size() / 4 { return None; }
+                bundle.draw_indexed(range.clone(), 0, 0..1);
+                ranges += 1;
+            }
+            groups.push((draw.blend_constant, bundle.finish(&Default::default())));
+        }
+        Some(LightBundles { groups, ranges })
     }
+}
+
+pub struct LightBundles {
+    pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
+    pub ranges: usize,
 }
 
 #[cfg(test)]

@@ -1615,6 +1615,16 @@ impl<B: Backend> Device<B> {
         Ok(Some((bound, pieces)))
     }
 
+    /// The projected, guest-rounded rectangle after SetScissors. A
+    /// disjoint window would need several scissored draws.
+    pub fn light_scissor(&self, mem: &dyn GuestMemory) -> Result<[u32; 4], &'static str> {
+        match self.draw_clip(mem).map_err(|_| "unreadable light scissor")? {
+            None => Ok([0; 4]),
+            Some((r, pieces)) if pieces.is_empty() => Ok([r.x, r.y, r.width, r.height]),
+            Some(_) => Err("light uses disjoint window clips"),
+        }
+    }
+
     /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,
     /// Z, Stencil`).
     #[allow(clippy::too_many_arguments)] // the D3D signature

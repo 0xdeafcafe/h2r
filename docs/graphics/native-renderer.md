@@ -1636,71 +1636,44 @@ definition flags).
 
 ### Skip point and order
 
-One `before` on `RENDER_LIGHT_PASSES`, context-only: for a light the
-host draws (`native_render::lights::Light`, the record copied with
-`feature::native_lights::read_light` and its checks), it answers
-`ret 0x10`, so none of the light's layers is built or drawn. It does the
-passes' tail first, so a skipped light leaves what a drawn one does,
-whatever the state it found (after layer 7, stencil may still be on):
+The observer at `RENDER_LIGHT_PASSES` captures the light and lets its body
+run. The guest projects its bounding sphere, sets the scissor, produces
+any shader gel, selects the layer, runs the build callbacks and sorts
+their output. The native decision is at the first BSP geometry handler
+called from the sorted dispatch loop (`0x0004d0b0`, return
+`0x0003bc90`). The owning light-layer call site and list must match.
+The original layer setup, teardown and light tail run on both paths.
 
-- the device side, through the host (`Host::tail`, which calls
-  `d3d::Device::light_passes_tail` at that point of the render, so in
-  render order): what is queued drains as before any entry, then
-  `SetRenderState_StencilEnable(FALSE)` and `SetScissors(0, FALSE, NULL)`
-  through the code their entries run, and the game's depth-clip restore
-  `0x00015720` (the words at `0x00485adc`/`0x00485ae0` into the
-  programmable clip range, its game-owned bit, the viewport fragment
-  `0x3f6190` at the put pointer). A push-buffer callback queued first, or
-  no push-buffer room, refuses the tail with nothing set and the light
-  keeps its D3D passes (d3d's `light_tail` test: the same device, guest
-  globals, push buffer and next draw as the game's tail);
-- then the guest words the tail zeroes (`lights::TAIL_ZEROES`:
-  `0x004858bc`, `0x004b843c` and the per-light flags `0x004ba014`,
-  `0x004ba018`), in the memory the hook's context sees (the render's
-  snapshot on the render thread), as the world's mask restores are.
+`light_list::sorted` reads the dispatcher's stack array, skips its
+`[[entry+0x10]+0x100] == -1` exclusions and retains its exact order,
+duplicates, handler records and implementation bytes. A light with an
+earlier executed handler, shadow or stencil work, layer 14, or two active
+light layers stays on D3D. Each layer builds a different sorted array;
+the second array cannot be confirmed at the first dispatch.
 
-The tail's last call, the view's target back (`0x00014bc0` with
-`[0x004858b8]`), is not repeated: a skipped light never moved the target.
-Every way into the call should leave the view's target bound (the layer
-begins draw every layer but 10 into `[0x004858b8]`, and layer 10's users,
-this tail and the object shadows', set it back), and a guard makes it
-so: the observer before `RENDER_DYNAMIC_LIGHTS` records the device's
-bound target (`Host::target`, `d3d::Device::bound_target`: colour and
-depth surfaces and viewport), and a light whose call finds another bound
-keeps its D3D passes (`native_lights::target_refusals` counts them; a
-steady count in the A/B says the reasoning was wrong). The gather before
-the call still runs (its CPU, 1.88 ms on the census run, is the next
-target, below).
-
-The feature can group consecutive lights in a `lights::Run`. For the
-first parity run the GPU host seals each light at the hook, after earlier
-push commands and before the guest can skip it. The threaded backend
-returns the encoder's decision. A refused target, an intervening push
-callback or a pass that records zero ranges leaves the original running.
-This costs one render-thread round trip per native light. It waits for
-CPU command recording, not GPU completion. The run owns this light's
-frame from the render snapshot taken after the re-pose.
-
-Both hooks are context-only with nothing after a body, so the pipelined
-render runs them on its own thread. With `render-timing` on the feature
-places nothing: its timer on the light passes needs their end, which a
-skipped light never reaches.
+The host reserves every range on the bound reference and each required
+display copy. It then advances the guest dispatch cursor with one checked
+stack write and a register update, and commits the reservation. A refused
+copy or failed write drops all recordings. Adjacent whole lights with the
+same gel and attachments can share one load/store pass. Guest draws,
+clears, a view change, light fallback and shadow or gel dependencies end a
+run. The GPU keeps each light's scissor, draw and blend order. Threaded
+preparation still waits synchronously for each reservation.
 
 ### What a native light draws
 
-- **Geometry.** At entry to `RENDER_LIGHT_PASSES`, the host reads the
-  active suffix of the gathered list. The list OR, each item's layer
-  bits and the light's flags select the requested passes. Each eligible
-  item names a BSP cluster, section part and full shader datum. The host
-  preserves item order within each layer and draws diffuse before specular.
-  A placement needs rigid-classification code and its model rows. A model
-  needs Stage 2 geometry and node matrices. Either keeps a whole light on D3D.
-- **Shading.** The material implementation selects the program, textures
-  and pipeline state. Each draw receives the view constants, the light's
-  36 frame words in `c[31..39]` and its material colour bindings. The host
-  takes the W-buffer range and clamp from the device and snapshots inherited
-  culling for each light. It currently draws the full view. The projected
-  per-light scissor is still outstanding.
+- **Geometry.** The gathered BSP owner, part and full material datum must
+  match a resident cluster draw. The handler's selected implementation
+  chooses the program. Models and rigid placements retain their D3D
+  handlers. A split may consume a contiguous native prefix. All remaining
+  entries run in guest order, even when one shares a shader with the prefix.
+- **Shading.** Each draw takes its view constants and W range at issue,
+  the light's 36 frame words in `c[31..39]`, material colours and
+  inherited device culling. The guest runs the sphere projection and
+  rounds its rectangle before this hook. The host reads that integer
+  device scissor, intersects the viewport and scales the half-open
+  rectangle independently for each copy. Empty rectangles cover no pixels.
+
 - **Shadows.** Layer 10's casters into a depth texture of our own from
   the light's projection (`0x00048ee0`, skipped with the call, so ported
   as a pure function), then the shadow term sampled in the light's own
@@ -1710,10 +1683,9 @@ skipped light never reaches.
 
 ### Order of work
 
-1. **The skip and the runs** (built: `feature::native_lights`,
-   `native_render::lights`, `impl.render.native_lights`, off by default;
-   points `RENDER_DYNAMIC_LIGHTS` and `RENDER_LIGHT_PASSES`). Each run owns
-   the plans admitted in step 3 until the device issues its external pass.
+1. **Admission and runs** (built, parity pending). Enable
+   `impl.render.native_lights` to reserve sorted cluster dispatches.
+   Positive admitted and per-copy recorded ranges establish coverage.
 2. **The light's constants**: trace `0x0004a1e0` and `0x00048ee0` and
    port them as pure functions of `Light` and the `ligh` definition, with
    tests against invented lights. `0x0004a1e0` and `0x000497a0` are done
@@ -1863,7 +1835,8 @@ skipped light never reaches.
      `c[40]`..`c[48]` the same way. A skipped light uploads nothing, so the
      host fills those registers from `LightGlobals::frame_constants`. The
      same function then, for a definition with a `shad` at `+0xdc`/`+0xe0`,
-     draws that shader into render target 13 (`0x00016610` with layer 13,
+     draws that shader into render target 13 (shader layer 1, pass -1,
+     selector 0, target 13, draw 1 at `0x00016610`, return `0x0003a5b0`,
      `[0x00485a77]` set meanwhile): the light's animated gel, which
      texture id 10 then samples. The engine inputs the light passes can
      bind (`0x0001b2c0`): vector 5 (`0x00033a0b`) and 6 (`0x00033a25`)
@@ -1921,8 +1894,8 @@ skipped light never reaches.
      every implementation of its layer-12 and 13 passes, the light
      textures, the gels of the map's `ligh` tags, and the cluster parts
      keyed by owner and part. At the hook,
-     `native_render::light_list::read` checks the complete active list,
-     including handler, material variant and active layers. The host resolves
+     `native_render::light_list::sorted` checks the built dispatches,
+     including handler, material variant and layer. The host resolves
      each requested layer against the full shader datum and the material's
      inputs. Missing streams, textures, stale stage palettes, unsupplied
      constants or unsupported device state refuse the light before submission.
@@ -1938,9 +1911,9 @@ skipped light never reaches.
        resolves with them zero; `colour_uniforms` puts each light's
        colours A and B (vectors 5 and 6) into its uniforms, so an animated
        colour resolves nothing.
-     - Uniforms: one buffer per run, each draw's vertex and pixel uniforms
+     - Uniforms: each light/copy has immutable vertex and pixel uniforms
        at aligned dynamic offsets (`light_gpu::uniforms_layout`,
-       `run_layout`), one group for the run.
+       `run_layout`).
      - Diagnostics (stderr, `native-lights:`). At load: each light
        texture loads with its size and layers, or says why not (no datum,
        the tag does not read, does not decode, or the wrong shape with
@@ -1948,8 +1921,9 @@ skipped light never reaches.
        into opaque D3D draws, opaque unread shaders, transparent lit and
        transparent unread. At run time each refusal reason prints on its
        first occurrence.
-       Every 1800 lights the host prints counts by reason. A successful
-       whole-light skip prints `first whole light submitted` once.
+       The host reports admissions, splits, reference and scaled passes and
+       actual synchronous worker round trips. Every 1800 host decisions it
+       also prints counts by reason.
      - Engine textures' texels (Code, V on 03a's `tile_metal_dark`): the
        light passes' samplers for the normalization cube and the
        attenuation volume carry no `D3DTSS_COLORSIGN` (the implementations'
@@ -1967,35 +1941,13 @@ skipped light never reaches.
        `the_native_light_textures_hold_the_texels_the_d3d_path_uploads`
        (synthetic X8R8G8B8 cube and AL8 volume through both decodes,
        every face, level and texel).
-     - **Split lights** (Code, `impl.render.native_lights_split`, off by
-       default). A light with an unsupported gathered item keeps all its D3D passes
-       under the default whole-light policy. Split instead: the light draws
-       its native world surfaces natively and its D3D passes draw the
-       rest, each surface once. `RENDER_LIGHT_PASSES` draws layers 14, 12
-       and 13 on the light's list `0x004c1a60` through the layer draw,
-       each followed by the layer's end `0x000445d0` (`points::LAYER_END`;
-       it sets the current layer back to 0). Where the list is emptied
-       between lights is not traced (`0x00030fa0` moves its `+0xc` up to
-       the count and zeroes its OR, so items can stay in the buffer), so
-       the bits go back at each layer's end rather than waiting for a
-       rebuild. The split host admits gathered cluster parts whose shader
-       is disjoint from every part it leaves on D3D. The light joins
-       the run and its original passes run. Before each
-       of those three layer draws (matched by return address,
-       `0x000313e2`, `0x0003144f`, `0x000314cf`, so the first-person
-       lights' draws on the same list are not touched) the layer's bit
-       is cleared on those shaders' BSP items (`skip::clear_structure`),
-       and before the layer's end it is set back on the items that still
-       hold the mask it left. Objects' items are not BSP items, so the
-       D3D passes light objects. The host confirms the native pass at
-       the light's hook, so its surfaces are lit just before its D3D ones; the lit passes test
-       depth equal, so a pixel is one surface's and the order between the
-       two sets does not matter (S: a transparent surface lit at the same
-       depth as an opaque one would see the two in the other order).
-       Residual: an unreadable item ends the clear early, and the items
-       left would be lit twice (the game reads the same items right
-       after). Tests: `a_split_light_lights_each_surface_once`
-       (feature's `native_lights_split`), and the placement test.
+     - **Split lights** (`impl.render.native_lights_split`, off by default).
+       The host validates the entire sorted array, reserves the exact
+       supported prefix and skips those same sorted slots. Exclusions
+       between two consumed entries are harmless. Matching materials in
+       the D3D suffix retain their original order. The gathered item masks
+       stay intact. The synthetic split test drives the guest entry loop
+       through a duplicate, an exclusion and a failed counter write.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
@@ -2028,8 +1980,9 @@ skipped light never reaches.
    Zero matching draws means the comparison found no program to compare.
    Separately, `D3D fallback light` compares the original pass flags
    and each frame lane against the port, even when every light is refused.
-   Check for `first whole light submitted` and zero
-   `external_passes_dropped`. Compare decoded pixels at equal presents
+   Check `admitted`, reference/scaled passes, worker round trips and
+   `native_lights_v*_reference_ranges` in frame stats. Investigate
+   dropped reservations and nonzero invariant counts. Compare decoded pixels at equal presents
    against the native arm with the diagnostic off. Identical captures
    from a run with zero native submissions establish no light coverage.
    Record the light site time separately after establishing parity.

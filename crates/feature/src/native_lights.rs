@@ -1,57 +1,9 @@
-//! `native-lights`: the dynamic lights drawn by the native renderer, in the
-//! game's own order (docs/graphics/native-renderer.md, "Stage 4: lights
-//! and shadows"). Off by default; `H2_FEATURES=impl.render.native_lights=on`
-//! turns it on (exactly that key).
-//!
-//! `RENDER_DYNAMIC_LIGHTS` (`0x00031c80`) gathers each visible light and
-//! calls `RENDER_LIGHT_PASSES` (`0x00031170`) once for it, which draws the
-//! light's layers 10 to 14. Two hooks, both context-only and with nothing
-//! after a body, so the pipelined render runs them on its own thread
-//! (docs/graphics/pipelined-render.md, "Render-safe hooks"):
-//!
-//! - a `before` on the light passes: when the [`Host`] draws the light
-//!   (its record copied with [`read_light`]), add it to the open [`Run`]
-//!   and answer `ret 0x10` in place of the passes, so none of the light's
-//!   layers is built or drawn, and do the passes' tail as they would:
-//!   the host's device side first ([`Host::tail`]: stencil off, no
-//!   scissors, the depth-clip range and viewport, through the device in
-//!   render order), then the guest words the tail zeroes
-//!   (`lights::TAIL_ZEROES`), so a skipped light leaves what a drawn one
-//!   does. The host can seal a run immediately. Boot does so at this
-//!   boundary and waits for the encoder to confirm the light's ranges.
-//!   A refusal leaves the guest call running.
-//! - an observer before the dynamic lights: forgets the open run, so a run
-//!   never spans two views (or a pass the device dropped), and records the
-//!   device's bound target ([`Host::target`]). The tail's last call sets
-//!   the view's target back, which a skipped light does not repeat, so a
-//!   light is skipped only while the bound target is still that one.
-//!
-//! The light is read, and the tail's words written, in the memory the
-//! hook's context sees, which on the render thread is the render's
-//! snapshot of the frame; an attached light's frame was refreshed just
-//! before the call.
-//!
-//! With `render-timing` on nothing is placed: its timed light passes need
-//! the body's end, which a skipped light never reaches.
-//!
-//! **Split lights** ([`SPLIT_SWITCH`], off by default). A light the host
-//! does not draw whole (it meets a world surface left to D3D, or a live
-//! object) may still have native world surfaces: [`Host::split`] names
-//! their shaders, the light joins the run for them and is not skipped, and
-//! two more context-only observers keep its D3D passes off those surfaces:
-//! before the layer draw, for the light passes' own draws of layers 14, 12
-//! and 13 on the light's list ([`SPLIT_LAYERS`], by return address), the
-//! layer's bit is cleared on those shaders' BSP items
-//! (`native_render::skip::clear_structure`; objects' items keep it); before
-//! the layer's end (`LAYER_END`, which follows each of those draws) it is
-//! set back. So each surface gets the light once: its native surfaces in
-//! the run's pass, the rest from its D3D passes. The two sets of pixels do
-//! not overlap (the lit passes test depth equal against what layer 3 laid
-//! down), so the run's pass coming before the light's D3D draws changes
-//! nothing.
-
+//! Replace geometry dispatches inside a dynamic light. The guest gathers,
+//! builds, sorts and applies its per-light state before admission. Its
+//! layer teardown and the light's tail run along both paths.
 mod reference;
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,11 +12,11 @@ use engine::handle::DatumHandle;
 use engine::memory::GuestMemory;
 use engine::points;
 use engine::render::light;
-use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::lights::{LIGHT_PASSES_CLEANUP, Light, LightConstants, Run, TAIL_CLIP, TAIL_ZEROES};
+use native_render::camera::GuestRead;
+use native_render::light_list::{self, SortedLayer};
+use native_render::lights::{Light, LightConstants};
 use native_render::skip;
 
-use crate::native_world::{Mem, Pending};
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "native-lights";
@@ -76,7 +28,7 @@ pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, false)
 }
 
-/// Split lights ([`split_layer`]): a light the host cannot draw whole
+/// A light the host cannot draw whole
 /// (it meets a world surface left to D3D, or a live object) draws its
 /// native world surfaces natively and keeps its D3D passes for the rest.
 /// Off by default; looked up exactly; only with the native lights on.
@@ -99,103 +51,40 @@ pub const LIGHT_LIST: u32 = 0x004c_1a60;
 /// same list (`0x000404b0`) are not split.
 pub const SPLIT_LAYERS: [(u32, u32); 3] = [(14, 0x0003_13e2), (12, 0x0003_144f), (13, 0x0003_14cf)];
 
-/// What draws the lights: boot's glue over the GPU and the device.
-pub trait Host: Send + Sync {
-    type Plan: Send + Sync;
-    /// Prepare the complete light or leave it on D3D with a reason.
-    fn prepare(&self, mem: &dyn GuestMemory, light: &Light) -> Option<Self::Plan>;
-    /// A host using the gathered list checks every active model entry itself.
-    /// Other hosts still need the conservative object sphere check.
-    fn checks_gathered_objects(&self) -> bool {
-        false
-    }
-    /// Asks the device for an external pass over `run` with `camera`; the
-    /// host seals the run on issue. An error gives the reason to keep D3D.
-    fn open(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, run: Arc<Run<Self::Plan>>) -> Result<(), &'static str>;
-    /// The device side of the passes' tail, at this point of the render
-    /// (`d3d::Device::light_passes_tail`, with `clip` the game's clip-range
-    /// words). `false`: not done, the light goes to the D3D path.
-    fn tail(&self, mem: &mut dyn GuestMemory, clip: [u32; 2]) -> bool;
-    /// The device's bound target now (`d3d::Device::bound_target`); `None`
-    /// when it cannot say (nothing is skipped then).
-    fn target(&self) -> Option<[u32; 8]>;
-    /// When probing this plan, keep the guest draw as the reference.
-    fn probe(&self, _mem: &mut dyn GuestMemory, _plan: &Self::Plan) -> bool {
-        false
-    }
-    fn end_layer(&self, _mem: &mut dyn GuestMemory) {}
-    /// For a light it does not draw whole ([`Host::prepare`] no, or its
-    /// sphere meets a live object): the world shaders (tag indices) whose
-    /// surfaces it draws natively for `light`, while the light's D3D passes
-    /// draw everything else. `None` (the default) or empty: all to D3D.
-    fn split(&self, _mem: &dyn GuestMemory, _light: &Light) -> Option<(Self::Plan, Arc<HashSet<u16>>)> {
-        None
-    }
+pub struct Dispatch<'a> {
+    pub light: Light,
+    pub serial: u64,
+    pub view_target: [u32; 8],
+    pub sorted: &'a SortedLayer,
+    pub split: bool,
 }
 
-// The installed host chooses what a run owns. Boot keeps the compiled
-// passes and their world alive, the feature only orders their submission.
-struct Installed<H: Host> {
-    host: Arc<H>,
-    open: Mutex<Option<Arc<Run<H::Plan>>>>,
-}
-trait Hooks: Send + Sync {
-    fn new_view(&self) -> Option<[u32; 8]>;
-    fn draw(&self, mem: &mut dyn GuestMemory, light: Light) -> bool;
+pub trait Host: Send + Sync {
+    /// Confirm all target copies. Consume only the confirmed prefix on
+    /// this stack before publishing any draw to the worker.
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool;
+    fn target(&self) -> Option<[u32; 8]>;
     fn end_layer(&self, mem: &mut dyn GuestMemory);
 }
-static HOST: Mutex<Option<Arc<dyn Hooks>>> = Mutex::new(None);
 
-static LIGHTS: AtomicU64 = AtomicU64::new(0);
-static SKIPPED: AtomicU64 = AtomicU64::new(0);
-static RUNS: AtomicU64 = AtomicU64::new(0);
-/// The bound target before this view's lights.
-static VIEW_TARGET: Mutex<Option<[u32; 8]>> = Mutex::new(None);
-/// Lights left to D3D because the bound target was not the view's.
-static TARGET_MOVED: AtomicU64 = AtomicU64::new(0);
-/// Lights the host would draw left to D3D because they meet an object.
-static OBJECTS_MET: AtomicU64 = AtomicU64::new(0);
-/// Whether lights may be split ([`set_split`]).
+static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
+static SERIAL: AtomicU64 = AtomicU64::new(0);
 static SPLIT_ENABLED: AtomicBool = AtomicBool::new(false);
-/// The light whose passes are running, when split: the shaders whose
-/// world items lose its layers. Set by the light's `before`, so the next
-/// light's clears it.
-static SPLIT: Mutex<Option<Arc<HashSet<u16>>>> = Mutex::new(None);
-/// The items a split light's layer draw is running without, until the
-/// layer's end sets them back.
-static SPLIT_CLEARED: Mutex<Option<Pending>> = Mutex::new(None);
-/// Lights split, layer draws split, world items left out of them.
-static SPLITS: AtomicU64 = AtomicU64::new(0);
-static SPLIT_DRAWS: AtomicU64 = AtomicU64::new(0);
-static SPLIT_ITEMS: AtomicU64 = AtomicU64::new(0);
 
-/// Lets lights split (the feature's build, with [`SPLIT_SWITCH`] on).
-pub fn set_split(on: bool) {
-    SPLIT_ENABLED.store(on, Ordering::Relaxed);
+
+struct Candidate {
+    light: Light,
+    serial: u64,
+    layer: u32,
+    inside_layer: bool,
+}
+thread_local! {
+    static CANDIDATE: RefCell<Option<Candidate>> = const { RefCell::new(None) };
+    static VIEW_TARGET: Cell<Option<[u32; 8]>> = const { Cell::new(None) };
 }
 
-/// Lights split, their layer draws that left world items to the native
-/// pass, and those items.
-pub fn split_counts() -> (u64, u64, u64) {
-    (
-        SPLITS.load(Ordering::Relaxed),
-        SPLIT_DRAWS.load(Ordering::Relaxed),
-        SPLIT_ITEMS.load(Ordering::Relaxed),
-    )
-}
-
-/// Installs the host (boot). Without one nothing is skipped.
-pub fn set_host<H: Host + 'static>(host: Arc<H>) {
-    *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Installed { host, open: Mutex::default() }));
-}
-
-/// Lights met, lights drawn natively, runs opened.
-pub fn counts() -> (u64, u64, u64) {
-    (
-        LIGHTS.load(Ordering::Relaxed),
-        SKIPPED.load(Ordering::Relaxed),
-        RUNS.load(Ordering::Relaxed),
-    )
+pub fn set_host(host: Arc<dyn Host>) {
+    *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -206,28 +95,20 @@ impl GuestRead for Ro<'_> {
     }
 }
 
-/// Lights left to D3D because the bound target had moved from the view's.
-pub fn target_refusals() -> u64 {
-    TARGET_MOVED.load(Ordering::Relaxed)
+fn finish_candidate() {
+    if let Some(c) = CANDIDATE.take() {
+        refused("no eligible sorted geometry dispatch");
+        reference::refused(c.light);
+    }
 }
 
-/// Lights the host would draw left to D3D because their sphere meets a
-/// live object's (`objects::object_meets_sphere`): their passes light
-/// the object, which the native lights do not yet.
-pub fn object_refusals() -> u64 {
-    OBJECTS_MET.load(Ordering::Relaxed)
-}
-
-/// The observer before the dynamic lights: no run carries over, and the
-/// bound target now is the view's.
 pub fn new_view() {
+    finish_candidate();
     reference::next_light();
-    SPLIT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    SERIAL.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    // The host's target takes the device lock: asked before VIEW_TARGET is
-    // taken, so no guard is held across it.
-    let target = host.and_then(|h| h.new_view());
-    *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
+    let target = host.and_then(|h| h.target());
+    VIEW_TARGET.set(target);
 }
 
 /// The light `handle` as the passes would draw it, with the caller's
@@ -253,6 +134,7 @@ pub fn read_light(mem: &dyn GuestMemory, handle: u32, shadow: bool, weight: f32)
 }
 
 fn refused(why: &'static str) -> bool {
+    timeline::native::Stage::Lights.count(timeline::native::Metric::RefusedOwnership, 1);
     static SEEN: std::sync::LazyLock<Mutex<HashSet<&'static str>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
     if SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(why) {
@@ -280,8 +162,7 @@ pub struct Entry {
 /// its flag code (`engine::light_passes::pass_flags`). Reads guest memory,
 /// writes none. `None` when a read faults or the arithmetic would raise an
 /// unmasked exception. The sphere's screen bounds (`0x001650a0`) are not
-/// asked: they only set the scissor rectangle, which the native pass does
-/// not use. S: `0x00040e90` (called with EAX 0 before `0x0004a1e0`) is
+/// asked: they set the scissor in the original body, before our geometry dispatch. S: `0x00040e90` (called with EAX 0 before `0x0004a1e0`) is
 /// taken to leave what `0x0004a1e0` reads alone.
 pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstants> {
     use engine::light_constants as lc;
@@ -330,212 +211,56 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
     })
 }
 
-/// The light passes' `before`, on any guest memory: `esp` at the entry
-/// (the return address; the light datum, position, shadow byte and weight
-/// above it). `true` when the light joined a native run, the tail is done
-/// and the passes must not run.
-pub fn on_light(mem: &mut dyn GuestMemory, esp: u32) -> bool {
-    on_light_at(mem, esp, None)
-}
-
-/// [`on_light`] with the entry's registers, so the light carries its
-/// constants ([`light_constants`]).
-pub fn on_light_at(mem: &mut dyn GuestMemory, esp: u32, entry: Option<Entry>) -> bool {
+fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
+    finish_candidate();
     reference::next_light();
-    LIGHTS.fetch_add(1, Ordering::Relaxed);
-    // A new light's passes: the last light's split is over.
-    SPLIT.lock().unwrap_or_else(|e| e.into_inner()).take();
-    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return refused("no host");
-    };
-    let (Ok(handle), Ok(shadow), Ok(weight)) = (
-        mem.u32(esp.wrapping_add(4)),
-        mem.u8(esp.wrapping_add(0xc)),
-        mem.u32(esp.wrapping_add(0x10)),
-    ) else {
-        return refused("unreadable call arguments");
+    timeline::native::Stage::Lights.count(timeline::native::Metric::Examined, 1);
+    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+    let esp = entry.esp;
+    let (Ok(handle), Ok(shadow), Ok(weight)) = (mem.u32(esp.wrapping_add(4)),
+        mem.u8(esp.wrapping_add(12)), mem.u32(esp.wrapping_add(16))) else {
+        refused("unreadable light arguments");
+        return;
     };
     let Some(mut light) = read_light(mem, handle, shadow != 0, f32::from_bits(weight)) else {
-        return refused("invalid or unreadable light record");
-    };
-    light.constants = entry.and_then(|e| light_constants(mem, &e));
-    host.draw(mem, light)
-}
-
-impl<H: Host> Hooks for Installed<H> {
-    fn new_view(&self) -> Option<[u32; 8]> {
-        self.open.lock().unwrap_or_else(|e| e.into_inner()).take();
-        self.host.target()
-    }
-
-    fn end_layer(&self, mem: &mut dyn GuestMemory) {
-        self.host.end_layer(mem);
-    }
-
-    fn draw(&self, mem: &mut dyn GuestMemory, light: Light) -> bool {
-        let host = &*self.host;
-        let Some(plan) = host.prepare(mem, &light) else {
-            if !SPLIT_ENABLED.load(Ordering::Relaxed) {
-                reference::refused(light);
-            }
-            return self.split(mem, light);
-        };
-        let (centre, radius) = light.bounds;
-        if !host.checks_gathered_objects() && native_render::objects::object_meets_sphere(&Ro(mem), centre, radius) {
-            OBJECTS_MET.fetch_add(1, Ordering::Relaxed);
-            refused("meets a live object");
-            return self.split(mem, light);
-        }
-        // The tail sets the view's target back; skipped, it must still be bound.
-        let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
-        if view.is_none() || host.target() != view {
-            TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
-            return refused("view target unavailable or changed");
-        }
-        if host.probe(mem, &plan) {
-            return false;
-        }
-        let (Ok(near), Ok(far)) = (mem.u32(TAIL_CLIP[0]), mem.u32(TAIL_CLIP[1])) else {
-            return refused("unreadable tail clip range");
-        };
-        // The device side first (a light it cannot finish stays on D3D, and
-        // the tail done early is the state that light's own tail ends with).
-        // Then the guest words; a light that goes on to D3D sets and zeroes
-        // them again.
-        if !host.tail(mem, [near, far]) {
-            return refused("device tail refused");
-        }
-        if !zero_tail(mem) {
-            return refused("guest tail write failed");
-        }
-        if !self.join(mem, plan) {
-            return false;
-        }
-        if SKIPPED.fetch_add(1, Ordering::Relaxed) == 0 {
-            eprintln!("native-lights: first whole light submitted ({:#010x})", light.handle);
-        }
-        true
-    }
-}
-
-/// The guest words the passes' tail zeroes; `false` when one cannot be
-/// written (nothing is skipped then).
-pub fn zero_tail(mem: &mut dyn GuestMemory) -> bool {
-    TAIL_ZEROES
-        .iter()
-        .all(|&(addr, bytes)| mem.write(addr, &[0u8; 4][..bytes as usize]).is_ok())
-}
-
-/// A light the host does not draw whole. With splitting on and world
-/// shaders the host draws for it ([`Host::split`]), the light joins the
-/// run (its native surfaces, drawn at the run's pass, which the device
-/// issues at its next entry: this light's own first D3D call) and its D3D
-/// passes run without those shaders' world items in layers 14, 12 and 13
-/// ([`split_layer`]), so each surface is lit once. Returns `false`: the
-/// passes run, and do their own tail.
-impl<H: Host> Installed<H> {
-    fn split(&self, mem: &mut dyn GuestMemory, light: Light) -> bool {
-        let host = &*self.host;
-        if !SPLIT_ENABLED.load(Ordering::Relaxed) {
-            return false;
-        }
-        let Some((plan, shaders)) = host.split(mem, &light).filter(|(_, s)| !s.is_empty()) else {
-            return false;
-        };
-        // The run's pass draws into the bound target: the view's, as for a
-        // skipped light.
-        let view = *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner());
-        if view.is_none() || host.target() != view {
-            TARGET_MOVED.fetch_add(1, Ordering::Relaxed);
-            return refused("view target unavailable or changed");
-        }
-        if !self.join(mem, plan) {
-            return false;
-        }
-        *SPLIT.lock().unwrap_or_else(|e| e.into_inner()) = Some(shaders);
-        SPLITS.fetch_add(1, Ordering::Relaxed);
-        false
-    }
-}
-
-/// The observer before the layer draw (`ret` its return address): sets
-/// back what the last split layer left out, then, for a split light's
-/// layer 14, 12 or 13 on [`LIGHT_LIST`] ([`SPLIT_LAYERS`]), clears the
-/// layer's bit on the world items of the light's native shaders
-/// (`skip::clear_structure`: BSP clusters and instances only, so objects
-/// keep their D3D light) for [`layer_end`] to set back.
-pub fn split_layer(mem: &mut dyn GuestMemory, ret: u32) {
-    restore_split(mem);
-    let Some(shaders) = SPLIT.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        refused("invalid or unreadable light record");
         return;
     };
-    let mut m = Mem(mem);
-    let Some(layer) = m.read_u32(skip::CURRENT_LAYER) else {
-        return;
+    light.constants = light_constants(mem, &entry);
+    let prepare = || {
+        let c = light.constants.ok_or("unreadable light constants")?;
+        if c.animated_gel { return Err("animated gel requires its produced target 13"); }
+        let or = mem.u32(LIGHT_LIST + 8).map_err(|_| "unreadable light layer mask")?;
+        light_list::single_layer(or, c.flags, c.definition_flags)
     };
-    if !SPLIT_LAYERS.contains(&(layer, ret)) || m.read_u32(skip::CURRENT_LIST) != Some(LIGHT_LIST) {
-        return;
-    }
-    let Some(c) = skip::clear_structure(&mut m, layer, &|shader| shaders.contains(&(shader as u16))) else {
-        return;
-    };
-    SPLIT_DRAWS.fetch_add(1, Ordering::Relaxed);
-    SPLIT_ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);
-    let left = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
-    *SPLIT_CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left });
-}
-
-/// The observer before the layer's end (`LAYER_END`, right after each
-/// layer draw of the light passes): sets back what [`split_layer`] left
-/// out, on the items that still hold the mask it left: right after the
-/// draw, before anything else reads the list (where the list is emptied
-/// between lights is not traced).
-pub fn layer_end(mem: &mut dyn GuestMemory) {
-    restore_split(mem);
-}
-
-fn restore_split(mem: &mut dyn GuestMemory) {
-    let Some(p) = SPLIT_CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        return;
-    };
-    let mut m = Mem(mem);
-    let bit = 1u32 << p.cleared.layer;
-    for (&item, &left) in p.cleared.items.iter().zip(&p.left) {
-        if m.read_u32(item + 0x10) == Some(left) {
-            let _ = m.write_u32(item + 0x10, left | bit);
-        }
+    match prepare() {
+        Ok(layer) => CANDIDATE.set(Some(Candidate { light, serial, layer, inside_layer: false })),
+        Err(why) => { refused(why); reference::refused(light); }
     }
 }
 
-/// Adds the light to the open run, or opens one; `false` when no pass
-/// could be asked for.
-impl<H: Host> Installed<H> {
-    fn join(&self, mem: &mut dyn GuestMemory, plan: H::Plan) -> bool {
-        // OPEN is only held to read or store the run: never across the run's
-        // own lock or the host's (open takes the device lock).
-        let current = self.open.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(run) = current
-            && !run.is_sealed()
-        {
-            return run.push(plan) || refused("run sealed during submission");
+fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
+    CANDIDATE.with_borrow_mut(|candidate| {
+        if let Some(c) = candidate {
+            c.inside_layer = SPLIT_LAYERS.contains(&(c.layer, ret))
+                && mem.u32(skip::CURRENT_LAYER).ok() == Some(c.layer)
+                && mem.u32(skip::CURRENT_LIST).ok() == Some(LIGHT_LIST);
         }
-        let Some(camera) = RenderCamera::read(&Ro(mem), RENDER_CAMERA) else {
-            return refused("unreadable render camera");
-        };
-        let run = Arc::new(Run::new());
-        run.push(plan);
-        if let Err(why) = self.host.open(mem, &camera, Arc::clone(&run)) {
-            return refused(why);
-        }
-        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some(run);
-        let runs = RUNS.fetch_add(1, Ordering::Relaxed) + 1;
-        if runs % 1800 == 1 {
-            let (l, s, r) = counts();
-            let o = object_refusals();
-            eprintln!("native-lights: {s} of {l} dynamic lights drawn natively, in {r} runs; {o} left to D3D for meeting an object");
-        }
-        true
-    }
+    });
+}
+
+fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32) -> bool {
+    let Some(c) = CANDIDATE.with_borrow_mut(|slot| slot.take_if(|c| c.inside_layer)) else { return false; };
+    let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(host) = host else { return refused("no light host"); };
+    let Some(view_target) = VIEW_TARGET.get() else { return refused("light view target unavailable"); };
+    let accepted = match light_list::sorted(&Ro(mem), LIGHT_LIST, c.layer, esp, *esi) {
+        Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, view_target,
+            sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }, esi),
+        Err(why) => refused(why),
+    };
+    if !accepted { reference::refused(c.light); }
+    accepted
 }
 
 pub struct NativeLights;
@@ -558,45 +283,37 @@ impl Feature for NativeLights {
             .observe_before(&points::RENDER_DYNAMIC_LIGHTS, "native_lights_view", |_| new_view())
             .context_only();
         b.raw()
-            .before(&points::RENDER_LIGHT_PASSES, "native_lights_skip", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let skip = {
-                    let mut mem = rt.memory();
-                    let entry = Entry {
-                        eax: c.cpu.eax,
-                        ecx: c.cpu.ecx,
-                        esp: c.cpu.esp,
-                        mxcsr: c.cpu.mxcsr,
-                        x87_control: c.cpu.x87.control,
-                    };
-                    on_light_at(&mut *mem, c.cpu.esp, Some(entry))
-                };
-                if skip {
-                    c.ret(LIGHT_PASSES_CLEANUP).map(Flow::Return)
-                } else {
-                    Ok(Flow::Continue)
-                }
+            .observe_before(&points::RENDER_LIGHT_PASSES, "native_lights_begin", |o| {
+                begin_light(&*o.guest(), Entry { eax: o.cpu.eax, ecx: o.cpu.ecx, esp: o.cpu.esp,
+                    mxcsr: o.cpu.mxcsr, x87_control: o.cpu.x87.control });
             })
             .context_only();
-        let split = split_on(b.switches());
-        set_split(split);
-        if split {
-            b.raw()
-                .observe_before(&points::LAYER_DRAW, "native_lights_split", |o| {
-                    let mut g = o.guest();
-                    let ret = g.u32(o.cpu.esp).unwrap_or(0);
-                    split_layer(&mut *g, ret);
-                })
-                .after_feature(crate::native_world::ID)
-                .after_feature(crate::native_objects::ID)
-                .context_only();
-            b.raw()
-                .observe_before(&points::LAYER_END, "native_lights_split_end", |o| {
-                    let mut g = o.guest();
-                    layer_end(&mut *g);
-                })
-                .context_only();
-        }
+        SPLIT_ENABLED.store(split_on(b.switches()), Ordering::Relaxed);
+        b.raw()
+            .observe_before(&points::LAYER_DRAW, "native_lights_layer", |o| {
+                let mem = o.guest();
+                enter_layer(&*mem, mem.u32(o.cpu.esp).unwrap_or(0));
+            })
+            .after_feature(crate::native_world::ID)
+            .after_feature(crate::native_objects::ID)
+            .context_only();
+        b.raw()
+            .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
+                let rt = Arc::clone(c.ctx.runtime());
+                if !geometry(&mut *rt.memory(), c.cpu.esp, &mut c.cpu.esi) {
+                    return Ok(Flow::Continue);
+                }
+                // sorted() already checked the return address on this locked stack.
+                c.cpu.esp = c.cpu.esp.wrapping_add(32);
+                Ok(Flow::Return(runtime::TransferAbi::ret(light_list::HANDLER_RETURN)))
+            })
+            .context_only();
+        b.raw()
+            .observe_before(&points::LAYER_END, "native_lights_end", |_| {
+                let inside = CANDIDATE.with_borrow(|c| c.as_ref().is_some_and(|c| c.inside_layer));
+                if inside { finish_candidate(); }
+            })
+            .context_only();
         let compare = std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1");
         reference::enable(compare);
         if compare {
