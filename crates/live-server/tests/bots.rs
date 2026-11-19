@@ -738,3 +738,148 @@ async fn a_host_reports_the_bots_it_leased_as_its_sessions_players() {
         StatusCode::BAD_REQUEST
     );
 }
+
+/// The run 20261119-020015: as the game started, Halo 2 deleted the
+/// lobby's session and advertised a new one, and the host's new roster
+/// renamed every bot mid-game. The new session carries the old one's
+/// roster (`carry_from`): the same bots, the same accounts, leased to the
+/// new session; only the host's own session it just closed may be
+/// carried.
+#[tokio::test]
+async fn a_hosts_next_session_carries_its_bots() {
+    use live_proto::session::{DELETED, JOINED};
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let lobby = host(&h, &a).await;
+    let first = roster(
+        &h,
+        &a,
+        json!({"session_id": lobby, "count": 3, "skill": 1.0}),
+    )
+    .await;
+    let game = host(&h, &a).await;
+    let carry = json!({"session_id": game, "count": 3, "carry_from": lobby});
+
+    // Not while the lobby's session is open.
+    assert_eq!(
+        ask(&h, &a, carry.clone()).await.status,
+        StatusCode::BAD_REQUEST
+    );
+
+    let delete = session_event(&a, &lobby, DELETED, json!({"reason": "closed"}));
+    assert_eq!(
+        session_batch(&h, &a, &lobby, &[delete]).await.status,
+        StatusCode::CREATED
+    );
+    let carried = roster(&h, &a, carry.clone()).await;
+    assert_eq!(carried.match_id, game);
+    assert_eq!(carried.bots, first.bots, "the same bots, names and looks");
+    h.live.read_bots(|s| {
+        let r = s.roster_at(&game, u64::MAX).unwrap();
+        assert_eq!(r.host, a.xuid);
+        assert!(
+            r.bots
+                .iter()
+                .zip(&first.bots)
+                .all(|(c, f)| c.xuid == f.xuid)
+        );
+        assert!(r.bots.iter().all(|b| b.skill == 1.0), "as rostered");
+    });
+    // Leased to the new session: the host reports them as its players.
+    let joined: Vec<_> = carried
+        .bots
+        .iter()
+        .map(|b| session_event(&a, &game, JOINED, json!({ "xuid": b.xuid })))
+        .collect();
+    assert_eq!(
+        session_batch(&h, &a, &game, &joined).await.status,
+        StatusCode::CREATED
+    );
+    // And a game in the new session takes them as bots.
+    let entries: Vec<Value> = carried
+        .bots
+        .iter()
+        .enumerate()
+        .map(|(i, b)| bot_entry(i as u32 + 1, b.xuid))
+        .collect();
+    h.start_game(&a, custom(&a, &game, Value::Array(entries)))
+        .await;
+
+    // More than the old roster had: its bots first, then new ones.
+    let next = host(&h, &a).await;
+    let delete = session_event(&a, &game, DELETED, json!({"reason": "closed"}));
+    assert_eq!(
+        session_batch(&h, &a, &game, &[delete]).await.status,
+        StatusCode::CREATED
+    );
+    let more = roster(
+        &h,
+        &a,
+        json!({"session_id": next, "count": 4, "carry_from": game}),
+    )
+    .await;
+    assert_eq!(more.bots.len(), 4);
+    assert_eq!(more.bots[..3], first.bots[..]);
+    assert!(first.bots.iter().all(|b| b.xuid != more.bots[3].xuid));
+
+    // Refused: its own id, an unknown or another host's session, and a
+    // session ended too long ago.
+    let refused = [
+        json!({"session_id": next, "count": 3, "carry_from": next}),
+        json!({"session_id": next, "count": 3, "carry_from": "8000000000000001"}),
+    ];
+    for req in refused {
+        assert_eq!(
+            ask(&h, &a, req.clone()).await.status,
+            StatusCode::BAD_REQUEST,
+            "{req}"
+        );
+    }
+    let b = h.create("Other").await;
+    let theirs = host(&h, &b).await;
+    assert_eq!(
+        ask(
+            &h,
+            &b,
+            json!({"session_id": theirs, "count": 3, "carry_from": lobby})
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST,
+        "another host's session"
+    );
+    // The window: a lobby that ended too long ago carries nothing.
+    let seen = h
+        .call(
+            Method::GET,
+            &format!("/v1/sessions/{lobby}"),
+            &[h.bearer(&a, lxm::READ)],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(seen.status, StatusCode::OK);
+    let mut old: live_proto::session::Session =
+        serde_json::from_value(seen.json()["session"].clone()).unwrap();
+    let now = live_server::app::now();
+    let r = h
+        .live
+        .read_bots(|s| s.roster_at(&lobby, u64::MAX).cloned())
+        .unwrap();
+    assert_eq!(
+        live_server::bots::may_carry(Some(&old), Some(&r), a.xuid, &lobby, &next, now),
+        Ok(())
+    );
+    old.last_activity = now - bots::CARRY_WINDOW_S - 1;
+    assert_eq!(
+        live_server::bots::may_carry(Some(&old), Some(&r), a.xuid, &lobby, &next, now),
+        Err(format!(
+            "the earlier session ended more than {} s ago",
+            bots::CARRY_WINDOW_S
+        ))
+    );
+    assert!(
+        live_server::bots::may_carry(Some(&old), None, a.xuid, &lobby, &next, old.last_activity)
+            .is_err(),
+        "no roster to carry"
+    );
+}

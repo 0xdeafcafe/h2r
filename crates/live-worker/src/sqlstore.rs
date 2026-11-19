@@ -943,6 +943,64 @@ mod tests {
             1,
             "{s}"
         );
+        // A session handoff (docs/game/bots.md §9.5): the lobby's session
+        // deleted, a new one advertised, and the new one carries the same
+        // bot, as on the native server (`a_hosts_next_session_carries_its_bots`).
+        let (status, next) = call(
+            "POST",
+            "/v1/sessions".into(),
+            Some(token(lxm::SESSIONS_WRITE)),
+            lobby.to_string(),
+        )
+        .await;
+        assert_eq!(status, 201, "{next}");
+        let next_id = next["session_id"].as_str().unwrap();
+        let carry =
+            serde_json::json!({"session_id": next_id, "count": 1, "carry_from": session_id})
+                .to_string();
+        let (status, _) = call(
+            "POST",
+            "/v1/games/bots".into(),
+            Some(token(lxm::GAMES_WRITE)),
+            carry.clone(),
+        )
+        .await;
+        assert_eq!(status, 400, "not while the lobby's session is open");
+        let deleted = live_proto::sign::EventBody::at_unix(
+            &key,
+            &author,
+            &live_proto::session::stream(session_id),
+            live_proto::session::DELETED,
+            serde_json::json!({"reason": "closed"}),
+            now(),
+        );
+        let r = live_server::http::router(live.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{session_id}/events"))
+                    .header("content-type", "application/jose")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(lxm::SESSIONS_WRITE)),
+                    )
+                    .body(Body::from(live_proto::sign::sign_batch(&key, &[deleted])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 201);
+        let (status, carried) = call(
+            "POST",
+            "/v1/games/bots".into(),
+            Some(token(lxm::GAMES_WRITE)),
+            carry,
+        )
+        .await;
+        assert_eq!(status, 201, "{carried}");
+        assert_eq!(carried["match_id"], next_id);
+        assert_eq!(carried["bots"][0]["xuid"], bot["xuid"]);
+        assert_eq!(carried["bots"][0]["gamertag"], bot["gamertag"]);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

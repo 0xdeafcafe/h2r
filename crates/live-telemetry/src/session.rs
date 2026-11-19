@@ -200,13 +200,19 @@ pub struct Bots {
 
 impl Bots {
     /// Whether `p` is one of the bots: a local player on a bot's port, or a
-    /// remote player on a phantom's machine.
+    /// remote player on a phantom's machine. A phantom made after the
+    /// game's start (not in `machines`) is still one by its machine id
+    /// (`live_proto::bots::is_phantom_machine`): the run 20261119-020015
+    /// recorded two such as humans ("6 players, 3 bots").
     fn plays(&self, p: &PlayerState) -> bool {
         match p.local_user {
             Some(_) => p
                 .controller
                 .is_some_and(|c| c < 8 && self.ports & 1 << c != 0),
-            None => self.machines.iter().any(|(m, _)| *m == p.machine),
+            None => {
+                live_proto::bots::is_phantom_machine(p.machine)
+                    || self.machines.iter().any(|(m, _)| *m == p.machine)
+            }
         }
     }
 
@@ -2850,6 +2856,60 @@ mod tests {
         // Marking does not make the roster look changed.
         session.sample(&snapshot(4, later));
         assert!(!kinds(&mut session).contains(&"PlayerJoined".to_string()));
+    }
+
+    /// The run 20261119-020015: "6 players, 3 bots". The roster changed
+    /// mid-game, so its phantoms were new machines the start's list did
+    /// not name, and they went out as humans. A phantom's machine id says
+    /// it is a bot (`live_proto::bots::is_phantom_machine`), listed or not;
+    /// only a listed one, with its roster in force, carries an xuid. A
+    /// remote human stays a human.
+    #[test]
+    fn a_phantom_the_start_did_not_list_is_still_a_bot() {
+        let listed = [0xc1, 0xa4, 0, 0, 0, 1];
+        let rostered = live_proto::Xuid(live_proto::bots::SERVER_XUID_MARK | 1);
+        let mut session = Session::new("test", None);
+        session.set_bots(Some(Bots {
+            session_id: Some("0123456789abcdef".into()),
+            machines: vec![(listed, rostered)],
+            ports: 0,
+            accounts: Vec::new(),
+        }));
+        let mut pa = player(0, 0);
+        pa.machine = listed;
+        let mut human = player(1, 0);
+        human.machine = [0x00, 0x50, 0xf2, 9, 9, 9];
+        let roster = vec![pa, human];
+        session.start(&info(), roster.clone());
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        let players = &started.data["players"];
+        assert_eq!(players[0]["bot"], true);
+        assert_eq!(players[0]["xuid"], rostered.to_string());
+        assert!(players[1].get("bot").is_none(), "a remote human");
+
+        // Joins after the start on a machine the list never had.
+        let mut late = player(2, 0);
+        late.machine = [0xc1, 0xa4, 0, 0, 0, 7];
+        let mut later = roster;
+        later.push(late);
+        session.sample(&snapshot(2, later));
+        let joined: Vec<_> = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) if e.kind == "PlayerJoined" => Some(e.data["player"].clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joined.len(), 1, "{joined:?}");
+        assert_eq!(joined[0]["bot"], true);
+        assert!(
+            joined[0].get("xuid").is_none(),
+            "no account it was listed with"
+        );
     }
 
     /// Clankers on local slots (docs/game/bots.md §4), without Live: each

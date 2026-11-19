@@ -1670,6 +1670,7 @@ fn the_host_asks_for_a_bot_roster_for_its_session() {
                     count: 2,
                     skill: Some(bots::HEROIC),
                     teams: false,
+                    carry_from: None,
                 },
                 Box::new(move |r| tx.send(r).unwrap()),
             )
@@ -1742,6 +1743,7 @@ fn a_leased_bot_account_passes_a_user_change_and_an_unleased_one_does_not() {
                 count: 1,
                 skill: None,
                 teams: false,
+                carry_from: None,
             },
             Box::new(move |r| tx.send(r).unwrap()),
         )
