@@ -31,11 +31,9 @@ use live_proto::hosts::{HostClass, HostLease, ProviderKind, Transport};
 
 use super::{HostBoot, HostError, HostProvider};
 
-// `HostError` is dh-provider's (crates/live-server/src/hosts.rs) and the
-// build contract doesn't spell it. This file needs only two shapes — a
-// setup problem and a call that failed — and every construction goes
-// through these two fns, so a different spelling at integration is a
-// two-line fix here.
+// `HostError` is dh-provider's (crates/live-server/src/hosts.rs), with
+// the `Config(String)` and `Http(String)` shapes confirmed. Every
+// construction goes through these two fns, one per shape.
 fn config_error(text: impl Into<String>) -> HostError {
     HostError::Config(text.into())
 }
@@ -102,10 +100,10 @@ pub struct FlyResponse {
 /// platform fetch in a Worker. `call` adds the `Authorization: Bearer`
 /// header and the JSON content type when a body is sent.
 ///
-/// The trait object is `Send + Sync` (a Worker wraps its non-`Send`
-/// future, as `r2.rs` does); the futures need not be `Send`, matching
-/// [`HostProvider`].
-#[async_trait(?Send)]
+/// `Send + Sync` with `Send` futures, like [`HostProvider`] and the
+/// store traits: a Worker implements it by wrapping its one-thread
+/// platform future in `SendWrapper`, as `r2.rs` does.
+#[async_trait]
 pub trait FlyHttp: Send + Sync + 'static {
     async fn call(&self, req: &FlyRequest, token: &str) -> Result<FlyResponse, String>;
 }
@@ -130,7 +128,7 @@ impl ReqwestFly {
 }
 
 #[cfg(feature = "native")]
-#[async_trait(?Send)]
+#[async_trait]
 impl FlyHttp for ReqwestFly {
     async fn call(&self, req: &FlyRequest, token: &str) -> Result<FlyResponse, String> {
         let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
@@ -513,7 +511,7 @@ impl FlyProvider {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl HostProvider for FlyProvider {
     fn kind(&self) -> ProviderKind {
         ProviderKind::Fly
@@ -526,7 +524,7 @@ impl HostProvider for FlyProvider {
         let machine = create_request(lease, boot, &self.config)?;
         let body = serde_json::to_vec(&machine)
             .map_err(|e| call_error(format!("encoding the Fly machine request: {e}")))?;
-        let url = self.machines_url(None)?;
+        let url = self.config.machines_url(None)?;
         let resp = self.call(FlyMethod::Post, &url, Some(body)).await?;
         if !(200..300).contains(&resp.status) {
             return Err(call_error(format!(
@@ -544,7 +542,7 @@ impl HostProvider for FlyProvider {
     /// Deletes the machine, forcing it off if it is still running. A
     /// machine already gone (404) or on its way down (409) is stopped.
     async fn stop(&self, _lease_id: &str, provider_ref: &str) -> Result<(), HostError> {
-        let url = format!("{}?force=true", self.machines_url(Some(provider_ref))?);
+        let url = format!("{}?force=true", self.config.machines_url(Some(provider_ref))?);
         let resp = self.call(FlyMethod::Delete, &url, None).await?;
         match resp.status {
             200..=299 | 404 | 409 => Ok(()),
@@ -560,7 +558,7 @@ impl HostProvider for FlyProvider {
     /// a machine that's gone (404) is not, rather than an error, so the
     /// reaper can treat it as ended.
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError> {
-        let url = self.machines_url(Some(provider_ref))?;
+        let url = self.config.machines_url(Some(provider_ref))?;
         let resp = self.call(FlyMethod::Get, &url, None).await?;
         match resp.status {
             200..=299 => {
@@ -641,7 +639,7 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl FlyHttp for FakeFly {
         async fn call(&self, req: &FlyRequest, token: &str) -> Result<FlyResponse, String> {
             self.calls.lock().unwrap().push((
