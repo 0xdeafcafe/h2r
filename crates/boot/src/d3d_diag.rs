@@ -746,6 +746,10 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
 
+    fn reusable_external_attachments(&self) -> bool {
+        self.inner.reusable_external_attachments()
+    }
+
     fn queue_world_draw(
         &mut self, mut candidate: d3d::backend::QueuedWorldDraw<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],

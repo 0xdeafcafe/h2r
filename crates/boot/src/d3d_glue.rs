@@ -978,6 +978,10 @@ impl d3d::backend::Backend for Headless {
         self.0.queue_world_draw(candidate, textures)
     }
 
+    fn reusable_external_attachments(&self) -> bool {
+        self.0.reusable_external_attachments()
+    }
+
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
         self.0.commit_external(recording);
     }
