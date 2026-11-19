@@ -314,7 +314,7 @@ impl DrawAdmission for Admission {
                 raw_vertices,
                 indices,
                 renderers: self.renderers.clone(),
-                prepared: None,
+                prepared: Vec::new(),
             }),
         ))
     }
@@ -329,7 +329,7 @@ struct Pass {
     raw_vertices: Option<RawVertices>,
     indices: Vec<u32>,
     renderers: Renderers,
-    prepared: Option<(PreparedDraw, DrawIdentity, TargetKey)>,
+    prepared: Vec<(PreparedDraw, DrawIdentity, TargetKey)>,
 }
 impl Pass {
     fn snapshot(
@@ -448,7 +448,8 @@ impl ExternalPass for Pass {
         }
     }
     fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.prepared = None;
+        self.prepared
+            .retain(|p| p.1.copy != u32::from(target.copy == d3d::TargetCopy::Display));
         let mut renderers = self.renderers.lock().unwrap_or_else(|e| e.into_inner());
         static DEVICES: AtomicU64 = AtomicU64::new(1);
         let (id, renderer) = renderers.entry(target.device.clone()).or_insert_with(|| {
@@ -469,13 +470,19 @@ impl ExternalPass for Pass {
         let draw = renderer
             .prepare(target.device, &snapshot)
             .map_err(refusal)?;
-        self.prepared = Some((draw, snapshot.identity, snapshot.target));
+        self.prepared
+            .push((draw, snapshot.identity, snapshot.target));
         Ok(())
     }
     fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
-        let Some((draw, identity, key)) = self.prepared.take() else {
+        let Some(i) = self
+            .prepared
+            .iter()
+            .position(|p| p.1.copy == u32::from(target.copy == d3d::TargetCopy::Display))
+        else {
             return 0;
         };
+        let (draw, identity, key) = self.prepared.swap_remove(i);
         if key.size != target.size
             || key.color_format != target.color_format
             || key.depth_format != target.depth_format
