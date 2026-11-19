@@ -29,6 +29,7 @@
 //! paths, quirks reproduced on purpose) is in `docs/engine/`.
 
 pub mod abi;
+pub mod colour_pass;
 pub mod datum;
 pub mod entry;
 pub mod handle;

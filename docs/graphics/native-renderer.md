@@ -1334,11 +1334,22 @@ its D3D passes.
 
 ### What the native post draws
 
-- **The colour pass**, `0x000214f0`'s combiner over a copy of the view's
-  colour target: a full-screen triangle sampling the scene the native
-  passes and the D3D passes drew. Its inputs (`0x000137a0` and the
-  blend) are ported as a pure function of guest memory, as the light
-  constants are.
+- **The colour pass**, `0x000214f0` (Code). It is two passes, a glow:
+  1. The view's target (`[0x004858b8]`) bound to all four stages
+     (`0x00014f60`; their sampler states clamp and linear, stored into
+     `D3D__TextureState` with the dirty bits), and a four-tap combiner
+     (PSDEF at `0x00484f68`, constant colour `pack(c, second x3)` at
+     `0x00484f9c`) drawn by `0x00034a90` into target 7, then blurred by
+     `0x000211a0` (EAX 7; not traced), which returns the texture.
+  2. That texture at stage 0, alpha blending on (`0x000222d0`: states
+     59 = 1, 62 = 1 or `0x307` by the sixth argument, 63 = the seventh
+     argument clear, 74 = `0x8006`), a one-stage combiner with
+     `pack(x, third x3)` at `0x00484f90`, drawn by `0x00034a90` into the
+     view's target; then the target is set back (`0x00014bc0`).
+
+  Its numbers are `engine::colour_pass` (built, below). The native pass
+  is the same two passes over a copy of the view's colour target, the
+  blur once `0x000211a0` is traced.
 - **The screen effects**, each entry `0x0002d140` would draw: its shader
   compiled as stage 3 compiles layer 15, drawn with the rectangle and
   the entry's function values. Blur needs the scene as a texture, which
@@ -1350,17 +1361,46 @@ its D3D passes.
 
 1. **The skip and its order** (built: `feature::native_post`,
    `native_render::post`, `impl.render.native_post`, off by default;
-   point `RENDER_SCREEN_EFFECTS`). Boot has no host, so nothing is
-   skipped, and the periodic line says what 03a's calls ask for.
-2. **The prologue of a skipped call.** `[0x004670bc]`, the shader draw
-   state `0x00016b10` resets on `0x00485b48` (the device side, as the
-   lights' tail does), `[[0x00485890]+0x1c]`, and what `0x000245c0`
-   leaves. Each is a guest word or a device call at that point, with a
-   test that a skipped call leaves what a drawn one does.
-3. **The colour pass**: trace `0x000137a0` and `0x000214f0`, port its
-   inputs, compile its combiner, and draw it from a copy of the colour
-   target. The host accepts calls with `colour` set and `late` clear, and
-   with no screen effect that would draw.
+   point `RENDER_SCREEN_EFFECTS`). Boot's host (`native_post_glue`)
+   accepts no call yet, so nothing is skipped, and the periodic line says
+   what 03a's calls ask for.
+2. **The prologue of a skipped call** (built). Code: the reset
+   `0x00016b10` on `0x00485b48` runs `0x00018900` over its last pass's
+   restore list (`[+0x24] + 0x11c`: a word, count in bits 9 and up,
+   first entry in bits 0 to 8; five-byte entries, state then value, from
+   `[[+0x20] + 0x14]`), each entry the inlined `SetRenderState`
+   (`SetRenderState_Simple` with the image's header below `0x5c`, the
+   deferred dirty bits below `0x88`, the setter from the table at
+   `0x004038d8` above), then stores its words. `0x000245c0` with EBX 0
+   stores the screen record's words and runs `0x00024ee0(0)`, which
+   computes its `pow` curve into its own stack only: the six tables
+   (`0x004b9370`, `0x004b9470`, `0x004b9570`, set `0x300` apart chosen
+   by the clamped word `[0x00485600]`) get the identity bytes, and its
+   record (`0x004b5444`, or address 0 as the game does without
+   `[0x004b54c8]`) two words. So the prologue is guest stores plus the
+   list's states. `native_render::post::Prologue` reads both;
+   `feature::native_post::redo_prologue` checks every store's target,
+   asks the host for the states (`Host::prologue`,
+   `d3d::Device::set_render_states_inline`, which checks every entry
+   before setting any), then stores, before the pass is asked for. A
+   call that cannot be redone runs (`native_post::counts().prologue_refused`).
+   Tests: feature's `a_skipped_prologue_leaves_memory_as_the_games_does`
+   (an instruction-by-instruction transcription side by side),
+   `a_prologue_that_cannot_be_redone_sets_nothing`; d3d's
+   `inline_states` (the game's loop through the entries side by side
+   with the device's method).
+3. **The colour pass.** Its numbers are built: `engine::colour_pass`
+   (`arguments`: the caller's half with `0x000137a0`'s curves;
+   `parameters`: the callee's override record and clamps;
+   `pack_colour`: `0x00131e50`; `Parameters::colours`: the two combiner
+   colours), bit-equal to the lifted original
+   (`engine/tests/colour_pass_differential.rs`). Next: trace the blur
+   `0x000211a0` and the quad draw `0x00034a90`, then draw the two passes
+   natively over a copy of the colour target, and leave what the pass
+   leaves (its texture-stage words and dirty bits, the PSDEF words at
+   `0x00484f68`, its render states, the target set back). The host then
+   accepts calls with `colour` set and `late` clear, and with no screen
+   effect that would draw.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
