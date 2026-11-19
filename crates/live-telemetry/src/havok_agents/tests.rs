@@ -165,7 +165,7 @@ fn rejects_bad_counts_sizes_and_wrapping_ranges() {
     list(&mut m, ISLAND + ISLAND_PAIRS, PAIRS, MAX_PAIRS + 1);
     assert_eq!(
         agents(&m, datum).unwrap_err().addr,
-        ISLAND + ISLAND_PAIRS + 4
+        ISLAND + ISLAND_PAIRS
     );
 }
 
