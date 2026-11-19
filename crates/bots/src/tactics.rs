@@ -34,6 +34,8 @@ pub const MIN_REACTION: u32 = 5;
 /// Enemies remembered at most this long (ticks) for [`GRACE`].
 const FORGET: u32 = 4 * GRACE;
 
+/// A scripted pull (the noob combo's release) lasts this many ticks.
+pub const PULL_TICKS: u32 = 2;
 /// Pulls come at least this many ticks apart (so it lets go).
 pub const PULL_MIN: u32 = 4;
 /// Pulls this far apart when the weapon's rate is not known.
