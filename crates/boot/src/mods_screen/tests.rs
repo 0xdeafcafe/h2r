@@ -262,7 +262,7 @@ fn a_mod_downloads_from_its_page_with_progress_then_shows_installed() {
     );
     assert_eq!(
         repo.detail_description(0).as_deref(),
-        Some("Installed: pick it in Change Map.")
+        Some("Installed. Change Map > Mods.")
     );
 }
 
@@ -322,7 +322,7 @@ fn an_installed_map_is_removed_from_its_page_on_a_second_press() {
     fake.here.lock().unwrap().clear();
     repo.act();
     assert!(repo.act().contains("not removed"));
-    assert_eq!(repo.detail_line(0).unwrap(), "Remove failed");
+    assert_eq!(repo.detail_line(0).unwrap(), "Retry removal");
     assert_eq!(
         repo.detail_description(0).as_deref(),
         Some("Not removed: not downloaded here")
@@ -432,7 +432,7 @@ fn the_status_line_fits_in_every_state() {
     seen.push(repo.detail_description(0).unwrap());
     assert_eq!(
         seen.last().map(String::as_str),
-        Some("Needs the Map Pack's Relic. A retries.")
+        Some("Needs the Map Pack's Relic")
     );
     fake.here.lock().unwrap().insert(id(5));
     repo.install_done(id(5), Ok(()));
@@ -453,7 +453,7 @@ fn the_list_describes_the_focused_map() {
     assert_eq!(
         repo.list_description(0).unwrap(),
         "On Relic, by Modder\n3.4 MB, 12 downloads\nHas vehicles, scripts\n\
-         X downloads it, A opens its page"
+         New map"
     );
     assert_eq!(
         repo.list_description(1).unwrap().lines().nth(2),
@@ -506,7 +506,10 @@ fn a_mod_needing_a_disc_map_says_which() {
         name: "Lockout Swords".into(),
         map: "lockout".into(),
     })));
-    assert_eq!(repo.detail_line(0).unwrap(), "Needs Lockout from your disc");
+    assert_eq!(repo.detail_line(0).unwrap(), "Retry download");
+    assert_eq!(repo.detail_description(0).unwrap(), "Needs Lockout from your disc");
+    assert_eq!(repo.list_row(0).unwrap().1, "Failed");
+    assert_eq!(repo.prompts(SCREEN, Some(0))[1].text, "Retry");
     // A failed one can be tried again.
     assert!(matches!(repo.press_detail(0), Chosen::Stepped(_)));
     assert_eq!(fake.installs.lock().unwrap().len(), 1);
@@ -521,7 +524,7 @@ fn a_mod_needing_a_disc_map_says_which() {
         ),
         (
             ModsError::Refused(Refusal::Download("HTTP 500".into())),
-            "Failed; press A to retry",
+            "Download failed",
         ),
         (ModsError::NotSignedIn, "Sign in to Live first"),
         // A Map Pack base: the map pack, by the map's game name.
@@ -870,14 +873,16 @@ fn a_packs_list_has_download_all_then_its_maps_each_opening_its_page() {
     for (_, progress, _) in &mut started {
         progress(50, 100);
     }
-    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 50%");
-    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2193} 50%");
+    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 66%");
+    assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2193} 66%");
     assert!(repo
         .x_pack(Some(0))
         .contains("every map is installed or downloading"));
-    for (_, _, done) in started {
-        done(Ok(PathBuf::from("/data/maps/live")));
-    }
+    let (_, _, done) = started.pop().unwrap();
+    done(Ok(PathBuf::from("/data/maps/live")));
+    assert_eq!(repo.pack_line(0).unwrap(), "Downloading 83%");
+    let (_, _, done) = started.pop().unwrap();
+    done(Ok(PathBuf::from("/data/maps/live")));
     assert_eq!(repo.pack_line(0).unwrap(), "All Installed");
     assert_eq!(repo.list_line(1).unwrap(), "Phantom Mappack  \u{2713}");
     assert!(repo

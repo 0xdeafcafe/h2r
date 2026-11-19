@@ -734,7 +734,8 @@ impl Repo {
             Some(Install::Downloading { done, total }) => return percent(*done, *total),
             Some(Install::Done) => return "Installed".into(),
             Some(Install::Removed) => return mods::size_text(e.size),
-            Some(Install::Failed(_) | Install::RemoveFailed(_)) | None => {}
+            Some(Install::Failed(_)) => return "Failed".into(),
+            Some(Install::RemoveFailed(_)) | None => {}
         }
         if g.installed.contains(&e.id) {
             "Installed".into()
@@ -749,16 +750,27 @@ impl Repo {
     /// any runs, "Installed" once every map is here, "New" when one is new,
     /// else how many maps it has ("5 maps").
     fn pack_status(g: &Inner, maps: &[ModEntry]) -> String {
-        let (mut done, mut total, mut running) = (0u64, 0u64, false);
+        // The percentage is the fraction of the whole pack available here.
+        // A finished map still contributes after its progress callback stops.
+        let mut available = 0u128;
+        let mut total = 0u128;
+        let mut running = false;
         for e in maps {
-            if let Some(Install::Downloading { done: d, total: t }) = g.installs.get(&e.id) {
-                (done, total, running) = (done + d, total + t, true);
+            let size = u128::from(e.size.max(1));
+            total += size;
+            if Self::is_here(g, &e.id) {
+                available += size;
+            } else if let Some(Install::Downloading { done, total }) = g.installs.get(&e.id) {
+                available += size * u128::from((*done).min(*total)) / u128::from((*total).max(1));
+                running = true;
             }
         }
         if running {
-            percent(done, total)
+            format!("Downloading {}%", 100 * available / total)
         } else if maps.iter().all(|e| Self::is_here(g, &e.id)) {
             "Installed".into()
+        } else if maps.iter().any(|e| matches!(g.installs.get(&e.id), Some(Install::Failed(_)))) {
+            "Failed".into()
         } else if maps.iter().any(|e| Self::status(g, e) == "New") {
             "New".into()
         } else {
@@ -827,9 +839,10 @@ impl Repo {
         lines.push(match g.installs.get(&e.id) {
             Some(Install::Failed(err)) => failed_install_text(err),
             _ => match Self::status(g, e).as_str() {
-                "Installed" => "Installed: A for its page".into(),
+                "Installed" => "Installed".into(),
+                "New" => "New map".into(),
                 s if s.starts_with("Downloading") => s.into(),
-                _ => "X downloads it, A opens its page".into(),
+                _ => "Available to download".into(),
             },
         });
         lines.join("\n")
@@ -861,7 +874,7 @@ impl Repo {
             }
         };
         let here = maps.iter().filter(|e| Self::is_here(g, &e.id)).count();
-        let size: u64 = maps.iter().map(|e| e.size).sum();
+        let size = maps.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
         [
             cut(
                 &format!("{} maps, by {}", maps.len(), makers.join(", ")),
@@ -1104,13 +1117,10 @@ impl Repo {
                 percent(*done, *total).trim_start_matches("Downloading "),
                 mods::size_text(e.size)
             ),
-            Some(Install::Failed(err)) => format!(
-                "{}. A retries.",
-                failed_install_text(err).trim_end_matches("; press A to retry")
-            ),
+            Some(Install::Failed(err)) => failed_install_text(err),
             _ if g.removing == Some(e.id) => "Press A or X again to remove it.".into(),
             Some(Install::RemoveFailed(why)) => format!("Not removed: {why}"),
-            _ if Self::is_here(&g, &e.id) => "Installed: pick it in Change Map.".into(),
+            _ if Self::is_here(&g, &e.id) => "Installed. Change Map > Mods.".into(),
             _ => format!("A or X downloads it: {}.", mods::size_text(e.size)),
         };
         Some(cut(&line, STATUS_CHARS))
@@ -1137,8 +1147,8 @@ impl Repo {
         match g.installs.get(&e.id) {
             Some(Install::Downloading { done, total }) => percent(*done, *total),
             _ if g.removing == Some(e.id) => "Remove? Press again".into(),
-            Some(Install::Failed(err)) => failed_install_text(err),
-            Some(Install::RemoveFailed(_)) => "Remove failed".into(),
+            Some(Install::Failed(_)) => "Retry download".into(),
+            Some(Install::RemoveFailed(_)) => "Retry removal".into(),
             _ if Self::is_here(g, &e.id) => "Remove".into(),
             _ => "Download".into(),
         }
@@ -1475,7 +1485,7 @@ pub fn failed_install_text(e: &ModsError) -> String {
         ModsError::Refused(Refusal::Unpublished(_)) => "Not on the server".into(),
         ModsError::NotSignedIn => "Sign in to Live first".into(),
         ModsError::Offline => "Live is off".into(),
-        _ => "Failed; press A to retry".into(),
+        _ => "Download failed".into(),
     }
 }
 
@@ -1483,7 +1493,7 @@ fn percent(done: u64, total: u64) -> String {
     let p = if total == 0 {
         0
     } else {
-        (done.saturating_mul(100) / total).min(100)
+        (u128::from(done) * 100 / u128::from(total)).min(100)
     };
     format!("Downloading {p}%")
 }
