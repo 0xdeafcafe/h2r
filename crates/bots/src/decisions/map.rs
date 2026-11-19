@@ -89,10 +89,11 @@ impl MapMemory {
         skill: Skill,
         stuck: &Stuck,
         map: Option<&MapData>,
+        experience: &crate::experience::Experience,
     ) -> Option<Vec3> {
         self.timers.due(me, tick, skill, |at| {
             (!self.hot(at, tick, 3.0) && !stuck.blocked(at, tick))
-                .then(|| map.map_or(0., |m| m.places.strength(at)))
+                .then(|| map.map_or(0., |m| m.places.strength(at)) + 0.3 * experience.success(at))
         })
     }
 

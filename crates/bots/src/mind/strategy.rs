@@ -88,10 +88,10 @@ impl Mind {
         }
         if calm
             && self.kit == Kit::Fine
-            && let Some(at) = self
-                .decisions
-                .map
-                .due(me, p.tick, self.skill, &self.stuck, map)
+            && let Some(at) =
+                self.decisions
+                    .map
+                    .due(me, p.tick, self.skill, &self.stuck, map, &self.experience)
         {
             return Doing::Supply(at);
         }
@@ -119,7 +119,7 @@ impl Mind {
                 let reach = if long { 8.0 + 45.0 * sense } else { 7.0 };
                 let known = (map.places.vantages.len() as f32 * sense).ceil() as usize;
                 let worth = |v: &crate::places::Vantage| {
-                    v.score * (10.0 + 16.0 * sense)
+                    (v.score + 0.2 * self.experience.firing_position(v.at)) * (10.0 + 16.0 * sense)
                         - len(sub(v.at, me.position))
                             * (1.0 - 0.4 * self.decisions.personality.caution)
                 };
@@ -149,6 +149,13 @@ impl Mind {
         map: Option<&MapData>,
     ) {
         for k in kills {
+            if !k.betrayal
+                && k.attacker.is_some_and(|id| {
+                    Some(id) == p.observations.player.map(|(own, _)| own) && id != k.victim
+                })
+            {
+                self.experience.own_kill(k.victim, k.tick);
+            }
             self.fight.forget(k.victim);
             if self
                 .last_seen

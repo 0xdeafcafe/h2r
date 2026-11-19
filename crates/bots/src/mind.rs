@@ -230,6 +230,7 @@ struct Track {
 pub struct Mind {
     pub skill: Skill,
     pub decisions: Decisions,
+    pub experience: crate::experience::Experience,
     pub doing: Doing,
     rng: Rng,
     tick: Option<u32>,
@@ -348,6 +349,7 @@ impl Mind {
         Mind {
             skill,
             decisions: Decisions::new(seed),
+            experience: Default::default(),
             doing: Doing::Idle,
             rng: Rng::new(seed),
             tick: None,
@@ -419,6 +421,7 @@ impl Mind {
         self.last_threat = None;
         self.search = None;
         self.decisions.died(tick);
+        self.experience.new_life();
         self.goal = None;
         self.evasion = Evasion::default();
         self.fidget.reset();
@@ -491,6 +494,19 @@ impl Mind {
         let style = Style::of(self.skill);
         // The target (crate::decisions): the team's split, trades and
         // threats weigh tactics' nearest-and-in-front choice.
+        // Count an actual visit once. Only an observed placement and the
+        // bot's own feet can establish a successful or empty trip.
+        let checked = match self.doing {
+            Doing::Supply(goal) | Doing::Rearm(goal) => map.and_then(|m| {
+                let items = p.observations.supplies.as_deref()?;
+                let pad = m.places.pads.iter().filter(|s| len(sub(s.at,goal))<=1.5)
+                    .min_by(|a,b|len(sub(a.at,goal)).total_cmp(&len(sub(b.at,goal))))?;
+                (len(sub(pad.at,me.position))<=2. && crate::perceive::in_view(me,pad.at,0.2,map))
+                    .then(||(pad.at,items.iter().any(|s|s.site==pad.site)))
+            }),
+            _ => None,
+        };
+        self.experience.visit(me.position,checked);
         let (goal, intent) = self.decide(p, me, &seen, map);
         let chosen = intent
             .chosen
@@ -1169,6 +1185,7 @@ impl Mind {
             self.buttons.release();
             self.fidget.reset();
         }
+        if pad.right_trigger>0. && let Doing::Fight(target)=self.doing { self.experience.fired(me.position,target,p.tick); }
         self.last_pad = pad;
         pad
     }

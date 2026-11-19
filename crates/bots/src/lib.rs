@@ -14,6 +14,7 @@ pub mod brain;
 pub mod cache;
 pub mod decisions;
 pub mod emote;
+pub mod experience;
 pub mod glitches;
 pub mod grenades;
 pub mod guest;
@@ -158,7 +159,10 @@ impl Brain {
             let taunt = self.mind.emote.taunt;
             let glitches = self.mind.glitches;
             let bounces = std::mem::take(&mut self.mind.bounces);
+            let mut experience = std::mem::take(&mut self.mind.experience);
+            experience.new_life();
             self.mind = mind::Mind::new(self.mind.skill, self.seed);
+            self.mind.experience = experience;
             self.mind.emote.taunt = taunt;
             self.mind.glitches = glitches;
             self.mind.bounces = bounces;
@@ -211,6 +215,7 @@ impl local::PadSource for Brain {
         let map = autonav::loaded();
         if map != self.map {
             self.mind.bounces = glitches::bounces(&map);
+            self.mind.experience.enter(&map);
             self.map = map;
         }
         let (kills, cursor) = emote::kills().since(self.kills_seen);
