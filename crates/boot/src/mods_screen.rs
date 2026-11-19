@@ -1096,7 +1096,8 @@ impl Repo {
     /// The page's one row's line: what A does (Download, Remove, the
     /// download's progress, or why it can't).
     pub fn detail_line(&self, row: i16) -> Option<String> {
-        let e = self.selected().filter(|_| row == 0)?;
+        if row != 0 { return None }
+        let Some(e) = self.selected() else { return Some("Map unavailable".into()) };
         let g = self.lock();
         Some(text_fit::line(&self.action_text(&g, &e), text_fit::ROW))
     }
@@ -1105,7 +1106,8 @@ impl Repo {
     /// now, or how the download is going, in one line
     /// on the lobby panel.
     pub fn detail_description(&self, row: i16) -> Option<String> {
-        let e = self.selected().filter(|_| row == 0)?;
+        if row != 0 { return None }
+        let Some(e) = self.selected() else { return Some("Press B to go back.".into()) };
         let g = self.lock();
         let line = match g.installs.get(&e.id) {
             Some(Install::Downloading { done, total }) => format!(
@@ -1375,8 +1377,9 @@ impl Repo {
             g.pack = pack.clone();
             g.pictures = None;
         }
-        if let Some(entry) = self.selected() {
-            self.texts.set(DETAIL_TITLE, &text_fit::line(&entry.name, text_fit::TITLE));
+        if some {
+            let title = self.selected().map_or_else(|| "Mod details".into(), |e| text_fit::line(&e.name, text_fit::TITLE));
+            self.texts.set(DETAIL_TITLE, &title);
         }
         if let Some(name) = &pack {
             self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));

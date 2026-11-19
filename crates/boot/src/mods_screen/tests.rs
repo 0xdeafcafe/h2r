@@ -1063,3 +1063,15 @@ fn pack_rows_drop_only_the_repeated_pack_name_and_keep_full_page_titles() {
     other.press_list(1);
     assert!(other.pack_line(1).unwrap().starts_with("Phantom Ascension"));
 }
+
+#[test]
+fn a_restored_page_for_an_unlisted_map_has_a_way_back() {
+    let repo = spec::sample_repo(spec::Sample::Page);
+    let (_, empty) = listed(Vec::new(), None);
+    empty.load_state(&repo.save_state()).unwrap();
+    assert_eq!(empty.texts.get(DETAIL_TITLE).as_deref(), Some("Mod details"));
+    assert_eq!(empty.detail_line(0).as_deref(), Some("Map unavailable"));
+    assert_eq!(empty.detail_description(0).as_deref(), Some("Press B to go back."));
+    assert_eq!(empty.prompts(DETAIL, Some(0)), [Prompt::new(&[Glyph::B], "Back")]);
+    assert_eq!(empty.press_detail(0), Chosen::Nothing);
+}
