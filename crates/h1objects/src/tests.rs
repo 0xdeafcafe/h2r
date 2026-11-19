@@ -2377,6 +2377,7 @@ fn held_wheels_keep_what_is_above_the_floor() {
     assert!((one.volume - 0.75).abs() < 1e-4);
     assert!(cube([0.0; 3], [1.0; 3]).above(2.0).is_none());
     assert!(held_wheels(&[vec![cube([0.0; 3], [1.0; 3])]], f32::INFINITY).is_empty());
+}
 
 /// A rebuilt seat's gunner role is Halo 1's alone: the role word's player
 /// gunner bit (`0x000cc810` makes a seat with it, ridden by a player, the
