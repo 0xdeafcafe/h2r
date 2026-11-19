@@ -528,9 +528,9 @@ impl GpuModels {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         viewport: PassViewport,
-    ) {
+    ) -> usize {
         if self.current.draws.is_empty() {
-            return;
+            return 0;
         }
         self.pipeline(device, color_format, depth_format);
         let pipeline = &self.pipelines[&(color_format, depth_format)];
@@ -565,6 +565,7 @@ impl GpuModels {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.frame_group, &[]);
         let mut bound: Option<(u32, Option<u16>)> = None;
+        let mut recorded = 0;
         for d in &self.current.draws {
             let Some(m) = self.models.get(d.model as usize) else { continue };
             let Some(group) = m.materials.get(&d.material) else { continue };
@@ -579,7 +580,9 @@ impl GpuModels {
                 bound = Some((d.model, Some(d.material)));
             }
             pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, d.instance..d.instance + 1);
+            recorded += 1;
         }
+        recorded
     }
 
     /// Records one run's object transparents (stage 3) in `items`' order:
