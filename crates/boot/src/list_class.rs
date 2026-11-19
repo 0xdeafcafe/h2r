@@ -137,6 +137,10 @@ pub trait Rows: Send + Sync {
     }
     /// `(text index, string id)` for each text of row `row`.
     fn texts(&self, row: i16) -> Vec<(u32, u32)>;
+    /// A reserved list can remove trailing rows when its filter changes.
+    fn shrink_growing_rows(&self) -> bool {
+        false
+    }
     /// A press on row `row`.
     fn press(&self, row: i16) -> Chosen;
     /// The description's string id for row `row`, for a class with a
@@ -1528,6 +1532,21 @@ pub async fn row_text(
         let count = rows.count();
         let screen = Screen::at(cx.entry().ecx.wrapping_sub(ui::LIST));
         cx.write(|m| grow_rows(m, screen, count))?;
+        if rows.shrink_growing_rows() {
+            let list = cx.entry().ecx;
+            let focused = cx.call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(list)).await?.eax;
+            if focused != u32::MAX && usize::from(DatumHandle(focused).index()) >= count {
+                // Clamp before removing the datum the list cursor refers to.
+                cx.call(GuestCall::new(0x0024_c591).eax(list).args([count.saturating_sub(1) as u32])).await?;
+            }
+            cx.write(|m| {
+                let rows = screen.list().row_array(m)?;
+                for (handle, _) in rows.live(m, i32::MAX)?.into_iter().skip(count) {
+                    rows.array.delete(m, handle)?;
+                }
+                Ok::<_, MemFault>(())
+            })?;
+        }
     }
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.

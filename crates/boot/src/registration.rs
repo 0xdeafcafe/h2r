@@ -37,6 +37,7 @@ pub struct CoreInputs<'a> {
     pub vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     /// The Video screen's model (a settings store's, else none).
     pub model: Option<Arc<ui::Model>>,
+    pub theater: Option<crate::theater_ui::Theater>,
     pub campaigns: Option<Arc<crate::campaigns::State>>,
     pub settings: Option<Arc<settings::Store>>,
     pub live: Option<Arc<live_hle::Hle>>,
@@ -80,7 +81,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
-    layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
+    layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
     map_select::install(features, i.live.clone()).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1

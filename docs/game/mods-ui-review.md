@@ -50,6 +50,16 @@ long names, partial installation, failure, signed-out access and removal.
 The preview walkthrough starts on a pack, downloads one map, opens its
 detail, then checks both parent focus positions on B. Y has no action.
 
+## Theater uses the same list class
+
+The Theater checks add `theater.films`, `theater.film` and
+`theater.playback` to the UI kit inventory. Films covers reading, empty,
+populated, incompatible, saved and clip states. The film page adds
+build mismatch, web link and delete confirmation states. The transport
+covers playing and paused. The coordinator checks the new main-menu row,
+map pictures, tab movement, actions, and the host overlay in the
+integrated run.
+
 ## Verification boundary
 
 This is an offline review. Navigation and download findings follow the Rust handlers and the list-class loader. B uses the retail stack. Actual focus restoration on B, bitmap replacement, transition timing and lobby presentation need the coordinator's integrated run. The existing agent API is appropriate for that check. No live session or API extension was needed to inspect the supplied artifacts.

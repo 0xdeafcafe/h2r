@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 21] = [
+pub const NAMES: [&str; 24] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -288,6 +288,9 @@ pub const NAMES: [&str; 21] = [
     "mods",
     "mods.pack",
     "mods.detail",
+    crate::theater_ui::FILMS,
+    crate::theater_ui::DETAIL,
+    crate::theater_ui::OVERLAY,
     "kit.picker",
     "kit.picker.game",
 ];
@@ -317,6 +320,9 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
         "mods" | "mods.pack" | "mods.detail" => {
             use crate::mods_screen::spec::{Sample, preview::Preview};
             Some(Box::new(Preview::new(Sample::named(name)?)))
+        }
+        crate::theater_ui::FILMS | crate::theater_ui::DETAIL | crate::theater_ui::OVERLAY => {
+            crate::theater_ui::preview::live(name)
         }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }

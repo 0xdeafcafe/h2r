@@ -382,6 +382,7 @@ fn hosted(
         voice_io: Some(voice::host::HostVoiceIo::opener()),
         pad_speaker,
         debug_menu: None,
+        theater: None,
         perf_overlay: None,
         settings: Some(store),
         trace_limit: Some(TRACE_LIMIT),
@@ -498,7 +499,16 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+mod theater;
+
 pub fn run(args: Vec<String>) -> Result<()> {
+    run_with_theater(args, None)
+}
+
+pub(crate) fn run_with_theater(
+    args: Vec<String>,
+    open_library: Option<boot::theater_ui::adapter::OpenLibrary>,
+) -> Result<()> {
     #[cfg(unix)]
     if args.iter().any(|a| a == "--follow") {
         return crate::follow::run(args);
@@ -765,6 +775,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         .then(debug_menu::Shared::default);
     config.debug_menu = debug_menu.clone();
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
+    let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
+    if let Some((controller, _)) = &theater {
+        config.theater = Some(theater::overlay(
+            controller.clone(),
+            opts.data_root.join("films/screenshots"),
+        ));
+    }
     let report = app::run(config, move |host| {
         let mut host = hosted(
             host,
@@ -780,9 +797,20 @@ pub fn run(args: Vec<String>) -> Result<()> {
         host.on_vfs = on_vfs;
         // The menu sees every pad first, and hides them from the game while
         // it is open.
-        if let (Some(menu), Some(input)) = (&debug_menu, host.input.as_mut()) {
-            input.set_gate(Box::new(menu.gate()));
+        if let Some(input) = host.input.as_mut() {
+            let debug_gate = debug_menu.as_ref().map(|menu| {
+                Box::new(menu.gate()) as Box<dyn input::PadGate>
+            });
+            let gate = if let Some((controller, _)) = &theater {
+                Some(controller.pad_gate(debug_gate))
+            } else {
+                debug_gate
+            };
+            if let Some(gate) = gate {
+                input.set_gate(gate);
+            }
         }
+        host.theater = theater;
         host.debug_menu = debug_menu;
         host.perf_overlay = perf_overlay;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
