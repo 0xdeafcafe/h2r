@@ -189,11 +189,11 @@ pub fn summarise(
         phases.insert(p.label().to_owned(), s);
     }
     let mut counts = BTreeMap::new();
-    for c in Counter::ALL {
-        let v = frames.iter().map(|f| f.counts[c as usize]);
+    for (i, label) in timeline::phase::counter_columns() {
+        let v = frames.iter().map(|f| f.counts[i]);
         let total: u64 = v.clone().sum();
         counts.insert(
-            c.label().to_owned(),
+            label.to_owned(),
             CountStats {
                 mean: round(total as f64 / frames.len().max(1) as f64),
                 max: v.max().unwrap_or(0),
@@ -228,10 +228,9 @@ pub fn summarise(
                     .filter(|&p| f.phase_ns[p as usize] > 0)
                     .map(|p| (p.label().to_owned(), ms(f.phase_ns[p as usize])))
                     .collect(),
-                counts: Counter::ALL
-                    .into_iter()
-                    .filter(|&c| f.counts[c as usize] > 0)
-                    .map(|c| (c.label().to_owned(), f.counts[c as usize]))
+                counts: timeline::phase::counter_columns()
+                    .filter(|&(i, _)| f.counts[i] > 0)
+                    .map(|(i, label)| (label.to_owned(), f.counts[i]))
                     .collect(),
                 top: top(f),
                 causes: causes(f, &typical),
@@ -265,7 +264,7 @@ pub fn write_csv(path: &Path, frames: &[FrameSample], marks: &[TickMark]) -> std
         .iter()
         .map(|p| format!("{}_us", p.label()))
         .collect();
-    let counts: Vec<&str> = Counter::ALL.iter().map(|c| c.label()).collect();
+    let counts: Vec<&str> = timeline::phase::counter_columns().map(|(_, label)| label).collect();
     writeln!(
         f,
         "present,end_ms,tick,map,total_us,busy_us,{},{}",
