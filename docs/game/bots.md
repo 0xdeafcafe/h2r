@@ -2247,9 +2247,20 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the window 5 screen the game names with `coop-live: lobby mode
    4294967295`; its cursor row is the low 16 bits of the `list [mask/value]`
    value on its `ui: screen none` line (rows: 0 Campaign, 1 Xbox Live, 2
-   Split Screen, 3 System Link, 4 Settings). From there: to row 1, A (the
-   game's own Xbox Live sign-in; its dialogs get A, and a request for the
-   account's 6-digit code stops the drive), A on the players' screen in
+   Split Screen, 3 System Link, 4 Settings). From there: to row 1, A. Not
+   signed in, that opens the game's account picker (`dialog_live_signin`,
+   dialog `0x14`, loader `0x24b4a9`), as a new profile's boot does. Its
+   row 0 (item `0x1023`, `0x24af1a`) is the no-account row: A there closes
+   it signed out, which is how the second run (20261119-001305) went round
+   the main menu four times. Then one row per account `XOnlineGetUsers`
+   lists (the run's `live/accounts.json`: Tester), then New Account. A on
+   an account row copies it into the profile and logs on (`0x24b2ea`,
+   `0x24b664`). So the drive knows the picker by the bots' join gate line
+   (`dialog 0x14 (window 3, ...)`), presses DOWN off row 0 and A on the
+   account (A anyway when the cursor shows no move), once per opening, and
+   gives up after 3 picks that did not sign in, or a picker still up 30 s
+   after A. Another dialog on the way gets A, and a request for the
+   account's 6-digit code stops the drive. Then A on the players' screen in
    Xbox Live mode (where the local bots join; any other mode is backed out
    of), the Live menu's Custom Game row (retail row 2), then the pregame
    lobby, which counts as a Live one only once the HLE says `live: session
@@ -2292,7 +2303,8 @@ failure:
 
 A failed check says what is missing and why, as far as the log does: for
 step 6 each missing port's last join gate lines (screen, dialog,
-`signed_in`); for 3 the mode it ended in, or the last presses and screen;
+`signed_in`); for 3 the mode it ended in, how often the account picker
+opened without a sign-in, or the last presses and screen;
 for 4 whether a lobby opened without a Live session; for 5 whether the
 roster was asked for at all; for 7 the port's guest or offline line; for
 8 the start state's blocking check, or that Start was never pressed; for

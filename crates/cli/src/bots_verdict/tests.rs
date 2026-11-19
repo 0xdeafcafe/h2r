@@ -455,3 +455,29 @@ fn split_screen_then_xbox_live_is_on_xbox_live() {
     lines.insert(8, "ui: screen 0x1e (window 5, slot 4), mode 1");
     assert!(run(&plan(5), &lines).passed());
 }
+
+#[test]
+fn an_account_picker_that_never_signed_in_is_named() {
+    // Run 2 (20261119-001305): the account picker opened on each Xbox Live
+    // press, took A on its no-account row and closed, signed out.
+    let lines = [
+        "live: playing as Tester (00097660034d6ee9) on http://127.0.0.1:8077",
+        "clankers: Clanker 1 on (Normal)",
+        "clankers: Clanker 2 on (Normal)",
+        "clankers: Clanker 3 on (Normal)",
+        "bots-drive: press a on screen none main menu row 1 (Xbox Live (signs in; the bots join here))",
+        "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
+        "bots: join gate port 2: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
+        "bots: join gate port 1: screen none (top none), dialog none, signed_in false (slot 0x1): waits",
+        "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits",
+        "bots-drive: stuck: no Xbox Live menu after 4 tries; back on the main menu",
+    ];
+    let v = run(&plan(5), &lines);
+    let (n, c) = v.first_failure().unwrap();
+    assert_eq!(n, 3, "{}", v.render());
+    assert!(
+        c.detail.contains("account picker (dialog 0x14") && c.detail.contains("opened 2 time(s)"),
+        "{}",
+        c.detail
+    );
+}
