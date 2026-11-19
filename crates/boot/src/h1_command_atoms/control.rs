@@ -90,6 +90,21 @@ fn begin_instance(m: &mut dyn GuestMemory, s: &mut ActorState, unit: u32, comman
     Ok(())
 }
 
+pub(super) fn executing(m: &dyn GuestMemory, unit: u32) -> R<bool> {
+    let id = m.u32(CURRENT)?;
+    if id == NONE {
+        return Ok(false);
+    }
+    let Some((_, body)) = objects::get(m, DatumHandle(unit))? else {
+        return Ok(false);
+    };
+    let actor = m.u32(body.addr + 0x12c)?;
+    if actor == NONE || m.u32(datum(m, ACTORS, actor, ACTOR_SIZE)? + 0x858)? != id {
+        return Ok(false);
+    }
+    generated(m, m.u32(points::SCENARIO.base)?, id)
+}
+
 fn generated(m: &dyn GuestMemory, sc: u32, id: u32) -> R<bool> {
     let c = datum(m, COMMANDS, id, COMMAND_SIZE)?;
     let i = u32::from(m.u16(c + 52)?);
@@ -149,12 +164,29 @@ fn model_reference(m: &dyn GuestMemory, unit: u32, offset: u32) -> R<u32> {
     m.u32(address + offset)
 }
 
-fn actor_timing(m: &mut dyn GuestMemory, sc: u32, i: u32) -> R<()> {
+pub(super) struct Tuning {
+    idle: [f32; 2],
+    pub(super) recovery: f32,
+    pub(super) flying: bool,
+    pub(super) gaze_cosine: f32,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            idle: [0.0; 2],
+            recovery: 2.0,
+            flying: false,
+            gaze_cosine: 0.0,
+        }
+    }
+}
+
+fn timing(m: &dyn GuestMemory, sc: u32, i: u32, unit: u32) -> R<Tuning> {
     let defs = m.u32(sc + 0x1c4)?;
     let globals = m.u32(m.u32(GLOBALS)? + 68)? + 1053 * 8 + 4;
-    let port = globals + i * 8;
-    let unit = m.u32(port)?;
-    let mut selected = [0.0, 0.0, 2.0];
+
+    let mut selected = Tuning::default();
     if let Some((kind, body)) = objects::get(m, DatumHandle(unit))?
         && matches!(kind, objects::BIPED | objects::VEHICLE)
     {
@@ -169,9 +201,19 @@ fn actor_timing(m: &mut dyn GuestMemory, sc: u32, i: u32) -> R<()> {
             {
                 let group = globals + j * 8;
                 j += 3;
+                let extended = j + 2 <= count
+                    && m.cstr(defs + j * 40, 31)?.starts_with(b"h1_cmd_fly_");
+                if extended {
+                    j += 2;
+                }
                 while j < count && m.u16(defs + j * 40 + 32)? == 11 {
                     if birth != 0 && m.u32(globals + j * 8)? == birth {
-                        selected = [m.f32(group)?, m.f32(group + 8)?, m.f32(group + 16)?];
+                        selected.idle = [m.f32(group)?, m.f32(group + 8)?];
+                        selected.recovery = m.f32(group + 16)?;
+                        if extended {
+                            selected.flying = m.f32(group + 24)? != 0.0;
+                            selected.gaze_cosine = m.f32(group + 32)?;
+                        }
                         break 'groups;
                     }
                     j += 1;
@@ -179,7 +221,25 @@ fn actor_timing(m: &mut dyn GuestMemory, sc: u32, i: u32) -> R<()> {
             }
         }
     }
-    for (field, v) in selected.into_iter().enumerate() {
+    Ok(selected)
+}
+
+pub(super) fn tuning(m: &dyn GuestMemory, sc: u32, unit: u32) -> R<Tuning> {
+    let defs = m.u32(sc + 0x1c4)?;
+    for i in 0..m.u32(sc + 0x1c0)?.saturating_sub(3) {
+        let def = defs + i * 40;
+        if m.u16(def + 32)? == 51 && m.cstr(def, 31)?.as_slice() == b"h1_cmd_timing_unit" {
+            return timing(m, sc, i, unit);
+        }
+    }
+    Ok(Tuning::default())
+}
+
+fn actor_timing(m: &mut dyn GuestMemory, sc: u32, i: u32) -> R<()> {
+    let port = m.u32(m.u32(GLOBALS)? + 68)? + (1053 + i) * 8 + 4;
+    let selected = timing(m, sc, i, m.u32(port)?)?;
+    let values = [selected.idle[0], selected.idle[1], selected.recovery];
+    for (field, v) in values.into_iter().enumerate() {
         m.set_f32(port + (field as u32 + 1) * 8, v)?;
     }
     Ok(())

@@ -9,6 +9,8 @@ use engine::view::{Tags, objects};
 use feature::{Flow, points};
 
 mod control;
+mod motion;
+mod performance;
 
 type R<T> = Result<T, MemFault>;
 const COMMANDS: u32 = 0x0050_2408;
@@ -41,7 +43,7 @@ fn decode(m: &dyn GuestMemory, id: u32) -> R<Option<Atom>> {
     }
     let bits = encoded as u32;
     let kind = ((bits >> 16) - 1) as u16;
-    if !matches!(kind, 3 | 7 | 9 | 15 | 22) {
+    if !matches!(kind, 2 | 3 | 4 | 7 | 9 | 13 | 15 | 22) {
         return Ok(None);
     }
     let scenario = m.u32(points::SCENARIO.base)?;
@@ -96,35 +98,6 @@ fn direction(from: [f32; 3], to: [f32; 3]) -> Option<[f32; 3]> {
     let [x, y, z] = std::array::from_fn(|i| to[i] - from[i]);
     let len = (x * x + y * y + z * z).sqrt();
     (len > 0.0 && len.is_finite()).then(|| [x / len, y / len, z / len])
-}
-
-// H2's targeting ray starts at the unit origin and follows +0x168
-// (0xcf3d0). H1 accepts a squared miss distance below 0.25 (0x16af73).
-fn on_target(origin: [f32; 3], aim: [f32; 3], target: [f32; 3]) -> bool {
-    let delta: [f32; 3] = std::array::from_fn(|i| target[i] - origin[i]);
-    let dot: f32 = (0..3).map(|i| aim[i] * delta[i]).sum();
-    let len: f32 = aim.iter().map(|v| v * v).sum();
-    if len <= 0.0 || dot < 0.0 {
-        return false;
-    }
-    (0..3)
-        .map(|i| (delta[i] - aim[i] * dot / len).powi(2))
-        .sum::<f32>()
-        <= 0.25
-}
-
-fn acquired(m: &dyn GuestMemory, a: Atom, unit: u32) -> R<bool> {
-    let Some((_, body)) = objects::get(m, DatumHandle(unit))? else {
-        return Ok(true);
-    };
-    let Some(target) = point(m, a)? else {
-        return Ok(true);
-    };
-    Ok(on_target(
-        bots::vehicle::read::unit_position(m, body)?,
-        m.vec3(body.addr + 0x168)?,
-        target,
-    ))
 }
 
 fn put_vector(m: &mut dyn GuestMemory, addr: u32, xyz: [f32; 3]) -> R<()> {
@@ -250,14 +223,29 @@ async fn execute(
             }
             Ok(Ret::new(0, 16))
         }
-        7 => Ok(Ret::new(
-            if cx.read(|m| acquired(m, a, unit))? {
-                2
-            } else {
-                0
-            },
-            16,
-        )),
+        2 => {
+            let aligned = cx.write(|m| {
+                let flight = performance::flying(m, a, unit)?;
+                m.set_u8(state + 8, u8::from(flight))?;
+                performance::face(m, a, actor, state)
+            })?;
+            Ok(Ret::new(if aligned { 2 } else { 0 }, 16))
+        }
+        4 => performance::begin_gaze(cx, a, actor, unit, state, scratch).await,
+        13 => {
+            let playing = cx.read(|m| performance::playing(m, unit))?;
+            if playing {
+                cx.write(|m| {
+                    m.set_u32(state + 8, 0)?;
+                    put_vector(m, state + 16, origin)
+                })?;
+            }
+            Ok(Ret::new(if playing { 0 } else { 2 }, 16))
+        }
+        7 => {
+            let finished = cx.write(|m| performance::shoot(m, a, actor, unit, state, true))?;
+            Ok(Ret::new(if finished { 2 } else { 0 }, 16))
+        }
         9 => {
             let candidates = cx.read(|m| seats(m, origin, a.amount, a.operand))?;
             for (vehicle, seat) in candidates {
@@ -304,7 +292,9 @@ impl feature::Feature for CommandAtoms {
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         control::install(b);
-        let scratch = b.guest_alloc(256 * 64, runtime::guest::Permissions::RW)?;
+        performance::install(b)?;
+        motion::install(b)?;
+        let scratch = b.guest_alloc(256 * 128, runtime::guest::Permissions::RW)?;
         b.raw().before(
             &points::AI_COMMAND_BEGIN,
             "execute converted command",
@@ -337,7 +327,7 @@ impl feature::Feature for CommandAtoms {
                         actor,
                         unit,
                         state,
-                        scratch + (actor & 255) * 64,
+                        scratch + (actor & 255) * 128,
                     ))
                 })
             },
@@ -352,12 +342,23 @@ impl feature::Feature for CommandAtoms {
                     return Ok(Flow::Continue);
                 }
                 let unit = c.arg_u32("unit").unwrap_or(u32::MAX);
+                let actor = c.arg_u32("actor").unwrap_or(u32::MAX);
                 let outcome = {
-                    let m = c.ctx.runtime().memory();
+                    let mut m = c.ctx.runtime().memory();
                     match decode(&*m, id).map_err(control::fault)? {
-                        Some(a) if a.kind == 7 => {
-                            Some(u32::from(acquired(&*m, a, unit).map_err(control::fault)?))
-                        }
+                        Some(a) if a.kind == 2 => Some(u32::from(
+                            performance::face(&mut *m, a, actor, state).map_err(control::fault)?,
+                        )),
+                        Some(a) if a.kind == 4 => Some(u32::from(
+                            performance::update_gaze(&mut *m, a, state).map_err(control::fault)?,
+                        )),
+                        Some(a) if a.kind == 7 => Some(u32::from(
+                            performance::shoot(&mut *m, a, actor, unit, state, false)
+                                .map_err(control::fault)?,
+                        )),
+                        Some(a) if a.kind == 13 => Some(u32::from(
+                            !performance::playing(&*m, unit).map_err(control::fault)?,
+                        )),
                         Some(a) if a.kind == 22 && m.u16(state)? == 0 => Some(1),
                         _ => None,
                     }
@@ -408,9 +409,6 @@ mod tests {
             Some([0.0, 0.0, 1.0])
         );
         assert_eq!(direction([3.0; 3], [3.0; 3]), None);
-        assert!(on_target([0.0; 3], [1.0, 0.0, 0.0], [10.0, 0.4, 0.0]));
-        assert!(!on_target([0.0; 3], [1.0, 0.0, 0.0], [-10.0, 0.0, 0.0]));
-        assert!(!on_target([0.0; 3], [1.0, 0.0, 0.0], [10.0, 1.0, 0.0]));
         assert!(seat_matches(3, 4));
         assert!(!seat_matches(3, 8));
         assert!(seat_matches(1, 8));

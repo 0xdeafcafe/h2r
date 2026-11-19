@@ -300,6 +300,12 @@ points! { ALL;
     AI_COMMAND_BEGIN @ 0x0025_8cf0: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
     AI_COMMAND_UPDATE @ 0x0025_9430: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
     AI_COMMAND_REMOVE @ 0x0025_8540: [fn(actor: ecx, command: stack 0) ret 4]; "docs/halo1/ai.md";
+    OBJECT_ANIMATION_BLEND @ 0x000b_a350: [fn(unit: esi, duration: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Finish the character physics mode's velocity calculation.
+    CHARACTER_MOTION_STATE @ 0x001e_5b50: [fn(input: eax, state: ecx, output: esi) ret 0]; "docs/halo1/ai.md";
+    AI_COMMAND_TARGETS @ 0x0025_a380: [fn(actor: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Actor firing-pattern setup selects a new burst duration from EBX+0x20/+0x24.
+    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, pattern: ebx) ret 4]; "docs/halo1/ai.md";
     /// Clear HS threads and instantiate scenario globals and persistent scripts.
     HS_NEW_MAP @ 0x0020_90a0: [fn() ret 0]; "docs/halo1/scripts.md";
 

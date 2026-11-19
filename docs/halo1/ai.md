@@ -393,18 +393,58 @@ source sound on the unit. H1 indexes the dialogue tag at `0x46a40`
 and follows the executable's fallback table when the line is absent.
 None of the retail campaign lists uses this atom.
 
-The synthetic tests cover duplicate list names, point literals, wait
-duration, actor reuse and completion expiry. The ignored disc tests check
-the generated script roots, placement record indices and point sets.
-A shooting atom uses the authored burst length. The H1 actor variant's
-recovery comes from `actv+0x84` (`0x16af96`), with a two-second floor.
-An unauthored random-look interval comes from `actr+0xec/+0xf0`
-(`0x16b4b7`). When those values are needed, placement string IDs identify
-the source actor variant. H2 retains the starting-location ID on its
-actor at `+0x38` (`0x272c13`). The point-acquisition check uses the H2
-weapon targeting ray (`0xcf3d0`). Playback, weapon timing and the
-correspondence between the two engines' gaze strengths still need an
-integrated game run.
+#### Cinematic bindings (x50 and c40)
+
+**Built.** Use the command list index from the containing H1 scenario.
+`h1ai::h1::command_script_name(i)` returns `h1_cmd_<i>` with the
+zero-based index in decimal. For example, source list 7 in a level with
+40 authored scripts becomes `h1_cmd_7`, H2 script index 47. Resolve the
+index independently for each level. Duplicate display names are legal.
+
+| Caller | Binding |
+|---|---|
+| Converted H1 script | `ai_command_list(ai, list)` runs the generated script on the group. `ai_command_list_by_unit(unit, list)` resolves the unit with `object_get_ai`. Both emit `cs_run_command_script`. |
+| Generated H2 cinematic code | Pass the actor and a type-21 `ai_command_script` literal to `cs_run_command_script`. Its data is the generated definition's index. Its token is the generated name. The none value is `0xffffffff`. |
+| Scenario starting location | Set `h1ai::convert::Options::first_command_script` to the number of authored scripts. Conversion binds `placement_script` to the generated name and `placement_script_index` to the first script plus the source list index. A location without a list keeps index `-1`. |
+| Advance and poll | The H1 advance calls deliver one stimulus per addressed actor. Status of an object list is the highest member status: 0 inactive, 1 recently finished, 2 waiting for advance, 3 running. |
+
+#### Command execution
+
+**Built.** H1 selects gaze strengths 5, 2, 8 and 7 for modifiers 1 through
+4 (`0x16b68f`). The default changes from 7 to 2 at combat status 4
+(`0x15c244`). The head-only, aiming and forced-facing controls on H2
+are set on the executing command. Strength 7 requests a body turn when
+the target leaves the source actor's horizontal gaze cone. Perceived
+units stay live. Unperceived unit targets contribute their head position
+once (`0x16b6c9`). The gaze expires in whole H1 ticks, truncated at 30 Hz
+before conversion to the simulation clock. Random looks with no authored
+duration read the actor's idle interval at `actr+0xec/+0xf0`.
+
+Go-to-and-face also waits for alignment after arrival with an authored
+radius. H1 `0x16ae14` requires a dot product of at least 0.984 with the
+direction to the face point. Ground actors use XY and flying actors use
+XYZ. The source flight flag is bit 21 of `actr`. A driver can also inherit
+flight from the vehicle (`0x14c4f5`).
+
+**Built.** Shoot requests fire on entry (`0x16bc4c`). On update, a point
+target must be strictly less than half a world unit from the authored
+point. Each miss restarts the timer at the variant's `actv+0x84` interval
+with a two-second floor. An already accepted point can finish on the
+first update (`0x16af4a`). H2 copies its accepted target at `0x1fcb4b`.
+A positive authored duration overrides the burst length for this actor
+(`0x1623ba`). The normal firing controller handles subsequent shots.
+Placement string IDs identify source tuning after an actor migrates.
+
+**Built.** All six animation modifiers start one custom animation. Modes
+0–2 blend for six source ticks and modes 3–5 start directly (`0x3f319`).
+Modes 1 and 4 take XYZ velocity from the playing channel and use normal
+collision. Modes 2 and 5 also advance through obstructions. H1 sets the
+two biped flags at `0x16bf18`, rotates the authored XY by the biped
+heading at `0x4977f`, and clears the flags at `0x16abee`. The H2 hook
+reads the converted root-motion stream at the live frame and playback
+rate (`0x1c6d00`). Completion follows the unit leaving its custom
+animation state, including interruption (`0x16b0b6` in H1, `0x11b930`
+in H2).
 
 ### Character selection
 

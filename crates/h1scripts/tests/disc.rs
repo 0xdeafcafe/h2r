@@ -228,6 +228,24 @@ fn every_campaign_script_compiles_and_round_trips() {
             for (i, def) in commands.iter().enumerate() {
                 assert_eq!(def.name().unwrap(), h1ai::h1::command_script_name(i));
                 assert_eq!((def.kind(),def.return_type()),(5,4));
+                let list = &t.commands.lists[i];
+                let nodes = s.reachable([def.root()]).unwrap();
+                let calls: std::collections::BTreeSet<_> = nodes.iter()
+                    .map(|d| s.node(*d).unwrap())
+                    .filter(|n| !n.atom() && !n.script_call())
+                    .map(|n| n.opcode())
+                    .collect();
+                let has = |op: &str| target.builtins.get(op).is_some_and(|b| calls.contains(&b.index));
+                assert!(!has("custom_animation_loop"), "{name}: {}", list.name);
+                for a in &list.atoms {
+                    let valid_point = list.points.get(a.points[0] as usize).is_some();
+                    if a.kind == 7 && valid_point {
+                        assert!(has("cs_shoot_point") && has("cs_move_in_direction"), "{name}: {}", list.name);
+                    }
+                    if a.kind == 13 && t.commands.animations.get(a.animation as usize).is_some() {
+                        assert!(has("custom_animation") && has("cs_move_in_direction"), "{name}: {}", list.name);
+                    }
+                }
             }
             assert!(s.globals().len() >= t.globals.len());
             assert!(c.missing.iter().all(|u| !u.name.starts_with("ai_command_list")), "{name}");

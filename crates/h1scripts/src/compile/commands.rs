@@ -13,7 +13,6 @@ const REAL: u16 = h2t::REAL;
 const SHORT: u16 = h2t::SHORT;
 const CS: u16 = 21;
 const POINT: u16 = 28;
-const OBJECT: u16 = 50;
 const OBJECT_NAME: u16 = 56;
 const OBJECT_LIST: u16 = 31;
 
@@ -144,6 +143,8 @@ impl Program {
                     ("lo", times.idle[0]),
                     ("hi", times.idle[1]),
                     ("burst", times.recovery),
+                    ("fly", if times.flying { 1.0 } else { 0.0 }),
+                    ("cone", times.gaze_cosine),
                 ] {
                     p.global(&format!("h1_cmd_{field}_{i}"), REAL, real(val));
                 }

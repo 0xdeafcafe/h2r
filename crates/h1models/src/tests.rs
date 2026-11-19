@@ -398,6 +398,16 @@ fn check_graph(
     }
     // Every animation reads as the engine reads it.
     for (i, a) in src.animations.iter().enumerate() {
+        let record = &g.animations[i];
+        assert_eq!(u16::from(record.frame_info_type), a.frame_info_type, "{}", a.name);
+        let sizes = record.sizes;
+        let len = u16::from_le_bytes(sizes.unknown) as usize;
+        let at = record.data_offset as usize
+            + usize::from(sizes.static_size)
+            + sizes.animated_size as usize
+            + usize::from(sizes.static_flags)
+            + usize::from(sizes.animated_flags);
+        assert_eq!(&resource[at..at + len], a.frame_info.as_slice(), "{}", a.name);
         let p = g.engine_problems(i, &resource);
         assert!(p.is_empty(), "{}: {p:?}", a.name);
     }
@@ -864,6 +874,31 @@ fn reads_synthetic_graph() {
 }
 
 #[test]
+fn movement_records_follow_the_two_channel_masks_for_each_encoding() {
+    for (kind, axes) in [(1, 2), (2, 3), (3, 4)] {
+        let (mut img, graph) = synthetic_graph();
+        let animations = h1::u32_at(&img.0, (graph - BASE) as usize + 0x78);
+        let entry = (animations - BASE) as usize;
+        let movement: Vec<u8> = (0..5 * axes)
+            .flat_map(|n| ((n as f32 - 3.0) / 8.0).to_le_bytes())
+            .collect();
+        let addr = img.alloc(&movement);
+        put16(&mut img.0, entry + 0x26, kind);
+        put(&mut img.0, entry + 0x48, movement.len() as u32);
+        put(&mut img.0, entry + 0x54, addr);
+        let g = h1::Graph::read(&img, graph).unwrap();
+        assert_eq!(g.animations[0].frame_info, movement);
+        let (out, report) = jmad::convert_graph(&g, None).unwrap();
+        assert_eq!(report.movement, [g.animations[0].name.clone()]);
+        let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+        assert_eq!(check_graph(&g, &[], bytes, ids[0]).len(), g.animations.len());
+
+        put(&mut img.0, entry + 0x48, movement.len() as u32 - 1);
+        assert!(h1::Graph::read(&img, graph).is_err());
+    }
+}
+
+#[test]
 fn synthetic_graph_round_trips_through_the_h2_decoder() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
@@ -1322,7 +1357,7 @@ fn real_graphs_round_trip() {
             std::array::from_fn(|k| w[k].max(e[k]))
         });
         println!(
-            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, dropped movement {}, dropped overlay defaults {}, zero rotations {}",
+            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, dropped overlay defaults {}, zero rotations {}",
             g.animations.len(),
             g.animations
                 .iter()
@@ -1332,7 +1367,7 @@ fn real_graphs_round_trip() {
             worst[1],
             worst[2],
             report.variants.len(),
-            report.dropped_movement.len(),
+            report.movement.len(),
             report.dropped_default_channels,
             report.zero_rotations
         );

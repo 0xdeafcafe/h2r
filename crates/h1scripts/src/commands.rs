@@ -21,6 +21,8 @@ pub struct Animation {
 pub struct ActorTiming {
     pub idle: [f32; 2],
     pub recovery: f32,
+    pub flying: bool,
+    pub gaze_cosine: f32,
     pub placements: Vec<String>,
 }
 
@@ -118,7 +120,7 @@ impl Lists {
             .lists
             .iter()
             .flat_map(|l| &l.atoms)
-            .any(|a| a.kind == 7 || (a.kind == 23 && a.parameters == [0.0, 0.0]))
+            .any(|a| matches!(a.kind, 2 | 4 | 7 | 23 | 24 | 25))
         {
             let ai = h1::H1Ai::read(map).map_err(|e| invalid(e.to_string()))?;
             let mut births =
@@ -149,8 +151,8 @@ impl Lists {
                         .ok_or_else(|| invalid("actv firing interval"))?,
                 )
                 .max(2.0);
-                let idle = if variant.actor.id.0 == u32::MAX {
-                    [0.0; 2]
+                let (idle, flying, gaze_cosine) = if variant.actor.id.0 == u32::MAX {
+                    ([0.0; 2], false, 0.0)
                 } else {
                     let actor = map.tag_data(map.tag(variant.actor.id)?)?;
                     let word = |off| {
@@ -158,11 +160,14 @@ impl Lists {
                             .map(f32::from_bits)
                             .ok_or_else(|| invalid("actr idle-look interval"))
                     };
-                    [word(236)?, word(240)?]
+                    let flags = super::u32_at(actor, 0).ok_or_else(|| invalid("actr flags"))?;
+                    ([word(236)?, word(240)?], flags & (1 << 21) != 0, word(0x12c)?)
                 };
                 self.timing.push(ActorTiming {
                     idle,
                     recovery,
+                    flying,
+                    gaze_cosine,
                     placements: locations
                         .into_iter()
                         .map(|i| placement_name(v, i))
