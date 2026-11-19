@@ -16,6 +16,7 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
+mod theater_cmd;
 mod anim;
 mod bitmap;
 mod boot_cmd;
@@ -262,7 +263,7 @@ fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
 fn main() -> Result<()> {
     // Live presence says which build this is (docs/game/game-options.md 3).
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
-    let mut args = std::env::args().skip(1);
+    let mut args = theater_cmd::arguments()?;
     let Some(cmd) = args.next() else {
         bail!("{USAGE}")
     };
@@ -328,6 +329,7 @@ fn main() -> Result<()> {
     if cmd == "live" {
         return live_cmd::run(args.collect());
     }
+    if cmd == "theater" { return theater_cmd::run(args.collect()); } // theater-film
     if cmd == "sim" {
         return sim_cmd::run(args.collect());
     }

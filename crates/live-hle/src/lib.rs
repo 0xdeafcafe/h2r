@@ -213,6 +213,14 @@ pub struct Hle {
     network: network::Network,
 }
 impl Hle {
+    /// Installed once by boot, before any guest thread runs.
+    pub fn set_film_tap(&self, tap: Arc<dyn film::tape::Tap>) {
+        assert!(self.network.tap.set(tap).is_ok());
+    }
+    pub fn film_address(&self) -> SocketAddrV4 {
+        self.network.config.address
+    }
+
     /// Loads account identities once; does not connect to the server. Disabled
     /// configuration never reads a file or queries host networking.
     pub fn new(config: LiveConfig) -> Result<Arc<Self>, ConfigError> {
@@ -266,6 +274,26 @@ impl Hle {
                 accounts,
                 address,
                 service,
+                config.clone(),
+            )),
+            config,
+            network: network::Network::new(network),
+        }))
+    }
+    /// Preserve the dedicated lobby's configured session class, with no HTTP
+    /// worker, accounts or usable remote URL. The guest network uses its tape.
+    pub fn for_film(network: NetworkConfig, live_service: bool) -> Result<Arc<Self>, ConfigError> {
+        network.validate().map_err(ConfigError::Network)?;
+        let config = LiveConfig {
+            enabled: true,
+            server_url: live_service.then(|| "film:offline".to_owned()),
+            ..Default::default()
+        };
+        Ok(Arc::new(Self {
+            state: Mutex::new(state::State::new(
+                Vec::new(),
+                network.address,
+                None,
                 config.clone(),
             )),
             config,
@@ -453,7 +481,41 @@ impl Hle {
     /// The Live session this console hosts (16 lowercase hex digits),
     /// while its advertisement stands. Never waits on the server.
     pub fn hosted_session(&self) -> Option<String> {
-        self.lock().hosted_session()
+        let Some(tap) = self.network.tap.get() else {
+            return self.lock().hosted_session();
+        };
+        const NAME: &str = "HostedSession";
+        if tap.replaying() {
+            let call = tap.next(NAME, &[], 0)?;
+            match call.outputs.as_slice() {
+                [] => None,
+                [id] if id.len() == 16 && id.iter().all(u8::is_ascii_hexdigit) => {
+                    String::from_utf8(id.clone()).ok()
+                }
+                _ => {
+                    tap.fault("invalid recorded session ID".into());
+                    None
+                }
+            }
+        } else {
+            let id = self.lock().hosted_session();
+            tap.record(
+                film::NETR,
+                film::tape::Call {
+                    index: 0,
+                    op: NAME.into(),
+                    args: vec![],
+                    thread: 0,
+                    result: Ok(0),
+                    outputs: id
+                        .as_ref()
+                        .map(|s| s.as_bytes().to_vec())
+                        .into_iter()
+                        .collect(),
+                },
+            );
+            id
+        }
     }
     /// Asks the server for a bot roster for this console's session
     /// (`POST /v1/games/bots` with a `games.write` token, docs/game/bots.md
@@ -617,6 +679,9 @@ impl Hle {
         report: Option<u16>,
         timeout: std::time::Duration,
     ) -> Option<u16> {
+        if self.network.tap.get().is_some_and(|t| t.replaying()) {
+            return None;
+        }
         let qos = std::net::SocketAddrV4::new(*host.ip(), host.port().wrapping_add(2));
         qos::ping(qos, report.unwrap_or(0), timeout).map(qos::round_trip_ms)
     }
@@ -853,7 +918,9 @@ fn invoke(
         eprintln!("live: matchmaking: could not start QoS responder: {e}");
     }
     if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
-        cpu.eax = 0;
+        cpu.eax = hle.network.tap.get().map_or(0, |t| {
+            network::film::service_qos(t.as_ref(), e.name, &args, ctx.thread_id, ctx.runtime(), 0)
+        });
         return ctx.memory().ret(cpu, e.stack_words * 4);
     }
     // The accepted-invitation read stamps the record in the guest's clock;
@@ -872,7 +939,12 @@ fn invoke(
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
         state.set_read_keys(read_keys);
-        let result = state.invoke(e.operation, &args, &mut m);
+        let result = match hle.network.tap.get() {
+            Some(tap) => network::film::with_random(tap, e.name, ctx.thread_id, || {
+                state.invoke(e.operation, &args, &mut m)
+            }),
+            None => state.invoke(e.operation, &args, &mut m),
+        };
         let cleanup = if matches!(result, Ok(0)) {
             hle.network.lifecycle(e.operation)
         } else {
@@ -883,6 +955,20 @@ fn invoke(
     drop(cleanup); // Socket wakeups and QoS responder join run without locks.
     let result = match result {
         Ok(value) => {
+            let value = if matches!(e.operation, Operation::QosLookup | Operation::QosRelease)
+                && let Some(tap) = hle.network.tap.get()
+            {
+                network::film::service_qos(
+                    tap.as_ref(),
+                    e.name,
+                    &args,
+                    ctx.thread_id,
+                    ctx.runtime(),
+                    value,
+                )
+            } else {
+                value
+            };
             cpu.eax = if e.operation == Operation::WsaCleanup && value != 0 {
                 hle.network.set_error(ctx.thread_id, value);
                 u32::MAX

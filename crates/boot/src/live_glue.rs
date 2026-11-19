@@ -40,6 +40,23 @@ pub fn install_with_network(
     };
     let hle = Hle::with_server_options(config.clone(), network, options)
         .context("configuring Live client")?;
+    register_network(rt, k, hle)
+}
+
+pub(crate) fn install_film(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    network: live_hle::NetworkConfig,
+    live_service: bool,
+) -> anyhow::Result<Option<Arc<Hle>>> {
+    register_network(rt, k, Hle::for_film(network, live_service)?)
+}
+
+fn register_network(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    hle: Arc<Hle>,
+) -> anyhow::Result<Option<Arc<Hle>>> {
     rt.edit_dispatch(|d| live_hle::register(d, &hle))
         .context("registering Live boundary")?;
     let mut console = k.console_config();

@@ -643,6 +643,7 @@ dependencies = [
  "emit",
  "engine",
  "feature",
+ "film",
  "font",
  "gfx",
  "hot-render",
@@ -965,6 +966,7 @@ dependencies = [
  "debug-menu",
  "dsound",
  "emit",
+ "film",
  "flate2",
  "font",
  "gltf",
@@ -1968,6 +1970,20 @@ name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
+
+[[package]]
+name = "film"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "live-proto",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ureq",
+ "url",
+ "zstd",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -3449,6 +3465,7 @@ name = "live-hle"
 version = "0.1.0"
 dependencies = [
  "content",
+ "film",
  "flate2",
  "live-proto",
  "live-server",
