@@ -316,6 +316,52 @@ score, or standing.
 [Arbitration](../../crates/live-server/src/arbitration.rs) ·
 [Identity projection](../../crates/live-telemetry/src/session.rs)
 
+
+
+The planned trusted source is the dedicated host. It signs telemetry
+with a service identity separate from the players. Live verifies that
+the assigned host signed the completed game and ties the record to the
+reservation and eligible joined players before it counts for Ranked.
+Preserve single-use results, reconcile disconnects against the
+reserved roster and keep the service account out of ranks and scores.
+
+## Host tunnel
+
+Set `H2_TUNNEL_LISTEN=0.0.0.0:31100` in the dedicated game process.
+The listener starts on its first initialized XNet call and serves one
+lease. Keep this port on the private network between the game host and
+the upstream proxy. Live authenticates and admits the client first. The
+host accepts the upstream-authenticated upgrade at its original
+`/v1/hosts/{lease}/tunnel` path and logs the optional
+`x-h2-tunnel-peer` XUID.
+
+The client sends an empty binary hello with port 0 and peer 0. The host
+replies on port 0 with an assigned nonzero peer ID and the four IPv4
+octets for `10.77.0.1`. The host reserves `10.77/16` for this lease.
+The low 16 bits of a client's synthetic address hold its peer ID,
+beginning at `10.77.0.2`. A reconnect gets a fresh ID and address. All
+client frames carry peer 0. Host datagrams and bye replies carry the
+recipient's ID. The host sends a WebSocket Ping every five seconds,
+answers incoming pings, and drops connections after 15 seconds without
+a Pong.
+
+Datagrams go to XNet guest port `1000 + offset` with a source of the
+client's synthetic IPv4 and the host's XNet base plus that offset. The
+configured XNet IPv4 must be local to the host. The local UDP bridge
+lets ordinary socket reads and `select` wake on tunnel traffic. Sends
+to synthetic peers go back over their WebSockets. System Link broadcast
+fans out to all active tunnel peers and still goes out over native UDP.
+The tunnel answers HLE QoS queries on offset +2 using the same advertised
+data as the UDP responder.
+
+The host allows 16 concurrent connections, including pending upgrades.
+The payload ceiling is 1,264 bytes. Each peer can send and receive up to
+240 datagrams per second, with a burst of 64 in each direction. An
+outbound queue holds 64 datagrams per peer. Rate limits and full queues
+drop datagrams. Bye or WebSocket close makes the address unreachable.
+The next receive skips pending packets from that peer and the next XNet
+address operation drops any cached mapping.
+
 ## Order of experiments
 
 1. Run the Mac control below. Advance only after a real remote client joins and its actions reach the authoritative world.
