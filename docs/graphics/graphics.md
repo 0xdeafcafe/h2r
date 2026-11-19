@@ -589,9 +589,18 @@ runtime data root (`$H2_DATA`, else `h2boot-data` in the temporary
 directory): `campaigns/halo1/<name>.map` for a campaign level,
 `maps/<name>/h1/<name>.map` (or `h2/`) for a multiplayer map, so `bsp a30`
 or `viewer h1_<map> <mode tag>` works once the import has run
-(`viewer::disc::converted`). A map from outside the disc reads its shared
-resources from the disc's `shared`, `single_player_shared` and `mainmenu`
-maps, as the game does.
+(`viewer::disc::converted`). An installed mod (a map package under
+`<data>/maps/`, docs/game/maps.md) opens as `mod:<package dir>`, or by its
+directory name when nothing else has that name: the package is resolved
+as the game resolves it (its patch layers over the disc's map of its base,
+or over the map pack map `h2 import-mappack` installed, the base checked
+against the package's SHA-256) into memory, once per run. Nothing is
+written, except that a BPS package is materialised into
+`<data>/maps/cache/<MapId>.map` as the game's resolver does (and read from
+there once it is). `viewer --list` prints the disc's maps, then each mod as
+`mod:<dir>  <name> (on <base>, map_id <first 16 hex>)`. A map from
+outside the disc reads its shared resources from the disc's `shared`,
+`single_player_shared` and `mainmenu` maps, as the game does.
 
 ## Not supported yet (future work)
 

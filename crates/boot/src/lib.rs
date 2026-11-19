@@ -56,6 +56,7 @@ pub mod map_copy;
 pub mod map_override;
 pub mod map_select;
 pub mod map_slots;
+pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_lights_glue;
@@ -993,9 +994,15 @@ pub fn run_hosted_with_live(
     // join tells the VFS to look again at once (it also notices by itself
     // at the map's next open), and the map-slots feature drops the game's
     // cached copy of a map whose package changed (docs/runtime/cache-slots.md).
+    // The map select and the maps' slots follow in the same session: new
+    // maps become content packages, the catalogue is read again, and the
+    // next Select Map shows the mod by its name and picture
+    // (docs/game/map-select.md, "Installed while the game runs").
     if let (Some(vfs), Some(gate)) = (k.vfs(), &map_gate) {
+        let disc = opts.disc.clone();
         gate.on_installed(Box::new(move |_| {
-            vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()
+            vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
+            map_select::packages_changed(&disc);
         }));
     }
     let uses = opts

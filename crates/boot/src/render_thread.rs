@@ -118,6 +118,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
          UI events on the game thread",
     ),
     (
+        "clankermatch-switch",
+        "*",
+        "the Game Setup list's Switch To: Clankermatch row, a UI event on the game thread",
+    ),
+    (
         "live-menu-cursor",
         "LIVE_MENU_CURSOR",
         "the Xbox Live menu's build, a UI event on the game thread",

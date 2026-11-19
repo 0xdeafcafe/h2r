@@ -10,6 +10,8 @@ default-run = "viewer"
 map.workspace = true
 tags.workspace = true
 xiso.workspace = true
+# Installed mods: their packages resolved to the patched map (disc.rs).
+content.workspace = true
 gfx = { path = "../gfx" }
 anyhow.workspace = true
 assets.workspace = true

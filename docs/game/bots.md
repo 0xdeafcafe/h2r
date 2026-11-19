@@ -1604,9 +1604,32 @@ Two hooks keep Quickmatch on human hoppers
   server marked it; `clankermatch::quickmatch_hopper`).
 
 With no marks (an older server) both are retail.
-The playlist screen has a second opener (`0x002bbf06`, kind 3, from
-`0x002bba93`, screen not identified); it sees whatever the last Live menu
-press left in `active`.
+
+**Switch To: Clankermatch (built 2026-11-19, the user's ask).** The
+playlist screen's second opener (`0x002bbf06`, from `0x002bba93`) is the
+lobby's **"Switch To: Matchmaking"**: a Game Setup (squad settings)
+row whose press, `0x002bba8c` (EAX the press's player chain, the list
+handler on the stack, `ret 4`), opens the playlist screen for the
+chain's player and closes the dialog (`0x0022eeee`, `0x0022e957`). The
+list constructor (`0x002bb4d2`) gives it action 8 in lobby kinds 4 (2,
+3, 7, 8) and 5 (Change Map, Change Rules, Quick Options, Switch To:
+Co-Op Game, Switch To: Matchmaking), and action 9 in kind 6 (9, 6); the
+row-chosen jump table (`0x002bb884`) sends 8 and 9 to the same press.
+`clankermatch::SwitchRow` (feature `clankermatch-switch`) adds **"Switch
+To: Clankermatch"** (action 12, `clankermatch::SWITCH_ACTION`, past the
+Halo 1 Options row's 10 and the Clankers row's 11) right under it, while
+the server has clanker hoppers (`clankermatch::wants_switch_row`,
+`switch_placed`), drawn with `custom_games::SWITCH_CLANKERMATCH_TEXT`
+(string id `ID_BASE + 0x3b`, the Live menu rows' family). Its press sets
+`clankermatch::active` and calls `0x002bba8c` itself, so the party goes
+to the clanker playlists and on to the empty search and the fill (§8.4),
+as the Live menu's row does. Retail's Switch To: Matchmaking now clears
+`active` first (`clankermatch::switch_press`), so it always lists the
+human playlists, whatever the Live menu chose last. The log says
+`clankermatch: Game Setup list: Switch To: Clankermatch row added (N
+rows)` at each Game Setup, then `clankermatch: Switch To: Clankermatch:
+opening the clanker playlists` and `clankermatch: the playlists are the
+clanker hoppers` at the press.
 
 ### 8.4 Search and lobby (built: the empty search)
 
@@ -1654,6 +1677,74 @@ For a clanker hopper (`live_hle::clankermatch`):
 The lobby's "searching for players" state is the game's own: it stays until
 the session is full.
 
+**Why no bots show (the user's run, 2026-11-19: "no bots on Clanker
+Slayer").** Read from the code, not a log yet. The fill seats its bots on
+the phantom books (`bots::phantom::Phantoms::add`), and a phantom enters
+the session only once a multiplayer game runs: `bots::phantom::session::
+host_session` answers `NotNow::Wait` while there is no game tick, and
+§5.1's recipe runs only in a running game ("phantoms leave the session
+when the game ends, so they are not in the lobby yet"). In a custom game
+that is fine: the human presses Start and the phantoms join the game. A
+matchmaking lobby has no Start: the game starts it on the hopper's
+countdown once it has its players, and with one human and no phantom in
+the session it never does (Clanker Slayer's fewest players is 2). So the
+fill runs, its `(phantom, rostered) on` lines come, and the lobby still
+shows the human alone. The fill's first line now says so (`clankermatch:
+the bots are phantoms: they enter the session when a game starts, not
+the lobby`).
+
+Nothing else on the path is gated on what the user might have set:
+
+- `clankers.enabled` off does not stop it: `clankers::frame` runs
+  `tick_match` every 15 frames from the bots' `RENDER_FRAME` hook whatever
+  the page says, and the fill seats `Fill::bots` with `Want::OFF`.
+- The hopper ids are descriptor indices 0..15 everywhere (the marks, the
+  `HOPPER_LISTED` filter, the session's attribute 1, the search's hopper),
+  so the admin list's 1-based 9, 10, 11 are hoppers 8, 9, 10. A
+  published file that moved a clanker playlist loses its mark
+  (`ClankerHoppers::of_defaults`), which would empty the Clankermatch
+  list rather than misfile it; the user saw the list, so the marks hold.
+- A refused roster seats host-made bots; it never blocks the fill.
+- The Clankers Off fix (`SLOT_SIGN_OUT`) touches local bots only, which
+  a Clankermatch never seats; the Live menu's row move keeps
+  `custom_games::Row::Clankermatch` at row 2.
+
+**What fixes it (next, needs tracing and a run):** phantoms in the lobby
+for a Clankermatch. The session is in state 5 in the lobby too, so the
+peer and player writes of §5.1 steps 1 to 3 may stand there; to trace
+first: the session's `+0x4980` (the phantom check wants 4; `0x0005a220`
+sets it from its argument, and the matchmaking path calls it with 6 and
+up), the lobby's ready check `0x5f970` and veto object `[S+0x78a8]`, and
+whether the matchmaking countdown counts session players. Until then a
+Clankermatch shows no bots.
+
+**Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
+
+1. `live: clankermatch: clanker hoppers [8, 9, 10]` at logon (or `the
+   server sent no clanker hoppers` / `no clanker hoppers from the
+   server`): the marks.
+2. `clankermatch: the playlists are the clanker hoppers`: the row's (or
+   the switch's) press.
+3. `live: clankermatch: searching clanker playlist 8: no one to find; the
+   console hosts in N s`: the held search. Missing: the search was not
+   the clanker hopper's (check `live: optimatch` lines).
+4. `live: session <id> advertised for ...` after it: the console hosted
+   a new session. (The game may update a session it already advertises
+   instead, which says nothing; step 5 decides.) Neither: the game never
+   hosted after the empty search (live-matchmaking.md §7.3 says
+   "likely").
+5. `clankers: clankermatch: hosting clanker playlist 8 (session <id>): 7
+   bots join over N s`: the fill started. Missing with 4 present: the
+   advertisement carries no hopper attribute (`Hle::clanker_hosted`).
+6. `clankers: asking Live for 7 bots for session <id>`, then `clankers:
+   Live rostered bots for session <id>` (or `no roster from Live (...):
+   host-made bots`).
+7. `clankers: <gamertag> (phantom, rostered) on (...)`, one per bot: on
+   the books.
+8. `bots: phantom <gamertag> joins (peer N)`: in the session. With the
+   lobby it never comes (above); `bots: phantom ... waits: ...` names
+   why a running game refused one.
+
 **Run:** whether the game hosts after an empty search in every playlist
 type, or needs the server's matcher to say "you host" (`MatchProposed`
 with `host = me`). **Design:** use `MatchProposed` with `host = me`, and
@@ -1663,7 +1754,8 @@ The empty search is what is built now.
 **Tests (no game):** `cargo test -p boot --lib custom_games` (the rows,
 panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
-balance, Quickmatch's hopper), `-p boot --lib clankers::tests::a_clankermatch`
+balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
+press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
 (the fill: one roster, one bot at a time, balanced teams around the
 host's real team, the handoff, the end, a refused roster), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
@@ -1711,6 +1803,11 @@ signed in on port 0, Clankers page off.
    (`clankermatch: hopper 8 not saved for Quickmatch` at the pick).
 10. With a server that has no clanker marks: OptiMatch as retail,
     Clankermatch's list empty (say how the empty list looks).
+11. In a Live custom game lobby, open Game Setup: "Switch To:
+    Clankermatch" sits right under "Switch To: Matchmaking" (the log:
+    `clankermatch: Game Setup list: Switch To: Clankermatch row added`).
+    Press it: the clanker playlists open, as from the Live menu. Back,
+    then Switch To: Matchmaking: the human playlists.
 
 ## 9. The server interface (for sbmm-ranked)
 
