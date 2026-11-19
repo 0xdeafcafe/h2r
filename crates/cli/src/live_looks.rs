@@ -1,8 +1,6 @@
-//! The pictures on a level's surfaces in `map.glb`: each solid shader's
-//! base map (the BSP's and the placed objects'), decoded from the disc at
-//! run time, one image per bitmap however many shaders and surfaces use it,
-//! and the level's pictures kept within a byte budget (docs/live/live-art.md,
-//! "Textures").
+//! The pictures on a level's surfaces in `map.glb`: base maps and plasma
+//! maps for BSPs and placed models. Pictures are shared across surfaces
+//! and kept within a byte budget (docs/live/live-art.md, "Textures").
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +14,7 @@ use crate::live_basemap;
 use crate::live_geometry::MapReader;
 use crate::live_layers::Texture;
 use crate::live_models::{self, BitmapRole, Image};
+use crate::live_plasma::{self, PlasmaLook};
 
 /// The largest side of a surface picture in `map.glb`: above any retail
 /// bitmap (the discs' largest are 1024), so every picture keeps the disc's
@@ -39,6 +38,8 @@ pub enum Cutout {
     Opaque,
     /// Cut out where the picture's alpha is under a half (grates, leaves).
     Mask,
+    /// An unmodified channel mask or noise map for the plasma pass.
+    Plasma,
 }
 
 /// One textured surface material: a shader with a picture.
@@ -53,6 +54,8 @@ pub struct Look {
     /// How often the picture tiles per stored texture coordinate (u, v):
     /// the shader's stage-0 scale ([`live_basemap::BaseMap`]).
     pub scale: [f32; 2],
+    /// The transparent pass parameters and its two noise maps.
+    pub plasma: Option<(PlasmaLook, [Arc<Texture>; 2])>,
 }
 
 /// A picture ready for the glb.
@@ -128,8 +131,8 @@ pub fn pick_base(names: &[(u32, String)]) -> Option<u32> {
 }
 
 /// A decoded picture as a surface draws it: at most [`MAX_SURFACE_TEXTURE`]
-/// a side; opaque unless cut out (a solid shader's alpha is a specular or
-/// blend mask, not coverage).
+/// a side. Solid shaders use alpha for specularity or blending rather
+/// than coverage. Plasma uses its stored channels.
 pub fn surface_image(image: Image, cutout: Cutout) -> Image {
     let mut image = image.fit(MAX_SURFACE_TEXTURE);
     match cutout {
@@ -139,6 +142,7 @@ pub fn surface_image(image: Image, cutout: Cutout) -> Image {
             }
         }
         Cutout::Mask => cut_at_a_quarter(&mut image),
+        Cutout::Plasma => {}
     }
     image
 }
@@ -166,8 +170,8 @@ pub fn cut_at_a_quarter(image: &mut Image) {
 }
 
 impl Looks {
-    /// The look of a shader, read the first time it is asked for: `None`
-    /// when it has no base map that decodes or is not a solid surface.
+    /// The look of a shader, read once, for a solid surface or a supported
+    /// plasma pass with pictures that decode.
     pub fn look_of(
         &mut self,
         map: &mut MapReader,
@@ -201,6 +205,9 @@ impl Looks {
                 return None;
             }
         };
+        if live_plasma::is_template(&template) {
+            return self.read_plasma(map, files, shader);
+        }
         let cutout = template_cutout(&template)?;
         let look = self.read_solid(map, files, shader, &bitmaps, cutout);
         if look.is_none() {
@@ -230,32 +237,61 @@ impl Looks {
             Some(b) => (b.bitmap.0, b.scale),
             None => (pick_base(&names)?, [1.0, 1.0]),
         };
-        let texture = self
-            .decoded
-            .entry((bitmap, cutout))
-            .or_insert_with(|| {
-                live_models::decode_bitmap(map, files, TagId(bitmap))
-                    .ok()
-                    .map(|image| {
-                        Arc::new(Texture {
-                            bitmap,
-                            image: surface_image(image, cutout),
-                        })
-                    })
-            })
-            .clone()?;
-        let name = map
-            .tag(shader)
-            .ok()
-            .and_then(|t| t.name.clone())
-            .unwrap_or_default();
+        let texture = self.texture(map, files, TagId(bitmap), cutout)?;
         Some(self.add(Look {
             shader: shader.0,
-            name: name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string(),
+            name: shader_name(map, shader),
             cutout,
             texture,
             scale,
+            plasma: None,
         }))
+    }
+
+    fn read_plasma(
+        &mut self,
+        map: &mut MapReader,
+        files: &mut ResourceFiles,
+        shader: TagId,
+    ) -> Option<u32> {
+        let lib = self
+            .library
+            .get_or_insert_with(|| ShaderLibrary::read(map).ok())
+            .as_mut()?;
+        let (look, [a, b, mask]) = live_plasma::read(map, lib, shader)?;
+        let cutout = Cutout::Plasma;
+        let noise = [
+            self.texture(map, files, a, cutout)?,
+            self.texture(map, files, b, cutout)?,
+        ];
+        let texture = self.texture(map, files, mask, cutout)?;
+        Some(self.add(Look {
+            shader: shader.0,
+            name: shader_name(map, shader),
+            cutout,
+            texture,
+            scale: look.uv[2].scale,
+            plasma: Some((look, noise)),
+        }))
+    }
+
+    fn texture(
+        &mut self,
+        map: &mut MapReader,
+        files: &mut ResourceFiles,
+        bitmap: TagId,
+        cutout: Cutout,
+    ) -> Option<Arc<Texture>> {
+        self.decoded
+            .entry((bitmap.0, cutout))
+            .or_insert_with(|| {
+                let image = live_models::decode_bitmap(map, files, bitmap).ok()?;
+                Some(Arc::new(Texture {
+                    bitmap: bitmap.0,
+                    image: surface_image(image, cutout),
+                }))
+            })
+            .clone()
     }
 
     /// Adds a look (tests build them by hand).
@@ -270,9 +306,12 @@ impl Looks {
     pub fn encode(&self, budget: usize) -> HashMap<(u32, Cutout), Encoded> {
         let mut distinct: Vec<((u32, Cutout), &Image)> = Vec::new();
         for l in &self.looks {
-            let key = (l.texture.bitmap, l.cutout);
-            if !distinct.iter().any(|(k, _)| *k == key) {
-                distinct.push((key, &l.texture.image));
+            let noise = l.plasma.as_ref().into_iter().flat_map(|(_, textures)| textures);
+            for t in std::iter::once(&l.texture).chain(noise) {
+                let key = (t.bitmap, l.cutout);
+                if !distinct.iter().any(|(k, _)| *k == key) {
+                    distinct.push((key, &t.image));
+                }
             }
         }
         // From the largest picture's side, so the first halving shrinks it.
@@ -294,6 +333,15 @@ impl Looks {
             cap /= 2;
         }
     }
+}
+
+fn shader_name(map: &MapReader, shader: TagId) -> String {
+    let name = map
+        .tag(shader)
+        .ok()
+        .and_then(|t| t.name.as_deref())
+        .unwrap_or_default();
+    name.rsplit(['\\', '/']).next().unwrap_or(name).to_string()
 }
 
 /// A picture as WebP ([`live_server::art_pack::webp`]): lossy at
@@ -333,6 +381,7 @@ mod tests {
             cutout,
             texture: Arc::new(Texture { bitmap, image: img }),
             scale: [1.0, 1.0],
+            plasma: None,
         }
     }
 

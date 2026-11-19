@@ -99,6 +99,14 @@ impl DialogBase {
             DialogBase::QuickOptions => &[1],
         }
     }
+    /// Where a page on this base shows its icon: Quick Options' game
+    /// type picture ([`QUICK_PICTURE`]); the other bases have none.
+    pub fn picture(self) -> Option<crate::list_class::PictureSpec> {
+        match self {
+            DialogBase::QuickOptions => Some(QUICK_PICTURE),
+            DialogBase::Large | DialogBase::ValuePicker => None,
+        }
+    }
     /// Whether its tag is in the game maps' interfaces (`shared.map`,
     /// `single_player_shared.map`) as well as the main menu's.
     pub fn in_game(self) -> bool {
@@ -238,6 +246,55 @@ pub const QUICK_LIST: ListAt = ListAt {
     skin: 2,
 };
 pub const QUICK_LIST_ROWS: usize = 11;
+
+/// Quick Options' game type picture: pane 0's bitmap block 1,
+/// `mp_games2.bitm` (eleven 40 x 40 icons, the variant's game type's
+/// filled by code) at (-267, 166), depth 3, the pane's animation (31),
+/// left of the variant's name and the help line. A page of ours on Quick
+/// Options shows its own icon of the set there
+/// ([`crate::ui_kit::screen::KitScreen::header`]): the block copied
+/// ([`crate::list_class::ListClass::picture`]) and its image set as the
+/// screen opens ([`crate::list_class::Rows::picture_image`]). The block's
+/// own image field is 0, as `PictureSpec::image` checks.
+/// `ui_kit::screens::tests::preview_and_check_against_the_disc` holds it
+/// to the disc's block.
+pub const QUICK_PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
+    screen_id: QUICK_OPTIONS_SCREEN_ID as u32,
+    pane: 0,
+    bitmap: 1,
+    image: 0,
+    at: [-267, 166],
+    animation: QUICK_ANIMATION,
+};
+/// The picture's size: every `mp_games2` icon is 40 x 40 (image 9, 41).
+pub const QUICK_PICTURE_SIZE: [u16; 2] = [40, 40];
+/// The picture block's render depth bias.
+pub const QUICK_PICTURE_DEPTH: i16 = 3;
+
+/// [`QUICK_PICTURE`] showing icon `image`, as the preview draws it.
+pub fn quick_icon(image: u16) -> PaneArt {
+    PaneArt {
+        art: Art::Screen {
+            screen_id: QUICK_OPTIONS_SCREEN_ID,
+            pane: QUICK_PICTURE.pane as u16,
+            index: QUICK_PICTURE.bitmap as u16,
+            image: image as i16,
+        },
+        at: QUICK_PICTURE.at,
+        size: QUICK_PICTURE_SIZE,
+        depth: QUICK_PICTURE_DEPTH,
+    }
+}
+/// `mp_games2.bitm`'s icons (read off `mainmenu.map`, 2026-11-19), as
+/// the pages of ours use them.
+pub mod icon {
+    /// A Spartan standing: Slayer's. The Clankers page's.
+    pub const SPARTAN: u16 = 0;
+    /// A banner of three stars. The Halo 1 Options page's.
+    pub const BANNER: u16 = 9;
+    /// How many there are.
+    pub const COUNT: u16 = 11;
+}
 
 /// `low_level_settings`' list: `default6` (skin 22: `default`'s one text
 /// and row bar, its scroll arrows at (-27, 24) and (-27, -88)), six rows
@@ -548,6 +605,7 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     list.focus = s.focus;
     list.style = s.style;
     list.description = s.description;
+    list.help = s.help.clone();
     list.list = DialogGeometry::list_place(g.list, shown);
     let rows = Geometry {
         visible: shown,
@@ -633,6 +691,20 @@ pub fn dialog_view(
         ));
     }
     w.extend(row_widgets(s, d, g, m));
+    // The screen's own art (a page's icon in Quick Options' picture).
+    for (k, a) in s.art.iter().enumerate() {
+        let r = art_rect(a);
+        w.push(Widget {
+            id: format!("art.{k}"),
+            rect: [r.top, r.left, r.bottom, r.right],
+            layer: Layer::Frame,
+            alpha: 255,
+            kind: Kind::Art {
+                art: a.art,
+                size: a.size,
+            },
+        });
+    }
     if let Some(c) = &d.cells {
         let [cw, ch] = g.cell.size.map(i32::from);
         let lh = m.line_height(g.header_font);

@@ -49,6 +49,8 @@ or a short form:
                          or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
   unpress                input.release: let go of everything
   padstate               input.state: every player's pad, recording or replay
+  hostpads               input.host: the host controllers (profile, touchpad, buttons)
+                         as their backend and the debug menu see them
   sample-start [hz]      profile.sample.start (the game thread; the Xbox app)
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
@@ -88,6 +90,7 @@ or a short form:
 {HOT}
 {SIM}
 {FLIGHT}
+{RAW}
 
 Input calls need no claim while nobody holds control; once a connection
 does, only it may send them. Queued steps outlive the connection and play out.
@@ -105,6 +108,7 @@ fn usage() -> String {
         .replace("{HOT}", crate::agent_hot_cmd::USAGE)
         .replace("{SIM}", crate::agent_sim::USAGE)
         .replace("{FLIGHT}", crate::agent_flight::USAGE)
+        .replace("{RAW}", crate::agent_raw::USAGE)
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
@@ -147,6 +151,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     // Reads a file; no game needed.
     if first == "flight" && rest.get(1).is_some_and(|w| w == "show") {
         return crate::agent_flight::show(&rest[2..]);
+    }
+    if first == "raw-diff" {
+        return crate::agent_raw::diff_files(&rest[1..]);
     }
     let path = socket.unwrap_or_else(agent_proto::default_socket);
     let mut c = Client::connect(&path).with_context(|| {
@@ -507,6 +514,9 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
     if let Some(r) = crate::agent_flight::parse(words) {
         return r;
     }
+    if let Some(r) = crate::agent_raw::parse(words) {
+        return r;
+    }
     let name = words[0].as_str();
     let arg = words.get(1);
     let extra = |n: usize| -> Result<()> {
@@ -526,6 +536,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "stop" => Some(method::INPUT_STOP),
         "unpress" => Some(method::INPUT_RELEASE),
         "padstate" => Some(method::INPUT_STATE),
+        "hostpads" => Some(method::INPUT_HOST),
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
@@ -729,6 +740,7 @@ mod tests {
             )
         );
         assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
+        assert_eq!(c("hostpads"), ("input.host".into(), Value::Null));
         assert_eq!(
             c("record fight replace"),
             (

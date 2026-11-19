@@ -561,15 +561,17 @@ impl Hle {
             .set_session_variant_ext(ext)
     }
     /// The bots (server accounts) in this console's hosted game, beside
-    /// its signed-in users: the Live sessions it hosts are told of them as
-    /// players (`PlayerJoined`/`PlayerLeft`), so the session counts every
-    /// player in the game. Host-made bots are left out. No guest memory
+    /// its signed-in users: the Live session their roster is for
+    /// (`session`, hex) is told of them as players
+    /// (`PlayerJoined`/`PlayerLeft`), so it counts every player in the
+    /// game; the other sessions it hosts (a Clankermatch's party lobby)
+    /// only of its users. Host-made bots are left out. No guest memory
     /// access.
-    pub fn set_session_players(&self, bots: Vec<live_proto::Xuid>) {
+    pub fn set_session_players(&self, session: Option<&str>, bots: Vec<live_proto::Xuid>) {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .set_session_players(bots)
+            .set_session_players(session, bots)
     }
     /// Arms (Some) or leaves (None) a co-op campaign on this console's lobby
     /// (docs/live/live-coop.md, "Co-op over Live"): its advertisements become

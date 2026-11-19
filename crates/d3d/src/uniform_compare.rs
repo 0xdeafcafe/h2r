@@ -159,11 +159,16 @@ pub(crate) fn observe(
     let Some((e, differ)) = pick(&armed.expected, words, pixel_shader) else {
         if armed.require_rows && armed.others < OTHER_PROGRAMS {
             armed.others += 1;
+            let depth = pipeline.1.map(|d| (d.depth_write_enabled, d.depth_compare, d.bias));
             eprintln!(
-                "uniform-compare {}: a D3D draw with the rows and another program ({} words, {:#018x})",
+                "uniform-compare {}: a D3D draw with the rows and another program ({} words, {:#018x}): cull {:?} front {:?} depth (write, compare, bias) {:?}, c[0..4] {:?}",
                 first.label,
                 words.len(),
-                crate::shader::Microcode::hash_words(words)
+                crate::shader::Microcode::hash_words(words),
+                pipeline.0.cull_mode,
+                pipeline.0.front_face,
+                depth,
+                &vertex.constants[..4]
             );
         }
         return;

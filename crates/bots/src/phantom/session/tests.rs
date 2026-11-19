@@ -55,6 +55,7 @@ fn hosted() -> FakeGuest {
     g.map(points::GAME_TIME.base & !0xfff, 0x1000)
         .put_u32(points::GAME_TIME.base, TIME)
         .map(TIME, 0x10)
+        .put_f32(TIME + 4, 1.0 / 30.0)
         .put_u32(TIME + guest::GAME_TIME_TICK, 100);
     // Players: the host at 0; room for phantoms.
     g.map(points::PLAYERS.base & !0xfff, 0x1000)
@@ -99,9 +100,17 @@ fn game_makes(g: &mut FakeGuest, index: u32, mac: [u8; 6], aim: [f32; 3]) {
     for k in 0..3 {
         g.put_f32(body + guest::UNIT_AIM + 4 * k, aim[k as usize]);
     }
-    g.put_u8(body + UNIT_WEAPON, 1);
+    g.put_u8(body + UNIT_WEAPON, 1)
+        .put_u8(body + 0x213, 0xff)
+        .put_u16(body + 0x214, 0x1234)
+        .put_u8(body + 0x216, 1)
+        .put_u8(body + 0x217, 0xff)
+        .put_u8(body + 0x23d, 0xff)
+        .put_u8(body + 0x241, 0xff);
     let slot = SIM + SIM_SLOTS + index * SLOT_SIZE;
-    g.put_u32(slot, index).put(slot + SLOT_MAC, &mac);
+    g.put_u32(slot, index)
+        .put_u32(slot + 8, 4)
+        .put(slot + SLOT_MAC, &mac);
     g.put_u32(slot + SLOT_STAMP, u32::MAX);
 }
 
@@ -356,6 +365,7 @@ fn an_action_passes_the_validators_ranges() {
         trigger: 1.5,
         trigger2: -1.0,
         weapon: 1,
+        ..Default::default()
     };
     let b = a.bytes();
     let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -367,13 +377,15 @@ fn an_action_passes_the_validators_ranges() {
     assert_eq!((f(0xc), f(0x10), f(0x14), f(0x18)), (1.0, -1.0, 1.0, 0.0));
     assert_eq!((b[0x20], b[0x21]), (1, 0xff), "the weapon, no second");
     assert_eq!(&b[0x22..0x26], &[0xff; 4], "grenade and +0x24 none");
-    assert!(b[0x26..].iter().all(|&x| x == 0), "no target, no aim block");
+    assert_eq!(&b[0x26..0x2c], &[0; 6]);
+    assert_eq!(&b[0x2c..0x40], &[0xff; 20], "empty object handles");
+    assert!(b[0x40..].iter().all(|&v| v == 0));
     assert_eq!(Action { weapon: 9, ..a }.bytes()[0x20], 0xff);
 }
 
 #[test]
 fn the_pad_turns_from_the_current_facing() {
-    let still = action_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
+    let still = motion_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
     assert!((still.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     assert_eq!(still.pitch, 0.0);
     let pad = HostPadState {
@@ -383,7 +395,7 @@ fn the_pad_turns_from_the_current_facing() {
         left_trigger: 0.25,
         ..Default::default()
     };
-    let a = action_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
+    let a = motion_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
     assert!(
         (a.yaw + TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
         "+x turns right (yaw down), as the brain steers"
@@ -736,6 +748,7 @@ mod books {
         assert_eq!(ph.player(h), Some(1));
         assert_eq!(ph.list()[0].state, State::Joined);
         let slot = slot_of(&g, mac).unwrap().unwrap();
+        g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
         assert_eq!(g.u32(slot + SLOT_ACTION + 0x14).unwrap(), 1.0f32.to_bits());
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "made once");
@@ -1114,6 +1127,7 @@ mod lobby {
         ph.tick(&mut g, 4).unwrap();
         assert_eq!(ph.player(h), Some(1));
         let slot = slot_of(&g, mac).unwrap().unwrap();
+        g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
 
         // The game ends, back in the lobby: still in the session, no
@@ -1136,13 +1150,15 @@ mod lobby {
         g.put_u32(S + STATE, 7);
         ph.tick(&mut g, 7).unwrap();
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
-        // Live again with the old peer still there: it is made anew, never
-        // twice.
+        // Live again with the old peer and its player still there: taken
+        // back as they are, never twice.
         g.put_u32(S + STATE, STATE_LIVE);
         let log = ph.tick(&mut g, 8).unwrap();
-        assert!(
-            log[0].contains("Rusty Lugnut joins (peer 1, in the pregame lobby)"),
-            "{log:?}"
+        assert_eq!(
+            log,
+            vec![
+                "bots: phantom Rusty Lugnut is still in the session (peer 1): it stays".to_owned()
+            ]
         );
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
         assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
@@ -1234,6 +1250,282 @@ mod lobby {
             ]
         );
         assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+    }
+
+    /// The user's Halo 1 run logged four phantoms all "joins (peer 4, in
+    /// the pregame lobby)" and a game start with 5 peers. Four in one
+    /// frame each get a peer of their own, one after the other.
+    #[test]
+    fn four_phantoms_in_one_frame_get_a_peer_each() {
+        let ph = Phantoms::default();
+        let names = ["Clanker 4", "Clanker 5", "Clanker 6", "Clanker 7"];
+        let handles: Vec<_> = names
+            .iter()
+            .zip(1u64..)
+            .map(|(n, x)| ph.add(who(x, n), None, idle()).unwrap())
+            .collect();
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        let want: Vec<String> = names
+            .iter()
+            .zip(1..)
+            .map(|(n, i)| format!("bots: phantom {n} joins (peer {i}, in the pregame lobby)"))
+            .collect();
+        assert_eq!(log, want);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 5);
+        for (h, i) in handles.iter().zip(1..) {
+            assert_eq!(find_peer(&g, S, machine_id(*h)).unwrap(), Some(i));
+            // Each peer's one player is its own, and points back at it.
+            let slot = g.u32(S + PEERS + i * PEER_SIZE + PEER_SLOTS).unwrap();
+            assert_eq!(g.u32(S + PLAYERS + slot * PLAYER_SIZE + P_PEER).unwrap(), i);
+        }
+        // Frames after: the same four peers, nothing said, none moved.
+        for frame in 1..4 {
+            assert!(ph.tick(&mut g, frame).unwrap().is_empty());
+        }
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+        for (h, i) in handles.iter().zip(1..) {
+            assert_eq!(find_peer(&g, S, machine_id(*h)).unwrap(), Some(i));
+        }
+    }
+
+    /// The party's squad session beside a Clankermatch's target session.
+    const PARTY: u32 = 0x0076_0000;
+
+    /// The user's Clankermatch (cm-run2): the empty search hosted, so the
+    /// life cycle is 6 (`session type 6`) and the lobby is the target
+    /// session (`[0x52736c]`), this console its host; the party's squad
+    /// session (`[0x527364]`) is live beside it with this console's one
+    /// peer. [`lobby`]'s session is the target here.
+    fn matchmaking() -> FakeGuest {
+        let mut g = lobby();
+        g.put_u32(l::SESSION_TYPE, 6)
+            .put_u32(l::TARGET_SESSION, S)
+            .put_u32(points::SQUAD_SESSION.base, PARTY)
+            .map(PARTY, 0x8000)
+            .put_u32(PARTY + STATE, STATE_LIVE)
+            .put_u32(PARTY + PROTOCOL, PROTOCOL_DISTRIBUTED)
+            .put_u32(PARTY + MAX_PEERS, 16)
+            .put_u32(PARTY + MAX_PLAYERS, 16)
+            .put_u32(PARTY + PEER_COUNT, 1)
+            .put_u32(PARTY + PLAYER_COUNT, 1)
+            .put_u32(PARTY + PLAYER_MASK, 1);
+        g
+    }
+
+    #[test]
+    fn a_clankermatch_lobby_this_console_hosts_takes_phantoms_in_its_target_session() {
+        let g = matchmaking();
+        assert_eq!(host_lobby(&g), Ok(S), "the target session, not the party's");
+        assert_eq!(live_session(&g), Some(S));
+        assert_eq!(owned_session(&g), Some(S));
+
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "Widget Rotor"), None, idle()).unwrap();
+        let mut g = matchmaking();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Widget Rotor joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
+        // Its hopper status is the host's, so the matchmaking start
+        // (0x66050) passes it.
+        let p = S + PEERS + PEER_SIZE;
+        assert_eq!(g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(), 1);
+        // The party's session is left alone.
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_clankermatch_this_console_joined_or_still_searching_makes_them_wait() {
+        // Someone else's match: wait.
+        let mut g = matchmaking();
+        g.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert_eq!(host_lobby(&g), Err(NotNow::Wait));
+        // Still searching: no target session yet.
+        let mut g = matchmaking();
+        g.put_u32(l::TARGET_SESSION, 0);
+        assert_eq!(host_lobby(&g), Err(NotNow::Wait));
+        let ph = Phantoms::default();
+        ph.add(who(1, "A"), None, idle()).unwrap();
+        assert!(ph.tick(&mut g, 0).unwrap().is_empty());
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+    }
+
+    /// A Clankermatch's phantoms in the party's lobby (a pregame lobby
+    /// this console hosts, life cycle 2, before the search): they wait,
+    /// and join only once the search hosts the match (type 6). The user's
+    /// run on f5d3010c showed bots in the party.
+    #[test]
+    fn a_clankermatchs_phantoms_never_join_the_party() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let h = ph.add(who(1, "Widget Rotor"), None, idle()).unwrap();
+        // The party's lobby: [`lobby`]'s session, type 2.
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec![format!(
+                "bots: phantom Widget Rotor waits: not a lobby it can join ({})",
+                crate::phantom::NOT_THE_MATCH
+            )]
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1, "nothing written");
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty(), "said once");
+        // The search hosted the match: it joins the target session.
+        let mut g = matchmaking();
+        let log = ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Widget Rotor joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+        // The game over, back to the party (type 2, the squad session
+        // the game's again): its peer leaves whatever session it is in.
+        g.put_u32(l::SESSION_TYPE, 2)
+            .put_u32(points::SQUAD_SESSION.base, S);
+        ph.tick(&mut g, 3).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), None);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        // Not a Clankermatch's: the same party lobby takes it.
+        ph.set_match_only(false);
+        let log = ph.tick(&mut g, 4).unwrap();
+        assert!(log.iter().any(|l| l.contains("joins (peer 1")), "{log:?}");
+    }
+
+    /// The matchmade game (life cycle 8) runs in the target session: the
+    /// phantoms stay in it, and a game this console hosts takes them.
+    #[test]
+    fn a_matchmade_game_is_the_target_sessions() {
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = matchmaking();
+        ph.tick(&mut g, 0).unwrap();
+        g.put_u32(l::SESSION_TYPE, 8)
+            .put_u32(points::GAME_TIME.base, TIME);
+        assert_eq!(host_session(&g), Ok(S));
+        assert_eq!(live_session(&g), Some(S));
+        assert!(
+            ph.tick(&mut g, 1)
+                .unwrap()
+                .iter()
+                .all(|l| !l.contains("joins"))
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+    }
+
+    /// The user's Halo 1 run, raw: host-made bots (the roster refused),
+    /// `waits: ... the lobby's session is not live (state 7 ...)`, then
+    /// `bots: phantom Clanker N joins (peer 4, in the pregame lobby)` for
+    /// N = 4 to 7. The phantoms had joined before; the session's state 7
+    /// unmade them but left their peers (a session not live is not
+    /// written), and each rejoin took its own peer out and added it at
+    /// the end, so every one landed on index 4 and the peers were
+    /// reordered under the game. Now each takes its peer back in place.
+    #[test]
+    fn host_made_phantoms_back_from_a_session_not_live_keep_their_peers() {
+        let ph = Phantoms::default();
+        // Host-made bots: no roster, "Clanker N" and the driver's own
+        // xuids; each still gets the machine id of its own handle.
+        let handles: Vec<_> = (4u64..=7)
+            .map(|n| {
+                ph.add(
+                    who(0x000e_0000_0000_0000 | n, &format!("Clanker {n}")),
+                    None,
+                    idle(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let macs: Vec<_> = handles.iter().map(|h| machine_id(*h)).collect();
+        for (i, a) in macs.iter().enumerate() {
+            assert!(macs[i + 1..].iter().all(|b| b != a), "distinct machine ids");
+        }
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(log.len(), 4, "{log:?}");
+        assert!(log[3].contains("Clanker 7 joins (peer 4"), "{log:?}");
+
+        // The session not live a while (state 7).
+        g.put_u32(S + STATE, 7);
+        let log = ph.tick(&mut g, 1).unwrap();
+        assert!(
+            log.iter()
+                .all(|l| l.contains("the lobby's session is not live (state 7")),
+            "{log:?}"
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5, "left as it is");
+
+        // Live again: each takes its own peer back, in place.
+        g.put_u32(S + STATE, STATE_LIVE);
+        let log = ph.tick(&mut g, 2).unwrap();
+        let want: Vec<String> = (4..=7)
+            .zip(1..)
+            .map(|(n, i)| {
+                format!("bots: phantom Clanker {n} is still in the session (peer {i}): it stays")
+            })
+            .collect();
+        assert_eq!(log, want);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 5);
+        for (mac, i) in macs.iter().zip(1..) {
+            assert_eq!(find_peer(&g, S, *mac).unwrap(), Some(i));
+            let slot = g.u32(S + PEERS + i * PEER_SIZE + PEER_SLOTS).unwrap();
+            assert_eq!(g.u32(S + PLAYERS + slot * PLAYER_SIZE + P_PEER).unwrap(), i);
+        }
+        assert!(ph.tick(&mut g, 3).unwrap().is_empty());
+    }
+
+    /// A phantom's peer the game emptied of its player: out and in again,
+    /// never twice.
+    #[test]
+    fn a_peer_with_no_player_is_made_anew() {
+        let ph = Phantoms::default();
+        let h = ph.add(who(1, "A"), None, idle()).unwrap();
+        let mut g = lobby();
+        ph.tick(&mut g, 0).unwrap();
+        g.put_u32(S + STATE, 7);
+        ph.tick(&mut g, 1).unwrap();
+        // The game took its player out (0x60200): none on the peer.
+        g.put_u32(S + PEERS + PEER_SIZE + PEER_PLAYERS, 0)
+            .put_u32(S + PEERS + PEER_SIZE + PEER_SLOTS, u32::MAX)
+            .put_u32(S + PLAYER_MASK, 1)
+            .put_u32(S + PLAYER_COUNT, 1)
+            .put_u32(S + STATE, STATE_LIVE);
+        let log = ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom A joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+    }
+
+    /// One phantom a frame, as the Clankermatch fill seats them: still a
+    /// peer each.
+    #[test]
+    fn phantoms_one_a_frame_get_a_peer_each() {
+        let ph = Phantoms::default();
+        let mut g = lobby();
+        for (x, i) in (1u64..=4).zip(1u32..) {
+            let name = format!("Clanker {}", x + 3);
+            ph.add(who(x, &name), None, idle()).unwrap();
+            let log = ph.tick(&mut g, u64::from(i)).unwrap();
+            assert_eq!(
+                log,
+                vec![format!(
+                    "bots: phantom {name} joins (peer {i}, in the pregame lobby)"
+                )]
+            );
+        }
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 5);
     }
 
     #[test]
@@ -1460,3 +1752,5 @@ mod in_game {
         assert_eq!(n[0], MARK as u16);
     }
 }
+
+mod buttons;

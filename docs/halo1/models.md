@@ -237,6 +237,19 @@ retail's are (`jmad::vehicle_plan`):
   `combat:fixed:any` `aim_still_up` names `aiming`, whose 24 bytes equal
   the Halo 1 warthog's `fixed` class screen. Every retail animation with a
   screen is codec 8 (float rotations), so the converter writes those so.
+- **Codec 8 streams are 16-byte aligned.** E: codec 8's interpolated
+  rotation function (`0x0028c530`, record 8 of the codec table at
+  `0x47fb14`, slot `+0x1c`) loads each frame's four floats at
+  `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps`
+  (`0x0028c589`), which faults on an address that is not a multiple of
+  16. V: every codec 8 stream on Coagulation is so aligned in its
+  resource (`h1objects/tests/animation_codec_disc.rs`). Through converter
+  version 88 the converter placed blobs 4-aligned, so from version 84 (the
+  first with codec 8) converted Blood Gulch stopped with `#GP at
+  0x28c589` about 5 s into a game, when a vehicle's steering or aim
+  overlay first played. Since version 89 every blob starts 16-aligned and
+  a static stream before a codec 8 stream is padded to 16 (its size
+  field covers the padding).
   The vehicles block's screen is `steering`'s, each class's screen goes
   on its `aim_still_up` / `aim_move_up`.
 - **Aim names.** E: the unit aim update asks for `aim_still_up`
@@ -472,6 +485,55 @@ Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
 blocks the decoder does not interpret (`10`, `28`, `30`, `44`, `54`, `5c`).
 
+### The emblem (**Design**, converter version 84)
+
+Halo 2 draws a player's emblem as a part of the body's model. The Chief's
+`mc_emblem` (stem `opaque\emblem_overlay_simple`, alpha blended on layer
+2) samples `ui\global_bitmaps\emblems\foreground` with its border
+clamped (sampler address 4), so only texture coordinates 0 to 1 show the
+emblem. Its 12 animated properties read the inputs
+`emblem_foreground_index`, `emblem_toggle_foreground` and `emblem_active`.
+The function evaluator `0x0022ace7` answers those for the player being
+drawn (`[0x510c4c]+0x1b4` via `0x0014cca0`, or `+0x1c0` via
+`0x0014ccf0`), and the colours are engine constants (E). The shader
+carries everything; the model only gives it a place. The converted
+multiplayer maps keep `mc_emblem`, because the base keeps the Chief.
+
+Halo 1's cyborg has no such part. The converter adds one to a player
+biped's model (`h1models::emblem`, called from `Converter::model` for a
+`bipd` that `health_hud::is_player_biped` names):
+
+- `place` casts a ray in the default pose. It starts 0.03 down the anchor
+  node's own x axis, which is the bone's length, from the node, and runs
+  along a model-space direction. It takes the farthest hit within reach
+  on triangles whose three vertices are bound mostly to the anchor, so
+  the outer surface, in the super-high geometry of the first permutation
+  hit.
+- `part` lays a square there: the hit triangle's normal turned to the
+  ray's side, the wanted up laid onto the surface, lifted 0.002 off it,
+  texture coordinates 0 to 1 (divided by the base map scale, which
+  `convert_model` multiplies back), every vertex bound to the anchor
+  alone. It is wound the way the hit triangle is relative to its vertex
+  normals, so it faces out as the model's own triangles do.
+- `add_emblem` puts the square in each detail level's geometry of that
+  permutation. It adds a shader entry of group `embl` (not `soso`, so the
+  part is drawn as the transparent kind, after the opaque body), whose
+  material the converter names as the base's `mc_emblem`.
+
+Default placement (`LEFT_SHOULDER`, a choice to confirm): the outside of
+the left shoulder plate. The anchor is `bip01 l upperarm`, the direction
+model +y (Halo 1 models face +x with z up, so +y is the biped's left),
+up +z, a square of 0.07 (about 21 cm) and a reach of 0.3. On Blood
+Gulch's cyborg the joint is at (-0.008, 0.09, 0.569) and the arm's x axis
+is (0.01, 0.19, -0.98). The right shoulder or the chest is a change of
+the placement's constants. The model is converted once per `mode` tag,
+so every object drawing the cyborg model wears the emblem; on
+multiplayer maps that is the player bipeds alone. Proof: the unit tests
+in `h1models/src/emblem.rs` (an invented arm) and
+`h1objects/tests/model_shaders_disc.rs`
+`bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder`. The
+size, orientation and look need a live check.
+
 ### Marker names
 
 Halo 2's engine finds a marker by string ID through `0x000b8d30`, which
@@ -512,11 +574,11 @@ grenades left from its origin (inferred: the lookup's fallback).
 |---|---|
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
 | Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, both link indices -1, frame info type 0 |
-| Data | one raw resource for the whole graph (`0x200`-aligned and padded). Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data. Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales). Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)` |
+| Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on a vehicle's steering and aim overlays. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
 | Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The tree also carries Halo 1's **borrowed slots**: Halo 1 finds a unit's animations through slot tables (`antr +0x0c` units, `0x64` each, label at +0, weapon classes at +0x58; a class is `0xbc`, label at +0, slot indices (`i16`) at +0x98, types at +0xb0; a type is `0x3c`, label at +0, slots at +0x30), and a slot may name another class's animation (every cyborg class's throw slot is `stand rifle throw-grenade`). Each such slot becomes an action of the borrowing mode, class and type naming the same animation, unless that path already has the action |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
-Left empty: sound and effect references and events, blend screens,
+Left empty: sound and effect references and events, blend screens (but a vehicle's, above),
 inheritance, the `+0x54` string-ID pairs (count >= 1 on every retail graph;
 meaning unknown; written only on first-person graphs, as (`any`, `any`)), static poses, and the header word at `+8`.
 

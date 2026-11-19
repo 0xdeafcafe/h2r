@@ -118,7 +118,6 @@ pub const TRANSPARENT_INHERITED: [R; 7] = [
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransparentState {
     writes: Vec<RenderStateValue>,
-    depth_clamp: Option<bool>,
 }
 
 impl TransparentState {
@@ -132,8 +131,7 @@ impl TransparentState {
         {
             return Err(StateRefusal::NonWDepth);
         }
-        let depth_clamp = last(R::DepthClipControl).map(gfx::state::clamps_depth);
-        Ok(Self { writes: writes.to_vec(), depth_clamp })
+        Ok(Self { writes: writes.to_vec() })
     }
 
     pub fn resolve(&self, incoming: &RenderState) -> PassState {
@@ -149,17 +147,6 @@ impl TransparentState {
             ..Default::default()
         };
         decode(&self.writes, inherited, false).expect("validated transparent state writes")
-    }
-
-    /// The clip range comes from the device. An explicit clamp write
-    /// in the implementation overrides the device's current clamp.
-    pub(crate) fn view(&self, view: &crate::program::ViewInputs) -> crate::program::ViewInputs {
-        let mut view = *view;
-        if let Some(clamp) = self.depth_clamp {
-            let range = view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range);
-            view.w_clip = Some((range, clamp));
-        }
-        view
     }
 }
 
@@ -279,16 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn transparent_depth_clip_inherits_the_range_and_only_overrides_an_explicit_clamp() {
-        let view = crate::program::ViewInputs {
-            constants: [[0.0; 4]; crate::program::VIEW_CONSTANTS],
-            guest_size: (64, 64), size: (64, 64), z_scale: 1024.0,
-            w_clip: Some(([16.0, 512.0], true)),
-        };
-        let inherited = TransparentState::new(&[]).unwrap();
-        let explicit = TransparentState::new(&[v(R::DepthClipControl, 0)]).unwrap();
-        assert_eq!(inherited.view(&view).w_clip, view.w_clip);
-        assert_eq!(explicit.view(&view).w_clip, Some(([16.0, 512.0], false)));
+    fn a_transparent_pass_refuses_an_explicit_non_w_depth_mode() {
         for mode in [DepthBufferMode::Z, DepthBufferMode::Disabled] {
             assert_eq!(TransparentState::new(&[v(R::ZEnable, mode.xbox_value())]), Err(StateRefusal::NonWDepth));
         }

@@ -65,9 +65,19 @@ impl Switches {
         self
     }
 
+    /// Headphone binaural filtering for positioned audio, off unless requested.
+    pub fn audio_hrtf(&self) -> bool {
+        self.feature("audio.hrtf", false)
+    }
+
     /// `features.<id>`.
     pub fn feature(&self, id: &str, default: bool) -> bool {
         self.set.get(id).copied().unwrap_or(default)
+    }
+
+    /// Optional extra wet level and direct HF loss for positioned voices.
+    pub fn distance_reverb(&self) -> bool {
+        self.feature("audio.distance_reverb", false)
     }
 
     /// `impl.<name>`, falling back to its parent (`impl.ui.row_text` then
@@ -105,6 +115,30 @@ mod tests {
         assert!(!s.implementation("ui", false));
         assert!(Switches::parse("a=maybe").is_err());
         assert!(Switches::parse("-").is_err());
+    }
+
+    #[test]
+    fn distance_reverb_is_an_exact_opt_in() {
+        assert!(!Switches::defaults().distance_reverb());
+        assert!(!Switches::parse("audio=on").unwrap().distance_reverb());
+        assert!(
+            Switches::parse("audio.distance_reverb=on")
+                .unwrap()
+                .distance_reverb()
+        );
+        assert!(
+            !Switches::parse("audio.distance_reverb=off")
+                .unwrap()
+                .distance_reverb()
+        );
+    }
+
+    #[test]
+    fn audio_hrtf_requires_opt_in() {
+        assert!(!Switches::defaults().audio_hrtf());
+        assert!(!Switches::parse("audio=on").unwrap().audio_hrtf());
+        assert!(Switches::parse("audio.hrtf=on").unwrap().audio_hrtf());
+        assert!(!Switches::parse("audio.hrtf=off").unwrap().audio_hrtf());
     }
 
     #[test]

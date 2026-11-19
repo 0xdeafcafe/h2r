@@ -105,8 +105,12 @@ pub const ROW_HEIGHT: i16 = 20;
 /// its rows of two.
 pub const FACT_ROWS: usize = 10;
 pub const CHECK_ROWS: usize = 4;
+/// The checklist's rows run wider than the table, from right of the map's
+/// picture (which ends at -38): two columns of conduit-12 `[x] Geometry`
+/// need about 90 each, and the table's 154 holds two of 75.
+pub const CHECK_LEFT: i16 = 40;
 /// Where the checklist's second column starts.
-pub const CHECK_SPLIT: i16 = 198;
+pub const CHECK_SPLIT: i16 = 157;
 
 /// Row `k` of the table column's rectangle.
 pub const fn row_rect(k: usize) -> [i16; 4] {
@@ -156,9 +160,9 @@ pub fn panel_text(i: usize) -> PanelText {
     }
     let cell = i - CHECK_HEADING - 1;
     let (row, column) = (cell / 2, cell % 2);
-    let [top, l, bottom, r] = row_rect(FACT_ROWS + 1 + row);
+    let [top, _, bottom, r] = row_rect(FACT_ROWS + 1 + row);
     let rect = if column == 0 {
-        [top, l, bottom, CHECK_SPLIT - 5]
+        [top, CHECK_LEFT, bottom, CHECK_SPLIT - 5]
     } else {
         [top, CHECK_SPLIT, bottom, r]
     };

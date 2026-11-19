@@ -1,0 +1,7 @@
+# Pushes fights: high aggression, low caution, a quicker trigger.
+skill = "legendary"
+aggression = 0.95
+caution = 0.1
+reaction = 5
+fire_cone_deg = 5.0
+grenades_per_minute = 4.0

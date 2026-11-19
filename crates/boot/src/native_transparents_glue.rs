@@ -199,7 +199,11 @@ fn diagnostics() -> &'static Diagnostics {
     static CONFIG: OnceLock<Diagnostics> = OnceLock::new();
     CONFIG.get_or_init(|| Diagnostics {
         compare: std::env::var("H2_NATIVE_TRANSPARENTS_COMPARE").ok().as_deref().and_then(parse_compare),
-        probe: std::env::var("H2_NATIVE_TRANSPARENTS_PROBE").ok().as_deref().and_then(parse_probe),
+        probe: std::env::var("H2_NATIVE_TRANSPARENTS_PROBE")
+            .ok()
+            .as_deref()
+            .and_then(parse_probe)
+            .map(|p| p.at),
     })
 }
 

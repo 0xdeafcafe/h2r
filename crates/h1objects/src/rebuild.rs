@@ -46,7 +46,7 @@ pub fn scenery(
 ) -> Result<Block> {
     let d = def(b"scen")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, words)?;
+    role_words(&mut r, "", words)?;
     set(&mut r, "object.object_type", Val::Enum(SCENERY_TYPE))?;
     set(
         &mut r,
@@ -64,6 +64,7 @@ pub fn scenery(
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(b"scen", &mut r, "object", predicted)?;
+    object_change_colors(b"scen", &mut r, "object", &obj.change_colours)?;
     built(d, &r)
 }
 
@@ -291,7 +292,7 @@ pub fn model_material_count(hlmt: &Block) -> u32 {
 pub fn model(m: &Model) -> Result<Block> {
     let d = def(b"hlmt")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, &m.words)?;
+    role_words(&mut r, "", &m.words)?;
     set(&mut r, "render_model", Val::tag(FourCC(*b"mode"), m.render))?;
     set(
         &mut r,
@@ -521,7 +522,8 @@ pub fn role_spheres(role: &VehicleRole) -> Vec<[f32; 3]> {
         .collect()
 }
 
-fn role(r: &mut Record, table: &[(&str, u32)]) -> Result<()> {
+fn role(r: &mut Record, scope: &str, table: &[(&str, u32)]) -> Result<()> {
+    crate::provenance::note_words(scope, table);
     for (path, word) in table {
         set(r, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
     }
@@ -1493,25 +1495,25 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     let mut r = defs::default_record(d);
     match v.role {
         Some(role) => {
-            role_words(&mut r, &role.words.root)?;
+            role_words(&mut r, "", &role.words.root)?;
             for (path, elems) in &role.words.blocks {
                 let e = d
                     .child(path)
                     .ok_or_else(|| Error::Invalid(format!("vehi {path}")))?;
                 let mut out = Vec::new();
-                for words in elems {
+                for (i, words) in elems.iter().enumerate() {
                     let mut x = defs::default_record(e);
-                    role_words(&mut x, words)?;
+                    role_words(&mut x, &format!("{path}[{i}]."), words)?;
                     out.push(x);
                 }
                 set(&mut r, path, Val::Block(out))?;
             }
         }
         None => {
-            role(&mut r, TURRET_ROLE)?;
+            role(&mut r, "", TURRET_ROLE)?;
             let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
             let mut p = defs::default_record(phys_def);
-            role(&mut p, TURRET_PHYSICS_ROLE)?;
+            role(&mut p, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
             set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
         }
     }
@@ -1519,7 +1521,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     if !matches!(r.at(VEHI_PHYSICS), Some(Val::Block(b)) if b.len() == 1) {
         let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
         let mut p = defs::default_record(phys_def);
-        role(&mut p, TURRET_PHYSICS_ROLE)?;
+        role(&mut p, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
         set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
     }
     let (obj, hlmt, predicted) = (v.object, v.hlmt, v.predicted);
@@ -1540,6 +1542,9 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     set(&mut r, "vehicle_type", Val::Enum(v.vehicle_type.into()))?;
     let high = v.role.map_or(0, |x| x.flags_high);
     let control = v.role.map_or(0, |x| x.control);
+    if v.role.is_some() {
+        crate::provenance::note(VEHI_CONTROL, &Val::Bytes(control.to_le_bytes().to_vec()));
+    }
     set(&mut r, VEHI_CONTROL, Val::Bytes(control.to_le_bytes().to_vec()))?;
     set(
         &mut r,
@@ -1547,6 +1552,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::Int(i64::from(high | (v.flags & 0xffff))),
     )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
+    object_change_colors(b"vehi", &mut r, "unit.obje", &obj.change_colours)?;
     object_effects(
         b"vehi",
         &mut r,
@@ -1576,11 +1582,12 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     set(&mut r, "unit.weapons", Val::Block(weapons))?;
     let seat_def = d.child(VEHI_SEATS).expect("vehi seats");
     let mut out = Vec::new();
-    for s in v.seats {
+    for (i, s) in v.seats.iter().enumerate() {
+        let scope = format!("{VEHI_SEATS}[{i}].");
         let mut e = defs::default_record(seat_def);
         match v.role {
-            Some(x) => role_words(&mut e, &x.seats[SeatKind::of(s.flags) as usize])?,
-            None => role(&mut e, TURRET_SEAT_ROLE)?,
+            Some(x) => role_words(&mut e, &scope, &x.seats[SeatKind::of(s.flags) as usize])?,
+            None => role(&mut e, &scope, TURRET_SEAT_ROLE)?,
         }
         let role_flags = match e.get(SEAT_FLAGS) {
             Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().expect("4")),
@@ -1601,6 +1608,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                     .find(|(p, _)| p == field)
                     .map(|(_, w)| *w)
                     .expect("entry word");
+                crate::provenance::note_words(&scope, &[(*field, w)]);
                 set(&mut e, field, Val::Bytes(w.to_le_bytes().to_vec()))?;
             }
         }
@@ -1652,7 +1660,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                     }
                     _ => words,
                 };
-                role_words(&mut x, words)?;
+                role_words(&mut x, &format!("{block}[{i}]."), words)?;
                 set(&mut x, marker, Val::text(&p.marker))?;
                 set(&mut x, region, Val::text(&p.region))?;
                 if block == VEHI_FRICTION {
@@ -1674,7 +1682,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         if !role.gears.is_empty() {
             let e = d.child(VEHI_GEARS).expect("vehi gears");
             let mut out = Vec::new();
-            for words in &role.gears {
+            for (i, words) in role.gears.iter().enumerate() {
                 let mut x = defs::default_record(e);
                 for (path, w) in words {
                     let raw = e
@@ -1686,6 +1694,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                     } else {
                         Val::Bytes(w.to_le_bytes().to_vec())
                     };
+                    crate::provenance::note(format!("{VEHI_GEARS}[{i}].{path}"), &val);
                     set(&mut x, path, val)?;
                 }
                 out.push(x);
@@ -1758,6 +1767,7 @@ pub fn device(dev: &h1::Device, hlmt: Option<TagId>, predicted: &[Predicted]) ->
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(group, &mut r, "devi.obje", predicted)?;
+    object_change_colors(group, &mut r, "devi.obje", &obj.change_colours)?;
     set(&mut r, "devi.device_flags", Val::Int(dev.flags.into()))?;
     let rates = device_rates(&dev.times);
     for (name, v) in [
@@ -2629,7 +2639,10 @@ pub fn biped_role(base: &crate::base::Base, role: BipedRole) -> Result<Option<Ro
     }))
 }
 
-fn role_words(r: &mut Record, words: &[(String, u32)]) -> Result<()> {
+/// Writes role words into `r`, noting them under `scope`, `r`'s path in
+/// the tag ([`crate::provenance`]).
+fn role_words(r: &mut Record, scope: &str, words: &[(String, u32)]) -> Result<()> {
+    crate::provenance::note_words(scope, words);
     for (path, word) in words {
         set(r, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
     }
@@ -2884,21 +2897,22 @@ pub fn biped(
 ) -> Result<Block> {
     let d = def(b"bipd")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, &role.root)?;
+    role_words(&mut r, "", &role.root)?;
     for (path, elems) in &role.blocks {
         let e = d
             .child(path)
             .ok_or_else(|| Error::Invalid(format!("bipd {path}")))?;
         let mut out = Vec::new();
-        for words in elems {
+        for (i, words) in elems.iter().enumerate() {
             let mut x = defs::default_record(e);
-            role_words(&mut x, words)?;
+            role_words(&mut x, &format!("{path}[{i}]."), words)?;
             out.push(x);
         }
         set(&mut r, path, Val::Block(out))?;
     }
     if let Some(c) = &parts.counterpart {
         for (path, v) in counterpart_fields(d, c, BIPED_OWN, BIPED_WITH_REFERENCES) {
+            crate::provenance::note(path.as_str(), &v);
             set(&mut r, &path, v)?;
         }
     }
@@ -2930,6 +2944,7 @@ pub fn biped(
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     predicted_resources(b"bipd", &mut r, "unit.obje", predicted)?;
+    object_change_colors(b"bipd", &mut r, "unit.obje", &obj.change_colours)?;
     set(
         &mut r,
         "unit.camera_field_of_view",
@@ -3072,6 +3087,58 @@ pub struct AttachmentSpec {
 /// The attachment primary scale field (`obje +0x94` element `+0x10`).
 pub const ATTACHMENT_PRIMARY_SCALE: &str = "string_10";
 
+/// Sets `path.change_colors` (`obje +0xac`, `0x10` each) on a rebuilt
+/// record from `colours`, already in Halo 2's slots
+/// ([`h1::ChangeColour::halo2_slots`]); none when `colours` is empty.
+/// Each element's first block is its initial permutations (`0x20` each:
+/// `+0` weight, `+4` lower and `+0x10` upper bound RGB, `+0x1c` a variant
+/// name, 0 for any), Halo 1's as they are; the second (functions) stays
+/// empty: Halo 1's darken/scale-by functions are not carried.
+///
+/// E: `object_new` reserves `0x18` bytes per element (two RGB colours,
+/// the initial and the current); `0x000be240` sets each slot white
+/// (`[0x468710]`), then, when the slot has permutations, picks one by
+/// weight among those whose `+0x1c` is 0 or the object's variant
+/// (`0x000be40e..0x000be44b`) and a colour between its bounds. The
+/// player's colours are written over slots 0 to 3 by `0x0014bfc0`
+/// through `0x000bacc0`, which leaves a slot past the object's count
+/// alone, so a player's unit needs all four.
+pub fn object_change_colors(
+    group: &[u8; 4],
+    r: &mut Record,
+    path: &str,
+    colours: &[h1::ChangeColour],
+) -> Result<()> {
+    if colours.is_empty() {
+        return Ok(());
+    }
+    let field = format!("{path}.change_colors");
+    let e = def(group)?
+        .child(&field)
+        .ok_or_else(|| Error::Invalid(format!("{} {field}", String::from_utf8_lossy(group))))?;
+    let pe = e
+        .child("block_0")
+        .ok_or_else(|| Error::Invalid(format!("{field}.block_0")))?;
+    let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
+    let mut out = Vec::new();
+    for c in colours {
+        let mut x = defs::default_record(e);
+        let mut perms = Vec::new();
+        for p in &c.permutations {
+            let mut y = defs::default_record(pe);
+            set(&mut y, "unknown_0", f(p.weight))?;
+            for (i, (lo, hi)) in p.lower.iter().zip(&p.upper).enumerate() {
+                set(&mut y, &format!("unknown_{:x}", 4 + 4 * i), f(*lo))?;
+                set(&mut y, &format!("unknown_{:x}", 0x10 + 4 * i), f(*hi))?;
+            }
+            perms.push(y);
+        }
+        set(&mut x, "block_0", Val::Block(perms))?;
+        out.push(x);
+    }
+    set(r, &field, Val::Block(out))
+}
+
 /// Sets `path.functions` (`obje +0x64`) on a rebuilt record.
 pub fn object_functions(
     group: &[u8; 4],
@@ -3183,7 +3250,8 @@ pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
     let d = def(b"ligh")?;
     let mut r = defs::default_record(d);
     if let Some(role) = role {
-        role_words(&mut r, &role.words.root)?;
+        role_words(&mut r, "", &role.words.root)?;
+        crate::provenance::note("brightness", &Val::floats(&role.brightness));
         set(&mut r, "brightness", Val::floats(&role.brightness))?;
     } else {
         set(&mut r, "brightness", Val::floats(&[1.0, 1.0]))?;
@@ -3276,9 +3344,17 @@ pub fn decal(
         max_overlapping: 8,
         scale_18: 0.75f32.to_bits(),
     });
-    set(&mut r, "layer", Val::Int(role.layer.into()))?;
-    set(&mut r, "max_overlapping", Val::Int(role.max_overlapping.into()))?;
-    set(&mut r, "unknown_18", Val::Bytes(role.scale_18.to_le_bytes().to_vec()))?;
+    for (path, v) in [
+        ("layer", Val::Int(role.layer.into())),
+        ("max_overlapping", Val::Int(role.max_overlapping.into())),
+        (
+            "unknown_18",
+            Val::Bytes(role.scale_18.to_le_bytes().to_vec()),
+        ),
+    ] {
+        crate::provenance::note(path, &v);
+        set(&mut r, path, v)?;
+    }
     set(&mut r, "next_decal", Val::tag(FourCC(*b"deca"), next.unwrap_or(TagId::NULL)))?;
     set(&mut r, "radius", Val::floats(&x.radius))?;
     set(&mut r, "colour_lower", Val::floats(&x.colour_lower))?;

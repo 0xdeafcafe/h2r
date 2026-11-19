@@ -18,6 +18,7 @@ pub mod havok;
 pub mod hot;
 mod load;
 mod pad;
+pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;
@@ -133,6 +134,10 @@ pub mod method {
     pub const INPUT_REPLAY: &str = "input.replay";
     /// End the recording (writing it) or the replay.
     pub const INPUT_STOP: &str = "input.stop";
+    /// The host's controllers as their backends and the debug menu's gate
+    /// see them: profile class, touchpad, buttons, and whether the menu is
+    /// open (`h2 agent hostpads`).
+    pub const INPUT_HOST: &str = "input.host";
     /// Start the in-process sampling profiler (`{"hz": 1000}`).
     pub const SAMPLE_START: &str = "profile.sample.start";
     /// Stop it and write the samples (`{"inline": true}` returns them too).
@@ -156,6 +161,17 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Active mixer voices, bin gains and distance-dependent path parameters.
+    pub const AUDIO_VOICES: &str = "audio.voices";
+    /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
+    /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
+    /// the speed-up so far, frames skipped, and the end once over.
+    pub const MATCH_STATUS: &str = "match.status";
+    /// Sim mode: the match report as it would be written now
+    /// (`h2-sim-report/1`, docs/runtime/sim.md §6).
+    pub const MATCH_REPORT: &str = "match.report";
+    /// Sim mode: end the match at the next slice boundary, as `stopped`.
+    pub const MATCH_STOP: &str = "match.stop";
 }
 
 /// Error codes. The negative ones are JSON-RPC's own.
