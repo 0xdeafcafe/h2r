@@ -67,6 +67,13 @@ pub struct Frame<'a> {
 pub trait PadSource: Send {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState;
 
+    fn brain_view(&self) -> Option<crate::BrainView> {
+        None
+    }
+
+    /// Roster personality (seed, taunt). Scripted pads have no brain to update.
+    fn set_roster_personality(&mut self, _personality: Option<(u64, f32)>) {}
+
     /// The phantom's action stream was interrupted by a new unit or match.
     fn reset_input(&mut self) {}
 
@@ -273,12 +280,22 @@ impl Local {
         handle: BotHandle,
         account: Option<crate::guest::BotAccount>,
     ) -> Result<(), Error> {
+        self.set_roster_account(handle, account, None)
+    }
+
+    pub fn set_roster_account(
+        &self,
+        handle: BotHandle,
+        account: Option<crate::guest::BotAccount>,
+        personality: Option<(u64, f32)>,
+    ) -> Result<(), Error> {
         let mut s = self.lock();
         let b = s
             .bots
             .iter_mut()
             .find(|b| b.handle == handle && !b.leaving)
             .ok_or(Error::NoSuchBot(handle))?;
+        b.source.set_roster_personality(personality);
         b.account = account;
         Ok(())
     }
@@ -300,6 +317,15 @@ impl Local {
             .iter()
             .find(|b| b.handle == handle && !b.leaving)
             .and_then(|b| b.account.clone())
+    }
+
+    pub fn brain_view(&self, handle: BotHandle) -> Option<crate::BrainView> {
+        self.lock()
+            .bots
+            .iter()
+            .find(|b| b.handle == handle && !b.leaving)?
+            .source
+            .brain_view()
     }
 
     /// Takes a bot off the books. Its pad stays plugged, idle, until the

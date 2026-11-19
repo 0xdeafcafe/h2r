@@ -154,6 +154,7 @@ impl Tuning {
             caution: unit(self.caution, p.caution),
             teamwork: unit(self.teamwork, p.teamwork),
             objective_focus: unit(self.objective_focus, p.objective_focus),
+            ..p
         }
     }
 
@@ -288,6 +289,7 @@ mod tests {
             caution: 0.5,
             teamwork: 0.5,
             objective_focus: 0.5,
+            ..Personality::seeded(0)
         };
         let t = Tuning {
             aggression: Some(2.0),

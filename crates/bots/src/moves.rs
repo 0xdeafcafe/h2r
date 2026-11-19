@@ -53,6 +53,18 @@ pub struct Style {
 }
 
 impl Style {
+    pub(crate) fn with_behavior(skill: Skill, behavior: crate::decisions::Behavior) -> Style {
+        let mut style = Self::of(skill);
+        let hold = behavior.strafe_hold();
+        style.strafe = (
+            (style.strafe.0 as f32 * hold) as u32,
+            (style.strafe.1 as f32 * hold) as u32,
+        );
+        style.stand = (style.stand + behavior.stand_bonus()).clamp(0.0, 0.55);
+        style.keep = (style.keep * behavior.spacing()).min(1.0);
+        style
+    }
+
     pub fn of(skill: Skill) -> Style {
         match skill {
             Skill::Easy => Style {
@@ -221,7 +233,16 @@ impl Moves {
     /// This tick's footwork. Without a map: straight at the enemy (or
     /// straight back when retreating), as stage 1 did.
     pub fn fight(&mut self, i: &FightIn, map: Option<&MapData>, bodies: &[Vec3]) -> FightMove {
-        let st = Style::of(i.skill);
+        self.fight_with_style(i, map, bodies, Style::of(i.skill))
+    }
+
+    pub(crate) fn fight_with_style(
+        &mut self,
+        i: &FightIn,
+        map: Option<&MapData>,
+        bodies: &[Vec3],
+        st: Style,
+    ) -> FightMove {
         let t = i.tick;
         let to = [i.foe[0] - i.at[0], i.foe[1] - i.at[1]];
         let flat = norm2(to).max(1e-6);

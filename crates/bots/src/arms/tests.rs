@@ -947,6 +947,49 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
 }
 
 #[test]
+fn temperament_loyalty_takes_a_short_favorite_detour_only_when_calm() {
+    use crate::decisions::Personality;
+
+    let a = arms(Some(gun(BR, rounds(36, 36, 108, 108))), None);
+    let favorite = Pickup {
+        gun: Gun {
+            profile: Profile {
+                trigger: Trigger::Automatic,
+                ..Profile::default()
+            },
+            ..gun(SMG, rounds(30, 30, 90, 90))
+        },
+        ..pickup(1, 9.0, SMG, Ammo::None)
+    };
+    let mut s = Situation {
+        arms: &a,
+        at: [0.0; 3],
+        enemy: None,
+        calm: true,
+        breather: true,
+        by_range: true,
+        pickups: &[favorite],
+    };
+    let loyal = Personality {
+        favorite_weapon: Role::Spray,
+        weapon_loyalty: 0.8,
+        ..Personality::seeded(4)
+    };
+    let indifferent = Personality {
+        weapon_loyalty: 0.2,
+        ..loyal
+    };
+    let plan = |s: &Situation<'_>, p| plan_with_personality(s, |_| false, Some(p));
+    assert_eq!(plan(&s, indifferent), Kit::Fine);
+    assert_eq!(plan(&s, loyal), Kit::Seek(favorite));
+    assert_eq!(plan_with_personality(&s, |_| true, Some(loyal)), Kit::Fine);
+    s.enemy = Some(5.0);
+    s.calm = false;
+    s.breather = false;
+    assert_eq!(plan(&s, loyal), Kit::Fine);
+}
+
+#[test]
 fn the_dual_pickup_table_checks_both_hands_and_range() {
     use DualGun::*;
     let weapon = |dual| Gun {
@@ -1048,4 +1091,76 @@ fn the_sword_has_a_battery_even_without_a_barrel_and_objectives_are_never_suppli
         let def = WeaponDef::read(&w.g, FLAG_TAG).unwrap();
         assert_eq!(def.ammo(&w.g, body).unwrap(), ammo);
     }
+}
+
+#[test]
+fn temperament_pickup_scoring_favors_a_weapon_inside_the_sandbox_gates() {
+    use crate::decisions::Personality;
+
+    let a = arms(
+        Some(with(
+            SMG,
+            Profile {
+                dual: Some(DualGun::Smg),
+                ..smg()
+            },
+            full(),
+        )),
+        None,
+    );
+    let sword = Pickup {
+        id: 1,
+        position: [6.0, 0.0, 0.0],
+        gun: with(SWORD, sword(), Ammo::Battery(1.0)),
+    };
+    let sniper = Pickup {
+        id: 2,
+        position: [5.0, 0.0, 0.0],
+        gun: with(SNIPER, sniper(), full()),
+    };
+    let offhand = Pickup {
+        id: 3,
+        position: [0.25, 0.0, 0.0],
+        gun: with(
+            PP,
+            Profile {
+                trigger: Trigger::Charge,
+                dual: Some(DualGun::PlasmaPistol),
+                ..smg()
+            },
+            Ammo::Battery(1.0),
+        ),
+    };
+    let loyal = Personality {
+        favorite_weapon: Role::Blade,
+        weapon_loyalty: 0.9,
+        ..Personality::seeded(0)
+    };
+    let s = Situation {
+        arms: &a,
+        at: [0.0; 3],
+        enemy: None,
+        calm: true,
+        breather: true,
+        by_range: true,
+        pickups: &[sword, sniper, offhand],
+    };
+    assert_eq!(plan(&s, |_| false), Kit::Seek(sniper));
+    assert_eq!(
+        plan_with_personality(&s, |_| false, Some(loyal)),
+        Kit::Seek(sword)
+    );
+
+    // Under fire the distant power weapons can't beat a compatible,
+    // reachable off-hand pickup.
+    let fight = Situation {
+        enemy: Some(4.0),
+        calm: false,
+        breather: false,
+        ..s
+    };
+    assert_eq!(
+        plan_with_personality(&fight, |_| false, Some(loyal)),
+        Kit::Dual(offhand)
+    );
 }

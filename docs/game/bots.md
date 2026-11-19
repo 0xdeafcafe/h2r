@@ -423,6 +423,7 @@ These are the inputs to that design.
 |---|---|
 | fight | a visible enemy; my health; my weapon against theirs at that range |
 | chase | an enemy seen recently, its last known position |
+| hold angle | a patient bot keeps aiming at its last sighting for a moment |
 | pick up weapon or powerup | how much better it is than what I hold; distance; the respawn timer |
 | seek health | shields down, no enemy in view (cover, then a wait for recharge) |
 | play the objective | gametype; my role (carrier, escort, defend, attack); team state |
@@ -442,8 +443,8 @@ guarding its flag or escorting a carrier. Target choice combines the
 existing range, turn and stickiness costs with the objective, teammates'
 calls, recent kills and visible openings. A bot that loses sight plays its
 objective first. In Slayer it can recover shields, respond to a call,
-regroup after withdrawing, collect a due supply, investigate its last
-sighting, or roam. A team call alone never authorizes a shot.
+regroup after withdrawing, collect a due supply, hold an angle, investigate
+its last sighting, or roam. A team call alone never authorizes a shot.
 
 Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
@@ -461,12 +462,59 @@ when another enemy is within 2.5 of the target, three times before pushing
 in with a short gun; and at twice the rate at where an enemy went out of
 view in the last 2 s, while chasing. Each throw is flown against the map's
 collision and aimed to land (`bots::grenades`, "Built: weapon skill" in
-§10); none while dual wielding.
+§10). In a dual-wield fight the bot can drop its left-hand gun for a
+throw it has already lined up, then waits for the hand to be free.
 
-Each bot seed produces its own aggression, caution, teamwork and objective
-focus. Skill scales how readily it notices an opening, how far it responds
-to teammates and how early it sets out for a supply. Changing difficulty
-preserves the personality.
+#### Personality and temperament
+
+A Clanker's identity seed fixes its trait draws and favorite weapon family.
+Offline bots use a seat seed. Live roster bots use the server's personality
+seed in both local and phantom seats. A difficulty change maps the same
+draws into the new bands. At the same difficulty, a persistent bot starts
+every match with the same traits and a fresh mood.
+
+| Trait | What changes in play | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|---|
+| Aggression | Takes openings and closes distance | .05–.95 | .12–.92 | .24–.90 | .35–.88 |
+| Caution | Respects being outnumbered and routes around recent danger | .05–.90 | .16–.88 | .30–.84 | .46–.82 |
+| Teamwork | Responds to radio calls and helps teammates | .08–.85 | .18–.88 | .32–.88 | .46–.87 |
+| Objective focus | Stays closer to the assignment during a fight | .05–.90 | .18–.88 | .35–.90 | .48–.89 |
+| Composure | Has smaller swings in mood and settles faster | .08–.50 | .28–.70 | .50–.86 | .73–.96 |
+| Patience | Holds a strafe or a corner longer before chasing | .05–.48 | .22–.72 | .42–.85 | .65–.91 |
+| Showboating | Attempts riskier melee and sword lunges and taunts more often | .10–.95 | .10–.87 | .12–.75 | .15–.67 |
+| Weapon loyalty | Favors a weapon family and may take a short detour for it during a lull | .05–.95 | .13–.88 | .20–.80 | .28–.72 |
+| Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
+
+Each trait is drawn independently and uniformly inside its band's lower and
+upper bounds. The narrower bands give Legendary bots more consistent
+discipline while leaving room for aggressive Clankers. Favorites are drawn
+from automatic guns, precision rifles and pistols, shotguns, snipers, splash
+weapons, and swords. Loyalty biases existing pickup choices and can justify
+a short detour for a visible favorite when the bot is calm and free to rearm.
+
+Confidence, tilt, and fear each run from 0 to 1. Enemy kills build confidence,
+with a larger gain as the streak grows. A death breaks the streak, drops
+confidence, and raises tilt and fear. Betrayals and losing a recent favored
+duel add extra tilt. A duel is favored when the bot sees one opponent with no
+nearby teammate in the fight, holds a weapon ready at that range, and has a
+shield lead of at least 0.30. While dead, the bot can read two crouch requests
+by its killer within 8 m of the body in the first 3 s as a taunt.
+
+The three mood values decay with game time, with half-lives of about 8 to
+17 s depending on composure. Confident bots commit to more fights. Tilt
+can make a bot press and throw grenades more often. It remembers the killer
+for up to 10 s and may favor that opponent in view or pursue its last
+sighting. A frightened bot is quicker to withdraw and regroup with a
+teammate. These choices respect combat range, objective and input gates.
+The human-input layer caps extra tracking noise from tilt and fear at 10%.
+Each match pad still passes through the controller's stick slew, button
+timing and thumb coordination limits before reaching a local port or the
+phantom's delayed uplink.
+
+The map decision layer can read `Personality::wait_weight()` for patience
+near a predicted spawn and `Personality::weapon_interest(role)` to value a
+favorite weapon there. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+for the live traits and mood.
 
 ### 3.4 Aim
 
@@ -542,23 +590,9 @@ The numbers in the table are starting points; tuning them needs runs
 
 The user asked: "make them teabag if you do something dumb". The emote is a
 short burst of crouch presses over a body, made with the real crouch input.
-Nothing else is changed.
-
-These events count as a **dumb** death. The detector reads them from the
-kill event, the shots hook and perception:
-
-- the human died to their own grenade, to a fall, or by suicide, with the bot
-  near;
-- the human got stuck: no progress for 3 s against geometry, in the bot's
-  view;
-- the human missed a shot at point-blank range (under 3 m, three or more
-  shots, no hit);
-- the human ran out of ammo mid-fight (an empty magazine and no reserve
-  while an enemy was in view);
-- the bot killed the human in a 1v1 that the human started with a big
-  advantage: shields full against the bot's broken, a power weapon, or
-  attacking from behind;
-- the human betrayed a teammate.
+The kill feed supplies the body position and the event. Self-kills (including
+world deaths) and betrayals can prompt a taunt. Showboats can also taunt over
+their own ordinary kills, at a lower rate.
 
 The bot may emote only when:
 
@@ -570,14 +604,16 @@ The bot may emote only when:
 
 When it does, it presses crouch 3 to 6 times at a human rhythm (built:
 130 to 200 ms per press), for 2 s at most, and stops at once if an enemy
-appears. Built in stage 4 for self-kills and betrayals (§10).
+appears, an objective takes priority, or taunts are turned off.
 
 How often it happens:
 
-    chance = personality.taunt × severity(event)
+    chance = clamp(taunt × severity(event) × showboating_weight, 0, 1)
 
-`taunt` is 0..1 and comes from the personality. It is 0 when the Clankers
-page's **Taunts** setting is off. A persistent bot has its own taunt value.
+Severity is 1 for a betrayal, 0.8 for a self-kill, and 0.35 for the bot's own
+ordinary kill. Showboating and current confidence set the weight. The
+Clankers page's **Taunts** switch sets `taunt` to 0 when off. A persistent bot
+has its own base taunt value.
 
 ### 3.6 Weapons and ammunition (traced)
 
@@ -4969,7 +5005,7 @@ Still open:
 - For objectives, the traced fields and their writers are in §3.7. The
   outstanding checks are pickup behavior, rotated one-bomb rounds, hill
   transitions and capture volumes in play (§11.2).
-- For vehicles (§3.9): the rocket launcher's lock time and zoom
+- For vehicles (§3.9): verify the rocket launcher's lock time and zoom
   requirement, the units of `O+0x88` (velocity), the Banshee's secondary
   fire and roll in phantom play, and whether tag dimensions need a
   larger margin on tight turns. For lifts (§3.2), measure the launch

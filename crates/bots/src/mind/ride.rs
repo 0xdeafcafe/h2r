@@ -139,8 +139,8 @@ impl Mind {
                 o.id,
                 tick,
                 aim_at,
-                sub(target, eye),
-                sub(led, eye),
+                [sub(target, eye), sub(led, eye)],
+                self.decisions.behavior().aim_noise_extra(),
             ));
             let off = angle_between(sub(led, eye), me.aim);
             let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
