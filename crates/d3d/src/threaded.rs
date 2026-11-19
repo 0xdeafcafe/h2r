@@ -62,6 +62,9 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
+/// Synchronous light reservations submitted to an actual worker thread.
+pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -1181,6 +1184,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        if plan.stage == timeline::native::Stage::Lights {
+            LIGHT_WORKER_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         let plan = plan.clone();
         let ids = textures.map(|t| t.map(|t| t.id));
         self.call(move |w| {

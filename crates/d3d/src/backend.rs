@@ -284,6 +284,10 @@ pub trait ExternalPass: Send {
         0
     }
 
+    /// Fully recorded bundles for an ordered run on the bound attachments.
+    /// The per-copy reservation checks their range count before commit.
+    fn take_bundles(&mut self, _copy: TargetCopy) -> Option<ExternalBundles> { None }
+
     /// Potential guest-visible writes. Read-only probes use the default.
     fn writes(&self) -> ExternalWrites {
         ExternalWrites::default()
@@ -449,6 +453,7 @@ impl<S> ExternalSurfaces<S> {
 
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
+    pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub color: wgpu::TextureView,
@@ -477,7 +482,25 @@ impl ExternalAttachments {
 pub struct ExternalRecording {
     pub copy: TargetCopy,
     pub ranges: usize,
-    pub commands: wgpu::CommandBuffer,
+    pub commands: ExternalCommands,
+}
+
+pub struct ExternalBundles {
+    pub run: u64,
+    pub scissor: [u32; 4],
+    pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
+    pub ranges: usize,
+}
+
+pub enum ExternalCommands {
+    Standalone(wgpu::CommandBuffer),
+    Bundles {
+        targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
+        color: wgpu::TextureView,
+        depth: wgpu::TextureView,
+        stencil: bool,
+        draws: ExternalBundles,
+    },
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
@@ -976,8 +999,16 @@ pub trait Backend: Send {
         let mut recordings = Vec::with_capacity(prepared.len());
         for (target, mut encoder) in prepared {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let ranges = pass.record_ranges(target.target(request, &mut encoder));
-            let commands = encoder.finish();
+            let (ranges, commands) = match pass.take_bundles(target.copy) {
+                Some(draws) => (draws.ranges, ExternalCommands::Bundles {
+                    targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                    stencil: target.depth_format.has_stencil_aspect(), draws,
+                }),
+                None => {
+                    let ranges = pass.record_ranges(target.target(request, &mut encoder));
+                    (ranges, ExternalCommands::Standalone(encoder.finish()))
+                }
+            };
             if pollster::block_on(scope.pop()).is_some() || !plan.complete(target.copy, ranges) {
                 return Ok(None);
             }

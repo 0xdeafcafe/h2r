@@ -393,3 +393,97 @@ fn threaded_prepare_waits_for_actual_recording_and_refuses_partial_ranges() {
     assert!(d.prepare_external_pass(&mut m, plan(2), Box::new(pass)).unwrap().is_none());
     assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference]);
 }
+
+/// Record a synthetic full-screen triangle. The caller's scissor and
+/// constant blend colour distinguish execution order and scaled copies.
+struct Paint {
+    run: u64,
+    x: u32,
+    color: wgpu::Color,
+    refuse_display: bool,
+    bundles: [Option<d3d::backend::ExternalBundles>; 2],
+}
+
+impl ExternalPass for Paint {
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+
+    fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
+        let display = t.copy == d3d::TargetCopy::Display;
+        if display && self.refuse_display { return Err("synthetic second-copy refusal"); }
+        let shader = t.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl("
+                @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                    let p = array(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+                    return vec4f(p[i], 0, 1);
+                }
+                @fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
+            ".into()),
+        });
+        let pipeline = t.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None, layout: None,
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader, entry_point: Some("fs"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: t.color_format, write_mask: wgpu::ColorWrites::ALL,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Constant,
+                            dst_factor: wgpu::BlendFactor::Zero, operation: wgpu::BlendOperation::Add },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                })],
+            }),
+            primitive: Default::default(), multisample: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: t.depth_format,
+                depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(), bias: Default::default() }),
+            multiview_mask: None, cache: None,
+        });
+        let mut b = t.device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+            label: None, color_formats: &[Some(t.color_format)], sample_count: 1, multiview: None,
+            depth_stencil: Some(wgpu::RenderBundleDepthStencil { format: t.depth_format,
+                depth_read_only: false, stencil_read_only: !t.depth_format.has_stencil_aspect() }),
+        });
+        b.set_pipeline(&pipeline);
+        b.draw(0..3, 0..1);
+        let scale = t.size.0 / t.guest_size.0;
+        self.bundles[usize::from(display)] = Some(d3d::backend::ExternalBundles {
+            run: self.run, ranges: 1, scissor: [self.x * scale, 0, 8 * scale, t.size.1],
+            groups: vec![(self.color, b.finish(&Default::default()))],
+        });
+        Ok(())
+    }
+
+    fn take_bundles(&mut self, copy: d3d::TargetCopy) -> Option<d3d::backend::ExternalBundles> {
+        self.bundles[usize::from(copy == d3d::TargetCopy::Display)].take()
+    }
+}
+
+#[test]
+fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
+        device: ctx.device.clone(), queue: ctx.queue.clone(), caps: ctx.caps });
+    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let baseline = GfxBackend::native_bundle_passes();
+    let paint = |x, color, refuse_display| Box::new(Paint { run: 17, x, color, refuse_display, bundles: [None, None] });
+    d.prepare_external_pass(&mut m, plan(1), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, plan(1), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
+    assert!(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
+    drop(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
+    let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    assert_eq!(GfxBackend::native_bundle_passes(), baseline.map(|n| n + 1));
+    for (scale, pixels) in [(1usize, reference), (2, display)] {
+        for (x, rgba) in [(0, [255; 4]), (3, [255; 4]), (4, [0,0,0,255]), (11, [0,0,0,255]), (12, [0,255,0,255])] {
+            let at = x * scale * 4;
+            assert_eq!(pixels[at..at+4], rgba, "{scale}x at {x}");
+        }
+    }
+}

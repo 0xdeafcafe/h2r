@@ -65,6 +65,8 @@
 //! translation) counts nothing. Clearing and reporting the counter submit
 //! the pending pass first, so they stay in order with the counted draws.
 
+mod native_runs;
+
 use std::collections::HashMap;
 
 use gfx::occlusion::{PixelCounter, PixelReport};
@@ -146,6 +148,7 @@ pub struct GfxBackend {
     /// through `present_hook`.
     replay_hook: Option<PresentHook>,
     pending: Option<PendingPass>,
+    native_run: Option<native_runs::Run>,
     stats: BatchStats,
     merge_passes: bool,
     /// [`set_merge_discards`](Self::set_merge_discards).
@@ -294,6 +297,7 @@ impl GfxBackend {
             present_hook: None,
             replay_hook: None,
             pending: None,
+            native_run: None,
             stats: BatchStats::default(),
             merge_passes: true,
             merge_discards: merge_discards_from_env(
@@ -667,6 +671,7 @@ impl GfxBackend {
     /// Encodes the pending pass, if any, after the passes encoded before it
     /// (without submitting them).
     fn encode_pending(&mut self) -> Result<(), String> {
+        self.finish_native_run();
         let Some(mut p) = self.pending.take() else {
             return Ok(());
         };
@@ -1226,6 +1231,7 @@ impl Backend for GfxBackend {
         depth: Option<SurfaceId>,
         clear: Clear,
     ) -> Result<(), String> {
+        self.finish_native_run();
         // A clear starts a pass: it becomes the pass's load operations.
         if self.pending.as_ref().is_some_and(|p| !p.draws.is_empty()) {
             self.flush()?;
@@ -1246,6 +1252,7 @@ impl Backend for GfxBackend {
         d: &ResolvedDraw,
         textures: [Option<&HostTexture>; 4],
     ) -> Result<DrawOutcome, String> {
+        self.finish_native_run();
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         timeline::phase::count(timeline::phase::Counter::Draws, 1);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "draw");
@@ -1631,8 +1638,9 @@ impl Backend for GfxBackend {
         &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
     ) -> Result<Option<Vec<crate::backend::ExternalAttachments>>, String> {
-        // Finish pending D3D work before the device can give up its guest draws.
-        self.encode_pending()?;
+        // Encode any earlier guest pass. A committed native run can
+        // remain open until commit selects the next pass or attachments.
+        if self.pending.is_some() { self.encode_pending()?; }
         let sampled = surfaces.sampled.into_iter().map(Some).collect();
         let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
             return Ok(None);
@@ -1661,16 +1669,24 @@ impl Backend for GfxBackend {
         let stages = textures.map(|t| t.and_then(|t| t.view.clone()));
         if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
         Ok(Some(vec![crate::backend::ExternalAttachments {
+            targets: (surfaces.color, surfaces.depth),
             device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
             depth: dv, depth_format: df, size, sampled, slots, copy, stages,
         }]))
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
-        if let Some((enc, _)) = self.open.take() {
-            self.external_prefix.push(enc.finish());
+        match recording.commands {
+            crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } =>
+                self.append_native(recording.copy, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Standalone(commands) => {
+                self.finish_native_run();
+                if let Some((enc, _)) = self.open.take() {
+                    self.external_prefix.push(enc.finish());
+                }
+                self.external_prefix.push(commands);
+            }
         }
-        self.external_prefix.push(recording.commands);
     }
 
     fn supports_external_pass(&self) -> bool {
