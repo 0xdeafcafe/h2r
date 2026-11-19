@@ -642,11 +642,13 @@ fn fnv(text: &str) -> u64 {
 }
 
 /// Each scene's output for its first 12 ticks, as hashed by [`fnv`] over
-/// [`output_json`]: what a change to the guest-side path must keep.
+/// [`output_json`], before wire quantisation. The v6 scenes include
+/// projectiles, loose items, vehicle velocity and the units' circular-motion
+/// velocity. The event sequence and all other frame fields match v4.
 const GOLDEN: [(&str, u64); 3] = [
-    ("mp16", 0x5f87e00e72613693),
-    ("mp16_1000", 0xf840a9fe4aec3427),
-    ("campaign100", 0xd8a08e706180ce67),
+    ("mp16", 0xd8cd4b39c3770c88),
+    ("mp16_1000", 0x9e34bcf10b5d0aae),
+    ("campaign100", 0x9d817f75bf7767c2),
 ];
 
 #[test]
