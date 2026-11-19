@@ -136,6 +136,33 @@ fn read_all(fs: &mut Vfs, handle: Handle) -> Vec<u8> {
 }
 
 #[test]
+fn mounting_storage_repairs_an_emptied_save_meta() {
+    let temp = TempDir::new();
+    let units = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+    let dir = format!("{:012X}", save_meta::save_directory_hash(&units("Chief")));
+    let host = temp.0.join("disk/Partition1/UDATA/4D530064").join(&dir);
+    fs::create_dir_all(&host).unwrap();
+    // A process killed between the truncate and the write.
+    fs::write(host.join(save_meta::SAVE_META), b"").unwrap();
+    let mut payload = b"profile v1 ".to_vec();
+    payload.extend(units("Chief").iter().flat_map(|u| u.to_le_bytes()));
+    fs::write(host.join("profile"), &payload).unwrap();
+    let mut vfs = temp.storage();
+    let meta = vfs
+        .open(
+            &format!("U:\\{dir}\\SaveMeta.xbx"),
+            options(CreateDisposition::Open),
+        )
+        .unwrap()
+        .handle;
+    assert_eq!(
+        read_all(&mut vfs, meta),
+        save_meta::encode_save_meta(&units("Chief"))
+    );
+    vfs.close(meta).unwrap();
+}
+
+#[test]
 fn independent_closes_cannot_release_another_handles_reservation() {
     let temp = TempDir::new();
     let mut fs = Vfs::new();

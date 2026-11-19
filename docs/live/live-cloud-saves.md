@@ -165,6 +165,18 @@ The rules, as `crates/cloud-saves/src/merge.rs` applies them per item
    either side) takes every file of it that differs, and every losing file
    that had changed is kept as a conflict copy. A profile's files stay a
    set the game wrote together.
+6. **A damaged meta file never travels**: a `SaveMeta.xbx` or
+   `TitleMeta.xbx` that is not UTF-16LE with the `FF FE` mark and a
+   `Name=` line (`TitleName=` for the title's) is damaged. The game never
+   writes one; XCreateSaveGame truncates the file and then writes it, so a
+   process killed in between leaves it empty. A damaged one here counts as
+   unchanged since the base and takes no part in rule 5: the server's copy
+   is downloaded over it, and it is never uploaded or deleted on the
+   server (with no server copy it is left as it is). A damaged one
+   downloaded is not written; when this machine's copy is good, it is
+   uploaded in its place. Each is a line on stderr ("damaged meta files
+   skipped" in the summary). The VFS mends what is left when it mounts
+   (docs/runtime/xapi.md "Damaged save metadata").
 
 Two machines that never synced compare as if every item changed on both
 (rule 4 for any difference).

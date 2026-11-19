@@ -227,6 +227,28 @@ of profiles..."). So that dialog is error 4, not a count:
   content file OPEN_EXISTING, GENERIC_WRITE, share 0 (`0x136970`); failing
   that open leaves 4 too, and `0x1a051c` deletes the save.
 
+### Damaged save metadata
+
+XCreateSaveGame opens `SaveMeta.xbx` with FILE_OVERWRITE_IF and then
+writes it, so a process killed in between leaves it empty or torn. The
+scanner then skips the directory (the profile is not listed), and making
+the profile again finds the directory with no matching `Name`, which the
+game shows as error 4 (CAN'T CREATE PROFILE). A meta file is damaged when
+it is not UTF-16LE with the `FF FE` mark and a `Name=` line (`TitleName=`
+in `TitleMeta.xbx`); the game never writes one so.
+
+`vfs::Vfs::with_storage` mends U: before mounting it
+(`crates/vfs/src/save_meta.rs`): for each `<12 hex digits>` directory
+whose `SaveMeta.xbx` is present and damaged, it looks in the directory's
+other files (first 1 MiB of each) for a UTF-16LE or 8-bit run whose name
+hash (`003309b8`) is the directory's name. That is the save's own name,
+so the file is rewritten as the game would (`FEFF`, `Name=<name>` CR LF;
+a `NoCopy=1` line is not recovered). With no such run the directory moves
+to `<data root>/damaged-saves/<unix ms>-<dir>`, so the profile can be made
+again. Each repair is a `vfs:` line on stderr. Cloud saves never upload a
+damaged meta file nor write one downloaded
+(docs/live/live-cloud-saves.md, rule 6).
+
 `H2_SAVE_TRACE=1` prints every kernel file call on `U:` (open name,
 access, share, disposition, options, status, IOSB information, and the
 return addresses on the guest stack; calls on a handle opened there, reads

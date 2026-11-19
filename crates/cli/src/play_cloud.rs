@@ -87,13 +87,14 @@ mod tests {
         let [a, b, c] = ["a", "b", "c"].map(|m| dir.join(m));
         let u = cloud_saves::local::udata_dir;
         std::fs::create_dir_all(u(&a).join("0123456789AB")).unwrap();
-        std::fs::write(u(&a).join("0123456789AB/SaveMeta.xbx"), b"Name=Chief").unwrap();
+        let meta = vfs::save_meta::encode_save_meta(&"Chief".encode_utf16().collect::<Vec<_>>());
+        std::fs::write(u(&a).join("0123456789AB/SaveMeta.xbx"), &meta).unwrap();
         drop(start(&session, &a, &store(&a)).expect("cloud saves on"));
 
         let cloud = start(&session, &b, &store(&b)).unwrap();
         assert_eq!(
             std::fs::read(u(&b).join("0123456789AB/SaveMeta.xbx")).unwrap(),
-            b"Name=Chief"
+            meta
         );
         let config = vfs::Config::new(&b, 0x4D530064);
         let mut v = vfs::Vfs::with_storage(config.clone()).unwrap();
