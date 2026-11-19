@@ -19,6 +19,8 @@ fn run(native: bool) -> Trace {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
     d.set_native_residual(native);
     set_states(&mut d, &mut m);
+    d.set_vertex_shader(&mut m, gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE)
+        .unwrap();
     let dev = GuestLayout::HALO2.device;
     let depth = m.read_u32(dev + field::DEPTH_STENCIL).unwrap();
     let color = m.read_u32(dev + field::RENDER_TARGET).unwrap();

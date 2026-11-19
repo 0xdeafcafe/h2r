@@ -199,6 +199,8 @@ mod tests {
         let handle = crate::objects::tests::object(&mut mem, 5, 0xe000_0100, 1);
         draw(&mut mem, 4, 0, 29 << 9);
         crate::objects::tests::record(&mut mem, 4, Some(crate::objects::tests::lighting(5 + 7)));
+        // The object record helper writes its own key word; restore the section.
+        mem.w(RENDER_RECORDS + RENDER_RECORD_SIZE * 4 + 0xc, 29 << 9);
         assert_eq!(
             Geometry::read(&mem, STACK, 1).unwrap().owner,
             Owner::Object {

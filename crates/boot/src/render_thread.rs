@@ -39,6 +39,28 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
     (
+        "native-transparents",
+        "GAME_ACTIVATE",
+        "game activation runs on the game thread; the render never meets it",
+    ),
+    (
+        "native-post",
+        "COLOUR_PASS",
+        "off by default; the post call's draws are held until it returns, so the \
+         return hook decides commit or replay",
+    ),
+    (
+        "native-post",
+        "SCREEN_EFFECT",
+        "off by default; the post call's draws are held until it returns, so the \
+         return hook decides commit or replay",
+    ),
+    (
+        "native-decals",
+        "DECAL_RENDER",
+        "off by default; the decal scope opens at the callback and closes at its return",
+    ),
+    (
         "occlusion",
         "SCENE_TRANSPARENTS",
         "shares the chain with the native transparents' return observer when enabled",
