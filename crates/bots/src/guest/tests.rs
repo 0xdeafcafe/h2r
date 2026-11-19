@@ -1033,3 +1033,197 @@ fn a_long_gamertag_is_cut_to_fit_the_record() {
     assert_eq!(a[0x1b], 0);
     assert_eq!(guest_number(&a), 0);
 }
+
+// ---- the objective (section 3.7) ----
+
+mod objective_reads {
+    use super::*;
+    use crate::objective::{
+        DESIGNATOR_MASK, DESIGNATOR_TEAMS, ENGINE_INDEX, GAME_ENGINE, Game, Hill, Item,
+        KOTH_GLOBALS, KOTH_HILL, NETGAME_FLAGS, OBJECTIVE_COUNT, OBJECTIVES, Spot, kind,
+    };
+
+    const ENGINE: u32 = 0x0070_0000;
+    const SCN: u32 = 0x0071_0000;
+    const FLAGS: u32 = 0x0072_0000;
+    const KOTH: u32 = 0x0073_0000;
+
+    /// A human (0, red) and the bot on port 1 (1, red) at X 5, and a blue
+    /// enemy (2) at X 50; objects 3 and 4 are weapons at `at3` and `at4`.
+    fn ctf_game(at3: [f32; 3], at4: [f32; 3]) -> FakeGuest {
+        let mut g = game(
+            &[
+                (0, 0, 0, [0.0; 3], X, false),
+                (1, 1, 0, [5.0, 0.0, 0.0], X, false),
+                (-1, -1, 1, [50.0, 0.0, 0.0], X, false),
+            ],
+            true,
+            &[0, 1],
+        );
+        g.put_u32(OBJECTS_HEADER + dl::HIGH_WATER, 5);
+        for (i, at) in [(3u32, at3), (4, at4)] {
+            let h = OBJECTS_DATA + i * 0xc;
+            let body = BODIES + i * 0x400;
+            g.put_u16(h, 0xb000 + i as u16)
+                .put_u8(h + 3, objects::WEAPON)
+                .put_u32(h + 8, body);
+            g.map(body, 0x400);
+            for k in 0..3 {
+                g.put_f32(body + 0x64 + 4 * k, at[k as usize]);
+            }
+        }
+        g.put_u32(GAME_ENGINE, ENGINE).map(ENGINE, 0x1000);
+        g.put_u32(ENGINE + ENGINE_INDEX, 1);
+        // Designator 0 is blue's, 1 red's: the netgame flags' teams are
+        // designators, not teams.
+        g.put_u16(ENGINE + DESIGNATOR_MASK, 0b11)
+            .put_u16(ENGINE + DESIGNATOR_TEAMS, 1)
+            .put_u16(ENGINE + DESIGNATOR_TEAMS + 2, 0);
+        g.put_u32(points::SCENARIO.base, SCN).map(SCN, 0x200);
+        g
+    }
+
+    fn record(g: &mut FakeGuest, i: u32, object: u32, team: i16, unit: u32, player: u32) {
+        let r = ENGINE + OBJECTIVES + i * 0x10;
+        g.put_u32(r, object)
+            .put_u16(r + 4, team as u16)
+            .put_u32(r + 8, unit)
+            .put_u32(r + 0xc, player);
+    }
+
+    fn flags(g: &mut FakeGuest, fs: &[([f32; 3], u16, u16)]) {
+        g.put_u32(SCN + NETGAME_FLAGS, fs.len() as u32)
+            .put_u32(SCN + NETGAME_FLAGS + 4, FLAGS);
+        for (i, &(at, ty, team)) in (0u32..).zip(fs) {
+            let f = FLAGS + i * 0x20;
+            for k in 0..3 {
+                g.put_f32(f + 4 * k, at[k as usize]);
+            }
+            g.put_u16(f + 0x10, ty).put_u16(f + 0x12, team);
+        }
+    }
+
+    #[test]
+    fn ctf_flags_their_carriers_and_spawns_are_read() {
+        let mut g = ctf_game([1.0, 2.0, 3.0], [0.0; 3]);
+        g.put_u32(ENGINE + OBJECTIVE_COUNT, 2);
+        let red_flag = DatumHandle::new(0xb003, 3).raw();
+        let blue_flag = DatumHandle::new(0xb004, 4).raw();
+        // Red's lies at 1,2,3; blue's is carried by the enemy (player 2,
+        // unit 2): it is where they are.
+        record(&mut g, 0, red_flag, 0, u32::MAX, u32::MAX);
+        record(
+            &mut g,
+            1,
+            blue_flag,
+            1,
+            DatumHandle::new(0xb002, 2).raw(),
+            DatumHandle::new(0xe002, 2).raw(),
+        );
+        flags(
+            &mut g,
+            &[
+                ([10.0, 0.0, 0.0], kind::CTF_SPAWN, 0),
+                ([-10.0, 0.0, 0.0], kind::CTF_SPAWN, 1),
+                ([-9.0, 1.0, 0.0], kind::CTF_RETURN, 1),
+                ([0.0, 0.0, 0.0], 7, 0),
+            ],
+        );
+        let p = perceive(&g, 1).unwrap();
+        let o = p.objective.expect("an objective");
+        assert_eq!((o.game, o.me), (Game::Ctf, 1));
+        assert_eq!(
+            o.items,
+            vec![
+                Item {
+                    id: red_flag,
+                    team: 0,
+                    position: [1.0, 2.0, 3.0],
+                    carrier: None,
+                },
+                Item {
+                    id: blue_flag,
+                    team: 1,
+                    position: [50.0, 0.0, 0.0],
+                    carrier: Some(2),
+                },
+            ]
+        );
+        assert_eq!(
+            o.spots,
+            vec![
+                Spot {
+                    kind: kind::CTF_SPAWN,
+                    team: Some(1),
+                    position: [10.0, 0.0, 0.0],
+                },
+                Spot {
+                    kind: kind::CTF_SPAWN,
+                    team: Some(0),
+                    position: [-10.0, 0.0, 0.0],
+                },
+                Spot {
+                    kind: kind::CTF_RETURN,
+                    team: Some(0),
+                    position: [-9.0, 1.0, 0.0],
+                },
+            ],
+            "the teleporter is not a spot"
+        );
+        // With no designator bound the designator is the team.
+        g.put_u16(ENGINE + DESIGNATOR_MASK, 0);
+        let o = perceive(&g, 1).unwrap().objective.unwrap();
+        assert_eq!(o.spots[0].team, Some(0));
+    }
+
+    #[test]
+    fn slayer_or_a_fault_reads_no_objective_and_the_bot_still_sees() {
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        g.put_u32(ENGINE + ENGINE_INDEX, 2);
+        let p = perceive(&g, 1).unwrap();
+        assert!(p.me.is_some());
+        assert_eq!(p.objective, None, "Slayer");
+        // A record pointing at unmapped memory: no objective, not blind.
+        g.put_u32(ENGINE + ENGINE_INDEX, 1)
+            .put_u32(ENGINE + OBJECTIVE_COUNT, 1);
+        g.put_u32(points::SCENARIO.base, 0x0dea_d000);
+        let p = perceive(&g, 1).unwrap();
+        assert!(p.me.is_some());
+        assert_eq!(p.objective, None);
+        // No engine globals at all.
+        g.put_u32(GAME_ENGINE, 0);
+        assert_eq!(perceive(&g, 1).unwrap().objective, None);
+    }
+
+    #[test]
+    fn koth_reads_the_hill_in_play_from_its_corners() {
+        let mut g = ctf_game([0.0; 3], [0.0; 3]);
+        g.put_u32(ENGINE + ENGINE_INDEX, 4);
+        flags(
+            &mut g,
+            &[
+                ([0.0, 0.0, 0.0], kind::HILL, 8),
+                ([4.0, 0.0, 0.0], kind::HILL, 8),
+                ([20.0, 0.0, 1.0], kind::HILL + 1, 8),
+                ([24.0, 4.0, 1.0], kind::HILL + 1, 8),
+                ([20.0, 4.0, 1.0], kind::HILL + 1, 8),
+                ([24.0, 0.0, 1.0], kind::HILL + 1, 8),
+            ],
+        );
+        g.put_u32(KOTH_GLOBALS, KOTH).map(KOTH, 0x200);
+        g.put_u32(KOTH + KOTH_HILL, 1);
+        let o = perceive(&g, 1).unwrap().objective.unwrap();
+        assert_eq!(o.game, Game::Koth);
+        assert!(o.spots.is_empty());
+        let h: Hill = o.hill.expect("a hill");
+        assert_eq!(h.corners.len(), 4);
+        assert_eq!(h.center(), [22.0, 2.0, 1.0]);
+        // The hill moves.
+        g.put_u32(KOTH + KOTH_HILL, 0);
+        let h = perceive(&g, 1).unwrap().objective.unwrap().hill.unwrap();
+        assert_eq!(h.center(), [2.0, 0.0, 0.0]);
+        // Out of range: no hill.
+        g.put_u32(KOTH + KOTH_HILL, 9);
+        assert_eq!(perceive(&g, 1).unwrap().objective.unwrap().hill, None);
+    }
+}

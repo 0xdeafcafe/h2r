@@ -34,6 +34,7 @@ fn look(
             teams: false,
             tick,
             pickups: vec![],
+            objective: None,
         },
         map,
     )
@@ -111,6 +112,7 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
         teams: false,
         tick: 0,
         pickups: vec![],
+        objective: None,
     };
     assert_eq!(
         Mind::visible(&p(X, [8.0, 0.0, 0.0]), Some(&map)).len(),
@@ -224,6 +226,7 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
         teams: false,
         tick: 0,
         pickups: vec![],
+        objective: None,
     };
     let pad = m.step(&p, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
@@ -246,6 +249,7 @@ fn a_teammate_is_never_a_target() {
         teams: true,
         tick: 0,
         pickups: vec![],
+        objective: None,
     };
     for t in 0..20 {
         let pad = m.step(
@@ -331,6 +335,7 @@ fn with(
             teams: false,
             tick,
             pickups,
+            objective: None,
         },
         None,
     )
@@ -496,6 +501,7 @@ fn shields_down_it_backs_off_instead_of_chasing() {
         teams: false,
         tick,
         pickups: vec![],
+        objective: None,
     };
     m.step(&p(1.0, vec![enemy(1, [6.0, 0.0, 0.0])], 0), None);
     let pad = m.step(&p(0.1, vec![], 5), None);
@@ -563,6 +569,7 @@ fn a_bot_that_gets_free_walks_on() {
             teams: false,
             tick: w + 3,
             pickups: vec![],
+            objective: None,
         },
         None,
     );
@@ -630,4 +637,290 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
     );
     // North first.
     assert!(wp.face[1] > wp.face[0].abs(), "{wp:?}");
+}
+
+// ---- objectives (section 3.7) ----
+
+use crate::objective::{Game, Item, Objective, Spot, kind};
+
+const HOME: Vec3 = [2.0, 5.0, 0.0];
+
+/// CTF with our (red, team 0) flag spawn at [`HOME`] and the blue flag
+/// carried by `carrier`.
+fn carrying(carrier: Option<u32>, at: Vec3) -> Objective {
+    Objective {
+        game: Game::Ctf,
+        me: 1,
+        items: vec![Item {
+            id: 0xe000_0101,
+            team: 1,
+            position: at,
+            carrier,
+        }],
+        spots: vec![Spot {
+            kind: kind::CTF_SPAWN,
+            team: Some(0),
+            position: HOME,
+        }],
+        hill: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn play(
+    m: &mut Mind,
+    at: Vec3,
+    aim: Vec3,
+    me: Me,
+    others: Vec<Seen>,
+    objective: Objective,
+    tick: u32,
+    map: Option<&MapData>,
+) -> HostPadState {
+    m.step(
+        &Perception {
+            me: Some(Me {
+                position: at,
+                aim,
+                ..me
+            }),
+            others,
+            teams: true,
+            tick,
+            pickups: vec![],
+            objective: Some(objective),
+        },
+        map,
+    )
+}
+
+#[test]
+fn the_flag_carrier_walks_home_along_the_nav_mesh() {
+    let map = MapData {
+        nav: floor(),
+        walls: Walls::default(),
+    };
+    let mut m = Mind::new(Skill::Normal, 7);
+    let (mut at, mut yaw) = ([18.0f32, 5.0, 0.0], 0.0f32);
+    let mut reached = None;
+    for t in 0..900 {
+        let aim = [yaw.cos(), yaw.sin(), 0.0];
+        let pad = play(
+            &mut m,
+            at,
+            aim,
+            Me::default(),
+            vec![],
+            carrying(Some(1), at),
+            t,
+            Some(&map),
+        );
+        assert_eq!(m.doing, Doing::Carry(HOME), "tick {t}");
+        // Never a switch (it drops the flag) or a shot.
+        assert!(!pad.buttons.contains(SWITCH), "tick {t}");
+        assert_eq!(pad.right_trigger, 0.0);
+        // The game's turning and walking, roughly.
+        yaw -= pad.right_stick.0 * 0.15;
+        let (c, s) = (yaw.cos(), yaw.sin());
+        let (right, fwd) = pad.left_stick;
+        at[0] += 0.15 * (fwd * c + right * s);
+        at[1] += 0.15 * (fwd * s - right * c);
+        if dist_xy(at, HOME) < 0.5 {
+            reached = Some(t);
+            break;
+        }
+    }
+    assert!(reached.is_some(), "stopped at {at:?}");
+}
+
+#[test]
+fn a_carrier_does_not_back_off_rearm_or_switch_and_melees_who_blocks_it() {
+    // Dry arms (the flag in hand reads as not a gun), shields popped and
+    // an enemy at arm's length: still home, meleeing.
+    let me = Me {
+        shield: 0.05,
+        arms: Some(armed(Ammo::None, Some(rounds(30, 60)))),
+        ..Me::default()
+    };
+    let enemy = Seen {
+        id: 5,
+        position: [9.0, 5.0, 0.0],
+        team: 1,
+    };
+    let mut m = Mind::new(Skill::Legendary, 3);
+    let mut melee = false;
+    for t in 0..40 {
+        let at = [10.0, 5.0, 0.0];
+        let pad = play(
+            &mut m,
+            at,
+            [-1.0, 0.0, 0.0],
+            me,
+            vec![enemy],
+            carrying(Some(1), at),
+            t,
+            None,
+        );
+        assert_eq!(m.doing, Doing::Carry(HOME), "tick {t}");
+        assert!(!pad.buttons.contains(SWITCH) && !pad.buttons.contains(RELOAD));
+        assert_eq!(pad.right_trigger, 0.0);
+        melee |= pad.buttons.contains(MELEE);
+    }
+    assert!(melee, "the blocker gets the flag");
+    assert_eq!(m.kit, Kit::Fine);
+}
+
+#[test]
+fn without_the_flag_a_dry_bot_still_rearms_first() {
+    // The priorities hold for everyone but the carrier.
+    let me = Me {
+        arms: Some(armed(Ammo::None, None)),
+        ..Me::default()
+    };
+    let gun = Pickup {
+        id: 9,
+        position: [5.0, 5.0, 0.0],
+        gun: Gun {
+            def: PISTOL,
+            ammo: rounds(10, 10),
+        },
+    };
+    let mut m = Mind::new(Skill::Normal, 3);
+    m.step(
+        &Perception {
+            me: Some(Me {
+                position: [10.0, 5.0, 0.0],
+                ..me
+            }),
+            others: vec![],
+            teams: true,
+            tick: 0,
+            pickups: vec![gun],
+            objective: Some(carrying(None, [40.0, 5.0, 0.0])),
+        },
+        None,
+    );
+    assert_eq!(m.doing, Doing::Rearm([5.0, 5.0, 0.0]));
+}
+
+#[test]
+fn the_objective_comes_before_chasing_and_roaming() {
+    let mut m = Mind::new(Skill::Normal, 3);
+    // Their flag lies at 40: alone, it attacks.
+    play(
+        &mut m,
+        [10.0, 5.0, 0.0],
+        X,
+        Me::default(),
+        vec![],
+        carrying(None, [40.0, 5.0, 0.0]),
+        0,
+        None,
+    );
+    assert_eq!(m.doing, Doing::Play(Goal::Go([40.0, 5.0, 0.0])));
+}
+
+#[test]
+fn the_ball_carrier_runs_from_the_nearest_enemy() {
+    let mut m = Mind::new(Skill::Normal, 3);
+    let ball = Objective {
+        game: Game::Oddball,
+        me: 1,
+        items: vec![Item {
+            id: 0xe000_0200,
+            team: 0,
+            position: [0.0; 3],
+            carrier: Some(1),
+        }],
+        spots: vec![],
+        hill: None,
+    };
+    let enemy = Seen {
+        id: 5,
+        position: [6.0, 0.0, 0.0],
+        team: 1,
+    };
+    // Facing +X, the enemy ahead: it walks back (-X), not at them.
+    let pad = play(
+        &mut m,
+        [0.0; 3],
+        X,
+        Me::default(),
+        vec![enemy],
+        ball.clone(),
+        0,
+        None,
+    );
+    assert_eq!(m.doing, Doing::Keep);
+    assert!(pad.left_stick.1 < -0.5, "{pad:?}");
+    assert_eq!(pad.right_trigger, 0.0);
+    // Close up: melee with the ball.
+    let mut melee = false;
+    for t in 1..30 {
+        let near = Seen {
+            position: [0.8, 0.0, 0.0],
+            ..enemy
+        };
+        let pad = play(
+            &mut m,
+            [0.0; 3],
+            X,
+            Me::default(),
+            vec![near],
+            ball.clone(),
+            t,
+            None,
+        );
+        melee |= pad.buttons.contains(MELEE);
+    }
+    assert!(melee);
+}
+
+#[test]
+fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
+    let hill = |c: Vec3| Objective {
+        game: Game::Koth,
+        me: 1,
+        items: vec![],
+        spots: vec![],
+        hill: Some(crate::objective::Hill {
+            corners: vec![
+                [c[0] - 3.0, c[1] - 3.0, 0.0],
+                [c[0] + 3.0, c[1] - 3.0, 0.0],
+                [c[0] + 3.0, c[1] + 3.0, 0.0],
+                [c[0] - 3.0, c[1] + 3.0, 0.0],
+            ],
+        }),
+    };
+    let mut m = Mind::new(Skill::Normal, 3);
+    // In it, near its centre: holds, standing.
+    let pad = play(
+        &mut m,
+        [10.5, 10.0, 0.0],
+        X,
+        Me::default(),
+        vec![],
+        hill([10.0, 10.0, 0.0]),
+        0,
+        None,
+    );
+    assert!(
+        matches!(m.doing, Doing::Play(Goal::Hold(..))),
+        "{:?}",
+        m.doing
+    );
+    assert_eq!(pad.left_stick, (0.0, 0.0));
+    // The hill moves behind it: it turns back for it.
+    let pad = play(
+        &mut m,
+        [10.5, 10.0, 0.0],
+        X,
+        Me::default(),
+        vec![],
+        hill([-20.0, 10.0, 0.0]),
+        1,
+        None,
+    );
+    assert_eq!(m.doing, Doing::Play(Goal::Go([-20.0, 10.0, 0.0])));
+    assert!(pad.right_stick.0.abs() > 0.5, "turning: {pad:?}");
 }

@@ -260,7 +260,7 @@ impl LitObjects {
                 continue;
             }
             // Checked at load: every sampled stage has its image.
-            let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new() });
+            let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
             bias_signed(&mut image, p.signed[n]);
             views.push((n, texture(device, queue, &image, "native object program stage")));
         }
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn a_uniform_image_is_one_texel_everywhere() {
-        let grey = Image { width: 2, height: 1, rgba: vec![9, 9, 9, 255, 9, 9, 9, 255], mips: vec![vec![9, 9, 9, 255]] };
+        let grey = Image { width: 2, height: 1, rgba: vec![9, 9, 9, 255, 9, 9, 9, 255], mips: vec![vec![9, 9, 9, 255]], blocks: None };
         assert!(uniform(&grey));
         let mut mip = grey.clone();
         mip.mips[0][0] = 10;
@@ -768,7 +768,7 @@ mod tests {
         let mut texel = grey.clone();
         texel.rgba[4] = 0;
         assert!(!uniform(&texel));
-        assert!(!uniform(&Image { width: 0, height: 0, rgba: Vec::new(), mips: Vec::new() }));
+        assert!(!uniform(&Image { width: 0, height: 0, rgba: Vec::new(), mips: Vec::new(), blocks: None }));
     }
 
     #[test]
@@ -804,7 +804,7 @@ mod tests {
         // v1 reads semantic 7: the lightmap coordinates the draw adds.
         let mut vertex = |_: map::TagId, _: u16, _: u8| Ok::<_, String>((rigid_program(), vec![0u16, 7, 2]));
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let grey = Image { width: 1, height: 1, rgba: vec![128, 128, 128, 255], mips: Vec::new() };
+        let grey = Image { width: 1, height: 1, rgba: vec![128, 128, 128, 255], mips: Vec::new(), blocks: None };
         let without = lit_model(&[section.clone()], &materials, &formats(), &EngineStages::default(), &mut vertex, &mut image);
         assert!(without.taken.is_empty());
         assert!(without.refused[0].1.contains("samples the lightmap"), "{:?}", without.refused);

@@ -304,6 +304,48 @@ pub fn decode_bytes(desc: &TextureDesc, data: &[u8]) -> Result<Vec<Level>> {
 /// Only the layout's bytes are read (the tag's declared size is checked
 /// against the layout and the file, not allocated).
 pub fn decode_image(image: &Image, files: &mut ResourceFiles) -> Result<DecodedImage> {
+    let (desc, lod, data, declared, layout_len) = read_image(image, files)?;
+    let levels = decode_bytes(&desc, &data)?;
+    Ok(DecodedImage { desc, lod, levels, data_len: declared, layout_len })
+}
+
+/// A DXT image's levels as BC blocks, as the D3D path uploads them when
+/// the host takes BC textures (`gfx::texture::decode_texture` with
+/// `bc_supported`): the GPU then decodes them, which rounds the
+/// interpolated colours otherwise than the CPU decoder (`gfx::dxt`).
+#[derive(Clone, Debug)]
+pub struct BlockLevels {
+    /// `Bc1RgbaUnorm`, `Bc2RgbaUnorm` or `Bc3RgbaUnorm`.
+    pub host: HostFormat,
+    /// Levels as [`DecodedImage::levels`], `rgba` holding the level's
+    /// blocks (rows of blocks, tight).
+    pub levels: Vec<Level>,
+}
+
+/// [`decode_image`], and the image's BC blocks when the D3D path would
+/// upload it as BC on a host that takes them: a DXT format, 2D or cube,
+/// its base size a multiple of 4 (`decode_texture`'s rule; signed
+/// channels, which also force the CPU path, are the caller's to check).
+pub fn decode_image_blocks(image: &Image, files: &mut ResourceFiles) -> Result<(DecodedImage, Option<BlockLevels>)> {
+    let (desc, lod, data, declared, layout_len) = read_image(image, files)?;
+    let levels = decode_bytes(&desc, &data)?;
+    let blocks = decode_texture(&desc, &data, None, DecodeOptions { bc_supported: true, ..Default::default() })
+        .ok()
+        .filter(|d| d.host.is_compressed())
+        .map(|d| BlockLevels {
+            host: d.host,
+            levels: d
+                .levels
+                .into_iter()
+                .map(|l| Level { face: l.face, level: l.level, width: l.width, height: l.height, depth: l.depth, rgba: l.data })
+                .collect(),
+        });
+    Ok((DecodedImage { desc, lod, levels, data_len: declared, layout_len }, blocks))
+}
+
+/// The first present LOD's descriptor, index and layout bytes, with its
+/// declared size and the layout's.
+fn read_image(image: &Image, files: &mut ResourceFiles) -> Result<(TextureDesc, u32, Vec<u8>, usize, usize)> {
     let (lod, range) = image
         .lods
         .iter()
@@ -329,8 +371,7 @@ pub fn decode_image(image: &Image, files: &mut ResourceFiles) -> Result<DecodedI
         }));
     }
     let data = files.read(range.pointer.file, range.pointer.offset, layout_len as u32)?;
-    let levels = decode_bytes(&desc, &data)?;
-    Ok(DecodedImage { desc, lod, levels, data_len: declared, layout_len })
+    Ok((desc, lod, data, declared, layout_len))
 }
 
 #[cfg(test)]

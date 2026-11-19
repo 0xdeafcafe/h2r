@@ -13,6 +13,7 @@ use crate::arms::{self, Kit, Situation};
 use crate::brain::{Perception, Seen, Vec3};
 use crate::cache::MapData;
 use crate::nav::Follower;
+use crate::objective::{self, Goal};
 use crate::stuck::{Stuck, around_bodies};
 
 /// How good a bot is (docs/game/bots.md, section 3.4).
@@ -140,6 +141,10 @@ pub const TAKE_TICKS: u32 = 30;
 pub const CLUSTER: f32 = 2.5;
 /// Lobs one where an enemy went out of view this recently.
 pub const COVER_GRENADE_TICKS: u32 = 60;
+/// An escort keeps this far from the carrier.
+pub const ESCORT_RANGE: f32 = 3.0;
+/// A ball carrier runs from enemies within this...
+pub const KEEP_AWAY: f32 = 15.0;
 /// Halo 2's default layout: X reloads (held, picks up), Y switches
 /// weapons, B melees, A jumps.
 pub const RELOAD: HostButton = HostButton::West;
@@ -158,6 +163,13 @@ pub enum Doing {
     Rearm(Vec3),
     /// Shields down: backing away from where the enemy was, facing it.
     Recover(Vec3),
+    /// Carrying the flag or bomb there (section 3.7): before everything.
+    Carry(Vec3),
+    /// Carrying the ball: away from the enemy, meleeing who comes close.
+    Keep,
+    /// Playing the objective: taking, returning, guarding, hunting the
+    /// carrier, escorting, holding the hill.
+    Play(Goal),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -426,6 +438,17 @@ impl Mind {
             }
             None => Kit::Fine,
         };
+        // The objective (section 3.7). Carrying, nothing else counts: no
+        // reload or switch (a switch drops the flag, the ball or the bomb),
+        // no detour for a gun.
+        let goal = p
+            .objective
+            .as_ref()
+            .and_then(|o| objective::plan(o, &me, &p.others, p.teams));
+        let carrying = matches!(goal, Some(Goal::Carry(_) | Goal::Keep));
+        if carrying {
+            self.kit = Kit::Fine;
+        }
         // Shields: down under LOW_SHIELD, up again at SHIELD_BACK.
         if me.shield < LOW_SHIELD {
             self.recovering = true;
@@ -433,12 +456,15 @@ impl Mind {
             self.recovering = false;
         }
 
-        self.doing = match (chosen, self.last_seen, self.kit) {
-            (_, _, Kit::Seek(pk)) => Doing::Rearm(pk.position),
-            (Some((o, _)), _, _) => Doing::Fight(o.id),
-            (None, Some((_, at, _)), _) if self.recovering => Doing::Recover(at),
-            (None, Some((_, at, _)), _) => Doing::Chase(at),
-            (None, None, _) => Doing::Roam,
+        self.doing = match (chosen, self.last_seen, self.kit, goal) {
+            (_, _, _, Some(Goal::Carry(at))) => Doing::Carry(at),
+            (_, _, _, Some(Goal::Keep)) => Doing::Keep,
+            (_, _, Kit::Seek(pk), _) => Doing::Rearm(pk.position),
+            (Some((o, _)), _, _, _) => Doing::Fight(o.id),
+            (None, Some((_, at, _)), _, _) if self.recovering => Doing::Recover(at),
+            (None, _, _, Some(g)) => Doing::Play(g),
+            (None, Some((_, at, _)), _, None) => Doing::Chase(at),
+            (None, None, _, None) => Doing::Roam,
         };
         if !matches!(self.doing, Doing::Rearm(_)) {
             self.take = None;
@@ -644,6 +670,66 @@ impl Mind {
                     }
                 }
             }
+            Doing::Carry(home) => {
+                // Home along the nav mesh. It cannot shoot with the flag;
+                // whoever is in its way at arm's length gets the flag.
+                walk = self.go(me.position, home, p.tick, map, &mut pad, &bodies);
+                if let Some((o, t0)) = chosen
+                    && len(sub(up(o.position, CHEST), eye)) < MELEE_RANGE * 1.3
+                    && p.tick.wrapping_sub(t0) >= aim.reaction
+                {
+                    look = Some(up(o.position, CHEST));
+                    if p.tick % 20 < 2 {
+                        pad.buttons.set(MELEE, true);
+                    }
+                }
+            }
+            Doing::Keep => {
+                // Away from the nearest enemy it knows of; one close up is
+                // meleed with the ball.
+                let near = p
+                    .others
+                    .iter()
+                    .filter(|o| !p.teams || o.team != me.team)
+                    .map(|o| (o.position, dist_xy(o.position, me.position)))
+                    .filter(|(_, d)| *d < KEEP_AWAY)
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                self.follower = None;
+                if let Some((at, d)) = near {
+                    if d < MELEE_RANGE * 1.3 {
+                        look = Some(up(at, CHEST));
+                        if p.tick % 20 < 2 {
+                            pad.buttons.set(MELEE, true);
+                        }
+                        let to = sub(at, me.position);
+                        let f = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
+                        walk = Some(Walk::straight([to[0] / f, to[1] / f]));
+                    } else {
+                        walk = self.away(me.position, at, map, &bodies);
+                    }
+                }
+            }
+            Doing::Play(g) => {
+                let (to, near_enough) = match g {
+                    Goal::Go(at) | Goal::Hunt(_, at) => (at, 0.0),
+                    Goal::Escort(at) => (at, ESCORT_RANGE),
+                    Goal::Hold(at, r) => (at, r),
+                    Goal::Carry(at) => (at, 0.0),
+                    Goal::Keep => (me.position, 0.0),
+                };
+                if dist_xy(me.position, to) > near_enough {
+                    walk = self.go(me.position, to, p.tick, map, &mut pad, &bodies);
+                    if self.gave_up {
+                        self.follower = None;
+                    }
+                } else {
+                    // There: stand, facing where the enemy was last seen.
+                    self.follower = None;
+                    if let Some((_, at, _)) = self.last_seen {
+                        look = Some(up(at, CHEST));
+                    }
+                }
+            }
             Doing::Idle => {}
         }
         if !self.navigated {
@@ -695,10 +781,11 @@ impl Mind {
             pad.left_stick = (right * k, fwd * k);
         }
         // An emote over a dumb death: stand, crouch in rhythm, nothing
-        // else. No objective is live until stage 5.
+        // else. Never while an objective is live for it: carrying,
+        // guarding, hunting a carrier, in or going to the hill.
         if let Some(crouch) = self
             .emote
-            .step(me.position, !seen.is_empty(), false, p.tick)
+            .step(me.position, !seen.is_empty(), goal.is_some(), p.tick)
         {
             pad = HostPadState::default();
             pad.buttons.set(CROUCH, crouch);
@@ -773,6 +860,26 @@ impl Mind {
             walk: around_bodies(at, u.dir.unwrap_or(dir), bodies),
             face: dir,
         })
+    }
+
+    /// A step away from `from` on the nav mesh (straight back, else to one
+    /// side or the other), around bodies.
+    fn away(&self, at: Vec3, from: Vec3, map: Option<&MapData>, bodies: &[Vec3]) -> Option<Walk> {
+        let a = sub(at, from);
+        let flat = (a[0] * a[0] + a[1] * a[1]).sqrt().max(1e-6);
+        let d = [a[0] / flat, a[1] / flat];
+        let on_mesh = |d: [f32; 2]| {
+            map.is_none_or(|m| {
+                m.nav
+                    .locate(add(at, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
+                    .is_some()
+            })
+        };
+        let side = [-d[1], d[0]];
+        [d, side, [-side[0], -side[1]]]
+            .into_iter()
+            .find(|&d| on_mesh(d))
+            .map(|d| Walk::straight(around_bodies(at, d, bodies)))
     }
 
     /// Somewhere to wander to: the farthest of three polygons picked at

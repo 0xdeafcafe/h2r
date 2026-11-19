@@ -19,6 +19,7 @@ pub mod local;
 pub mod los;
 pub mod mind;
 pub mod nav;
+pub mod objective;
 pub mod phantom;
 pub mod stuck;
 
