@@ -33,6 +33,8 @@ pub(crate) struct Recording {
     pub(crate) retry_at: i64,
     pub published: bool,
     pub rolled_back: bool,
+    /// A recording with any player pin is exempt from archive pruning.
+    pub saved_by: usize,
     pub parts: Arc<Vec<job::Part>>,
 }
 
@@ -110,6 +112,7 @@ struct InventoryItem<'a> {
     ended: bool,
     state: &'static str,
     source_position: u64,
+    pinned: bool,
     chunks: u64,
     legacy_frames: u64,
     archive_sha256: Option<String>,
@@ -127,6 +130,7 @@ fn inventory_item(game: &Game) -> InventoryItem<'_> {
         ended,
         state,
         source_position: r.position,
+        pinned: r.saved_by > 0,
         chunks: r.chunks,
         legacy_frames: r.legacy_frames,
         archive_sha256: p.archive_sha256,

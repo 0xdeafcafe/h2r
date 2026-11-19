@@ -88,6 +88,8 @@ pub struct Game {
     // dh-identity: preserve evidence even after an unidentified seat leaves.
     pub(crate) all_players_identified: bool,
     pub(crate) ended_by_host: bool,
+    /// The last team of each account that left, for its film result.
+    pub(crate) departed_teams: HashMap<Xuid, i32>,
     pub scoreboard: Vec<PlayerScore>,
     pub teams: Option<Vec<TeamScore>>,
     pub kills: VecDeque<KillRecord>,
@@ -214,6 +216,7 @@ pub struct State {
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
+    pub(crate) films: crate::films::Films,
     pub outlines: HashMap<String, Outline>,
     /// For each `SignedIn`/`PresenceChanged` event (by log position) set
     /// while its player was in a friends-only or invite-only session: those
@@ -451,6 +454,7 @@ impl Model {
                 all_players_identified: players.iter().all(|p| p.xuid.is_some()),
                 ended_by_host: false,
                 xuids,
+                departed_teams: HashMap::new(),
                 coop,
                 players,
                 started,
@@ -498,6 +502,11 @@ impl Model {
                 let Some(d) = data::<game::PlayerLeft>(e) else {
                     return;
                 };
+                if let Some(player) = g.players.iter().find(|p| p.index == d.index)
+                    && let Some(xuid) = player.xuid
+                {
+                    g.departed_teams.insert(xuid, player.team);
+                }
                 g.players.retain(|p| p.index != d.index);
             }
             game::PLAYER_KILLED => {
@@ -584,6 +593,10 @@ impl Model {
         }
         if b.stream.starts_with("game-") {
             Self::apply_game(&mut s, e, at);
+            return;
+        }
+        if b.stream == crate::films::STREAM {
+            crate::films::project(&mut s, e);
             return;
         }
         if live_proto::team::Action::is_kind(&b.kind) {

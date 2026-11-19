@@ -97,7 +97,7 @@ fn jws_body(body: Result<Bytes, BytesRejection>) -> ApiResult<String> {
     Ok(text.trim().to_string())
 }
 
-fn body_bytes(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
+pub(crate) fn body_bytes(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
     body.map_err(|e| match e.status() {
         StatusCode::PAYLOAD_TOO_LARGE => {
             ApiError::new(ErrorCode::TooLarge, "request body too large")
@@ -111,15 +111,15 @@ fn gamertag(raw: &str) -> ApiResult<Gamertag> {
 }
 
 /// `?limit=` and `?cursor=` (or `?from=`, its alias on the log).
-struct Paging {
-    after: u64,
-    limit: usize,
+pub(crate) struct Paging {
+    pub(crate) after: u64,
+    pub(crate) limit: usize,
 }
 
 /// The most events one `GET /v1/events` page holds.
 pub const EVENTS_MAX_LIMIT: usize = 200;
 
-fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
+pub(crate) fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
     let num = |k: &str| -> ApiResult<Option<u64>> {
         p.get(k)
             .filter(|v| !v.is_empty())
@@ -381,6 +381,19 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/snapshot", get(snapshot))
+        .route("/v1/films", get(crate::films::list))
+        .route(
+            "/v1/films/{game}/save",
+            post(crate::films::save).delete(crate::films::unsave),
+        )
+        .route(
+            "/v1/films/{game}/clips",
+            get(crate::films::game_clips).post(crate::films::create_clip),
+        )
+        .route(
+            "/v1/clips/{id}",
+            get(crate::films::get_clip).delete(crate::films::delete_clip),
+        )
         .route("/v1/games", get(list_games).post(start_game))
         .route("/v1/games/bots/{xuid}", get(crate::bots::player_card))
         .route("/v1/games/bots", post(crate::bots::post_roster))
@@ -1156,7 +1169,7 @@ async fn start_game(
     Ok(json(StatusCode::CREATED, &created))
 }
 
-fn game_id(id: &str) -> ApiResult<&str> {
+pub(crate) fn game_id(id: &str) -> ApiResult<&str> {
     if live_proto::game::valid_id(id) {
         Ok(id)
     } else {

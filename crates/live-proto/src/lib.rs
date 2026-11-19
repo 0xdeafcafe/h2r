@@ -321,6 +321,8 @@ pub mod lxm {
     pub const EVENTS_WRITE: &str = "events.write";
     /// Game events, `POST /v1/games`, the ingest socket, map outlines.
     pub const GAMES_WRITE: &str = "games.write";
+    /// Saving films and creating or deleting Theater clips.
+    pub const FILMS_WRITE: &str = "films.write";
     pub const SESSIONS_WRITE: &str = "sessions.write";
     /// The co-op relay socket of a session the token's account is in.
     pub const SESSIONS_RELAY: &str = "sessions.relay";

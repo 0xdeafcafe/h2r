@@ -172,6 +172,7 @@ pub struct Live {
     pub(crate) packed: crate::packed::Hub,
     pub(crate) ingest: crate::games::IngestState,
     pub(crate) archive_work: tokio::sync::Mutex<()>,
+    pub(crate) film_writes: tokio::sync::Mutex<()>,
     jtis: ReplayGuard,
     writes: RateLimiter,
     pub(crate) reads: RateLimiter,
@@ -268,6 +269,8 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
     }
     if stream == live_proto::hosts::STREAM
         || live_proto::hosts::KINDS.contains(&kind)
+        || stream == crate::films::STREAM
+        || crate::films::KINDS.contains(&kind)
         || stream.starts_with("session-")
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
@@ -567,6 +570,7 @@ impl Live {
             packed: Default::default(),
             ingest: Default::default(),
             archive_work: Default::default(),
+            film_writes: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             reads: RateLimiter::new(policy.read_rate.0, policy.read_rate.1),

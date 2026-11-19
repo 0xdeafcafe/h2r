@@ -198,6 +198,7 @@ fn stats_page<'a>(s: &'a [&'a str]) -> Option<&'a [&'a str]> {
 pub enum Subject {
     Player(String),
     Game(String),
+    Clip { game: String, id: String },
     Clan(String),
 }
 
@@ -215,8 +216,12 @@ pub fn subject(path: &str) -> Option<Subject> {
             _ => None,
         };
     }
-    // The oldest links, which the app redirects into the stats site.
     match s.as_slice() {
+        ["theater", game, "clip", id] => Some(Subject::Clip {
+            game: game.to_string(),
+            id: id.to_string(),
+        }),
+        // The oldest links, which the app redirects into the stats site.
         ["players", tag, ..] => Some(Subject::Player(tag.to_string())),
         ["games", id, ..] => Some(Subject::Game(id.to_string())),
         ["dash", "clans", id, ..] => Some(Subject::Clan(id.to_string())),
@@ -317,6 +322,9 @@ pub fn describe(live: &Live, path: &str) -> PageMeta {
     match subject(path) {
         Some(Subject::Player(tag)) => base = player(live, &tag).unwrap_or(base),
         Some(Subject::Game(id)) => base = game(live, &id).unwrap_or(base),
+        Some(Subject::Clip { game, id }) => {
+            base = theater_clip(live, &game, &id).unwrap_or(base);
+        }
         Some(Subject::Clan(id)) => base = clan(live, &id, base.side).unwrap_or(base),
         None => {}
     }
@@ -498,6 +506,25 @@ fn game(live: &Live, id: &str) -> Option<PageMeta> {
     Some(PageMeta {
         page: Some(page),
         description: format!("{}.", parts.join(" · ")),
+        side: Side::Stats,
+        kind: website(),
+        header: None,
+    })
+}
+
+fn theater_clip(live: &Live, game_id: &str, clip_id: &str) -> Option<PageMeta> {
+    let (title, seconds) = {
+        let model = live.model.read();
+        let clip = crate::films::visible_clip(&model, clip_id, Viewer::Anonymous)?;
+        if clip.game != game_id {
+            return None;
+        }
+        (clip.title.clone(), clip.duration_s())
+    };
+    let game_title = game(live, game_id)?.page?;
+    Some(PageMeta {
+        page: Some(title),
+        description: format!("A {seconds}-second Theater clip from {game_title}."),
         side: Side::Stats,
         kind: website(),
         header: None,
