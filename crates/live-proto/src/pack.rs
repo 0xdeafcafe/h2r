@@ -20,21 +20,28 @@ use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 use crate::game::{
-    ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer,
-    FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS,
-    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
+    ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameItem, FrameMachine, FrameObject,
+    FramePlayer, FrameProjectile, FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS,
+    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_ITEMS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
+    MAX_FRAME_PROJECTILES, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
 };
 
-/// The packed format's version, the first four bits of every frame. Version
-/// 5 adds the frame's cinematic bit after the cut, and is written only for a
-/// cinematic frame ([`CINEMATIC_VERSION`]): every other frame is still
-/// version 4, so a version 4 reader keeps reading them. Version 4 added a
-/// player's and actor's animation; version 3 added a player's and actor's velocity, fire ticks, vitality, seat and
-/// action ticks, a hit's tick and a frame's cut; version 2 added a
-/// vehicle's parent and aim. Versions 1 and 2 (recorded frames, an older
-/// game's) still decode, as do version 3's.
-pub const VERSION: u64 = 4;
-/// The version of a frame with `cinematic` set: version 4 and the bit.
+/// The packed format's version, the first four bits of every frame, and
+/// the one the encoder writes. Version 6 carries the cinematic bit on every
+/// frame, adds a vehicle's velocity and the projectile and item lists, and
+/// codes a moving entity's position in a delta as the error of a
+/// prediction from its velocity ([`predict`]). Version 5 was version 4 with
+/// the cinematic bit, written only for cinematic frames
+/// ([`CINEMATIC_VERSION`]); version 4 added a player's and actor's
+/// animation; version 3 a player's and actor's velocity, fire ticks,
+/// vitality, seat and action ticks, a hit's tick and a frame's cut; version
+/// 2 a vehicle's parent and aim. Every older version (recorded frames, an
+/// older game's stream) still decodes.
+pub const VERSION: u64 = 6;
+/// The last version before 6 that wrote no cinematic bit on ordinary frames.
+pub const V4: u64 = 4;
+/// Version 4 with the cinematic bit: what a cinematic frame was before
+/// version 6 (decoded, no longer written).
 pub const CINEMATIC_VERSION: u64 = 5;
 /// Positions are whole multiples of 1/512 world unit (about 6 mm).
 pub const POS_SCALE: f64 = 512.0;
@@ -56,6 +63,14 @@ pub const SHIELD_SCALE: f64 = 32.0;
 pub const ANIM_SCALE: f64 = 16.0;
 /// Machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
+/// Version 6: the Exp-Golomb order of a predicted position's error.
+pub const PREDICT_K: u32 = 3;
+/// Version 6: a prediction spans at most this many ticks; a longer gap
+/// codes the plain difference.
+pub const PREDICT_TICKS: u64 = 30;
+/// Version 6: a velocity component (in 1/64 unit a second) past this is
+/// not predicted from.
+const PREDICT_VEL: i64 = 1 << 23;
 /// Most strings a stream's table holds before the encoder starts over with
 /// a keyframe.
 pub const MAX_STRINGS: usize = 4096;
@@ -446,8 +461,11 @@ const VEHICLE: &[Field] = &[
     f(Kind::Bool), // occupied
     o(Kind::Id),   // parent (version 2)
     o(Kind::Dir),  // aim (version 2)
+    o(Kind::Vel),  // vel (version 6)
 ];
-/// Version 1's vehicle: [`VEHICLE`] without its parent and aim.
+/// Versions 2 to 5's vehicle: [`VEHICLE`] without its velocity.
+const VEHICLE_V2: &[Field] = VEHICLE.split_at(8).0;
+/// Version 1's vehicle: without its parent and aim too.
 const VEHICLE_V1: &[Field] = VEHICLE.split_at(6).0;
 const ACTOR: &[Field] = &[
     k(Kind::Id),
@@ -501,11 +519,43 @@ const OBJECT: &[Field] = &[
     o(Kind::Dir),
     o(Kind::Dir),
 ];
+/// Version 6.
+const PROJECTILE: &[Field] = &[
+    k(Kind::Id),
+    f(Kind::Str), // kind
+    f(Kind::Pos),
+    o(Kind::Vel),
+    o(Kind::Id), // parent
+];
+/// Version 6.
+const ITEM: &[Field] = &[
+    k(Kind::Id),
+    f(Kind::Str), // kind
+    f(Kind::Pos),
+    f(Kind::Dir),  // forward
+    f(Kind::Dir),  // up
+    f(Kind::Bool), // equipment
+];
 
-/// The delta-coded lists, in wire order (hits are always sent whole).
-const LISTS: [(&[Field], usize); 5] = [
+/// How many delta-coded lists a frame has (version 6; older versions the
+/// first five).
+const LIST_COUNT: usize = 7;
+
+/// The delta-coded lists, in wire order (hits are always sent whole, after
+/// the actors).
+const LISTS: [(&[Field], usize); LIST_COUNT] = [
     (PLAYER, MAX_PLAYERS),
     (VEHICLE, MAX_FRAME_VEHICLES),
+    (ACTOR, MAX_FRAME_ACTORS),
+    (MACHINE, MAX_FRAME_MACHINES),
+    (OBJECT, MAX_FRAME_OBJECTS),
+    (PROJECTILE, MAX_FRAME_PROJECTILES),
+    (ITEM, MAX_FRAME_ITEMS),
+];
+/// Versions 4 and 5's lists.
+const LISTS_V4: [(&[Field], usize); 5] = [
+    (PLAYER, MAX_PLAYERS),
+    (VEHICLE_V2, MAX_FRAME_VEHICLES),
     (ACTOR, MAX_FRAME_ACTORS),
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
@@ -513,7 +563,7 @@ const LISTS: [(&[Field], usize); 5] = [
 /// Version 3's lists.
 const LISTS_V3: [(&[Field], usize); 5] = [
     (PLAYER_V3, MAX_PLAYERS),
-    (VEHICLE, MAX_FRAME_VEHICLES),
+    (VEHICLE_V2, MAX_FRAME_VEHICLES),
     (ACTOR_V3, MAX_FRAME_ACTORS),
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
@@ -521,7 +571,7 @@ const LISTS_V3: [(&[Field], usize); 5] = [
 /// Version 2's lists.
 const LISTS_V2: [(&[Field], usize); 5] = [
     (PLAYER_V2, MAX_PLAYERS),
-    (VEHICLE, MAX_FRAME_VEHICLES),
+    (VEHICLE_V2, MAX_FRAME_VEHICLES),
     (ACTOR_V2, MAX_FRAME_ACTORS),
     (MACHINE, MAX_FRAME_MACHINES),
     (OBJECT, MAX_FRAME_OBJECTS),
@@ -537,48 +587,76 @@ const LISTS_V1: [(&[Field], usize); 5] = [
 
 /// What a version this decoder reads has: its lists and its hits.
 struct Schema {
-    lists: &'static [(&'static [Field], usize); 5],
+    lists: &'static [(&'static [Field], usize)],
     hit: &'static [Field],
     /// The header carries a cut (version 3).
     cut: bool,
-    /// The header carries the cinematic bit (version 5).
+    /// The header carries the cinematic bit (versions 5 and 6).
     cinematic: bool,
+    /// Deltas predict positions from velocities (version 6).
+    predict: bool,
 }
 
 fn schema_of(version: u64) -> Option<Schema> {
-    match version {
-        1 => Some(Schema {
-            lists: &LISTS_V1,
-            hit: HIT_V2,
-            cut: false,
-            cinematic: false,
-        }),
-        2 => Some(Schema {
-            lists: &LISTS_V2,
-            hit: HIT_V2,
-            cut: false,
-            cinematic: false,
-        }),
-        3 => Some(Schema {
-            lists: &LISTS_V3,
-            hit: HIT,
-            cut: true,
-            cinematic: false,
-        }),
-        VERSION => Some(Schema {
-            lists: &LISTS,
-            hit: HIT,
-            cut: true,
-            cinematic: false,
-        }),
-        CINEMATIC_VERSION => Some(Schema {
-            lists: &LISTS,
-            hit: HIT,
-            cut: true,
-            cinematic: true,
-        }),
+    fn schema(
+        lists: &'static [(&'static [Field], usize)],
+        hit: &'static [Field],
+        cut: bool,
+        cinematic: bool,
+        predict: bool,
+    ) -> Schema {
+        Schema {
+            lists,
+            hit,
+            cut,
+            cinematic,
+            predict,
+        }
+    }
+    Some(match version {
+        1 => schema(&LISTS_V1, HIT_V2, false, false, false),
+        2 => schema(&LISTS_V2, HIT_V2, false, false, false),
+        3 => schema(&LISTS_V3, HIT, true, false, false),
+        V4 => schema(&LISTS_V4, HIT, true, false, false),
+        CINEMATIC_VERSION => schema(&LISTS_V4, HIT, true, true, false),
+        VERSION => schema(&LISTS, HIT, true, true, true),
+        _ => return None,
+    })
+}
+
+/// Where an entity's position and velocity sit in its fields, when it has
+/// both: what a version 6 delta predicts its position from.
+fn motion_fields(schema: &[Field]) -> Option<(usize, usize)> {
+    let pos = schema.iter().position(|f| f.kind == Kind::Pos && !f.opt)?;
+    let vel = schema.iter().position(|f| f.kind == Kind::Vel)?;
+    Some((pos, vel))
+}
+
+/// The previous velocity a version 6 delta predicts from, `dt` ticks on:
+/// only when there is one, in range, and the gap is at most
+/// [`PREDICT_TICKS`]. Both sides know it before the position's bits.
+fn predict_base(prev_vel: &Val, dt: u64) -> Option<[i64; 3]> {
+    match prev_vel {
+        Val::Vel(a) if dt <= PREDICT_TICKS && a.iter().all(|c| c.abs() <= PREDICT_VEL) => Some(*a),
         _ => None,
     }
+}
+
+/// Version 6's predicted position: the previous one moved by the mean of
+/// the previous and the new velocity (the previous alone when there is no
+/// new one in range) over `dt` ticks, in position quanta, rounded half up:
+/// `p + floor((4 (a + b) dt + 15) / 30)` (1/64 unit a second over 1/30 s
+/// in 1/512 unit is a factor of 4/30 for the sum of two). Integers, so
+/// every decoder predicts the same.
+fn predict(prev_pos: [i64; 3], a: [i64; 3], new_vel: &Val, dt: u64) -> [i64; 3] {
+    let b = match new_vel {
+        Val::Vel(b) if b.iter().all(|c| c.abs() <= PREDICT_VEL) => *b,
+        _ => a,
+    };
+    let dt = dt as i64;
+    std::array::from_fn(|i| {
+        prev_pos[i].saturating_add((4 * (a[i] + b[i]) * dt + 15).div_euclid(30))
+    })
 }
 
 type Entity = Vec<Val>;
@@ -714,6 +792,28 @@ fn vehicle_vals(v: &FrameVehicle) -> Result<Entity> {
         Val::Bool(v.occupied),
         opt(v.parent.as_deref(), id)?,
         opt(v.aim, |a| oct(a).map(Val::Dir))?,
+        opt(v.vel, |v| qvel(v).map(Val::Vel))?,
+    ])
+}
+
+fn projectile_vals(p: &FrameProjectile) -> Result<Entity> {
+    Ok(vec![
+        id(&p.id)?,
+        string(&p.kind)?,
+        Val::Pos(qpos(p.pos)?),
+        opt(p.vel, |v| qvel(v).map(Val::Vel))?,
+        opt(p.parent.as_deref(), id)?,
+    ])
+}
+
+fn item_vals(x: &FrameItem) -> Result<Entity> {
+    Ok(vec![
+        id(&x.id)?,
+        string(&x.kind)?,
+        Val::Pos(qpos(x.pos)?),
+        Val::Dir(oct(x.forward)?),
+        Val::Dir(oct(x.up)?),
+        Val::Bool(x.equipment),
     ])
 }
 
@@ -975,6 +1075,29 @@ fn vehicle_of(e: &Entity) -> Result<FrameVehicle> {
         // Version 1 vehicles have neither.
         parent: e.get(6).map(as_opt_id).transpose()?.flatten(),
         aim: e.get(7).map(as_opt_dir).transpose()?.flatten(),
+        // Version 6.
+        vel: e.get(8).map(as_opt_vel).transpose()?.flatten(),
+    })
+}
+
+fn projectile_of(e: &Entity) -> Result<FrameProjectile> {
+    Ok(FrameProjectile {
+        id: as_id(&e[0])?,
+        kind: as_str(&e[1])?,
+        pos: as_pos(&e[2])?,
+        vel: as_opt_vel(&e[3])?,
+        parent: as_opt_id(&e[4])?,
+    })
+}
+
+fn item_of(e: &Entity) -> Result<FrameItem> {
+    Ok(FrameItem {
+        id: as_id(&e[0])?,
+        kind: as_str(&e[1])?,
+        pos: as_pos(&e[2])?,
+        forward: as_dir(&e[3])?,
+        up: as_dir(&e[4])?,
+        equipment: as_bool(&e[5])?,
     })
 }
 
@@ -1065,10 +1188,10 @@ fn object_of(e: &Entity) -> Result<FrameObject> {
     })
 }
 
-/// A frame as entity lists: players, vehicles, actors, machines, objects
-/// (the [`LISTS`] order) and hits.
+/// A frame as entity lists: players, vehicles, actors, machines, objects,
+/// projectiles, items (the [`LISTS`] order) and hits.
 struct Lists {
-    lists: [Vec<Entity>; 5],
+    lists: [Vec<Entity>; LIST_COUNT],
     hits: Vec<Entity>,
 }
 
@@ -1088,6 +1211,8 @@ impl Lists {
                 collect(&frame.actors, actor_vals, MAX_FRAME_ACTORS)?,
                 collect(&frame.machines, machine_vals, MAX_FRAME_MACHINES)?,
                 collect(&frame.objects, object_vals, MAX_FRAME_OBJECTS)?,
+                collect(&frame.projectiles, projectile_vals, MAX_FRAME_PROJECTILES)?,
+                collect(&frame.items, item_vals, MAX_FRAME_ITEMS)?,
             ],
             hits: collect(&frame.hits, hit_vals, MAX_FRAME_HITS)?,
         })
@@ -1115,7 +1240,7 @@ fn frame_of(
     bsp: Option<u64>,
     cut: Option<u64>,
     cinematic: bool,
-    lists: &[Vec<Entity>; 5],
+    lists: &[Vec<Entity>; LIST_COUNT],
     hits: &[Entity],
 ) -> Result<Frame> {
     // Sized up front: collecting through `Result` would grow it by doubling.
@@ -1140,6 +1265,8 @@ fn frame_of(
         objects: map(&lists[4], object_of)?,
         cut,
         cinematic,
+        projectiles: map(&lists[5], projectile_of)?,
+        items: map(&lists[6], item_of)?,
     })
 }
 
@@ -1392,8 +1519,19 @@ fn key_of<'a>(schema: &[Field], e: &'a Entity) -> [Option<&'a Val>; 2] {
 /// reached either `0` and a run of unchanged entities taken in order from
 /// the previous list, or `1` and one entity: `1`, the previous entity it
 /// is (relative to the one after the last taken), a changed-field mask and
-/// the changed fields; or `0` and the whole entity.
-fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Entity], t: &Table) {
+/// the changed fields; or `0` and the whole entity. With `predict` (version
+/// 6), a changed position of an entity with a velocity is the error of
+/// [`predict`] over `dt` ticks when [`predict_base`] allows.
+fn write_delta(
+    w: &mut BitWriter,
+    schema: &[Field],
+    list: &[Entity],
+    prev: &[Entity],
+    t: &Table,
+    dt: u64,
+    predict: bool,
+) {
+    let motion = motion_fields(schema).filter(|_| predict);
     // Most frames list the same entities in the same order: match by
     // position, and only key a map when that fails.
     let same_order = list.len() == prev.len()
@@ -1445,9 +1583,17 @@ fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Ent
                         w.bit(v != p);
                     }
                 }
-                for ((field, v), p) in schema.iter().zip(&list[i]).zip(before) {
-                    if !field.key && v != p {
-                        write_field(w, *field, v, Some(p), t);
+                let base = motion.and_then(|(_, vi)| predict_base(&before[vi], dt));
+                for (idx, ((field, v), p)) in schema.iter().zip(&list[i]).zip(before).enumerate() {
+                    if field.key || v == p {
+                        continue;
+                    }
+                    match (motion, base, v, p) {
+                        (Some((pi, vi)), Some(a), Val::Pos(q), Val::Pos(pp)) if idx == pi => {
+                            let guess = self::predict(*pp, a, &list[i][vi], dt);
+                            (0..3).for_each(|c| w.seg(q[c] - guess[c], PREDICT_K));
+                        }
+                        _ => write_field(w, *field, v, Some(p), t),
                     }
                 }
                 cursor = j + 1;
@@ -1470,8 +1616,11 @@ fn read_delta(
     max: usize,
     prev: &mut [Entity],
     strings: &[String],
+    dt: u64,
+    predict: bool,
 ) -> Result<Vec<Entity>> {
     const HERE: usize = usize::MAX;
+    let motion = motion_fields(schema).filter(|_| predict);
     let n = read_count(r, max)?;
     let mut out: Vec<Entity> = Vec::with_capacity(n);
     // Where each of `prev` was moved to in `out` (HERE: not moved).
@@ -1510,10 +1659,33 @@ fn read_delta(
                 }
             }
             let mut e = before.clone();
+            // A predicted position: its error now, the prediction once the
+            // new velocity (a later field) is read.
+            let mut error = None;
+            let base = motion.and_then(|(_, vi)| predict_base(&before[vi], dt));
             for (idx, field) in schema.iter().enumerate() {
-                if mask & (1 << idx) != 0 {
-                    e[idx] = read_field(r, *field, Some(&before[idx]), strings)?;
+                if mask & (1 << idx) == 0 {
+                    continue;
                 }
+                match (motion, base) {
+                    (Some((pi, _)), Some(_)) if idx == pi => {
+                        error = Some([r.seg(PREDICT_K)?, r.seg(PREDICT_K)?, r.seg(PREDICT_K)?]);
+                    }
+                    _ => e[idx] = read_field(r, *field, Some(&before[idx]), strings)?,
+                }
+            }
+            if let (Some((pi, vi)), Some(a), Some(err)) = (motion, base, error) {
+                let Val::Pos(pp) = before[pi] else {
+                    return Err(PackError::Bad("expected a position"));
+                };
+                let guess = self::predict(pp, a, &e[vi], dt);
+                let mut q = [0i64; 3];
+                for c in 0..3 {
+                    q[c] = guess[c]
+                        .checked_add(err[c])
+                        .ok_or(PackError::Bad("position out of range"))?;
+                }
+                e[pi] = Val::Pos(q);
             }
             out.push(e);
             cursor = j + 1;
@@ -1534,7 +1706,7 @@ struct StreamState {
     tick: u64,
     bsp: Option<u64>,
     strings: Vec<String>,
-    lists: [Vec<Entity>; 5],
+    lists: [Vec<Entity>; LIST_COUNT],
 }
 
 /// Encodes one stream of frames: a keyframe, then deltas against the frame
@@ -1582,13 +1754,9 @@ impl Encoder {
             return Err(PackError::Value("game id too long"));
         }
         let mut new_strings: Vec<&str> = Vec::new();
-        // A cinematic frame is version 5, any other version 4; a delta is
-        // against a frame of its own version, so a change is a keyframe.
-        let version = if frame.cinematic {
-            CINEMATIC_VERSION
-        } else {
-            VERSION
-        };
+        // Every frame is version 6, cinematic or not (a delta is against a
+        // frame of its own version; the check stays for a later version).
+        let version = VERSION;
         let key = match &self.state {
             None => true,
             Some((s, t)) => {
@@ -1629,6 +1797,7 @@ impl Encoder {
         w.eg(self.sid, 0);
         w.eg(seq, 8);
         let bsp = frame.bsp.map(u64::from);
+        let dt = if key { 0 } else { frame.tick - state.tick };
         if key {
             write_str_literal(&mut w, &frame.game_id);
             w.eg(frame.tick, 20);
@@ -1650,9 +1819,7 @@ impl Encoder {
         if let Some(c) = frame.cut {
             w.eg(c, 16);
         }
-        if version == CINEMATIC_VERSION {
-            w.bit(true);
-        }
+        w.bit(frame.cinematic);
         w.eg(new_strings.len() as u64, 1);
         for s in &new_strings {
             write_str_literal(&mut w, s);
@@ -1668,7 +1835,15 @@ impl Encoder {
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
-                write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table);
+                write_delta(
+                    &mut w,
+                    schema,
+                    &lists.lists[n],
+                    &state.lists[n],
+                    &table,
+                    dt,
+                    true,
+                );
             }
         }
         state.seq = seq;
@@ -1767,6 +1942,7 @@ impl Decoder {
             state.strings.push(read_str_literal(&mut r)?);
         }
         let mut hits = Vec::new();
+        let dt = state.tick - prev.tick;
         for (n, (fields, max)) in schema.lists.iter().enumerate() {
             if n == 3 {
                 hits = read_full(&mut r, schema.hit, MAX_FRAME_HITS, &state.strings)?;
@@ -1774,7 +1950,15 @@ impl Decoder {
             state.lists[n] = if key {
                 read_full(&mut r, fields, *max, &state.strings)?
             } else {
-                read_delta(&mut r, fields, *max, &mut prev.lists[n], &state.strings)?
+                read_delta(
+                    &mut r,
+                    fields,
+                    *max,
+                    &mut prev.lists[n],
+                    &state.strings,
+                    dt,
+                    schema.predict,
+                )?
             };
         }
         let frame = frame_of(

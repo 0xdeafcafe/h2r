@@ -234,6 +234,38 @@ A frame may carry `cut`: a campaign checkpoint revert or restart happened
 just before it, and the engine's clock came back to that tick (the game's
 ticks keep counting; see below). Only the first frame of the new run has it.
 
+From senders on packed format version 6, a frame may carry
+`projectiles` and `items`, and vehicles their `vel`:
+
+```json
+"projectiles": [ { "id": "e90c0001", "kind": "plasma_grenade",
+                   "pos": [4.0, 5.0, 6.0], "vel": [3.0, 0.0, 2.5] },
+                 { "id": "e90c0002", "kind": "plasma_grenade",
+                   "pos": [1.5, 2.0, 0.5], "parent": "90070007" } ],
+"items": [ { "id": "a2f00f00", "kind": "flag", "pos": [20.0, -12.0, 0.5],
+             "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0] },
+           { "id": "a10d0001", "kind": "overshield", "equipment": true,
+             "pos": [0.0, 3.0, 0.2], "forward": [0.0, 1.0, 0.0],
+             "up": [0.0, 0.0, 1.0] } ]
+```
+
+`projectiles` are projectiles in flight slower than 100 game units a
+second (grenades, rockets, plasma, needles; bullets live a tick or two and
+are drawn from the shooter's `fire` and `aim`) or stuck to something, at
+most 64: `id` the object datum (new for each throw or shot, gone when it
+detonates), `kind` the `proj` tag stem or `unknown`, `pos` the world
+position, `vel` game units a second (absent when stuck), `parent` what it
+is stuck to (a player's, actor's or vehicle's id), and then `pos` is that
+object's position. `items` are weapons and equipment lying loose that no
+scenario placement or netgame spawn made (those are `objects`): dropped
+guns, the flag, the ball, the bomb, at most 128; `kind` is the `weap` stem,
+or with `equipment: true` the `eqip` stem. A held flag, ball or bomb is the
+carrier's `weapon` (`flag`, `ball`, `assault_bomb`). A vehicle's `vel` is
+its velocity like a unit's. The server refuses non-finite positions or
+velocities, velocities over 1000, zero `forward`/`up`, ids or kinds outside
+`[a-z0-9_]{1,32}`, a projectile that is its own parent, and more than 64
+projectiles or 128 items.
+
 A frame may carry `cinematic: true`: a campaign cutscene is playing. The
 game sends such frames on its clock as ever, with the tick and `bsp` (and a
 `cut` when one is due) but no players, actors, vehicles, hits, machines or

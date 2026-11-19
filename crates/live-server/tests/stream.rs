@@ -666,6 +666,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
             occupied: true,
             parent: None,
             aim: None,
+            vel: Some([0.0, 4.0, 0.0]),
         }],
         actors: vec![FrameActor {
             id: "90070007".into(),
@@ -704,6 +705,21 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         bsp: Some(1),
         cut: Some(61),
         cinematic: false,
+        projectiles: vec![live_proto::game::FrameProjectile {
+            id: "900b000b".into(),
+            kind: "plasma_grenade".into(),
+            pos: [4.0, 5.0, 6.0],
+            vel: Some([3.0, 0.0, 2.5]),
+            parent: None,
+        }],
+        items: vec![live_proto::game::FrameItem {
+            id: "900c000c".into(),
+            kind: "flag".into(),
+            pos: [1.0, 1.0, 0.5],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            equipment: false,
+        }],
         machines: vec![live_proto::game::FrameMachine {
             node: Some("scarab_0".into()),
             id: "90090009".into(),
@@ -744,6 +760,10 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     bad_order.objects.reverse();
     let mut bad_gone = good.clone();
     bad_gone.objects[1].p = Some([0.0; 3]);
+    let mut bad_item = good.clone();
+    bad_item.items[0].up = [0.0; 3];
+    let mut bad_projectile = good.clone();
+    bad_projectile.projectiles[0].vel = Some([f64::NAN, 0.0, 0.0]);
     for bad in [
         bad_up,
         bad_species,
@@ -751,6 +771,8 @@ async fn campaign_frames_carry_vehicles_and_actors() {
         bad_position,
         bad_order,
         bad_gone,
+        bad_item,
+        bad_projectile,
     ] {
         assert!(live.ingest_frame(&author, bad).await.is_err());
     }
@@ -768,6 +790,9 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     );
     assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
     assert_eq!(frame.actors[0].shots, Some(2));
+    assert_eq!(frame.vehicles[0].vel, Some([0.0, 4.0, 0.0]));
+    assert_eq!(frame.projectiles[0].kind, "plasma_grenade");
+    assert_eq!(frame.items[0].kind, "flag");
 
     let recorded = recorded_frames(&live, &game_id).await;
     assert_eq!(recorded[0]["vehicles"][0]["kind"], "warthog");
