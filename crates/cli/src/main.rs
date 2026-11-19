@@ -38,6 +38,7 @@ mod follow;
 mod fonts;
 mod h1_cmd;
 mod h1_import;
+mod host_cmd;
 #[cfg(unix)]
 mod lab;
 mod lighting;
@@ -357,6 +358,7 @@ fn main() -> Result<()> {
         #[cfg(not(unix))]
         bail!("h2 agent needs Unix sockets");
     }
+    if cmd == "host" { return host_cmd::run(args.collect()); } // dh-supervisor and dh-provision
     if cmd == "studio" {
         return studio_proto::cli::run("h2 studio", args.collect());
     }
