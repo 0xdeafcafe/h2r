@@ -850,8 +850,7 @@ impl Live {
         result
     }
 
-    /// `GET /v1/content/{sha256}`.
-    pub async fn content(&self, sha256: &str) -> ApiResult<(Sha256, Vec<u8>)> {
+    fn readable_content(&self, sha256: &str) -> ApiResult<Sha256> {
         let h: Sha256 = sha256.parse().map_err(|_| not_found("no such content"))?;
         {
             let s = self.catalog.read();
@@ -866,6 +865,12 @@ impl Live {
                 return Err(not_found("no such content"));
             }
         }
+        Ok(h)
+    }
+
+    /// Bounded image reads use the whole object.
+    pub async fn content(&self, sha256: &str) -> ApiResult<(Sha256, Vec<u8>)> {
+        let h = self.readable_content(sha256)?;
         let key = blob_key(&h);
         match self.content_store()?.get(&key).await {
             Ok(Some(bytes)) => Ok((h, bytes.to_vec())),
@@ -1754,17 +1759,28 @@ pub(crate) async fn get_content(
     UrlPath(sha256): UrlPath<String>,
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
-    let (h, bytes) = live.content(&sha256).await?;
+    let h = live.readable_content(&sha256)?;
+    let key = blob_key(&h);
+    let (size, stream) = live
+        .content_store()?
+        .get_stream(&key)
+        .await
+        .map_err(|e| {
+            eprintln!("live: content: {key}: {e}");
+            unavailable("the content store cannot read")
+        })?
+        .ok_or_else(|| not_found("no such content"))?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
             (header::ETAG, format!("\"{h}\"")),
+            (header::CONTENT_LENGTH, size.to_string()),
             (
                 header::CACHE_CONTROL,
                 "public, max-age=31536000, immutable".to_string(),
             ),
         ],
-        bytes,
+        Body::from_stream(stream),
     )
         .into_response())
 }

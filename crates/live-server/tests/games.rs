@@ -31,6 +31,37 @@ fn score(tick: u64, a: i64, b: i64) -> (&'static str, Value) {
     )
 }
 
+#[tokio::test]
+async fn ingest_checks_message_size_before_authenticating() {
+    use live_server::http::MAX_WS_MESSAGE;
+    use live_server::ingest::IngestSession;
+    use live_server::stream::Out;
+
+    let h = harness().await;
+    let host = h.create("Host").await;
+    let token = h.token(&host.key, &host.author, lxm::GAMES_WRITE);
+    let mut auth = json!({"kind": "auth", "token": token}).to_string();
+    auth.extend(std::iter::repeat_n(' ', MAX_WS_MESSAGE + 1 - auth.len()));
+    let mut session = IngestSession::new(h.live.clone());
+
+    assert!(matches!(
+        session.on_text(&auth).await.as_slice(),
+        [Out::Close(1009, _)]
+    ));
+    assert!(session.awaits_auth());
+    let binary = vec![0; MAX_WS_MESSAGE + 1];
+    assert!(matches!(
+        session.on_binary(&binary).await.as_slice(),
+        [Out::Close(1009, _)]
+    ));
+    assert!(session.awaits_auth());
+
+    // The exact limit is accepted and the rejected frame spent no token.
+    auth.pop();
+    assert!(session.on_text(&auth).await.is_empty());
+    assert!(!session.awaits_auth());
+}
+
 /// Both original JSON GameFrames and their packed successors appear on the
 /// same legacy page. The cursor and the packed bytes survive either read.
 #[tokio::test]
@@ -488,7 +519,14 @@ async fn game_writes_are_checked() {
 
 #[tokio::test]
 async fn map_outlines() {
-    let h = harness().await;
+    let h = start(
+        Arc::new(MemoryStore::new()),
+        Policy {
+            admins: vec![live_proto::Gamertag::new("Alpha").unwrap()],
+            ..Policy::default()
+        },
+    )
+    .await;
     let a = h.create("Alpha").await;
     let b = h.create("Bravo").await;
     let outline = json!({"map": "lockout", "bounds": {"min": [0, 0, 0], "max": [10, 10, 5]},
@@ -497,15 +535,20 @@ async fn map_outlines() {
         h.get("/v1/maps/lockout/outline").await.status,
         StatusCode::NOT_FOUND
     );
+    // An ordinary account cannot claim the outline before an admin uploads it.
     assert_eq!(
-        h.put_outline(&a, "lockout", &outline.clone()).await.status,
+        h.put_outline(&b, "lockout", &outline).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        h.put_outline(&a, "lockout", &outline).await.status,
         StatusCode::OK
     );
     assert_eq!(h.get("/v1/maps/lockout/outline").await.json(), outline);
-    // The first upload wins.
+    // An ordinary account cannot overwrite the outline either.
     assert_eq!(
-        h.put_outline(&b, "lockout", &outline.clone()).await.status,
-        StatusCode::CONFLICT
+        h.put_outline(&b, "lockout", &outline).await.status,
+        StatusCode::FORBIDDEN
     );
     // The path and body must agree, and it must be an outline.
     let mut other = outline.clone();
@@ -520,7 +563,15 @@ async fn map_outlines() {
             .status,
         StatusCode::BAD_REQUEST
     );
-    // The operator may replace it.
+    let mut replacement = outline.clone();
+    replacement["bounds"]["max"] = json!([15, 15, 5]);
+    assert_eq!(
+        h.put_outline(&a, "lockout", &replacement).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(h.get("/v1/maps/lockout/outline").await.json(), replacement);
+
+    // The operator may replace it too.
     let operator = Author::Server(h.id.clone()).to_string();
     let auth = format!(
         "Bearer {}",
@@ -834,7 +885,14 @@ async fn postgres_games() {
     let map = tag.to_lowercase();
     let outline = json!({"map": map, "bounds": {"min": [0, 0, 0], "max": [1, 1, 1]}, "layers": []});
     let id = {
-        let h = start(store.clone(), Policy::default()).await;
+        let h = start(
+            store.clone(),
+            Policy {
+                admins: vec![live_proto::Gamertag::new(&tag).unwrap()],
+                ..Policy::default()
+            },
+        )
+        .await;
         let host = h.create(&tag).await;
         let id = h.start_game(&host, two_player_game(&host)).await;
         let r = h
@@ -853,10 +911,6 @@ async fn postgres_games() {
         assert_eq!(
             h.put_outline(&host, &map, &outline).await.status,
             StatusCode::OK
-        );
-        assert_eq!(
-            h.put_outline(&host, &map, &outline).await.status,
-            StatusCode::CONFLICT
         );
         id
     };

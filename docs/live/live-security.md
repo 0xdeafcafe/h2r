@@ -62,14 +62,15 @@ shown `123-456`), the same scheme authenticator apps use.
   server-signed `KeyAdded {kid, jwk, proof, via: "totp"}`; and answers
   `{xuid, gamertag, id}`. No token and no invite: the code is the
   credential.
-- **Guessing.** Wrong codes count per gamertag: after 5, the gamertag is
-  locked for a minute, doubling with every further wrong code up to a day
-  (429 with the time left); a right code clears it; a gamertag quiet for a
-  day starts over. A wrong code's 403 says how many are left before the
-  lock (`wrong code; N tries left`), which the in-game prompt shows. Sign-up and recovery also share the server-wide
-  creation rate limit. With three codes valid at once, the first five
-  guesses succeed with odds of about 1 in 67,000; after that each guess
-  costs exponentially more time.
+- **Guessing.** Wrong codes count per gamertag and client IP. After five
+  attempts, that pair is locked for a minute (429 with the time left).
+  The lock doubles with each further wrong code up to a day. A correct
+  code or a day without failures clears it. A wrong code's 403 says how
+  many tries remain (`wrong code; N tries left`). Recovery has its own
+  bucket of one request per second per IP with a burst of ten across all
+  gamertags. An owner recovering from another IP has their own budget and
+  backoff. With three codes valid at once, five guesses from one IP have
+  odds of about 1 in 67,000 before the backoff begins.
 - **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
   24-byte nonce per value, stored as base64url of nonce and ciphertext with
   its tag) under a key derived from the server key with HKDF-SHA256 (info
@@ -137,9 +138,10 @@ JWT themselves, the way AT Protocol service auth works.
 - **Server check.** Parse header, look up `kid` in memory, verify EdDSA,
   check `aud`, `exp`, `lxm`, and reject a `jti` seen in the last 2 minutes
   (an in-memory set that expires itself). No database call.
-- **WebSockets** send the token as the first message (browsers cannot set
-  headers on a WebSocket); the server closes the socket when the token's
-  `exp` passes unless the client sends a fresh one.
+- **WebSockets** for stream and ingest send the token as the first
+  message. The co-op relay needs a bearer token on the upgrade request.
+  The server closes an authenticated socket when its token expires unless
+  the client sends a fresh one.
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
@@ -240,8 +242,15 @@ Not built yet; the formats above are chosen so it can be.
   (`--tls-cert` and `--tls-key`, rustls) or an explicit `--insecure-http`,
   and clients refuse to send tokens over plain HTTP to a non-loopback host.
 - Request bodies are capped (64 KiB normally, title files 2 MiB because the
-  playlist file inflates to about 1.46 MB, ingest
-  messages 16 KiB), and each author is rate-limited per method in memory.
+  playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
+  cap before authentication and throughout the session on both deployments.
+  Writes have an in-memory budget per author and method. API GET and HEAD
+  requests share a budget of 30 requests per second per client IP with a
+  burst of 120. Both budgets return 429 when exhausted. The native server
+  uses the peer address and trusts `CF-Connecting-IP` from loopback with a
+  Cloudflare tunnel configured. The Worker uses Cloudflare's client IP.
+  IPv6 addresses share limits within their /64 for reads and recovery.
+  Requests with no trusted IP share a fallback bucket.
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.
 - Postgres credentials come only from the environment or the `--db` URL;

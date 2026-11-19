@@ -382,7 +382,7 @@ the index once and fetches the one chunk whose window holds the tick.
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
-| `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
+| `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until an admin has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
@@ -597,7 +597,7 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/invites/{jti}/revoke` | JWS `InviteRevoked` event `{jti}` by an admin | end an open invite an admin made |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
-| `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
+| `PUT /v1/maps/{map}/outline` | outline JSON, admin or operator's `games.write` token | store or replace a map outline |
 | `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live-local` offered; otherwise 404 (live-admin.md §4) |
 
 ## Sign-ins
@@ -1050,7 +1050,7 @@ stored: players use their own disc for the base.
 | endpoint | authentication | result |
 |---|---|---|
 | `PUT /v1/content/{sha256}` | account token, `lxm: content.write`; the raw bytes | 201 `{sha256, size, whole_map, stored: true}`; 200 `{..., stored: false}` if already kept |
-| `GET /v1/content/{sha256}` | public, or `read` on a private server | the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
+| `GET /v1/content/{sha256}` | public, or `read` on a private server | streams the bytes (`ETag` the hash, cached immutably); 404; 410 if taken down |
 | `POST /v1/content/{sha256}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps` | account token, `lxm: content.write`; a signed `MapPublished` event (compact JWS) | 201 `{map, missing, position}`; 200 when the author republishes it |
 | `GET /v1/maps?sort=&base=&author=&category=&q=&limit=&cursor=` | read rule | `{items: [summary], next, position}`, newest first or most downloaded first (see "The mod repository") |
@@ -1369,14 +1369,15 @@ message from one member of a co-op session to the other
 cannot reach each other directly; the direct path is UDP on the XNet base
 port + 4.
 
-- The first message is `{ "kind": "auth", "token": "<jwt>" }` with
-  `lxm: sessions.relay`. A missing, wrong or expired token closes the
-  socket with 4401, as on the other sockets. Sending a fresh `auth`
-  message later extends the socket; it must be the same account's.
+- The upgrade request carries `Authorization: Bearer <jwt>` with
+  `lxm: sessions.relay`. A missing, wrong or expired token gets HTTP 401.
+  After the upgrade, `{ "kind": "auth", "token": "<jwt>" }` from the same
+  account refreshes the socket. Expiry closes it with 4401.
 - The session must be open and created with `flags: "coop"`. The account
-  must be its host, or one whose invitation to this session was answered
-  `accept`. Otherwise the socket closes with 4403. Membership is checked
-  again every few seconds, so a closed session ends its relay.
+  must be its host or a guest who accepted an invitation. The upgrade
+  gets HTTP 403 if membership is refused or 404 if the session is missing.
+  The relay rechecks membership after connection and closes with 4403
+  if membership ends.
 - A room has two members. The same account connecting again replaces its
   older socket (which closes with 4409); a third account gets 4409.
 - Each member receives `{ "kind": "peer", "present": true|false }` when
@@ -1470,8 +1471,9 @@ version across wake-up.
 `{ "kind": "frame", "frame": {...} }` and
 `{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
 may also come as binary messages: containers of packed frame records, one
-stream per socket. The server fans frames out to readers, records them in
-[frame chunks](#frame-chunks), and appends events.
+stream per socket. The server caps each text or binary message at 16 KiB,
+including the first auth message. The server fans frames out to readers,
+records them in [frame chunks](#frame-chunks), and appends events.
 
 A `GameFrame` recorded before frame chunks holds `{tick, source, packed}`:
 `packed` is the frame as one packed keyframe, base64url without padding, so
@@ -1480,9 +1482,9 @@ frame plus `source`; both read the same through `/frames`.
 
 ## Map outline
 
-Map geometry comes from the user's own map files, so the server never ships
-it. The game uploads an outline for its map the first time it starts a game
-there:
+An admin or the operator can upload an outline derived from their own map
+files with a `games.write` token. Each map name has one outline, shared
+by every game on that map. A new upload replaces the current outline.
 
 ```json
 { "map": "lockout", "bounds": { "min": [x,y,z], "max": [x,y,z] },
@@ -1655,8 +1657,7 @@ above where they differ.
   or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
 - **`POST /v1/events`** returns the stored wire event (a superset of
   `{position}`).
-- **Map outlines**: the first upload for a map wins; the operator can replace
-  it.
+- **Map outlines** can be uploaded and replaced by admins and the operator.
 - **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
   the caller isn't signed in. Presence expires 90 s after the last event or
   ping; a game with no events or frames for 5 minutes ends as `lost`. That

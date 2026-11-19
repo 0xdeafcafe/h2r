@@ -1,8 +1,8 @@
 //! The relay path: co-op datagrams through the Live server.
 //!
 //! `GET /v1/sessions/{id}/relay` is a WebSocket (docs/live/live-api.md, "Co-op
-//! relay"). The first message is `{"kind":"auth","token":...}` with a token
-//! for `sessions.relay`; after that every binary message is one datagram,
+//! relay"). Its upgrade request authenticates with a `sessions.relay`
+//! bearer token; every binary message after that is one datagram,
 //! handed to the session's other member. The server never looks inside one.
 //!
 //! [`RelayLink`] runs the socket on a thread of its own, so `send` and
@@ -15,6 +15,9 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tungstenite::client::{IntoClientRequest, connect_with_config};
+use tungstenite::handshake::client::Request;
+use tungstenite::http::header::AUTHORIZATION;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
@@ -33,14 +36,12 @@ pub struct RelayLink {
 
 impl RelayLink {
     /// Connects to `url` (`ws://host/v1/sessions/<id>/relay`) and
-    /// authenticates with `token`. Fails when the server cannot be reached;
-    /// a refused token closes the link afterwards ([`RelayLink::closed`]).
+    /// authenticates the upgrade with `token`.
     pub fn connect(url: &str, token: &str) -> Result<RelayLink, String> {
-        let (mut socket, _) = tungstenite::connect(url).map_err(|e| format!("relay {url}: {e}"))?;
-        let auth = format!("{{\"kind\":\"auth\",\"token\":{}}}", json_string(token));
-        socket
-            .send(Message::text(auth))
-            .map_err(|e| format!("relay auth: {e}"))?;
+        let req = upgrade_request(url, token)?;
+        // The upgrade carries credentials for this server.
+        let (mut socket, _) =
+            connect_with_config(req, None, 0).map_err(|e| format!("relay {url}: {e}"))?;
         tcp(&mut socket)
             .set_read_timeout(Some(TURN))
             .map_err(|e| format!("relay socket: {e}"))?;
@@ -77,19 +78,16 @@ impl RelayLink {
     }
 }
 
-fn json_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+fn upgrade_request(url: &str, token: &str) -> Result<Request, String> {
+    let mut req = url
+        .into_client_request()
+        .map_err(|e| format!("relay URL: {e}"))?;
+    let mut bearer = format!("Bearer {token}")
+        .parse::<tungstenite::http::HeaderValue>()
+        .map_err(|_| "invalid relay token header".to_string())?;
+    bearer.set_sensitive(true);
+    req.headers_mut().insert(AUTHORIZATION, bearer);
+    Ok(req)
 }
 
 fn tcp(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> &mut TcpStream {
@@ -172,8 +170,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_are_quoted_as_json() {
-        assert_eq!(json_string("a.b-c_d"), "\"a.b-c_d\"");
-        assert_eq!(json_string("a\"b\\c\n"), "\"a\\\"b\\\\c\\u000a\"");
+    fn bearer_is_sent_on_the_upgrade() {
+        let req = upgrade_request("wss://live.test/v1/sessions/1234/relay", "relay-token").unwrap();
+        assert_eq!(req.uri().path(), "/v1/sessions/1234/relay");
+        assert!(req.uri().query().is_none());
+        assert_eq!(req.headers()[AUTHORIZATION], "Bearer relay-token");
+        assert_eq!(req.headers()["upgrade"], "websocket");
     }
 }

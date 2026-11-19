@@ -3,39 +3,74 @@
 //! the hub (docs/live/live-worker.md, The co-op relay).
 //!
 //! The client's protocol is the machine's (`live_server::relay`): its
-//! first message is `{kind: "auth", token}`. The relay hands that token to
-//! the hub (`POST /v1/sessions/{id}/relay/ticket`), which checks it and
-//! the account's membership and signs a short ticket; the relay checks the
-//! ticket with the server's public key and lets the socket in
+//! upgrade request carries a `sessions.relay` bearer token. The hub
+//! checks it and the account's membership before it opens the relay
+//! object; the relay verifies the resulting short-lived ticket and lets
+//! the socket in
 //! ([`crate::relayroom`]). A ticket lasts `TICKET_S`; when a member's has
 //! run out, the relay renews it with the hub in the background, so
 //! membership is checked again that often without holding up datagrams.
 //!
 //! Sockets are hibernatable: the ticket is kept as the socket's
 //! attachment, and the room is rebuilt from them after a wake. The token's
-//! end and the auth deadline are checked from the object's alarm.
+//! end is checked from the object's alarm.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use live_proto::ClientMessage;
+use axum::response::IntoResponse;
 use live_proto::sign::PublicKey;
+use live_proto::{ClientMessage, ErrorCode};
 use live_server::relay::{CLOSE_FORBIDDEN, Ticket, TicketReply};
 use live_server::stream::CLOSE_UNAUTHORIZED;
 use wasm_bindgen::JsValue;
 use worker::{
-    DurableObject, Env, Headers, Method, Request, RequestInit, Response, Result, State, Stub,
-    WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object,
+    DurableObject, Env, Headers, HttpRequest, Method, Request, RequestInit, Response, Result,
+    State, Stub, WebSocket, WebSocketIncomingMessage, WebSocketPair, durable_object,
 };
 
-use crate::bindings::{HUB, HUB_NAME};
-use crate::relayroom::{RelayAttachment, RelaySocket, Room};
+use crate::bindings::{HUB, HUB_NAME, RELAY};
+use crate::relayroom::{RelayAttachment, RelaySocket, Room, session_of};
 use crate::settings::Settings;
 use crate::sockets::now_ms;
 
-/// How long a socket has to send its auth message.
-const AUTH_TIMEOUT_MS: f64 = 10_000.0;
+const TICKET_HEADER: &str = "x-h2-relay-ticket";
+
+pub(crate) fn websocket_upgrade(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(http::header::UPGRADE)
+        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"websocket"))
+}
+
+/// Runs on the hub. Only a checked member can reach a session's object.
+pub(crate) async fn upgrade(
+    live: &Live,
+    env: &Env,
+    mut req: HttpRequest,
+    session: &str,
+) -> Result<Response> {
+    if req.method() != http::Method::GET || !websocket_upgrade(req.headers()) {
+        return Response::try_from(
+            ApiError::new(ErrorCode::Invalid, "the relay is a WebSocket").into_response(),
+        );
+    }
+
+    let bearer = live_server::http::bearer(req.headers());
+    let reply = match live.relay_ticket(bearer, session) {
+        Ok(reply) => reply,
+        Err(e) => return Response::try_from(e.into_response()),
+    };
+    let ticket = http::HeaderValue::from_str(&reply.ticket)
+        .map_err(|e| worker::Error::RustError(e.to_string()))?;
+    req.headers_mut().remove(http::header::AUTHORIZATION);
+    req.headers_mut().insert(TICKET_HEADER, ticket);
+    let stub = env
+        .durable_object(RELAY)?
+        .id_from_name(session)?
+        .get_stub()?;
+    stub.fetch_with_request(Request::try_from(req)?).await
+}
 
 impl RelaySocket for WebSocket {
     fn send_text(&self, text: &str) -> bool {
@@ -47,12 +82,6 @@ impl RelaySocket for WebSocket {
     fn close(&self, code: u16, reason: &str) {
         let _ = WebSocket::close(self, Some(code), Some(reason));
     }
-}
-
-/// The session id in `/v1/sessions/{id}/relay`.
-pub fn session_of(path: &str) -> Option<&str> {
-    let id = path.strip_prefix("/v1/sessions/")?.strip_suffix("/relay")?;
-    (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
 fn attachment(ws: &WebSocket) -> Option<RelayAttachment> {
@@ -143,23 +172,21 @@ impl CoopRelay {
             // Its ticket's own time may have passed while asleep: the
             // token's end still holds, and it is renewed on the next
             // datagram.
-            if let Some(t) = a.ticket.as_deref()
-                && let Ok(ticket) = Ticket::open(&self.key, t, &a.session, 0)
-            {
+            let ticket = a
+                .ticket
+                .as_deref()
+                .and_then(|t| Ticket::open(&self.key, t, &a.session, 0).ok());
+            if let Some(ticket) = ticket {
                 self.room.restore(a.socket, ws, ticket, now_ms());
+            } else {
+                RelaySocket::close(&ws, CLOSE_UNAUTHORIZED, "missing or invalid relay ticket");
             }
         }
     }
 
-    /// The alarm for the next auth deadline or token end, if any.
+    /// The alarm for the next token end, if any.
     async fn schedule(&self) -> Result<()> {
-        let sockets = self.state.get_websockets();
-        let pending = sockets
-            .iter()
-            .filter_map(attachment)
-            .filter(|a| a.ticket.is_none())
-            .map(|a| (a.since + AUTH_TIMEOUT_MS) as i64);
-        let due = pending.chain(self.room.next_deadline_ms()).min();
+        let due = self.room.next_deadline_ms();
         let storage = self.state.storage();
         match due {
             Some(at) => storage.set_alarm((at - now_ms() as i64).max(250)).await,
@@ -168,6 +195,11 @@ impl CoopRelay {
     }
 
     async fn auth(&self, ws: WebSocket, a: RelayAttachment, text: &str) -> Result<()> {
+        if text.len() > live_server::http::MAX_WS_MESSAGE {
+            RelaySocket::close(&ws, 1009, "message too large");
+            self.room.leave(a.socket);
+            return Ok(());
+        }
         let token = match serde_json::from_str::<ClientMessage>(text) {
             Ok(ClientMessage::Auth { token }) => token,
             _ => {
@@ -189,12 +221,7 @@ impl CoopRelay {
                 return Ok(());
             }
         };
-        let joined = if self.room.is_member(a.socket) {
-            self.room.refresh(a.socket, ticket)
-        } else {
-            self.room.join(a.socket, ws.clone(), ticket, now_ms())
-        };
-        match joined {
+        match self.room.refresh(a.socket, ticket) {
             Ok(()) => {
                 let _ = ws.serialize_attachment(RelayAttachment {
                     ticket: Some(compact),
@@ -289,16 +316,34 @@ impl DurableObject for CoopRelay {
             );
             return Response::try_from(axum::response::IntoResponse::into_response(e));
         }
+        let Some(compact) = req.headers().get(TICKET_HEADER)? else {
+            let error = ApiError::new(ErrorCode::Unauthorized, "missing relay ticket");
+            return Response::try_from(error.into_response());
+        };
+        let ticket = match Ticket::open(&self.key, &compact, session, now_s()) {
+            Ok(ticket) => ticket,
+            Err(e) => return Response::try_from(e.into_response()),
+        };
         let pair = WebSocketPair::new()?;
         self.state.accept_web_socket(&pair.server);
         let socket = self.next.get() + 1;
         self.next.set(socket);
-        pair.server.serialize_attachment(RelayAttachment {
-            socket,
-            session: session.to_string(),
-            since: now_ms(),
-            ticket: None,
-        })?;
+        match self
+            .room
+            .join(socket, pair.server.clone(), ticket, now_ms())
+        {
+            Ok(()) => {
+                if let Err(e) = pair.server.serialize_attachment(RelayAttachment {
+                    socket,
+                    session: session.to_string(),
+                    ticket: Some(compact),
+                }) {
+                    self.room.leave(socket);
+                    return Err(e);
+                }
+            }
+            Err(r) => RelaySocket::close(&pair.server, r.0, r.1),
+        }
         self.schedule().await?;
         Response::from_websocket(pair.client)
     }
@@ -356,14 +401,6 @@ impl DurableObject for CoopRelay {
     async fn alarm(&self) -> Result<Response> {
         self.adopt();
         let now = now_ms();
-        for ws in self.state.get_websockets() {
-            if let Some(a) = attachment(&ws)
-                && a.ticket.is_none()
-                && now - a.since >= AUTH_TIMEOUT_MS
-            {
-                RelaySocket::close(&ws, CLOSE_UNAUTHORIZED, "send an auth message first");
-            }
-        }
         self.room.expire(now);
         self.schedule().await?;
         Response::ok("")
