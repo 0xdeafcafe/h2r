@@ -548,6 +548,8 @@ fn the_session_is_left_alone_unless_it_can_only_be_this_consoles() {
     );
     keep(
         StartFacts {
+            // Host 0, so the peers differ and the range is what refuses.
+            host: 0,
             local: 1,
             ..base.clone()
         },
