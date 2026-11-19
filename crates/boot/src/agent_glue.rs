@@ -61,6 +61,7 @@ impl AgentGlue {
         path: PathBuf,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
+        allow_bot_add: bool,
     ) -> Result<AgentGlue> {
         let endpoint = agent_proto::Endpoint::from(path);
         if let agent_proto::Endpoint::Unix(p) = &endpoint
@@ -70,7 +71,7 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        let sim = install_sim(&agent);
+        let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
         let calls = agent::sim::calls::shared();
@@ -243,11 +244,12 @@ pub fn add_host_methods(agent: &agent::Agent) {
 /// `sim.*` (crates/agent's `sim`): its players are the process-wide local
 /// bots ([`crate::sim_bots`]), and the session kind is read as `coop_probe`
 /// reads it.
-pub fn install_sim(agent: &agent::Agent) -> agent::sim::SimHandle {
+fn install_sim(agent: &agent::Agent, allow_bot_add: bool) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
         Box::new(crate::sim_bots::LocalBots::new(
             bots::local::global().clone(),
+            allow_bot_add,
         )),
         Some(Box::new(session_view)),
     )

@@ -97,7 +97,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
-  serve <disc>            run headless with the agent API on a socket; never builds
+  serve <disc>            run headless with the agent API; --system-link [--host-light]
                           (docs/runtime/agent-api.md)
   agent <call>            call a running game's agent API: status, count, query,
                           object, counters, wait, pause/step in a `-` script

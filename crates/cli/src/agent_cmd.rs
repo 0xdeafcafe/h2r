@@ -61,6 +61,7 @@ or a short form:
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
+  hostmetrics            host.metrics: tick cost, CPU and RSS
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
   frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
                          render.frame: record the next whole frame and
@@ -549,6 +550,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
+        "hostmetrics" => Some(method::HOST_METRICS),
         "render" => Some(method::RENDER_STATS),
         "ui" => Some(method::UI_SCREEN),
         _ => None,
@@ -812,6 +814,7 @@ mod tests {
             ("profile.sample.stop".into(), Value::Null)
         );
         assert_eq!(c("hostperf"), ("host.perf".into(), Value::Null));
+        assert_eq!(c("hostmetrics"), ("host.metrics".into(), Value::Null));
         assert_eq!(c("ui"), ("ui.screen".into(), Value::Null));
         assert_eq!(c("render"), ("render.stats".into(), Value::Null));
         assert_eq!(

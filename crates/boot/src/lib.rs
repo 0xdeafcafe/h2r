@@ -39,6 +39,7 @@ pub mod h1_options;
 pub mod h1_options_row;
 pub mod h1_variants;
 pub mod health;
+mod host_metrics;
 pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
@@ -733,6 +734,10 @@ pub struct RunReport {
 /// fills these in; see docs/runtime/BOOT.md "Hosted runs".
 #[derive(Default)]
 pub struct Host {
+    /// Dedicated System Link profile, with no screen or speakers.
+    pub host_light: bool,
+    /// Opt in to bot support on a light host.
+    pub host_bots: bool,
     /// D3D renders here (present hook attached) instead of the headless
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
@@ -859,6 +864,34 @@ fn run_configured(
     live: &LiveConfig,
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
 ) -> Result<RunReport> {
+    let host_light = host.host_light;
+    if host_light {
+        anyhow::ensure!(
+            live.enabled
+                && host.gfx.is_none()
+                && host.gfx_view.is_none()
+                && !host.render_thread
+                && std::env::var_os("H2_BOOT_GFX").is_none(),
+            "light host requires enabled networking and no graphics backend (unset H2_BOOT_GFX)"
+        );
+        anyhow::ensure!(
+            opts.d3d && opts.bink && opts.dsound && opts.xapi,
+            "light host requires the guest D3D, Bink, DirectSound and XAPI shims"
+        );
+        anyhow::ensure!(
+            sim.is_none() && std::env::var_os(sim::ENV).is_none_or(|v| v.is_empty()),
+            "light host uses the network lobby; unset H2_SIM"
+        );
+        anyhow::ensure!(
+            host.level.is_none() && std::env::var_os("H2_LEVEL").is_none_or(|v| v.is_empty()),
+            "light host starts in the network lobby; unset H2_LEVEL"
+        );
+    }
+    let bots = opts.xapi
+        && (!host_light
+            || host.host_bots
+            || std::env::var_os(bots::ENV).is_some_and(|v| !v.is_empty()));
+    d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
     // Either tier's module, by its own stamp (tier.rs).
     let Some(tier) = tier::module_tier(xbe_bytes, dylib) else {
@@ -951,6 +984,7 @@ fn run_configured(
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    cfg.mmap_disc = host_light;
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
     cfg.content_maps = new_maps::mounted_packages();
@@ -1149,7 +1183,7 @@ fn run_configured(
             packages: &packages,
             level,
             perf_level: perf_from == Some(level_boot::PerfFrom::Level),
-            xapi: opts.xapi,
+            bots,
         },
     )?;
     let (skulls_on, skulls_mp_on, skulls_custom_on, health_on) = (
@@ -1284,23 +1318,32 @@ fn run_configured(
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
     let pad = host.pad_speaker.take();
-    let ds = match (opts.dsound, host.audio_sink.take()) {
-        (false, _) => None,
-        (true, Some(open)) => Some(dsound_glue::install_with_sinks(
-            &loaded.runtime,
-            &k,
-            xbe_bytes,
-            open,
-            pad,
-        )?),
-        (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
+    // Use the same audio path in a deterministic sim A/B without the LAN
+    // lobby, the map mount changes, or a rendered control.
+    let clock_only_audio = host_light
+        || (sim_mode.is_some() && features.switches().feature("audio.clock-only", false));
+    let ds = if opts.dsound && clock_only_audio {
+        Some(dsound_glue::install_clock_only(&loaded.runtime, &k, xbe_bytes)?)
+    } else {
+        match (opts.dsound, host.audio_sink.take()) {
+            (false, _) => None,
+            (true, Some(open)) => Some(dsound_glue::install_with_sinks(
+                &loaded.runtime,
+                &k,
+                xbe_bytes,
+                open,
+                pad,
+            )?),
+            (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
+        }
     };
     if let Some(audio) = &ds
+        && !clock_only_audio
         && features.switches().audio_hrtf()
     {
         audio.mixer().lock().unwrap().set_hrtf(true);
     }
-    if let Some(input) = host.input.as_mut() {
+    if bots && let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
         input.add_backend(Box::new(bots::local::global().backend()));
     }
@@ -1320,8 +1363,11 @@ fn run_configured(
     };
     // Voice chat's communicator (docs/live/live-voice.md): off until a
     // microphone is chosen on the Voice screen.
-    let mut voice_link = xa.as_ref().and_then(|x| {
-        let game_mix = ds.as_ref().map(dsound_glue::Audio::mixer);
+    let mut voice_link = xa.as_ref().filter(|_| !host_light).and_then(|x| {
+        let game_mix = ds
+            .as_ref()
+            .filter(|_| !clock_only_audio)
+            .map(dsound_glue::Audio::mixer);
         voice_glue::install(
             &loaded.runtime,
             x,
@@ -1349,8 +1395,8 @@ fn run_configured(
     let pipeline =
         registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
     // Sim mode skips the render it would pipeline (both implement the frame).
-    let pipeline = if sim_mode.is_some() {
-        pipeline.disabled("sim mode skips the world render (sim-frame)")
+    let pipeline = if sim_mode.is_some() || host_light {
+        pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
     };
@@ -1377,6 +1423,7 @@ fn run_configured(
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
+            allow_bot_add: !host_light || core.bots_on,
             xa: xa.as_ref(),
             pipeline,
             coop_probe,
@@ -1423,6 +1470,17 @@ fn run_configured(
             host.perf_overlay.clone(),
         );
     }
+    if host_light {
+        let frame = feature::sim_frame::SimFrame::new(0)
+            .on_skip(d3d_diag::note_skipped_present);
+        anyhow::ensure!(
+            features.add(&frame).map_err(anyhow::Error::msg)?,
+            "light host requires sim-frame (H2_FEATURES)"
+        );
+    }
+    if let Some(a) = &agent {
+        host_metrics::install(&mut features, &a.agent, host_light)?;
+    }
     // Sim mode's render skip and metrics, and match.* on the agent.
     if let Some(s) = &sim_mode {
         s.install(&mut features)?;
@@ -1442,6 +1500,9 @@ fn run_configured(
     let installed = plan
         .install(&loaded.runtime)
         .context("installing the feature plan")?;
+    if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
+        anyhow::bail!("light host needs sim-frame: {why}");
+    }
     for n in &installed.notes {
         eprintln!("feature plan: {n}");
     }
@@ -1472,26 +1533,35 @@ fn run_configured(
         // A lockstep run compares schedules and movie pacing follows the
         // wall clock, so it skips them; so, by default, do level boots and
         // headless runs.
-        let why_off =
-            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless);
+        let why_off = if host_light {
+            Some("light host".into())
+        } else {
+            movies_glue::why_off(&opts.movies, lockstep_on, level_name.as_deref(), headless)
+        };
         let (_, hle) = movies_glue::install(
             &loaded.runtime,
             &opts.movies,
             &opts.disc,
             why_off.as_deref(),
-            ds.as_ref().map(dsound_glue::Audio::mixer),
+            ds.as_ref()
+                .filter(|_| !clock_only_audio)
+                .map(dsound_glue::Audio::mixer),
         );
         Some(hle)
     } else {
         eprintln!("movies: off (--no-bink: the original player runs)");
         None
     };
-    let tr = trace::install_bounded(
-        &loaded.runtime,
-        // Sim mode writes no kernel trace file (docs/runtime/sim.md §2).
-        if sim_mode.is_some() { None } else { opts.trace.as_deref() },
-        host.trace_limit.unwrap_or(usize::MAX),
-    )?;
+    let tr = if host_light {
+        None
+    } else {
+        Some(trace::install_bounded(
+            &loaded.runtime,
+            // Sim mode writes no kernel trace file (docs/runtime/sim.md §2).
+            if sim_mode.is_some() { None } else { opts.trace.as_deref() },
+            host.trace_limit.unwrap_or(usize::MAX),
+        )?)
+    };
     let mut m = kernel::Machine::new(
         Arc::clone(&loaded.runtime),
         Arc::clone(&k),
@@ -1503,7 +1573,7 @@ fn run_configured(
     m.max_transfers_per_slice = opts.transfers_per_slice;
     // H2_BOOT_REALTIME: hold the host back to real time (wall pacing); the
     // schedule is unchanged.
-    if std::env::var_os("H2_BOOT_REALTIME").is_some() {
+    if host_light || std::env::var_os("H2_BOOT_REALTIME").is_some() {
         m.pacer = Some(kernel::pacer::Pacer::real_time());
     }
     // Sim mode: the match's pace (unpaced by default).
@@ -1535,7 +1605,9 @@ fn run_configured(
         live: _live.as_deref(),
     };
     let mut rebuilders = kernel::snapshot::Rebuilders::new();
-    rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(&tr));
+    if let Some(tr) = &tr {
+        rebuilders.add(trace::KERNEL_CALL_RETURN, trace::rebuilder(tr));
+    }
     let shelf = agent.as_ref().and_then(|a| {
         // The running tier's own stamp: a fast-tier snapshot is not a clang one's.
         let stamp = match tier {
@@ -1835,7 +1907,9 @@ fn run_configured(
             eprintln!("stopgap used: #{o} {name} x{n}");
         }
     }
-    trace::flush(&tr);
+    if let Some(tr) = &tr {
+        trace::flush(tr);
+    }
     if std::env::var_os("H2_BOOT_MAPS").is_some() {
         let mem = loaded.runtime.memory();
         let mut ms: Vec<_> = mem.mappings().to_vec();
@@ -1876,7 +1950,7 @@ fn run_configured(
             first.join(" ")
         );
     }
-    {
+    if let Some(tr) = &tr {
         let t = tr.lock().unwrap();
         eprintln!("{} kernel calls; last 40:", t.total);
         for c in t

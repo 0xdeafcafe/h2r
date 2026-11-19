@@ -14,7 +14,7 @@ Live would choose and reserve the machine. The native game would run the match. 
 
 The host indices, local-user reconciliation, player configurations, countdown and remote-view waits are traced in the repo. A permanent nonspawning spectator role has no demonstrated retail path. A spectator workaround would need tests for respawn, team balance, objectives, score, results and capacity. The theater design proposes viewing a stream outside the session. [Phantom session implementation](../../crates/bots/src/phantom/session.rs) · [Local players and remote peers](../game/bots.md) · [Theater spectator options](../game/theater.md)
 
-**Headless today.** The fast sim boots straight into a *local* map with one to four bot controllers. Its render skip preserves timing and menus, and it can pace to real time. It bypasses the network lobby. Ordinary `h2 serve` runs the full title without a window, including the guest render front end. The new `--system-link` switch enables XNet there. Only after a successful networked game should we reuse the sim’s world-render skip separately from its local roster, level boot and stop conditions. [Sim setup](../../crates/boot/src/sim_glue.rs) · [Direct path and render costs](../runtime/sim.md) · [Headless CLI](../../crates/cli/src/boot_cmd.rs)
+**Headless today.** The fast sim boots straight into a *local* map with one to four bot controllers. Ordinary `h2 serve` runs the full title without a window, including the guest render front end. `--system-link` enables XNet for the retail lobby. The light host reuses the sim’s world-render skip while running that same lobby. [Sim setup](../../crates/boot/src/sim_glue.rs) · [Direct path and render costs](../runtime/sim.md) · [Headless CLI](../../crates/cli/src/boot_cmd.rs)
 
 **What Clankermatch proves.** Live supplies a hopper and bot roster. An empty search induces the *player console* to form the target session. The party and target can differ. The host can add a phantom as a remote machine and player, borrowing a local configuration and injecting its controls. Its channel is absent, so its special start handling bypasses waits that real clients must satisfy. Zero local **bots** still leaves a human profile. Runs that hit a controller-unplugged prompt demonstrate why a changed slot count cannot establish a working launch. [Clankermatch implementation](../../crates/boot/src/clankermatch.rs) · [Hosting and observed start failures](../game/bots.md)
 
@@ -43,6 +43,67 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 
 **Sizing is provisional.** The two-bot result supplied for this design, 2.8× unpaced at 30 ticks/s, gives 84 ticks/s or **11.9 ms/tick**. If CPU-bound, that uses about 36% of one comparable serial core when paced. If 10–20% of that work scales linearly with player count, sixteen seats cost 11.9 × (1 + 7f) with f = 0.10–0.20, or **20–29 ms/tick** (about **0.61–0.86 of a comparable core**), before network replication. At about 26% scalable work the 33.3 ms budget is already exhausted. Remote humans replace bot thinking with real replication and acknowledgement work. The sim design budgets roughly **1 GB/process** including guest RAM, module and caches. Sixteen-player CPU and peak RSS are unmeasured. Trial one sustained core and 2 GiB, then two cores and 4 GiB. Extra cores can handle other threads. One slow simulation thread can still miss its deadline. [Sim cost model and report](../runtime/sim.md#10-expected-speed-up) · [Report fields](../../crates/sim/src/metrics.rs)
 
+## Light host
+
+Run `h2 serve --system-link --host-light` with the existing prebuilt image.
+An operator still uses the retail lobby to create and start the game. The
+machine-only lobby and remote join lifecycle above still need a game run.
+
+| Area | What the profile does and why |
+|---|---|
+| World, HUD, effects | `sim-frame` skips every steady-state world call to `0x00223240`. This drops the world, HUD, and effect draw paths reached there. It calls `0x0012b2e0` for the frame clock, advances counters at `0x00485aa0` and `0x004ba034`, and clears `0x004e6098`. Guest effect updates stay because the tick reads the counters. The software D3D shim keeps display timing and device ABI, with no GPU, display presentation, or render thread. [Skip](../../crates/feature/src/sim_frame.rs) · [Read-back census](../runtime/sim.md#2-what-can-be-skipped-and-what-cant) |
+| UI and movies | Bink takes the existing skip return, including intro, attract and credits. The lobby and loading frames keep the guest menu path and cache housekeeping. Animation has a tick-side request at `0x001236f0` and a render-side load at `0x001237e0`. Test animation-driven hit and melee behaviour in a real match. [Movie mode](../../crates/boot/src/movies_glue.rs) · [Animation dependency](../graphics/pipelined-render.md#the-new-dependency-sites) |
+| Audio | The guest polls buffer status and position and waits for stream events. `StreamGetStatus` at `0x0037f591` has a pause bit read at `0x002ae4c4`. The same logical 256-frame grid advances cursors and delivers status, events and callbacks with no sample mixing, output queue, sink or output thread. `SetBufferData` and PCM/ADPCM stream packets validate the guest ranges without reading their sample bytes in DirectSound. Machine snapshots are unavailable with this audio profile because their audio section contains samples. [DirectSound state](../../crates/dsound/src/state.rs) · [Output clock](../../crates/dsound/src/output.rs) |
+| Map I/O | The world skip avoids render-initiated texture streaming in steady state. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/vfs/src/disc.rs) · [Directory reads](../../crates/vfs/src/dir_disc.rs) · [Cache copy](../../crates/boot/src/map_copy.rs) · [Codec](../../crates/dsound/src/xwma.rs) |
+| Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/src/guest.rs) · [Module loading and boot](../../crates/boot/src/lib.rs) |
+| Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/kernel/src/pacer.rs) · [XNet sockets](../../crates/live-hle/src/network.rs) |
+| Bots and telemetry | `--host-bots` enables bot support for explicit adds. `H2_BOTS` also opts in and supplies the roster. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/boot/src/registration.rs) · [Telemetry configuration](../../crates/live-telemetry/src/config.rs) |
+
+For a quiet, low-population game, use **12 ms of game-thread CPU per tick**
+as the first sizing target (about **0.36 of one core** at 30 Hz) and
+**1 GiB RSS per process** as the provisional memory allowance. These are
+planning figures from the two-bot sim and the earlier process allowance.
+Replication, map loads and the map itself can move either number. RSS counts
+shared pages in each process. Measure the fleet’s incremental RAM separately
+before sizing by game count.
+
+### Compare against ordinary headless serve
+
+Use the image, profile and port setup from the [Mac spike](#mac-system-link-spike).
+Use the same prebuilt image and map, matching warm cache state, roster and
+telemetry configuration for both trials. Stop both processes between trials
+and start the same client again. Run the control with `start_trial control`
+and the light trial with `start_trial light --host-light`.
+
+```sh
+start_trial() {
+  label=$1
+  shift
+  H2_BOOT_REALTIME=1 H2_XNET_ADDR="${lan}:31000" H2_XNET_LOOPBACK_PEERS="${lan}:31010"     "$H2_BIN" serve "$H2_DISC" --system-link "$@" --out "$trial/host-image" --tier clang     --data "$trial/host" --no-halo1 --no-mappack --socket tcp://127.0.0.1:14720     >"$trial/$label.log" 2>&1 &
+  host_pid=$!
+}
+host_agent() { "$H2_BIN" agent --socket tcp://127.0.0.1:14720 --timeout 100 "$@"; }
+```
+
+After joining and starting the same map in each trial, collect five
+non-overlapping 30-tick windows after the first 300 ticks.
+
+```sh
+for ticks in 300 360 420 480 540; do
+  host_agent wait "{"phase":"gameplay","map_ticks":$ticks}" 90000 >/dev/null &&
+    host_agent hostmetrics || break
+done | tee "$trial/$label-metrics.txt"
+```
+
+Compare `game_cpu_ms_per_tick`, `process_cpu_ms_per_tick`, `cpu_percent`
+and `rss_bytes`. Check `wall_ms_per_tick` against 33.3 ms. The match
+check is remote movement, hits, death and respawn, results, and a second
+round on the same host. The render consumes shared RNG at
+`0x001032a0`, so the rendered control and the light host can diverge in
+lockstep. For an isolated tick-hash comparison use two runs of the same sim
+match with `render_every = 0`, setting `H2_FEATURES=audio.clock-only` on one.
+Compare with `h2 lockstep` as in the [sim checks](../runtime/sim.md#first-runs).
+
 ## Routing, assignment and arbitration
 
 **Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live-server/src/relay.rs) · [Worker counterpart](../../crates/live-worker/src/relayroom.rs)
@@ -55,7 +116,7 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 
 1. Run the Mac control below. Advance only after a real remote client joins and its actions reach the authoritative world.
 2. Decouple machine ownership/ready/start from local player reconciliation in an isolated host mode. Exercise join, load, combat, results, a second round and last-client departure. If retail requires an owner profile, identify the first failing transition. A retained spectator needs explicit evidence for every slot and gameplay consequence.
-3. Reuse the sim’s gameplay render skip with network pacing. Compare normal and skipped runs on the same maps at 1, 4, 8 and 15 remote machines, including a 16-human split-screen case. Record p50/p95/p99 tick work, missed 33.3 ms deadlines, host CPU, RSS, packets/bytes and both startup intervals. Use agent `hostperf`, `capture`, `loads` and host OS resource counters (macOS `/usr/bin/time -l` for whole-process peak RSS and CPU).
+3. Reuse the sim’s gameplay render skip with network pacing. Compare normal and skipped runs on the same maps at 1, 4, 8 and 15 remote machines, including a 16-human split-screen case. Record p50/p95/p99 tick work, missed 33.3 ms deadlines, host CPU, RSS, packets/bytes and both startup intervals. Use agent `hostmetrics`, `capture`, `loads` and host OS resource counters (macOS `/usr/bin/time -l` for whole-process peak RSS and CPU).
 4. Once rights and Linux support are established, pilot Fly in one region with unranked games. Its public UDP path tests the title’s existing transport without first building a multiplayer relay. Compare actual routes and hit outcomes against peer hosts. Introduce fleet assignment, then ranked arbitration after remote identity and crash/no-contest checks pass.
 
 ## Mac System Link spike

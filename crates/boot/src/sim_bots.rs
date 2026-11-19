@@ -36,14 +36,16 @@ use input::host::HostPadState;
 /// The bots of one [`Local`], as sim calls them.
 pub struct LocalBots {
     local: Local,
+    allow_add: bool,
     /// The bot on each port sim asked for.
     handles: BTreeMap<u32, BotHandle>,
 }
 
 impl LocalBots {
-    pub fn new(local: Local) -> Self {
+    pub fn new(local: Local, allow_add: bool) -> Self {
         LocalBots {
             local,
+            allow_add,
             handles: BTreeMap::new(),
         }
     }
@@ -169,6 +171,9 @@ fn brain_view(view: bots::BrainView) -> BotBrain {
 
 impl Bots for LocalBots {
     fn add_local(&mut self, port: Option<u32>, src: PadSource) -> Result<u32, String> {
+        if !self.allow_add {
+            return Err("light host bots are off; start with --host-bots".into());
+        }
         let wanted: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
         let port = match port {
             Some(p) => u8::try_from(p).map_err(|_| format!("port {p}: ports are 0 to 3"))?,
@@ -191,6 +196,9 @@ impl Bots for LocalBots {
         team: Option<i32>,
         src: PadSource,
     ) -> Result<u32, String> {
+        if !self.allow_add {
+            return Err("light host bots are off; start with --host-bots".into());
+        }
         let id = bots::phantom::Identity {
             xuid: xuid(&identity.xuid)?,
             gamertag: identity.gamertag.clone(),
@@ -326,7 +334,7 @@ mod tests {
         local
             .add(1, "Clanker 1", Box::new(bots::Brain::default()))
             .unwrap();
-        let mut b = LocalBots::new(local.clone());
+        let mut b = LocalBots::new(local.clone(), true);
         assert_eq!(
             b.add_local(None, PadSource::Script(Remote::new())),
             Ok(2),

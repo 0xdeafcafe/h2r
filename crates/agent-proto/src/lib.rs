@@ -146,6 +146,8 @@ pub mod method {
     pub const SAMPLE_STATUS: &str = "profile.sample.status";
     /// The newest host perf line (`boot::host_perf`).
     pub const HOST_PERF: &str = "host.perf";
+    /// Recent tick cost and process resource use.
+    pub const HOST_METRICS: &str = "host.metrics";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";

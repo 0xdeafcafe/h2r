@@ -396,6 +396,7 @@ impl Default for Listener3d {
 pub struct DirectSound {
     mixer: Arc<Mutex<Mixer>>,
     layout: Layout,
+    clock_only: bool,
     objects: HashMap<u32, Object>,
     root: Option<u32>,
     mix_bin_headroom: [u32; 32],
@@ -445,6 +446,7 @@ impl DirectSound {
         Self {
             mixer,
             layout,
+            clock_only: false,
             objects: HashMap::new(),
             root: None,
             mix_bin_headroom: [0; 32],
@@ -462,6 +464,16 @@ impl DirectSound {
             voice_rings: None,
             pad_router: None,
         }
+    }
+
+    /// Dedicated hosts need cursor/status polling and packet callbacks, but
+    /// have no consumer for the sample data.
+    pub(crate) fn set_clock_only(&mut self) {
+        self.clock_only = true;
+    }
+
+    pub(crate) fn clock_only(&self) -> bool {
+        self.clock_only
     }
 
     /// Installs (or with `None` removes) the controller-speaker router. Voices
@@ -1074,7 +1086,7 @@ impl DirectSound {
             h.write_u32(at(base, 0x10)?, flags)?;
         }
         let raw = h.read_vec(at(base, dest_off)?, dest_len)?;
-        if ty == EFFECT_TYPE_I3DL2 && self.reverb_index == Some(index) {
+        if !self.clock_only && ty == EFFECT_TYPE_I3DL2 && self.reverb_index == Some(index) {
             // The game's environment for the I3DL2 send (Halo: effect 9).
             let mut w = [0u32; 12];
             w.copy_from_slice(&words);
@@ -1193,7 +1205,12 @@ impl DirectSound {
                 h.free(p);
                 return Err(e.into());
             }
-            let sb = match SoundBuffer::new(fmt, d.buffer_bytes as usize) {
+            let buffer = if self.clock_only {
+                SoundBuffer::for_clock(fmt, d.buffer_bytes as usize)
+            } else {
+                SoundBuffer::new(fmt, d.buffer_bytes as usize)
+            };
+            let sb = match buffer {
                 Ok(sb) => sb,
                 Err(_) => {
                     h.free(p);
@@ -1290,7 +1307,11 @@ impl DirectSound {
         } else {
             default_mix_bins(d.flags, format.channels() as usize)
         };
-        let mut stream = Stream::new(format).map_err(|_| unimpl("stream format"))?;
+        let mut stream = if self.clock_only {
+            Stream::for_clock(format)
+        } else {
+            Stream::new(format).map_err(|_| unimpl("stream format"))?
+        };
         stream.set_mix_bins(Some(mix_bins.clone()));
         let mix_bins = VoiceBins::from_pairs(&mix_bins);
         let audio = self.mixer.lock().unwrap().add_stream(stream);
@@ -1484,9 +1505,15 @@ impl DirectSound {
         {
             return Ok(S_OK);
         }
-        let data = h.read_vec(pv, bytes)?;
-        let output = next_output(VoiceOutput::Main, self.classify(&data), true);
-        let sb = SoundBuffer::from_data(fmt, data).map_err(|_| unimpl("SetBufferData contents"))?;
+        let (buffer, output) = if self.clock_only {
+            h.check_samples(pv, bytes)?;
+            (SoundBuffer::for_clock(fmt, bytes as usize), VoiceOutput::Main)
+        } else {
+            let data = h.read_vec(pv, bytes)?;
+            let output = next_output(VoiceOutput::Main, self.classify(&data), true);
+            (SoundBuffer::from_data(fmt, data), output)
+        };
+        let sb = buffer.map_err(|_| unimpl("SetBufferData contents"))?;
         let b = self.buf(ptr)?;
         b.output = output;
         let mut m = mixer.lock().unwrap();
@@ -1521,10 +1548,14 @@ impl DirectSound {
     /// Re-reads the guest bytes into the audio buffer.
     fn resync(&mut self, h: &dyn crate::host::GuestMemory, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
+        let clock_only = self.clock_only;
         let b = self.buf(ptr)?;
         let (Some(d), Some(id)) = (&b.data, b.audio) else {
             return Ok(());
         };
+        if clock_only {
+            return h.check_samples(d.ptr, d.size).map_err(Into::into);
+        }
         let bytes = h.read_vec(d.ptr, d.size)?;
         if let Some(sb) = mixer.lock().unwrap().buffer_mut(id) {
             sb.lock_all()
@@ -1887,7 +1918,12 @@ impl DirectSound {
         if at_capacity {
             return Ok(DSERR_INVALIDCALL);
         }
-        let bytes = h.read_vec(pkt.buffer, pkt.max_size)?;
+        let bytes = if self.clock_only {
+            h.check_samples(pkt.buffer, pkt.max_size)?;
+            None
+        } else {
+            Some(h.read_vec(pkt.buffer, pkt.max_size)?)
+        };
         let align = {
             let mut m = mixer.lock().unwrap();
             let st = m.stream_mut(audio).ok_or(Stop::BadHandle {
@@ -1896,7 +1932,7 @@ impl DirectSound {
             })?;
             st.format().block_align()
         };
-        if bytes.len() % align != 0 {
+        if pkt.max_size as usize % align != 0 {
             return Ok(E_INVALIDARG);
         }
         // Writes first: nothing is queued if the guest's pointers fault.
@@ -1909,9 +1945,9 @@ impl DirectSound {
         // Zero-length packets stay out of the audio crate (it would complete
         // them ahead of earlier packets); `service_stream` releases them in
         // order.
-        let class = self.classify(&bytes);
+        let class = self.classify(bytes.as_deref().unwrap_or_default());
         let positional = self.stream_positional(ptr);
-        let id = if bytes.is_empty() {
+        let id = if pkt.max_size == 0 {
             None
         } else {
             let mut m = mixer.lock().unwrap();
@@ -1926,7 +1962,11 @@ impl DirectSound {
             } else {
                 output
             });
-            match st.submit(&bytes) {
+            let queued = match bytes.as_deref() {
+                Some(bytes) => st.submit(bytes),
+                None => st.submit_for_clock(pkt.max_size as usize),
+            };
+            match queued {
                 Ok(id) => Some(id),
                 Err(_) => return Ok(E_INVALIDARG),
             }
@@ -2494,10 +2534,17 @@ impl DirectSound {
         if !self.holds(lease) {
             return Err(Stop::Consumer(self.conflict(lease.who)));
         }
-        self.mixer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .render_split(out, side);
+        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        if self.clock_only {
+            out.fill(0.0);
+            if let Some(side) = side {
+                side.fill(0.0);
+            }
+            mixer.advance_clock(out.len() / 2);
+        } else {
+            mixer.render_split(out, side);
+        }
+        drop(mixer);
         self.service_all(h).map(|_| ())
     }
 
@@ -2577,13 +2624,22 @@ impl DirectSound {
     }
 
     fn render_discard(&mut self, frames: u64) {
-        let mut scratch = vec![0.0f32; 2 * RENDER_CHUNK as usize];
-        let mut left = frames;
         let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
-        while left > 0 {
-            let n = left.min(RENDER_CHUNK);
-            mixer.render(&mut scratch[..2 * n as usize]);
-            left -= n;
+        if self.clock_only {
+            let mut left = frames;
+            while left > 0 {
+                let n = left.min(RENDER_CHUNK);
+                mixer.advance_clock(n as usize);
+                left -= n;
+            }
+        } else {
+            let mut scratch = vec![0.0f32; 2 * RENDER_CHUNK as usize];
+            let mut left = frames;
+            while left > 0 {
+                let n = left.min(RENDER_CHUNK);
+                mixer.render(&mut scratch[..2 * n as usize]);
+                left -= n;
+            }
         }
         self.frames_rendered += frames;
     }

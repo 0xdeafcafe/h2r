@@ -131,9 +131,10 @@ environment variable read at launch (**Code**: no listener outside
   "frame_budget_miss", …])` streams notifications, so a client waits on
   "the skulls page opened" instead of polling.
 - **Headless.** `h2 serve` is `h2 run` with the agent socket on, no window,
-  render optional, and a speed control (`time_scale`, or "as fast as the
-  sim allows"). It is the shared instance agents use; see
-  [the decision](#open-decisions) on who starts it.
+  optional GPU rendering and optional real-time pacing (`H2_BOOT_REALTIME=1`).
+  `h2 serve --system-link --host-light` always paces to real time. It is the
+  shared instance agents use. The [dedicated host guide](../live/dedicated-host.md#light-host)
+  describes the profile and the measurement procedure.
 
 Method names are `domain.verb`. Every reply has the stamp:
 
@@ -151,12 +152,34 @@ Method names are `domain.verb`. Every reply has the stamp:
 | `session.status` | build id, image hash, disc map list, switches, phase, fps right now |
 | `session.claim` / `release` | take or give up control |
 | `session.pause` / `resume` / `step {ticks}` | freeze the sim; step exact ticks (render keeps presenting the paused frame) |
-| `session.speed {time_scale \| "max"}` | headless only: run faster than real time |
 | `session.wait {until: <predicate>, timeout_ticks}` | block until a predicate holds: `{"screen": "skulls"}`, `{"phase": "gameplay"}`, `{"tick": 50000}`, `{"hs_global": ["x", ">", 3]}` |
 | `session.subscribe {events}` | stream events |
 
 `wait` is the replacement for every "sleep and screenshot" loop: it is
 evaluated at the tick boundary, so it never misses a one-tick state.
+
+### `host.metrics`
+
+Read with `h2 agent hostmetrics`. This method takes no parameters. It
+reports the latest complete window of 30 intervals between returns from
+`GAME_TICK` (`0x00137fe0`). The first reading is available after 31 tick
+returns. Until then it returns `UNAVAILABLE`.
+
+| Field | Meaning |
+|---|---|
+| `ticks` | Tick intervals in the sample, currently 30 |
+| `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
+| `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
+| `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `cpu_percent` | Whole-process CPU over the wall interval. 100 means one fully used core |
+| `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux. This includes resident shared pages |
+| `age_ms` | Time since the sample ended |
+| `host_light` | Whether the process uses the light host profile |
+
+A platform counter that is unavailable is returned as `null`. Compare
+active gameplay windows after loading. A stale sample can survive a gap in
+ticks. The CPU fields exclude sleeping. The wall field shows the pace the
+host actually sustained. [Tick sampler](../../crates/boot/src/host_metrics.rs)
 
 ### `ui`: what the menus and HUD show
 

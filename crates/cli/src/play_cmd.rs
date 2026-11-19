@@ -371,6 +371,8 @@ fn hosted(
         eprintln!("play: field of view {fov} degrees");
     }
     boot::Host {
+        host_light: false,
+        host_bots: false,
         gfx: Some(gfx),
         gfx_view: view,
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as

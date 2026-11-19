@@ -838,8 +838,8 @@ fn all_black(px: &[u8]) -> bool {
 }
 
 /// The headless default: a `RecordingBackend` that forgets every call once
-/// it returns, except the surface creations and destructions its
-/// `destroy_surface` checks against. Without this the recorder would hold
+/// it returns, except the live surface records its `destroy_surface`
+/// checks against. Without this the recorder would hold
 /// a copy of every draw (streams included) for the whole run; the report's
 /// draw counts come from `DiagBackend`.
 #[derive(Default)]
@@ -879,7 +879,14 @@ impl d3d::backend::Backend for Headless {
         self.0.create_surface(format, width, height, depth)
     }
     fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
-        self.0.destroy_surface(surface)
+        self.0.destroy_surface(surface)?;
+        // The recorder just checked the handle. Drop both records so maps
+        // can cycle without accumulating a history of dead surfaces.
+        self.0.calls.pop();
+        self.0.calls.retain(|c| {
+            !matches!(c, d3d::backend::Recorded::Surface { id, .. } if *id == surface)
+        });
+        Ok(())
     }
     fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
         let r = self.0.upload_texture(texture);
@@ -1808,6 +1815,6 @@ mod tests {
         assert_eq!(b.held(), 1, "only the surface creation is held");
         b.destroy_surface(s).unwrap();
         assert!(b.destroy_surface(s).is_err(), "destroy is still checked");
-        assert_eq!(b.held(), 2);
+        assert_eq!(b.held(), 0);
     }
 }
