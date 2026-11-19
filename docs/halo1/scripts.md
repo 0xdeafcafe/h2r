@@ -223,8 +223,8 @@ Coverage, share of builtin calls (`translation_coverage`):
 | d40 | 4,059 | 84.3% | 0.1% | 5.0% | 10.6% | 56 |
 | **all** | **33,737** | **82.0%** | **0.4%** | **6.1%** | **11.5%** | **139** |
 
-Missing builtins by calls across the campaign (top 40 of 139; 3,882 calls in
-all; the test prints the full list with signatures):
+The original coverage survey counted these missing calls (top 40 of 139,
+3,882 calls in all). Command-list operations have since gained adapters.
 
 sound_impulse_time 493 (now renamed, above), ai_magically_see_players 180, ai_conversation 169,
 ai_command_list 150, ai_go_to_vehicle 143, recording_play 141,
@@ -240,7 +240,7 @@ unit_set_seat 42, ai_try_to_fight 37, ai_conversation_status 34,
 unit_enter_vehicle 32, enable_hud_help_flash 30, ai_conversation_stop 29,
 ai_vehicle_enterable_distance 27, ai_dialogue_triggers 27.
 
-They group into: recordings (`recording_*`), command lists (`ai_command_list*`,
+The historical gaps group into recordings (`recording_*`), command lists (`ai_command_list*`,
 which Halo 2 replaced with command scripts), conversations (`ai_conversation*`),
 the Halo 1 HUD help and objective text, encounter-level AI control
 (`ai_magically_see_players`, `ai_follow_target_*`, `ai_retreat`,
@@ -280,7 +280,7 @@ retail compiler writes them; literals keep their source type.
   expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it,
   except the status queries in `compile::DONE_VALUES`, which return the
   value every use in the ten levels reads as done (`ai_conversation_status`
-  5, `ai_command_list_status` 2, `game_all_quiet` and `game_safe_to_speak`
+  5, `game_all_quiet` and `game_safe_to_speak`
   true, `hud_get_timer_ticks` 32767 so d40's escape timer never runs out,
   `ai_conversation_line` 99, past any line, for b30), so a `sleep_until`
   on them ends;
@@ -289,6 +289,16 @@ retail compiler writes them; literals keep their source type.
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
   `missing_globals` (4 across the campaign).
+- **Built. Command lists.** `ai_command_list` starts a generated Halo 2
+  command script with `cs_run_command_script`. The by-unit form resolves
+  the actor with `object_get_ai`. A command-list literal becomes a typed
+  `ai_command_script` value. The advance calls deliver a signal to each
+  addressed actor. Status returns the highest state in the object list:
+  idle (0), recently finished (1), waiting for advance (2), running (3).
+  Completion lasts through tick 150 after removal. The state belongs to
+  the salted unit and command instance in checkpointed HS globals.
+  The engine's write-back notification is `0x20a490`, and command removal
+  is `0x258540`. See [command scripts](ai.md#command-scripts).
 - **Sleeping forever**: Halo 1's `(sleep -1)` sleeps until a `wake`,
   and `(sleep -1 <script>)` puts another script to sleep that way (S:
   Halo 1's scripting reference; the levels use it so: a10's continuous

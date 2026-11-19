@@ -8,6 +8,8 @@
 //! token in the string data, hold a placeholder value, and are listed as
 //! [`Hook`]s the converter fills in.
 
+mod commands;
+
 use std::collections::HashMap;
 
 use hs::{Datum, Node};
@@ -98,21 +100,18 @@ pub const SKIP_GUARD: &str = "cinematic_skip_start";
 
 /// Under [`Cutscenes::Skip`], `(wake from)` becomes `(wake to)` when the
 /// level has both scripts. a10: the cryo tutorial (normal difficulty, single
-/// player) disables input and waits on look and movement tests and command
-/// lists Halo 2 lacks; the fast setup is the path Halo 1 takes in co-op
-/// and on other difficulties, and gives control back.
+/// player) disables input and waits on look and movement tests. The fast
+/// setup is the path Halo 1 takes in co-op and on other difficulties.
 pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 
 /// What a stubbed status query returns under [`Missing::Stub`] instead of
 /// zero, where zero would hold a `sleep_until` forever. Every use in the
 /// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
 /// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
-/// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
-/// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
+/// `(< 2 s)`. The quiet and safe-to-speak tests
 /// are true; the HUD timer never runs out; a conversation is past any line.
 pub const DONE_VALUES: &[(&str, i32)] = &[
     ("ai_conversation_status", 5),
-    ("ai_command_list_status", 2),
     ("game_all_quiet", 1),
     ("game_safe_to_speak", 1),
     // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
@@ -295,7 +294,9 @@ pub fn compile_with(
     resolves: &dyn Fn(&str, &str) -> bool,
     reference_names: &[String],
 ) -> Result<Compiled> {
+    let commands = commands::Program::new(t, h1)?;
     let mut c = Compiler {
+        commands: &commands,
         t,
         h1,
         table,
@@ -321,6 +322,7 @@ pub fn compile_with(
             .scripts
             .push(definition(&s.name, s.kind, ty, root, i)?);
     }
+    c.generate_commands()?;
     c.out.references = t
         .references
         .iter()
@@ -437,6 +439,7 @@ fn definition(name: &str, a: u16, b: u16, root: Datum, i: usize) -> Result<[u8; 
 }
 
 struct Compiler<'a> {
+    commands: &'a commands::Program,
     t: &'a Tables,
     h1: &'a Catalog,
     table: &'a Table,
@@ -847,6 +850,10 @@ impl Compiler<'_> {
             .table
             .builtin(index)
             .ok_or_else(|| invalid("no translation"))?;
+        if f.name.starts_with("ai_command_list") {
+            return self.command_builtin(&f.name, &args, expected)?
+                .ok_or_else(|| invalid(format!("invalid command list call {}", f.name)));
+        }
         if matches!(f.name.as_str(), "=" | "<" | ">" | "<=" | ">=")
             && let Some(d) = self.status_compare(&f.name, &args, expected)?
         {
@@ -1080,6 +1087,9 @@ impl Compiler<'_> {
         }
         let h1_source = n.opcode();
         let bits = n.data();
+        if self.h1.type_name(h1_source)? == "ai_command_list" {
+            return self.command_literal(bits as u16, expected);
+        }
         let scalar = match h1_source {
             types::VOID => Some(h2t::VOID),
             types::BOOLEAN => Some(h2t::BOOLEAN),

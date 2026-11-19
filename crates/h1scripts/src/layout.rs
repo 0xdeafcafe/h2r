@@ -80,6 +80,8 @@ pub struct SyntaxHeader {
 /// Every script table of one scenario.
 #[derive(Debug, Clone)]
 pub struct Tables {
+    /// Scenario command lists and their symbolic operands.
+    pub commands: crate::commands::Lists,
     /// The syntax data header.
     pub header: SyntaxHeader,
     /// Every node slot; salt zero is free.
@@ -98,7 +100,9 @@ impl Tables {
     /// The scenario's tables.
     pub fn read(map: &H1Map) -> Result<Self> {
         let scnr = map.tag_data(map.scenario())?;
-        Self::decode(scnr, &map.tag_space())
+        let mut tables = Self::decode(scnr, &map.tag_space())?;
+        tables.commands.resolve(map)?;
+        Ok(tables)
     }
 
     /// The tables of the scenario `scnr`, whose blocks point into `space`.
@@ -156,6 +160,7 @@ impl Tables {
             .map(|b| TagRef::read(b, 0x18).ok_or_else(|| invalid("reference")))
             .collect::<Result<_>>()?;
         Ok(Self {
+            commands: crate::commands::Lists::decode(scnr, space)?,
             header,
             nodes,
             strings,
@@ -238,7 +243,7 @@ fn decode_syntax(b: &[u8]) -> Result<(SyntaxHeader, Vec<Node>)> {
     Ok((SyntaxHeader { capacity, count }, nodes))
 }
 
-fn name(b: &[u8]) -> Result<String> {
+pub(crate) fn name(b: &[u8]) -> Result<String> {
     let raw = &b[..32];
     let end = raw.iter().position(|&c| c == 0).unwrap_or(32);
     String::from_utf8(raw[..end].to_vec()).map_err(|_| invalid("non-UTF-8 name"))

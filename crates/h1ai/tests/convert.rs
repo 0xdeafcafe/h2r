@@ -126,6 +126,7 @@ fn invented() -> H1Ai {
             name: "walk".into(),
             flags: 0,
             manual_bsp: 0,
+            bsp: 2,
             atoms: vec![Atom {
                 kind: 1,
                 modifier: 0,
@@ -227,20 +228,11 @@ fn encounters_become_groups_zones_squads_and_orders() {
         [0, 1]
     );
 
-    // The command list: a point set and an order stub of its name, and its
-    // atoms for the scripts lane.
+    // Commands use the scripting point set. Only squad orders occupy the order table.
     assert_eq!(ai.point_sets[0].name, "walk");
     assert_eq!(ai.point_sets[0].points[1].position, [5.0, 6.0, 7.0]);
     assert_eq!(ai.point_sets[0].points[1].surface, 8);
-    assert!(
-        ai.orders
-            .iter()
-            .any(|o| o.name == "walk" && o.primary_areas.is_empty())
-    );
-    assert_eq!(
-        plan.command_scripts[0].atoms,
-        [("atom 1".to_owned(), [1, -1])]
-    );
+    assert!(!ai.orders.iter().any(|o| o.name == "walk"));
 }
 
 #[test]
@@ -255,6 +247,20 @@ fn a_built_plan_reads_back_unchanged() {
         "{:#?}",
         back.check_indices()
     );
+}
+
+#[test]
+fn placement_list_reads_back_as_a_command_script() {
+    let mut src = invented();
+    src.encounters[0].squads[0].starting_locations[0].command_list = 0;
+    let plan = convert(&src, &Options { first_command_script: Some(23), ..Default::default() });
+    let (back, _) = build_and_read(&plan);
+    let starts = &back.squads[0].starting_locations;
+    assert_eq!(starts[0].placement_script, "h1_cmd_0");
+    assert_eq!(starts[0].placement_script_index, 23);
+    assert_eq!(starts[1].placement_script_index, -1);
+    assert!(starts[1].placement_script.is_empty());
+    assert_eq!(back.point_sets[0].bsp, 2);
 }
 
 #[test]

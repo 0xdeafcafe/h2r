@@ -95,6 +95,9 @@ pub struct StartingLocation {
     pub grenade_type: u16,
     /// Swarm count (`i16 +0x2e`).
     pub swarm_count: i16,
+    /// The command script to start on placement, name and compiled HS index.
+    pub placement_script: String,
+    pub placement_script_index: i16,
     /// Emitter vehicle, `-1` none (`i16 +0x3c`).
     pub emitter_vehicle: i16,
 }
@@ -357,6 +360,8 @@ impl ScenarioAi {
                             grenade_type: u16_at(s, 0x2c),
                             swarm_count: i16_at(s, 0x2e),
                             emitter_vehicle: i16_at(s, 0x3c),
+                            placement_script: name32(s, 0x40),
+                            placement_script_index: i16_at(s, 0x60),
                         })
                         .collect(),
                 })

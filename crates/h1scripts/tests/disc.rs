@@ -1,5 +1,5 @@
 //! Opt-in checks against the owner's discs. Set `H1_ISO` (default
-//! `disc/halo1.iso`) and `H2_ISO` (default `disc/halo2.iso`). Nothing read
+//! `disc/halo1.iso`) and `H2_DISC` (default `disc/halo2.iso`). Nothing read
 //! here is written to the repository; summaries go to stdout.
 use std::{fs::File, io::BufReader, path::PathBuf};
 
@@ -74,7 +74,7 @@ fn every_campaign_script_decompiles() {
 }
 
 fn h2() -> h1scripts::translate::Target {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = std::env::var_os("H2_DISC").map(PathBuf::from).unwrap_or_else(|| disc("H2_ISO", "halo2.iso"));
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -178,7 +178,7 @@ fn translation_coverage() {
 }
 
 fn h2_catalog() -> hs::Catalog {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = std::env::var_os("H2_DISC").map(PathBuf::from).unwrap_or_else(|| disc("H2_ISO", "halo2.iso"));
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -208,8 +208,13 @@ fn every_campaign_script_compiles_and_round_trips() {
             let s = hs::Scenario::decode(&bytes, BASE).unwrap_or_else(|e| panic!("{name}: {e}"));
             s.verify_codec_symmetry(&bytes, BASE).unwrap();
             assert_eq!(s.nodes().len(), c.nodes.len());
-            assert_eq!(s.scripts().len(), t.scripts.len());
-            assert_eq!(s.globals().len(), t.globals.len());
+            assert_eq!(s.scripts().len(), t.scripts.len() + t.commands.lists.len(), "{name}");
+            for (i, def) in s.scripts()[t.scripts.len()..].iter().enumerate() {
+                assert_eq!(def.name().unwrap(), h1ai::h1::command_script_name(i));
+                assert_eq!((def.kind(),def.return_type()),(5,4));
+            }
+            assert!(s.globals().len() >= t.globals.len());
+            assert!(c.missing.iter().all(|u| !u.name.starts_with("ai_command_list")), "{name}");
             let reached = s.reachable(s.roots()).unwrap().len();
             assert_eq!(reached, c.nodes.len(), "{name}: unreached nodes");
             if policy == Missing::Stub {
@@ -233,8 +238,8 @@ fn every_campaign_script_compiles_and_round_trips() {
 }
 
 /// Under `Cutscenes::Skip`, per level: no call of the skip guard is left
-/// (each became `false`), the stubbed conversation and command list
-/// statuses read as done, and every node is still reached. a10's `(wake tutorial_setup)` wakes `fast_setup`, by its index.
+/// (each became `false`), and every node is still reached. a10's
+/// `(wake tutorial_setup)` wakes `fast_setup`, by its index.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn skipped_cutscenes_on_every_level() {

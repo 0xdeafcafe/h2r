@@ -86,6 +86,7 @@ pub struct Catalog {
     script_kinds: Vec<String>,
     /// The parse function shared by fixed-signature builtins.
     ordinary_parse: u32,
+    pub(crate) dialogue_fallback: Vec<i16>,
 }
 
 impl Catalog {
@@ -131,11 +132,18 @@ impl Catalog {
         if x.read_u32(TYPE_NAMES + 4 * TYPE_COUNT as u32)? >= 0x1_0000 {
             return Err(invalid("value type table is not 49 entries: unknown XBE"));
         }
-        Self::new(
+        let mut catalog = Self::new(
             functions,
             names(TYPE_NAMES, TYPE_COUNT)?,
             names(SCRIPT_KIND_NAMES, SCRIPT_KIND_COUNT)?,
-        )
+        )?;
+        // H1 0x46a55 follows this signed slot index when the sound is absent.
+        catalog.dialogue_fallback = x
+            .bytes_at(0x1e0720, 512)?
+            .chunks_exact(2)
+            .map(|v| i16::from_le_bytes([v[0], v[1]]))
+            .collect();
+        Ok(catalog)
     }
 
     /// A catalog from its parts, checked: every type index in range, every
@@ -169,6 +177,7 @@ impl Catalog {
             types,
             script_kinds,
             ordinary_parse,
+            dialogue_fallback: Vec::new(),
         })
     }
 

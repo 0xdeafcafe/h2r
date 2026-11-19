@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod catalog;
+pub mod commands;
 pub mod compile;
 pub mod decompile;
 pub mod identified;

@@ -1057,7 +1057,8 @@ pub fn write(
     let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
     // h1ai keeps squads with no starting locations (empty) so scripts can
     // name them; only those the scripts name are worth their room.
-    let named = h1scripts::Tables::read(h1)
+    let source_tables = h1scripts::Tables::read(h1);
+    let named = source_tables.as_ref()
         .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
         .unwrap_or_default()
         .into_iter()
@@ -1096,8 +1097,12 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
-    let plan = h1map::phase::time("ai", || {
-        h1ai::convert::convert(&ai_src, &Default::default())
+    let mut plan = h1map::phase::time("ai", || {
+        let first_command_script = opts.scripts
+            .and_then(|_| source_tables.as_ref().ok())
+            .and_then(|t| u16::try_from(t.scripts.len()).ok());
+        let options = h1ai::convert::Options { first_command_script, ..Default::default() };
+        h1ai::convert::convert(&ai_src, &options)
     });
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
@@ -1105,6 +1110,20 @@ pub fn write(
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));
+    }
+    if opts.ai && opts.scripts.is_some()
+        && source_tables.as_ref().is_ok_and(|t| !t.commands.timing.is_empty())
+    {
+        let squads = ai_src.encounters.iter().flat_map(|e| &e.squads);
+        for (src, dst) in squads.zip(&mut plan.ai.squads) {
+            let locations = src.starting_locations.iter().zip(&mut dst.starting_locations);
+            for (i, (source, target)) in locations.enumerate() {
+                let variant = if source.actor >= 0 { source.actor } else { src.actor };
+                if variant >= 0 {
+                    target.name = set.intern(&h1scripts::commands::placement_name(variant, i))?;
+                }
+            }
+        }
     }
     let mut chars = Vec::new();
     let resolve = |p: &str| -> Option<TagId> {
@@ -1152,8 +1171,11 @@ pub fn write(
             notes: plan.notes.len(),
         });
     } else {
-        for (at, _, _) in blocks.fields {
+        for (at, count, data) in blocks.fields {
             put_block(&mut root, at, 0, Vec::new());
+            if opts.scripts.is_some() && at as usize == h1ai::h2::layout::SCRIPTING_DATA.0 && count > 0 {
+                root.block(at, count, data);
+            }
         }
     }
 
@@ -1841,18 +1863,18 @@ fn install_scripts(
     // The looping sounds (`lsnd`: music and ambience) the scripts start,
     // found by the tag-name lookup below.
     let (looping, looping_dropped, looping_bytes) = install_looping_sounds(h1, set, &c, music);
-    // Animation graphs the cutscenes name, and their animation names
-    // (crate::cutscenes).
-    // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
-    // are left out at `Lean::CutsceneData`.
-    // `cutscene_data` is `None` without either, `Some(false)` without the
-    // graphs.
+    // Lean modes may omit cinematic graphs and recordings. AI command
+    // scripts retain their graph dependencies and recording table indices.
     let graphs = match cutscene_data {
         Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
-        _ => Default::default(),
+        _ => crate::cutscenes::install_graph_hooks(h1, set, c.hooks.iter().filter(|h| {
+            h.h1_type == h1scripts::commands::ANIMATION_GRAPH
+        }))?,
     };
     let mut recordings = match cutscene_data {
         Some(_) => crate::cutscenes::read_recordings(h1)?,
+        None if t.commands.lists.iter().any(|l| l.atoms.iter().any(|a| a.kind == 14)) =>
+            crate::cutscenes::read_recordings(h1)?,
         None => Vec::new(),
     };
     // Halo 1's event streams in Halo 2's encoding (crate::recordings).
@@ -1903,6 +1925,9 @@ fn install_scripts(
         match h.type_name.as_str() {
             "string_id" => interned.get(&h.token).copied(),
             "sound" => sounds.get(&h.token).map(|id| id.0),
+            _ if h.h1_type == "command_voice_tag" => Some(tags_by_name
+                .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
+                .map_or(u32::MAX, |id| id.0)),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
@@ -1932,6 +1957,11 @@ fn install_scripts(
             );
         })
     });
+    if let Some(h) = left.iter().find(|h| {
+        h.h1_type == h1scripts::commands::ANIMATION_GRAPH || h.h1_type == "command_voice_sound"
+    }) {
+        return Err(invalid(format!("AI command {} {} could not be installed", h.type_name, h.token)));
+    }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
     for h in &left {
