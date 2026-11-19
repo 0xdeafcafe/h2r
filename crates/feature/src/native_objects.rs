@@ -193,8 +193,8 @@ fn add_walk(w: &WalkStats) {
     t.accepted += w.accepted;
     t.write_failed += w.write_failed;
     for &(b, n) in &w.other_builds {
-        match t.other_builds.iter_mut().find(|(x, _)| *x == b) {
-            Some((_, m)) => *m += n,
+        match t.other_builds.iter().position(|(x, _)| *x == b) {
+            Some(i) => t.other_builds[i].1 += n,
             None if t.other_builds.len() < 4 => t.other_builds.push((b, n)),
             None => {}
         }
