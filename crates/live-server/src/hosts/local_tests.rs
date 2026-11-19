@@ -46,6 +46,11 @@ fn command_passes_boot_values_verbatim_and_isolates_writable_data() {
             .unwrap();
         let decoded: HostLease = serde_json::from_str(encoded.unwrap().to_str().unwrap()).unwrap();
         assert_eq!(decoded, lease(id));
+        assert!(
+            cmd.get_envs()
+                .any(|(name, value)| name == OsStr::new("H2_HOST_PARENT_PIPE")
+                    && value == Some(OsStr::new("1")))
+        );
         let data = root.join("hosts").join(id);
         assert!(data.is_dir());
         let args: Vec<&OsStr> = cmd.get_args().collect();
@@ -160,22 +165,29 @@ async fn start_reuses_the_same_lease_and_releases_the_slot_on_stop() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn polling_forgets_an_exited_child() {
-    let provider = LocalProvider::new(crate::blobs::tests::temp_dir("host-exit"));
-    let mut child = Command::new("true").process_group(0).spawn().unwrap();
-    let pid = child.id().to_string();
-    child.wait().unwrap();
-    provider.children.lock().unwrap().insert(
-        pid.clone(),
-        LocalHost {
-            lease_id: "hl-ended".into(),
-            slot: 0,
-            child,
-        },
-    );
+async fn polling_forgets_the_supervisor_after_its_parent_pipe_closes() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::blobs::tests::temp_dir("host-pipe");
+    std::fs::create_dir(&root).unwrap();
+    let bin = root.join("read-pipe");
+    std::fs::write(&bin, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut provider = LocalProvider::new(&root);
+    provider.bin = Some(bin);
+    let pid = provider.start(&lease("hl-pipe"), &boot()).await.unwrap();
 
-    assert!(!provider.alive(&pid).await.unwrap());
-    assert!(!provider.children.lock().unwrap().contains_key(&pid));
+    assert!(provider.alive(&pid).await.unwrap());
+    {
+        let mut hosts = provider.children.lock().unwrap();
+        let child = &mut hosts.get_mut(&pid).unwrap().child;
+        drop(child.stdin.take().expect("Live holds the pipe open"));
+        child.wait().unwrap();
+    }
+    let alive = provider.alive(&pid).await.unwrap();
+    let stale = provider.children.lock().unwrap().remove(&pid);
+    assert!(!alive);
+    assert!(stale.is_none());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
@@ -183,7 +195,7 @@ async fn polling_forgets_an_exited_child() {
 async fn retrying_a_failed_launch_cannot_return_a_dead_pid() {
     let root = crate::blobs::tests::temp_dir("host-retry");
     let mut provider = LocalProvider::new(&root);
-    provider.bin = Some("/usr/bin/true".into());
+    provider.bin = Some("true".into());
     let lease = lease("hl-exit");
     let pid = provider.start(&lease, &boot()).await.unwrap();
     provider
@@ -195,7 +207,10 @@ async fn retrying_a_failed_launch_cannot_return_a_dead_pid() {
         .child
         .wait()
         .unwrap();
-    assert!(provider.start(&lease, &boot()).await.is_err());
+    let retried = provider.start(&lease, &boot()).await;
+    let stale = provider.children.lock().unwrap().remove(&pid);
+    assert!(retried.is_err());
+    assert!(stale.is_none());
     assert!(!provider.alive(&pid).await.unwrap());
     std::fs::remove_dir_all(root).unwrap();
 }

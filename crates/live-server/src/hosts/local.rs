@@ -58,6 +58,9 @@ impl LocalProvider {
         let lease_json = serde_json::to_string(lease)
             .map_err(|_| HostError::new("could not encode local host lease"))?;
         let mut cmd = Command::new(bin);
+        // Child keeps the write end. If Live goes away the supervisor sees
+        // EOF and closes its game even when Live could not run Drop.
+        cmd.env("H2_HOST_PARENT_PIPE", "1");
         cmd.env("H2_HOST_LEASE_JSON", lease_json);
         cmd.args([
             "host",
@@ -73,7 +76,7 @@ impl LocalProvider {
             "--data-sha",
             &boot.data_sha256,
         ])
-        .stdin(Stdio::null());
+        .stdin(Stdio::piped());
         if let Some(region) = &lease.region {
             cmd.args(["--region", region]);
         }
