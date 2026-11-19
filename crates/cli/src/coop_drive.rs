@@ -215,8 +215,8 @@ impl Driver {
                 if screen != self.screen {
                     self.screen = screen;
                     self.screen_since = now;
-                    self.cursor =
-                        (screen == Some(LIVE_MENU)).then(|| row.filter(|r| *r <= 3).unwrap_or(0));
+                    self.cursor = (screen == Some(LIVE_MENU))
+                        .then(|| row.filter(|r| *r <= COOP_ROW).unwrap_or(0));
                 }
                 self.live_row = row;
                 return;

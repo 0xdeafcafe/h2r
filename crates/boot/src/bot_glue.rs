@@ -686,14 +686,19 @@ impl feature::Feature for Bots {
             move |c| {
                 let bots = local.port_mask();
                 let any_phantoms = !phantoms.is_empty();
+                let f = frame.fetch_add(1, Ordering::Relaxed);
+                // A Live session made after the Clankers page was set gets
+                // its roster (docs/game/bots.md stage 6c), and a
+                // Clankermatch lobby its bots: before any bot is in, so
+                // this runs with none.
+                let rt = Arc::clone(c.ctx.runtime());
+                crate::clankers::frame(f, || {
+                    let mem = rt.memory();
+                    bots::phantom::session::host_team(&*mem).ok().flatten()
+                });
                 if bots == 0 && !any_phantoms {
                     return Ok(Flow::Continue);
                 }
-                let f = frame.fetch_add(1, Ordering::Relaxed);
-                // A Live session made after the Clankers page was set gets
-                // its roster (docs/game/bots.md stage 6c).
-                crate::clankers::frame(f);
-                let rt = Arc::clone(c.ctx.runtime());
                 let mut mem = rt.memory();
                 load_map_data(&map, &dir, &mem);
                 if any_phantoms {

@@ -437,6 +437,21 @@ points! { ALL;
     /// `0x002b1ff4` (return address `0x002b2069`), which stores the index
     /// in each row's datum at `+4`, so a skipped hopper leaves no hole.
     HOPPER_LISTED @ 0x0019_2db0: [fn(index: ecx) -> al ret 0]; "docs/game/bots.md";
+    /// The hopper Quickmatch searches: local player `player`'s saved
+    /// playlist (`[0x54e9dc + player*0xc70]`), or -1 when the player has
+    /// none (flag bit 4 of `[0x54e8e0 + player*0xc70]` clear). Its one
+    /// caller is the Live menu's Quickmatch press (`0x00231056`), which
+    /// starts nothing on -1.
+    QUICKMATCH_HOPPER @ 0x0019_02de: [fn(player: ecx) -> eax ret 0]; "docs/game/bots.md";
+    /// Saves `hopper` as local player `player`'s playlist for Quickmatch.
+    /// Its one caller is the OptiMatch playlist list's press
+    /// (`0x002b21e3`).
+    PLAYLIST_REMEMBER @ 0x0019_02fc: [fn(player: stack 0, hopper: stack 1) ret 8]; "docs/game/bots.md";
+    /// The Xbox Live menu's "build" method (vtable `0x00458b48`, slot
+    /// `0x00458bec`): resets the search globals, fills the list, then puts
+    /// the cursor on the row in `[0x00510a18]` when it is 0 to 3 (`0x0024c591`,
+    /// the list at screen `+0x818`).
+    LIVE_MENU_CURSOR @ 0x0023_1170: [fn(screen: ecx) ret 0]; "docs/game/bots.md";
     /// The multiplayer level list's data array (`[0x4ee4e4]`, 8-byte
     /// elements, the map id at `+4`), or 0 without UI level data. The
     /// Select Map list's constructor (`0x2c9928`, list handler in ESI)

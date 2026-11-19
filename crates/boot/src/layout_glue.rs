@@ -502,6 +502,16 @@ fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<OriginalHandler>> {
     o.map(Arc::new)
 }
 
+/// Leaves the Xbox Live menu's cursor on `row` for the way back
+/// (`custom_games::remember_row`).
+fn remember(ctx: &mut ExecCtx, row: i16) {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    if !custom_games::remember_row(&mut *mem, row) {
+        eprintln!("custom games: the live menu's cursor row could not be set");
+    }
+}
+
 /// Run the original at `addr` through `shadow`, then `then` with the caller's
 /// return address. The wrapper pops the return address first so the original
 /// sees its own arguments.
@@ -1277,11 +1287,7 @@ pub fn install(
                         );
                     }
                     return call_then(cpu, ctx, sh, move |_, ctx| {
-                        let rt = Arc::clone(ctx.runtime());
-                        let mut mem = rt.memory();
-                        if !custom_games::remember_row(&mut *mem, shown) {
-                            eprintln!("custom games: the live menu's cursor row could not be set");
-                        }
+                        remember(ctx, shown);
                         Ok(())
                     });
                 }
@@ -1322,9 +1328,16 @@ pub fn install(
                         row.unwrap_or(-1),
                         custom_games::RETAIL_CUSTOM_GAME_ROW
                     );
-                    return Ok(o.invoke(cpu, ctx, custom_games::ROW_CHOSEN));
+                    // The retail press stores its row 2 (now Clankermatch's)
+                    // for the cursor: ours goes over it.
+                    let shown = row.unwrap_or(custom_games::COOP_ROW);
+                    return call_then(cpu, ctx, sh, move |_, ctx| {
+                        remember(ctx, shown);
+                        Ok(())
+                    });
                 }
                 if kind == custom_games::Row::Coop {
+                    remember(ctx, row.unwrap_or(custom_games::COOP_ROW));
                     let screen = crate::coop_live::lobby().map(|l| l.open_from_menu());
                     let Some(loader) = screen.and_then(crate::list_class::loader_of) else {
                         eprintln!("coop-live: the co-op screens are off; nothing opened");
@@ -1343,7 +1356,8 @@ pub fn install(
                     return open_screen(cpu, ctx, mask, loader, note);
                 }
                 // The browser's row is past the rows the menu restores its
-                // cursor to (`custom_games::remember_row`): nothing stored.
+                // cursor to; `custom_games::LiveMenuCursor` restores it.
+                remember(ctx, row.unwrap_or(custom_games::ROW));
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
             });
         }

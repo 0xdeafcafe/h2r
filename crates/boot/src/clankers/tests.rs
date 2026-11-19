@@ -800,6 +800,56 @@ fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
 }
 
 #[test]
+fn a_clankermatch_balances_around_the_hosts_real_team() {
+    use live_proto::hopper::clankers::ClankerHopper;
+    use std::time::Instant;
+    const SESSION: &str = "00000000000000c3";
+    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
+    *live.playlist.lock().unwrap() = Some("9".into());
+    *live.clanker.lock().unwrap() = Some((
+        SESSION.into(),
+        ClankerHopper {
+            hopper_id: 9,
+            playlist_id: 10,
+            players: 8,
+            teams: 2,
+            ranks_as: None,
+        },
+    ));
+    // The host's player is on blue (team 1), as the game says.
+    d.set_host_team(Some(1));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(
+        log.iter().any(|l| l.contains("the host on team 1")),
+        "{log:?}"
+    );
+    live.answer(0, Ok(roster(SESSION, 7, 0.5)));
+    // A change of team after the first bot is in moves nobody.
+    let schedule =
+        crate::clankermatch::schedule(7, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    d.tick_match(t0 + schedule[0]);
+    assert_eq!(ph.list().len(), 1);
+    d.set_host_team(Some(0));
+    d.tick_match(t0 + *schedule.last().unwrap());
+    assert_eq!(ph.list().len(), 7);
+    // The roster's bot 2 asked for blue: with the human there too, the
+    // rest balance to 4 v 4: four bots on red, three on blue.
+    let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
+    assert_eq!(teams[1], Some(1));
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(0)).count(),
+        4,
+        "{teams:?}"
+    );
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(1)).count(),
+        3,
+        "{teams:?}"
+    );
+}
+
+#[test]
 fn a_clankermatch_refused_a_roster_seats_host_made_phantoms() {
     use live_proto::hopper::clankers::ClankerHopper;
     use std::time::{Duration, Instant};

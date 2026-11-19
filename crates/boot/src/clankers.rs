@@ -416,6 +416,9 @@ struct Fill {
     /// When this console stopped hosting a session (a handoff, or the
     /// player left): the fill ends [`FILL_GONE`] after.
     gone: Option<std::time::Instant>,
+    /// The host player's team ([`Driver::set_host_team`]), followed until
+    /// the first bot sits, then kept: a bot's team does not change.
+    host_team: Option<u8>,
 }
 
 /// A Clankermatch ends this long after its console last hosted a session:
@@ -437,6 +440,9 @@ struct Seating {
     /// The roster's skill: the page's difficulty's, or none for a
     /// Clankermatch (the server sets it from the human's level, §8.2.3).
     skill: Option<f32>,
+    /// The host player's team, the bots balance around (0 when unknown or
+    /// not one of the game's teams).
+    host_team: u8,
 }
 
 impl Seating {
@@ -448,6 +454,7 @@ impl Seating {
                 phantoms_only: true,
                 teams: f.teams,
                 skill: None,
+                host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
             },
             None => Seating {
                 count: want.count,
@@ -455,6 +462,7 @@ impl Seating {
                 phantoms_only: false,
                 teams: 0,
                 skill: request_skill(want.difficulty),
+                host_team: 0,
             },
         }
     }
@@ -618,6 +626,8 @@ pub struct Driver {
     reported: AtomicBool,
     /// The Clankermatch being filled, while this console hosts one.
     fill: Mutex<Option<Fill>>,
+    /// The host player's team, as [`frame`] last read it.
+    host_team: Mutex<Option<u8>>,
 }
 
 /// The bot accounts among `own`: local bots with one, and rostered
@@ -650,6 +660,7 @@ impl Driver {
             me: std::sync::Weak::new(),
             reported: AtomicBool::new(false),
             fill: Mutex::new(None),
+            host_team: Mutex::new(None),
         }
     }
 
@@ -1086,14 +1097,14 @@ impl Driver {
         };
         // A Clankermatch's teams, balanced over the whole roster so a
         // bot's team does not change as the others join (§9.1: "the host
-        // balances by total skill"). The human is taken to be on team 0.
+        // balances by total skill"), around the human's team.
         if seating.teams > 1 {
             let k = |s: &RosterSeat| f32::from(skill_index(s.skill)) / 3.0;
             let mean = seats.iter().map(|(s, _)| k(s)).sum::<f32>() / seats.len().max(1) as f32;
             // The human (at the bots' mean: the server matched them to
             // its level) and the bots the roster put on a team are fixed;
             // the rest are balanced around them.
-            let mut fixed = vec![(0u8, mean)];
+            let mut fixed = vec![(seating.host_team, mean)];
             fixed.extend(seats.iter().filter_map(|(s, _)| Some((s.team?, k(s)))));
             let free: Vec<f32> = seats
                 .iter()
@@ -1204,6 +1215,13 @@ impl Driver {
             .is_some()
     }
 
+    /// The host player's team, read from the game (its first local
+    /// player's configuration), or `None` while it has none. A
+    /// Clankermatch's bots balance around it.
+    pub fn set_host_team(&self, team: Option<u8>) {
+        *self.host_team.lock().unwrap_or_else(|e| e.into_inner()) = team;
+    }
+
     /// Follows the Clankermatch this console hosts, at `now`: a clanker
     /// hopper's lobby starts a fill, its bots join on their schedule, and
     /// it ends when the console hosts another kind of session or none for
@@ -1215,6 +1233,7 @@ impl Driver {
         };
         let hosted = rosters.clanker_match();
         let hosting = hosted.is_some() || rosters.session().is_some();
+        let host_team = *self.host_team.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         let changed = {
             let mut fill = self.fill.lock().unwrap_or_else(|e| e.into_inner());
@@ -1223,6 +1242,9 @@ impl Driver {
                 (Some(h), Some((_, mark))) if h == mark.hopper_id => {
                     let f = fill.as_mut().expect("a fill");
                     f.gone = None;
+                    if f.seated == 0 {
+                        f.host_team = host_team;
+                    }
                     let n = crate::clankermatch::seated(
                         &f.schedule,
                         now.saturating_duration_since(f.started),
@@ -1240,7 +1262,11 @@ impl Driver {
                         mark.hopper_id,
                         schedule.last().map_or(0.0, |t| t.as_secs_f32()),
                         if mark.teams > 1 {
-                            format!(", {} teams", mark.teams)
+                            format!(
+                                ", {} teams, the host on {}",
+                                mark.teams,
+                                host_team.map_or("an unknown team (0)".into(), |t| format!("team {t}"))
+                            )
                         } else {
                             String::new()
                         }
@@ -1253,6 +1279,7 @@ impl Driver {
                         started: now,
                         seated: 0,
                         gone: None,
+                        host_team,
                     });
                     true
                 }
@@ -1322,8 +1349,9 @@ static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 
 /// Once a frame, from the bots' frame hook: every second or so, asks
 /// for a roster again if the hosted Live session changed
-/// ([`Driver::refresh`]). Never waits on the server.
-pub fn frame(n: u64) {
+/// ([`Driver::refresh`]). Never waits on the server. `host_team` reads
+/// the host player's team from the game; it is called twice a second.
+pub fn frame(n: u64, host_team: impl FnOnce() -> Option<u8>) {
     // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
     if n % 15 != 0 {
         return;
@@ -1334,6 +1362,7 @@ pub fn frame(n: u64) {
         .as_ref()
         .and_then(|w| w.upgrade());
     let Some(d) = d else { return };
+    d.set_host_team(host_team());
     for line in d.tick_match(std::time::Instant::now()) {
         eprintln!("clankers: {line}");
     }

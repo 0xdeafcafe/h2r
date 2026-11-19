@@ -308,7 +308,8 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
                     &s,
                 ));
             }
-            // The menu restores its cursor to a row it reports when 0 to 3.
+            // The menu restores its cursor to the row it reports (0 to 3
+            // retail's, the browser's 4 and co-op's 5 ours).
             let from = s.live_menu_row.unwrap_or(0).min(COOP_ROW);
             let mut b = downs(COOP_ROW - from);
             b.push("a");
@@ -447,7 +448,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(buttons(&m.pads[0]), ["a"]);
-        assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "a"]);
+        // Row 1 to Co-op Campaign, row 5 (after Clankermatch and the
+        // moved Custom Game rows).
+        assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "down", "a"]);
     }
 
     #[test]

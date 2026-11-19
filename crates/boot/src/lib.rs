@@ -74,6 +74,7 @@ pub mod retail_rows;
 pub mod sampling;
 pub use live_telemetry as telemetry;
 pub mod bot_glue;
+pub mod bot_mark;
 pub mod bots_nav_auto;
 pub mod clankermatch;
 pub mod clankers;
@@ -952,8 +953,13 @@ pub fn run_hosted_with_live(
             s.cards.clone(),
         )
     });
-    let rewrites = vfs::Chain(icons.as_ref().map(|i| i.font_rewrite()), cards);
-    let rewrites = (rewrites.0.is_some() || rewrites.1.is_some()).then_some(rewrites);
+    // Every font gets the bot mark's gear (docs/game/bots.md §8.2.2), after
+    // the icon sets.
+    let fonts = vfs::Chain(
+        icons.as_ref().map(|i| i.font_rewrite()),
+        bot_mark::GearRewrite,
+    );
+    let rewrites = Some(vfs::Chain(fonts, cards));
     let mounted = map_override::mount_with_hashes(
         cfg.clone(),
         &opts.disc,

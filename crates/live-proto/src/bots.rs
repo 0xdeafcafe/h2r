@@ -38,6 +38,22 @@ pub fn is_server_xuid(x: Xuid) -> bool {
     x.0 >> 48 == SERVER_XUID_MARK >> 48
 }
 
+/// The mark a bot's name carries in the game: U+2699 GEAR and a space
+/// before its gamertag (docs/game/bots.md §8.2.2). It is not part of the
+/// account's name: a record names the bot without it ([`unmarked_units`]),
+/// and the site draws its own from the bot flag.
+pub const BOT_MARK: char = '\u{2699}';
+
+/// A name's UTF-16 units without a leading [`BOT_MARK`] and the space
+/// after it. No player can type the gear, so only a bot's name has it.
+pub fn unmarked_units(units: &[u16]) -> &[u16] {
+    const MARK: u16 = BOT_MARK as u16;
+    match units {
+        [MARK, 0x20, rest @ ..] | [MARK, rest @ ..] => rest,
+        _ => units,
+    }
+}
+
 /// `BotIssued` on [`bot_stream`]: the server made a bot account. Data:
 /// [`Issued`].
 pub const ISSUED: &str = "BotIssued";
@@ -388,5 +404,21 @@ mod tests {
             .contains("carry_from"),
             "absent when not carrying"
         );
+    }
+
+    #[test]
+    fn a_bots_name_loses_its_mark() {
+        let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        assert_eq!(
+            unmarked_units(&u("\u{2699} Clanker 3")),
+            &u("Clanker 3")[..]
+        );
+        assert_eq!(
+            unmarked_units(&u("\u{2699}Fourteen chars")),
+            &u("Fourteen chars")[..]
+        );
+        assert_eq!(unmarked_units(&u("Sneaky Pete")), &u("Sneaky Pete")[..]);
+        assert_eq!(unmarked_units(&u("A \u{2699}")), &u("A \u{2699}")[..]);
+        assert!(unmarked_units(&[]).is_empty());
     }
 }

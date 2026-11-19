@@ -113,8 +113,14 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     (
         "clankermatch",
-        "HOPPER_LISTED",
-        "the OptiMatch playlist list's rows, a UI event on the game thread",
+        "*",
+        "the OptiMatch playlist list's rows and press, and the Live menu's Quickmatch press: \
+         UI events on the game thread",
+    ),
+    (
+        "live-menu-cursor",
+        "LIVE_MENU_CURSOR",
+        "the Xbox Live menu's build, a UI event on the game thread",
     ),
     // Local bots: the game thread's frame, sound and players screen. Around
     // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
