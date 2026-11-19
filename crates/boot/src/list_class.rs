@@ -580,6 +580,16 @@ impl feature::Feature for ScrollArrowLayout {
                     .iter()
                     .find(|layout| layout.list_vtable == vtable)
                     .and_then(|layout| layout.scroll_arrows)
+            })
+            .map_err(|m| runtime::GuestFault {
+                addr: m.addr,
+                len: m.len as usize,
+                access: if m.write {
+                    runtime::guest::Access::Write
+                } else {
+                    runtime::guest::Access::Read
+                },
+                reason: runtime::guest::FaultReason::Unmapped,
             })?;
             Ok(feature::Flow::Continue)
         });
