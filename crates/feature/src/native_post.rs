@@ -20,13 +20,19 @@
 //! (`engine::screen_effect::plan`) and arms nothing until every piece it
 //! needs draws natively, refusing per reason. The call always runs.
 //!
+//! `H2_POST_TRACE` ([`TraceSpec`]) traces the first calls of
+//! `0x0002d140`: the host keeps the device's account of what each runs
+//! (every D3D entry called and its caller, the swallow armed, every draw
+//! and its fate), and a third hook, on `0x00016610`
+//! (`points::TEMPLATE_PASS`), adds each template pass the effect sets up.
+//!
 //! With the switch off the hook is placed only for the frame A/B
 //! ([`place_for_capture`]): the host then observes the same quads,
 //! dropping none, to capture the view's colour where the native glow
 //! would land.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::memory::GuestMemory;
 use engine::points;
@@ -63,6 +69,71 @@ pub trait Host: Send + Sync {
         let _ = (mem, call, fp);
         false
     }
+
+    /// `H2_POST_TRACE`: the call of `0x0002d140` described by `call`,
+    /// returning to `ret`, is about to run; called before
+    /// [`Host::screen_effect`] for it.
+    fn trace_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, ret: u32) {
+        let _ = (mem, call, ret);
+    }
+
+    /// `H2_POST_TRACE`: `0x00016610` called with `args` (its six stack
+    /// words), returning to `ret`.
+    fn trace_template(&self, mem: &mut dyn GuestMemory, args: [u32; 6], ret: u32) {
+        let _ = (mem, args, ret);
+    }
+
+    /// `H2_POST_TRACE`: a line for the trace running, if one is.
+    fn trace_note(&self, note: String) {
+        let _ = note;
+    }
+}
+
+/// `H2_POST_TRACE` (docs/graphics/native-renderer.md, stage 5): `N` traces
+/// the first `N` calls of `0x0002d140` (empty: [`TRACE_CALLS`]); `N,after`
+/// also notes where `0x00016610` returns (its AL) and where `0x0002d140`
+/// returns. An after-hook keeps those two chains off the pipelined render
+/// thread: each call of them falls back to the game thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TraceSpec {
+    pub calls: u64,
+    pub after: bool,
+}
+
+/// The calls `H2_POST_TRACE` traces when it names no count.
+pub const TRACE_CALLS: u64 = 4;
+
+impl TraceSpec {
+    /// The variable's value; `None` when it is not one.
+    pub fn parse(s: &str) -> Option<TraceSpec> {
+        let mut parts = s.split(',').map(str::trim);
+        let calls = match parts.next() {
+            None | Some("") => TRACE_CALLS,
+            Some(n) => n.parse().ok().filter(|&n| n > 0)?,
+        };
+        let mut after = false;
+        for p in parts {
+            match p {
+                "after" => after = true,
+                _ => return None,
+            }
+        }
+        Some(TraceSpec { calls, after })
+    }
+}
+
+/// `H2_POST_TRACE`, read once; a value that is not one is said once and
+/// traces nothing.
+pub fn trace_spec() -> Option<TraceSpec> {
+    static SPEC: OnceLock<Option<TraceSpec>> = OnceLock::new();
+    *SPEC.get_or_init(|| {
+        let v = std::env::var("H2_POST_TRACE").ok()?;
+        let spec = TraceSpec::parse(&v);
+        if spec.is_none() {
+            eprintln!("native-post: H2_POST_TRACE={v:?} is not N or N,after; nothing is traced");
+        }
+        spec
+    })
 }
 
 /// One call of `0x0002d140`: EAX and its four stack words.
@@ -162,11 +233,43 @@ pub fn on_screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return false;
     };
+    if trace_spec().is_some() {
+        let ret = mem.u32(esp).unwrap_or(0);
+        host.trace_effect(mem, call, ret);
+    }
     let armed = host.screen_effect(mem, call, fp);
     if armed {
         EFFECTS_ARMED.fetch_add(1, Ordering::Relaxed);
     }
     armed
+}
+
+/// `H2_POST_TRACE`'s hook on `0x00016610`: `esp` at the entry (the
+/// return address, then the six words).
+pub fn on_template_pass(mem: &mut dyn GuestMemory, esp: u32) {
+    let mut args = [0u32; 6];
+    for (i, a) in args.iter_mut().enumerate() {
+        let Ok(v) = mem.u32(esp.wrapping_add(4 + 4 * i as u32)) else {
+            return;
+        };
+        *a = v;
+    }
+    let ret = mem.u32(esp).unwrap_or(0);
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        host.trace_template(mem, args, ret);
+    }
+}
+
+/// `H2_POST_TRACE=N,after`: `what` returned with `eax`.
+pub fn on_return(what: &str, eax: u32) {
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        host.trace_note(return_line(what, eax));
+    }
+}
+
+/// The line [`on_return`] adds.
+pub fn return_line(what: &str, eax: u32) -> String {
+    format!("{what} returned, AL {}", eax & 0xff)
 }
 
 pub struct NativePost;
@@ -206,6 +309,27 @@ impl Feature for NativePost {
                     Ok(Flow::Continue)
                 })
                 .context_only();
+            if let Some(trace) = trace_spec() {
+                b.raw()
+                    .before(&points::TEMPLATE_PASS, "native_post_trace_template", |c| {
+                        let rt = Arc::clone(c.ctx.runtime());
+                        let mut mem = rt.memory();
+                        on_template_pass(&mut *mem, c.cpu.esp);
+                        Ok(Flow::Continue)
+                    })
+                    .context_only()
+                    .optional();
+                if trace.after {
+                    b.raw()
+                        .observe_after(&points::TEMPLATE_PASS, "native_post_trace_template_return", |o| {
+                            on_return("0x00016610", o.cpu.eax)
+                        })
+                        .optional();
+                    b.raw().observe_after(&points::SCREEN_EFFECT, "native_post_trace_effect_return", |o| {
+                        on_return("0x0002d140", o.cpu.eax)
+                    });
+                }
+            }
         }
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())

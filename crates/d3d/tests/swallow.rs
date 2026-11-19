@@ -356,3 +356,72 @@ fn a_pass_without_slot_0_takes_the_target_its_first_draw_finds() {
     assert!(d.swallow(&mut m, own(&placed)).unwrap());
     assert_eq!(d.swallow_mismatch(), Some("armed over it at draw 0 of 2"));
 }
+
+#[test]
+fn a_trace_keeps_each_call_arming_and_draw_in_order() {
+    use d3d::{Traced, TracedDraw};
+    let (mut d, mut m, back) = setup(takes());
+    let placed = Arc::new(AtomicU32::new(0));
+    d.trace(true);
+    assert!(d.tracing());
+    quad(&mut m);
+    let one = Swallow {
+        targets: vec![0],
+        primitive: PrimitiveType::QuadList,
+        vertices: 4,
+        shapes: Vec::new(),
+        drop: true,
+        pass: Box::new(Placed(Arc::clone(&placed), true)),
+    };
+    assert!(d.swallow(&mut m, one).unwrap());
+    d.trace_call("D3DDevice_Begin", 0x0002_d5f0);
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    d.trace_note(|| "a note".into());
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let (events, past) = d.take_trace();
+    assert_eq!(past, 0);
+    let draw = |draws, fate| {
+        Traced::Draw(TracedDraw {
+            entry: "inline Begin/End",
+            primitive: PrimitiveType::QuadList,
+            vertices: 4,
+            inline: 0,
+            push: None,
+            target: back,
+            draws,
+            fate: Some(fate),
+        })
+    };
+    // The push-buffer address is wherever the End landed.
+    let events: Vec<Traced> = events
+        .into_iter()
+        .map(|e| match e {
+            Traced::Draw(t) => {
+                assert!(t.push.is_some(), "a pushed draw says where");
+                Traced::Draw(TracedDraw { push: None, ..t })
+            }
+            e => e,
+        })
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            Traced::Arming,
+            draw(0, "drawn"),
+            Traced::Armed { draws: 1 },
+            Traced::Call { entry: "D3DDevice_Begin", ret: 0x0002_d5f0 },
+            draw(1, "dropped"),
+            Traced::Note("a note".into()),
+            draw(1, "drawn"),
+        ],
+        "what was queued drains at arming, before it arms"
+    );
+    assert_eq!(d.take_trace().0, Vec::new(), "taken");
+    d.trace(false);
+    assert!(!d.tracing());
+    d.trace_call("D3DDevice_Begin", 0);
+    d.trace(true);
+    assert_eq!(d.take_trace().0, Vec::new(), "nothing kept while off");
+}

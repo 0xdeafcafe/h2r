@@ -72,7 +72,7 @@ use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
 use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
-use feature::native_post::{Fp, Host, ScreenEffect};
+use feature::native_post::{self as post_feature, Fp, Host, ScreenEffect};
 use gfx::vertex::PrimitiveType;
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::GuestRead;
@@ -665,6 +665,54 @@ pub fn plan_line(egor: TagId, drop: bool, plan: &SwallowPlan) -> String {
     format!("{:#010x} {} [{}]", egor.0, if drop { "drop" } else { "probe" }, draws.join(" "))
 }
 
+/// `H2_POST_TRACE` ([`post_feature::TraceSpec`]): the calls of
+/// `0x0002d140` traced so far, and whether one is running (the device
+/// keeping its account, [`d3d::Traced`]). A trace runs from its call's
+/// hook to the next hook of either kind (the next effect, or the next
+/// frame's colour pass), then is written, one line per event.
+static TRACE: Mutex<(u64, bool)> = Mutex::new((0, false));
+
+/// One event of a trace as `H2_POST_TRACE` writes it.
+pub fn trace_line(e: &d3d::Traced) -> String {
+    match e {
+        d3d::Traced::Call { entry, ret } => format!("call {entry} from {ret:#010x}"),
+        d3d::Traced::Arming => "swallow: arming, draining what was queued first".into(),
+        d3d::Traced::Armed { draws } => format!("swallow: armed for {draws} draws"),
+        d3d::Traced::Draw(d) => {
+            let inline = if d.inline > 0 { format!(", an inline array of {} words", d.inline) } else { String::new() };
+            let push = d.push.map(|p| format!(", its End pushed at {p:#010x}")).unwrap_or_default();
+            let fate = d.fate.map(|f| format!(": {f}")).unwrap_or_default();
+            format!(
+                "draw {} {:?} x{}{inline}{push}, into {:#010x}, after {} draws{fate}",
+                d.entry, d.primitive, d.vertices, d.target, d.draws
+            )
+        }
+        d3d::Traced::Note(n) => n.clone(),
+    }
+}
+
+/// The line a traced call of `0x00016610` adds: its six words, its
+/// caller, and whether `engine::screen_effect::template_draws` says the
+/// pass draws (`port`).
+pub fn template_line(args: [u32; 6], ret: u32, port: Result<bool, String>) -> String {
+    let port = match port {
+        Ok(d) => format!("the port says it {}", if d { "draws" } else { "skips" }),
+        Err(e) => format!("the port fails: {e}"),
+    };
+    format!(
+        "0x00016610(shader {:#010x}, layer {}, implementation {}, selector {}, target {}, {}) from {ret:#010x}; {port}",
+        args[0], args[1], args[2] as i32, args[3] as i32, args[4], args[5]
+    )
+}
+
+/// The line that opens a trace.
+pub fn effect_line(call: ScreenEffect, ret: u32) -> String {
+    format!(
+        "0x0002d140(egor {:#010x}, values {:#010x}, columns {}, rows {}, corners {:#010x}) from {ret:#010x}",
+        call.datum, call.values, call.columns, call.rows, call.corners
+    )
+}
+
 /// A set of egors, noted once each.
 pub struct Egors(Mutex<Vec<TagId>>);
 
@@ -1073,6 +1121,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn colour_pass(&self, mem: &mut dyn GuestMemory, args: [u32; 7], fp: Fp, native: bool) -> bool {
+        self.trace_end();
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let ab = Ab::get();
         let capturing = ab.is_some_and(|a| a.captures(call));
@@ -1130,6 +1179,79 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
+        let armed = self.effect(mem, call, fp);
+        self.note(|| format!("hook: armed {armed}"));
+        armed
+    }
+
+    fn trace_effect(&self, _mem: &mut dyn GuestMemory, call: ScreenEffect, ret: u32) {
+        self.trace_end();
+        let Some(spec) = post_feature::trace_spec() else { return };
+        let mut t = TRACE.lock().unwrap_or_else(|e| e.into_inner());
+        if t.0 >= spec.calls {
+            return;
+        }
+        let Ok(mut d) = self.device.lock() else { return };
+        t.0 += 1;
+        t.1 = true;
+        d.trace(true);
+        d.trace_note(|| effect_line(call, ret));
+    }
+
+    fn trace_template(&self, mem: &mut dyn GuestMemory, args: [u32; 6], ret: u32) {
+        self.note(|| {
+            let port = screen_effect::template_draws(&*mem, args[0], args[1], args[2] as i32, args[3] as i32)
+                .map_err(|e| format!("{e:?}"));
+            template_line(args, ret, port)
+        });
+    }
+
+    fn trace_note(&self, note: String) {
+        self.note(|| note);
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// Adds `note` to the trace running, if one is.
+    fn note(&self, note: impl FnOnce() -> String) {
+        if !TRACE.lock().unwrap_or_else(|e| e.into_inner()).1 {
+            return;
+        }
+        if let Ok(mut d) = self.device.lock() {
+            d.trace_note(note);
+        }
+    }
+
+    /// Ends the trace running, if one is, and writes it.
+    fn trace_end(&self) {
+        let mut t = TRACE.lock().unwrap_or_else(|e| e.into_inner());
+        if !t.1 {
+            return;
+        }
+        t.1 = false;
+        let call = t.0;
+        std::mem::drop(t);
+        let Ok(mut d) = self.device.lock() else { return };
+        let (events, past) = d.take_trace();
+        d.trace(false);
+        let end = format!(
+            "end: {} swallow mismatches, the last: {}; a swallow {}",
+            d.stats().swallow_mismatches,
+            d.swallow_mismatch().unwrap_or("none"),
+            if d.swallowing() { "still armed" } else { "not armed" }
+        );
+        std::mem::drop(d);
+        for e in &events {
+            eprintln!("native-post: H2_POST_TRACE #{call} {}", trace_line(e));
+        }
+        if past > 0 {
+            eprintln!("native-post: H2_POST_TRACE #{call} {past} more not kept");
+        }
+        eprintln!("native-post: H2_POST_TRACE #{call} {end}");
+    }
+
+    /// [`Host::screen_effect`]'s body.
+    fn effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
         let (effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
             Ok(None) => return false,
@@ -1150,6 +1272,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         for m in &m {
             refused(*m);
+        }
+        if !m.is_empty() {
+            self.note(|| format!("hook: refused, missing {m:?}"));
         }
         // Armed only once nothing is missing (never while the stand-ins
         // are); until then the D3D path draws every effect.
@@ -1176,6 +1301,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let Some(plan) = screen_swallow(&call) else { return false };
         let drop = proved(egor, &plan);
         dump_plan(egor, drop, &plan);
+        self.note(|| format!("hook: plan {}", plan_line(egor, drop, &plan)));
         let (targets, shapes) = plan.clone();
         let (primitive, vertices) = shapes[0];
         let pass: Box<dyn d3d::ExternalPass> = if drop {
@@ -1893,5 +2019,67 @@ mod tests {
         assert!(ScreenProbe { effects: Arc::clone(&effects), call: call(), plan: Default::default() }.colour_only());
         let screens = Arc::new(Mutex::new((0, ScreenSet::new())));
         assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
+    }
+
+    /// `H2_POST_TRACE`'s lines: each event the device kept, the call that
+    /// opens a trace and each template pass, as the A/B reads them.
+    #[test]
+    fn a_trace_writes_what_the_device_saw() {
+        let draw = |inline, push, fate| {
+            d3d::Traced::Draw(d3d::TracedDraw {
+                entry: "inline Begin/End",
+                primitive: PrimitiveType::QuadList,
+                vertices: 0,
+                inline,
+                push,
+                target: 0x8007_c000,
+                draws: 12,
+                fate,
+            })
+        };
+        let lines: Vec<String> = [
+            d3d::Traced::Call { entry: "D3D_MakeRequestedSpace", ret: 0x0002_d5f0 },
+            d3d::Traced::Arming,
+            d3d::Traced::Armed { draws: 1 },
+            draw(24, Some(0x8010_0040), Some("mismatch")),
+            d3d::Traced::Draw(d3d::TracedDraw {
+                entry: "D3DDevice_DrawVertices",
+                primitive: PrimitiveType::TriangleStrip,
+                vertices: 4,
+                inline: 0,
+                push: None,
+                target: 0x8007_c000,
+                draws: 11,
+                fate: None,
+            }),
+            d3d::Traced::Note("hook: armed true".into()),
+        ]
+        .iter()
+        .map(trace_line)
+        .collect();
+        assert_eq!(
+            lines,
+            [
+                "call D3D_MakeRequestedSpace from 0x0002d5f0",
+                "swallow: arming, draining what was queued first",
+                "swallow: armed for 1 draws",
+                "draw inline Begin/End QuadList x0, an inline array of 24 words, its End pushed at 0x80100040, into 0x8007c000, after 12 draws: mismatch",
+                "draw D3DDevice_DrawVertices TriangleStrip x4, into 0x8007c000, after 11 draws",
+                "hook: armed true",
+            ]
+        );
+        let call = ScreenEffect { datum: 0xe438_0218, values: 0x0050_0000, columns: 2, rows: 2, corners: 0x0050_0010 };
+        assert_eq!(
+            effect_line(call, 0x0001_3b57),
+            "0x0002d140(egor 0xe4380218, values 0x00500000, columns 2, rows 2, corners 0x00500010) from 0x00013b57"
+        );
+        let args = [0x0012_3450, 15, 0, u32::MAX, 1, 0];
+        assert_eq!(
+            template_line(args, 0x0002_d4bc, Ok(true)),
+            "0x00016610(shader 0x00123450, layer 15, implementation 0, selector -1, target 1, 0) from 0x0002d4bc; the port says it draws"
+        );
+        assert!(template_line(args, 0x0002_d4bc, Ok(false)).ends_with("; the port says it skips"));
+        assert!(template_line(args, 0x0002_d4bc, Err("Data".into())).ends_with("; the port fails: Data"));
+        assert_eq!(post_feature::return_line("0x00016610", 0x1234_5600), "0x00016610 returned, AL 0");
     }
 }
