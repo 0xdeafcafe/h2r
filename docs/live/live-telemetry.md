@@ -842,6 +842,22 @@ Deploy the web reader first, then the server and Worker, then reinstall the
 game sender. Existing senders work with the updated readers. Clients that
 consume JSON can keep using the JSON representations.
 
+### Finished recordings
+
+The viewer requests the archive-capable chunk index when a match ends.
+Until publication it uses the original recording. Publication switches the
+reader to independently decodable H2AR segments and keeps the current
+playhead, speed and pause state. The index maps source ticks across checkpoint
+rewinds, so a time link can fetch its target segment directly. The viewer
+loads a neighbour near a segment edge to interpolate through it and releases
+distant segments after a seek.
+
+Local servers run the offline codec on the blocking pool. The Worker runs
+one bounded segment on its single-threaded Durable Object per alarm or admin
+step. The raw originals and their signed index remain available after
+publication and rollback. [Archive format, limits and measurements](../engine/live-telemetry.md#finished-replay-archives)
+and [migration procedure](replay-migration.md).
+
 ## Telemetry cost
 
 Measured on the deterministic invented games in
