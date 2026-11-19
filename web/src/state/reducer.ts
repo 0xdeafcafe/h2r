@@ -406,6 +406,33 @@ export function normalizeWinner(w: unknown): Winner | null {
   return null;
 }
 
+/** Whether a game has teammates, so a kill can be a betrayal: a team game
+ *  (the variant's team flag), or a campaign, where the players are all on
+ *  one side. Free-for-all has none, whatever team index its players carry
+ *  (live-proto `NewGame::has_teammates`). */
+export function hasTeammates(g: Pick<GameState, "team_play" | "mode">): boolean {
+  return g.team_play || g.mode === "campaign";
+}
+
+/** Whether `killer` betrayed `victim`: a game with teammates, a killer who
+ *  is not the victim, both known and on one team (live-proto `is_betrayal`). */
+export function isBetrayal(g: Pick<GameState, "team_play" | "mode" | "players">, killer: number | null, victim: number): boolean {
+  if (!hasTeammates(g) || killer === null || killer === victim) return false;
+  const k = g.players[killer], v = g.players[victim];
+  return !!k && !!v && k.team === v.team;
+}
+
+/** A recorded kill's kind as it should read: a `kill` or `betrayal` by
+ *  another player is settled by the teams, since hosts before the fix sent
+ *  free-for-all kills as betrayals; `suicide` and `world` stay as recorded
+ *  (live-proto `settled_kill_kind`). */
+export function settledKillKind(
+  g: Pick<GameState, "team_play" | "mode" | "players">, k: Pick<Kill, "kind" | "killer" | "victim">,
+): KillKind {
+  if ((k.kind !== "kill" && k.kind !== "betrayal") || k.killer === null || k.killer === k.victim) return k.kind;
+  return isBetrayal(g, k.killer, k.victim) ? "betrayal" : "kill";
+}
+
 /** Adds a kill unless one at the same log position is already there
  *  (a snapshot and the stream can both carry it). */
 function addKill(g: GameState, k: KillRecord) {
@@ -420,6 +447,7 @@ function addKill(g: GameState, k: KillRecord) {
     kind: k.kind ?? "kill",
     pos: k.pos ?? null,
   };
+  kill.kind = settledKillKind(g, kill);
   // Keep kills in log order even if a snapshot's arrive after streamed ones.
   let i = g.kills.length;
   while (i > 0 && g.kills[i - 1]!.position > kill.position && kill.position > 0) i--;
@@ -648,6 +676,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
   if (g.team_play) for (const p of Object.values(g.players)) g.teams[p.team] ??= 0;
   if (det.scoreboard) applyScores(g, det.scoreboard);
   for (const k of det.kills ?? []) addKill(g, k);
+  // The snapshot may have brought the teams or the team flag.
+  for (const k of g.kills) k.kind = settledKillKind(g, k);
 }
 
 function insertByStart(s: LiveState, id: GameId, startedAt: string): GameId[] {

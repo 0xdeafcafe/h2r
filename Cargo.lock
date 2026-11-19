@@ -3506,6 +3506,7 @@ dependencies = [
  "mime_guess",
  "object_store",
  "percent-encoding",
+ "png",
  "reqwest",
  "rustls",
  "s3s",

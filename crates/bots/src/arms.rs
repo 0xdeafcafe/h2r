@@ -239,6 +239,7 @@ impl Trigger {
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Profile {
     pub trigger: Trigger,
+    pub dual: Option<DualGun>,
     /// Zoom levels (`+0x1fe`).
     pub zoom: i16,
     /// The aim assist's reach (`+0x20c`, `+0x214`), world units.
@@ -251,6 +252,71 @@ pub struct Profile {
     /// The first barrel's projectile's initial speed (world units a
     /// second), 0 unknown.
     pub shot_speed: f32,
+}
+
+/// Retail multiplayer weapon-list entries with a preferred off-hand pairing.
+/// Both definitions must also pass the engine's dual-wield flag test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DualGun {
+    Smg,
+    PlasmaRifle,
+    PlasmaPistol,
+    Needler,
+}
+
+impl DualGun {
+    fn read(m: &dyn GuestMemory, weap: u32, datum: DatumHandle) -> R<Option<Self>> {
+        if m.u32(weap + 0x12c)? & (3 << 22) == 0 {
+            return Ok(None);
+        }
+        let matg = m.u32(engine::points::GLOBALS_TAG.base)?;
+        if matg == 0 {
+            return Ok(None);
+        }
+        let Some(h) = DatumHandle::from_raw(m.u32(matg + 0x16c)?) else {
+            return Ok(None);
+        };
+        let Some(tag) = Tags.entry(m, h)? else {
+            return Ok(None);
+        };
+        if tag.group(m)? != GroupTag::from_chars(*b"mulg") {
+            return Ok(None);
+        }
+        let meta = tag.address(m)?;
+        if meta == 0 || m.i32(meta + 8)? <= 0 {
+            return Ok(None);
+        }
+        let universal = m.u32(meta + 0xc)?;
+        if universal == 0 {
+            return Ok(None);
+        }
+        let n = m.i32(universal + 0x68)?;
+        let list = m.u32(universal + 0x6c)?;
+        if list != 0 {
+            for (i, kind) in [
+                (1, Self::Smg),
+                (6, Self::PlasmaPistol),
+                (7, Self::PlasmaRifle),
+                (8, Self::PlasmaRifle),
+                (9, Self::Needler),
+            ] {
+                if (i as i32) < n && m.u32(list + 8 * i + 4)? == datum.raw() {
+                    return Ok(Some(kind));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn pairs(self, other: Self) -> bool {
+        use DualGun::*;
+        matches!(
+            (self, other),
+            (Smg, Smg | PlasmaRifle | PlasmaPistol)
+                | (PlasmaRifle | PlasmaPistol, Smg)
+                | (Needler, Needler)
+        )
+    }
 }
 
 /// What a weapon is for, from its [`Profile`].
@@ -286,8 +352,7 @@ impl Profile {
         match self.trigger {
             Trigger::Unknown => Role::Unknown,
             Trigger::Absent => {
-                // The flag, ball and bomb likely have no aim assist; the
-                // sword lunges with it.
+                // The retail sword has aim assist and no trigger.
                 if self.cone_range > 0.0 || self.pull_range > 0.0 {
                     Role::Blade
                 } else {
@@ -519,6 +584,8 @@ pub enum Kit {
     /// Go and take the weapon on the ground: walk over it (same kind: its
     /// ammunition is taken) or hold the action button on it (another kind).
     Seek(Pickup),
+    /// Hold Y in pickup range to fill the left hand.
+    Dual(Pickup),
     /// Nothing to shoot: close in and melee.
     Melee,
 }
@@ -586,6 +653,14 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///
 /// `skip` rules out pickups (those the bot could not reach).
 pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
+    plan_with_personality(s, skip, None)
+}
+
+pub(crate) fn plan_with_personality(
+    s: &Situation<'_>,
+    skip: impl Fn(&Pickup) -> bool,
+    personality: Option<crate::decisions::Personality>,
+) -> Kit {
     let held_gun = s.arms.held;
     let other_gun = s.arms.other;
     let held = held_gun.map_or(Ammo::None, |g| g.ammo);
@@ -597,6 +672,8 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
     // assist reach (crate::weapons::reach).
     let held_misfit = |d: f32| held_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
     let other_misfit = |d: f32| other_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
+    // All pickup choices, including the off hand, apply interest after
+    // filtering for reach, safety and weapon compatibility.
     let nearest = |range: f32, want: &dyn Fn(&Pickup) -> bool| {
         s.pickups
             .iter()
@@ -604,7 +681,10 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
             .map(|p| (dist(p.position, s.at), *p))
             .filter(|(d, _)| *d < range)
             .min_by(|a, b| {
-                let cost = |(d, p): &(f32, Pickup)| d - RATING_PULL * p.gun.rating() as f32;
+                let cost = |(d, p): &(f32, Pickup)| {
+                    d - RATING_PULL * p.gun.rating() as f32
+                        - crate::weapons::pickup_bias(personality, p.gun.role())
+                };
                 cost(a).total_cmp(&cost(b))
             })
             .map(|(_, p)| p)
@@ -668,10 +748,14 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         .iter()
         .flatten()
         .any(|g| g.rating() > 0 && g.role().power());
-    if s.enemy.is_none()
-        && (s.calm || s.breather)
+    let power_range = if s.enemy.is_some() {
+        crate::mind::TAKE_RANGE
+    } else {
+        POWER_RANGE
+    };
+    if (s.enemy.is_some() || s.calm || s.breather)
         && !has_power
-        && let Some(p) = nearest(POWER_RANGE, &|p| {
+        && let Some(p) = nearest(power_range, &|p| {
             p.gun.role().power() && !s.arms.carries(p.gun.def)
         })
     {
@@ -682,10 +766,52 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         }
         return Kit::Seek(p);
     }
+    if s.by_range
+        && s.arms.left.is_none()
+        && let Some(h) = held_gun.filter(|h| h.ready())
+        && let Some(kind) = h.profile.dual
+        && let Some(p) = nearest(
+            if s.enemy.is_some() {
+                crate::mind::TAKE_RANGE
+            } else {
+                PAIR_RANGE
+            },
+            &|p| {
+                p.gun.ready()
+                    && p.gun.profile.dual.is_some_and(|other| kind.pairs(other))
+                    && s.enemy
+                        .is_none_or(|d| d <= h.reach().band.1.min(p.gun.reach().band.1))
+            },
+        )
+    {
+        return Kit::Dual(p);
+    }
     if s.calm && held.low() && other.is_none_or(|o| o.low()) {
         // Same kind tops up by walking over it; any useful gun will do.
         if let Some(p) = nearest(TOP_UP_RANGE, &|_| true) {
             return Kit::Seek(p);
+        }
+    }
+    if s.calm
+        && s.enemy.is_none()
+        && let Some(traits) = personality
+        && ![held_gun, other_gun]
+            .into_iter()
+            .flatten()
+            .any(|g| g.rating() > 0 && g.role() == traits.favorite_weapon)
+        && let Some(p) = nearest(traits.favorite_detour(), &|p| {
+            traits.weapon_interest(p.gun.role()) > 0.0 && !s.arms.carries(p.gun.def)
+        })
+    {
+        let rate = |g: Option<Gun>| g.map_or(0, |g| g.rating());
+        // Preserve the stronger gun and never trade a stronger pair just
+        // for a favorite. A single gun has an open second slot.
+        if other_gun.is_none() || p.gun.rating() >= rate(held_gun).min(rate(other_gun)) {
+            return if other_gun.is_some() && rate(held_gun) > rate(other_gun) {
+                Kit::Switch
+            } else {
+                Kit::Seek(p)
+            };
         }
     }
     if s.calm && s.by_range {
@@ -729,13 +855,16 @@ pub struct WeaponDef {
     /// The first magazine's rounds loaded and reserve maxima, if it has
     /// magazines.
     pub magazine: Option<(i16, i16)>,
-    /// A barrel uses battery per shot.
+    /// No magazines or a barrel that uses battery per shot.
     pub ages: bool,
 }
 
 impl WeaponDef {
     /// Reads the definition at `weap` (the tag's metadata).
     pub fn read(m: &dyn GuestMemory, weap: u32) -> R<WeaponDef> {
+        if m.u16(weap + 0x290)? != 0 {
+            return Ok(WeaponDef::default());
+        }
         let mags = m.i32(weap + WEAP_MAGAZINES)?;
         let magazine = if mags > 0 {
             let first = m.u32(weap + WEAP_MAGAZINES + 4)?;
@@ -752,7 +881,9 @@ impl WeaponDef {
         } else {
             0
         };
-        let mut ages = false;
+        // 0x101d20 accepts zero magazines immediately, including the sword.
+        // Objective weapons also have zero magazines, but cannot be supplies.
+        let mut ages = mags == 0;
         for i in 0..barrels {
             if m.f32(base + i * BARREL_DEF_STRIDE + BARREL_DEF_USAGE)? > 0.0 {
                 ages = true;
@@ -839,7 +970,8 @@ pub fn gun(m: &dyn GuestMemory, weapon: DatumHandle) -> R<Option<(Gun, objects::
     let ammo = WeaponDef::read(m, weap)?.ammo(m, body.addr)?;
     // The handling is a refinement: a fault reading it leaves the gun
     // weapon-blind, not unread.
-    let profile = WeaponDef::profile(m, weap).unwrap_or_default();
+    let mut profile = WeaponDef::profile(m, weap).unwrap_or_default();
+    profile.dual = DualGun::read(m, weap, def).ok().flatten();
     Ok(Some((
         Gun {
             def: def.raw(),
@@ -926,6 +1058,7 @@ pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
 }
 
 pub(crate) struct Ground {
+    pub held_power: Vec<u32>,
     pub weapons: Vec<Pickup>,
     pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
     /// Live grenades within [`crate::incoming::DANGER`] of `near`: none
@@ -942,6 +1075,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
     use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
 
     let mut out = Ground {
+        held_power: Vec::new(),
         weapons: Vec::new(),
         supplies: None,
         grenades: Vec::new(),
@@ -980,6 +1114,9 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                     continue;
                 };
                 if body.parent(m)?.is_some() {
+                    if gun.role().power() && gun.rating() > 0 {
+                        out.held_power.push(h.raw());
+                    }
                     continue;
                 }
                 out.weapons.push(Pickup {
@@ -990,7 +1127,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                 if out.supplies.is_none() || !gun.role().power() {
                     continue;
                 }
-                crate::guest::intel::supply(m, h, body, false)
+                crate::guest::intel::supply(m, h, body, None)
             }
             crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
                 .body(m)

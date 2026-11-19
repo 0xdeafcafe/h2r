@@ -90,8 +90,17 @@ profile and the server (`/dash/server`: service admin) sit under settings.
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
-The Halo admin area (MOTD, playlists, custom content) is on the stats site
+The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+
+**Clanker Training** is available there with an admin account
+(`/games/halo2/admin?tab=training`). It lists opt-in
+[`h2 sim --upload` recordings](../docs/runtime/sim.md#watching-in-uplink)
+and batches. Filter by map, tuning or batch, select two matches to compare
+their summaries, or open a match for its report, bot stats and the shared
+game viewer. Running streams follow the live edge. The **Live** control
+returns to it after a seek. The training page shows the measured simulation
+speed and the same viewer switches to replay at the end.
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
@@ -257,15 +266,15 @@ server change (`src/state/gameart.ts`); a 404 or anything unreadable means
 "use the art pack", and a miss is remembered for a minute. With a manifest,
 any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
 
-- **Emblems** (`emblem/fg/<n>`, `emblem/bg/<n>`) are two-mask layers, not
-  colour pictures. `compositeEmblem` colours them per the manifest's rules
-  (`rgb = colour_a * red + colour_b * blue`; the background is opaque, the
-  foreground's coverage is `max(red, blue)`, PNG alpha is ignored) on a
-  canvas, cached per layers and colours. Until telemetry carries a player's
-  real emblem, layers and colours are picked from the XUID (`emblemChoice`),
-  the colours from the manifest's `palette` when it has one;
-  `<Emblem emblem={...}>` takes real values (`emblemFromIndices` turns
-  profile colour indices into them).
+- **Emblems** load from `/art/emblem/*.png` as soon as the image is
+  rendered, without waiting for the manifest or a browser canvas. Both
+  servers compose the two mask layers using the extraction's palette.
+  A recorded player's layers and colours take precedence, and seed-derived
+  choices fill in any missing fields. The art pack symbol appears if the
+  server cannot supply the image. With `H2_MOCK_GAME_ART=1`, the mock
+  composes its synthetic masks too. To use a real extraction with a mock
+  event feed, point `H2_GAME_ART_URL` at the Live server serving that
+  extraction.
 - **Stats banners** (`banner/home`, `banner/strip`): collages of in-game
   views of the owner's maps, drawn by `bun run banner` (`banner/`: the shot
   list, layout and grade in `plan.ts` and `page.ts`; docs/live/live-art.md
@@ -511,11 +520,16 @@ optional; a frame without them draws as before.
 
 **Machines, teleporters and lifts (optional).** Frames may carry `machines`:
 lift platforms, doors and other big scripted movers, each with the name of
-the map glb's `machines` child it is (`node`), its place, facing and device
-position. A live frame has only the ones that moved, a recorded one all of
-them, so `FrameBuffer` keeps the last word on each and `sampleMachines`
-looks a few frames back (`state/frames.ts`). The 3D view moves the named
-node (`viewer/machines3d.ts`): one with a transform of its own is put where
+the map glb's `machines` child it is (`node`), its place and facing.
+`machine_positions` carries the normalized animation position by scenario
+placement index, as a byte sent on change. Live and replay state retain
+quiet devices and sample between frames at the same render tick as the
+players. The 3D view uses the map glb's device clip to pose its moving
+parts and blends across the seam for looping devices. Older recordings
+and map art without device clips draw with world poses as before.
+
+The 3D view moves a named machine node (`viewer/machines3d.ts`): one with
+a transform of its own is put where
 the frame says; one whose mesh is already in world space is moved by how
 far the machine is from where it was first seen. A machine the glb has no
 node for is drawn from `models.objects.<kind>` when the server has that
@@ -602,6 +616,22 @@ well), the map picture fetched from the published game art
 by the CDN under a key that includes the game's log position (an ended
 game's card never changes). The open questions are the Worker's wasm size
 and CPU budget for a 1200 x 630 render.
+
+**The game page's header, pre-rendered.** Both homes write the game title,
+map, status, result, and standings into the initial HTML above `#root`,
+at the `<!-- game-header -->` marker. The Worker uses the same model
+from its existing `GET /v1/page-meta` call to the hub. The header can load
+each player's real emblem before the app starts because its 16×16
+`<img>` uses the same appearance URL as the game report. The browser
+uses the original art pack only if the image fails.
+
+The embedded JSON model lets `Game.tsx` keep the existing header when
+its own model matches byte for byte. It updates the header on a changed
+game or score and hides it outside the game page. The TypeScript and Rust
+renderers share the goldens in `test/fixtures/game-header.{json,html}`.
+Regenerate them with `bun test/fixtures/gen-game-header.ts`. The PNG
+pixel and palette fixtures are generated by
+`H2_UPDATE_EMBLEM_GOLDEN=1 bun test test/emblem.test.ts`.
 
 ## Architecture
 

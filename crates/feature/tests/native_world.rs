@@ -49,6 +49,27 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert!(chain.render_thread().is_ok());
 }
 
+/// Off, it holds nothing and never blocks a snapshot; on, its section
+/// (no bytes) drops the pending restore at a load.
+#[test]
+fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
+    for (switches, policy) in [
+        ("", "stateless"),
+        ("impl.render.native_world=on", "section"),
+    ] {
+        let mut r = Registry::new(Switches::parse(switches).unwrap());
+        assert!(r.add(&NativeWorld).unwrap());
+        let plan = r.build(&Base).unwrap();
+        let policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        assert_eq!(policies, vec![(native_world::ID, policy)], "{switches:?}");
+        assert!(plan.snapshot_blockers().is_empty(), "{switches:?}");
+    }
+}
+
 #[test]
 fn material_programs_are_on_with_the_world_and_need_it() {
     let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
@@ -177,6 +198,17 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // Nothing pending: another layer draw changes nothing.
     native_world::before_layer(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
+
+    // A snapshot load between a layer 3 and the next layer draw drops the
+    // pending restore: the loaded RAM is not the memory it was made in.
+    m.set_u32(CURRENT_LAYER, 3).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m)[0], 0b0010);
+    native_world::forget_pending();
+    native_world::restore_pending(&mut m);
+    assert_eq!(masks(&m)[0], 0b0010, "nothing set back after the load");
+    m.set_u32(ITEMS + 0x10, 0b1010).unwrap();
+    m.set_u32(CURRENT_LAYER, 5).unwrap();
 
     // An item list built again before the next layer draw (another value
     // in the cleared item's mask): its mask is left alone.

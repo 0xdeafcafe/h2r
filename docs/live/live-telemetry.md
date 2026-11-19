@@ -14,7 +14,7 @@ Five overrides are installed after the generated module is registered (the last 
 |---|---|
 | `0x0018f000` | After the original map activation returns success, read map/mode/variant, team play, score/time limits, tick, and the initial roster. |
 | `0x00137fe0` | After the original tick, sample only when the game-time counter changed. Frames are emitted every second changed tick (up to 15 Hz). |
-| `0x0015ce70` | Read attacker, victim, betrayal and victim position at entry, then invoke the original kill handler unchanged. Scores are reconciled at a later tick. |
+| `0x0015ce70` | Read attacker, victim and victim position at entry, then invoke the original kill handler unchanged. The kind is told from the players: a betrayal is a teammate killed in a team game or campaign (`live_proto::game::is_betrayal`); the third argument is not a betrayal flag. Scores are reconciled at a later tick. |
 | `0x001389c0` | After the original end-latch function, publish the final scoreboard and a unique high-score winner (or none for a tie). |
 | `0x00104150` | Weapon barrel fire: read the weapon object datum at `[esp+4]`, count one shot for it, then invoke the original unchanged. Optional: if the entry is missing or already overridden, telemetry installs without it and frames carry no `shots`. |
 
@@ -156,12 +156,19 @@ machines"):
   The attacker is the report's owner player (`p<index>`), else its owner
   object. The hook is optional: without that entry frames carry no hits.
 - `bsp`: the game globals' active structure BSP (`G+0x02`).
-- `machines`: every machine (object type 7) whose position, forward, up or
-  device position changed by 0.001 or more since it was last sent; all of
-  them in the game's first frame. `node` is the `mach` stem and the
-  object's scenario placement index (`+0x1a`), matching map.glb's
-  `machines` children, which are named after the scenario's machine block
-  index.
+- `machines`: machine objects (type 7) whose world position, forward or
+  up changed by 0.001 or more since last sent. The first sample includes
+  the pose. `node` is the `mach` stem and scenario placement index, which
+  identify a placed machine in map.glb. The viewer applies the pose to
+  the whole machine, including free movers.
+- `machine_positions`: placed machines with a valid position animation
+  channel. The object body holds the scenario index at `+0x1a`, normalized
+  travel at `+0x140`, and the channel at `+0x18c` (see
+  [live-gamestate.md](live-gamestate.md#unit-stance-actions-damage-and-machines)).
+  The sender rounds travel to 0..255 and sends each index once at first
+  sight, then on changes to that byte. This works independently of the
+  object's root pose and tag name. The viewer samples the device animation
+  with those values. Earlier recordings keep their world-pose playback.
 
 Game starts say their `kind`: `campaign` for campaign mode, with
 `difficulty` from the active options' `+0x12a` word (0 easy to 3
@@ -676,7 +683,7 @@ without padding.
 | stance | `u(3)` | `stand`, `crouch`, `airborne`, `vehicle`, `dead` |
 | actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
 | grenade | `u(1)` | `frag`, `plasma` |
-| device position | `u(10)` | 0..1 in 1023 steps |
+| legacy device position | `u(10)` | 0..1 in 1023 steps |
 | velocity | three `seg(8)` absolute. With a base, each axis gets one nonzero bit and `seg(1)` for a nonzero difference | 1/128 unit a second |
 | fire | `eg(1)` | a tick mask, bit k a shot k ticks before the frame's tick (0 is not sent) |
 | body | `u(6)` | 0..1 in 63 steps |
@@ -718,6 +725,7 @@ when present.
 | objects | list |
 | projectiles (version 6) | list |
 | items (version 6) | list |
+| machine travel (v7) | optional section, then zero padding to the byte boundary |
 
 A keyframe list starts with an `eg(2)` count followed by each entity's
 fields in schema order. A delta also starts with the count. V7 follows with
@@ -809,10 +817,41 @@ doubles (exact: every term stays under 2^31).
 | vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied), opt velocity (version 6) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
-| machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
+| machine | opt node string, **id**, kind string, pos, forward, up, opt legacy device position |
 | object | **kind**, **index**, gone `u(1)`, opt pos, opt forward, opt up |
 | projectile (version 6) | **id**, kind string, pos, opt velocity, opt parent id |
 | item (version 6) | **id**, kind string, pos, forward, up, equipment `u(1)` |
+
+### Machine travel in v7
+
+Machine travel is an optional section after the items list at the current
+bit cursor. Its first field is `eg(2)` count minus one (1–255 entries).
+Each entry is `eg(3)` placement gap, then its absolute `u(8)` position.
+Placements are strictly ascending from 0 to 32767. The gap is
+`index - previous_index - 1` with previous index initially -1.
+
+The section is absent when empty and takes at least 15 bits when present.
+A decoder uses the current record's length. With at most seven bits left,
+only zero padding is allowed. With more it reads the section, then
+requires at most seven zero padding bits. Old v7 records end with the
+same padding and still decode. The legacy 10-bit field in the
+`machines` list remains part of the body.
+
+A v7 keyframe replaces the known travel baseline. An absent section on a
+keyframe means unknown travel for all devices. Travel of zero is explicit.
+On a delta, an omitted index holds its latest value. A campaign cut
+starts a new baseline. The server carries changes from throttled frames
+and seeds the next keyframe after a reconnect and at each recorded chunk
+start, including keyframes used to seek. Playback samples adjacent
+delivered frames and holds quiet devices. It draws no telemetry during
+cinematics, though a keyframe can still carry the known baseline for
+playback afterward.
+
+An idle frame adds zero bytes. A single change at placement 0–7 uses
+15 bits, or 1–2 additional frame bytes depending on padding. The furthest
+placement in a 206-machine map takes 23 bits as a single change, or 2–3
+additional bytes. In a batch, a gap of 0–7 costs 12 bits per entry plus the
+shared count.
 
 ### Streams, keyframes and gaps
 
@@ -1164,10 +1203,10 @@ relying on live output, check in this order:
     type order (unverified); body and shield amounts
     as vitality fractions (likely); a grenade's or vehicle's weapon falls
     back to the damage effect's stem.
-12. Machines: object type 7 is a machine and the scarab is one (its `mach`
-    tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
-    device position `+0x140` moving 0 to 1 as doors open and elevators
-    travel (likely); the active BSP switching between campaign zones.
+12. Machines: in-game comparison of travel and viewer poses for a door,
+    a lift and a looping device. Check a replay seek after a long idle
+    period and a campaign checkpoint cut. A FakeGuest test covers the
+    traced offsets and rejects inactive channels and out-of-range travel.
 13. Scenario objects: crates knocked about in campaign show as moved in the
     3D viewer and settle where they stop; a weapon picked up off the floor
     and a multiplayer spawn's weapon after a pickup go gone and come back

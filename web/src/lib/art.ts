@@ -8,6 +8,13 @@ const EMBLEMS = [
   "19-curved-fan", "20-wave-bands", "21-roof-stack", "22-folded-loop", "23-river", "24-offset-orbits",
 ];
 
+/** Stable fallback icon for an XUID or gamertag. */
+export function packEmblem(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  return (h >>> 0) % EMBLEMS.length;
+}
+
 /** Rank badges by rank name (the ladder in state/derive.ts). */
 const RANKS: Record<string, string> = {
   Newcomer: "01-newcomer", Regular: "02-regular", Contender: "03-contender", Veteran: "04-veteran",

@@ -76,7 +76,7 @@ Worker variables (`[vars]` in wrangler.toml) and secrets. The names are
 | `H2_LIVE_ADMINS` | variable | Admin gamertags, comma-separated. |
 | `H2_LIVE_INVITE_ONLY` | variable | `1`: account creation needs an invite. |
 | `H2_LIVE_PRIVATE` | variable | `1`: reads need a token too. |
-| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there; unset, it is a JSON 404 and the web app uses its own art pack. |
+| `H2_LIVE_GAME_ART_URL` | variable | Published game art, `<public bucket URL>/art/<stamp>` (what `h2 live assets publish` prints). `/art/game/*` redirects there and `/art/emblem/*` reads its manifest and masks. With it unset, both paths return 404 and the web app uses its own art pack. |
 
 A missing id or key, or a bad value, fails the hub's start. The request then
 answers 500 with the reason; the hub never runs as some other server.
@@ -524,16 +524,33 @@ What the Mac's server serves, and where it comes from on the Worker:
 |---|---|---|
 | `/v1/*`, `/healthz`, `/.well-known/h2live.json` | the router | the router, in the hub (`run_worker_first`) |
 | `/assets/*` | `web/dist`, `public, max-age=31536000, immutable` | static assets, the same header from `web/public/_headers` |
-| `index.html`, any app route | `web/dist`, `no-cache` | static assets with SPA fallback, Cloudflare's default (`public, max-age=0, must-revalidate`) |
+| App routes | `web/dist/index.html` with page metadata, `no-cache` | the Worker injects the page metadata into the static `index.html`, `no-cache` |
 | `/art/*` (the web's own art pack) | `web/dist` | static assets |
 | `/art/game/*` (art from the owner's disc) | served from `game-art/` (`--share-game-art`) | a redirect to the published copy (`H2_LIVE_GAME_ART_URL`), answered by the Worker without waking the hub, else a JSON 404 |
+| `/art/emblem/*` | composed from local game art, under the same sharing rules | composed from the published art in the Worker, without waking the hub |
+
+A game page's header model travels with the hub's existing
+`GET /v1/page-meta` reply. The Worker uses the shared Rust renderer to put
+the header and its emblem image URLs above the app's root in the initial
+HTML. There are no extra hub calls for the images.
+
+The Worker routes `/art/emblem/*` ahead of static assets. The stable
+appearance URL redirects to a revision derived from the published art
+directory and the PNG renderer version. On a cache hit the Worker serves
+the PNG directly. On a miss it reads the manifest and two mask PNGs from
+`H2_LIVE_GAME_ART_URL` and composes them with the native server's Rust
+renderer. The Worker caches successful PNGs under their full revisioned
+URL, per data center, with `public, max-age=31536000, immutable`. Changing
+the published directory changes the revision. The stable redirect
+revalidates and errors are uncached.
+[Workers Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
 
 The `/v1/` cache rules (`public, … s-maxage=5` with an `ETag` for
 anonymous reads, `private, no-store` for the rest) are the router's, so
 they hold on the Worker too.
 
-The disc's art can't be in the Worker, so the Worker redirects to a
-published copy. Extracting everything the viewer and the stats site use
+The Worker's source art is the published copy. Extracting everything the
+viewer and the stats site use
 (Halo 2's maps, the map pack's, the Halo 1 maps converted from the Halo 1
 disc, models, pictures) and publishing it once from the Mac:
 

@@ -1,6 +1,6 @@
 //! `world.raw`: an object's state as raw guest bytes, for diffing one
-//! moment against another (docs/runtime/agent-api.md, "world.raw"). Wire
-//! types, and the diff `h2 agent raw-diff` prints.
+//! moment against another. `world.poke` replaces bytes in one part
+//! (docs/runtime/agent-api.md). Wire types and the diff `h2 agent raw-diff` prints.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,10 @@ pub mod method {
     /// Raw bytes ([`super::RawParams`] → [`super::Raw`]).
     pub const RAW: &str = "world.raw";
 
-    pub const ALL: &[&str] = &[RAW];
+    /// Replace bytes ([`super::PokeParams`] → [`super::Poke`]).
+    pub const POKE: &str = "world.poke";
+
+    pub const ALL: &[&str] = &[RAW, POKE];
 }
 
 /// The part names, in the order they are found and answered.
@@ -54,6 +57,41 @@ pub struct Raw {
     pub parts: Vec<RawPart>,
 }
 
+/// Maximum bytes per `world.poke` call.
+pub const POKE_MAX: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PokeParams {
+    /// An object id: `player.N` (its unit) or `kind.xxxxxxxx`.
+    pub id: String,
+    /// One of [`PARTS`]; defaults to `object`.
+    #[serde(default = "object_part")]
+    pub part: String,
+    /// Byte offset from the part's base.
+    pub offset: u32,
+    /// Replacement bytes as hex, two digits each.
+    pub hex: String,
+}
+
+fn object_part() -> String {
+    "object".to_owned()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Poke {
+    pub id: String,
+    /// The object datum handle, 8 hex digits.
+    pub datum: String,
+    pub part: String,
+    /// The guest address of the part's first byte, 8 hex digits.
+    pub base: String,
+    pub offset: u32,
+    /// The bytes at the offset, before and after the write, in lowercase hex.
+    pub before: String,
+    pub after: String,
+}
+
 /// Lowercase hex, two digits a byte.
 pub fn to_hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -61,7 +99,7 @@ pub fn to_hex(b: &[u8]) -> String {
 
 /// The bytes of [`to_hex`]'s text; `None` when it is not hex.
 pub fn from_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 || !s.is_ascii() {
+    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     (0..s.len())
@@ -234,6 +272,7 @@ mod tests {
         assert_eq!(from_hex("007fff10").unwrap(), b);
         assert_eq!(from_hex("0"), None);
         assert_eq!(from_hex("zz"), None);
+        assert_eq!(from_hex("+f"), None);
         assert_eq!(from_hex("é0"), None);
     }
 

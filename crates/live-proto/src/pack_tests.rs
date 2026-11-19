@@ -198,6 +198,92 @@ fn several_streams_decode_side_by_side() {
     }
 }
 
+#[test]
+fn machine_position_trailer_round_trips_without_changing_world_poses() {
+    let base = odd_frame();
+    let old = encode_keyframe(&base).unwrap();
+    let with = Frame {
+        machine_positions: vec![MachinePosition { i: 205, p: 128 }],
+        ..base.clone()
+    };
+    let bytes = encode_keyframe(&with).unwrap();
+    assert!((2..=3).contains(&(bytes.len() - old.len())));
+    assert_eq!(decode_keyframe(&bytes).unwrap(), quantize(&with).unwrap());
+    assert!(decode_keyframe(&old).unwrap().machine_positions.is_empty());
+    assert!(decode_keyframe(&bytes[..bytes.len() - 1]).is_err());
+
+    let mut bad = with;
+    bad.machine_positions.push(bad.machine_positions[0]);
+    assert!(encode_keyframe(&bad).is_err());
+    bad.machine_positions[1].i = 8;
+    assert!(encode_keyframe(&bad).is_err());
+    bad.machine_positions[1].i = 0x8000;
+    assert!(encode_keyframe(&bad).is_err());
+}
+
+#[test]
+fn machine_position_trailer_rejects_bad_counts_indices_and_padding() {
+    let bad = |write: fn(&mut BitWriter)| {
+        let mut w = BitWriter::new();
+        write(&mut w);
+        let bytes = w.finish();
+        read_machine_positions(&mut BitReader::new(&bytes)).unwrap_err()
+    };
+    assert!(matches!(
+        bad(|w| w.eg(255, 2)),
+        PackError::Bad("too many machine positions")
+    ));
+    assert!(matches!(
+        bad(|w| {
+            w.eg(1, 2);
+            w.eg(0x7fff, 3);
+            w.bits(1, 8);
+            w.eg(0, 3);
+            w.bits(1, 8);
+        }),
+        PackError::Bad("machine position index out of range")
+    ));
+    assert!(matches!(
+        bad(|w| {
+            w.eg(1, 2);
+            w.eg(0, 3);
+            w.bits(1, 8);
+        }),
+        PackError::Short
+    ));
+    for extra in [1, 8] {
+        let mut w = BitWriter::new();
+        write_machine_positions(&mut w, [MachinePosition { i: 0, p: 128 }].iter());
+        w.bits(u64::from(extra == 1), extra);
+        assert!(matches!(
+            read_machine_positions(&mut BitReader::new(&w.finish())),
+            Err(PackError::Bad("bad machine position padding"))
+        ));
+    }
+}
+
+#[test]
+fn machine_position_trailer_fits_a_full_map_of_devices() {
+    let mut frame = Frame {
+        game_id: "g".into(),
+        machine_positions: (0..255)
+            .map(|i| crate::game::MachinePosition { i, p: i as u8 })
+            .collect(),
+        ..Frame::default()
+    };
+    assert!(validate_frame(&frame).is_ok());
+    let packed = encode_keyframe(&frame).unwrap();
+    assert_eq!(
+        decode_keyframe(&packed).unwrap().machine_positions,
+        frame.machine_positions
+    );
+    frame
+        .machine_positions
+        .push(crate::game::MachinePosition { i: 255, p: 255 });
+    assert!(encode_keyframe(&frame).is_err());
+    assert!(validate_frame(&frame).is_err());
+}
+
 /// A frame with every optional field, odd ids and empty lists.
 fn odd_frame() -> Frame {
     Frame {
@@ -483,15 +569,61 @@ fn frame_sizes_stay_under_budget() {
 /// ten seconds. 16 players, 30 seconds at 15 Hz, with the fixed match RNG.
 #[test]
 fn bytes_per_player_second_stay_under_budget() {
-    let frames = samples::multiplayer(450);
-    let mut bytes = Vec::new();
-    for (record, _) in stream(&frames, 150) {
-        push_record(&mut bytes, &record);
-    }
-    let rate = bytes.len() as f64 / (16.0 * 30.0);
+    let mut frames = samples::multiplayer(450);
+    let encoded_len = |frames: &[Frame]| {
+        let mut bytes = Vec::new();
+        for (record, _) in stream(frames, 150) {
+            push_record(&mut bytes, &record);
+        }
+        bytes.len()
+    };
+    let base = encoded_len(&frames);
+    let rate = base as f64 / (16.0 * 30.0);
     println!("{rate:.2} B/player/s including projectiles, vehicles, items and hits");
     // The ten-minute bench measures 145.25 B/player/s on the same RNG.
     assert!(rate < 147.0, "{rate:.2} B/player/s");
+
+    // One door changes once per second. Frames with a position include
+    // the three scheduled keyframes, so the stream can join at any of them.
+    for (second, f) in frames.iter_mut().step_by(15).enumerate() {
+        f.machine_positions.push(MachinePosition {
+            i: 7,
+            p: if second % 2 == 0 { 0 } else { 255 },
+        });
+    }
+    let total = encoded_len(&frames);
+    let added = total - base;
+    let rate = total as f64 / (16.0 * 30.0);
+    println!("{rate:.2} B/player/s with travel (+{added} bytes over 30 seconds)");
+    // At most two bytes for each 15-bit update, plus one if the container
+    // length crosses a LEB128 boundary.
+    assert!((30..=90).contains(&added), "{added} travel bytes");
+    assert!(rate < 147.0, "{rate:.2} B/player/s with travel");
+}
+
+/// Empty old-v7 records, sparse deltas, an empty periodic baseline and a
+/// cut with a fresh baseline. The web test also starts at the cut.
+fn machine_position_stream() -> Vec<Frame> {
+    let m = |i, p| MachinePosition { i, p };
+    [
+        (10, None, vec![]),
+        (12, None, vec![m(7, 64), m(23, 200)]),
+        (14, None, vec![m(7, 128)]),
+        (16, None, vec![]),
+        (18, None, vec![m(7, 255)]),
+        (20, Some(2), vec![m(23, 40)]),
+        (22, None, vec![]),
+        (24, None, vec![m(23, 168)]),
+    ]
+    .into_iter()
+    .map(|(tick, cut, machine_positions)| Frame {
+        game_id: "g".into(),
+        tick,
+        cut,
+        machine_positions,
+        ..Frame::default()
+    })
+    .collect()
 }
 
 /// The golden vectors `web/test/fixtures/pack` holds: the TypeScript
@@ -511,12 +643,13 @@ fn golden_vectors_match_the_encoder() {
     odd_b.objects[0].u = None;
     odd_b.projectiles[1].pos = [-9.5, 4.25, 4.75];
     odd_b.items.clear();
-    let cases: [(&str, Vec<Frame>, u64); 5] = [
+    let cases: [(&str, Vec<Frame>, u64); 6] = [
         ("v7-multiplayer", samples::multiplayer(6), 4),
         ("v7-campaign", samples::campaign(4), 3),
         ("v7-odd", vec![odd_frame(), odd_b], 15),
         ("v7-cinematic", cinematic_stream(), 100),
         ("v7-motion", motion_stream(), 100),
+        ("v7-machine-positions", machine_position_stream(), 3),
     ];
     let update = std::env::var_os("H2_UPDATE_GOLDEN").is_some();
     for (name, frames, every) in cases {

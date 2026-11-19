@@ -19,6 +19,9 @@ pub trait Sink: Send + 'static {
     fn flush(&mut self) -> Result<(), String> {
         Ok(())
     }
+    fn finish_sim(&mut self, _report: serde_json::Value) -> Result<(), String> {
+        Err("this telemetry sink does not upload simulation reports".into())
+    }
 }
 
 pub struct JsonlSink {

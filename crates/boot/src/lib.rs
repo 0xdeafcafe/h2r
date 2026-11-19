@@ -826,8 +826,37 @@ pub fn run_hosted_with_live(
     xbe_bytes: &[u8],
     dylib: &Path,
     opts: &RunOpts,
+    host: Host,
+    live: &LiveConfig,
+) -> Result<RunReport> {
+    run_configured(xbe_bytes, dylib, opts, host, live, None)
+}
+
+/// Runs a prepared headless match, optionally capturing it in Live.
+pub fn run_sim(
+    xbe_bytes: &[u8],
+    dylib: &Path,
+    opts: &RunOpts,
+    sim: sim_glue::Sim,
+    upload: Option<telemetry::TelemetryConfig>,
+) -> Result<RunReport> {
+    run_configured(
+        xbe_bytes,
+        dylib,
+        opts,
+        Host::default(),
+        &LiveConfig::default(),
+        Some((sim, upload)),
+    )
+}
+
+fn run_configured(
+    xbe_bytes: &[u8],
+    dylib: &Path,
+    opts: &RunOpts,
     mut host: Host,
     live: &LiveConfig,
+    sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
 ) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
     // Either tier's module, by its own stamp (tier.rs).
@@ -906,7 +935,11 @@ pub fn run_hosted_with_live(
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
     // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
-    let sim_mode = sim_glue::from_env()?;
+    let (sim_mode, upload) = match sim {
+        Some((sim, upload)) => (Some(sim), upload),
+        None => (sim_glue::from_env()?, None),
+    };
+    let uploading_sim = upload.is_some();
     if sim_mode.is_some() && host.gfx.is_some() {
         anyhow::bail!("{}: sim mode is headless; this host has a window", sim::ENV);
     }
@@ -1084,11 +1117,14 @@ pub fn run_hosted_with_live(
         &mut features,
         registration::CoreInputs {
             rt: &loaded.runtime,
-            telemetry: telemetry::TelemetryConfig::from_live(
-                live.enabled,
-                live.accounts_path.as_deref(),
-                live.server_url.as_deref(),
-            ),
+            telemetry: match upload {
+                Some(config) => Ok(config),
+                None => telemetry::TelemetryConfig::from_live(
+                    live.enabled,
+                    live.accounts_path.as_deref(),
+                    live.server_url.as_deref(),
+                ),
+            },
             vfs: k.vfs(),
             model,
             campaigns,
@@ -1121,6 +1157,9 @@ pub fn run_hosted_with_live(
         s.add_bots();
     }
     let _telemetry = core.telemetry;
+    if uploading_sim && _telemetry.is_none() {
+        anyhow::bail!("sim upload requires the telemetry feature");
+    }
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
@@ -1158,7 +1197,7 @@ pub fn run_hosted_with_live(
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            let file = map_override::map_file(&mut v, map)?;
             Some(telemetry::MapFile {
                 path: file.path,
                 offset: file.offset,
@@ -1309,7 +1348,7 @@ pub fn run_hosted_with_live(
     if let Some(vfs) = k.vfs() {
         native_world_glue::set_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            let file = map_override::map_file(&mut v, map)?;
             Some(telemetry::MapFile {
                 path: file.path,
                 offset: file.offset,
@@ -1340,18 +1379,26 @@ pub fn run_hosted_with_live(
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
-        let maps = k.vfs().map(|vfs| -> hot_glue::MapLocator {
-            Box::new(move |map| {
-                let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
-                Some(telemetry::MapFile {
-                    path: file.path,
-                    offset: file.offset,
-                    len: file.len,
+        let maps = || {
+            k.vfs().map(|vfs| -> hot_glue::MapLocator {
+                Box::new(move |map| {
+                    let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+                    let file = map_override::map_file(&mut v, map)?;
+                    Some(telemetry::MapFile {
+                        path: file.path,
+                        offset: file.offset,
+                        len: file.len,
+                    })
                 })
             })
-        });
-        hot_glue::install(&a.agent, &loaded.runtime, maps, watch_overrides);
+        };
+        hot_glue::install(&a.agent, &loaded.runtime, maps(), watch_overrides);
+        // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
+        if let Some(sim) = &a.sim {
+            sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+        }
+        // world.* results name their tags the same way.
+        a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {
@@ -1657,11 +1704,26 @@ pub fn run_hosted_with_live(
             break;
         }
     }
-    if let Some(s) = &sim_mode
-        && let Err(e) = s.finish()
-    {
-        eprintln!("sim: {e:#}");
-    }
+    let sim_upload_result = match &sim_mode {
+        Some(s) => match s.finish() {
+            Ok(report) if uploading_sim => serde_json::to_value(report)
+                .map_err(anyhow::Error::from)
+                .and_then(|report| {
+                    _telemetry
+                        .as_ref()
+                        .expect("upload telemetry installed")
+                        .finish_sim(report)
+                        .map_err(anyhow::Error::msg)
+                }),
+            Err(error) if uploading_sim => Err(error),
+            Err(error) => {
+                eprintln!("sim: {error:#}");
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+        },
+        None => Ok(()),
+    };
     if let Some(a) = &ds {
         a.output.halt();
     }
@@ -1885,6 +1947,7 @@ pub fn run_hosted_with_live(
     drop(m);
     drop(loaded);
     drop(module);
+    sim_upload_result.context("uploading the simulation to Live")?;
     Ok(report)
 }
 

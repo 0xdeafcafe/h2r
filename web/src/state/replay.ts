@@ -4,7 +4,7 @@
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import type { ArchiveSegment } from "../api/chunk";
 import { recordedFrame } from "../api/pack";
-import { cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
+import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -80,6 +80,7 @@ export interface ScoreSnapshot {
 
 export class ReplayTimeline {
   readonly frames: Frame[];
+  private readonly travel = new MachinePositionHistory();
   readonly kills: ReplayKill[];
   readonly scores: ScoreSnapshot[];
   readonly startTick: number;
@@ -109,6 +110,11 @@ export class ReplayTimeline {
       if (isFrame(f)) logged.set(ev, f);
     }
     this.frames = [];
+    const addFrame = (f: Frame) => {
+      const tick = clock.tick(f.tick, true);
+      this.travel.push(f, tick, clock.cuts.at(-1) === tick);
+      this.frames.push(retick(f, tick));
+    };
     if (archive?.length) {
       // Archive frame ticks are on the playback clock already. Use the full
       // index to place events across runs even when only one segment is loaded.
@@ -121,20 +127,24 @@ export class ReplayTimeline {
           clock.runs.push({lo, hi, offset:m.from_tick - lo});
         }
       }
-      for (const f of frames) if (isFrame(f)) this.frames.push(retick(f, f.tick));
+      const cuts = new Set(clock.cuts);
+      for (const f of frames) if (isFrame(f)) {
+        this.travel.push(f, f.tick, cuts.has(f.tick));
+        this.frames.push(retick(f, f.tick));
+      }
       clock.place(sorted, ticks);
     } else if (logged.size && logged.size >= frames.length) {
       for (const ev of sorted) {
         const f = logged.get(ev);
         if (f) {
-          this.frames.push(retick(f, clock.tick(f.tick, true)));
+          addFrame(f);
           continue;
         }
         const raw = eventTick(ev);
         if (raw !== null) ticks.set(ev, clock.tick(raw, false));
       }
     } else {
-      for (const f of frames) if (isFrame(f)) this.frames.push(retick(f, clock.tick(f.tick, true)));
+      for (const f of frames) if (isFrame(f)) addFrame(f);
       clock.place(sorted, ticks);
     }
     this.cuts = clock.cuts;
@@ -323,6 +333,10 @@ export class ReplayTimeline {
   }
 
   /** Machines at `tick`. */
+  sampleMachinePositions(tick: number) {
+    return this.travel.sample(this.frames, this.clamp(tick));
+  }
+
   sampleMachines(tick: number): SampledMachine[] {
     return sampleMachines(this.frames, this.clamp(tick));
   }

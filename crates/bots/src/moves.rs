@@ -53,6 +53,18 @@ pub struct Style {
 }
 
 impl Style {
+    pub(crate) fn with_behavior(skill: Skill, behavior: crate::decisions::Behavior) -> Style {
+        let mut style = Self::of(skill);
+        let hold = behavior.strafe_hold();
+        style.strafe = (
+            (style.strafe.0 as f32 * hold) as u32,
+            (style.strafe.1 as f32 * hold) as u32,
+        );
+        style.stand = (style.stand + behavior.stand_bonus()).clamp(0.0, 0.55);
+        style.keep = (style.keep * behavior.spacing()).min(1.0);
+        style
+    }
+
     pub fn of(skill: Skill) -> Style {
         match skill {
             Skill::Easy => Style {
@@ -221,7 +233,16 @@ impl Moves {
     /// This tick's footwork. Without a map: straight at the enemy (or
     /// straight back when retreating), as stage 1 did.
     pub fn fight(&mut self, i: &FightIn, map: Option<&MapData>, bodies: &[Vec3]) -> FightMove {
-        let st = Style::of(i.skill);
+        self.fight_with_style(i, map, bodies, Style::of(i.skill))
+    }
+
+    pub(crate) fn fight_with_style(
+        &mut self,
+        i: &FightIn,
+        map: Option<&MapData>,
+        bodies: &[Vec3],
+        st: Style,
+    ) -> FightMove {
         let t = i.tick;
         let to = [i.foe[0] - i.at[0], i.foe[1] - i.at[1]];
         let flat = norm2(to).max(1e-6);
@@ -394,6 +415,24 @@ pub(crate) fn bend_clear(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
     step_clear(m, at, d, &[0.22, 0.45])
 }
 
+/// Check the standing capsule against overhead collision at the next step.
+pub(crate) fn headroom(m: &MapData, at: Vec3, dir: [f32; 2]) -> bool {
+    let len = norm2(dir);
+    if len < 1e-3 {
+        return true;
+    }
+    [0.14, 0.32].into_iter().all(|distance| {
+        let q = [
+            at[0] + dir[0] / len * distance,
+            at[1] + dir[1] / len * distance,
+        ];
+        let Some(z) = step_floor(m, q, at[2]) else {
+            return true;
+        };
+        crate::nav::standing_clear(&m.walls, [q[0], q[1], z])
+    })
+}
+
 fn step_clear(m: &MapData, at: Vec3, d: [f32; 2], probes: &[f32]) -> bool {
     let l = norm2(d);
     if l < 1e-3 {
@@ -406,6 +445,9 @@ fn step_clear(m: &MapData, at: Vec3, d: [f32; 2], probes: &[f32]) -> bool {
             .locate([at[0] + u[0] * 0.6, at[1] + u[1] * 0.6, at[2]], 1.0)
             .is_some();
     };
+    if !headroom(m, at, u) {
+        return false;
+    }
     let mut prev = here;
     for &s in probes {
         let q = [at[0] + u[0] * s, at[1] + u[1] * s];

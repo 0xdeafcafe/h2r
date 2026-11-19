@@ -137,6 +137,23 @@ pub fn published() -> u64 {
     PUBLISHED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Forgets everything carried between frames: every view's streaks, last
+/// camera and depth, the capture armed, the captures in flight, the
+/// published frames and the last grid. The feature's snapshot load: all of
+/// it is of renders the loaded machine never made, and a load to a later
+/// frame with the camera close by would otherwise keep streaks keyed by
+/// object handles that may now name other objects. The meter and the
+/// counters stay (they only count).
+pub fn forget() {
+    if let Some(st) = STATE.lock().unwrap().as_mut() {
+        st.occ = Occlusion::new(st.occ.rules);
+        st.armed = None;
+    }
+    INFLIGHT.lock().unwrap().clear();
+    MAILBOX.clear();
+    *LAST_GRID.lock().unwrap() = None;
+}
+
 fn epoch() -> Instant {
     static E: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     *E.get_or_init(Instant::now)
@@ -154,9 +171,18 @@ impl Feature for OcclusionCull {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Switched off: no hooks, nothing held. On: per-view streaks, the
+        // last camera and depth frames (`STATE`, `MAILBOX`, `INFLIGHT`),
+        // all derived from renders; a load drops them ([`forget`]) and the
+        // tracker starts again, culling nothing until it has new depth.
         if !b.switches().feature(SWITCH, false) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
+        b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
+            forget();
+            Ok(())
+        }));
         *STATE.lock().unwrap() = Some(State {
             occ: Occlusion::new(Rules::default()),
             meter: Meter::default(),
@@ -259,7 +285,6 @@ impl Feature for OcclusionCull {
                     capture(tag, GRID.0, GRID.1);
                 }
             });
-        b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }
 }

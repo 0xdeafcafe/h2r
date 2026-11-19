@@ -839,6 +839,9 @@ pub struct Converter<'a> {
     /// Plasma pictures with their brightness as alpha
     /// ([`Self::brightest_bitmap`]), by (bitmap tag, gain bits).
     brightest_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Flat bump maps cut out by a base map's alpha
+    /// ([`Self::cutout_bump`]), by base map tag.
+    cutout_bumps: HashMap<u32, Option<TagId>>,
     /// Change-colour maps ([`Self::change_colour_bitmap`]), by
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
@@ -906,6 +909,7 @@ impl<'a> Converter<'a> {
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
             brightest_bitmaps: HashMap::new(),
+            cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
@@ -1507,7 +1511,10 @@ impl<'a> Converter<'a> {
                 // One material per Halo 1 shader, as convert_model writes.
                 let mut padded = shaders.clone();
                 padded.resize(h1_model.shaders.len(), TagId::NULL);
-                let opts = ModelOptions { shaders };
+                let opts = ModelOptions {
+                    shaders,
+                    ..ModelOptions::default()
+                };
                 let mut mode = h1models::mode::convert_model(
                     &h1_model,
                     h1models::short_name(&mode_tag.name),
@@ -2060,7 +2067,11 @@ impl<'a> Converter<'a> {
     /// A `soso` whose base is cut out (an alpha Halo 1 tests,
     /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
     /// trees, decals) takes this path onto `tex_bump_alpha_test_single_pass`
-    /// (converter version 84; they drew as solid cards before).
+    /// (converter version 84; they drew as solid cards before). Its bump
+    /// slot takes a flat bump map cut out where the base is
+    /// ([`Self::cutout_bump`], converter version 92): the stem's depth
+    /// and shadow passes kill by the bump's alpha, so with the default
+    /// bump the cards stayed whole and dark.
     ///
     /// A `soso` with a reflection cube map takes this path too, onto
     /// `tex_bump_env` with Halo 1's cube map and tints
@@ -2162,6 +2173,28 @@ impl<'a> Converter<'a> {
         if maps.is_empty() {
             return None;
         }
+        // The cut-out stem's depth and shadow passes kill by its bump
+        // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
+        // a `soso` has no bump map, so it takes a flat one cut out where
+        // its base is (converter version 92; the stem's default bump is
+        // opaque, and the leaves drew as whole dark cards).
+        if chosen.layout.stem == h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
+            && !maps.contains_key(&h1convert::shad::Role::Bump)
+            && let Some((_, base)) = chosen
+                .maps
+                .iter()
+                .find(|(r, _)| *r == h1convert::shad::Role::Base)
+            && let Some(id) = self.cutout_bump(base.bitmap)
+        {
+            maps.insert(
+                h1convert::shad::Role::Bump,
+                h1convert::shad::Bound {
+                    id,
+                    scale: base.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, base.bitmap),
+                },
+            );
+        }
         let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
         self.cached(
             tag,
@@ -2217,6 +2250,26 @@ impl<'a> Converter<'a> {
                 self.tree.push(&name, conv)
             });
         self.brightest_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
+    /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
+    /// name>_alpha_test_bump`, built once per base. `None` when the base
+    /// does not read or decode, or has more than one image: the stem's
+    /// default bump then stands, uncut, as before.
+    fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
+        if let Some(t) = self.cutout_bumps.get(&base.0) {
+            return *t;
+        }
+        let tag = self.h1.tag(base).ok()?.clone();
+        let out = h1bitmaps::mask::convert_cutout_bump(self.h1, &tag)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::cutout_bump_name(&tag.name);
+                self.tree.push(&name, conv)
+            });
+        self.cutout_bumps.insert(base.0, out);
         out
     }
 

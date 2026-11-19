@@ -17,6 +17,7 @@ pub mod emote;
 pub mod glitches;
 pub mod grenades;
 pub mod guest;
+mod human_input;
 mod incoming;
 pub mod lobby;
 pub mod local;
@@ -33,6 +34,8 @@ pub mod tactics;
 pub mod tuning;
 pub mod vehicle;
 pub mod weapons;
+
+use std::collections::VecDeque;
 
 use decisions::radio;
 use input::host::HostPadState;
@@ -69,9 +72,70 @@ pub struct Brain {
     /// Over the skill's aim table, awareness and the seeded personality
     /// (sim mode's tuning files; [`tuning`]).
     tuning: Option<tuning::Tuning>,
+    controller: human_input::Controller,
+    observations: VecDeque<Observation>,
+    sampled: Option<(u32, bool)>,
+    pending_kills: Vec<emote::Kill>,
+}
+
+#[derive(Default)]
+struct Observation {
+    perception: brain::Perception,
+    vehicles: vehicle::Sight,
+    kills: Vec<emote::Kill>,
+    sounds: Vec<sound::ShotSound>,
+    grenades: Vec<incoming::Grenade>,
+    inbox: Vec<radio::Call>,
+}
+
+/// Read-only state shared by local, phantom and simulated bot views.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrainView {
+    pub skill: mind::Skill,
+    pub personality: decisions::Personality,
+    pub mood: decisions::MoodView,
 }
 
 impl Brain {
+    pub fn view(&self) -> BrainView {
+        BrainView {
+            skill: self.mind.skill,
+            personality: self.mind.decisions.personality,
+            mood: self.mind.decisions.mood(),
+        }
+    }
+
+    pub fn set_skill(&mut self, skill: mind::Skill) {
+        if self.mind.skill != skill {
+            self.mind.skill = skill;
+            self.mind.decisions.personality = decisions::Personality::for_skill(self.seed, skill);
+            self.retune();
+        }
+    }
+
+    pub fn set_identity_seed(&mut self, seed: u64) {
+        if self.seed != seed {
+            self.seed = seed;
+            self.kills_seen = emote::kills().since(u64::MAX).1;
+            self.reset_mind();
+        }
+    }
+
+    fn reset_mind(&mut self) {
+        let taunt = self.mind.emote.taunt;
+        let glitches = self.mind.glitches;
+        let bounces = std::mem::take(&mut self.mind.bounces);
+        self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        self.mind.emote.taunt = taunt;
+        self.mind.glitches = glitches;
+        self.mind.bounces = bounces;
+        self.retune();
+        self.controller = human_input::Controller::new(self.seed);
+        self.observations.clear();
+        self.sampled = None;
+        self.pending_kills.clear();
+    }
+
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
@@ -81,6 +145,10 @@ impl Brain {
             fidget: mind::pad::Fidget::new(seed),
             map: String::new(),
             tuning: None,
+            controller: human_input::Controller::new(seed),
+            observations: VecDeque::new(),
+            sampled: None,
+            pending_kills: Vec::new(),
         }
     }
 
@@ -107,7 +175,7 @@ impl Brain {
         }
     }
 
-    /// One observer and one pad. The radio lock covers the exchange only.
+    #[cfg(test)]
     fn play(
         &mut self,
         p: &brain::Perception,
@@ -115,62 +183,117 @@ impl Brain {
         kills: &[emote::Kill],
         channel: &std::sync::Mutex<radio::Radio>,
     ) -> HostPadState {
-        self.play_with_cues(p, map, kills, channel, &[], &[])
+        self.sample(
+            Observation {
+                perception: p.clone(),
+                kills: kills.to_vec(),
+                ..Observation::default()
+            },
+            map,
+            channel,
+        )
     }
 
-    /// [`Brain::play`] with what the bot hears and the live grenades near
-    /// it ([`mind::Mind::step_with_cues`]).
-    fn play_with_cues(
+    fn sample(
         &mut self,
-        p: &brain::Perception,
+        mut observation: Observation,
         map: Option<&cache::MapData>,
-        kills: &[emote::Kill],
         channel: &std::sync::Mutex<radio::Radio>,
-        sounds: &[sound::ShotSound],
-        grenades: &[incoming::Grenade],
     ) -> HostPadState {
-        let t = self.tuning;
-        tuning::with(t, || self.think(p, map, kills, channel, sounds, grenades))
+        let p = &observation.perception;
+        let tick = p.tick;
+        let alive = p.me.is_some();
+        let epoch = {
+            let mut board = radio::lock(channel);
+            if p.observations.player.is_some() {
+                board.advance(tick);
+                if board.epoch == self.epoch {
+                    board.forget_deaths(&observation.kills);
+                }
+            }
+            observation.inbox = board.listen(p);
+            board.epoch
+        };
+        if self.epoch != epoch {
+            self.reset_mind();
+            self.epoch = epoch;
+            observation.kills.clear();
+        }
+
+        self.pending_kills.append(&mut observation.kills);
+        if self.sampled == Some((tick, alive)) {
+            return self.controller.report();
+        }
+        if self
+            .sampled
+            .is_some_and(|(_, was_alive)| was_alive != alive)
+        {
+            // Visual samples are for the previous life. Preserve their
+            // kill feed in order so a quick death cannot swallow a kill.
+            let current_kills = std::mem::take(&mut self.pending_kills);
+            self.pending_kills
+                .extend(self.observations.drain(..).flat_map(|o| o.kills));
+            self.pending_kills.extend(current_kills);
+            self.controller.discard_pending();
+        }
+        self.sampled = Some((tick, alive));
+        let limits = self
+            .tuning
+            .unwrap_or_default()
+            .input_limits(self.mind.skill);
+        let intent =
+            if alive {
+                observation.kills = std::mem::take(&mut self.pending_kills);
+                self.observations.push_back(observation);
+                let mut ready = None::<Observation>;
+                while self.observations.front().is_some_and(|o| {
+                    tick.wrapping_sub(o.perception.tick) >= limits.perception_ticks
+                }) {
+                    let mut next = self.observations.pop_front().unwrap();
+                    if let Some(mut earlier) = ready.take() {
+                        earlier.kills.append(&mut next.kills);
+                        next.kills = earlier.kills;
+                    }
+                    ready = Some(next);
+                }
+                ready.map_or_else(HostPadState::default, |o| self.think(o, map, channel, tick))
+            } else {
+                observation.kills = std::mem::take(&mut self.pending_kills);
+                self.think(observation, map, channel, tick)
+            };
+        self.controller.step(tick, intent, limits)
     }
 
     fn think(
         &mut self,
-        p: &brain::Perception,
+        observation: Observation,
         map: Option<&cache::MapData>,
-        kills: &[emote::Kill],
         channel: &std::sync::Mutex<radio::Radio>,
-        sounds: &[sound::ShotSound],
-        grenades: &[incoming::Grenade],
+        tick: u32,
     ) -> HostPadState {
-        let (epoch, inbox) = {
-            let mut board = radio::lock(channel);
-            if p.observations.player.is_some() {
-                board.advance(p.tick);
-                if board.epoch == self.epoch {
-                    board.forget_deaths(kills);
-                }
-            }
-            (board.epoch, board.listen(p))
-        };
-        if self.epoch != epoch {
-            let taunt = self.mind.emote.taunt;
-            let glitches = self.mind.glitches;
-            let bounces = std::mem::take(&mut self.mind.bounces);
-            self.mind = mind::Mind::new(self.mind.skill, self.seed);
-            self.mind.emote.taunt = taunt;
-            self.mind.glitches = glitches;
-            self.mind.bounces = bounces;
-            self.epoch = epoch;
-            self.retune();
-        } else {
-            self.mind.hear_deaths(p, kills);
-            self.mind.emote.hear(kills);
+        let Observation {
+            perception,
+            kills,
+            sounds,
+            grenades,
+            vehicles,
+            inbox,
+        } = observation;
+        self.mind.hear_deaths(&perception, &kills);
+        if let Some((id, _)) = perception.observations.player {
+            let weight = self.mind.decisions.behavior().taunt_weight();
+            self.mind.emote.hear_with_style(&kills, Some(id), weight);
         }
         self.mind.decisions.inbox = inbox;
-        let pad = self.mind.step_with_cues(p, map, sounds, grenades);
-        if let Some(call) = self.mind.decisions.report {
+        self.mind.see_vehicles(vehicles);
+        let pad = tuning::with(self.tuning, || {
+            self.mind
+                .step_with_cues(&perception, map, &sounds, &grenades)
+        });
+        if let Some(mut call) = self.mind.decisions.report {
             let mut board = radio::lock(channel);
-            if board.epoch == epoch {
+            if board.epoch == self.epoch {
+                call.tick = tick;
                 board.publish(call);
             }
         }
@@ -185,8 +308,26 @@ impl Default for Brain {
 }
 
 impl local::PadSource for Brain {
+    fn brain_view(&self) -> Option<BrainView> {
+        Some(self.view())
+    }
+
+    fn reset_input(&mut self) {
+        if let Some((tick, _)) = self.sampled.take() {
+            self.mind.release(tick);
+            self.observations.clear();
+            self.pending_kills.clear();
+            self.controller.reset();
+        }
+    }
+
+    fn phantom_latency(&self) -> tuning::PhantomLatency {
+        self.tuning.unwrap_or_default().phantom_latency()
+    }
+
     fn pad(&mut self, f: &local::Frame<'_>) -> HostPadState {
         if f.joining {
+            self.reset_input();
             self.fidget.reset();
             return HostPadState::default();
         }
@@ -195,6 +336,7 @@ impl local::PadSource for Brain {
             None => guest::Who::Port(u32::from(f.port)),
         };
         let Ok((p, grenades)) = guest::perceive_for_brain(f.guest, who) else {
+            self.reset_input();
             self.fidget.reset();
             return HostPadState::default();
         };
@@ -211,22 +353,25 @@ impl local::PadSource for Brain {
         let alive = p.me.is_some();
         // Vehicles are extra: a fault reading them leaves the bot on foot
         // (docs/game/bots.md, Vehicles).
-        if alive {
-            self.mind
-                .see_vehicles(vehicle::read::sight_in_game(f.guest, who));
-        }
-        let shots = if alive {
-            sound::recent(p.tick)
+        let (vehicles, sounds) = if alive {
+            (
+                vehicle::read::sight_in_game(f.guest, who),
+                sound::recent(p.tick),
+            )
         } else {
-            Vec::new()
+            Default::default()
         };
-        let pad = self.play_with_cues(
-            &p,
+        let pad = self.sample(
+            Observation {
+                perception: p,
+                vehicles,
+                kills,
+                sounds,
+                grenades,
+                inbox: Vec::new(),
+            },
             cache::current().as_deref(),
-            &kills,
             radio::host(),
-            &shots,
-            &grenades,
         );
         if alive {
             self.fidget.reset();
@@ -355,5 +500,45 @@ mod tests {
             moved |= pad.right_stick != (0.0, 0.0);
         }
         assert!(moved);
+    }
+
+    #[test]
+    fn temperament_survives_a_round_reset_while_mood_clears() {
+        let board = std::sync::Mutex::new(radio::Radio::default());
+        let mut bot = Brain::new(mind::Skill::Easy, 42);
+        bot.epoch = radio::lock(&board).epoch;
+        let first = bot.view().personality;
+        let mut p = brain::Perception {
+            observations: brain::Observations {
+                player: Some((1, 0)),
+                ..Default::default()
+            },
+            tick: 25,
+            ..Default::default()
+        };
+        bot.play(
+            &p,
+            None,
+            &[emote::Kill {
+                seq: 1,
+                tick: p.tick,
+                victim: 1,
+                attacker: Some(2),
+                betrayal: false,
+                at: None,
+            }],
+            &board,
+        );
+        assert!(bot.view().mood.tilt > 0.0);
+        bot.set_skill(mind::Skill::Legendary);
+        let legendary = bot.view().personality;
+        assert_ne!(legendary, first);
+        assert_eq!(legendary.favorite_weapon, first.favorite_weapon);
+        assert!(bot.view().mood.tilt > 0.0);
+        radio::lock(&board).reset();
+        p.tick = 1;
+        bot.play(&p, None, &[], &board);
+        assert_eq!(bot.view().mood, decisions::MoodView::default());
+        assert_eq!(bot.view().personality, legendary);
     }
 }

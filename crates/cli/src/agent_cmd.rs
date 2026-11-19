@@ -25,6 +25,12 @@ or a short form:
   methods                session.methods
   count [kind|team]      world.count, grouped
   query [JSON]           world.query, e.g. '{\"kind\":[\"actor\"],\"near\":{\"player\":0,\"radius\":20}}'
+                         (a unit's forward is where it aims, with yaw and
+                         pitch in degrees; body_forward is its body's).
+                         Kinds: player actor vehicle machine body scenery
+                         weapon equipment control crate creature. \"tag\"
+                         keeps one tag, by datum or part of its name, e.g.
+                         '{\"kind\":[\"scenery\"],\"tag\":\"teleporter_base\"}'
   object <id>            world.object, e.g. actor.e1230045
   counters               profile.counters (frame-stats window)
   capture <N|Nms> [sample]  profile.capture over N game ticks or N ms: frame
@@ -180,6 +186,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         _ => {
             let (m, p) = parse_call(&rest)?;
+            if first == "poke" {
+                call(&mut c, method::CLAIM, Value::Null)?;
+            }
             let v = call(&mut c, &m, p)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())

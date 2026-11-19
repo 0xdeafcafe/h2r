@@ -347,6 +347,16 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/admin/replay-archives/{id}", get(crate::replay_archive::detail))
         .route("/v1/admin/replay-archives/{id}/step", post(crate::replay_archive::run_step))
         .route("/v1/admin/replay-archives/{id}/rollback", post(crate::replay_archive::rollback))
+        .route(
+            "/v1/admin/sim-runs",
+            get(crate::sim_runs::list).post(crate::sim_runs::start),
+        )
+        .route("/v1/admin/sim-runs/{id}", get(crate::sim_runs::detail))
+        .route(
+            "/v1/admin/sim-runs/{id}/report",
+            axum::routing::put(crate::sim_runs::upload)
+                .layer(DefaultBodyLimit::max(crate::sim_runs::MAX_REPORT)),
+        )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
@@ -446,6 +456,8 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
     };
     #[cfg(not(feature = "native"))]
     let _ = published;
+    #[cfg(feature = "native")]
+    let api = api.merge(crate::art::emblem_routes(site.game_art.clone()));
     with_web(api, pages, site.web.as_deref()).layer(middleware::from_fn(crate::caching::layer))
 }
 
@@ -491,6 +503,11 @@ async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Respons
     );
     let meta = crate::page_meta::describe(live, path);
     let body = crate::page_meta::page_html(&html, &meta, &origin, path);
+    // A game page's header, pre-rendered above the app (page_header.rs).
+    let body = match &meta.header {
+        Some(header) => crate::page_header::inject(&body, header),
+        None => body,
+    };
     (
         [(
             header::CONTENT_TYPE,
@@ -1071,7 +1088,11 @@ async fn start_game(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let bytes = body_bytes(body)?;
-    let new = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    let new: live_proto::game::NewGame =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    if new.sim.is_some() {
+        return Err(invalid("simulation games start at /v1/admin/sim-runs"));
+    }
     let created = live.start_game(bearer(&headers), new).await?;
     Ok(json(StatusCode::CREATED, &created))
 }

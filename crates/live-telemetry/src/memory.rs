@@ -704,6 +704,18 @@ pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     }))
 }
 
+/// Normalized travel for a machine with an active position animation.
+fn machine_position(guest: &Guest, body: u32) -> ReadResult<Option<f64>> {
+    let channel = body + layout::DEVICE_POSITION_CHANNEL;
+    let graph = guest.u32(channel + layout::CHANNEL_GRAPH)?;
+    let index = guest.u16(channel + layout::CHANNEL_ANIMATION + 2)? as i16;
+    if graph == u32::MAX || index < 0 {
+        return Ok(None);
+    }
+    let position = f64::from(guest.f32(body + layout::DEVICE_POSITION)?);
+    Ok((0.0..=1.0).contains(&position).then_some(position))
+}
+
 /// Every live AI-controlled biped: object type biped, an actor datum at
 /// `+0x12c`, no player at `+0x13c`, and not body-depleted.
 pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
@@ -845,11 +857,7 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
                     .u16(body + layout::BODY_PLACEMENT_INDEX)
                     .ok()
                     .filter(|p| (*p as i16) >= 0);
-                let position = guest
-                    .f32(body + layout::DEVICE_POSITION)
-                    .ok()
-                    .map(f64::from)
-                    .filter(|p| (0.0..=1.0).contains(p));
+                let position = placement.and_then(|_| machine_position(guest, body).ok().flatten());
                 out.machines.push(MachineState {
                     datum,
                     definition,
@@ -957,6 +965,70 @@ pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
         12 => ObjectKind::Creature,
         _ => return None,
     })
+}
+
+/// Any live object, as [`things`] lists it: its object type (the header's
+/// `+3`: 2 weapon, 3 equipment, 6 scenery, 8 control, 11 crate and so on,
+/// [`object_kind`]'s table), definition and pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThingState {
+    pub datum: u32,
+    pub object_type: u8,
+    pub definition: Option<u32>,
+    /// The object it is attached to (a held weapon's unit); its pose is
+    /// then relative to that object.
+    pub parent: Option<u32>,
+    /// The scenario placement it came from (`+0x1a`).
+    pub placement: Option<u16>,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+}
+
+/// Every live object whose type `wanted` takes, in slot order: one pass
+/// over the object header table, as [`world`] makes, reading only the
+/// wanted objects' bodies. A fault on one object skips it. For the agent
+/// API's object kinds the telemetry scan does not follow (scenery, items
+/// on the ground, device controls, crates).
+pub fn things(guest: &Guest, wanted: impl Fn(u8) -> bool) -> ReadResult<Vec<ThingState>> {
+    let array = ptr(guest, layout::OBJECTS_PTR)?;
+    let high_water = guest
+        .u32(array + layout::DATUM_HIGH_WATER)?
+        .min(layout::OBJECT_CAPACITY);
+    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    let mut headers = vec![0u8; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
+    guest.read_bytes(data, &mut headers, 1)?;
+    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    let mut out = Vec::new();
+    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
+        let salt = u16::from_le_bytes([header[0], header[1]]);
+        let at = layout::OBJECT_BODY as usize;
+        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        let object_type = header[layout::OBJECT_TYPE as usize];
+        if salt == 0 || body == 0 || !wanted(object_type) {
+            continue;
+        }
+        let read = || -> ReadResult<ThingState> {
+            let (definition, [pos, forward, up]) = transform(guest, body)?;
+            let parent = Some(guest.u32(body + layout::BODY_PARENT)?).filter(|p| *p != u32::MAX);
+            let placement =
+                Some(guest.u16(body + layout::BODY_PLACEMENT_INDEX)?).filter(|p| (*p as i16) >= 0);
+            Ok(ThingState {
+                datum: (u32::from(salt) << 16) | slot as u32,
+                object_type,
+                definition,
+                parent,
+                placement,
+                pos,
+                forward,
+                up,
+            })
+        };
+        if let Ok(thing) = read() {
+            out.push(thing);
+        }
+    }
+    Ok(out)
 }
 
 /// Notes an object that came from a scenario placement (`+0x1a`) or a
@@ -1471,9 +1543,10 @@ pub(crate) mod fixture {
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
-        guest
-            .set_f32(body + super::layout::DEVICE_POSITION, position)
-            .unwrap();
+        guest.set_u32(body + 0x18c, 0xe100_0010).unwrap();
+        guest.set_u16(body + 0x190, u16::MAX).unwrap();
+        guest.set_u16(body + 0x192, 2).unwrap();
+        guest.set_f32(body + 0x140, position).unwrap();
     }
 
     /// An object of `object_type` at `slot` from placement `placement`
@@ -2135,7 +2208,14 @@ mod tests {
             )
             .unwrap();
         fixture::put_machine(&mut guest, 4, 7, 0.25);
-        fixture::put_machine(&mut guest, 5, -1, 3.0);
+        fixture::put_machine(&mut guest, 5, 8, 3.0);
+        fixture::put_machine(&mut guest, 6, -1, 0.5);
+        fixture::put_machine(&mut guest, 7, 9, 0.5);
+        fixture::put_machine(&mut guest, 8, 10, 0.5);
+        guest.set_u32(fixture::body(7) + 0x18c, u32::MAX).unwrap();
+        guest.set_u16(fixture::body(8) + 0x192, u16::MAX).unwrap();
+        // Machine power is separate from its position.
+        guest.set_f32(fixture::body(4) + 0x134, 0.75).unwrap();
         let world = world(&guest).unwrap();
         assert_eq!(world.actors.len(), 1);
         let occupied: Vec<_> = world
@@ -2151,11 +2231,14 @@ mod tests {
             ]
         );
         assert_eq!(world.vehicles[0].pos, [10.0, 20.0, 30.0]);
-        assert_eq!(world.machines.len(), 2);
+        assert_eq!(world.machines.len(), 5);
         assert_eq!(world.machines[0].placement, Some(7));
         assert_eq!(world.machines[0].position, Some(0.25));
-        assert_eq!(world.machines[1].placement, None, "not placed");
-        assert_eq!(world.machines[1].position, None, "not a 0..1 position");
+        assert_eq!(world.machines[1].position, None, "out of range");
+        assert_eq!(world.machines[2].placement, None, "not placed");
+        assert_eq!(world.machines[2].position, None);
+        assert_eq!(world.machines[3].position, None, "no graph");
+        assert_eq!(world.machines[4].position, None, "no position animation");
         assert_eq!(world.machines[0].up, [0.0, 0.0, 1.0]);
     }
 
@@ -2604,6 +2687,41 @@ mod tests {
         assert_eq!(placed[0].pos, [5.0, 6.0, 7.0]);
         assert_eq!(placed[0].forward, [0.0, 1.0, 0.0]);
         assert_eq!(placed[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn things_lists_objects_of_the_wanted_types_with_their_tag_and_pose() {
+        let mut guest = fixture::memory();
+        // Scenery from placement 3, a weapon on the ground, a weapon a
+        // unit holds, a dynamic equipment, and a vehicle (not wanted).
+        fixture::put_placed(&mut guest, 1, 6, 3, -1, [5.0, 6.0, 7.0], u32::MAX);
+        fixture::put_placed(&mut guest, 2, 2, -1, -1, [1.0, 1.0, 1.0], u32::MAX);
+        let holder = fixture::object_datum(9);
+        fixture::put_placed(&mut guest, 3, 2, -1, -1, [0.0, 0.0, 0.0], holder);
+        fixture::put_placed(&mut guest, 4, 3, -1, -1, [2.0, 0.0, 0.0], u32::MAX);
+        fixture::put_vehicle(&mut guest, 5);
+        guest
+            .set_u32(fixture::body(1) + layout::BODY_DEFINITION, 0xe123_0456)
+            .unwrap();
+        let found = things(&guest, |t| matches!(t, 2 | 3 | 6)).unwrap();
+        let seen: Vec<_> = found
+            .iter()
+            .map(|t| (t.datum, t.object_type, t.parent, t.placement))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (fixture::object_datum(1), 6, None, Some(3)),
+                (fixture::object_datum(2), 2, None, None),
+                (fixture::object_datum(3), 2, Some(holder), None),
+                (fixture::object_datum(4), 3, None, None),
+            ]
+        );
+        assert_eq!(found[0].definition, Some(0xe123_0456));
+        assert_eq!(found[0].pos, [5.0, 6.0, 7.0]);
+        assert_eq!(found[0].forward, [0.0, 1.0, 0.0]);
+        assert_eq!(found[0].up, [0.0, 0.0, 1.0]);
+        assert!(things(&guest, |_| false).unwrap().is_empty());
     }
 
     #[test]

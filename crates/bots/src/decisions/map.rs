@@ -55,16 +55,22 @@ impl MapMemory {
     pub(super) fn observe(&mut self, p: &Perception, me: Me, map: Option<&MapData>) {
         self.deaths
             .retain(|(_, t)| p.tick.wrapping_sub(*t) < HOT_TICKS);
+        let visible = |at: Vec3| {
+            let dist = distance(me.position, at);
+            let facing = (0..3)
+                .map(|i| (at[i] - me.position[i]) * me.aim[i])
+                .sum::<f32>();
+            dist <= 25.0
+                && (dist < 3.0 || facing > dist * 0.42)
+                && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
+        };
         self.timers
-            .observe(p.tick, p.observations.supplies.as_deref(), |at| {
-                let dist = distance(me.position, at);
-                let facing = (0..3)
-                    .map(|i| (at[i] - me.position[i]) * me.aim[i])
-                    .sum::<f32>();
-                dist <= 25.0
-                    && (dist < 3.0 || facing > dist * 0.42)
-                    && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
-            });
+            .observe(p.tick, p.observations.supplies.as_deref(), visible);
+        self.timers.update_known(p, visible);
+    }
+
+    pub(super) fn holder(&self, id: u32) -> bool {
+        self.timers.holder(id)
     }
 
     pub(crate) fn due(&self, me: Me, tick: u32, skill: Skill, stuck: &Stuck) -> Option<Vec3> {
@@ -91,7 +97,13 @@ impl MapMemory {
         stuck: &Stuck,
         caution: f32,
     ) -> Option<Vec<Waypoint>> {
-        let blocked = |e: &Edge| stuck.blocks_segment(e.a, e.b, tick);
+        let blocked = |e: &Edge| {
+            if e.kind.traversal() {
+                stuck.blocked(e.a, tick) || stuck.blocked(e.b, tick)
+            } else {
+                stuck.blocks_segment(e.a, e.b, tick)
+            }
+        };
         let threat = self.route_threat;
         if !self.deaths.is_empty() || threat.is_some() {
             let danger = |p| {
@@ -102,9 +114,14 @@ impl MapMemory {
             // even when that unavoidable destination is dangerous.
             let end = nav.poly_near(goal);
             let safe = nav.path_avoiding(at, goal, &|e| {
-                let mid = std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5);
+                let mid = if e.kind.traversal() {
+                    e.a
+                } else {
+                    std::array::from_fn(|i| (e.a[i] + e.b[i]) * 0.5)
+                };
                 blocked(e)
                     || danger(mid)
+                    || (e.kind.traversal() && Some(e.to) != end && danger(e.b))
                     || (Some(e.to) != end && danger(nav.polys[e.to as usize].center))
             });
             if safe.is_some() {

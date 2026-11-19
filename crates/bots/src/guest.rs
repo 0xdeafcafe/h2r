@@ -13,6 +13,7 @@ use engine::view::{objects, players};
 
 use crate::brain::{Me, Perception, Seen};
 pub(crate) mod intel;
+pub mod pickups;
 
 pub type R<T> = Result<T, MemFault>;
 
@@ -827,6 +828,10 @@ pub const VARIANT_FLAGS: u32 = 0x134 + 0x48;
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
 pub const UNIT_AIM: u32 = 0x168;
+/// Crouch request bit on a biped (docs/live/live-gamestate.md).
+const BIPED_UNIT_FLAGS: u32 = 0x134;
+const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
+
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
@@ -965,6 +970,33 @@ fn perception(
         let Some((position, aim, body)) = living_unit(m, &p)? else {
             continue;
         };
+        let hand = |offset| {
+            let slot = u32::from(m.u8(body.addr + offset).ok()?);
+            if slot >= crate::arms::UNIT_WEAPON_SLOTS {
+                return None;
+            }
+            DatumHandle::from_raw(
+                m.u32(body.addr + crate::arms::UNIT_WEAPONS + slot * 4)
+                    .ok()?,
+            )
+            .map(|h| h.raw())
+        };
+        if let Some(unit) = p.unit(m)? {
+            out.observations
+                .supply_players
+                .push(crate::decisions::supplies::Player {
+                    id,
+                    unit: unit.raw(),
+                    position,
+                    overshield: body.shield(m).is_ok_and(|shield| shield > 1.0)
+                        || m.u8(body.addr + 0x10a).is_ok_and(|f| f & 0x10 != 0),
+                    camo: m.u16(p.addr + 0x198).is_ok_and(|t| (t as i16) > 0),
+                    hands: [
+                        hand(crate::arms::UNIT_WEAPON_INDEX),
+                        hand(crate::arms::UNIT_LEFT_WEAPON_INDEX),
+                    ],
+                });
+        }
         if ours {
             me_index = Some(id);
             // Ammunition is extra: a fault reading it leaves the bot
@@ -983,6 +1015,9 @@ fn perception(
                 aim,
                 shield: body.shield(m).ok().filter(|s| s.is_finite()),
                 empty_magazine: crate::arms::held_empty_magazine(m, body.addr).unwrap_or(false),
+                crouching: m
+                    .u32(body.addr + BIPED_UNIT_FLAGS)
+                    .is_ok_and(|flags| flags & BIPED_CROUCH_REQUEST != 0),
             });
             out.others.push(Seen { id, position, team });
         }
@@ -991,7 +1026,10 @@ fn perception(
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
         if let Ok(ground) = crate::arms::ground(m, near) {
             out.pickups = ground.weapons;
+            out.observations.held_power = ground.held_power;
+            out.observations.takes = pickups::recent(out.tick);
             out.observations.supplies = ground.supplies;
+            out.observations.placement_clocks = intel::clocks(m, out.tick).unwrap_or_default();
             out.observations.pickups_scanned = true;
             grenades = ground.grenades;
         }

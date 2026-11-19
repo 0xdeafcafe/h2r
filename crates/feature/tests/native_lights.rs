@@ -27,8 +27,11 @@ use native_render::lights::{Light, Run, TAIL_CLIP, TAIL_ZEROES};
 fn the_switch_off_places_nothing() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     r.add(&NativeLights).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_lights"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
 }
 
 #[test]
@@ -77,8 +80,11 @@ fn splitting_places_its_layer_observers_on_the_render_thread() {
 fn render_timing_on_places_nothing() {
     let mut r = Registry::new(Switches::parse("impl.render.native_lights=on,render-timing").unwrap());
     r.add(&NativeLights).unwrap();
-    let text = r.build(&Base).unwrap().text();
+    let plan = r.build(&Base).unwrap();
+    let text = plan.text();
     assert!(!text.contains("native_lights"), "{text}");
+    // Nothing placed, nothing held: no snapshot blocker.
+    assert!(plan.snapshot_blockers().is_empty());
 }
 
 const ARRAY: u32 = 0x0058_0000;
@@ -317,4 +323,28 @@ fn native_lights_join_runs_between_the_d3d_lights() {
     assert!(native_lights::on_light(&mut m, esp));
     assert_eq!(native_lights::object_refusals(), 1);
     assert_eq!(native_lights::counts(), (15, 7, 5));
+
+    // A snapshot load forgets the open run (it is the saving render's):
+    // the next light opens one of its own.
+    native_lights::forget_runs();
+    let esp = call(&mut m, a, false);
+    assert!(native_lights::on_light(&mut m, esp));
+    assert_eq!(stub.runs.lock().unwrap().len(), 6);
+    assert_eq!(native_lights::counts(), (16, 8, 6));
+}
+
+/// Placed, its section (no bytes) forgets the open run and the split
+/// light at a load.
+#[test]
+fn placed_its_snapshot_policy_is_a_section() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
+    assert!(r.add(&NativeLights).unwrap());
+    let plan = r.build(&Base).unwrap();
+    let policies: Vec<_> = plan
+        .snapshot
+        .iter()
+        .map(|f| (f.id, f.policy.name()))
+        .collect();
+    assert_eq!(policies, vec![(native_lights::ID, "section")]);
+    assert!(plan.snapshot_blockers().is_empty());
 }

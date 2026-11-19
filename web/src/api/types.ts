@@ -188,6 +188,13 @@ export interface FrameActor {
   anim?: FrameAnim | null;
 }
 
+/** A placed machine's travel, keyed by its scenario placement index. */
+export interface MachinePosition {
+  i: number;
+  /** 0..255, where 255 is the end of the animation. */
+  p: number;
+}
+
 export interface Frame {
   game_id: GameId;
   tick: number;
@@ -198,6 +205,7 @@ export interface Frame {
   /** The structure BSP the game has loaded. */
   bsp?: number | null;
   machines?: FrameMachine[];
+  machine_positions?: MachinePosition[];
   /** Scenario placements not where the scenario put them (moved or gone),
    *  every one each frame, by kind then index. */
   objects?: FrameObject[];

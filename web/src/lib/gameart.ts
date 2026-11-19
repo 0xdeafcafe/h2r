@@ -248,7 +248,7 @@ export const EMBLEM_COLOURS: Rgb[] = [
   [36, 70, 160], [130, 90, 200], [120, 80, 44], [200, 160, 110], [150, 30, 70], [70, 90, 70],
 ];
 
-function fnv(seed: string, salt: number): number {
+export function fnv(seed: string, salt: number): number {
   let h = (2166136261 ^ salt) >>> 0;
   for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
   // Final mix, so near-identical seeds don't land on neighbouring picks.
@@ -353,46 +353,11 @@ export function emblemChoice(seed: string, fgCount = 64, bgCount = 32, palette: 
   };
 }
 
-export const emblemCacheKey = (e: EmblemSpec) =>
-  [e.fg, e.bg, e.primary, e.secondary, e.background, e.background2].map((x) => (typeof x === "number" ? x : x.join("."))).join("|");
-
 /** How many consecutive `<prefix><n>` keys the manifest has, from 0. */
 export function countKeys(art: GameArt, prefix: string, max: number): number {
   let n = 0;
   while (n < max && art.has(prefix + n)) n++;
   return n;
-}
-
-/**
- * Colours an emblem from its two layer images (RGBA bytes, same size).
- *
- * A layer holds two masks, not colours: mask a is the red channel, mask b
- * the blue one. The image's alpha copies mask b and is not coverage, so it
- * is ignored. Per pixel, channels in 0..1:
- *
- *   rgb      = colour_a * red + colour_b * blue
- *   coverage = background: 1;  foreground: max(red, blue)
- *
- * The foreground's rgb is already weighted by its masks, so it goes over
- * the background as `fg + bg * (1 - coverage)`. The result is opaque.
- */
-export function compositeEmblem(
-  bg: ArrayLike<number>, fg: ArrayLike<number>,
-  colours: Pick<EmblemSpec, "primary" | "secondary" | "background" | "background2">,
-  out: Uint8ClampedArray = new Uint8ClampedArray(bg.length),
-): Uint8ClampedArray {
-  const { primary: fa, secondary: fb, background: ba, background2: bb } = colours;
-  for (let i = 0; i + 3 < bg.length; i += 4) {
-    const br = bg[i]! / 255, bbm = bg[i + 2]! / 255;
-    const fr = (fg[i] ?? 0) / 255, fbm = (fg[i + 2] ?? 0) / 255;
-    const keep = 1 - Math.max(fr, fbm);
-    for (let c = 0; c < 3; c++) {
-      const under = Math.min(255, ba[c]! * br + bb[c]! * bbm);
-      out[i + c] = Math.round(fa[c]! * fr + fb[c]! * fbm + under * keep);
-    }
-    out[i + 3] = 255;
-  }
-  return out;
 }
 
 /**
