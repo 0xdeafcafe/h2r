@@ -31,14 +31,16 @@
 //! to the lifted original) and refused per reason ([`Missing`]) until
 //! every piece it needs draws natively: the blur and `0x00021360`'s
 //! convolutions through the glow machinery (`engine::screen_grid` for the
-//! latter's grids), passes into target 1, and stand-ins for targets
+//! latter's grids), a last pass into target 1, and stand-ins for targets
 //! `0x19` to `0x1b`. The layer-15 template pass is missing only for a
 //! pass whose program did not load with the world
-//! (`native_post_load`) or that samples an engine texture the native pass
-//! does not supply ([`pass_drawable`]); it draws through
-//! `native_render::screen_gpu`. A call with nothing missing is armed as
-//! the glow is: one swallow of its strips (every strip a triangle strip of
-//! twice the columns, into the bound target), a [`ScreenProbe`] first
+//! (`native_post_load`), that samples an engine texture the native pass
+//! does not supply ([`pass_drawable`]), or in a call that reads target 1
+//! before drawing it ([`call_ordered`]); it draws through
+//! `native_render::screen_gpu`, into the bound target or a stand-in for
+//! target 1 ([`dest`]). A call with nothing missing is armed as the glow
+//! is: one swallow of its strips (every strip a triangle strip of twice
+//! the columns, slot 0 the bound target and 1 target 1), a [`ScreenProbe`] first
 //! (observed, nothing dropped), then the [`ScreenPass`] in place of the
 //! strips; a swallow that ends early keeps every later call on the D3D
 //! path. The stand-ins are missing only for a call with a drawn
@@ -72,7 +74,7 @@ use gfx::vertex::PrimitiveType;
 use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
-use native_render::screen_gpu::{self, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget, StripVertex};
+use native_render::screen_gpu::{self, Dest, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget, StripVertex};
 use native_render::screen_look::ScreenStage;
 
 use crate::native_lights_glue::DeviceMemory;
@@ -153,7 +155,9 @@ pub enum Missing {
     /// or that binds an engine texture the native pass does not supply
     /// ([`pass_drawable`]).
     TemplatePass,
-    /// A pass into target 1 at the window's size, a half or a quarter.
+    /// A pass into target 1 (at the window's size, a half or a quarter)
+    /// that is the call's last, or has no size: the native pass is issued
+    /// into the target bound at the last strip, which must be the call's.
     PassTarget,
     /// A blur convolution (`0x000211a0`).
     Blur,
@@ -195,16 +199,44 @@ pub fn pass_drawable(effects: Option<&ScreenEffects>, egor: TagId, p: &screen_ef
     bound && !p.strips.is_empty() && p.strips.iter().all(|s| s.len() >= 3)
 }
 
+/// Where pass `p` draws: `kind` 0 the bound target, else target 1 at the
+/// size the plan gives it.
+pub fn dest(p: &screen_effect::Pass) -> Option<Dest> {
+    match (p.kind, p.size) {
+        (0, _) => Some(Dest::Bound),
+        (_, Some((w, h))) => Some(Dest::Target1 { guest: (u32::try_from(w).ok()?, u32::try_from(h).ok()?) }),
+        (_, None) => None,
+    }
+}
+
+/// Whether `effect`'s passes read target 1 only after one drew it
+/// (`screen_gpu::check_order`), each with its program loaded.
+pub fn call_ordered(effects: Option<&ScreenEffects>, egor: TagId, effect: &Effect) -> bool {
+    let mut passes = Vec::new();
+    for p in &effect.passes {
+        let program = usize::try_from(p.selector)
+            .ok()
+            .and_then(|i| effects?.program(egor, p.implementation as usize, i));
+        match (program, dest(p)) {
+            (Some(program), Some(d)) => passes.push((program, d)),
+            _ => return false,
+        }
+    }
+    screen_gpu::check_order(passes).is_ok()
+}
+
 /// What `effect` needs that is not native yet, once each, in order;
 /// `drawable` says whether the native template pass draws a pass
 /// ([`pass_drawable`]).
 pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool) -> Vec<Missing> {
     let mut m = Vec::new();
-    for p in &effect.passes {
+    let last = effect.passes.len().saturating_sub(1);
+    for (i, p) in effect.passes.iter().enumerate() {
         if !drawable(p) {
             m.push(Missing::TemplatePass);
         }
-        if p.kind != 0 {
+        let sized = matches!(dest(p), Some(Dest::Target1 { guest: (w, h) }) if w > 0 && h > 0);
+        if p.kind != 0 && (i == last || !sized) {
             m.push(Missing::PassTarget);
         }
         for c in &p.convolutions {
@@ -234,9 +266,9 @@ pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool)
 /// The most corners a call's plan reads.
 pub const MAX_CORNERS: u32 = 64;
 
-/// The plan of the call `c`: its values and corners read, then
-/// `engine::screen_effect::plan`.
-pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Option<Effect>, String> {
+/// The plan of the call `c` and its values: its values and corners read,
+/// then `engine::screen_effect::plan`.
+pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Option<(Effect, [u32; 4])>, String> {
     let n = c.columns.checked_mul(c.rows).filter(|&n| n <= MAX_CORNERS).ok_or("too many corners")?;
     let word = |a: u32| mem.u32(a).map_err(err("a value or corner"));
     let mut values = [0u32; 4];
@@ -248,8 +280,9 @@ pub fn plan_effect(mem: &dyn GuestMemory, c: ScreenEffect, fp: Fp) -> Result<Opt
         let at = c.corners.wrapping_add(16 * i);
         corners.push([word(at)?, word(at + 4)?, word(at + 8)?, word(at + 12)?]);
     }
-    screen_effect::plan(mem, c.datum, values, c.columns, c.rows, &corners, fp.mxcsr, fp.x87_control)
-        .map_err(err("plan"))
+    let effect = screen_effect::plan(mem, c.datum, values, c.columns, c.rows, &corners, fp.mxcsr, fp.x87_control)
+        .map_err(err("plan"))?;
+    Ok(effect.map(|e| (e, values)))
 }
 
 static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] = [const { AtomicU64::new(0) }; Missing::ALL.len()];
@@ -261,15 +294,18 @@ pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
     std::array::from_fn(|i| EFFECT_REFUSED[i].load(Ordering::Relaxed))
 }
 
-/// A call as the native pass draws it: per pass its key and strips
-/// (`depth` the positions' z and w, `[0x0045dd40]`).
+/// A call as the native pass draws it: per pass its key, destination and
+/// strips (`depth` the positions' z and w, `[0x0045dd40]`), and the call's
+/// values (what its passes' engine constants read).
 pub struct ScreenCall {
     pub egor: TagId,
-    pub passes: Vec<(ScreenKey, Vec<Vec<StripVertex>>)>,
+    pub passes: Vec<(ScreenKey, Dest, Vec<Vec<StripVertex>>)>,
+    pub values: [u32; 4],
 }
 
-/// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`]).
-pub fn screen_call(effect: &Effect, egor: TagId, depth: u32) -> ScreenCall {
+/// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`]),
+/// called with `values`.
+pub fn screen_call(effect: &Effect, egor: TagId, values: [u32; 4], depth: u32) -> ScreenCall {
     let passes = effect
         .passes
         .iter()
@@ -283,21 +319,26 @@ pub fn screen_call(effect: &Effect, egor: TagId, depth: u32) -> ScreenCall {
                     screen_gpu::strip(&words, depth)
                 })
                 .collect();
-            (key, strips)
+            (key, dest(p).unwrap_or(Dest::Bound), strips)
         })
         .collect();
-    ScreenCall { egor, passes }
+    ScreenCall { egor, passes, values }
 }
 
-/// The swallow of a call's strips: per strip slot 0 (the bound target),
-/// each a triangle strip (`SET_BEGIN_END` 6) of twice the columns.
+/// The swallow of a call's strips: per strip its slot (0 the bound
+/// target, 1 target 1), each a triangle strip (`SET_BEGIN_END` 6) of
+/// twice the columns.
 pub fn screen_swallow(call: &ScreenCall) -> Option<(Vec<u8>, PrimitiveType, usize)> {
-    let strips: Vec<&Vec<StripVertex>> = call.passes.iter().flat_map(|(_, s)| s).collect();
-    let vertices = strips.first()?.len();
-    if strips.iter().any(|s| s.len() != vertices) {
+    let strips: Vec<(u8, &Vec<StripVertex>)> = call
+        .passes
+        .iter()
+        .flat_map(|(_, d, s)| s.iter().map(move |s| (u8::from(*d != Dest::Bound), s)))
+        .collect();
+    let vertices = strips.first()?.1.len();
+    if strips.iter().any(|(_, s)| s.len() != vertices) {
         return None;
     }
-    Some((vec![0; strips.len()], PrimitiveType::TriangleStrip, vertices))
+    Some((strips.iter().map(|(slot, _)| *slot).collect(), PrimitiveType::TriangleStrip, vertices))
 }
 
 /// The native screen effect, in place of a call's strips.
@@ -321,12 +362,12 @@ impl d3d::ExternalPass for ScreenPass {
             screens.0 = epoch;
         }
         let mut draws = Vec::new();
-        for (key, strips) in &self.call.passes {
+        for (key, dest, strips) in &self.call.passes {
             let Some(program) = self.effects.program(self.call.egor, key.1, key.2) else {
                 screen_refused(&screen_gpu::ScreenRefused::NoProgram);
                 return;
             };
-            draws.push(ScreenDraw { key: *key, program, strips });
+            draws.push(ScreenDraw { key: *key, program, strips, dest: *dest, values: self.call.values });
         }
         let images = &self.effects.images;
         let mut stage_image = |s: ScreenStage| match s {
@@ -371,10 +412,13 @@ impl d3d::ExternalPass for ScreenProbe {
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let checked = self.call.passes.iter().try_for_each(|(key, _)| {
+        let mut ordered = Vec::new();
+        let checked = self.call.passes.iter().try_for_each(|(key, dest, _)| {
             let program = self.effects.program(self.call.egor, key.1, key.2).ok_or(screen_gpu::ScreenRefused::NoProgram)?;
+            ordered.push((program, *dest));
             screen_gpu::check(t.color, program)
         });
+        let checked = checked.and_then(|()| screen_gpu::check_order(ordered));
         match checked {
             Ok(()) => {
                 if !SCREEN_PROVED.swap(true, Ordering::Relaxed) {
@@ -781,7 +825,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        let effect = match plan_effect(&*mem, call, fp) {
+        let (effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
             Ok(None) => return false,
             Err(e) => {
@@ -793,7 +837,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let effects = self.screen_effects();
         let egor = TagId(call.datum);
-        let m = missing(&effect, &|p| pass_drawable(effects.as_deref(), egor, p));
+        let ordered = call_ordered(effects.as_deref(), egor, &effect);
+        let m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p));
         for m in &m {
             let i = Missing::ALL.iter().position(|a| a == m).unwrap_or(0);
             EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
@@ -815,7 +860,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return false;
         }
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
-        let call = screen_call(&effect, egor, depth);
+        let call = screen_call(&effect, egor, values, depth);
         let Some((targets, primitive, vertices)) = screen_swallow(&call) else { return false };
         let (drop, pass): (bool, Box<dyn d3d::ExternalPass>) = if SCREEN_PROVED.load(Ordering::Relaxed) {
             let pass = ScreenPass { effects, call, screens: Arc::clone(&self.screens) };
@@ -984,6 +1029,37 @@ mod tests {
         // convolved.
         assert_eq!(missing(&effect(vec![pass(0, vec![])]), yes), vec![], "armed");
         assert_eq!(missing(&effect(vec![pass(0, vec![Convolution::Kept { result: 0 }])]), yes), vec![], "a kept one draws nothing");
+        // Target 1, then back into the bound target: the native pass is
+        // issued at the last strip, into the call's target.
+        let into_1 = screen_effect::Pass { size: Some((320, 240)), ..pass(2, vec![]) };
+        assert_eq!(missing(&effect(vec![into_1.clone(), pass(0, vec![])]), yes), vec![]);
+        assert_eq!(missing(&effect(vec![pass(0, vec![]), into_1.clone()]), yes), vec![Missing::PassTarget], "target 1 last");
+        let unsized_1 = screen_effect::Pass { size: Some((0, 240)), ..into_1 };
+        assert_eq!(missing(&effect(vec![unsized_1, pass(0, vec![])]), yes), vec![Missing::PassTarget], "no size");
+    }
+
+    #[test]
+    fn a_pass_draws_where_its_kind_says() {
+        assert_eq!(dest(&pass(0, vec![])), Some(Dest::Bound));
+        let half = screen_effect::Pass { size: Some((320, 240)), ..pass(2, vec![]) };
+        assert_eq!(dest(&half), Some(Dest::Target1 { guest: (320, 240) }));
+        assert_eq!(dest(&pass(1, vec![])), None, "target 1 without a size");
+        assert_eq!(dest(&screen_effect::Pass { size: Some((-1, 2)), ..half }), None);
+    }
+
+    /// blur's order: the view into target 1, then target 1 back.
+    #[test]
+    fn a_call_reads_target_1_only_after_drawing_it() {
+        let mut e = effects([ScreenStage::Engine(3), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        let copy = program([ScreenStage::Engine(5), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        e.effects.get_mut(&EGOR).unwrap().programs.insert((0, 0), copy);
+        let back = drawn_pass(2, 4);
+        let into_1 = screen_effect::Pass { implementation: 0, kind: 1, size: Some((640, 480)), ..drawn_pass(2, 4) };
+        let call = |passes| Effect { shader: 0, implementations: 2, passes };
+        assert!(call_ordered(Some(&e), EGOR, &call(vec![into_1.clone(), back.clone()])));
+        assert!(!call_ordered(Some(&e), EGOR, &call(vec![back.clone()])), "target 1 as D3D left it");
+        assert!(!call_ordered(Some(&e), EGOR, &call(vec![back, into_1])), "read before drawn");
+        assert!(!call_ordered(None, EGOR, &call(vec![drawn_pass(1, 4)])), "no world");
     }
 
     const EGOR: TagId = TagId(0xe000_0001);
@@ -999,6 +1075,7 @@ mod tests {
             vertex: Default::default(),
             pixel: Default::default(),
             inputs: 0x1f,
+            constants: Default::default(),
             state: native_render::pass_state::PassState {
                 blend: None,
                 blend_constant: wgpu::Color::TRANSPARENT,
@@ -1052,8 +1129,10 @@ mod tests {
         assert!(!pass_drawable(Some(&view), EGOR, &screen_effect::Pass { selector: 1, ..p.clone() }), "no such implementation");
         assert!(!pass_drawable(Some(&view), EGOR, &drawn_pass(0, 4)), "no strips");
         assert!(!pass_drawable(Some(&view), EGOR, &drawn_pass(2, 1)), "two-vertex strips");
-        let target = effects([ScreenStage::Engine(3), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
-        assert!(!pass_drawable(Some(&target), EGOR, &p), "target 1 has no stand-in yet");
+        let target = effects([ScreenStage::Engine(13), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        assert!(!pass_drawable(Some(&target), EGOR, &p), "target 9 has no stand-in");
+        let target1 = effects([ScreenStage::Engine(3), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        assert!(pass_drawable(Some(&target1), EGOR, &p), "target 1's stand-in (the call's order is checked apart)");
         let undecoded = effects([ScreenStage::Bitmap { bitmap: BITMAP, image: 1 }, ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
         assert!(!pass_drawable(Some(&undecoded), EGOR, &p), "a bitmap that did not decode");
     }
@@ -1065,15 +1144,24 @@ mod tests {
             implementations: 2,
             passes: vec![drawn_pass(3, 4), drawn_pass(3, 4)],
         };
-        let call = screen_call(&effect, EGOR, 0x4b7f_ffff);
+        let values = [0.5f32.to_bits(), 0, 0, 0];
+        let call = screen_call(&effect, EGOR, values, 0x4b7f_ffff);
         assert_eq!(call.passes.len(), 2);
+        assert_eq!(call.values, values, "what the passes' engine constants read");
         assert_eq!(call.passes[0].0, (EGOR.0, 1, 0), "(egor, layer pass, implementation)");
-        assert_eq!(call.passes[0].1[0][0].position[2].to_bits(), 0x4b7f_ffff);
+        assert_eq!(call.passes[0].1, Dest::Bound);
+        assert_eq!(call.passes[0].2[0][0].position[2].to_bits(), 0x4b7f_ffff);
         assert_eq!(screen_swallow(&call), Some((vec![0; 6], PrimitiveType::from_xbox(6).unwrap(), 8)), "SET_BEGIN_END 6");
         let uneven = Effect { passes: vec![drawn_pass(1, 4), drawn_pass(1, 3)], ..effect.clone() };
-        assert_eq!(screen_swallow(&screen_call(&uneven, EGOR, 0)), None);
-        let empty = Effect { passes: vec![], ..effect };
-        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, 0)), None);
+        assert_eq!(screen_swallow(&screen_call(&uneven, EGOR, [0; 4], 0)), None);
+        let empty = Effect { passes: vec![], ..effect.clone() };
+        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, [0; 4], 0)), None);
+        // Target 1's strips go to slot 1, the target the first finds.
+        let into_1 = screen_effect::Pass { kind: 1, size: Some((640, 480)), ..drawn_pass(2, 4) };
+        let both = Effect { passes: vec![into_1, drawn_pass(3, 4)], ..effect };
+        let call = screen_call(&both, EGOR, [0; 4], 0);
+        assert_eq!(call.passes[0].1, Dest::Target1 { guest: (640, 480) });
+        assert_eq!(screen_swallow(&call).map(|s| s.0), Some(vec![1, 1, 0, 0, 0]));
     }
 
     #[test]
@@ -1113,7 +1201,7 @@ mod tests {
         assert!(Probe { plan, capture: None }.colour_only());
         assert!(CapturePass(None).colour_only());
         let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
-        let call = || ScreenCall { egor: EGOR, passes: Vec::new() };
+        let call = || ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4] };
         assert!(ScreenProbe { effects: Arc::clone(&effects), call: call() }.colour_only());
         let screens = Arc::new(Mutex::new((0, ScreenSet::new())));
         assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
