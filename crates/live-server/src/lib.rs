@@ -49,6 +49,7 @@ pub mod hold;
 pub mod http;
 #[cfg(feature = "native")]
 pub mod httpstore;
+pub mod host_identity; // dh-identity
 pub mod identity;
 pub mod ingest;
 pub mod invites;

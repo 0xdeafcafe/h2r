@@ -773,7 +773,11 @@ impl Live {
         Ok(Token::parse(bearer).map(|t| t.claims.exp).unwrap_or(0))
     }
 
-    pub(crate) fn rate_limit(&self, author: &Author, method: &str) -> Result<(), ApiError> {
+    pub(crate) fn rate_limit(
+        &self,
+        author: &impl std::fmt::Display,
+        method: &str,
+    ) -> Result<(), ApiError> {
         if self.writes.allow(&format!("{author} {method}")) {
             Ok(())
         } else {

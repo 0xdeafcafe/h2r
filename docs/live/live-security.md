@@ -201,6 +201,31 @@ read, including the stream, on a `--private` server).
 The server id is fixed on first start and stored with the server key,
 because every author id contains it.
 
+### Dedicated host identity
+
+Live issues the host process one reusable Ed25519 JWT at boot. The issuer
+is the Live server, the audience is its server ID, and the subject is
+`host:<lease_id>`. The token expires `max_match_s + 300` seconds after
+issuance. Its `lxm` array grants `hosts.register`, `hosts.report`,
+`sessions.publish`, and `telemetry.ingest`. Registration and reporting
+compare the verified subject’s lease ID to the route. Player and operator
+routes keep their existing single-method token checks.
+
+The private JWT also carries `event_key`, the base64url Ed25519 seed for
+this lease’s event batches. Live derives it with HKDF from the server key
+and the lease subject. The host uses the JWT as its HTTP or ingest bearer
+and signs ordinary session and game batch JWSes with the lease key, using
+the JWT subject as event author. Live checks the batch signature, scope
+and resource owner. Session creation and game start also check the active
+lease. The event log retains the signed batches. A hibernating ingest
+socket retains only the subject and expiry. Keep the JWT and its event key
+private for the lifetime of the lease.
+
+A dedicated session carries the service subject in `host` and zero in the
+legacy `host_xuid` field. Host heartbeats refresh its advertisement, and
+only player XUIDs populate presence, session membership and Ranked results.
+[Ranked admission](dedicated-host.md#routing-assignment-and-arbitration)
+
 ## 4. Base URL and discovery
 
 Every client takes a base URL: `--server`/`H2_LIVE_SERVER` for the CLI and

@@ -140,20 +140,31 @@ publish it under that lease. A playerless lobby, automatic fleet startup,
 jitter and loss limits, and relay-backed multiplayer are separate work.
 [QoS implementation](../../crates/live-hle/src/qos.rs)
 
-**Ranked admission.** Today rank processing requires a finished
-matchmade game from the recorded host, a host-registered arbitration
-round before start and eligible registered participants on the host
-record. Ordinary remote players can lack a verified XUID.
+**Ranked admission.** A peer-hosted match uses the session host’s game
+record and its latest unused arbitration round registered before the game
+started. The existing human registration and bot roster rules apply.
+
+When the published assignment has `host_lease`, Live binds the session to
+the lease subject and checks the assignment’s members against the lease
+roster. The session has its own ID and retains the matchmaking assignment
+ID, leaving that ID available for a peer fallback. Only the lease subject
+can write the authoritative game’s frames and event batches. A client receiving `Queue::Join.frames_from_host` skips
+its own frame upload for that game.
+
+A dedicated match counts for Ranked when the lease holder signs a
+`GameEnded` with reason `finished` in the assigned ranked hopper. Every
+recorded player, including anyone who left, must have an XUID on the
+lease roster. Reserved players who never joined receive no result. A
+seat without an XUID or a player outside the reservation makes the whole
+result ineligible. The current guest-memory projection gives ordinary remote
+humans no XUID. A real game with any such seat therefore remains unranked
+until the runtime can identify that player. Gamertags and roster order
+cannot establish account identity. Live spends an eligible assignment once
+and ranks the recorded entrants. The service identity has no player slot,
+score, or standing.
 [Ranking predicates](../../crates/live-server/src/ranks.rs) ·
 [Arbitration](../../crates/live-server/src/arbitration.rs) ·
 [Identity projection](../../crates/live-telemetry/src/session.rs)
-
-The planned trusted source is the dedicated host. It signs telemetry
-with a service identity separate from the players. Live verifies that
-the assigned host signed the completed game and ties the record to the
-reservation and eligible joined players before it counts for Ranked.
-Preserve single-use results, reconcile disconnects against the
-reserved roster and keep the service account out of ranks and scores.
 
 ## Order of experiments
 

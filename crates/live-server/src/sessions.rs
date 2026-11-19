@@ -1,5 +1,6 @@
 //! Signed-host discovery sessions, projected from the event log.
 use crate::ConnectInfo;
+use crate::host_identity::{Publisher, SESSIONS_PUBLISH}; // dh-identity
 use crate::{
     app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized},
     model::{State, nonce_key},
@@ -41,10 +42,23 @@ impl Live {
         observed: Option<IpAddr>,
         match_id: Option<&str>,
     ) -> Result<Session, ApiError> {
-        let author = self.authenticate(bearer, lxm::SESSIONS_WRITE)?;
+        let (author, grant, _) = self.publisher(bearer, SESSIONS_PUBLISH)?;
         self.rate_limit(&author, lxm::SESSIONS_WRITE)?;
-        let Author::Account { xuid, .. } = author else {
-            return Err(forbidden("a session host must be an account"));
+        let xuid = match &author {
+            Publisher::Peer(Author::Account { xuid, .. }) => *xuid,
+            Publisher::Host(_) => live_proto::Xuid(0), // wire placeholder, never a player
+            _ => {
+                return Err(forbidden(
+                    "a session host must be an account or a leased host",
+                ));
+            }
+        };
+        let match_id = match &grant {
+            Some(host) => {
+                host.require_active(self)?;
+                host.session_assignment(&new, match_id)?
+            }
+            None => match_id,
         };
         new.validate().map_err(invalid)?;
         let seen = observed.and_then(|ip| match ip {
@@ -52,25 +66,56 @@ impl Live {
             _ => None,
         });
         let _guard = self.session_writes.lock().await;
+        let subject = author.to_string();
+        if grant.is_some()
+            && let Some(existing) = self
+                .model
+                .read()
+                .sessions
+                .values()
+                .find(|s| s.host == subject)
+        {
+            return Ok(existing.clone());
+        }
         let matchmaking = if let Some(id) = match_id {
             if !session::valid_id(id) {
                 return Err(invalid("invalid matchmaking assignment id"));
             }
-            if let Some(existing) = self.model.read().sessions.get(id) {
-                if existing.host_xuid == xuid && existing.matchmaking.is_some() {
+            if grant.is_none()
+                && let Some(existing) = self.model.read().sessions.get(id)
+            {
+                if existing.host == subject && existing.matchmaking.is_some() {
                     return Ok(existing.clone());
                 }
                 return Err(forbidden("only the elected host may publish the assigned session"));
             }
             let matcher = self.matchmaking.lock().unwrap();
-            let lease = matcher
-                .lease(id, now())
-                .ok_or_else(|| conflict("matchmaking assignment expired"))?;
-            if lease.assignment.host != xuid {
+            let lease = if grant.is_some() {
+                matcher.dedicated_lease(id, now())
+            } else {
+                matcher.lease(id, now())
+            }
+            .ok_or_else(|| conflict("matchmaking assignment expired"))?;
+            let elected = match &grant {
+                Some(host) => host.owns_assignment(&lease.assignment),
+                None => lease.assignment.host_lease.is_none() && lease.assignment.host == xuid,
+            };
+            if !elected {
                 return Err(forbidden("only the elected host may publish the assigned session"));
             }
-            if seen != Some(*lease.endpoint.ip()) || new.port != lease.endpoint.port() {
+            if grant.is_none()
+                && (seen != Some(*lease.endpoint.ip()) || new.port != lease.endpoint.port())
+            {
                 return Err(conflict("session endpoint changed after the QoS probes"));
+            }
+            if grant.is_some() {
+                // A playerless publisher may have no local hopper selection.
+                new.attributes
+                    .entry(live_proto::optimatch::attr::HOPPER)
+                    .or_insert(session::AttributeValue::Integer(u64::from(
+                        lease.assignment.hopper,
+                    )));
+                new.validate().map_err(invalid)?;
             }
             if new.is_coop()
                 || live_proto::optimatch::playlist(&new.attributes) != Some(lease.assignment.hopper)
@@ -90,6 +135,7 @@ impl Live {
         // Off loopback, listed sessions use the observed client address.
         // An assigned session always uses the address the roster probed.
         let declared = match seen {
+            None if grant.is_some() => new.addr,
             _ if matchmaking.is_some() => None,
             Some(v) if new.visibility.is_listed() && !v.is_loopback() => None,
             _ => new.addr,
@@ -100,7 +146,9 @@ impl Live {
         if addr.is_unspecified() || addr.is_multicast() || addr.is_broadcast() || new.port > 65529 {
             return Err(invalid("invalid gameplay endpoint"));
         }
-        let tag = {
+        let tag = if grant.is_some() {
+            String::new()
+        } else {
             let s = self.model.read();
             if s.sessions
                 .values()
@@ -116,7 +164,7 @@ impl Live {
                 .gamertag
                 .to_string()
         };
-        let id = if let Some(assignment) = &matchmaking {
+        let id = if let Some(assignment) = matchmaking.as_ref().filter(|_| grant.is_none()) {
             assignment.id.clone()
         } else {
             loop {
@@ -124,7 +172,7 @@ impl Live {
                 getrandom::fill(&mut bytes).map_err(|_| invalid("random source unavailable"))?;
                 bytes[0] = (bytes[0] & 15) | 0x80;
                 let id = live_proto::sign::hex(&bytes);
-                if !self.model.read().sessions.contains_key(&id) {
+                if Some(id.as_str()) != match_id && !self.model.read().sessions.contains_key(&id) {
                     break id;
                 }
             }
@@ -135,7 +183,7 @@ impl Live {
             .expect("time formats");
         let item = Session {
             session_id: id.clone(),
-            host: author.to_string(),
+            host: subject,
             host_xuid: xuid,
             host_gamertag: tag,
             xnkid: id.clone(),
@@ -173,15 +221,15 @@ impl Live {
         id: &str,
         jws: &str,
     ) -> Result<u64, ApiError> {
-        let author = self.authenticate(bearer, lxm::SESSIONS_WRITE)?;
+        let (author, grant, _) = self.publisher(bearer, SESSIONS_PUBLISH)?;
         self.rate_limit(&author, lxm::SESSIONS_WRITE)?;
         let (parsed, bodies) = SignedEvent::open_batch(jws).map_err(sign_error)?;
         let first = &bodies[0];
         if first.author != author.to_string() {
             return Err(forbidden("event author is not the token issuer"));
         }
-        let key = self
-            .key_for(&author, &first.kid)
+        let key = author
+            .key(self, &first.kid)
             .ok_or_else(|| unauthorized("unknown or revoked session key"))?;
         parsed.verify(&key).map_err(sign_error)?;
         let _guard = self.session_writes.lock().await;
@@ -227,9 +275,19 @@ impl Live {
                     .map_err(|_| invalid("invalid player"))?;
                 let known = {
                     let m = self.model.read();
-                    m.accounts.contains_key(&p.xuid)
-                        || crate::bots::leased_to(&m, id, &author, p.xuid)
-                        || (b.kind == session::LEFT && item.players.contains_key(&p.xuid))
+                    let eligible = grant.as_ref().is_none_or(|host| {
+                        p.xuid.0 != 0 && (host.roster.is_empty() || host.roster.contains(&p.xuid))
+                    });
+                    eligible
+                        && (m.accounts.contains_key(&p.xuid)
+                            || grant.as_ref().is_some_and(|g| {
+                                g.roster.contains(&p.xuid)
+                                    && m.bots.bot(p.xuid).is_some_and(|bot| bot.persistent)
+                            })
+                            || author
+                                .peer()
+                                .is_some_and(|a| crate::bots::leased_to(&m, id, a, p.xuid))
+                            || (b.kind == session::LEFT && item.players.contains_key(&p.xuid)))
                 };
                 if !known || p.slot.as_ref().is_some_and(|s| s.len() > 64) {
                     return Err(invalid("unknown player or invalid slot"));
@@ -246,6 +304,17 @@ impl Live {
                 return Err(invalid("SessionDeleted must be last"));
             }
             let did = item.apply(&b.kind, &b.data, &b.at, at).map_err(invalid)?;
+            if let Some(host) = &grant
+                && b.kind == session::UPDATED
+            {
+                host.session_assignment(&item.advertisement, None)?;
+                if let Some(a) = &item.matchmaking
+                    && live_proto::optimatch::playlist(&item.advertisement.attributes)
+                        != Some(a.hopper)
+                {
+                    return Err(forbidden("session update changed the leased hopper"));
+                }
+            }
             if did {
                 changed.push(i);
             }

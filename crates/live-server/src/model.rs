@@ -85,6 +85,9 @@ pub struct Game {
     pub players: Vec<Player>,
     /// Everyone who was ever in the game (for `recent_games`).
     pub xuids: Vec<Xuid>,
+    // dh-identity: preserve evidence even after an unidentified seat leaves.
+    pub(crate) all_players_identified: bool,
+    pub(crate) ended_by_host: bool,
     pub scoreboard: Vec<PlayerScore>,
     pub teams: Option<Vec<TeamScore>>,
     pub kills: VecDeque<KillRecord>,
@@ -402,6 +405,15 @@ impl Model {
         }
     }
 
+    /// A host heartbeat keeps only its own advertisements alive.
+    pub(crate) fn touch_service_sessions(&self, subject: &str, now: i64) {
+        for s in self.state.write().unwrap().sessions.values_mut() {
+            if s.host == subject && s.state == "open" {
+                s.last_activity = s.last_activity.max(now);
+            }
+        }
+    }
+
     /// Notes activity in game `id` at unix second `now`. Frames come 15 a
     /// second and the clock moves once a second: the write lock is taken
     /// only when it moves.
@@ -436,6 +448,8 @@ impl Model {
                 })
                 .flatten();
             let game = Game {
+                all_players_identified: players.iter().all(|p| p.xuid.is_some()),
+                ended_by_host: false,
                 xuids,
                 coop,
                 players,
@@ -477,6 +491,7 @@ impl Model {
                 if let Some(x) = d.player.xuid.filter(|x| !g.xuids.contains(x)) {
                     g.xuids.push(x);
                 }
+                g.all_players_identified &= d.player.xuid.is_some();
                 g.players.push(d.player);
             }
             game::PLAYER_LEFT => {
@@ -533,6 +548,7 @@ impl Model {
                 if !d.players.is_empty() {
                     g.scoreboard = d.players.clone();
                 }
+                g.ended_by_host = b.author == g.started.host;
                 g.ended = Some((d, b.at.clone()));
             }
             _ => {}

@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::app::{
     ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized,
 };
+use crate::host_identity::{Publisher, TELEMETRY_INGEST}; // dh-identity
 use crate::model::{Game, nonce_key};
 use crate::store::{NewEvent, Query};
 
@@ -489,16 +490,26 @@ pub fn parse_skulls(v: &str) -> Result<Vec<u8>, String> {
 
 impl Live {
     /// The live game `id`, if `author` may write to it.
-    fn writable_game(&self, id: &str, author: &Author) -> Result<Game, ApiError> {
+    fn writable_game(&self, id: &str, author: &Publisher, frame: bool) -> Result<Game, ApiError> {
         let s = self.model.read();
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
-        if g.started.game.sim.is_some() && !self.admins.is_admin(author, &s) {
+        if g.started.game.sim.is_some()
+            && author.peer().is_some_and(|a| !self.admins.is_admin(a, &s))
+        {
             return Err(forbidden("simulation recording requires an admin"));
         }
         if g.ended.is_some() {
             return Err(conflict("the game has ended"));
         }
-        if !g.admits(author) {
+        // Even a participant writing to its own secondary record cannot
+        // publish a competing frame stream for a dedicated session.
+        if frame && author.peer().is_some()
+            && g.started.game.session_id.as_ref().and_then(|id| s.sessions.get(id))
+                .and_then(|s| s.matchmaking.as_ref()).is_some_and(|a| a.host_lease.is_some())
+        {
+            return Err(forbidden("the assigned host supplies this session's frames"));
+        }
+        if !author.may_write(g) {
             return Err(forbidden("only the game's host and players write to it"));
         }
         Ok(g.clone())
@@ -511,11 +522,19 @@ impl Live {
         bearer: Option<&str>,
         mut new: NewGame,
     ) -> Result<GameCreated, ApiError> {
-        let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
+        let (author, grant, _) = self.publisher(bearer, TELEMETRY_INGEST)?;
+        if let Some(grant) = &grant {
+            grant.require_active(self)?;
+            grant.bind_game(&self.model.read(), &mut new)?;
+        }
         self.rate_limit(&author, lxm::GAMES_WRITE)?;
         let _sim_guard = if let Some(sim) = &new.sim {
-            crate::admin::require_admin(self, &author)?;
-            crate::sim_runs::validate_start(sim, &new)?;
+            if let Some(peer) = author.peer() {
+                crate::admin::require_admin(self, peer)?;
+                crate::sim_runs::validate_start(sim, &new)?;
+            } else {
+                crate::sim_runs::validate_hosted_start(sim, &new)?;
+            }
             Some(self.sim_writes.lock().await)
         } else {
             None
@@ -526,35 +545,34 @@ impl Live {
         game::validate_new(&new).map_err(invalid)?;
         // Bots (docs/game/bots.md §9.3): the session's roster as it is now,
         // which is the one in force when GameStarted lands.
-        let host = match &author {
-            Author::Account { xuid, .. } => Some(*xuid),
-            _ => None,
-        };
-        crate::bots::check_players(
+        author.check_players(
             &self.model.read(),
-            host,
+            author.xuid(),
             new.session_id.as_deref(),
             u64::MAX,
             &new.players,
         )
         .map_err(invalid)?;
-        let game_id = match &new.sim {
-            Some(sim) => {
-                let id = game::sim_game_id(&sim.run_id);
-                if let Some(g) = self.model.read().games.get(&id) {
-                    return if g.started.host == author.to_string() && g.started.game == new {
-                        Ok(GameCreated {
-                            game_id: id,
-                            position: g.position,
-                        })
-                    } else {
-                        Err(conflict("that simulation run id is already in use"))
-                    };
-                }
-                id
-            }
-            None => random_game_id(),
-        };
+        // dh-identity: one game per lease. Sim recordings keep their existing
+        // stable run id. A retried identical start returns the original game.
+        let stable_id = new
+            .sim
+            .as_ref()
+            .map(|sim| game::sim_game_id(&sim.run_id))
+            .or_else(|| author.host_lease_id().map(str::to_owned));
+        if let Some(id) = &stable_id
+            && let Some(g) = self.model.read().games.get(id)
+        {
+            return if g.started.host == author.to_string() && g.started.game == new {
+                Ok(GameCreated {
+                    game_id: id.clone(),
+                    position: g.position,
+                })
+            } else {
+                Err(conflict("that game id is already in use"))
+            };
+        }
+        let game_id = stable_id.unwrap_or_else(random_game_id);
         let started = GameStarted {
             game_id: game_id.clone(),
             host: author.to_string(),
@@ -579,8 +597,8 @@ impl Live {
         game_id: &str,
         jws: &str,
     ) -> Result<u64, ApiError> {
-        let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
-        self.append_game_batch(&author, game_id, jws).await
+        let (author, _, _) = self.publisher(bearer, TELEMETRY_INGEST)?;
+        self.append_publisher_batch(&author, game_id, jws).await
     }
 
     /// One batch JWS of game events by `author`, verified once, appended in
@@ -591,17 +609,27 @@ impl Live {
         game_id: &str,
         jws: &str,
     ) -> Result<u64, ApiError> {
+        self.append_publisher_batch(&Publisher::Peer(author.clone()), game_id, jws)
+            .await
+    }
+
+    pub(crate) async fn append_publisher_batch(
+        &self,
+        author: &Publisher,
+        game_id: &str,
+        jws: &str,
+    ) -> Result<u64, ApiError> {
         self.rate_limit(author, lxm::GAMES_WRITE)?;
         let (parsed, bodies) = SignedEvent::open_batch(jws).map_err(sign_error)?;
         let first = &bodies[0];
         if first.author != author.to_string() {
             return Err(forbidden("the events' author is not the token's issuer"));
         }
-        let key = self
-            .key_for(author, &first.kid)
+        let key = author
+            .key(self, &first.kid)
             .ok_or_else(|| unauthorized("the events' key is unknown or revoked"))?;
         parsed.verify(&key).map_err(sign_error)?;
-        let game = self.writable_game(game_id, author)?;
+        let game = self.writable_game(game_id, author, false)?;
         let stream = game::stream(game_id);
         let now = now();
         // A replay is a conflict, whatever the game looks like now.
@@ -647,8 +675,9 @@ impl Live {
                 game::PLAYER_JOINED => {
                     let p: game::Player =
                         serde_json::from_value(b.data["player"].clone()).expect("validated");
-                    let itself = matches!(author, Author::Account { xuid, .. }
-                        if p.xuid == Some(*xuid) && !p.is_bot());
+                    let itself = author
+                        .xuid()
+                        .is_some_and(|x| p.xuid == Some(x) && !p.is_bot());
                     if !by_host && !itself {
                         return Err(forbidden(format!(
                             "event {i}: a player joins as itself; the host adds others"
@@ -657,7 +686,7 @@ impl Live {
                     if game.started.game.sim.is_some() && (!p.is_bot() || p.xuid.is_some()) {
                         return Err(invalid("simulation players must be local bots"));
                     }
-                    crate::bots::check_players(
+                    author.check_players(
                         &self.model.read(),
                         host,
                         game.started.game.session_id.as_deref(),
@@ -731,20 +760,20 @@ impl Live {
         author: &Author,
         frame: Frame,
     ) -> Result<FrameOutcome, ApiError> {
-        self.ingest_frame_with_machine_baseline(author, frame, false)
+        self.ingest_frame_with_machine_baseline(&Publisher::Peer(author.clone()), frame, false)
             .await
     }
 
     pub(crate) async fn ingest_frame_with_machine_baseline(
         &self,
-        author: &Author,
+        author: &Publisher,
         mut frame: Frame,
         machine_baseline: bool,
     ) -> Result<FrameOutcome, ApiError> {
         if !game::valid_id(&frame.game_id) {
             return Err(invalid("bad game_id"));
         }
-        let game = self.writable_game(&frame.game_id, author)?;
+        let game = self.writable_game(&frame.game_id, author, true)?;
         let sim = game.started.game.sim.as_ref();
         if sim.is_some()
             && frame
