@@ -931,7 +931,10 @@ impl ShaderProvider for Nv2aShaders {
             (want == have).then_some(textures[n]).flatten()
         });
         let samplers = draw::samplers(draw, border, ctx.caps);
-        if let VertexSource::Microcode(words) = &key.vertex {
+        if crate::uniform_compare::armed()
+            && let VertexSource::Microcode(words) = &key.vertex
+        {
+            let render = &draw.state.render;
             crate::uniform_compare::observe(
                 words,
                 &vu,
@@ -939,13 +942,18 @@ impl ShaderProvider for Nv2aShaders {
                 &key.vertex_options,
                 (&def, &key.pixel_options),
                 (
-                    &gfx::translate::primitive_state(&draw.state.render, draw.primitive.host_topology(), ctx.caps),
+                    &gfx::translate::primitive_state(render, draw.primitive.host_topology(), ctx.caps),
                     gfx::translate::depth_stencil_state(
-                        &draw.state.render,
+                        render,
                         Some(wgpu::TextureFormat::Depth24PlusStencil8),
                         draw.primitive.host_topology(),
                     )
                     .as_ref(),
+                    crate::uniform_compare::ColorState {
+                        blend: gfx::translate::blend_state(render),
+                        write_mask: gfx::translate::color_writes(render.color_write),
+                        blend_constant: gfx::translate::blend_constant(render),
+                    },
                 ),
                 &samplers,
                 &draw.texture_info,

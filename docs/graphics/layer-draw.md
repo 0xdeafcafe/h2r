@@ -16,7 +16,7 @@ Evidence labels as in feature-engine.md; no game data.
   `[0x004670bc] = 1`, then `0x00016b10` with ESI = `0x00485b48` (the
   layer setup).
 - Draws only if bit `layer` of the mask `0x00bffdee` is set: layers 1, 2,
-  3, 5, 6, 7, 8, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 23. Layer 16
+  3, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23. Layer 16
   (planar fog) draws only when `[0x0048574c] == 3` or byte `0x00485a75` or
   `0x00485a76` is set.
 - Then `0x0003bc30` with EDI = `[0x00467138]` (the list), EBX = the layer,

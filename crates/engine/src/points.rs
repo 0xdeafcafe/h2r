@@ -289,6 +289,14 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Sets the render stencil mode, including after the scene passes return.
     RENDER_STENCIL_MODE @ 0x0001_5370: [opaque]; "docs/graphics/native-renderer.md";
+    /// The additional shadow-caster pass (layer 10/11 pair after the main lights).
+    ADDITIONAL_SHADOW_CASTERS @ 0x0003_0ed0: [opaque]; "docs/graphics/native-shadows.md";
+    /// The scene call that walks the object shadow list.
+    OBJECT_SHADOW_LIST @ 0x0003_35e0: [opaque]; "docs/graphics/native-shadows.md";
+    /// Gathers the object shadow candidates.
+    GATHER_OBJECT_SHADOWS @ 0x0003_3400: [opaque]; "docs/graphics/native-shadows.md";
+    /// One object's shadow (caster and receiver layers).
+    OBJECT_SHADOW @ 0x0003_2350: [opaque]; "docs/graphics/native-shadows.md";
     /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
@@ -328,6 +336,23 @@ points! { ALL;
     TEMPLATE_PASS @ 0x0001_6610: [fn(shader: stack 0, layer: stack 1, implementation: stack 2, selector: stack 3, target: stack 4, flags: stack 5) -> al ret 24], Optional; "docs/graphics/native-renderer.md";
     /// Full-target template quad; its gel caller returns to 0x1675a.
     TEMPLATE_QUAD @ 0x0001_5ec0: [fn(target: stack 0) ret 4], Optional; "docs/graphics/native-gels.md";
+    /// A batch of screen quads begins (`0x00035b90`): stdcall `(record)`,
+    /// `ret 4`. The record (`native_render::hud::Record`) names the
+    /// bitmaps, address modes, filter, blend mode and colours; the begin
+    /// sets that state and the combiner. Text (`0x0001f070`) is drawn this
+    /// way, one quad per glyph.
+    SCREEN_QUADS_BEGIN @ 0x0003_5b90: [fn(record: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// One screen quad (`0x000363a0`): stdcall `(&corners)`, four corners
+    /// of `0x14` bytes (x, y, u, v, colour), pushed as one inline
+    /// `Begin(7)`/`End` with no D3D entry. `ret 4`.
+    SCREEN_QUAD @ 0x0003_63a0: [fn(corners: stack 0) ret 4], Hot; "docs/graphics/native-renderer.md";
+    /// The batch's end (`0x00036560`): no arguments, `ret`.
+    SCREEN_QUADS_END @ 0x0003_6560: [fn() ret 0]; "docs/graphics/native-renderer.md";
+    /// One HUD shader quad (`0x0022a664`): ECX the four corners, EAX the
+    /// coordinate rectangle, stack `(bitmap datum, bitmap index, shader)`,
+    /// `ret 0xc`. A shader draw (`0x0001bbf0`) and one
+    /// `D3DDevice_Begin(7)`..`End`.
+    HUD_SHADER_QUAD @ 0x0022_a664: [fn(corners: ecx, rect: eax, bitmap: stack 0, index: stack 1, shader: stack 2) ret 12], Hot; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";
@@ -335,6 +360,8 @@ points! { ALL;
     /// is followed by one; it ends the layer's state and sets the current
     /// layer (`[0x00467130]`) to 0.
     LAYER_END @ 0x0004_45d0: [opaque]; "docs/graphics/native-renderer.md";
+    /// Ordered geometry dispatch from LAYER_ENTRIES (seven stack arguments).
+    LIGHT_GEOMETRY_DRAW @ 0x0004_d0b0: [fn(shader: stack 0, arg: stack 1, variant: stack 2, layer: stack 3, selector: stack 4, part: stack 5, entry: stack 6) ret 28], Hot; "docs/graphics/layer-draw.md";
     /// The layer draw's setup call (ESI = `0x00485b48`).
     LAYER_SETUP @ 0x0001_6b10: [opaque]; "docs/graphics/layer-draw.md";
     /// Draws a list's entries for a layer: builds them, then calls each

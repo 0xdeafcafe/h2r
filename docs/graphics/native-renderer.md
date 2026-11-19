@@ -155,7 +155,7 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
 | 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
-| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | The transparent list and its per-entry handlers; particle update stays in the simulation | Depth (read), sorted order computed on the GPU or on our side |
+| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
@@ -221,9 +221,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
   programs draw with them (`ViewInputs::w_clip`), as the objects' lit
   parts now do (`ObjectsPass::depth_clip`; 03a's near is 256 depth
-  units, which the objects clipped at 0). The transparents' and lights'
-  passes still take the whole range (S: the same gap for anything far in
-  a cinematic, or nearer than the view's near). That did not close the
+  units, which the objects clipped at 0). Stage 3 also takes the device
+  range for transparents. The lights' passes still take the whole range
+  (S: the same gap for distant or very near triangles). That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
   line per pass (the first 8, then every 250th, or every `n`th with
@@ -264,9 +264,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   its translation decodes them in the shader (`xvs_normpacked3`), where
   the native programs read floats decoded on the CPU, so the two modules
   were different code. A world vertex now carries the four words too
-  (`WorldVertex::packed`, `world::pack_normpacked3`, which gives back the
-  stream's word for any value decoded from one) and the material
-  programs fetch and decode them as the D3D path does
+  (`WorldVertex::packed`). The loader now keeps the words from the
+  guest streams, including either encoding that clamps to -1. The
+  material programs fetch and decode them as the D3D path does
   (`program::INPUTS`, `WORLD_FETCH`): a world program's module is then
   the D3D path's for the same draw, text for text
   (`a_world_program_s_module_is_the_d3d_path_s`), position math included.
@@ -1663,17 +1663,13 @@ at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
 only build `0x0004cbf0`): they stay on D3D, a later world stage.
 
-## Stage 3: transparents (design)
+## Stage 3: transparents
 
-The sorted transparents are not layers of the scene list: after the
-opaque layers, layer 15 and the late passes, `render_scene_passes` calls
-`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run), which
-sorts a list of its own and calls one handler per entry. So the skip is
-not on `LAYER_DRAW`; it is on the geometry entries' handler. Stage 1b
-(the world's layers 1, 5, 7, 8) is not a prerequisite: the transparents
-depth-test against what the opaque layers left (the world's native pass
-writes the game's W depth already), and their materials are the
-template's layer-15 passes, which do not read the other layers' targets.
+After the opaque layers and late passes, `render_scene_passes` calls
+`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run). The call
+sorts its own list and invokes one handler per entry. The geometry
+handlers set up their layer-15 passes and depth-test against what the
+opaque layers left.
 
 ### The list (Code, `h2 disasm`)
 
@@ -1706,101 +1702,76 @@ template's layer-15 passes, which do not read the other layers' targets.
 Other handlers in the list (effects, particles, contrails, decals) are
 not read yet; they keep their D3D draws in this stage.
 
-### Skip point and order
+### Admission and order
 
-One `before` on `TRANSPARENT_GEOMETRY`, context-only: for an entry the
-host draws (`native_render::transparent::read_entry`, then
-`Host::accepts`), it answers `ret 4`, so the entry builds and draws
-nothing and no guest memory changes (no restore). The hook meets the
-entries in the game's sorted order, so no sort of ours is needed.
+Observers identify the sorted entry from the live guest stack and clear
+the scope when `SCENE_TRANSPARENTS` returns. The return observer uses
+the game-thread fallback under pipelined rendering. The original handler
+runs its builds, state writes, binds and
+restores. The D3D indexed draw drains pending push-buffer work, then
+resolves its own state and bindings. Stage 3 may substitute one immutable
+GPU vertex binding at that draw. It uses the original indices, shader
+classification, constants, alpha test, W clip and attachments. The
+original draw remains in place if the entry, map generation, compatible
+depth target or any sampled texture cannot be confirmed.
 
-Ordering against the D3D path's transparents uses the device's external
-pass as it already works: a pass asked for is issued at the device's
-next entry, after the draws queued before it. Consecutive native entries
-join one `transparent::Run`; the first asks the device for a pass that
-owns the run, and the pass seals the run when the device issues it
-(`ExternalPass::view_constants`, the issue moment, on the device's
-thread). A D3D entry's draw is a device entry, so the next native entry
-finds its run sealed and opens a new one. Each run therefore lands
-between the D3D draws it sorts between, and its entries draw in their
-sorted order inside the pass. An observer before `SCENE_TRANSPARENTS`
-forgets the open run, so a run never spans two views, or outlives a
-pass the device dropped.
-
-Both hooks are context-only with nothing after a body, so the pipelined
-render runs them on its own thread; the entries are read from the
-render's snapshot of the frame.
+The intervening D3D and inline draws pass through the same command
+stream. Each entry retains its own part and the implementation passes
+that the handler actually draws. No stage-3 pass is queued ahead of
+that work. The optimization targets vertex bindings. Guest handler and
+D3D state-resolution costs still apply.
 
 ### Order of work
 
-1. **The skip and the runs** (built: `feature::native_transparents`,
-   `native_render::transparent`, `impl.render.native_transparents`, off by
-   default). Without a host nothing is skipped.
-2. **The layer-15 look** (built: `look::transparent_passes`,
-   `pass_state`). Every pass of the template's layer 15 at the first
-   level of detail, in order, each with `look::implementation_look`'s
-   rules (the ones layer 3 uses) and the pipeline state from the
-   implementation's render states (`ResolvedImplementation::render_states`,
-   decoded by `gfx` as the D3D path decodes them: blend enable, factors,
-   op and constant, colour writes, depth test and write, cull, alpha
-   test). All or nothing per material. It stays on the D3D path when a
-   pass has more than one implementation (S: which one the engine binds
-   for a transparent entry is not traced), reads engine render states
-   (`engine_render_states`), turns on fog, stencil or a depth bias, or
-   leaves blend enable, its factors or depth write to whatever the
-   previous draw left (S: the states it does not set are taken at the
-   D3D defaults).
-3. **The world's transparent parts.** The draw table is built
-   (`world::TransparentDraw`, `World::transparent(owner, part)`): the
-   kind-4 parts in the world's vertex and index buffers, keyed by
-   (cluster or placement, the part's index in its section; the loader now
-   keeps every part in place, a part not drawn as an empty one), their
-   lightmap pages in the lightmap array. The GPU side is built too
-   (`transparent_gpu::TransparentSet`, `GpuWorld::encode_transparents`):
-   each material's passes compiled with `program::compile_pass` (the
-   world programs' translation plus the pass's alpha test) and uploaded
-   with the same per-program code as the world's (`program::Gpu`), one
-   pipeline per pass with its `PassState` (blend, write mask, depth write
-   and compare, cull) and its blend constant set per draw. A run's pass
-   loads the target and depth and draws, per entry in order, the part
-   with each of its passes, over the whole target (the programs carry
-   the viewport). Boot's host is built too (`boot::native_transparents_glue`, over the
-   native world's loaded BSP, so the native world must be on): at load,
-   each transparent material's passes compiled all or nothing and their
-   stage images decoded, then the parts that can draw (a compiled
-   material, and its lightmap page when a pass samples it), with one line
-   on stderr: how many materials and parts, and why the rest stay on the
-   D3D path. It accepts a cluster or placement entry whose part is in
-   that table with the entry's shader; a run's pass takes the run's
-   entries when the device issues it and draws them with
-   `GpuWorld::encode_transparents`.
-4. **Objects' transparent parts** (with `impl.render.native_objects` on
-   as well). The hook copies the object's node matrices and sphere into
-   the run (`transparent::RunEntry`, `objects::read_object`, as stage 2
-   does at layer 3), from the render's snapshot, so the pass draws the
-   frame's pose. An object's entry stands for all of its parts with that
-   shader (S: which section and part an object's render record names is
-   not read), so a later entry of the same object and shader in the view
-   is skipped without drawing again (the parts draw at the first one's
-   place in the order). On the GPU (`model_gpu`) a model keeps its
-   transparent parts in its index buffer, in their own draw table
-   (`Model::transparents`); the caller sets each transparent material's
-   base map and pass state (`GpuModels::set_transparent`; S: an
-   alpha-tested pass is refused, the models' shader has no alpha test
-   yet), and `GpuModels::encode_transparents` draws a run's object items
-   in order with the models' shading and the base map's alpha
-   (`fs_transparent`), each pass's blend and depth state, and the run's
-   node matrices in buffers of its own, so runs and the opaque objects'
-   pass in one submit do not overwrite each other's. In boot, the objects'
-   worker takes a definition's transparent materials with one layer-15
-   pass, no alpha test and a base map that decodes, and publishes the
-   definition's node count and each shader's materials; the transparents'
-   host accepts an object entry when its definition is published with
-   the copy's node count and the entry's shader, and a run's pass draws
-   its entries in order as segments: consecutive world entries through
-   the world's pass, consecutive objects through the models'.
-5. **The live A/B**, as stage 1's: the same frame with the switch on and
-   off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
+1. **Sorted parts.** `feature::native_transparents` tracks the view and
+   geometry handler frames. It verifies the entry argument and render
+   record at each indexed draw. The switch
+   `impl.render.native_transparents` is off by default.
+2. **Draw state and attachments.** Each draw takes the D3D snapshot
+   after that handler sets up its pass, including the effects of earlier
+   setup and restore writes. The adapter requires a programmable
+   W-buffered indexed triangle draw with compatible colour and depth
+   targets. The shared backend uses the resolved state and receives the
+   actual texture bindings. Palette expansion, resident mip selection,
+   BC blocks, sampler state and render-to-texture coherency stay with
+   that path.
+3. **Vertex bindings.** `native_render::transparent_streams` packs
+   multiple immutable streams into one buffer when their live
+   declarations and strides allow it. It keeps the raw guest bytes,
+   including packed normals and normalized endpoints. The cache uses
+   immutable stream snapshots and the exact declaration, scoped to the
+   game activation and active BSP. A transparent view can use the cache
+   before any layer-3 item. The object flag also has to be on to pack
+   object entries. Object inputs and node rows come from the actual
+   draw, as do cluster and placement inputs. The opaque world keeps the
+   layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and
+   `Float32x2` for v6.
+4. **GPU submission.** The ordered draw path batches uniforms in the
+   renderer's upload arena and reuses texture/sampler groups keyed by
+   the live views and samplers. The packed vertex buffer can stay on
+   the GPU across views. No transparent draw allocates its own pair
+   of uniform buffers and group.
+5. **Live A/B pending.** Capture the same Old Mombasa frame with
+   `H2_LEVEL=03a_oldmombasa` and
+   `H2_FEATURES=impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_transparents=on`.
+   For the reference, set `impl.render.native_transparents=off` and
+   keep the other switches and capture settings the same. Compare
+   pixels, check that `native-transparents:` reports native bindings,
+   and compare the `0x0002c19a` site's time.
+
+   - `H2_NATIVE_TRANSPARENTS_PROBE=x,y` names the sorted indexed entries
+     with triangles covering a guest pixel. It reports source, part,
+     record, shader, triangle depth and edge distance from the live
+     vertex program. Coverage is measured before clip, depth and alpha
+     tests.
+   - `H2_NATIVE_TRANSPARENTS_COMPARE=placement:ID:PART[@N]` keeps the
+     selected original binding and emits a one-shot diagnostic after
+     `N` eligible draws. The other selectors are `cluster:ID:PART[@N]`
+     and `object:HANDLE:PART[:RECORD][@N]`. Handles may be hexadecimal.
+     The optional record distinguishes draws that share a handle and
+     part. Read `native-transparents compare` for both vertex fetch
+     plans and the shared W clip, constants, stage textures and render
+     states.
 
 ## Stage 4: lights and shadows (design)
 
@@ -2323,12 +2294,14 @@ frame.
 - **After the scene.** `0x00040890` is a full-screen fade: when the mode
   `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
   (packed by `0x00131e50`), with a blend picked through the jump table
-  at `0x00040dc0`. Then `0x00147af1` composes the UI and HUD. The HUD
-  render (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is S: under
-  it; its caller chain is not traced. So the HUD is always drawn after
-  `render_screen_effects`, and the post passes need no HUD split: the
-  colour pass and the screen effects see the scene only, and the fade
-  and the HUD go over them.
+  at `0x00040dc0`. Then `0x00147af1` composes the UI. The HUD render
+  (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is not under it: it
+  is the tail jump of `0x001917eb`, which `render_view_scene` calls
+  before the fade (Code, `0x00191887`; see "The UI and HUD" below). So
+  the HUD is always drawn after `render_screen_effects`, and the post
+  passes need no HUD split: the colour pass and the screen effects see
+  the scene only, the HUD goes over them, the fade over the HUD, and the
+  UI over everything.
 
 ### Hook point and order
 
@@ -2390,6 +2363,162 @@ continuation closes the plan before the guest caller resumes. Under
   the colour pass's copy already gives.
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
+
+### The UI and HUD (Code, `h2 disasm`; the native-hud lane)
+
+**Where they are drawn.** `render_view_scene` (`0x0002ba10`) calls
+`0x001917eb` at `0x0002bc93` when `[0x004b9ed8]` (the view's user) is
+not -1: it asks `0x0014de70` and `0x00159170` for the user's unit,
+draws per-user overlays (`0x0019188c`, `0x00192129`, `0x0024da7d`,
+`0x0024cf66`), and tail-jumps to the HUD render `0x0013954b`. Then the
+fade `0x00040890`, then `ui_render_layers` `0x00147af1` (also called by
+the alternate view `0x0002c790` at `0x0002c884` and by `0x0002c8a0` at
+`0x0002c9bc`). `0x00147af1` takes the user in EAX (-1 every user, the
+word at `[ebp+8]` when EAX is -1), stores it at `0x0054d598`, returns
+early when `0x00155f60` says so, then for an index 0 to 4 calls the
+render slot (`+0x14`) of three layer objects (`0x0054d62c + 0x40 *
+index`, `0x0054d76c + 0x38 * index`, `0x0054d884 + 0x38 * index`); index
+4 also draws the screen managers around them (`0x00234f8c` on
+`0x0054d5c4` and `0x0054dba8`, `0x0023583e` on `0x0054d9e0`,
+`0x00234f8c` on `0x0054d99c`). Those collect and sort the screen's widgets
+(`0x002353a5`, docs/formats/ui.md, "Draw order") and call each
+widget's draw. Last, a fade-in by the clock at `0x0054d5b8` against
+`0x0054d5c0` (3 s and 4 s windows).
+
+**The draw primitives under them.** Every draw the HUD and the menus
+make that was followed ends in one of three:
+
+| Primitive | What it pushes | Who calls it |
+|---|---|---|
+| Screen quads: begin `0x00035b90` (record of `0x98` bytes), quad `0x000363a0`, end `0x00036560` (`points::SCREEN_QUADS_BEGIN`, `SCREEN_QUAD`, `SCREEN_QUADS_END`) | The begin sets up to three bitmaps (`0x00012310`, address mode wrap or clamp per stage, point or linear filter), colour writes without alpha (`SET_COLOR_MASK`), depth test off, the blend by mode (`0x000142f0`: mode 10 off, else three 12-entry tables of source factor, destination factor and equation), two vertex constant blocks (a pixel-centred screen transform over the rectangle at `0x00485648`, and a second block from the record's flips and pairs), and, with stage 0 bound and `+0x97` clear, a fixed combiner written into the PSDEF at `0x00484f68` with the record's colours packed in (`0x00131e50`). Each quad commits the state (`0x0001cf50`) and pushes one inline `Begin(7)`, four vertices of diffuse (`SET_VERTEX_DATA4UB`), coordinate and position (`SET_VERTEX_DATA2F`), and `End`: no D3D entry. | Text: `0x0001f070` (from `0x0001fa50`, 22 call sites, and `0x0001fb10`, the HUD's `0x0022aca8`), over the glyph cache `[0x004b62ac]`, one quad per glyph through the layout `0x0013f0e0`, its callback `0x0001f490` and `0x0001f3a0`. A full-screen bitmap at `0x00156960`. |
+| HUD shader quad `0x0022a664` (`points::HUD_SHADER_QUAD`) | The HUD's bitmap into `0x004e6978`/`0x004e697c` (datum, index: the shader's engine texture), the shader draw `0x0001bbf0` (EDI the shader), then `D3DDevice_Begin(7)`, per corner `SetVertexData2f(3, u, v)` and `SetVertexData4f(-1, x, y, z, w)` (z and w the float at `0x0045dd40`), `D3DDevice_End`. The coordinates are the rectangle at EAX `(u0, u1, v0, v1)`, times the bitmap's size when it is linear. | The HUD widgets (`0x0022b397` to `0x0022bca4`), the UI's shader bitmaps (`0x002b12ae`), `0x001e936a` to `0x001e95b6`, `0x0020077f`, `0x0024eca0` to `0x0024f556`. |
+| Other immediate draws (`D3DDevice_Begin` callers) | Not traced: `0x002548f0` (`0x00254e28`, `0x00255083`, with `0x00014bc0` target switches and `0x00014f60` texture binds: S, the menus' blurred backdrop), the fade's `0x00040d86`, and `0x00029b00`, `0x00037a60`, `0x0003bf20`, `0x00046ea0`. | |
+
+So text is one batch per string with a quad per glyph, each a separate
+D3D draw; that is the work a native batch removes (one draw per run of
+glyphs, the glyph cache mirrored as a texture). The HUD's bitmaps are
+shader draws: native, they need the shader's program (the stage 3
+compiler) with the HUD's engine bitmap, in screen space.
+
+**The end of the frame** (for the present's owner; Code, not changed
+here). `0x00013b90` calls `0x0001fd20`, then, when `0x0001dc40` and
+`0x0001de20` say so, copies the view's target `[0x004858b8]` through
+`0x000351a0`, then `0x0001fd00`, `0x0001fcd0` and `0x00022070`.
+`0x00013cd0` (`ret 4`) commits the state (`0x0001cf50`), writes push
+words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520`.
+`0x00013f10` (`ret 8`) locks a surface for the optional readback
+(`0x003fdb20`, `0x003fad50`, `0x003fdbc0`; bitmaps `0x001358c0`,
+`0x00135a30`), calls `0x00013d80`, and swaps at `0x000140fc`
+(`0x003f9d00`, between two `0x003f9df0`).
+
+**Built** (`impl.render.native_hud`, off by default;
+`feature::native_hud`, `boot::native_hud_glue`,
+`native_render::hud`, `native_render::hud_gpu`). Four context-only
+hooks: the screen-quad begin, quad and end, and the HUD shader quad.
+The host plans each batch (`hud::Batch::read`: the record, the blend
+through the game's tables, the screen transform with the begin's own
+arithmetic, the bitmap) and refuses, logged once per reason
+(`hud::Refused`), every batch that is not one stage over the glyph
+cache with the text's second block. Planned batches are drawn natively
+(below, "Native text"), and so are HUD shader quads (below, "Native HUD
+quads").
+
+`H2_NATIVE_HUD_COMPARE=N` (empty: 512) pairs the plan with the D3D
+path for the first `N` quads, over the handoff's seam: the hooks queue
+each quad's corners as the call pushes them (`hud::Expect`), and a
+`d3d::DrawAdmission` the host adds to the device reads the position of
+every resolved four-vertex fan, in issue order, and pairs it with the
+first waiting quad of the same corners (`hud::Pairing`; quads passed
+over are lost). It claims no draw. It prints, for the first screen quad
+and the first HUD quad, what D3D resolved (entry, colour target, stage
+0's texture, blend) beside the batch's plan, and every 64 pairings one
+line: `native-hud: compare: <s> screen quads and <h> HUD quads paired
+with their D3D draws; <ls> screen and <lh> HUD lost; <o> other fans; <w>
+waiting`. Every quad paired and none lost is the pass mark. A quad
+drawn natively is skipped on D3D and never queued.
+
+#### Native text
+
+A planned batch is drawn in segments, each one external pass
+(`hud_gpu::TextDraw`, recorded by `hud_gpu::TextGpu`):
+
+- **Reservation, before any skip.** At a quad of a planned batch the
+  host reads what the begin set: the render states (`ZENABLE` off,
+  no stencil, alpha test, fog or stipple, solid fill, not flat; blend,
+  colour writes, cull and front face taken as they are), the combiner
+  block at `0x00484f68` and that the bound combiner is it (render
+  states 0..57 equal its code words; constants and the texture modes
+  come from the states, as `d3d::nv2a::guest_def` takes them, with
+  D3D's default final combiner), the clip area as one rectangle
+  (`Device::clip_area`), the viewport, and the glyph cache's texels
+  (its header read as `LIN_A4R4G4B4` 256x256, mirrored as RGBA,
+  `hud::a4r4g4b4_to_rgba`). It then calls
+  `Device::prepare_external_pass` (the drain of everything before,
+  then the pass recorded on every live copy) and commits. Only then is
+  the quad skipped (`ret 4`). Anything not established, or the
+  reservation refused, and the quad and the rest of the batch keep
+  their D3D draws (`native_hud_glue::Kept`, logged once). The states
+  are read again after the drain and before commit. If the drain changed
+  them, the recording is discarded and the quad stays on D3D.
+- **Extension.** The pass draws its quads with an indexed indirect
+  draw over buffers it made at recording (128 quads). A later quad
+  joins it while the device's counters (`Device::stats`), its bound
+  target, viewport, clip, render states and the glyph cache's ring
+  (`hud::GLYPH_RING`, which every glyph added moves) still match the
+  reservation. Its corners and the new count go in through the queue
+  (`hud_gpu::Segment::append`), and it is skipped. The backend seals
+  the segment before submitting either copy, under the lock that guards
+  both queue writes. Accepted writes reach the draw before submission.
+  If the state changes or the segment fills or seals, the quad tries a
+  new reservation. If that fails, D3D draws it. Ending the batch ends the
+  segment.
+  This is why the pass is committed at the reservation and filled up to
+  the end, not committed at the end: `PreparedExternal` borrows the
+  device and cannot be held across hooks.
+- **What a quad is.** S, the screen-transform assumption
+  (`hud::text_quad`, with a synthetic test): the batch's vertex
+  program takes `oPos` from the begin's rows (`hud::ScreenTransform`)
+  then to the viewport as Xbox D3D's viewport constants do, and scales
+  the coordinate by the record's `+0x40`/`+0x44` (texels for the linear
+  glyph cache, normalised by its size as the D3D path's `tex_scale`
+  does). The colour is the pushed bytes over 255. The vertex stage
+  (`hud_gpu::TEXT_VERTEX`) snaps window coordinates as the translated
+  programs do (`xvs_fixup`: 1/16 at 1x, the render scale's shift
+  above), the fragment stage is the combiner through `shaders::psh`
+  with fog off; the clamp sampler filters as the record's `+0x96` says.
+  The clip is the scissor, scaled to each copy.
+
+S to verify on a run: text on 03a and the menus drawn as on D3D (no
+half-pixel shift, the same weight), `Kept` lines, and segments per
+batch (`native_hud_glue::text_counts`).
+
+#### Native HUD quads
+
+A HUD shader quad (`0x0022a664`) is one resolved draw, so it goes
+through a `DrawAdmission` (`native_hud_glue::HudAdmission`): the hook
+notes the open call's corners; the admission claims the
+`D3DDevice_End` four-vertex fan with those corners and hands the device
+a pass that draws it with what D3D resolved (`hud_gpu::ScreenDraw`):
+the vertex program (`shaders::vsh`, every register a float4 at `16 r`
+as the device's immediate draws lay them out) with the draw's
+constants and defaults, the combiner as `d3d::nv2a::guest_def` builds
+it with D3D's default final combiner (`shaders::psh`, fog off), each
+sampled stage's resident view (`ExternalTarget::stages`) with its
+sampler, `tex_scale` for linear stages, bias and bump environment, the
+blend, colour writes and cull, the clip as the scissor. The device
+reserves the pass on every copy before it gives up the draw and draws
+it on D3D when that fails. Refused, logged once per reason: fixed
+function on either side, not the immediate layout, depth on,
+stencil, alpha test, fog, stipple or not solid fill, W-buffered, a clip
+of several rectangles, and a sampled stage that is not a 2D texture, is
+P8, has signed channels or a border. Programs are translated once per
+code (`hud_gpu::ScreenGpu::program`). Counts:
+`native_hud_glue::hud_counts`.
+
+**Next.** (1) The A/B on 03a and the main menu with
+`impl.render.native_hud=on`: text and HUD identical, few segments per
+batch, the `Kept` and HUD lines. (2) Alpha test in both passes (the
+combiner compiler takes it). (3) The other immediate draws.
 
 ### Stage 5 status
 

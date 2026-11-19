@@ -80,6 +80,13 @@ pub struct CachedBytes {
     pub bytes: std::sync::Arc<[u8]>,
 }
 
+impl CachedBytes {
+    /// An immutable derived stream with its own GPU cache identity.
+    pub fn derived(bytes: Vec<u8>) -> Self {
+        Self { id: crate::vertex_cache::next_snapshot_id(), bytes: bytes.into() }
+    }
+}
+
 impl StreamData {
     /// The cache snapshot's id, if this is one.
     pub fn cache_id(&self) -> Option<u64> {
@@ -368,6 +375,10 @@ pub struct ExternalTarget<'a> {
     pub uploads: &'a gfx::ring::SubmissionUploads,
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+    /// An initially empty list for [`ExternalPass::record_ranges`] on an
+    /// isolated encoder. Callbacks run just before submission and are
+    /// discarded with a refused or cancelled recording.
+    pub on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ExternalTarget<'_> {
@@ -475,12 +486,18 @@ pub struct ExternalAttachments {
 }
 
 impl ExternalAttachments {
-    fn target<'a>(&'a self, request: ExternalPassRequest, encoder: &'a mut wgpu::CommandEncoder) -> ExternalTarget<'a> {
+    fn target<'a>(
+        &'a self,
+        request: ExternalPassRequest,
+        encoder: &'a mut wgpu::CommandEncoder,
+        on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
+    ) -> ExternalTarget<'a> {
         ExternalTarget {
             device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
             depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
             uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+            on_submit,
         }
     }
 }
@@ -494,6 +511,7 @@ pub struct ExternalRecording {
     pub ranges: usize,
     pub commands: wgpu::CommandBuffer,
     pub uploads: gfx::ring::SubmissionUploads,
+    pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
@@ -1040,7 +1058,7 @@ pub trait Backend: Send {
         for target in targets {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let mut encoder = target.device.create_command_encoder(&Default::default());
-            let ready = pass.prepare_copy(&target.target(request, &mut encoder)).is_ok();
+            let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
             let invalid = pollster::block_on(scope.pop()).is_some();
             if !ready || invalid {
                 plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
@@ -1055,7 +1073,8 @@ pub trait Backend: Send {
         let mut recordings = Vec::with_capacity(prepared.len());
         for (target, mut encoder) in prepared {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let ranges = pass.record_ranges(target.target(request, &mut encoder));
+            let mut on_submit = Vec::new();
+            let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
             plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
             let commands = encoder.finish();
             let invalid = pollster::block_on(scope.pop()).is_some();
@@ -1065,7 +1084,16 @@ pub trait Backend: Send {
                 failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedRanges });
                 continue;
             }
-            recordings.push(ExternalRecording { stage: plan.stage, view: plan.view, items: item_count as usize, copy: target.copy, ranges, commands, uploads: target.uploads });
+            recordings.push(ExternalRecording {
+                stage: plan.stage,
+                view: plan.view,
+                items: item_count as usize,
+                copy: target.copy,
+                ranges,
+                commands,
+                uploads: target.uploads,
+                on_submit,
+            });
         }
         if let Some(why) = failure { return refuse(why); }
         Ok(Some(recordings))

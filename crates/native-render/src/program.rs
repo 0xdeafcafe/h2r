@@ -770,7 +770,6 @@ pub(crate) struct Gpu {
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -899,7 +898,6 @@ impl Gpu {
             samplers,
             stage_views,
             stage_info,
-            pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
         })
     }
@@ -940,21 +938,6 @@ impl Gpu {
     pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
-    }
-
-    /// Makes the pipeline for these target formats: the world's opaque
-    /// state without `state`, a transparent pass's with it.
-    pub(crate) fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        state: Option<&PassState>,
-    ) {
-        let (module, layout) = (&self.module, &self.layout);
-        self.pipelines
-            .entry((color, depth))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
     }
 }
 
@@ -1326,7 +1309,8 @@ mod tests {
         let regs: Vec<u32> = INPUTS.iter().map(|i| i.0).collect();
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
-        assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
+        assert_eq!(INPUTS[6], (6, 20, wgpu::VertexFormat::Float32x2));
+        assert_eq!(FLOAT_INPUTS[6].1, 20, "the lights still read the float coordinate");
         assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
         assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
         // The packed registers are words, decoded in the shader.

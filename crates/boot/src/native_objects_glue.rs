@@ -28,14 +28,7 @@
 //!   first seen) and its per-object constants (vertex and combiner) put in
 //!   per draw. A material none of whose implementations compiles for every
 //!   section and stage stays on D3D whole, with the reasons; never drawn
-//!   with the base-map stand-in (that is for transparent parts only).
-//! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
-//!   on too). The worker also takes each transparent material with a
-//!   single layer-15 pass, no alpha test and a base map that decodes (S:
-//!   drawn as the base map with the models' lighting and the pass's blend);
-//!   the definition's node count and its shaders' materials are published
-//!   in [`Models::transparents`] for the transparents' host
-//!   (`native_transparents_glue`), which draws them run by run.
+//!   with a base-map stand-in.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
@@ -59,7 +52,6 @@ use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, Lit
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::{ItemDraw, ObjectFrame};
-use native_render::pass_state::PassState;
 use native_render::program::ViewInputs;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
@@ -69,32 +61,10 @@ struct CpuModel {
     definition: u32,
     model: Model,
     base_maps: HashMap<u16, Image>,
-    /// The transparent materials taken: base map and pass state.
-    transparents: Vec<(u16, Image, PassState)>,
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
     /// The normalization cube the lit parts' programs may sample.
     normalization: Option<Arc<LayeredImage>>,
-}
-
-/// One definition's transparent parts the native pass draws.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ObjectTransparents {
-    /// The model's node count (an object with another is not drawn).
-    pub(crate) nodes: usize,
-    /// Shader tag index -> the model-local materials that use it.
-    pub(crate) shaders: HashMap<u16, Vec<u16>>,
-}
-
-impl ObjectTransparents {
-    /// The materials an object's entry with `shader` draws, when its node
-    /// count is the model's.
-    pub(crate) fn materials(&self, nodes: usize, shader: u32) -> Option<&[u16]> {
-        if nodes != self.nodes {
-            return None;
-        }
-        self.shaders.get(&(shader as u16)).map(Vec::as_slice)
-    }
 }
 
 /// One map's models: queued, uploaded, and which definition is which.
@@ -106,36 +76,14 @@ pub(crate) struct Models {
     lit: Mutex<Option<LitObjects>>,
     /// Definition tag index -> uploaded model.
     pub(crate) index: Mutex<HashMap<u16, u32>>,
-    /// Definition tag index -> its transparent parts, published after the
-    /// model is queued.
-    pub(crate) transparents: Mutex<HashMap<u16, ObjectTransparents>>,
     /// The device palettes the loads expanded palettized base maps
     /// through, at their stages ([`StageDecoder::used`]): the models draw
     /// only while those stay bound.
     palettes: Mutex<StagePalettes>,
 }
 
-impl Models {
-    /// The materials object `o`'s transparent entry with `shader` draws.
-    pub(crate) fn transparent_materials(&self, o: &ObjectFrame, shader: u32) -> Option<Vec<u16>> {
-        let t = self.transparents.lock().unwrap_or_else(|e| e.into_inner());
-        t.get(&(o.definition as u16))?.materials(o.nodes.len(), shader).map(<[u16]>::to_vec)
-    }
-}
-
-/// The installed host's state, for the transparents' host.
-static CURRENT: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
-
-/// The current map's models (`None` before the first view of a map, or
-/// without the host).
-pub(crate) fn current_models() -> Option<Arc<Models>> {
-    let state = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let st = state.lock().unwrap_or_else(|e| e.into_inner());
-    st.as_ref().map(|s| Arc::clone(&s.models))
-}
-
-/// Uploads the queued models (and their transparent materials) on the
-/// render thread; the models' GPU side, locked.
+/// Uploads the queued models on the render thread and returns their
+/// locked GPU side.
 pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>) -> MutexGuard<'a, Option<GpuModels>> {
     let mut guard = models.gpu.lock().unwrap_or_else(|e| e.into_inner());
     let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
@@ -147,7 +95,6 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             definition,
             model,
             mut base_maps,
-            transparents,
             lit,
             normalization,
         } = cpu;
@@ -158,11 +105,6 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
                 l.set_normalization(t.device, t.queue, n);
             }
             l.add_model(t.device, t.queue, i, lit);
-        }
-        for (material, image, state) in transparents {
-            // Checked on the worker; a refusal here leaves those parts
-            // undrawn for this model.
-            let _ = gpu.set_transparent(t.device, t.queue, i, material, Some(image), state);
         }
         index.insert(definition as u16, i);
     }
@@ -438,7 +380,6 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state = Arc::new(Mutex::new(None));
-    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
@@ -478,20 +419,12 @@ fn spawn_worker(
                 // the palettes its base maps went through.
                 models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
                 match result {
-                    Ok((cpu, transparents)) => {
+                    Ok(cpu) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
-                        let see_through = cpu.model.transparents.len();
                         let lit = cpu.lit.parts.len();
                         let parts = set_parts(&cpu.lit);
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                        if !transparents.shaders.is_empty() {
-                            models
-                                .transparents
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(def as u16, transparents);
-                        }
                         // Published after the model is queued, and only to
                         // the load this worker serves (its `Models`): a
                         // worker of an earlier load of the same map (A, B,
@@ -509,7 +442,7 @@ fn spawn_worker(
                         drop(st);
                         loaded += 1;
                         eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
                             t0.elapsed().as_secs_f32() * 1000.0
                         );
                     }
@@ -533,8 +466,7 @@ struct Opened {
     /// through the stage's palette), shared by every model of the map.
     decoder: StageDecoder,
     images: StageImages,
-    /// The shader tags, read at the first transparent material (`None`
-    /// when they do not read: transparents stay on D3D).
+    /// The shader tags, read at the first material that needs them.
     lib: Option<Option<tags::material::ShaderLibrary>>,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
@@ -584,42 +516,6 @@ fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
     map.tags().iter().find(|t| t.id.0 & 0xffff == datum & 0xffff).map(|t| t.id)
 }
 
-/// `shader`'s base map `bitmap` (its first image) as the D3D path samples
-/// it: through the shared stage decoder at the stage its material binds it
-/// ([`base_map_stage`], stage 0 when no layer-3 implementation names it),
-/// so a palettized one (P8, P8 bump) is expanded through that stage's
-/// device palette, not drawn as its index. `None` when the stage cannot
-/// have it (no palette there, or it does not decode).
-fn decoded(o: &mut Opened, shader: TagId, bitmap: TagId) -> Option<Image> {
-    let stage = material(o, shader).and_then(|m| base_map_stage(&m, bitmap)).unwrap_or(0);
-    o.decoder
-        .decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, stage, false)
-        .ok()?;
-    o.images.get(&(bitmap, 0)).cloned()
-}
-
-/// The stage `material`'s layer-3 passes (first level of detail) bind
-/// `bitmap` at, in their first implementation that does.
-fn base_map_stage(material: &tags::material::Material, bitmap: TagId) -> Option<usize> {
-    let stages = material
-        .layers
-        .iter()
-        .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
-        .flat_map(|l| &l.passes)
-        .flat_map(|p| &p.implementations)
-        .map(|i| i.textures.map(|t| match t.map(|t| t.source) {
-            Some(tags::material::TextureSource::Bitmap { bitmap: b, .. }) => Some(b),
-            _ => None,
-        }));
-    first_stage(stages, bitmap)
-}
-
-/// The first stage, over implementations' stage bitmaps in order, that
-/// binds `bitmap`.
-fn first_stage(mut implementations: impl Iterator<Item = [Option<TagId>; 4]>, bitmap: TagId) -> Option<usize> {
-    implementations.find_map(|stages| stages.iter().position(|&s| s == Some(bitmap)))
-}
-
 /// `shader` resolved, through the map's shader library (read once).
 fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
     if o.lib.is_none() {
@@ -643,25 +539,8 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     native_render::object_program::program_refusal(&m)
 }
 
-/// A transparent material the models' pass can stand in for: one layer-15
-/// pass without an alpha test (S), and its shader's base map.
-fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassState)> {
-    let material = material(o, shader)?;
-    let state = match look::transparent_passes(&material).ok()?.as_slice() {
-        [one] => one.state,
-        _ => return None,
-    };
-    if state.alpha_test.is_some() {
-        return None;
-    }
-    let bitmap = load::base_map(&mut o.map, shader)?;
-    Some((decoded(o, shader, bitmap)?, state))
-}
-
-/// Loads definition `def`'s model with its base maps; the shader indices
-/// it draws, and its transparent parts the native pass takes. Materials
-/// without a base map leave the model.
-fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, ObjectTransparents), load::Error> {
+/// Prepares a definition's supported layer-3 programs and geometry.
+fn load_model(o: &mut Opened, def: u32) -> Result<CpuModel, load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
     // Every opaque material through its own programs, or left to D3D: the
@@ -684,18 +563,6 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, ObjectTransparents)
             Err(why) => unlit.push(format!("{:#010x} {why}", shader.0)),
         }
     }
-    let mut transparents = Vec::new();
-    let mut table = ObjectTransparents {
-        nodes: loaded.model.inverse_binds.len(),
-        shaders: HashMap::new(),
-    };
-    for m in loaded.model.transparent_materials() {
-        let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
-        if let Some((image, state)) = transparent_material(o, shader) {
-            transparents.push((m, image, state));
-            table.shaders.entry(shader.0 as u16).or_default().push(m);
-        }
-    }
     let lit = if lit_materials.is_empty() {
         LitModelInput::default()
     } else {
@@ -705,25 +572,21 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, ObjectTransparents)
         }
         input
     };
-    let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
-    let model = keep_materials(loaded.model, &base_maps, &kept);
+    let model = keep_materials(loaded.model, &base_maps);
     if model.draws.is_empty() && lit.is_empty() {
         if !unlit.is_empty() {
             return Err(format!("its lit materials stay on D3D: {}", unlit.join(", ")).into());
         }
         return Err("no material with a base map".into());
     }
-    Ok((
-        CpuModel {
-            definition: def,
-            model,
-            base_maps,
-            transparents,
-            normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
-            lit,
-        },
-        table,
-    ))
+
+    Ok(CpuModel {
+        definition: def,
+        model,
+        base_maps,
+        normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
+        lit,
+    })
 }
 
 /// What an opaque material's programs draw with: the material and its
@@ -904,11 +767,11 @@ fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
         .collect()
 }
 
-/// The model without the draws of materials left to the D3D path (opaque
-/// ones without a base map, transparent ones not taken).
-fn keep_materials(mut model: Model, native: &HashMap<u16, Image>, transparent: &HashSet<u16>) -> Model {
+/// Keeps the model's opaque draws for supported base maps. Sorted
+/// transparent draws are handled at the indexed-draw boundary.
+fn keep_materials(mut model: Model, native: &HashMap<u16, Image>) -> Model {
     model.draws.retain(|d| native.contains_key(&d.material));
-    model.transparents.retain(|d| transparent.contains(&d.material));
+    model.transparents.clear();
     model
 }
 
@@ -1148,6 +1011,7 @@ fn arm_compare(lit: &LitObjects, model: u32, d: &PlannedDraw, label: &str, view:
                 pixel_options: u.pixel_options,
                 primitive: u.primitive,
                 depth: (u.depth.0, u.depth.1, Default::default()),
+                color: None,
                 textures: u.textures,
                 samplers: u.samplers,
                 draws: 4,
@@ -1333,37 +1197,10 @@ mod tests {
             ..Model::default()
         };
         let native: HashMap<u16, Image> = [(1, Image::solid([1; 4])), (2, Image::solid([1; 4]))].into_iter().collect();
-        let m = keep_materials(model, &native, &[4].into_iter().collect());
+        let m = keep_materials(model, &native);
         assert_eq!(m.draws.iter().map(|d| (d.material, d.first_index)).collect::<Vec<_>>(), vec![(1, 3), (1, 6), (2, 9)]);
         assert_eq!(m.materials(), vec![1, 2]);
-        assert_eq!(m.transparent_materials(), vec![4]);
-    }
-
-    #[test]
-    fn an_objects_transparent_entry_names_its_shaders_materials_at_the_models_node_count() {
-        let t = ObjectTransparents {
-            nodes: 2,
-            shaders: [(0x42, vec![3, 5])].into_iter().collect(),
-        };
-        assert_eq!(t.materials(2, 0xe123_0042), Some(&[3, 5][..]));
-        assert_eq!(t.materials(3, 0xe123_0042), None, "another node count");
-        assert_eq!(t.materials(2, 0xe123_0043), None, "another shader");
-    }
-
-    #[test]
-    fn a_base_map_is_decoded_at_the_stage_its_material_binds_it() {
-        // The stage picks the device palette a palettized base map (P8,
-        // P8 bump) is expanded through: the first implementation that binds
-        // the bitmap names it; one that binds it nowhere has none.
-        let (base, detail) = (TagId(0xe000_0050), TagId(0xe000_0051));
-        let lightmap_only = [None, None, None, None];
-        let first = [Some(detail), None, Some(base), None];
-        let second = [Some(base), None, None, None];
-        assert_eq!(first_stage([lightmap_only, first, second].into_iter(), base), Some(2));
-        assert_eq!(first_stage([second, first].into_iter(), base), Some(0));
-        assert_eq!(first_stage([first].into_iter(), detail), Some(0));
-        assert_eq!(first_stage([lightmap_only].into_iter(), base), None);
-        assert_eq!(first_stage(std::iter::empty(), base), None);
+        assert!(m.transparents.is_empty());
     }
 
     fn map_state(name: &str, generation: u64, models: &Arc<Models>) -> MapState {

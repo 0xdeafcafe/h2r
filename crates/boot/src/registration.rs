@@ -340,12 +340,8 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_residual::NativeResidual)
         .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
-    // The sorted transparents' geometry on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_transparents=on, off by default;
-    // docs/graphics/native-renderer.md, stage 3): a context-only skip on
-    // the geometry entries' handler, in the game's sort order. Its host
-    // (native_transparents_glue, installed with the world's) draws the
-    // native world's transparent parts; everything else keeps its D3D draw.
+    // Mark the sorted geometry entries so their resolved indexed draws
+    // can use a cached vertex binding in the game's order (off by default).
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
@@ -373,6 +369,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_gels::NativeGels)
         .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
+    features
+        .add(&feature::native_shadows::NativeShadows)
+        .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     // The view's post passes on the native GPU renderer
     // (H2_FEATURES=impl.render.native_post=on, off by default;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at
@@ -385,6 +384,15 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
+    // The HUD's and the UI's screen draws on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_hud=on, off by default, or
+    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
+    // context-only hooks on the screen-quad batch (text) and the HUD shader
+    // quad. Its host (native_hud_glue) draws accepted quads natively and
+    // pairs the plans for D3D draws in compare mode.
+    features
+        .add(&feature::native_hud::NativeHud)
+        .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;
