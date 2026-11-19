@@ -1949,8 +1949,9 @@ its own thread, and render-timing does not matter (the call runs).
        address, `0x5c` bytes): a size from the target's (`0x0001dd60`)
        times `+0x58`, at least 64 and its area capped at `0x12c00` by a
        square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first)
-       or `0x1b`, and with flag bit 2 `0x00021360` (not traced) else the
-       blur `0x000211a0` (ported: `engine::glow::blur`), its result in
+       or `0x1b`, and with flag bit 2 `0x00021360` (ported:
+       `engine::glow::wide`) else the blur `0x000211a0` (ported:
+       `engine::glow::blur`), its result in
        `[0x00485a78 + 4 i]`.
      - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
        `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
@@ -2009,6 +2010,27 @@ its own thread, and render-timing does not matter (the call runs).
      `effect_plans_match_the_lifted_original` (`0x0002d140` lifted, its
      callees stubbed and recorded: the template passes, every size set,
      the convolution calls and the words pushed must be the plan's).
+   - **Built: `0x00021360`** (`engine::glow::wide`, slice (c)), the blur's
+     sibling (Code): EAX the source, ECX the draw count, XMM0 a scale,
+     then stack words passed to each draw, the two buffers, the last
+     target, a byte that first sets the combiner `0x00020f30` (XMM0 0,
+     XMM3 its eighth word), `ret 0x20`. `s = scale * [0x0045e4e0]`; per
+     draw (count above 0) the source is bound to stages 0..3 (`0x00014f60`,
+     the same sampler states as the blur) and `0x00034d90` draws into the
+     destination with EDI pointing at `s`, `s * [0x0045e1f4]`,
+     `s * [0x0045e4dc]` and `0 - s`, the buffers ping-pong as the blur's,
+     and `s` grows by `[0x0045dc0c]` (the blur's spread term). The result
+     and the copy into the last target are the blur's. `MAX_WIDE_TAPS`
+     (64) bounds it. `0x00034d90` is `0x00034a90`'s sibling: the
+     target's size (`0x0001dd60`, -1 the bound one `[0x004858b8]`), the
+     target's rectangle or the window by a byte argument, the per-stage
+     size ratios (`0x00485af4`/`0x00485b04` over the target's) and EDI's
+     four floats where `0x00034a90` takes a spread; how the four move
+     each tap is for the native draw to trace. Tests: unit test
+     `the_wide_convolution_ping_pongs_with_a_growing_scale`, and
+     `glow_differential::wide_matches_the_lifted_original` (stubbed as
+     the blur's: draws, offsets, the quad's stack words, combiner, copy
+     and result); the plan now follows a convolution after a wide one.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

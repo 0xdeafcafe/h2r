@@ -33,15 +33,16 @@
 //!   the target's (`0x0001dd60`) times `+0x58` (at least 64; past
 //!   `0x12c00` texels both scaled by an x87 square root, at least 64
 //!   each) into targets `0x19`/`0x1a` (the first) or `0x1b` and the one
-//!   the first did not end in, and drawn by `0x00021360` (flag bit 2) or
-//!   the blur `0x000211a0` ([`crate::glow::blur`]); the result in
+//!   the first did not end in, and drawn by `0x00021360` (flag bit 2,
+//!   [`crate::glow::wide`]) or the blur `0x000211a0`
+//!   ([`crate::glow::blur`]); the result in
 //!   `[0x00485a78 + 4 n]`.
 //!
 //! The arithmetic is the original's (SSE under the caller's MXCSR, x87
 //! under its control word), checked against the lifted original by
 //! `engine/tests/screen_effects_differential.rs`.
 
-use crate::glow::{self, Blur, BlurArgs};
+use crate::glow::{self, Blur, BlurArgs, Wide, WideArgs};
 use crate::light_constants::{Error, Sse, X87};
 use crate::memory::GuestMemory;
 
@@ -102,17 +103,10 @@ pub enum Convolution {
     /// The blur `0x000211a0` into `args.dest` and `args.other`, sized
     /// `size` (width, height).
     Blur { size: (i32, i32), args: BlurArgs, blur: Blur },
-    /// `0x00021360` (not ported): EAX the source, ECX `taps`, XMM0
-    /// `scale`, then the words `+0x50`, `+0x54`, the targets, -1, 1, 0, 0.
-    Wide {
-        size: (i32, i32),
-        source: u32,
-        taps: i32,
-        scale: u32,
-        words: [u32; 2],
-        dest: u32,
-        other: u32,
-    },
+    /// `0x00021360` ([`crate::glow::wide`]): EAX the source, ECX
+    /// `cvttss2si(+0x44)`, XMM0 `+0x48`, then the words `+0x50`, `+0x54`,
+    /// the targets, -1, 1, 0, 0.
+    Wide { size: (i32, i32), args: WideArgs, wide: Wide },
 }
 
 /// One pass of the effect.
@@ -328,7 +322,8 @@ pub const MAX_PASSES: u32 = 64;
 /// per row, `rows` rows; x, y, u, v each), under `mxcsr` and
 /// `x87_control`. `None` when it returns at once. `Err(Data)` for what it
 /// cannot plan (a shader through a virtual call, a kind past the jump
-/// tables, a convolution after one drawn by `0x00021360`).
+/// tables); `Err(Unbounded)` past [`MAX_PASSES`] passes or convolutions,
+/// or a blur or `0x00021360` past its budget.
 pub fn plan(
     mem: &dyn GuestMemory,
     datum: u32,
@@ -399,7 +394,8 @@ pub fn plan(
         }
         let target = u32::from(kind != 0);
         let mut convolutions = Vec::new();
-        let mut first_result: Option<u32> = None;
+        // `[0x00485a78]`: the first convolution's result.
+        let mut first_result = 0;
         let n_conv = mem.u32(p + 0xa4)? as i32;
         if n_conv > MAX_PASSES as i32 {
             return Err(Error::Unbounded);
@@ -409,30 +405,31 @@ pub fn plan(
             let (dest, other) = if n == 0 {
                 (0x19, 0x1a)
             } else {
-                let r0 = first_result.ok_or(Error::Data)?;
-                (0x1b, 0x19 + u32::from(r0 == 0x19))
+                (0x1b, 0x19 + u32::from(first_result == 0x19))
             };
             let flags = mem.u16(c)?;
             let kept = (flags & 1 != 0 && sse.equal(values[0], zero)?)
                 || (flags & 2 != 0 && sse.equal(values[1], zero)?);
             let (conv, result) = if kept {
-                (Convolution::Kept { result: target }, Some(target))
+                (Convolution::Kept { result: target }, target)
             } else {
                 let source_size = target_size(mem, target, &set)?;
                 let size = convolution_size(mem, &mut sse, x87_control, mem.u32(c + 0x58)?, source_size)?;
                 set.push((dest, size));
                 set.push((other, size));
                 if flags & 4 != 0 {
-                    let w = Convolution::Wide {
-                        size,
+                    let args = WideArgs {
                         source: target,
                         taps: cvtt(mem.u32(c + 0x44)?)?,
                         scale: mem.u32(c + 0x48)?,
                         words: [mem.u32(c + 0x50)?, mem.u32(c + 0x54)?],
                         dest,
                         other,
+                        last: u32::MAX,
                     };
-                    (w, None)
+                    let wide = glow::wide(mem, &args, mxcsr)?;
+                    let result = wide.result;
+                    (Convolution::Wide { size, args, wide }, result)
                 } else {
                     let args = BlurArgs {
                         source: target,
@@ -445,7 +442,7 @@ pub fn plan(
                     };
                     let blur = glow::blur(mem, &args, mxcsr)?;
                     let result = blur.result;
-                    (Convolution::Blur { size, args, blur }, Some(result))
+                    (Convolution::Blur { size, args, blur }, result)
                 }
             };
             if n == 0 {

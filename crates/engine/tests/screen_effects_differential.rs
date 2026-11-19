@@ -13,8 +13,8 @@
 //!   `0x0001dd60` lifted inside; stubbed: `0x00016610` (the template pass,
 //!   drawing; its arguments recorded), `0x0001ddd0` (the size recorded and
 //!   stored as it stores it), the blur `0x000211a0` and `0x00021360`
-//!   (their registers and arguments recorded; the blur returning
-//!   `glow::blur`'s result, `0x00021360` its first target), the push
+//!   (their registers and arguments recorded; returning `glow::blur`'s
+//!   and `glow::wide`'s results, which the next convolution reads), the push
 //!   buffer's flush, `End` and the draw-state reset; over random egor
 //!   passes, offsets, convolutions, targets and windows. The template
 //!   passes, the words the strips push, the `End`s, the sizes set and the
@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::memory::{GuestMemory, MemFault};
-use engine::glow::{self, BlurArgs};
+use engine::glow::{self, BlurArgs, WideArgs};
 use engine::screen_effect::{self as fx, Convolution};
 use engine::screen_effects::{self as se, Drawn};
 use ir::IrInsn;
@@ -466,8 +466,8 @@ enum Did {
     Size(u32, i32, i32),
     /// The blur: EAX, then its first seven stack words.
     Blur(u32, [u32; 7]),
-    /// `0x00021360`: EAX, ECX, XMM0, then its first four stack words.
-    Wide(u32, i32, u32, [u32; 4]),
+    /// `0x00021360`: EAX, ECX, XMM0, then its first six stack words.
+    Wide(u32, i32, u32, [u32; 6]),
 }
 
 /// A finite float in 0..top.
@@ -525,12 +525,7 @@ fn effect_world(r: &mut Rng, m: &mut FlatMemory) -> (u32, [u32; 4], Vec<[u32; 4]
         put(m, p + 0xa8, base);
         for n in 0..convs {
             let c = base + n * fx::CONVOLUTION_SIZE;
-            // `0x00021360`'s result is not planned: only the last.
-            let mut flags = r.below(8) as u16;
-            if n == 0 && convs > 1 {
-                flags &= !4;
-            }
-            put16(m, c, flags);
+            put16(m, c, r.below(8) as u16);
             put(m, c + 0x44, finite(r, 5.0));
             put(m, c + 0x48, r.float(2.0));
             put(m, c + 0x4c, finite(r, 1.0));
@@ -593,18 +588,15 @@ fn expected(e: &fx::Effect) -> Vec<Did> {
                         [args.steps, args.scale, args.growth, args.dest, args.other, args.last, 1],
                     ));
                 }
-                Convolution::Wide {
-                    size,
-                    source,
-                    taps,
-                    scale,
-                    words,
-                    dest,
-                    other,
-                } => {
-                    v.push(Did::Size(*dest, size.0, size.1));
-                    v.push(Did::Size(*other, size.0, size.1));
-                    v.push(Did::Wide(*source, *taps, *scale, [words[0], words[1], *dest, *other]));
+                Convolution::Wide { size, args, .. } => {
+                    v.push(Did::Size(args.dest, size.0, size.1));
+                    v.push(Did::Size(args.other, size.0, size.1));
+                    v.push(Did::Wide(
+                        args.source,
+                        args.taps,
+                        args.scale,
+                        [args.words[0], args.words[1], args.dest, args.other, args.last, 1],
+                    ));
                 }
             }
         }
@@ -708,9 +700,18 @@ fn effect_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                     c.gpr[0] = glow::blur(&Eng(&*m), &args, 0x1f80).map(|b| b.result).unwrap_or(u32::MAX);
                 }
                 WIDE => {
-                    let words: [u32; 4] = std::array::from_fn(|i| stack_arg(m, c, i as u32));
+                    let words: [u32; 6] = std::array::from_fn(|i| stack_arg(m, c, i as u32));
                     did.push(Did::Wide(c.gpr[0], c.gpr[1] as i32, c.xmm[0] as u32, words));
-                    c.gpr[0] = words[2];
+                    let args = WideArgs {
+                        source: c.gpr[0],
+                        taps: c.gpr[1] as i32,
+                        scale: c.xmm[0] as u32,
+                        words: [words[0], words[1]],
+                        dest: words[2],
+                        other: words[3],
+                        last: words[4],
+                    };
+                    c.gpr[0] = glow::wide(&Eng(&*m), &args, 0x1f80).map(|w| w.result).unwrap_or(u32::MAX);
                 }
                 END => ends += 1,
                 _ => {}
