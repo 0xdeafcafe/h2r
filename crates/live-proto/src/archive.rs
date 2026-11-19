@@ -11,6 +11,28 @@ use thiserror::Error;
 
 pub const MAX_FRAMES: usize = 900;
 pub const SPAN_TICKS: u64 = 900;
+/// Cap working memory in both storage backends. Count the canonical source
+/// frame JSON bytes, which also accounts for long strings and dense rosters.
+pub const MAX_SOURCE_BYTES: usize = 8 << 20;
+
+/// Whether the next frame must be the first frame of a fresh segment.
+/// A single legal source frame always makes progress.
+pub fn starts_segment(
+    open: &[Frame],
+    source_bytes: usize,
+    next: &Frame,
+    next_bytes: usize,
+) -> bool {
+    let (Some(first), Some(last)) = (open.first(), open.last()) else {
+        return false;
+    };
+    next.game_id != first.game_id
+        || next.cut.is_some()
+        || next.tick < last.tick
+        || next.tick.saturating_sub(first.tick) >= SPAN_TICKS
+        || open.len() >= MAX_FRAMES
+        || source_bytes.saturating_add(next_bytes) > MAX_SOURCE_BYTES
+}
 const MAGIC: &[u8] = b"H2AR\x01";
 const MAX_BODY: usize = 16 << 20;
 const MAX_NODES: usize = 2_000_000;

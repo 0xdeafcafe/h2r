@@ -77,15 +77,14 @@ fn scene(frames: Vec<Frame>, name: &str) -> (usize, usize) {
     drop(frames);
     let old: usize = chunks.iter().map(|c| c.bytes.len()).sum();
     let mut total = 0;
-    for (i, group) in chunks.chunks(3).enumerate() {
-        let frames: Vec<_> = group
-            .iter()
-            .flat_map(|c| chunk::frames(&c.bytes).unwrap())
-            .collect();
+    let mut pending = Vec::new();
+    let mut source_bytes = 0;
+    let mut i = 0;
+    let mut seal = |frames: &[Frame]| {
         let start = std::time::Instant::now();
-        let stored = encode(&frames).unwrap();
+        let stored = encode(frames).unwrap();
         let encoded = start.elapsed();
-        verify(&frames, &stored).unwrap();
+        verify(frames, &stored).unwrap();
         eprintln!(
             "{name} segment={i} frames={} bytes={} encode_ms={:.1}",
             frames.len(),
@@ -103,6 +102,23 @@ fn scene(frames: Vec<Frame>, name: &str) -> (usize, usize) {
             .unwrap();
         }
         total += stored.len();
+        i += 1;
+    };
+    for frame in chunks
+        .into_iter()
+        .flat_map(|c| chunk::frames(&c.bytes).unwrap())
+    {
+        let size = serde_json::to_vec(&frame).unwrap().len();
+        if starts_segment(&pending, source_bytes, &frame, size) {
+            seal(&pending);
+            pending.clear();
+            source_bytes = 0;
+        }
+        source_bytes += size;
+        pending.push(frame);
+    }
+    if !pending.is_empty() {
+        seal(&pending);
     }
     eprintln!(
         "{name}: stored_v7={old} archive={total} ratio={:.4}",
