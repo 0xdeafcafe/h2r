@@ -248,6 +248,7 @@ pub struct Mind {
     pub grenade: crate::grenades::Thrower,
     pub combo: crate::weapons::Combo,
     left: crate::weapons::LeftHand,
+    paired_pistol: crate::weapons::LeftHand,
     follower: Option<Follower>,
     goal: Option<Vec3>,
     /// Getting unstuck (section 3.2).
@@ -361,6 +362,7 @@ impl Mind {
             grenade: crate::grenades::Thrower::new(seed ^ 0x6e_ade),
             combo: crate::weapons::Combo::new(seed ^ 0xc0_4b0),
             left: crate::weapons::LeftHand::default(),
+            paired_pistol: Default::default(),
             follower: None,
             goal: None,
             stuck: Stuck::new(),
@@ -389,7 +391,12 @@ impl Mind {
         let eye = up(me.position, EYE);
         p.others
             .iter()
-            .filter(|o| !p.teams || o.team != me.team)
+            .filter(|o| {
+                p.objective
+                    .as_ref()
+                    .and_then(|g| g.juggernaut_opponent(o.id))
+                    .unwrap_or(!p.teams || o.team != me.team)
+            })
             .filter(|o| {
                 let to = sub(up(o.position, CHEST), eye);
                 len(to) < NOTICE_NEAR || angle_between(to, me.aim) < NOTICE_CONE
@@ -399,7 +406,7 @@ impl Mind {
             .collect()
     }
 
-    fn release(&mut self, tick: u32) {
+    pub(crate) fn release(&mut self, tick: u32) {
         self.follower = None;
         self.target = None;
         self.doing = Doing::Idle;
@@ -421,6 +428,7 @@ impl Mind {
         self.grenade.reset();
         self.combo.reset();
         self.left.reset();
+        self.paired_pistol.reset();
         self.show_off.reset();
         self.stunt = None;
         self.vehicles.reset();
@@ -553,7 +561,7 @@ impl Mind {
         }
         // A reload or switch press under way is let go too: carrying is
         // not `weapon_allowed` in the buttons (mind::pad).
-        if carrying {
+        if carrying || (self.grenade.busy() && matches!(self.kit, Kit::Dual(_))) {
             self.kit = Kit::Fine;
         }
         // A combo under way chose the gun (crate::weapons): no switch away.
@@ -655,6 +663,7 @@ impl Mind {
                 let led = if clear(projected) { projected } else { target };
                 let reacted = reached(p.tick, ready);
                 let blade = shot.role == arms::Role::Blade;
+                let juggernaut = p.objective.as_ref().is_some_and(|o| o.am_juggernaut());
                 let melee = self.kit == Kit::Melee || blade;
                 if reacted {
                     let off = angle_between(sub(led, eye), me.aim);
@@ -672,17 +681,17 @@ impl Mind {
                         && !carrying
                         && self.decisions.posture != Posture::Withdraw;
                     let reach = if blade {
-                        if risky || !self.recovering {
+                        if risky || juggernaut || !self.recovering {
                             shot.lunge
                         } else {
                             MELEE_RANGE
                         }
-                    } else if melee || risky {
+                    } else if melee || risky || juggernaut {
                         MELEE_RANGE * 1.3
                     } else {
                         MELEE_RANGE
                     };
-                    let melee_cone = if blade && !risky && dist >= MELEE_RANGE {
+                    let melee_cone = if blade && !risky && !juggernaut && dist >= MELEE_RANGE {
                         0.52
                     } else {
                         0.85
@@ -714,7 +723,7 @@ impl Mind {
                             on_target: off < cone,
                             reacted,
                             held,
-                            other: me.arms.and_then(|a| a.other),
+                            other: me.arms.filter(|a| a.left.is_none()).and_then(|a| a.other),
                             firing: fired,
                             glitch,
                         },
@@ -739,6 +748,18 @@ impl Mind {
                     if let Some(l) = me.arms.and_then(|a| a.left) {
                         let (lo, hi) = l.reach().fire;
                         let want = off < cone && (lo..hi).contains(&dist) && !melee;
+                        if l.profile.dual == Some(arms::DualGun::Smg)
+                            && let Some(right) =
+                                held.filter(|g| g.profile.dual == Some(arms::DualGun::PlasmaPistol))
+                        {
+                            let on_target = !melee && off < cone && shot.in_range(dist);
+                            pad.right_trigger =
+                                if self.paired_pistol.trigger(p.tick, &right, on_target) {
+                                    1.0
+                                } else {
+                                    0.0
+                                };
+                        }
                         if self.left.trigger(p.tick, &l, want) {
                             pad.left_trigger = 1.0;
                         }
@@ -782,7 +803,7 @@ impl Mind {
                         at: me.position,
                         foe: o.position,
                         shield: me.shield,
-                        rush: melee && self.decisions.posture != Posture::Withdraw,
+                        rush: (melee || juggernaut) && self.decisions.posture != Posture::Withdraw,
                         retreat: self.recovering || self.decisions.posture == Posture::Withdraw,
                         // The combat side's signals (tactics): cover while
                         // reloading or switching in range, and its range band.
@@ -852,13 +873,14 @@ impl Mind {
             }
             Doing::Rearm(at) => {
                 let pk = match self.kit {
-                    Kit::Seek(pk) => Some(pk),
+                    Kit::Seek(pk) | Kit::Dual(pk) => Some(pk),
                     _ => None,
                 };
                 let near = dist_xy(me.position, at) < TAKE_RANGE;
                 let other_kind =
                     pk.is_some_and(|pk| me.arms.is_some_and(|a| !a.carries(pk.gun.def)));
-                if near && other_kind {
+                let dual = matches!(self.kit, Kit::Dual(_));
+                if near && (other_kind || dual) {
                     // On it: hold the action button to take it. Walking over
                     // one of the same kind takes its ammunition by itself.
                     let id = pk.map_or(0, |pk| pk.id);
@@ -868,7 +890,7 @@ impl Mind {
                     };
                     self.take = Some((id, since));
                     if p.tick.wrapping_sub(since) < TAKE_TICKS {
-                        pad.buttons.set(RELOAD, true);
+                        pad.buttons.set(if dual { SWITCH } else { RELOAD }, true);
                     } else {
                         // It will not come: out of reach (on a ledge, in
                         // a wall). Some other one.
@@ -988,6 +1010,11 @@ impl Mind {
         if !self.navigated {
             self.stuck.reset();
         }
+        let taking_objective = matches!(self.doing, Doing::Play(_) | Doing::Fight(_))
+            && p.objective.as_ref().is_some_and(|o| o.take_at(goal, me));
+        if taking_objective {
+            pad.buttons.set(RELOAD, true);
+        }
         if !matches!(self.doing, Doing::Fight(_)) {
             self.moves.calm();
             self.combo.reset();
@@ -1003,10 +1030,31 @@ impl Mind {
         let mates: Vec<Vec3> = p
             .others
             .iter()
-            .filter(|o| p.teams && o.team == me.team)
+            .filter(|o| {
+                p.objective
+                    .as_ref()
+                    .and_then(|g| g.juggernaut_opponent(o.id))
+                    .map_or(p.teams && o.team == me.team, |opponent| !opponent)
+            })
             .map(|o| o.position)
             .collect();
-        let nade = self.grenade.step_with_rate(
+        let dual = me.arms.and_then(|a| a.left);
+        if dual.is_none() {
+            self.left.reset();
+            self.paired_pistol.reset();
+        }
+        let trade_left = dual.is_some_and(|l| {
+            mark.is_some_and(|m| {
+                !m.seen
+                    || len(sub(m.at, me.position)) > l.reach().band.1
+                    || seen
+                        .iter()
+                        .filter(|o| len(sub(o.position, m.at)) < crate::grenades::GROUP)
+                        .count()
+                        >= 2
+            })
+        });
+        let nade = self.grenade.step_with_left(
             &crate::grenades::Moment {
                 tick: p.tick,
                 // A repeated frame returned the last pad above: always new.
@@ -1022,13 +1070,15 @@ impl Mind {
                     .arms
                     .and_then(|a| crate::grenades::Kind::from_index(a.selected)),
                 busy: carrying
-                    || me.arms.is_some_and(|a| a.left.is_some())
+                    || taking_objective
+                    || (dual.is_some() && !trade_left)
                     || self.combo.tricking()
                     || self.stunt.is_some(),
                 pushing,
             },
             world,
             self.skill,
+            dual.is_some(),
             behavior.grenade_rate(),
         );
         // Aiming a throw: the hand turns to the throw's line instead of the
@@ -1042,7 +1092,7 @@ impl Mind {
                     p.tick,
                     facing,
                     [raw, goal],
-                    behavior.aim_noise(),
+                    behavior.aim_noise_extra(),
                 ));
             }
             (None, Some(at)) => look = Some(at),
@@ -1056,7 +1106,13 @@ impl Mind {
         }
 
         // A glitch under way (crate::glitches) presses for itself.
-        let tap = melee_press
+        if nade.drop_left {
+            pad.left_trigger = 0.0;
+        }
+        let tap = nade
+            .drop_left
+            .then_some(Tap::Switch)
+            .or(melee_press)
             .or(match self.kit {
                 Kit::Reload => Some(Tap::Reload),
                 Kit::Switch => Some(Tap::Switch),
@@ -1067,7 +1123,10 @@ impl Mind {
             tap,
             p.tick,
             self.skill,
-            !carrying && !pad.buttons.contains(RELOAD) && !nade.throw,
+            !carrying
+                && !pad.buttons.contains(RELOAD)
+                && !pad.buttons.contains(SWITCH)
+                && !nade.throw,
         ) {
             pad.buttons.set(b, true);
         }
@@ -1334,8 +1393,7 @@ impl Mind {
         if let Some(b) = spot {
             return Some(Stunt::Bounce(b, None));
         }
-        let mut roll = || self.show_off.uniform();
-        let mac = crate::glitches::plan(crate::glitches::Trick::CrouchJump, self.skill, &mut roll);
+        let mac = crate::glitches::plan(crate::glitches::Trick::CrouchJump);
         Some(Stunt::Hop(crate::glitches::Run::new(mac, tick)))
     }
 

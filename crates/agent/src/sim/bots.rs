@@ -84,6 +84,14 @@ pub trait Bots: Send {
     fn clankers(&self) -> Vec<ClankerView> {
         Vec::new()
     }
+
+    /// Why a local bot added now would never become a player, read from
+    /// the game: `sim.player.add` refuses with it rather than answer a
+    /// player that never comes. `None`: it may join.
+    fn local_refusal(&self, m: &dyn engine::GuestMemory) -> Option<String> {
+        let _ = m;
+        None
+    }
     /// The players-array index of the player a phantom became, once it has
     /// one. Local bots are found by their port (the player's local user).
     fn phantom_player(&self, handle: u32) -> Option<u32> {
@@ -127,6 +135,9 @@ pub struct FakeLog {
     pub phantom_players: BTreeMap<u32, u32>,
     pub brains: BTreeMap<Bot, BotBrain>,
     pub clankers: Vec<ClankerView>,
+
+    /// What `local_refusal` answers.
+    pub local_refusal: Option<String>,
 }
 
 /// A backend for tests: local ports from 1 (the human has 0) to 3,
@@ -185,5 +196,9 @@ impl Bots for FakeBots {
 
     fn phantom_player(&self, handle: u32) -> Option<u32> {
         self.log().phantom_players.get(&handle).copied()
+    }
+
+    fn local_refusal(&self, _: &dyn engine::GuestMemory) -> Option<String> {
+        self.log().local_refusal.clone()
     }
 }

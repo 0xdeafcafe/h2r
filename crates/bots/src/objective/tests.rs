@@ -35,6 +35,7 @@ const RED_HOME: Vec3 = [0.0, 0.0, 0.0];
 const BLUE_HOME: Vec3 = [100.0, 0.0, 0.0];
 fn ctf(me_id: u32, items: Vec<Item>) -> Objective {
     Objective {
+        state: Default::default(),
         game: Game::Ctf,
         me: me_id,
         items,
@@ -174,6 +175,7 @@ fn their_dropped_flag_is_taken_where_it_lies() {
 
 fn oddball(me_id: u32, items: Vec<Item>) -> Objective {
     Objective {
+        state: Default::default(),
         game: Game::Oddball,
         me: me_id,
         items,
@@ -235,6 +237,7 @@ fn the_hill_is_inside_its_corners_and_near_its_height() {
 #[test]
 fn koth_goes_to_the_hill_stays_in_it_and_follows_it_when_it_moves() {
     let mut o = Objective {
+        state: Default::default(),
         game: Game::Koth,
         me: 1,
         items: vec![],
@@ -266,8 +269,9 @@ fn koth_goes_to_the_hill_stays_in_it_and_follows_it_when_it_moves() {
 }
 
 #[test]
-fn territories_ask_nothing_yet() {
+fn no_territory_markers_give_no_goal() {
     let o = Objective {
+        state: Default::default(),
         game: Game::Territories,
         me: 1,
         items: vec![],
@@ -283,7 +287,7 @@ fn engine_indices_name_the_objective_games_only() {
     assert_eq!(Game::from_engine(2), None, "Slayer");
     assert_eq!(Game::from_engine(3), Some(Game::Oddball));
     assert_eq!(Game::from_engine(4), Some(Game::Koth));
-    assert_eq!(Game::from_engine(7), None, "Juggernaut");
+    assert_eq!(Game::from_engine(7), Some(Game::Juggernaut), "Juggernaut");
     assert_eq!(Game::from_engine(8), Some(Game::Territories));
     assert_eq!(Game::from_engine(9), Some(Game::Assault));
 }
@@ -311,6 +315,7 @@ fn the_last_teammate_escorts_a_flag_once_our_drop_is_secure() {
 
 fn assault(id: u32, items: Vec<Item>) -> Objective {
     Objective {
+        state: Default::default(),
         game: Game::Assault,
         me: id,
         items,
@@ -410,6 +415,7 @@ fn an_unreadable_scoring_plate_keeps_the_carrier_in_possession() {
     let p = me([30.0, 4.0, 2.0], 0);
     for game in [Game::Ctf, Game::Assault] {
         let o = Objective {
+            state: Default::default(),
             game,
             me: 1,
             items: vec![flag(1, p.position, Some(1))],
@@ -418,4 +424,150 @@ fn an_unreadable_scoring_plate_keeps_the_carrier_in_possession() {
         };
         assert_eq!(plan(&o, &p, &[], true), Some(Goal::Carry(p.position)));
     }
+}
+
+#[test]
+fn territories_capture_hold_and_relieve_a_contested_teammate() {
+    let neutral = Territory {
+        at: RED_HOME,
+        owner: None,
+        owner_team: None,
+        occupants: 0,
+    };
+    let mut own = Territory {
+        at: BLUE_HOME,
+        owner: Some(3),
+        owner_team: Some(0),
+        occupants: 0,
+    };
+    let bot = me([1.0, 0.0, 0.0], 0);
+    let foe = seen(2, [99.0, 0.0, 0.0], 1);
+    let goal = |sites, teams| {
+        plan(
+            &Objective {
+                game: Game::Territories,
+                state: State::Territories(sites),
+                ..ctf(1, vec![])
+            },
+            &bot,
+            &[foe],
+            teams,
+        )
+    };
+    assert_eq!(
+        goal(vec![neutral.clone(), own.clone()], true),
+        Some(Goal::Go(RED_HOME))
+    );
+    own.occupants = 1 << foe.id;
+    assert_eq!(
+        goal(vec![neutral.clone(), own.clone()], true),
+        Some(Goal::Go(BLUE_HOME))
+    );
+    assert_eq!(
+        goal(vec![neutral.clone(), own], false),
+        Some(Goal::Go(RED_HOME))
+    );
+    assert_eq!(
+        goal(
+            vec![Territory {
+                occupants: 2,
+                ..neutral
+            }],
+            true
+        ),
+        Some(Goal::Hold(bot.position, 0.0))
+    );
+}
+
+#[test]
+fn the_hill_mask_decides_when_to_stop_and_when_to_leave() {
+    let mut o = Objective {
+        game: Game::Koth,
+        state: State::Hill { occupants: 2 },
+        hill: Some(square(BLUE_HOME, 3.0)),
+        ..ctf(1, vec![])
+    };
+    let bot = me(RED_HOME, 0);
+    assert_eq!(plan(&o, &bot, &[], false), Some(Goal::Hold(RED_HOME, 0.0)));
+    o.state = State::Hill { occupants: 0 };
+    assert_eq!(plan(&o, &bot, &[], false), Some(Goal::Go(BLUE_HOME)));
+}
+
+#[test]
+fn the_juggernaut_hunts_everyone_and_hunters_only_hunt_the_juggernaut() {
+    let mut o = Objective {
+        game: Game::Juggernaut,
+        state: State::Juggernauts(4),
+        ..ctf(1, vec![])
+    };
+    let bot = me(RED_HOME, 0);
+    let seen = [seen(2, BLUE_HOME, 0), seen(3, [2.0, 0.0, 0.0], 1)];
+    assert_eq!(plan(&o, &bot, &seen, false), Some(Goal::Hunt(2, BLUE_HOME)));
+    assert_eq!(o.juggernaut_opponent(3), Some(false));
+    o.state = State::Juggernauts(2);
+    assert!(o.am_juggernaut());
+    assert_eq!(
+        plan(&o, &bot, &seen, false),
+        Some(Goal::Hunt(3, seen[1].position))
+    );
+}
+
+#[test]
+fn one_bomb_uses_the_designated_defender_through_arm_and_plant() {
+    let mut o = assault(1, vec![flag(0, RED_HOME, Some(1))]);
+    let state = |armed, planted| State::Assault {
+        defending: Some(1),
+        arming: 1,
+        armed,
+        planted,
+    };
+    o.state = state(0, 0);
+    o.spots.push(spot(kind::BOMB_RETURN, 2, [4.0, 0.0, 0.0]));
+    assert_eq!(
+        plan(&o, &me(RED_HOME, 0), &[], true),
+        Some(Goal::Carry(BLUE_HOME))
+    );
+    let near = [99.8, 0.0, 0.0];
+    assert_eq!(plan(&o, &me(near, 0), &[], true), Some(Goal::Carry(near)));
+    o.state = state(1, 0);
+    assert_eq!(
+        plan(&o, &me(near, 0), &[], true),
+        Some(Goal::Carry(BLUE_HOME))
+    );
+    o.items = vec![flag(0, BLUE_HOME, None)];
+    o.state = state(1, 1);
+    assert_eq!(
+        plan(&o, &me(near, 0), &[], true),
+        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+    );
+    assert_eq!(
+        plan(&o, &me(near, 1), &[], true),
+        Some(Goal::Hold(BLUE_HOME, DEFEND_RADIUS))
+    );
+}
+
+#[test]
+fn primary_use_takes_the_loose_objective_and_leaves_the_planted_bomb_alone() {
+    let bot = me(RED_HOME, 0);
+    let goal = Some(Goal::Go(RED_HOME));
+    let mut o = assault(1, vec![flag(8, RED_HOME, None)]);
+    assert!(o.take_at(goal, bot));
+    o.state = State::Assault {
+        defending: None,
+        arming: 0,
+        armed: 256,
+        planted: 256,
+    };
+    assert!(!o.take_at(goal, bot));
+    o.items[0].team = 1;
+    assert!(!o.take_at(goal, bot));
+    o.game = Game::Ctf;
+    assert!(o.take_at(goal, bot));
+    o.items[0].team = 0;
+    assert!(!o.take_at(goal, bot), "touch to return");
+    o.game = Game::Oddball;
+    assert!(o.take_at(goal, bot));
+    assert!(!o.take_at(goal, me(BLUE_HOME, 0)));
+    o.items[0].carrier = Some(1);
+    assert!(!o.take_at(goal, bot));
 }

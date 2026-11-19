@@ -165,7 +165,7 @@ fn a_host_write_lands_where_the_readers_read() {
         &mut game,
         method::STATE_SET,
         json!({
-            "player": "player.0", "pos": [10.0, -2.5, 3.0], "team": 1,
+            "player": "player.0", "team": 1,
             "health": 0.25, "shield": 2.0,
             "grenades": {"frag": 4, "plasma": 0},
             "ammo": {"loaded": 12, "reserve": 48}
@@ -174,17 +174,10 @@ fn a_host_write_lands_where_the_readers_read() {
     assert_eq!(r["player"], "player.0");
     assert_eq!(
         r["wrote"],
-        json!(["team", "pos", "health", "shield", "grenades", "ammo"])
+        json!(["team", "health", "shield", "grenades", "ammo"])
     );
     assert_eq!(r["session"]["kind"], "mp_host");
     let g = &game.g;
-    let unit = Body::at(UNIT_BODY);
-    assert_eq!(unit.position(g).unwrap(), [10.0, -2.5, 3.0]);
-    assert_eq!(
-        g.f32(UNIT_BODY + l::BODY_VELOCITY).unwrap(),
-        0.0,
-        "velocity zeroed"
-    );
     assert_eq!(g.u16(UNIT_BODY + l::UNIT_TEAM).unwrap(), 1);
     let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
     let p0 = &v["player"]["0"];
@@ -562,4 +555,405 @@ fn temperament_sim_player_list_and_view_expose_current_brain_state() {
     assert_eq!(listed["clankers"][0]["player"], "player.1");
     let view = h.ok(&mut game, method::VIEW, json!({"roots": ["sim"]}));
     assert_eq!(view["sim"]["1"]["brain"], updated);
+}
+
+/// The tags `sim.give` and `sim.spawn` find.
+struct FakeTags;
+
+const WEAP_TAG: u32 = 0xe100_0010;
+const VEHI_TAG: u32 = 0xe200_0020;
+
+impl super::calls::Tags for FakeTags {
+    /// As a map names them: a weapon's name is also its model's (`hlmt`),
+    /// a vehicle's its render model's (`mode`).
+    fn find(&mut self, tag: &str, among: &[&str]) -> Result<super::calls::TagRef, String> {
+        const BR: &str = "objects\\weapons\\rifle\\battle_rifle\\battle_rifle";
+        const HOG: &str = "objects\\vehicles\\warthog\\warthog";
+        let rows = [
+            (WEAP_TAG, "weap", BR),
+            (0xe100_0011, "hlmt", BR),
+            (VEHI_TAG, "vehi", HOG),
+            (0xe200_0021, "mode", HOG),
+            (0xe300_0030, "shad", "shaders\\metal"),
+        ];
+        let (group, name) = match tag.split_once(':') {
+            Some((g, n)) => (Some(g), n),
+            None => (None, tag),
+        };
+        let found: Vec<_> = rows
+            .iter()
+            .filter(|(d, g, n)| {
+                (*n == name || name == format!("{d:#010x}"))
+                    && match group {
+                        Some(want) => *g == want,
+                        None => among.is_empty() || among.contains(g),
+                    }
+            })
+            .collect();
+        match found.as_slice() {
+            [(datum, group, name)] => Ok(super::calls::TagRef {
+                datum: *datum,
+                group: (*group).into(),
+                name: Some((*name).into()),
+            }),
+            [] => Err(format!("no tag named {tag:?}")),
+            many => Err(format!("{tag:?} names {} tags: give the group", many.len())),
+        }
+    }
+}
+
+/// A harness whose sim has the calls queue (armed, as the feature's build
+/// arms it) and the fake tags.
+fn with_calls() -> (Harness, super::calls::Shared) {
+    let h = Harness::new();
+    let agent = &h.agent;
+    // The sim installed by Harness::new isn't reachable: install again
+    // under the same names (later registrations replace earlier ones).
+    let sim = super::install(
+        agent,
+        Box::new(h.bots.clone()),
+        Some(Box::new({
+            let k = Arc::clone(&h.kind);
+            move |_| SessionView {
+                kind: *k.lock().unwrap(),
+                ..Default::default()
+            }
+        })),
+    );
+    let q = super::calls::shared();
+    super::calls::lock(&q).arm();
+    sim.set_calls(Arc::clone(&q));
+    sim.set_tags(Box::new(FakeTags));
+    (h, q)
+}
+
+/// The feature's part at the next tick: takes the queued calls and
+/// answers each with `answer`.
+fn the_game_makes(
+    q: &super::calls::Shared,
+    mut answer: impl FnMut(&super::calls::Call) -> super::calls::Outcome,
+) -> Vec<super::calls::Call> {
+    let work = super::calls::lock(q).drain();
+    let mut calls = Vec::new();
+    for (t, c) in work {
+        let out = answer(&c);
+        super::calls::lock(q).finish(t, out);
+        calls.push(c);
+    }
+    calls
+}
+
+impl Harness {
+    /// Sends `m`, ticks once: the answer is deferred (nothing yet).
+    fn deferred(&self, game: &mut Game, m: &str, p: Value) {
+        self.send(m, p);
+        self.agent.on_tick(game);
+        assert!(self.rx.try_recv().is_err(), "{m}: answered at once");
+    }
+}
+
+#[test]
+fn a_teleport_goes_through_the_games_placement_and_answers_after_the_tick() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    let handle = super::state::player_handle(&game.g, 0).unwrap();
+    h.deferred(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "pos": [10.0, -2.5, 3.0], "yaw": 90, "health": 0.5}),
+    );
+    // The health is written now; the move waits for the game.
+    assert_eq!(Body::at(UNIT_BODY).health(&game.g).unwrap(), 0.5);
+    assert_eq!(Body::at(UNIT_BODY).position(&game.g).unwrap(), [0.0; 3]);
+    let calls = the_game_makes(&q, |_| Ok(json!({"pos": [10.0, -2.5, 3.1]})));
+    let super::calls::Call::Teleport {
+        player,
+        pos,
+        facing,
+    } = calls[0].clone()
+    else {
+        panic!("{calls:?}");
+    };
+    assert_eq!((player, pos), (handle, Some([10.0, -2.5, 3.0])));
+    let f = facing.unwrap();
+    assert!(
+        f[0].abs() < 1e-6 && (f[1] - 1.0).abs() < 1e-6 && f[2] == 0.0,
+        "{f:?}"
+    );
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    let r = &r["result"];
+    assert_eq!(r["wrote"], json!(["health", "pos", "facing"]));
+    assert_eq!(r["teleport"]["pos"], json!([10.0, -2.5, 3.1]));
+    assert_eq!(r["at"]["boundary"], "tick");
+}
+
+#[test]
+fn a_teleport_the_game_refuses_or_never_makes_is_an_error() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "facing": [0, 1, 0]}),
+    );
+    the_game_makes(&q, |_| Err("no room".into()));
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::UNAVAILABLE, "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("no room"));
+    // Queued, never made (the feature didn't run): a timeout, not a hang.
+    h.deferred(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "pos": [1, 1, 1]}),
+    );
+    for _ in 0..super::TELEPORT_TICKS {
+        h.agent.on_tick(&mut game);
+    }
+    let r = h.reply();
+    assert_eq!(r["error"]["code"], code::TIMEOUT, "{r}");
+}
+
+#[test]
+fn a_teleport_needs_the_calls_and_a_unit() {
+    let (h, mut game) = (Harness::new(), game());
+    let e = h.err(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.0", "pos": [1, 2, 3]}),
+    );
+    assert_eq!(e["code"], code::UNAVAILABLE, "{e}");
+    assert!(
+        e["message"].as_str().unwrap().contains("agent-calls"),
+        "{e}"
+    );
+    let (h, q) = with_calls();
+    let e = h.err(
+        &mut game,
+        method::STATE_SET,
+        json!({"player": "player.1", "pos": [1, 2, 3]}),
+    );
+    assert_eq!(e["code"], code::GONE, "between lives: {e}");
+    for bad in [
+        json!({"player": "player.0", "pitch": 10}),
+        json!({"player": "player.0", "yaw": 0, "pitch": 95}),
+        json!({"player": "player.0", "yaw": 0, "facing": [1, 0, 0]}),
+        json!({"player": "player.0", "facing": [0, 0, 0]}),
+    ] {
+        let e = h.err(&mut game, method::STATE_SET, bad.clone());
+        assert_eq!(e["code"], code::INVALID_PARAMS, "{bad}: {e}");
+    }
+    assert!(!super::calls::lock(&q).has_pending(), "nothing queued");
+}
+
+#[test]
+fn give_makes_a_weapon_by_name_and_fills_its_magazine() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::GIVE,
+        json!({
+            "player": "player.0",
+            "weapon": "objects\\weapons\\rifle\\battle_rifle\\battle_rifle",
+            "ammo": {"loaded": 36, "reserve": 108}
+        }),
+    );
+    // The game makes it: the new weapon is the one the unit now holds.
+    let weapon = game.g.u32(UNIT_BODY + l::UNIT_WEAPONS).unwrap();
+    let unit_h = engine::view::players::array(&game.g)
+        .unwrap()
+        .unwrap()
+        .get_absolute(&game.g, 0)
+        .unwrap()
+        .unwrap()
+        .unit(&game.g)
+        .unwrap()
+        .unwrap()
+        .raw();
+    let calls = the_game_makes(&q, |c| {
+        assert_eq!(
+            *c,
+            super::calls::Call::Give {
+                unit: unit_h,
+                weapon: WEAP_TAG,
+                mode: super::calls::addr::MODE_REPLACE
+            }
+        );
+        Ok(json!({"object": format!("{weapon:08x}"), "mode": 2}))
+    });
+    assert_eq!(calls.len(), 1);
+    h.agent.on_tick(&mut game);
+    let r = h.reply();
+    assert!(r["error"].is_null(), "{r}");
+    let r = &r["result"];
+    assert_eq!(r["weapon"]["tag"], "0xe1000010");
+    assert_eq!(r["weapon"]["group"], "weap");
+    assert_eq!(r["object"], format!("{weapon:08x}"));
+    assert_eq!(r["held"], true);
+    assert_eq!(
+        game.g.u16(WEAPON_BODY + l::WEAPON_MAGAZINE_LOADED).unwrap(),
+        36
+    );
+    assert_eq!(
+        game.g
+            .u16(WEAPON_BODY + l::WEAPON_MAGAZINE_RESERVE)
+            .unwrap(),
+        108
+    );
+    // keep: the game's mode 1.
+    h.deferred(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "0xe1000010", "keep": true}),
+    );
+    let calls = the_game_makes(&q, |_| Ok(json!({"object": "00aa0009", "mode": 1})));
+    assert!(matches!(
+        calls[0],
+        super::calls::Call::Give {
+            mode: super::calls::addr::MODE_ADD,
+            ..
+        }
+    ));
+    h.agent.on_tick(&mut game);
+    assert_eq!(h.reply()["result"]["held"], false);
+}
+
+#[test]
+fn give_refuses_what_is_not_a_weapon_and_players_between_lives() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    for (p, want) in [
+        (
+            json!({"player": "player.0", "weapon": "shaders\\metal"}),
+            code::INVALID_PARAMS,
+        ),
+        (
+            json!({"player": "player.0", "weapon": "nothing"}),
+            code::INVALID_PARAMS,
+        ),
+        (
+            json!({"player": "player.0", "weapon": "0xe1000010", "ammo": {"loaded": -1}}),
+            code::INVALID_PARAMS,
+        ),
+        (
+            json!({"player": "player.1", "weapon": "0xe1000010"}),
+            code::GONE,
+        ),
+    ] {
+        let e = h.err(&mut game, method::GIVE, p.clone());
+        assert_eq!(e["code"], want, "{p}: {e}");
+    }
+    *h.kind.lock().unwrap() = SessionKind::CoopHost;
+    let e = h.err(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "0xe1000010"}),
+    );
+    assert_eq!(e["code"], code::INVALID_REQUEST);
+    assert!(!super::calls::lock(&q).has_pending());
+}
+
+#[test]
+fn spawn_makes_an_object_tag_at_a_point() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    h.deferred(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "objects\\vehicles\\warthog\\warthog", "pos": [1, 2, 3], "yaw": 180}),
+    );
+    let calls = the_game_makes(&q, |_| {
+        Ok(json!({"object": "00420003", "pos": [1.0, 2.0, 3.0]}))
+    });
+    let super::calls::Call::Spawn { tag, pos, facing } = calls[0].clone() else {
+        panic!("{calls:?}");
+    };
+    assert_eq!((tag, pos), (VEHI_TAG, [1.0, 2.0, 3.0]));
+    assert!((facing.unwrap()[0] + 1.0).abs() < 1e-6);
+    h.agent.on_tick(&mut game);
+    let r = h.reply()["result"].clone();
+    assert_eq!(r["object"], "00420003");
+    assert_eq!(r["tag"]["group"], "vehi");
+    let e = h.err(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "shaders\\metal", "pos": [0, 0, 0]}),
+    );
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+}
+
+#[test]
+fn give_and_spawn_resolve_a_shared_name_among_their_groups() {
+    let (h, q) = with_calls();
+    let mut game = game();
+    // The battle rifle's name is also its model's: give looks among weap.
+    h.deferred(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(
+        matches!(
+            calls[0],
+            super::calls::Call::Give {
+                weapon: WEAP_TAG,
+                ..
+            }
+        ),
+        "{calls:?}"
+    );
+    h.agent.on_tick(&mut game);
+    h.reply();
+    // The warthog's is also its render model's: spawn looks among objects.
+    h.deferred(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(
+        matches!(calls[0], super::calls::Call::Spawn { tag: VEHI_TAG, .. }),
+        "{calls:?}"
+    );
+    h.agent.on_tick(&mut game);
+    h.reply();
+    // group:name is taken as given: the model is no weapon.
+    let e = h.err(
+        &mut game,
+        method::GIVE,
+        json!({"player": "player.0", "weapon": "hlmt:objects\\weapons\\rifle\\battle_rifle\\battle_rifle"}),
+    );
+    assert_eq!(e["code"], code::INVALID_PARAMS, "{e}");
+    assert!(
+        e["message"].as_str().unwrap().contains("not a weapon"),
+        "{e}"
+    );
+    h.deferred(
+        &mut game,
+        method::SPAWN,
+        json!({"tag": "vehi:objects\\vehicles\\warthog\\warthog", "pos": [0, 0, 0]}),
+    );
+    let calls = the_game_makes(&q, |_| Err("not this time".into()));
+    assert!(matches!(
+        calls[0],
+        super::calls::Call::Spawn { tag: VEHI_TAG, .. }
+    ));
+}
+
+#[test]
+fn a_local_player_the_game_would_never_seat_is_refused_saying_why() {
+    let (h, mut game) = (Harness::new(), game());
+    h.bots.log().local_refusal = Some("a game is running".into());
+    let e = h.err(
+        &mut game,
+        method::PLAYER_ADD,
+        json!({"kind": "local", "source": "script"}),
+    );
+    assert_eq!(e["code"], code::UNAVAILABLE);
+    assert!(e["message"].as_str().unwrap().contains("a game is running"));
+    assert!(h.bots.log().bots.is_empty(), "no pad added");
 }

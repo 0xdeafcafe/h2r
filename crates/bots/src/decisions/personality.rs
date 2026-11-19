@@ -317,8 +317,8 @@ impl Behavior {
             as u32
     }
 
-    pub fn aim_noise(self) -> f32 {
-        1.0 + (0.08 * self.mood.tilt + 0.06 * self.fear()).min(0.10)
+    pub fn aim_noise_extra(self) -> f32 {
+        0.08 * self.mood.tilt + 0.06 * self.fear()
     }
 }
 

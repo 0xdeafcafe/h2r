@@ -391,7 +391,7 @@ impl Combo {
         if self.uniform() >= glitches::chance(c.glitch.setting, skill) {
             return None;
         }
-        let mac = glitches::plan(trick, skill, &mut || self.uniform());
+        let mac = glitches::plan(trick);
         self.trick = Some(glitches::Run::new(mac, t));
         self.trick_keys(t)
     }

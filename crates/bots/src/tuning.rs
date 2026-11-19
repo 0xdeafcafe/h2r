@@ -1,22 +1,52 @@
-//! A bot's tuning: the aim table's numbers, awareness and the personality,
-//! each optional over the built-in values for its skill (docs/runtime/sim.md,
+//! A bot's input, aim, awareness and personality tuning. Each field is
+//! optional over the built-in values for its skill (docs/runtime/sim.md,
 //! "Bot parameters from a file").
 //!
 //! The aim table and awareness are read deep in the mind, through
 //! [`Skill::aim`](crate::mind::Skill::aim) and `decisions::awareness`, from
 //! a dozen call sites. Rather than thread a tuning through each, a brain
 //! that has one sets it for the length of its think ([`with`]), on its own
-//! thread, and those two functions consult [`current`]. A brain with none
-//! (every brain outside sim mode) leaves it unset, and nothing changes.
+//! thread, and those two functions consult [`current`]. A brain without
+//! overrides uses its skill's defaults.
 
 use std::cell::Cell;
 
 use crate::decisions::Personality;
-use crate::mind::Aim;
+use crate::mind::{Aim, Skill};
 
 /// The burst a tuning asks for when the skill's table holds the trigger
 /// (normal's).
 pub const DEFAULT_BURST: (u32, u32) = (24, 8);
+
+/// The timing and physical limits of a brain's normal Xbox pad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InputLimits {
+    pub perception_ticks: u32,
+    pub motor_ticks: u32,
+    pub button_sigma_ms: f32,
+    /// Maximum stick travel in one tick, in stick radii.
+    pub stick_step: f32,
+    /// Minimum ticks between a right-thumb button and right-stick use.
+    pub thumb_switch_ticks: u32,
+}
+
+/// Simulated transport for a phantom, in milliseconds. Ping is round trip.
+/// The jitter is a bound on the variation in the one-way trip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PhantomLatency {
+    /// None draws a fixed round trip in 40..80 ms from the phantom's seed.
+    pub ping_ms: Option<f32>,
+    pub jitter_ms: f32,
+}
+
+impl Default for PhantomLatency {
+    fn default() -> Self {
+        Self {
+            ping_ms: None,
+            jitter_ms: 4.0,
+        }
+    }
+}
 
 /// What a bot is tuned by. `None` keeps the built-in value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -41,9 +71,49 @@ pub struct Tuning {
     pub caution: Option<f32>,
     pub teamwork: Option<f32>,
     pub objective_focus: Option<f32>,
+    pub perception_ticks: Option<u32>,
+    pub motor_ticks: Option<u32>,
+    pub button_sigma_ms: Option<f32>,
+    pub stick_step: Option<f32>,
+    pub thumb_switch_ticks: Option<u32>,
+    pub phantom_ping_ms: Option<f32>,
+    pub phantom_jitter_ms: Option<f32>,
 }
 
 impl Tuning {
+    pub fn input_limits(&self, skill: Skill) -> InputLimits {
+        let (perception, motor, sigma) = match skill {
+            Skill::Easy => (3, 2, 8.0),
+            Skill::Normal => (3, 2, 6.0),
+            Skill::Heroic => (2, 2, 4.5),
+            Skill::Legendary => (2, 1, 3.0),
+        };
+        InputLimits {
+            perception_ticks: self.perception_ticks.unwrap_or(perception).min(30),
+            motor_ticks: self.motor_ticks.unwrap_or(motor).min(30),
+            button_sigma_ms: self
+                .button_sigma_ms
+                .filter(|v| v.is_finite())
+                .unwrap_or(sigma)
+                .clamp(0.0, 12.0),
+            stick_step: self
+                .stick_step
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.45)
+                .clamp(0.1, 0.6),
+            thumb_switch_ticks: self.thumb_switch_ticks.unwrap_or(1).clamp(1, 6),
+        }
+    }
+
+    pub fn phantom_latency(&self) -> PhantomLatency {
+        PhantomLatency {
+            ping_ms: self.phantom_ping_ms,
+            jitter_ms: self
+                .phantom_jitter_ms
+                .unwrap_or(PhantomLatency::default().jitter_ms),
+        }
+    }
+
     /// `base` (a skill's row) with this tuning's numbers over it.
     pub fn aim(&self, base: Aim) -> Aim {
         let burst = if self.burst == Some(false) {

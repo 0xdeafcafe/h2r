@@ -327,13 +327,7 @@ impl Telemetry {
         self.pipeline.push(Work::End(Box::new(snapshot)))
     }
 
-    fn kill(
-        &self,
-        guest: &runtime::Guest,
-        attacker: u32,
-        victim: u32,
-        betrayal: bool,
-    ) -> Result<(), String> {
+    fn kill(&self, guest: &runtime::Guest, attacker: u32, victim: u32) -> Result<(), String> {
         let tick = memory::game_tick(guest).map_err(|e| format!("read kill tick: {e:?}"))?;
         let players = memory::players(guest).map_err(|e| format!("read kill players: {e:?}"))?;
         let victim_index = victim & 0xffff;
@@ -346,7 +340,6 @@ impl Telemetry {
             tick,
             attacker: (attacker != u32::MAX).then_some(attacker & 0xffff),
             victim: victim_index,
-            betrayal,
             object,
             // The scripts' kills in a cutscene are not play.
             cinematic: memory::cinematic(guest).unwrap_or(false),
@@ -412,13 +405,15 @@ impl feature::Feature for TelemetryFeature {
                     (|| {
                         let attacker = guest.u32(esp.wrapping_add(4))?;
                         let victim = guest.u32(esp.wrapping_add(8))?;
-                        let betrayal = guest.u32(esp.wrapping_add(0x0c))? != 0;
+                        // `[esp+0x0c]` is not a betrayal flag (it is set in
+                        // free-for-all too): the session tells betrayals by
+                        // the players' teams.
                         let _packed_damage = guest.u32(esp.wrapping_add(0x10))?;
-                        Ok::<_, runtime::GuestFault>((attacker, victim, betrayal))
+                        Ok::<_, runtime::GuestFault>((attacker, victim))
                     })()
                 };
-                if let Ok((attacker, victim, betrayal)) = observation {
-                    t.protect(|| t.kill(&o.guest(), attacker, victim, betrayal));
+                if let Ok((attacker, victim)) = observation {
+                    t.protect(|| t.kill(&o.guest(), attacker, victim));
                 }
             });
         // Observers only: nothing here writes the guest or feeds back into
@@ -649,15 +644,15 @@ mod tests {
             .unwrap();
         assert_eq!(object.pos, [1.0, 2.0, 3.0]);
         telemetry.protect(|| telemetry.start(&guest));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000, false));
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010000));
         // In a cutscene the scripts' kills are not counted, and the tick's
         // frame is a marked, empty one.
         fixture::set_cinematic(&mut guest, true);
         guest
             .set_u32(fixture::TIME + layout::TIME_TICK, 10)
             .unwrap();
-        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001, false));
+        telemetry.protect(|| telemetry.kill(&guest, 0x80010000, 0x80010001));
         telemetry.protect(|| telemetry.sample(&guest));
         assert!(!telemetry.disabled());
         drop(telemetry);

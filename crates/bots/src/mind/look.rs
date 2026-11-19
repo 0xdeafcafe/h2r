@@ -143,7 +143,7 @@ impl Hand {
         tick: u32,
         aim: (f32, f32),
         [raw, led]: [Vec3; 2],
-        noise_scale: f32,
+        noise_extra: f32,
     ) -> [f32; 2] {
         let raw = angles(raw);
         let led = angles(led);
@@ -188,7 +188,7 @@ impl Hand {
                 error[1] += f.offset[1];
             }
         }
-        let noise = self.error(skill, h, tick).map(|n| n * noise_scale);
+        let noise = crate::human_input::tracking_noise(self.error(skill, h, tick), noise_extra);
         [error[0] + noise[0], error[1] + noise[1]]
     }
 

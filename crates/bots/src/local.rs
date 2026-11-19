@@ -73,6 +73,14 @@ pub trait PadSource: Send {
 
     /// Roster personality (seed, taunt). Scripted pads have no brain to update.
     fn set_roster_personality(&mut self, _personality: Option<(u64, f32)>) {}
+
+    /// The phantom's action stream was interrupted by a new unit or match.
+    fn reset_input(&mut self) {}
+
+    /// Phantom uplink timing, ignored when this source drives a local port.
+    fn phantom_latency(&self) -> crate::tuning::PhantomLatency {
+        crate::tuning::PhantomLatency::default()
+    }
 }
 
 /// A source from a closure.

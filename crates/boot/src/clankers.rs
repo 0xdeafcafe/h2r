@@ -603,6 +603,14 @@ impl local::PadSource for Clanker {
         self.taunt = taunt;
     }
 
+    fn reset_input(&mut self) {
+        self.brain.reset_input();
+    }
+
+    fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
+        self.brain.phantom_latency()
+    }
+
     fn pad(&mut self, f: &local::Frame<'_>) -> input::host::HostPadState {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
         self.brain.set_skill(want);

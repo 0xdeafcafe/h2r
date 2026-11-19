@@ -27,7 +27,7 @@ pub struct Kill {
     /// world).
     pub attacker: Option<u32>,
     pub victim: u32,
-    /// The game's own betrayal flag.
+    /// A teammate killed in a team game ([`kill_from_guest`]).
     pub betrayal: bool,
     /// Where the body is: the victim's unit when it died.
     pub at: Option<Vec3>,
@@ -104,38 +104,58 @@ pub fn kills() -> &'static KillLog {
     G.get_or_init(KillLog::default)
 }
 
-/// A death read from the kill function's arguments: the attacker and
-/// victim player datums (`u32::MAX` for none) and the betrayal flag. The
-/// body's place is the victim's unit, which is still there.
+/// A death read from the kill function's attacker and victim player
+/// datums (`u32::MAX` for none). The body's place is the victim's unit,
+/// which is still there.
+///
+/// A betrayal is a teammate killed in a team game (the variant's team
+/// flag), as Live telemetry tells it (`live_proto::game::is_betrayal`).
+/// The kill function's third argument is not a betrayal flag: it is set in
+/// free-for-all too, so it is not read.
 pub fn kill_from_guest(
     m: &dyn GuestMemory,
     attacker: u32,
     victim: u32,
-    betrayal: bool,
 ) -> Result<Option<Kill>, MemFault> {
     let Some(v) = DatumHandle::from_raw(victim) else {
         return Ok(None);
     };
-    let at = match players::array(m)? {
-        Some(a) => match a.get(m, v)? {
-            Some(p) => match p.unit(m)? {
-                Some(u) => objects::get(m, u)?
-                    .map(|(_, b)| b.position(m))
-                    .transpose()?,
-                None => None,
-            },
+    let a = DatumHandle::from_raw(attacker);
+    let mut at = None;
+    let mut betrayal = false;
+    if let Some(array) = players::array(m)?
+        && let Some(p) = array.get(m, v)?
+    {
+        at = match p.unit(m)? {
+            Some(u) => objects::get(m, u)?
+                .map(|(_, b)| b.position(m))
+                .transpose()?,
             None => None,
-        },
-        None => None,
-    };
+        };
+        if let Some(killer) = a.filter(|a| a.index() != v.index())
+            && team_game(m)?
+            && let Some(k) = array.get(m, killer)?
+        {
+            betrayal = k.team(m)? == p.team(m)?;
+        }
+    }
     Ok(Some(Kill {
         seq: 0,
         tick: crate::guest::game_tick(m).unwrap_or(0),
-        attacker: DatumHandle::from_raw(attacker).map(|h| u32::from(h.index())),
+        attacker: a.map(|h| u32::from(h.index())),
         victim: u32::from(v.index()),
         betrayal,
         at,
     }))
+}
+
+/// A multiplayer game whose variant is a team game.
+fn team_game(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+    use crate::guest::{MODE_MULTIPLAYER, OPTIONS, VARIANT_FLAGS};
+    let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+    Ok(globals != 0
+        && m.u32(globals + OPTIONS)? == MODE_MULTIPLAYER
+        && m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0)
 }
 
 /// The taunt of a bot with no personality of its own (§9.1's default).

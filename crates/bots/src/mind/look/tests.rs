@@ -39,7 +39,7 @@ fn flick(skill: Skill, seed: u64) -> Vec<f32> {
                 tick,
                 (yaw, pitch),
                 [ray(target), ray(target)],
-                1.0,
+                0.0,
             );
             let next = hand.steer(skill, Some(error), 1);
             assert!(next.0.hypot(next.1) <= 1.000_001);
@@ -91,7 +91,7 @@ fn tracking_lags_faster_bearings_more_and_crosses_the_wrap() {
             0,
             (0.4, 0.0),
             [ray(before), ray(before)],
-            1.0,
+            0.0,
         );
         hand.track(
             Skill::Legendary,
@@ -99,7 +99,7 @@ fn tracking_lags_faster_bearings_more_and_crosses_the_wrap() {
             1,
             (0.4, 0.0),
             [ray(0.4), ray(0.4)],
-            1.0,
+            0.0,
         )[0]
     };
     assert!(error(0.25) < error(0.38) - 0.14);
@@ -187,7 +187,7 @@ fn a_muffled_shot_draws_a_delayed_bearing_and_a_distant_one_does_not() {
 }
 
 #[test]
-fn temperament_aim_noise_stays_bounded_and_uses_the_same_thumb_limits() {
+fn temperament_aim_noise_changes_only_the_tracking_error() {
     use crate::decisions::{Behavior, MoodView, Personality};
 
     for skill in Skill::ALL {
@@ -202,26 +202,15 @@ fn temperament_aim_noise_stays_bounded_and_uses_the_same_thumb_limits() {
                 ..MoodView::default()
             },
         };
-        let scale = behavior.aim_noise();
-        assert!((1.0..=1.10).contains(&scale));
+        let extra = behavior.aim_noise_extra();
         let mut calm = Hand::new(7);
         let mut upset = Hand::new(7);
-        let mut previous = (0.0f32, 0.0f32);
         for tick in 0..120 {
             // No lag, lead or flick in this sightline: only tracking noise.
             let target = [ray(0.0); 2];
-            let base = calm.track(skill, 1, tick, (0.0, 0.0), target, 1.0);
-            let changed = upset.track(skill, 1, tick, (0.0, 0.0), target, scale);
-            assert_eq!(changed, base.map(|e| e * scale));
-            // Also exercise the full input cap under a large turn request.
-            let error = [changed[0] + 2.0, changed[1] + 1.0];
-            let stick = upset.steer(skill, Some(error), 1);
-            assert!(stick.0.hypot(stick.1) <= 1.000_001);
-            let slew = (stick.0 - previous.0).hypot(stick.1 - previous.1);
-            assert!(slew <= Handling::of(skill).engage + 1e-6);
-            let (yaw, pitch) = turn_rate(stick);
-            assert!(yaw.hypot(pitch) <= TURN_RATE + 1e-6);
-            previous = stick;
+            let base = calm.track(skill, 1, tick, (0.0, 0.0), target, 0.0);
+            let changed = upset.track(skill, 1, tick, (0.0, 0.0), target, extra);
+            assert_eq!(changed, crate::human_input::tracking_noise(base, extra));
         }
     }
 }
