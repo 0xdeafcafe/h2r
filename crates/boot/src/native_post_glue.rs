@@ -178,10 +178,10 @@ pub enum Missing {
     /// and 25): they are `screen_gpu`'s, so only a convolution without
     /// its frame misses them.
     StandIns,
-    /// A pass `0x00016610` does not draw (`screen_effect::template_draws`:
-    /// its implementation has no vertex shader, or the template has no
-    /// such pass): `0x0002d140` skips it, strips and convolutions, where
-    /// the plan has it drawn. The game draws what is left on D3D.
+    /// A pass whose `0x00016610` gate could not be read
+    /// (`screen_effect::template_draws` failed): whether `0x0002d140`
+    /// skips it is not known. (A pass the gate says is skipped is left
+    /// out of the plan, [`skip_undrawn`].)
     TemplateSkipped,
 }
 
@@ -196,18 +196,24 @@ impl Missing {
     ];
 }
 
-/// Whether `0x00016610` draws each of `effect`'s passes (Code,
-/// `0x0002d4b7..0x0002d4be`: a pass it does not draw is skipped whole).
-/// The plan assumes it does; a call where one is skipped keeps its D3D
-/// draws ([`Missing::TemplateSkipped`]), where the swallow would
-/// otherwise wait for strips the game never pushes (the mainmenu A/B:
-/// the next draws were the UI's).
-pub fn templates_draw(mem: &dyn GuestMemory, effect: &Effect) -> bool {
-    effect.passes.iter().all(|p| {
+/// Leaves out of `effect` the passes `0x00016610` does not draw (Code,
+/// `0x0002d4b7..0x0002d4be`: such a pass is skipped whole, its strips
+/// and its convolutions, `0x0002d4be` jumping to the next pass at
+/// `0x0002dabf`). `engine::screen_effect::plan` has every pass drawn, as
+/// the differential stubs `0x00016610`; without this the swallow would
+/// wait for strips the game never draws. The passes it left out, or
+/// `None` when a gate could not be read ([`Missing::TemplateSkipped`]).
+pub fn skip_undrawn(mem: &dyn GuestMemory, effect: &mut Effect) -> Option<usize> {
+    let shader = effect.shader;
+    let mut drawn = Vec::with_capacity(effect.passes.len());
+    for p in &effect.passes {
         let implementation = i32::try_from(p.implementation).unwrap_or(-2);
-        screen_effect::template_draws(mem, effect.shader, screen_effect::TEMPLATE_LAYER, implementation, p.selector)
-            .unwrap_or(false)
-    })
+        drawn.push(screen_effect::template_draws(mem, shader, screen_effect::TEMPLATE_LAYER, implementation, p.selector).ok()?);
+    }
+    let before = effect.passes.len();
+    let mut d = drawn.into_iter();
+    effect.passes.retain(|_| d.next().unwrap_or(false));
+    Some(before - effect.passes.len())
 }
 
 /// Whether the native screen pass draws `p` of egor `egor`: its program
@@ -670,7 +676,44 @@ pub fn plan_line(egor: TagId, drop: bool, plan: &SwallowPlan) -> String {
 /// keeping its account, [`d3d::Traced`]). A trace runs from its call's
 /// hook to the next hook of either kind (the next effect, or the next
 /// frame's colour pass), then is written, one line per event.
-static TRACE: Mutex<(u64, bool)> = Mutex::new((0, false));
+static TRACE: Mutex<Traces> = Mutex::new(Traces::new());
+
+/// The traces so far: their count, each egor's, and whether one runs.
+pub struct Traces {
+    traced: u64,
+    egors: Vec<(u32, u64)>,
+    running: bool,
+}
+
+impl Traces {
+    pub const fn new() -> Self {
+        Traces { traced: 0, egors: Vec::new(), running: false }
+    }
+
+    /// Starts a trace of a call of `egor` while it has had fewer than
+    /// `calls`: its number (from 1), or `None`.
+    pub fn start(&mut self, egor: u32, calls: u64) -> Option<u64> {
+        let i = match self.egors.iter().position(|(e, _)| *e == egor) {
+            Some(i) => i,
+            None => {
+                self.egors.push((egor, 0));
+                self.egors.len() - 1
+            }
+        };
+        if self.egors[i].1 >= calls {
+            return None;
+        }
+        self.egors[i].1 += 1;
+        self.traced += 1;
+        self.running = true;
+        Some(self.traced)
+    }
+
+    /// Ends the trace running: its number, or `None`.
+    pub fn end(&mut self) -> Option<u64> {
+        std::mem::replace(&mut self.running, false).then_some(self.traced)
+    }
+}
 
 /// One event of a trace as `H2_POST_TRACE` writes it.
 pub fn trace_line(e: &d3d::Traced) -> String {
@@ -1201,12 +1244,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         self.trace_end();
         let Some(spec) = post_feature::trace_spec() else { return };
         let mut t = TRACE.lock().unwrap_or_else(|e| e.into_inner());
-        if t.0 >= spec.calls {
+        let Ok(mut d) = self.device.lock() else { return };
+        if t.start(call.datum, spec.calls).is_none() {
             return;
         }
-        let Ok(mut d) = self.device.lock() else { return };
-        t.0 += 1;
-        t.1 = true;
         d.trace(true);
         d.trace_note(|| effect_line(call, ret));
     }
@@ -1227,7 +1268,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// Adds `note` to the trace running, if one is.
     fn note(&self, note: impl FnOnce() -> String) {
-        if !TRACE.lock().unwrap_or_else(|e| e.into_inner()).1 {
+        if !TRACE.lock().unwrap_or_else(|e| e.into_inner()).running {
             return;
         }
         if let Ok(mut d) = self.device.lock() {
@@ -1237,13 +1278,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
     /// Ends the trace running, if one is, and writes it.
     fn trace_end(&self) {
-        let mut t = TRACE.lock().unwrap_or_else(|e| e.into_inner());
-        if !t.1 {
-            return;
-        }
-        t.1 = false;
-        let call = t.0;
-        std::mem::drop(t);
+        let Some(call) = TRACE.lock().unwrap_or_else(|e| e.into_inner()).end() else { return };
         let Ok(mut d) = self.device.lock() else { return };
         let (events, past) = d.take_trace();
         d.trace(false);
@@ -1265,9 +1300,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
     /// [`Host::screen_effect`]'s body.
     fn effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
-        let (effect, values) = match plan_effect(&*mem, call, fp) {
+        let (mut effect, values) = match plan_effect(&*mem, call, fp) {
             Ok(Some(e)) => e,
-            Ok(None) => return false,
+            Ok(None) => {
+                self.note(|| "hook: no plan (no egor, or nothing to draw)".into());
+                return false;
+            }
             Err(e) => {
                 if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
                     eprintln!("native-post: a screen effect keeps its D3D draws: {e} (logged once)");
@@ -1277,6 +1315,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let effects = self.screen_effects(&*mem);
         let egor = TagId(call.datum);
+        let skipped = skip_undrawn(&*mem, &mut effect);
+        if let Some(n) = skipped.filter(|&n| n > 0) {
+            self.note(|| format!("hook: {n} passes 0x00016610 skips left out"));
+        }
         let ordered = call_ordered(effects.as_deref(), egor, &effect);
         if effects.is_none() {
             // The first call on a map starts their load: nothing is
@@ -1286,7 +1328,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let frame = quad_frame(&*mem, fp);
         let mut m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p), frame.is_some());
-        if !templates_draw(&*mem, &effect) {
+        if skipped.is_none() {
             m.push(Missing::TemplateSkipped);
         }
         for m in &m {
@@ -1307,17 +1349,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         self.note_mismatches(mismatches, why);
         if fell_back(egor) {
+            self.note(|| "hook: this egor fell back to D3D earlier".into());
             return false;
         }
-        let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
+        let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else {
+            self.note(|| "hook: the depth constant is unreadable".into());
+            return false;
+        };
         let grid = |p: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
             grid_of(&*mem, fp, &wide_grid(a, size, d, wide_source(&*mem, p, a.source)?))
         };
         let Some(call) = screen_call(&effect, egor, values, depth, frame, &grid) else {
             refused(Missing::Wide);
+            self.note(|| "hook: refused, a wide convolution's grid was not made".into());
             return false;
         };
-        let Some(plan) = screen_swallow(&call) else { return false };
+        let Some(plan) = screen_swallow(&call) else {
+            self.note(|| "hook: nothing to swallow (no strips, or a convolution into no stand-in)".into());
+            return false;
+        };
         let drop = proved(egor, &plan);
         dump_plan(egor, drop, &plan);
         self.note(|| format!("hook: plan {}", plan_line(egor, drop, &plan)));
@@ -1632,12 +1682,18 @@ mod tests {
     /// `the_template_pass_draws_only_an_implementation_with_a_vertex_shader`);
     /// a template that does not read keeps it on D3D.
     #[test]
-    fn a_call_whose_template_pass_is_skipped_keeps_its_d3d_draws() {
+    fn a_pass_the_template_skips_is_left_out_and_an_unread_gate_refuses() {
         use engine::memory::FlatMemory;
         let m = FlatMemory::new(0x0010_0000, 0x100);
-        let one = Effect { shader: 0xe001_0005, implementations: 1, passes: vec![pass(0, vec![])] };
-        assert!(!templates_draw(&m, &one), "unread: not drawn");
-        assert!(templates_draw(&m, &Effect { passes: vec![], ..one }), "nothing to skip");
+        let mut one = Effect { shader: 0xe001_0005, implementations: 1, passes: vec![pass(0, vec![])] };
+        assert_eq!(skip_undrawn(&m, &mut one), None, "unread: refused");
+        assert_eq!(one.passes.len(), 1, "untouched");
+        let mut none = Effect { passes: vec![], ..one.clone() };
+        assert_eq!(skip_undrawn(&m, &mut none), Some(0), "nothing to skip");
+        // A shader of -1: 0x00016610 returns 0 at once, every pass skipped.
+        let mut unbound = Effect { shader: u32::MAX, passes: vec![pass(0, vec![]), pass(2, vec![])], ..one };
+        assert_eq!(skip_undrawn(&m, &mut unbound), Some(2));
+        assert!(unbound.passes.is_empty());
         assert!(Missing::ALL.contains(&Missing::TemplateSkipped));
     }
 
@@ -2122,5 +2178,20 @@ mod tests {
         assert!(screen_mismatch(dropped, true));
         assert!(fell_back(dropped));
         assert!(!screen_mismatch(dropped, true), "said once");
+    }
+
+    /// `H2_POST_TRACE=N` traces each egor's first `N` calls, numbered
+    /// across them, one at a time.
+    #[test]
+    fn each_egor_gets_its_own_traces() {
+        let mut t = Traces::new();
+        assert_eq!(t.end(), None, "none running");
+        assert_eq!(t.start(0xe438_0218, 2), Some(1));
+        assert_eq!(t.end(), Some(1));
+        assert_eq!(t.end(), None, "ended once");
+        assert_eq!(t.start(0xe438_0218, 2), Some(2));
+        assert_eq!(t.start(0xe438_0218, 2), None, "its two");
+        assert_eq!(t.end(), Some(2));
+        assert_eq!(t.start(0xe0ff_0001, 2), Some(3), "another egor's first");
     }
 }

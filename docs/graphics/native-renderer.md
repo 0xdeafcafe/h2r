@@ -2169,7 +2169,7 @@ effect per egor.
 | Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
 | Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
 | Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
-| A pass `0x00016610` does not draw (no vertex shader for its implementation) | Refused (`TemplateSkipped`) | `0x0002d140` skips it whole; the plan would wait for strips that never come. |
+| A pass `0x00016610` does not draw (no vertex shader for its implementation) | Left out of the plan (`skip_undrawn`); a gate that cannot be read is refused (`TemplateSkipped`) | `0x0002d140` skips it whole, strips and convolutions, so the native pass does too. |
 | Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
 | A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
 | `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
@@ -2719,8 +2719,8 @@ effect per egor.
      egor is never called there; the blur needs another scene.
    - **The next A/B was the same**: no `TemplateSkipped`, the same
      mismatch. So the static reading is set aside for a runtime account,
-     `H2_POST_TRACE=N` (`N,after`; empty, 4): for the first `N` calls of
-     `0x0002d140` the device keeps, from the hook to the next hook of
+     `H2_POST_TRACE=N` (`N,after`; empty, 4): for each egor's first `N`
+     calls of `0x0002d140` the device keeps, from the hook to the next hook of
      either kind (`d3d::Traced`, the first 512 events): every D3D entry
      the runtime calls and its guest return address (so a call from
      inside `0x0002d140..0x0002db67` is its own); `Arming` before the

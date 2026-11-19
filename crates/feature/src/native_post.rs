@@ -90,7 +90,8 @@ pub trait Host: Send + Sync {
 }
 
 /// `H2_POST_TRACE` (docs/graphics/native-renderer.md, stage 5): `N` traces
-/// the first `N` calls of `0x0002d140` (empty: [`TRACE_CALLS`]); `N,after`
+/// each egor's first `N` calls of `0x0002d140` (empty: [`TRACE_CALLS`]);
+/// `N,after`
 /// also notes where `0x00016610` returns (its AL) and where `0x0002d140`
 /// returns. An after-hook keeps those two chains off the pipelined render
 /// thread: each call of them falls back to the game thread.
@@ -100,7 +101,7 @@ pub struct TraceSpec {
     pub after: bool,
 }
 
-/// The calls `H2_POST_TRACE` traces when it names no count.
+/// The calls of each egor `H2_POST_TRACE` traces when it names no count.
 pub const TRACE_CALLS: u64 = 4;
 
 impl TraceSpec {
