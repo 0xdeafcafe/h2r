@@ -2354,7 +2354,9 @@ its own thread, and render-timing does not matter (the call runs).
      The swallow takes each draw's own shape (`d3d::Swallow::shapes`: the
      strips of `SET_BEGIN_END` 6, the quads `Begin(7)` of four), the quads
      into slots 2..4 for `0x19`..`0x1b`. Each egor is probed on its own
-     before its draws are dropped. With these, the blur misses nothing and
+     before its draws are dropped, and falls back on its own: a refused
+     pass, a failed probe or a swallow mismatch (charged to the egor that
+     armed last) keeps that egor's later calls on D3D and no other's. With these, the blur misses nothing and
      is armed with the switch on (off by default); a wide convolution
      (`0x00021360`) still keeps its effect on D3D (`Missing::Wide`).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the

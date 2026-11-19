@@ -62,7 +62,7 @@
 //! draw.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use engine::colour_pass;
@@ -418,7 +418,7 @@ impl d3d::ExternalPass for ScreenPass {
         let mut draws = Vec::new();
         for (key, dest, strips, convolutions) in &self.call.passes {
             let Some(program) = self.effects.program(self.call.egor, key.1, key.2) else {
-                screen_refused(&screen_gpu::ScreenRefused::NoProgram);
+                screen_refused(self.call.egor, &screen_gpu::ScreenRefused::NoProgram);
                 return;
             };
             let values = self.call.values;
@@ -440,18 +440,21 @@ impl d3d::ExternalPass for ScreenPass {
             z_scale: t.z_scale,
         };
         if let Err(r) = screens.1.encode(target, &draws, self.call.frame.as_ref(), &mut stage_image) {
-            screen_refused(&r);
+            screen_refused(self.call.egor, &r);
         }
     }
 }
 
-/// A screen effect not drawn after its strips were dropped: that frame's
-/// effect is missing, and later calls keep the D3D path.
-fn screen_refused(r: &screen_gpu::ScreenRefused) {
+/// Screen effect `egor` not drawn after its strips were dropped: that
+/// frame's is missing, and its later calls keep the D3D path.
+fn screen_refused(egor: TagId, r: &screen_gpu::ScreenRefused) {
     if !SCREEN_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
-        eprintln!("native-post: a screen effect was not drawn: {r:?}; this frame's is missing, later calls keep the D3D path (logged once)");
+        eprintln!(
+            "native-post: the screen effect {:#010x} was not drawn: {r:?}; this frame's is missing, its later calls keep the D3D path (logged once)",
+            egor.0
+        );
     }
-    SCREEN_FELL_BACK.store(true, Ordering::Relaxed);
+    fall_back(egor);
 }
 
 /// Before any strip is dropped: whether each pass of the call would draw
@@ -489,34 +492,69 @@ impl d3d::ExternalPass for ScreenProbe {
                 }
             }
             Err(r) => {
-                if !SCREEN_FELL_BACK.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-post: the screen effects cannot draw into the bound target: {r:?}; they keep their D3D strips");
+                if fall_back(self.call.egor) {
+                    eprintln!(
+                        "native-post: the screen effect {:#010x} cannot draw into the bound target: {r:?}; it keeps its D3D strips",
+                        self.call.egor.0
+                    );
                 }
             }
         }
     }
 }
 
-/// A screen swallow ended early, or a screen pass cannot draw: later
-/// calls keep the D3D path.
-static SCREEN_FELL_BACK: AtomicBool = AtomicBool::new(false);
+/// A set of egors, noted once each.
+pub struct Egors(Mutex<Vec<TagId>>);
+
+impl Egors {
+    pub const fn new() -> Self {
+        Egors(Mutex::new(Vec::new()))
+    }
+
+    pub fn contains(&self, egor: TagId) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).contains(&egor)
+    }
+
+    /// Notes `egor`; whether it was not noted before.
+    pub fn insert(&self, egor: TagId) -> bool {
+        let mut v = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let new = !v.contains(&egor);
+        if new {
+            v.push(egor);
+        }
+        new
+    }
+}
+
+/// The egors whose swallow ended early or whose pass cannot draw: their
+/// later calls keep the D3D path, each on its own (a refused blur leaves
+/// desaturate armed).
+static SCREEN_FELL_BACK: Egors = Egors::new();
 /// The egors a [`ScreenProbe`] found draw into the bound target, each
 /// probed on its own (one effect's passes prove nothing of another's).
-static SCREEN_PROVED: Mutex<Vec<TagId>> = Mutex::new(Vec::new());
+static SCREEN_PROVED: Egors = Egors::new();
+/// The egor of the last screen swallow armed (its datum), what a
+/// mismatch after it is charged to.
+static LAST_SCREEN: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Whether `egor` was proved.
 fn proved(egor: TagId) -> bool {
-    SCREEN_PROVED.lock().unwrap_or_else(|e| e.into_inner()).contains(&egor)
+    SCREEN_PROVED.contains(egor)
 }
 
 /// Notes `egor` proved; whether it was not before.
 fn prove(egor: TagId) -> bool {
-    let mut p = SCREEN_PROVED.lock().unwrap_or_else(|e| e.into_inner());
-    let new = !p.contains(&egor);
-    if new {
-        p.push(egor);
-    }
-    new
+    SCREEN_PROVED.insert(egor)
+}
+
+/// Whether `egor` keeps the D3D path.
+fn fell_back(egor: TagId) -> bool {
+    SCREEN_FELL_BACK.contains(egor)
+}
+
+/// `egor`'s later calls keep the D3D path; whether they did not before.
+fn fall_back(egor: TagId) -> bool {
+    SCREEN_FELL_BACK.insert(egor)
 }
 static SCREEN_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
 /// Which hook armed the last swallow (a mismatch is that one's).
@@ -937,7 +975,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let Some(effects) = effects else { return false };
         let Ok(mismatches) = self.device.lock().map(|d| d.stats().swallow_mismatches) else { return false };
         self.note_mismatches(mismatches);
-        if SCREEN_FELL_BACK.load(Ordering::Relaxed) {
+        if fell_back(egor) {
             return false;
         }
         let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
@@ -955,6 +993,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let armed = d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false);
         if armed {
             LAST_SWALLOW.store(SCREEN_ARMED, Ordering::Relaxed);
+            LAST_SCREEN.store(egor.0, Ordering::Relaxed);
         }
         armed
     }
@@ -978,9 +1017,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return;
         }
         if LAST_SWALLOW.load(Ordering::Relaxed) == SCREEN_ARMED {
-            if !SCREEN_FELL_BACK.swap(true, Ordering::Relaxed) {
+            let egor = TagId(LAST_SCREEN.load(Ordering::Relaxed));
+            if fall_back(egor) {
                 eprintln!(
-                    "native-post: a screen effect drew a strip its plan did not have; that call's effect fell back to D3D, and every later call keeps it"
+                    "native-post: the screen effect {:#010x} drew a strip its plan did not have; that call fell back to D3D, and its later calls keep it",
+                    egor.0
                 );
             }
         } else if !FELL_BACK.swap(true, Ordering::Relaxed) {
@@ -1090,6 +1131,22 @@ mod tests {
         assert!(!proved(a));
         assert!(prove(a) && !prove(a), "noted once");
         assert!(proved(a) && !proved(b));
+    }
+
+    /// A refused or mismatched blur keeps only the blur on D3D:
+    /// desaturate stays armed.
+    #[test]
+    fn a_fallback_is_its_effects_alone() {
+        let (blur, desaturate) = (TagId(0xe0ff_0011), TagId(0xe0ff_0012));
+        assert!(!fell_back(blur) && !fell_back(desaturate));
+        screen_refused(blur, &screen_gpu::ScreenRefused::ConvolutionStates);
+        assert!(fell_back(blur) && !fell_back(desaturate), "a refused pass");
+        assert!(!fall_back(blur), "noted once");
+        let mismatched = TagId(0xe0ff_0013);
+        assert!(fall_back(mismatched));
+        assert!(fell_back(mismatched) && !fell_back(desaturate), "a mismatch is charged to its egor");
+        let set = Egors::new();
+        assert!(set.insert(desaturate) && set.contains(desaturate) && !set.contains(blur));
     }
 
     fn pass(kind: u16, convolutions: Vec<Convolution>) -> screen_effect::Pass {
