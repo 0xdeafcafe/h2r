@@ -17,6 +17,7 @@ pub mod h1;
 pub mod hud;
 pub mod scenario;
 mod scenario_help;
+mod silhouettes;
 
 /// Conversion failures.
 #[derive(Debug, thiserror::Error)]

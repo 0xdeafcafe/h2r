@@ -73,31 +73,40 @@ fn event_text(
             template = mem.u16(tag + CUSTOM_DEVICE)?;
             indices[0] = phrase;
         }
-        let Some(message) = list_row(mem, tag, SHARED_MESSAGES, template)? else {
-            return Ok(None);
-        };
-        let mut args: [Option<Vec<u8>>; 2] = [None, None];
-        for (text, index) in args.iter_mut().zip(indices) {
-            if index != u16::MAX {
-                let Some(row) = list_row(mem, tag, SHARED_MESSAGES, index)? else {
-                    return Ok(None);
-                };
-                let Some(mut bytes) = message_text(mem, tag, row, &[], NATIVE_CAPACITY)? else {
-                    return Ok(None);
-                };
-                bytes.truncate(bytes.len() - 2);
-                *text = Some(bytes);
-            }
-        }
-        return message_text(
-            mem,
-            tag,
-            message,
-            &[args[0].as_deref(), args[1].as_deref()],
-            NATIVE_CAPACITY,
-        );
+        return render(mem, tag, template, indices);
     }
     Ok(None)
+}
+
+pub(super) fn render(
+    mem: &dyn GuestMemory,
+    tag: u32,
+    template: u16,
+    indices: [u16; 2],
+) -> Result<Option<Vec<u8>>, MemFault> {
+    let Some(message) = list_row(mem, tag, SHARED_MESSAGES, template)? else {
+        return Ok(None);
+    };
+    let mut args: [Option<Vec<u8>>; 2] = [None, None];
+    for (text, index) in args.iter_mut().zip(indices) {
+        if index != u16::MAX {
+            let Some(row) = list_row(mem, tag, SHARED_MESSAGES, index)? else {
+                return Ok(None);
+            };
+            let Some(mut bytes) = message_text(mem, tag, row, &[], NATIVE_CAPACITY)? else {
+                return Ok(None);
+            };
+            bytes.truncate(bytes.len() - 2);
+            *text = Some(bytes);
+        }
+    }
+    message_text(
+        mem,
+        tag,
+        message,
+        &[args[0].as_deref(), args[1].as_deref()],
+        NATIVE_CAPACITY,
+    )
 }
 
 fn replace(
@@ -188,6 +197,14 @@ mod tests {
             Some(utf16("\u{e448}driver in truck\0"))
         );
         assert_eq!(event_text(&mem, tag, key + 1, None).unwrap(), None);
+
+        mem.set_u16(strings + 10, h1text::hud::SILHOUETTE_BASE).unwrap();
+        mem.set_u16(strings + 12, 0).unwrap();
+        mem.set_u8(elements + 9, 2).unwrap();
+        assert_eq!(
+            event_text(&mem, tag, key, None).unwrap(),
+            Some(utf16("\u{e448}\u{e500} in truck\0"))
+        );
 
         mem.set_u16(routes + 8, u16::MAX).unwrap();
         assert_eq!(event_text(&mem, tag, key, None).unwrap(), None);

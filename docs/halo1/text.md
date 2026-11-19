@@ -184,10 +184,40 @@ in the player HUD message entry (E `0xdfc65`–`0xdfd19`).
 `hudg +0xfc` and binds them to the native interaction and pickup string
 fields of the rebuilt objects. At `0x13925f` the game already chose the
 object and action. The hook uses that string ID to select a template, then
-expands the template with its argument rows. Weapon pickup, swap and
-switch prompts use the named weapon. Vehicle entry uses the seat and
-vehicle names from `hudg +0xc0`, the vehicle's `+0x13c` and the seat's
+expands the template with its argument rows. Vehicle entry uses the seat
+and vehicle names from `hudg +0xc0`, the vehicle's `+0x13c` and the seat's
 `+0xec` (E `0xe2d28`, `0xe2fc3`). Vehicle flip uses the vehicle name.
+
+**Built.** Weapon pickup, swap and switch reminders use the silhouette
+selected by the weapon's `wphi +0x13c` in the `hudg +0xa4` bitmap
+(E `0xe2ed5`, `0xe2f5e`, `0xe31e7`, `0xdf520`). Each pickup weapon
+with an authored icon on the ten Xbox campaign maps uses a static
+sprite. The converter crops its UV rectangle and stores ARGB4444 pixels
+and glyph metrics in the rebuilt `hmt `. Halo 2 measures and advances
+the sprite inline with the text and button glyphs. The hooks supply
+metrics to the font cache (E `0x140b20`, `0x140b80`, `0x141020`)
+and pixels to the existing atlas upload (E `0x140870`, `0x140960`,
+`0x1f85f`). The cache key includes the pixels and metrics so a changed
+map sprite is loaded separately. A weapon with no authored sprite uses
+its label. The a30 disc test compares the rifle prompt's glyph pixels
+against its source atlas rectangle.
+
+**Built.** On the native interaction fallback (E `0x191976`),
+`exit_vehicle` takes the name of the local unit's live parent vehicle
+while it occupies a valid seat. Halo 1's action 3 reads that parent's
+icon-message row (E `0xe2dd4`, `0xe25d0`). `swap_powerup` uses the
+held and nearby powerup names in that order (E `0xe2d77`). The nearby
+candidate comes from Halo 2's pickup scan (E `0x1508e0`, `0x150e30`),
+and is eligible only when the unit is on foot and its held-equipment
+slot (E `0xccb80`) names a live powerup of a different type. The Xbox
+Halo 1 candidate code compares the incoming type with itself at
+`0xf5939`, leaving action 5 unreachable through that comparison.
+The converted trigger compares the two equipment definitions. It uses
+the source equipment's pickup text when the icon-message row is the
+placeholder. The interact press uses the native object attachment and
+detachment paths (E `0x151c90`, `0xb8ee0`, `0xb9a50`) to exchange
+the held and offered items. The ordinary automatic pickups still use
+their native scan path when the held slot is empty.
 
 The source control placement's `+0x34` holds a one-based custom phrase
 index (E `0x118f16`, `0xe2e30`). The converter keeps that argument

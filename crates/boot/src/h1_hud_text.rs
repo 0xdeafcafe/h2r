@@ -11,11 +11,16 @@ use engine::points::{
 };
 use engine::tags::{entry_layout, tag_entry_checked};
 use feature::{BuildError, Builder, Manifest};
-use h1text::hud::{GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT, SCENARIO_HMT, SIZE, glyph};
+use h1text::hud::{
+    EVENT_LAYOUT_SIZE, EVENT_MARKER, GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT,
+    SCENARIO_HMT, SIZE, glyph,
+};
 
 mod controls;
 mod events;
 mod flash;
+mod prompts;
+mod silhouettes;
 mod timer;
 mod tint;
 
@@ -74,7 +79,7 @@ fn show_scenario_help(mem: &mut dyn GuestMemory, tag: u32, index: u16) -> Result
 }
 
 fn extended(mem: &dyn GuestMemory, tag: u32) -> Result<bool, MemFault> {
-    Ok(mem.u32(tag + MARKER_AT)? == MARKER)
+    Ok(matches!(mem.u32(tag + MARKER_AT)?, MARKER | EVENT_MARKER))
 }
 
 struct Saved {
@@ -184,6 +189,7 @@ fn mission_hud(mem: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
     let tag = mem.u32(entry + entry_layout::ADDRESS)?;
     let supported = match mem.u32(tag + MARKER_AT)? {
         MARKER => size >= SIZE,
+        EVENT_MARKER => size >= EVENT_LAYOUT_SIZE,
         LEGACY_MARKER => true,
         _ => false,
     };
@@ -353,6 +359,8 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                 .context_only();
             controls::register(b);
             events::register(b);
+            prompts::register(b);
+            silhouettes::register(b);
             timer::register(b);
             tint::register(b);
             Ok(())

@@ -2575,6 +2575,7 @@ dependencies = [
 name = "h1text"
 version = "0.1.0"
 dependencies = [
+ "h1bitmaps",
  "h1map",
  "h1models",
  "map",

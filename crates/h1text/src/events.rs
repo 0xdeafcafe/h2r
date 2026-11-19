@@ -6,6 +6,7 @@ use map::build::{Block, FixupKind, TagPayload, TagSet};
 
 use crate::Result;
 use crate::h1::{Hmt, HudMessage, MessagePart, Ustr};
+use crate::silhouettes::{Atlas, Silhouette};
 
 pub(crate) struct Event {
     group: FourCC,
@@ -22,6 +23,16 @@ pub(crate) struct Events {
     pub routes: Vec<Event>,
     pub control_phrases: Vec<Option<usize>>,
     pub custom_device: Option<usize>,
+    pub exit_vehicle: Option<usize>,
+    pub swap_powerup: Option<usize>,
+    pub subjects: Vec<Subject>,
+    pub silhouettes: Vec<Silhouette>,
+}
+
+pub(crate) struct Subject {
+    pub group: FourCC,
+    pub object: String,
+    pub argument: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -101,12 +112,15 @@ impl Builder {
     }
 
     fn prompt(&mut self, tag: &Tag, field: Field, name: &str, args: [Option<usize>; 2]) {
-        if let Some(template) = self.entries[..self.template_count]
-            .iter()
-            .position(|message| message.name == name)
-        {
+        if let Some(template) = self.template(name) {
             self.route(tag, field, template, args);
         }
+    }
+
+    fn template(&self, name: &str) -> Option<usize> {
+        self.entries[..self.template_count]
+            .iter()
+            .position(|message| message.name == name)
     }
 }
 
@@ -138,6 +152,9 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
     let items = strings(map, TagRef::read(globals, 0x94))?;
     let icons = strings(map, TagRef::read(globals, 0xb4))?;
     let object_names = strings(map, object_names)?;
+    let mut atlas = Atlas::read(map, globals)?;
+    let mut silhouettes = Vec::new();
+    let mut subjects = Vec::new();
     let mut b = Builder {
         template_count: entries.len(),
         entries,
@@ -169,10 +186,14 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                 if group == *b"weap"
                     && let Some((_, pickup)) = pickup
                 {
-                    // The source may display a weapon sprite from its wphi.
-                    // The source pickup row supplies the name for that weapon.
-                    let name = name.unwrap_or_else(|| weapon_name(pickup));
-                    let arg = b.text(name);
+                    let sprite = match &mut atlas {
+                        Some(atlas) => atlas.weapon(map, bytes, &mut silhouettes)?,
+                        None => None,
+                    };
+                    let arg = match sprite {
+                        Some(sprite) => b.text(sprite.encode_utf8(&mut [0; 4])),
+                        None => b.text(name.unwrap_or_else(|| item_name(pickup))),
+                    };
                     for (field, template) in [
                         (0xcc, "pickup"),
                         (0xd0, "swap_weapon"),
@@ -184,10 +205,28 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
                         b.prompt(tag, Field::Root(field), template, [Some(arg), None]);
                     }
                 }
+                if group == *b"eqip" && matches!(short(bytes, 0x308), Some(1..=5)) {
+                    // Stock Xbox equipment has icon row 0, the globals'
+                    // placeholder. Use the equipment's own localized pickup
+                    // noun when it has no authored icon label.
+                    let label = name
+                        .or_else(|| pickup.map(|(_, text)| item_name(text)))
+                        .unwrap_or_else(|| tag.name.rsplit('\\').next().unwrap_or(&tag.name));
+                    subjects.push(Subject {
+                        group: FourCC(group),
+                        object: tag.name.clone(),
+                        argument: b.text(label),
+                    });
+                }
             }
             b"vehi" => {
                 let Some(name) = name else { continue };
                 let vehicle = b.text(name);
+                subjects.push(Subject {
+                    group: FourCC(group),
+                    object: tag.name.clone(),
+                    argument: vehicle,
+                });
                 b.prompt(
                     tag,
                     Field::Root(0x21c),
@@ -218,9 +257,9 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
             _ => unreachable!(),
         }
     }
-    let custom_device = b.entries[..b.template_count]
-        .iter()
-        .position(|message| message.name == "custom_device");
+    let custom_device = b.template("custom_device");
+    let exit_vehicle = b.template("exit_vehicle");
+    let swap_powerup = b.template("swap_powerup");
     let mut control_phrases = Vec::new();
     if custom_device.is_some() {
         let scenario = map.tag_data(map.scenario())?;
@@ -242,10 +281,14 @@ pub(crate) fn read(map: &H1Map, object_names: Option<TagRef>) -> Result<Events> 
         routes: b.routes,
         control_phrases,
         custom_device,
+        exit_vehicle,
+        swap_powerup,
+        subjects,
+        silhouettes,
     })
 }
 
-fn weapon_name(pickup: &str) -> &str {
+fn item_name(pickup: &str) -> &str {
     let name = pickup.strip_prefix("Picked up ").unwrap_or(pickup);
     ["a ", "an ", "the "]
         .into_iter()
@@ -269,6 +312,6 @@ mod tests {
             Some("Found \u{e422} widgets")
         );
         assert_eq!(quantity("Found one widget"), None);
-        assert_eq!(weapon_name("Picked up an example"), "example");
+        assert_eq!(item_name("Picked up an example"), "example");
     }
 }

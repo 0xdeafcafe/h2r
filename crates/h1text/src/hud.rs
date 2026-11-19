@@ -16,12 +16,16 @@ pub const SCENARIO_HMT: u32 = 0x208;
 pub const GROUP: FourCC = FourCC(*b"hmt ");
 
 /// Root size including the converter's runtime fields.
-pub const SIZE: u32 = 0xb0;
+pub const SIZE: u32 = 0xc8;
 
 /// The marker and HUD state after the unmodified legacy tag fields.
 pub const MARKER_AT: u32 = 0x18;
 /// Value written by the converter, for the runtime hooks to recognize.
-pub const MARKER: u32 = 0x4831_4856;
+pub const MARKER: u32 = 0x4831_4857;
+/// Marker of the first shared event layout.
+pub const EVENT_MARKER: u32 = 0x4831_4856;
+/// Root size before silhouettes and contextual prompts.
+pub const EVENT_LAYOUT_SIZE: u32 = 0xb0;
 /// Marker of the first mission-text layout, before shared events and panel tints.
 pub const LEGACY_MARKER: u32 = 0x4831_4855;
 /// Root size of the first mission-text layout.
@@ -49,6 +53,22 @@ pub const EVENT_SIZE: u32 = 0xc;
 pub const CONTROL_PROMPTS: u32 = 0xa4;
 /// The shared template row for a control with an authored prompt.
 pub const CUSTOM_DEVICE: u32 = 0xac;
+/// Inline ARGB4444 glyphs rebuilt from the source message bitmap.
+pub const SILHOUETTES: u32 = 0xb0;
+/// Glyph cache key, metrics and pixel data reference.
+pub const SILHOUETTE_SIZE: u32 = 0x18;
+/// The first code unit reserved for converted HUD sprites.
+pub const SILHOUETTE_BASE: u16 = 0xe500;
+/// Number of private glyph code units reserved for converted HUD sprites.
+pub const SILHOUETTE_LIMIT: u16 = 0x100;
+/// Converted object definition datums and their text argument rows.
+pub const PROMPT_SUBJECTS: u32 = 0xb8;
+/// A definition datum and argument row.
+pub const PROMPT_SUBJECT_SIZE: u32 = 8;
+/// The shared template row for exiting a vehicle.
+pub const EXIT_VEHICLE: u32 = 0xc0;
+/// The shared template row for swapping held equipment.
+pub const SWAP_POWERUP: u32 = 0xc2;
 
 /// Hidden health, shield, motion sensor and crosshair, respectively.
 /// Each of the first three is followed by its blink bit, as in Halo 1's
@@ -188,6 +208,34 @@ pub(crate) fn rebuild(
         "custom_device",
         field_u16(events.custom_device.unwrap_or(usize::from(u16::MAX)))?,
     )?;
+    for (field, index) in [
+        ("exit_vehicle", events.exit_vehicle),
+        ("swap_powerup", events.swap_powerup),
+    ] {
+        root.set(field, field_u16(index.unwrap_or(usize::from(u16::MAX)))?)?;
+    }
+    let sprite_def = def.child("silhouettes").expect("silhouette definition");
+    let mut silhouettes = Vec::new();
+    for sprite in &events.silhouettes {
+        let mut row = default_record(sprite_def);
+        row.set("cache_key", Val::Int(i64::from(sprite.cache_key())))?;
+        row.set("width", Val::Int(i64::from(sprite.width)))?;
+        row.set("height", Val::Int(i64::from(sprite.height)))?;
+        row.set("advance", Val::Int(i64::from(sprite.advance)))?;
+        row.set("x_offset", Val::Int(i64::from(sprite.x_offset)))?;
+        row.set("y_offset", Val::Int(i64::from(sprite.y_offset)))?;
+        row.set("pixels", Val::Data(sprite.pixels.clone()))?;
+        silhouettes.push(row);
+    }
+    root.set("silhouettes", Val::Block(silhouettes))?;
+    let subject_def = def.child("prompt_subjects").expect("prompt subject definition");
+    let mut subjects = Vec::new();
+    for subject in &events.subjects {
+        let mut row = default_record(subject_def);
+        row.set("argument", field_u16(subject.argument)?)?;
+        subjects.push(row);
+    }
+    root.set("prompt_subjects", Val::Block(subjects))?;
     let mut routes = Vec::new();
     let event_def = def.child("events").expect("event definition");
     for event in &events.routes {

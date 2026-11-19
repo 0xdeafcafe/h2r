@@ -1,7 +1,7 @@
 //! Install a campaign scenario's text without changing Halo 1's message order.
 
 use h1map::H1Map;
-use map::build::{Block, TagSet};
+use map::build::{Block, FixupKind, TagPayload, TagSet};
 use map::{FourCC, TagId};
 
 use crate::Result;
@@ -20,6 +20,7 @@ pub struct LevelText {
     hud_messages: Option<TagId>,
     message_names: Vec<String>,
     events: Vec<crate::events::Event>,
+    subjects: Vec<crate::events::Subject>,
     control_phrases: Vec<Option<usize>>,
 }
 
@@ -85,6 +86,7 @@ impl LevelText {
             hud_messages,
             message_names,
             events: events.routes,
+            subjects: events.subjects,
             control_phrases: events.control_phrases,
         })
     }
@@ -105,11 +107,34 @@ impl LevelText {
         }
     }
 
-    /// Write the event string IDs into the fields that the native interaction
-    /// and pickup code reads, while the rebuilt objects are still blocks.
+    /// Bind interaction and pickup routes to the rebuilt object definitions.
     pub fn write_object_prompts(&self, set: &mut TagSet) {
         for event in &self.events {
             event.write(set);
+        }
+        let definitions = self
+            .subjects
+            .iter()
+            .enumerate()
+            .filter_map(|(i, subject)| set.find(subject.group, &subject.object).map(|id| (i, id)))
+            .collect::<Vec<_>>();
+        let Some(tag) = self.hud_messages.and_then(|id| set.tag_mut(id)) else {
+            return;
+        };
+        let TagPayload::Built(root) = &mut tag.payload else {
+            return;
+        };
+        if let Some(FixupKind::Block { child, .. }) = root
+            .fixups
+            .iter_mut()
+            .find(|fixup| fixup.offset == hud::PROMPT_SUBJECTS)
+            .map(|fixup| &mut fixup.kind)
+        {
+            for (index, id) in definitions {
+                let offset = index as u32 * hud::PROMPT_SUBJECT_SIZE;
+                child.fixups.retain(|fixup| fixup.offset != offset);
+                child.tag_id(offset, id);
+            }
         }
     }
 
@@ -123,7 +148,7 @@ impl LevelText {
         let Some(tag) = self.hud_messages.and_then(|id| set.tag_mut(id)) else {
             return;
         };
-        let map::build::TagPayload::Built(root) = &mut tag.payload else {
+        let TagPayload::Built(root) = &mut tag.payload else {
             return;
         };
         let mut rows = Vec::new();

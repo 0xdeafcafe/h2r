@@ -560,10 +560,11 @@ fn h1_trigger_volumes_read() {
     }
 }
 
-fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, scnr: &[u8], objects: bool) {
+fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, h1: &h1map::H1Map, scnr: &[u8], objects: bool) {
     use h1text::hud::{
-        CONTROL_PROMPTS, EVENTS, EVENT_SIZE, MARKER, MARKER_AT, SCENARIO_HELP, SCENARIO_HMT,
-        SHARED_MESSAGES, WIDGET_CONTROLS, WIDGET_CONTROL_SIZE,
+        CONTROL_PROMPTS, EVENTS, EVENT_SIZE, EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE,
+        PROMPT_SUBJECTS, SCENARIO_HELP, SCENARIO_HMT, SHARED_MESSAGES, SILHOUETTE_BASE,
+        SILHOUETTE_SIZE, SILHOUETTES, SWAP_POWERUP, WIDGET_CONTROLS, WIDGET_CONTROL_SIZE,
     };
 
     let word = |b: &[u8], at: u32| u32::from_le_bytes(b[at as usize..at as usize + 4].try_into().unwrap());
@@ -597,6 +598,31 @@ fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, scnr: &[u8], objects: bool) {
 
     if objects {
         let routes = read(word(&hmt, EVENTS + 4), word(&hmt, EVENTS) * EVENT_SIZE);
+        let subjects = read(word(&hmt, PROMPT_SUBJECTS + 4), word(&hmt, PROMPT_SUBJECTS) * PROMPT_SUBJECT_SIZE);
+        let sprites = read(word(&hmt, SILHOUETTES + 4), word(&hmt, SILHOUETTES) * SILHOUETTE_SIZE);
+        let text = read(word(&hmt, 4), word(&hmt, 0));
+        let shared = u32::from(short(&hmt, SHARED_MESSAGES));
+        let at = |row| (shared + u32::from(row)) * 0x40;
+        let first_unit = |row| 2 * u32::from(short(&msgs, at(row) + 0x20));
+        let text_row = |row| {
+            let start = first_unit(row) as usize;
+            String::from_utf16(&text[start..].chunks_exact(2)
+                .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                .take_while(|&unit| unit != 0)
+                .collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, EXIT_VEHICLE))), [18, 32]);
+        assert_eq!(glyphs(shared + u32::from(short(&hmt, SWAP_POWERUP))), [18, 32, 33]);
+        for (name, group, label) in [
+            (r"vehicles\warthog\warthog", FourCC(*b"vehi"), "Warthog"),
+            (r"powerups\health pack", FourCC(*b"eqip"), "health pack"),
+        ] {
+            let id = m.tag(map::TagQuery::NameInGroup(name, group)).unwrap().id;
+            let subject = subjects.chunks_exact(PROMPT_SUBJECT_SIZE as usize)
+                .find(|subject| word(subject, 0) == id.0)
+                .expect("the contextual argument follows the rebuilt object datum");
+            assert_eq!(text_row(short(subject, 4)).to_ascii_lowercase(), label.to_ascii_lowercase());
+        }
         let rifle = m
             .tag(map::TagQuery::NameInGroup(
                 r"weapons\assault rifle\assault rifle",
@@ -608,11 +634,49 @@ fn check_a30_hud(m: &mut Map<Cursor<Vec<u8>>>, scnr: &[u8], objects: bool) {
         let route = routes.chunks_exact(EVENT_SIZE as usize)
             .find(|route| word(route, 0) == word(&rifle, 0xcc))
             .expect("the rifle pickup field names a converted route");
-        let shared = u32::from(short(&hmt, SHARED_MESSAGES));
         assert_eq!(glyphs(shared + u32::from(short(route, 4))), [18, 32]);
-        assert_ne!(short(route, 6), u16::MAX);
+        let argument = short(route, 6);
+        assert_eq!(short(&text, first_unit(argument) + 2), 0, "one inline glyph");
+        let index = short(&text, first_unit(argument)).checked_sub(SILHOUETTE_BASE).unwrap();
+        let start = usize::from(index) * SILHOUETTE_SIZE as usize;
+        let sprite = &sprites[start..start + SILHOUETTE_SIZE as usize];
+        let pixel_len = word(sprite, 0x10);
+        let offset = m.file_offset(word(sprite, 0x14), pixel_len).unwrap();
+        let pixels = m.read_file_range(offset, u64::from(pixel_len)).unwrap();
+        check_rifle_silhouette(h1, short(sprite, 4), short(sprite, 6), &pixels);
         assert_eq!(word(&hmt, CONTROL_PROMPTS), 1, "the cave's placed control retains its prompt");
     }
+}
+
+fn check_rifle_silhouette(h1: &h1map::H1Map, width: u16, height: u16, pixels: &[u8]) {
+    use h1bitmaps::decode::BitmapExt;
+    use h1map::{Group, TagRef, bitmap::Bitmap};
+
+    let rifle = h1.find(Group::new(b"weap"), r"weapons\assault rifle\assault rifle").unwrap();
+    let hud = TagRef::read(h1.tag_data(rifle).unwrap(), 0x480).unwrap();
+    let hud = h1.tag_data(h1.tag(hud.id).unwrap()).unwrap();
+    let sequence = usize::from(u16::from_le_bytes(hud[0x13c..0x13e].try_into().unwrap()));
+    assert_eq!(sequence, 8);
+    let globals = h1.tags().iter().find(|tag| tag.group == Group::new(b"hudg")).unwrap();
+    let atlas = TagRef::read(h1.tag_data(globals).unwrap(), 0xa4).unwrap();
+    let atlas = Bitmap::read(h1, h1.tag(atlas.id).unwrap()).unwrap();
+    let sprite = &atlas.sequences[sequence].sprites[0];
+    let image = atlas.decode(h1, sprite.image as usize, 0).unwrap();
+    let [left, right, top, bottom] = sprite.bounds;
+    assert_eq!(image.width, 128);
+    assert_eq!(image.height, 128);
+    let [left, right, top, bottom] = [left, right, top, bottom].map(|v| (128.0 * v).round() as usize);
+    assert_eq!((usize::from(width), usize::from(height)), (right - left, bottom - top));
+    let mut expected = Vec::new();
+    for row in image.rgba.chunks_exact(128 * 4).take(bottom).skip(top) {
+        for rgba in row.chunks_exact(4).take(right).skip(left) {
+            let nibble = |i: usize| u16::from(rgba[i] / 16);
+            let argb = 0x1000 * nibble(3) + 0x100 * nibble(0) + 0x10 * nibble(1) + nibble(2);
+            expected.extend(argb.to_le_bytes());
+        }
+    }
+    assert!(expected.chunks_exact(2).any(|p| p[1] & 0xf0 != 0));
+    assert_eq!(pixels, expected);
 }
 
 #[test]
@@ -648,7 +712,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
     let addr = scnr.location.unwrap().address;
     let bytes = m.read_tag_bytes(scnr.id).unwrap();
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
-    check_a30_hud(&mut m, &bytes, opts.objects);
+    check_a30_hud(&mut m, &h1, &bytes, opts.objects);
 
     // Every tag reference in the scenario resolves to a tag of its group.
     // The whole ordinary metadata, unowned bytes included (the base
