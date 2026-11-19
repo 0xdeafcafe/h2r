@@ -1966,6 +1966,22 @@ its own thread, and render-timing does not matter (the call runs).
      path) with the engine inputs the screen-effect pass reads; (c)
      `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
      `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
+   - **Built: which entries draw** (`engine::screen_effects`):
+     `function_value` (`0x00134fc0` and `0x00134fe0`: the state's input
+     plus its `+0x1c`; without a parent (`+0x16` -1 or past the count)
+     the function through `0x0013bb90`, its output range unless a flag in
+     `0xf0`; with one (itself without a parent, else 0) the parent's
+     value times its own raw value, then its range), the evaluator being
+     `tags::effects::function` with the image's wave and shape tables
+     (`tables`, read from the image); `full_screen_single_view`
+     (`0x00022710`: the viewport `0x00485648` is 0, 0, 480, 640 and at
+     most one view `[0x004ba04c]`); `gated`, `corners` and `drawn` (the
+     loop: each entry's datum and four values). Tests: unit tests, and
+     `engine/tests/screen_effects_differential.rs` (`0x00134fc0` over
+     random functions of every type with parents, and the loop from
+     `0x000139ba` with `0x0002d140` stubbed, against the lifted
+     original; types 9 and 10 within 1e-3, where the evaluator port
+     approximates).
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

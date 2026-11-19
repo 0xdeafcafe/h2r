@@ -12,6 +12,8 @@ paste = "1"
 # for bit.
 simd.workspace = true
 x87.workspace = true
+# For src/screen_effects.rs: the tag function evaluator (0x0013b390).
+tags.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }

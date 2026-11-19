@@ -17,6 +17,8 @@
 //! - [`shadow_constants`]: `0x00048ee0`'s shadow block, the same way.
 //! - [`light_passes`]: the per-light pass flags and which implementation a
 //!   lit material's layer-12 and layer-13 passes draw.
+//! - [`screen_effects`]: which of the scenario's screen effects draw
+//!   (`0x00134fc0`, the loop of `render_screen_effects`).
 //! - [`points`]: the one table of named guest functions and globals.
 //! - [`view`]: typed views (`record!`, datum arrays, tags, players,
 //!   objects).
@@ -41,6 +43,7 @@ pub mod memory;
 pub mod points;
 pub mod render;
 pub mod render_loop;
+pub mod screen_effects;
 pub mod shadow_constants;
 pub mod tags;
 pub mod testing;
