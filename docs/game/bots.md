@@ -1013,6 +1013,8 @@ These read the local-user map `[0x4e8c20]+0xc` or the count `+8`:
 | `render_game_views` `0x2234e0` (`0x223524`, `0x22359e`) | one view per user, layout from the count | **yes** |
 | HUD, per view (`0x1e6fe0`: user to player via the map, from the view's draw) | that view's HUD | covered by the render window |
 | sound frame service `0x125b40`, listener loop `0x125c93`..`0x125cd7` | one listener per mapped user (`0x221a70(user, listener)`) | **yes**, so only the human's ears count |
+| `SOUND_LISTENERS_UPDATE` `0x127400` (also from `0x18c060`, outside the sound frame) | one listener per mapped user, marked active | **yes**, and the bots' listeners are marked inactive |
+| `SOUND_OWNER_USER` `0x18d4f0` | a starting sound on a mapped user's unit plays unpositioned, in the ears | **yes**, so a bot's sounds are world sounds |
 | `0x1870a0` | actions | **no**: the bot must act |
 | `director_update` `0x1554b0` (`0x155939`, `0x155caf`) | one camera per user | no: harmless, small CPU |
 | about 70 others (game engine, UI, scoreboard; the full list is in the scratch trace) | | no |
@@ -1054,9 +1056,48 @@ and the user heard the bots' through the controller.
   user it skips, so a listener made before its user was hidden would
   stay active where the bot last stood. Called from inside
   `SOUND_UPDATE`, the window finds no bot user mapped and does nothing.
-- [guess] That a sound at an active listener plays as a plain (not 3D)
-  voice is read from the symptom, not traced: a 3D voice is never
-  routed to the controller. The game run says.
+- That a bot's own sound played as a plain (not 3D) voice is traced
+  now: see "Whose sound" below. The listener was not the whole story.
+
+**Whose sound (traced, 2026-11-19).** The user's run after the
+listeners went quiet: "i can hear sound from every ai player, also,
+sound doesn't get quieter in distance or round corners". A sound that
+starts on an object asks `0x18d4f0` (`SOUND_OWNER_USER`, stdcall,
+`ret 12`: object, a pointer to the sound's kind, a pointer for the user
+or null) whose own sound it is. When the kind is 1 (positioned) it walks
+the local-user map `[0x4e8c20] + 0xc`; for the first mapped user in
+first person (`0x155760` gives 0 or 1) whose player's unit (`+0x2c`) is
+the object or carries it (`0xbafb0`, both ways) it sets the kind to 0
+and the user. Kind 0 has no position: `0x127d00` gives it to the first
+mapped user, `0x127e20` gives it distance 0, and it plays in the ears
+with no distance, no panning and no obstruction, as a player's own
+gun, footsteps and breathing do. Its callers (`0x1890e5`, `0x18935f`,
+`0x189441`, `0x18cf76` from the per-frame update `0x18c060`, and
+`0x18d4dc`) run from the game tick and the per-frame update, not inside
+`SOUND_UPDATE`'s window, so the bots were mapped: every bot's gun, footsteps, grenades, melee and voice
+started as kind 0 and, given to the first mapped user, the human, played
+at full level in the human's ears wherever the bot was. That is both
+halves of the report: every bot is heard, and those sounds never fall
+off with distance or walls (the human's own world sounds always did;
+they are the game's own mix-bin volumes, docs/audio/dsound.md).
+`0x189441`'s caller even checks the user's listener (`+0x8e`) and
+falls back to the world path when it is inactive; the other four do
+not, so quieting the listeners could not fix it.
+
+- **Design:** `SOUND_OWNER_USER` gets the hide window (before: the bots'
+  users out of the map, `guest::hide`; after: `guest::restore`), as the
+  views and listeners have. The walk then finds only the humans: a
+  bot's sound keeps kind 1 and starts as a world sound at the bot,
+  heard (or culled) by the human's listener as a remote player's would
+  be, with the game's distance, panning, cluster audibility
+  (`0x221da0`) and obstruction (`0x221a70`). The human's own sounds are
+  unchanged.
+- The DirectSound listener is not the game's ears: `0x127400` ends by
+  setting it (`0x220790`, `IDirectSound_SetPosition` at `0x2207ba`,
+  `DS3D_DEFERRED`) to the origin facing +x (`[0x468788]`,
+  `[0x4687a8]`), and the game places each 3D mix-in relative to the
+  listener its sound belongs to. So nothing in the DirectSound layer
+  knows which local user a sound is for; the choice is made here.
 
 **The controller speaker, haptics and rumble (Repo).** Nothing there
 goes by port:
@@ -3179,6 +3220,26 @@ list for the user to play (§11).
      6. Split Screen with Clankers On: the players screen shows you
         alone, the lobby and the game have the bots. Say whether B on
         the players screen backs out or opens your profile menu.
+   **Built: a bot's sounds come from the bot** (2026-11-19, §4.3,
+   "Whose sound"). The user's run: "i can hear sound from every ai
+   player, also, sound doesn't get quieter in distance or round corners
+   etc".
+   - **Cause:** a sound starting on a local user's unit plays as that
+     user's own, unpositioned, in the ears (`0x18d4f0`), and the bots
+     are local users; the walk runs on the game tick, outside every
+     window. Each bot's gun, footsteps, grenades and voice played at
+     full level in the human's ears.
+   - **Fix:** the window around `SOUND_OWNER_USER` (`bot_glue`, "hide
+     bot owners" and "bot owners back").
+   - Tests: `-p bots --lib guest`
+     (`a_bots_own_sound_starts_as_a_world_sound_and_the_humans_stays_in_their_ears`),
+     `-p boot --lib render_thread` (the new point listed).
+   - **Game run (the user):** a match with three Clankers, no
+     controller speaker needed. Stand still away from the bots: their
+     shots and footsteps are quiet or silent far away, louder as they
+     come closer, panned to where they are, muffled behind walls. Your
+     own gun, footsteps and melee sound as before. Say whether any bot
+     sound still plays as if it were yours (and which).
    **Built: Off takes the bots out of the lobby** (2026-11-19). The
    user's run: "clankers still a bit buggy, i turned them off and they
    stay in the lobby."

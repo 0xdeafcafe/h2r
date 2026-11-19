@@ -39,6 +39,10 @@
 //!   (`SOUND_LISTENERS_UPDATE`), which the per-frame update also calls
 //!   outside `SOUND_UPDATE`, gets the same window, and the bots' listeners
 //!   are marked inactive ([`bots::guest::quiet_listeners`]).
+//! - Around `SOUND_OWNER_USER`, which a starting sound asks whose own
+//!   sound it is, the bots' users are hidden too, so a bot's guns,
+//!   footsteps and voice start as positioned world sounds, not as plain
+//!   sounds in the human's ears.
 //! - Around the players screen's update (`PLAYERS_SCREEN_UPDATE`) the
 //!   bots' controller handles read as none ([`bots::guest::hide_pads`]),
 //!   so its panes show the humans only ("CONNECT CONTROLLER" on a bot's
@@ -450,6 +454,8 @@ pub struct Bots {
     panes: Arc<Mutex<Option<guest::HiddenPads>>>,
     /// The bot users hidden around the listener update.
     listeners: Arc<Mutex<Option<Hidden>>>,
+    /// The bot users hidden around a sound's owner lookup.
+    owners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
     /// When the Xbox Live and the sign-in tries were last made.
@@ -480,6 +486,7 @@ impl Bots {
             pressed: Arc::default(),
             panes: Arc::default(),
             listeners: Arc::default(),
+            owners: Arc::default(),
             lobby_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
@@ -602,6 +609,35 @@ impl feature::Feature for Bots {
                 Ok(())
             },
         );
+
+        // A sound starting on an object: the game asks whose own sound it
+        // is (a mapped local user's unit, or what it holds), and that
+        // user's sounds play as plain sounds in the ears, with no position,
+        // distance or walls. The bots are local users, so their guns,
+        // footsteps, grenades and voices all played in the human's ears
+        // (docs/game/bots.md §4.3, "Whose sound"). With the bots' users
+        // hidden the walk finds only the humans, and a bot's sound starts
+        // positioned, as a remote player's does.
+        let (local, owners) = (self.local.clone(), Arc::clone(&self.owners));
+        b.raw()
+            .before(&points::SOUND_OWNER_USER, "hide bot owners", move |c| {
+                let bots = local.port_mask();
+                if bots == 0 {
+                    return Ok(Flow::Continue);
+                }
+                let rt = Arc::clone(c.ctx.runtime());
+                *lock(&owners) = guest::hide(&mut *rt.memory(), bots).ok().flatten();
+                Ok(Flow::Continue)
+            });
+        let owners = Arc::clone(&self.owners);
+        b.raw()
+            .after(&points::SOUND_OWNER_USER, "bot owners back", move |c| {
+                if let Some(h) = lock(&owners).take() {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    guest::restore(&mut *rt.memory(), &h).map_err(|e| fault(e.addr))?;
+                }
+                Ok(())
+            });
 
         // A Start press in the lobby while bots are in: the start state is
         // logged before the next SOUND_UPDATE (once per press).

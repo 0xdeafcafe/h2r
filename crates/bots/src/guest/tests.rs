@@ -148,6 +148,50 @@ fn nothing_is_hidden_without_bots_or_without_a_human() {
     assert_eq!(locals(&g), before);
 }
 
+/// The walk of `SOUND_OWNER_USER` (`0x18d4f0`) that decides whose own
+/// sound a starting sound is: the first mapped local user whose player's
+/// unit (`+0x2c`) is the sound's object. (The game also takes what the
+/// unit carries, `0xbafb0`, and needs the user in first person; both are
+/// the same for a bot and a human.) `Some(user)` plays the sound with no
+/// position, in that user's ears.
+fn sound_owner(g: &FakeGuest, object: u32) -> Option<u32> {
+    (0..4u32).find(|&u| {
+        let handle = g.u32(LOCALS + LOCAL_MAP + 4 * u).unwrap();
+        handle != u32::MAX
+            && player_at(g, handle)
+                .unwrap()
+                .and_then(|p| p.unit(g).unwrap())
+                .is_some_and(|unit| unit.raw() == object)
+    })
+}
+
+fn unit_of(g: &FakeGuest, player: u32) -> u32 {
+    g.u32(PLAYERS_DATA + player * 0x21c + 0x2c).unwrap()
+}
+
+#[test]
+fn a_bots_own_sound_starts_as_a_world_sound_and_the_humans_stays_in_their_ears() {
+    let mut g = three();
+    let (human, bot1, bot2) = (unit_of(&g, 0), unit_of(&g, 1), unit_of(&g, 2));
+    // As the game ran it: each bot's own sounds (its gun, footsteps,
+    // voice) were a local user's, so they played in the ears, unpositioned.
+    assert_eq!(
+        [human, bot1, bot2].map(|u| sound_owner(&g, u)),
+        [Some(0), Some(1), Some(2)]
+    );
+    // Inside the hook's window the walk finds the human only: a bot's
+    // sound has no owner and starts positioned, where the bot is.
+    let h = hide(&mut g, 0b110).unwrap().expect("bots to hide");
+    assert_eq!(
+        [human, bot1, bot2].map(|u| sound_owner(&g, u)),
+        [Some(0), None, None]
+    );
+    restore(&mut g, &h).unwrap();
+    assert_eq!(sound_owner(&g, bot1), Some(1), "put back after the call");
+    // Without bots the window does nothing.
+    assert_eq!(hide(&mut g, 0).unwrap(), None);
+}
+
 const SOUND: u32 = 0x0068_0000;
 
 fn listener_active(g: &FakeGuest, u: u32) -> u8 {
