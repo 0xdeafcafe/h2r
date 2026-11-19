@@ -936,7 +936,7 @@ as the game disc) is `halo1: not imported: <why>`.
 By hand, the same import: `cargo h2 import halo1 [disc/halo1.iso]
 [--data DIR] [--disc disc/halo2.iso] [--force] [--dry-run]
 [--copy-source]`. `--data` defaults to the data root `h2 play` uses
-(`$TMPDIR/h2boot-data`); `--disc` (the Halo 2 disc, for the bases) to
+(`~/Library/Application Support/h2recomp/data`); `--disc` (the Halo 2 disc, for the bases) to
 `$H2_DISC`, else `halo2.iso` beside the Halo 1 disc, else
 `disc/halo2.iso`. It exits non-zero when a map failed, after trying every
 map. `--copy-source` also copies the disc's campaign maps unchanged to

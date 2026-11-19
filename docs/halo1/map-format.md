@@ -355,7 +355,7 @@ needs every level and adds `ui`, `bitmaps` and `sounds` when present.
   title and every campaign map's header, then copies the maps as stored
   (still compressed) into `<data>/campaigns/halo1/source/` and writes
   `manifest.txt` there: `<sha256>  <size>  <name>` per file. `--data`
-  defaults to `$TMPDIR/h2boot-data` and the disc to `disc/halo1.iso`.
+  defaults to `~/Library/Application Support/h2recomp/data` and the disc to `disc/halo1.iso`.
 
 ## Verifying on the disc
 

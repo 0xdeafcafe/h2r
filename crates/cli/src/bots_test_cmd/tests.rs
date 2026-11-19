@@ -180,7 +180,7 @@ fn status_session_and_game_lines_from_their_answers() {
 fn wait_clang_runs_clangs_build_and_settings_come_from_the_play_data() {
     let o = opts(&["test"]);
     assert!(!o.wait_clang);
-    assert_eq!(o.settings_from, PathBuf::from("/tmp/t/h2boot-data"));
+    assert_eq!(o.settings_from, content::store::default_data_root());
     let g = plan(&o, "http://s", Path::new("/r"), Path::new("/a.sock"));
     assert!(!g.args.iter().any(|a| a == "--tier"));
 

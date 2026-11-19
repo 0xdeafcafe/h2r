@@ -72,7 +72,7 @@ Options:
 | `--halo1 <file.iso or dir>` | A Halo 1 disc image or folder of Halo 1 maps, to look at (section 4). Without it, the editor uses `H1_ISO`, then `H1_MAP_DIR`, then `disc/halo1.iso`. |
 | `--mappack <file.iso or dir>` | The Halo 2 Multiplayer Map Pack disc, to add its nine maps. Without it, the editor uses `H2_MAPPACK_ISO`, then a `mappack.iso` next to the Halo 2 disc, then `disc/mappack.iso`. |
 | `--hopper <file>` | Open this `multiplayer_hopper.dat` in the Playlists tool at startup. |
-| `--data <dir>` | The game's data folder: where saved variants and map packages go. It defaults to the same folder `h2 play` uses (`$TMPDIR/h2boot-data`). |
+| `--data <dir>` | The game's data folder: where saved variants and map packages go. It defaults to the same folder `h2 play` uses (`~/Library/Application Support/h2recomp/data`). |
 
 If you start the game with `h2 play --data <dir>`, give the editor the
 same `--data <dir>`, or the game won't see what you save. If you don't
@@ -1108,7 +1108,7 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
 ## 11. Where files go
 
 `<data>` is the data folder: `--data`, or by default the one `h2 play`
-uses, `$TMPDIR/h2boot-data`.
+uses, `~/Library/Application Support/h2recomp/data`.
 
 | What | Where | How the game finds it |
 |---|---|---|
@@ -1118,7 +1118,7 @@ uses, `$TMPDIR/h2boot-data`.
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |
 | Exported variants | Wherever you save the `.h2variant` | Not directly: import it in the editor and save it. |
 | Playlists | Wherever you save the `.dat` | Through your Live server (`h2 live hopper import`). |
-| The window layout | `$TMPDIR/h2boot-data/h2-editor.ini` | (The editor's own.) |
+| The window layout | `~/Library/Application Support/h2recomp/data/h2-editor.ini` | (The editor's own.) |
 
 Your disc image is only ever read.
 
