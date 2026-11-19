@@ -891,12 +891,47 @@ pub const OBJECT_LIMIT: i32 = 2048;
 /// The weapons lying in the world: live weapon objects with no parent
 /// (nobody holds them).
 pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
+    Ok(ground_items(m, None)?.0)
+}
+
+/// Look for nearby live grenades during the existing pickup scan.
+pub(crate) fn ground_items(
+    m: &dyn GuestMemory,
+    near: Option<crate::brain::Vec3>,
+) -> R<(Vec<Pickup>, Vec<crate::incoming::Grenade>)> {
+    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
+
     let Some(array) = objects::array(m)? else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
-    let mut out = Vec::new();
+    let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
+    let mut pickups = Vec::new();
+    let mut grenades = Vec::new();
     for (h, header) in array.live(m, OBJECT_LIMIT)? {
-        if header.kind(m)? != objects::WEAPON || header.body(m)? == 0 {
+        let kind = header.kind(m)?;
+        if kind == PROJECTILE {
+            if let Some((at, defs)) = senses
+                && let Ok(addr @ 1..) = header.body(m)
+            {
+                let body = objects::Body::at(addr);
+                if let Ok(Some(def)) = body.definition(m)
+                    && defs.contains(&Some(def))
+                    && let Ok(position) = body.position(m)
+                {
+                    let distance = (position[0] - at[0])
+                        .hypot(position[1] - at[1])
+                        .hypot(position[2] - at[2]);
+                    if distance < DANGER {
+                        grenades.push(Grenade {
+                            id: h.raw(),
+                            at: position,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        if kind != objects::WEAPON || header.body(m)? == 0 {
             continue;
         }
         let Some((g, body)) = gun(m, h)? else {
@@ -905,13 +940,13 @@ pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
         if body.parent(m)?.is_some() {
             continue;
         }
-        out.push(Pickup {
+        pickups.push(Pickup {
             id: h.raw(),
             position: body.position(m)?,
             gun: g,
         });
     }
-    Ok(out)
+    Ok((pickups, grenades))
 }
 
 #[cfg(test)]
