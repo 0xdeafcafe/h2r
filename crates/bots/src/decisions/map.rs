@@ -55,16 +55,22 @@ impl MapMemory {
     pub(super) fn observe(&mut self, p: &Perception, me: Me, map: Option<&MapData>) {
         self.deaths
             .retain(|(_, t)| p.tick.wrapping_sub(*t) < HOT_TICKS);
+        let visible = |at: Vec3| {
+            let dist = distance(me.position, at);
+            let facing = (0..3)
+                .map(|i| (at[i] - me.position[i]) * me.aim[i])
+                .sum::<f32>();
+            dist <= 25.0
+                && (dist < 3.0 || facing > dist * 0.42)
+                && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
+        };
         self.timers
-            .observe(p.tick, p.observations.supplies.as_deref(), |at| {
-                let dist = distance(me.position, at);
-                let facing = (0..3)
-                    .map(|i| (at[i] - me.position[i]) * me.aim[i])
-                    .sum::<f32>();
-                dist <= 25.0
-                    && (dist < 3.0 || facing > dist * 0.42)
-                    && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
-            });
+            .observe(p.tick, p.observations.supplies.as_deref(), visible);
+        self.timers.update_known(p, visible);
+    }
+
+    pub(super) fn holder(&self, id: u32) -> bool {
+        self.timers.holder(id)
     }
 
     pub(crate) fn due(&self, me: Me, tick: u32, skill: Skill, stuck: &Stuck) -> Option<Vec3> {

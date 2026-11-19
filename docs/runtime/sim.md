@@ -263,10 +263,16 @@ reaction = 5
   `grenades_per_minute`;
 - `awareness` (0..1; the decisions' sense of the fight, per skill now);
 - the personality, each optional (0..1): `aggression`, `caution`,
-  `teamwork`, `objective_focus` (seeded per bot today).
+  `teamwork`, `objective_focus` (seeded per bot today);
+- human input timing: `perception_ticks` and `motor_ticks` (0–30 ticks),
+  `button_sigma_ms` (0–12 ms), `stick_step` (0.1–0.6 stick radii per
+  tick), and `thumb_switch_ticks` (1–6 ticks);
+- phantom transport: `phantom_ping_ms` (0–1000 ms round trip) and
+  `phantom_jitter_ms` (0–50 ms bounded one-way variation). These fields
+  apply when the source drives a phantom.
 
 Anything left out keeps the built-in value. The bots crate takes them as
-`bots::Tuning`: `Brain::with_tuning`. The aim table and awareness are
+`bots::tuning::Tuning` through `Brain::with_tuning`. The aim table and awareness are
 read through `Skill::aim()` and `awareness()`, which consult the tuning of
 the brain that is thinking (a scoped override on the game thread, so the
 call sites stay as they are); the personality replaces the seeded one,
@@ -283,7 +289,7 @@ A feature, `sim-metrics`, observes the game on the game thread, read-only:
 | `GAME_TICK` (after each tick) | `live_telemetry::memory::snapshot`: every player's score, kills, deaths, assists, suicides, team, unit, vehicle, grenades carried, vitality; team scores |
 | `WEAPON_FIRE` | a shot: the weapon's holder unit, so its player |
 | `DAMAGE_REPORT` | a hit: the owner player, the victim unit, so its player, and the damage |
-| `PLAYER_KILLED` | the kill log: attacker, victim, betrayal flag, tick |
+| `PLAYER_KILLED` | the kill log: attacker, victim, tick; a betrayal is a teammate killed in a team game (`bots::emote::kill_from_guest`) |
 | `GAME_END` | the end latch: the match is over |
 
 and each bot's brain is wrapped (`sim_glue::Metered`) to count, per game
