@@ -190,8 +190,9 @@ layer before its bots could even stand still.
 **Live menu.**
 
 - Screen `0xba`, list "xbox live menu list" `0x458c80`.
-- Rows: Quickmatch 0, OptiMatch 1, Custom Game 2, then ours: Custom Game
-  Browser 3, Co-op Campaign 4, Content Download 5.
+- Rows: Quickmatch 0, OptiMatch 1, Clankermatch 2, then Co-op Campaign 3
+  (directly above Custom Game), Custom Game 4 (retail row 2, moved), Custom
+  Game Browser 5, Content Download 6 (rows close up by one without co-op).
 - `crates/boot/src/custom_games.rs` adds our rows: row text `0x230f36`, row
   chosen `0x230f92`, last row `0x510a18`.
 
@@ -1522,10 +1523,14 @@ down one:
 | 0 | Quickmatch | retail |
 | 1 | OptiMatch | retail |
 | 2 | **Clankermatch** (ours, pane 4) | retail row 1's press, `clankermatch::active` set |
-| 3 | Custom Game (retail row 2, moved) | retail row 2's press; text `0x0b000421`, pane 2 |
-| 4 | Custom Game Browser (ours, pane 5) | the Live browser |
-| 5 | Co-op Campaign (ours, pane 6; with Live) | co-op |
-| 5 or 6 | Content Download (retail row 3, moved) | Mods screen or the Map Pack dialog |
+| 3 | Co-op Campaign (ours, pane 6; with Live), directly above Custom Game | co-op |
+| 4 | Custom Game (retail row 2, moved) | retail row 2's press; text `0x0b000421`, pane 2 |
+| 5 | Custom Game Browser (ours, pane 5) | the Live browser |
+| 6 | Content Download (retail row 3, moved) | Mods screen or the Map Pack dialog |
+
+Without the co-op row (`H2_NO_COOP_ROW=1`) the rows after Clankermatch close
+up: Custom Game 3, the browser 4, Content Download 5
+(`custom_games::row_kind_with`). `h2 bots test` drives Custom Game at row 4.
 
 A moved retail row's press rewrites the press record's row (`[[esp+8]]`)
 to its retail row and runs the original, as the co-op row does; after it
@@ -1675,8 +1680,8 @@ clankermatch`, `-p live-worker a_clankermatch_game`.
 signed in on port 0, Clankers page off.
 
 1. The Xbox Live menu shows seven rows (six without co-op): Quickmatch,
-   OptiMatch, Clankermatch, Custom Game, Custom Game Browser, Co-op
-   Campaign, Content Download. They fit above the hints, none scrolls,
+   OptiMatch, Clankermatch, Co-op Campaign, Custom Game, Custom Game
+   Browser, Content Download. They fit above the hints, none scrolls,
    and each shows its own help pane (Clankermatch: "Matchmaking against
    bots..."; Custom Game its retail one).
 2. Custom Game still opens the custom game lobby; back lands on Custom
@@ -3467,10 +3472,10 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    Live menu for the main menu, pressed DOWN, A (OptiMatch, row 1), then
    DOWN, A on a playlist, and landed in OptiMatch's lobby (lobby mode 3,
    a session advertised). The Live menu's rows, ours included
-   (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Custom Game, 3
-   Custom Game Browser, 4 Co-op Campaign, 5 Content Download. The drive
-   moves one row at a time, reading the row back off the list value, and
-   presses A on row 2. The pregame lobby counts as the Live custom game
+   (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Clankermatch, 3
+   Co-op Campaign, 4 Custom Game, 5 Custom Game Browser, 6 Content
+   Download. The drive moves one row at a time, reading the row back off
+   the list value, and presses A on row 4. The pregame lobby counts as the Live custom game
    only once a session is advertised (and not deleted) while the lobby
    mode is 2: `coop-live: lobby mode 2` alone is any custom game lobby,
    Split Screen's too, and other Live lobbies advertise as well. A lobby

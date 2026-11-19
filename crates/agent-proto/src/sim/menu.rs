@@ -27,11 +27,12 @@ pub const MODE_LIVE: u32 = 3;
 pub const MODE_INVITE: u32 = 4;
 /// The campaign's screens: A on Campaign, and the one after it.
 pub const CAMPAIGN_SCREENS: [u32; 2] = [0xee, 0xd1];
-/// Live menu rows (`boot::custom_games`): 2 Clankermatch, 3 Custom Game
-/// (retail row 2, moved down), 4 the browser, 5 Co-op Campaign.
+/// Live menu rows (`boot::custom_games`): 2 Clankermatch, 3 Co-op Campaign,
+/// 4 Custom Game (retail row 2, moved down), 5 the browser.
 pub const CLANKERMATCH_ROW: u32 = 2;
-pub const BROWSER_ROW: u32 = 4;
-pub const COOP_ROW: u32 = 5;
+pub const COOP_ROW: u32 = 3;
+pub const CUSTOM_GAME_ROW: u32 = 4;
+pub const BROWSER_ROW: u32 = 5;
 /// Main menu rows (`boot::ui_watch`: `0x230827`): 0 Campaign, 1 Xbox Live,
 /// 2 Split Screen, 3 System Link, 4 Settings.
 pub const MAIN_LIVE_ROW: u32 = 1;
@@ -309,9 +310,13 @@ pub fn run(rpc: &mut dyn Rpc, step: &Lobby) -> Result<Value, RpcError> {
                 ));
             }
             // The menu restores its cursor to the row it reports (0 to 3
-            // retail's, the browser's 4 and co-op's 5 ours).
-            let from = s.live_menu_row.unwrap_or(0).min(COOP_ROW);
-            let mut b = downs(COOP_ROW - from);
+            // retail's and co-op's, Custom Game's 4 and the browser's 5).
+            let from = s.live_menu_row.unwrap_or(0).min(BROWSER_ROW);
+            let mut b = if from > COOP_ROW {
+                vec!["up"; (from - COOP_ROW) as usize]
+            } else {
+                downs(COOP_ROW - from)
+            };
             b.push("a");
             press(rpc, &b)?;
             let left = Expect {
@@ -448,9 +453,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(buttons(&m.pads[0]), ["a"]);
-        // Row 1 to Co-op Campaign, row 5 (after Clankermatch and the
-        // moved Custom Game rows).
-        assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "down", "a"]);
+        // Row 1 to Co-op Campaign, row 3 (after Clankermatch, directly
+        // above Custom Game).
+        assert_eq!(buttons(&m.pads[1]), ["down", "down", "a"]);
     }
 
     #[test]

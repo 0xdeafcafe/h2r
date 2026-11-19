@@ -110,7 +110,7 @@ impl World {
             At::Main => self.games[g].main_row,
             At::Live => {
                 let r = self.games[g].live_row;
-                if r <= COOP_ROW { r } else { 0 }
+                if r <= BROWSER_ROW { r } else { 0 }
             }
             _ => 0,
         };
@@ -166,7 +166,7 @@ impl World {
                     }
                 }
                 BROWSER_ROW => {
-                    // The browser's row 4: its press stores it, and the
+                    // The browser's row 5: its press stores it, and the
                     // menu's build puts the cursor back on it.
                     self.games[g].live_row = BROWSER_ROW;
                     self.emit(now + 10, g, "custom games: opening the browser");
@@ -365,7 +365,7 @@ fn three_games_with_no_invitation_reader_join_through_the_browser_and_start() {
         assert!(
             has(
                 &w.lines,
-                &format!("{g}: press a on screen 0xba row 4 (Custom Game Browser)")
+                &format!("{g}: press a on screen 0xba row 5 (Custom Game Browser)")
             ),
             "{all}"
         );
@@ -377,7 +377,7 @@ fn three_games_with_no_invitation_reader_join_through_the_browser_and_start() {
     assert!(
         has(
             &w.lines,
-            "Alpha: press a on screen 0xba row 5 (Co-op Campaign)"
+            "Alpha: press a on screen 0xba row 3 (Co-op Campaign)"
         ),
         "{all}"
     );
@@ -442,7 +442,7 @@ fn the_late_guest_joins_after_the_start() {
     assert!(
         has(
             &w.lines,
-            "Charlie: press a on screen 0xba row 4 (Custom Game Browser)"
+            "Charlie: press a on screen 0xba row 5 (Custom Game Browser)"
         ),
         "{all}"
     );
@@ -535,8 +535,8 @@ fn a_wrong_row_on_the_live_menu_is_backed_out_of() {
         }
         t += 100;
     }
-    assert_eq!(pressed, ["down", "down", "down", "down", "down", "a"]);
-    // The game opened the browser: row 4 was where row 5 should be.
+    assert_eq!(pressed, ["down", "down", "down", "a"]);
+    // The game opened the browser: row 5 was where row 3 should be.
     d.line(t, "Alpha", "custom games: opening the browser");
     let p = d.poll(t + 1000).unwrap();
     assert_eq!(p.button, "b");

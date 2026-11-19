@@ -75,16 +75,16 @@ use crate::setting_defs::{
 /// The Xbox Live menu's list name and retail row count.
 pub const LIST_NAME: u32 = 0x0045_8c80;
 pub const VANILLA_ROWS: u32 = 4;
-/// Clankermatch (docs/game/bots.md §8.3), right after OptiMatch; retail's
-/// Custom Game one row down from its retail row 2; then our rows, Custom
-/// Game Browser and Co-op Campaign (docs/live/live-coop.md), directly
-/// above Content Download, and where Content Download moves to (it is
-/// retail row 3). With the co-op row off (`H2_NO_COOP_ROW=1`) Content
-/// Download is row 5.
+/// Clankermatch (docs/game/bots.md §8.3), right after OptiMatch; then Co-op
+/// Campaign (docs/live/live-coop.md), directly above retail's Custom Game
+/// (one row down from its retail row 2); then our Custom Game Browser, and
+/// where Content Download moves to (it is retail row 3). With the co-op row
+/// off (`H2_NO_COOP_ROW=1`) the rows after Clankermatch close up: Custom
+/// Game 3, the browser 4, Content Download 5 ([`shift`]).
 pub const CLANKERMATCH_ROW: i16 = 2;
-pub const CUSTOM_GAME_ROW: i16 = 3;
-pub const ROW: i16 = 4;
-pub const COOP_ROW: i16 = 5;
+pub const COOP_ROW: i16 = 3;
+pub const CUSTOM_GAME_ROW: i16 = 4;
+pub const ROW: i16 = 5;
 pub const DOWNLOAD_ROW: i16 = 6;
 const RETAIL_DOWNLOAD_ROW: i16 = 3;
 /// Retail row 1, OptiMatch (`0x231025`: the playlist screen's loader
@@ -133,7 +133,7 @@ const REQUEST_LOADER: u32 = 0x1c;
 const LAST_ROW: u32 = 0x0051_0a18;
 /// The rows `0x231170` restores the cursor to.
 pub const RESTORED_ROWS: i16 = 4;
-/// The rows a press leaves the cursor on: ours up to Co-op Campaign
+/// The rows a press leaves the cursor on: ours up to the browser
 /// (Content Download opens a dialog or the Mods screen over the menu).
 /// Rows from [`RESTORED_ROWS`] on are restored by [`LiveMenuCursor`].
 pub const REMEMBERED_ROWS: i16 = DOWNLOAD_ROW;
@@ -282,14 +282,20 @@ pub fn row_kind(row: i16) -> Row {
 }
 
 pub fn row_kind_with(row: i16, coop: bool) -> Row {
-    match (row, coop) {
-        (CLANKERMATCH_ROW, _) => Row::Clankermatch,
-        (CUSTOM_GAME_ROW, _) => Row::CustomGame,
-        (ROW, _) => Row::Browser,
-        (COOP_ROW, true) => Row::Coop,
-        (COOP_ROW, false) | (DOWNLOAD_ROW, true) => Row::Download,
+    match shift(row, coop) {
+        CLANKERMATCH_ROW => Row::Clankermatch,
+        COOP_ROW => Row::Coop,
+        CUSTOM_GAME_ROW => Row::CustomGame,
+        ROW => Row::Browser,
+        DOWNLOAD_ROW => Row::Download,
         _ => Row::Retail,
     }
+}
+
+/// `row` as a row of the co-op-on layout: with the co-op row off, the rows
+/// from row 3 on sit one higher, so they are shifted down to match.
+fn shift(row: i16, coop: bool) -> i16 {
+    if coop || row < COOP_ROW { row } else { row + 1 }
 }
 
 impl Row {
@@ -400,7 +406,7 @@ pub fn back_loader<M: Gm>(m: &mut M, request: u32) -> Option<u32> {
 /// Leave the Live menu's cursor on `row` for when a screen goes back to it
 /// (the retail press stores rows 0 to 2 the same way). Rows below
 /// [`REMEMBERED_ROWS`] are written: `0x231170` restores the first four,
-/// [`LiveMenuCursor`] the browser's and co-op's. Returns whether it wrote.
+/// [`LiveMenuCursor`] Custom Game's, the browser's. Returns whether it wrote.
 pub fn remember_row<M: Gm>(m: &mut M, row: i16) -> bool {
     (0..REMEMBERED_ROWS).contains(&row) && m.set_u32(LAST_ROW, row as u32)
 }
@@ -1467,17 +1473,18 @@ mod tests {
     fn a_press_leaves_the_cursor_on_its_row_and_the_build_restores_it() {
         let mut m = Fake::default();
         m.set_u32(LAST_ROW, 1);
-        // `0x231170` restores rows 0 to 3: Clankermatch and the moved
-        // Custom Game (their retail presses stored OptiMatch's 1 and
-        // Custom Game's old 2); the build hook leaves those to it.
-        for row in [CLANKERMATCH_ROW, CUSTOM_GAME_ROW] {
+        // `0x231170` restores rows 0 to 3: Clankermatch and Co-op Campaign
+        // (Clankermatch's retail press stored OptiMatch's 1); the build
+        // hook leaves those to it.
+        for row in [CLANKERMATCH_ROW, COOP_ROW] {
             assert!(remember_row(&mut m, row));
             assert_eq!(m.u32(LAST_ROW), Some(row as u32));
             assert_eq!(cursor_row(&m), None, "row {row}: retail's");
         }
-        // The browser's row 4 and co-op's 5 are past what it restores:
-        // stored, and the build hook puts the cursor there.
-        for row in [ROW, COOP_ROW] {
+        // Custom Game's row 4 (its retail press stored 2) and the browser's
+        // 5 are past what it restores: stored, and the build hook puts the
+        // cursor there.
+        for row in [CUSTOM_GAME_ROW, ROW] {
             assert!(remember_row(&mut m, row));
             assert_eq!(m.u32(LAST_ROW), Some(row as u32));
             assert_eq!(cursor_row(&m), Some(row as u32));
@@ -1486,7 +1493,7 @@ mod tests {
         // nor for no row.
         assert!(!remember_row(&mut m, DOWNLOAD_ROW));
         assert!(!remember_row(&mut m, -1));
-        assert_eq!(m.u32(LAST_ROW), Some(COOP_ROW as u32));
+        assert_eq!(m.u32(LAST_ROW), Some(ROW as u32));
         // Retail's "none" (-1) and anything out of range: retail's build.
         m.set_u32(LAST_ROW, u32::MAX);
         assert_eq!(cursor_row(&m), None);
