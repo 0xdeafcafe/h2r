@@ -31,6 +31,9 @@ use crate::game::{
 /// repeated edit masks and change-only positions relative to dead reckoning.
 /// V6 introduced vehicle velocity, projectiles and loose items.
 pub const VERSION: u64 = V7;
+/// Highest negotiated live format. Standalone records and default writers use v7.
+pub const LIVE_VERSION: u8 = 8;
+mod v8;
 // Keep historical decoding tied to the wire version when the writer advances.
 const V7: u64 = 7;
 /// V4 was the last ordinary frame format without a cinematic bit.
@@ -2289,6 +2292,7 @@ pub struct Encoder {
     since_key: u64,
     next_seq: u64,
     state: Option<(StreamState, Table)>,
+    causal: Option<Box<v8::Writer>>,
 }
 
 impl Encoder {
@@ -2300,7 +2304,19 @@ impl Encoder {
             since_key: 0,
             next_seq: 0,
             state: None,
+            causal: None,
         }
+    }
+
+    /// Select the version agreed for this connection. New subscribers start at a key.
+    pub fn with_version(sid: u64, keyframe_every: u64, version: u8) -> Result<Self> {
+        let mut writer = Self::new(sid, keyframe_every);
+        match version {
+            7 => {}
+            LIVE_VERSION => writer.causal = Some(Box::default()),
+            v => return Err(PackError::Version(u64::from(v))),
+        }
+        Ok(writer)
     }
 
     pub fn sid(&self) -> u64 {
@@ -2315,6 +2331,7 @@ impl Encoder {
     /// The next frame is a keyframe.
     pub fn force_keyframe(&mut self) {
         self.state = None;
+        self.since_key = self.keyframe_every;
     }
 
     /// One packed frame; `Ok((bytes, keyframe))`. A frame that cannot be
@@ -2330,7 +2347,6 @@ impl Encoder {
         frame: &Frame,
         baseline: Option<&BTreeMap<u16, MachinePosition>>,
     ) -> Result<(Vec<u8>, bool)> {
-        let lists = Lists::of(frame)?;
         let positions = &frame.machine_positions;
         if positions.len() > MAX_MACHINE_POSITIONS
             || positions.last().is_some_and(|m| m.i > i16::MAX as u16)
@@ -2341,6 +2357,34 @@ impl Encoder {
         if frame.game_id.len() > MAX_STRING {
             return Err(PackError::Value("game id too long"));
         }
+        if let Some(writer) = self.causal.as_mut() {
+            if self.next_seq == u64::MAX
+                || frame.tick >= 1 << 44
+                || frame.cut.is_some_and(|v| v >= 1 << 44)
+            {
+                return Err(PackError::Value("v8 tick or sequence out of range"));
+            }
+            let result = writer.encode(
+                frame,
+                self.sid,
+                self.next_seq,
+                self.since_key >= self.keyframe_every,
+                baseline,
+            );
+            match &result {
+                Ok((_, key)) => {
+                    self.since_key = if *key { 1 } else { self.since_key + 1 };
+                    self.next_seq += 1;
+                }
+                // A partial projection or model update cannot become a delta base.
+                Err(_) => {
+                    self.causal = Some(Box::default());
+                    self.since_key = self.keyframe_every;
+                }
+            }
+            return result;
+        }
+        let lists = Lists::of(frame)?;
         let mut new_strings: Vec<&str> = Vec::new();
         let version = VERSION;
         let key = match &self.state {
@@ -2468,8 +2512,8 @@ impl Encoder {
         }
         #[cfg(test)]
         {
-            floor::set_list(LIST_COUNT+1);
-            floor::charge(&w,"machine travel");
+            floor::set_list(LIST_COUNT + 1);
+            floor::charge(&w, "machine travel");
             floor::end(&w);
         }
         Ok((w.finish(), key))
@@ -2491,6 +2535,7 @@ pub struct Decoded {
 #[derive(Default)]
 pub struct Decoder {
     streams: HashMap<u64, StreamState>,
+    causal: HashMap<u64, v8::Stream>,
 }
 
 /// Most streams one decoder follows.
@@ -2504,9 +2549,13 @@ impl Decoder {
     /// Forgets a stream (its game ended).
     pub fn forget(&mut self, sid: u64) {
         self.streams.remove(&sid);
+        self.causal.remove(&sid);
     }
 
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Decoded> {
+        if bytes.first().is_some_and(|b| b & 15 == LIVE_VERSION) {
+            return v8::decode(self, bytes);
+        }
         let mut r = BitReader::new(bytes);
         let version = r.bits(4)?;
         r.version = version;
@@ -2602,7 +2651,9 @@ impl Decoder {
         if version == V7 {
             frame.machine_positions = read_machine_positions(&mut r)?;
         }
-        if !self.streams.contains_key(&sid) && self.streams.len() >= MAX_STREAMS {
+        self.causal.remove(&sid);
+        if !self.streams.contains_key(&sid) && self.streams.len() + self.causal.len() >= MAX_STREAMS
+        {
             return Err(PackError::Bad("too many streams"));
         }
         self.streams.insert(sid, state);

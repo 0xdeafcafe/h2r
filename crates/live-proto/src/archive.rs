@@ -2,8 +2,9 @@
 //! Content-Encoding: br). The inflated H2AR stream transposes the complete
 //! Frame tree by field and array ordinal across the segment's timeline.
 mod motion;
+pub(crate) use motion::rotated;
 #[cfg(any(test, feature = "live-floor-bench"))]
-pub(crate) use motion::{rotated, sin as predictor_sin};
+pub(crate) use motion::sin as predictor_sin;
 mod numbers;
 
 use crate::game::Frame;
