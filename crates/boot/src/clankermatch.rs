@@ -136,7 +136,9 @@ pub fn balance(teams: u32, humans: &[(u8, f32)], skills: &[f32]) -> Vec<Option<u
 
 /// The playlist filter on [`HOPPER_LISTED`](engine::points::HOPPER_LISTED).
 pub struct PlaylistFilter {
-    pub hle: Arc<live_hle::Hle>,
+    /// `None` with no Live: every hopper is listed, as retail. Placed
+    /// anyway, so the boot plan (and its tests) always holds the hook.
+    pub hle: Option<Arc<live_hle::Hle>>,
 }
 
 impl feature::Feature for PlaylistFilter {
@@ -149,10 +151,13 @@ impl feature::Feature for PlaylistFilter {
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         use engine::points::HOPPER_LISTED;
-        let hle = Arc::clone(&self.hle);
+        let hle = self.hle.clone();
         let told = Arc::new(AtomicBool::new(false));
         b.raw()
             .before(&HOPPER_LISTED, "clanker or human hoppers", move |c| {
+                let Some(hle) = &hle else {
+                    return Ok(Flow::Continue);
+                };
                 let index = c.cpu.ecx;
                 let marks = hle.clanker_hoppers();
                 let on = active();
@@ -174,14 +179,13 @@ impl feature::Feature for PlaylistFilter {
     }
 }
 
-/// Adds the playlist filter (Live only).
+/// Adds the playlist filter; with no Live it lists every hopper.
 pub fn install(
     registry: &mut feature::Registry,
     live: Option<Arc<live_hle::Hle>>,
 ) -> anyhow::Result<()> {
-    let Some(hle) = live else { return Ok(()) };
     registry
-        .add(&PlaylistFilter { hle })
+        .add(&PlaylistFilter { hle: live })
         .map_err(|e| anyhow::anyhow!("clankermatch playlists: {e}"))?;
     Ok(())
 }

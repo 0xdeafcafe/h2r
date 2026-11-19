@@ -1301,12 +1301,12 @@ fn storage_pending_pumps_results_and_close_never_wait_for_http() {
     discovery["api"] = json!(format!("{url}/v1"));
     let (entered, seen) = mpsc::channel();
     let (release, wait) = mpsc::channel();
-    // Forward the three logon requests, then deliberately hold the file GET.
+    // Forward the logon's requests (discovery, three logon calls and the clanker hoppers), then deliberately hold the file GET.
     let proxy = std::thread::spawn(move || {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(3))
             .build();
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut socket, _) = listener.accept().unwrap();
             let header = String::from_utf8(receive_headers(&mut socket)).unwrap();
             let mut lines = header.lines();

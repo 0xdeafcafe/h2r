@@ -135,24 +135,24 @@ fn main_menu_to_the_lobby_to_start() {
     // The Live menu restored on row 0: three downs (past Clankermatch)
     // and A on Custom Game.
     d.line(11100, "ui: screen 0xba (window 5, slot 4), live menu row 0");
-    let p = presses(&mut d, 11200, 16000);
+    let p = presses(&mut d, 11200, 17800);
     assert_eq!(p.len(), 4, "{p:?}");
     assert!(
         p[0].starts_with("down toward Custom Game (row 3, from 0)"),
         "{p:?}"
     );
-    assert!(p[2].starts_with("a Custom Game"), "{p:?}");
+    assert!(p[3].starts_with("a Custom Game"), "{p:?}");
     // The lobby: lobby mode 2 alone is not a Live lobby.
-    d.line(16100, LOBBY);
-    d.line(16200, "coop-live: lobby mode 2");
+    d.line(18100, LOBBY);
+    d.line(18200, "coop-live: lobby mode 2");
     assert!(d.take_said().is_empty());
-    d.line(17000, ADVERTISED);
+    d.line(19000, ADVERTISED);
     assert!(
         d.take_said()
             .iter()
             .any(|s| s == "bots-drive: in the Live custom game lobby")
     );
-    assert!(presses(&mut d, 17100, 24000).is_empty());
+    assert!(presses(&mut d, 19100, 24000).is_empty());
     for p in 1..=3 {
         d.line(
             24000 + p,
@@ -351,7 +351,7 @@ fn the_live_menu_cursor_left_lower_goes_up() {
     presses(&mut d, 2500, 5000);
     d.line(5100, "ui: screen 0xba (window 5, slot 4), live menu row 4");
     let p = presses(&mut d, 5200, 12000);
-    assert_eq!(p.len(), 3, "{p:?}");
+    assert_eq!(p.len(), 2, "{p:?}");
     assert!(
         p[0].starts_with("up toward Custom Game (row 3, from 4)"),
         "{p:?}"
