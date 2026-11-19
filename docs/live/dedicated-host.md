@@ -65,6 +65,37 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 
 **Sizing is provisional.** The two-bot result supplied for this design, 2.8× unpaced at 30 ticks/s, gives 84 ticks/s or **11.9 ms/tick**. If CPU-bound, that uses about 36% of one comparable serial core when paced. If 10–20% of that work scales linearly with player count, sixteen seats cost 11.9 × (1 + 7f) with f = 0.10–0.20, or **20–29 ms/tick** (about **0.61–0.86 of a comparable core**), before network replication. At about 26% scalable work the 33.3 ms budget is already exhausted. Remote humans replace bot thinking with real replication and acknowledgement work. The sim design budgets roughly **1 GB/process** including guest RAM, module and caches. Sixteen-player CPU and peak RSS are unmeasured. Trial one sustained core and 2 GiB, then two cores and 4 GiB. Extra cores can handle other threads. One slow simulation thread can still miss its deadline. [Sim cost model and report](../runtime/sim.md#10-expected-speed-up) · [Report fields](../../crates/sim/src/metrics.rs)
 
+## Container image
+
+The deployable artifact for both cloud providers is one image,
+[deploy/host](../../deploy/host/README.md): `debian:bookworm-slim` for
+linux/amd64 with `ca-certificates` and nothing else from apt, the Linux `h2`
+built with `--no-default-features --features host` (no window, Metal,
+AVFoundation, input devices or app icons), and the game module compiled from
+**the owner's own disc**. No game data is inside: maps and shared disc
+content are fetched at start from the owner's private bundle over
+`H2_DATA_URL`, hash-checked against `H2_DATA_SHA`, and cached per machine
+under `/var/cache/h2`.
+
+`deploy/host/build.sh` runs on the owner's Mac. It cross-builds `h2` with
+cargo-zigbuild pinned to bookworm's glibc (`x86_64-unknown-linux-gnu.2.36`,
+matching the base image), compiles the Linux module with this checkout's
+macOS `h2`, and stages the binary, the module with its stamp, and
+`default.xbe` — the boot needs the image the module was built from — into
+`deploy/host/stage/`, which `docker build` then packs. The entrypoint maps
+`H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and the
+optional `H2_REGION` onto `h2 host run` and `exec`s it, so the match process
+is the container's main process and stops with the container. The game's UDP
+ports 31000–31006 and the agent socket's 31100/tcp are exposed; there is no
+health check and no restart policy, because a host is one ad-hoc lease and
+the provider that started the container (Durable Object, Fly Machine or a
+plain `docker run`) owns liveness and stop.
+
+The module is derived from the owner's disc, so the image belongs to its
+owner alone. Push it only to a private registry — Cloudflare's container
+registry for the account, or Fly's private registry — never a public one.
+The rights questions above apply to a fleet of these images unchanged.
+
 ## Light host
 
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.
