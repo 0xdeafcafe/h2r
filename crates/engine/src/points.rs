@@ -626,6 +626,15 @@ points! { ALL;
     /// the profile pick (`0x1905bf`). Called from the screen's handler
     /// `0x252ad7`.
     PLAYERS_SCREEN_UNJOINED @ 0x0025_2a67: [fn(screen: stack 0, event: esi) -> al ret 4]; "docs/game/bots.md";
+    /// The players screen's (`0x1e`) per-frame update (vtable `0x45a490`
+    /// slot 3, thiscall, plain `ret`; from the window update `0x2358b9`):
+    /// for each port it lays out the pane. A port is "joined" (name, no
+    /// prompt) when its controller handle (`0x4e61cc`, `0x18f8b8`) is
+    /// non-zero and its slot has a profile (`+0` bit `0x10`); with a
+    /// controller and no profile it says "PRESS A TO JOIN" (`0x0f00028a`),
+    /// with none "CONNECT CONTROLLER" (`0x1100028b`). Ends in the children's
+    /// update `0x22e391`.
+    PLAYERS_SCREEN_UPDATE @ 0x0025_2554: [fn(screen: ecx) ret 0]; "docs/game/bots.md";
     /// Signs a profile into a local player slot: the slot index, the
     /// 0x1e0-byte profile block it copies to the slot's `+0x18`, and the
     /// profile file (-1 for none, so nothing is saved). Sets the slot's
@@ -640,6 +649,14 @@ points! { ALL;
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The sound listeners' update (stdcall, one argument, `ret 4`): for
+    /// each local user mapped (`[0x4e8c20] + 0xc`) it sets the user's
+    /// listener (records `0x48` bytes apart in `[0x4e6380]`) from its
+    /// camera and marks it active (the byte at `[0x4e6380] + 0x8e + 0x48 *
+    /// user`); an unmapped user's is left as it was.
+    /// Called from `SOUND_UPDATE` (`0x125c1e`) and, outside it, from the
+    /// per-frame update `0x18c060` (`0x18c07f`, from `0x137ef8`).
+    SOUND_LISTENERS_UPDATE @ 0x0012_7400: [fn(arg: stack 0) ret 4]; "docs/game/bots.md";
     /// The map cache copy machine: one state step per call (submit a
     /// 1 MiB read or write job, take its result, checksum, publish), AL
     /// returned and ignored by its callers. They step it only while the

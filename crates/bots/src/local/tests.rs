@@ -260,3 +260,75 @@ fn a_source_is_told_the_game_tick_in_a_game_only() {
     l.frame(1, &g, |_| false);
     assert_eq!(*seen.lock().unwrap(), vec![(0, None), (1, Some(42))]);
 }
+
+/// The human's real pad, which keeps the rumble it is sent.
+struct Felt(Arc<Mutex<Vec<(HostPadId, input::Rumble)>>>);
+impl HostBackend for Felt {
+    fn name(&self) -> &str {
+        "felt"
+    }
+    fn poll(&mut self) -> Vec<HostPad> {
+        vec![HostPad {
+            id: HostPadId(7),
+            name: "pad".into(),
+            state: HostPadState::default(),
+            physical: true,
+            supports_rumble: true,
+        }]
+    }
+    fn set_rumble(&mut self, id: HostPadId, r: input::Rumble) {
+        self.0.lock().unwrap().push((id, r));
+    }
+}
+
+#[test]
+fn rumble_for_a_bots_port_never_reaches_the_humans_pad() {
+    use input::device::{FeedbackRequest, InputError};
+    let felt = Arc::new(Mutex::new(Vec::new()));
+    let l = Local::default();
+    l.add(1, "b", idle()).unwrap();
+    let mut m = input::InputManager::new(Default::default()).unwrap();
+    m.add_backend(Box::new(Felt(Arc::clone(&felt))));
+    m.add_backend(Box::new(l.backend()));
+    m.sync();
+    assert_eq!(m.connected_mask(), 0b11);
+    let port = |p| input::PortIndex::new(p).unwrap();
+    let (human, bot) = (m.open(port(0)).unwrap(), m.open(port(1)).unwrap());
+    let shake = |left_motor| input::Rumble {
+        left_motor,
+        right_motor: 0,
+    };
+    // The bot's pad has no motors: the game's XInputSetState on its port is
+    // refused (as on an Xbox pad with none) and nothing is queued.
+    assert_eq!(
+        m.capabilities(bot).unwrap().output,
+        input::Rumble::default()
+    );
+    assert!(matches!(
+        m.set_state(
+            bot,
+            FeedbackRequest {
+                addr: 0x100,
+                h_event: 0,
+                rumble: shake(0x4000),
+            },
+        ),
+        Err(InputError::NotSupported)
+    ));
+    m.set_state(
+        human,
+        FeedbackRequest {
+            addr: 0x200,
+            h_event: 0,
+            rumble: shake(0x8000),
+        },
+    )
+    .unwrap();
+    m.sync();
+    m.sync();
+    assert_eq!(
+        *felt.lock().unwrap(),
+        vec![(HostPadId(7), shake(0x8000))],
+        "only the human's own rumble, once"
+    );
+}
