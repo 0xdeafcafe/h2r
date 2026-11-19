@@ -52,7 +52,7 @@ impl Aabb {
     /// Whether the box and the sphere (`centre`, `radius`) share a point;
     /// an empty box meets nothing.
     pub fn meets_sphere(&self, centre: [f32; 3], radius: f32) -> bool {
-        if self.is_empty() || !(radius >= 0.0) {
+        if self.is_empty() || radius.is_nan() || radius < 0.0 {
             return false;
         }
         let d2: f32 = (0..3)
