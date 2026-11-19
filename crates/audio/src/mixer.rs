@@ -38,6 +38,7 @@ pub struct Mixer {
     pub(crate) sample_rate: u32,
     pub(crate) master_mb: i32,
     pub(crate) listener: Listener,
+    pub(crate) distance_reverb: bool,
     pub(crate) buffers: BTreeMap<BufferId, SoundBuffer>,
     pub(crate) streams: BTreeMap<StreamId, Stream>,
     pub(crate) mix_ins: BTreeMap<MixInId, MixIn>,
@@ -92,6 +93,7 @@ impl Mixer {
             sample_rate,
             master_mb: 0,
             listener: Listener::default(),
+            distance_reverb: false,
             buffers: BTreeMap::new(),
             streams: BTreeMap::new(),
             mix_ins: BTreeMap::new(),
@@ -178,6 +180,12 @@ impl Mixer {
 
     pub fn reverb(&self) -> Option<&I3dl2Listener> {
         self.reverb.as_ref().map(Reverb::params)
+    }
+
+    /// Enables additional wet level and direct HF loss with source distance.
+    /// This host enhancement is off by default.
+    pub fn set_distance_reverb(&mut self, enabled: bool) {
+        self.distance_reverb = enabled;
     }
 
     /// Master volume in millibels.
@@ -348,6 +356,7 @@ impl Mixer {
                     listener: &self.listener,
                     direct: &mut direct,
                     room: &mut room,
+                    distance_reverb: self.distance_reverb,
                     environment,
                     rate,
                     master,
@@ -404,6 +413,7 @@ impl Mixer {
                     listener: &self.listener,
                     direct: &mut direct,
                     room: &mut room,
+                    distance_reverb: self.distance_reverb,
                     environment,
                     rate,
                     master,
@@ -439,6 +449,7 @@ impl Mixer {
                 listener: &self.listener,
                 direct: &mut direct,
                 room: &mut room,
+                distance_reverb: self.distance_reverb,
                 environment,
                 rate,
                 master,
@@ -515,7 +526,12 @@ struct VoicePaths {
 }
 
 impl VoicePaths {
-    fn new(listener: &Listener, voice: &VoiceParams, env: Option<&I3dl2Listener>) -> Self {
+    fn new(
+        listener: &Listener,
+        voice: &VoiceParams,
+        env: Option<&I3dl2Listener>,
+        distance_reverb: bool,
+    ) -> Self {
         let source = voice.fx.i3dl2.unwrap_or_default().sane();
         let reference_hz = env.map_or(DEFAULT_HF_REFERENCE_HZ, |e| e.hf_reference);
         let reference_hz = if reference_hz.is_nan() {
@@ -524,9 +540,20 @@ impl VoicePaths {
             reference_hz.clamp(20.0, 20_000.0)
         };
         let mut room_gain = source.room_gain();
+        let mut direct_hf_db = source.shelf_db();
         if let Some(sp) = &voice.spatial
             && let Some(distance) = listener.source_distance(sp)
         {
+            if distance_reverb {
+                // World units are map-scale dependent. Ten metres is the
+                // half-strength point of this bounded, host-chosen curve.
+                let metres = f64::from(distance) * f64::from(listener.distance_factor);
+                if metres.is_finite() && metres > 0.0 {
+                    let amount = (metres / (10.0 + metres)) as f32;
+                    room_gain *= crate::fx::mb_gain(600.0 * amount);
+                    direct_hf_db -= 12.0 * amount;
+                }
+            }
             let min = sp.min_distance.max(1e-6);
             let d = distance.min(sp.max_distance.max(min));
             if d > min {
@@ -544,7 +571,7 @@ impl VoicePaths {
         Self {
             direct_gain: source.direct_gain(),
             room_gain,
-            direct_hf_db: source.shelf_db(),
+            direct_hf_db,
             room_hf_db: source.room_shelf_db(),
             reference_hz,
         }
@@ -557,6 +584,7 @@ struct Route<'a> {
     direct: &'a mut [f32],
     room: &'a mut [f32],
     environment: Option<I3dl2Listener>,
+    distance_reverb: bool,
     rate: u32,
     master: f32,
     buses: &'a mut [Bus],
@@ -582,7 +610,7 @@ fn route_voice(
 ) -> bool {
     let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
-    let paths = VoicePaths::new(listener, p, cx.environment.as_ref());
+    let paths = VoicePaths::new(listener, p, cx.environment.as_ref(), cx.distance_reverb);
     let direct = paths.direct_gain;
     let room = paths.room_gain;
     let filtered = filter_path(
@@ -1377,6 +1405,46 @@ mod tests {
             assert!((db(occluded.1, wet) - loss).abs() < 0.2);
             assert!((db(room.1, wet) - if high { -21.0 } else { -9.0 }).abs() < 0.2);
         }
+    }
+
+    #[test]
+    fn positioned_mix_in_distance_changes_wet_balance_and_direct_brightness_only_when_enabled() {
+        let measure = |enabled, distance, hz| {
+            let mut m = Mixer::new(48_000);
+            m.set_distance_reverb(enabled);
+            m.set_reverb(Some(I3dl2Listener {
+                reflections_delay: 0.3,
+                ..env_params()
+            }));
+            let mut bus = MixIn::new(17);
+            bus.set_mix_bins(Some(vec![(6, 0), (10, -600)]));
+            bus.set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, distance),
+                min_distance: f32::MAX,
+                max_distance: f32::MAX,
+                rolloff_factor: 0.0,
+                ..Default::default()
+            }));
+            bus.play();
+            m.add_mix_in(bus);
+            let mut stream = Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap();
+            stream.set_mix_bins(Some(vec![(17, -900)]));
+            stream.submit(&sine_pcm(hz, 0.1)).unwrap();
+            m.add_stream(stream);
+            let mut out = vec![0.0; 4800 * 2];
+            m.render(&mut out);
+            let energy = |s: &[f32]| s.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+            (energy(&out[480..]), energy(&m.reverb_in[240..]))
+        };
+        let far = 30.0;
+        let neutral = measure(false, 0.0, 5000.0);
+        assert_eq!(measure(false, far, 5000.0), neutral);
+        assert_eq!(measure(true, 0.0, 5000.0), neutral);
+        let (direct, wet) = measure(true, far, 5000.0);
+        assert!(wet > neutral.1 && direct / wet < neutral.0 / neutral.1);
+        let low_near = measure(true, 0.0, 100.0).0;
+        let low_far = measure(true, far, 100.0).0;
+        assert!(direct / low_far < 0.3 * neutral.0 / low_near);
     }
 
     #[test]

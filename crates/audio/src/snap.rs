@@ -893,6 +893,8 @@ impl Mixer {
             reverb_in: _,
             direct: _,
             room: _,
+            // Host configuration, covered by the snapshot feature-switch key.
+            distance_reverb: _,
             clock,
             // Diagnostics.
             health: _,
@@ -1016,6 +1018,8 @@ impl Mixer {
             reverb_in: _,
             direct: _,
             room: _,
+            // Host configuration, covered by the snapshot feature-switch key.
+            distance_reverb: _,
             clock,
             health: _,
             taps,

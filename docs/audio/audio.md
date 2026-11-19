@@ -203,6 +203,17 @@ Documented and deliberately simple; it is not the MCPX HRTF.
 - Not modelled: HRTF filtering. Occlusion and reverb are per-voice effects
   below.
 
+### Optional distance reverb
+
+`H2_FEATURES=audio.distance_reverb=on` enables extra depth for positioned
+voices. It uses the length of the listener-relative position in metres,
+before the DS3D min/max clamp. For distance `d`, the mixer adds
+`6 × d/(10+d)` dB to an existing room send and subtracts
+`12 × d/(10+d)` dB from the direct HF level. At ten metres this gives
++3 dB wet and −6 dB at the HF reference. These are host tuning choices.
+The switch defaults off. Unpositioned streams keep their game mix. When
+a stream feeds a positioned mix-in, the cue applies there.
+
 ### Voice effects
 
 `crate::fx` (per-voice) and `crate::reverb` (one per mixer). Every effect is

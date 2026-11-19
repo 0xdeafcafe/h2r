@@ -70,6 +70,11 @@ impl Switches {
         self.set.get(id).copied().unwrap_or(default)
     }
 
+    /// Optional extra wet level and direct HF loss for positioned voices.
+    pub fn distance_reverb(&self) -> bool {
+        self.feature("audio.distance_reverb", false)
+    }
+
     /// `impl.<name>`, falling back to its parent (`impl.ui.row_text` then
     /// `impl.ui`), then `default`.
     pub fn implementation(&self, name: &str, default: bool) -> bool {
@@ -105,6 +110,22 @@ mod tests {
         assert!(!s.implementation("ui", false));
         assert!(Switches::parse("a=maybe").is_err());
         assert!(Switches::parse("-").is_err());
+    }
+
+    #[test]
+    fn distance_reverb_is_an_exact_opt_in() {
+        assert!(!Switches::defaults().distance_reverb());
+        assert!(!Switches::parse("audio=on").unwrap().distance_reverb());
+        assert!(
+            Switches::parse("audio.distance_reverb=on")
+                .unwrap()
+                .distance_reverb()
+        );
+        assert!(
+            !Switches::parse("audio.distance_reverb=off")
+                .unwrap()
+                .distance_reverb()
+        );
     }
 
     #[test]
