@@ -94,6 +94,9 @@ pub const PRESS_WINDOW: u32 = 5;
 pub const PRESS_SLOT: u32 = 4;
 /// The loading screen's id (`0x2b1467`'s, `screen + 0x70`).
 pub const LOADING_SCREEN: u32 = 0xd1;
+/// Where in the scratch page the stand-in list goes ([`write_stand_in`]):
+/// past the press's arguments, its mode byte inside the page.
+pub const STAND_IN: u32 = 0x100;
 /// The difficulty rows: Easy, Normal, Heroic, Legendary.
 pub const DIFFICULTIES: std::ops::RangeInclusive<i16> = 0..=3;
 const DIFFICULTY_NAMES: [&str; 4] = ["Easy", "Normal", "Heroic", "Legendary"];
@@ -436,6 +439,45 @@ pub fn write_press(
     Ok((at, at + 0x10))
 }
 
+/// A stand-in for the difficulty list at `at`: its mode byte, the only
+/// part of the list a mode 0 press reads (`0x2c9d79`; the mode 0 path from
+/// `0x2c9d9b` never reads `this` again). Returns the list pointer to pass.
+pub fn write_stand_in(
+    m: &mut dyn engine::memory::GuestMemory,
+    at: u32,
+    p: &Pending,
+) -> Result<u32, MemFault> {
+    m.set_u8(at + DIFFICULTY_LIST_MODE, u8::from(p.from_select))?;
+    Ok(at)
+}
+
+/// Which list the kept press runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// The kept difficulty list, still there.
+    List(u32),
+    /// The kept list is gone with the page up (the stack frees the screen
+    /// under a new one); a mode 0 press runs on a stand-in.
+    StandIn,
+    /// Gone, and the press needs the real list (mode 1 finds the screen's
+    /// root through it): not started.
+    Gone,
+}
+
+impl Target {
+    /// For a kept list whose vtable reads `vtable` now, with the press
+    /// in `mode`.
+    pub fn of(list: u32, vtable: u32, mode: Continue, from_select: bool) -> Target {
+        if vtable == DIFFICULTY_LIST_VTABLE {
+            Target::List(list)
+        } else if mode == Continue::Stay && !from_select {
+            Target::StandIn
+        } else {
+            Target::Gone
+        }
+    }
+}
+
 /// When Start Level runs the kept press.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Continue {
@@ -533,7 +575,7 @@ pub async fn action(cx: &Cx, flow: &PageFlow, page: u32, mode: Continue) -> Resu
                     p.row,
                     difficulty_name(p.row)
                 );
-                if continue_level(cx, flow, &p).await? {
+                if continue_level(cx, flow, &p, Continue::Stay).await? {
                     flow.started();
                 }
                 Ok(())
@@ -547,7 +589,7 @@ pub async fn freed(cx: &Cx, flow: &PageFlow, page: u32) -> Result<(), EntryError
     match flow.freed(page) {
         Freed::Continue(p) => {
             eprintln!("skulls page: the page {page:#x} is freed; back on the difficulty list");
-            continue_level(cx, flow, &p).await.map(|_| ())
+            continue_level(cx, flow, &p, Continue::Freed).await.map(|_| ())
         }
         Freed::Back => {
             eprintln!("skulls page: the page {page:#x} is freed (B); nothing started");
@@ -563,26 +605,48 @@ pub async fn freed(cx: &Cx, flow: &PageFlow, page: u32) -> Result<(), EntryError
 /// Run the kept difficulty press on its own list, as the game would have:
 /// it stores the difficulty and starts the level. The hook lets it through
 /// ([`Phase::Continuing`]); nothing is kept after. Whether it ran.
-pub async fn continue_level(cx: &Cx, flow: &PageFlow, p: &Pending) -> Result<bool, EntryError> {
+pub async fn continue_level(
+    cx: &Cx,
+    flow: &PageFlow,
+    p: &Pending,
+    mode: Continue,
+) -> Result<bool, EntryError> {
     let Some(&scratch) = flow.scratch.get() else {
         eprintln!("skulls page: no scratch page; not started");
         flow.done();
         return Ok(false);
     };
     let vtable = cx.read(|m| m.u32(p.list)).unwrap_or(0);
-    if vtable != DIFFICULTY_LIST_VTABLE {
-        eprintln!(
-            "skulls page: the difficulty list at {:#x} is gone (vtable {vtable:#x}); not started",
-            p.list
-        );
-        flow.done();
-        return Ok(false);
-    }
+    let list = match Target::of(p.list, vtable, mode, p.from_select) {
+        Target::List(list) => list,
+        Target::StandIn => {
+            eprintln!(
+                "skulls page: the difficulty list at {:#x} is gone under the page \
+                 (vtable {vtable:#x}); the press runs on a stand-in with its mode byte",
+                p.list
+            );
+            match cx.write(|m| write_stand_in(m, scratch + STAND_IN, p)) {
+                Ok(list) => list,
+                Err(e) => {
+                    flow.done();
+                    return Err(e.into());
+                }
+            }
+        }
+        Target::Gone => {
+            eprintln!(
+                "skulls page: the difficulty list at {:#x} is gone (vtable {vtable:#x}); not started",
+                p.list
+            );
+            flow.done();
+            return Ok(false);
+        }
+    };
     eprintln!(
         "skulls page: starting: the difficulty press ({} for {}, list {:#x}) with {}",
         difficulty_name(p.row),
         p.profile,
-        p.list,
+        list,
         skulls_on_line(&p.profile)
     );
     let before = cx.read(|m| ui_watch::stack(&ReadGm(m), PRESS_WINDOW, PRESS_SLOT));
@@ -591,7 +655,7 @@ pub async fn continue_level(cx: &Cx, flow: &PageFlow, p: &Pending) -> Result<boo
         Ok((chain, row)) => {
             cx.call(
                 GuestCall::new(engine::points::DIFFICULTY_ROW_CHOSEN.base)
-                    .ecx(p.list)
+                    .ecx(list)
                     .args([chain, row]),
             )
             .await
@@ -1066,7 +1130,7 @@ mod tests {
 
     fn guest(list_vtable: u32) -> FakeGuest {
         let mut g = FakeGuest::new();
-        g.map(PAGE, 0x100).map(LIST, 0x400).map(SCRATCH, 0x100);
+        g.map(PAGE, 0x100).map(LIST, 0x400).map(SCRATCH, 0x1000);
         g.put_u32(PAGE + SCREEN_WINDOW, 5)
             .put_u32(PAGE + SCREEN_SLOT, 4)
             .put_u32(LIST, list_vtable);
@@ -1222,6 +1286,45 @@ mod tests {
             stack_line(true, None),
             "skulls page: after the press: window 5 slot 4 unreadable"
         );
+    }
+
+    /// Seen live (2026-11-19, `h2 serve --settings`, a Halo 1 level from
+    /// the level select): with the page up the difficulty list was gone
+    /// (vtable 0x458788 at its address), so Start Level said "not started"
+    /// and every press after found nothing kept. A mode 0 press reads only
+    /// the list's mode byte, so it runs on a stand-in holding it.
+    #[test]
+    fn start_level_starts_when_the_list_under_the_page_is_gone() {
+        let f = flow();
+        let run = run(&f, guest(0x0045_8788), |cx, f| {
+            Box::pin(async move {
+                action(&cx, &f, PAGE, Continue::Stay).await?;
+                Ok(Ret::new(0, 0))
+            })
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 0)));
+        let stand_in = SCRATCH + STAND_IN;
+        assert_eq!(
+            run.calls,
+            [Gc::new(engine::points::DIFFICULTY_ROW_CHOSEN.base)
+                .ecx(stand_in)
+                .args([SCRATCH, SCRATCH + 0x10])],
+            "the press, once, on the stand-in"
+        );
+        assert_eq!(run.guest.u8(stand_in + DIFFICULTY_LIST_MODE), Ok(0), "mode 0");
+        assert_eq!(f.pending(), None);
+    }
+
+    #[test]
+    fn the_press_runs_on_the_list_or_a_stand_in_by_mode() {
+        let ok = DIFFICULTY_LIST_VTABLE;
+        assert_eq!(Target::of(LIST, ok, Continue::Stay, false), Target::List(LIST));
+        assert_eq!(Target::of(LIST, ok, Continue::Freed, true), Target::List(LIST));
+        assert_eq!(Target::of(LIST, 0x458788, Continue::Stay, false), Target::StandIn);
+        // A lobby's press finds the screen through the real list.
+        assert_eq!(Target::of(LIST, 0x458788, Continue::Freed, true), Target::Gone);
+        assert_eq!(Target::of(LIST, 0, Continue::Stay, true), Target::Gone);
+        assert_eq!(Target::of(LIST, 0, Continue::Freed, false), Target::Gone);
     }
 
     /// A kept list that is no longer a difficulty list is not called.
