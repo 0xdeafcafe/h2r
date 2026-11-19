@@ -364,32 +364,39 @@ let archiveGame = "";
   } catch (e) {
     fail("ingest-wrong-method", e);
   }
+  out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
   try {
     const end = eventBody(a!, {stream:"game-" + gameId, type:"GameEnded", data:{tick:960,reason:"finished"}}, Date.now());
     const key = await importSeed(a!.key, a!.x);
     const compact = await signCompact(key.privateKey, {alg:"EdDSA", kid:key.publicJwk.kid, typ:TYP_EVENT}, canonicalJson([end]));
+    const closeAt = performance.now();
     const closed = await timed(api + "/games/" + gameId + "/events", {
       method:"POST", headers:{authorization:`Bearer ${await writeToken()}`, "content-type":"application/jose"}, body:compact,
     });
     if (closed.r.status !== 201) fail("archive-close", closed.body);
     await json.until(m => m.kind === "event" && m.event?.type === "ReplayArchivePublished", 30_000);
+    const publishedAt = performance.now();
     const url = api + "/games/" + gameId;
     const index = await (await fetch(url + "/chunks?format=archive")).json();
     if (index.items?.length !== 2 || !/^[0-9a-f]{64}$/.test(index.archive_sha256)) fail("archive-index", JSON.stringify(index));
+    const readMs: number[] = [];
     for (const [i, tick] of [30, 960].entries()) {
       const raw = await fetch(url + "/chunks/" + tick);
+      const readAt = performance.now();
       const segment = await fetch(url + "/archive/" + index.archive_sha256 + "/" + i);
       if (!raw.ok || !segment.ok || segment.headers.get("content-encoding") !== "br" ||
           !segment.headers.get("cache-control")?.includes("immutable")) fail("archive-headers", segment.status);
       const archived = decodeArchive(new Uint8Array(await segment.arrayBuffer()));
+      readMs.push(+(performance.now() - readAt).toFixed(1));
       const source = await decodeChunk(new Uint8Array(await raw.arrayBuffer()));
       if (archived.length !== 1 || archived[0]?.tick !== tick || canonicalJson(archived) !== canonicalJson(source))
         fail("archive-r2-parity", "source and archive differ at tick " + tick);
     }
     archiveGame = gameId;
-    out.archive = {segments:index.items.length, archive_sha256:index.archive_sha256};
+    out.archive = {segments:index.items.length, archive_sha256:index.archive_sha256,
+      close_ms:closed.ms, close_to_publication_ms:+(publishedAt - closeAt).toFixed(1),
+      segment_fetch_and_decode_ms:readMs};
   } catch (e) { fail("archive-alarm", e); }
-  out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
   for (const s of [json, packed, game]) s.ws.close();
 }
 
@@ -487,12 +494,13 @@ let archiveGame = "";
       if (!r.r.ok) fail("archive-verify", r.body);
       return JSON.parse(r.body);
     };
+    const verifyAt = performance.now();
     const first = await verify(null);
     const last = await verify(first.next);
     if (first.done || !first.next || !last.done || last.totals.frames !== 2 || last.totals.segments !== 2 ||
         last.archive_sha256 !== info.archive_sha256 || last.backup_sha256 !== info.backup_sha256 ||
         canonicalJson(await verify(first.next)) !== canonicalJson(last)) fail("archive-retry", JSON.stringify(last));
-    r2.verified_archive = last.totals;
+    r2.verified_archive = { ...last.totals, verify_with_retry_ms:+(performance.now() - verifyAt).toFixed(1) };
     const file = random(2 * 1024 * 1024);
     const url = `${api}/titles/4d530064/files/smoke.bin`;
     t = performance.now();
