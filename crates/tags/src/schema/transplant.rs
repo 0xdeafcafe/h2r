@@ -488,12 +488,57 @@ impl<'s> Unpinner<'s> {
             return Ok(id);
         }
         let offset = v & 0x3fff_ffff;
-        let bytes = src.read_file_range(offset.into(), len.into())?;
-        self.raw.0 += 1;
-        self.raw.1 += u64::from(len);
-        let id = dst.add_raw(bytes, 1 << offset.trailing_zeros().min(12));
+        let id = self.read_raw(src, dst, offset, len.into())?;
         self.raws.insert(v, id);
         Ok(id)
+    }
+
+    fn read_raw<R: Read + Seek>(
+        &mut self,
+        src: &mut Map<R>,
+        dst: &mut TagSet,
+        offset: u32,
+        size: u64,
+    ) -> crate::Result<RawId> {
+        let bytes = src
+            .read_file_range(offset.into(), size)
+            .map_err(|source| Error::RawRead { offset, size, source })?;
+        self.raw.0 += 1;
+        self.raw.1 += size;
+        Ok(dst.add_raw(bytes, 1 << offset.trailing_zeros().min(12)))
+    }
+
+    /// Rebuild the locale file offsets before the generic raw pass. Locale
+    /// descriptors give exact spans, including empty spans with nonzero
+    /// offsets that can also be the start of unrelated data.
+    fn localise_matg_locales<R: Read + Seek>(
+        &mut self,
+        root: &super::Struct,
+        block: &mut map::build::Block,
+        src: &mut Map<R>,
+        dst: &mut TagSet,
+    ) -> crate::Result<()> {
+        let mut empty = None;
+        for (&field, kind) in &root.fields {
+            if !matches!(kind, Field::Raw) {
+                continue;
+            }
+            let Some(size) = crate::localization::matg_locale_raw_len(&block.bytes, field) else {
+                continue;
+            };
+            let at = field as usize;
+            let offset = super::u32_at(&block.bytes, at);
+            if offset == 0 || offset == u32::MAX {
+                continue;
+            }
+            let raw = if size == 0 {
+                *empty.get_or_insert_with(|| dst.add_raw(Vec::new(), 0x200))
+            } else {
+                self.read_raw(src, dst, offset, size)?
+            };
+            block.put_u32(at, 0).raw(field, RawRef::Local(raw));
+        }
+        Ok(())
     }
 
     /// Rewrite the raw pointers of `count` elements of `s` in `block` (a
@@ -682,6 +727,9 @@ impl<'s> Unpinner<'s> {
                 .to_built(id)
                 .map_err(|_| Error::Invalid("tag is not relocatable"))?;
             let root = &self.rel.schema.groups[&group];
+            if group == FourCC(*b"matg") {
+                self.localise_matg_locales(root, &mut block, src, dst)?;
+            }
             self.localise(root, &mut block, 1, src, dst)?;
             done.push((id, TagPayload::Built(block)));
         }

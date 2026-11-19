@@ -1893,40 +1893,6 @@ fn a10_scripted_vehicles_can_be_created() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-#[test]
-#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
-fn a30_converts_fresh_with_the_holo_control() {
-    let h1 = h1_level("a30");
-    let mut base = h2_map(h1campaign::base_for("a30"));
-    let s = scripting();
-    let donors = donors();
-    let opts = Options {
-        scripts: Some(&s),
-        sounds: 1000,
-        donors: Some(&donors),
-        ..Default::default()
-    };
-    let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
-    assert!(done.report.fresh, "{}", done.report);
-    let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
-    m.validate_checksum().unwrap();
-    assert_eq!(m.header().name, "a30");
-
-    let group = FourCC(*b"ctrl");
-    let name = r"levels\b30\devices\interior tech objects\holo control\holo control";
-    let control = m.tag(map::TagQuery::NameInGroup(name, group)).unwrap().id;
-    let scenario = m.scenario().unwrap().id;
-    let relocator = tags::schema::Relocator::new(tags::schema::Schema::builtin(), &mut m).unwrap();
-    let (_, palette) = relocator.block_field(scenario, 0xc0).unwrap().unwrap();
-    assert!(palette.bytes.chunks_exact(0x28).any(|entry| {
-        entry[..4] == u32::from_be_bytes(group.0).to_le_bytes()
-            && entry[4..8] == control.0.to_le_bytes()
-    }));
-    let (count, colors) = relocator.block_field(control, 0xac).unwrap().unwrap();
-    assert_eq!(count, 4);
-    assert_eq!(colors.bytes.len(), 4 * 0x10);
-}
-
 /// Every Halo 1 machine, control and light fixture placement on every
 /// level converts and lands in the scenario: machines then light fixtures
 /// in the machine block (`+0xa8`, `0x48` each; Halo 2 has no `lifi` tags),

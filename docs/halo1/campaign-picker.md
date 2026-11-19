@@ -153,7 +153,10 @@ can be seen before any converted map exists. At boot
 (`campaigns::boot_state`) a campaign is listed when its manifest parses,
 its key is its folder's name, and at least one level has a map (in its
 folder, or on the disc); levels with no map yet are left out and the log
-says how many.
+says how many. The picker uses the files on disk and does not read the
+import stamp. A failed level leaves any successfully imported levels
+available. The Halo 2-assets files in `halo1/h2/` are alternates for
+levels listed by their main maps.
 
 ### Ids
 
