@@ -804,9 +804,13 @@ impl GpuWorld {
             multiview_mask: None,
         });
         // The programs carry the game's viewport in their constants: the
-        // pass covers the whole target, as the world's programs do.
+        // pass covers the whole target, as the world's programs do. The
+        // buffer is the program vertices (the layer-3 programs' own):
+        // clusters' are their placed world positions, and a placement's
+        // unplaced local coordinates, which its rigid program places with
+        // its rows.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         set.draw(&mut pass, color_format, depth_format)
     }
