@@ -380,11 +380,15 @@ fn arm_compare(
             words: p.code_words.clone(),
             vertex: program::frame_vertex(&p.program.vertex, view),
             pixel: program::frame_pixel(&base, view),
-            options: Default::default(),
+            options: shaders::vsh::VertexOptions {
+                provided_inputs: p.program.inputs,
+                input_fetch: program::WORLD_FETCH,
+                ..Default::default()
+            },
             def: p.program.def.clone(),
             pixel_options: p.program.pixel_options,
             textures: [None, None, None, None],
-            samplers: p.program.samplers.map(|s| s.and_then(program::sampler_key)),
+            samplers: p.program.samplers.map(|s| s.and_then(|s| program::sampler_key(&s))),
             primitive,
             depth: (depth.0, depth.1, Default::default()),
             draws: 4,
@@ -406,15 +410,15 @@ mod tests {
     fn the_compare_names_a_cluster_part_and_material() {
         // The parse is exact: a cluster index, a part, an optional
         // material.
-        std::env::set_var("H2_NATIVE_FOG_COMPARE", "37:4");
+        unsafe { std::env::set_var("H2_NATIVE_FOG_COMPARE", "37:4") };
         assert_eq!(compare(), Some((Owner::Cluster(37), 4, None)));
-        std::env::set_var("H2_NATIVE_FOG_COMPARE", "37:4:12");
+        unsafe { std::env::set_var("H2_NATIVE_FOG_COMPARE", "37:4:12") };
         assert_eq!(compare(), Some((Owner::Cluster(37), 4, Some(12))));
-        std::env::set_var("H2_NATIVE_FOG_COMPARE", "37");
+        unsafe { std::env::set_var("H2_NATIVE_FOG_COMPARE", "37") };
         assert_eq!(compare(), None);
-        std::env::set_var("H2_NATIVE_FOG_COMPARE", "x:4");
+        unsafe { std::env::set_var("H2_NATIVE_FOG_COMPARE", "x:4") };
         assert_eq!(compare(), None);
-        std::env::remove_var("H2_NATIVE_FOG_COMPARE");
+        unsafe { std::env::remove_var("H2_NATIVE_FOG_COMPARE") };
     }
 
     #[test]

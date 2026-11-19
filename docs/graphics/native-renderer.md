@@ -2092,8 +2092,8 @@ loaded, drawn with each material's own translated layer-16 pass.
   blend, depth or `CULLMODE` to the previous draw stays on the D3D path
   (inheriting the device's cull at the call, as layer 3 does, is a
   later slice).
-- **The fog state** (`fog::FogWords`): the effective fog unit of a draw
-  is the implementation's own render states overlaid on the device's
+- **The fog state** (`fog_gpu::FogWords`): the effective fog unit of a
+  draw is the implementation's own render states overlaid on the device's
   (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`,
   `FOGTABLEMODE`, `FOGSTART`, `FOGEND`, `FOGDENSITY`, `RANGEFOGENABLE`,
   read through `Device::render_state` as `stencil_state` reads the

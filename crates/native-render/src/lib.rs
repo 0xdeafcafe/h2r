@@ -23,7 +23,6 @@
 
 pub mod camera;
 pub mod cull;
-#[cfg(feature = "gpu")]
 pub mod fog;
 #[cfg(feature = "gpu")]
 pub mod fog_gpu;
