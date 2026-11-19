@@ -116,6 +116,21 @@ fn sse_command() -> Option<Command> {
     Some(c)
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn linux_native_sse_harness_adds_scalar_lanes() {
+    let input = In {
+        op: op("addss"),
+        pred: 0,
+        mxcsr: 0x1f80,
+        a: (17u128 << 32) | u128::from(1.0f32.to_bits()),
+        b: u128::from(2.0f32.to_bits()),
+    };
+    // Use a separate output name so the optional live sweep can compile in parallel.
+    let mut cmd = Command::new(build("sse_harness.c", "sse-linux-add", &[]));
+    assert_eq!(run_harness(&mut cmd, &[input]), vec![run_rust(&input)]);
+}
+
 /// Inputs for the hardware: fully masked MXCSRs, no rcp/rsqrt.
 fn hardware_inputs(n: usize, seed: u64) -> Vec<In> {
     let mut ins: Vec<In> = edge_records(true)

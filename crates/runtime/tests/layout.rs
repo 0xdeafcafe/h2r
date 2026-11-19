@@ -1,5 +1,5 @@
 //! Rust layouts are constant assertions on every compiled target. Clang checks
-//! every header field against those values for both Macs, even on arm64 CI.
+//! every header field against those values for the macOS and Linux targets.
 use runtime::{CpuAbi, TransferAbi, cpu::X87Abi};
 use std::{
     fs,
@@ -22,7 +22,7 @@ const _: () = {
 };
 
 #[test]
-fn c_header_matches_every_rust_field_on_both_macs() {
+fn c_header_matches_every_rust_field_on_macos_and_linux() {
     let mut source = String::from("#include \"h2abi.h\"\n");
     macro_rules! check {
         ($ty:ty, $($field:ident),+ $(,)?) => { $( source.push_str(&format!(
@@ -113,7 +113,11 @@ fn c_header_matches_every_rust_field_on_both_macs() {
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("layout.c");
     fs::write(&path, source).unwrap();
-    for target in ["arm64-apple-macos14", "x86_64-apple-macos10.15"] {
+    for target in [
+        "arm64-apple-macos14",
+        "x86_64-apple-macos10.15",
+        "x86_64-unknown-linux-gnu",
+    ] {
         let output = Command::new("clang")
             .args([
                 "-std=c11",
@@ -122,6 +126,7 @@ fn c_header_matches_every_rust_field_on_both_macs() {
                 "-Werror",
                 "-target",
                 target,
+                "-ffreestanding", // use Clang's stdint/stddef, independent of the host SDK
                 "-fsyntax-only",
                 "-I",
             ])

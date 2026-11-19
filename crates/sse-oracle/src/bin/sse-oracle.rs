@@ -2,18 +2,22 @@ use anyhow::{Context, Result, bail};
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     let scratch = std::env::var_os("TMPDIR").context("TMPDIR is required")?;
     let directory =
         PathBuf::from(scratch).join(format!("sse-oracle-native-{}", std::process::id()));
+    run(&args, &directory)
+}
+
+fn run(args: &[String], directory: &Path) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("fidelity") | Some("build") | Some("query") | Some("generate")
-            if !sse_oracle::rosetta_available() =>
+            if !sse_oracle::runner_available() =>
         {
-            eprintln!("skipped: Rosetta 2 (arch -x86_64) or clang is not available");
+            eprintln!("skipped: requires clang and either x86-64 Linux or macOS with Rosetta 2");
         }
         Some("inventory") if args.len() == 2 => {
             let forms = sse_oracle::inventory(&std::fs::read(&args[1])?)?;
@@ -33,7 +37,7 @@ fn main() -> Result<()> {
             }
             let inventory: Vec<sse_oracle::Form> =
                 serde_json::from_reader(BufReader::new(File::open(&args[2])?))?;
-            let binary = sse_oracle::build_runner(&directory)?;
+            let binary = sse_oracle::build_runner(directory)?;
             let mut oracle = sse_oracle::Oracle::spawn(&binary)?;
             let inputs = sse_oracle::fixtures::Inputs::default();
             let mut builder = sse_oracle::fixtures::Builder::default();
@@ -48,10 +52,10 @@ fn main() -> Result<()> {
             write_fixtures(&builder.finish()?, &args[3])?;
         }
         Some("build") => {
-            println!("{}", sse_oracle::build_runner(&directory)?.display());
+            println!("{}", sse_oracle::build_runner(directory)?.display());
         }
         Some("fidelity") => {
-            let binary = sse_oracle::build_runner(&directory)?;
+            let binary = sse_oracle::build_runner(directory)?;
             let mut oracle = sse_oracle::Oracle::spawn(&binary)?;
             serde_json::to_writer_pretty(
                 std::io::stdout(),
@@ -69,7 +73,7 @@ fn main() -> Result<()> {
                 state: sse_oracle::State,
             }
             let query: Query = serde_json::from_reader(BufReader::new(File::open(&args[1])?))?;
-            let binary = sse_oracle::build_runner(&directory)?;
+            let binary = sse_oracle::build_runner(directory)?;
             let mut oracle = sse_oracle::Oracle::spawn(&binary)?;
             serde_json::to_writer_pretty(
                 std::io::stdout(),
@@ -90,7 +94,7 @@ fn main() -> Result<()> {
                 bail!("refusing disc output or symlink");
             }
             let random = args.get(3).map(|s| s.parse()).transpose()?.unwrap_or(64);
-            let binary = sse_oracle::build_runner(&directory)?;
+            let binary = sse_oracle::build_runner(directory)?;
             let mut oracle = sse_oracle::Oracle::spawn(&binary)?;
             let mut output =
                 BufWriter::new(File::options().write(true).create_new(true).open(&path)?);
@@ -105,7 +109,7 @@ fn main() -> Result<()> {
             serde_json::to_writer_pretty(std::io::stdout(), &counts)?;
         }
         _ => bail!(
-            "usage: sse-oracle inventory XBE | audit CORPUS.jsonl | regen-fixtures CORPUS.jsonl OUT.bin.zst\n  Rosetta opt-in (skip cleanly if absent): build | fidelity | query REQUEST.json | generate INVENTORY OUTPUT.jsonl [RANDOM_CASES] | regen-fixtures --live INVENTORY.json OUT.bin.zst"
+            "usage: sse-oracle inventory XBE | audit CORPUS.jsonl | regen-fixtures CORPUS.jsonl OUT.bin.zst\n  x86-64 Linux or Rosetta: build | fidelity | query REQUEST.json | generate INVENTORY OUTPUT.jsonl [RANDOM_CASES]\n  Rosetta fixture source: regen-fixtures --live INVENTORY.json OUT.bin.zst"
         ),
     }
     Ok(())
@@ -133,5 +137,18 @@ fn write_fixtures(forms: &[sse_oracle::fixtures::FormFixtures], out: &str) -> Re
         raw.len(),
         packed.len()
     );
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn build_subcommand_produces_a_linux_x86_64_executable() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!("sse-cli-build-{}", std::process::id()));
+    std::fs::create_dir(&dir)?;
+    run(&["build".to_owned()], &dir)?;
+    let elf = std::fs::read(dir.join("sse-runner"))?;
+    assert_eq!(&elf[..6], b"\x7fELF\x02\x01"); // ELF64, little endian
+    assert_eq!(u16::from_le_bytes([elf[18], elf[19]]), 62); // EM_X86_64
+    std::fs::remove_dir_all(dir)?;
     Ok(())
 }

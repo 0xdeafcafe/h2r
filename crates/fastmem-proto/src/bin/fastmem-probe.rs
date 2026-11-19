@@ -1,7 +1,8 @@
 //! Scenario runner for the fastmem write-watch prototype. Each scenario runs
 //! in its own process so crashes, task-wide ports and port-name counts stay
 //! isolated from the test harness. `tests/process.rs` drives it; it also runs
-//! by hand and under lldb:
+//! by hand. Linux x86-64 also has `chain-handler` for a previous SIGSEGV
+//! action. The Mach port chain and benchmark run on macOS arm64:
 //!
 //! ```text
 //! fastmem-probe smoke | chain-task | teardown | all
@@ -38,9 +39,27 @@ fn main() {
     }
 }
 
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "fastmem-probe/linux.rs"]
+mod linux;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn main() -> std::io::Result<()> {
+    linux::run(&std::env::args().nth(1).unwrap_or_else(|| "all".into()))
+}
+
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn linux_rejects_unknown_scenarios() {
+    assert!(linux::run("unknown").is_err());
+}
+
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+)))]
 fn main() {
-    eprintln!("fastmem-probe only runs on macOS arm64");
+    eprintln!("fastmem-probe only runs on macOS arm64 or Linux x86-64");
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

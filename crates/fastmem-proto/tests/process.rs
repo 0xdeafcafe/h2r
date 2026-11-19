@@ -1,12 +1,18 @@
 //! Scenarios that crash on purpose, change task-wide ports or count port
 //! names run in a child `fastmem-probe` process.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Output};
 
-const SIGBUS: i32 = 10;
+#[cfg(target_os = "macos")]
+const PROTECTION_FAULT: i32 = 10; // SIGBUS
 const SIGSEGV: i32 = 11;
+#[cfg(target_os = "linux")]
+const PROTECTION_FAULT: i32 = SIGSEGV;
 
 fn probe(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_fastmem-probe"))
@@ -45,14 +51,22 @@ fn smoke() {
 
 /// A fault our server declines reaches a task-level handler installed
 /// before it (the kernel's thread -> task -> host triage).
+#[cfg(target_os = "macos")]
 #[test]
 fn declined_fault_reaches_previous_task_handler() {
     expect_ok("chain-task");
 }
 
-/// Five install/teardown rounds leave the task's port-name count unchanged.
+#[cfg(target_os = "linux")]
 #[test]
-fn teardown_leaks_no_ports() {
+fn previous_sigaction_receives_the_original_protection_fault() {
+    let out = probe(&["chain-handler"]);
+    assert_eq!(out.status.code(), Some(42), "{out:?}");
+}
+
+/// Five install/teardown rounds release the OS handler state.
+#[test]
+fn teardown_restores_prior_handler() {
     expect_ok("teardown");
 }
 
@@ -62,23 +76,24 @@ fn null_deref_still_crashes_with_sigsegv() {
 }
 
 #[test]
-fn write_outside_regions_still_crashes_with_sigbus() {
-    expect_signal("unregistered-write", SIGBUS);
+fn write_outside_regions_still_crashes() {
+    expect_signal("unregistered-write", PROTECTION_FAULT);
 }
 
 #[test]
 fn read_fault_in_region_is_not_taken_for_a_write() {
-    expect_signal("region-read-none", SIGBUS);
+    expect_signal("region-read-none", PROTECTION_FAULT);
 }
 
 #[test]
 fn unattached_thread_is_not_watched() {
-    expect_signal("unattached-thread-write", SIGBUS);
+    expect_signal("unattached-thread-write", PROTECTION_FAULT);
 }
 
 /// Runs the probe under lldb: handled faults stay invisible to the
 /// debugger, and a foreign fault stops it with EXC_BAD_ACCESS. Ignored by
 /// default because it needs Xcode's lldb and a GUI-less debug session.
+#[cfg(target_os = "macos")]
 #[test]
 #[ignore = "needs lldb; run with --ignored"]
 fn works_under_lldb() {

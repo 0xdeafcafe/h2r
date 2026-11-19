@@ -1,6 +1,12 @@
 .text
+#if defined(__ELF__)
+.globl execute
+.type execute, @function
+execute:
+#else
 .globl _execute
 _execute:
+#endif
     pushq %rbp
     pushq %rbx
     pushq %r12
@@ -66,3 +72,8 @@ _execute:
     popq %rbx
     popq %rbp
     retq
+
+#if defined(__ELF__)
+.size execute, . - execute
+.section .note.GNU-stack,"",@progbits
+#endif
