@@ -268,7 +268,8 @@ fn vertex(
     let mut texcoords = [[0u32; 4]; 4];
     for (s, t) in texcoords.iter_mut().enumerate() {
         let s = s as u32;
-        let (mut u, mut v, mut z, mut w) = (0u32, 0u32, 0u32, one);
+        let (mut u, mut v): (u32, u32);
+        let (mut z, mut w) = (0u32, one);
         match mem.u16(p + 0x50 + 2 * s)? {
             0 => (u, v) = (corner[2], corner[3]),
             1 => {

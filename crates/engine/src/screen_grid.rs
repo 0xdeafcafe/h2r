@@ -155,15 +155,22 @@ fn block(mem: &dyn GuestMemory, sse: &mut Sse, g: &Grid) -> Result<Block, Error>
     } else {
         let s = |o: u32| -> Result<i32, Error> { Ok(i32::from(mem.u16(WINDOW + o)? as i16)) };
         // left, right, top, bottom
-        [sse.int(s(2)?)?, sse.int(s(6)?)?, sse.int(s(0)?)?, sse.int(s(4)?)?]
+        let (l, r, t, b) = (s(2)?, s(6)?, s(0)?, s(4)?);
+        [sse.int(l)?, sse.int(r)?, sse.int(t)?, sse.int(b)?]
     };
-    let inv_w = sse.div(one, sse.int(w)?)?;
-    let inv_h = sse.div(one, sse.int(h)?)?;
+    let fw = sse.int(w)?;
+    let inv_w = sse.div(one, fw)?;
+    let fh = sse.int(h)?;
+    let inv_h = sse.div(one, fh)?;
     let depth = if sse.below(g.depth, 0)? { sse.sub(0, g.depth)? } else { g.depth };
     let mut ratios = [[0; 2]; TAPS];
     for (s, r) in ratios.iter_mut().enumerate() {
         let (bw, bh) = g.bound[s];
-        *r = [sse.mul(sse.int(bw)?, inv_w)?, sse.mul(sse.int(bh)?, inv_h)?];
+        let fw = sse.int(bw)?;
+        let x = sse.mul(fw, inv_w)?;
+        let fh = sse.int(bh)?;
+        let y = sse.mul(fh, inv_h)?;
+        *r = [x, y];
     }
     Ok(Block {
         rect,
@@ -180,15 +187,22 @@ fn block(mem: &dyn GuestMemory, sse: &mut Sse, g: &Grid) -> Result<Block, Error>
 /// `0x000350e0`: the rectangle at `uv`, and z and w from `depth`.
 fn position(mem: &dyn GuestMemory, sse: &mut Sse, rect: &[u32; 4], uv: [u32; 2], depth: u32) -> Result<[u32; 4], Error> {
     let [left, right, top, bottom] = *rect;
-    let x = sse.add(sse.mul(sse.sub(right, left)?, uv[0])?, left)?;
-    let y = sse.add(sse.mul(sse.sub(bottom, top)?, uv[1])?, top)?;
+    let x = sse.sub(right, left)?;
+    let x = sse.mul(x, uv[0])?;
+    let x = sse.add(x, left)?;
+    let y = sse.sub(bottom, top)?;
+    let y = sse.mul(y, uv[1])?;
+    let y = sse.add(y, top)?;
     let far = mem.u32(constant::FAR)?;
     let near = mem.u32(constant::NEAR)?;
-    let q = sse.div(far, sse.sub(far, near)?)?;
+    let q = sse.sub(far, near)?;
+    let q = sse.div(far, q)?;
     let a = sse.mul(q, depth)?;
     let b = sse.mul(near, q)?;
     let top_z = mem.u32(constant::DEPTH)?;
-    let z = sse.mul(sse.div(sse.sub(a, b)?, depth)?, top_z)?;
+    let z = sse.sub(a, b)?;
+    let z = sse.div(z, depth)?;
+    let z = sse.mul(z, top_z)?;
     let clamp = |sse: &mut Sse, v: u32| -> Result<u32, Error> {
         Ok(if sse.above(0, v)? {
             0
@@ -199,7 +213,8 @@ fn position(mem: &dyn GuestMemory, sse: &mut Sse, rect: &[u32; 4], uv: [u32; 2],
         })
     };
     let z = clamp(sse, z)?;
-    let w = sse.mul(sse.div(depth, far)?, top_z)?;
+    let w = sse.div(depth, far)?;
+    let w = sse.mul(w, top_z)?;
     let w = clamp(sse, w)?;
     Ok([x, y, z, w])
 }
@@ -211,8 +226,10 @@ fn radial(mem: &dyn GuestMemory, sse: &mut Sse, x87_control: u16, uv: [u32; 2], 
     let k = mem.u32(constant::DOUBLE)?;
     let [lo, hi] = radii;
     let distance2 = |sse: &mut Sse| -> Result<u32, Error> {
-        let dy = sse.sub(sse.mul(uv[1], k)?, one)?;
-        let dx = sse.sub(sse.mul(uv[0], k)?, one)?;
+        let dy = sse.mul(uv[1], k)?;
+        let dy = sse.sub(dy, one)?;
+        let dx = sse.mul(uv[0], k)?;
+        let dx = sse.sub(dx, one)?;
         let dx2 = sse.mul(dx, dx)?;
         let dy2 = sse.mul(dy, dy)?;
         sse.add(dy2, dx2)
@@ -238,11 +255,15 @@ fn radial(mem: &dyn GuestMemory, sse: &mut Sse, x87_control: u16, uv: [u32; 2], 
     if flags & 0x41 == 0 {
         return Ok(0);
     }
-    let a = sse.div(sse.sub(r, lo)?, sse.sub(hi, lo)?)?;
+    let n = sse.sub(r, lo)?;
+    let d = sse.sub(hi, lo)?;
+    let a = sse.div(n, d)?;
     if sse.above(a, one)? {
         return Ok(one);
     }
-    sse.div(sse.sub(r, lo)?, sse.sub(hi, lo)?)
+    let n = sse.sub(r, lo)?;
+    let d = sse.sub(hi, lo)?;
+    sse.div(n, d)
 }
 
 /// `0x00034100` for taps 1..4 (`t` 0..3) at `uv`.
@@ -258,17 +279,27 @@ fn tap(
     let half = mem.u32(constant::HALF)?;
     let clear = mem.u32(constant::SIGN_CLEAR)?;
     let [left, right, top, bottom] = b.rect;
-    let cy = sse.mul(sse.add(top, bottom)?, half)?;
-    let cx = sse.mul(sse.add(left, right)?, half)?;
-    let x0 = sse.add(sse.mul(sse.sub(right, left)?, uv[0])?, left)?;
-    let y0 = sse.add(sse.mul(sse.sub(bottom, top)?, uv[1])?, top)?;
+    let cy = sse.add(top, bottom)?;
+    let cy = sse.mul(cy, half)?;
+    let cx = sse.add(left, right)?;
+    let cx = sse.mul(cx, half)?;
+    let x0 = sse.sub(right, left)?;
+    let x0 = sse.mul(x0, uv[0])?;
+    let x0 = sse.add(x0, left)?;
+    let y0 = sse.sub(bottom, top)?;
+    let y0 = sse.mul(y0, uv[1])?;
+    let y0 = sse.add(y0, top)?;
     let sx = if t & 1 != 0 { half } else { clear };
     let sy = if t & 2 != 0 { half } else { clear };
     let [rx, ry] = b.ratios[t];
     let f = b.taps[t];
     let (x, y) = if sse.equal(f, 0)? {
-        let x = sse.mul(sse.add(sse.mul(b.spread, sx)?, x0)?, rx)?;
-        let y = sse.mul(sse.add(sse.mul(b.spread, sy)?, y0)?, ry)?;
+        let x = sse.mul(b.spread, sx)?;
+        let x = sse.add(x, x0)?;
+        let x = sse.mul(x, rx)?;
+        let y = sse.mul(b.spread, sy)?;
+        let y = sse.add(y, y0)?;
+        let y = sse.mul(y, ry)?;
         (x, y)
     } else {
         let f = if sse.equal(b.radii[0], b.radii[1])? {
@@ -278,14 +309,24 @@ fn tap(
             sse.mul(w, f)?
         };
         let keep = sse.sub(one, f)?;
-        let x = sse.add(sse.mul(b.spread, sx)?, sse.mul(f, cx)?)?;
-        let x = sse.mul(sse.add(x, sse.mul(keep, x0)?)?, rx)?;
-        let y = sse.add(sse.mul(y0, keep)?, sse.mul(b.spread, sy)?)?;
-        let y = sse.mul(sse.add(y, sse.mul(f, cy)?)?, ry)?;
+        let a = sse.mul(b.spread, sx)?;
+        let c = sse.mul(f, cx)?;
+        let x = sse.add(a, c)?;
+        let k = sse.mul(keep, x0)?;
+        let x = sse.add(x, k)?;
+        let x = sse.mul(x, rx)?;
+        let a = sse.mul(y0, keep)?;
+        let c = sse.mul(b.spread, sy)?;
+        let y = sse.add(a, c)?;
+        let k = sse.mul(f, cy)?;
+        let y = sse.add(y, k)?;
+        let y = sse.mul(y, ry)?;
         (x, y)
     };
     let [ox, oy] = b.offsets[t];
-    Ok([sse.add(ox, x)?, sse.add(oy, y)?, 0, one])
+    let x = sse.add(ox, x)?;
+    let y = sse.add(oy, y)?;
+    Ok([x, y, 0, one])
 }
 
 /// One vertex at grid point `(i, j)`.
@@ -296,8 +337,12 @@ pub fn vertex(mem: &dyn GuestMemory, g: &Grid, i: u32, j: u32, mxcsr: u32, x87_c
 }
 
 fn vertex_in(mem: &dyn GuestMemory, sse: &mut Sse, x87_control: u16, b: &Block, i: u32, j: u32) -> Result<GridVertex, Error> {
-    let u = sse.div(sse.int(i as i32)?, sse.int(COLUMNS as i32)?)?;
-    let v = sse.div(sse.int(j as i32)?, sse.int(ROWS as i32)?)?;
+    let fi = sse.int(i as i32)?;
+    let columns = sse.int(COLUMNS as i32)?;
+    let u = sse.div(fi, columns)?;
+    let fj = sse.int(j as i32)?;
+    let rows = sse.int(ROWS as i32)?;
+    let v = sse.div(fj, rows)?;
     let uv = [u, v];
     let mut taps = [[0; 4]; TAPS];
     for t in (0..TAPS).rev() {
