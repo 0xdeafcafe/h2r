@@ -1052,8 +1052,8 @@ screens, the session plumbing, the text and the web stay.
 
 ### 10.1 What a player sees
 
-**Host.** Xbox Live menu: Quickmatch, OptiMatch, Custom Game, Custom Game
-Browser, **Co-op Campaign**, Content Download. The list still has five item
+**Host.** Xbox Live menu: Quickmatch, OptiMatch, Clankermatch, **Co-op
+Campaign**, Custom Game, Custom Game Browser, Content Download. The list still has five item
 widgets, so with six rows it scrolls: Content Download comes into view
 below the fifth row. Co-op Campaign has its own pane (the Custom Game
 picture, our help text). It opens the co-op screen:
@@ -1227,8 +1227,8 @@ Checklist (stderr lines in brackets):
 1. Both: sign in to Live. stderr: `coop-live: N campaign levels (M named)`
    (N about 15 on the retail disc; 0 means the disc read failed and the
    Level row says None).
-2. Host: Xbox Live menu. Six rows, Co-op Campaign above Content Download,
-   which scrolls into view. Moving onto Co-op Campaign shows the Custom Game
+2. Host: Xbox Live menu. Co-op Campaign sits directly above Custom Game (row 3).
+   Moving onto Co-op Campaign shows the Custom Game
    picture and our help line. [`custom games: xbox live menu tag has 6
    panes and room for 5 rows`]
 3. Host: Co-op Campaign. The screen shows Level, Difficulty, Invite a
@@ -1391,7 +1391,7 @@ fast). Ping stays on the web.
 ### 11.3 What needs a game run, and the lines to look for
 
 1. Pick Co-op Campaign on the Live menu. Expect
-   `coop-live: Live menu row 4 opens the custom game lobby (row 2) in co-op mode`,
+   `coop-live: Live menu row 3 opens the custom game lobby (row 2) in co-op mode`,
    `coop-live: hosting a co-op campaign in the game's own lobby` and
    `coop-live: the Co-op Campaign row's lobby: mode 2 (custom game) set as 0 (co-op campaign)`.
    The lobby should show pane 1 (level, difficulty, description).
@@ -1776,13 +1776,13 @@ without a press. The three parts of 12.5:
    it waited for. Every step has a 15 s timeout and up to 4 tries; after
    that the driver says `coop-drive: <tag>: stuck: ...; press on its
    window` and stops for that game. Each press goes into coop.log as
-   `coop-drive: Alpha: press a on screen 0xba row 4 (Co-op Campaign)`.
+   `coop-drive: Alpha: press a on screen 0xba row 3 (Co-op Campaign)`.
 
 | Game | Path |
 |---|---|
 | every game | No press until the main menu, which the coop-test data reaches by itself about 19 s after the agent socket is up (presses START, A, B only if it hasn't a minute after the first chance). Main menu: DOWN, A (Xbox Live). That opens the players' screen `0x1e` in mode 3; A there opens the Live menu. If what opened says the cursor was on another row (`0xee` for Campaign, mode 1 for Split Screen, mode 2 for System Link), the driver presses B and moves to Xbox Live. The guests come back to Xbox Live a second time with A, corrected the same way |
-| host | Live menu (`0xba`): from the restored row to row 4, A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 3, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
-| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 3 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
+| host | Live menu (`0xba`): from the restored row to row 3 (Co-op Campaign, directly above Custom Game), A. Wait for `coop-live: hosting`; `custom games: opening the browser` means it landed on row 5, so B and try again. Wait for every lobby guest's `coop-live: guest: joined`, then A on Start Game (the lobby's row 0, `0x250fb3` → `0x251050`). If `session start returned 1` or `simulation mode sync-server` doesn't follow, UP, A |
+| guest | Live menu: B back to the main menu, where the invitation reader runs (12.1). Once `coop-auto: accepting`: DOWN, UP (the reader runs on an event, perhaps a controller event). If the game hasn't joined 20 s after the acceptance (or 5 min with no acceptance), A for Xbox Live, row 5 (Custom Game Browser), A. Once the browser has probed a game (`live: join: qos lookup`) and 1.5 s have passed, A on the first game. Done at `coop-live: guest: joined` |
 | late guest | As a guest, but the browser fallback waits until 120 s after the host invited it, so it joins in progress |
 
 **What the first runs showed** (2026-11-18, 083611 and 092343, with

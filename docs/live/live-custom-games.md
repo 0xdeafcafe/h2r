@@ -304,8 +304,8 @@ A LAN browser never raises the flag, so main menu → System Link → back is
 retail. Our row press also stores its row (4 since Clankermatch's row,
 docs/game/bots.md §8.3) in `[0x510a18]`, the row the Live menu's cursor
 starts on (the retail press stores rows 0 to 2 the same way). The menu's
-build `0x231170` restores only rows 0 to 3, so for rows 4 and 5 (the
-browser and co-op) `custom_games::LiveMenuCursor` does the build itself
+build `0x231170` restores only rows 0 to 3, so for rows 4 to 5 (Custom
+Game and the browser) `custom_games::LiveMenuCursor` does the build itself
 and puts the cursor there: back lands on Custom Game Browser.
 
 **The Map Pack dialog.** The game shows its errors in two dialog classes
@@ -351,8 +351,10 @@ label is not shortened.
 `H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
 Content Download as retail.
 
-With Live on, a sixth row, **Co-op Campaign**, sits between Custom Game
-Browser and Content Download, with its own pane (the Custom Game pane with
+With Live on, a further row, **Co-op Campaign**, sits directly above Custom
+Game (the rows read Quickmatch, OptiMatch, Clankermatch, Co-op Campaign,
+Custom Game, Custom Game Browser, Content Download; the co-op row was
+moved up from below the browser), with its own pane (the Custom Game pane with
 its help text); the list keeps five item widgets, so Content Download
 scrolls into view ([live-coop.md](live-coop.md) section 10).
 `H2_NO_COOP_ROW=1` takes it out (five rows, as above).
