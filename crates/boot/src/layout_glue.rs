@@ -2336,7 +2336,7 @@ mod tests {
             let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
             let model = video_screen::model(store, video_screen::Switches::ALL).unwrap();
             let mut features = feature::Registry::new(feature::Switches::defaults());
-            let ok = install(&r, &mut features, Some(Arc::new(model))).is_ok();
+            let ok = install(&r, &mut features, Some(Arc::new(model)), None).is_ok();
             let installed = features.build(&feature::Base).unwrap().install(&r).unwrap();
             tx.send((ok, installed.off_reason("locale").map(str::to_owned)))
                 .ok();
