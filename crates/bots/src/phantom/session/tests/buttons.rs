@@ -64,6 +64,19 @@ fn game_with_latency(
         .put_f32(0x79107c, 0.1)
         .put_u8(UNIT + 0x23d, 0)
         .put(UNIT + 0x23e, &[2, 1]);
+    // Synthetic response samples and ramp; the profile supplies degrees/s.
+    g.put_f32(0x444c04 + 8, 120.)
+        .put_f32(0x444bdc + 8, 60.)
+        .put_f32(0x791048, 0.85)
+        .put_f32(0x79104c, 0.25)
+        .put_f32(0x791050, 2.)
+        .put_f32(0x791054, 2.0 / 30.0)
+        .put_f32(0x791058, 2.)
+        .put_u32(0x791074, 3)
+        .put_u32(0x791078, 0x792000)
+        .put_f32(0x792000, 0.)
+        .put_f32(0x792004, 0.125)
+        .put_f32(0x792008, 1.);
     let slot = slot_of(&g, machine_id(h)).unwrap().unwrap();
     assert!(ph.owns_action_slot(&g, slot));
     (ph, g, slot)
@@ -625,7 +638,7 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     let next = ph.aim_view(&g, bot).unwrap();
     assert_eq!((next.stick, next.trigger), ([0., 0.], 0.));
     assert_eq!((next.arrived_stick, next.arrived_trigger), ([1., 0.], 1.));
-    assert!((next.action_deg.unwrap()[0] - (360. - 0.1f32.to_degrees())).abs() < 0.001);
+    assert!((next.action_deg.unwrap()[0] - 356.0).abs() < 0.001);
     assert_eq!(next.unit_forward, [1., 0., 0.]);
     // Rejected input has no action, even with a prior stamped record.
     at_tick(&mut g, 102);
@@ -641,4 +654,56 @@ fn aim_view_separates_intended_arrived_and_observed_aim() {
     assert_eq!(ph.aim_view(&g, bot).unwrap().action_deg, None);
     g.put_u32(PLAYERS_DATA + 0x21c + 0x2c, u32::MAX);
     assert!(ph.aim_view(&g, bot).is_none());
+}
+
+/// Independent local-control expectations (Default layout, sensitivity 3,
+/// unzoomed, away from an assist target). Exercise the actual remote gather,
+/// including RT, action validation, repeated reads and the slot write.
+#[test]
+fn gathered_look_matches_local_deadzone_curve_and_axis_rates() {
+    let (ph, mut g, slot) = game(|f| HostPadState {
+        right_stick: match f.tick.unwrap() {
+            100 => (0.25, -0.25), // both axes inside the Xbox reader's deadzone
+            101 => (-0.5, 0.0),   // interpolate in the map's response table
+            102..=104 => (0.0, 1.0),
+            105 => (0.0, 0.0), // unpeg
+            106 => (0.0, -1.0),
+            _ => (0.5, 0.5),
+        },
+        right_trigger: 1.0,
+        ..Default::default()
+    });
+    // -0.5 quantizes to -16384. The reader removes 9000 counts, then
+    // rescales the remaining negative range using integer arithmetic.
+    let counts = (16384 - 9000) * 32768 / (32768 - 9000);
+    let half_yaw = 4.0 * 0.125 * 2.0 * counts as f32 / 32767.0;
+    // The two diagonal expansions each multiply equal axes by sqrt(2).
+    // At half stick that reaches the interval between samples 1 and 2.
+    let diagonal_counts = (16384 - 9000) * 32767 / (32767 - 9000);
+    let pos = 4.0 * diagonal_counts as f32 / 32767.0;
+    let diagonal = 0.125 + (pos - 1.0) * 0.875;
+    for (tick, yaw, pitch) in [
+        (100, 0., 0.),
+        (101, half_yaw, 0.),
+        (102, 0., 2.),
+        (103, 0., 3.),
+        (103, 0., 3.),
+        (104, 0., 4.),
+        (105, 0., 0.),
+        (106, 0., -2.),
+        (107, 360.0 - 4.0 * diagonal, 2.0 * diagonal),
+    ] {
+        at_tick(&mut g, tick);
+        g = gather(&ph, g, slot);
+        assert!(
+            (g.f32(OUT + 4).unwrap().to_degrees() - yaw).abs() < 1e-4,
+            "yaw at {tick}"
+        );
+        assert!(
+            (g.f32(OUT + 8).unwrap().to_degrees() - pitch).abs() < 1e-4,
+            "pitch at {tick}"
+        );
+        assert_eq!(g.u32(OUT).unwrap() & 0x10040, 0x10040);
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.);
+    }
 }

@@ -554,7 +554,8 @@ carry a little past the target before settling. Small correlated errors and
 the occasional larger misread vary by skill. Fast crossings leave more
 tracking lag than slow ones. The local virtual pad uses the game's stick
 response, look acceleration and aim assist at sensitivity 3. Phantom
-actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
+actions use the same sensitivity-3 base axis rates and the loaded map’s
+right-stick response table (§5.1).
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -2192,8 +2193,16 @@ the next gather. The local stick slowdown and follow are still part of
 local input processing. Phantom thumb motion uses the curve below.
 
 Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
-the unit's aim vector at `+0x168` with the bot's stick curve (nominal
-3 rad/s at full deflection). The left stick supplies forward and strafe at `+0xc/+0x10`.
+the unit's aim vector at `+0x168`. For the Default layout, the Xbox
+reader removes 9,000 counts on each signed axis (`0x124dfe..0x124ea5`).
+The input and control passes expand the diagonal (`0x217dab`, `0x185ee3`).
+The control pass interpolates the map's look-function samples
+(player-control `+0x74/+0x78`, `0x185b30`). The profile sets separate
+yaw and pitch base speeds. Sensitivity 3 gives 120°/s yaw and 60°/s
+pitch before sustained-stick acceleration (`0x190c87..0x190ca6`,
+`0x18602d..0x1860e3`). Each phantom tracks both acceleration timers
+across accepted or rejected gathers and clears them with its input stream.
+The left stick supplies forward and strafe at `+0xc/+0x10`.
 Default stick layout writes left Y and negated left X at `0x21838a..0x218399`,
 which `0x185e81..0x185ea9` passes to the action builder.
 
@@ -2224,6 +2233,29 @@ arrived pad. Several packets arriving together can collapse to the newest
 report. A new unit or a break in the stream clears the queue.
 `phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
 `phantom_jitter_ms` sets the one-way jitter bound.
+
+**Midship replay, 2026-11-19.** In game
+`531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
+attribute 2,231 shots to the four phantoms. Fourteen bullet hits and
+nine melee hits from them dealt positive damage to opposing players.
+The three local bots recorded 1,372 shots and 236 opposing bullet hits.
+A team with no kills has no assisted kills either. The damage reports
+establish that phantom fire reached the host.
+
+The old phantom adapter treated a half-stick on either axis as about
+54°/s. The local Midship table gives about 9°/s yaw or 5°/s pitch
+for that input before aim assist. One phantom's pitch swept from +34°
+at tick 1284 to −26° at 1300 while the human's bearing stayed within
+6° of level. Using the local response removes this excess gain from the
+delayed control loop. Post-change hit rates require another hosted match.
+
+**Training coverage.** `h2 sim run` and `h2 sim batch` level-boot up to
+four local pads. Uploading the result to Clanker Training doesn't enter
+the remote gather. A batch with phantom coverage needs a distributed
+System Link host, identities for the remote seats, a wait for their live
+player/unit bindings, and per-seat shot and opposing-damage totals. Keep
+the seed and lineups the same when comparing local and phantom controls.
+See [Headless simulation](../runtime/sim.md#more-than-four).
 
 ### 5.2 Why phantoms are needed
 
@@ -3668,8 +3700,9 @@ list for the user to play (§11).
         address")?
      5. Back in the lobby they are gone; the next game they join again.
      6. Send the `bots:` and `clankers:` lines, and anything odd in the
-        turning or lateral movement. Compare full-stick turning with the
-        adapter's nominal 3 rad/s.
+        turning or lateral movement. Compare the initial full-stick turn with
+        the sensitivity-3 rates in §5.1, then check the sustained turn
+        against a local Clanker on the same map.
      7. Also useful: on the host, the session state and the network life
         cycle (`0x527334`) during the game.
    - **Built (6c), the server side, both homes** (`live_server::bots`,

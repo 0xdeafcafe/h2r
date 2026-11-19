@@ -87,6 +87,7 @@ impl Uplink {
 pub(super) struct ButtonState {
     sample: Option<(DatumHandle, u32)>,
     accepted: bool,
+    look: super::look::Look,
     thresholds: [u8; 8],
     pressure: [u8; 8],
     x_ticks: u32,
@@ -154,7 +155,8 @@ impl ButtonState {
             let left = m.u8(body + arms::UNIT_LEFT_WEAPON_INDEX)?;
             let requested = m.u8(body + 0x216)?;
             let primary = if requested < 4 { requested } else { current };
-            let mut a = session::motion_from_pad(&pad, aim, primary as i8, dt);
+            let turn = self.look.delta(m, &g, dt)?;
+            let mut a = session::motion_from_pad(&pad, aim, primary as i8, turn);
             a.weapon_set = m.u16(body + 0x214)?;
             let secondary = m.u8(body + 0x217)?;
             a.secondary = (secondary < 4).then_some(secondary);

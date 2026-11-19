@@ -385,7 +385,7 @@ fn an_action_passes_the_validators_ranges() {
 
 #[test]
 fn the_pad_turns_from_the_current_facing() {
-    let still = motion_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
+    let still = motion_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, [0.0; 2]);
     assert!((still.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     assert_eq!(still.pitch, 0.0);
     let pad = HostPadState {
@@ -395,13 +395,13 @@ fn the_pad_turns_from_the_current_facing() {
         left_trigger: 0.25,
         ..Default::default()
     };
-    let a = motion_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
+    let a = motion_from_pad(&pad, [1.0, 0.0, 0.0], 2, [0.5, 0.25]);
     assert!(
-        (a.yaw + TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
+        (a.yaw + 0.5).abs() < 1e-6,
         "+x turns right (yaw down), as the brain steers"
     );
     assert!(
-        (a.pitch - TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
+        (a.pitch - 0.25).abs() < 1e-6,
         "+y looks up"
     );
     assert_eq!((a.forward, a.strafe), (0.5, -1.0));

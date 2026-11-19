@@ -1160,11 +1160,11 @@ pub fn write_action(m: &mut dyn GuestMemory, slot: u32, action: &Action) -> R<()
     m.set_u32(slot + SLOT_STAMP, tick)
 }
 
-/// Nominal turn rate at full stick, shared with the bot's hand.
+/// Nominal turn rate used by the brain's hand model.
 pub const TURN_RATE: f32 = crate::mind::TURN_RATE;
 
 /// A pad as an action, for a player facing `aim` (a unit vector) with
-/// weapon `weapon`, over `dt` seconds. The right stick turns from the
+/// weapon `weapon` and the right-stick turn for this sample. It turns from the
 /// current facing as the brain expects (+x turns right, +y looks up); the
 /// left stick is (right, forward); the right trigger fires and the left
 /// throws. The button adapter fills the discrete controls and selections.
@@ -1172,14 +1172,13 @@ pub(super) fn motion_from_pad(
     pad: &input::host::HostPadState,
     aim: [f32; 3],
     weapon: i8,
-    dt: f32,
+    turn: [f32; 2],
 ) -> Action {
     let (yaw, pitch) = (aim[1].atan2(aim[0]), aim[2].atan2(aim[0].hypot(aim[1])));
-    let (rx, ry) = crate::mind::turn_rate(pad.right_stick);
     let (lx, ly) = pad.left_stick;
     Action {
-        yaw: yaw - rx * dt,
-        pitch: pitch + ry * dt,
+        yaw: yaw - turn[0],
+        pitch: pitch + turn[1],
         forward: ly,
         // Default stick layout at 0x21838a: the action's strafe is positive left.
         strafe: -lx,
