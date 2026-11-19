@@ -78,13 +78,17 @@ Use an integrated `h2`, a matching optimized image at `H2_SHADOW_IMAGE` and a GP
 shadow_run() {
     local name="$1" level="$2" end="$3" scale="$4" lighting="$5"
     local shadows="$6" lights="$7" compare="$8" every="$9"
-    local out="$RUSH_KEEP/$name" data
+    local out="$RUSH_KEEP/$name" data shots=8 probe=1
+    if [ "$every" = never ]; then
+        shots=0
+        probe=0
+    fi
     data=$(mktemp -d "$TMPDIR/shadows-data.XXXXXX") || return
     mkdir -p "$out" || return
     H2_OPT=2 H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_LIGHTING="$lighting" \
-    H2_BOOT_GFX="$out" H2_BOOT_GFX_EVERY="$every" H2_BOOT_GFX_SHADOWS=8 \
+    H2_BOOT_GFX="$out" H2_BOOT_GFX_EVERY="$every" H2_BOOT_GFX_SHADOWS="$shots" \
     H2_FRAME_STATS=1 H2_FRAME_STATS_FROM=750 H2_FRAME_STATS_CSV="$out/frames.csv" \
-    H2_NATIVE_SHADOWS_COMPARE="$compare" H2_NATIVE_SHADOWS_PROBE=1 \
+    H2_NATIVE_SHADOWS_COMPARE="$compare" H2_NATIVE_SHADOWS_PROBE="$probe" \
     H2_BOOT_STOP_AT_PRESENT="$end" \
     H2_FEATURES="impl.render.native_world=on,impl.render.native_lights=$lights,impl.render.native_shadows=$shadows,impl.render.interpolate=off,impl.render.reproject=off" \
     "$HOME/.cargo/bin/h2" run "$PWD/disc/halo2.iso" --out "${H2_SHADOW_IMAGE:?set to the matching image directory}" \
@@ -97,6 +101,20 @@ shadow_run 03a-lights 03a_oldmombasa 4087 1 retail off on 0 250
 shadow_run 03a-mixed 03a_oldmombasa 4087 1 retail on on 0 250
 shadow_run 00a-original 00a_introduction 4520 2 e3 off on 0 250
 shadow_run 00a-fallback 00a_introduction 4520 2 e3 on on 0 250
+shadow_run 03a-time-original 03a_oldmombasa 4087 1 retail off off 0 never
+shadow_run 03a-time-shadows 03a_oldmombasa 4087 1 retail on off 0 never
 ```
 
 Compare RGBA on identically numbered, visible frames, including 01000, 02000, 03000 and 04000. Check same-frame shadowed/unshadowed lights and the object filter/application separately. Compare both reference and displayed images for the E3 pair. Require zero differing texels on nonempty source comparisons, correct guest targets, and nonzero actual replacement counts for each path claimed. If these cinematics do not exercise a site, that site's runtime validation is still open. Use the same input replay reaching the site for both sides. Measure timings in separate runs with the screenshot interval `never`, `H2_BOOT_GFX_SHADOWS=0`, compare and probe disabled. Guest gather/decoding and synchronous per-range preparation remain in these timings.
+
+## Shared integration files
+
+| Files | Shadow-lane change |
+| --- | --- |
+| `crates/boot/src/lib.rs`, `registration.rs`, `native_world_glue.rs`, `d3d_glue.rs` | Register the feature, install its device host and configure the appropriate physical GPU copies. |
+| `crates/d3d/src/gfx_backend.rs` | Optional observers for resolved caster batches and submitted frames. The handoff lane supplies the replacement contract. |
+| `crates/engine/src/points.rs` | Shared typed sorted-geometry dispatch. |
+| `crates/feature/src/lib.rs`, `crates/native-render/src/lib.rs` | Export the new modules. |
+| `crates/boot/Cargo.toml`, `Cargo.lock` | Test-only shader fixture dependency. |
+| `crates/agent-proto/src/lib.rs`, `crates/boot/src/agent_glue.rs`, `docs/runtime/agent-api.md` | Register and document the read-only comparison method. |
+| `docs/graphics/layer-draw.md` | Correct the list of layers the dispatcher draws. |
