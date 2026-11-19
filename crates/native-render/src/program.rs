@@ -529,6 +529,23 @@ pub fn signed_channels(color_sign: u32) -> [bool; 4] {
     [bit(29), bit(30), bit(31), bit(28)]
 }
 
+/// The primitive and the depth write and compare a program's pipeline
+/// draws with ([`render_pipeline`]): its pass's state, or the opaque
+/// world's (a triangle list, no cull, `LessEqual` and write). No depth
+/// bias: the polygon offset is the fragment's (`PixelUniforms::depth`).
+pub fn pipeline_state(state: Option<&PassState>) -> (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)) {
+    let primitive = state.map_or(
+        wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        |s| s.primitive,
+    );
+    let depth = state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
+    (primitive, depth)
+}
+
 /// What an image is uploaded as on a device that takes BC textures
 /// (`bc`) or not ([`crate::gpu::texture`]): format, size, levels and an
 /// FNV-1a hash of level 0's bytes, for the uniform compare.
@@ -910,16 +927,7 @@ fn render_pipeline(
         .iter()
         .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
         .collect();
-    let primitive = state.map_or(
-        wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            cull_mode: None,
-            ..Default::default()
-        },
-        |s| s.primitive,
-    );
-    let (depth_write, depth_compare) =
-        state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
+    let (primitive, (depth_write, depth_compare)) = pipeline_state(state);
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("native world program"),
@@ -1196,6 +1204,7 @@ impl ProgramSet {
                     def: program.def.clone(),
                     pixel_options: program.pixel_options,
                     textures: self.materials.get(&material)?.stage_info.clone(),
+                    pipeline: pipeline_state(program.state.as_ref()),
                 })
             })
             .collect();
@@ -1222,6 +1231,9 @@ pub struct RigidUniforms {
     /// Each stage's bitmap as uploaded ([`describe_image`]; `None`: the
     /// lightmap, an engine texture or nothing).
     pub textures: [Option<String>; 4],
+    /// The pipeline's primitive and depth write and compare
+    /// ([`pipeline_state`]).
+    pub pipeline: (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)),
 }
 
 #[cfg(test)]

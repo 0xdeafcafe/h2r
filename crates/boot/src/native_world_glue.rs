@@ -426,12 +426,22 @@ struct Diagnostics {
     /// parts drawn natively, the rest left to the D3D path (their items
     /// not skipped): which kind a difference belongs to.
     owners: Owners,
-    /// `H2_NATIVE_WORLD_DUMP=placement[:material]`: the uniforms the
-    /// native pass draws that placement's rigid draws of the material (its
-    /// lowest without one) with, against the D3D path's draws of it
+    /// `H2_NATIVE_WORLD_DUMP=placement[:material][@passes]`: the uniforms
+    /// the native pass draws that placement's rigid draws of the material
+    /// (its lowest without one) with, against the D3D path's draws of it
     /// ([`arm_dump`]; with `H2_NATIVE_WORLD_OWNERS=clusters`, so that the
-    /// D3D path draws the placement).
-    dump: Option<(u32, Option<u16>)>,
+    /// D3D path draws the placement), armed after that many of the world's
+    /// passes (0 without one: the first, while the game may still be
+    /// streaming the bitmaps in at low detail).
+    dump: Option<Dump>,
+}
+
+/// [`Diagnostics::dump`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Dump {
+    instance: u32,
+    material: Option<u16>,
+    after: u64,
 }
 
 impl Diagnostics {
@@ -499,17 +509,22 @@ fn trace(
 }
 
 /// `"x,y"` as a probe pixel.
-/// `placement[:material]` ([`Diagnostics::dump`]).
-fn parse_dump(v: &str) -> Option<(u32, Option<u16>)> {
+/// `placement[:material][@passes]` ([`Diagnostics::dump`]).
+fn parse_dump(v: &str) -> Option<Dump> {
+    let (v, after) = match v.split_once('@') {
+        Some((v, n)) => (v, n.trim().parse::<u64>().ok()?),
+        None => (v, 0),
+    };
     let (instance, material) = match v.split_once(':') {
         Some((i, m)) => (i, Some(m.trim().parse::<u16>().ok()?)),
         None => (v, None),
     };
-    Some((instance.trim().parse::<u32>().ok()?, material))
+    Some(Dump { instance: instance.trim().parse::<u32>().ok()?, material, after })
 }
 
-/// The world [`arm_dump`] last armed for (its `Ready`'s address).
-static DUMPED: Mutex<usize> = Mutex::new(0);
+/// The world [`arm_dump`] counts passes of (its `Ready`'s address), the
+/// count, and whether it armed for it.
+static DUMPED: Mutex<(usize, u64, bool)> = Mutex::new((0, 0, false));
 
 /// Once per loaded world: prints the uniforms the native pass draws
 /// placement `instance`'s rigid draws of `material` with in this frame,
@@ -518,13 +533,17 @@ static DUMPED: Mutex<usize> = Mutex::new(0);
 /// read input and uniform that differs. Draws of the placement natively
 /// are skipped on the D3D path, so this wants the placements left to it
 /// (`H2_NATIVE_WORLD_OWNERS=clusters`).
-fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, (instance, material): (u32, Option<u16>)) {
+fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instance, material, after }: Dump) {
     let key = Arc::as_ptr(ready) as usize;
     let mut dumped = DUMPED.lock().unwrap_or_else(|e| e.into_inner());
-    if *dumped == key {
+    if dumped.0 != key {
+        *dumped = (key, 0, false);
+    }
+    dumped.1 += 1;
+    if dumped.2 || dumped.1 <= after {
         return;
     }
-    *dumped = key;
+    dumped.2 = true;
     let draws = gpu.rigid_uniforms(instance, view);
     let materials: Vec<u16> = draws.iter().map(|d| d.material).collect();
     let Some(d) = draws.into_iter().find(|d| material.is_none_or(|m| m == d.material)) else {
@@ -560,6 +579,8 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, (instance, ma
         def: d.def,
         pixel_options: d.pixel_options,
         textures: d.textures,
+        primitive: d.pipeline.0,
+        depth: (d.pipeline.1.0, d.pipeline.1.1, Default::default()),
         draws: 4,
     });
 }
@@ -1497,9 +1518,13 @@ mod tests {
 
     #[test]
     fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
-        assert_eq!(parse_dump("282"), Some((282, None)));
-        assert_eq!(parse_dump(" 282 : 107 "), Some((282, Some(107))));
+        let dump = |instance, material, after| Some(Dump { instance, material, after });
+        assert_eq!(parse_dump("282"), dump(282, None, 0));
+        assert_eq!(parse_dump(" 282 : 107 "), dump(282, Some(107), 0));
+        assert_eq!(parse_dump("282:107@600"), dump(282, Some(107), 600));
+        assert_eq!(parse_dump("282@30"), dump(282, None, 30));
         assert_eq!(parse_dump("282:"), None);
+        assert_eq!(parse_dump("282@"), None);
         assert_eq!(parse_dump("girder"), None);
         assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
         assert_eq!(parse_probe("520"), None);

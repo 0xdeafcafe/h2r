@@ -156,7 +156,19 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   where the device takes BC, on the D3D path's rule (no signed channel:
   `bias_signed` drops them). The compare prints each stage's native
   upload beside the D3D texture (`program::describe_image`: format,
-  size, levels, a hash of level 0). For the placements' edges,
+  size, levels, a hash of level 0). That removed the speckle (w15:
+  03000's mean 0.203 to 0.009; clusters alone match exactly but for
+  02000's curb). The compare's first draws are the world's first passes,
+  while the game may still be streaming bitmaps at low detail: 03000's
+  dump saw the D3D path bind 2x8 and 4x8 DXT stand-ins where the native
+  stage has the 64x256 bitmap (S: low-detail stand-ins, since the
+  later frames match native to a mean of 0.009), so `H2_NATIVE_WORLD_DUMP` takes `@passes` to arm
+  later. It now lists only the pixel shader and option fields that
+  differ, the D3D draw's stipple pattern when it masks anything, and the
+  pipeline's primitive (topology, winding, cull, fill) and depth write,
+  compare and bias as `gfx::translate` derives them from the D3D draw's
+  render state, against the native pipeline's (`program::pipeline_state`).
+  For the placements' edges,
   `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
   so that the D3D path draws the placement) prints, once per loaded
   world, the uniforms the native rigid draw of that placement and
