@@ -835,6 +835,10 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
+  Frame captures include `native_lights_worker_round_trips` for synchronous
+  light reservations and `native_lights_reference_passes` /
+  `native_lights_display_passes` for committed light runs encoded on each
+  physical copy. Compare these with the per-view light range counts.
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
   is what `profile.sample.stop` answers: the module-relative dump

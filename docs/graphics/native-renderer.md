@@ -1950,7 +1950,9 @@ preparation still waits synchronously for each reservation.
        transparent unread. At run time each refusal reason prints on its
        first occurrence.
        The host reports admissions, splits, lights sampling shader gels, reference and scaled passes and
-       actual synchronous worker round trips. Every 1800 host decisions it
+       actual synchronous worker round trips. Frame and agent captures include
+       `native_lights_worker_round_trips`, `native_lights_reference_passes`
+       and `native_lights_display_passes`. Every 1800 host decisions it
        also prints counts by reason.
      - Engine textures' texels (Code, V on 03a's `tile_metal_dark`): the
        light passes' samplers for the normalization cube and the

@@ -1184,6 +1184,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        plan.stage.count(timeline::native::Metric::WorkerRoundTrips, 1);
         if plan.stage == timeline::native::Stage::Lights {
             LIGHT_WORKER_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }

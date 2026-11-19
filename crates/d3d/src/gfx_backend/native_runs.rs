@@ -42,6 +42,11 @@ impl GfxBackend {
             (self.ctx.device.create_command_encoder(&Default::default()), 0));
         ExternalBundles::encode_run(encoder, &run.color, &run.depth, run.stencil, &run.draws);
         *passes += 1;
+        let metric = match run.copy {
+            TargetCopy::Reference => timeline::native::Metric::ReferencePasses,
+            TargetCopy::Display => timeline::native::Metric::DisplayPasses,
+        };
+        timeline::native::Stage::Lights.count(metric, 1);
         PASSES[usize::from(run.copy == TargetCopy::Display)].fetch_add(1, Ordering::Relaxed);
     }
 }
