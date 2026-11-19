@@ -796,3 +796,53 @@ fn hud_thresholds_survive_an_unpinned_build() {
     assert_eq!(text[0x18..0x1c], thresholds);
     assert_eq!(text[0x2c..0x2e], 2u16.to_le_bytes());
 }
+
+/// No retail map has an `hmt `, so its layout is the Halo 1 converter's
+/// definition, whole ([`super::infer::apply_converter_groups`]): the
+/// checked-in schema holds exactly that, and inference adds it back.
+#[test]
+fn converter_hud_messages_take_their_layout_from_the_definition() {
+    let hmt = FourCC(*b"hmt ");
+    let def = crate::defs::Defs::builtin().group(hmt).unwrap();
+    assert_eq!(Schema::builtin().groups[&hmt], def.schema_fields().unwrap());
+    let mut inferred = Schema::builtin().clone();
+    inferred.groups.remove(&hmt);
+    super::infer::apply_converter_groups(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
+/// A rebuilt `hmt ` moves even when its flash colours and silhouette cache
+/// key fall in the metadata address space (a10's help flash colour
+/// `0x8075baff` did): those words are data, and the widget and silhouette
+/// blocks past the legacy `0x94` bytes are followed.
+#[test]
+fn converted_hud_messages_walk_with_colours_that_look_like_addresses() {
+    let hmt = FourCC(*b"hmt ");
+    let address = 0x8010_0000u32;
+    let (widget, silhouette) = (0xc8u32, 0xecu32);
+    let mut bytes = vec![0u8; 0x104];
+    let mut put = |at: u32, v: u32| bytes[at as usize..at as usize + 4].copy_from_slice(&v.to_le_bytes());
+    put(0x18, 0x4831_4857);
+    put(0x20, 0x8075_baff);
+    put(0x24, 0x80ff_0040);
+    put(0x38, 1);
+    put(0x3c, address + widget);
+    put(0xb0, 1);
+    put(0xb4, address + silhouette);
+    put(widget + 0xc, 0x8075_baff);
+    put(widget + 0x10, 0x80ff_0040);
+    put(silhouette, 0x80c0_ffee);
+    let mem = Memory::from_regions(vec![(address, bytes)], vec![(0x8000_0000, 0x8100_0000)]);
+    let schema = Schema::builtin();
+    let walked = walk(&schema.groups[&hmt], address, &mem).unwrap();
+    assert_eq!(
+        walked.pointers,
+        [(0x38, 1, address + widget), (0xb0, 1, address + silhouette)]
+    );
+    assert_eq!(walked.arrays, [(0, 0xc8), (widget, 0x24), (silhouette, 0x18)]);
+    // Without the help flash colour as a word, it reads as a pointer.
+    let mut root = schema.groups[&hmt].clone();
+    root.fields.remove(&0x20);
+    let refused = walk(&root, address, &mem).unwrap_err();
+    assert_eq!((refused.refusal, refused.offset, refused.value), (Refusal::UnknownPointer, 0x20, 0x8075_baff));
+}

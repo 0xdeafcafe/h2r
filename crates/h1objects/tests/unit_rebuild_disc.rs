@@ -372,7 +372,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 let p = format!("{VEHI_SEATS}[{k}]");
                 assert_eq!(
                     text(&r, &format!("{p}.label")),
-                    h1models::names::map_name(&s.label).mode
+                    h1models::names::mode_name(&s.label)
                 );
                 let has = markers.iter().any(|m| m.eq_ignore_ascii_case(&s.marker));
                 assert_eq!(
@@ -401,18 +401,31 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 panic!()
             };
             assert_eq!(phys.len(), 1, "every retail vehicle has one");
-            // References the schema could not see read as null, not tag 0.
-            for p in ["snd_ref_284", "foot_ref_294"] {
-                assert!(
-                    matches!(
-                        r.at(p),
-                        Some(Val::Ref {
-                            target: Target::Null,
-                            ..
-                        })
-                    ),
-                    "{p}"
-                );
+            // References the schema could not see are Halo 1's (the
+            // suspension sound at `+0x3b0`, the material effects at
+            // `+0x3d0`) or null, never tag 0: a sound stands in as one of
+            // the tree's sounds, the material effects as a tree `foot`.
+            for (p, at) in [("snd_ref_284", 0x3b0), ("foot_ref_294", 0x3d0)] {
+                let Some(Val::Ref { target, .. }) = r.at(p) else {
+                    panic!("{}: {p} is no reference", t.name)
+                };
+                match target {
+                    Target::Null => {}
+                    Target::Id(id) => {
+                        assert!(
+                            h1::reference(&h1, b, at).is_some(),
+                            "{}: {p} set where Halo 1's is null",
+                            t.name
+                        );
+                        let ok = if p == "snd_ref_284" {
+                            (0..c.tree.sounds.len()).any(|k| h1objects::convert::sound(k) == *id)
+                        } else {
+                            local(&c.tree, *id).is_some_and(|x| x.group == FourCC(*b"foot"))
+                        };
+                        assert!(ok, "{}: {p} is {id:?}", t.name);
+                    }
+                    other => panic!("{}: {p} is {other:?}", t.name),
+                }
             }
             built.push(format!(
                 "{level} {}: {} seats {:?}, {nodes} nodes",
@@ -768,7 +781,14 @@ fn bipeds_rebuilt_against_the_template_path() {
             let got = local(&c.tree, id).expect("rebuilt bipd in the tree");
             assert_eq!(got.group, FourCC(*b"bipd"));
             assert!(got.raw.is_empty(), "{}: no template bytes", t.name);
-            let rep = c.tree.reports.iter().find(|r| r.source == t.name).unwrap();
+            // The biped's own report: a unit weapon of the same path (its
+            // conversion reports first) is no biped.
+            let rep = c
+                .tree
+                .reports
+                .iter()
+                .find(|r| r.source == t.name && r.group == "bipd")
+                .unwrap();
             assert!(rep.template.starts_with("none: rebuilt"), "{}", t.name);
             let r = defs::from_built(d, &got.root).expect("rebuilt bipd reads");
             let again = defs::to_built(d, &r, &mut |_| None).unwrap();

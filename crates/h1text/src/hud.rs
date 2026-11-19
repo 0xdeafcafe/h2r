@@ -199,7 +199,7 @@ pub(crate) fn rebuild(
     root.set("elements", Val::Block(elements))?;
     root.set("messages", Val::Block(messages))?;
     root.set("converter_marker", Val::Int(i64::from(MARKER)))?;
-    root.set("unknown_20", Val::Bytes(help_flash.to_vec()))?;
+    set_flash(&mut root, "help_flash", help_flash)?;
     root.set("help_first", field_u16(source.messages.len())?)?;
     root.set("help_count", field_u16(help.len())?)?;
     root.set("shared_first", field_u16(source.messages.len() + help.len())?)?;
@@ -218,7 +218,7 @@ pub(crate) fn rebuild(
     let mut silhouettes = Vec::new();
     for sprite in &events.silhouettes {
         let mut row = default_record(sprite_def);
-        row.set("cache_key", Val::Int(i64::from(sprite.cache_key())))?;
+        row.set("cache_key", Val::Word(sprite.cache_key()))?;
         row.set("width", Val::Int(i64::from(sprite.width)))?;
         row.set("height", Val::Int(i64::from(sprite.height)))?;
         row.set("advance", Val::Int(i64::from(sprite.advance)))?;
@@ -265,7 +265,7 @@ pub(crate) fn rebuild(
         .and_then(|at| unit_hud.get(at + 0x34..at + 0x4c));
         if let Some(flash) = flash {
             record.set("has_colour", Val::Int(1))?;
-            record.set("unknown_c", Val::Bytes(flash.to_vec()))?;
+            set_flash(&mut record, "flash", flash)?;
         }
         widgets.push(record);
         Ok(())
@@ -284,6 +284,28 @@ pub(crate) fn rebuild(
         root: to_built(def, &root, &mut |_| None)?,
         raw: Vec::new(),
     })
+}
+
+/// Fill the `h1_hud_flash` struct at `path` from Halo 1's 0x18-byte flash
+/// record, as `boot::h1_hud_text::flash` reads it back.
+fn set_flash(record: &mut Record, path: &str, bytes: &[u8]) -> Result<()> {
+    if bytes.len() != 0x18 {
+        return Err(Error::Invalid("HUD flash record is not 0x18 bytes".into()));
+    }
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    let half = |at: usize| Val::Int(i64::from(u16::from_le_bytes([bytes[at], bytes[at + 1]])));
+    for (name, value) in [
+        ("colour", Val::Word(word(0))),
+        ("flash_colour", Val::Word(word(4))),
+        ("repeat", Val::Float(f32::from_bits(word(8)))),
+        ("off", Val::Float(f32::from_bits(word(0xc)))),
+        ("count", half(0x10)),
+        ("flags", half(0x12)),
+        ("on", Val::Float(f32::from_bits(word(0x14)))),
+    ] {
+        record.set(&format!("{path}.{name}"), value)?;
+    }
+    Ok(())
 }
 
 fn field_u16(value: usize) -> Result<Val> {

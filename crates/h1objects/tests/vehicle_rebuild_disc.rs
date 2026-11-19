@@ -374,9 +374,12 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 assert_eq!(seats.len(), u.seats.len(), "{name}: seats");
                 for (k, s) in u.seats.iter().enumerate() {
                     let p = format!("{VEHI_SEATS}[{k}]");
+                    // The rider's whole mode, as the biped graphs name
+                    // it: a10's lifepod seat is `driver lifepod`, a unit
+                    // of the cyborg's graph of its own.
                     assert_eq!(
                         text(&r, &format!("{p}.label")),
-                        h1models::names::map_name(&s.label).mode,
+                        h1models::names::mode_name(&s.label),
                         "{name}: seat {k} label"
                     );
                     // Halo 1's marker, or none where the model lacks it.
@@ -812,7 +815,12 @@ fn every_seat_passes_the_engines_boarding_rule() {
                 players.push((t.name.clone(), h1_graph, g));
             }
             assert!(!players.is_empty(), "{level}: a cyborg");
-            for t in h1.tags().iter().filter(|t| t.group.0.to_be_bytes() == *b"vehi") {
+            // The seatless props Halo 2 places as another kind (a10's
+            // ring as scenery, b30's falling boxes as crates) have no seats.
+            for t in h1.tags().iter().filter(|t| {
+                t.group.0.to_be_bytes() == *b"vehi"
+                    && h1objects::scripted_props::replacement_group(&t.name).is_none()
+            }) {
                 let name = format!("{level} {}", t.name);
                 let u = h1::Unit::read(&h1, t).unwrap();
                 let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));

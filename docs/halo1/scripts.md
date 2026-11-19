@@ -412,8 +412,10 @@ fixed-signature call's arity and argument types equal Halo 2's descriptor) and
 | d40 | 12,287 | 3,635 | 1,904 | 430 |
 
 Stubbed calls count outermost missing calls; a missing call's arguments go
-with it, which is why the Halo 2 node counts are lower than Halo 1's. All
-maps fit Halo 2's `0x9000`-node pool.
+with it, which is why the Halo 2 node counts are lower than Halo 1's. The
+table predates the command lists, unit builtins and AI controls, which
+compile calls that were stubbed here and add generated scripts: a10 now
+needs more than retail's `0x9000` nodes (see Syntax storage below).
 
 ## Step 4: hooks in a converted level
 
@@ -530,6 +532,35 @@ The remaining bytes hold the maximum number of whole thread records and
 their bitmap. The converter checks that the persistent scripts leave a
 free thread. A retail-sized scenario restores the original layout. All
 values and array pointers are in the game state saved by checkpoints.
+
+**Syntax storage.** Halo 1 holds up to 19,001 nodes per scenario, and a10
+uses 18,735 slots (17,516 live). Halo 2 compiles them about one to one,
+but the generated command scripts, AI controls and conversations
+roughly double a10: 36,845 nodes with neither AI controls nor
+conversations, 41,229 for the whole converted level (both before the
+shared initializer roots below). Retail's pool is smaller. At `0x20a700`
+retail allocates the syntax array header and an occupancy bitmap for `0x9000` slots in one `0x124c`-byte block from the
+system heap (`push 124Ch`, `push 9000h`). The nodes themselves are not
+copied: at each map load `0x20a750` passes `scnr+0x238`'s count and
+address to `0x16b6b0`, which makes the count the capacity and sets or
+clears one bitmap bit per slot. A larger scenario overruns the block.
+
+`engine::hs_syntax` runs before `0x20a750`. When the scenario has more than
+`0x9000` slots, the header's bitmap pointer (`+0x48`) moves to an
+`0x2000`-byte bitmap in the feature arena. A retail-sized scenario gets
+the original bitmap back. Nothing else changes: the attach still sets the
+capacity and rebuilds occupancy from the salts. Retail's own capacity
+already exceeds `0x7fff`, so the interpreter reads node indices as unsigned
+16-bit. The converter's limit (`h1scripts::compile::MAX_NODES`,
+`hs::MAX_NODES`) is `0xffff` slots. Slot `0xffff` is excluded because its
+salt (`0x8000 | slot`) would make its datum `0xffffffff`, which means none.
+The header and bitmap come from the default heap (`*0x468758`), not game
+state, so checkpoints neither save nor restore them; the arena is guest
+RAM in machine snapshots.
+
+Generated globals with the same literal initial value share one root node
+(command-list actor banks, conversation state). A root has no sibling, and
+each global keeps its own value cell.
 
 ## Open questions
 

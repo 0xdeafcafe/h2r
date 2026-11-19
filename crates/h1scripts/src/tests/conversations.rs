@@ -158,6 +158,20 @@ fn conversation_calls_reference_the_generated_worker_and_state() {
     scnr.validate_graph().unwrap();
     assert_eq!(scnr.reachable(scnr.roots()).unwrap().len(), out.nodes.len());
 
+    // Generated globals with the same literal initial value share its node;
+    // each keeps its own definition and value cell.
+    let state_root = |purpose: &str| {
+        scnr.globals()
+            .iter()
+            .find(|g| g.name().unwrap().starts_with(&format!("__h1cv0_{purpose}_")))
+            .unwrap()
+            .root()
+    };
+    assert_eq!(state_root("status"), state_root("count"));
+    assert_eq!(state_root("request"), state_root("working"));
+    assert_ne!(state_root("status"), state_root("line"));
+    assert_ne!(state_root("status"), state_root("request"));
+
     let root = |name| scnr.node(scnr.script(name).unwrap().root()).unwrap();
     for name in ["conversation", "conversation_stop", "conversation_advance"] {
         assert!(

@@ -850,12 +850,14 @@ fn scope_masks_use_the_hud_screen_effect_in_each_view() {
             record.at("screen_effects[0].sequences"),
             Some(&Val::List(vec![Val::Int(0), Val::Int(1), Val::Int(1)]))
         );
+        // Hidden unzoomed, and in the off-hand and backpack passes (word C
+        // `0x06`, the primary panel's mask).
         assert_eq!(
             record.at("screen_effects[0].hide_when"),
             Some(&Val::List(vec![
                 Val::Int(0x40),
                 Val::Int(0),
-                Val::Int(4),
+                Val::Int(6),
                 Val::Int(0)
             ]))
         );

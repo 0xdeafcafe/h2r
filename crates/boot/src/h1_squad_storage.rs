@@ -1,4 +1,5 @@
-//! Reserve native game-state storage for the campaign squad arrays.
+//! Reserve native game-state storage for the campaign squad arrays, and
+//! size the script pools a converted scenario needs.
 
 use engine::{
     campaign_squad_pool as pool,
@@ -47,6 +48,33 @@ impl feature::Feature for SquadStorage {
                 Ok(Flow::Continue)
             });
         }
+        // A converted scenario may hold more syntax nodes than retail's
+        // bitmap covers (engine::hs_syntax). The arena is guest RAM, so
+        // snapshots keep it with the array that points at it.
+        let bitmap = b.guest_alloc(
+            engine::hs_syntax::BITMAP_BYTES,
+            runtime::guest::Permissions::RW,
+        )?;
+        b.raw().before(
+            &points::HS_MAP_ATTACH,
+            "size the script syntax bitmap",
+            move |call| {
+                let mut guest = call.ctx.runtime().memory();
+                engine::hs_syntax::prepare(&mut *guest, bitmap).map_err(|f| {
+                    runtime::GuestFault {
+                        addr: f.addr,
+                        len: f.len as usize,
+                        access: if f.write {
+                            runtime::guest::Access::Write
+                        } else {
+                            runtime::guest::Access::Read
+                        },
+                        reason: runtime::guest::FaultReason::Unmapped,
+                    }
+                })?;
+                Ok(Flow::Continue)
+            },
+        );
         b.snapshot(SnapshotPolicy::Stateless);
         Ok(())
     }

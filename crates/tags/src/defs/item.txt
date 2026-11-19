@@ -33,8 +33,7 @@ group weap 0x31c
   0x138 unknown 0x4
   0x13c unknown 0x4
   0x140 tagref ready_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x148 unknown 0x4
-  0x14c unknown 0x4
+  0x148 tagref ref_148 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
   0x150 unknown 0x4
   0x154 unknown 0x4
   0x158 unknown 0x4
@@ -43,15 +42,11 @@ group weap 0x31c
   0x164 unknown 0x4
   0x168 unknown 0x4
   0x16c tagref overheated_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x174 unknown 0x4
-  0x178 unknown 0x4
+  0x174 tagref ref_174 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
   0x17c tagref detonation_effect -- E/V: docs/halo1/objects.md, "Weapon effects and sounds"
-  0x184 unknown 0x4
-  0x188 unknown 0x4
-  0x18c unknown 0x4
-  0x190 unknown 0x4
-  0x194 unknown 0x4
-  0x198 unknown 0x4
+  0x184 tagref ref_184 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x18c tagref ref_18c groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
+  0x194 tagref ref_194 groups=jpt! -- V (object/layouts.rs WEAP): jpt! where set; a definition default of zero words reads as a reference to tag 0
   0x19c unknown 0x4
   0x1a0 unknown 0x4
   0x1a4 unknown 0x4

@@ -203,25 +203,12 @@ fn bloodgulch_sandbox_converts_and_reads_back() {
     let reports = tree.reports.clone();
     let count = tree.tags.len();
     let mut set = TagSet::from_map(&mut base_map).unwrap();
-    // A pinned index cannot grow, so the tree takes over slots the
-    // converted map does not need: Coagulation's own level tags (bitmaps,
-    // shaders, scenery), which no object references. The level itself
-    // (scenario, structure, lightmap) stays. The models' Halo 1 bitmaps and
-    // shader copies need more than the bitmaps alone.
-    let level = [*b"scnr", *b"sbsp", *b"ltmp"];
-    let donors: Vec<TagId> = base_map
-        .tags()
-        .iter()
-        .filter(|t| {
-            !level.contains(&t.group.0)
-                && t.name
-                    .as_deref()
-                    .is_some_and(|n| n.starts_with("scenarios\\"))
-        })
-        .map(|t| t.id)
-        .collect();
-    eprintln!("{} donor slots for {count} tags", donors.len());
-    let ids = tree.install_over(&mut set, &donors).unwrap();
+    // The tags go in new slots after the base's, as the Halo 1 sandbox
+    // installs them (`Tree::install`): a pinned map's grown entry table
+    // moves into its metadata (`TagSet::build`). Taking over Coagulation's
+    // own level tags instead runs out of slots once the objects carry
+    // their Halo 1 attachments.
+    let ids = tree.install(&mut set).unwrap();
     let (bytes, _) = set.build().unwrap();
     eprintln!("{count} tags installed; map {} bytes", bytes.len());
     let mut out = Map::from_reader(Cursor::new(bytes)).unwrap();

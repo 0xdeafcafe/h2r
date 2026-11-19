@@ -12,7 +12,8 @@
 //!   `hlmt` and `mode` read back through the definitions, write the same
 //!   again, pin nothing, hold no raw data and reference only converted
 //!   tags; the known fields are Halo 1's (type, bounds, the model chain,
-//!   the predicted resources), other spans at the definition default; no `phmo` (the engine gives scenery no Havok body, so a
+//!   the predicted resources, attachments at Halo 1's markers), other
+//!   spans at the definition default; no `phmo` (the engine gives scenery no Havok body, so a
 //!   placement's collision joins the level's instead,
 //!   `h1convert::scenery_collision`), and its `coll` one BSP physics slot
 //!   per BSP, as retail scenery with no `phmo`.
@@ -259,13 +260,38 @@ fn every_scenery_rebuilds_from_its_definition() {
                     "{name}"
                 );
                 assert_eq!(word(&r, "object.unknown_6c"), 0, "{name}");
-                for f in ["attachments", "widgets", "functions"] {
-                    assert_eq!(
-                        r.at(&format!("object.{f}")),
-                        Some(&Val::Block(Vec::new())),
-                        "{name}: {f}"
+                assert_eq!(
+                    r.at("object.widgets"),
+                    Some(&Val::Block(Vec::new())),
+                    "{name}: widgets"
+                );
+                // Halo 1's attachments and the functions scaling them
+                // (`convert_attachments`), each at one of Halo 1's
+                // markers; none without.
+                let bytes = h1.tag_data(t).unwrap();
+                let markers: Vec<Val> = h1::attachments(&h1, bytes)
+                    .unwrap()
+                    .iter()
+                    .map(|a| Val::text(&a.marker))
+                    .collect();
+                let Some(Val::Block(attached)) = r.at("object.attachments") else {
+                    panic!("{name}: attachments")
+                };
+                for a in attached {
+                    let marker = a.get("marker").expect("an attachment marker");
+                    assert!(
+                        markers.contains(marker),
+                        "{name}: attachment at {marker:?}, Halo 1's at {markers:?}"
                     );
                 }
+                let Some(Val::Block(functions)) = r.at("object.functions") else {
+                    panic!("{name}: functions")
+                };
+                assert!(
+                    functions.len() <= h1::functions(&h1, bytes).unwrap().len(),
+                    "{name}: {} functions",
+                    functions.len()
+                );
                 // Change colours: Halo 1's in Halo 2's four slots
                 // (`h1::ChangeColour::halo2_slots`), each with Halo 1's
                 // permutations; none without (unless the model reads C).

@@ -325,6 +325,7 @@ impl<'c, 's> Program<'c, 's> {
         let name = format!("{}{purpose}_{index:x}", self.prefix);
         let ty = init.ty();
         let root = init.emit(c, ty)?;
+        let root = c.shared_root(root);
         c.out.globals.push(definition(&name, ty, 0, root, index)?);
         Ok(Global {
             index: index as u16,

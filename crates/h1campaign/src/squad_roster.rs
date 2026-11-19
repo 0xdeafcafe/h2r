@@ -4,7 +4,10 @@
 use std::collections::HashSet;
 
 use h1ai::h1::{FiringPosition, H1Ai, Squad, StartingLocation};
-use h1scripts::{Tables, catalog::types::AI};
+use h1scripts::{
+    Tables,
+    catalog::types::{AI, FUNCTION_NAME},
+};
 
 #[derive(Default)]
 struct Uses {
@@ -18,7 +21,8 @@ impl Uses {
         let mut uses = Self::default();
         for node in t.nodes.iter().filter(|n| n.live()) {
             if node.atom() {
-                if !node.global() && node.opcode() == AI {
+                // A call's head holds a builtin or script index instead.
+                if !node.global() && node.value_type() != FUNCTION_NAME && node.opcode() == AI {
                     uses.named.insert(node.data());
                 }
                 continue;
@@ -237,7 +241,22 @@ mod tests {
                     .iter()
                     .find(|s| s.name == q.name)
                     .unwrap();
-                if q.starting_locations.is_empty() && q.actor >= 0 && uses.places.contains(&id) {
+                // A placed empty squad takes its sites from its move
+                // positions or its firing groups. b40's
+                // `a2_top_cov/grunt_sniper` names only group Y, which holds
+                // no firing position in its encounter, so it has none and
+                // stays an empty, addressable squad.
+                let mask = q.groups.iter().fold(0, |a, &g| a | g);
+                let authored = !q.move_positions.is_empty()
+                    || before[ei]
+                        .firing_positions
+                        .iter()
+                        .any(|f| f.group < 32 && mask & (1 << f.group) != 0);
+                if q.starting_locations.is_empty()
+                    && q.actor >= 0
+                    && uses.places.contains(&id)
+                    && authored
+                {
                     assert!(!target.starting_locations.is_empty(), "{level} {}", q.name);
                 }
             }

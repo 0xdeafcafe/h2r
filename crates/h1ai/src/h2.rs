@@ -319,11 +319,31 @@ fn area_refs(v: &TagView, e: &[u8], l: (usize, usize)) -> Result<Vec<AreaRef>> {
         .collect())
 }
 
+/// A zone's firing positions or areas. The converter places identical zone
+/// arrays once and points every zone holding them at that copy (b40's
+/// encounters repeat theirs), so each distinct array is charged to the
+/// view's budget once; a repeat reads the same bytes again uncharged.
+fn shared_block<'a>(
+    v: &TagView<'a>,
+    seen: &mut std::collections::HashSet<(u32, u32, usize)>,
+    record: &[u8],
+    (field, stride): (usize, usize),
+) -> Result<Vec<&'a [u8]>> {
+    let (count, address) = (u32_at(record, field), u32_at(record, field + 4));
+    if seen.insert((count, address, stride)) {
+        return Ok(v.elements(count, address, stride)?);
+    }
+    // Validated by the charged read the first time.
+    let bytes = v.range(address, u64::from(count) * stride as u64)?;
+    Ok(bytes.chunks_exact(stride).collect())
+}
+
 impl ScenarioAi {
     /// Decodes the AI blocks of the scenario struct at the start of `v`.
     pub fn read(v: &TagView) -> Result<Self> {
         let root = v.at(0, layout::SCENARIO_MIN)?;
         let b = |l: (usize, usize)| v.block(root, l.0, l.1);
+        let mut shared = std::collections::HashSet::new();
         let squads = b(layout::SQUADS)?
             .into_iter()
             .map(|e| {
@@ -374,16 +394,12 @@ impl ScenarioAi {
         let zones = b(layout::ZONES)?
             .into_iter()
             .map(|e| {
+                let positions = shared_block(v, &mut shared, e, layout::ZONE_FIRING_POSITIONS)?;
                 Ok(Zone {
                     name: name32(e, 0),
                     flags: u32_at(e, 0x20),
                     manual_bsp: i16_at(e, 0x24),
-                    firing_positions: v
-                        .block(
-                            e,
-                            layout::ZONE_FIRING_POSITIONS.0,
-                            layout::ZONE_FIRING_POSITIONS.1,
-                        )?
+                    firing_positions: positions
                         .into_iter()
                         .map(|f| FiringPosition {
                             position: vec3(f, 0),
@@ -395,8 +411,7 @@ impl ScenarioAi {
                             normal: [f32_at(f, 0x18), f32_at(f, 0x1c)],
                         })
                         .collect(),
-                    areas: v
-                        .block(e, layout::ZONE_AREAS.0, layout::ZONE_AREAS.1)?
+                    areas: shared_block(v, &mut shared, e, layout::ZONE_AREAS)?
                         .into_iter()
                         .map(|a| Area {
                             name: name32(a, 0),

@@ -200,10 +200,14 @@ impl Tables {
     }
 
     /// The tokens of every live literal atom whose source type is `ty`.
+    /// A call's head atom is not a literal: its opcode is the builtin or
+    /// script index, so a head whose index equals `ty` must not match.
     pub fn atom_tokens(&self, ty: u16) -> std::collections::BTreeSet<String> {
+        use crate::catalog::types::FUNCTION_NAME;
         self.nodes
             .iter()
-            .filter(|n| n.live() && n.atom() && !n.global() && n.opcode() == ty)
+            .filter(|n| n.live() && n.atom() && !n.global())
+            .filter(|n| n.value_type() != FUNCTION_NAME && n.opcode() == ty)
             .filter_map(|n| self.string(n.string_offset()).ok().map(str::to_owned))
             .collect()
     }

@@ -835,7 +835,11 @@ mod level_and_seats {
         assert!(h2_label_matches("GT-gunner", "guntower_d"));
         assert!(h2_label_matches("gt-gunner", "guntower_d"));
         assert!(h2_label_matches("pchair-driver", "pchair_driver"));
-        assert!(h2_label_matches("driver lifepod", "driver"));
+        // The lifepod's seat keeps its whole mode (`driver lifepod`, a
+        // unit of the cyborg's graph), not the plain driver's.
+        assert!(h2_label_matches("driver lifepod", "driver lifepod"));
+        assert!(h2_label_matches("Driver Lifepod", "driver lifepod"));
+        assert!(!h2_label_matches("driver lifepod", "driver"));
         assert!(h2_label_matches("W-driver", "scorpion_d"));
         assert!(!h2_label_matches("driver", "warthog_b_d"));
         assert!(h2_label_matches("gunner", "warthog_g"));

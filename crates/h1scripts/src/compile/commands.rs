@@ -206,6 +206,9 @@ impl Compiler<'_> {
         let p = self.commands;
         for (name, ty, value) in &p.globals {
             let root = self.generated(value, *ty)?;
+            // The per-actor banks are over a thousand globals, nearly all
+            // starting at none or zero.
+            let root = self.shared_root(root);
             self.out
                 .globals
                 .push(definition(name, *ty, 0, root, self.out.globals.len())?);

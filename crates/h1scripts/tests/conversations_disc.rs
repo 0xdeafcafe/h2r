@@ -436,7 +436,10 @@ fn conversation_vm_plays_holds_advances_and_restarts() {
             .map(|l| l.sounds[0].clone().unwrap())
             .collect::<Vec<_>>();
         let t = Tables::read(map).unwrap();
+        // Only the scene: the level's command lists would add their own
+        // hooks (animations, recordings, object names) to resolve.
         let t = Tables {
+            commands: Default::default(),
             scripts: Vec::new(),
             globals: Vec::new(),
             references: Vec::new(),

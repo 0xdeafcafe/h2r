@@ -72,9 +72,14 @@ integration run. There is no new pass count or play result yet.
   at `+0x7c/+0x84/+0xe8/+0xf0`. The per-model camouflage shader is
   H2-specific. Halo 1 implements camouflage through its globals.
 - The optional Halo 2 side of the paired HUD, HUD drawing shaders,
-  particle and material shader templates, default texture inputs and
-  the player emblem are native rendering dependencies. The primary HUD
-  and source bitmap slots use converted Halo 1 tags.
+  particle and material shader templates, default texture inputs, the
+  scope effect's screen vertex shader and the player emblem are native
+  rendering dependencies. The primary HUD and source bitmap slots use
+  converted Halo 1 tags.
+- **Known gap.** A Halo 1 model shader with no base map gets the base's
+  stand-in model shader, a marine's head on 05a_deltaapproach. a10's
+  `light siren` on the alert light names no map at all. The fix needs
+  Halo 1's draw of a null base map.
 
 ## Running the audit
 

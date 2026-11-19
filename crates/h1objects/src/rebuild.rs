@@ -541,9 +541,9 @@ pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeatNames {
     /// `label`: the rider's animation mode, the name the converted biped
-    /// graphs give Halo 1's seat label (`h1models::names::map_name`):
-    /// `W-driver` is `warthog_d`, an unlisted label its lower-case,
-    /// `-` to `_` form.
+    /// graphs give Halo 1's seat label (`h1models::names::mode_name`, the
+    /// whole label): `W-driver` is `warthog_d`, an unlisted label its
+    /// lower-case, `-` to `_` form (a10's lifepod: `driver lifepod`).
     pub label: String,
     /// `string_8`, the rider's marker, as the converted model names it
     /// (Halo 1's name); empty when the model has no such marker.

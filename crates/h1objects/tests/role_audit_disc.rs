@@ -100,6 +100,12 @@ const ALLOWED: &[Rule] = &[
         "bitm",
         "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
     ),
+    (
+        "spas",
+        "postprocess[].implementations[].vertex_shader",
+        "vrtx",
+        "(a) the scope effect's passes draw with Halo 2's screen-effect vertex shader (program::SCOPE_VERTEX): Halo 1 has no vertex shader tags (hud.md, Scope mask)",
+    ),
 ];
 
 /// Leaks with a Halo 1 equivalent, or in spans not yet identified: each
@@ -111,6 +117,12 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
+    (
+        "mode",
+        "materials[].shader",
+        "shad",
+        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
+    ),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
     ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
     ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),

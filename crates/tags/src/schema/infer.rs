@@ -318,7 +318,28 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
     pair_raw_sizes(&mut schema, maps);
     apply_engine_strides(&mut schema);
     apply_device_change_colors(&mut schema);
+    apply_converter_groups(&mut schema);
     schema
+}
+
+/// Groups only converters write: no retail map has an instance, so
+/// inference never sees them. Each takes its whole relocation layout from
+/// its definition. `hmt ` is the Halo 1 campaign's rebuilt HUD message list
+/// (`defs/hmt_.txt`, docs/halo1/text.md): retail scenarios leave
+/// `scnr +0x208` null.
+pub const CONVERTER_GROUPS: &[FourCC] = &[FourCC(*b"hmt ")];
+
+/// Applies [`CONVERTER_GROUPS`] to a schema.
+pub(super) fn apply_converter_groups(schema: &mut Schema) {
+    let defs = crate::defs::Defs::builtin();
+    for &group in CONVERTER_GROUPS {
+        let root = defs
+            .group(group)
+            .expect("converter group has a definition")
+            .schema_fields()
+            .expect("converter group definition has a relocation layout");
+        schema.groups.insert(group, root);
+    }
 }
 
 /// Retail `ctrl` and `mach` leave `obje +0xac` empty, so inference misses

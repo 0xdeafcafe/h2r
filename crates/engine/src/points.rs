@@ -329,6 +329,9 @@ points! { ALL;
     AI_COMMAND_TARGETS @ 0x0025_a380: [fn(actor: stack 0) ret 4]; "docs/halo1/ai.md";
     /// Clear HS threads and instantiate scenario globals and persistent scripts.
     HS_NEW_MAP @ 0x0020_90a0: [fn() ret 0]; "docs/halo1/scripts.md";
+    /// Attach the new scenario's syntax nodes (`0x16b6b0`) and strings,
+    /// then tail-jump to `HS_NEW_MAP`.
+    HS_MAP_ATTACH @ 0x0020_a750: [fn() ret 0]; "docs/halo1/scripts.md";
 
     /// HS global write-back notification (EAX is the variable index).
     HS_GLOBAL_STORED @ 0x0020_a490: [fn(index: eax) ret 0]; "docs/halo1/ai.md";

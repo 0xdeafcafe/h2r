@@ -131,6 +131,9 @@ pub const MAX_SQUAD_GROUPS: usize = 0x64;
 
 /// Script tables: string data, scripts, globals, references, nodes.
 pub const SCRIPT_FIELDS: [u32; 5] = [0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x238];
+// Every node the compiler may write has a bit in the runtime's syntax
+// bitmap (engine::hs_syntax).
+const _: () = assert!(h1scripts::compile::MAX_NODES as u32 <= engine::hs_syntax::CAPACITY);
 /// Palette element (`scenario_edit::layout`): a tag reference first.
 pub const PALETTE: usize = 0x28;
 

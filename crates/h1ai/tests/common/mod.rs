@@ -33,9 +33,10 @@ pub fn build_and_read(plan: &Plan) -> (ScenarioAi, Vec<TagId>) {
             (c.h2_character.to_owned(), id)
         })
         .collect();
-    let blocks = plan
-        .blocks(|p| ids.iter().find(|(n, _)| n == p).map(|(_, id)| *id))
-        .unwrap();
+    // Palette entries may share a path (the same character with different
+    // uncover thresholds), so each entry gets its own tag, in order.
+    let mut entries = ids.iter().map(|(_, id)| *id);
+    let blocks = plan.blocks_with_characters(|_| entries.next()).unwrap();
     let mut root = Block::zeroed(layout::SCENARIO_MIN);
     blocks.apply(&mut root).unwrap();
     let scnr = set

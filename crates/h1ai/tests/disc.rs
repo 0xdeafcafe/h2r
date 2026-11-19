@@ -52,14 +52,20 @@ fn h1_campaign_ai_reads_on_every_level() {
         // Dangling atom points and squad platoons are retail data faults
         // (a10's moving_1_3 goes to point 5 of 5; c40 has a squad in
         // platoon 3 of 3): a few per level are printed and counted, and any
-        // other bad index fails.
+        // other bad index fails. So are maneuver destinations past the
+        // encounter's squads (a10's first_contact has 2 squads and maneuvers
+        // to 2 and 3; b30's a2_top_cov goes to 19 of 12), which the
+        // converter treats as no destination.
         let (dangling, bad): (Vec<String>, Vec<String>) = ai
             .check_indices()
             .into_iter()
             .partition(|m| m.contains(" point ") || m.contains(" platoon "));
+        let (maneuvers, bad): (Vec<String>, Vec<String>) =
+            bad.into_iter().partition(|m| m.contains(": maneuver "));
         assert!(bad.is_empty(), "{level}: {bad:#?}");
         assert!(dangling.len() <= 8, "{level}: {dangling:#?}");
-        for d in &dangling {
+        assert!(maneuvers.len() <= 4, "{level}: {maneuvers:#?}");
+        for d in dangling.iter().chain(&maneuvers) {
             println!("{level}: dangling {d}");
         }
         let bounds = world_bounds(&m);

@@ -63,7 +63,9 @@ const SCRIPT_CALL: u16 = 10;
 const GLOBAL: u16 = 13;
 /// Placeholder value of a hooked atom: Halo 2's `none`.
 pub const NONE: u32 = u32::MAX;
-/// Most nodes Halo 2's syntax pool holds (`0x9000`).
+/// Most nodes a converted scenario holds. Retail Halo 2's syntax pool
+/// covers [`hs::RETAIL_NODES`]; the runtime gives a larger scenario a larger
+/// occupancy bitmap (`engine::hs_syntax`, docs/halo1/scripts.md).
 pub const MAX_NODES: usize = hs::MAX_NODES;
 /// First opcode of [`Missing::Extension`] calls: one past Halo 2's table.
 pub const EXTENSION_BASE: u16 = 0x8000;
@@ -379,6 +381,7 @@ pub fn compile_scenario(
         ai_registries: Vec::new(),
         cinematic_base: None,
         global_constants: HashMap::new(),
+        shared_roots: HashMap::new(),
         ai_scripts: Default::default(),
         out: Compiled::default(),
         interned: HashMap::new(),
@@ -434,7 +437,7 @@ pub fn compile_scenario(
     c.install_perception_state()?;
     if c.out.nodes.len() > MAX_NODES {
         return Err(invalid(format!(
-            "{} nodes, Halo 2 holds {MAX_NODES}",
+            "{} nodes, the syntax pool holds {MAX_NODES}",
             c.out.nodes.len()
         )));
     }
@@ -478,7 +481,7 @@ pub fn add_startup_placements(
     let mut helper = definition(name, kind, h2t::VOID, Datum::NULL, i)?;
     let added = squads.len().saturating_mul(3).saturating_add(2 + 4 * usize::from(startup.is_some()));
     if out.nodes.len().saturating_add(added) > MAX_NODES {
-        return Err(invalid(format!("startup placements exceed Halo 2's {MAX_NODES} nodes")));
+        return Err(invalid(format!("startup placements exceed the syntax pool's {MAX_NODES} nodes")));
     }
     let push = |out: &mut Compiled, opcode: u16, ty: u16, flags: u16, token: &[u8], data: u32| {
         let string = out.strings.len() as u32;
@@ -567,6 +570,7 @@ struct Compiler<'a> {
     maneuver_latches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     cinematic_base: Option<u16>,
     global_constants: HashMap<(u16, i32), Datum>,
+    shared_roots: HashMap<(u16, u16, u32, u32), Datum>,
     ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     out: Compiled,
@@ -700,6 +704,30 @@ impl Compiler<'_> {
         }
         let root = self.number(ty, value);
         self.global_constants.insert((ty, value), root);
+        root
+    }
+
+    /// A generated global's initializer `root`, just compiled, or an equal
+    /// literal root compiled before it. Like [`Self::global_constant`], a
+    /// root has no sibling and each global keeps its own VM cell, so one
+    /// node serves every global with the same literal initial value. Hooked
+    /// literals keep their own slot: the converter patches each hook's.
+    fn shared_root(&mut self, root: Datum) -> Datum {
+        let slot = root.slot();
+        let node = self.out.nodes[slot];
+        if slot + 1 != self.out.nodes.len()
+            || node.flags() != ATOM
+            || node.next() != Datum::NULL
+            || self.out.hooks.iter().any(|h| usize::from(h.slot) == slot)
+        {
+            return root;
+        }
+        let key = (node.opcode(), node.value_type(), node.string_offset(), node.data());
+        if let Some(&shared) = self.shared_roots.get(&key) {
+            self.out.nodes.pop();
+            return shared;
+        }
+        self.shared_roots.insert(key, root);
         root
     }
 

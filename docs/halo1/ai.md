@@ -519,9 +519,11 @@ these indices to retain named targets, including on a50 and b40. The
 native migration evaluator requires a squad datum (`0x002a54cc`).
 Direct placements of empty squads with a defined actor use authored
 positions from that squad's movement or firing groups. This site-selection
-rule is an inference. Examples include a50's `marines_initial/marines_a`
-and b40's `a2_top_cov/grunt_sniper`. b40's `a2_bottom_cov/grunts_tub`
-has no actor or start to instantiate. It remains addressable for migration.
+rule is an inference. Examples include a50's `marines_initial/marines_a`.
+b40's `a2_top_cov/grunt_sniper` names only firing group Y, and its
+encounter has no position in that group, so it gets no sites. b40's
+`a2_bottom_cov/grunts_tub` has no actor or start to instantiate. Both
+remain addressable for migration.
 
 The campaign squad-pool hook runs before `0x00200b30` initializes the
 arrays. Retail allocates consecutive `0xc760` and `0x163c` buffers

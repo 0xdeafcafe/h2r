@@ -295,13 +295,16 @@ mod tests {
         .unwrap();
         let d = Defs::builtin().group(FourCC(*b"nhdt")).unwrap();
         let r = defs::from_built(d, &root).unwrap();
-        assert_eq!(
-            r.at("screen_effects[0].bitmap"),
-            Some(&Val::tag(FourCC(*b"bitm"), bitmap))
-        );
+        // A builder tree reads a reference fixup back with group 0: the
+        // builder writes the target's group itself.
+        let built = |id| Val::Ref {
+            group: 0,
+            target: defs::Target::Id(id),
+        };
+        assert_eq!(r.at("screen_effects[0].bitmap"), Some(&built(bitmap)));
         for mode in ["full", "half", "quarter"] {
             let path = format!("screen_effects[0].effect_{mode}");
-            assert_eq!(r.at(&path), Some(&Val::tag(FourCC(*b"egor"), effect)));
+            assert_eq!(r.at(&path), Some(&built(effect)));
         }
         assert_eq!(
             r.at("screen_effects[0].sequences"),
