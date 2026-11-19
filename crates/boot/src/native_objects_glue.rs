@@ -55,7 +55,7 @@ use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model};
+use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model, uniform};
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
@@ -385,6 +385,10 @@ struct Opened {
     normalization: Option<Option<Arc<LayeredImage>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
+    /// What an object's draw samples for the lightmap (the globals'
+    /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
+    /// read at the first lit model: the image when uniform, else why not.
+    lightmap: Option<Result<Image, String>>,
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
@@ -410,6 +414,7 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
         images: StageImages::new(),
         lib: None,
         normalization: None,
+        lightmap: None,
         formats,
     })
 }
@@ -668,6 +673,14 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         };
         o.normalization = Some(cube);
     }
+    if o.lightmap.is_none() {
+        let l = object_lightmap(o);
+        match &l {
+            Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
+            Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
+        }
+        o.lightmap = Some(l);
+    }
     let Some(formats) = o.formats.clone() else {
         return LitBuild {
             refused: materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect(),
@@ -681,8 +694,35 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, image, stage, true).ok()?;
         o.images.get(&(bitmap, image)).cloned()
     };
-    let has_normalization = o.normalization.as_ref().is_some_and(Option::is_some);
-    lit_model(&sections, materials, &formats, has_normalization, &mut vertex, &mut image)
+    let engine = EngineStages {
+        normalization: o.normalization.as_ref().is_some_and(Option::is_some),
+        lightmap: o.lightmap.clone().and_then(Result::ok),
+    };
+    lit_model(&sections, materials, &formats, &engine, &mut vertex, &mut image)
+}
+
+/// What an object's layer-3 draw samples where its pass reads the
+/// lightmap (`native_render::object_program::OBJECT_LIGHTMAP`): the
+/// globals' rasterizer bitmap at `+0x64`, decoded as stage 3 samples it,
+/// when it is uniform (then the coordinates the draw adds do not matter).
+fn object_lightmap(o: &mut Opened) -> Result<Image, String> {
+    let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
+    let matg = o
+        .map
+        .tags()
+        .iter()
+        .find(|t| t.group.0 == *b"matg")
+        .and_then(|t| t.location.as_ref().map(|l| l.address))
+        .ok_or("no matg")?;
+    let read = |a: u32, n: usize| lib.metadata().bytes(a, n).ok().map(<[u8]>::to_vec);
+    let bitmap = crate::native_lights_glue::rasterizer_bitmap(&read, matg, native_render::object_program::OBJECT_LIGHTMAP)
+        .ok_or("the globals' rasterizer data names no bitmap at +0x64")?;
+    o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, 3, false)?;
+    let image = o.images.get(&(bitmap, 0)).cloned().ok_or("its image does not decode")?;
+    if !uniform(&image) {
+        return Err(format!("the globals' rasterizer bitmap {bitmap:?} ({}x{}) is not uniform, so the coordinates the draw adds (the BSP's stream 0x2e) would matter", image.width, image.height));
+    }
+    Ok(image)
 }
 
 /// Vertex shader `vs`'s program and input semantics for a section of

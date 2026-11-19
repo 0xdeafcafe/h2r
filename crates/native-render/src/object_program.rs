@@ -111,12 +111,20 @@ pub struct ObjectPass {
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
-/// supplying `provided` (bit `n`: `v<n>`), or says why not.
-pub fn object_pass(pass: map::TagId, imp: &ResolvedImplementation, microcode: &[u8], provided: u16) -> Result<ObjectPass, String> {
+/// supplying `provided` (bit `n`: `v<n>`), or says why not. `lightmap`:
+/// whether a stage may sample the lightmap (the host binds what an
+/// object's draw binds there, [`OBJECT_LIGHTMAP`]).
+pub fn object_pass(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    lightmap: bool,
+) -> Result<ObjectPass, String> {
     let state = object_pass_state(imp)?;
     let (look, normalization) = object_look_stages(pass, imp)?;
-    if look.textures.contains(&crate::look::Stage::Lightmap) {
-        return Err("a stage samples the lightmap".into());
+    if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
+        return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
     let mut program = compile_object_stages(&look, normalization, microcode, state.alpha_test, provided)?;
     program.state = Some(state);
@@ -148,6 +156,24 @@ pub fn lighting_refusal(material: &tags::material::Material) -> Option<String> {
 pub fn object_look(pass: map::TagId, imp: &ResolvedImplementation) -> Result<PassLook, String> {
     object_look_stages(pass, imp).map(|(look, _)| look)
 }
+
+/// What an object's layer-3 draw binds where a pass samples the lightmap
+/// (Code). The draw (`0x0004d0b0`, draw 3) leaves the current lightmap
+/// page `[0x00485a60]` at -1 for any record with a model datum at `+4`
+/// (`0x0004d2c4`..`0x0004d2de` and `0x0004d362`, then `0x0004d420`): it
+/// binds a cluster's page and palette (`0x00015c90`) only for records
+/// without one (the BSP's instanced geometry, `0x0004d367`). With the page
+/// at -1 the stage setup (`0x00018c43`..`0x00018c4c`, then `0x00018d1f`)
+/// binds the globals' rasterizer data element's bitmap at `+0x64`
+/// (`[[0x00485a80] + 0x64]`, the datum of the reference at `+0x60`), and
+/// no palette. The coordinates the draw adds (`0x0004dc60`: a stream of
+/// type `0x2e` from the BSP's `+0x64` element, offset per section) then
+/// read that bitmap, so a uniform one is the same wherever they fall.
+pub const OBJECT_LIGHTMAP: u32 = 0x64;
+
+/// The stream type of the lightmap coordinates the draw adds
+/// (`0x0004dc60`).
+pub const LIGHTMAP_STREAM: u8 = 0x2e;
 
 /// The engine texture the game binds at a stage for the vector
 /// normalization cube (the globals' rasterizer data, as the lights'
