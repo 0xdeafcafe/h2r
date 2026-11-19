@@ -187,6 +187,24 @@ pub struct ClankerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub player: Option<String>,
     pub brain: BotBrain,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<PhantomAim>,
+}
+
+/// Latest phantom gather and its unit's aim at the time of the query.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhantomAim {
+    pub tick: u32,
+    pub stick: [f32; 2],
+    pub arrived_stick: [f32; 2],
+    pub trigger: f32,
+    pub arrived_trigger: f32,
+    /// Validated slot angles [yaw, pitch] in degrees, absent on rejection.
+    pub action_deg: Option<[f32; 2]>,
+    pub fire_primary: bool,
+    pub assist_strength: [f32; 2],
+    pub unit_forward: [f32; 3],
+    pub assist_player: Option<String>,
 }
 
 /// `sim.player.remove`: one by id, or `all`.

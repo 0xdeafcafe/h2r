@@ -229,7 +229,7 @@ impl Bots for LocalBots {
         .map(brain_view)
     }
 
-    fn clankers(&self) -> Vec<ClankerView> {
+    fn clankers(&self, guest: Option<&dyn engine::GuestMemory>) -> Vec<ClankerView> {
         let locals = self.local.list().into_iter().filter_map(|bot| {
             let brain = brain_view(self.local.brain_view(bot.handle)?);
             let name = self
@@ -241,6 +241,7 @@ impl Bots for LocalBots {
                 kind: PlayerKind::Local,
                 port: bot.port.map(u32::from),
                 player: None,
+                aim: None,
                 brain,
             })
         });
@@ -251,6 +252,20 @@ impl Bots for LocalBots {
                 kind: PlayerKind::Phantom,
                 port: None,
                 player: bot.player.map(|id| format!("player.{id}")),
+                aim: guest
+                    .and_then(|m| bots::phantom::global().aim_view(m, bot.handle))
+                    .map(|a| agent_proto::sim::PhantomAim {
+                        tick: a.tick,
+                        stick: a.stick,
+                        arrived_stick: a.arrived_stick,
+                        trigger: a.trigger,
+                        arrived_trigger: a.arrived_trigger,
+                        action_deg: a.action_deg,
+                        fire_primary: a.fire_primary,
+                        assist_strength: a.assist_strength,
+                        unit_forward: a.unit_forward,
+                        assist_player: a.assist_player.map(|i| format!("player.{i}")),
+                    }),
                 brain,
             })
         });

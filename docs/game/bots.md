@@ -2173,9 +2173,23 @@ The local interaction finder `0x151110(player, result)` returns the
 12 bytes copied at `+0x28`. These include the interaction kind (i16),
 detail at `+0x2a` (seat for a seat interaction), object datum at `+0x2c`
 and melee target at `+0x30` (`0x151d41`, `0x15166c`, `0x14fd37`).
-An empty target has kind zero and both datums −1. The unused aim block
-`+0x34..+0x57` has its first three datums set to −1, other fields zero,
-as initialized at `0x14d040`.
+An empty target has kind zero and both datums −1.
+
+The separate shot-assist block starts at `+0x34`. The local action builder
+copies nine dwords there at `0x187074..0x187083`. Previously the phantom
+always supplied the empty block from `0x14d040`. Both strengths were
+zero, so the barrel's target check at `0x1a6a8b..0x1a6aa5` skipped
+shot magnetism even when the reticle was close enough for a local player.
+
+At gather the phantom now runs the local weapon parameter and target search
+routines (`0x1a50a0`, `0x1a5370`) using its own controlled unit, team,
+zoom, unit camera origin (`0x1557c0`) and action direction after uplink
+delivery. The game checks the weapon's cone, range and visibility.
+A selected object, its model target index, its controlling player if any,
+and the two weapon strengths go into `+0x34/+0x38/+0x3c` and
+`+0x50/+0x54` before validation. Losing the target clears the block on
+the next gather. The local stick slowdown and follow are still part of
+local input processing. Phantom thumb motion uses the curve below.
 
 Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
 the unit's aim vector at `+0x168` with the bot's stick curve (nominal

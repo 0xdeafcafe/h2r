@@ -11,6 +11,7 @@ use input::host::HostButton;
 
 const STACK: u32 = 0x781000;
 const OUT: u32 = 0x782000;
+const WORK: u32 = 0x7a0000;
 const UNIT: u32 = BODY + 0x400;
 
 struct TimedSource<F>(F, PhantomLatency);
@@ -84,14 +85,15 @@ fn call(
     slot: u32,
     callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs,
 ) -> entry::testing::Run {
-    g.map(OUT, ACTION_SIZE as u32)
+    g.map(WORK, crate::phantom::AIM_WORK_BYTES)
+        .map(OUT, ACTION_SIZE as u32)
         .put_u32(STACK + 4, slot)
         .put_u32(STACK + 8, OUT);
     let ph = ph.clone();
     entry::testing::run(
         &move |cx| {
             let ph = ph.clone();
-            Box::pin(async move { ph.slot_action(cx, slot).await })
+            Box::pin(async move { ph.slot_action(cx, slot, WORK).await })
         },
         g,
         Regs {
@@ -105,6 +107,8 @@ fn call(
 fn guest_query(q: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
     let unit = DatumHandle::new(0xb001, 1).raw();
     let eax = match q.target {
+        0xcb6d0 => unit,
+        0x1a50a0 => 0, // No assisting weapon unless the test supplies one.
         0xcfe40 => {
             assert_eq!(q.ecx, Some(unit));
             u32::MAX
@@ -491,4 +495,150 @@ fn moving_crouch_checks_only_bipeds_and_stays_latched_until_release() {
             assert_eq!(g.u32(OUT).unwrap() & 1 != 0, kind == 0 && i < 2);
         }
     }
+}
+
+#[test]
+fn gather_carries_the_local_weapon_search_result_into_the_remote_action() {
+    let (ph, mut g, slot) = game(|_| HostPadState {
+        right_trigger: 1.,
+        ..Default::default()
+    });
+    let unit = DatumHandle::new(0xb001, 1).raw();
+    let target = DatumHandle::new(0xb002, 2);
+    game_makes(&mut g, 2, [9; 6], [0., 1., 0.]);
+    g.put_u8(
+        PLAYERS_DATA + 0x21c + engine::view::players::Player::TEAM,
+        1,
+    )
+    .put_u32(BODY + 2 * 0x400 + 0x13c, 0xe0020002);
+    // Two successes (including a dual-wield-only strength), then loss of sight.
+    for (tick, weights) in [(100, [0.6, 0.25]), (101, [0., 0.5]), (102, [0., 0.])] {
+        at_tick(&mut g, tick);
+        let mut eye = 0;
+        let mut direction = 0;
+        let mut params = 0;
+        let run = call(&ph, g, slot, |q, m| match q.target {
+            0xcb6d0 | 0xbaf40 => {
+                assert_eq!(q.eax, Some(unit));
+                Regs {
+                    eax: unit,
+                    ..Default::default()
+                }
+            }
+            0x1a50a0 => {
+                assert_eq!(q.ecx, Some(unit));
+                assert_eq!(q.args, [u32::MAX]);
+                params = q.esi.unwrap();
+                Regs {
+                    eax: 1,
+                    ..Default::default()
+                }
+            }
+            0x1557c0 => {
+                assert_eq!(q.eax, Some(unit));
+                eye = q.args[0];
+                m.set_f32(eye, 17.).unwrap();
+                Regs::default()
+            }
+            0xcb810 => {
+                assert_eq!(q.eax, Some(unit));
+                direction = q.args[0];
+                assert_eq!(m.vec3(direction).unwrap(), [1., 0., 0.]);
+                Regs::default()
+            }
+            0x1a5370 => {
+                assert_eq!(q.ecx, Some(eye));
+                assert_eq!(m.f32(eye).unwrap(), 17.);
+                let candidate = q.args[4];
+                assert_eq!(q.args, [params, direction, unit, 1, candidate]);
+                if tick == 102 {
+                    return Regs::default();
+                }
+                m.set_u32(candidate, target.raw()).unwrap();
+                m.set_u32(candidate + 4, 3).unwrap();
+                m.set_f32(candidate + 0x4c, weights[0]).unwrap();
+                m.set_f32(candidate + 0x50, weights[1]).unwrap();
+                Regs {
+                    eax: 1,
+                    ..Default::default()
+                }
+            }
+            _ => guest_query(q, m),
+        });
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        g = run.guest;
+        let view = ph.aim_view(&g, ph.list()[0].handle).unwrap();
+        assert!(view.fire_primary);
+        assert_eq!(view.assist_strength, weights);
+        assert_eq!(view.assist_player, (tick != 102).then_some(2));
+        for record in [OUT, slot + SLOT_ACTION] {
+            let selected = tick != 102;
+            assert_eq!(
+                g.u32(record + 0x34).unwrap(),
+                if selected { target.raw() } else { u32::MAX }
+            );
+            assert_eq!(
+                g.u32(record + 0x38).unwrap(),
+                if selected { 3 } else { u32::MAX }
+            );
+            assert_eq!(
+                g.u32(record + 0x3c).unwrap(),
+                if selected { 0xe0020002 } else { u32::MAX }
+            );
+            assert_eq!(g.f32(record + 0x50).unwrap(), weights[0]);
+            assert_eq!(g.f32(record + 0x54).unwrap(), weights[1]);
+            assert_eq!(g.u32(record).unwrap() & 0x10040, 0x10040);
+        }
+    }
+}
+
+#[test]
+fn aim_view_separates_intended_arrived_and_observed_aim() {
+    let (ph, mut g, slot) = game_with_latency(
+        |f| {
+            if f.tick == Some(100) {
+                HostPadState {
+                    right_stick: (1., 0.),
+                    right_trigger: 1.,
+                    ..Default::default()
+                }
+            } else {
+                HostPadState::default()
+            }
+        },
+        PhantomLatency {
+            ping_ms: Some(40.),
+            jitter_ms: 0.,
+        },
+    );
+    let bot = ph.list()[0].handle;
+    assert!(ph.aim_view(&g, bot).is_none());
+    g = gather(&ph, g, slot);
+    let first = ph.aim_view(&g, bot).unwrap();
+    assert_eq!(first.tick, 100);
+    assert_eq!((first.stick, first.trigger), ([1., 0.], 1.));
+    assert_eq!((first.arrived_stick, first.arrived_trigger), ([0., 0.], 0.));
+    assert_eq!(first.action_deg, Some([0., 0.]));
+    at_tick(&mut g, 101);
+    g = gather(&ph, g, slot);
+    // Unit state may still lag the newly accepted angle.
+    let next = ph.aim_view(&g, bot).unwrap();
+    assert_eq!((next.stick, next.trigger), ([0., 0.], 0.));
+    assert_eq!((next.arrived_stick, next.arrived_trigger), ([1., 0.], 1.));
+    assert!((next.action_deg.unwrap()[0] - (360. - 0.1f32.to_degrees())).abs() < 0.001);
+    assert_eq!(next.unit_forward, [1., 0., 0.]);
+    // Rejected input has no action, even with a prior stamped record.
+    at_tick(&mut g, 102);
+    let run = call(&ph, g, slot, |q, m| {
+        if q.target == 0x14d0a0 {
+            Regs::default()
+        } else {
+            guest_query(q, m)
+        }
+    });
+    assert_eq!(run.result, Ok(Ret::new(0, 8)));
+    let mut g = run.guest;
+    assert_eq!(ph.aim_view(&g, bot).unwrap().action_deg, None);
+    g.put_u32(PLAYERS_DATA + 0x21c + 0x2c, u32::MAX);
+    assert!(ph.aim_view(&g, bot).is_none());
 }

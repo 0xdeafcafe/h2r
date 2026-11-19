@@ -642,6 +642,9 @@ pub fn player(handle: PhantomHandle) -> Option<u32> {
 }
 
 mod action;
+mod aim;
+pub use action::AimView;
+pub use aim::AIM_WORK_BYTES;
 pub mod session;
 
 #[cfg(test)]

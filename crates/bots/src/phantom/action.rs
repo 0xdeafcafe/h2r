@@ -124,6 +124,7 @@ struct Sample {
     body: u32,
     biped: bool,
     player_flags: u16,
+    team: i8,
     tick: u32,
     dt: f32,
     pad: HostPadState,
@@ -329,7 +330,74 @@ impl ButtonState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AimView {
+    pub tick: u32,
+    pub stick: [f32; 2],
+    pub arrived_stick: [f32; 2],
+    pub trigger: f32,
+    pub arrived_trigger: f32,
+    pub action_deg: Option<[f32; 2]>,
+    pub fire_primary: bool,
+    pub assist_strength: [f32; 2],
+    pub unit_forward: [f32; 3],
+    pub assist_player: Option<u16>,
+}
+
 impl Phantoms {
+    /// Read the last controller sample, the validated slot record and the
+    /// current unit at one agent boundary. A respawn invalidates the sample.
+    pub fn aim_view(&self, m: &dyn GuestMemory, handle: super::PhantomHandle) -> Option<AimView> {
+        let books = self.lock();
+        let p = books.list.iter().find(|p| p.info.handle == handle)?;
+        books.hosted_game?;
+        let (unit, tick) = p.buttons.sample?;
+        let slot = session::slot_of(m, p.info.machine).ok()??;
+        let index = i32::try_from(m.u32(slot).ok()?).ok()?;
+        let player = players::array(m).ok()??.get_absolute(m, index).ok()??;
+        if !p.made
+            || !player.listed(m).ok()?
+            || player.machine(m).ok()? != p.info.machine
+            || player.unit(m).ok()? != Some(unit)
+        {
+            return None;
+        }
+        let (_, body) = objects::get(m, unit).ok()??;
+        let observed = m.vec3(body.addr + guest::UNIT_AIM).ok()?;
+        let sent = p
+            .uplink
+            .in_flight
+            .back()
+            .map_or(p.uplink.arrived, |&(_, pad)| pad);
+        let accepted = p.buttons.accepted && m.u32(slot + SLOT_STAMP).ok()? == tick;
+        let record = slot + SLOT_ACTION;
+        let (action_deg, fire_primary, assist_strength, target) = if accepted {
+            (
+                Some([
+                    m.f32(record + 4).ok()?.to_degrees(),
+                    m.f32(record + 8).ok()?.to_degrees(),
+                ]),
+                m.u32(record).ok()? & 0x40 != 0,
+                [m.f32(record + 0x50).ok()?, m.f32(record + 0x54).ok()?],
+                DatumHandle::from_raw(m.u32(record + 0x3c).ok()?),
+            )
+        } else {
+            (None, false, [0.; 2], None)
+        };
+        Some(AimView {
+            tick,
+            stick: sent.right_stick.into(),
+            arrived_stick: p.uplink.arrived.right_stick.into(),
+            trigger: sent.right_trigger,
+            arrived_trigger: p.uplink.arrived.right_trigger,
+            action_deg,
+            fire_primary,
+            assist_strength,
+            unit_forward: observed,
+            assist_player: target.map(|h| h.index()),
+        })
+    }
+
     /// Only a remote slot of a running match this console hosts can be answered.
     pub fn owns_action_slot(&self, m: &dyn GuestMemory, slot: u32) -> bool {
         if slot == 0 || m.u32(slot + 8) != Ok(4) {
@@ -344,13 +412,21 @@ impl Phantoms {
     }
 
     /// 0x84990(slot, out), only for a slot matched by owns_action_slot.
-    pub async fn slot_action(&self, cx: Cx, slot: u32) -> Result<Ret, EntryError> {
+    pub async fn slot_action(
+        &self,
+        cx: Cx,
+        slot: u32,
+        aim_workspace: u32,
+    ) -> Result<Ret, EntryError> {
         let out = cx.arg(1)?;
         let input = cx.read(|m| -> Result<_, MemFault> {
             let Some(tick) = guest::game_tick(m) else {
                 return Ok(None);
             };
             let index = m.u32(slot)?;
+            if index >= session::MAX {
+                return Ok(None);
+            }
             let Some(players) = players::array(m)? else {
                 return Ok(None);
             };
@@ -396,6 +472,7 @@ impl Phantoms {
             }
             let dt = m.f32(m.u32(engine::points::GAME_TIME.base)? + 4)?;
             let player_flags = player.flags(m)?;
+            let team = player.team(m)?;
             let player = DatumHandle::new(player.salt(m)?, index);
             let pad = if let Some(report) = p.uplink.report_at(tick) {
                 report
@@ -420,6 +497,7 @@ impl Phantoms {
                 tick,
                 dt,
                 player_flags,
+                team,
                 pad,
             };
             Ok(Some((p.info.handle, state, Some(sample))))
@@ -429,13 +507,18 @@ impl Phantoms {
         };
         if let Some(sample) = sample {
             let Sample {
-                tick, player, unit, ..
+                tick,
+                player,
+                unit,
+                team,
+                ..
             } = sample;
             let a = state.action(&cx, sample).await?;
             cx.write(|m| m.write(out, &a.bytes()))?;
             // The same target also supplies melee and sword lunges on ticks without X.
             cx.call(GuestCall::new(0x151110).args([player.raw(), out + 0x28]))
                 .await?;
+            super::aim::fill(&cx, unit, team, player.index(), aim_workspace, out).await?;
             state.accepted = cx.call(GuestCall::new(0x14d0a0).ecx(out)).await?.eax as u8 != 0;
             if state.accepted {
                 cx.write(|m| -> Result<(), MemFault> {
