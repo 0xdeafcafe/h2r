@@ -732,3 +732,81 @@
 .s-skull-btn:focus-visible, .s-skull-tog:focus-visible, .s-skull-x:focus-visible { outline: 2px solid #6f93c4; outline-offset: 1px; }
 
 .s-skulls-played { margin: 0 8px 8px; padding: 6px 4px; }
+
+/* The Ranked page (/games/halo2/ranks): the side menu of playlists in
+   their three groups, the playlist's header panel, the level badge and XP
+   bar of the leaderboard, the your-rank strip and the empty board. */
+
+/* The side menu: group headings between the pills, each pill with the
+   players ranked on its playlist to the right. */
+.s-rank-menu { margin-bottom: 12px; }
+.s-rank-menu a { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.s-rank-group { margin: 10px 0 0; padding: 0 2px 3px; font: bold 10px/12px var(--font-nav); letter-spacing: .12em; text-transform: uppercase; color: #71829c; border-bottom: 1px solid #2a3d59; }
+.s-rank-group:first-child { margin-top: 0; }
+.s-rank-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.s-rank-count { flex: none; font: bold 11px/14px var(--font-ui); color: #9fb4cc; font-variant-numeric: tabular-nums; }
+.s-rank-count--none { color: #4d5a6b; }
+.s-rank-menu a.active .s-rank-count { color: #f6cf5a; }
+
+/* A level as a badge: an original shield, six colour grades (t0 steel for
+   1–9 through t5 for 50) — drawn here, never the game's rank art. */
+.s-lvl {
+  --s-lvl: 20px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: var(--s-lvl); height: calc(var(--s-lvl) * 1.12);
+  font: bold calc(var(--s-lvl) * 0.44)/1 var(--font-ui); text-shadow: 0 1px 1px rgba(0, 0, 0, .5);
+  clip-path: polygon(50% 0, 100% 24%, 100% 74%, 50% 100%, 0 74%, 0 24%);
+  background: linear-gradient(180deg, #8d9aa9, #4f5b68);
+}
+.s-lvl.t1 { background: linear-gradient(180deg, #cf9257, #6f4520); }
+.s-lvl.t2 { background: linear-gradient(180deg, #d7e0e9, #77879a); color: #16202b; text-shadow: 0 1px 0 rgba(255, 255, 255, .35); }
+.s-lvl.t3 { background: linear-gradient(180deg, #f2c94c, #a87709); color: #2b1f04; text-shadow: 0 1px 0 rgba(255, 255, 255, .3); }
+.s-lvl.t4 { background: linear-gradient(180deg, #7ab3ec, #255a9e); }
+.s-lvl.t5 { background: linear-gradient(180deg, #24406b, #0b1830); color: #f6cf5a; text-shadow: 0 0 4px rgba(246, 207, 90, .55); }
+
+/* XP with its progress bar to the next level, beside the number. */
+.s-xp { display: inline-flex; align-items: center; gap: 6px; }
+.s-xp i { font-style: normal; font-variant-numeric: tabular-nums; }
+.s-xp-track { width: 44px; height: 6px; background: #000; border: 1px solid #3f3f3f; }
+.s-xp-fill { display: block; height: 100%; background: linear-gradient(180deg, #f5cf4a, #c98f0c); }
+
+/* The playlist's header panel: a blue-gradient bar with the name and
+   description, then its rules and what the board adds up to. */
+.s-rank-box-head { align-items: flex-start; padding: 7px 8px 6px 9px; background: linear-gradient(180deg, var(--s-head-1), var(--s-head-2)); }
+.s-rank-box-head h3 { font: bold 18px/22px var(--font-ui); }
+.s-rank-box-head p { font: italic 11px/14px var(--font-ui); color: #9fb4cc; padding-top: 2px; }
+.s-rank-kind { flex: none; margin-top: 2px; padding: 0 8px; font: bold 10px/16px var(--font-nav); letter-spacing: .08em; text-transform: uppercase; color: #dfe7f2; background: #0a1526; border: 1px solid #33496a; border-radius: 8px; }
+.s-rank-kind--unranked { color: #9d9d9d; }
+.s-rank-kind--clanker { color: #f6cf5a; background: #221a08; border-color: #8f7424; }
+.s-rank-rules { display: flex; flex-wrap: wrap; gap: 3px 12px; padding: 6px 9px 0; font: 11px/15px var(--font-ui); color: #c5d6ee; }
+.s-rank-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 1px; margin: 7px 8px 8px; background: #000; border: 1px solid #000; }
+.s-rank-stats > div { display: grid; gap: 2px; align-content: start; padding: 5px 8px 6px; background: #161616; }
+.s-rank-stats dt { font: 9px/12px var(--font-nav); text-transform: uppercase; letter-spacing: .06em; color: #71829c; }
+.s-rank-stats dd { font: bold 15px/18px var(--font-ui); color: #fff; font-variant-numeric: tabular-nums; }
+
+/* The your-rank strip between the panel and the table. */
+.s-rank-you { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; margin-bottom: 8px; padding: 4px 9px; font-size: 12px; color: #dfe7f2; background: linear-gradient(180deg, #16304f, #0e1a2c); border: 1px solid #33496a; border-left: 3px solid var(--s-gold); }
+.s-rank-you b { color: #f6cf5a; }
+.s-rank-you--out { color: #9d9d9d; border-left-color: #33496a; }
+.s-rank-you-way { color: #9fb4cc; }
+.s-rank-you-link { margin-left: auto; font-size: 11px; }
+
+/* The "you" mark beside the signed-in player's row. */
+.s-rank-youtag { flex: none; padding: 0 4px; font: bold 9px/13px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: #0a0a0a; background: var(--s-gold); }
+
+/* What the empty board says: how to get on it, and where the games are. */
+.s-rank-empty { padding: 14px 12px 12px; background: #1a1a1a; }
+.s-rank-empty h3 { margin: 0 0 6px; font: bold 14px/18px var(--font-ui); color: #fff; }
+.s-rank-empty p { margin: 0 0 6px; max-width: 66ch; font: 12px/17px var(--font-ui); color: #c5ccd6; }
+.s-rank-empty p:last-child { margin-bottom: 0; }
+
+/* The Your Ranks list: a small badge before each playlist. */
+.s-rank-mine .s-lvl { flex: none; }
+.s-rank-mine a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .s-rank-box-head h3 { font-size: 15px; line-height: 19px; }
+  .s-rank-you-link { margin-left: 0; }
+  .s-xp-track { width: 26px; }
+  .s-rank-stats { grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+}

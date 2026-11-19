@@ -165,6 +165,139 @@ fn query_filters_by_kind_and_distance_nearest_first() {
     assert_eq!((page.total, page.more), (2, false));
 }
 
+/// Blood Gulch's teleporter bases and a Warthog, named.
+fn named_level() -> Vec<Object> {
+    let named = |id: &str, kind, pos, tag: &str, name: &str| Object {
+        tag: Some(tag.into()),
+        tag_name: Some(name.into()),
+        ..obj(id, kind, pos, None)
+    };
+    let base = "scenery\\teleporter_base\\teleporter_base";
+    vec![
+        obj("player.0", Kind::Player, [0.0, 0.0, 0.0], Some(0)),
+        named(
+            "scenery.e1000001",
+            Kind::Scenery,
+            [40.0, 0.0, 0.0],
+            "e1230045",
+            base,
+        ),
+        named(
+            "scenery.e1010002",
+            Kind::Scenery,
+            [5.0, 0.0, 0.0],
+            "e1230045",
+            base,
+        ),
+        named(
+            "scenery.e1020003",
+            Kind::Scenery,
+            [6.0, 0.0, 0.0],
+            "e1230046",
+            "scenery\\rocks\\boulder",
+        ),
+        named(
+            "vehicle.e1030004",
+            Kind::Vehicle,
+            [7.0, 0.0, 0.0],
+            "e1230047",
+            "objects\\vehicles\\warthog\\warthog",
+        ),
+    ]
+}
+
+#[test]
+fn query_filters_by_tag_name_or_datum() {
+    let ids = |p: &QueryParams| -> Vec<String> {
+        query(named_level(), p)
+            .unwrap()
+            .objects
+            .iter()
+            .map(|o| o["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Any case, `/` for `\`, nearest first with `near`.
+    let p = QueryParams {
+        tag: Some("Scenery/Teleporter_Base".into()),
+        near: Some(agent_proto::Near {
+            player: Some(0),
+            radius: 100.0,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(ids(&p), ["scenery.e1010002", "scenery.e1000001"]);
+    let p = QueryParams {
+        tag: Some("0xe1230047".into()),
+        ..Default::default()
+    };
+    assert_eq!(ids(&p), ["vehicle.e1030004"]);
+    let p = QueryParams {
+        tag: Some("warthog".into()),
+        kind: Some(vec![Kind::Scenery]),
+        ..Default::default()
+    };
+    assert!(ids(&p).is_empty(), "kind and tag both filter");
+    // An object without a name matches no name.
+    let mut unnamed = named_level();
+    unnamed[1].tag_name = None;
+    let p = QueryParams {
+        tag: Some("teleporter".into()),
+        ..Default::default()
+    };
+    assert_eq!(query(unnamed, &p).unwrap().total, 1);
+}
+
+struct Names;
+impl crate::TagNames for Names {
+    fn names(&mut self, datums: &[u32]) -> Vec<Option<String>> {
+        datums
+            .iter()
+            .map(|d| {
+                (*d == 0xe123_0045).then(|| "scenery\\teleporter_base\\teleporter_base".into())
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn world_results_carry_tag_names_when_the_host_gives_them() {
+    let a = Agent::new();
+    let (c, rx) = client(&a);
+    let mut g = level();
+    g.objects.push(Object {
+        tag: Some("e1230045".into()),
+        ..obj("scenery.e1000001", Kind::Scenery, [5.0, 0.0, 0.0], None)
+    });
+    ask(
+        &a,
+        c,
+        1,
+        method::WORLD_QUERY,
+        json!({"tag": "teleporter_base"}),
+    );
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["total"], 0, "no names yet: {v}");
+    a.set_tag_names(Box::new(Names));
+    ask(
+        &a,
+        c,
+        2,
+        method::WORLD_QUERY,
+        json!({"tag": "teleporter_base"}),
+    );
+    a.between_slices(&mut g, 0);
+    let v = next(&rx);
+    assert_eq!(v["result"]["total"], 1, "{v}");
+    let o = &v["result"]["objects"][0];
+    assert_eq!(o["kind"], "scenery");
+    assert_eq!(o["tag_name"], "scenery\\teleporter_base\\teleporter_base");
+    ask(&a, c, 3, method::WORLD_COUNT, Value::Null);
+    a.between_slices(&mut g, 0);
+    assert_eq!(next(&rx)["result"]["groups"]["scenery"], 1);
+}
+
 #[test]
 fn query_pages_and_trims_fields() {
     let p = QueryParams {

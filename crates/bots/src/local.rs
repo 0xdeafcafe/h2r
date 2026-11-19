@@ -39,8 +39,8 @@ pub const ID_BASE: u64 = 0xc1a4_0000;
 
 /// What a source sees each frame.
 pub struct Frame<'a> {
-    /// Frames since the glue started: once a rendered frame, menus
-    /// included.
+    /// Input sample number. Local pads use rendered frames, including menus.
+    /// A phantom advances once per simulation sample, including catch-up ticks.
     pub frame: u64,
     /// The game's tick (30 a second) while a game is loaded, `None` in the
     /// menus ([`crate::guest::game_tick`]). Ticks are not frames: a slow
@@ -66,6 +66,14 @@ pub struct Frame<'a> {
 /// Where a bot's pad comes from: one pad per frame.
 pub trait PadSource: Send {
     fn pad(&mut self, f: &Frame<'_>) -> HostPadState;
+
+    /// The phantom's action stream was interrupted by a new unit or match.
+    fn reset_input(&mut self) {}
+
+    /// Phantom uplink timing, ignored when this source drives a local port.
+    fn phantom_latency(&self) -> crate::tuning::PhantomLatency {
+        crate::tuning::PhantomLatency::default()
+    }
 }
 
 /// A source from a closure.

@@ -24,6 +24,8 @@ use crate::guest::{BODY_DEPLETED, Who};
 
 type R<T> = Result<T, MemFault>;
 
+mod entry;
+
 /// Unit `+0x1fc`: the seat in the vehicle it rides (`i16`, -1 none).
 /// Confirmed (`crates/live-telemetry/src/layout.rs`, `UNIT_SEAT`): the
 /// enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores
@@ -47,8 +49,20 @@ pub const OBJECT_LIMIT: i32 = 2048;
 
 const VEHI: GroupTag = GroupTag::from_chars(*b"vehi");
 
+struct Definition {
+    class: Class,
+    alternate_fire: bool,
+    hull: Option<[f32; 2]>,
+    seats: Vec<Seat>,
+}
+
 /// A vehicle's tag: its class and its seats' roles.
-fn definition(m: &dyn GuestMemory, def: DatumHandle) -> R<Option<(Class, Vec<SeatRole>)>> {
+fn definition(
+    m: &dyn GuestMemory,
+    def: DatumHandle,
+    body: objects::Body,
+    world: [Vec3; 3],
+) -> R<Option<Definition>> {
     let Some(tag) = Tags.entry(m, def)? else {
         return Ok(None);
     };
@@ -70,7 +84,64 @@ fn definition(m: &dyn GuestMemory, def: DatumHandle) -> R<Option<(Class, Vec<Sea
     for i in 0..count {
         flags.push(m.u32(base + i * SEAT_STRIDE + SEAT_FLAGS)?);
     }
-    Ok(Some((class, roles(&flags))))
+    let mode = entry::model(m, vehi).ok().flatten();
+    let seats = roles(&flags)
+        .into_iter()
+        .enumerate()
+        .map(|(i, role)| {
+            // Seat rules at 0xc8c87 and 0xc92c0. Boarding seats target a
+            // normal seat by its signed index at +0x3e.
+            let seat = base + i as u32 * SEAT_STRIDE;
+            let flags = flags[i];
+            let boards = (flags & (1 << 11) != 0)
+                .then(|| m.u16(seat + 0x3e).ok().filter(|&n| u32::from(n) < count))
+                .flatten();
+            let eligible = flags & (1 << 16) == 0 && (flags & (1 << 11) == 0 || boards.is_some());
+            let role = if class == Class::Turret && flags & (SEAT_DRIVER | SEAT_GUNNER) != 0 {
+                SeatRole::Gunner
+            } else if class == Class::Turret {
+                SeatRole::Passenger
+            } else {
+                role
+            };
+            Seat {
+                role,
+                rider: None,
+                entries: if eligible {
+                    entry::read(m, mode, seat, body, world).unwrap_or_default()
+                } else {
+                    Vec::new()
+                },
+                boards,
+            }
+        })
+        .collect();
+    let alternate_fire = class == Class::Fighter && fighter_secondary(m, vehi).unwrap_or(false);
+    let hull = mode.and_then(|mode| entry::hull(m, mode).ok().flatten());
+    Ok(Some(Definition {
+        class,
+        alternate_fire,
+        hull,
+        seats,
+    }))
+}
+
+/// The fighter uses the secondary fire input when its weapon has a second
+/// trigger and barrel. Retail Ascension's second barrel is banshee_bomb.
+fn fighter_secondary(m: &dyn GuestMemory, vehi: u32) -> R<bool> {
+    // unit.txt: the unit's weapon references are a block at +0x1c0.
+    if m.i32(vehi + 0x1c0)? < 1 {
+        return Ok(false);
+    }
+    let block = m.u32(vehi + 0x1c4)?;
+    if block == 0 {
+        return Ok(false);
+    }
+    let Some(weapon) = entry::reference(m, block + 4, *b"weap")? else {
+        return Ok(false);
+    };
+    Ok(m.i32(weapon + crate::arms::WEAP_TRIGGERS)? >= 2
+        && m.i32(weapon + crate::arms::WEAP_BARRELS)? >= 2)
 }
 
 /// The seats' roles from their flags. With no driver's seat flagged at
@@ -184,10 +255,26 @@ pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
             continue;
         };
         // A vehicle whose tag does not read is no use to a bot.
-        let Some((class, roles)) = definition(m, def).ok().flatten() else {
+        let [position, forward, up] = world_pose(m, body)?;
+        if !position
+            .into_iter()
+            .chain(forward)
+            .chain(up)
+            .all(f32::is_finite)
+        {
+            continue;
+        }
+        let Some(Definition {
+            class,
+            alternate_fire,
+            hull,
+            seats,
+        }) = definition(m, def, body, [position, forward, up])
+            .ok()
+            .flatten()
+        else {
             continue;
         };
-        let [position, forward, up] = world_pose(m, body)?;
         let on = vehicle_body(m, body.parent(m)?)?
             .and(body.parent(m)?)
             .map(DatumHandle::raw);
@@ -198,11 +285,10 @@ pub fn sight(m: &dyn GuestMemory, who: Who) -> R<Sight> {
             forward,
             up,
             health: body.health(m)?,
+            alternate_fire,
+            hull,
             on,
-            seats: roles
-                .into_iter()
-                .map(|role| Seat { role, rider: None })
-                .collect(),
+            seats,
         });
     }
     if out.vehicles.is_empty() {

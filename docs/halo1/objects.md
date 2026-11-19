@@ -468,6 +468,34 @@ treads are in its body above the hull's lowest point where its retail
 role's physics models have wheel shapes (the scorpion's treads; not the
 warthog's tires; tag-definitions.md, `convert::held_wheels`).
 
+**The scorpion's treads are solid; the boulders are not** (game run,
+2026-11-19, converted Blood Gulch, the scorpion's `phmo` 18,786 bytes
+with its 42 pieces, as converter version 90 builds it; the scorpion at
+[40.36, -64.01, 1.0], forward [-0.03, -0.99, -0.10]). Its pieces reach
+1.18 to each side over the back half of the tread and 1.06 over the
+front half (retail's scorpion: 1.13; its hull 0.53), from 0.10 to 0.53
+above the origin. Walking at x 41.45 or 41.59 (1.1 and 1.2 to the
+tank's left) toward -y, the player stopped at y -62.4, the treads' back
+face, was pushed out to x 41.79 and slid along the side at 1.40 from the
+centre line, the tread's edge plus the capsule; walking from x 41.59
+angled a little inward, it slid inward along the back face instead and
+stopped at [40.92, -62.37], where it stops on the centre line. Put inside the tread
+(`sim.state.set`), it was pushed out of it or stood on top (z 1.61). So
+a walking biped cannot enter the converted treads, and an earlier report
+of walking through them at 1.2 to the side was not reproduced; a path
+just outside the front half (narrower by 0.12) clears it.
+
+The boulders are another matter: the engine gives no scenery a Havok
+body, from a `phmo` or otherwise, so neither the slots (through version
+84) nor the built `phmo` (since 85) make a scenery object solid; the
+player put inside `boulder_doublewide` or `boulder_crouch` drops to the
+ground through it ([tag-definitions.md](../formats/tag-definitions.md),
+"Scenery from definitions", and [collision.md](../formats/collision.md),
+rigid bodies: only bipeds, vehicles, machines, crates and creatures get
+bodies). Retail Blood Gulch's base keeps its rocks in the structure and
+its one solid prop as a crate with a fixed body, so the fix is one of
+those two, not more scenery physics.
+
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
 permutation (`8`) its `coll` permutation (`+5`) and physics permutation
@@ -606,6 +634,63 @@ built map; `tests/sandbox_disc.rs`
 (`every_hlmt_holds_its_materials_in_both_sandboxes`) and
 `h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
 every converted map against what the retail base already breaks.
+
+### Cut-out model shaders (**Built**, converter version 92)
+
+Halo 1 alpha-tests a model shader (`soso`) on its base map's alpha
+unless its flags (`+0x28`) set bit 2, which no Blood Gulch `soso` does
+(`h1convert::shad::soso_alpha_tested`). The leaf cards of the trees and
+plants are such shaders, each a DXT3 base three quarters clear:
+
+| Object | `soso` | Base |
+|---|---|---|
+| `tree_desert_whitebark` | `whitebark_leaves` (flags 2, two-sided) | `whitebark_leaves`, 128², 72 % clear |
+| `shrub_large` | `tree_leafy_leaves` (2) | `tree_leafy_leaves`, 256² |
+| `plant fern` | `plant fern` (2) | `plant fern`, 256² |
+| `plant_broadleaf_short` | `broadleaf top`, `broadleaf bottom` (0) | `plant_broadleaf_leaf`, 256² |
+
+`tree_desert_dead` has no leaves: its one shader is its trunk (V, Blood
+Gulch on the disc). The whitebark's model scales its texture coordinates
+by (255.9, 119.1) (`mode +0x30`); its leaf cards span one tile each, u
+104.9 to 106.0, v 95.0 to 96.0, so the whole leaf image lies on each card.
+
+From converter version 84 these draw on
+`opaque\tex_bump_alpha_test_single_pass` with the leaf in slot 2, the
+base. That stem cuts out in two places (V, `h2 shader` on coagulation's
+`bush_vine` and `tree_cliff_leaf`, both on it; and
+`tests/model_shaders_disc.rs`): its colour pass (layer 3,
+`lightmap_tex_detail_alpha_test`) alpha-tests with the base at stage 0,
+and its layer 10 (`shadow\shadow_generate`, whose implementations 1 and 2
+write depth only, the depth the light passes then test equal against)
+samples **slot 0, the bump map**, at stage 0 with `D3DTSS_ALPHAKILL` on.
+Retail's alpha-tested bump maps carry the cut-out: they are P8 bump with
+palette index 255 exactly where the colour map is clear
+(`tree_cliff_leaf_bump`: 24,367 of its 24,396 texels with colour alpha
+below 128 are index 255, none above 159). The converted shaders had
+`default_vector` there, opaque, so each card's depth covered the whole
+card: live on Blood Gulch (version 91) the whitebark's canopies drew as
+flat near-black diamonds, the clear part showing the dark colour behind
+the depth, not the cliff. Pointing the leaf shader's slot 0 at the leaf
+bitmap itself (`h2 agent edit set`) cut the canopies into the leaf's
+star shape at once.
+
+The converter now binds a bump map of its own in slot 0 when a cut-out
+`soso` has none (`h1bitmaps::mask::cutout_bump`, tag `<base
+name>_alpha_test_bump`, built once per base): DXT5 of the base's size and
+mip chain, every texel the flat normal (129, 128, 255, a fixed colour
+block within a step of `default_vector`'s 128, 128, 255), its alpha 0
+where the base's level is below 128 and 255 elsewhere. A binary alpha
+keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
+half and agrees with retail's leaf bump above. Its tiling and LOD offset
+are the base's. A base that doesn't decode, or has more than one image,
+keeps the default bump, uncut, as before. Proof:
+`h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
+`tests/model_shaders_disc.rs`,
+`bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
+slots on coagulation, then every converted shader on the cut-out stem
+among the five plants and trees). Not covered: an alpha-tested `senv`
+(structure) shader on the same stem still binds its own P8 bump or the
+default, whether or not that bump's alpha cuts.
 
 ### Change colours (`obje +0xac`, **Built**, converter version 84)
 

@@ -68,6 +68,76 @@ pub fn red_into_alpha(
     Ok((out_img, out))
 }
 
+/// The image `img` (its stored pixels `px`) as DXT5 whose alpha is its
+/// own brightest channel, `max(r, g, b)`, times `gain` (saturated at 1):
+/// Halo 1's plasma `sotr` adds its picture's colour times the band, and
+/// Halo 2's `plasma_alpha` shapes and dims only through its mask's alpha
+/// (`h1convert::shad::plasma_shader`). Every level of the chain is
+/// written; the colours are the image's (as [`red_into_alpha`] keeps
+/// them). 2D images only. Deterministic.
+pub fn brightest_into_alpha(img: &Image, px: &[u8], gain: f32) -> Result<(Image, Vec<u8>)> {
+    if img.kind != ImageKind::D2 {
+        return Err(Error::Unsupported(format!(
+            "a brightness mask of type {:?}",
+            img.kind
+        )));
+    }
+    let colours = decode_image(img, px)?;
+    let mut out_img = img.clone();
+    out_img.format = PixelFormat::Dxt5;
+    out_img.flags =
+        (img.flags & !(FLAG_PALETTIZED | FLAG_SWIZZLED | FLAG_LINEAR)) | FLAG_COMPRESSED;
+    out_img.depth = 1;
+    let layout = texture_desc(&out_img)?.layout()?;
+    let mut out = vec![0u8; layout.total_size];
+    for l in &layout.levels {
+        let src = colours
+            .iter()
+            .find(|v| v.face == 0 && v.level == l.level)
+            .ok_or_else(|| Error::Invalid(format!("the image has no level {}", l.level)))?;
+        let alpha: Vec<u8> = src
+            .rgba
+            .chunks_exact(4)
+            .map(|t| brightest(t[0], t[1], t[2], gain))
+            .collect();
+        let blocks = encode_dxt5(src.width, src.height, &src.rgba, &alpha);
+        let n = blocks.len().min(l.size);
+        out[l.offset..l.offset + n].copy_from_slice(&blocks[..n]);
+    }
+    out_img.pixel_size = out.len() as u32;
+    Ok((out_img, out))
+}
+
+/// `gain × max(r, g, b)`, rounded, saturated at 255.
+pub fn brightest(r: u8, g: u8, b: u8, gain: f32) -> u8 {
+    (f32::from(r.max(g).max(b)) * gain)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+/// The single-image Halo 1 bitmap `tag` with [`brightest_into_alpha`]'s
+/// alpha, converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+pub fn convert_brightest(
+    map: &h1map::H1Map,
+    tag: &h1map::Tag,
+    gain: f32,
+) -> Result<h1models::Converted> {
+    let bm = h1map::bitmap::Bitmap::read(map, tag)?;
+    if bm.images.len() != 1 {
+        return Err(Error::Unsupported(format!(
+            "a brightness mask of {} images",
+            bm.images.len()
+        )));
+    }
+    let (img, px) = brightest_into_alpha(&bm.images[0], bm.pixels(map, 0)?, gain)?;
+    let mut baked = bm.clone();
+    baked.images[0] = img;
+    baked.encoding = INTERPOLATED_ALPHA;
+    let mut px = Some(px);
+    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
+    Ok(conv)
+}
+
 /// A Halo 2 change-colour map from one channel of a Halo 1 model
 /// shader's multipurpose map: DXT5 of `mask`'s size and mip chain, whose
 /// channel `to` (0 red .. 3 alpha) is `mask`'s channel `from` and every
@@ -117,6 +187,112 @@ pub fn channel_into(
     }
     out_img.pixel_size = out.len() as u32;
     Ok((out_img, out))
+}
+
+/// The base alpha at and above which an alpha-tested surface is kept
+/// ([`cutout_bump`]): Halo 1 tests its model shaders' base at a half.
+/// Retail Halo 2's alpha-tested bump maps agree (V, coagulation's
+/// `tree_cliff_leaf_bump`: its cut-out index covers its leaf's texels
+/// with alpha below 128 and almost none above).
+pub const CUTOUT_THRESHOLD: u8 = 128;
+
+/// A DXT colour block every texel of which is the flat tangent-space
+/// normal, `(129, 128, 255)`: endpoints `0x841f` (132, 130, 255) and
+/// `0x7bff` (123, 125, 255), the larger first (four-colour mode), every
+/// texel index 2, two thirds of the first and one of the second. Within
+/// one step of `default_vector`'s `(128, 128, 255)`, which no single
+/// R5G6B5 endpoint is (128 lies between 5-bit red's 123 and 132).
+pub const FLAT_NORMAL_BLOCK: [u8; 8] = [0x1f, 0x84, 0xff, 0x7b, 0xaa, 0xaa, 0xaa, 0xaa];
+
+/// A bump map for Halo 2's alpha-tested model stem made from the base
+/// image `base` (its stored pixels `base_px`): DXT5 of the base's size
+/// and chain, every texel the flat normal ([`FLAT_NORMAL_BLOCK`]), its
+/// alpha 0 where the base's level is below [`CUTOUT_THRESHOLD`] and 255
+/// elsewhere.
+///
+/// `opaque\tex_bump_alpha_test_single_pass` cuts its depth and shadow
+/// passes by its bump map's alpha, not the base's: its layer 10
+/// (`shadow\shadow_generate`, whose depth-only implementations lay down
+/// the depth the later passes test equal against) samples bitmap 0, the
+/// bump, at stage 0 with `D3DTSS_ALPHAKILL` on, while the colour pass
+/// (layer 3) alpha-tests the base. Retail's alpha-tested bump maps are
+/// P8 bump with palette index 255 exactly where their colour map is clear
+/// (V, coagulation's `bush_vine_bmp` and `tree_cliff_leaf_bump`). With
+/// `default_vector` there (opaque), a Halo 1 leaf card's depth covered
+/// the whole card and the cut-out parts drew as the dark colour behind
+/// it. A binary alpha keeps the depth cut where the colour pass cuts.
+/// 2D images only; deterministic.
+pub fn cutout_bump(base: &Image, base_px: &[u8]) -> Result<(Image, Vec<u8>)> {
+    if base.kind != ImageKind::D2 {
+        return Err(Error::Unsupported(format!(
+            "a cut-out bump of a base of type {:?}",
+            base.kind
+        )));
+    }
+    let levels = decode_image(base, base_px)?;
+    let mut out_img = base.clone();
+    out_img.format = PixelFormat::Dxt5;
+    out_img.flags =
+        (base.flags & !(FLAG_PALETTIZED | FLAG_SWIZZLED | FLAG_LINEAR)) | FLAG_COMPRESSED;
+    out_img.depth = 1;
+    let layout = texture_desc(&out_img)?.layout()?;
+    let mut out = vec![0u8; layout.total_size];
+    for l in &layout.levels {
+        let src = levels
+            .iter()
+            .find(|v| v.face == 0 && v.level == l.level)
+            .ok_or_else(|| Error::Invalid(format!("the base has no level {}", l.level)))?;
+        let alpha: Vec<u8> = src
+            .rgba
+            .chunks_exact(4)
+            .map(|t| if t[3] >= CUTOUT_THRESHOLD { 255 } else { 0 })
+            .collect();
+        let blocks = encode_alpha_dxt5(src.width, src.height, &alpha, FLAT_NORMAL_BLOCK);
+        let n = blocks.len().min(l.size);
+        out[l.offset..l.offset + n].copy_from_slice(&blocks[..n]);
+    }
+    out_img.pixel_size = out.len() as u32;
+    Ok((out_img, out))
+}
+
+/// The single-image Halo 1 bitmap `tag` as [`cutout_bump`]'s bump map,
+/// converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+pub fn convert_cutout_bump(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<h1models::Converted> {
+    let bm = h1map::bitmap::Bitmap::read(map, tag)?;
+    if bm.images.len() != 1 {
+        return Err(Error::Unsupported(format!(
+            "a cut-out bump of {} images",
+            bm.images.len()
+        )));
+    }
+    let (img, px) = cutout_bump(&bm.images[0], bm.pixels(map, 0)?)?;
+    let mut baked = bm.clone();
+    baked.images[0] = img;
+    baked.encoding = INTERPOLATED_ALPHA;
+    let mut px = Some(px);
+    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
+    Ok(conv)
+}
+
+/// DXT5 blocks of a `w` x `h` level whose colour half is `colour` in
+/// every block and whose alpha is `alpha` (one byte per texel). A block
+/// past the level's edge repeats the edge texels.
+fn encode_alpha_dxt5(w: u32, h: u32, alpha: &[u8], colour: [u8; 8]) -> Vec<u8> {
+    let (bw, bh) = (w.div_ceil(4).max(1), h.div_ceil(4).max(1));
+    let mut out = Vec::with_capacity((bw * bh * 16) as usize);
+    for by in 0..bh {
+        for bx in 0..bw {
+            let a: [u8; 16] = std::array::from_fn(|k| {
+                let (i, j) = (k as u32 % 4, k as u32 / 4);
+                let x = (bx * 4 + i).min(w - 1);
+                let y = (by * 4 + j).min(h - 1);
+                alpha[(y * w + x) as usize]
+            });
+            out.extend_from_slice(&alpha_block(&a));
+            out.extend_from_slice(&colour);
+        }
+    }
+    out
 }
 
 /// The red channel of `masks` (face 0) at `w` x `h`, row-major.

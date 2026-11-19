@@ -335,6 +335,9 @@ pub struct Tree {
     /// Where the player's Halo 1 HUD centres the motion sensor's blips
     /// ([`crate::h1hud::sensor_centre`]), for `boot::hud_swap`.
     pub hud_sensor: Option<[i16; 2]>,
+    /// Per tag (its index in [`Tree::tags`]), the values its builder took
+    /// from a role ([`crate::provenance`]), for the role audit.
+    pub role_fields: Vec<(usize, Vec<crate::provenance::RoleField>)>,
 }
 
 /// One owner's two HUDs: Halo 1's ([`crate::h1hud`]), which the owner
@@ -518,6 +521,19 @@ impl Tree {
 }
 
 impl Tree {
+    /// Keeps the role values ([`crate::provenance::capture`]) of the tree's
+    /// tag `id` (a [`local`] datum); nothing for any other datum.
+    pub fn note_roles(&mut self, id: TagId, fields: Vec<crate::provenance::RoleField>) {
+        if let Some(k) = local_index(id)
+            && !fields.is_empty()
+        {
+            match self.role_fields.iter_mut().find(|e| e.0 == k) {
+                Some(e) => e.1.extend(fields),
+                None => self.role_fields.push((k, fields)),
+            }
+        }
+    }
+
     /// Adds `tag` as `name`, or `name_2`, `name_3`, ... when a tag of its
     /// group already has that name: a map's tags are found by group and
     /// name, so two would leave one unreachable. Halo 1 objects of two
@@ -820,6 +836,12 @@ pub struct Converter<'a> {
     /// Base maps with a reflection mask as their alpha
     /// ([`Self::masked_bitmap`]), by (base, mask) tag.
     masked_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Plasma pictures with their brightness as alpha
+    /// ([`Self::brightest_bitmap`]), by (bitmap tag, gain bits).
+    brightest_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Flat bump maps cut out by a base map's alpha
+    /// ([`Self::cutout_bump`]), by base map tag.
+    cutout_bumps: HashMap<u32, Option<TagId>>,
     /// Change-colour maps ([`Self::change_colour_bitmap`]), by
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
@@ -848,6 +870,9 @@ pub struct Converter<'a> {
     /// Effects whose particles are being converted (a particle's own
     /// effects that lead back to one are left out).
     effects_open: Vec<u32>,
+    /// Objects being converted ([`Self::object`]), so one whose effects
+    /// lead back to it is refused instead of recursed into.
+    objects_open: Vec<u32>,
     /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
     /// state and its type's initial count ([`Self::effect_particle_systems`]).
     pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
@@ -883,6 +908,8 @@ impl<'a> Converter<'a> {
             sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
+            brightest_bitmaps: HashMap::new(),
+            cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
@@ -894,6 +921,7 @@ impl<'a> Converter<'a> {
             particle_role: None,
             emitter_role: None,
             effects_open: Vec::new(),
+            objects_open: Vec::new(),
             pctl_done: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
@@ -1095,7 +1123,10 @@ impl<'a> Converter<'a> {
         if self.decal_role.is_none() {
             self.decal_role = Some(crate::rebuild::decal_role(self.base)?);
         }
-        let root = crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())
+        });
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1105,6 +1136,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1126,7 +1158,8 @@ impl<'a> Converter<'a> {
             self.light_roles.insert(kind, role);
         }
         let role = self.light_roles[&kind].as_ref();
-        let mut root = crate::rebuild::light(&l, role)?;
+        let (root, roles) = crate::provenance::capture(|| crate::rebuild::light(&l, role));
+        let mut root = root?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
             root = flares_conv::light_with_flare(&root, lens)?;
@@ -1140,6 +1173,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1257,7 +1291,9 @@ impl<'a> Converter<'a> {
         for (g, n) in left {
             rep.no_home.push(format!("{n} {g} parts left out (no converter here, or did not convert)"));
         }
-        let root = self.effect_particle_systems(tag, root, &mut rep)?;
+        let (root, roles) =
+            crate::provenance::capture(|| self.effect_particle_systems(tag, root, &mut rep));
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1267,6 +1303,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1362,15 +1399,26 @@ impl<'a> Converter<'a> {
         if let Some(id) = self.done.get(&tag.id.0) {
             return Ok(*id);
         }
-        let id = match &tag.group.0.to_be_bytes() {
-            b"weap" => self.weapon(tag)?,
-            b"proj" => self.projectile(tag, template)?,
-            b"eqip" => self.equipment(tag)?,
-            b"bipd" | b"vehi" => self.unit(tag)?,
-            b"scen" => self.scenery(tag)?,
-            b"mach" | b"ctrl" | b"lifi" => self.device(tag)?,
-            _ => return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
+        // An object whose conversion reaches itself (a projectile whose
+        // detonation effect creates it) is refused there, not recursed into.
+        if self.objects_open.contains(&tag.id.0) {
+            return Err(Error::Invalid(format!(
+                "{}: converting it needs itself",
+                tag.name
+            )));
+        }
+        self.objects_open.push(tag.id.0);
+        let got = match &tag.group.0.to_be_bytes() {
+            b"weap" => self.weapon(tag),
+            b"proj" => self.projectile(tag, template),
+            b"eqip" => self.equipment(tag),
+            b"bipd" | b"vehi" => self.unit(tag),
+            b"scen" => self.scenery(tag),
+            b"mach" | b"ctrl" | b"lifi" => self.device(tag),
+            _ => Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
         };
+        self.objects_open.pop();
+        let id = got?;
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1705,28 +1753,33 @@ impl<'a> Converter<'a> {
                     .collect(),
             })
             .collect();
-        let root = crate::rebuild::model(&crate::rebuild::Model {
-            render: mode,
-            collision: coll.map(|c| c.0),
-            animation: jmad,
-            physics: None,
-            nodes: (count, nodes),
-            regions,
-            words,
-            materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
-        })?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::model(&crate::rebuild::Model {
+                render: mode,
+                collision: coll.map(|c| c.0),
+                animation: jmad,
+                physics: None,
+                nodes: (count, nodes),
+                regions,
+                words,
+                materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
+            })
+        });
+        let root = root?;
         if obj.animation.is_none() {
             rep.no_home
                 .push("no Halo 1 animation graph on the object; hlmt animation left null".into());
         }
-        Ok(Some(self.tree.push(
+        let id = self.tree.push(
             name,
             Converted {
                 group: FourCC(*b"hlmt"),
                 root,
                 raw: Vec::new(),
             },
-        )))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(Some(id))
     }
 
     /// Scenery from the `scen` definition ([`crate::rebuild::scenery`]),
@@ -1750,7 +1803,10 @@ impl<'a> Converter<'a> {
         }
         let predicted = self.predicted(&object)?;
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
-        let root = crate::rebuild::scenery(&object, hlmt, &predicted, &words)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::scenery(&object, hlmt, &predicted, &words)
+        });
+        let root = root?;
         let attached = object.attachments.iter().flatten().count();
         if attached > 0 {
             rep.no_home.push(format!(
@@ -1764,14 +1820,16 @@ impl<'a> Converter<'a> {
             ));
         }
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"scen"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// The physics a scenery object is built: [`PhysicsKind::Scenery`] with
@@ -1841,7 +1899,9 @@ impl<'a> Converter<'a> {
             // under the warthog's `fixed`; the converted vehicle graph's
             // aim overlays are found under that class, h1models
             // `jmad::vehicle_plan`). Until converter version 84 the gun had
-            // no class, and the warthog no aim.
+            // no class, and the warthog no aim. Vehicle graphs' tables only
+            // (`h1models::h1::weapon_types`): a biped's converted graph holds
+            // just the types its animation names hold.
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
                 for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
                     if h1models::names::CLASSES.contains(&class.as_str()) {
@@ -2004,7 +2064,11 @@ impl<'a> Converter<'a> {
     /// A `soso` whose base is cut out (an alpha Halo 1 tests,
     /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
     /// trees, decals) takes this path onto `tex_bump_alpha_test_single_pass`
-    /// (converter version 84; they drew as solid cards before).
+    /// (converter version 84; they drew as solid cards before). Its bump
+    /// slot takes a flat bump map cut out where the base is
+    /// ([`Self::cutout_bump`], converter version 92): the stem's depth
+    /// and shadow passes kill by the bump's alpha, so with the default
+    /// bump the cards stayed whole and dark.
     ///
     /// A `soso` with a reflection cube map takes this path too, onto
     /// `tex_bump_env` with Halo 1's cube map and tints
@@ -2012,6 +2076,12 @@ impl<'a> Converter<'a> {
     /// take their metal from that reflection over dark base maps, and
     /// drew near black without it (the sniper rifle in first person,
     /// converter version 76).
+    ///
+    /// An additive `schi` whose maps multiply together (Blood Gulch's
+    /// teleporter cone, the pelican's thrusters) takes this path onto
+    /// `two_add_clouds`, scrolling and faded by the view angle
+    /// (`h1convert::shad::multiply_chain`, converter version 90; the cone
+    /// drew its first grey dust map alone before).
     ///
     /// A `soso` with a change colour (`h1convert::shad::soso_change_colour`)
     /// takes this path onto `tex_bump_env_four_change_color`, its
@@ -2070,13 +2140,18 @@ impl<'a> Converter<'a> {
             .flatten();
         let mut maps = HashMap::new();
         for (role, m) in &chosen.maps {
-            let id = match (role, mask) {
-                (h1convert::shad::Role::Base, Some(mask)) => {
+            let id = match (role, mask, chosen.extras.brightest_mask) {
+                (h1convert::shad::Role::Base, Some(mask), _) => {
                     self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
                 }
+                // A plasma's picture with its brightness as alpha
+                // (converter version 90, `shad::plasma_shader`).
+                (h1convert::shad::Role::Mask, _, Some(gain)) => self
+                    .brightest_bitmap(m.bitmap, gain)
+                    .or_else(|| self.bitmap(m.bitmap)),
                 // The multipurpose map's blue in the slot's channel; no
                 // change-colour map, no tint (the layout's default).
-                (h1convert::shad::Role::ChangeColour, _) => match change_colour {
+                (h1convert::shad::Role::ChangeColour, _, _) => match change_colour {
                     Some((slot, _)) => self.change_colour_bitmap(m.bitmap, slot),
                     None => None,
                 },
@@ -2094,6 +2169,28 @@ impl<'a> Converter<'a> {
         }
         if maps.is_empty() {
             return None;
+        }
+        // The cut-out stem's depth and shadow passes kill by its bump
+        // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
+        // a `soso` has no bump map, so it takes a flat one cut out where
+        // its base is (converter version 92; the stem's default bump is
+        // opaque, and the leaves drew as whole dark cards).
+        if chosen.layout.stem == h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
+            && !maps.contains_key(&h1convert::shad::Role::Bump)
+            && let Some((_, base)) = chosen
+                .maps
+                .iter()
+                .find(|(r, _)| *r == h1convert::shad::Role::Base)
+            && let Some(id) = self.cutout_bump(base.bitmap)
+        {
+            maps.insert(
+                h1convert::shad::Role::Bump,
+                h1convert::shad::Bound {
+                    id,
+                    scale: base.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, base.bitmap),
+                },
+            );
         }
         let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
         self.cached(
@@ -2130,6 +2227,46 @@ impl<'a> Converter<'a> {
         }
         let out = self.bake_mask(base, mask);
         self.masked_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
+    /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
+    /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
+    /// it does not read or decode, or has more than one image.
+    fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
+        let key = (id.0, gain.to_bits());
+        if let Some(t) = self.brightest_bitmaps.get(&key) {
+            return *t;
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let out = h1bitmaps::mask::convert_brightest(self.h1, &tag, gain)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::brightness_mask_name(&tag.name, gain);
+                self.tree.push(&name, conv)
+            });
+        self.brightest_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
+    /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
+    /// name>_alpha_test_bump`, built once per base. `None` when the base
+    /// does not read or decode, or has more than one image: the stem's
+    /// default bump then stands, uncut, as before.
+    fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
+        if let Some(t) = self.cutout_bumps.get(&base.0) {
+            return *t;
+        }
+        let tag = self.h1.tag(base).ok()?.clone();
+        let out = h1bitmaps::mask::convert_cutout_bump(self.h1, &tag)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::cutout_bump_name(&tag.name);
+                self.tree.push(&name, conv)
+            });
+        self.cutout_bumps.insert(base.0, out);
         out
     }
 
@@ -2541,23 +2678,25 @@ impl<'a> Converter<'a> {
         }
         let functions: Vec<_> = converted.into_iter().flatten().collect();
         rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
-        let root = crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
-            attachments: &attachments,
-            functions: &functions,
-            creation_effect,
-            object: &u.object,
-            bounds,
-            hlmt,
-            seats: &seats,
-            predicted: &predicted,
-            camera_field_of_view: u.camera_field_of_view,
-            vehicle_type,
-            flags,
-            weapons: &weapons,
-            role: role.as_ref(),
-            points: &points,
-        })?;
-        let root = self.unit_foot(*b"vehi", root, u, &mut rep)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+                attachments: &attachments,
+                functions: &functions,
+                creation_effect,
+                object: &u.object,
+                bounds,
+                hlmt,
+                seats: &seats,
+                predicted: &predicted,
+                camera_field_of_view: u.camera_field_of_view,
+                vehicle_type,
+                flags,
+                weapons: &weapons,
+                role: role.as_ref(),
+                points: &points,
+            })
+        });
+        let root = self.unit_foot(*b"vehi", root?, u, &mut rep)?;
         rep.no_home.push(format!(
             "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
@@ -2568,14 +2707,16 @@ impl<'a> Converter<'a> {
             u.references.iter().filter(|r| r.tag.is_some()).count()
         ));
         self.tree.reports.push(rep);
-        Ok(self.tree.push(
+        let id = self.tree.push(
             &tag.name,
             Converted {
                 group: FourCC(*b"vehi"),
                 root,
                 raw: Vec::new(),
             },
-        ))
+        );
+        self.tree.note_roles(id, roles);
+        Ok(id)
     }
 
     /// A Halo 1 camera track as a Halo 2 `trak` with the same control
@@ -2841,6 +2982,14 @@ impl<'a> Converter<'a> {
             }
             *root = tags::defs::to_built(hd, &r, &mut |_| None)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
+            let copied = fields
+                .iter()
+                .map(|(path, value)| crate::provenance::RoleField {
+                    path: path.clone(),
+                    value: value.clone(),
+                })
+                .collect();
+            self.tree.note_roles(h, copied);
             rep.no_home.push(format!(
                 "hlmt: {} reference fields from {} (damage, dialogue, camouflage shaders)",
                 fields.len(),
@@ -2900,8 +3049,10 @@ impl<'a> Converter<'a> {
             hud,
             markers,
         };
-        let root = crate::rebuild::biped(u, hlmt, &predicted, words, &parts)?;
-        let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            crate::rebuild::biped(u, hlmt, &predicted, words, &parts)
+        });
+        let root = self.unit_foot(*b"bipd", root?, u, &mut rep)?;
         let taken = crate::rebuild::reference_fields(bipd_def)
             .into_iter()
             .filter(|p| !BIPED_OWN.contains(&p.as_str()))
@@ -2921,6 +3072,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         if let Some((halo1, halo2)) = swap {
             self.tree.hud_swaps.push(HudSwap {
                 owner: id,
@@ -3436,6 +3588,14 @@ impl Converter<'_> {
     /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
     /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
     /// widget, why.
+    ///
+    /// A chain with no element at all draws nothing in Halo 1 and gets an
+    /// `nhdt` with no widget (V: the flamethrower's on the multiplayer
+    /// maps, `weapons\flamethrower\flame thrower` and its child `ui\hud\master
+    /// fuel`, list no static, meter, number, crosshair or overlay). Until
+    /// converter version 87 it was refused, and the converted flamethrower
+    /// kept the shotgun's Halo 2 HUD (`ui\hud\shotgun`, `role_audit_disc`).
+    /// A chain whose elements all fail to convert is still refused.
     pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
         use crate::h1hud;
         let tag = self.h1.tag(wphi)?.clone();
@@ -3507,7 +3667,7 @@ impl Converter<'_> {
                 Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
             }
         }
-        if widgets.is_empty() && texts.is_empty() {
+        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
         let id = self.tree.push(

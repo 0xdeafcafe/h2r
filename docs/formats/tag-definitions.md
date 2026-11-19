@@ -380,6 +380,38 @@ bodies hold one flags and motion pattern, the one taken, and each its
 size class by its radius among the base's other bodies). Whether the player now stops
 at the boulders is the game run's to show.
 
+**It does not: the engine never gives scenery a Havok body** (2026-11-19).
+E: the only place an object gets a physics component and rigid bodies
+from its `phmo` is `0x001c35f0` (it calls `0x001cf0b0` for the component
+at `0x001c3667`, then `0x001cf120`), and it returns at `0x001c361c`
+unless the object's type (object table entry `+3`) is in the mask
+`0x1883`: biped 0, vehicle 1, machine 7, crate 11, creature 12. Scenery
+(6) never passes. `0x001cf120` itself switches on the type (byte table
+`0x001cf20c`, jump table `0x001cf1f4`) and has cases for exactly those
+five; every other type's index is 5, whose jump-table entry is zero. The
+other callers of `0x001cf120` (`0x000c54d1` for units, `0x000f1053`,
+`0x001c37d2`, `0x001d3ffb`) rebuild a component the object already has.
+Rigid bodies are built in two places only, the level's at `0x001c3c32`
+and an object component's at `0x001d72c2`. Game run (converted Blood
+Gulch, converter version 90, `h2 agent`): `havok.bodies` lists the eight
+vehicles, the player and the level, and no body for any of the 50
+scenery placements, though the map holds the boulders' `phmo` tags
+(`edit.tags phmo`); the player put (`sim.state.set`) at the middle of
+`boulder_doublewide` and of `boulder_crouch` drops through each to the
+ground under its origin (z 0.32 and 0.10, the boulders' origins 0.31
+and 0.09). So the scenery `phmo` built since version 85 is inert, and
+the slots before it were too.
+
+Retail does not rely on scenery for solid props either. V, coagulation
+(Blood Gulch's base): no tag on the map names a rock or a boulder, so
+its rocks are structure; its scenery are the flag and teleporter bases,
+bushes and trees; and its one solid placed prop, the `powerhaus`, is a
+crate (`bloc`) whose `phmo` body holds motion `5` (Havok motion 7,
+fixed), flags 0, on node 0. A converted Halo 1 scenery object with solid
+collision is therefore solid to bipeds and vehicles only as structure
+(instanced geometry) or as a crate with a fixed body; neither is built
+yet.
+
 **Not carried:** Halo 1's attachments (on the ten levels and the
 multiplayer maps: 58 `ligh`, 24 `effe`, 13 `lsnd`, 5 `pctl`; no light or
 particle definition exists here yet, and effects are their own lane) and
@@ -1511,9 +1543,15 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): melee damage, effects and sounds (Halo 1's `effe` and
-  most `snd!` are not converted), the barrels' firing effects. A
-  projectile takes no `jpt!` from Halo 2. The HUD (`+0x2b0`) is Halo 1's
+  `TEMPLATES` row; references only): effects and sounds, the barrels'
+  firing effects. A projectile takes no `jpt!` from Halo 2. Since
+  converter v86 the slots named by the retail tags they hold
+  (`arsenal::WEAPON_OVERHEATED`, `WEAPON_MELEE_DAMAGE`,
+  `WEAPON_MELEE_RESPONSE`, `PROJECTILE_DETONATION_STARTED`,
+  `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
+  `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
+  material effects take Halo 1's converted tags, or none
+  ([../halo1/role-audit.md](../halo1/role-audit.md)). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

@@ -212,6 +212,19 @@ pub fn new_view() {
     *VIEW_TARGET.lock().unwrap_or_else(|e| e.into_inner()) = target;
 }
 
+/// Forgets the open run, the split light and its pending restore, without
+/// setting anything back: a snapshot load, whose guest RAM is not the
+/// memory those bits were cleared in. Takes no device lock (unlike
+/// [`new_view`], whose view target the next view asks for again).
+pub fn forget_runs() {
+    OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    SPLIT.lock().unwrap_or_else(|e| e.into_inner()).take();
+    SPLIT_CLEARED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+}
+
 /// The light `handle` as the passes would draw it, with the caller's
 /// shadow decision and weight. `None` when the record cannot be read, is
 /// gone, or fails the record's checks (`light::LightRecord::check`).
@@ -486,10 +499,18 @@ impl Feature for NativeLights {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        // Switched off, or not placed with render-timing: no hooks, nothing
+        // held. Placed: the open run (`OPEN`), the split light (`SPLIT`)
+        // and the split layer's cleared bits (`SPLIT_CLEARED`, set back at
+        // the layer's end) belong to the render they were made in, so a
+        // load drops them ([`forget_runs`]); `VIEW_TARGET` is asked for
+        // again at every view.
         if !on(b.switches()) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
         if b.switches().feature(crate::render_timing::ID, false) {
+            b.snapshot(crate::SnapshotPolicy::Stateless);
             eprintln!("native-lights: not placed with render-timing on (its light passes' timer needs their end)");
             return Ok(());
         }
@@ -536,7 +557,10 @@ impl Feature for NativeLights {
                 })
                 .context_only();
         }
-        b.snapshot(crate::SnapshotPolicy::Stateless);
+        b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
+            forget_runs();
+            Ok(())
+        }));
         Ok(())
     }
 }

@@ -697,6 +697,33 @@ Left from this round (**S**, not built):
 - Co-op's background threads can change the role at any moment; the
   boot's `state.save` must check and save without letting them in between.
 
+### The render features
+
+Boot registers the six render features below in every run, with their
+`impl.render.*` switches off by default. Each one used to declare its
+policy at the end of `build`, after the early return for a switch that
+is off, so a run with all of them off still came out `Unaudited` and
+`state.save` refused ("occlusion/native-world/…: not audited for
+snapshots"). Each now declares its policy before any early return.
+
+None of them changes simulation state. A save runs between slices, with
+the D3D render thread drained and the pipelined render not in flight
+(`pipeline-render` forbids while it is). Section loads run last, on the
+game thread, over loaded guest RAM and a loaded device; they clear
+Mutex-guarded statics and take no device lock. Their GPU caches are
+keyed by what they read from guest RAM at every ask (the map name, and
+for the world the BSP address and index), so a load that changes map
+re-keys them.
+
+| Feature | Off | On | What a load drops |
+|---|---|---|---|
+| `occlusion` | stateless | section, no bytes | `occlusion::forget`: every view's streaks, last camera and depth, the armed capture, the captures in flight, the published depth frames (`MAILBOX`), the last grid. `Tracker::begin` already reset on a camera cut or when the frame went backwards. A load to a later frame with the camera close by kept streaks keyed by handles that may now name other objects |
+| `native-world` | stateless | section, no bytes | `native_world::forget_pending`: the layer-3 bits waiting to be set back at the next layer draw, without setting them (the loaded item lists are the loaded render's) |
+| `native-objects` | stateless | section, no bytes | `native_objects::forget_pending`: as the world's |
+| `native-lights` | stateless (also when not placed with render-timing on) | section, no bytes | `native_lights::forget_runs`: the open run, the split light and the split layer's pending restore. `VIEW_TARGET` is asked for again at every view |
+| `native-transparents` | stateless | stateless | nothing: the open run and the objects drawn last one view (`new_view` forgets them), and it never writes guest memory |
+| `native-post` | stateless | stateless | nothing: no frame history (no temporal AA, no exposure adaptation); the screen effects are keyed by map, and the proof and fallback sets only ever send an effect back to D3D |
+
 ## Phase 4: what was built
 
 D3D (`d3d/src/device/snap.rs`, tests in `d3d/tests/snapshot.rs`):

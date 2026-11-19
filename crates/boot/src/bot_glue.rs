@@ -730,6 +730,23 @@ impl feature::Feature for Bots {
             },
         );
 
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::SIMULATION_SLOT_ACTION,
+            "phantoms: sample the pad for this simulation tick",
+            move |c| {
+                let slot = c.arg_u32("slot").unwrap_or(0);
+                let rt = Arc::clone(c.ctx.runtime());
+                if !phantoms.owns_action_slot(&*rt.memory(), slot) {
+                    return Ok(Flow::Continue);
+                }
+                let phantoms = phantoms.clone();
+                c.answer_async(move |cx| {
+                    Box::pin(async move { phantoms.slot_action(cx, slot).await })
+                })
+            },
+        );
+
         // A game starting from the session with phantoms planned: this
         // console must start it as the distributed server, or phantoms
         // never join (docs/game/bots.md §5.1, "Hosting the game").
@@ -899,11 +916,36 @@ impl feature::Feature for Bots {
                 }
             })
             .optional();
-        b.game().on_start("forget bot sound cues", |_| bots::clear_shots());
+        b.game()
+            .on_start("forget bot sound cues", |_| bots::clear_shots());
+
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::ITEM_SET_UNIT, "date a weapon pickup", move |o| {
+                if (!local.is_empty() || !phantoms.is_empty())
+                    && let (Some(item), Some(unit)) = (o.arg_u32("item"), o.arg_u32("unit"))
+                    && unit != u32::MAX
+                {
+                    guest::pickups::weapon(&*o.guest(), item, unit);
+                }
+            })
+            .optional();
+        let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
+        b.raw()
+            .observe_before(&points::POWERUP_TAKEN, "date a power-up pickup", move |o| {
+                if !local.is_empty() || !phantoms.is_empty() {
+                    guest::pickups::equipment(&*o.guest(), o.cpu.esp, o.cpu.ecx, o.cpu.edx);
+                }
+            })
+            .optional();
+        b.game().on_start("forget previous placement pickups", |_| {
+            guest::pickups::clear()
+        });
 
         // Deaths, for the emotes (bots::emote): the kill function's
-        // attacker and victim player datums and betrayal flag, read as
-        // live telemetry reads them.
+        // attacker and victim player datums, read as live telemetry reads
+        // them; a betrayal is told by the teams (the third argument is not
+        // a betrayal flag).
         let (local, phantoms) = (self.local.clone(), self.phantoms.clone());
         b.raw()
             .observe_before(&points::PLAYER_KILLED, "bots hear a death", move |o| {
@@ -913,12 +955,10 @@ impl feature::Feature for Bots {
                 let esp = o.cpu.esp;
                 let guest = o.guest();
                 let arg = |n: u32| guest.u32(esp.wrapping_add(4 * n));
-                let (Ok(attacker), Ok(victim), Ok(betrayal)) = (arg(1), arg(2), arg(3)) else {
+                let (Ok(attacker), Ok(victim)) = (arg(1), arg(2)) else {
                     return;
                 };
-                if let Ok(Some(k)) =
-                    bots::emote::kill_from_guest(&*guest, attacker, victim, betrayal != 0)
-                {
+                if let Ok(Some(k)) = bots::emote::kill_from_guest(&*guest, attacker, victim) {
                     bots::emote::kills().push(k);
                 }
             });

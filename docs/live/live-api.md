@@ -53,7 +53,7 @@ Event types so far (payload fields):
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?`, `activity?`, `build?`, `capabilities?` (below) |
 | `game-<id>` | `GameStarted` | `game_id`, `console`, `map`, `mode` (`campaign`/`multiplayer`), `variant?`, `team_play`, `score_limit?`, `time_limit_s?`, `players`, `kind?`, `playlist?`, `playlist_id?`, `difficulty?`, `online?` (below) |
 | `game-<id>` | `PlayerJoined`, `PlayerLeft` | `player` (below) / `index` |
-| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`) |
+| `game-<id>` | `PlayerKilled` | `tick`, `victim`, `killer?`, `weapon?`, `kind` (`kill`/`suicide`/`betrayal`/`world`; `betrayal` only for a teammate killed in a team game or campaign, `live_proto::game::is_betrayal`, and readers settle a stored `kill` or `betrayal` again by the teams, since older hosts sent free-for-all kills as betrayals) |
 | `game-<id>` | `ScoreChanged` | `tick`, `players: [{index, score, kills, deaths, assists}]`, `teams?: [{team, score}]` |
 | `game-<id>` | `FrameChunk` | a stored chunk of the game's recorded frames ([Frame chunks](#frame-chunks)) |
 | `game-<id>` | `GameFrame` | a frame (below), recorded at 1 Hz for replays by servers before frame chunks |
@@ -234,6 +234,38 @@ A frame may carry `cut`: a campaign checkpoint revert or restart happened
 just before it, and the engine's clock came back to that tick (the game's
 ticks keep counting; see below). Only the first frame of the new run has it.
 
+From senders on packed format version 6, a frame may carry
+`projectiles` and `items`, and vehicles their `vel`:
+
+```json
+"projectiles": [ { "id": "e90c0001", "kind": "plasma_grenade",
+                   "pos": [4.0, 5.0, 6.0], "vel": [3.0, 0.0, 2.5] },
+                 { "id": "e90c0002", "kind": "plasma_grenade",
+                   "pos": [1.5, 2.0, 0.5], "parent": "90070007" } ],
+"items": [ { "id": "a2f00f00", "kind": "flag", "pos": [20.0, -12.0, 0.5],
+             "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0] },
+           { "id": "a10d0001", "kind": "overshield", "equipment": true,
+             "pos": [0.0, 3.0, 0.2], "forward": [0.0, 1.0, 0.0],
+             "up": [0.0, 0.0, 1.0] } ]
+```
+
+`projectiles` are projectiles in flight slower than 100 game units a
+second (grenades, rockets, plasma, needles; bullets live a tick or two and
+are drawn from the shooter's `fire` and `aim`) or stuck to something, at
+most 64: `id` the object datum (new for each throw or shot, gone when it
+detonates), `kind` the `proj` tag stem or `unknown`, `pos` the world
+position, `vel` game units a second (absent when stuck), `parent` what it
+is stuck to (a player's, actor's or vehicle's id), and then `pos` is that
+object's position. `items` are weapons and equipment lying loose that no
+scenario placement or netgame spawn made (those are `objects`): dropped
+guns, the flag, the ball, the bomb, at most 128; `kind` is the `weap` stem,
+or with `equipment: true` the `eqip` stem. A held flag, ball or bomb is the
+carrier's `weapon` (`flag`, `ball`, `assault_bomb`). A vehicle's `vel` is
+its velocity like a unit's. The server refuses non-finite positions or
+velocities, velocities over 1000, zero `forward`/`up`, ids or kinds outside
+`[a-z0-9_]{1,32}`, a projectile that is its own parent, and more than 64
+projectiles or 128 items.
+
 A frame may carry `cinematic: true`: a campaign cutscene is playing. The
 game sends such frames on its clock as ever, with the tick and `bsp` (and a
 `cut` when one is due) but no players, actors, vehicles, hits, machines or
@@ -318,8 +350,10 @@ A chunk carries packed records as they are, so a new packed frame version
 changes nothing here. A chunk inflates to at most 16 MiB. `GET
 /v1/games/{id}/chunks` lists a game's chunks and `GET
 /v1/games/{id}/chunks/{first tick}` returns one, with the same visibility
-check as the game. A seek reads the index once and fetches the one chunk
-whose window holds the tick.
+check as the game. The binary response is the stored blob byte for byte.
+An explicit `?format=json` returns a JSON array of its decoded frames. The
+query gives each representation its own URL in the edge cache. A seek reads
+the index once and fetches the one chunk whose window holds the tick.
 
 ## Read endpoints
 
@@ -337,7 +371,7 @@ whose window holds the tick.
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills; 404, as for no game, for a co-op game the reader may not see ([Co-op games](#co-op-games)) |
 | `GET /v1/games/{id}/chunks` | the game's [frame chunk](#frame-chunks) index: `{game_id, chunk_ticks, ended, items}`, `items` the `FrameChunk` data oldest first; empty for a game recorded before chunks |
 | `GET /v1/games/{id}/chunks/{tick}` | one chunk by its first tick, `application/x-h2-chunk`; checked against its index entry's hash. Anonymous reads are `public, max-age=31536000, immutable` (it is never rewritten) |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. The JSON read (`format=json`) is gone: `400` |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | a game recorded before frame chunks: its `GameFrame`s as an `application/x-h2-frames` container of packed keyframes (docs/live/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position`. `format=json` returns the decoded page as `{items,next,position}` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/snapshot` | what a page needs on load, in one read at one log position: `{position, accounts, presence, live, ended, details, tail}`. `accounts` is `/v1/accounts?limit=1000`, `presence` is `/v1/presence`, `live` and `ended` are `/v1/games?state=…&limit=100`, `details` is `/v1/games/{id}` for every live game and the 40 newest ended ones, and `tail` is the last 300 log events up to `position` without `GameFrame` (as on the stream). Each part has the reader's visibility applied, as at its own endpoint ([Co-op games](#co-op-games)) |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first, at most 200 a page; without the events of co-op games and sessions the reader may not see ([Co-op games](#co-op-games), "The log"): a page can be short or empty with a `next`; without network addresses for anyone but the operator ([Network addresses](#network-addresses)); invitations, friend events, content and player reports and bans only to whom they concern ([Private events](#private-events)) |

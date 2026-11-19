@@ -180,6 +180,34 @@ mod tests {
         assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
     }
 
+    /// The render features boot always registers, with their `impl.render.*`
+    /// switches at the defaults (off): each declares its policy before it
+    /// returns, so none is left unaudited and none blocks a save (the
+    /// agent's `state.save` once refused with all six "not audited").
+    #[test]
+    fn switched_off_render_features_block_nothing() {
+        let mut r = feature::Registry::new(feature::Switches::default());
+        r.add(&feature::occlusion::OcclusionCull).unwrap();
+        r.add(&feature::native_world::NativeWorld).unwrap();
+        r.add(&feature::native_objects::NativeObjects).unwrap();
+        r.add(&feature::native_transparents::NativeTransparents)
+            .unwrap();
+        r.add(&feature::native_lights::NativeLights).unwrap();
+        r.add(&feature::native_post::NativePost).unwrap();
+        let plan = r.build(&feature::Base).unwrap();
+        let policies: Vec<_> = plan
+            .snapshot
+            .iter()
+            .map(|f| (f.id, f.policy.name()))
+            .collect();
+        assert_eq!(policies.len(), 6, "{policies:?}");
+        assert!(
+            policies.iter().all(|(_, p)| *p == "stateless"),
+            "{policies:?}"
+        );
+        assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
+    }
+
     #[test]
     fn modes() {
         assert_eq!(mode_from(None), Ok(None));

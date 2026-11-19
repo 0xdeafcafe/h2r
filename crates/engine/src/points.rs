@@ -230,12 +230,17 @@ points! { ALL;
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     /// The game-end path; the end latch is game globals `+0x1128`.
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
-    /// A player was killed: `(attacker player, victim player, betrayal,
-    /// packed damage)` on the stack. Who pops them is not read.
+    /// A player was killed: `(attacker player, victim player, flag, packed
+    /// damage)` on the stack. The flag is not a betrayal flag (it is set in
+    /// free-for-all too). Who pops them is not read.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).
     WEAPON_FIRE @ 0x0010_4150: [fn(weapon: stack 0, barrel: stack 1) ret 8], Optional; "docs/live/live-gamestate.md";
+    /// Attach a weapon to a unit, or detach when the unit is -1.
+    ITEM_SET_UNIT @ 0x0010_ca80: [fn(item: eax, unit: stack 0) ret 4], Optional; "docs/game/bots.md";
+    /// Successful power-up application before the consumed equipment is deleted.
+    POWERUP_TAKEN @ 0x000a_89c0: [fn(unit: ecx, definition: edx) ret 0], Optional; "docs/game/bots.md";
     /// A damage report is applied to its victim: the report in EDI, the
     /// victim object datum on the stack. Called once per damage instance.
     DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live/live-gamestate.md";
@@ -534,6 +539,8 @@ points! { ALL;
     /// only caller) copies it into each player's flag bit 0, and only
     /// players with it spawn (`0x14d3a0`).
     MACHINE_IN_GAME @ 0x0006_86e0: [fn(machine: eax) -> al ret 0]; "docs/game/bots.md";
+    /// Gather one stored remote action into this tick's simulation update.
+    SIMULATION_SLOT_ACTION @ 0x0008_4990: [fn(slot: stack 0, action: stack 1) -> al ret 8]; "docs/game/bots.md";
     /// Clear and default a game-options block (ESI). The session start
     /// calls it right after its peer and player checks.
     OPTIONS_NEW @ 0x0013_8110: [fn(options: esi) ret 0]; "docs/runtime/level-boot.md";
@@ -762,6 +769,15 @@ points! { ALL;
 }
 
 globals! { GLOBALS;
+    /// Multiplayer engine state and its per-variant views (§3.7).
+    GAME_ENGINE @ 0x004e_9ae8; "docs/game/bots.md";
+    CTF_ASSAULT_GLOBALS @ 0x0051_ec80; "docs/game/bots.md";
+    ODDBALL_GLOBALS @ 0x0051_ecc4; "docs/game/bots.md";
+    KOTH_GLOBALS @ 0x0051_ecc8; "docs/game/bots.md";
+    TERRITORIES_GLOBALS @ 0x0051_eccc; "docs/game/bots.md";
+    JUGGERNAUT_GLOBALS @ 0x0051_0c9c; "docs/game/bots.md";
+    /// Loaded matg metadata. Its multiplayer reference leads to the weapon list.
+    GLOBALS_TAG @ 0x004e_034c; "docs/game/bots.md";
     /// Pointer to the game globals: active options at `+8`, "map active" at
     /// `+0x1120`, the end latch at `+0x1128`.
     GAME_GLOBALS @ 0x004e_6948; "docs/runtime/level-boot.md";

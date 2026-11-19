@@ -337,7 +337,7 @@ struct WorldPass {
 
 /// `CULLMODE` and `FRONTFACE` as the D3D path's pipeline takes them
 /// (`gfx::translate::primitive_state`).
-fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::FrontFace)) -> native_render::program::Cull {
+pub(crate) fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::FrontFace)) -> native_render::program::Cull {
     let rs = gfx::state::RenderState {
         cull_mode: cull,
         front_face: front,
@@ -787,7 +787,7 @@ pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Optio
 }
 
 /// The hook's guest memory as the device reads it, read-only.
-struct ReadMemory<'a>(&'a dyn GuestMemory);
+pub(crate) struct ReadMemory<'a>(pub(crate) &'a dyn GuestMemory);
 
 impl d3d::GuestMemory for ReadMemory<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
