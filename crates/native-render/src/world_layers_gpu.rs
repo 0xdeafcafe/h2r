@@ -1,6 +1,7 @@
 //! Records opaque indexed geometry from an ordered, resolved draw. The
 //! guest has already selected the live shader, streams and attachments.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -10,7 +11,7 @@ use d3d::backend::{
 use d3d::nv2a::{NativeDrawKey, NativeDrawProgram};
 use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline};
 use gfx::program::{ProgramBindings, StageDims};
-use gfx::repack::{FetchMode, RepackPlan};
+use gfx::repack::{FetchMode, RepackPlan, StreamPlan};
 use gfx::state::{DepthBufferMode, StencilOp};
 use gfx::texture::TextureKind;
 use gfx::translate::{Capabilities, blend_constant};
@@ -34,10 +35,21 @@ struct DeviceCache {
     frame: u64,
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 enum BufferKey {
-    Vertex(u64, u32, u32),
+    RawVertex(u64, u32, u32),
+    RepackedVertex(u64, u32, StreamPlan),
     Indices(u64),
+}
+
+impl BufferKey {
+    fn vertex(id: u64, plan: &StreamPlan, count: u32) -> Self {
+        if plan.identity {
+            Self::RawVertex(id, plan.guest_stride, count)
+        } else {
+            Self::RepackedVertex(id, count, plan.clone())
+        }
+    }
 }
 
 impl DeviceCache {
@@ -52,19 +64,20 @@ impl DeviceCache {
         }
     }
 
-    fn buffer(
+    fn buffer<'a>(
         &mut self,
         device: &wgpu::Device,
         key: Option<BufferKey>,
-        bytes: &[u8],
         usage: wgpu::BufferUsages,
-    ) -> wgpu::Buffer {
+        bytes: impl FnOnce() -> Option<Cow<'a, [u8]>>,
+    ) -> Option<wgpu::Buffer> {
         if let Some(buffer) = key.as_ref().and_then(|k| self.buffers.get(k)) {
-            return buffer.clone();
+            return Some(buffer.clone());
         }
+        let bytes = bytes()?;
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("opaque indexed geometry"),
-            contents: bytes,
+            contents: &bytes,
             usage,
         });
         if let Some(key) = key.filter(|_| buffer.size() < CACHE_BUDGET) {
@@ -75,7 +88,7 @@ impl DeviceCache {
             self.buffer_bytes += buffer.size();
             self.buffers.insert(key, buffer.clone());
         }
-        buffer
+        Some(buffer)
     }
 }
 
@@ -290,25 +303,27 @@ impl IndexedPass {
             .collect::<Option<_>>()?;
         let mut streams = Vec::with_capacity(draw.streams.len());
         for (plan, stream) in repack.streams.iter().zip(&draw.streams) {
-            let bytes = plan.repack(&stream.data, draw.vertex_count).ok()?;
-            // Only raw streams share a buffer by byte identity. Two repacks
-            // of the same snapshot can produce different bytes.
+            // Raw streams with different declarations may share the bytes. Check
+            // the last required attribute even on a cache hit for a shorter layout.
+            if plan.identity {
+                plan.check(&stream.data, draw.vertex_count).ok()?;
+            }
             let key = stream
                 .data
                 .cache_id()
-                .filter(|_| plan.identity)
-                .map(|id| BufferKey::Vertex(id, plan.guest_stride, draw.vertex_count));
-            streams.push(cache.buffer(target.device, key, &bytes, wgpu::BufferUsages::VERTEX));
+                .map(|id| BufferKey::vertex(id, plan, draw.vertex_count));
+            streams.push(
+                cache.buffer(target.device, key, wgpu::BufferUsages::VERTEX, || {
+                    plan.repack(&stream.data, draw.vertex_count).ok()
+                })?,
+            );
         }
         let indices = draw.indices.as_ref()?;
         let index_count = indices.len().try_into().ok()?;
         let index_key = indices.cache_id().map(BufferKey::Indices);
-        let indices = cache.buffer(
-            target.device,
-            index_key,
-            bytemuck::cast_slice(&indices[..]),
-            wgpu::BufferUsages::INDEX,
-        );
+        let indices = cache.buffer(target.device, index_key, wgpu::BufferUsages::INDEX, || {
+            Some(Cow::Borrowed(bytemuck::cast_slice(&indices[..])))
+        })?;
         let params = target.uploads.uniform_run(
             target.device,
             target.queue,
@@ -435,6 +450,38 @@ fn scaled_clip(rect: &PixelRect, scale: u32, extent: (u32, u32)) -> Option<Pixel
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn converted_streams_require_the_same_snapshot_count_and_repack_plan() {
+        use gfx::vertex::{
+            StreamLayout, VertexAttribute, VertexDataType, VertexLayout, VertexRegister,
+        };
+        let plan = |ty| {
+            let layout = VertexLayout {
+                streams: vec![StreamLayout {
+                    stream: 0,
+                    stride: 4,
+                    attributes: vec![VertexAttribute {
+                        register: VertexRegister(0),
+                        data_type: ty,
+                        offset: 0,
+                    }],
+                }],
+                pretransformed: false,
+            };
+            RepackPlan::with_mode(&layout, &[4], FetchMode::Cpu)
+                .streams
+                .remove(0)
+        };
+        let short = plan(VertexDataType::Short2);
+        let packed = plan(VertexDataType::NormPacked3);
+        assert!(!short.identity && !packed.identity);
+        let key = BufferKey::vertex(7, &short, 3);
+        assert_eq!(key, BufferKey::vertex(7, &short.clone(), 3));
+        assert_ne!(key, BufferKey::vertex(7, &packed, 3));
+        assert_ne!(key, BufferKey::vertex(8, &short, 3));
+        assert_ne!(key, BufferKey::vertex(7, &short, 4));
+    }
 
     #[test]
     fn scaled_scissors_keep_the_same_guest_rectangle() {
