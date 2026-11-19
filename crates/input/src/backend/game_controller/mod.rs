@@ -23,6 +23,7 @@
 use crate::backend::HostBackend;
 use crate::gamepad::Rumble;
 use crate::host::{HostButton, HostPad, HostPadId, HostPadState, Touchpad};
+use crate::report::DeviceInfo;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -89,12 +90,43 @@ impl RawTouchpad {
     }
 }
 
+/// Which GameController profile a controller came with: the class its
+/// `extendedGamepad` is (a DualSense's and a DualShock 4's carry the
+/// touchpad), or a remote's micro gamepad.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Profile {
+    /// `GCExtendedGamepad` and no subclass we know: no touchpad.
+    #[default]
+    Extended,
+    /// `GCDualSenseGamepad`.
+    DualSense,
+    /// `GCDualShockGamepad`.
+    DualShock4,
+    /// `GCMicroGamepad` only (an Apple TV remote).
+    Micro,
+}
+
+impl Profile {
+    /// The word `h2 agent hostpads` shows.
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Extended => "extended",
+            Profile::DualSense => "dualsense",
+            Profile::DualShock4 => "dualshock4",
+            Profile::Micro => "micro",
+        }
+    }
+}
+
 /// One connected controller as a platform source reports it.
 #[derive(Clone, Debug)]
 pub struct RawPad {
     /// Unique per connection: never reused, so a replug yields a new key.
     pub key: u64,
     pub name: String,
+    pub profile: Profile,
+    /// The framework's `productCategory` ("DualShock 4", ...), if any.
+    pub category: Option<String>,
     pub snapshot: Snapshot,
     pub supports_rumble: bool,
     /// An Apple TV remote (a micro gamepad): `snapshot` is unused and this
@@ -210,11 +242,19 @@ pub struct GameControllerPads<S: ControllerSource> {
     source: S,
     navs: std::collections::HashMap<u64, remote::RemoteNav>,
     epoch: std::time::Instant,
+    /// Each controller as of the last poll, before the remote merge
+    /// ([`HostBackend::devices`]).
+    devices: Vec<DeviceInfo>,
 }
 
 impl<S: ControllerSource> GameControllerPads<S> {
     pub fn with_source(source: S) -> Self {
-        Self { source, navs: Default::default(), epoch: std::time::Instant::now() }
+        Self {
+            source,
+            navs: Default::default(),
+            epoch: std::time::Instant::now(),
+            devices: Vec::new(),
+        }
     }
 
     /// [`HostBackend::poll`] at `now` on the remote clock.
@@ -223,6 +263,7 @@ impl<S: ControllerSource> GameControllerPads<S> {
         self.navs.retain(|k, _| raw.iter().any(|p| p.key == *k && p.remote.is_some()));
         let mut pads = Vec::new();
         let mut remotes = Vec::new();
+        self.devices.clear();
         for p in raw {
             let pad = |state| HostPad {
                 id: HostPadId(p.key),
@@ -231,9 +272,21 @@ impl<S: ControllerSource> GameControllerPads<S> {
                 physical: true,
                 supports_rumble: p.supports_rumble,
             };
+            let state = match &p.remote {
+                Some(r) => self.navs.entry(p.key).or_default().update(r, now),
+                None => map_snapshot(&p.snapshot),
+            };
+            self.devices.push(DeviceInfo {
+                backend: "game-controller".into(),
+                id: p.key,
+                name: p.name.clone(),
+                profile: Some(p.profile.name().into()),
+                category: p.category.clone(),
+                state,
+            });
             match &p.remote {
-                Some(r) => remotes.push(pad(self.navs.entry(p.key).or_default().update(r, now))),
-                None => pads.push(pad(map_snapshot(&p.snapshot))),
+                Some(_) => remotes.push(pad(state)),
+                None => pads.push(pad(state)),
             }
         }
         pads.sort_by_key(|p| p.id); // keys grow with connection order
@@ -291,6 +344,10 @@ impl<S: ControllerSource> HostBackend for GameControllerPads<S> {
             to_u16_speed(rumble.right_motor),
         );
     }
+
+    fn devices(&self) -> Vec<DeviceInfo> {
+        self.devices.clone()
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +378,8 @@ mod tests {
         RawPad {
             key,
             name: format!("pad{key}"),
+            profile: Profile::Extended,
+            category: None,
             snapshot,
             supports_rumble: true,
             remote: None,
@@ -331,6 +390,8 @@ mod tests {
         RawPad {
             key,
             name: remote::NAME.into(),
+            profile: Profile::Micro,
+            category: None,
             snapshot: Snapshot::default(),
             supports_rumble: false,
             remote: Some(r),
@@ -357,6 +418,53 @@ mod tests {
         src.0.lock().unwrap().pads[1].remote = Some(remote::RemoteSnapshot::default());
         let pads = b.poll_at(Duration::from_millis(2));
         assert_eq!(pads[0].name, "pad2", "an idle remote leaves the name");
+    }
+
+    #[test]
+    fn devices_describe_each_controller_before_the_remote_merge() {
+        use std::time::Duration;
+        let src = FakeSource::default();
+        let ds4 = RawPad {
+            profile: Profile::DualShock4,
+            category: Some("DualShock 4".into()),
+            ..raw(
+                4,
+                Snapshot {
+                    touchpad: Some(RawTouchpad {
+                        click: true,
+                        primary: (0.25, 0.5),
+                        secondary: (0.0, 0.0),
+                    }),
+                    ..Default::default()
+                },
+            )
+        };
+        src.0.lock().unwrap().pads = vec![
+            ds4,
+            remote(5, remote::RemoteSnapshot { select: true, ..Default::default() }),
+        ];
+        let mut b = GameControllerPads::with_source(src.clone());
+        assert!(b.devices().is_empty(), "nothing before the first poll");
+        let pads = b.poll_at(Duration::from_millis(1));
+        assert_eq!(pads.len(), 1, "the remote merged");
+        let d = b.devices();
+        assert_eq!(d.len(), 2, "but both are described");
+        assert_eq!((d[0].id, d[0].profile.as_deref()), (4, Some("dualshock4")));
+        assert_eq!(d[0].category.as_deref(), Some("DualShock 4"));
+        assert_eq!(d[0].backend, "game-controller");
+        assert_eq!(
+            d[0].state.touchpad,
+            Some(Touchpad {
+                click: true,
+                primary: Some((0.25, 0.5)),
+                secondary: None,
+            })
+        );
+        assert_eq!(d[1].profile.as_deref(), Some("micro"));
+        assert!(d[1].state.buttons.contains(HostButton::South), "the remote's own click");
+        src.0.lock().unwrap().pads.clear();
+        b.poll_at(Duration::from_millis(2));
+        assert!(b.devices().is_empty(), "unplugged");
     }
 
     #[test]

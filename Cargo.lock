@@ -670,6 +670,7 @@ dependencies = [
  "serde_json",
  "settings",
  "shaders",
+ "sim",
  "snapshot",
  "tags",
  "timeline",
@@ -992,6 +993,8 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
+ "sim",
+ "snapshot",
  "studio-proto",
  "symbols",
  "tags",
@@ -5830,6 +5833,15 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "sim"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

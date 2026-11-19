@@ -244,6 +244,7 @@ impl Owners {
 }
 
 pub struct GpuWorld {
+    part_slots: std::collections::HashMap<(Owner, u8), usize>,
     world: World,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
@@ -528,8 +529,9 @@ impl GpuWorld {
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
         slots.shrink_to_fit();
+        let part_slots = world.draws.iter().enumerate().map(|(i, d)| ((d.owner, d.part), i)).collect();
         Self {
-            world,
+            part_slots, world,
             stencil: PassStencil::default(),
             inherited_cull: crate::program::InheritedCull::default(),
             culls: true,
@@ -737,9 +739,9 @@ impl GpuWorld {
 
     /// The frame's view for the programs' uniforms (the device's view
     /// constants, the target's sizes and depth scale).
-    pub fn prepare_programs(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare_programs(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         if let Some(p) = &self.programs {
-            p.prepare(queue, view);
+            p.prepare(uploads, view);
         }
     }
 
@@ -797,7 +799,7 @@ impl GpuWorld {
 
     /// The frame's camera: culls on the CPU and writes the uniform and the
     /// slots' instance counts.
-    pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &RenderCamera, depth: DepthRule) -> CullStats {
+    pub fn prepare(&mut self, uploads: &mut gfx::ring::EncoderUploads<'_>, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
         // The material programs clip as the D3D path does: cull by the
         // sides and the eye only (`Frustum::sides`). Stage 1 draws with
@@ -831,9 +833,9 @@ impl GpuWorld {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
         };
-        queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&u));
+        uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
         if !self.slots.is_empty() {
-            queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
+            uploads.write(&self.indirect, 0, bytemuck::cast_slice(&self.slots));
         }
         stats
     }
@@ -854,6 +856,41 @@ impl GpuWorld {
         viewport: PassViewport,
         target_size: (u32, u32),
     ) {
+        self.encode_parts(device, encoder, color, color_format, depth, depth_format, viewport, target_size, None);
+    }
+
+    /// Record precisely the guest's ordered part sequence, including repeated
+    /// parts. Adjacent slots in the same batch may share a multi-draw.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_parts(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        viewport: PassViewport,
+        target_size: (u32, u32),
+        parts: Option<&[(Owner, u8)]>,
+    ) -> usize {
+        let mut spans = Vec::<(usize, usize, usize)>::new();
+        if let Some(parts) = parts {
+            for part in parts {
+                let Some(&slot) = self.part_slots.get(part) else { return 0 };
+                let batch = self.world.draws[slot].batch as usize;
+                if let Some((last_batch, _, end)) = spans.last_mut() && *last_batch == batch && *end == slot {
+                    *end += 1;
+                } else {
+                    spans.push((batch, slot, slot + 1));
+                }
+            }
+        } else {
+            spans.extend(self.world.batches.iter().enumerate().map(|(i, b)| {
+                let first = b.first_draw as usize;
+                (i, first, first + b.draw_count as usize)
+            }));
+        }
         self.pipeline(device, color_format, depth_format);
         if let Some(p) = &mut self.programs {
             p.pipelines(device, color_format, depth_format, &self.stencil.state, self.inherited_cull);
@@ -887,7 +924,7 @@ impl GpuWorld {
             multiview_mask: None,
         });
         if self.slots.is_empty() {
-            return;
+            return 0;
         }
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         // Which pipeline is bound: None before the first batch, Some(false)
@@ -895,7 +932,10 @@ impl GpuWorld {
         // per run).
         let mut own: Option<bool> = None;
         let mut unbound = 0u64;
-        for (i, (b, group)) in self.world.batches.iter().zip(&self.batch_groups).enumerate() {
+        let mut recorded = 0;
+        for (i, first, last) in spans {
+            let b = &self.world.batches[i];
+            let group = &self.batch_groups[i];
             let programs = self.programs.as_ref();
             let program = programs.and_then(|p| p.batch(i, b.material, color_format, depth_format, &self.stencil.state));
             if let (Some(p), Some((program, uniforms, textures))) = (programs, program) {
@@ -911,8 +951,7 @@ impl GpuWorld {
                 // them before each of its draws (`0x0004d830`). A section
                 // the game draws in stencil mode 2 is a run of its own, with
                 // that reference.
-                let first = b.first_draw as usize;
-                let draws = &self.world.draws[first..first + b.draw_count as usize];
+                let draws = &self.world.draws[first..last];
                 let mut k = 0;
                 while k < draws.len() {
                     let owner = draws[k].owner;
@@ -946,6 +985,7 @@ impl GpuWorld {
                         pass.set_stencil_reference(reference);
                     }
                     pass.multi_draw_indexed_indirect(&self.indirect, (first + k) as u64 * SLOT_SIZE, (end - k) as u32);
+                    recorded += end - k;
                     k = end;
                 }
                 continue;
@@ -965,10 +1005,12 @@ impl GpuWorld {
                 own = Some(false);
                 pass.set_bind_group(1, group, &[]);
             }
-            pass.multi_draw_indexed_indirect(&self.indirect, u64::from(b.first_draw) * SLOT_SIZE, b.draw_count);
+            pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (last - first) as u32);
+            recorded += last - first;
         }
         drop(pass);
         self.unbound_batches += unbound;
+        recorded
     }
 }
 

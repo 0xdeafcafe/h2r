@@ -303,3 +303,81 @@ fn a_touchpad_click_alone_opens_it_without_selecting() {
     assert!(r.s.is_open());
     assert!(r.s.lock().menu.current().is_some(), "a later click selects");
 }
+
+#[test]
+fn the_gate_reports_each_pad_and_the_chord_wait() {
+    let mut r = Rig::new();
+    assert_eq!(r.s.gate_report(), (false, Default::default()));
+    r.sync(&[HostButton::Start], finger(0.0, 0.1));
+    let (open, g) = r.s.gate_report();
+    assert!(!open);
+    assert_eq!(g.syncs, 1);
+    assert_eq!(g.pads.len(), 1);
+    let p = g.pads[0];
+    assert_eq!(p.key, (1, 7));
+    assert!(p.touchpad && !p.click && !p.chord);
+    assert!(p.chord_pending, "Start waits for the click");
+    r.sync(&[HostButton::Start], click());
+    let (open, g) = r.s.gate_report();
+    assert!(open);
+    assert!(g.pads[0].click && g.pads[0].chord && g.pads[0].opened_by_press);
+    assert!(!g.pads[0].chord_pending);
+    // A pad without a touchpad says so.
+    let mut pads = [ds(&[], Touchpad::default())];
+    pads[0].pad.state.touchpad = None;
+    r.gate.filter_at(&mut pads, r.t + T);
+    assert!(!r.s.gate_report().1.pads[0].touchpad);
+}
+
+/// The whole path `h2 play` builds: a DualShock 4 behind the keyboard
+/// fallback (it is player one, merged with the keyboard), the input
+/// manager, and the menu's gate. The merge used to drop the touchpad, so
+/// the click never reached the gate.
+#[test]
+fn a_touchpad_click_on_player_ones_pad_opens_it_through_the_input_manager() {
+    use input::backend::fallback::KeyboardFallback;
+    use input::backend::keyboard::KeyboardMouse;
+    use input::bindings::Bindings;
+    use input::{HostBackend, InputManager};
+    use std::sync::{Arc, Mutex};
+
+    struct Ds4(Arc<Mutex<Touchpad>>);
+    impl HostBackend for Ds4 {
+        fn name(&self) -> &str {
+            "game-controller"
+        }
+        fn poll(&mut self) -> Vec<HostPad> {
+            vec![HostPad {
+                id: HostPadId(1),
+                name: "DUALSHOCK 4 Wireless Controller".into(),
+                state: HostPadState {
+                    prefiltered: true,
+                    touchpad: Some(*self.0.lock().unwrap()),
+                    ..Default::default()
+                },
+                physical: true,
+                supports_rumble: true,
+            }]
+        }
+    }
+    let touch = Arc::new(Mutex::new(Touchpad::default()));
+    let (s, _fake) = menu();
+    let mut m = InputManager::new(Default::default()).unwrap();
+    m.add_backend(Box::new(KeyboardFallback::new(
+        KeyboardMouse::new(Bindings::default()),
+        Some(Box::new(Ds4(Arc::clone(&touch)))),
+        Default::default(),
+    )));
+    m.set_gate(Box::new(s.gate()));
+    m.sync();
+    assert!(!s.is_open());
+    *touch.lock().unwrap() = click();
+    m.sync();
+    assert!(s.is_open(), "the click on player one's pad opened the menu");
+    let r = m.host_report().get();
+    assert_eq!(r.pads[0].backend, "keyboard-fallback");
+    assert_eq!(r.pads[0].port, Some(0));
+    assert!(r.pads[0].state.touchpad.is_some_and(|t| t.click));
+    let (_, g) = s.gate_report();
+    assert!(g.pads[0].touchpad && g.pads[0].click);
+}

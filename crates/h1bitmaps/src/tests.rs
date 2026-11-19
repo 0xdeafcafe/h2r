@@ -467,6 +467,85 @@ fn a_base_takes_its_masks_red_as_alpha() {
     assert_eq!(red_into_alpha(&base, &base_px, &mask, &mask_px).unwrap().1, px);
 }
 
+/// A DXT1 image (red and blue endpoints, each row the four palette
+/// entries): the result keeps its colours exactly and takes `gain` times
+/// each texel's brightest channel as alpha (255, 255, 170, 170 along a
+/// row; at gain 0.5 half that; at gain 2 saturated), within a DXT5 alpha
+/// step.
+#[test]
+fn an_image_takes_its_brightest_channel_as_alpha() {
+    use crate::mask::{brightest, brightest_into_alpha};
+    assert_eq!(brightest(10, 200, 30, 1.0), 200);
+    assert_eq!(brightest(10, 200, 30, 0.5), 100);
+    assert_eq!(brightest(10, 200, 30, 2.0), 255);
+    let base = image(14, 0, [8, 8, 1], 1, DXT);
+    let mut block = [0u8; 8];
+    block[0..2].copy_from_slice(&0xf800u16.to_le_bytes());
+    block[2..4].copy_from_slice(&0x001fu16.to_le_bytes());
+    block[4..8].copy_from_slice(&0xe4e4_e4e4u32.to_le_bytes());
+    let px: Vec<u8> = block.iter().copied().cycle().take(base.pixel_size as usize).collect();
+    let want = decode_image(&base, &px).unwrap();
+    for gain in [1.0f32, 0.5, 2.0] {
+        let (img, out) = brightest_into_alpha(&base, &px, gain).unwrap();
+        assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+        assert_eq!((img.width, img.height, img.mip_count), (8, 8, 1));
+        assert_eq!(img.pixel_size as usize, out.len());
+        let got = decode_image(&img, &out).unwrap();
+        assert_eq!(got.len(), 2);
+        for (g, w) in got.iter().zip(&want) {
+            for t in 0..(g.width * g.height) as usize {
+                let c = &w.rgba[t * 4..t * 4 + 3];
+                assert_eq!(&g.rgba[t * 4..t * 4 + 3], c, "gain {gain} level {} texel {t}", g.level);
+                let a = g.rgba[t * 4 + 3];
+                let expect = brightest(c[0], c[1], c[2], gain);
+                // Half a step of the block's 8-value mode over its range
+                // (at most 255 / 7 / 2).
+                assert!(a.abs_diff(expect) <= 19, "gain {gain} level {} texel {t}: {a} vs {expect}", g.level);
+            }
+        }
+        assert_eq!(brightest_into_alpha(&base, &px, gain).unwrap().1, out);
+    }
+}
+
+/// A Halo 1 multipurpose map's blue (invented A8R8G8B8) as a Halo 2
+/// change-colour map: DXT5 of the same size, the blue in the channel asked
+/// for (red: change colour 0), every other channel, alpha included, 0 (a
+/// non-zero alpha would tint by change colour 3 as well). Each 4x4 block
+/// is uniform here, so the values come back exactly.
+#[test]
+fn a_multipurpose_blue_becomes_one_change_colour_channel() {
+    use crate::decode::texture_desc;
+    use crate::mask::channel_into;
+    let mask = image(11, 0, [8, 8, 1], 0, LIN);
+    let pitch = texture_desc(&mask).unwrap().pitch as usize;
+    let mut px = vec![0u8; mask.pixel_size as usize];
+    for y in 0..8 {
+        for x in 0..8 {
+            // B, G, R, A: blue is the mask (left half full, right empty),
+            // red and green are the reflection and glow masks.
+            let b = if x < 4 { 0xff } else { 0 };
+            px[y * pitch + x * 4..][..4].copy_from_slice(&[b, 0x40, 0x80, 0xff]);
+        }
+    }
+    for to in 0..4 {
+        let (img, out) = channel_into(&mask, &px, 2, to).unwrap();
+        assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+        assert_eq!((img.width, img.height), (8, 8));
+        assert_eq!(img.pixel_size as usize, out.len());
+        let got = decode_image(&img, &out).unwrap();
+        assert_eq!(got.len(), 1);
+        for t in 0..64 {
+            let want = if t % 8 < 4 { 0xff } else { 0 };
+            for c in 0..4 {
+                let w = if c == to { want } else { 0 };
+                assert_eq!(got[0].rgba[t * 4 + c], w, "to {to} texel {t} channel {c}");
+            }
+        }
+        assert_eq!(channel_into(&mask, &px, 2, to).unwrap().1, out);
+    }
+    assert!(channel_into(&mask, &px, 2, 4).is_err());
+}
+
 /// A picture made opaque keeps its colour and samples alpha 255 in every
 /// format with an alpha it can set, through the swizzled, linear and DXT
 /// paths; the formats whose alpha it can't set are left as they are.

@@ -72,10 +72,12 @@ impl Host for Stub {
     fn want(&self, definition: u32) {
         self.wanted.lock().unwrap().push(definition);
     }
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool {
+    fn draw(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, objects: Vec<ObjectFrame>,
+        masks: &native_render::skip::MaskPlan, _ranges: usize) -> bool {
         if *self.refuse.lock().unwrap() {
             return false;
         }
+        if !masks.apply(&mut feature::native_world::Mem(mem)) { return false; }
         self.drawn.lock().unwrap().push((*camera, objects));
         true
     }

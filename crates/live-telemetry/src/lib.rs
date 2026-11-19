@@ -11,6 +11,7 @@ pub mod layout;
 mod memory;
 mod motion;
 mod pipeline;
+pub mod raw;
 mod server;
 mod session;
 mod sink;

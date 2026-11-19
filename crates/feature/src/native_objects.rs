@@ -84,6 +84,12 @@ pub struct NativeSet {
     /// than the one loaded, or a section none of whose parts loaded) would
     /// lose those items undrawn, so its items keep their D3D draws.
     pub sections: HashSet<(u16, u16)>,
+    /// Definitions whose objects the host is handed as drawn ones (node
+    /// rows, lighting) while their items keep their D3D draws: the host
+    /// compares its uniforms with the D3D path's draws of them
+    /// (`H2_NATIVE_OBJECTS_COMPARE` in the boot glue) and does not draw
+    /// them.
+    pub shadowed: HashSet<u16>,
 }
 
 impl NativeSet {
@@ -158,7 +164,8 @@ pub trait Host: Send + Sync {
     fn want(&self, definition: u32);
     /// Asks the device for the view's pass over `objects`. `false`: not
     /// drawn (the skip is undone).
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool;
+    fn draw(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, objects: Vec<ObjectFrame>,
+        masks: &native_render::skip::MaskPlan, ranges: usize) -> bool;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -409,10 +416,17 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         false
     };
-    let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
+    let Some(mut preview) = native_render::skip::MaskPreview::new(&m) else {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
+    let Some(mut cleared) = objects::clear_objects(&mut preview, LIGHTMAP_LAYER, &accept) else {
+        stop(Stop::NoList, || "the current list does not read".to_owned());
+        return;
+    };
+    use timeline::native::{Stage, Metric};
+    Stage::Objects.count(Metric::Examined, cleared.walk.walked as u64);
+    Stage::Objects.count(Metric::RefusedOwnership, (cleared.walk.walked - cleared.walk.accepted) as u64);
     add_walk(&cleared.walk);
     count_implementations(&set.map, &cleared.walk);
     if cleared.items.is_empty() {
@@ -433,9 +447,11 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
             frames.push(f);
         }
     }
-    let drawn: HashSet<u32> = frames.iter().map(|f| f.handle).collect();
+    // A shadowed definition's items keep their D3D draws; the host still
+    // gets its frames (`NativeSet::shadowed`).
+    let drawn: HashSet<u32> = frames.iter().filter(|f| !set.shadowed.contains(&(f.definition as u16))).map(|f| f.handle).collect();
     let accepted = cleared.handles.len();
-    objects::keep_only(&mut m, &mut cleared, &|h: u32| drawn.contains(&h));
+    objects::keep_only(&mut preview, &mut cleared, &|h: u32| drawn.contains(&h));
     if frames.is_empty() {
         stop(Stop::NoneRead, || {
             format!("{accepted} accepted objects, none read with its model's node count (node block at body +0x114/+0x116)")
@@ -443,12 +459,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     let count = frames.len() as u64;
-    if !host.draw(&camera, frames) {
+    let Some(masks) = preview.finish() else { return };
+    if !host.draw(m.0, &camera, frames, &masks, cleared.items.len()) {
         stop(Stop::DrawRefused, || "the device cannot take an external pass".to_owned());
-        objects::restore(&mut m, &cleared);
         return;
     }
     stop(Stop::Drawn, || format!("{count} objects, {} items", cleared.items.len()));
+    Stage::Objects.count(Metric::Suppressed, cleared.items.len() as u64);
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(count, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);

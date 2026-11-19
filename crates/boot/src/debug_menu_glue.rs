@@ -1,7 +1,9 @@
 //! Our debug menu in the game (docs/runtime/debug-menu.md): connects the
 //! menu to the agent as an in-process client, and adds the host methods
 //! it lists beside `render.*` and `edit.*`: `settings.*` over the
-//! settings store and `perf.overlay` over the watermark's switch.
+//! settings store and `perf.overlay` over the watermark's switch. Also
+//! `input.host` (`h2 agent hostpads`) over the input manager's report and
+//! the menu's gate, for when a pad doesn't open the menu.
 //!
 //! The menu itself (rows, navigation, input, drawing) is the host's:
 //! `h2 play` makes it, puts its gate on the input manager and its lines
@@ -15,6 +17,7 @@ use std::sync::atomic::AtomicBool;
 /// is one.
 pub fn install(
     menu: Option<&debug_menu::Shared>,
+    host_pads: Option<input::report::HostReportHandle>,
     agent: &agent::Agent,
     settings: Option<Arc<settings::Store>>,
     perf_overlay: Option<Arc<AtomicBool>>,
@@ -25,10 +28,13 @@ pub fn install(
     if let Some(on) = perf_overlay {
         agent::menu::add_perf_overlay(agent, on);
     }
+    if let Some(report) = host_pads {
+        agent::hostpads::add_host_pads(agent, report, menu.cloned());
+    }
     if let Some(menu) = menu {
         agent::menu::connect(menu, agent);
         eprintln!(
-            "debug menu: touchpad click + Options, or ` on the keyboard (docs/runtime/debug-menu.md)"
+            "debug menu: touchpad click (or touchpad click + Options), or ` on the keyboard (docs/runtime/debug-menu.md)"
         );
     }
 }

@@ -155,7 +155,8 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   a cinematic, or nearer than the view's near). That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
-  line per pass (the first 8, then every 250th: the clip, whether draws
+  line per pass (the first 8, then every 250th, or every `n`th with
+  `H2_NATIVE_WORLD_TRACE_EVERY=n`: the clip, whether draws
   are W-buffered, the render camera and its view-projection beside the
   constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
   draws every part without the CPU cull. With the trace,
@@ -224,11 +225,12 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   back faces. Such a pass is now marked (`look::WorldPass::inherits_cull`)
   and takes the device's `CULLMODE` and `FRONTFACE` at the layer-3 call
   (`Device::cull_state`, read from the guest's render-state array as the
-  stencil is; `program::InheritedCull`). By default only the placements'
-  rigid draws take it (the ones compared);
-  `H2_NATIVE_WORLD_INHERIT_CULL=all` gives it to the clusters too and
-  `=none` to neither (S: that the structure draw sets no cull of its own
-  between the layer-3 call and the clusters' draws). The other fields
+  stencil is; `program::InheritedCull`). That made 01000, 03000 and
+  04000 match exactly (w19). The clusters take it too: 02000's 81
+  cluster pixels on a curb (box [120,327]-[235,374]) went with it and
+  nothing else changed (w21), so that is the default;
+  `H2_NATIVE_WORLD_INHERIT_CULL=placements` gives it to the placements
+  only and `=none` to neither. The other fields
   the compare listed change nothing: `explicit_final` is the device's
   final-combiner latch, which only matters when both final-combiner
   input words are zero (`PixelShaderDef::has_final_combiner`), and a
@@ -809,9 +811,8 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      `_combined` templates) set `ZFUNC` equal without depth writes. A
      state the pass does not set is inherited from the previous draw on
      the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual`, and
-     an unset `CULLMODE` takes the device's at the layer-3 call for the
-     placements (`InheritedCull`, above; nothing where it does not
-     read). It refuses: engine-driven render or stage states, a
+     an unset `CULLMODE` takes the device's at the layer-3 call
+     (`InheritedCull`, above; nothing where it does not read). It refuses: engine-driven render or stage states, a
      blending pass, fog enabled, stencil, depth bias.
    - `program::compile_world` translates the pass (inputs `v0..v6` from
      the world vertex: position, uv, normal, binormal, tangent, lighting
@@ -1167,6 +1168,30 @@ implementation samples engine texture 3.
   constants it gets; or why it is not drawn.
   `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...` leaves those definitions to
   D3D (the load refuses them), to tell which one a difference is.
+- **The comparison.** `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`
+  (e.g. `0xe92207ad:2:30`) is the objects' `H2_NATIVE_WORLD_DUMP`: the
+  definition's objects keep their D3D draws (`NativeSet::shadowed`: the
+  host gets their frames, their items are not skipped), and on the pass
+  after `after` holding one, its first object's part is armed in
+  `d3d::uniform_compare` with what the pass would draw it with
+  (`LitObjects::part_uniforms`: program words, vertex and pixel uniforms
+  with the object's rows, decompression, lighting and texture
+  accumulation constants, translation options, pixel shader and options,
+  samplers, primitive, depth). The D3D draws with the same rows
+  `c[50..52]` and the same program are compared field by field; those
+  with another program (the object's other parts, and its earlier
+  layers, which wrote the depth a later `Equal` pass tests) are named
+  with their cull, winding, depth state and `c[0..4]`.
+- **The inherited cull.** A lit part whose layer-3 implementation does
+  not set `CULLMODE` (`object_program::sets_cull`; 03a's
+  `concrete_rebar` part of `concrete_chunk_j`) draws on the D3D path
+  with the device's cull and winding at the layer-3 call, as a world
+  pass does. Its program is marked (`MaterialProgram::inherits_cull`);
+  the host reads `Device::cull_state` when the feature asks for the set,
+  and the pass draws those parts with it
+  (`LitObjects::set_inherited_cull`, through `program::pipeline_state`;
+  the cull is part of the pipeline key). Before, they culled nothing.
+  `H2_NATIVE_OBJECTS_INHERIT_CULL=0` turns it off.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

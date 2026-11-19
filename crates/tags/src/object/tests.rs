@@ -209,6 +209,40 @@ fn resolves_object_model_and_default_variant() {
 }
 
 #[test]
+fn the_chosen_variant_lists_the_objects_it_attaches() {
+    let mut f = fixture();
+    let m = f.ctx.resolve_object(SCEN).unwrap().model.unwrap();
+    assert!(m.objects.is_empty(), "no objects block");
+    // Variant 0 attaches the scenery itself on its "marker" marker by its
+    // "head" marker, and a null reference (left out). The block lies in
+    // the effe's data (aliased blocks decode).
+    let at = f.effe;
+    f.poke(at, sid(5));
+    f.poke(at + 4, sid(6));
+    f.poke(at + 8, fourcc(b"scen"));
+    f.poke(at + 0xc, SCEN.0);
+    f.poke(at + 0x10, sid(5));
+    f.poke(at + 0x18, u32::MAX);
+    f.poke(at + 0x1c, u32::MAX);
+    let variant0 = f.hlmt + 0xfc + 2 * 0x10 + 2 * 8;
+    f.poke(variant0 + 0x1c, 2);
+    f.poke(variant0 + 0x20, at);
+    let m = f.ctx.resolve_object(SCEN).unwrap().model.unwrap();
+    assert_eq!(
+        m.objects,
+        [VariantObject {
+            parent_marker: "marker".into(),
+            child_marker: "head".into(),
+            object: SCEN,
+        }]
+    );
+    // Another variant's objects are not the chosen one's.
+    f.poke(f.scen + 0x30, sid(4));
+    let m = f.ctx.resolve_object(SCEN).unwrap().model.unwrap();
+    assert!(m.objects.is_empty());
+}
+
+#[test]
 fn variant_lookup_follows_the_engine() {
     let mut f = fixture();
     f.poke(f.scen + 0x30, 0);

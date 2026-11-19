@@ -12,7 +12,7 @@
 
 use super::{
     Check, Log, Plan, Verdict, account_line, check, gate_port, on_live_as_account, phantom_failed,
-    phantom_joined, phantom_joined_lobby, read_session, read_status, signing_port,
+    phantom_joined, phantom_joined_lobby, read_status, signing_port,
 };
 
 const PLAN: &str = "bots-test: clankermatch plan: ";
@@ -50,7 +50,8 @@ pub struct CmPlan {
     /// Teams (0: free for all).
     pub teams: u32,
     /// Bots beside the human, and how many of them are local bots
-    /// (`boot::clankers::max_local`); the rest are phantoms.
+    /// (`boot::clankers::MATCH_LOCAL`, none: phantoms only); the rest are
+    /// phantoms.
     pub bots: usize,
     pub local: usize,
     pub tag: String,
@@ -108,6 +109,25 @@ impl CmPlan {
             tag: tag.trim().into(),
         })
     }
+}
+
+/// The game's own lobby count: `bots: lobby players: N in the game's
+/// session` (`bots::lobby::players_line`).
+fn read_lobby_players(text: &str) -> Option<u64> {
+    let rest = text.strip_prefix("bots: lobby players: ")?;
+    rest.split(' ').next()?.parse().ok()
+}
+
+/// A status line of a game starting: a multiplayer map loading or in
+/// play, not the main menu's (`map mainmenu`, mode `main_menu`) nor the
+/// campaign's.
+fn game_start(text: &str) -> bool {
+    read_status(text).is_some_and(|(phase, mode, map)| {
+        matches!(phase, "loading" | "gameplay")
+            && map != "mainmenu"
+            && mode != "main_menu"
+            && mode != "campaign"
+    })
 }
 
 /// `[8, 9, 10]`: the hoppers.
@@ -432,7 +452,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                     t[LOCAL_LINE.len()..].to_string()
                 } else {
                     format!(
-                        "{n} local bots, not the {} the plan works out (`max_local` of {} bots, \
+                        "{n} local bots, not the {} the plan works out (`MATCH_LOCAL`; {} bots, \
                          {} players, {} teams)",
                         plan.local, plan.bots, plan.max, plan.teams
                     )
@@ -480,7 +500,30 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         }
     }
     let not_seated: Vec<u8> = missing.iter().filter(|m| !m.1).map(|m| m.0).collect();
-    checks.push(check(
+    if local == 0 {
+        // Phantoms only (docs/game/bots.md §8.4): no bot signs in on a
+        // controller port, so none shows in the party.
+        let signed: Vec<String> = l
+            .texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| signing_port(t).is_some())
+            .map(|(i, _)| l.raw_at(i))
+            .collect();
+        checks.push(check(
+            "no bot in the party: none signs in on a controller port",
+            signed.is_empty(),
+            if signed.is_empty() {
+                "no `bots: signing ...` line: every bot is a phantom in the match".into()
+            } else {
+                "a bot signed in on a controller port: it shows in the party, and the \
+                 matchmade start checks its controller"
+                    .into()
+            },
+            signed,
+        ));
+    } else {
+        checks.push(check(
         "local bots seated and signed in, in the lobby",
         missing.is_empty() && local > 0,
         if local == 0 {
@@ -502,6 +545,7 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         },
         lines,
     ));
+    }
 
     // 8. Each local bot on Live as its own bot account.
     let mut lines = Vec::new();
@@ -531,31 +575,58 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             }
         }
     }
-    checks.push(check(
-        "local bots on Xbox Live as bot accounts (000b...)",
-        missing.is_empty() && local > 0,
-        if missing.is_empty() {
-            names.join(", ")
-        } else {
-            format!(
-                "port(s) {missing:?}: no bot account sign-in (`Clanker N is ... (bot account \
+    if local == 0 {
+        // Phantoms only: each planned phantom carries a roster bot account
+        // (`clankers: G (phantom, rostered) on (...)`).
+        let rostered: Vec<(String, &str)> = l
+            .texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.starts_with("clankers: ") && t.contains(" (phantom, rostered) on"))
+            .map(|(i, t)| (l.raw_at(i), *t))
+            .collect();
+        let want = plan.phantoms();
+        let n = rostered.len();
+        checks.push(check(
+            "the phantoms are the roster's bot accounts",
+            n >= want && want > 0,
+            if n >= want {
+                format!("{n} rostered phantoms")
+            } else {
+                format!(
+                    "{n} of {want} phantoms rostered (`clankers: G (phantom, rostered) on`): \
+                     Live's roster refused or never came (`no roster from Live`), so host-made \
+                     bots with no account"
+                )
+            },
+            rostered.into_iter().map(|r| r.0).collect(),
+        ));
+    } else {
+        checks.push(check(
+            "local bots on Xbox Live as bot accounts (000b...)",
+            missing.is_empty() && local > 0,
+            if missing.is_empty() {
+                names.join(", ")
+            } else {
+                format!(
+                    "port(s) {missing:?}: no bot account sign-in (`Clanker N is ... (bot account \
                  000b...)` and `... is on Xbox Live as its own bot account`); a guest or offline \
                  line says why"
-            )
-        },
-        lines,
-    ));
+                )
+            },
+            lines,
+        ));
+    }
 
     // 9. The lobby's player count reached the playlist's fewest players,
-    // before the game started.
-    let start = host_at.and_then(|h| {
-        l.index_from(h, |t| {
-            read_status(t).is_some_and(|(phase, _, _)| phase == "loading" || phase == "gameplay")
-        })
-    });
+    // before the game started: the game's own count of its session
+    // (`bots: lobby players: N in the game's session`), not the Live
+    // server's, which counts what the host told it (cm-run2's "4 joined"
+    // came with no bot in the game's lobby).
+    let start = host_at.and_then(|h| l.index_from(h, game_start));
     let lobby_end = start.unwrap_or(l.texts.len());
     let counts: Vec<(usize, u64)> = (from..lobby_end)
-        .filter_map(|i| read_session(l.texts[i]).map(|(f, j)| (i, f.max(j))))
+        .filter_map(|i| read_lobby_players(l.texts[i]).map(|n| (i, n)))
         .collect();
     let best = counts.iter().max_by_key(|c| c.1);
     let min = u64::from(plan.min);
@@ -564,32 +635,40 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
             "the lobby reached the playlist's fewest players",
             n >= min,
             if n >= min {
-                format!("{n} players in the lobby (the playlist starts at {min})")
+                format!("{n} players in the game's lobby (the playlist starts at {min})")
             } else {
                 format!(
-                    "at most {n} players in the lobby of the {min} the playlist starts at: the \
-                     local bots did not count as session players (step 7 and 8 say whether they \
-                     signed in)"
+                    "at most {n} players in the game's lobby of the {min} the playlist starts \
+                     at: the local bots did not count as session players (step 7 and 8 say \
+                     whether they signed in) and no phantom joined (step 12)"
                 )
             },
             vec![l.raw_at(i)],
         ),
-        None => check(
-            "the lobby reached the playlist's fewest players",
-            false,
-            "the Live server listed no session for the host while the lobby was up".into(),
-            l.last(2, |t| t.starts_with("bots-test: session ")),
-        ),
+        None => {
+            let mut lines = l.last(2, |t| t.starts_with("bots: lobby facts"));
+            lines.extend(l.last(2, |t| t.starts_with("bots-test: session ")));
+            check(
+                "the lobby reached the playlist's fewest players",
+                false,
+                "no `bots: lobby players: N` while the lobby was up: the game never read a \
+                 lobby the bots can join (the lobby facts line says why; the Live server's \
+                 session count is not the game's)"
+                    .into(),
+                lines,
+            )
+        }
     });
 
-    // 10. The countdown ran and the game started: the phase left the menus
-    // after the lobby was hosted.
+    // 10. The countdown ran and the game started: a multiplayer map
+    // loading or playing after the lobby was hosted (cm-run2's "phase
+    // loading" was the main menu coming back, `map mainmenu`).
     checks.push(match start {
         Some(i) => check(
             "the countdown ran and the game started",
             true,
             read_status(l.texts[i])
-                .map(|s| format!("phase {} after the lobby", s.0))
+                .map(|s| format!("phase {} on {} after the lobby", s.0, s.2))
                 .unwrap_or_default(),
             vec![l.raw_at(i)],
         ),
@@ -604,11 +683,14 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                 if host_at.is_none() {
                     "no lobby, so no start".into()
                 } else if reached {
-                    "the lobby had its fewest players but stayed in the menus: the game's \
-                     matchmaking start (its countdown, or the party leader check) never ran"
-                        .into()
+                    "the lobby had its fewest players but no multiplayer map loaded: the \
+                     game's matchmaking start (its countdown, or the party leader check) never \
+                     ran"
+                    .into()
                 } else {
-                    "the lobby stayed in the menus, short of its fewest players (step 9)".into()
+                    "no multiplayer map loaded: the lobby stayed short of its fewest players \
+                     (step 9)"
+                        .into()
                 },
                 lines,
             )

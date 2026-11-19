@@ -6,6 +6,7 @@
 //! GPU side for [`crate::gpu::GpuWorld`].
 
 use std::collections::HashMap;
+use wgpu::util::DeviceExt;
 
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
 use shaders::vsh::{self, InputFetch, VertexOptions, VertexUniforms};
@@ -551,8 +552,8 @@ pub struct InheritedCull {
     /// The placements' rigid draws take it (the D3D path's draws of a
     /// placement were compared: `d3d::uniform_compare`).
     pub placements: bool,
-    /// The clusters' draws take it too (not compared: S, that the
-    /// structure draw does not set its own between).
+    /// The clusters' draws take it (03a's 02000: 81 cluster pixels on a
+    /// curb went with it, nothing else changed).
     pub clusters: bool,
 }
 
@@ -1086,11 +1087,17 @@ impl Rigid {
             bind_group_layouts: &[Some(&uniforms_layout), Some(&gpu.textures_layout)],
             immediate_size: 0,
         });
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let mut initial = vec![0; (stride * (slots.len() as u64 - 1) + size) as usize];
+        for (i, (_, rows)) in slots.iter().enumerate() {
+            let mut v = program.vertex.clone();
+            v.constants[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(rows);
+            let start = i * stride as usize;
+            v.write_bytes(&mut initial[start..start + VertexUniforms::SIZE]);
+        }
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native world rigid vertex"),
-            size: stride * (slots.len() as u64 - 1) + size,
+            contents: &initial,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
         let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native world rigid uniforms"),
@@ -1111,9 +1118,13 @@ impl Rigid {
     }
 
     /// The frame's view and rows in every slot.
-    fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
-        let bytes = rigid_slot_bytes(&self.program.vertex, view, &self.slots, self.stride as usize);
-        queue.write_buffer(&self.buffer, 0, &bytes);
+    fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
+        let v = frame_vertex(&self.program.vertex, view).to_bytes();
+        // Only c[0..18] and the viewport/clip tail depend on the view.
+        // Every placement keeps its own original c[50..53] in the GPU block.
+        let tail = VertexUniforms::SIZE - 32;
+        uploads.repeat(&self.buffer, 0, self.stride, self.slots.len(), &v[..VIEW_CONSTANTS * 16]);
+        uploads.repeat(&self.buffer, tail as u64, self.stride, self.slots.len(), &v[tail..]);
     }
 
     /// The dynamic offset of `instance`'s slot.
@@ -1174,12 +1185,13 @@ impl ProgramSet {
     }
 
     /// The frame's uniforms for every material.
-    pub fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+    pub fn prepare(&self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs) {
         for g in self.materials.values() {
-            g.prepare(queue, view);
+            uploads.write(&g.vertex_buffer, 0, &frame_vertex(&g.program.vertex, view).to_bytes());
+            uploads.write(&g.pixel_buffer, 0, &frame_pixel(&g.program.pixel, view).to_bytes());
         }
         for r in self.rigid.values() {
-            r.prepare(queue, view);
+            r.prepare(uploads, view);
         }
     }
 

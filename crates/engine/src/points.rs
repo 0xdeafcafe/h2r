@@ -538,6 +538,8 @@ points! { ALL;
     /// only caller) copies it into each player's flag bit 0, and only
     /// players with it spawn (`0x14d3a0`).
     MACHINE_IN_GAME @ 0x0006_86e0: [fn(machine: eax) -> al ret 0]; "docs/game/bots.md";
+    /// Gather one stored remote action into this tick's simulation update.
+    SIMULATION_SLOT_ACTION @ 0x0008_4990: [fn(slot: stack 0, action: stack 1) -> al ret 8]; "docs/game/bots.md";
     /// Clear and default a game-options block (ESI). The session start
     /// calls it right after its peer and player checks.
     OPTIONS_NEW @ 0x0013_8110: [fn(options: esi) ret 0]; "docs/runtime/level-boot.md";

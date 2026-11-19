@@ -50,9 +50,27 @@ pub struct Reference {
     pub scene: Option<Arc<Scene>>,
 }
 
-/// Scenes kept for maps opened before (reopening one, or opening its
-/// package, reuses its art). A few levels are tens of MB each.
+/// Scenes kept for maps opened before (reopening one reuses its art). A
+/// few levels are tens of MB each.
 const SCENE_CACHE: usize = 4;
+
+/// Which cached scene a map opened from `source` may reuse. A map held in
+/// memory (a package resolved over its base) keeps its base's path and
+/// region, so its bytes are part of the key: a package can change any
+/// tag (a modded map's own scenery, shaders, sky and BSP), and must not be
+/// drawn with its base's art.
+pub fn scene_key(source: &MapSource, name: &str, cache_key: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let bytes = source.bytes.as_ref().map_or(String::new(), |b| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        b.hash(&mut h);
+        format!("|{:016x}+{}", h.finish(), b.len())
+    });
+    format!(
+        "{:?}|{:?}|{name}|{cache_key}{bytes}",
+        source.path, source.region
+    )
+}
 
 /// A drag of the selected placement on a plane (a viewport's
 /// primary-button drag).
@@ -467,7 +485,7 @@ impl Session {
         map: &mut map::Map<R>,
         raw: &mut dyn tags::geometry::RawSource,
     ) -> Arc<Scene> {
-        let key = format!("{:?}|{:?}|{name}|{cache_key}", source.path, source.region);
+        let key = scene_key(source, name, cache_key);
         if let Some(i) = self.scenes.iter().position(|(k, _)| *k == key) {
             let hit = self.scenes.remove(i);
             let scene = hit.1.clone();

@@ -22,7 +22,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::view::players;
 
 use crate::guest;
-use crate::local::{Frame, PadSource};
+use crate::local::PadSource;
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.
@@ -116,8 +116,9 @@ struct Phantom {
     source: Box<dyn PadSource>,
     /// Its peer is in the host's session.
     made: bool,
-    /// The tick of its last action.
-    last_tick: Option<u32>,
+    buttons: action::ButtonState,
+    /// Frame-indexed sources advance once per simulation sample, across respawns.
+    samples: u64,
     /// Why it waits for hosting, as last logged ([`waiting_line`]).
     waiting: Option<String>,
 }
@@ -151,6 +152,7 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 #[derive(Default)]
 struct Books {
     list: Vec<Phantom>,
+    hosting_game: bool,
     next: u32,
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
@@ -158,7 +160,15 @@ struct Books {
     /// Phantoms join only once a game runs and leave when it ends (the
     /// lobby join off, [`LOBBY_ENV`]).
     game_only: bool,
+    /// A Clankermatch's phantoms: they join only the match's session (the
+    /// matchmaking life cycle, types 6 to 9), never the party's lobby
+    /// ([`Phantoms::set_match_only`]).
+    match_only: bool,
 }
+
+/// Why a Clankermatch's phantom waits outside the match.
+pub const NOT_THE_MATCH: &str =
+    "the party's lobby: a Clankermatch's bots join the match the search hosted, never the party";
 
 /// Where the session a phantom can join is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,7 +219,8 @@ impl Phantoms {
             },
             source,
             made: false,
-            last_tick: None,
+            buttons: Default::default(),
+            samples: 0,
             waiting: None,
         });
         Ok(handle)
@@ -232,6 +243,20 @@ impl Phantoms {
     /// running game ([`LOBBY_ENV`]).
     pub fn set_lobby(&self, on: bool) {
         self.lock().game_only = !on;
+    }
+
+    /// Whether the phantoms are a Clankermatch's (docs/game/bots.md §8.4,
+    /// "Phantoms only"): they join the session the search hosted and its
+    /// game (life cycle 6 to 9, [`crate::lobby::matchmaking_cycle`]), and
+    /// leave any other, the party's lobby before the search and after the
+    /// game above all. Set by the Clankermatch fill while it runs.
+    pub fn set_match_only(&self, on: bool) {
+        self.lock().match_only = on;
+    }
+
+    /// Whether the phantoms are a Clankermatch's ([`Phantoms::set_match_only`]).
+    pub fn match_only(&self) -> bool {
+        self.lock().match_only
     }
 
     /// Takes a phantom off the books.
@@ -323,11 +348,11 @@ impl Phantoms {
     /// multiplayer game it hosts runs, pending phantoms get a peer, its
     /// properties and a session player, as a real peer joining does: in
     /// the lobby they show in its roster and the game takes them in when
-    /// it starts. Each joined phantom's source is asked for its pad in a
-    /// game, written as its action. Removed phantoms' peers come out. When
+    /// it starts. The simulation samples each joined phantom's pad when it
+    /// gathers actions (`slot_action`). Removed phantoms' peers come out. When
     /// this console hosts no session any more, every phantom's peer comes
     /// out and the phantom waits for the next. Returns lines for the log.
-    pub fn tick(&self, m: &mut dyn GuestMemory, frame: u64) -> Result<Vec<String>, MemFault> {
+    pub fn tick(&self, m: &mut dyn GuestMemory, _frame: u64) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
         // A starting game waits for no phantom (§5.1, "Phantoms in the
         // game"), whichever way they came in.
@@ -338,9 +363,16 @@ impl Phantoms {
             ));
         }
         let mut b = self.lock();
-        let game = session::host_session(&*m);
+        // A Clankermatch's phantoms stay out of the party (§8.4).
+        let barred = b.match_only && !crate::lobby::matchmaking_cycle(&*m);
+        let game = if barred {
+            Err(session::NotNow::Wait)
+        } else {
+            session::host_session(&*m)
+        };
         let lobby = match &game {
             Ok(_) => Err(session::NotNow::Wait),
+            Err(_) if barred => Err(session::NotNow::NotHost(NOT_THE_MATCH.into())),
             Err(_) if b.game_only => Err(session::NotNow::Wait),
             Err(_) => session::host_lobby(&*m),
         };
@@ -349,18 +381,24 @@ impl Phantoms {
             (_, Ok(s)) => Some(Phase::Lobby(*s)),
             _ => None,
         };
+        b.hosting_game = matches!(phase, Some(Phase::Game(_)));
+        if !b.hosting_game {
+            for p in &mut b.list {
+                p.buttons = Default::default();
+            }
+        }
         let live = session::live_session(&*m);
 
         // Out: removed phantoms, and all of them once this console hosts
         // no session (with the lobby join off: once no game runs).
         let mut out: Vec<[u8; 6]> = std::mem::take(&mut b.gone);
-        let keep = phase.is_some() || (!b.game_only && session::owned_session(&*m).is_some());
+        let keep =
+            phase.is_some() || (!b.game_only && !barred && session::owned_session(&*m).is_some());
         if !keep {
             for p in &mut b.list {
                 if p.made {
                     out.push(p.info.machine);
                     p.made = false;
-                    p.last_tick = None;
                 }
             }
         }
@@ -427,7 +465,7 @@ impl Phantoms {
                 }
                 None => {
                     p.made = false;
-                    p.last_tick = None;
+                    p.buttons = Default::default();
                     log.push(format!(
                         "bots: phantom {} is no longer in the session: it joins again",
                         p.info.identity.gamertag
@@ -451,9 +489,27 @@ impl Phantoms {
                 continue; // no local player to copy yet
             };
             let mac = p.info.machine;
-            // A peer of its own left from a session this console stopped
-            // hosting and hosts again: out first, so it is never in twice.
+            // A peer of its own still in the session: a session that was
+            // not live a while (state 7 on the user's Halo 1 run) left the
+            // phantoms unmade but could not take their peers out. With its
+            // player it is taken back as it is. Removing it and adding it
+            // again at the end moved every later peer down and gave each
+            // phantom the last index ("joins (peer 4)" four times). The
+            // machine id is the phantom's own (`machine_id` of its handle,
+            // roster or host-made alike), so no other phantom's peer is
+            // ever found here.
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
+                if session::peer_players(&*m, s, stale)? > 0 {
+                    session::sync_props(m, s, stale, &p.info.identity.gamertag)?;
+                    p.made = true;
+                    p.waiting = None;
+                    log.push(format!(
+                        "bots: phantom {} is still in the session (peer {stale}): it stays",
+                        p.info.identity.gamertag
+                    ));
+                    continue;
+                }
+                // A peer with no player left: out, so it is never in twice.
                 session::remove_peer(m, s, stale)?;
             }
             let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {
@@ -504,58 +560,8 @@ impl Phantoms {
         }
         drop(b);
         self.refresh_where(&*m, true)?;
-        if in_lobby {
-            return Ok(log);
-        }
-
-        // Actions.
-        let tick = guest::game_tick(&*m);
-        let mut b = self.lock();
-        for p in &mut b.list {
-            if !p.made || p.info.state != State::Joined {
-                continue;
-            }
-            let mac = p.info.machine;
-            let Some(slot) = session::slot_of(&*m, mac)? else {
-                continue;
-            };
-            let Some(addr) = player_addr(&*m, mac)? else {
-                continue;
-            };
-            let Some((aim, weapon)) = session::facing(&*m, addr)? else {
-                continue;
-            };
-            let f = Frame {
-                frame,
-                tick,
-                port: 4,
-                machine: Some(mac),
-                guest: &*m,
-                joining: false,
-            };
-            let pad = p.source.pad(&f);
-            let ticks = match (tick, p.last_tick) {
-                (Some(t), Some(l)) => t.saturating_sub(l).clamp(1, 30),
-                _ => 1,
-            };
-            p.last_tick = tick;
-            let a = session::action_from_pad(&pad, aim, weapon, ticks as f32 / 30.0);
-            session::write_action(m, slot, &a)?;
-        }
         Ok(log)
     }
-}
-
-fn player_addr(m: &dyn GuestMemory, mac: [u8; 6]) -> Result<Option<u32>, MemFault> {
-    let Some(array) = players::array(m)? else {
-        return Ok(None);
-    };
-    for (_, p) in array.live(m, 16)? {
-        if p.listed(m)? && guest::player_machine(m, p.addr)? == mac {
-            return Ok(Some(p.addr));
-        }
-    }
-    Ok(None)
 }
 
 /// Every listed player's machine id and datum index.
@@ -611,6 +617,7 @@ pub fn player(handle: PhantomHandle) -> Option<u32> {
     global().player(handle)
 }
 
+mod action;
 pub mod session;
 
 #[cfg(test)]

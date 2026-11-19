@@ -67,6 +67,7 @@ impl AgentGlue {
         add_host_methods(&agent);
         let _sim = install_sim(&agent);
         agent::havok::install(&agent);
+        agent::raw::install(&agent);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let server = agent::Server::listen_on(&endpoint, agent.clone())

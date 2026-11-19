@@ -97,6 +97,17 @@ pub const OBJECT_OVERLAY_LEN: usize = 0x14;
 /// (`h1objects::functions`), so that output could not turn the barrels.
 pub const BARREL_SPIN: &str = "barrel_spin";
 const BLEND_SCREEN_LEN: usize = 0x1c;
+/// Alignment of every animation's blob in the resource, and of a
+/// blend-screen stream after a static one. E: codec 8's interpolated
+/// rotation function (`0x0028c530`, the codec table's record 8 at
+/// `0x47fc54`, slot `+0x1c`) loads each frame's four floats at
+/// `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps` (`0x0028c589`),
+/// which faults (#GP) on an address that is not a multiple of 16. Through
+/// converter version 88 blobs were 4-aligned; from version 84, when the
+/// vehicles' steering and aim overlays took codec 8, Blood Gulch stopped
+/// there about 5 s into a game (`tags::anim::AnimationGraph::engine_problems`
+/// checks it).
+const STREAM_ALIGN: usize = 16;
 /// Codec of an animation with a blend screen: float rotations (V: every
 /// retail animation that names a screen, the vehicles' steering and aim
 /// overlays included, is codec 8).
@@ -262,6 +273,14 @@ fn encode(
     } else {
         Vec::new()
     };
+    // A blend-screen stream must start 16-byte aligned in the resource
+    // ([`STREAM_ALIGN`]); every blob does, so pad the static stream
+    // before one. Its size field covers the padding, which no codec 1
+    // read reaches (its offsets are in its header).
+    let mut static_part = static_part;
+    if screen && !static_part.is_empty() {
+        static_part.resize(static_part.len().next_multiple_of(STREAM_ALIGN), 0);
+    }
     if static_part.len() >= 0x8000 {
         return Err(Error::Unsupported(format!(
             "{}: static stream too large",
@@ -737,9 +756,7 @@ pub fn convert_graph_with(
                 .push((name.action, i));
         }
 
-        while resource.len() % 4 != 0 {
-            resource.push(0);
-        }
+        resource.resize(resource.len().next_multiple_of(STREAM_ALIGN), 0);
         let offset = resource.len();
         let screen = plan.screen_of.get(&i).copied();
         let (blob, static_size, animated_size) =

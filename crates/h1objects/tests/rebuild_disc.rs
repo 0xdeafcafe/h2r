@@ -271,12 +271,49 @@ fn every_scenery_rebuilds_from_its_definition() {
                 for (p, w) in &words.scen {
                     assert_eq!(word(&r, p), *w, "{name}: {p}");
                 }
-                for f in ["attachments", "widgets", "functions", "change_colors"] {
+                for f in ["attachments", "widgets", "functions"] {
                     assert_eq!(
                         r.at(&format!("object.{f}")),
                         Some(&Val::Block(Vec::new())),
                         "{name}: {f}"
                     );
+                }
+                // Change colours: Halo 1's in Halo 2's four slots
+                // (`h1::ChangeColour::halo2_slots`), each with Halo 1's
+                // permutations; none without (unless the model reads C).
+                let Some(Val::Block(cc)) = r.at("object.change_colors") else {
+                    panic!("{name}: change colours")
+                };
+                if obj.change_colours.is_empty() {
+                    assert!(
+                        cc.is_empty() || cc.len() == 4,
+                        "{name}: {} change colours",
+                        cc.len()
+                    );
+                } else {
+                    assert_eq!(cc.len(), 4, "{name}: change colours");
+                    let perms: usize = obj
+                        .change_colours
+                        .iter()
+                        .map(|c| c.permutations.len())
+                        .sum();
+                    let got: usize = (0..4)
+                        .map(
+                            |k| match r.at(&format!("object.change_colors[{k}].block_0")) {
+                                Some(Val::Block(b)) => b.len(),
+                                _ => 0,
+                            },
+                        )
+                        .sum();
+                    assert!(
+                        got <= perms,
+                        "{name}: {got} permutations from Halo 1's {perms}"
+                    );
+                    // Scenery with only A (the boulders, trees, crates):
+                    // all of it in slot 0.
+                    if obj.change_colours.len() == 1 {
+                        assert_eq!(got, perms, "{name}: A's permutations in slot 0");
+                    }
                 }
 
                 // The model chain: Halo 1's render model, collision and

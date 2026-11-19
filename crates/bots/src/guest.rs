@@ -830,7 +830,8 @@ pub const UNIT_AIM: u32 = 0x168;
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
-/// A player's living unit: its origin, aim and body.
+/// A player's living unit: its origin (in the world: a rider's is its
+/// vehicle's), aim and body.
 fn living_unit(
     m: &dyn GuestMemory,
     p: &players::Player,
@@ -844,8 +845,10 @@ fn living_unit(
     if kind != objects::BIPED || body.damage_flags(m)? & BODY_DEPLETED != 0 {
         return Ok(None);
     }
+    // In a vehicle the unit's own position is relative to it
+    // (docs/game/bots.md section 3.9): the vehicle's is where it is.
     Ok(Some((
-        body.position(m)?,
+        crate::vehicle::read::unit_position(m, body)?,
         m.vec3(body.addr + UNIT_AIM)?,
         body,
     )))
@@ -903,7 +906,8 @@ pub fn player_machine(m: &dyn GuestMemory, p: u32) -> R<[u8; 6]> {
     Ok(id)
 }
 
-fn is(m: &dyn GuestMemory, p: &players::Player, who: Who) -> R<bool> {
+/// Whether player `p` is the bot `who`.
+pub(crate) fn is(m: &dyn GuestMemory, p: &players::Player, who: Who) -> R<bool> {
     Ok(match who {
         Who::Port(port) => {
             p.local_user(m)? >= 0 && m.i32(p.addr + PLAYER_CONTROLLER)? == port as i32

@@ -90,6 +90,7 @@ pub mod shim;
 pub mod signin_keyboard;
 pub mod signin_screen;
 pub mod sim_bots;
+pub mod sim_glue;
 pub mod skulls;
 pub mod skulls_custom;
 pub mod skulls_menu;
@@ -907,10 +908,20 @@ pub fn run_hosted_with_live(
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
+    // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
+    let sim_mode = sim_glue::from_env()?;
+    if sim_mode.is_some() && host.gfx.is_some() {
+        anyhow::bail!("{}: sim mode is headless; this host has a window", sim::ENV);
+    }
     if opts.xapi && host.input.is_none() {
-        let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
-        host.input = Some(input);
-        host.keyboard = Some(keyboard);
+        if sim_mode.is_some() {
+            // No keyboard pad: all four ports are the bots'.
+            host.input = Some(input::InputManager::new(Default::default())?);
+        } else {
+            let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
+            host.input = Some(input);
+            host.keyboard = Some(keyboard);
+        }
     }
     let icon_options = match host.icons {
         Some(o) => Some(o),
@@ -1057,9 +1068,10 @@ pub fn run_hosted_with_live(
     // picker in front of the level select. None installed: nothing is
     // hooked and the disc is not read for it.
     let campaigns = campaigns.map(|c| campaign_menu::prepare(c, host.settings.clone()));
-    let level = match host.level.take() {
-        Some(l) => Some(l),
-        None => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
+    let level = match (host.level.take(), &sim_mode) {
+        (Some(l), _) => Some(l),
+        (None, Some(s)) => Some(s.level_request(&opts.disc, &opts.data_root)?),
+        (None, None) => level_boot::from_env(&opts.disc, Some(&opts.data_root)).context("H2_LEVEL")?,
     };
     let perf_from_var = std::env::var("H2_PERF_FROM").ok();
     let perf_from = perf_from_var
@@ -1100,8 +1112,16 @@ pub fn run_hosted_with_live(
     );
     // The bots' nav meshes, built in the background where missing or stale
     // (docs/game/bots.md §10 stage 2); H2_BOTS_NAV_AUTO=0 turns it off.
-    if let (true, Some(vfs)) = (core.bots_on, k.vfs()) {
+    // Sim mode never builds them: a build on a thread is at the wall
+    // clock's mercy (docs/runtime/sim.md §8).
+    if let (true, Some(vfs), None) = (core.bots_on, k.vfs(), &sim_mode) {
         bots_nav_auto::start(&opts.data_root, &opts.disc, vfs, level_name.clone());
+    }
+    if let Some(s) = &sim_mode {
+        if !core.bots_on {
+            anyhow::bail!("sim: the bots are off (H2_FEATURES or no XAPI); a match needs them");
+        }
+        s.add_bots();
     }
     let _telemetry = core.telemetry;
     // Frame species and weapon names come from the loaded map's tag names,
@@ -1226,10 +1246,18 @@ pub fn run_hosted_with_live(
         )?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
+    if let Some(audio) = &ds
+        && features.switches().audio_hrtf()
+    {
+        audio.mixer().lock().unwrap().set_hrtf(true);
+    }
     if let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
         input.add_backend(Box::new(bots::local::global().backend()));
     }
+    // `input.host` (`h2 agent hostpads`) reads the manager's report after
+    // the manager moves into XAPI.
+    let host_pads = host.input.as_ref().map(input::InputManager::host_report);
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (
@@ -1271,6 +1299,12 @@ pub fn run_hosted_with_live(
     let watch_overrides = agent_glue::socket_from_env().is_some();
     let pipeline =
         registration::pipeline_for(d3d_glue::pipeline_render(d3d_calls.as_ref()), lockstep_on);
+    // Sim mode skips the render it would pipeline (both implement the frame).
+    let pipeline = if sim_mode.is_some() {
+        pipeline.disabled("sim mode skips the world render (sim-frame)")
+    } else {
+        pipeline
+    };
     render_probe::set_pipeline(pipeline.clone());
     let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
     // The native world's map file (native_world_glue.rs): read from the
@@ -1326,10 +1360,18 @@ pub fn run_hosted_with_live(
     if let Some(a) = &agent {
         debug_menu_glue::install(
             host.debug_menu.as_ref(),
+            host_pads,
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),
         );
+    }
+    // Sim mode's render skip and metrics, and match.* on the agent.
+    if let Some(s) = &sim_mode {
+        s.install(&mut features)?;
+        if let Some(a) = &agent {
+            s.add_methods(&a.agent);
+        }
     }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
@@ -1389,7 +1431,8 @@ pub fn run_hosted_with_live(
     };
     let tr = trace::install_bounded(
         &loaded.runtime,
-        opts.trace.as_deref(),
+        // Sim mode writes no kernel trace file (docs/runtime/sim.md §2).
+        if sim_mode.is_some() { None } else { opts.trace.as_deref() },
         host.trace_limit.unwrap_or(usize::MAX),
     )?;
     let mut m = kernel::Machine::new(
@@ -1405,6 +1448,10 @@ pub fn run_hosted_with_live(
     // schedule is unchanged.
     if std::env::var_os("H2_BOOT_REALTIME").is_some() {
         m.pacer = Some(kernel::pacer::Pacer::real_time());
+    }
+    // Sim mode: the match's pace (unpaced by default).
+    if let Some(s) = &sim_mode {
+        m.pacer = s.pacer();
     }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
@@ -1605,6 +1652,18 @@ pub fn run_hosted_with_live(
             host_stop = true;
             break;
         }
+        // Sim mode: the match is over (its end, its limits, match.stop).
+        if let Some(s) = &sim_mode
+            && !s.keep_running()
+        {
+            host_stop = true;
+            break;
+        }
+    }
+    if let Some(s) = &sim_mode
+        && let Err(e) = s.finish()
+    {
+        eprintln!("sim: {e:#}");
     }
     if let Some(a) = &ds {
         a.output.halt();
