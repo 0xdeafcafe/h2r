@@ -224,16 +224,19 @@ pub enum SessionKind {
 }
 
 impl SessionKind {
-    /// From the simulation mode word: 0 none, 1 local, 2 sync-client,
-    /// 3 sync-server, 4 dist-client, 5 dist-server.
+    /// From the simulation world's mode word (`[0x4cf77c]+8`): 0 none, 1
+    /// local, 2 sync-server, 3 sync-client, 4 dist-server, 5 dist-client.
+    /// This is not the game mode's numbering (options `+4`: 2 sync client,
+    /// 3 sync server, 4 dist client, 5 dist server); the world's setup maps
+    /// one to the other through the jump table at `0x68da8`.
     pub fn from_sim_mode(mode: u32) -> SessionKind {
         match mode {
             0 => SessionKind::None,
             1 => SessionKind::Local,
-            2 => SessionKind::CoopGuest,
-            3 => SessionKind::CoopHost,
-            4 => SessionKind::MpClient,
-            5 => SessionKind::MpHost,
+            2 => SessionKind::CoopHost,
+            3 => SessionKind::CoopGuest,
+            4 => SessionKind::MpHost,
+            5 => SessionKind::MpClient,
             _ => SessionKind::Unknown,
         }
     }
@@ -432,10 +435,10 @@ mod tests {
             [
                 SessionKind::None,
                 SessionKind::Local,
-                SessionKind::CoopGuest,
                 SessionKind::CoopHost,
-                SessionKind::MpClient,
+                SessionKind::CoopGuest,
                 SessionKind::MpHost,
+                SessionKind::MpClient,
                 SessionKind::Unknown
             ]
         );

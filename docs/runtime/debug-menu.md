@@ -133,9 +133,9 @@ vehicle moves you. The research points are in the module doc.
 | Session | Refused | Allowed |
 |---|---|---|
 | lockstep run (`H2_LOCKSTEP`, input record or replay) | every cheat | none |
-| synchronous co-op (simulation modes 2, 3) | all but `hide_hud`: only this machine's simulation would change, and the players would desync | `hide_hud` |
-| a networked game's guest (mode 4) | all but `hide_hud`: the host's simulation decides | `hide_hud` |
-| a networked game's host (mode 5) | `game_speed`: the guests' clocks would not follow | god, ammo, clip, fly and noclip on the host's own players; `hide_hud` |
+| synchronous co-op (simulation world modes 2, 3) | all but `hide_hud`: only this machine's simulation would change, and the players would desync | `hide_hud` |
+| a networked game's guest (world mode 5) | all but `hide_hud`: the host's simulation decides | `hide_hud` |
+| a networked game's host (world mode 4) | `game_speed`: the guests' clocks would not follow | god, ammo, clip, fly and noclip on the host's own players; `hide_hud` |
 
 They act only in a campaign or multiplayer game, not on the main menu.
 When every cheat is refused, the menu shows "cheats are off" with the

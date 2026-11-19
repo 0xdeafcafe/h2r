@@ -8,16 +8,20 @@
 //! 3. Whoever you are, refused where a cheat would break the run:
 //!    - a lockstep run (`H2_LOCKSTEP`, input record or replay) compares
 //!      deterministic runs: every cheat;
-//!    - a synchronous co-op session (simulation modes 2 and 3): every
+//!    - a synchronous co-op session (simulation world modes 2 and 3): every
 //!      machine runs the same simulation, so only this one would change
 //!      and the players would desync: every cheat that changes the
 //!      simulation ([`Reach::Simulation`], [`Reach::Clock`]);
-//!    - a networked (distributed) game's guest (mode 4): the host's
+//!    - a networked (distributed) game's guest (world mode 5): the host's
 //!      simulation decides; ours would be overruled: the same;
-//!    - a networked game's host (mode 5): the host's simulation is the
+//!    - a networked game's host (world mode 4): the host's simulation is the
 //!      game, so [`Reach::Simulation`] cheats work there (on the host's
 //!      own players); [`Reach::Clock`] (game speed) does not, since the
 //!      guests' clocks would not follow.
+//!
+//!    The modes are the simulation world's (`[0x4cf77c]+8`), not the game's:
+//!    its 4 is the distributed server and its 5 the client (the setup's jump
+//!    table at `0x68da8`; 2 and 3 are the synchronous pair in both).
 //!
 //!    [`Reach::Local`] cheats (what this machine draws) are refused only
 //!    by 1, 2 and lockstep.
@@ -123,12 +127,12 @@ pub fn refusals(s: &Session) -> Refusals {
             simulation: Some(CO_OP.into()),
             clock: Some(CO_OP.into()),
         },
-        Some(4) => Refusals {
+        Some(5) => Refusals {
             all: None,
             simulation: Some(GUEST.into()),
             clock: Some(GUEST.into()),
         },
-        Some(5) => Refusals {
+        Some(4) => Refusals {
             all: None,
             simulation: None,
             clock: Some(HOST_CLOCK.into()),
@@ -231,7 +235,7 @@ mod tests {
 
     #[test]
     fn co_op_and_guests_refuse_the_simulation_but_not_what_is_drawn() {
-        for (mode, why) in [(2, CO_OP), (3, CO_OP), (4, GUEST)] {
+        for (mode, why) in [(2, CO_OP), (3, CO_OP), (5, GUEST)] {
             for l in [Live::Off, Live::SignedIn(vec!["afr".into()])] {
                 let r = refusals(&Session {
                     sim_mode: Some(mode),
@@ -249,7 +253,7 @@ mod tests {
     fn a_networked_host_keeps_the_simulation_cheats_not_the_clock() {
         for l in [Live::Off, Live::SignedIn(vec!["afr".into()])] {
             let r = refusals(&Session {
-                sim_mode: Some(5),
+                sim_mode: Some(4),
                 lockstep: false,
                 live: l,
             });
@@ -259,7 +263,7 @@ mod tests {
         }
         // Not afr on Live: refused as a host too.
         let mut s = live(&["Chief"]);
-        s.sim_mode = Some(5);
+        s.sim_mode = Some(4);
         assert!(refusals(&s).of(Reach::Simulation).is_some());
     }
 }

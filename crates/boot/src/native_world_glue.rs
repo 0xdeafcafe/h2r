@@ -402,7 +402,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         world,
         shaders,
         lightmap_bitmap,
-        palettes,
+        palettes: lightmap_palettes,
         ..
     } = load::load_world(&mut map, &mut raw, index)?;
     let mut files = raw.0;
@@ -418,7 +418,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         }) = tags::DecodedTag::read(&mut map, id)
     {
         for key in world.lightmap_keys() {
-            let (Some(image), Some(palette)) = (b.images.get(usize::from(key.page)), palettes.get(usize::from(key.palette))) else {
+            let (Some(image), Some(palette)) = (b.images.get(usize::from(key.page)), lightmap_palettes.get(usize::from(key.palette))) else {
                 continue;
             };
             if image.format != tags::PixelFormat::P8 {
