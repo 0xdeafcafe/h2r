@@ -30,7 +30,7 @@ function same(a, b) {
   return a.every((v, i) => Object.is(v, b[i]));
 }
 
-export function project(frame) {
+export function project(frame, shareAim = true) {
   const out = { ...frame };
   for (const [name, rows] of Object.entries(frame)) {
     if (!Array.isArray(rows)) continue;
@@ -58,6 +58,7 @@ export function project(frame) {
         if (!same(e[k], unoct(xy[0], xy[1], M))) continue;
         let tag = "$" + k;
         if (
+          shareAim &&
           units &&
           k === "aim" &&
           i &&

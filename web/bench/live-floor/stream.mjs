@@ -93,7 +93,8 @@ function fromBits(s) {
 }
 
 export class Connection {
-  constructor() {
+  constructor(shareAim = true) {
+    this.shareAim = shareAim;
     this.reset();
   }
   reset() {
@@ -229,7 +230,7 @@ export class Connection {
     if (key) this.reset();
     this.seq = seq + 1;
     const r = new Range(this.models);
-    this.visit(r, this.root, project(frame));
+    this.visit(r, this.root, project(frame, this.shareAim));
     const payload = r.finish();
     const head = [];
     leb(head, seq * 2 + Number(key));

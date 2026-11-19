@@ -14,8 +14,14 @@ const files = readdirSync(dir)
   .sort();
 const frames = files.flatMap((f) => JSON.parse(readFileSync(join(dir, f))));
 assert.equal(frames.length, 9000);
-for (const interval of [150, 450, Infinity]) {
-  const enc = new Connection();
+// Removing only the cross-player predictor keeps this a same-data ablation.
+for (const [interval, shareAim] of [
+  [150, true],
+  [450, true],
+  [Infinity, true],
+  [150, false],
+]) {
+  const enc = new Connection(shareAim);
   let dec = new Connection();
   let bytes = 0,
     keys = 0,
@@ -40,6 +46,7 @@ for (const interval of [150, 450, Infinity]) {
   console.log(
     JSON.stringify({
       key_seconds: Number.isFinite(interval) ? interval / 15 : null,
+      cross_player_aim: shareAim,
       frames: frames.length,
       keys,
       wire_bytes: bytes,
