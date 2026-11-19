@@ -807,7 +807,7 @@ fn bound_offset(socket: &Socket) -> Option<u16> {
     if !socket.host.datagram {
         return None;
     }
-    game_offset(*lock(&socket.guest_port))
+    game_offset(lock(&socket.bound).map_or(0, |a| a.port()))
 }
 
 #[cfg(test)]
