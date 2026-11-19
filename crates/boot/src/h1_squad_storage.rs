@@ -70,7 +70,7 @@ async fn allocate(cx: Cx) -> Result<Ret, EntryError> {
         .call(
             GuestCall::new(alloc)
                 .ecx(allocator)
-                .args([pool::GROUP_BYTES]),
+                .args([pool::GROUP_ALLOCATION_BYTES]),
         )
         .await?
         .eax;
@@ -99,7 +99,7 @@ mod tests {
             .put_u32(allocator, vtable)
             .put_u32(vtable, alloc)
             .map(INITIAL_HANDLES[0], 20)
-            .map(squad, pool::SQUAD_BYTES + pool::GROUP_BYTES)
+            .map(squad, pool::SQUAD_BYTES + pool::GROUP_ALLOCATION_BYTES)
             .put_u32(0x51e9d8, 0)
             .put_u32(0x51e9dc, 0)
             .put(0x4561e4, b"squad group\0squad\0");
@@ -112,7 +112,7 @@ mod tests {
                 assert_eq!(call.ecx, Some(allocator));
                 let eax = match call.args.as_slice() {
                     [pool::SQUAD_BYTES] => squad,
-                    [pool::GROUP_BYTES] => group,
+                    [pool::GROUP_ALLOCATION_BYTES] => group,
                     _ => panic!("unexpected game-state allocation"),
                 };
                 Regs {

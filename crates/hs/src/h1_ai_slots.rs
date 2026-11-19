@@ -81,6 +81,7 @@ impl Registry {
 /// The final global packs the indices of data needed by native hooks.
 pub const HOOK_STATE: &str = "h1_ai_hook_state";
 pub const TELEPORT_STATE: &str = "h1_ai_teleport_state";
+pub const PERCEPTION_STATE: &str = "h1_ai_perception_state";
 
 pub const CONTROL_TOKEN: &str = "h1_ai_control";
 pub const DISCARD_EVALUATOR: u32 = 0x002a_b6c0;

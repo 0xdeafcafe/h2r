@@ -83,13 +83,29 @@ pub(super) fn phased_timers(m: &dyn GuestMemory) -> Result<bool, MemFault> {
 }
 
 fn teleport_trailer(m: &dyn GuestMemory) -> Result<u32, MemFault> {
-    Ok(u32::from(global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, 0)?.is_some()))
+    let trailing = u32::from(perception_global(m)?.is_some());
+    Ok(trailing + u32::from(global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, trailing)?.is_some()))
 }
 
 pub(super) fn teleport_base(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
-    global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, 0)?
+    global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, u32::from(perception_global(m)?.is_some()))?
         .map(|index| m.u32(addr(m, index)?))
         .transpose()
+}
+
+pub(super) fn perception_global(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
+    global_index_from_end(m, hs::h1_ai_slots::PERCEPTION_STATE, 0)
+}
+
+pub(super) fn script_strings(m: &dyn GuestMemory, offset: u32) -> Result<Option<(u32, u32)>, MemFault> {
+    let scenario = m.u32(super::points::SCENARIO.base)?;
+    if scenario == 0 {
+        return Ok(None);
+    }
+    let len = m.u32(scenario + 0x1b0)?;
+    let start = m.u32(scenario + 0x1b4)?;
+    Ok((start != 0 && offset < len && start.checked_add(len).is_some())
+        .then(|| (start + offset, len - offset)))
 }
 
 fn global_index_from_end(m: &dyn GuestMemory, name: &str, trailing: u32) -> Result<Option<u32>, MemFault> {

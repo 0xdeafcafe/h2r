@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use engine::memory::{GuestMemory, MemFault};
 use hs::h1_ai_slots::{decode_words, migration as wire};
 
-use super::{actors, auto_migration as migration, points, squad_control};
+use super::{actors, auto_migration as migration, points, squad_control, state};
 
 const NO_SQUAD: u16 = u16::MAX;
 const NATIVE_ORDER: u16 = u16::MAX;
@@ -22,17 +22,14 @@ pub(super) struct Data {
 
 impl Data {
     pub(super) fn from_scenario(m: &dyn GuestMemory, offset: u32) -> R<Option<Self>> {
-        let scenario = m.u32(points::SCENARIO.base)?;
-        let len = m.u32(scenario + 0x1b0)?;
-        let start = m.u32(scenario + 0x1b4)?;
-        let Some(remaining) = len.checked_sub(offset) else {
+        let Some((at, remaining)) = state::script_strings(m, offset)? else {
             return Ok(None);
         };
-        if start == 0 || remaining < wire::DIRECTORY as u32 || start.checked_add(len).is_none() {
+        if remaining < wire::DIRECTORY as u32 {
             return Ok(None);
         }
         Ok(Some(Self {
-            at: start + offset,
+            at,
             len: remaining,
         }))
     }

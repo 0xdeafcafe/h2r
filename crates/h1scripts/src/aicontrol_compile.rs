@@ -607,6 +607,33 @@ impl Compiler<'_> {
         self.declare_state_word(hs::h1_ai_slots::TELEPORT_STATE, u32::from(base))
     }
 
+    pub(super) fn install_perception_state(&mut self) -> Result<()> {
+        use std::fmt::Write;
+
+        let Some(control) = self.ai_control else {
+            return Ok(());
+        };
+        if !self.has_runtime_control()
+            || (control.uncover.is_empty() && control.combat_timers.is_empty())
+        {
+            return Ok(());
+        }
+        if hs::vm::EXTERNAL_GLOBALS + self.out.globals.len() >= 0xc00 {
+            return Err(invalid("converted AI perception state exceeds the Halo 2 global pool"));
+        }
+        let mut data = format!("{:08x}", control.uncover.len());
+        for rule in control.uncover.values() {
+            let [seconds, damage] = rule.requirements;
+            write!(data, "{:08x}{:08x}", seconds.to_bits(), damage.to_bits())
+                .expect("write to String");
+            // These trailing references are normal scenario tag fixups.
+            // The fresh map writer can change the actual character datum.
+            self.out.references.push((h1map::Group::new(b"char"), rule.character.clone()));
+        }
+        let offset = self.intern(data.as_bytes());
+        self.declare_state_word(hs::h1_ai_slots::PERCEPTION_STATE, offset)
+    }
+
     pub(super) fn install_combat_timers(&mut self) -> Result<()> {
         use hs::h1_ai_slots::timers;
 

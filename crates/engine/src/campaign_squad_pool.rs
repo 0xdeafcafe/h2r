@@ -20,6 +20,10 @@ const fn bytes(count: usize, stride: usize) -> u32 {
 
 pub const SQUAD_BYTES: u32 = bytes(LIMIT, SQUAD_SIZE);
 pub const GROUP_BYTES: u32 = bytes(GROUPS, GROUP_SIZE);
+const ACTORS: u32 = 256;
+const ACTOR_STATE_SIZE: u32 = 24;
+const ACTOR_STATE_BYTES: u32 = ACTORS * ACTOR_STATE_SIZE;
+pub const GROUP_ALLOCATION_BYTES: u32 = GROUP_BYTES + ACTOR_STATE_BYTES;
 
 pub fn holds(squads: usize, groups: usize) -> bool {
     squads <= LIMIT && groups <= GROUPS
@@ -60,6 +64,7 @@ pub fn publish(
     }
     initialize(m, squad, SQUAD_NAME, RETAIL_SQUADS, SQUAD_SIZE, allocator)?;
     initialize(m, group, GROUP_NAME, GROUPS, GROUP_SIZE, allocator)?;
+    clear_actor_state(m, group)?;
     m.set_u32(SQUAD_ARRAY, squad)?;
     m.set_u32(GROUP_ARRAY, group)
 }
@@ -75,18 +80,37 @@ pub fn prepare(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
     }
     let count = squads.max(RETAIL_SQUADS);
     let squad = m.u32(SQUAD_ARRAY)?;
-    if squad.checked_add(SQUAD_BYTES) != Some(m.u32(GROUP_ARRAY)?)
+    let group = m.u32(GROUP_ARRAY)?;
+    if squad.checked_add(SQUAD_BYTES) != Some(group)
         || m.u32(squad + layout::SIGNATURE)? != datum::SIGNATURE
         || m.u32(squad + layout::ELEMENT_SIZE)? != SQUAD_SIZE as u32
         || m.u8(squad + layout::FLAGS)? & flags::CONTIGUOUS == 0
     {
         return Err(invalid(SQUAD_ARRAY));
     }
+    clear_actor_state(m, group)?;
     if m.u32(squad + layout::MAXIMUM_COUNT)? as usize == count {
         return Ok(());
     }
     let allocator = m.u32(squad + layout::ALLOCATOR)?;
     initialize(m, squad, SQUAD_NAME, count, SQUAD_SIZE, allocator)
+}
+
+fn clear_actor_state(m: &mut dyn GuestMemory, group: u32) -> Result<(), MemFault> {
+    m.write(group + GROUP_BYTES, &[0; ACTOR_STATE_BYTES as usize])
+}
+
+/// Rewindable campaign state adjacent to the native group array. The caller
+/// verifies the full actor handle before reusing a slot.
+pub fn actor_state(m: &dyn GuestMemory, index: u16) -> Result<Option<u32>, MemFault> {
+    let index = u32::from(index);
+    if index >= ACTORS {
+        return Ok(None);
+    }
+    let squad = m.u32(SQUAD_ARRAY)?;
+    let group = m.u32(GROUP_ARRAY)?;
+    Ok((squad != 0 && squad.checked_add(SQUAD_BYTES) == Some(group))
+        .then(|| group + GROUP_BYTES + index * ACTOR_STATE_SIZE))
 }
 
 #[cfg(test)]
@@ -125,7 +149,10 @@ mod tests {
         assert_eq!(m.u32(squad + layout::MAXIMUM_COUNT).unwrap(), 335);
         assert_eq!(m.u32(GROUP_ARRAY).unwrap(), group);
         assert_eq!(m.u32(group + layout::MAXIMUM_COUNT).unwrap(), 100);
-        assert_eq!(m.u32(group + GROUP_BYTES).unwrap(), 0x7856_3412);
+        assert_eq!(actor_state(&m, 0).unwrap(), Some(group + GROUP_BYTES));
+        assert_eq!(m.u32(group + GROUP_BYTES).unwrap(), 0);
+        assert_eq!(actor_state(&m, 255).unwrap(), Some(group + GROUP_ALLOCATION_BYTES - ACTOR_STATE_SIZE));
+        assert_eq!(actor_state(&m, 256).unwrap(), None);
         assert!(!holds(385, 75));
     }
 }

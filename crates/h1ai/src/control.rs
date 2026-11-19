@@ -114,10 +114,16 @@ pub struct Control {
     pub platoon_rules: Vec<PlatoonRule>,
     pub combat_timers: BTreeMap<u16, CombatTimer>,
     pub guard_baselines: BTreeSet<u16>,
+    pub uncover: BTreeMap<u32, UncoverRule>,
     pub teleport_starts: BTreeMap<u16, Vec<bool>>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
     pub automatic_encounters: BTreeMap<u16, AutomaticEncounter>,
+}
+
+pub struct UncoverRule {
+    pub character: String,
+    pub requirements: [f32; 2],
 }
 
 #[derive(Clone, Copy)]

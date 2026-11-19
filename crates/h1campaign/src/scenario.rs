@@ -1154,51 +1154,12 @@ pub fn write(
             plan.ai.squad_groups.len()
         )));
     }
-    let mut chars = Vec::new();
-    let resolve = |p: &str| -> Option<TagId> {
-        let find = |p: &str| {
-            set.slots.iter().find_map(|s| {
-                let t = s.tag.as_ref()?;
-                (t.group == FourCC(*b"char") && s.name.as_deref() == Some(p)).then_some(t.id)
-            })
-        };
-        if plan
-            .characters
-            .iter()
-            .any(|c| c.h2_character == p && h1ai::convert::rebuilds_character(c.h1_type))
-        {
-            return find(p);
-        }
-        find(p).or_else(|| {
-            // Stand-ins for characters the base lacks: the marine for
-            // marine kinds, else the folder's first.
-            let folder = p.rsplit_once('\\')?.0;
-            if p.contains("\\marine\\") {
-                find("objects\\characters\\marine\\ai\\marine")
-            } else {
-                set.slots.iter().find_map(|s| {
-                    let t = s.tag.as_ref()?;
-                    (t.group == FourCC(*b"char") && s.name.as_deref()?.starts_with(folder))
-                        .then_some(t.id)
-                })
-            }
-        })
-    };
-    for c in &plan.characters {
-        let got = resolve(&c.h2_character);
-        if opts.ai && h1ai::convert::rebuilds_character(c.h1_type) && got.is_none() {
-            return Err(invalid(format!(
-                "missing rebuilt character {}",
-                c.h2_character
-            )));
-        }
-        let name = got
-            .and_then(|id| set.slots[id.index()].name.clone())
-            .unwrap_or_else(|| "none".into());
-        chars.push((c.h1_variant.clone(), name));
-    }
+    let (characters, chars) = crate::ai_control_characters::resolve(
+        h1, set, &plan, &mut ai_control, opts.ai, opts.ai && opts.scripts.is_some(),
+    )?;
+    let mut characters = characters.into_iter();
     let blocks = plan
-        .blocks(|p| resolve(p).or(Some(TagId::NULL)))
+        .blocks_with_characters(|_| characters.next())
         .map_err(|e| invalid(format!("ai: {e}")))?;
     if opts.ai {
         blocks
@@ -2019,15 +1980,30 @@ fn install_scripts(
         })
         .collect();
     let mut resolved = 0;
+    let mut missing_character = None;
     for at in SCRIPT_FIELDS {
         put_block(root, at, 0, Vec::new());
     }
-    c.install(root, |_, name| {
-        let r = by_name.get(name).copied().or_else(|| aliases.by_name(name));
+    c.install(root, |group, name| {
+        let r = if group == h1map::Group::new(b"char") {
+            let group = FourCC(*b"char");
+            let tag = tags_by_name
+                .get(&(group, name.to_ascii_lowercase()))
+                .map(|&id| (group, id));
+            if tag.is_none() {
+                missing_character = Some(name.to_owned());
+            }
+            tag
+        } else {
+            by_name.get(name).copied().or_else(|| aliases.by_name(name))
+        };
         resolved += usize::from(r.is_some());
         r
     })
     .map_err(|e| invalid(format!("scripts: {e}")))?;
+    if let Some(name) = missing_character {
+        return Err(invalid(format!("scripts: missing AI character reference {name}")));
+    }
     Ok(ScriptReport {
         scripts: c.scripts.len(),
         globals: c.globals.len(),

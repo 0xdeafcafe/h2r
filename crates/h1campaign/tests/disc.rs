@@ -906,6 +906,7 @@ fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
     call(&target, 0x00274d61, 0x001a80e0);
     let uncover = target.read_u32(0x0046eeb8 + 35 * 4).unwrap();
     assert_eq!(uncover, 0x0047e908);
+    assert_eq!(target.read_u32(uncover + 0x10).unwrap(), 0x001b84a0);
     assert_eq!(target.read_u32(uncover + 0x18).unwrap(), 0x001b8540);
     assert_eq!(target.read_u32(uncover + 0x40).unwrap(), 0x001b85a0);
     assert_eq!(target.read_u32(uncover + 0x44).unwrap(), 0x001b89d0);
@@ -916,6 +917,88 @@ fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
     call(&target, 0x001b2190, 0x002626b0);
     let presearch = target.read_u32(0x0046eeb8 + 28 * 4).unwrap();
     assert_eq!(target.read_u32(presearch + 0x10).unwrap(), 0x001b44d0);
+}
+
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_uncover_and_combat_timer_contact_rules() {
+    let mut source = h1_iso();
+    let source_entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&source_entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let target_entry = target.find("default.xbe").unwrap();
+    let target = target.read(&target_entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+
+    // Actor-defined time and damage operands and the two inclusive thresholds.
+    assert_eq!(&source.bytes_at(0x163c96, 6).unwrap()[2..], &0x2d8u32.to_le_bytes());
+    assert_eq!(&source.bytes_at(0x163ce6, 6).unwrap()[2..], &0x324u32.to_le_bytes());
+    assert_eq!(source.bytes_at(0x163cdf, 4).unwrap(), [0x3b, 0xc1, 0x7d, 2]);
+    assert_eq!(source.bytes_at(0x163d07, 5).unwrap(), [0xf6, 0xc4, 5, 0x7a, 2]);
+    assert_eq!(source.read_u32(0x1f0aa8).unwrap(), 30.0f32.to_bits());
+    assert_eq!(source.read_u32(0x1f0ca0).unwrap(), (1.0f32 / 60.0).to_bits());
+    assert_eq!(source.bytes_at(0x966e6, 3).unwrap(), [0x83, 0xf8, 60]);
+
+    // Only the focused prop contributes awareness. Encounter timers use the
+    // actor's own mode and baseline. An actor in combat 5 releases its squad.
+    assert_eq!(source.bytes_at(0x1507e9, 6).unwrap(), [0x8b, 0x82, 0x70, 2, 0, 0]);
+    assert_eq!(source.bytes_at(0x152e76, 10).unwrap(),
+        [0xc7, 0x86, 0x6c, 2, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+    assert_eq!(source.bytes_at(0x150943, 7).unwrap(), [0x66, 0x83, 0x79, 0x32, 0, 0x7e, 0x22]);
+    let combat: Vec<_> = source.bytes_at(0x1f025c, 24).unwrap().chunks_exact(2)
+        .map(|word| u16::from_le_bytes(word.try_into().unwrap())).collect();
+    assert_eq!(combat, [0, 0, 0, 1, 2, 2, 3, 4, 5, 5, 7, 7]);
+    assert_eq!(source.bytes_at(0x13db0c, 16).unwrap(),
+        [0x66, 0x83, 0x7d, 0x6a, 3, 0x75, 0x0e, 0x66, 0x8b, 0x45, 0x6e, 0x66, 0x3b, 0x45, 0x72, 0x7e]);
+    assert_eq!(source.bytes_at(0x167bff, 5).unwrap(), [0x66, 0x83, 0x7e, 0x6e, 5]);
+
+    // Native H2 focus assignment, recognition timestamp and damage packet.
+    assert_eq!(target.bytes_at(0x267798, 6).unwrap(), [0x89, 0xbe, 0x38, 3, 0, 0]);
+    assert_eq!(target.bytes_at(0x1e3531, 5).unwrap(), [0xe8, 0x0a, 0x31, 8, 0]);
+    assert_eq!(target.bytes_at(0x265006, 3).unwrap(), [0x89, 0x4d, 0x10]);
+    assert_eq!(target.bytes_at(0x0d7cfc, 2).unwrap(), [0xf3, 0xab]);
+    assert_eq!(target.bytes_at(0x0d8e5e, 5).unwrap(), [0xf3, 0x0f, 0x11, 0x4f, 0x28]);
+    assert_eq!(target.bytes_at(0x0d9013, 3).unwrap(), [0xc2, 0x0c, 0]);
+}
+
+fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
+    level: &str,
+    source: &h1map::H1Map,
+    map: &Map<R>,
+    scenario: &hs::Scenario,
+    characters: &[(String, String)],
+) {
+    let global = scenario.globals().last().unwrap();
+    assert_eq!(global.name().unwrap(), hs::h1_ai_slots::PERCEPTION_STATE);
+    let offset = scenario.node(global.root()).unwrap().data();
+    let encoded = scenario.string(offset).unwrap();
+    let word = |s| u32::from_str_radix(s, 16).unwrap();
+    let count = word(&encoded[..8]);
+    assert_eq!(encoded.len(), 8 + count as usize * 16);
+    let references = scenario.references();
+    let rules: std::collections::BTreeMap<_, _> = encoded.as_bytes()[8..].chunks_exact(16)
+        .zip(&references[references.len() - count as usize..])
+        .map(|(row, character)| {
+            assert_eq!(character.group(), FourCC(*b"char"));
+            let row = std::str::from_utf8(row).unwrap();
+            (character.id(), [word(&row[..8]), word(&row[8..])])
+        }).collect();
+    assert_eq!(rules.len(), count as usize);
+    for (variant, character) in characters {
+        if character == "none" {
+            continue;
+        }
+        let variant = source.find(h1map::Group::new(b"actv"), variant).unwrap();
+        let variant = h1ai::h1::actor_variant(source, variant).unwrap();
+        let actor = source.tag(variant.actor.id).unwrap();
+        let bytes = source.tag_data(actor).unwrap();
+        let expected = [0x2d8, 0x324].map(|at| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()));
+        let tag = map.tags().iter()
+            .find(|t| t.group == FourCC(*b"char") && t.name.as_deref() == Some(character.as_str()))
+            .unwrap();
+        assert_eq!(rules[&tag.id], expected, "{level}: {}", variant.name);
+    }
 }
 
 fn check_authored_automatic_destinations(
@@ -1065,6 +1148,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
             h1campaign::convert(&h1, &mut base, &opts).unwrap_or_else(|e| panic!("{level}: {e}"));
         let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
         let sc = hs::Scenario::read(&mut m).unwrap();
+        check_authored_uncover_rules(
+            level, &h1, &m, &sc, &done.report.scenario.ai.as_ref().unwrap().characters,
+        );
         let found = sc.unrunnable(&catalog).unwrap();
         // Every `switch_bsp` in Halo 1's scripts (whose literal the
         // translation keeps: Halo 2's `switch_bsp` takes the same short)

@@ -90,6 +90,7 @@ fn invented() -> H1Ai {
                     flags: 0,
                     more_flags: 0,
                     kind: ActorType(0),
+                    uncover: [0.0; 2],
                 },
             ),
             (
@@ -99,6 +100,7 @@ fn invented() -> H1Ai {
                     flags: 0,
                     more_flags: 0,
                     kind: ActorType(2),
+                    uncover: [0.0; 2],
                 },
             ),
         ],
@@ -296,6 +298,20 @@ fn a_built_plan_reads_back_unchanged() {
 fn an_unresolved_character_is_an_error() {
     let plan = convert(&invented(), &Options::default());
     assert!(plan.blocks(|_| None).is_err());
+}
+
+#[test]
+fn variants_with_different_uncover_rules_keep_separate_palette_entries() {
+    let mut src = invented();
+    let mut actor = src.actors[0].1.clone();
+    actor.uncover = [0.5, 0.1];
+    let other_actor = TagId(3);
+    src.actors.push((other_actor, actor));
+    src.actor_palette[2].as_mut().unwrap().actor.id = other_actor;
+    let plan = convert(&src, &Options::default());
+    assert_eq!(plan.characters[0].h2_character, plan.characters[2].h2_character);
+    assert_eq!(plan.characters[0].uncover, [0.0; 2]);
+    assert_eq!(plan.characters[2].uncover, [0.5, 0.1]);
 }
 
 #[test]

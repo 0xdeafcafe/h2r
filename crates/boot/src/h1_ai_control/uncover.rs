@@ -9,7 +9,7 @@ use engine::{
 };
 use feature::{Builder, Flow, points};
 
-use super::{NONE, actors, playfight, preference, uncover_targetless};
+use super::{NONE, actors, playfight, preference, uncover_limits, uncover_targetless};
 
 const UNCOVER: u16 = 35;
 const OBEY: u16 = 4;
@@ -49,7 +49,7 @@ fn available(m: &dyn GuestMemory, actor: actors::Actor) -> R<bool> {
 pub(super) fn register_playfight_hook(builder: &mut Builder<'_>) {
     builder.raw().before(
         &points::AI_PRESEARCH_UNCOVER,
-        "allow native uncover while playfighting",
+        "select Halo 1 uncover from presearch",
         |call| {
             if !super::is_converted_campaign(call) {
                 return Ok(Flow::Continue);
@@ -57,15 +57,20 @@ pub(super) fn register_playfight_hook(builder: &mut Builder<'_>) {
             let Some(actor) = call.arg_u32("actor") else {
                 return Ok(Flow::Continue);
             };
-            let allowed = {
+            let (playfight, ordinary) = {
                 let m = call.ctx.runtime().memory();
-                playfight_exception(&*m, actor).unwrap_or(false)
+                (playfight_exception(&*m, actor).unwrap_or(false),
+                 uncover_limits::allows(&*m, actor).unwrap_or(true))
             };
-            if !allowed {
-                return Ok(Flow::Continue);
+            if playfight {
+                call.cpu.eax = u32::from(UNCOVER);
+                return call.ret(8).map(Flow::Return);
             }
-            call.cpu.eax = u32::from(UNCOVER);
-            call.ret(8).map(Flow::Return)
+            if !ordinary {
+                call.cpu.eax = u32::from(u16::MAX);
+                return call.ret(8).map(Flow::Return);
+            }
+            Ok(Flow::Continue)
         },
     );
 }

@@ -9,7 +9,7 @@ use engine::{
 };
 use feature::{Builder, Call, Flow, points};
 
-use super::{actors, is_converted_campaign};
+use super::{actors, is_converted_campaign, uncover_limits};
 
 const MARKER: u32 = 0x4831_554e;
 const MARKER_OFFSET: u32 = 0x3c;
@@ -49,8 +49,18 @@ fn marked(call: &mut Call<'_>) -> Option<(u32, u32)> {
 
 pub(super) fn register(b: &mut Builder<'_>) {
     b.raw()
-        .before(&points::AI_UNCOVER_ENTER, "enter forced uncover", |call| {
+        .before(&points::AI_UNCOVER_ENTER, "apply Halo 1 uncover eligibility", |call| {
             let Some((_, record)) = marked(call) else {
+                if is_converted_campaign(call) && let Some(actor) = call.arg_u32("actor") {
+                    let allowed = {
+                        let m = call.ctx.runtime().memory();
+                        uncover_limits::allows(&*m, actor).unwrap_or(true)
+                    };
+                    if !allowed {
+                        call.cpu.eax = 0;
+                        return call.ret(8).map(Flow::Return);
+                    }
+                }
                 return Ok(Flow::Continue);
             };
             {

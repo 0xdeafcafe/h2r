@@ -71,6 +71,8 @@ pub struct CharacterChoice {
     pub h2_character: String,
     /// Grenades the squad carries.
     pub grenade: u16,
+    /// The source actor's ordinary uncover requirements.
+    pub uncover: [f32; 2],
 }
 
 /// Actor types for which campaign conversion builds a per-variant character.
@@ -168,14 +170,18 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
     let palette: Vec<Option<usize>> = (0..src.actor_palette.len())
         .map(|i| {
             let v = src.actor_palette[i].as_ref()?;
-            let kind = src.actor_of(i).map(|a| a.kind).unwrap_or(ActorType(14));
+            let actor = src.actor_of(i);
+            let kind = actor.map_or(ActorType(14), |a| a.kind);
+            let uncover = actor.map_or([0.0; 2], |a| a.uncover);
             let (path, grenade) = character_for(kind, &v.name);
             let path = if rebuilds_character(kind) {
                 v.name.as_str()
             } else {
                 path
             };
-            if let Some(k) = characters.iter().position(|c| c.h2_character == path) {
+            if let Some(k) = characters.iter().position(|c| {
+                c.h2_character == path && c.uncover.map(f32::to_bits) == uncover.map(f32::to_bits)
+            }) {
                 return Some(k);
             }
             characters.push(CharacterChoice {
@@ -183,6 +189,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 h1_type: kind,
                 h2_character: path.to_owned(),
                 grenade,
+                uncover,
             });
             Some(characters.len() - 1)
         })
@@ -530,6 +537,14 @@ impl Plan {
     /// `resolve` (the map being built must hold the tag). Fails on a path
     /// that doesn't resolve.
     pub fn blocks(&self, resolve: impl Fn(&str) -> Option<TagId>) -> Result<ScenarioBlocks> {
+        self.blocks_with_characters(|choice| resolve(&choice.h2_character))
+    }
+
+    /// Resolve each palette entry, including variants sharing a native character path.
+    pub fn blocks_with_characters(
+        &self,
+        mut resolve: impl FnMut(&CharacterChoice) -> Option<TagId>,
+    ) -> Result<ScenarioBlocks> {
         let ai = &self.ai;
         let mut fields = Vec::new();
         let mut push = |(at, stride): (usize, usize), elements: Vec<Block>| {
@@ -540,7 +555,7 @@ impl Plan {
             .characters
             .iter()
             .map(|c| {
-                let id = resolve(&c.h2_character)
+                let id = resolve(c)
                     .ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character)))?;
                 let mut e = Block::zeroed(8);
                 e.tag_ref(0, id);

@@ -9,6 +9,7 @@ use hs::h1_ai_slots::{self, Operation};
 
 mod actors;
 mod auto_migration;
+mod contact;
 mod follow;
 mod follow_geometry;
 mod platoons;
@@ -21,6 +22,7 @@ mod state;
 mod teleport;
 mod timers;
 mod uncover;
+mod uncover_limits;
 mod uncover_targetless;
 mod vehicles;
 
@@ -111,6 +113,7 @@ impl feature::Feature for AiControl {
         );
         playfight::register_firing_hooks(b);
         uncover::register_playfight_hook(b);
+        uncover_limits::register(b);
         uncover_targetless::register(b);
         teleport::register_spawn_hook(b);
         b.raw().before(

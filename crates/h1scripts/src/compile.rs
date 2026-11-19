@@ -371,6 +371,7 @@ pub fn compile_with_ai(
         .enumerate()
         .map(|(i, r)| (r.group, reference_names.get(i).cloned().unwrap_or_default()))
         .collect();
+    c.install_perception_state()?;
     if c.out.nodes.len() > MAX_NODES {
         return Err(invalid(format!(
             "{} nodes, Halo 2 holds {MAX_NODES}",

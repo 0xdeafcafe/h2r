@@ -13,7 +13,7 @@ use hs::h1_ai_slots::timers::{
     self, BLOCKS, HEADER, REVEAL_PLAYERS, SQUADS, TIME_UNITS_PER_SECOND, UPDATE_TIME,
 };
 
-use super::{NONE, actors, squad_control, squads, state};
+use super::{NONE, actors, contact, squad_control, squads, state, uncover_limits};
 
 const COMBAT_STATUS: u32 = 0x86;
 const FIRST_ENEMY_NOTICE: u16 = 3;
@@ -42,10 +42,9 @@ fn timer_row(m: &dyn GuestMemory, base: u32, squad: u32) -> R<Option<u32>> {
     state::registry(m, base + HEADER + rank, 1)
 }
 
-fn combat_level(interest: u16) -> u16 {
-    // Halo 2 0x267180 produces the best tracked hostile contact class.
-    // Feed its categories into Halo 1's awareness-to-combat table
-    // (0x1f025c), before Halo 2's orders raise its displayed status.
+// Previously converted maps carry the phased timer table but no perception
+// marker. Preserve their original runtime behavior.
+fn legacy_combat_level(interest: u16) -> u16 {
     match interest {
         3 => 1,
         4 | 5 => 2,
@@ -58,7 +57,11 @@ fn combat_level(interest: u16) -> u16 {
 
 fn releases(m: &dyn GuestMemory, actor: actors::Actor, phased: bool) -> R<bool> {
     if phased {
-        Ok(combat_level(m.u16(actor.at + INTEREST_CLASS)?) >= RELEASE_COMBAT_LEVEL)
+        if contact::enabled(m)? && let Some((_, rate)) = state::clock(m)? {
+            Ok(contact::focused(m, actor, rate)?.releases_timer())
+        } else {
+            Ok(legacy_combat_level(m.u16(actor.at + INTEREST_CLASS)?) >= RELEASE_COMBAT_LEVEL)
+        }
     } else {
         Ok(m.u16(actor.at + COMBAT_STATUS)? >= VISIBLE_ENEMY)
     }
@@ -132,6 +135,7 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
         m.set_u32(start, tick)?;
 
         let phased = state::phased_timers(m)?;
+        let source_contact = phased && contact::enabled(m)?;
         let guard_bits = if phased {
             let last = start + (1 + (BLOCKS - 1) * 2) * state::STRIDE;
             let rows = m.u32(last + state::STRIDE)? + m.u32(last)?.count_ones();
@@ -147,22 +151,32 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
             if actor.squad == NONE {
                 continue;
             }
-            let informed = if phased {
+            let (informed, releases_hold) = if phased {
                 let Some((_, unit)) = objects::get(m, DatumHandle(actor.unit))? else {
                     continue;
                 };
                 if unit.damage_flags(m)? & 4 != 0 {
                     continue;
                 }
-                combat_level(m.u16(actor.at + INTEREST_CLASS)?)
-                    > guard_baseline(m, guard_bits, actor.squad)?
+                let baseline = guard_baseline(m, guard_bits, actor.squad)?;
+                if source_contact {
+                    let focused = contact::focused(m, actor, rate)?;
+                    (
+                        uncover_limits::timer_starts(m, actor, focused, baseline)?,
+                        focused.releases_timer(),
+                    )
+                } else {
+                    let level = legacy_combat_level(m.u16(actor.at + INTEREST_CLASS)?);
+                    (level > baseline, level >= RELEASE_COMBAT_LEVEL)
+                }
             } else {
-                m.u16(actor.at + COMBAT_STATUS)? >= FIRST_ENEMY_NOTICE
+                let status = m.u16(actor.at + COMBAT_STATUS)?;
+                (status >= FIRST_ENEMY_NOTICE, status >= VISIBLE_ENEMY)
             };
             if informed && let Some(group) = squad_control::encounter(m, actor.squad)? {
                 noticed.insert(group);
             }
-            if releases(m, actor, phased)? {
+            if releases_hold {
                 release.insert(actor.squad);
             }
         }
@@ -215,10 +229,10 @@ mod tests {
 
     #[test]
     fn a_lost_contact_starts_the_clock_but_does_not_release_the_hold() {
-        assert_eq!(combat_level(6), 4);
-        assert!(combat_level(6) < RELEASE_COMBAT_LEVEL);
-        assert!(combat_level(7) >= RELEASE_COMBAT_LEVEL);
-        assert_eq!(combat_level(2), 0);
+        assert_eq!(legacy_combat_level(6), 4);
+        assert!(legacy_combat_level(6) < RELEASE_COMBAT_LEVEL);
+        assert!(legacy_combat_level(7) >= RELEASE_COMBAT_LEVEL);
+        assert_eq!(legacy_combat_level(2), 0);
     }
 
     #[test]
