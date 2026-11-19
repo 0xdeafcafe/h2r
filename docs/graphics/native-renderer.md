@@ -1811,8 +1811,10 @@ its own thread, and render-timing does not matter (the call runs).
    captured with the D3D path and the native one. `H2_POST_AB=<dir>`
    (`native_post_glue::Ab`) captures the view's colour where the glow
    lands (after the composite; before the screen effects, the fade and
-   the HUD) for the calls numbered `H2_POST_AB_AT` (default 600) and on,
-   `H2_POST_AB_COUNT` of them (default 1), into
+   the HUD) from each call `H2_POST_AB_AT` names (default 600; a list
+   `601,1500,2700`, or a start and a stride `600+500` for ten windows
+   spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
+   each (default 1), into
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
    under the render scale. With the switch off the hook is placed for it
    and observes the same quads, dropping none, so the D3D side is
