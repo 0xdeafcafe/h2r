@@ -139,10 +139,31 @@ layers keep their pictures).
   axes. These are the only nodes with a transform. The child's `extras`
   repeat the placement in game coordinates as telemetry frames give a
   moving machine: `pos`, unit `forward` and `up`, and `scale`. The node
-  names are stable: a frame's machine names the node it moves. Machines are all class
-  `metal`, unless their shader names them glass, water or foliage. The
-  model is drawn at rest (no animation): each region's first permutation
-  at the highest detail level up to 3 of 5 it has.
+  names are stable so a frame's world pose can move the matching node.
+  Machines are class `metal` unless their shader names them glass, water or
+  foliage. The mesh uses each region's first permutation at the highest
+  detail level it has through 3 of 5.
+
+  For a machine with a `position` overlay, the extractor writes a glTF
+  skin and a clip named `device_position_<placement index>`, with time
+  from 0 to 1. The node's `extras.device` carries the scenario machine
+  `index` and a `loop` flag. Its geometry, inverse bind matrices and
+  animation samples are shared across placements of the same model.
+  The viewer scrubs the clip to the travel in telemetry and applies any
+  world pose to the root. In the absence of travel samples, the rig
+  stays in its bind pose. Older map art can still use root poses. The
+  viewer interpolates cyclic travel across the wrap by the shortest
+  distance, assuming the wheel advances less than half a cycle between
+  samples [guess]. The retail clips checked on Zanzibar, Ascension and
+  the campaign maps sampled here have rotation and translation channels
+  with no animated scale.
+
+  The extractor follows the `hlmt` animation reference and the graph's
+  `position` overlay (see [Animation graphs](../formats/animation.md)).
+  Looping devices have machine definition type 2 (`mach+0x11c`, checked
+  on the Zanzibar wheel and Ascension antenna). The engine branches on that
+  value at `0x001153ee` and wraps `+0x140` at 1 in `0x0011547d–0x00115494`.
+
 - **Scenario objects.** When the scenario places any other objects, a
   root node `scenario` (no mesh) follows `machines`, with a child per
   placement named `<kind>_<placement index>`: a mesh shared by every

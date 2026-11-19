@@ -67,7 +67,7 @@ parent (i16 node indices, -1 for none), `+0x0a` u16 flags, `+0x0c` u32 flags,
 string such as a bone name), the links form a valid tree. Field names other than the
 links are S; the three floats are zero on every node examined.
 
-### Modes, classes, types, actions
+### Modes, classes, types, actions and overlays
 
 Three nested blocks, then a leaf list, confirmed by the engine's lookup
 (`0x001db170`) and by the resolved names (a mode name, a weapon class name and a weapon type name).
@@ -76,8 +76,15 @@ Three nested blocks, then a leaf list, confirmed by the engine's lookup
 |---|---|---|
 | mode | `0x14` | `+0` name, `+4` block of classes, `+0xc` block (count kept, elements not modelled) |
 | class | `0x14` | `+0` name, `+4` block of types, `+0xc` block (count kept) |
-| type | `0x34` | `+0` name, `+4` block of actions, blocks at `+0xc`, `+0x14`, `+0x1c` (counts kept), int lists at `+0x24` and `+0x2c` (resource indices the engine preloads) |
-| action | 8 | `+0` name, `+4` i16 graph index (-1: this graph, otherwise a position in the inheritance list), `+6` i16 animation index |
+| type | `0x34` | `+0` name, `+4` block of actions, `+0xc` block of overlays, blocks at `+0x14` and `+0x1c` (counts kept), int lists at `+0x24` and `+0x2c` (resource indices the engine preloads) |
+| action or overlay | 8 | `+0` name, `+4` i16 graph index (-1: this graph, otherwise a position in the inheritance list), `+6` i16 animation index |
+
+The overlay lookup at `0x001dbd12` searches the weapon type's `+0xc`
+block with an eight-byte stride, then takes the animation reference at
+`+4`. For a placed machine, `0x00107815` requests string ID
+`0x08000080` (`position`) through `0x001086e0`. The gates, doors, wheels
+and lifts checked in the retail maps put it in the `any:any:any` overlay
+list and point to an animation named `device:position`.
 
 On the disc 70,817 actions were decoded and every non-null animation index is in
 range for its graph or inheritance list.

@@ -1738,6 +1738,7 @@ fn machines_are_metal_shared_meshes_under_a_machines_node() {
         ..t
     }));
     let model = MachineModel {
+        rig: None,
         stem: "wheel".into(),
         mesh: object_mesh(&tris),
     };
@@ -1748,6 +1749,7 @@ fn machines_are_metal_shared_meshes_under_a_machines_node() {
     let ground = build_mesh(&flat(-20.0, -20.0, 20.0, 20.0, 0.0, true));
     let level = Level::build("lvl", MapKind::Multiplayer, vec![(0, Ok(ground))]).unwrap();
     let at = |i: usize, x: f32| PlacedMachine {
+        index: i,
         name: format!("wheel_{i}"),
         model: 0,
         at: Placement {
@@ -2382,6 +2384,7 @@ fn textured_triangles_get_a_primitive_per_class_and_look_with_uvs() {
         uvs: (0..n).map(|i| [i as f32, 0.0]).collect(),
         indices: (0..n as u32 - 2).flat_map(|i| [i, i + 1, i + 2]).collect(),
         look: Some(3),
+        ..Primitive::default()
     };
     for q in split_u16(&big) {
         assert_eq!(q.look, Some(3));
@@ -2531,6 +2534,7 @@ fn written_levels_keep_pictures_beside_the_glb_and_tile_them_by_the_shader_s_sca
 fn scenario_objects_are_shared_meshes_under_a_scenario_node() {
     use crate::live_scenario::PlacedObject;
     let model = MachineModel {
+        rig: None,
         stem: "crate_packing".into(),
         mesh: object_mesh(&cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 1.0])),
     };
@@ -2840,6 +2844,100 @@ fn looks_on_the_disc() {
                     m.name()
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn machine_device_glb_shares_geometry_and_keys_but_moves_each_placement() {
+    let mut mesh = object_mesh(&cuboid([-0.5, -0.5, 0.0], [0.5, 0.5, 1.0]));
+    for (_, primitive) in &mut mesh.primitives {
+        primitive.skin = vec![([0; 4], [1., 0., 0., 0.]); primitive.positions.len()];
+    }
+    let rig = MachineRig {
+        primitives: std::mem::take(&mut mesh.primitives),
+        bones: vec![MachineBone {
+            name: "moving".into(),
+            parent: None,
+            rest: ([0.; 3], [0., 0., 0., 1.]),
+            track: Some(vec![
+                ([0.; 3], [0., 0., 0., 1.]),
+                ([0., 4., 0.], [0., 0., 0., 1.]),
+            ]),
+        }],
+        inverse_bind: vec![live_models::IDENTITY],
+        frames: 2,
+        loops: false,
+    };
+    let roots = [3, 7].map(|i| GlbNode {
+        mesh: Some(&rig.primitives),
+        rig: Some((&rig, i)),
+        ..GlbNode::mesh(format!("lift_{i}"), &mesh)
+    });
+    let glb = write_nodes(&roots, mesh.bounds, mesh.bounds, Default::default());
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(doc["meshes"].as_array().unwrap().len(), 1);
+    let attributes = &doc["meshes"][0]["primitives"][0]["attributes"];
+    assert!(attributes["JOINTS_0"].is_number());
+    assert!(attributes["WEIGHTS_0"].is_number());
+    assert_eq!(doc["nodes"][0]["skin"], 0);
+    assert_eq!(doc["nodes"][2]["skin"], 1);
+    assert_eq!(doc["skins"][0]["joints"], serde_json::json!([1]));
+    assert_eq!(doc["skins"][1]["joints"], serde_json::json!([3]));
+    assert_eq!(
+        doc["skins"][0]["inverseBindMatrices"],
+        doc["skins"][1]["inverseBindMatrices"]
+    );
+    let a = &doc["animations"][0];
+    let b = &doc["animations"][1];
+    assert_eq!(a["name"], "device_position_3");
+    assert_eq!(b["name"], "device_position_7");
+    assert_eq!(a["samplers"], b["samplers"]);
+    assert_eq!(a["channels"][0]["target"]["node"], 1);
+    assert_eq!(b["channels"][0]["target"]["node"], 3);
+}
+
+#[test]
+#[ignore = "reads Zanzibar and Gas Giant data from H2_DISC"]
+fn machine_device_rigs_read_from_retail_maps() {
+    let disc_path = std::env::var("H2_DISC").expect("set H2_DISC to the retail Halo 2 ISO");
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    for (stem, expected) in [
+        (
+            "zanzibar",
+            &[("big_wheel", true), ("house_gate", false)][..],
+        ),
+        ("04a_gasgiant", &[("hanger_lift", false)][..]),
+    ] {
+        let (file, _) = levels(&disc)
+            .into_iter()
+            .find(|(map, _)| map.name() == stem)
+            .unwrap();
+        let (mut map, mut files) = disc.open(file).unwrap();
+        let (models, placed) = load_machines(
+            &mut map,
+            &mut files,
+            stem,
+            &mut BTreeMap::new(),
+            &mut Looks::default(),
+        )
+        .unwrap();
+        for &(name, loops) in expected {
+            let m = placed
+                .iter()
+                .find(|m| models[m.model].stem == name)
+                .unwrap_or_else(|| panic!("{stem} has no {name} placement"));
+            let rig = models[m.model]
+                .rig
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} has no device rig"));
+            assert_eq!(rig.loops, loops);
+            assert!(rig.bones.iter().any(|b| b.track.is_some()));
+            assert!(
+                rig.primitives
+                    .iter()
+                    .all(|(_, p)| p.skin.len() == p.positions.len())
+            );
         }
     }
 }
