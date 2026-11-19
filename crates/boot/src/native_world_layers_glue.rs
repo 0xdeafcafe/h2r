@@ -8,6 +8,7 @@ use d3d::backend::{
     ExternalWrites, ResolvedDraw,
 };
 use d3d::shader::VertexProcessing;
+use engine::memory::GuestMemory as _;
 use feature::native_world_layers::{Layer, compare_frames, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{

@@ -109,6 +109,7 @@ impl IndexedPass {
     ) -> Option<Self> {
         let indices = draw.indices.as_ref()?;
         if indices.len() < 3
+            || indices.iter().any(|&index| index >= draw.vertex_count)
             || !matches!(
                 draw.primitive,
                 PrimitiveType::TriangleList | PrimitiveType::TriangleStrip
