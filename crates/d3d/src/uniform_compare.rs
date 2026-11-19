@@ -98,11 +98,16 @@ pub(crate) fn observe(
     if !same_program(words, &e.words) {
         if armed.others < OTHER_PROGRAMS {
             armed.others += 1;
+            let depth = pipeline.1.map(|d| (d.depth_write_enabled, d.depth_compare, d.bias));
             eprintln!(
-                "uniform-compare {}: a D3D draw with the rows and another program ({} words, {:#018x})",
+                "uniform-compare {}: a D3D draw with the rows and another program ({} words, {:#018x}): cull {:?} front {:?} depth (write, compare, bias) {:?}, c[0..4] {:?}",
                 e.label,
                 words.len(),
-                crate::shader::Microcode::hash_words(words)
+                crate::shader::Microcode::hash_words(words),
+                pipeline.0.cull_mode,
+                pipeline.0.front_face,
+                depth,
+                &vertex.constants[..4]
             );
         }
         return;

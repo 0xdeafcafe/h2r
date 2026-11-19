@@ -121,6 +121,23 @@ fn texture_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("native object program textures"), layout, entries: &entries })
 }
 
+/// One lit part's draw as [`LitObjects::encode`] issues it
+/// ([`LitObjects::part_uniforms`]).
+#[derive(Clone, Debug)]
+pub struct PartUniforms {
+    pub implementation: usize,
+    pub words: Vec<u32>,
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
+    pub options: shaders::vsh::VertexOptions,
+    pub def: shaders::psh::PixelShaderDef,
+    pub pixel_options: shaders::psh::PixelOptions,
+    pub samplers: [Option<gfx::translate::SamplerKey>; 4],
+    pub textures: [Option<String>; 4],
+    pub primitive: wgpu::PrimitiveState,
+    pub depth: (bool, wgpu::CompareFunction),
+}
+
 /// The texture accumulation level an encode binds: its view and its size
 /// in guest texels (the coordinates the programs give are texels of it).
 #[derive(Clone, Copy)]
@@ -419,6 +436,55 @@ impl LitObjects {
             out.push(format!("{head}: drawn with implementation {imp}, rows {}, state {state:?}{texaccum_text}", rows.len()));
         }
         out
+    }
+
+    /// What part `part` of model `index` draws with for `frame` in `view`
+    /// (as [`Self::encode`] puts it in), to compare with the D3D path's draw
+    /// of it (`d3d::uniform_compare`); or why it is not drawn.
+    pub fn part_uniforms(&self, index: u32, frame: &ObjectFrame, part: usize, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
+        let m = self.models.get(&index).ok_or("no lit model")?;
+        let p = m.parts.get(part).ok_or_else(|| format!("no part {part} (of {})", m.parts.len()))?;
+        let (i, imp, rows) = frame_parts(frame, &m.parts)
+            .into_iter()
+            .find(|(i, _, _)| *i == part)
+            .ok_or("not drawn: no record of its section, or its records' implementation is not one it has")?;
+        debug_assert_eq!(i, part);
+        let (program, _) = p.implementations[imp].ok_or("no program for its implementation")?;
+        let pass = &m.programs[program].pass;
+        let defaults = frame.defaults.unwrap_or_default();
+        let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+        let mut vertex = object_vertex_uniforms(&frame_vertex(&pass.program.vertex, view), &pass.implementation, &inputs, rows, p.decompression)?;
+        let mut pixel = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs)?;
+        if let Some(t) = texaccum {
+            texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
+            texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
+        }
+        let state = pass.program.state.as_ref().ok_or("no state")?;
+        let textures = std::array::from_fn(|n| {
+            if pass.texaccum[n] {
+                Some(format!("the texture accumulation level ({:?} guest texels)", texaccum.map(|t| t.guest_size)))
+            } else if pass.normalization[n] {
+                Some("the normalization cube".to_string())
+            } else {
+                match pass.program.stages[n] {
+                    Stage::Empty => None,
+                    s => Some(format!("{s:?}")),
+                }
+            }
+        });
+        Ok(PartUniforms {
+            implementation: imp,
+            words: pass.words.clone(),
+            vertex,
+            pixel,
+            options: pass.options,
+            def: pass.program.def.clone(),
+            pixel_options: pass.program.pixel_options,
+            samplers: std::array::from_fn(|n| pass.program.dims[n].and(pass.program.samplers[n].as_ref()).and_then(crate::program::sampler_key)),
+            textures,
+            primitive: state.primitive,
+            depth: (state.depth_write, state.depth_compare),
+        })
     }
 
     /// The sections model `index`'s lit parts come from, each once

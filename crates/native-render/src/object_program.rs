@@ -112,6 +112,11 @@ pub struct ObjectPass {
     /// ([`TEXACCUM_TEXTURE`]; empty in `program.stages`; the host binds the
     /// level the D3D path drew, in texel coordinates).
     pub texaccum: [bool; 4],
+    /// The vertex program's instruction words (four per instruction, no
+    /// header) and the translation's options: what the D3D path's draw of
+    /// the same part is compared by (`d3d::uniform_compare`).
+    pub words: Vec<u32>,
+    pub options: shaders::vsh::VertexOptions,
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
@@ -133,7 +138,15 @@ pub fn object_pass(
     }
     let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
     program.state = Some(state);
-    Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum })
+    let count = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?.instructions.len();
+    let words = microcode
+        .get(4..4 + 16 * count)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+    let options = shaders::vsh::VertexOptions { provided_inputs: provided, input_fetch: fetch, ..Default::default() };
+    Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum, words, options })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an
