@@ -121,7 +121,7 @@ fn the_filter_keeps_the_bots_lines() {
 fn a_whole_run_passes() {
     let v = run(&plan(5), &whole_run());
     assert!(v.passed(), "{}", v.render());
-    assert_eq!(v.checks.len(), 11);
+    assert_eq!(v.checks.len(), 12);
     assert!(v.first_failure().is_none());
     let r = v.render();
     assert!(r.ends_with("verdict: PASS\n"), "{r}");
@@ -144,11 +144,11 @@ fn signing_in_in_the_lobby_is_said() {
         })
         .collect();
     let v = run(&plan(5), &lines);
-    assert!(v.checks[4].pass);
+    assert!(v.checks[5].pass);
     assert!(
-        v.checks[4].detail.contains("port 2 in the lobby"),
+        v.checks[5].detail.contains("port 2 in the lobby"),
         "{}",
-        v.checks[4].detail
+        v.checks[5].detail
     );
 }
 
@@ -163,7 +163,7 @@ fn a_bot_that_never_got_through_the_gate_names_its_last_gate_line() {
     );
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 5, "{}", v.render());
+    assert_eq!(n, 6, "{}", v.render());
     assert!(c.detail.contains("[3]"), "{}", c.detail);
     assert!(
         c.lines
@@ -174,7 +174,7 @@ fn a_bot_that_never_got_through_the_gate_names_its_last_gate_line() {
     );
     assert!(
         v.render()
-            .contains("verdict: FAIL, first at step 5 (local bots signed in")
+            .contains("verdict: FAIL, first at step 6 (local bots signed in")
     );
 }
 
@@ -185,7 +185,7 @@ fn menus_that_never_reached_the_lobby_show_the_last_presses() {
     lines.push("bots-drive: stuck: Custom Game never opened a lobby");
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 3, "{}", v.render());
+    assert_eq!(n, 4, "{}", v.render());
     assert!(
         c.lines
             .iter()
@@ -205,12 +205,12 @@ fn no_roster_says_whether_it_was_asked() {
     );
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 4);
+    assert_eq!(n, 5);
     assert!(c.detail.starts_with("asked, but"), "{}", c.detail);
     assert!(c.lines.iter().any(|l| l.contains("no roster from Live")));
     let lines = without(&whole_run(), |l| l.starts_with("clankers: asking Live"));
     let v = run(&plan(5), &lines);
-    assert!(v.checks[3].detail.starts_with("never asked"));
+    assert!(v.checks[4].detail.starts_with("never asked"));
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn a_bot_on_live_as_a_guest_is_not_a_bot_account() {
         .collect();
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 6, "{}", v.render());
+    assert_eq!(n, 7, "{}", v.render());
     assert!(
         c.lines.iter().any(|l| l.contains("as guest 1")),
         "{:?}",
@@ -246,7 +246,7 @@ fn a_start_held_back_names_the_check() {
         .collect();
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 7, "{}", v.render());
+    assert_eq!(n, 8, "{}", v.render());
     assert!(c.lines.iter().any(|l| l.contains("start state 8")));
     // No Start press at all.
     let lines: Vec<&str> = whole_run()
@@ -254,8 +254,8 @@ fn a_start_held_back_names_the_check() {
         .take_while(|l| !l.starts_with("bots-drive: press a on screen none (Start"))
         .collect();
     let v = run(&plan(5), &lines);
-    assert_eq!(v.first_failure().unwrap().0, 7);
-    assert!(v.checks[6].detail.contains("never pressed"));
+    assert_eq!(v.first_failure().unwrap().0, 8);
+    assert!(v.checks[7].detail.contains("never pressed"));
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn the_wrong_map_fails_with_the_map_played() {
     };
     let v = run(&p, &whole_run());
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 8);
+    assert_eq!(n, 9);
     assert!(
         c.detail.contains("played lockout, not midship"),
         "{}",
@@ -284,14 +284,14 @@ fn phantoms_that_wait_or_fail_are_named() {
     let lines = without(&whole_run(), |l| l.contains("Oil Slick joins"));
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 9);
+    assert_eq!(n, 10);
     assert!(c.detail.starts_with("1 of 2 joined"), "{}", c.detail);
     assert!(c.lines.iter().any(|l| l.contains("Tin Can waits")));
     let mut lines = whole_run();
     lines.push("clankers: Oil Slick (phantom, rostered): the phantoms are full");
     let v = run(&plan(5), &lines);
-    assert_eq!(v.first_failure().unwrap().0, 9);
-    assert_eq!(v.checks[8].detail, "a phantom failed");
+    assert_eq!(v.first_failure().unwrap().0, 10);
+    assert_eq!(v.checks[9].detail, "a phantom failed");
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn three_or_fewer_need_no_phantoms() {
         .collect();
     let v = run(&plan(3), &lines);
     assert!(v.passed(), "{}", v.render());
-    assert!(v.checks[8].detail.starts_with("none asked"));
+    assert!(v.checks[9].detail.starts_with("none asked"));
 }
 
 #[test]
@@ -324,19 +324,19 @@ fn the_session_count_and_the_record_must_reach_the_count() {
     });
     let v = run(&plan(5), &lines);
     let (n, c) = v.first_failure().unwrap();
-    assert_eq!(n, 10);
+    assert_eq!(n, 11);
     assert!(
         c.detail.starts_with("at most 4 filled of the 6"),
         "{}",
         c.detail
     );
-    assert!(v.checks[10].detail.contains("no game record"));
+    assert!(v.checks[11].detail.contains("no game record"));
     let mut lines = without(&whole_run(), |l| l.starts_with("bots-test: game"));
     lines.push("bots-test: game g1 on lockout: 4 players, 3 bots (3 with an account)");
     let v = run(&plan(5), &lines);
-    assert_eq!(v.first_failure().unwrap().0, 11);
+    assert_eq!(v.first_failure().unwrap().0, 12);
     assert!(
-        v.checks[10]
+        v.checks[11]
             .detail
             .starts_with("3 bots on the record of the 5")
     );
@@ -402,4 +402,56 @@ fn the_line_readers() {
     );
     assert_eq!(read_session(&session_line("s-1", 3, 1, 0)), Some(4));
     assert_eq!(read_game(&game_line("g", "lockout", 6, 5, 4)), Some((5, 4)));
+}
+
+#[test]
+fn a_run_that_ended_in_split_screen_is_not_on_xbox_live() {
+    // The first real run (20261118-232735): the players' screen in Split
+    // Screen, a custom game lobby there, no Live session.
+    let lines = [
+        "live: playing as Tester (000994cdf4a025e1) on http://127.0.0.1:8077",
+        "clankers: Clanker 1 on (Normal)",
+        "clankers: Clanker 2 on (Normal)",
+        "clankers: Clanker 3 on (Normal)",
+        "bots-drive: stuck: no Xbox Live menu after 4 tries (on none)",
+        "ui: screen 0x1e (window 5, slot 4), mode 1",
+        "coop-live: lobby mode 2",
+        "bots: start state 10, blocked by nothing (the countdown runs: 9)",
+        "bots-test: status phase gameplay mode multiplayer map cyclotron",
+    ];
+    let v = run(&plan(5), &lines);
+    let (n, c) = v.first_failure().unwrap();
+    assert_eq!(n, 3, "{}", v.render());
+    assert_eq!(c.detail, "not on Xbox Live: ended in Split Screen");
+    assert!(c.lines[0].contains("mode 1"));
+    assert!(!v.checks[3].pass, "lobby mode 2 is not a Live lobby");
+    assert!(
+        v.checks[3]
+            .detail
+            .starts_with("a custom game lobby opened in Split Screen"),
+        "{}",
+        v.checks[3].detail
+    );
+}
+
+#[test]
+fn a_lobby_with_no_advertisement_is_not_hosting() {
+    let lines = without(&whole_run(), |l| l.starts_with("live: session "));
+    let v = run(&plan(5), &lines);
+    let (n, c) = v.first_failure().unwrap();
+    assert_eq!(n, 4, "{}", v.render());
+    assert!(
+        c.detail.contains("advertised no Live session"),
+        "{}",
+        c.detail
+    );
+    assert!(c.lines[0].contains("lobby mode 2"));
+}
+
+#[test]
+fn split_screen_then_xbox_live_is_on_xbox_live() {
+    // Backed out of Split Screen and on to the Live menu.
+    let mut lines = whole_run();
+    lines.insert(8, "ui: screen 0x1e (window 5, slot 4), mode 1");
+    assert!(run(&plan(5), &lines).passed());
 }

@@ -1,27 +1,39 @@
-//! `h2 bots test`'s menu driver: from the main menu to a Live custom
-//! game's pregame lobby and Start Game, on what the game says (docs/game/
+//! `h2 bots test`'s menu driver: from boot to a Live custom game's
+//! pregame lobby and Start Game, on what the game says (docs/game/
 //! bots.md, "Testing"). The game runs with `H2_UI_WATCH=1`, so it prints
-//! `ui: screen 0x..` whenever player one's screen changes; the harness
+//! `ui: screen ...` whenever player one's screen changes; the harness
 //! feeds those lines, the bots' lines and the agent API's phase
 //! (`session.status`) to a [`Driver`], and sends each press it asks for as
 //! `input.pad` on the game's agent socket. Every press waits on a screen,
 //! a line or the phase, and every wait has a timeout; each press is said
 //! as `bots-drive: press a on screen 0xba row 2 (Custom Game)`.
 //!
+//! What the screens read as (`boot::ui_watch`, and the first real run,
+//! 20261118-232735): the main menu, the title screen, the boot's profile
+//! dialogs and the pregame lobby all read as `ui: screen none (slot 4:
+//! window W active ... list [mask/value]; ...)`. Windows 0 to 4 hold
+//! dialogs, window 5 the screens. The main menu is the one the game names
+//! with `coop-live: lobby mode 4294967295` (the lobby mode it sets on
+//! reaching it; a custom game's lobby sets 2, Live or not), and on it the
+//! list value's low 16 bits are the cursor's row (`0xe16d0000` on row 0,
+//! `0xe16f0002` on row 2 in that run). The rows are 0 Campaign, 1 Xbox
+//! Live, 2 Split Screen, 3 System Link, 4 Settings (`0x230827`).
+//!
 //! The path, as `h2 coop test --drive`'s host takes it
 //! ([`crate::coop_drive`]), with the Live menu's retail Custom Game row
-//! (row 2, `boot::custom_games::RETAIL_CUSTOM_GAME_ROW`) in place of
-//! Co-op Campaign:
+//! (row 2) in place of Co-op Campaign:
 //!
-//! * the main menu (screen 9, or no screen once the game said
-//!   `coop-live: lobby mode` or has been in phase `menu` a while): DOWN,
-//!   A for Xbox Live, which opens the players' screen (`0x1e`) in mode 3
-//!   (the local bots join there); A there opens the Xbox Live menu
-//!   (`0xba`); a wrong main menu row shows in what it opened and is
-//!   backed out of;
-//! * the Live menu: from its restored row to row 2, A; the lobby is up on
-//!   `coop-live: lobby mode 2` (or the session's `live: session ...
-//!   advertised`);
+//! * boot: a fresh data folder stops on the title screen and the new
+//!   profile's dialogs, so once the screen has held [`BOOT_HOLD_MS`]
+//!   without the main menu, A (at most [`BOOT_PRESSES`]);
+//! * the main menu: from its row to Xbox Live (row 1), A; that signs the
+//!   profile in to Live (the HLE logs on with the run's account) and opens
+//!   the players' screen (`0x1e`) in mode 3, where the local bots join; A
+//!   there opens the Xbox Live menu (`0xba`). A dialog on the way (the
+//!   sign-in's) gets A; a players' screen in another mode is backed out
+//!   of and corrected; Live asking for a 6-digit code stops the drive;
+//! * the Live menu: from its restored row to row 2, A; the lobby is a Live
+//!   one only once the HLE says `live: session ... advertised`;
 //! * the lobby: once every local bot is on Xbox Live (`bots: NAME on port
 //!   P is on Xbox Live as ...`), or after [`LOBBY_WAIT_MS`], A on Start
 //!   Game (row 0); again (UP, A) if the phase hasn't left `menu` in
@@ -30,15 +42,22 @@
 use std::collections::BTreeSet;
 
 use crate::coop_drive::{
-    BOOT_SETTLE_MS, BOOT_WAIT_MS, CAMPAIGN_SCREENS, GAP_MS, JOIN_SCREEN, LIVE_MENU, MAIN_LIVE_ROW,
-    MAIN_MENU, MODE_LIVE, MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES,
-    parse_screen,
+    CAMPAIGN_SCREENS, GAP_MS, JOIN_SCREEN, LIVE_MENU, MAIN_LIVE_ROW, MAIN_MENU, MODE_LIVE,
+    MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES, parse_screen,
 };
 
 /// The Xbox Live menu's Custom Game row (retail row 2).
 pub const CUSTOM_GAME_ROW: u32 = 2;
-/// The phase `menu` with no screen this long counts as the main menu.
-pub const MENU_PHASE_MS: u64 = 5_000;
+/// The lobby mode the game sets on reaching the main menu (-1).
+pub const MAIN_MENU_MODE: u32 = u32::MAX;
+/// A boot screen (title, profile dialog) held this long gets A.
+pub const BOOT_HOLD_MS: u64 = 4_000;
+/// Boot presses before the driver gives up on reaching the main menu.
+pub const BOOT_PRESSES: u32 = 12;
+/// A dialog on the way to the Live menu held this long gets A.
+pub const DIALOG_HOLD_MS: u64 = 3_000;
+/// Dialog presses on the way to the Live menu before giving up.
+pub const DIALOG_PRESSES: u32 = 6;
 /// How long the host waits in the lobby for its local bots to be on Xbox
 /// Live before it starts anyway (the verdict then says which did not).
 pub const LOBBY_WAIT_MS: u64 = 90_000;
@@ -64,22 +83,29 @@ pub struct Driver {
     /// Local bots to wait for in the lobby.
     local: usize,
     step: Step,
+    /// The screen id (`None` for every `ui: screen none` line).
     screen: Option<u32>,
     screen_since: u64,
+    /// A `none` line's window (5: a screen; 0 to 4: a dialog).
+    window: Option<u32>,
+    /// A `none` line's first list value.
+    list_value: Option<u32>,
+    /// The last `ui: screen` line, and when it came.
+    ui: String,
+    ui_since: u64,
     mode: Option<u32>,
-    /// The game said `coop-live: lobby mode`: it has been at the main menu.
-    menu_seen: bool,
-    /// The agent API's phase and since when.
+    /// The last `coop-live: lobby mode N`.
+    lobby_mode: Option<u32>,
     phase: Option<String>,
-    phase_since: u64,
-    first_poll: Option<u64>,
     acted: Option<u64>,
     cursor: Option<u32>,
     queue: Vec<Press>,
     last_press: u64,
-    boot: Vec<(Option<u32>, u32)>,
+    boot_presses: u32,
+    dialog_presses: u32,
     /// Ports whose bot is on Xbox Live (as an account or a guest).
     on_live: BTreeSet<u8>,
+    /// The HLE advertised a hosted session.
     hosting: bool,
     said: BTreeSet<String>,
     out: Vec<String>,
@@ -107,6 +133,38 @@ fn live_port(text: &str) -> Option<u8> {
         .then(|| port.parse::<u8>().ok())?
 }
 
+/// A `ui: screen none (slot 4: window W ... list [M/V ...]; ...)` line's
+/// window and first list value.
+pub fn none_window(text: &str) -> Option<(u32, Option<u32>)> {
+    let rest = text.strip_prefix("ui: screen none (slot 4: window ")?;
+    let (w, rest) = rest.split_once(' ')?;
+    let window = w.parse().ok()?;
+    let value = rest
+        .split_once("list [")
+        .and_then(|(_, r)| r.split_once('/'))
+        .and_then(|(_, r)| {
+            let v = r.trim_start_matches("0x");
+            let end = v.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(v.len());
+            u32::from_str_radix(&v[..end], 16).ok()
+        });
+    Some((window, value))
+}
+
+/// A players' screen mode by name, for the log.
+pub fn mode_name(mode: u32) -> &'static str {
+    match mode {
+        MODE_SPLIT => "Split Screen",
+        MODE_SYSTEM_LINK => "System Link",
+        MODE_LIVE => "Xbox Live",
+        _ => "another mode",
+    }
+}
+
+/// The `live: session ... advertised` line: a hosted Live session.
+pub fn advertised(text: &str) -> bool {
+    text.starts_with("live: session ") && text.contains(" advertised")
+}
+
 impl Driver {
     pub fn new(local: usize) -> Self {
         Driver {
@@ -114,16 +172,19 @@ impl Driver {
             step: Step::Boot,
             screen: None,
             screen_since: 0,
+            window: None,
+            list_value: None,
+            ui: String::new(),
+            ui_since: 0,
             mode: None,
-            menu_seen: false,
+            lobby_mode: None,
             phase: None,
-            phase_since: 0,
-            first_poll: None,
             acted: None,
             cursor: None,
             queue: Vec::new(),
             last_press: 0,
-            boot: Vec::new(),
+            boot_presses: 0,
+            dialog_presses: 0,
             on_live: BTreeSet::new(),
             hosting: false,
             said: BTreeSet::new(),
@@ -142,8 +203,15 @@ impl Driver {
     /// A line of the game's.
     pub fn line(&mut self, now: u64, text: &str) {
         if let Some((screen, row, mode)) = parse_screen(text) {
+            if text != self.ui {
+                self.ui = text.to_string();
+                self.ui_since = now;
+            }
+            let (window, value) = none_window(text).map_or((None, None), |(w, v)| (Some(w), v));
+            self.window = window;
+            self.list_value = value;
             self.mode = mode;
-            if screen != self.screen {
+            if screen != self.screen || screen.is_none() {
                 self.screen = screen;
                 self.screen_since = now;
                 self.cursor =
@@ -151,22 +219,28 @@ impl Driver {
             }
             return;
         }
-        if text.starts_with("coop-live: lobby mode ") {
-            self.menu_seen = true;
+        if let Some(m) = text.strip_prefix("coop-live: lobby mode ") {
+            self.lobby_mode = m.split(' ').next().and_then(|m| m.parse().ok());
         }
-        if text.starts_with("coop-live: lobby mode 2")
-            || (text.starts_with("live: session ") && text.contains(" advertised"))
-        {
+        if advertised(text) {
             self.hosting = true;
         }
         if let Some(p) = live_port(text) {
             self.on_live.insert(p);
         }
+        if text.contains("needs a code to sign in") {
+            self.give_up(
+                "Xbox Live asks for the account's 6-digit code (the run's Live directory has no \
+                 key for it)"
+                    .into(),
+            );
+            return;
+        }
         match self.step {
             Step::Hosting { .. } if self.hosting => {
                 self.queue.clear();
                 self.step = Step::Lobby { since: now };
-                self.say("in the custom game lobby".into());
+                self.say("in the Live custom game lobby".into());
             }
             Step::Hosting { .. } if text.starts_with("custom games: opening the browser") => {
                 self.queue = vec![press("b", "back from the browser: that was row 3")];
@@ -176,10 +250,9 @@ impl Driver {
     }
 
     /// The agent API's phase (`session.status`), when it changes.
-    pub fn status(&mut self, now: u64, phase: &str) {
+    pub fn status(&mut self, _now: u64, phase: &str) {
         if self.phase.as_deref() != Some(phase) {
             self.phase = Some(phase.to_string());
-            self.phase_since = now;
         }
         if matches!(self.step, Step::Starting { .. }) && phase != "menu" {
             self.queue.clear();
@@ -212,12 +285,31 @@ impl Driver {
         now.saturating_sub(self.screen_since) >= ms
     }
 
-    fn at_main(&self, now: u64) -> bool {
+    /// No press, and no screen change, for `ms`.
+    fn quiet(&self, now: u64, ms: u64) -> bool {
+        now.saturating_sub(self.ui_since) >= ms && now.saturating_sub(self.last_press) >= ms
+    }
+
+    /// A dialog (windows 0 to 4) takes player one's input.
+    fn dialog(&self) -> bool {
+        self.screen.is_none() && self.window.is_some_and(|w| w < 5)
+    }
+
+    /// On the main menu: screen 9, or a window 5 `none` screen once the
+    /// game set the main menu's lobby mode.
+    fn at_main(&self) -> bool {
         self.screen == Some(MAIN_MENU)
             || (self.screen.is_none()
-                && (self.menu_seen
-                    || (self.phase.as_deref() == Some("menu")
-                        && now.saturating_sub(self.phase_since) >= MENU_PHASE_MS)))
+                && self.window == Some(5)
+                && self.lobby_mode == Some(MAIN_MENU_MODE))
+    }
+
+    /// The main menu's cursor row, read off its list value.
+    fn main_row(&self) -> Option<u32> {
+        if !self.at_main() {
+            return None;
+        }
+        self.list_value.map(|v| v & 0xffff).filter(|r| *r <= 4)
     }
 
     fn fresh(&mut self, now: u64) -> bool {
@@ -226,6 +318,22 @@ impl Driver {
         }
         self.acted = Some(self.screen_since);
         true
+    }
+
+    /// On the main menu: to Xbox Live from the cursor's row, A.
+    fn go_live(&mut self, now: u64, tries: u32) {
+        let from = self.main_row().unwrap_or(0);
+        let (button, n) = if from <= MAIN_LIVE_ROW {
+            ("down", MAIN_LIVE_ROW - from)
+        } else {
+            ("up", from - MAIN_LIVE_ROW)
+        };
+        let mut q: Vec<Press> = (0..n)
+            .map(|_| press(button, &format!("to Xbox Live (row 1, from {from})")))
+            .collect();
+        q.push(press("a", "Xbox Live (signs in; the bots join here)"));
+        self.queue = q;
+        self.step = Step::ToLive { at: now, tries };
     }
 
     /// On the way to the Live menu: the players' screen goes on in Xbox
@@ -238,6 +346,14 @@ impl Driver {
         }
         if !self.fresh(now) {
             return true;
+        }
+        if let (false, Some(m)) = (campaign, self.mode)
+            && m != MODE_LIVE
+        {
+            self.say(format!(
+                "the players' screen opened in {} (mode {m}), not Xbox Live; backing out",
+                mode_name(m)
+            ));
         }
         self.queue = match (campaign, self.mode) {
             (true, _) => vec![
@@ -313,19 +429,13 @@ impl Driver {
         let screen = self.screen;
         match self.step.clone() {
             Step::Boot => {
-                let first = *self.first_poll.get_or_insert(now);
                 if self.hosting {
                     self.step = Step::Lobby { since: now };
                     return;
                 }
-                if self.at_main(now) {
+                if self.at_main() {
                     if self.held(now, SETTLE_MS) {
-                        let mut q: Vec<Press> = (0..MAIN_LIVE_ROW)
-                            .map(|_| press("down", "to Xbox Live"))
-                            .collect();
-                        q.push(press("a", "Xbox Live (signs in; the bots join here)"));
-                        self.queue = q;
-                        self.step = Step::ToLive { at: now, tries: 0 };
+                        self.go_live(now, 0);
                     }
                     return;
                 }
@@ -339,31 +449,25 @@ impl Driver {
                     self.step = Step::ToLive { at: now, tries: 0 };
                     return;
                 }
-                if now.saturating_sub(first) < BOOT_WAIT_MS || !self.held(now, BOOT_SETTLE_MS) {
+                // The title screen and a fresh profile's dialogs wait for
+                // A; nothing before the game shows a screen.
+                if self.ui.is_empty() || !self.quiet(now, BOOT_HOLD_MS) {
                     return;
                 }
-                let n = match self.boot.iter_mut().find(|(s, _)| *s == screen) {
-                    Some((_, n)) => n,
-                    None => {
-                        self.boot.push((screen, 0));
-                        &mut self.boot.last_mut().expect("pushed").1
-                    }
+                if self.boot_presses >= BOOT_PRESSES {
+                    let ui = self.ui.clone();
+                    self.give_up(format!(
+                        "no main menu after {BOOT_PRESSES} presses; the last screen: {ui}"
+                    ));
+                    return;
+                }
+                self.boot_presses += 1;
+                let what = if self.dialog() {
+                    "a boot dialog (the new profile's)"
+                } else {
+                    "the title screen"
                 };
-                let k = *n;
-                *n += 1;
-                self.screen_since = now;
-                self.queue = match k {
-                    0 => vec![press("start", "no main menu after a minute")],
-                    1 => vec![press("a", "no main menu after a minute")],
-                    2 => vec![press("b", "no main menu after a minute")],
-                    _ => {
-                        self.give_up(format!(
-                            "no main menu; screen {} held after 3 presses",
-                            show(screen)
-                        ));
-                        Vec::new()
-                    }
-                };
+                self.queue = vec![press("a", &format!("{what}: on to the main menu"))];
             }
             Step::ToLive { at, tries } => {
                 if screen == Some(LIVE_MENU) {
@@ -374,18 +478,40 @@ impl Driver {
                     if !self.queue.is_empty() {
                         self.step = Step::ToLive { at: now, tries };
                     }
-                } else if now.saturating_sub(at) > STEP_MS {
+                } else if self.dialog() {
+                    // The sign-in's dialogs: A, their first button.
+                    if self.quiet(now, DIALOG_HOLD_MS) {
+                        if self.dialog_presses >= DIALOG_PRESSES {
+                            let ui = self.ui.clone();
+                            self.give_up(format!(
+                                "dialogs on the way to Xbox Live after {DIALOG_PRESSES} presses; \
+                                 the last: {ui}"
+                            ));
+                        } else {
+                            self.dialog_presses += 1;
+                            self.queue = vec![press("a", "a dialog on the way to Xbox Live")];
+                            self.step = Step::ToLive { at: now, tries };
+                        }
+                    }
+                } else if self.at_main() && self.held(now, SETTLE_MS) && self.quiet(now, STEP_MS) {
+                    // Back on the main menu (a sign-in that failed, or a
+                    // press it missed): again from its row.
                     if tries + 1 >= TRIES {
                         self.give_up(format!(
-                            "no Xbox Live menu after {TRIES} tries (on {})",
-                            show(screen)
+                            "no Xbox Live menu after {TRIES} tries; back on the main menu"
                         ));
                     } else {
-                        self.queue = if self.at_main(now) {
-                            vec![press("a", "Xbox Live, again")]
-                        } else {
-                            vec![press("b", "a screen on the way to Xbox Live")]
-                        };
+                        self.say("back on the main menu; Xbox Live again".into());
+                        self.go_live(now, tries + 1);
+                    }
+                } else if now.saturating_sub(at.max(self.ui_since)) > 2 * STEP_MS {
+                    if tries + 1 >= TRIES {
+                        let ui = self.ui.clone();
+                        self.give_up(format!(
+                            "no Xbox Live menu after {TRIES} tries; the last screen: {ui}"
+                        ));
+                    } else {
+                        self.queue = vec![press("b", "a screen on the way to Xbox Live")];
                         self.step = Step::ToLive {
                             at: now,
                             tries: tries + 1,
@@ -396,7 +522,12 @@ impl Driver {
             Step::Hosting { at, tries } => {
                 if now.saturating_sub(at) > STEP_MS {
                     if tries + 1 >= TRIES {
-                        self.give_up("Custom Game never opened a lobby".into());
+                        self.give_up(match self.lobby_mode {
+                            Some(2) => "a custom game lobby opened but the HLE advertised no \
+                                        Live session (not signed in to Xbox Live?)"
+                                .into(),
+                            _ => "Custom Game never opened a Live lobby".into(),
+                        });
                     } else if screen == Some(LIVE_MENU) && self.held(now, SETTLE_MS) {
                         self.queue = self.to_row(CUSTOM_GAME_ROW, "Custom Game, again");
                         self.step = Step::Hosting {
@@ -405,6 +536,13 @@ impl Driver {
                         };
                     } else if screen.is_some() && screen != Some(LIVE_MENU) {
                         self.queue = vec![press("b", "back to the Xbox Live menu")];
+                        self.step = Step::Hosting {
+                            at: now,
+                            tries: tries + 1,
+                        };
+                    } else {
+                        // The lobby (a none screen) without an
+                        // advertisement yet: wait again.
                         self.step = Step::Hosting {
                             at: now,
                             tries: tries + 1,
@@ -462,6 +600,9 @@ impl Driver {
             && let Some(r) = p.row
         {
             s.push_str(&format!(" row {r}"));
+        }
+        if let Some(r) = self.main_row() {
+            s.push_str(&format!(" main menu row {r}"));
         }
         s.push_str(&format!(" ({})", p.why));
         s

@@ -2216,6 +2216,7 @@ account making and `input.pad` presses.
 
 ```sh
 h2 bots test [--count 5] [--map lockout] [--keep] [--timeout 360]
+             [--wait-clang] [--settings-from DIR]
 h2 bots verdict <bots.log>   # the verdict of a log again
 ```
 
@@ -2231,12 +2232,29 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    at Count N for this run with no menu work (the page's rows show it
    locked). N is `--count`, 5 by default: 3 local bots on ports 1 to 3 and
    2 phantoms. The window builds the game into `--out` first when `--out`
-   has none, as `h2 play` does.
+   has none, as `h2 play` does. `--wait-clang` passes `--tier clang`, so
+   the run uses clang's full build and never the Cranelift fast tier; it
+   first waits while a background clang build of `--out` is still writing
+   `clang-build.log`. The run's data starts with the `[graphics]` table of
+   `--settings-from`'s `settings.toml` (by default `$TMPDIR/h2boot-data`,
+   the data root `h2 play` uses), so the window renders with the user's
+   own video settings.
 3. Presses through the menus over the game's agent socket
    (`crates/cli/src/bots_drive.rs`). The game runs with `H2_UI_WATCH=1`, and
    every press waits on a `ui: screen` line, a game line or the agent API's
-   phase: Xbox Live (the players' screen, where the local bots join), the
-   Live menu's Custom Game row (retail row 2), then the pregame lobby. Once
+   phase. A fresh data folder stops on the title screen and the new
+   profile's dialogs: each gets A once it has held 4 s. The main menu is
+   the window 5 screen the game names with `coop-live: lobby mode
+   4294967295`; its cursor row is the low 16 bits of the `list [mask/value]`
+   value on its `ui: screen none` line (rows: 0 Campaign, 1 Xbox Live, 2
+   Split Screen, 3 System Link, 4 Settings). From there: to row 1, A (the
+   game's own Xbox Live sign-in; its dialogs get A, and a request for the
+   account's 6-digit code stops the drive), A on the players' screen in
+   Xbox Live mode (where the local bots join; any other mode is backed out
+   of), the Live menu's Custom Game row (retail row 2), then the pregame
+   lobby, which counts as a Live one only once the HLE says `live: session
+   ... advertised`: `coop-live: lobby mode 2` is any custom game lobby,
+   Split Screen's too. Once
    every local bot is on Xbox Live, or after 90 s, it presses A on Start
    Game, and again (UP, A) if the phase has not left `menu` within 40 s.
    Each press is a `bots-drive:` line.
@@ -2246,7 +2264,9 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the newest game record (`GET /v1/games`: players with `bot: true`).
    What it reads goes into the merged log as `bots-test:` lines.
 5. Stops once every check has passed (3 s more for the last lines), the
-   game closes or stops, or after `--timeout`. It prints the verdict,
+   game closes or stops, or after `--timeout`, counted from the game's
+   agent socket coming up (a build before that is not counted, up to an
+   hour). It prints the verdict,
    closes the game, deletes the run's data and exits non-zero if a check
    failed. With `--keep` the game stays open, and the command with it (it
    is the Live server), until the window closes; the data is kept.
@@ -2259,22 +2279,24 @@ failure:
 |---|---|---|
 | 1 | Signed in to Xbox Live | `live: playing as Tester` |
 | 2 | Clankers on | `clankers: Clanker P on (...)` for each local port |
-| 3 | Hosting a Live custom game | `coop-live: lobby mode 2` or `live: session ... advertised` |
-| 4 | Live roster of bot accounts | `clankers: asking Live for N bots for session S`, then `clankers: Live rostered bots for session S` |
-| 5 | Local bots signed in (join gate) | per port, `bots: join gate port P: screen ... : signs in` and `bots: signing ... on port P ...`; it says whether on the players screen or in the lobby |
-| 6 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |
-| 7 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
-| 8 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
-| 9 | Phantoms joined | `bots: phantom G joins (peer K)` for each phantom, and no phantom failure |
-| 10 | The Live session holds 1 + N players | the session's filled slots reach 1 + N |
-| 11 | The game record has the bots | at least N players with `bot: true` on the server's game record |
+| 3 | On Xbox Live | the players' screen in mode 3 or the Xbox Live menu (`0xba`); a run that ended on the players' screen in Split Screen or System Link fails `not on Xbox Live: ended in Split Screen` |
+| 4 | Hosting a Live custom game | `live: session ... advertised` (the HLE's hosted session); a lobby without it says so |
+| 5 | Live roster of bot accounts | `clankers: asking Live for N bots for session S`, then `clankers: Live rostered bots for session S` |
+| 6 | Local bots signed in (join gate) | per port, `bots: join gate port P: screen ... : signs in` and `bots: signing ... on port P ...`; it says whether on the players screen or in the lobby |
+| 7 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |
+| 8 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
+| 9 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
+| 10 | Phantoms joined | `bots: phantom G joins (peer K)` for each phantom, and no phantom failure |
+| 11 | The Live session holds 1 + N players | the session's filled slots reach 1 + N |
+| 12 | The game record has the bots | at least N players with `bot: true` on the server's game record |
 
 A failed check says what is missing and why, as far as the log does: for
-step 5 each missing port's last join gate lines (screen, dialog,
-`signed_in`); for 3 the last presses and screen; for 4 whether the roster
-was asked for at all; for 6 the port's guest or offline line; for 7 the
-start state's blocking check, or that Start was never pressed; for 9 the
-phantoms' `waits` lines. Lines that look like trouble anywhere (a panic,
+step 6 each missing port's last join gate lines (screen, dialog,
+`signed_in`); for 3 the mode it ended in, or the last presses and screen;
+for 4 whether a lobby opened without a Live session; for 5 whether the
+roster was asked for at all; for 7 the port's guest or offline line; for
+8 the start state's blocking check, or that Start was never pressed; for
+10 the phantoms' `waits` lines. Lines that look like trouble anywhere (a panic,
 the guest thread exiting, a fault, a stuck driver, a refusal, a timeout)
 are listed under `trouble:`.
 
@@ -2288,13 +2310,13 @@ non-zero on a failure).
 
 - `--map` only checks the map played. The menus are not driven through
   Game Setup's Change Map, so the game plays the lobby's default map; a
-  `--map` other than that fails step 8, saying which map was played.
-- The phantoms join when the game starts, not in the lobby (§5.1); step 10
+  `--map` other than that fails step 9, saying which map was played.
+- The phantoms join when the game starts, not in the lobby (§5.1); step 11
   counts the most filled slots the server saw over the whole run.
 - `h2 play` builds the game into `--out` when `--out` has none, or has one
   from another image. Run it with the same `H2_OPT` as that build, or the
-  window recompiles first. A first build can outlast `--timeout`; build
-  first (or raise `--timeout`).
+  window recompiles first. The timeout starts once the game is up, so a
+  build doesn't eat it.
 - One game at a time: the server port and Tester's account are the run's
   own, but a second `h2 bots test` needs another `--server-port` and
   `--root`.

@@ -24,7 +24,8 @@ use crate::live_cmd::{Client, LIVE_DIR_ENV};
 
 const USAGE: &str = "usage:
   h2 bots test [--disc ISO] [--count N] [--map NAME] [--keep] [--timeout SECS]
-               [--root DIR] [--out DIR] [--server-port N] [--dry-run]
+               [--wait-clang] [--settings-from DIR] [--root DIR] [--out DIR]
+               [--server-port N] [--dry-run]
                [-- <more h2 play arguments>]
   h2 bots verdict <bots.log>
 
@@ -35,18 +36,29 @@ Tester on it, and opens one `h2 play` window signed in as Tester with
 Clankers On and Count --count (5 by default: 3 local bots on ports 1 to 3,
 the rest phantoms), set for this run with `--set`. The window builds the
 game into --out first if --out has none (as `h2 play` does).
+--wait-clang runs clang's full build (`h2 play --tier clang`): it waits
+for a background clang build of --out that is still writing its log,
+then builds clang's module in the foreground if it is not current, never
+the Cranelift fast tier. The game takes the [graphics] settings (video,
+frame rate, render scale) of --settings-from's settings.toml (the data
+root `h2 play` uses by default), so it renders as your own game does.
+--timeout counts from the game's agent socket coming up, so a build
+before that is not counted.
 
 Nobody presses anything: the game prints its menu screen (H2_UI_WATCH=1)
 and this process presses over its agent socket, each press on a screen or
-line it waited for: Xbox Live, Custom Game, then, once the local bots are
-on Xbox Live (or after 90 s), Start Game. Every press is a `bots-drive:`
+line it waited for: A through the title screen and the new profile's
+dialogs, Xbox Live from the main menu's row (A on the sign-in's dialogs),
+Custom Game, then, once the local bots are on Xbox Live (or after 90 s),
+Start Game. Every press is a `bots-drive:`
 line.
 
 It watches the game's lines, the agent API's phase and map, and the Live
 server's session and game record, and stops once every check has passed
 or after --timeout (360 s). The verdict lists each check, passed or
 failed, with the log lines that explain it, and names the first failure:
-signed in; Clankers on; hosting a custom game; the Live roster; each local
+signed in; Clankers on; on Xbox Live (not Split Screen or System Link);
+hosting a Live custom game (the session advertised); the Live roster; each local
 bot through the join gate; each local bot on Xbox Live as a bot account
 (000b...); the start state; gameplay on a map (--map NAME: on that map;
 the map is the lobby's, this does not pick it); the phantoms joined; the
@@ -85,6 +97,10 @@ pub struct Opts {
     pub out: Option<PathBuf>,
     pub server_port: u16,
     pub dry_run: bool,
+    /// clang's full build (`--tier clang`), never the fast tier.
+    pub wait_clang: bool,
+    /// The data root whose settings.toml's [graphics] the game takes.
+    pub settings_from: PathBuf,
     pub play_args: Vec<String>,
 }
 
@@ -116,6 +132,8 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     let mut out = None;
     let mut server_port = DEFAULT_SERVER_PORT;
     let mut dry_run = false;
+    let mut wait_clang = false;
+    let mut settings_from = None;
     let mut play_args = Vec::new();
     while let Some(a) = it.next() {
         let mut value = |name: &str| it.next().with_context(|| format!("{name} needs a value"));
@@ -157,6 +175,8 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .with_context(|| format!("--server-port {v}: a port"))?;
             }
             "--dry-run" => dry_run = true,
+            "--wait-clang" => wait_clang = true,
+            "--settings-from" => settings_from = Some(PathBuf::from(value("--settings-from")?)),
             "--" => play_args.extend(it.by_ref()),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => bail!("unexpected {a:?}\n\n{USAGE}"),
@@ -179,6 +199,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         out,
         server_port,
         dry_run,
+        wait_clang,
+        settings_from: settings_from.unwrap_or_else(|| {
+            env("TMPDIR")
+                .filter(|t| !t.is_empty())
+                .map_or_else(std::env::temp_dir, PathBuf::from)
+                .join("h2boot-data")
+        }),
         play_args,
     }))
 }
@@ -208,6 +235,9 @@ pub fn plan(opts: &Opts, server: &str, run: &Path, agent: &Path) -> Game {
     ];
     if let Some(out) = &opts.out {
         args.extend(["--out".into(), out.display().to_string()]);
+    }
+    if opts.wait_clang {
+        args.extend(["--tier".into(), "clang".into()]);
     }
     args.extend(opts.play_args.iter().cloned());
     let env = vec![
@@ -250,6 +280,11 @@ const STATUS_EVERY: Duration = Duration::from_secs(2);
 const SERVER_EVERY: Duration = Duration::from_secs(3);
 /// Once every check passed, this long more for the last lines.
 const SETTLE: Duration = Duration::from_secs(3);
+/// How long the game may take to come up (a build) before the timeout's
+/// clock starts.
+const BUILD_LIMIT: Duration = Duration::from_secs(60 * 60);
+/// A background clang build whose log changed this recently still runs.
+const CLANG_QUIET: Duration = Duration::from_secs(120);
 /// How long the game may take to close.
 const CLOSE_WAIT: Duration = Duration::from_secs(15);
 
@@ -286,6 +321,25 @@ fn test(opts: Opts) -> Result<()> {
     let server_data = run_dir.join("server");
     fs::create_dir_all(&server_data)?;
     fs::create_dir_all(&logs)?;
+    fs::create_dir_all(&game.data)?;
+    match copy_graphics(&opts.settings_from, &game.data) {
+        Ok(Some(n)) => eprintln!(
+            "bots test: the game takes your [graphics] settings ({n} keys) from {}",
+            settings::path_in(&opts.settings_from).display()
+        ),
+        Ok(None) => eprintln!(
+            "bots test: no [graphics] in {}; the game's default video settings",
+            settings::path_in(&opts.settings_from).display()
+        ),
+        Err(e) => eprintln!("bots test: video settings not copied: {e:#}"),
+    }
+    if opts.wait_clang {
+        let out = opts
+            .out
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("h2boot"));
+        wait_for_background_clang(&out, &interrupted);
+    }
     let listen = SocketAddrV4::new(Ipv4Addr::LOCALHOST, opts.server_port);
     let embedded = live_server::start_embedded(
         live_server::FILE_DB,
@@ -330,7 +384,10 @@ fn test(opts: Opts) -> Result<()> {
     eprintln!("bots test: the game opens (it builds into --out first if that has none)");
 
     let mut watch = Watch::new(&plan, &client, &agent);
-    let start = Instant::now();
+    let spawned = Instant::now();
+    // The timeout counts from the agent socket: a build before is not run
+    // time (at most BUILD_LIMIT of it).
+    let mut start: Option<Instant> = None;
     let mut passed_at: Option<Instant> = None;
     let mut ended = None;
     loop {
@@ -350,7 +407,20 @@ fn test(opts: Opts) -> Result<()> {
             sup.note(0, "bots-test: the game closed")?;
             break;
         }
-        if start.elapsed() >= opts.timeout {
+        if start.is_none() && watch.agent_up {
+            start = Some(Instant::now());
+        }
+        if start.is_none() && spawned.elapsed() >= BUILD_LIMIT {
+            sup.note(
+                0,
+                &format!(
+                    "bots-test: timed out: no agent socket {} min after the start (a build?)",
+                    BUILD_LIMIT.as_secs() / 60
+                ),
+            )?;
+            break;
+        }
+        if start.is_some_and(|s| s.elapsed() >= opts.timeout) {
             sup.note(
                 0,
                 &format!("bots-test: timed out after {} s", opts.timeout.as_secs()),
@@ -470,9 +540,7 @@ impl<'a> Watch<'a> {
             if line.contains("guest thread exited") {
                 self.crashed = true;
             }
-            if line.starts_with("coop-live: lobby mode 2")
-                || (line.starts_with("live: session ") && line.contains(" advertised"))
-            {
+            if crate::bots_drive::advertised(&line) {
                 self.hosting = true;
             }
             let now = self.now_ms();
@@ -626,6 +694,67 @@ pub fn game_from(page: &serde_json::Value) -> Option<String> {
         bots.len(),
         accounts,
     ))
+}
+
+/// `<from>/settings.toml`'s `[graphics]` table as a settings file of its
+/// own, or `None` when it has none.
+pub fn graphics_only(text: &str) -> Result<Option<(String, usize)>> {
+    let table: toml::Table = text.parse().context("not TOML")?;
+    let Some(toml::Value::Table(g)) = table.get("graphics") else {
+        return Ok(None);
+    };
+    let n = g.len();
+    let mut out = toml::Table::new();
+    out.insert("graphics".into(), toml::Value::Table(g.clone()));
+    Ok(Some((toml::to_string(&out)?, n)))
+}
+
+/// Writes `from`'s `[graphics]` into `data`'s settings.toml (which a run
+/// starts without); the number of keys, or `None` without any.
+fn copy_graphics(from: &Path, data: &Path) -> Result<Option<usize>> {
+    let path = settings::path_in(from);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let Some((graphics, n)) =
+        graphics_only(&text).with_context(|| format!("reading {}", path.display()))?
+    else {
+        return Ok(None);
+    };
+    fs::write(settings::path_in(data), graphics)?;
+    Ok(Some(n))
+}
+
+/// Whether a log last written at `modified` is still being written at
+/// `now`.
+pub fn still_writing(modified: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    now.duration_since(modified).is_ok_and(|d| d < CLANG_QUIET) || now < modified
+}
+
+/// `--wait-clang`: waits while a background clang build of `out`
+/// (`boot::tier::background_build`) is still writing its log, so the
+/// game's own `--tier clang` doesn't build alongside it.
+fn wait_for_background_clang(out: &Path, interrupted: &std::sync::atomic::AtomicBool) {
+    let log = boot::tier::background_log(out);
+    let modified = || fs::metadata(&log).and_then(|m| m.modified()).ok();
+    let mut said = false;
+    while let Some(m) = modified() {
+        if !still_writing(m, std::time::SystemTime::now())
+            || interrupted.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            break;
+        }
+        if !said {
+            eprintln!(
+                "bots test: --wait-clang: clang's background build is still writing {}; waiting",
+                log.display()
+            );
+            said = true;
+        }
+        std::thread::sleep(Duration::from_secs(10));
+    }
 }
 
 #[cfg(test)]
