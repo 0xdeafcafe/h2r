@@ -2,6 +2,9 @@
 //! `$H2_DISC`), and read back. Nothing is written to disk; counts go to
 //! stdout.
 
+#[path = "disc/ground_ai.rs"]
+mod ground_ai;
+
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
@@ -879,6 +882,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
         for c in &ai.character_palette {
             assert_eq!(m.tag(*c).unwrap().group, FourCC(*b"char"));
         }
+        ground_ai::check(&h1, &m, &ai, &decoded, &mem);
         println!(
             "ai read back: {} squads, {} zones, {} characters",
             ai.squads.len(),

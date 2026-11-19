@@ -24,6 +24,8 @@
 //! | `+0x290` cluster data | `0x34` | one per BSP: per cluster its background sound and sound environment (as the structure's cluster names them), its centroid; the BSP's checksum |
 //! | `+0x388` per-BSP points | `0x10` | one per BSP, no points |
 
+mod ai_weapons;
+
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
@@ -787,6 +789,7 @@ pub fn write(
     set: &mut TagSet,
     base: &BaseScenario,
     bsps: &[BspSlot],
+    pathfinding: &[tags::pathfinding::PathfindingData],
     sounds: &h1convert::ambience::Installed,
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
@@ -941,6 +944,13 @@ pub fn write(
         }
     }
     let mut aliases = crate::h2assets::Aliases::default();
+    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let ai_weapon_tags = if opts.ai {
+        ai_weapons::retail_tags(h1, &ai_src, set, &mut report.dropped)?
+    } else {
+        Vec::new()
+    };
+    let mut weapon_palette = Vec::new();
     let placed = match objects {
         Some(b) => {
             // Device groups are written with the scripts' level data;
@@ -959,10 +969,17 @@ pub fn write(
                     opts.rebuild_bipeds,
                     opts.assets,
                     &mut aliases,
+                    &mut weapon_palette,
                 )
             })?
         }
-        None => HashMap::new(),
+        None => {
+            if !fresh && opts.ai {
+                // The pinned base keeps its own palette when objects are disabled.
+                weapon_palette = ai_weapons::base_palette(base)?;
+            }
+            HashMap::new()
+        }
     };
     level_text.write_control_prompts(
         set,
@@ -1047,7 +1064,6 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
     // h1ai keeps squads with no starting locations (empty) so scripts can
     // name them; only those the scripts name are worth their room.
     let named = h1scripts::Tables::read(h1)
@@ -1089,8 +1105,9 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
+    let weapons = ai_weapons::install(&mut root, weapon_palette, &ai_weapon_tags)?;
     let plan = h1map::phase::time("ai", || {
-        h1ai::convert::convert(&ai_src, &Default::default())
+        h1ai::convert::convert_for_map(&ai_src, &Default::default(), pathfinding, &weapons)
     });
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
@@ -1290,6 +1307,7 @@ fn place_objects(
     rebuild_bipeds: bool,
     assets: crate::h2assets::Assets,
     aliases: &mut crate::h2assets::Aliases,
+    weapon_palette: &mut Vec<TagId>,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
     let halo2 = assets == crate::h2assets::Assets::Halo2;
     // The Halo 2-assets variant's retail tag for a Halo 1 object
@@ -1541,6 +1559,12 @@ fn place_objects(
                 targets.push(Some((ty, dest.palette.len())));
                 dest.palette.push(palette_entry(id));
             }
+        }
+        if k.h2_type == 2 {
+            weapon_palette.extend(
+                pal.iter()
+                    .map(|p| p.as_ref().map_or(TagId::NULL, palette_id)),
+            );
         }
         let converted = targets.iter().flatten().count();
         let src = h1_block(h1, k.h1)?;

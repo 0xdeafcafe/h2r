@@ -42,6 +42,7 @@
 //! The observer adds dispatch transfers to every tick, as `lockstep`'s
 //! does: compare runs that all have the agent on, or all off.
 
+pub mod ai;
 mod capture;
 mod exec;
 pub mod havok;

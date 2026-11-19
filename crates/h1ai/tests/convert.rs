@@ -108,6 +108,7 @@ fn invented() -> H1Ai {
             team: 3,
             search_behavior: 0,
             manual_bsp: -1,
+            bsp: 1,
             respawn_delay: [0.0; 2],
             squads: vec![
                 // Attacks from group C only.
@@ -184,7 +185,7 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert!(
         z.firing_positions
             .iter()
-            .all(|f| f.surface == 7 && f.cluster == -1)
+            .all(|f| f.sector == u32::MAX && f.cluster == 0)
     );
 
     // The squad with no starting locations is kept, empty, with a note:
@@ -241,6 +242,75 @@ fn encounters_become_groups_zones_squads_and_orders() {
         plan.command_scripts[0].atoms,
         [("atom 1".to_owned(), [1, -1])]
     );
+}
+
+#[test]
+fn variant_loadouts_and_compiled_bsp_survive_serialization() {
+    use tags::pathfinding::{Link, PathfindingData, Ref, Sector};
+    let mesh = |sector: u16| PathfindingData {
+        sectors: vec![
+            Sector {
+                flags: 0x19,
+                hint: u16::MAX,
+                first_link: 0
+            };
+            2
+        ],
+        refs: vec![Ref::sector(u32::from(sector)); 8],
+        links: (0..3)
+            .map(|i| Link {
+                vertex1: i,
+                vertex2: (i + 1) % 3,
+                flags: 1,
+                hint: u16::MAX,
+                forward_link: (i + 1) % 3,
+                reverse_link: u16::MAX,
+                left_sector: sector,
+                right_sector: u16::MAX,
+            })
+            .collect(),
+        // A floor rising towards positive Y.
+        vertices: vec![[0.0; 3], [20.0, 0.0, 0.0], [0.0, 20.0, 10.0]],
+        bsp2d_nodes: vec![],
+        object_refs: vec![],
+        hints: vec![],
+        instance_refs: vec![],
+        checksum: 0,
+        user_hints: vec![],
+    };
+    let mut src = invented();
+    src.actors[1].1.kind = ActorType(7);
+    let encounter = &mut src.encounters[0];
+    encounter.squads[0].starting_locations.push(start(3.0, 1));
+    encounter.manual_bsp = 0;
+    encounter.firing_positions[0].cluster = 39;
+    encounter.firing_positions[2].surface = u32::MAX;
+    encounter.firing_positions[2].cluster = -1;
+    // Two variants use the same character with different starting weapons.
+    encounter.squads[0].starting_locations[1].actor = 2;
+    let plan = h1ai::convert::convert_for_map(
+        &src,
+        &Options::default(),
+        &[mesh(0), mesh(1)],
+        &[Some(4), None, Some(9)],
+    );
+    let (ai, _) = build_and_read(&plan);
+    let squad = &ai.squads[0];
+    assert_eq!(squad.initial_weapon, 4);
+    assert_eq!(squad.starting_locations[0].initial_weapon, -1);
+    assert_eq!(squad.starting_locations[1].character, squad.character);
+    assert_eq!(squad.starting_locations[1].initial_weapon, 9);
+    assert_eq!(squad.starting_locations[1].grenade_type, grenade::COVENANT);
+    assert_eq!(squad.starting_locations[2].grenade_type, grenade::HUMAN);
+    let z = &ai.zones[0];
+    assert_eq!(z.manual_bsp, 1);
+    assert_eq!(z.firing_positions[2].sector, 1);
+    let [yaw, pitch] = z.firing_positions[2].normal;
+    assert!((yaw + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    assert!((pitch - 2.0f32.atan()).abs() < 1e-5);
+    assert_eq!(z.firing_positions[3].sector, u32::MAX);
+    assert_eq!(z.areas[1].clusters[1], 1 << 7);
+    assert_eq!(z.areas[0].clusters[0], 1);
 }
 
 #[test]

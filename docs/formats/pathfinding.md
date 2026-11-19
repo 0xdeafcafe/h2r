@@ -78,6 +78,8 @@ spawns.
 count): from `first_link`, on a link whose left sector is this sector
 continue at `+8`, otherwise at `+a`. The sector's polygon is vertex 1 of
 links where it is the left sector, vertex 2 where it is the right one.
+The retail iterator at `0x001fa779` compares the right sector to the current
+sector and reads the next link at `+a` on equality, `+8` otherwise (E).
 This is the collision-edge rule of [collision.md](collision.md) with the
 roles renamed. Floor sectors wind counter-clockwise seen from above (V:
 9442 of the 11191 sectors of `01a_tutorial` are convex and CCW in XY;
@@ -197,9 +199,12 @@ collision edge. Lowest agreement: `05b_deltatowers` BSP 1 (0.693),
 
 ## Engine invariants checked (`PathfindingData::validate`)
 
-The retail lookup code has not been read (see below). These are the
-invariants a lookup can only rely on if the data keeps them, and retail
-data keeps every one on all 64 BSPs: u16 counts; refs count equals the
+The retail sector walker bounds the starting sector by the mesh's sector
+count at `0x0026c5fb`. Its neighbor check at `0x0026c3bf` reads the sector
+across a link, tests for the absent side and checks flag bit 0 of the
+neighboring sector. Generated ground sectors carry this bit (`0x19`).
+
+Retail data keeps these invariants on all 64 BSPs: u16 counts; refs count equals the
 collision surface count; every ref and 2D child in range; 2D nodes children
 first; finite planes and vertices; every sector ring closes; link vertices
 and sectors in range on links that border a sector; no link with the same
@@ -217,9 +222,8 @@ generator has no hints and no instanced or object sectors.
 
 ## Open questions
 
-- The engine's pathfinding code was not located in the XBE (no symbols; it
-  needs a scan for the `0x14`-stride node walk or `sbsp+c4` reads). Until
-  then the side rule, ring rule and invariants are V only.
+- The branch convention in the surface reference's 2D node lookup still
+  needs a matching engine read.
 - Sector and link flag meanings, and which of them AI movement needs
   (walls, ledges, corners, crouch).
 - Wall and ceiling sectors: what uses them, and whether their absence

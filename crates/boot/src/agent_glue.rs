@@ -81,6 +81,7 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
+        agent::ai::install(&agent);
         agent::havok::install(&agent);
         agent::raw::install(&agent, &sim);
         // On the game thread: the sampler's main target.

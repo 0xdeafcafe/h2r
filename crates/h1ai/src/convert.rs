@@ -154,6 +154,24 @@ fn letter(group: u16) -> String {
 
 /// Converts a Halo 1 scenario's AI data.
 pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
+    convert_for_map(src, opts, &[], &[])
+}
+
+/// Converts with the generated meshes in scenario BSP order and the scenario
+/// weapon palette index chosen for each Halo 1 actor variant. Missing entries
+/// leave the corresponding reference unassigned.
+pub fn convert_for_map(
+    src: &H1Ai,
+    opts: &Options,
+    meshes: &[tags::pathfinding::PathfindingData],
+    weapons: &[Option<i16>],
+) -> Plan {
+    let weapon = |actor: i16| {
+        usize::try_from(actor)
+            .ok()
+            .and_then(|i| weapons.get(i).copied().flatten())
+            .unwrap_or(-1)
+    };
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
 
@@ -185,6 +203,15 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
 
     for (ei, e) in src.encounters.iter().enumerate() {
         let zone_index = ei as i16;
+        // Halo 1's manual BSP is only an editor input. Its compiled choice
+        // names the collision mesh that the firing positions index.
+        let bsp = if e.bsp >= 0 {
+            e.bsp
+        } else {
+            e.manual_bsp.max(0)
+        };
+        // The compiled surface only describes ground positions.
+        let ground = meshes.get(bsp as usize).filter(|_| e.flags & (1 << 5) == 0);
         // Areas: one per firing position group letter, in letter order.
         let mut letters: Vec<u16> = e.firing_positions.iter().map(|f| f.group).collect();
         letters.sort_unstable();
@@ -197,14 +224,19 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         fps.sort_by_key(|(a, _)| *a);
         let firing_positions: Vec<h2::FiringPosition> = fps
             .iter()
-            .map(|(a, f)| h2::FiringPosition {
-                position: f.position,
-                reference_frame: -1,
-                flags: opts.firing_position_flags,
-                area: *a as i16,
-                cluster: -1,
-                surface: f.surface,
-                normal: [0.0, std::f32::consts::FRAC_PI_2],
+            .map(|(a, f)| {
+                let (sector, normal) = ground
+                    .and_then(|mesh| crate::ground::location(mesh, f))
+                    .unwrap_or((u32::MAX, [0.0, std::f32::consts::FRAC_PI_2]));
+                h2::FiringPosition {
+                    position: f.position,
+                    reference_frame: -1,
+                    flags: opts.firing_position_flags,
+                    area: *a as i16,
+                    cluster: f.cluster,
+                    sector,
+                    normal,
+                }
             })
             .collect();
         let areas = letters
@@ -225,6 +257,14 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     .map(|p| (0..3).map(|k| (p[k] - mean[k]).powi(2)).sum::<f32>())
                     .sum::<f32>()
                     / n;
+                let mut clusters = [0u32; 16];
+                for (_, f) in &fps[first..first + pts.len()] {
+                    if let Ok(c) = usize::try_from(f.cluster)
+                        && let Some(word) = clusters.get_mut(c / 32)
+                    {
+                        *word |= 1 << (c % 32);
+                    }
+                }
                 h2::Area {
                     name: letter(g),
                     flags: 0,
@@ -233,6 +273,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     deviation: var.sqrt(),
                     first: first as i16,
                     count: pts.len() as i16,
+                    clusters,
                     manual_reference_frame: 0,
                 }
             })
@@ -246,7 +287,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         ai.zones.push(h2::Zone {
             name: name31(&e.name),
             flags: opts.zone_flags,
-            manual_bsp: e.manual_bsp.max(0),
+            manual_bsp: bsp,
             firing_positions,
             areas,
         });
@@ -327,11 +368,11 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     } else {
                         char_of(l.actor).map(|c| c as i16).unwrap_or(-1)
                     },
-                    initial_weapon: -1,
+                    initial_weapon: weapon(l.actor),
                     initial_secondary_weapon: -1,
                     vehicle: -1,
                     seat_type: 0,
-                    grenade_type: 0,
+                    grenade_type: char_of(l.actor).map_or(0, |c| characters[c].grenade),
                     swarm_count: 0,
                     emitter_vehicle: -1,
                 })
@@ -348,7 +389,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 vehicle: -1,
                 character: character.map(|c| c as i16).unwrap_or(-1),
                 initial_zone: zone_index,
-                initial_weapon: -1,
+                initial_weapon: weapon(s.actor),
                 initial_secondary_weapon: -1,
                 grenade_type: grenade,
                 initial_order: order,
@@ -610,7 +651,7 @@ impl Plan {
                             b.put_u16(0xe, f.flags);
                             put_i16(&mut b, 0x10, f.area);
                             put_i16(&mut b, 0x12, f.cluster);
-                            b.put_u32(0x14, f.surface);
+                            b.put_u32(0x14, f.sector);
                             put_f32s(&mut b, 0x18, &f.normal);
                             b
                         })
@@ -628,6 +669,9 @@ impl Plan {
                             b.put_f32(0x34, a.deviation);
                             put_i16(&mut b, 0x38, a.first);
                             put_i16(&mut b, 0x3a, a.count);
+                            for (i, bits) in a.clusters.iter().enumerate() {
+                                b.put_u32(0x3c + 4 * i, *bits);
+                            }
                             put_i16(&mut b, 0x7c, a.manual_reference_frame);
                             b
                         })
