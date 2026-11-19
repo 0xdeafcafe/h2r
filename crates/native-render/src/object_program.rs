@@ -284,6 +284,8 @@ pub fn compile_object_stages(
         vertex,
         pixel: t.pixel,
         inputs: t.inputs,
+        def: t.def,
+        pixel_options: t.pixel_options,
         state: None,
         rigid: None,
     })

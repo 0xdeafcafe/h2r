@@ -555,7 +555,10 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, (instance, ma
         words: d.words,
         vertex: d.vertex,
         pixel: d.pixel,
-        streamed: program::INPUT_MASK,
+        samplers: d.samplers,
+        options: d.options,
+        def: d.def,
+        pixel_options: d.pixel_options,
         draws: 4,
     });
 }

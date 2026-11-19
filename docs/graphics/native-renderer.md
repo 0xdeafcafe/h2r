@@ -128,7 +128,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   `s / 1023` (`s / 511` for z); the native world had it from the CPU's
   midpoint decode (`(2 s + 1) / (2^bits - 1)`, [lighting.md](../formats/lighting.md)),
   up to half a step higher in each component. It now takes the GPU's
-  decode (`load::program_lighting_vector`). For the placements' edges,
+  decode (`load::program_lighting_vector`), which matches the D3D path
+  but did not remove the speckle (mean 0.204 to 0.203): its cause is
+  still open. For the placements' edges,
   `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
   so that the D3D path draws the placement) prints, once per loaded
   world, the uniforms the native rigid draw of that placement and
@@ -136,7 +138,15 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   next draws with the same rows `c[50..52]` and the same program print
   every constant the program reads, every input it reads (streamed by
   one and not the other, or with other defaults) and every vertex or
-  pixel uniform that differs. A view whose draws are not
+  pixel uniform that differs, then the input fetch and interpolation,
+  the pixel shader definition and options when they differ, and each
+  sampled stage's D3D texture and sampler. On 03000 (placement 282,
+  material 107) the layer-3 draw matched in every constant and input
+  the program reads; its pixel side differed only in `fog_color` and
+  `bump_lum`, which no native pass reads (`world_parity` refuses a
+  combiner that reads fog and the luminance bump modes). The draws that
+  also differed in `c0`, `c1` and `alpha_ref` share the rows and the
+  vertex program but are another layer's. A view whose draws are not
   W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
   path (counted in the log): the programs write and clip w. The trace
   found it: every cinematic pass culled 0 of 1449 draws (and drawing
