@@ -1129,7 +1129,8 @@ pub fn run_hosted_with_live(
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_id_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, map)
+            let id = map_override::map_id(&mut v, map)?;
+            Some((id, v.content_base_name(map)))
         }));
     }
     // A matchmaking game's record names its playlist and Live session

@@ -447,7 +447,8 @@ SHA-256.
   multiplayer list ID, then looks up the package's content `MapId` by
   its path. The lobby setter publishes a change immediately. Selecting
   retail clears the advertisement's `map_id`. Telemetry can identify a
-  loaded mod by its aliased cache header name.
+  loaded mod by its aliased cache header name and keeps the base map's
+  name in match reports.
 - **Joining** (`live_hle::maps::MapGate`, given to the HLE through
   `ServerOptions.maps`). A search result whose map cannot be had is left
   out of the browser; finding a session by id (how a join starts) makes its

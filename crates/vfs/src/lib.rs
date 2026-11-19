@@ -417,6 +417,12 @@ impl Vfs {
         Some(format!("{DATA_DEVICE}\\{path}"))
     }
 
+    /// The original map name used to group matches by base in telemetry.
+    pub fn content_base_name(&self, name: &str) -> Option<String> {
+        let path = self.content_maps.path_for_name(name)?;
+        Some(self.content_maps.get(&path)?.package.manifest.base.map)
+    }
+
     /// Look again at map packages (`<data>/maps`) on every mount, after
     /// one was installed or edited while the game runs: a map whose
     /// package changed is resolved again at its next open; a file open now
