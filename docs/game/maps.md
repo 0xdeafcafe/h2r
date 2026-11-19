@@ -725,12 +725,17 @@ game" below.
   session's map counts the same way; a search's check never does. A
   reinstall adds nothing; a failed count is only logged.
 - **The map select.** The installed package is served for its base map at
-  that map's next open. The map select's Mods category is read at boot,
-  so a map installed this session is listed there after a restart; until
-  then it plays as its base map's entry.
-- **Not built.** The preview image (the server serves it; the game would
-  need it as a bitmap tag), the map's description, paging past 40, and
-  the ui_kit preview of these two screens.
+  that map's next open, and the map select follows in the same session:
+  the download's thread reads the catalogue again, and the next Change
+  Map lists the mod under Mods by its name. The base map's slot takes
+  the mod's name, description and (when the package has one) picture,
+  so Select Map, Game Setup and the lobby show the mod, not the base map
+  ([map-select.md](map-select.md), "Installed while the game runs" and
+  "A mod's name and picture"). A mod that is a new map is installed as
+  a content package then, and the game's own content scan runs again
+  before the list is built.
+- **Not built.** The description on the Mods screen's page, paging past
+  40, and the ui_kit preview of these two screens.
 
 **To check in game** (Live on, signed in, a server with at least two
 published maps, one on a disc map you have and one you can make fail, for
@@ -757,8 +762,10 @@ disc's):
    Author, Map, Size, Downloads.
 4. A on Download: "Downloading N%", then "Installed"; stderr `mods: <id>
    installed`; `<data>/maps/live-<16 hex>/` exists and `active.toml`
-   names it. B, B, then host a custom game on that base map: the mod
-   loads. After a restart it is listed under the map select's Mods.
+   names it. B, B, then host a custom game: with no restart, Change Map
+   lists the mod under Mods by its name, with its picture (or the base
+   map's) and description; pick it, and Game Setup and the lobby show
+   its name. The mod loads.
 5. The map whose base you lack: "Needs <Map> from your disc"; nothing
    written under `<data>/maps`.
 6. Signed out (or the server stopped): Mods shows one row, "Sign in to

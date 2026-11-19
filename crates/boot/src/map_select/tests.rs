@@ -198,14 +198,15 @@ fn slots_and_packages_read_as_the_game_lists_them() {
 
 #[test]
 fn one_category_or_none_leaves_the_retail_list() {
-    assert!(prepare(Catalogue::default()).is_none());
+    assert!(!prepare(Catalogue::default(), Vec::new()).active());
     let retail = Catalogue::new([map(
         0x0a,
         "Lockout",
         10,
         "scenarios\\multi\\lockout\\lockout",
     )]);
-    assert!(prepare(retail).is_none());
+    assert!(!prepare(retail, Vec::new()).active());
+    assert!(Selection::new(sample()).active());
 }
 
 // ---- the screens, pressed ----
@@ -324,7 +325,7 @@ fn a_map_s_press_says_which_map_and_the_titles_follow_the_category() {
     assert_eq!(p.spec(&s).title, "Halo: CE");
     assert_eq!(p.step(&mut s, A), ListEffect::Action);
     let pressed = sel.take_pressed().unwrap();
-    let m = sel.catalogue.maps(Category::Halo1)[1].clone();
+    let m = sel.catalogue().maps(Category::Halo1)[1].clone();
     assert_eq!((pressed, m.name.as_str()), (m.id, "Blood Gulch"));
     assert_eq!(sel.take_pressed(), None, "taken once");
     // The rows the game is handed: the category's label as the title, a
@@ -332,7 +333,10 @@ fn a_map_s_press_says_which_map_and_the_titles_follow_the_category() {
     let rows = MapRows(Arc::clone(&sel));
     assert_eq!(rows.title(), IDS.id(CATEGORY_LABELS + 3));
     assert_eq!(rows.count(), 3);
-    assert_eq!(rows.texts(1), [(0, sel.catalogue.label_id(m.id).unwrap())]);
+    assert_eq!(
+        rows.texts(1),
+        [(0, sel.catalogue().label_id(m.id).unwrap())]
+    );
     assert!(rows.texts(3).is_empty());
     assert_eq!(rows.press(9), Chosen::Nothing);
     let cats = CategoryRows(Arc::clone(&sel));
@@ -403,6 +407,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     r.add(&MapSelect {
         sel: Arc::new(Selection::new(sample())),
         flow: Arc::default(),
+        slots: Arc::default(),
     })
     .unwrap();
     r.add(&crate::h1_options_row::SetupRow {
@@ -422,6 +427,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     for line in [
         "0x00149f49 SCREEN_REQUEST: observe_before [map-select:change map arms the categories] -> before [campaigns:the campaign picker first] -> original",
         "0x0019c6a0 MP_LEVEL_ARRAY: before [map-select:a Select Map of ours lists ours] -> original",
+        "0x0019c190 MP_LEVEL_REFRESH: before [map-select:the mods' names and pictures onto their maps] -> original",
         "0x002afd70 MP_LEVEL_NAME: before [map-select:category and package names] -> original",
         "0x002c9ac4 MAP_LIST_ROW_TEXT: observe_before [map-select:note the list drawing] -> original",
         "0x002c9b17 MAP_LIST_ROW_CHOSEN: before [map-select:categories open their maps] -> original",
@@ -637,4 +643,73 @@ fn snapshots_wait_while_a_select_map_of_ours_is_armed_or_up() {
     assert!(f.snapshot_live().unwrap().contains("1 Select Map"));
     assert_eq!(f.freed(0x1000), None);
     assert_eq!(f.snapshot_live(), None, "every screen of ours freed");
+}
+
+// ---- packages installed while the game runs ----
+
+fn disc_slot(id: u32, map: &str, name: &str) -> Vec<u8> {
+    let mut s = vec![0u8; content::map_list::SLOT_LEN];
+    s[..4].copy_from_slice(&id.to_le_bytes());
+    let units: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    s[SLOT_NAME..SLOT_NAME + units.len()].copy_from_slice(&units);
+    let path = format!("scenarios\\multi\\{map}\\{map}");
+    s[SLOT_PATH..SLOT_PATH + path.len()].copy_from_slice(path.as_bytes());
+    s[SLOT_SORT..SLOT_SORT + 4].copy_from_slice(&(id as i32).to_le_bytes());
+    s
+}
+
+#[test]
+fn a_package_installed_while_the_game_runs_is_listed_without_a_restart() {
+    let root = std::env::temp_dir().join(format!("h2-map-select-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let r = Arc::clone(&reads);
+    let sources = Sources::new(&root, move || {
+        r.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![
+            disc_slot(0x0a, "lockout", "Lockout"),
+            disc_slot(0x14, "ascension", "Ascension"),
+        ])
+    });
+    // At boot nothing is installed: the retail list, the disc unread.
+    let (cat, fills) = sources.read().unwrap();
+    let sel = Selection::with_fills(cat, fills);
+    assert!(!sel.active());
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let g0 = sel.generation();
+
+    // A download installs a package for Lockout: read again, the mod is
+    // under Mods by its own name, and its slot will take the name.
+    crate::mod_slots::tests::replacing_package(
+        &root,
+        "live-00aa",
+        "lockout",
+        "Lockout Snow",
+        false,
+    );
+    refresh(&sel, &sources, || {});
+    assert!(sel.generation() > g0);
+    assert!(sel.active());
+    let cat = sel.catalogue();
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    let m = &cat.maps(Category::Mods)[0];
+    assert_eq!((m.id, m.name.as_str()), (0x0a, "Lockout Snow"));
+    assert_eq!(m.replaces.as_deref(), Some("Lockout"));
+    assert_eq!(sel.fills()[0].names[0], "Lockout Snow");
+    assert!(!sel.take_content_changed(), "no content package came");
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // A new map (a content package) installed by the refresh: the game's
+    // content scan is asked for; the disc's slots aren't read again.
+    let content_root = sources.content_root();
+    refresh(&sel, &sources, || {
+        let d = content_root.join("4D53006480020001");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("patch.lvl"), b"not a record").unwrap();
+    });
+    assert!(sel.take_content_changed());
+    assert!(!sel.take_content_changed(), "taken once");
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    std::fs::remove_dir_all(&root).ok();
 }
