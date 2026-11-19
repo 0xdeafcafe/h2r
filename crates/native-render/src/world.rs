@@ -282,7 +282,15 @@ impl WorldBuilder {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
             let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
             self.vertices.push(WorldVertex {
-                position: place.point(section.positions[i]),
+                // Unplaced geometry (a cluster) keeps its positions' bits:
+                // the D3D path feeds them to the same program, and the
+                // passes after layer 3 test depth equal against what it
+                // writes.
+                position: if *place == Placement::IDENTITY {
+                    section.positions[i]
+                } else {
+                    place.point(section.positions[i])
+                },
                 uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
                 lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
                 normal: place.normal(normal),
@@ -507,6 +515,25 @@ mod tests {
         assert_eq!((d.first_index, d.index_count, d.material, d.lightmap), (0, 6, 3, PAGE));
         assert_eq!(d.bounds, Aabb { min: [0.0; 3], max: [1.0, 1.0, 0.0] });
         assert_eq!(w.vertices[3].lightmap_uv, [0.5; 2]);
+    }
+
+    #[test]
+    fn a_cluster_keeps_its_positions_bit_for_bit() {
+        // The D3D path feeds a cluster's positions to the world program
+        // unchanged, and the passes after layer 3 (shadows, lights, fog,
+        // overlays) test depth equal against what layer 3 wrote: the
+        // native pass must feed the same bits. Identity arithmetic would
+        // not (0 + -0 is +0; x + 0·y is not x once y is infinite).
+        let mut b = WorldBuilder::new();
+        let mut s = quad(0, false, false);
+        s.positions[0] = [-0.0, f32::from_bits(1), 1.0e30];
+        s.positions[1] = [0.1, -1.0e-30, f32::INFINITY];
+        b.add_section(Owner::Cluster(0), &s, &Placement::IDENTITY, None);
+        let w = b.finish();
+        let bits = |p: [f32; 3]| p.map(f32::to_bits);
+        for i in 0..s.positions.len() {
+            assert_eq!(bits(w.vertices[i].position), bits(s.positions[i]), "vertex {i}");
+        }
     }
 
     #[test]

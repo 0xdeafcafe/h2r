@@ -184,6 +184,36 @@ the world (layers 7 and 8 in stage 1) only line up when the native clip
 position equals the translated vertex program's bit for bit; stage 1b
 removes that dependency by drawing those layers natively too.
 
+That dependency is not only layers 7 and 8: on 03a every world template
+has, after layer 3, shadow application (11), the lights (12, 13) and
+planar fog (16), all `ZFUNC` equal (`0x202`) without depth writes
+(`h2 shader`). The 2026-11-19 A/B (the walls right, the palette fixed)
+lost them where native depth was not the D3D path's: decals and signs,
+a doorway's light, the fire's light on the rocks as speckle. What the
+native pass must match, per part:
+
+- **Clusters**: classification 0 of the pass's vertex program, `v0`
+  the section's position. The world keeps a cluster's position bits as
+  decoded (`WorldBuilder::add_section`, no identity arithmetic: `0 + -0`
+  is `+0`, `x + 0·inf` is NaN), and the program, view constants
+  (`c[0..18]` at the issue) and W depth (`floor(w)/16777215` for D24,
+  `xps_w_depth`) are the D3D path's.
+- **Instanced placements**: the structure draw takes the rigid
+  classification for them (render record `+0` bits 3 and 12, set by the
+  placement caller `0x001336d3` of `0x0002cbf0`; the cluster caller
+  `0x00133504` sets neither), whose program decompresses `v0` with
+  `c[170..171]` and places it with `c[50..52]`; `0x0004d830` uploads
+  those rows from the matrix at render record `+0x1c`, which for a
+  placement is the placement's tag element (`[sbsp+0x144] + 0x58·i`):
+  forward, left and up by column and the position, the scale at `+0`
+  not applied. The native world places them on the CPU
+  (`Placement::point`, another order of operations), so its depth there
+  is not the D3D path's, and they stay on the D3D path
+  (`native_world_glue::drawn_natively`; the load says how many parts).
+  Drawing them natively means the rigid program with those rows per
+  placement. The lights take only materials without placements, since
+  their native passes would meet the D3D depth there.
+
 ### Match the look
 
 The world's layer-3 passes are lightmap passes: the material's base
