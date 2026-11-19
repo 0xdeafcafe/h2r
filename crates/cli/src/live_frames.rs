@@ -590,6 +590,7 @@ mod server_test {
             let started = game::GameStarted {
                 game_id: id.into(),
                 host: op.author(),
+                dedicated: Default::default(),
                 game: game::NewGame {
                     map: "lockout".into(),
                     mode: "multiplayer".into(),

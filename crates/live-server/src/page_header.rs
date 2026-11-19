@@ -537,6 +537,7 @@ mod tests {
         // The same game, as the read model would carry it (the web side's
         // fixture game, web/test/fixtures/game-header-game.ts).
         let summary = GameSummary {
+            dedicated: Default::default(),
             game_id: "0123abcd".into(),
             map: "orchard".into(),
             mode: "multiplayer".into(),

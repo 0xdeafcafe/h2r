@@ -193,7 +193,7 @@ impl HostClaims {
     }
 }
 
-fn lease_id(subject: &str) -> Option<&str> {
+pub(crate) fn lease_id(subject: &str) -> Option<&str> {
     subject
         .strip_prefix("host:")
         .filter(|id| id.starts_with("hl-") && game::valid_id(id))

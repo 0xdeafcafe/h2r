@@ -295,6 +295,7 @@ async fn signed_finish_ranks_a_roster_subset_once_and_rejects_wrong_lease() {
             json!(game::GameStarted {
                 game_id: secondary.into(),
                 host: account.to_string(),
+                dedicated: Default::default(),
                 game: client_game,
             }),
         )],
@@ -388,6 +389,7 @@ async fn custom_session_has_no_host_player_and_is_bound_to_its_token() {
     let live = live().await;
     let mut lease = lease();
     lease.assignment_id = "custom-test".into();
+    lease.region = Some("lhr".into());
     lease.hopper = None;
     lease.roster.clear();
     record(
@@ -405,6 +407,19 @@ async fn custom_session_has_no_host_player_and_is_bound_to_its_token() {
     assert_eq!(session.host, format!("host:{}", lease.id));
     assert_eq!(session.host_xuid, Xuid(0));
     assert!(session.players.is_empty());
+    let response = crate::sessions::detail(
+        axum::extract::State(live.clone()),
+        axum::extract::Path(session.session_id.clone()),
+        axum::http::HeaderMap::new(),
+    )
+    .await
+    .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let wire: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(wire["session"]["host_lease"], json!(lease.id));
+    assert_eq!(wire["session"]["dedicated_region"], "lhr");
+    assert!(wire["session"]["endpoint"].get("addr").is_none());
+
     assert_eq!(
         live.create_session(Some(&token), ad(), addr).await.unwrap(),
         session
@@ -416,14 +431,11 @@ async fn custom_session_has_no_host_player_and_is_bound_to_its_token() {
         ErrorCode::Forbidden
     );
     let game = live.start_game(Some(&token), new_game()).await.unwrap();
-    assert!(
-        live.game(&game.game_id)
-            .unwrap()
-            .summary
-            .players
-            .iter()
-            .all(|p| p.xuid != Some(Xuid(0)))
-    );
+    let detail = live.game(&game.game_id).unwrap();
+    assert!(detail.summary.players.iter().all(|p| p.xuid != Some(Xuid(0))));
+    let wire = serde_json::to_value(detail).unwrap();
+    assert_eq!(wire["host_lease"], json!(lease.id));
+    assert_eq!(wire["dedicated_region"], "lhr");
     let operator = issue_token(
         &live.identity.key,
         &live.identity.author(),

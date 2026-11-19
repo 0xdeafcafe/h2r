@@ -1233,7 +1233,7 @@ impl Live {
                 .filter(|g| g.xuids.contains(&a.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
-                .map(|g| g.summary())
+                .map(|g| self.game_summary(g))
                 .collect(),
             position,
         })
@@ -1274,7 +1274,7 @@ impl Live {
                 .filter(|g| g.xuids.contains(&b.xuid))
                 .filter(|g| g.shows_to(viewer, |x, y| s.is_friends(x, y)))
                 .take(RECENT_GAMES)
-                .map(|g| g.summary())
+                .map(|g| self.game_summary(g))
                 .collect(),
             position,
         })

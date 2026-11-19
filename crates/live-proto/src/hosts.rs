@@ -20,6 +20,15 @@ pub const KINDS: [&str; 5] = [
 pub const DEFAULT_IDLE_TIMEOUT_S: u32 = 120;
 pub const DEFAULT_MAX_MATCH_S: u32 = 1800;
 
+/// The lease metadata shown on public game and session pages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DedicatedHostFields {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_lease: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedicated_region: Option<String>,
+}
+
 /// A reservation for one match on a dedicated process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostLease {

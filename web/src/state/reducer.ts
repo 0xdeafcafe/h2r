@@ -8,6 +8,7 @@ import type {
 } from "../api/types";
 import { clankerAppearance, normalizeAppearance, type Appearance } from "../lib/gameart";
 import { normalizeSkulls } from "../lib/skulls";
+import type { DedicatedHostFields } from "../lib/hosts";
 
 export interface Presence {
   state: string;
@@ -53,7 +54,7 @@ export interface GamePlayerState extends GamePlayer {
   appearance: Appearance | null;
 }
 
-export interface GameState {
+export interface GameState extends DedicatedHostFields {
   archiveRevision?: number;
   game_id: GameId;
   console: string | null;
@@ -275,6 +276,8 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         game_id: id,
         console: d.console ?? null,
         host: d.host ?? null,
+        host_lease: str(d.host_lease),
+        dedicated_region: str(d.dedicated_region),
         map: d.map,
         map_id: mapId(d.map_id),
         mode: d.mode,
@@ -632,6 +635,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
       game_id: d.game_id,
       console: det.console ?? null,
       host: det.host ?? null,
+      host_lease: str(d.host_lease),
+      dedicated_region: str(d.dedicated_region),
       map: d.map,
       map_id: mapId(d.map_id),
       mode: d.mode,
@@ -659,6 +664,8 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
   } else {
     const k = kindFields(d);
     g.map_id ??= mapId(d.map_id);
+    g.host_lease ??= str(d.host_lease);
+    g.dedicated_region ??= str(d.dedicated_region);
     g.kind ??= k.kind; g.playlist ??= k.playlist; g.playlist_id ??= k.playlist_id;
     g.difficulty ??= k.difficulty; g.online ??= k.online;
     if (!g.skulls.length) g.skulls = k.skulls;

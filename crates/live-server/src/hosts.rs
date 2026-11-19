@@ -380,6 +380,27 @@ impl Live {
             .cloned()
     }
 
+    pub(crate) fn dedicated_host_fields(
+        &self,
+        subject: &str,
+    ) -> live_proto::hosts::DedicatedHostFields {
+        let Some(id) = crate::host_identity::lease_id(subject) else {
+            return Default::default();
+        };
+        let dedicated_region = self
+            .hosts
+            .registry
+            .read()
+            .unwrap()
+            .leases
+            .get(id)
+            .and_then(|row| row.lease.region.clone());
+        live_proto::hosts::DedicatedHostFields {
+            host_lease: Some(id.to_owned()),
+            dedicated_region,
+        }
+    }
+
     fn require_host(&self, lease_id: &str) -> ApiResult<HostView> {
         self.host_view(lease_id)
             .ok_or_else(|| not_found("no such host lease"))

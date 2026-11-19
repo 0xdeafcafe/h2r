@@ -130,6 +130,7 @@ impl Game {
         let g = &self.started.game;
         game::GameSummary {
             game_id: self.started.game_id.clone(),
+            dedicated: self.started.dedicated.clone(),
             map: g.map.clone(),
             mode: g.mode.clone(),
             kind: g.kind().into(),

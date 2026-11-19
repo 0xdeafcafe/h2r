@@ -922,7 +922,11 @@ pub(crate) async fn detail(
         .sessions
         .get(&id)
         .ok_or_else(|| not_found("no such session"))?;
-    let item = for_reader(item, token.is_some() && assignment_endpoint_shows(item, viewer));
+    let item = for_reader(
+        &live,
+        item,
+        token.is_some() && assignment_endpoint_shows(item, viewer),
+    );
     Ok(crate::http::json(
         StatusCode::OK,
         &json!({"session":item,"position":live.position()}),
@@ -1016,7 +1020,7 @@ pub(crate) async fn list(
     Ok(crate::http::json(
         StatusCode::OK,
         &Page {
-            items: items.iter().map(|s| for_reader(s, signed)).collect(),
+            items: items.iter().map(|s| for_reader(&live, s, signed)).collect(),
             next,
             position: live.position(),
         },
@@ -1031,8 +1035,15 @@ fn assignment_endpoint_shows(s: &Session, viewer: Option<live_proto::Xuid>) -> b
 /// A session as the session endpoints answer it: whole for a signed-in
 /// reader (a game joins by its addresses), without them
 /// ([`strip_addresses`]) for an anonymous one.
-fn for_reader(s: &Session, signed: bool) -> serde_json::Value {
+fn for_reader(live: &Live, s: &Session, signed: bool) -> serde_json::Value {
     let mut v = serde_json::to_value(s).expect("serializes");
+    let dedicated = live.dedicated_host_fields(&s.host);
+    if let Some(id) = dedicated.host_lease {
+        v["host_lease"] = id.into();
+    }
+    if let Some(region) = dedicated.dedicated_region {
+        v["dedicated_region"] = region.into();
+    }
     if !signed {
         strip_addresses(&mut v);
     }

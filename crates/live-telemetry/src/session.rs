@@ -458,6 +458,7 @@ impl Session {
             live_proto::game::GameStarted {
                 game_id: game_id.clone(),
                 host: self.host.clone(),
+                dedicated: Default::default(),
                 game,
             },
         )));

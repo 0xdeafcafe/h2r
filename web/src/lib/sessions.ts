@@ -2,6 +2,8 @@
 // (docs/live/live-api.md "Sessions"). The web only reads them; joining happens
 // in the game. Everything here is pure.
 
+import { dedicatedHostLabel, type DedicatedHostFields } from "./hosts";
+
 export interface SessionSlots {
   public_filled: number;
   public_open: number;
@@ -9,7 +11,7 @@ export interface SessionSlots {
   private_open: number;
 }
 
-export interface Session {
+export interface Session extends DedicatedHostFields {
   session_id: string;
   host_xuid: string;
   host_gamertag: string;
@@ -102,7 +104,8 @@ export function parseSession(raw: unknown): Session | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const id = text(r.session_id), tag = text(r.host_gamertag);
-  if (!id || !tag) return null;
+  const host_lease = text(r.host_lease);
+  if (!id || (!tag && !host_lease)) return null;
   const ad = (r.advertisement && typeof r.advertisement === "object" ? r.advertisement : {}) as Record<string, unknown>;
   const s = (ad.slots && typeof ad.slots === "object" ? ad.slots : {}) as Record<string, unknown>;
   const players: Record<string, string> = {};
@@ -112,7 +115,9 @@ export function parseSession(raw: unknown): Session | null {
   return {
     session_id: id,
     host_xuid: text(r.host_xuid) ?? "",
-    host_gamertag: tag,
+    host_gamertag: tag ?? "",
+    host_lease,
+    dedicated_region: text(r.dedicated_region),
     state: text(r.state) ?? "open",
     since: text(r.since),
     flags: text(ad.flags) ?? "custom",
@@ -194,11 +199,12 @@ export function sortSessions(list: readonly Session[]): Session[] {
  *  `custom` is a custom map's package name, which replaces the map's. */
 export function sessionRow(s: Session, title?: (stem: string) => string, custom?: string | null): { key: string; label: string; meta: string } {
   const n = seats(s);
+  const label = dedicatedHostLabel(s) ?? s.host_gamertag;
   if (isCoop(s) && s.campaign) {
     const ping = pingText(s);
-    return { key: s.session_id, label: s.host_gamertag, meta: `co-op ${levelName(s.campaign, title)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
+    return { key: s.session_id, label, meta: `co-op ${levelName(s.campaign, title)} ${n.filled}/${n.max}${ping ? ` ${ping}` : ""}` };
   }
-  return { key: s.session_id, label: s.host_gamertag, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
+  return { key: s.session_id, label, meta: `${custom ?? mapName(s, title)} ${n.filled}/${n.max}` };
 }
 
 /** "3 open", "full", or "closed" for a session no longer open. */

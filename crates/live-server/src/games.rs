@@ -573,9 +573,11 @@ impl Live {
             };
         }
         let game_id = stable_id.unwrap_or_else(random_game_id);
+        let host = author.to_string();
         let started = GameStarted {
             game_id: game_id.clone(),
-            host: author.to_string(),
+            dedicated: self.dedicated_host_fields(&host),
+            host,
             game: new,
         };
         let stream = game::stream(&game_id);
@@ -1228,7 +1230,7 @@ impl Live {
             .then(|| page.last().map(|g| g.position.to_string()))
             .flatten();
         Page {
-            items: page.iter().map(|g| g.summary()).collect(),
+            items: page.iter().map(|g| self.game_summary(g)).collect(),
             next,
             position,
         }
@@ -1250,13 +1252,22 @@ impl Live {
         }
     }
 
+    pub(crate) fn game_summary(&self, game: &Game) -> GameSummary {
+        let mut summary = game.summary();
+        // Older GameStarted events can still use the lease in their host subject.
+        if summary.dedicated.host_lease.is_none() {
+            summary.dedicated = self.dedicated_host_fields(&game.started.host);
+        }
+        summary
+    }
+
     pub fn game(&self, id: &str) -> Result<GameDetail, ApiError> {
         let position = self.position();
         let s = self.model.read();
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
         let n = &g.started.game;
         Ok(GameDetail {
-            summary: g.summary(),
+            summary: self.game_summary(g),
             console: n.console.clone(),
             host: g.started.host.clone(),
             score_limit: n.score_limit,
