@@ -126,6 +126,7 @@ impl IngestState {
 
 struct FrameClock {
     last_sent: Instant,
+    sim_tick: Option<u64>,
     /// What throttled frames carried (shots, actions, hits, machines),
     /// handed to the next frame sent so none is lost.
     unsent: game::FrameCarry,
@@ -146,6 +147,7 @@ impl FrameClock {
     fn new(now: Instant, sid: u64) -> Self {
         FrameClock {
             last_sent: now - FRAME_INTERVAL,
+            sim_tick: None,
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
             chunks: ChunkWriter::default(),
@@ -184,15 +186,16 @@ impl FrameClock {
         live
     }
 
-    /// Throttles a validated frame: false when it is dropped (what it
-    /// carried goes to the next sent frame). A sent frame's shots, actions
-    /// and hits cover the frames dropped before it.
-    fn admit(&mut self, frame: &mut Frame, now: Instant) -> bool {
+    fn observe_machines(&mut self, frame: &Frame) {
         for m in &frame.machines {
             if self.machines.len() < game::MAX_FRAME_MACHINES || self.machines.contains_key(&m.id) {
                 self.machines.insert(m.id.clone(), m.clone());
             }
         }
+    }
+
+    /// Throttles the wall-clock fan-out, carrying actions and hits forward.
+    fn admit(&mut self, frame: &mut Frame, now: Instant) -> bool {
         if now.duration_since(self.last_sent) < FRAME_INTERVAL {
             self.unsent.add(frame);
             return false;
@@ -296,6 +299,9 @@ impl Live {
     fn writable_game(&self, id: &str, author: &Author) -> Result<Game, ApiError> {
         let s = self.model.read();
         let g = s.games.get(id).ok_or_else(|| not_found("no such game"))?;
+        if g.started.game.sim.is_some() && !self.admins.is_admin(author, &s) {
+            return Err(forbidden("simulation recording requires an admin"));
+        }
         if g.ended.is_some() {
             return Err(conflict("the game has ended"));
         }
@@ -314,6 +320,13 @@ impl Live {
     ) -> Result<GameCreated, ApiError> {
         let author = self.authenticate(bearer, lxm::GAMES_WRITE)?;
         self.rate_limit(&author, lxm::GAMES_WRITE)?;
+        let _sim_guard = if let Some(sim) = &new.sim {
+            crate::admin::require_admin(self, &author)?;
+            crate::sim_runs::validate_start(sim, &new)?;
+            Some(self.sim_writes.lock().await)
+        } else {
+            None
+        };
         if new.playlist.is_none() {
             new.playlist = self.playlist_name(new.playlist_id.as_deref()).await;
         }
@@ -332,7 +345,23 @@ impl Live {
             &new.players,
         )
         .map_err(invalid)?;
-        let game_id = random_game_id();
+        let game_id = match &new.sim {
+            Some(sim) => {
+                let id = game::sim_game_id(&sim.run_id);
+                if let Some(g) = self.model.read().games.get(&id) {
+                    return if g.started.host == author.to_string() && g.started.game == new {
+                        Ok(GameCreated {
+                            game_id: id,
+                            position: g.position,
+                        })
+                    } else {
+                        Err(conflict("that simulation run id is already in use"))
+                    };
+                }
+                id
+            }
+            None => random_game_id(),
+        };
         let started = GameStarted {
             game_id: game_id.clone(),
             host: author.to_string(),
@@ -432,6 +461,9 @@ impl Live {
                             "event {i}: a player joins as itself; the host adds others"
                         )));
                     }
+                    if game.started.game.sim.is_some() && (!p.is_bot() || p.xuid.is_some()) {
+                        return Err(invalid("simulation players must be local bots"));
+                    }
                     crate::bots::check_players(
                         &self.model.read(),
                         host,
@@ -486,8 +518,12 @@ impl Live {
         let last = recorded.last().map_or(0, |e| e.position);
         self.wait_applied(last).await?;
         if ends {
-            // A finished ranked game ranks its players (crate::ranks).
-            self.rank_game(game_id).await?;
+            if game.started.game.sim.is_some() {
+                self.ingest.games.lock().unwrap().remove(game_id);
+            } else {
+                // A finished ranked game ranks its players (crate::ranks).
+                self.rank_game(game_id).await?;
+            }
         }
         Ok(last)
     }
@@ -504,7 +540,19 @@ impl Live {
         if !game::valid_id(&frame.game_id) {
             return Err(invalid("bad game_id"));
         }
-        self.writable_game(&frame.game_id, author)?;
+        let game = self.writable_game(&frame.game_id, author)?;
+        let sim = game.started.game.sim.as_ref();
+        if sim.is_some()
+            && frame
+                .tick
+                .saturating_sub(game.started.game.tick.unwrap_or(0))
+                > crate::sim_runs::MAX_TICKS
+        {
+            return Err(ApiError::new(
+                live_proto::ErrorCode::TooLarge,
+                "simulation recording exceeds one in-game hour",
+            ));
+        }
         game::validate_frame(&frame).map_err(invalid)?;
         game::normalize_frame(&mut frame);
         let now_s = now();
@@ -513,19 +561,46 @@ impl Live {
         let clock = self.ingest.clock(&game_id);
         let closed = {
             let mut clock = clock.lock().unwrap();
-            if !clock.admit(&mut frame, Instant::now()) {
-                return Ok(FrameOutcome::Throttled);
+            clock.observe_machines(&frame);
+            let now = Instant::now();
+            if let Some(sim) = sim {
+                // Record on game time. Wall time only limits live fan-out.
+                if clock
+                    .sim_tick
+                    .is_some_and(|tick| frame.tick < tick.saturating_add(2))
+                {
+                    return Ok(FrameOutcome::Throttled);
+                }
+                clock.sim_tick = Some(frame.tick);
+                let chunk = if game.sim_recording_limited {
+                    None
+                } else {
+                    clock.record(&frame)
+                };
+                if !sim.deferred && clock.admit(&mut frame, now) {
+                    let _ = self.frames.send(clock.publish(frame));
+                }
+                chunk
+            } else {
+                if !clock.admit(&mut frame, now) {
+                    return Ok(FrameOutcome::Throttled);
+                }
+                let closed = clock.record(&frame);
+                // Sent under the game's lock: its frames go out in order.
+                let _ = self.frames.send(clock.publish(frame));
+                closed
             }
-            let closed = clock.record(&frame);
-            // Sent under the game's lock: its frames go out in order.
-            let _ = self.frames.send(clock.publish(frame));
-            closed
         };
         let recorded = closed.is_some();
         if let Some(c) = closed {
             self.store_chunk(&game_id, c).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
+    }
+
+    pub(crate) fn sim_tick(&self, id: &str) -> Option<u64> {
+        let clock = self.ingest.games.lock().unwrap().get(id).cloned()?;
+        clock.lock().unwrap().sim_tick
     }
 
     /// Stores game `id`'s open chunk, if it has frames: at the game's end
@@ -549,6 +624,31 @@ impl Live {
     /// with neither), then its index entry in the log as a server-signed
     /// `FrameChunk`.
     async fn store_chunk(&self, id: &str, c: Chunk) -> Result<(), ApiError> {
+        let sim = crate::sim_runs::is_sim_id(id);
+        let _guard = if sim {
+            // Serialize the archive quota with its accounting event. Both
+            // come back from the log after a Worker wake.
+            let guard = self.sim_writes.lock().await;
+            let (bytes, limited) = self.model.read().games.get(id).map_or((0, false), |g| {
+                (g.sim_recorded_bytes, g.sim_recording_limited)
+            });
+            if limited {
+                return Ok(());
+            }
+            if bytes.saturating_add(c.meta.bytes) > crate::sim_runs::MAX_ARCHIVE_BYTES {
+                let event = self.server_event(
+                    game::stream(id),
+                    crate::sim_runs::RECORDING_LIMITED,
+                    json!({}),
+                );
+                let stored = self.store.append(vec![event], &[]).await?;
+                self.wait_applied(stored[0].position).await?;
+                return Ok(());
+            }
+            Some(guard)
+        } else {
+            None
+        };
         match self.blobs() {
             Some(b) => {
                 let meta = crate::blobs::Meta {
@@ -571,7 +671,10 @@ impl Live {
         }
         let data = serde_json::to_value(&c.meta).expect("serializes");
         let event = self.server_event(game::stream(id), chunk::FRAME_CHUNK, data);
-        self.store.append(vec![event], &[]).await?;
+        let stored = self.store.append(vec![event], &[]).await?;
+        if sim {
+            self.wait_applied(stored[0].position).await?;
+        }
         Ok(())
     }
 
@@ -790,6 +893,7 @@ impl Live {
         let s = self.model.read();
         let page: Vec<&Game> = s
             .games_newest()
+            .filter(|g| g.started.game.sim.is_none())
             .filter(|g| before.is_none_or(|b| g.position < b))
             .filter(|g| filter.matches(&g.started.game))
             .filter(|g| g.shows_to(viewer, |a, b| s.is_friends(a, b)))
@@ -975,11 +1079,10 @@ impl Live {
             .presence
             .values()
             .map(|p| p.last_seen + policy.presence_ttl_s);
-        let games = s
-            .games
-            .values()
-            .filter(|g| g.ended.is_none())
-            .map(|g| g.last_activity + policy.game_idle_s);
+        let games = s.games.values().filter(|g| g.ended.is_none()).map(|g| {
+            g.last_activity
+                + crate::sim_runs::idle_seconds(g.started.game.sim.as_ref(), policy.game_idle_s)
+        });
         let sessions = s
             .sessions
             .values()
@@ -1007,7 +1110,15 @@ impl Live {
             let idle = s
                 .games
                 .values()
-                .filter(|g| g.ended.is_none() && g.last_activity + policy.game_idle_s < now)
+                .filter(|g| {
+                    g.ended.is_none()
+                        && g.last_activity
+                            + crate::sim_runs::idle_seconds(
+                                g.started.game.sim.as_ref(),
+                                policy.game_idle_s,
+                            )
+                            < now
+                })
                 .map(|g| {
                     (
                         g.started.game_id.clone(),
@@ -1133,6 +1244,7 @@ mod tests {
         let at = |ms: u64| start + Duration::from_millis(ms);
         let mut chunks = Vec::new();
         let mut send = |clock: &mut FrameClock, mut f: Frame, ms: u64| {
+            clock.observe_machines(&f);
             if clock.admit(&mut f, at(ms)) {
                 chunks.extend(clock.record(&f));
             }

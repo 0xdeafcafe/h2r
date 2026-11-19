@@ -144,7 +144,9 @@ bracket): N = 30 renders once a second, keeping the caches warm at about
 The pacer only makes the host wait; schedules and guest state are the same
 paced or not (`crates/kernel/src/pacer.rs`). So a paced and an unpaced run
 of the same match are the same match. `sim::clock` holds the parsing and
-the arithmetic (tested); boot sets `Machine::pacer` from it.
+the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
+`--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
+file for this invocation.
 
 The report's speed-up is game time over wall time from the match's first
 tick to its end (`sim::clock::SpeedMeter`), and also over the whole
@@ -324,8 +326,8 @@ report's body plus shield numbers (**S**: read as amounts, as telemetry's
 `hits` are); a hit is a report with another player's unit as the victim
 (a shotgun's pellets each count, so accuracy can pass 1).
 
-Live telemetry is not needed for this and stays off; with
-`H2_TELEMETRY_FILE` set it still writes its own JSONL beside the report.
+Sim runs are local by default. Set `H2_TELEMETRY_FILE` for a separate
+JSONL capture, or use `--upload` for an Uplink recording.
 
 ## 7. Parallel runs, A/B and tuning
 
@@ -362,6 +364,37 @@ params = "tuning/aggressive.toml"
   (Welch). `compare.json` and a text table in the results directory.
   `h2 sim compare <dir>` prints it again.
 - `h2 sim batch --dry-run` prints the runs and stops.
+
+### Watching in Uplink
+
+```sh
+h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --upload
+```
+
+```sh
+h2 sim batch docs/runtime/sim-examples/batch.toml --parallel 4 --upload
+```
+
+The commands use your stored Live account and its server. When multiple
+accounts match, choose an admin with `--as GAMERTAG` and optionally narrow
+the selection with `--server URL`. HTTPS and loopback HTTP are supported.
+Use the same disc, image and nav meshes you use for local runs.
+
+Sign into that server as an admin in h2 Uplink. Open **Halo Admin →
+Clanker Training** and select a running match to watch it. The viewer follows
+the live edge on the simulation's clock and shows its usual **Live** control
+for returning to it after a seek. The training page shows measured simulation
+speed. Use `--pace realtime` for normal game speed.
+
+Each batch streams at most two matches at once. Other running matches appear
+in the list with replay available after the match. They buffer packed
+telemetry locally and take turns uploading after they finish. The batch prints
+its Live batch ID and writes it to `batch.json`. Fork seed runs stay local.
+
+The same game stream becomes the replay at the end. The CLI still saves the
+local report, including when an upload fails. Training games are private
+and excluded from public stats and ranks. The
+[Live API](../live/live-api.md#clanker-training) describes the storage limits.
 
 ### Forking from spawn (snapshots)
 

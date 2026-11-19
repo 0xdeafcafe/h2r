@@ -105,9 +105,35 @@ impl Appearance {
     }
 }
 
+/// Private headless simulation metadata carried by the normal game start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimGame {
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_id: Option<String>,
+    /// Decimal u64, including seeds larger than JavaScript's exact integer range.
+    pub seed: String,
+    pub gametype: String,
+    pub pace: String,
+    /// Resolved bot specs from the match config, with inline tuning.
+    pub bots: Vec<serde_json::Value>,
+    /// This match's recording is sent after simulation finishes.
+    #[serde(default)]
+    pub deferred: bool,
+}
+
+/// Sim recordings' stable game id, also used when retrying a start.
+pub fn sim_game_id(run_id: &str) -> String {
+    format!("sim-{run_id}")
+}
+
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewGame {
+    /// Present only for private admin training games.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim: Option<SimGame>,
+
     #[serde(default)]
     pub console: Option<String>,
     pub map: String,
