@@ -33,13 +33,18 @@ pub struct LoadedModel {
     /// The sections drawn, by index into `geometry.sections` (the render
     /// record key's section).
     pub sections: Vec<usize>,
+    /// Every detail level's section of the permutations picked, highest
+    /// first per region: the game draws a lower one for a distant object,
+    /// its records naming that section.
+    pub lod_sections: Vec<usize>,
 }
 
 /// A render-model region as the pick sees it: its name and, per
-/// permutation, the name and the highest-LOD section.
+/// permutation, the name and its section per detail level (lowest first,
+/// as `Permutation::lod_sections`).
 pub struct RegionSections<'a> {
     pub name: Option<&'a str>,
-    pub permutations: Vec<(Option<&'a str>, Option<usize>)>,
+    pub permutations: Vec<(Option<&'a str>, [Option<usize>; 6])>,
 }
 
 /// A variant region: its name and the permutation names it may pick.
@@ -48,11 +53,39 @@ pub struct VariantRegion<'a> {
     pub permutations: Vec<Option<&'a str>>,
 }
 
-/// The section to draw per region: the variant's one permutation when it
-/// lists the region, else the region's first. `Err` when a listed region
-/// has several permutations (chosen at run time) or names a permutation the
-/// render model lacks.
+/// The section to draw per region: the highest detail level of the
+/// permutation [`pick_permutations`] picks.
 pub fn pick_sections(regions: &[RegionSections<'_>], variant: &[VariantRegion<'_>]) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for lods in pick_permutations(regions, variant)? {
+        if let Some(&s) = lods.iter().rev().flatten().next()
+            && !out.contains(&s)
+        {
+            out.push(s);
+        }
+    }
+    Ok(out)
+}
+
+/// Every detail level's section of the permutations [`pick_permutations`]
+/// picks, highest first per region, each once.
+pub fn pick_lod_sections(regions: &[RegionSections<'_>], variant: &[VariantRegion<'_>]) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for lods in pick_permutations(regions, variant)? {
+        for &s in lods.iter().rev().flatten() {
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The permutation drawn per region (its sections per detail level): the
+/// variant's one permutation when it lists the region, else the region's
+/// first. `Err` when a listed region has several permutations (chosen at
+/// run time) or names a permutation the render model lacks.
+pub fn pick_permutations<'r>(regions: &'r [RegionSections<'_>], variant: &[VariantRegion<'_>]) -> Result<Vec<&'r [Option<usize>; 6]>, String> {
     let mut out = Vec::new();
     for r in regions {
         let chosen = match variant.iter().find(|v| v.name.is_some() && v.name == r.name) {
@@ -64,19 +97,17 @@ pub fn pick_sections(regions: &[RegionSections<'_>], variant: &[VariantRegion<'_
                         v.permutations.len()
                     ));
                 };
-                r.permutations
-                    .iter()
-                    .find(|(name, _)| name.is_some() && name == p)
-                    .ok_or_else(|| format!("region {}: no permutation {}", r.name.unwrap_or("?"), p.unwrap_or("?")))?
-                    .1
+                Some(
+                    &r.permutations
+                        .iter()
+                        .find(|(name, _)| name.is_some() && name == p)
+                        .ok_or_else(|| format!("region {}: no permutation {}", r.name.unwrap_or("?"), p.unwrap_or("?")))?
+                        .1,
+                )
             }
-            None => r.permutations.first().and_then(|p| p.1),
+            None => r.permutations.first().map(|p| &p.1),
         };
-        if let Some(s) = chosen
-            && !out.contains(&s)
-        {
-            out.push(s);
-        }
+        out.extend(chosen);
     }
     Ok(out)
 }
@@ -107,7 +138,7 @@ pub fn load_object_model<R: Read + Seek>(
         .iter()
         .map(|r| RegionSections {
             name: r.name.as_deref(),
-            permutations: r.permutations.iter().map(|p| (p.name.as_deref(), p.best_section())).collect(),
+            permutations: r.permutations.iter().map(|p| (p.name.as_deref(), p.lod_sections)).collect(),
         })
         .collect();
     let variant: Vec<VariantRegion<'_>> = resolved
@@ -119,6 +150,7 @@ pub fn load_object_model<R: Read + Seek>(
         })
         .collect();
     let sections = pick_sections(&regions, &variant)?;
+    let lod_sections = pick_lod_sections(&regions, &variant)?;
     let inverse_binds = geo
         .nodes
         .iter()
@@ -163,6 +195,7 @@ pub fn load_object_model<R: Read + Seek>(
         shaders,
         geometry: geo,
         sections,
+        lod_sections,
     })
 }
 
@@ -173,8 +206,42 @@ mod tests {
     fn region<'a>(name: &'a str, perms: &[(&'a str, usize)]) -> RegionSections<'a> {
         RegionSections {
             name: Some(name),
-            permutations: perms.iter().map(|&(n, s)| (Some(n), Some(s))).collect(),
+            permutations: perms
+                .iter()
+                .map(|&(n, s)| {
+                    let mut lods = [None; 6];
+                    lods[5] = Some(s);
+                    (Some(n), lods)
+                })
+                .collect(),
         }
+    }
+
+    /// A distant object is drawn at a lower detail level: its records name
+    /// that level's section, which the native parts must hold too.
+    #[test]
+    fn every_detail_level_of_the_picked_permutation_is_loaded_highest_first() {
+        let lods = |s: [Option<usize>; 6]| s;
+        let regions = [
+            RegionSections {
+                name: Some("body"),
+                permutations: vec![
+                    (Some("base"), lods([Some(4), Some(4), Some(2), None, None, Some(0)])),
+                    (Some("damaged"), lods([None, None, None, None, None, Some(1)])),
+                ],
+            },
+            RegionSections {
+                name: Some("head"),
+                permutations: vec![(Some("a"), lods([Some(5), None, None, None, None, Some(3)]))],
+            },
+        ];
+        assert_eq!(pick_sections(&regions, &[]), Ok(vec![0, 3]), "the highest level per region");
+        assert_eq!(pick_lod_sections(&regions, &[]), Ok(vec![0, 2, 4, 3, 5]), "every level, each once");
+        let damaged = [VariantRegion {
+            name: Some("body"),
+            permutations: vec![Some("damaged")],
+        }];
+        assert_eq!(pick_lod_sections(&regions, &damaged), Ok(vec![1, 3, 5]));
     }
 
     #[test]
