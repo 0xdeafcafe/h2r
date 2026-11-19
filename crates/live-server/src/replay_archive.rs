@@ -250,6 +250,7 @@ pub(crate) async fn segment(
     State(live): State<Arc<Live>>,
     headers: HeaderMap,
     Path((id, index, number)): Path<(String, String, usize)>,
+    uri: axum::http::Uri,
 ) -> Result<Response, ApiError> {
     use axum::http::header;
     let token = bearer(&headers);
@@ -274,7 +275,9 @@ pub(crate) async fn segment(
     };
     // The storage digest is for these Brotli bytes. HTTP handles inflation.
     let bytes = job::read_blob(&live, job::ARCHIVE, &hash).await?;
-    let cache = if headers.contains_key(header::AUTHORIZATION) {
+    let cache = if headers.contains_key(header::AUTHORIZATION)
+        || crate::caching::has_auth_param(uri.query())
+    {
         crate::caching::PRIVATE
     } else {
         crate::caching::IMMUTABLE
