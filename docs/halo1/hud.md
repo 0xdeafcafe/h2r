@@ -5,8 +5,9 @@ HUD (its indicator and count) and the weapon HUDs (statics, meters,
 crosshairs and the ammunition and battery counts) are converted; Halo 1's
 HUD is the default on Halo 1 maps. The converter records each HUD pair
 and the boot swaps them on the player's choice (`halo1.hud`, "The
-switch" below). The HUD globals (`hudg`) and Halo 1's overlay elements
-are not converted. Played at v60 on Blood Gulch (the shield over the
+switch" below). The weapon HUDs' overlays shown always (the ammunition
+type icon) are converted since v80; the HUD globals (`hudg`) and
+overlays shown on a condition are not. Played at v60 on Blood Gulch (the shield over the
 health bar and the grenade count's digits below its indicator, both
 fixed in v66); the weapon counts have not been seen running. Labels as in [health.md](health.md): **E**
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
@@ -143,6 +144,7 @@ Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 | number on battery (state 3) | number text on input `0x32`, `100 - age * 100` (E `0x0013aee3`; V: retail Halo 2's plasma rifle, energy sword and sentinel beam battery counts) |
 | aim crosshair overlay (type 0) | centred (E `0x000dad9e`: the crosshairs' header anchor is 4), Halo 2's battle rifle reticle's state flags |
 | aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' state flags (`+0x08` bit `0x40`, zoomed only) |
+| overlay of an overlay element, shown always (`+0x4a` bit `0x10`) | static, as a static element ("Overlay elements" below) |
 
 Halo 1's meter fills to `multiplier * value + offset` of 255 (E
 `0x000e20a0`); on the disc that is the fraction the Halo 2 input gives (V:
@@ -157,8 +159,48 @@ up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
 the zoom-level readout (type 1, its sprite chosen by the zoom level),
 aim overlays shown only unzoomed (bit 6), statics of colour 0 (below),
 numbers on other states (the sniper rifle's zoom readouts, states 6 and
-7, with fraction digits), numbers shown in magazines, and overlay
-elements.
+7, with fraction digits), numbers shown in magazines, and overlays shown
+only on a condition or animated.
+
+### Overlay elements: the ammunition type icon
+
+Halo 1 draws a `wphi`'s overlay elements (`+0x90`, `0x68` each) after its
+numbers (E `0x000dc031`..`0x000dc0b1`): each has an entry head as the
+statics' (state `+0`, flags `+2`, screen type `+4`), and at `+0x24` a
+bitmap (reference) and its overlays (block `+0x34`, `0x88` each), drawn
+by `0x000e16b0` at the `wphi`'s anchor. An overlay (`h1hud::wphi::
+element_overlay`): offset `+0` and scale `+4` as an element's (it goes
+to the element draw `0x000e1590` as an element does, so it is laid out
+the same way), colour `+0x24`, frame rate `+0x44` (0: the sequence's
+first sprite, `0x000e174c`), sequence `+0x48`, the conditions it shows
+on `+0x4a`, flags `+0x4c` (bit 0 flashes, bit 1 not drawn, `0x000e16dd`).
+
+The conditions (`h1hud::overlay_shown`) are a mask tested against one
+the weapon draw builds per state (E `0x000db917`..`0x000db9d6` for the
+rounds in reserve and loaded): 1 below the state's threshold with no
+reload under way, 2 the value is 0, 4 a reload under way, 8 none of
+those, and `0x10` on every state. On Blood Gulch (V) the overlay
+elements are the shared `ui\hud\master rounds` (two, full screen and
+split screen; one overlay each, `hud_ammo_type_icons` sequence 0 at
+(53, 4), colour `0xffe6f0ff`, shown always) and `ui\hud\master plasma`
+(one, sequence 4 at (51, 2), shown always, flashing). The converter
+draws an overlay shown always as a static (`h1hud::weapon_widget`,
+`h1_weapon_overlay`): the icon right of the count. Flashing is not
+carried (as for statics), nor overlays shown only on a condition
+(`Skip::OverlayCondition`: no Halo 2 state flags for "empty" or
+"reloading" are established) or animated (`Skip::Animated`; none on
+Blood Gulch).
+
+### The sniper rifle's angle ticks
+
+The sniper rifle's own `wphi` has two statics on `weapons\sniper
+rifle\bitmaps\angle_ticks_black` at (92, 85) and (445, 85). Halo 1
+draws statics whatever the zoom (E `0x000dbe4d`..`0x000dbead`: only the
+hidden flag and the screen type are tested; `0x000e1830` has no early
+out), but that bitmap (DXT1, 8 x 256) is black with alpha 0 in every
+texel (V), so under blend mode 7 it adds nothing: Halo 1 shows nothing
+there, and the converted widgets show nothing either (the shader keeps
+the texture's alpha). No zoom gate is needed.
 
 ### The ammunition and battery counts
 
@@ -407,7 +449,10 @@ get the same copy.
 
 ## Not converted yet
 
-- **HUD globals** (`hudg`), Halo 1's weapon **overlay elements**, and
+- **HUD globals** (`hudg`), weapon overlays shown only on a condition
+  (empty, reloading, below the threshold), warning crosshairs, the
+  sniper rifle's zoom readouts (numbers on states 6 and 7 with fraction
+  digits; no Halo 2 input for distance or elevation to the target) and
   the split-screen numbers (rounds loaded, the reserve in magazines).
 - **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
   centre; Halo 2's sensor draws its own blips only. The sweep is not
@@ -451,7 +496,9 @@ get the same copy.
   digits, every digit at every length up to Halo 1's digit count, inside
   its weapon's panel, ending at Halo 1's last cell and centred on Halo
   1's digit rows; Halo 1's blend mode 7 from the XBE and Blood Gulch's
-  six colour-0 statics with no widget.
+  six colour-0 statics with no widget; each weapon inheriting
+  `master rounds` or `master plasma` with one ammunition type icon
+  (`ammo_type_icons_are_drawn_always`), placed as Halo 1's.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored
   weapon_huds_read --nocapture`: prints every `wphi` chain of `$H1_MAPS`
   as read.

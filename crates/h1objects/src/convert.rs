@@ -3080,7 +3080,7 @@ impl Converter<'_> {
             let skipped = self.weapon_hud_skips.get(&tag.id.0).cloned().unwrap_or_default();
             return Ok((*id, skipped));
         }
-        let (entries, uncounted) = h1hud::weapon_entries(self.h1, wphi)?;
+        let entries = h1hud::weapon_entries(self.h1, wphi)?;
         let find = |group: &[u8; 4], name: &str| {
             self.base
                 .find(group, name)
@@ -3111,8 +3111,9 @@ impl Converter<'_> {
                         h1hud::WeaponEntryKind::Meter(..) => self.meter_bitmap(b),
                         // A static's colour alpha goes into its sprite, as
                         // the unit HUD's; colour 0 draws nothing.
-                        h1hud::WeaponEntryKind::Static(_) => h1hud::static_alpha(e.colour)
-                            .and_then(|a| self.hud_bitmap(b, a)),
+                        h1hud::WeaponEntryKind::Static(_) | h1hud::WeaponEntryKind::Overlay(..) => {
+                            h1hud::static_alpha(e.colour).and_then(|a| self.hud_bitmap(b, a))
+                        }
                         _ => self.bitmap(b),
                     })
                 }
@@ -3122,9 +3123,6 @@ impl Converter<'_> {
                 Ok(w) => widgets.push(w),
                 Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
             }
-        }
-        if uncounted > 0 {
-            skipped.push(format!("{uncounted} overlay elements not converted"));
         }
         if widgets.is_empty() && texts.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));

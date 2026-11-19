@@ -344,7 +344,7 @@ fn weapon_hud_widgets_stand_where_halo1_puts_them() {
         let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
             continue;
         };
-        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        let entries = h1hud::weapon_entries(&m, hud).unwrap();
         for e in &entries {
             let Ok(w) = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)) else {
                 continue;
@@ -392,7 +392,7 @@ fn weapon_ammo_digits_sit_inside_the_ammo_panel() {
         let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
             continue;
         };
-        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        let entries = h1hud::weapon_entries(&m, hud).unwrap();
         for e in &entries {
             let h1hud::WeaponEntryKind::Number(state, n, _) = &e.kind else { continue };
             let Ok(t) = h1hud::weapon_number(e, w, h, TagId(1)) else { continue };
@@ -486,7 +486,7 @@ fn halo1_statics_of_colour_zero_have_no_widget() {
         let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
             continue;
         };
-        let (entries, _) = h1hud::weapon_entries(&m, hud).unwrap();
+        let entries = h1hud::weapon_entries(&m, hud).unwrap();
         for e in entries.iter().filter(|e| matches!(e.kind, h1hud::WeaponEntryKind::Static(_))) {
             let w = h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3));
             if e.colour == 0 {
@@ -501,4 +501,42 @@ fn halo1_statics_of_colour_zero_have_no_widget() {
     }
     eprintln!("statics of colour 0: {zero:?}");
     assert_eq!(zero.len(), 6, "{zero:?}");
+}
+
+/// Blood Gulch's ammunition type icons: Halo 1's overlay elements
+/// (`wphi +0x90`) of the shared `ui\hud\master rounds` and `master plasma`
+/// are overlays shown always (mask 0x10), so each weapon that inherits one
+/// gets exactly one widget for it (the full-screen one; the split-screen
+/// one is left out), at Halo 1's place, from `hud_ammo_type_icons`.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn ammo_type_icons_are_drawn_always() {
+    let m = h1("bloodgulch");
+    let mut icons = Vec::new();
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        let entries = h1hud::weapon_entries(&m, hud).unwrap();
+        let drawn: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.kind, h1hud::WeaponEntryKind::Overlay(..)))
+            .filter(|e| h1hud::weapon_widget(e, Some(TagId(1)), TagId(2), TagId(3)).is_ok())
+            .collect();
+        let inherits = |n: &str| {
+            entries.iter().any(|e| m.tag(e.wphi).unwrap().name.eq_ignore_ascii_case(n))
+        };
+        let expected =
+            usize::from(inherits("ui\\hud\\master rounds") || inherits("ui\\hud\\master plasma"));
+        assert_eq!(drawn.len(), expected, "{}", wt.name);
+        for e in drawn {
+            let b = m.tag(e.bitmap.unwrap()).unwrap();
+            assert!(b.name.ends_with("hud_ammo_type_icons"), "{}: {}", wt.name, b.name);
+            let bm = Bitmap::read(&m, b).unwrap();
+            assert!(h1hud::sprite(&bm, e.sequence).is_some(), "{}", wt.name);
+            icons.push((wt.name.clone(), e.offset, e.sequence));
+        }
+    }
+    eprintln!("ammo type icons: {icons:?}");
+    assert!(icons.len() >= 6, "{icons:?}");
 }
