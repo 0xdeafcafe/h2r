@@ -2140,3 +2140,23 @@ fn shared_caches_come_from_the_named_place() {
     assert_eq!(with.base().shared, Some(base));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A package resolved over its base keeps the base's path and region, so
+/// its bytes key the scene cache: opening it must not reuse the base's art
+/// (a modded map's own scenery, shaders and sky), while the same bytes
+/// again may.
+#[test]
+fn a_package_in_memory_does_not_reuse_its_bases_scene() {
+    use crate::session::scene_key;
+    let base = MapSource::region("disc.iso", Some((0x1000, 0x2000)));
+    let with = |b: &[u8]| MapSource {
+        bytes: Some(std::sync::Arc::from(b.to_vec())),
+        ..base.clone()
+    };
+    let disc = scene_key(&base, "invented", "");
+    let edit = scene_key(&with(b"one map"), "invented", "");
+    assert_ne!(disc, edit);
+    assert_ne!(edit, scene_key(&with(b"another"), "invented", ""));
+    assert_eq!(edit, scene_key(&with(b"one map"), "invented", ""));
+    assert_eq!(disc, scene_key(&base.clone(), "invented", ""));
+}
