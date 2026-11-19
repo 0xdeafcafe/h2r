@@ -708,6 +708,9 @@ mod tests {
             size: None,
             stage_size: None,
         });
+        // The combiners sample t3 (PROJECT2D, 5 bits a stage): a stage the
+        // shader does not sample has no texture to bind.
+        imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 15, ..Default::default() }.to_bytes();
         let mut materials = HashMap::new();
         materials.insert(0, LitMaterial { material: material(vec![imp]), shader: ShaderValues::default() });
         // v1 reads semantic 7: the lightmap coordinates the draw adds.

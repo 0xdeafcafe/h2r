@@ -907,8 +907,14 @@ mod tests {
         assert_eq!(matg_light_bitmaps(&meta, matg), (Some(TagId(0xe000_0001)), Some(TagId(0xe000_0009))));
         // An object's lightmap stage: the element's +0x64 (0x00018d1f).
         let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
-        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), None, "a null datum");
+        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), Some(TagId(0)), "an unwritten word reads as datum 0, as the game reads it");
+        // A null reference: datum -1.
         words.push((element + 0x60, bitm));
+        words.push((element + 0x64, u32::MAX));
+        let meta = metadata(base, 0x1000, &words);
+        let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
+        assert_eq!(rasterizer_bitmap(&read, matg, 0x64), None, "a null datum");
+        words.pop();
         words.push((element + 0x64, 0xe000_0064));
         let meta = metadata(base, 0x1000, &words);
         let read = |a: u32, n: usize| meta.bytes(a, n).ok().map(<[u8]>::to_vec);
