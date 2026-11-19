@@ -296,6 +296,10 @@ impl LiveHub {
         )
         .await
         .map_err(|e| rust_error(format!("{e:#}")))?;
+        // dh-matchmaker: load the dedicated queue settings from Worker bindings.
+        if let Err(err) = live.configure_dedicated_matchmaking(|name| self.setting(name)) {
+            worker::console_log!("live: dedicated matchmaking disabled: {err}");
+        }
         live.set_blobs(Blobs {
             private,
             public: None,
