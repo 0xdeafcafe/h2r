@@ -130,6 +130,18 @@ Ry(−pitch) · Rx(roll)`, the record's `+0x14` as it is drawn) and merged:
   tree into every level leaf the box reached instead: Blood Gulch's
   12,071 nodes became 51,007 for 25 placements, past what the pinned
   build's BSP space holds.
+- **Room.** What the merge adds is the pieces themselves: Boarding
+  Action's 21 placements with collision take its collision BSP from
+  311,492 bytes to 537,388, and its structure region past Beaver Creek's
+  BSP space (its `sbsp` and `ltmp` are 655,344 bytes on the disc). A pinned map can't grow that space: every region loads
+  at one base right under the metadata, and pinned metadata keeps its
+  addresses. The fresh build doesn't need it to: it takes the converted
+  BSP from the set, not from the pinned intermediate's bytes, and lays
+  every tag out anew with a BSP space sized to its own region. So the
+  intermediate it builds is built with `check_bsp_space` off
+  (`Prepared::assemble`; [map-builder.md](../formats/map-builder.md),
+  "Pinned maps"), and a `--pinned` Boarding Action is refused with
+  "BSP space outgrew the pinned metadata base", as before.
 - **Havok.** The structure's MOPP code is built over every structure
   surface after the merge (`structure_mopp`), so the rocks' surfaces are
   keyed with the level's.
@@ -155,7 +167,10 @@ vertical rays away from every placed object meets the level exactly as
 before; every multiplayer map merges every placement, validates (the level's own
 surfaces may hold material `0xffff`, none, as retail structure BSPs do),
 and keys every surface in its MOPP code; each prints its node growth and
-collision BSP bytes before and after).
+collision BSP bytes before and after; Boarding Action, merged again
+piece by piece, grows by each piece's own blocks once, six gate planes a
+piece, six gate nodes a level leaf it is put in and the references its
+copied leaves carry, and by nothing else).
 
 ## Halo 2 sandbox table (**Built** as `h1convert::sandbox`)
 

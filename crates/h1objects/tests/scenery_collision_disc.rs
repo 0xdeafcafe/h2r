@@ -19,19 +19,24 @@
 //! - `every_multiplayer_map_merges_its_placed_scenery`: every multiplayer
 //!   map on its base, Halo 1 sandbox: every placement's collision merges
 //!   (none refused), and the BSP validates and keys its MOPP code.
+//! - `boardingaction_grows_by_its_pieces_and_their_gates`: Boarding Action
+//!   (on Beaver Creek, whose BSP space its merged region outgrows) grows
+//!   by each placed piece's own blocks once, six gate planes a piece, six
+//!   gate nodes a level leaf it is put in, and the references its copied
+//!   leaves carry from the level, and by nothing else.
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};
 
 use h1convert::convert::halo1::{Halo1Objects, prepare_halo1};
 use h1convert::convert::{MAPS, structure_mopp};
-use h1convert::scenery_collision::{Pose, transformed};
+use h1convert::scenery_collision::{Pose, merge, transformed};
 use h1convert::surface_query::{Hit, Outcome, locate, vector};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::sandbox::Objects;
 use map::Map;
-use tags::collision::Bsp;
+use tags::collision::{BSP_STRIDES, Bsp};
 
 fn h1_map(name: &str) -> Option<H1Map> {
     let path = std::env::var("H1_ISO").expect("set H1_ISO");
@@ -399,4 +404,102 @@ fn every_multiplayer_map_merges_its_placed_scenery() {
         maps += 1;
     }
     assert!(maps > 0);
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn boardingaction_grows_by_its_pieces_and_their_gates() {
+    let h1 = h1_map("boardingaction").expect("boardingaction on the disc");
+    let mut base_map = h2_map("beavercreek");
+    let templates = Base::read(&mut base_map).unwrap();
+    let mut objects = Objects::new(&h1, &templates);
+    let p = prepare_halo1(
+        &h1,
+        content::Sha256::of(b"boardingaction"),
+        &mut base_map,
+        &mut objects,
+    )
+    .unwrap();
+    let before = level_only(&h1);
+    let scenery = p.scenery.as_ref().expect("scenery planned");
+    let placed = placed_collision(&mut objects, scenery);
+
+    // The merges again, in the conversion's order, each one's growth
+    // taken apart.
+    let mut level = before.clone();
+    let (mut pieces, mut slots, mut carried, mut own_bytes) = (0, 0, 0, 0);
+    let empty = Bsp::default().encode_blocks(0).len();
+    for (name, bsps) in &placed {
+        for world in bsps {
+            let was = level.clone();
+            let m = merge(&mut level, world, 0).unwrap_or_else(|e| panic!("{name}: {e}"));
+            if m.slots == 0 {
+                assert!(level == was, "{name}: put nowhere, nothing added");
+                continue;
+            }
+            let grew = |a: usize, b: usize| a - b;
+            assert_eq!(
+                grew(level.surfaces.len(), was.surfaces.len()),
+                world.surfaces.len(),
+                "{name}"
+            );
+            assert_eq!(
+                grew(level.edges.len(), was.edges.len()),
+                world.edges.len(),
+                "{name}"
+            );
+            assert_eq!(
+                grew(level.vertices.len(), was.vertices.len()),
+                world.vertices.len(),
+                "{name}"
+            );
+            assert_eq!(
+                grew(level.nodes_2d.len(), was.nodes_2d.len()),
+                world.nodes_2d.len(),
+                "{name}"
+            );
+            assert_eq!(
+                grew(level.leaves.len(), was.leaves.len()),
+                world.leaves.len(),
+                "{name}"
+            );
+            assert_eq!(m.stand_ins.len(), world.leaves.len(), "{name}");
+            assert_eq!(
+                grew(level.planes.len(), was.planes.len()),
+                world.planes.len() + 6,
+                "{name}"
+            );
+            assert_eq!(
+                grew(level.nodes.len(), was.nodes.len()),
+                world.nodes.len() + 6 * m.slots,
+                "{name}: one copy of its tree, six gate nodes a level leaf"
+            );
+            let refs = grew(level.refs.len(), was.refs.len());
+            assert!(refs >= world.refs.len(), "{name}");
+            pieces += 1;
+            slots += m.slots;
+            carried += refs - world.refs.len();
+            own_bytes += world.encode_blocks(0).len() - empty;
+        }
+    }
+    assert!(level == p.collision, "the replay is the conversion's merge");
+    assert_eq!(p.sound_leaves.len(), level.leaves.len());
+
+    let (bytes_before, bytes_after) = (before.encode_blocks(0).len(), level.encode_blocks(0).len());
+    let growth = bytes_after - bytes_before;
+    let [node, plane, _, reference, ..] = BSP_STRIDES;
+    let gates = pieces * 6 * plane + slots * 6 * node;
+    let overhead = gates + carried * reference;
+    eprintln!(
+        "boardingaction: {} placements with collision, {pieces} pieces merged into {slots} level leaves; \
+         collision BSP {bytes_before} to {bytes_after} bytes (+{growth}): the pieces' own blocks {own_bytes}, \
+         gates {gates}, carried references {carried} ({} bytes)",
+        placed.len(),
+        carried * reference
+    );
+    assert_eq!(growth, own_bytes + overhead, "nothing else grows");
+    assert!(
+        overhead < own_bytes,
+        "the merge's own blocks stay under the pieces': {overhead} of {growth}"
+    );
 }

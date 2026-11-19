@@ -318,6 +318,37 @@ fn an_all_pinned_decomposition_rebuilds_byte_identically() {
 }
 
 #[test]
+fn a_bsp_region_past_the_pinned_bsp_space_is_refused_unless_unchecked() {
+    let t = tiny();
+    let mut map = read(t.set.build().unwrap().0);
+    let thing = map.read_tag_bytes(t.thing).unwrap();
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let pinned = set.pinned.clone().unwrap();
+    // A region a page past the pinned BSP space.
+    set.tag_mut(t.bsp).unwrap().payload =
+        TagPayload::Built(Block::zeroed((pinned.bsp_size + PAGE) as usize));
+    let section = set.add_bsp(t.bsp, None);
+    match set.build() {
+        Err(Error::Invalid(m)) => assert_eq!(m, "BSP space outgrew the pinned metadata base"),
+        other => panic!("{:?}", other.map(|b| b.1)),
+    }
+    // Unchecked (an intermediate laid out anew later): the pinned
+    // metadata keeps its addresses and the region runs into their range.
+    set.check_bsp_space = false;
+    let (bytes, layout) = set.build().unwrap();
+    assert_eq!(layout.metadata_base, pinned.metadata_base);
+    let (offset, size) = layout.bsps[section];
+    assert!(size > pinned.bsp_size);
+    assert!(layout.bsp_base + size > layout.metadata_base);
+    let mut map = read(bytes);
+    assert_eq!(map.read_tag_bytes(t.thing).unwrap(), thing);
+    assert_eq!(
+        map.read_file_range(u64::from(offset) + 12, 4).unwrap(),
+        b"psbs"
+    );
+}
+
+#[test]
 fn a_pinned_tag_can_be_replaced_by_a_built_one_that_moves() {
     let t = tiny();
     let first = t.set.build().unwrap().0;
