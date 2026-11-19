@@ -1507,7 +1507,10 @@ impl<'a> Converter<'a> {
                 // One material per Halo 1 shader, as convert_model writes.
                 let mut padded = shaders.clone();
                 padded.resize(h1_model.shaders.len(), TagId::NULL);
-                let opts = ModelOptions { shaders };
+                let opts = ModelOptions {
+                    shaders,
+                    ..ModelOptions::default()
+                };
                 let mut mode = h1models::mode::convert_model(
                     &h1_model,
                     h1models::short_name(&mode_tag.name),
