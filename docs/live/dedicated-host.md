@@ -586,14 +586,12 @@ and the first refusal still need a game run. [Agent methods](../runtime/agent-ap
 
 `FlyProvider` ([fly.rs](../../crates/live-server/src/hosts/fly.rs)) runs
 each lease as one Fly Machine: created when matchmaking forms the lobby,
-destroyed with the match. It speaks the Machines API — `POST`, `DELETE
-…?force=true` and `GET` on `/v1/apps/{app}/machines` — through `FlyHttp`,
-a one-method seam in the same file, because the crate had no outbound
-HTTP path that builds in both homes: the native server uses a reqwest
-adapter, and the Worker passes its own adapter over the platform fetch
-(the way [r2.rs](../../crates/live-worker/src/r2.rs) adapts the R2
-binding for the blob store). The builders, the machine shape and the
-error mapping are plain code that compiles for wasm32.
+destroyed with the match. On the native Live server, set
+`LIVE_HOST_PROVIDER=fly` to select Fly or leave it unset to use `local`.
+The native provider calls the Machines API through its reqwest adapter.
+The Worker selects Cloudflare Containers through `HostRoom`. A Worker
+deployment that selects Fly would need a platform-fetch implementation of
+`FlyHttp`.
 
 Setup, from the environment:
 
