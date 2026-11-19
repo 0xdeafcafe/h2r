@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::io::BufReader;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use map::{Map, ResourceFile, TagId};
 use native_render::gpu::Image;
@@ -18,11 +18,14 @@ pub struct Asset {
     pub pixel_shader: [u8; PSDEF_SIZE],
     pub images: [Option<Image>; 4],
     pub uses_light_bitmap: bool,
+    pub generation: u64,
+    pub bitmap_ids: [Option<(u32, u32)>; 4],
+    pub gpu: Mutex<native_render::gels_gpu::BitmapCache>,
 }
 
 pub type Assets = HashMap<(u32, u32), Result<Arc<Asset>, String>>;
 
-pub fn load(name: &str) -> Result<Assets, String> {
+pub fn load(name: &str, generation: u64) -> Result<Assets, String> {
     let file = locate(name).ok_or("gel map not found")?;
     let reader = BufReader::new(std::fs::File::open(&file.path).map_err(|e| e.to_string())?);
     let mut map = Map::from_region(reader, file.offset, file.len).map_err(|e| e.to_string())?;
@@ -126,6 +129,9 @@ pub fn load(name: &str) -> Result<Assets, String> {
                 pixel_shader: imp.pixel_shader,
                 images,
                 uses_light_bitmap,
+                generation,
+                bitmap_ids: stages.map(|s| s.map(|(bitmap, image)| (bitmap.0, image))),
+                gpu: Mutex::default(),
             }))
         })();
         out.insert((shader, gel), result);
