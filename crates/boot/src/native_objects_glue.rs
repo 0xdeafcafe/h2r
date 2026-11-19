@@ -29,10 +29,6 @@
 //!   per draw. A material none of whose implementations compiles for every
 //!   section and stage stays on D3D whole, with the reasons; never drawn
 //!   with the base-map stand-in.
-//! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
-//!   on too). The worker translates the layer-15 pass over each
-//!   section's guest streams. The transparents host uses the record's
-//!   model, section, part and node rows to draw only that entry.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
@@ -57,7 +53,6 @@ use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, Lit
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::program::ViewInputs;
-use native_render::transparent::Entry;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
 
@@ -66,39 +61,12 @@ struct CpuModel {
     definition: u32,
     model: Model,
     base_maps: HashMap<u16, Image>,
-    /// Layer-15 parts translated over their own raw declarations.
-    transparents: LitModelInput,
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
     /// The implementations (bit `n`) every lit part has.
     lit_implementations: u8,
     /// The normalization cube the lit parts' programs may sample.
     normalization: Option<Arc<LayeredImage>>,
-}
-
-/// One definition's supported layer-15 parts, by section and part index.
-#[derive(Default)]
-struct ObjectTransparents {
-    model: u16,
-    nodes: usize,
-    parts: HashMap<(u16, u8), ObjectTransparentPart>,
-}
-
-struct ObjectTransparentPart {
-    shader: u16,
-    implementation: usize,
-    needs_lighting_root: bool,
-}
-
-impl ObjectTransparents {
-    fn implementation(&self, frame: &ObjectFrame, model: u32, section: u16, entry: &Entry) -> Option<usize> {
-        let part = self.parts.get(&(section, entry.part))?;
-        (model as u16 == self.model
-            && frame.nodes.len() == self.nodes
-            && entry.shader as u16 == part.shader
-            && (!part.needs_lighting_root || frame.lighting.as_ref().and_then(|l| l.root).is_some()))
-        .then_some(part.implementation)
-    }
 }
 
 /// One map's models: queued, uploaded, and which definition is which.
@@ -110,10 +78,6 @@ pub(crate) struct Models {
     lit: Mutex<Option<LitObjects>>,
     /// Definition tag index -> uploaded model.
     pub(crate) index: Mutex<HashMap<u16, u32>>,
-    /// Definition tag index -> its transparent parts, published after the
-    /// model is queued.
-    transparents: Mutex<HashMap<u16, ObjectTransparents>>,
-    pub(crate) transparent_gpu: Mutex<Option<LitObjects>>,
     /// The device palettes the loads expanded palettized base maps
     /// through, at their stages ([`StageDecoder::used`]): the models draw
     /// only while those stay bound.
@@ -121,37 +85,6 @@ pub(crate) struct Models {
     /// Definitions whose lit parts sample the texture accumulation target:
     /// a view drawing one asks the device for that level.
     texaccum: Mutex<HashSet<u16>>,
-}
-
-impl Models {
-    pub(crate) fn transparent_implementation(&self, o: &ObjectFrame, model: u32, section: u16, entry: &Entry) -> Option<usize> {
-        self.transparents.lock().unwrap_or_else(|e| e.into_inner())
-            .get(&(o.definition as u16))?.implementation(o, model, section, entry)
-    }
-
-    pub(crate) fn transparent_palettes_hold(&self, bound: &dyn Fn(usize) -> Option<Vec<u32>>) -> bool {
-        palettes_hold(&self.palettes.lock().unwrap_or_else(|e| e.into_inner()), bound)
-    }
-}
-
-/// The installed host's state, for the transparents' host.
-static CURRENT: Mutex<Option<Arc<Mutex<Option<MapState>>>>> = Mutex::new(None);
-
-/// The current map's models (`None` before the first view of a map, or
-/// without the host).
-pub(crate) fn current_models() -> Option<Arc<Models>> {
-    let state = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let st = state.lock().unwrap_or_else(|e| e.into_inner());
-    st.as_ref().map(|s| Arc::clone(&s.models))
-}
-
-pub(crate) fn want_transparent(mem: &dyn GuestMemory, definition: u32) -> Option<Arc<Models>> {
-    let name = crate::health::loaded_map_name(mem).ok()?;
-    let state = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-    let map = st.as_mut().filter(|s| s.name == name)?;
-    want_model(map, definition);
-    Some(Arc::clone(&map.models))
 }
 
 fn want_model(map: &mut MapState, definition: u32) {
@@ -162,21 +95,19 @@ fn want_model(map: &mut MapState, definition: u32) {
     }
 }
 
-/// Uploads the queued models (and their transparent materials) on the
-/// render thread; the models' GPU side, locked.
+/// Uploads the queued models on the render thread and returns their
+/// locked GPU side.
 pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>) -> MutexGuard<'a, Option<GpuModels>> {
     let mut guard = models.gpu.lock().unwrap_or_else(|e| e.into_inner());
     let gpu = guard.get_or_insert_with(|| GpuModels::new(t.device, t.queue));
     let pending = std::mem::take(&mut *models.pending.lock().unwrap_or_else(|e| e.into_inner()));
     let mut index = models.index.lock().unwrap_or_else(|e| e.into_inner());
     let mut lit_gpu = models.lit.lock().unwrap_or_else(|e| e.into_inner());
-    let mut transparent_gpu = models.transparent_gpu.lock().unwrap_or_else(|e| e.into_inner());
     for cpu in pending {
         let CpuModel {
             definition,
             model,
             mut base_maps,
-            transparents,
             lit,
             lit_implementations: _,
             normalization,
@@ -189,13 +120,8 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             }
             l.add_model(t.device, t.queue, i, lit);
         }
-        if !transparents.is_empty() {
-            transparent_gpu.get_or_insert_with(|| LitObjects::new(t.device))
-                .add_model(t.device, t.queue, i, transparents);
-        }
         index.insert(definition as u16, i);
     }
-    drop(transparent_gpu);
     drop(lit_gpu);
     drop(index);
     guard
@@ -207,6 +133,14 @@ struct MapState {
     set: Arc<NativeSet>,
     tried: HashSet<u16>,
     worker: Option<mpsc::Sender<u32>>,
+}
+
+impl MapState {
+    /// A worker keeps the Models instance it queued into. A newer load
+    /// of the same map has its own instance and its own published set.
+    fn publish_to<'a>(state: &'a mut Option<Self>, models: &Arc<Models>) -> Option<&'a mut Self> {
+        state.as_mut().filter(|s| Arc::ptr_eq(&s.models, models))
+    }
 }
 
 /// The host: the device and the current map's models.
@@ -326,7 +260,6 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state = Arc::new(Mutex::new(None));
-    *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
@@ -366,10 +299,9 @@ fn spawn_worker(
                 // the palettes its base maps went through.
                 models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
                 match result {
-                    Ok((cpu, shaders, transparents)) => {
+                    Ok((cpu, shaders)) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
-                        let see_through = cpu.transparents.parts.len();
                         let lit = cpu.lit.parts.len();
                         let lit_implementations = cpu.lit_implementations;
                         let texaccum = cpu.lit.samples_texaccum();
@@ -378,17 +310,10 @@ fn spawn_worker(
                             models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
                         }
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                        if !transparents.parts.is_empty() {
-                            models
-                                .transparents
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(def as u16, transparents);
-                        }
                         // Published after the model is queued: a pass that
                         // sees the definition finds the model.
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| s.name == name) else { return };
+                        let Some(s) = MapState::publish_to(&mut st, &models) else { return };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
                         set.shaders.extend(shaders.into_iter().map(|s| (def as u16, s)));
@@ -404,7 +329,7 @@ fn spawn_worker(
                         drop(st);
                         loaded += 1;
                         eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {see_through} transparent, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
                             t0.elapsed().as_secs_f32() * 1000.0
                         );
                     }
@@ -428,15 +353,13 @@ struct Opened {
     /// through the stage's palette), shared by every model of the map.
     decoder: StageDecoder,
     images: StageImages,
-    /// The shader tags, read at the first transparent material (`None`
-    /// when they do not read: transparents stay on D3D).
+    /// The shader tags, read at the first material that needs them.
     lib: Option<Option<tags::material::ShaderLibrary>>,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
     normalization: Option<Option<Arc<LayeredImage>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
-    transparents_on: bool,
     /// What an object's draw samples for the lightmap (the globals'
     /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
     /// read at the first lit model: the image when uniform, else why not.
@@ -468,7 +391,6 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
         normalization: None,
         lightmap: None,
         formats,
-        transparents_on: feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s)),
     })
 }
 
@@ -504,9 +426,8 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     native_render::object_program::program_refusal(&m)
 }
 
-/// Prepares a definition's supported layer-3 and layer-15 programs and
-/// the geometry each replacement may skip.
-fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTransparents), load::Error> {
+/// Prepares a definition's supported layer-3 programs and geometry.
+fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>), load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
     // Every opaque material through its own programs, or left to D3D: the
@@ -530,49 +451,10 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             Err(why) => unlit.push(format!("{:#010x} {why}", shader.0)),
         }
     }
-    let mut table = ObjectTransparents {
-        model: loaded.mode.0 as u16,
-        nodes: loaded.model.inverse_binds.len(),
-        ..Default::default()
-    };
-    let transparents = if o.transparents_on {
-        let materials: HashMap<_, _> = loaded.lod_sections.iter().filter_map(|&s| loaded.geometry.sections.get(s))
-            .flat_map(|s| &s.geometry.parts)
-            .filter(|p| p.is_drawn() && p.kind == load::PART_TRANSPARENT)
-            .map(|p| p.material)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .filter_map(|m| {
-                let &shader = loaded.shaders.get(usize::from(m))?;
-                Some((m, lit_material(o, shader).ok()?))
-            })
-            .collect();
-        let built = lit_parts(o, &loaded, &materials, true);
-        for (m, why) in built.refused {
-            eprintln!("native-transparents: object definition {def:#010x} material {m} left to D3D ({why})");
-        }
-        for part in &built.input.parts {
-            if let Some((n, (program, _))) = part.implementations.iter().enumerate().find_map(|(n, p)| p.map(|p| (n, p))) {
-                let imp = &built.input.programs[program].pass.implementation;
-                // These are the lighting sources uniform preparation can
-                // fail to evaluate after the implementation has compiled.
-                let needs_lighting_root = imp.vector_bindings.iter().any(|b| b.source == 40)
-                    || imp.scalar_bindings.iter().any(|b| b.source == 37);
-                table.parts.insert((part.section, part.part), ObjectTransparentPart {
-                    shader: part.shader_tag as u16,
-                    implementation: n,
-                    needs_lighting_root,
-                });
-            }
-        }
-        built.input
-    } else {
-        LitModelInput::default()
-    };
     let (lit, lit_implementations) = if lit_materials.is_empty() {
         (LitModelInput::default(), 0)
     } else {
-        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials, false);
+        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials);
         for (m, why) in refused {
             unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
         }
@@ -580,7 +462,7 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
         (input, implementations)
     };
     let model = keep_materials(loaded.model, &base_maps, &HashSet::new());
-    if model.draws.is_empty() && lit.is_empty() && transparents.is_empty() {
+    if model.draws.is_empty() && lit.is_empty() {
         if !unlit.is_empty() {
             return Err(format!("its lit materials stay on D3D: {}", unlit.join(", ")).into());
         }
@@ -591,13 +473,11 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             definition: def,
             model,
             base_maps,
-            transparents,
             normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
             lit,
             lit_implementations,
         },
         shaders,
-        table,
     ))
 }
 
@@ -628,11 +508,10 @@ const SHADER_VALUES: u32 = 0x44;
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
-fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>, transparent: bool) -> LitBuild {
+fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
     if materials.is_empty() {
         return LitBuild::default();
     }
-    let layer = if transparent { look::TRANSPARENT_LAYER } else { look::LIGHTMAP_LAYER };
     let geo = &loaded.geometry;
     let mut sections = Vec::new();
     // Every detail level: a distant object's records draw a lower one.
@@ -661,7 +540,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.is_drawn() && (p.kind == load::PART_TRANSPARENT) == transparent)
+                .filter(|(_, p)| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
                 .filter_map(|(i, p)| Some((u8::try_from(i).ok()?, p.material, g.part_triangles(p))))
                 .collect(),
         });
@@ -674,7 +553,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && l.layer == layer)
+            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);
@@ -689,14 +568,14 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         }
     }
     // The normalization cube, as the lights load it (once per map).
-    if !transparent && o.normalization.is_none() {
+    if o.normalization.is_none() {
         let cube = match o.lib.as_ref().and_then(Option::as_ref) {
             Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0.map(Arc::new),
             None => None,
         };
         o.normalization = Some(cube);
     }
-    if !transparent && o.lightmap.is_none() {
+    if o.lightmap.is_none() {
         let l = object_lightmap(o);
         match &l {
             Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
@@ -717,9 +596,6 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, image, stage, true).ok()?;
         o.images.get(&(bitmap, image)).cloned()
     };
-    if transparent {
-        return native_render::object_program_gpu::transparent_model(&sections, materials, &formats, &mut vertex, &mut image);
-    }
     let engine = EngineStages {
         texaccum: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
@@ -1047,6 +923,26 @@ mod tests {
     use super::*;
     use native_render::model::{ModelDraw, NodeMatrix};
 
+    #[test]
+    fn a_delayed_worker_cannot_publish_after_reloading_the_same_map() {
+        let load = |name: &str| MapState {
+            name: name.to_owned(),
+            models: Arc::new(Models::default()),
+            set: Arc::new(NativeSet::default()),
+            tried: HashSet::new(),
+            worker: None,
+        };
+        let mut state = Some(load("a"));
+        let old = state.as_ref().unwrap().models.clone();
+        assert!(MapState::publish_to(&mut state, &old).is_some());
+        state = Some(load("b"));
+        assert!(MapState::publish_to(&mut state, &old).is_none());
+        state = Some(load("a"));
+        assert!(MapState::publish_to(&mut state, &old).is_none());
+        let current = state.as_ref().unwrap().models.clone();
+        assert!(MapState::publish_to(&mut state, &current).is_some());
+    }
+
     /// The lit parts are W-buffered programs as the world's: they clip w
     /// to the range the device draws the layer with, not from 0, or an
     /// object nearer than the view's near is drawn where the D3D path
@@ -1128,37 +1024,5 @@ mod tests {
         assert_eq!(m.draws.iter().map(|d| (d.material, d.first_index)).collect::<Vec<_>>(), vec![(1, 3), (1, 6), (2, 9)]);
         assert_eq!(m.materials(), vec![1, 2]);
         assert_eq!(m.transparent_materials(), vec![4]);
-    }
-
-    #[test]
-    fn an_objects_transparent_entry_matches_its_exact_section_part_and_shader() {
-        let t = ObjectTransparents {
-            model: 12,
-            nodes: 2,
-            parts: [
-                ((3, 1), ObjectTransparentPart { shader: 0x42, implementation: 0, needs_lighting_root: false }),
-                ((5, 1), ObjectTransparentPart { shader: 0x42, implementation: 1, needs_lighting_root: true }),
-            ].into_iter().collect(),
-        };
-        let mut frame = ObjectFrame {
-            handle: 1, definition: 2, nodes: vec![native_render::model::NodeMatrix::IDENTITY; 2],
-            sphere: ([0.0; 3], 1.0), lighting: None, defaults: None, node_rows: Vec::new(), implementations: Vec::new(),
-        };
-        let mut entry = Entry {
-            source: native_render::transparent::Source::Object(1),
-            record: 4, part: 1, shader: 0xe123_0042, depth: 0.0, position: [0.0; 3],
-        };
-        assert_eq!(t.implementation(&frame, 12, 3, &entry), Some(0));
-        assert_eq!(t.implementation(&frame, 13, 3, &entry), None, "another render model");
-        assert_eq!(t.implementation(&frame, 12, 4, &entry), None, "another LOD");
-        assert_eq!(t.implementation(&frame, 12, 5, &entry), None, "lighting missing");
-        entry.part = 2;
-        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another part of the same shader");
-        entry.part = 1;
-        entry.shader += 1;
-        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another shader");
-        frame.nodes.pop();
-        entry.shader -= 1;
-        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another node count");
     }
 }

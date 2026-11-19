@@ -45,7 +45,6 @@ use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassVi
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
-use native_render::transparent_gpu::{Programs as TransparentPrograms, TransparentSet};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
@@ -73,9 +72,6 @@ pub struct CpuWorld {
     /// stage 1's program.
     pub programs_on: bool,
     pub stage_images: StageImages,
-    /// Transparent materials (`impl.render.native_transparents`): each
-    /// one's layer-15 passes, compiled.
-    pub transparents: TransparentPrograms,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
@@ -85,9 +81,6 @@ pub struct Ready {
     /// The parts the native pass draws, with their shaders: what the skip
     /// clears.
     parts: Arc<PartSet>,
-    /// The transparent parts the native pass draws, with their shader's
-    /// tag index (`native_transparents_glue`).
-    pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
@@ -247,15 +240,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
-/// Installs the host on the device (with the occlusion capture), and the
-/// transparents' host over the same world.
+/// Installs the world host and the other native stages on the device.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let state: State = Arc::new(Mutex::new((None, Load::Idle)));
     feature::native_world::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state: Arc::clone(&state),
     }));
-    crate::native_transparents_glue::install(device, Arc::clone(&state));
+    crate::native_transparents_glue::install(device);
     crate::native_lights_glue::install(device, state);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
@@ -280,7 +272,6 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         programs,
         programs_on,
         stage_images,
-        transparents,
     } = cpu;
     // With programs on, stage 1's groups are never drawn: no copy of the
     // lightmap pages for them (the programs upload their own).
@@ -301,11 +292,6 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
             set.rigid_len()
         );
         g.set_programs(set);
-    }
-    if !transparents.is_empty() {
-        let set = TransparentSet::new(device, queue, g.world(), transparents, &mut stage, &mut |k| lightmaps.get(&k).cloned());
-        eprintln!("native-transparents: {} transparent materials uploaded", set.len());
-        g.set_transparents(set);
     }
     *gpu = Some(g);
     gpu
@@ -966,14 +952,6 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             );
         }
     }
-    // Transparent materials: each one's layer-15 passes where they all
-    // translate, and the parts the native pass can draw.
-    let transparents_on = feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s));
-    let (transparents, transparent_parts) = if transparents_on {
-        crate::native_transparents_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder)
-    } else {
-        Default::default()
-    };
     // The lights' part, over the whole world: the parts of materials left
     // to D3D, or sharing a shader with one (the lights' split skips by
     // shader), are where native lights cannot draw.
@@ -998,11 +976,9 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             programs,
             programs_on,
             stage_images,
-            transparents,
         })),
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
-        transparent_parts: Arc::new(transparent_parts),
         lights,
         palettes: decoder.used().clone(),
     })
@@ -1328,6 +1304,7 @@ impl StageDecoder {
             if stage == 3 || *palette != self.palettes[at] {
                 return Err(format!("stage {stage} bitmap is palettized and was expanded through another stage's palette"));
             }
+            self.used[stage].clone_from(palette);
             return Ok(true);
         }
         if images.contains_key(&key) {
@@ -1856,6 +1833,8 @@ mod tests {
         assert_eq!(d.used(), &[None, None, Some(normals()), None]);
         assert_eq!(d.take(&mut images, bump, 1, &mut |pal| { decodes += 1; p8(1)(pal) }), Ok(true));
         assert_eq!(decodes, 1, "expanded once");
+        assert_eq!(d.used(), &[None, Some(normals()), Some(normals()), None]);
+        assert!(!palettes_hold(d.used(), &|s| (s == 2).then(normals)));
         assert!(d.take(&mut images, bump, 0, &mut |pal| p8(0)(pal)).is_err(), "no palette at stage 0");
         assert!(d.take(&mut images, bump, 3, &mut |pal| p8(3)(pal)).is_err(), "the lightmap's stage");
 

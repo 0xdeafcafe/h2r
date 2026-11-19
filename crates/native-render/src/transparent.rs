@@ -26,18 +26,11 @@
 //!   records; an object's record names its object through its lighting
 //!   pointer `+0x10` ([`crate::objects::record_owner`]).
 //!
-//! The skip is the handler's: a `before` hook answers `ret 4` for an
-//! entry the native renderer draws, so the entry builds and draws nothing
-//! and no guest memory changes. The sort order is the game's: the hook
-//! meets the entries in it. Consecutive native entries share one
-//! [`Run`], one external pass the device issues at its next entry, which
-//! is the next D3D entry's draw or whatever follows the transparents: so
-//! every native run lands between the D3D draws it sorts between.
-
-use std::sync::Mutex;
+//! The guest runs the handlers in sorted order. The native stage uses this
+//! record to identify the current part at its resolved indexed draw.
 
 use crate::camera::GuestRead;
-use crate::objects::{ObjectFrame, RecordOwner, record_owner};
+use crate::objects::{RecordOwner, record_owner};
 use crate::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 
 /// The geometry entries' handler.
@@ -80,8 +73,11 @@ pub struct Entry {
 /// geometry path fills, or it is an object's whose owner does not resolve.
 pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
     let entry = data.checked_sub(DATA_OFFSET)?;
+    if mem.read_u32(data.checked_sub(4)?)? != GEOMETRY_HANDLER {
+        return None;
+    }
     let shader = mem.read_u32(data)?;
-    let arg = mem.read_u32(data + 4)?;
+    let arg = mem.read_u32(data.checked_add(4)?)?;
     let record = (arg >> 8) as u16 as i16;
     if record < 0 {
         return None;
@@ -98,9 +94,9 @@ pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
         }
     };
     let position = [
-        mem.read_f32(entry + 0x64)?,
-        mem.read_f32(entry + 0x68)?,
-        mem.read_f32(entry + 0x6c)?,
+        mem.read_f32(entry.checked_add(0x64)?)?,
+        mem.read_f32(entry.checked_add(0x68)?)?,
+        mem.read_f32(entry.checked_add(0x6c)?)?,
     ];
     Some(Entry {
         shader,
@@ -110,61 +106,6 @@ pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
         depth: mem.read_f32(entry + 4)?,
         position,
     })
-}
-
-/// One entry of a run: the entry, and for an object its node matrices and
-/// sphere as the hook copied them out of the render's snapshot of the
-/// frame (`crate::objects::read_object`), so the pass draws the frame's
-/// pose whatever the next tick does to the body.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RunEntry {
-    pub entry: Entry,
-    pub object: Option<ObjectFrame>,
-}
-
-/// Consecutive native entries in the game's sort order: one external
-/// pass. The feature adds entries while the pass waits in the device; the
-/// pass takes them when the device issues it ([`Run::seal`]), after which
-/// the next native entry needs a new run (a D3D draw came between).
-#[derive(Debug, Default)]
-pub struct Run {
-    inner: Mutex<(Vec<RunEntry>, bool)>,
-}
-
-impl Run {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Adds `entry` (with its object's copy, for an object); `false` once
-    /// the run is sealed.
-    pub fn push(&self, entry: Entry, object: Option<ObjectFrame>) -> bool {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if g.1 {
-            return false;
-        }
-        g.0.push(RunEntry { entry, object });
-        true
-    }
-
-    /// Takes the entries and closes the run (the device issued its pass).
-    pub fn seal(&self) -> Vec<RunEntry> {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.1 = true;
-        std::mem::take(&mut g.0)
-    }
-
-    pub fn is_sealed(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).1
-    }
-
-    pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 #[cfg(test)]
@@ -223,17 +164,5 @@ mod tests {
         // A negative record (no render record): not geometry this reads.
         m.w(ENTRY + 0x28, 0xffff_ff00);
         assert_eq!(read_entry(&m, ENTRY + DATA_OFFSET), None);
-    }
-
-    #[test]
-    fn a_sealed_run_takes_no_more_entries() {
-        let mut m = Mem::default();
-        entry(&mut m, 1, 0, None, NO_PLACEMENT << 18);
-        let e = read_entry(&m, ENTRY + DATA_OFFSET).unwrap();
-        let run = Run::new();
-        assert!(run.push(e, None) && run.push(e, None));
-        assert_eq!(run.seal().len(), 2);
-        assert!(run.is_sealed() && run.is_empty());
-        assert!(!run.push(e, None));
     }
 }

@@ -1030,11 +1030,11 @@ Marked now:
   copies the drawn objects' node matrices out of the memory its context
   sees, which on the render thread is the frame's snapshot, so the pass
   draws the poses of the frame the render draws.
-- `native-transparents`' `before` on `TRANSPARENT_GEOMETRY` (the sorted
-  transparents' geometry handler) and its observer before
-  `SCENE_TRANSPARENTS`. The `before` answers `ret 4` for an entry the
-  native renderer draws and writes no guest memory; its runs of entries
-  reach the D3D device in render order, as the world's pass does.
+- `native-transparents` observes `SCENE_TRANSPARENTS` and
+  `TRANSPARENT_GEOMETRY` on the render thread. The guest runs the
+  sorted handlers. An eligible indexed draw uses the native vertex
+  binding at its resolved position in the D3D command stream.
+  The game-activation observer invalidates the old map generation.
 - `native-lights`' `before` on `RENDER_LIGHT_PASSES` (one dynamic light's
   layers) and its observer before `RENDER_DYNAMIC_LIGHTS`, the same shape:
   the `before` answers `ret 0x10` for a light the native renderer draws,

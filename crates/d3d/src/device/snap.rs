@@ -706,6 +706,7 @@ impl<B: Backend> Device<B> {
             // Quiesce.
             pending_grid: _,
             pending_external: _,
+            indexed_geometry: _,
             swallowing: _,
             swallow_mismatch: _,
             trace: _,

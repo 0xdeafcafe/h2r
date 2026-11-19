@@ -1,24 +1,14 @@
-//! The `native-transparents` feature (docs/graphics/native-renderer.md,
-//! stage 3): its plan (two context-only hooks the pipelined render runs on
-//! its own thread) and its skip on synthetic guest memory: the geometry
-//! entries the host draws join one run until the device issues its pass,
-//! a D3D entry between them starts a new run, a new view forgets the open
-//! run, and nothing is skipped without a host, for an entry the host does
-//! not draw, or when the device cannot.
+//! Sorted entries are identified on the original guest stack, including
+//! when another handler runs without calling the geometry observer.
 
-use std::sync::{Arc, Mutex};
-
-use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_transparents::{self, Host, NativeTransparents};
+use engine::{memory::{FlatMemory, GuestMemory}, points};
+use feature::native_transparents::{NativeTransparents, Scope};
+use feature::native_world::ACTIVE_BSP;
 use feature::plan::Base;
 use feature::{Registry, Switches};
-use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::objects::{
-    BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, OBJECTS, ObjectFrame, RECORD_LIGHTING, RECORD_MODEL,
-    RENDER_STATE_CACHE,
-};
-use native_render::skip::RENDER_RECORDS;
-use native_render::transparent::{DATA_OFFSET, Entry, GEOMETRY_HANDLER, Run, Source};
+use native_render::camera::GuestRead;
+use native_render::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
+use native_render::transparent::{DATA_OFFSET, GEOMETRY_HANDLER, Source};
 
 #[test]
 fn the_switch_off_places_nothing() {
@@ -29,208 +19,111 @@ fn the_switch_off_places_nothing() {
 }
 
 #[test]
-fn its_chains_run_on_the_render_thread() {
+fn the_hooks_can_run_without_shadowing_the_guest_handlers() {
     let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
     assert!(r.add(&NativeTransparents).unwrap());
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
-    assert!(text.contains("native_transparents_skip"), "{text}");
-    assert!(text.contains("native_transparents_view"), "{text}");
-    for point in ["TRANSPARENT_GEOMETRY", "SCENE_TRANSPARENTS"] {
-        let chain = plan
-            .chains
-            .values()
-            .find(|c| c.point.name == point)
-            .unwrap_or_else(|| panic!("placed at {point}"));
-        assert!(!chain.needs_shadow(), "{point}: nothing after the body");
+    for (point, label) in [
+        ("TRANSPARENT_GEOMETRY", "native_transparents_entry"),
+        ("SCENE_TRANSPARENTS", "native_transparents_view"),
+        ("GAME_ACTIVATE", "native_transparents_generation"),
+    ] {
+        assert!(text.contains(label), "{text}");
+        let chain = plan.chains.values().find(|c| c.point.name == point).unwrap();
+        assert!(!chain.needs_shadow(), "{point}");
         assert!(chain.render_thread().is_ok(), "{point}");
     }
 }
 
+const GLOBALS: u32 = 0x005e_0000;
+const SCENE: u32 = 0x005f_1000;
+const HANDLER: u32 = SCENE - 0x100;
+const DRAW: u32 = HANDLER - 0x100;
 const ENTRIES: u32 = 0x0060_0000;
+const SORTED_RETURN: u32 = points::SCENE_TRANSPARENTS.base + 4;
 
-#[derive(Default)]
-struct Stub {
-    runs: Mutex<Vec<Arc<Run>>>,
-    refuse: Mutex<bool>,
-}
+struct Guest(FlatMemory);
 
-impl Host for Stub {
-    fn accepts(&self, _mem: &dyn GuestMemory, entry: &Entry, object: Option<&ObjectFrame>) -> bool {
-        let shape = match entry.source {
-            Source::Object(_) => object.is_some_and(|o| o.nodes.len() == 2),
-            Source::Cluster(_) | Source::Placement(_) => object.is_none(),
-        };
-        shape && entry.shader as u16 == 0x10
-    }
-    fn open(&self, _mem: &dyn GuestMemory, camera: &RenderCamera, run: Arc<Run>) -> bool {
-        assert_eq!(camera.far, 1024.0);
-        if *self.refuse.lock().unwrap() {
-            return false;
-        }
-        self.runs.lock().unwrap().push(run);
-        true
+impl GuestRead for Guest {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
     }
 }
 
-/// Entry `i` (a BSP cluster's part 1 with shader `0xe000_0000 | shader`,
-/// render record `i + 1`); returns the handler's argument.
-fn entry(m: &mut FlatMemory, i: u32, shader: u32) -> u32 {
-    let at = ENTRIES + 0x70 * i;
-    let record = i + 1;
-    m.set_u32(at + 4, (-(i as f32)).to_bits()).unwrap();
-    m.set_u32(at + 0x20, GEOMETRY_HANDLER).unwrap();
-    m.set_u32(at + 0x24, 0xe000_0000 | shader).unwrap();
-    m.set_u32(at + 0x28, record << 8 | 1).unwrap();
-    m.set_u32(RENDER_RECORDS + 0x20 * record + 4, u32::MAX).unwrap();
-    m.set_u32(RENDER_RECORDS + 0x20 * record + 0xc, 0x7ff << 18 | (20 + i) << 9).unwrap();
-    at + DATA_OFFSET
-}
-
-const ARRAY: u32 = 0x0058_0000;
-const HEADERS: u32 = 0x0058_1000;
-const BODIES: u32 = 0x0059_0000;
-const CACHE: u32 = 0x0057_0000;
-const CACHE_DATA: u32 = 0x0057_1000;
-
-/// Object `slot` of definition `def` with `nodes` node matrices (node `n`
-/// at x = n), its render-state cache record `slot`; returns its handle.
-fn object(m: &mut FlatMemory, slot: u32, def: u32, nodes: u32) -> u32 {
-    m.set_u32(OBJECTS, ARRAY).unwrap();
-    m.set_u32(ARRAY + 0x38, 16).unwrap();
-    m.set_u32(ARRAY + 0x44, HEADERS).unwrap();
-    let salt = 0x8000 + slot;
-    let header = HEADERS + 0xc * slot;
-    let body = BODIES + 0x1000 * slot;
-    m.set_u32(header, salt).unwrap();
-    m.set_u32(header + 8, body).unwrap();
-    m.set_u32(body, def).unwrap();
-    m.set_u32(body + 0x3c, 1f32.to_bits()).unwrap();
-    m.set_u32(body + 0x114, (0x34 * nodes) | (0x200 << 16)).unwrap();
-    for n in 0..nodes {
-        let at = body + 0x200 + 0x34 * n;
-        let words = [1.0f32, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, n as f32, 0.0, 0.0];
-        for (k, w) in words.into_iter().enumerate() {
-            m.set_u32(at + 4 * k as u32, w.to_bits()).unwrap();
-        }
+impl Guest {
+    fn set(&mut self, addr: u32, value: u32) {
+        self.0.set_u32(addr, value).unwrap();
     }
-    let handle = salt << 16 | slot;
-    m.set_u32(RENDER_STATE_CACHE, CACHE).unwrap();
-    m.set_u32(CACHE + 0x38, 16).unwrap();
-    m.set_u32(CACHE + 0x44, CACHE_DATA).unwrap();
-    m.set_u32(CACHE_DATA + CACHE_RECORD_SIZE * slot + CACHE_OWNER, handle).unwrap();
-    m.set_u32(body + BODY_RENDER_STATE, (0x4000 + slot) << 16 | slot).unwrap();
-    handle
-}
 
-/// Entry `i` of object `handle` with shader `0xe000_0000 | shader`: its
-/// render record holds a model datum and the object's lighting pointer,
-/// which names the object through its render-state cache record.
-fn object_entry(m: &mut FlatMemory, i: u32, shader: u32, handle: u32) -> u32 {
-    let data = entry(m, i, shader);
-    let record = RENDER_RECORDS + 0x20 * (i + 1);
-    m.set_u32(record + RECORD_MODEL, 0xe100_0000 | i).unwrap();
-    let lighting = CACHE_DATA + CACHE_RECORD_SIZE * (handle & 0xffff) + CACHE_LIGHTING;
-    m.set_u32(record + RECORD_LIGHTING, lighting).unwrap();
-    data
-}
-
-fn guest() -> FlatMemory {
-    let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
-    let c = RENDER_CAMERA;
-    for (i, v) in [0.0f32, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
-        m.set_u32(c + 4 * i as u32, v.to_bits()).unwrap();
+    fn new() -> Self {
+        let mut guest = Self(FlatMemory::new(0x0040_0000, 0x0021_0000));
+        guest.set(points::GAME_GLOBALS.base, GLOBALS);
+        guest.set(ACTIVE_BSP, 0x005d_0000);
+        guest.set(GLOBALS, 2 << 16);
+        guest.set(SCENE, 0x0010_0010);
+        guest.set(HANDLER, SORTED_RETURN);
+        guest
     }
-    m.set_u32(c + 0x28, 1.2f32.to_bits()).unwrap();
-    m.set_u32(c + 0x34, 480 | (640 << 16)).unwrap();
-    m.set_u32(c + 0x40, 0.0625f32.to_bits()).unwrap();
-    m.set_u32(c + 0x44, 1024f32.to_bits()).unwrap();
-    m
+
+    fn cluster_entry(&mut self, record: u32, part: u32) -> u32 {
+        let at = ENTRIES + 0x70 * record;
+        let row = RENDER_RECORDS + RENDER_RECORD_SIZE * record;
+        self.set(at + 0x20, GEOMETRY_HANDLER);
+        self.set(at + DATA_OFFSET, 0xe000_0010);
+        self.set(at + DATA_OFFSET + 4, record << 8 | part);
+        self.set(row + 4, u32::MAX);
+        self.set(row + 0xc, 0x7ff << 18 | 20 << 9);
+        at + DATA_OFFSET
+    }
 }
 
-/// One test, since the host and the open run are process globals.
 #[test]
-fn native_entries_join_runs_between_the_d3d_draws() {
-    let mut m = guest();
-    let a = entry(&mut m, 0, 0x10);
-    let b = entry(&mut m, 1, 0x10);
-    let d3d = entry(&mut m, 2, 0x11);
-    let c = entry(&mut m, 3, 0x10);
+fn same_shader_parts_keep_their_sorted_slots_across_a_d3d_handler() {
+    let mut guest = Guest::new();
+    let a = guest.cluster_entry(1, 3);
+    let b = guest.cluster_entry(2, 5);
+    let mut scope = Scope::default();
+    scope.begin_view(&guest, SCENE);
+    guest.set(HANDLER + 4, a);
+    scope.begin_entry(&guest, HANDLER, true);
+    let (generation, first) = scope.indexed_entry(&guest, DRAW).unwrap();
+    assert_eq!((first.source, first.record, first.part), (Source::Cluster(20), 1, 3));
 
-    // No host yet: every entry keeps its handler.
-    assert!(!native_transparents::on_entry(&m, a));
+    // An effects handler uses the same dispatch frame and calls D3D.
+    guest.set(HANDLER + 4, b + 0x70);
+    assert_eq!(scope.indexed_entry(&guest, DRAW), None);
 
-    let stub = Arc::new(Stub::default());
-    native_transparents::set_host(stub.clone());
-    native_transparents::new_view();
+    guest.set(HANDLER + 4, b);
+    scope.begin_entry(&guest, HANDLER, true);
+    let (same_generation, second) = scope.indexed_entry(&guest, DRAW).unwrap();
+    assert_eq!(generation, same_generation);
+    assert_eq!(first.shader, second.shader);
+    assert_eq!((second.source, second.record, second.part), (first.source, 2, 5));
+    assert_eq!(scope.indexed_entry(&guest, HANDLER), None);
 
-    // A and B: one run, one pass asked for.
-    assert!(native_transparents::on_entry(&m, a));
-    assert!(native_transparents::on_entry(&m, b));
-    assert_eq!(stub.runs.lock().unwrap().len(), 1);
-    // A shader the host does not draw ends the run, and its handler
-    // is free to visit the device or return without drawing.
-    assert!(!native_transparents::on_entry(&m, d3d));
-    // The fallback can make no device call. C still gets a new run.
-    assert!(native_transparents::on_entry(&m, c));
-    assert_eq!(stub.runs.lock().unwrap().len(), 2);
-    let first = stub.runs.lock().unwrap()[0].seal();
-    assert_eq!(first.len(), 2);
-    assert_eq!(first[0].entry.source, Source::Cluster(20));
-    assert_eq!((first[1].entry.source, first[1].entry.part), (Source::Cluster(21), 1));
-    assert_eq!(first[0].object, None);
-    assert_eq!(stub.runs.lock().unwrap()[1].len(), 1);
+    scope.begin_view(&guest, SCENE);
+    assert_eq!(scope.indexed_entry(&guest, DRAW), None);
+}
 
-    // The next view's transparents: the open run is not joined.
-    native_transparents::new_view();
-    assert!(native_transparents::on_entry(&m, a));
-    assert_eq!(stub.runs.lock().unwrap().len(), 3);
-    assert_eq!(stub.runs.lock().unwrap()[1].len(), 1);
+#[test]
+fn changing_bsp_at_the_same_address_invalidates_the_saved_entry() {
+    let mut guest = Guest::new();
+    let data = guest.cluster_entry(1, 3);
+    guest.set(HANDLER + 4, data);
+    let mut scope = Scope::default();
+    scope.begin_view(&guest, SCENE);
+    scope.begin_entry(&guest, HANDLER, true);
+    let (first, _) = scope.indexed_entry(&guest, DRAW).unwrap();
 
-    // The device cannot draw: the entry keeps its handler, and no run is
-    // left open.
-    native_transparents::new_view();
-    *stub.refuse.lock().unwrap() = true;
-    assert!(!native_transparents::on_entry(&m, b));
-    *stub.refuse.lock().unwrap() = false;
-    assert!(native_transparents::on_entry(&m, b));
-    assert_eq!(stub.runs.lock().unwrap().len(), 4);
+    guest.set(GLOBALS, 3 << 16);
+    assert_eq!(scope.indexed_entry(&guest, DRAW), None);
+    scope.begin_view(&guest, SCENE);
+    scope.begin_entry(&guest, HANDLER, true);
+    let (second, _) = scope.indexed_entry(&guest, DRAW).unwrap();
+    assert_ne!(first, second);
 
-    // An entry without a render record: not geometry the hook reads.
-    m.set_u32(c + 4, 0xffff_ff00).unwrap();
-    assert!(!native_transparents::on_entry(&m, c));
-
-    // Objects: left to D3D until the native objects are on too.
-    let h = object(&mut m, 1, 0xe000_0100, 2);
-    let o1 = object_entry(&mut m, 4, 0x10, h);
-    let o2 = object_entry(&mut m, 5, 0x10, h);
-    native_transparents::new_view();
-    assert!(!native_transparents::on_entry(&m, o1));
-    native_transparents::set_objects(true);
-    // The hook copies the object's nodes into the run.
-    assert!(native_transparents::on_entry(&m, o1));
-    assert_eq!(stub.runs.lock().unwrap().len(), 5);
-    let objects = stub.runs.lock().unwrap()[4].seal();
-    assert_eq!(objects.len(), 1);
-    let copy = objects[0].object.as_ref().expect("the object's copy");
-    assert_eq!((copy.handle, copy.definition, copy.nodes.len()), (h, 0xe000_0100, 2));
-    assert_eq!(copy.nodes[1].position, [1.0, 0.0, 0.0]);
-    // Same object and shader, another render record. It has its own
-    // sorted draw rather than being folded into the first one.
-    assert!(native_transparents::on_entry(&m, o2));
-    assert_eq!(stub.runs.lock().unwrap().len(), 6);
-    let second = stub.runs.lock().unwrap()[5].seal();
-    assert_eq!(second.len(), 1);
-    assert_ne!(objects[0].entry.record, second[0].entry.record);
-    native_transparents::new_view();
-    assert!(native_transparents::on_entry(&m, o2));
-    assert_eq!(stub.runs.lock().unwrap().len(), 7);
-    // An object the host does not take (another node count): D3D.
-    native_transparents::new_view();
-    let h3 = object(&mut m, 3, 0xe000_0100, 3);
-    let o3 = object_entry(&mut m, 6, 0x10, h3);
-    assert!(!native_transparents::on_entry(&m, o3));
-
-    let (entries, skipped, runs) = native_transparents::counts();
-    assert_eq!((entries, skipped, runs), (14, 8, 7));
+    guest.set(HANDLER, 0x0010_0020);
+    scope.begin_entry(&guest, HANDLER, true);
+    assert_eq!(scope.indexed_entry(&guest, DRAW), None);
 }

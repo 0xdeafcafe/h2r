@@ -80,6 +80,13 @@ pub struct CachedBytes {
     pub bytes: std::sync::Arc<[u8]>,
 }
 
+impl CachedBytes {
+    /// An immutable derived stream with its own GPU cache identity.
+    pub fn derived(bytes: Vec<u8>) -> Self {
+        Self { id: crate::vertex_cache::next_snapshot_id(), bytes: bytes.into() }
+    }
+}
+
 impl StreamData {
     /// The cache snapshot's id, if this is one.
     pub fn cache_id(&self) -> Option<u64> {

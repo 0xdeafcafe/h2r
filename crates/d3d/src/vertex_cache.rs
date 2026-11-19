@@ -34,6 +34,10 @@ use crate::dirty::WriteTracker;
 /// copies by id, so an id must never name two snapshots.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+pub(crate) fn next_snapshot_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// What a [`RangeCache`] keeps per range.
 pub trait Snapshot: Clone {
     /// Host bytes it holds (for the budget).
@@ -162,7 +166,7 @@ impl<T: Snapshot> RangeCache<T> {
     /// `[va, va + len)` as read at tracker generation `generation`, after a
     /// [`Probe::Fill`]; returns it.
     pub fn fill(&mut self, va: u32, len: u32, generation: u64, make: impl FnOnce(u64) -> T) -> T {
-        let snapshot = make(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        let snapshot = make(next_snapshot_id());
         self.tick += 1;
         let e = self.entries.entry((va, len)).or_insert(Entry {
             generation,

@@ -14,8 +14,7 @@ use tags::shader::StageStates;
 
 use crate::gpu::{Image, texture};
 use crate::look::{PassLook, Stage, WorldPass};
-use crate::pass_state::{PassState, PipelineState};
-use wgpu::util::DeviceExt;
+use crate::pass_state::PassState;
 use crate::world::{LightmapKey, ModelRows, Owner, World, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
@@ -769,7 +768,6 @@ pub(crate) struct Gpu {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
-    uniforms_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
     pixel_buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
@@ -777,7 +775,6 @@ pub(crate) struct Gpu {
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     pub(crate) stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, PipelineState), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -900,14 +897,12 @@ impl Gpu {
             module,
             layout,
             textures_layout,
-            uniforms_layout,
             vertex_buffer,
             pixel_buffer,
             uniforms,
             samplers,
             stage_views,
             stage_info,
-            pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
         })
     }
@@ -948,44 +943,6 @@ impl Gpu {
     pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
-    }
-
-    /// Immutable uniforms for a transparent draw; another run in the
-    /// same submission can have different view constants and clip.
-    pub(crate) fn draw_uniforms(
-        &self,
-        device: &wgpu::Device,
-        vertex: &VertexUniforms,
-        pixel: &PixelUniforms,
-    ) -> wgpu::BindGroup {
-        let buffer = |contents: &[u8]| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("native transparent uniforms"),
-            contents,
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let vertex = buffer(&vertex.to_bytes());
-        let pixel = buffer(&pixel.to_bytes());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native transparent uniforms"),
-            layout: &self.uniforms_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: vertex.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: pixel.as_entire_binding() },
-            ],
-        })
-    }
-
-    pub(crate) fn pipeline(
-        &mut self,
-        device: &wgpu::Device,
-        color: wgpu::TextureFormat,
-        depth: wgpu::TextureFormat,
-        state: PassState,
-    ) -> &wgpu::RenderPipeline {
-        let (module, layout) = (&self.module, &self.layout);
-        self.pipelines.entry((color, depth, state.into())).or_insert_with(|| {
-            render_pipeline(device, module, layout, color, depth, Some(&state), None, wgpu::StencilState::default())
-        })
     }
 }
 

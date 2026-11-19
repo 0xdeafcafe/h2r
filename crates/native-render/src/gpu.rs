@@ -13,7 +13,6 @@ use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_sl
 use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
-use crate::transparent_gpu::TransparentSet;
 use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
@@ -270,9 +269,6 @@ pub struct GpuWorld {
     /// Materials drawn with their own programs ([`crate::program`]); the
     /// rest draw with stage 1's.
     programs: Option<ProgramSet>,
-    /// The transparent materials the sorted transparents' runs draw
-    /// ([`crate::transparent_gpu`]).
-    transparents: Option<TransparentSet>,
     /// The light passes (stage 4), once a light needs them.
     lights: Option<LightSet>,
     /// Batches left out of a pass because their material program could
@@ -547,7 +543,6 @@ impl GpuWorld {
             shader,
             pipelines: HashMap::new(),
             programs: None,
-            transparents: None,
             lights: None,
             unbound_batches: 0,
         }
@@ -561,84 +556,6 @@ impl GpuWorld {
 
     pub fn world(&self) -> &World {
         &self.world
-    }
-
-    /// Draws the world's transparent parts of `set`'s materials from now on.
-    pub fn set_transparents(&mut self, set: TransparentSet) {
-        self.transparents = Some(set);
-    }
-
-    /// The transparent materials, when they are uploaded.
-    pub fn transparents(&self) -> Option<&TransparentSet> {
-        self.transparents.as_ref()
-    }
-
-    /// Records one run of sorted transparent entries, each a part
-    /// `(owner, part index)`, in order: every pass of each, blended into
-    /// the target over the depth (loaded and kept). Entries whose part or
-    /// material the set does not draw are skipped (the host accepts none
-    /// such). Returns how many were drawn.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_transparents(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
-        depth_format: wgpu::TextureFormat,
-        target_size: (u32, u32),
-        view: &ViewInputs,
-        entries: &[(Owner, u8)],
-        incoming: &gfx::state::RenderState,
-    ) -> usize {
-        let Some(set) = self.transparents.as_mut() else { return 0 };
-        let entries: Vec<_> = entries.iter().filter_map(|&(owner, part)| {
-            let draw = self.world.transparent(owner, part)?;
-            let passes = set.prepare(device, (color_format, depth_format), &self.world, draw, view, incoming);
-            (!passes.is_empty()).then_some((draw, passes))
-        }).collect();
-        if entries.is_empty() {
-            return 0;
-        }
-        let has_stencil = depth_format.has_stencil_aspect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native transparents"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: has_stencil.then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        // The programs carry the game's viewport in their constants: the
-        // pass covers the whole target, as the world's programs do.
-        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
-        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        for (entry, passes) in &entries {
-            for draw in passes {
-                draw.encode(&mut pass, entry);
-            }
-        }
-        entries.len()
     }
 
     /// Draws lights with `set` from now on.
