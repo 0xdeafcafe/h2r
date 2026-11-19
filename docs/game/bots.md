@@ -2216,7 +2216,7 @@ account making and `input.pad` presses.
 
 ```sh
 h2 bots test [--count 5] [--map lockout] [--keep] [--timeout 360]
-             [--wait-clang] [--settings-from DIR]
+             [--wait-clang] [--settings-from DIR] [--no-drive]
 h2 bots verdict <bots.log>   # the verdict of a log again
 ```
 
@@ -2294,6 +2294,34 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    closes the game, deletes the run's data and exits non-zero if a check
    failed. With `--keep` the game stays open, and the command with it (it
    is the Live server), until the window closes; the data is kept.
+
+**`--no-drive` and `progress.json`.** `--no-drive` launches and watches
+exactly as above but presses nothing: the scripted driver is off, and the
+verdict is the same. At the start it prints the agent socket and a hint
+(`h2 agent --socket <sock> ...`). `--timeout` still counts from `agent:
+listening`; a drive by hand or by a model needs longer, so it defaults to
+900 s with `--no-drive` (360 s otherwise; an explicit `--timeout` wins).
+Either way the run's log directory gets `progress.json`, rewritten
+whenever a check, the status or the last lines change (written through a
+temporary file, so a poll never reads half of it):
+
+```json
+{ "finished": false, "passed": false,
+  "next": { "step": 3, "name": "on Xbox Live ..." },
+  "phase": "menu", "mode": "-", "map": "-",
+  "last_ui": "ui: screen none (slot 4: ...)",
+  "last_bots": "bots: ...",
+  "checks": [ { "step": 1, "name": "...", "state": "pass|pending|fail",
+                "detail": "..." } ] }
+```
+
+`checks` is the 12 checks of the list below; `state` is `pending` while
+the run goes and `fail` for what did not pass once it has ended. `next`
+is the first check not passed. An outside driver loops: read
+`progress.json` (stop on `finished`), `h2 agent --socket <sock> ui` and
+`h2 agent --socket <sock> frame snap 1` to see the screen, then
+`h2 agent --socket <sock> press down` (or `a`, `b`, `up`) as the first
+pending check and `last_ui` call for, and read `progress.json` again.
 
 **The checks**, in the order a run reaches them. Each prints as passed or
 failed with the log lines that show it, and the verdict names the first

@@ -226,7 +226,7 @@ pub fn status_line(phase: &str, mode: &str, map: &str) -> String {
     format!("bots-test: status phase {phase} mode {mode} map {map}")
 }
 
-fn read_status(text: &str) -> Option<(&str, &str, &str)> {
+pub fn read_status(text: &str) -> Option<(&str, &str, &str)> {
     let rest = text.strip_prefix("bots-test: status phase ")?;
     let (phase, rest) = rest.split_once(" mode ")?;
     let (mode, map) = rest.split_once(" map ")?;
