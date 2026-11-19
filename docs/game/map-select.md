@@ -1,7 +1,9 @@
 # The multiplayer map select by category
 
 Status: **built and table-tested, not run in the game.** Started
-2026-11-18.
+2026-11-18. Packages installed while the game runs, and a mod's name,
+description and picture on its map's slot: 2026-11-19, not run in the
+game either.
 
 The pregame lobby's map list now holds maps from four places: the Halo 2
 disc, the Multiplayer Map Pack ([map-pack.md](map-pack.md)), community
@@ -65,8 +67,8 @@ it out, because the disc's own map can't be loaded until the package is
 switched off. Offering both would mean installing the package as a new
 map (a content package of its own, as derived packages are, maps.md
 §4), which changes how the package is served. That isn't done.
-The choice is read at boot. A package added while the game runs is
-served at once (maps.md §3), but the list only follows at the next boot.
+The choice is read at boot and again whenever a package is installed or
+chosen while the game runs (below, "Installed while the game runs").
 
 No list of retail map names or ids is kept. The Halo 2 maps are the ones
 the user's own disc lists.
@@ -83,6 +85,83 @@ and the editor's Maps list share. A record whose map id matches a
 slot replaces that slot, as `0x19be00` refills it. A map's name is the
 English one (slot `+0xc`, record names `[0]`). At most 50 maps, the
 list's slots.
+
+## Installed while the game runs
+
+A mod downloaded on the Mods screen, or installed by a join
+(`MapGate::on_installed`, which the boot also uses for the VFS rescan),
+is listed without a restart:
+
+1. On the download's own thread, `map_select::packages_changed` installs
+   new maps as content packages (`new_maps`, as at boot), then reads the
+   catalogue again (`Sources::read`: the disc's slots are read once, the
+   first time a catalogue needs them, and kept) and the fills below, and
+   bumps the selection's generation. With one category or none at boot
+   the hooks are on all the same; Change Map opens the retail list until
+   there are two (`Selection::active`).
+2. The next Change Map (the Select Map list asking for its array,
+   `0x19c6a0` from `0x2c9985`) sees a generation the slots weren't filled
+   for. Before it answers, it refills the slots (next section). When a
+   content package came or went (a new map: its offer directory under
+   `$c` appeared or left), it first runs the game's own content scan
+   (`0x19c120`, which refills the slots from each `patch.lvl` through
+   `0x19be00`) and the multiplayer array build (`0x19c7e0([0x4ee4e4])`),
+   the two steps of the game's refresh `0x19c190` that matter here. Then
+   the list is ours (categories) or the retail array (one category),
+   built from the new catalogue.
+
+A map load runs `0x19c190` itself (function table `0x43ca94`, every map
+load; the content scan only in the main menu). Its hook
+(`MP_LEVEL_REFRESH`) calls it, forgets what it had changed (the tag
+memory is fresh), and refills.
+
+## A mod's name and picture
+
+A package chosen for a disc map (or a Map Pack map) is served in its
+place, so that map's slot is the mod. Every screen reads the slot:
+
+| What | Where it reads |
+|---|---|
+| the lobby's map name | `0x22d5a7`: `0x19a84e` gives the lobby's map, `0x19c5f0(id)` its slot, `0x2afd70(slot)` the name |
+| Select Map rows, System Link browser rows, the post-game | `0x2afd70` (from `0x2c9afc`, `0x253569`, `0x2b6a59`) |
+| Select Map's description | inline at `0x2c9bee`: slot `+0x24c + 0x100 * language` |
+| Game Setup's and Select Map's picture | the slot's bitmap datum `[slot + 8]` (`0x2bbcbb`, `0x2c9bd1`, through `0x137550` and `0x2b0a7b`) |
+
+So `boot::mod_slots` refills the slot in the loaded main menu's list
+(globals `[0x4e034c] + 0x178`, element 0, block `+0x10`; only when the
+cache header `[0x4e0350] + 0x10` says main menu):
+
+- **Name and description.** The nine names (`+0xc`, 32 UTF-16 units each)
+  and descriptions (`+0x24c`, 128 units each) become the package's:
+  `[list] name.<lang>`, else `[package] name`; `[list]
+  description.<lang>`, else `[package] description`, else empty
+  (`content::map_list::Entry::for_manifest`, as a new map's record).
+- **Picture**, when the package has an image (`[package] image`, which
+  the Live download fetches with the layers). A retail slot's bitmap
+  isn't the 220x207 32-bit one a `patch.lvl` preview is copied into, so
+  the slot is first pointed at a free slot's bitmap (a free slot, id
+  `-1`, has one of its own, map-pack.md 8.1; one no used slot shows).
+  Then the game's own applier `0x19be00(content dir, record)` refills
+  the slot from a v2 record built from the slot itself (its id, sort
+  order, flags, team counts, scenario path) with the package's texts
+  and the image as the preview (`map_list::preview_from_rgba`, no frame
+  colours). The applier keeps the bitmap reference, copies the preview
+  into that bitmap through its texture lock (`0x1cfb0`, `0x12cb80`,
+  `0x1d5e0`) and sets the path to `<dir>\<basename>`, which, with the
+  slot's own directory as `dir`, is the path it had. With no free bitmap
+  left the mod keeps the map's picture.
+- **Memory.** The record (`0x2d3fc` bytes) and its content dir go in a
+  `0x2e000`-byte block of ours mapped once at install
+  (`mod_slots::map_scratch`: the first free place from `0xa2fc_0000`,
+  above the campaigns' region, below `0xa300_0000`), not the features'
+  shared arena (512 KiB for all of them). Without it the mods keep their
+  maps' pictures.
+- **Undo.** A slot changed in this load whose package is gone (or no
+  longer has an image) gets its own bitmap reference, names and
+  descriptions back.
+
+The Select Map row label of a replaced map (below, `MP_LEVEL_NAME`) is the
+package's name as before; with the slot refilled it is the same text.
 
 ## How it's built
 
@@ -191,9 +270,25 @@ Tests (`boot` `map_select::tests`):
 - a table driving the two steps with presses (A opens a category's maps,
   B returns with the focus kept, B on the categories closes them, A on a
   map is the action);
+- a package installed while the game runs: listed under Mods by its
+  name after `refresh`, the generation bumped, the disc's slots read
+  once, a new content package asking for the game's content scan once
+  (`a_package_installed_while_the_game_runs_is_listed_without_a_restart`);
 - `the_boot_s_features_plan_together_with_the_campaigns`: the campaigns,
-  their picker, the map select's six hooks and the Halo 1 Options row
+  their picker, the map select's seven hooks and the Halo 1 Options row
   plan with no refusal, each hook where the table above says.
+
+Tests (`boot` `mod_slots::tests`): a mod without a picture renames its
+map's slot in every language and keeps the picture, once; one with a
+picture takes the first free bitmap and a record that is the slot itself
+with the package's texts and image (passes 1.0's check, the applier's
+path is the slot's), keeps its own spare for the next package; a package
+gone puts the slot's own bytes back, a picture dropped the map's own
+bitmap; no free bitmap keeps the map's picture; which slots a fill takes
+(a disc map; a Map Pack map unless the disc has its file name; never a
+new map's content); texts cut to the fields; the slots read from the main
+menu's globals only (`FakeGuest`-style memory); a replacing package's
+name, description and image read from its directory.
 
 ## Needs a game run
 
@@ -214,7 +309,27 @@ Tests (`boot` `map_select::tests`):
    Game Setup shows the new map, with no crash (the first build died
    here, at `0x2351d9` reading `0x42`). Do it for a Halo 2 map and a
    Halo: CE one, then start a game on it.
-5. Unchecked: whether the second Select Map takes our request on the
+5. A mod downloaded on the Mods screen, with the game running, no
+   restart (a Live server with a mod on Lockout that has an image, and
+   one without): stderr `map select: packages changed; by category
+   (Halo 2 12, ..., Mods 1) (1 mods on their maps)`. Back in a custom
+   game's Game Setup, Change Map logs `map select: mods on their maps
+   (packages changed): 1 named, 1 pictures, 0 put back, 0 failed` (or
+   `1 named, 0 pictures` without an image). Mods is listed with the
+   mod's name; its row shows the mod's picture (or Lockout's, without an
+   image) and description. Pick it: Game Setup and the lobby show the
+   mod's name and picture, and the game loads the mod.
+   - At the next main menu load (after a game) stderr says `mods on
+     their maps (the lists were built)` and the same shows.
+   - Unchecked: that `0x19be00` called from our hooks (outside its
+     own map-load path) draws the new picture at once; that the free
+     slot's bitmap really is the 220x207 32-bit kind for every free
+     slot; that the lobby screen already up refreshes its name text
+     without leaving it.
+   - A mod that is a new map (`[base] derived = true`), downloaded
+     with the game running: stderr `the game read its content packages
+     again` at the next Change Map, and it is listed under Mods.
+6. Unchecked: whether the second Select Map takes our request on the
    categories' window and slot as the first took Game Setup's. Whether
    the close message sent to the categories from the maps screen's
    destructor closes them.
