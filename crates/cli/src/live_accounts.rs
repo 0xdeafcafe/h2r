@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use live_proto::sign::{KeyPair, PrivateJwk};
 #[cfg(feature = "desktop")]
-use live_proto::{AccountKeys, Author, Discovery, Gamertag};
-use live_proto::Xuid;
+use live_proto::{AccountKeys, Discovery, Gamertag};
+use live_proto::{Author, Xuid};
 #[cfg(feature = "desktop")]
 use live_server::identity::write_private;
 use serde::{Deserialize, Serialize};
