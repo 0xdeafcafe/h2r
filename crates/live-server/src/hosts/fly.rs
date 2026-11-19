@@ -269,8 +269,9 @@ fn windows((lo, hi): (u16, u16)) -> Result<u32, HostError> {
 /// FNV-1a, so a lease's window is picked by a hash that never moves:
 /// the same lease always restarts on the same ports.
 fn fnv1a(text: &str) -> u64 {
-    text.bytes()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64) * 0x0000_0100_0000_01b3)
+    text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// The UDP window `base..base+6` this lease claims: aligned, so two
@@ -285,7 +286,7 @@ pub fn port_base(lease_id: &str, ports: (u16, u16)) -> Result<u16, HostError> {
 
 /// The machine's guest by lease class (dedicated-host.md's sizing):
 /// Small is `performance-1x` 2 GiB, Large is `performance-2x` 4 GiB.
-pub fn guest(class: HostClass) -> MachineGuest {
+pub fn guest(class: &HostClass) -> MachineGuest {
     let (cpus, memory_mb) = match class {
         HostClass::Small => (1, 2048),
         HostClass::Large => (2, 4096),
@@ -315,15 +316,18 @@ pub fn services(base: u16) -> Vec<MachineService> {
 /// The env the host process boots with: the lease it serves, where it
 /// registers and with what credential, its game data, and the address
 /// it must bind for Fly's UDP to reach it.
-pub fn machine_env(lease: &HostLease, boot: &HostBoot) -> BTreeMap<String, String> {
-    BTreeMap::from([
+pub fn machine_env(lease: &HostLease, boot: &HostBoot) -> Result<BTreeMap<String, String>, HostError> {
+    let lease_json = serde_json::to_string(lease)
+        .map_err(|_| config_error("could not encode Fly host lease"))?;
+    Ok(BTreeMap::from([
         ("H2_LEASE".to_string(), lease.id.clone()),
+        ("H2_HOST_LEASE_JSON".to_string(), lease_json),
         ("H2_LIVE".to_string(), boot.live_url.clone()),
         ("H2_TOKEN".to_string(), boot.token.clone()),
         ("H2_DATA_URL".to_string(), boot.data_url.clone()),
         ("H2_DATA_SHA".to_string(), boot.data_sha256.clone()),
         ("H2_XNET_BIND".to_string(), GLOBAL_BIND.to_string()),
-    ])
+    ]))
 }
 
 /// `POST /v1/apps/{app}/machines` for this lease: region from the lease
@@ -347,8 +351,8 @@ pub fn create_request(
         region,
         config: MachineConfig {
             image: fly.image.clone(),
-            guest: guest(lease.class),
-            env: machine_env(lease, boot),
+            guest: guest(&lease.class),
+            env: machine_env(lease, boot)?,
             auto_destroy: true,
             restart: MachineRestart {
                 policy: "no".to_string(),
@@ -670,7 +674,7 @@ mod tests {
     #[test]
     fn guest_sizes_follow_the_lease_class() {
         assert_eq!(
-            guest(HostClass::Small),
+            guest(&HostClass::Small),
             MachineGuest {
                 cpu_kind: "performance".to_string(),
                 cpus: 1,
@@ -678,7 +682,7 @@ mod tests {
             }
         );
         assert_eq!(
-            guest(HostClass::Large),
+            guest(&HostClass::Large),
             MachineGuest {
                 cpu_kind: "performance".to_string(),
                 cpus: 2,
@@ -722,11 +726,16 @@ mod tests {
 
     #[test]
     fn machine_env_carries_the_lease_the_boot_and_the_bind() {
-        let env = machine_env(&lease(), &boot());
+        let lease = lease();
+        let env = machine_env(&lease, &boot()).unwrap();
         assert_eq!(
             env,
             BTreeMap::from([
                 ("H2_LEASE".to_string(), "hl-3fRNhbDZ7EpNRRF0".to_string()),
+                (
+                    "H2_HOST_LEASE_JSON".to_string(),
+                    serde_json::to_string(&lease).unwrap(),
+                ),
                 ("H2_LIVE".to_string(), "https://live.forbes.red".to_string()),
                 ("H2_TOKEN".to_string(), "host-jwt".to_string()),
                 (
@@ -742,8 +751,9 @@ mod tests {
     #[test]
     fn create_request_builds_the_machine_the_contract_spells() {
         let fly = config();
-        let request = create_request(&lease(), &boot(), &fly).unwrap();
-        let base = port_base(&lease().id, fly.ports).unwrap();
+        let lease = lease();
+        let request = create_request(&lease, &boot(), &fly).unwrap();
+        let base = port_base(&lease.id, fly.ports).unwrap();
         let expected_services: Vec<_> = (0..GAME_PORTS)
             .map(|i| {
                 serde_json::json!({
@@ -762,6 +772,7 @@ mod tests {
                     "guest": {"cpu_kind": "performance", "cpus": 1, "memory_mb": 2048},
                     "env": {
                         "H2_LEASE": "hl-3fRNhbDZ7EpNRRF0",
+                        "H2_HOST_LEASE_JSON": serde_json::to_string(&lease).unwrap(),
                         "H2_LIVE": "https://live.forbes.red",
                         "H2_TOKEN": "host-jwt",
                         "H2_DATA_URL": "https://blobs.forbes.red/host-data.tar.zst?sig=1",
