@@ -69,6 +69,10 @@ pub struct Perception {
     pub tick: u32,
     /// The weapons lying in the world.
     pub pickups: Vec<Pickup>,
+    /// The gametype and its objective (docs/game/bots.md section 3.7):
+    /// flags, balls, bombs and the hill. `None` in Slayer, or when it
+    /// could not be read; the bot then plays as in Slayer.
+    pub objective: Option<crate::objective::Objective>,
 }
 
 /// The trivial brain's tuning.
@@ -205,6 +209,7 @@ mod tests {
                 teams,
                 tick: 0,
                 pickups: vec![],
+                objective: None,
             },
             &Params::default(),
         )
@@ -265,6 +270,7 @@ mod tests {
                 teams: false,
                 tick: 0,
                 pickups: vec![],
+                objective: None,
             },
             &Params::default(),
         );
@@ -287,6 +293,7 @@ mod tests {
             teams: true,
             tick: 0,
             pickups: vec![],
+            objective: None,
         };
         assert_eq!(target(&p), Some(2));
     }

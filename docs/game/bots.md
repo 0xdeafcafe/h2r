@@ -229,7 +229,7 @@ The brain reads game state the way telemetry already does
   (`+0x218[4]`);
 - the weapons, grenades and powerups lying in the world;
 - the objective: flag, bomb, ball, hill and territories, from the
-  game-engine globals;
+  game-engine globals and the scenario's netgame flags (built, §3.7);
 - shots (the `0x104150` hook) and kills (`0x15ce70`), for "who is shooting
   me" and for the emote triggers (§3.5).
 
@@ -334,14 +334,26 @@ keeps the best, with hysteresis so the bot does not flicker between two.
 
 **Built so far** (`Mind::step`, a fixed order rather than scores):
 
-1. the weapons decision (§3.6) says go for a weapon: **rearm**;
-2. an enemy in view: **fight**. With nothing to shoot it runs straight in
+1. it carries the flag or bomb: **carry** it to where it scores (§3.7),
+   whatever else is going on: no rearming, no backing off, no reload or
+   switch (a switch drops it), only a melee for whoever is in the way;
+2. it carries the ball: **keep** it, walking away from the nearest enemy
+   within 15 world units and meleeing one that comes within reach;
+3. the weapons decision (§3.6) says go for a weapon: **rearm**;
+4. an enemy in view: **fight**. With nothing to shoot it runs straight in
    and melees (B within 1.2 world units); with its shields under 0.25 it
    backs off while it shoots, until they are back to 0.9;
-3. an enemy seen in the last 10 s, shields down: **recover**, backing
+5. an enemy seen in the last 10 s, shields down: **recover**, backing
    away from where it was seen, facing that way;
-4. an enemy seen in the last 10 s: **chase** its last known position;
-5. otherwise **roam**.
+6. the objective asks something (§3.7): **play** it: take the enemy
+   flag or the ball, return our flag, hunt the carrier, escort a
+   teammate who carries, guard our flag, go to or stand in the hill;
+7. an enemy seen in the last 10 s: **chase** its last known position;
+8. otherwise **roam**.
+
+In an objective game the objective takes the place of chasing and
+roaming; fighting, rearming and recovering keep their place, except for
+a carrier.
 
 Reload (X) and switch weapons (Y) are taps of 2 ticks, at most one every
 2 s (reload) or 1.3 s (switch), on top of whichever of these runs.
@@ -487,6 +499,120 @@ world units) for at most 1 s; the dry one in hand is dropped for it.
 The presses are Halo 2's Default layout (X reload and action, Y switch,
 B melee, A jump, left stick click crouch), which every bot's profile is
 given whatever the human uses (`guest::bot_block`, §4.2).
+
+### 3.7 Objectives (traced)
+
+Stage 5. The bot reads the gametype, the objective objects and the
+scenario's netgame flags (`crates/bots/src/objective.rs`), and a pure
+decision (`objective::plan`) gives it a goal.
+
+**Fields.** Traced offline from the XBE with `h2 disasm` and a reading of
+its data section (static, no game run). `E` is the game-engine globals,
+`G` the game globals, `V` the variant (`G+0x13c`), as in
+docs/live/live-gamestate.md. Live telemetry reads none of these yet: it
+names the gametype by `V+0x44` and the weapons by tag name.
+
+| Field | Where | Type | Confidence | Evidence |
+|---|---|---|---|---|
+| game-engine globals | `[0x4e9ae8]` | pointer | confirmed | live-gamestate.md; `0x1574c0` zeroes `0x327` dwords of it |
+| engine index | `E+0xc14` | `i32` | confirmed | `0x1574c0` copies `[G+0x180]` (`V+0x44`) there, and writes 0 when the engine has no object or the globals tag lacks its multiplayer block (`0x157578`) |
+| engines | `0x55e4d0[index]` | pointer to an object whose `+0` is a vtable | confirmed | filled by `0x378500`: 1 CTF and 9 Assault share one (`[0x470a5c]`, vtable `0x459d18`); 2 Slayer `0x45c6d8`; 3 Oddball `0x45c7a8`; 4 KotH `0x45c878`; 7 Juggernaut `0x453d38`; 8 Territories `0x45c948` |
+| objective object count | `E+0xc18` | `i32`, at most 8 | confirmed | `0x15e050` (register) bumps it after `cmp eax,8; jae`; `0x15e130` (unregister) moves the last record down and drops it |
+| objective records | `E+0xc1c`, `0x10` each | | confirmed | `0x15e050`: `shl eax,4; lea edi,[eax+ebx+0C1Ch]` |
+| record: the object | `+0` | `u32` datum | confirmed | `0x15e050` stores its first argument; every lookup (`0x15e180`, `0x15e2b4`, `0x15e327`) compares it |
+| record: its team | `+4` | `i16` | confirmed | `0x15e050`'s second argument; the CTF flag spawn `0x2422d0` passes the flag's team (8 is the neutral one), Oddball's `0x2bc1f0` the ball's number; `0x15e410` finds a record by it; also written to the weapon's `+0x17e` |
+| record: carrying unit | `+8` | `u32` datum, -1 none | confirmed | `0x15e250` (picked up) writes its second argument; `0x15e460` (dropped) writes -1 |
+| record: carrying player | `+0xc` | `u32` datum, -1 none | confirmed | `0x15e250` copies the unit's `+0x13c` (its player, live-gamestate.md); `0x15e300` refreshes it; `0x15e460` writes -1 |
+| carried flag on the weapon | weapon `+0x16c` bit 7 (bit 6: registered) | `u8` | confirmed | `0x15e2d4` `or 80h`, `0x15e49c` `and 7Fh`; `0x15e0a5` `or 40h`, `0x15e1b6` `and 0BFh` |
+| who registers | | | confirmed | callers of `0x15e050`: CTF and Assault (`0x2423d9`), Oddball (`0x2bc26c`), `0x2c0a7d` (another engine's, not looked at), and the network and object-create paths `0xa228f`, `0xd0ab5`; KotH and Territories register nothing |
+| team designators in use | `E+8` | `u16` mask | likely | `0x158990` tests `1 << i` against it for `i` 0 to 8 |
+| each designator's team | `E+0x10 + 2i` | `i16`, 9 | likely | `0x158990(team)` returns the `i` whose entry is the team; `0x1574c0` sets all to -1. Which code fills them is not traced (the team set builder `0x157790` is the candidate) |
+| netgame flags | `[[0x4e0350]+0x11c]`, count `[..+0x118]`, `0x20` each | | confirmed | `0x243b69`: `mov ecx,[4E0350h]; mov edx,[ecx+11Ch]; shl ...,5` |
+| flag type, team, identifier | `+0x10`, `+0x12`, `+0x14` | `u16` each | confirmed | `0x19ec40`, the engine's flag query, compares the three with its arguments (-1 matches any) |
+| flag game flags | `+0x16` | `u16` | likely | `0x243b8f`: bits 1, 2 and 4 against `V+0x104` (`G+0x240`), the CTF variant's flag setting |
+| type 0, 1: CTF flag spawn, flag return | | | confirmed | `0x243b10(spawn?)`: type `al ? 0 : 1` for CTF |
+| type 2, 3: bomb spawn, bomb return (the plate) | | | confirmed | as above, `al ? 2 : 3` when the engine is 9 |
+| type 4: ball spawn | | | likely | the community enum; on the disc all are team 8 (`crates/h1convert/tests/h2_scenario.rs`); Oddball's `0x2bc1b0` reads a spawn index per ball from its globals, not the type |
+| type 11 to 18: hill `0` to `7`'s corners | | | confirmed | KotH's init `0x2bd140` collects the types `0xb..0x12` it finds, as `type - 11`, into `0x5092f0` (count `0x5092e8`); `0x2bdc70` asks `0x19ec40` for type `0xb + hill` |
+| CTF and Assault globals | `[0x51ec80]` (= `E+0xfc`) | pointer | confirmed | `0x240160` zeroes `0x82` dwords from `E+0xfc` and stores the address there |
+| ...: per-designator flag spawn, return | `+0x02 + 2i`, `+0x14 + 2i` | `i16` netgame flag index | confirmed | `0x240160`'s loop `0x2401a0`; `0x2422d0` takes `+0x02` at `0x158990(team)` |
+| ...: neutral flag or bomb spawn | `+0x38` | `i32` index | confirmed | `0x2401e6`; `0x2422d0` for team 8 |
+| ...: per-team state bits | `+0x170 + team` | `u8`, 9 | likely | value `8`: armed (Assault: set, with `1`, when the timer below reaches `V+0x108` seconds, `0x2405a0`) |
+| ...: per-team timer | `+0x1a0 + 2·team` | `i16`, 9 | likely | the Assault arming count (`0x240575..0x24058d`); -1 at a flag spawn (`0x2422e6`) |
+| ...: one team | `+0x1f4` | `i32` | likely | `0x161eb0(-1)` when `V+0x104 == 1` (`0x2402a4`); `0x243a80` compares teams with it (the side that has a flag in one-flag CTF and Assault) |
+| Oddball globals | `[0x51ecc4]` | pointer | confirmed | the only global of Oddball's functions besides the shared ones |
+| ...: each ball's spawn | `+0xc + 4·ball` | `i32` netgame flag index | confirmed | `0x2bc1bb` |
+| King of the Hill globals | `[0x51ecc8]` (= `E+0xfc`) | pointer | confirmed | `0x2bd157` |
+| ...: the hill's corners | `+0x00`, `4` each, count `+0x60` | `i32` netgame flag index | confirmed | `0x2bdc96` asks for at most 16 into it; the count is made even and at least 4 is needed (`0x2bdc9b..0x2bdca7`) |
+| ...: the hill in play | `+0x1a0` | `i32`, 0 to 7 | confirmed | `0x2bd20b` sets 0 at start; `0x2bd77f` moves it on (`0x2bd0b0` picks the next), when `+0x1a4` runs out |
+| ...: ticks until the hill moves | `+0x1a4` | `i32` | confirmed | `0x2bd747..0x2bd772`: counted down, reset to `V+0xf4` (`G+0x230`) seconds × the tick rate; never when that is 0 |
+| ...: players in the hill | `+0x1a8` | `u16` mask by player index | likely | built at `0x2bd6d0` from each player's `+0x1b8` (`i16`, not 0 while in the hill); an event when it changes |
+| Territories globals | `[0x51eccc]` | pointer | likely | the only global of Territories' functions; not read further |
+| the flag, ball, bomb tags | globals tag (`[0x4e034c]`) `+0x16c` the multiplayer block: `+0xc` → `+4` flag, `+0xc` ball, `+0x3c` bomb | `u32` tag datum | confirmed | `0x242261` (bomb, engine 9) and `0x24228b` (flag) create the object from it; Oddball `0x2bc231` the ball |
+
+**How the bot reads them** (`objective::read`, from `perceive_as` once
+it has found itself):
+
+- the gametype is `E+0xc14`; Slayer, Juggernaut and anything else read
+  as no objective;
+- each record gives an item: the object, its team, and the carrier's
+  player index (as `Seen::id`). A carried item is where its carrier's unit
+  is; otherwise where the object is. A record whose object is gone is
+  skipped;
+- the netgame flags the gametype uses become spots (CTF: types 0 and 1;
+  Assault: 2 and 3; Oddball: 4), each with the game team its designator
+  stands for (`E+8`, `E+0x10`), or the designator itself when no
+  designator is bound;
+- in King of the Hill, the hill is the netgame flags of type `11 +` the
+  hill in play. Its centre is their mean, its radius their mean distance
+  from it; a bot is in it inside the corners (sorted round the centre)
+  and within 2 world units of its height.
+
+A fault leaves `Perception::objective` `None`: the bot plays as in Slayer.
+
+**Roles** (`objective::role_of`). Every bot sorts its living teammates
+and itself by player index; its rank and the team's size give its role,
+so all of a team's bots agree with nothing said between them. One alone
+attacks; of two, the higher index defends; from three, a third (rounded
+down) defend, the highest ranks. Humans count in the ranks: the bots do
+not know who is a bot.
+
+**The decision** (`objective::plan`, pure):
+
+CTF (and Assault, see below), in order:
+
+1. it carries the enemy flag: **carry** it to our return point, else our
+   flag's spawn, along the nav mesh;
+2. an enemy carries our flag: **hunt** the carrier (defenders always;
+   attackers when the carrier is nearer than the flag they are after);
+3. our flag lies more than 2 world units from its spawn: **go** and touch
+   it to return it (defenders always; attackers within 25);
+4. attackers: **go** for the enemy flag where it lies (at home or
+   dropped); with it taken by a teammate, **escort** them (within 3);
+5. defenders, and attackers with nothing to do: **hold** our flag's spawn,
+   within 4 world units, fighting from there.
+
+Oddball: carrying, **keep** it; a free ball, **go** for it; an enemy's,
+**hunt** them; a teammate's, **escort** them.
+
+King of the Hill: out of the hill, **go** to its centre; in it, **hold**
+within 0.6 of its radius and fight from there. When the hill moves, the
+bot goes to the new one.
+
+**Assault** is read and played as CTF with the bomb, except that the
+carrier takes it to the enemy's plate (bomb return), else their bomb
+spawn. Which team a neutral bomb's record names, and who attacks
+(`+0x1f4`), are not checked against a run, so Assault is a guess until
+the game run (§11.2).
+
+**Territories: next.** Its globals (`[0x51eccc]`) were found but not
+read; the territories' positions are presumably the netgame flags of the
+community's type 10, and their owners somewhere in those globals. Until
+then a bot plays Territories as Slayer.
+
+**Picking up.** The flag, ball and bomb are walked over. Whether Halo 2
+takes them by walking over or needs the action button held is a game-run
+check (§11.2); the bot does not press it.
 
 ## 4. Way in 1: local slots
 
@@ -1848,9 +1974,9 @@ list for the user to play (§11).
      advantage, which need the shots hook, ammo and shields.
    - Each dumb death with a body rolls `taunt × severity` once. The bot
      emotes over it only when the body is within 8 m (2.67 units), no enemy
-     has been in its view for 1.5 s, no objective is live (always, until
-     stage 5), and it has not emoted for 30 s; a death waits at most 5 s
-     for that.
+     has been in its view for 1.5 s, no objective is asked of it
+     (stage 5: in Slayer, never), and it has not emoted for 30 s; a death
+     waits at most 5 s for that.
    - **The burst**: the bot stands still and clicks the left stick
      (crouch, Halo 2's default layout) 3 to 6 times, a press every 4 to 6
      ticks (130 to 200 ms) held for half of it, 2 s at most, and stops at
@@ -1873,9 +1999,33 @@ list for the user to play (§11).
      6 times over the spot (about one time in four: 0.3 × 0.8). It never
      does it while it sees you shooting at it, and not twice in 30 s. With
      Taunts off on the Clankers page it never does.
-5. **Objectives.** CTF, Oddball, then King of the Hill, Assault and
-   Territories: roles, carrier logic and defence spots from the netgame
-   flags. Tests: role assignment and goal choice per gametype state.
+5. **Objectives.** Built for CTF, Oddball and King of the Hill; Assault
+   as a guess; Territories next (§3.7).
+   - **Traced** (§3.7): the engine index `E+0xc14`; the objective records
+     at `E+0xc18`/`E+0xc1c` (flag, ball, bomb; team; carrier unit and
+     player); the netgame flags and their types (0/1 CTF, 2/3 bomb and
+     plate, 4 ball, 11 to 18 hill corners) and the designator-to-team map
+     `E+8`/`E+0x10`; King of the Hill's hill in play (`[0x51ecc8]+0x1a0`).
+   - `bots::objective`: `read` (perception: `Perception::objective`, a
+     fault gives `None`), `role_of` (roles across a team by player index)
+     and `plan` (the goal, pure).
+   - `Mind::step` (§3.3): a carrier carries before everything; a ball
+     carrier keeps it; then rearm, fight, recover as before; then the
+     objective in place of chasing and roaming. No reload or switch
+     while carrying (a switch drops it). No emote while an objective
+     is asked of the bot.
+   - **Tests** (no game): `objective::tests` (roles; CTF goals with our
+     flag home, taken and dropped and theirs home, dropped and carried;
+     Oddball with the ball free and held by me, an enemy, a teammate and
+     in free-for-all; the hill, its inside and it moving; the engine
+     indices); `mind::tests` (the carrier walks home along the nav mesh;
+     it neither backs off, rearms, reloads nor switches and melees who
+     blocks it; everyone else still rearms first; the objective comes
+     before chasing and roaming; the ball carrier runs and melees; the
+     hill held and followed); `guest::tests::objective_reads` (CTF
+     records, carriers and spawns against a FakeGuest, the designator
+     map, Slayer and faults, the hill in play and its moving).
+   - **Game run (the user)**: §11.2.
 6. **Phantom peers.** In progress.
    - **Built (6a):**
      - The membership path is traced (§5.1: the session layout, the
@@ -2597,7 +2747,7 @@ Each item is for the user to play, or for a coordinator run.
 5. Aim and combat feel per difficulty against a human; tuning of the §3.4
    table.
 6. Emote triggers and gates in real play.
-7. CTF and Oddball roles on two or three maps.
+7. CTF, Oddball and King of the Hill with bots (§11.2).
 8. A phantom peer seen correctly by a real System Link client: lobby,
    in-game, scoreboard, carnage report. The host's CPU with 15 phantoms.
 9. The Clankers page in Game Setup: layout on the real screen, and its
@@ -2657,6 +2807,55 @@ Cheap wins (§3.3):
 16. A bot that loses sight of someone round a corner sometimes lobs a
     grenade there.
 
+### 11.2 Objectives in play (checklist)
+
+For the user, or a coordinator run. Two teams of two or three (a human
+and Clankers), Normal. Each line is a yes or no.
+
+CTF on Lockout or Beaver Creek:
+
+1. With both flags home, one bot per team runs for the enemy flag and
+   (with three or more on the team) one stays near its own flag.
+2. A bot reaching the enemy flag picks it up by walking over it. If it
+   stands on it and nothing happens, Halo 2 needs the action button:
+   note it (§3.7, "Picking up").
+3. A bot carrying the flag runs home along the floor, does not shoot,
+   does not drop it (no weapon switch) and does not stop to reload or
+   for a gun, even with its shields down. It melees a human standing in
+   its way.
+4. Reaching home with our flag there, it scores (the score goes up).
+5. Take a bot team's flag: its defender, and an attacker nearer to you,
+   come after you; when you drop it, the nearest bot walks over it and it
+   goes home.
+6. A bot whose teammate has the enemy flag runs near them.
+7. Spawns and returns are right on both maps: the bots' "home" is their
+   own base, not the enemy's (the designator map, `E+8`/`E+0x10`).
+
+Oddball (any small map):
+
+8. When the ball spawns, the bots run for it.
+9. A bot with the ball moves away from the nearest enemy, does not shoot,
+   and melees a human who comes close.
+10. When a human has the ball, the bots come after them; in teams, a
+    bot's teammate with it is followed, not attacked.
+
+King of the Hill (Midship or Lockout):
+
+11. The bots go to the hill and stay in it, fighting from it, rather than
+    chasing out of it.
+12. When the hill moves, they go to the new one within a few seconds.
+13. A bot in the hill counts as in it (the hill's colour and the score
+    say so): the corners and height test (§3.7) agree with the game's.
+
+Assault (if tried):
+
+14. Does a bot pick up the bomb and take it to the enemy plate? Which
+    side's bots go for it? This is a guess today (§3.7).
+
+All:
+
+15. No bot teabags while carrying, guarding or in the hill.
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -2676,6 +2875,14 @@ Still open:
   (zoom?); the layout is in §5.1.
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
+- For objectives (§3.7): Territories' globals `[0x51eccc]` (the
+  territories, their owners and who contests them) and the netgame flag
+  type of a territory; who fills the designator map `E+0x10` (the team
+  set builder `0x157790`); in Assault, the bomb record's team and the
+  attacking side (`+0x1f4`); the fourth caller of `0x15e050`
+  (`0x2c0a7d`); whether a ball's spawn is netgame flag type 4 in the
+  engine (Oddball's init); and King of the Hill's in-hill test (player
+  `+0x1b8`) against our geometric one.
 - For the weapons layer (§3.6): whether the flag, ball, bomb and energy
   sword's `weap` tags have no magazines and no aging barrel (the sword
   should read as a battery to be sought); the `weap` field naming the
