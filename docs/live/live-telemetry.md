@@ -14,7 +14,7 @@ Five overrides are installed after the generated module is registered (the last 
 |---|---|
 | `0x0018f000` | After the original map activation returns success, read map/mode/variant, team play, score/time limits, tick, and the initial roster. |
 | `0x00137fe0` | After the original tick, sample only when the game-time counter changed. Frames are emitted every second changed tick (up to 15 Hz). |
-| `0x0015ce70` | Read attacker, victim, betrayal and victim position at entry, then invoke the original kill handler unchanged. Scores are reconciled at a later tick. |
+| `0x0015ce70` | Read attacker, victim and victim position at entry, then invoke the original kill handler unchanged. The kind is told from the players: a betrayal is a teammate killed in a team game or campaign (`live_proto::game::is_betrayal`); the third argument is not a betrayal flag. Scores are reconciled at a later tick. |
 | `0x001389c0` | After the original end-latch function, publish the final scoreboard and a unique high-score winner (or none for a tie). |
 | `0x00104150` | Weapon barrel fire: read the weapon object datum at `[esp+4]`, count one shot for it, then invoke the original unchanged. Optional: if the entry is missing or already overridden, telemetry installs without it and frames carry no `shots`. |
 

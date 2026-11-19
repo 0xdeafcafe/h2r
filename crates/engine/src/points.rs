@@ -230,8 +230,9 @@ points! { ALL;
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     /// The game-end path; the end latch is game globals `+0x1128`.
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
-    /// A player was killed: `(attacker player, victim player, betrayal,
-    /// packed damage)` on the stack. Who pops them is not read.
+    /// A player was killed: `(attacker player, victim player, flag, packed
+    /// damage)` on the stack. The flag is not a betrayal flag (it is set in
+    /// free-for-all too). Who pops them is not read.
     PLAYER_KILLED @ 0x0015_ce70: [opaque]; "docs/live/live-gamestate.md";
     /// One weapon barrel fires: stdcall `(weapon object datum, barrel
     /// index)`. One call is one shot (likely).

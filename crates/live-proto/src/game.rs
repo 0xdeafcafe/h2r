@@ -186,6 +186,14 @@ impl NewGame {
             None => "custom",
         }
     }
+
+    /// Whether this game has teammates, so a kill can be a betrayal: a team
+    /// game (the variant's team flag), or a campaign, where the players are
+    /// all on one side. Free-for-all has none, whatever team index its
+    /// players carry.
+    pub fn has_teammates(&self) -> bool {
+        self.team_play || self.mode == "campaign"
+    }
 }
 
 /// `GameStarted` data, written by the server: the request plus the id it
@@ -223,6 +231,58 @@ pub struct PlayerKilled {
 }
 
 pub const KILL_KINDS: [&str; 4] = ["kill", "suicide", "betrayal", "world"];
+
+/// Whether a kill is a betrayal: in a game with teammates
+/// ([`NewGame::has_teammates`]), by a killer who is not the victim and is
+/// on the victim's team. `team_of` gives a player's team; a player it does
+/// not know is no one's teammate.
+///
+/// This is the only rule. The kill function's third argument is not a
+/// betrayal flag: it is set for free-for-all kills too
+/// (docs/live/live-gamestate.md §7).
+pub fn is_betrayal(
+    has_teammates: bool,
+    killer: Option<u32>,
+    victim: u32,
+    team_of: impl Fn(u32) -> Option<i32>,
+) -> bool {
+    has_teammates
+        && killer
+            .is_some_and(|k| k != victim && team_of(k).is_some_and(|t| team_of(victim) == Some(t)))
+}
+
+/// A kill's kind from who killed whom: `world` with no killer, `suicide`
+/// by the victim, else `betrayal` or `kill` ([`is_betrayal`]).
+pub fn kill_kind(killer: Option<u32>, victim: u32, betrayal: bool) -> &'static str {
+    match killer {
+        None => "world",
+        Some(k) if k == victim => "suicide",
+        Some(_) if betrayal => "betrayal",
+        Some(_) => "kill",
+    }
+}
+
+/// A recorded kill's kind as it should be read: a `kill` or `betrayal` by
+/// another player is settled again by `betrayal` ([`is_betrayal`]), since
+/// hosts before the fix recorded free-for-all kills as betrayals; `suicide`
+/// and `world` stay as recorded.
+pub fn settled_kill_kind<'a>(
+    recorded: &'a str,
+    killer: Option<u32>,
+    victim: u32,
+    betrayal: bool,
+) -> &'a str {
+    match recorded {
+        "kill" | "betrayal" if killer.is_some_and(|k| k != victim) => {
+            if betrayal {
+                "betrayal"
+            } else {
+                "kill"
+            }
+        }
+        other => other,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayerScore {
@@ -1682,6 +1742,50 @@ mod tests {
         ] {
             assert!(validate(kind, &data, &p).is_err(), "{kind} {data}");
         }
+    }
+
+    /// Free-for-all has no betrayals, even with every player on team 0 (or
+    /// a Clanker on the host's team); a team game's are teammates only.
+    #[test]
+    fn a_betrayal_is_a_teammate_killed_in_a_game_with_teams() {
+        let g = |mode: &str, team_play: bool| -> NewGame {
+            serde_json::from_value(json!({
+                "map": "lockout", "mode": mode, "team_play": team_play, "players": []
+            }))
+            .unwrap()
+        };
+        assert!(!g("multiplayer", false).has_teammates());
+        assert!(g("multiplayer", true).has_teammates());
+        assert!(g("campaign", false).has_teammates());
+
+        let all_zero = |_| Some(0);
+        assert!(!is_betrayal(false, Some(1), 2, all_zero), "free-for-all");
+        assert!(is_betrayal(true, Some(1), 2, all_zero));
+        assert!(!is_betrayal(true, Some(2), 2, all_zero), "a suicide");
+        assert!(!is_betrayal(true, None, 2, all_zero), "the world");
+        let teams = |p: u32| (p != 9).then_some((p % 2) as i32);
+        assert!(!is_betrayal(true, Some(1), 2, teams), "an enemy");
+        assert!(is_betrayal(true, Some(1), 3, teams));
+        assert!(!is_betrayal(true, Some(9), 1, teams), "an unknown killer");
+        assert!(!is_betrayal(true, Some(1), 9, teams), "an unknown victim");
+
+        assert_eq!(kill_kind(None, 2, true), "world");
+        assert_eq!(kill_kind(Some(2), 2, true), "suicide");
+        assert_eq!(kill_kind(Some(1), 2, true), "betrayal");
+        assert_eq!(kill_kind(Some(1), 2, false), "kill");
+    }
+
+    /// Records from hosts before the fix carry `betrayal` for free-for-all
+    /// kills: reading settles them again; suicides and world deaths stay.
+    #[test]
+    fn a_recorded_kills_kind_is_settled_again_on_read() {
+        assert_eq!(settled_kill_kind("betrayal", Some(1), 2, false), "kill");
+        assert_eq!(settled_kill_kind("kill", Some(1), 2, true), "betrayal");
+        assert_eq!(settled_kill_kind("betrayal", Some(1), 2, true), "betrayal");
+        assert_eq!(settled_kill_kind("kill", Some(1), 2, false), "kill");
+        assert_eq!(settled_kill_kind("suicide", Some(2), 2, false), "suicide");
+        assert_eq!(settled_kill_kind("world", None, 2, true), "world");
+        assert_eq!(settled_kill_kind("betrayal", Some(2), 2, false), "betrayal");
     }
 
     #[test]
