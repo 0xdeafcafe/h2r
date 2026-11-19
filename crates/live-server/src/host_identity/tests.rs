@@ -228,6 +228,85 @@ async fn assigned_game(live: &Live, lease: &HostLease) -> (String, String) {
 }
 
 #[tokio::test]
+async fn only_the_games_lease_can_upload_a_bounded_host_film() {
+    use axum::{
+        body::{Body, Bytes, to_bytes},
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt;
+
+    let live = live().await;
+    let lease = lease();
+    let (token, id) = assigned_game(&live, &lease).await;
+    let store = crate::blobs::BlobStore::memory();
+    live.set_blobs(crate::blobs::Blobs {
+        private: store.clone(),
+        public: None,
+    });
+    let router = crate::http::router(live.clone());
+    let key = crate::films::host_film_key(&id);
+    let upload = |token: Option<&str>, len: Option<u64>, body: Body| {
+        let mut req = Request::post(format!("/v1/games/{id}/film"));
+        if let Some(token) = token {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(len) = len {
+            req = req.header(header::CONTENT_LENGTH, len);
+        }
+        router.clone().oneshot(req.body(body).unwrap())
+    };
+    let list = || {
+        let req = Request::get(format!("/v1/films?player={}&kind=recent", lease.roster[0]));
+        let router = router.clone();
+        async move {
+            let res = router.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let bytes = to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        }
+    };
+    let mut other = lease.clone();
+    other.id = "hl-BBBBBBBBBBBBBBBBBBBBBB".into();
+    let other_token = live.issue_host_token(&other);
+    let mut claims = HostClaims::verify(&live.identity, &token, HOST_REPORT, now()).unwrap();
+    claims.lxm = vec![HOST_REPORT.into()];
+    let limited = live.identity.key.sign_json(TYP_TOKEN, &claims);
+    for (credential, status) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(limited.as_str()), StatusCode::FORBIDDEN),
+        (Some(other_token.as_str()), StatusCode::FORBIDDEN),
+    ] {
+        let response = upload(credential, None, Body::from("film")).await.unwrap();
+        assert_eq!(response.status(), status);
+    }
+
+    let response = upload(Some(&token), Some((64 << 20) + 1), Body::empty())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let chunk = Bytes::from(vec![0; 1 << 20]);
+    let chunks = (0..65).map(move |_| Ok::<_, std::io::Error>(chunk.clone()));
+    let response = upload(
+        Some(&token),
+        None,
+        Body::from_stream(futures_util::stream::iter(chunks)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(store.get(&key).await.unwrap().is_none());
+    assert_eq!(list().await["items"][0]["has_host_film"], false);
+
+    // A retry must leave the first successful film intact.
+    for payload in ["film", "retry"] {
+        let response = upload(Some(&token), None, Body::from(payload)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+    assert_eq!(store.get(&key).await.unwrap().unwrap().as_ref(), b"film");
+    assert_eq!(list().await["items"][0]["has_host_film"], true);
+}
+
+#[tokio::test]
 async fn signed_finish_ranks_a_roster_subset_once_and_rejects_wrong_lease() {
     let live = live().await;
     let lease = lease();

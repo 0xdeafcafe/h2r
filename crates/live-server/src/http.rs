@@ -403,6 +403,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/{id}/chunks", get(game_chunks))
         .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
+        .route("/v1/games/{id}/film", post(crate::films::upload_host_film))
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
             "/v1/{*rest}",

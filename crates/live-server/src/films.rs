@@ -1,16 +1,17 @@
-//! Web Theater. Films point to existing game recordings. Pins and clips
-//! are server-signed events shared by the native and Worker stores.
+//! Theater lists archived games and tracks their exact host films. Film
+//! availability, pins and clips are projected in both homes from signed events.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::Hash;
 use std::ops::Bound::{self, Excluded, Unbounded};
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::rejection::BytesRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
+use futures_util::StreamExt;
 use live_proto::game::{self, Winner};
 use live_proto::sign::{parse_time, random_id};
 use live_proto::{Author, ErrorCode, Page, Xuid, lxm};
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::app::{ApiError, Live, forbidden, invalid, not_found};
+use crate::host_identity::{TELEMETRY_INGEST, lease_id};
 use crate::http::{bearer, body_bytes, game_id, json, paging};
 use crate::model::{Game, State as Model};
 use crate::sessions::Viewer;
@@ -28,7 +30,11 @@ const SAVED: &str = "FilmSaved";
 const UNSAVED: &str = "FilmUnsaved";
 const CLIP_CREATED: &str = "ClipCreated";
 const CLIP_DELETED: &str = "ClipDeleted";
-pub(crate) const KINDS: [&str; 4] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED];
+const HOST_FILM_STORED: &str = "HostFilmStored";
+pub(crate) const KINDS: [&str; 5] = [SAVED, UNSAVED, CLIP_CREATED, CLIP_DELETED, HOST_FILM_STORED];
+pub(crate) const HOST_FILM_PREFIX: &str = "films/";
+// Mirrors the film writer's upload cap. The server does not decode exact films.
+const MAX_HOST_FILM: u64 = 64 << 20;
 
 const TICKS_PER_SECOND: u64 = 30;
 const MIN_CLIP_TICKS: u64 = 30 * TICKS_PER_SECOND;
@@ -144,6 +150,13 @@ pub(crate) fn project(model: &mut Model, event: &RecordedEvent) {
     let films = &mut model.films;
     films.next_version = event.version + 1;
     match event.body.kind.as_str() {
+        HOST_FILM_STORED => {
+            if let Some(id) = event.body.data["game"].as_str()
+                && let Some(game) = model.games.get_mut(id)
+            {
+                game.has_host_film = true;
+            }
+        }
         SAVED | UNSAVED => {
             let Ok(pin) = serde_json::from_value::<Pin>(event.body.data.clone()) else {
                 return;
@@ -188,6 +201,7 @@ struct Film<'a> {
     started_at: &'a str,
     duration_s: Option<u64>,
     result: Option<&'static str>,
+    has_host_film: bool,
 }
 
 impl<'a> Film<'a> {
@@ -212,6 +226,7 @@ impl<'a> Film<'a> {
             started_at: &game.started_at,
             duration_s,
             result: game_result(game, player),
+            has_host_film: game.has_host_film,
         }
     }
 }
@@ -388,6 +403,88 @@ fn account(author: &Author) -> ApiResult<Xuid> {
         Author::Account { xuid, .. } => Ok(*xuid),
         Author::Server(_) => Err(forbidden("a player account is required")),
     }
+}
+
+pub(crate) fn host_film_key(id: &str) -> String {
+    format!("{HOST_FILM_PREFIX}{id}.h2film")
+}
+
+fn host_film_too_large() -> ApiError {
+    ApiError::new(ErrorCode::TooLarge, "a host film is at most 64 MiB")
+}
+
+pub(crate) async fn upload_host_film(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Body,
+) -> ApiResult<StatusCode> {
+    let lease = live.verify_host_token(bearer(&headers), TELEMETRY_INGEST)?;
+    game_id(&id)?;
+    let film_version = || {
+        let model = live.model.read();
+        let game = model.games.get(&id).ok_or_else(|| not_found("no such game"))?;
+        if lease_id(&game.started.host) != Some(lease.as_str()) {
+            return Err(forbidden("the game belongs to another host"));
+        }
+        // Uploads can arrive after lease teardown. The persisted game owner
+        // and the token expiry still enforce the original lease binding.
+        Ok((!game.has_host_film).then_some(model.films.next_version))
+    };
+    if headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok()?.parse::<u64>().ok())
+        .is_some_and(|size| size > MAX_HOST_FILM)
+    {
+        return Err(host_film_too_large());
+    }
+    film_version()?;
+
+    let store = live
+        .blobs()
+        .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
+    let key = host_film_key(&id);
+    let blob_error = |error| {
+        eprintln!("live: film: {key}: {error}");
+        ApiError::new(ErrorCode::Unavailable, "the film store cannot write")
+    };
+    let meta = crate::blobs::Meta {
+        content_type: Some("application/octet-stream".into()),
+        ..Default::default()
+    };
+    let mut writer = Some(store.private.writer(&key, &meta).map_err(blob_error)?);
+    let result = async {
+        let out = writer.as_mut().expect("upload is open");
+        let mut data = body.into_data_stream();
+        while let Some(chunk) = data.next().await {
+            let chunk = chunk.map_err(|_| invalid("the film upload was cut off"))?;
+            if out.size().saturating_add(chunk.len() as u64) > MAX_HOST_FILM {
+                return Err(host_film_too_large());
+            }
+            out.write(&chunk).await.map_err(blob_error)?;
+        }
+        if out.size() == 0 {
+            return Err(invalid("empty host film"));
+        }
+
+        let _guard = live.film_writes.lock().await;
+        if let Some(version) = film_version()? {
+            writer
+                .take()
+                .expect("upload is open")
+                .finish()
+                .await
+                .map_err(blob_error)?;
+            live.append_film(version, HOST_FILM_STORED, json!({"game": id}))
+                .await?;
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+    .await;
+    if let Some(out) = writer {
+        out.abort().await;
+    }
+    result
 }
 
 pub(crate) async fn save(

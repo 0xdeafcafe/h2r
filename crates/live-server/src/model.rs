@@ -81,6 +81,7 @@ pub struct Game {
     pub(crate) sim_recorded_bytes: u64,
     pub(crate) sim_recording_limited: bool,
     pub started_at: String,
+    pub(crate) has_host_film: bool,
     pub position: u64,
     pub players: Vec<Player>,
     /// Everyone who was ever in the game (for `recent_games`).
@@ -463,6 +464,7 @@ impl Model {
                 sim_recorded_bytes: 0,
                 sim_recording_limited: false,
                 started_at: b.at.clone(),
+                has_host_film: false,
                 position: e.position,
                 scoreboard: Vec::new(),
                 teams: None,
