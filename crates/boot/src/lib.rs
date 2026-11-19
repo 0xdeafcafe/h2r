@@ -67,6 +67,7 @@ mod native_gels_replace;
 pub mod native_lights_glue;
 pub mod native_objects_glue;
 pub mod native_particles_glue;
+mod native_particles_admission;
 pub mod native_post_glue;
 pub mod native_post_load;
 mod native_residual_glue;

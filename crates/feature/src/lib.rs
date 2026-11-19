@@ -25,6 +25,7 @@ pub mod native_gels;
 pub mod native_lights;
 pub mod native_objects;
 pub mod native_particles;
+mod native_effects;
 pub mod native_post;
 pub mod native_residual;
 pub mod native_transparents;

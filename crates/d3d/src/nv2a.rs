@@ -52,6 +52,9 @@
 //! cached too, so a draw that cannot be translated costs a lookup the next
 //! time.
 
+/// Pure resolved-draw shader inputs for transactional native recording.
+pub mod resolved;
+
 use std::collections::HashMap;
 
 // Program keys are large (microcode plus the combiner definition) and are
