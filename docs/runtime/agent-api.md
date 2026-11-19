@@ -774,6 +774,47 @@ How it behaves (**Code**, with tests in `crates/agent`, `crates/xapi` and
   parted) and `past_end` (left live). One recording or replay at a time.
   A replay only reproduces a run from the same starting state: until
   `state.*` exists, that means starting both from the same boot.
+
+#### `input.host`: the host controllers
+
+`input.host` (`h2 agent hostpads`, read-only, no params) shows the
+controllers the host's input layer has, before the game sees anything.
+Use it when a pad, a button or the touchpad doesn't do what it should.
+It answers from the last input sync (`syncs` counts them), which runs
+whenever the game reads its pads. Boot adds it wherever the game has XAPI
+input (`crates/boot/src/debug_menu_glue.rs`, `crates/agent/src/hostpads.rs`).
+
+- `devices`: each controller as its own backend reads it, before any
+  merging (`input::HostBackend::devices`). From Apple GameController:
+  `backend` (`game-controller`), `id`, `name` (the vendor name), `profile`
+  (the extended profile's class: `dualsense`, `dualshock4`, `extended`, or
+  `micro` for an Apple TV remote), `category` (the framework's product
+  category, such as "DualShock 4"), and the state below. Other backends
+  don't describe their pads yet; theirs show under `pads`.
+- `pads`: each pad the input manager polled, as the debug menu's gate is
+  handed it: `backend` (the top-level one, such as `keyboard-fallback`),
+  `key` (backend index and id, the gate's key), `name`, `physical`, `port`
+  (0 to 3, or null) and the state. With the keyboard on, player one is a
+  single pad that merges the first controller with the keyboard.
+- The state, in both lists: `touchpad` (null without one, else `click`,
+  and `primary` and `secondary` as `[x, y]` from -1 to 1 with +y up, or
+  null for a lifted finger), `buttons` (`south east west north
+  left_bumper right_bumper back start left_stick right_stick dpad_up
+  dpad_down dpad_left dpad_right`; GameController's menu button is
+  `start`, Options is `back`), `left_stick`, `right_stick`, `triggers`.
+- `gate`: null with no debug menu, else `open`, `syncs`, and per pad `key`,
+  `touchpad`, `click`, `chord` (click and Start together), `chord_pending`
+  (Start held back waiting for the click), `opened_by_press` (the click
+  that opened the menu is still down) and `latched` (buttons hidden until
+  let go) ([debug-menu.md](debug-menu.md)).
+- `notes`: where a touchpad goes missing, in words: a plain `extended`
+  profile, a DualShock 4 profile without touchpad elements, a touchpad
+  under `devices` but on no pad the gate sees, no debug menu.
+
+```sh
+H2_AGENT=/tmp/h2-play.sock h2 play           # then, holding the touchpad down:
+h2 agent --socket /tmp/h2-play.sock hostpads
+```
 - **Capture.** `profile.capture {ticks | ms, budget_ms, spikes, sample}`
   keeps every frame-stats row (`timeline::phase`, the numbers
   `H2_FRAME_STATS` prints) over the window, then answers: `frames`, `fps`,
@@ -1262,6 +1303,33 @@ is the local embedded server (`h2 play --live-local`,
 `bot: true` only for xuids it issued. Server-side bot accounts are
 bed6c8dc's. Never point a sim run at live.forbes.red.
 
+## Sim matches
+
+Built 2026-11-19, tested over pure inputs; not run against the game.
+Host methods while sim mode is on (`H2_SIM=<match file>`, `h2 sim run
+<match> --socket PATH`; `boot::sim_glue::Sim::add_methods`,
+[sim.md](sim.md)). Sim mode is a whole headless match with bots and no
+rendering, ending in a report; these let a client watch it, read its
+numbers so far and end it. (The `sim.*` methods above are a different
+thing: simulated players added to an ordinary run.)
+
+| Method | Access | What |
+|---|---|---|
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `playing`, `over`), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md §6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
+| `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
+
+```sh
+h2 sim run docs/runtime/sim-examples/lockout-2v2.toml --socket /tmp/sim.sock &
+H2_AGENT=/tmp/sim.sock h2 agent match.status
+H2_AGENT=/tmp/sim.sock h2 agent match.report
+H2_AGENT=/tmp/sim.sock h2 agent match.stop
+```
+
+Stepping a match is `session.pause` and `session.step N` as in any run.
+`h2 sim batch --fork` drives these and `state.save`/`state.load`: it
+waits on `match.status` for `playing` before it saves or loads.
+
 ## `havok`: the physics world
 
 Built 2026-11-18, tested over synthetic guest memory; not run against the
@@ -1270,7 +1338,7 @@ Game methods (`agent::havok::install`), answered at a tick boundary.
 
 | Method | Access | What |
 |---|---|---|
-| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`. `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
+| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b` in the body's frame, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
 | `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
 
 ```sh
@@ -1283,6 +1351,49 @@ on one `h2 agent -` connection next to `object player.0`: the contact
 with `b.fixed` is the level, and `impulse` over the body's `mass` is the
 velocity it gave. Which triangle a point is on is not read yet
 ([havok-runtime.md](../engine/havok-runtime.md), "Open").
+
+A biped's `shape` is its standing or its crouching pill, chosen when its
+body is built ([havok-runtime.md](../engine/havok-runtime.md), "Shapes"):
+`height` says which (0.725 and 0.5 for `masterchief_mp`), and the address
+names the pill.
+
+## `world.raw`: an object's bytes, before and after
+
+Built 2026-11-19 to look for state a forced crouch leaves behind (the
+superbounce, [superbounce.md](../game/superbounce.md)); tested over
+synthetic guest memory, not run against the game. A game method
+(`agent::raw::install`; reader `crates/live-telemetry/src/raw.rs`), read
+only, no claim.
+
+| Method | Access | What |
+|---|---|---|
+| `world.raw` | read | `{id, parts?, len?}`: `id`, `datum`, and `parts`, each `{part, base, hex}` or `{part, missing}` (why: an unset pointer, a fault) |
+
+The parts, each found through the one before it
+([havok-runtime.md](../engine/havok-runtime.md)):
+
+| Part | Where | Bytes |
+|---|---|---|
+| `object` | the object's body (`player.N`: its unit) | the header's size (`+0x06`), else `len` (default `0x400`), at most `0x2000` |
+| `physics_component` | body `+0xb4` into the component array | `0xa0` |
+| `entity` | the component's first rigid body (`+0x70`, `+0x40`) | `0x200` |
+| `motion` | entity `+0x3c` | `0x140` |
+| `shape` | entity `+0x0c` | `0x80` |
+
+`h2 agent raw-diff a.json b.json` (no game needed) prints, per part, the
+32-bit words that differ, with their offset from the part's base, and
+both as floats where they read as ones. A part on one side only, or
+whose base moved (another structure), is listed, not compared. It reads
+what `h2 agent raw` prints, or a `-` script's output (its last line).
+
+```sh
+h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
+# ... force a crouch, walk out, stand ...
+h2 agent raw player.0 > after.json
+h2 agent raw-diff before.json after.json
+h2 agent raw player.0 entity,shape              # some parts
+h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
+```
 
 ## Tick traces and the flight recorder
 

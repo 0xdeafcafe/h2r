@@ -775,6 +775,7 @@ pub static ALL: &[&Def] = &[
     &crate::clankers::AGGRESSION,
     &crate::clankers::AIM_STYLE,
     &crate::clankers::TAUNTS,
+    &crate::clankers::GLITCHES,
 ];
 
 /// Every setting of this run: [`ALL`], with the voice device settings

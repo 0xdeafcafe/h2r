@@ -967,3 +967,56 @@ fn animation_node_count_must_match_the_graph() {
         assert!(message(e).contains("node count differs"));
     }
 }
+
+/// A one-rotation, two-frame codec 8 (blend screen) stream and its flags,
+/// as an animation's whole blob.
+fn blend_screen_blob() -> Vec<u8> {
+    let mut s = vec![0u8; 0x20];
+    s[0] = 8;
+    s[1] = 1;
+    s[0x14..0x18].copy_from_slice(&le32(2 * 16));
+    s.extend(floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0]));
+    let t_at = s.len() as u32;
+    s[0xc..0x10].copy_from_slice(&le32(t_at));
+    s[0x10..0x14].copy_from_slice(&le32(t_at));
+    s
+}
+
+#[test]
+fn engine_problems_require_aligned_blend_screen_streams() {
+    let s = blend_screen_blob();
+    let mut g = AnimationGraph::decode(&sample_graph(), BASE).unwrap();
+    assert!(g.blend_screens.is_empty());
+    let mut anim = animation(2, 0, s.len(), 0);
+    anim.anim_type = AnimationType::Overlay;
+    anim.unknown_12 = 0xff;
+    let resource_at = |offset: usize| {
+        let mut data = vec![0u8; offset];
+        data.extend(&s);
+        data.extend(flags(1, 0, 0));
+        data.resize(0x200, 0);
+        data
+    };
+    // At offset 0x40 the engine's `movaps` reads aligned floats.
+    anim.data_offset = 0x40;
+    g.animations[0] = anim.clone();
+    assert_eq!(
+        g.engine_problems(0, &resource_at(0x40)),
+        Vec::<String>::new()
+    );
+    // At 0x4c (4-byte aligned, as converter version 84 placed them) the
+    // same data decodes, but the engine's read faults.
+    anim.data_offset = 0x4c;
+    g.animations[0] = anim.clone();
+    let data = resource_at(0x4c);
+    assert!(g.clip_from_resource(0, &data).is_ok());
+    let p = g.engine_problems(0, &data);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains("not 16-byte aligned"), "{p:?}");
+    // A screen past the graph's (none here) is a problem too.
+    anim.data_offset = 0x40;
+    anim.unknown_12 = 0;
+    g.animations[0] = anim;
+    let p = g.engine_problems(0, &resource_at(0x40));
+    assert_eq!(p, ["blend screen 0 of 0"]);
+}

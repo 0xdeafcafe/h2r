@@ -277,6 +277,33 @@ impl Picker {
     fn value_slot(row: usize) -> u32 {
         VALUES + row as u32
     }
+
+    /// Every text of the pick showing now in its slot: the title, the
+    /// description and each value. The class is built before any pick
+    /// (its title id is taken then), and `TEXT_SET` copies a string as it
+    /// sets it, so the loader has them all written before the screen is
+    /// built ([`Rows::count`] is asked first, then [`Rows::write_texts`]):
+    /// a slot set later than it is named shows what it held before,
+    /// nothing on the first open (the picker opened blank, 2026-11-19).
+    fn refresh(&self) -> Option<Pick> {
+        let p = current();
+        let (title, description) = p
+            .as_ref()
+            .map(|p| (p.title.as_str(), p.description.as_str()))
+            .unwrap_or_default();
+        self.texts.set(TITLE, title);
+        self.texts.set(DESCRIPTION, description);
+        for (i, v) in p.iter().flat_map(|p| p.values.iter()).enumerate() {
+            self.texts.set(Self::value_slot(i), v);
+        }
+        p
+    }
+
+    /// Its text slots (a test points them at guest memory).
+    #[cfg(test)]
+    pub(crate) fn slot_texts(&self) -> &SlotTexts {
+        &self.texts
+    }
 }
 
 const fn name_family(ingame: bool) -> &'static str {
@@ -288,12 +315,16 @@ const fn name_family(ingame: bool) -> &'static str {
 }
 
 impl Rows for Picker {
+    /// The title's slot, the same for every pick: [`Picker::refresh`]
+    /// fills it as the screen opens.
     fn title(&self) -> u32 {
-        let t = current().map(|p| p.title).unwrap_or_default();
-        self.texts.set(TITLE, &t)
+        self.refresh();
+        self.texts.family.id(TITLE)
     }
+    /// Asked first as the screen opens: every text of the pick is set
+    /// here, for the loader's write.
     fn count(&self) -> usize {
-        current().map_or(0, |p| p.values.len())
+        self.refresh().map_or(0, |p| p.values.len())
     }
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
         let Some(p) = current() else {

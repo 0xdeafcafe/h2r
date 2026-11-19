@@ -785,8 +785,20 @@ pub static VARIANT_OBJECT: Layout = Layout {
     start: 0,
     end: 0x10,
     fields: &[
-        f(0x00, "unknown_sid_00", StringId, Disc, ""),
-        f(0x04, "unknown_sid_04", StringId, Disc, ""),
+        f(
+            0x00,
+            "parent_marker",
+            StringId,
+            Disc,
+            "names a marker group of the parent's render model (the Warthog's `turret`, the Wraith's `left_minigun`)",
+        ),
+        f(
+            0x04,
+            "child_marker",
+            StringId,
+            Disc,
+            "zero on the retail vehicles: the child's origin sits on the marker",
+        ),
         f(
             0x08,
             "object",

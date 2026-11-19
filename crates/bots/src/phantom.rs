@@ -158,7 +158,15 @@ struct Books {
     /// Phantoms join only once a game runs and leave when it ends (the
     /// lobby join off, [`LOBBY_ENV`]).
     game_only: bool,
+    /// A Clankermatch's phantoms: they join only the match's session (the
+    /// matchmaking life cycle, types 6 to 9), never the party's lobby
+    /// ([`Phantoms::set_match_only`]).
+    match_only: bool,
 }
+
+/// Why a Clankermatch's phantom waits outside the match.
+pub const NOT_THE_MATCH: &str =
+    "the party's lobby: a Clankermatch's bots join the match the search hosted, never the party";
 
 /// Where the session a phantom can join is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,6 +240,20 @@ impl Phantoms {
     /// running game ([`LOBBY_ENV`]).
     pub fn set_lobby(&self, on: bool) {
         self.lock().game_only = !on;
+    }
+
+    /// Whether the phantoms are a Clankermatch's (docs/game/bots.md §8.4,
+    /// "Phantoms only"): they join the session the search hosted and its
+    /// game (life cycle 6 to 9, [`crate::lobby::matchmaking_cycle`]), and
+    /// leave any other, the party's lobby before the search and after the
+    /// game above all. Set by the Clankermatch fill while it runs.
+    pub fn set_match_only(&self, on: bool) {
+        self.lock().match_only = on;
+    }
+
+    /// Whether the phantoms are a Clankermatch's ([`Phantoms::set_match_only`]).
+    pub fn match_only(&self) -> bool {
+        self.lock().match_only
     }
 
     /// Takes a phantom off the books.
@@ -338,9 +360,16 @@ impl Phantoms {
             ));
         }
         let mut b = self.lock();
-        let game = session::host_session(&*m);
+        // A Clankermatch's phantoms stay out of the party (§8.4).
+        let barred = b.match_only && !crate::lobby::matchmaking_cycle(&*m);
+        let game = if barred {
+            Err(session::NotNow::Wait)
+        } else {
+            session::host_session(&*m)
+        };
         let lobby = match &game {
             Ok(_) => Err(session::NotNow::Wait),
+            Err(_) if barred => Err(session::NotNow::NotHost(NOT_THE_MATCH.into())),
             Err(_) if b.game_only => Err(session::NotNow::Wait),
             Err(_) => session::host_lobby(&*m),
         };
@@ -354,7 +383,8 @@ impl Phantoms {
         // Out: removed phantoms, and all of them once this console hosts
         // no session (with the lobby join off: once no game runs).
         let mut out: Vec<[u8; 6]> = std::mem::take(&mut b.gone);
-        let keep = phase.is_some() || (!b.game_only && session::owned_session(&*m).is_some());
+        let keep =
+            phase.is_some() || (!b.game_only && !barred && session::owned_session(&*m).is_some());
         if !keep {
             for p in &mut b.list {
                 if p.made {
@@ -451,9 +481,27 @@ impl Phantoms {
                 continue; // no local player to copy yet
             };
             let mac = p.info.machine;
-            // A peer of its own left from a session this console stopped
-            // hosting and hosts again: out first, so it is never in twice.
+            // A peer of its own still in the session: a session that was
+            // not live a while (state 7 on the user's Halo 1 run) left the
+            // phantoms unmade but could not take their peers out. With its
+            // player it is taken back as it is. Removing it and adding it
+            // again at the end moved every later peer down and gave each
+            // phantom the last index ("joins (peer 4)" four times). The
+            // machine id is the phantom's own (`machine_id` of its handle,
+            // roster or host-made alike), so no other phantom's peer is
+            // ever found here.
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
+                if session::peer_players(&*m, s, stale)? > 0 {
+                    session::sync_props(m, s, stale, &p.info.identity.gamertag)?;
+                    p.made = true;
+                    p.waiting = None;
+                    log.push(format!(
+                        "bots: phantom {} is still in the session (peer {stale}): it stays",
+                        p.info.identity.gamertag
+                    ));
+                    continue;
+                }
+                // A peer with no player left: out, so it is never in twice.
                 session::remove_peer(m, s, stale)?;
             }
             let Some(peer) = session::add_peer(m, s, mac, &p.info.identity.gamertag)? else {

@@ -102,15 +102,16 @@ Slayer, 9 Clanker Teams, 10 Clanker Doubles; --playlist, slayer by
 default), and the run stops at once if the server does not mark the one
 asked for. The drive goes Xbox Live, row 2 (Clankermatch), the
 playlist's row, A, then waits: the search, the lobby this console hosts,
-the local bots seated in it, the countdown, the game (to its end: 6 to 8
+the phantoms joining it (no local bot: a Clankermatch's bots are all
+phantoms, never in the party), the countdown, the game (to its end: 6 to 8
 minutes) and back out, B until no session is hosted. The checks: signed
 in; the clanker hoppers (server and game); the Clankermatch row's
 playlists; the clanker search; the search ending with this console
-hosting; the local bots planned; each seated and signed in, in the lobby;
-each on Xbox Live as a bot account; the lobby at the playlist's fewest
+hosting; no local bot planned; no bot signed in on a controller port
+(none in the party); the phantoms rostered as bot accounts; the lobby at the playlist's fewest
 players; the countdown and start; gameplay; the phantoms joining the
-lobby before the start; the game record (kind clankermatch, bot: true); the local
-bots leaving after the game. --timeout is 900 s (1200 with --no-drive).";
+lobby before the start; the game record (kind clankermatch, bot: true); the bots
+leaving after the game. --timeout is 900 s (1200 with --no-drive).";
 
 pub const TAG: &str = "Tester";
 const DEFAULT_COUNT: usize = 5;
@@ -330,7 +331,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
 /// lineup a fresh server serves, `live_server::default_hopper`): its
 /// hopper (descriptor index), its row on the Clankermatch list (the clanker
 /// hoppers in index order), its fewest and most players and teams, and the
-/// bots the fill seats, local first (`boot::clankers::max_local`).
+/// bots the fill seats, all phantoms (`boot::clankers::MATCH_LOCAL`).
 pub fn cm_plan(playlist: CmPlaylist, tag: &str) -> Result<CmPlan> {
     use live_proto::hopper::clankers::size_of;
     let lineup = live_proto::hopper::defaults::playlists();
@@ -365,7 +366,7 @@ pub fn cm_plan(playlist: CmPlaylist, tag: &str) -> Result<CmPlan> {
         max,
         teams,
         bots,
-        local: boot::clankers::max_local(bots, max, teams),
+        local: boot::clankers::MATCH_LOCAL,
         tag: tag.into(),
     })
 }

@@ -15,6 +15,7 @@ pub mod game_controller;
 
 use crate::gamepad::Rumble;
 use crate::host::{HostPad, HostPadId};
+use crate::report::DeviceInfo;
 
 /// A source of host pads.
 pub trait HostBackend: Send {
@@ -43,5 +44,13 @@ pub trait HostBackend: Send {
     /// preference.
     fn preferred_port(&self, _id: HostPadId) -> Option<usize> {
         None
+    }
+
+    /// The controllers behind this backend as of its last `poll`, as their
+    /// own backend reports them (profile class, touchpad), for
+    /// `h2 agent hostpads` ([`crate::report`]). A backend that wraps others
+    /// passes theirs on. Default: none described.
+    fn devices(&self) -> Vec<DeviceInfo> {
+        Vec::new()
     }
 }

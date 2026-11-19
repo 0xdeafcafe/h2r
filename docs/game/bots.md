@@ -267,7 +267,8 @@ The mesh holds:
   - **teleporter**: from the scenario's teleporter netgame flags;
   - **lift**: man cannons and gravity lifts, from scenery and device
     positions;
-  - **vehicle**: a later stage.
+  - **vehicle**: not built. Vehicles follow the bipeds' mesh for now
+    (§3.9).
 
 Paths come from A\* over the sector graph, smoothed with a funnel pass and
 followed by steering:
@@ -419,6 +420,11 @@ Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
 for reload and 1.3 s for switch. Melee also needs a target in reach and
 near the crosshair for a short time before the press.
+
+Vehicles (§3.9) sit across this order: in a vehicle the vehicle layer
+makes the whole pad; on foot, after the order above, boarding a close and
+slow enemy vehicle takes over in a fight or not, and taking a free one
+takes over only when calm and not carrying or rearming.
 
 Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
 At the skill's rate in a fight at 3 to 12 world units, four times that rate
@@ -739,6 +745,327 @@ then a bot plays Territories as Slayer.
 **Picking up.** The flag, ball and bomb are walked over. Whether Halo 2
 takes them by walking over or needs the action button held is a game-run
 check (§11.2); the bot does not press it.
+
+### 3.8 Glitches (built, not checked in a game)
+
+The user asked: "add setting so that clankers can do glitches (super
+bounce, sword fly, etc) if turned on". The Clankers page has a
+**Glitches** row (`clankers.glitches`): **Off** (the default), **Some**
+(the occasional show-off) and **Lots** (whenever there is an opening).
+
+A glitch is the same button presses a player makes, with the same timing,
+on the bot's pad. Nothing in the engine is changed or called. The tricks
+work only because the recomp runs retail 1.0's code: no title update has
+patched sword flying or the super bounce out (title-updates.md). **Not one
+has been seen working in a game yet.** Each needs the checklist below.
+
+**The code.** `bots::glitches` is pure: each trick is a list of timed
+presses (`glitches::plan`, a `Macro` of `Beat`s), the rules for when one
+fits (`glitches::opening`) and the show-off clock (`glitches::ShowOff`).
+The fight tricks run in the noob combo's scheduler
+(`weapons::Combo::step`, its `ComboIn::glitch` gate); the show-offs run
+in the mind's roaming (`Mind::step`, `Stunt`). The setting follows the
+Taunts path: store, `clankers::Want::read`, the driver's shared
+`AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
+phantoms alike.
+
+**The tricks.** Presses at 30 ticks a second, as Legendary does them:
+
+| Trick | Presses (tick: button) | When | Source |
+|---|---|---|---|
+| BXR | 0 B, 5 X (held), 7 R | in melee reach with a gun whose magazine is full or has no reserve | [Halopedia, BXR](https://www.halopedia.org/BXR): B, then X once the melee lands (it cancels the melee's recovery), then R; full magazine only, else X reloads; [Bungie.net forum](https://www.bungie.net/en/Forums/Post/414304): "hold X while pressing R" |
+| BYYR | 0 B, 5 Y, 8 Y, 10 R | the same with a part-empty magazine and a second gun | Halopedia, BXR: "press Y twice instead of pressing X once" |
+| BXB | 0 B, 5 X, 7 B | the same with nothing in the magazine and nothing to load | Bungie.net forum: "like BXR, but after X press B again" |
+| Double shot | 0 R, 4 R (held), 6 X | a battle rifle, 6 rounds loaded and a reserve, the target in its range | Bungie.net forum: RRX, "holding the second R while pressing X"; "on a last clip it just shoots twice" |
+| Quad shot | a double shot, 9 Y, 12 Y, then a double shot from 15 | as the double shot, 12 rounds and a second gun | Bungie.net forum: "RRX, YY, RRX"; YY swaps back before the reload |
+| Sword flying | 0 Y, 1 X, 3 R, 11 A | the sword the other weapon, the gun in hand on target (its reticle red) past the sword's lunge, up to 20 units | [Halopedia, Sword flying](https://www.halopedia.org/Sword_flying): Y, X, RT "quickly in that order", the reticle red on the gun first; the window is 0.066 s at 30 fps (two ticks); A in the lunge goes higher |
+| Crouch jump | 0 A, 7 crouch (10 ticks) | roaming, now and then | superbounce.md, "The crouch height term": a crouch change in the air lifts the feet |
+| Super bounce | at a measured spot: stand still, A, hands off but a light push toward +y, land; again from a nudged place | roaming, a spot within 60 units | superbounce.md (traced; the spot's table is `glitches::spots`) |
+
+The 5 ticks from B to the melee landing (`MELEE_CONNECT`) and the 4 for
+the battle rifle's burst (`BURST`) are not traced. They are starting
+points to tune in a game run. The battle rifle is told from the tag: once
+per pull, one zoom level, a magazine of 30 or more.
+
+**Skill.** Each press after the first is late by up to 0 ticks
+(Legendary), 1 (Heroic), 2 (Normal) or 1 to 3 (Easy). Late presses miss
+windows the way a player's do: Easy's sword fly often lands its X outside
+the two-tick window and is an ordinary switch. Skill also scales how
+often it tries: Easy 40% of the setting's chance, Normal 70%, Heroic 90%,
+Legendary all of it.
+
+**How often.** A fight trick is rolled for at most once a second while
+one fits: 15% a roll on Some, 60% on Lots (times the skill's share), and
+not again for 2 s after one. A show-off comes every 45 to 90 s of calm on
+Some and every 8 to 20 s on Lots (longer at lower skill). A super bounce
+gets 3 tries on Some and 8 on Lots, then the bot gives the spot up.
+
+**Never:**
+
+- with the setting Off;
+- carrying the flag, the bomb or the ball, or with an objective to play
+  (show-offs);
+- when it would obviously lose: shields down (recovering), withdrawing,
+  or another enemy within 8 units; a sword fly never at a target with
+  another enemy within 2.5;
+- before its reaction to the target has passed;
+- doing anything but fighting or roaming on foot (`mind::glitch_doing`,
+  an allowlist: getting in, driving or riding a vehicle is never on it).
+  The vehicle work's seat pad returns before the fight and roam code, so
+  it must call `Mind::drop_glitches` first;
+- a show-off with anyone in view, or within 1.5 s of seeing someone.
+
+While a trick runs the mind's own melee, reload, switch and grenades
+wait, and the trigger is the trick's.
+
+**The super bounce spots** (`glitches::spots::SPOTS`) hold only measured
+spots. Each spot has a map, the place to stand, a spread to nudge within
+between tries, a drift direction and a source. There is one:
+
+| Map | Stand at (x, y, z) | Drift | Source |
+|---|---|---|---|
+| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | superbounce.md: the crease where the ramp meets the floor, 5 bounces in 20 standing-jump landings; the launch is a pinch between faces at y 4.12 and 3.94 |
+
+The bot walks to 0.8 units short of the spot (lower y), steps onto it,
+stands still for 4 ticks, jumps with the stick let go, and pushes the
+stick 0.15 toward +y in the air, because every traced bounce came in
+moving slowly toward +y. Not every landing bounces, so it tries again from
+a nudged place. It knows it bounced when it rises 0.4 units again after
+starting to fall: a plain landing never does. Community guides
+([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
+give spots on most maps by landmark only, with a forced crouch first.
+superbounce.md found the crouch is not needed. A spot goes in the table
+only once a game run has found and traced it.
+
+**Not built:**
+
+- **Butterfly**: a two-player trick (one jumps on the other's head while
+  the bottom player, sword in hand, presses X and B), not one bot's
+  presses.
+- **BXL, LX, RRBX**: less well documented.
+- Super bounces off moving vehicles (Burial Mounds' Warthog launch).
+
+One community note matters here. The Bungie.net post says BXR "works as
+a reload glitch from any range, but only off host". Clankers play on the
+host. Whether the cancels work for a host-side player is the first thing
+to check.
+
+**Tests** (`cargo test -p bots glitches`, and
+`cargo test -p boot clankers`): each trick's presses and timing at
+Legendary; lateness within each skill's slop and never out of order;
+sword flying clean at Legendary and Heroic and often missed on Easy; the
+gate (Off never, never carrying, losing or before reacting, the trick
+that fits each moment); the combo scheduler playing B, X, R in order,
+often on Lots, less on Some, never on Off; the show-off clock (Off never,
+Lots 25 to 80 in ten calm minutes, never when not calm); the bounce run
+(walks on, standing jump, drift, a launch ends it, plain and caught
+landings retry until the tries run out); a roaming mind crouch jumping on
+Lots and never on Off; the setting off by default and reaching the
+driver.
+
+**Game run (checklist).** For the user. Use one Clanker against you on
+Legendary with Glitches on Lots. The agent API reads what happened:
+`world.object player.N physics` (havok_pos, havok_velocity, airborne,
+crouch), `havok.contacts {object: player.N}` and `trace.start player.N`
+for a row every tick ([agent-api.md](../runtime/agent-api.md)). Each line
+is a yes or no:
+
+1. **Off.** Glitches Off: in five minutes no bot does any of the below.
+2. **BXR.** Give the bot a battle rifle and let it get close. It melees
+   and fires at once, with no melee recovery between. Your shields drop
+   on the B and you die on the R. If the shot waits out the melee
+   anyway, try `MELEE_CONNECT` 3 to 8; if it never cancels, note "host".
+3. **BYYR and BXB.** The same with a part-empty magazine and a second
+   gun (two switches, then the shot), and with an empty SMG and no
+   reserve (two melees close together).
+4. **Double and quad shot.** At mid range with a battle rifle: two bursts
+   leave almost together (six rounds), then it reloads. With a second
+   gun, two switches and two more bursts. Tune `BURST` if the second pull
+   is ignored.
+5. **Sword flying.** Give it a battle rifle in hand and the sword as the
+   other weapon. Stand 5 to 15 units off. It switches and flies at you
+   much further than the sword's own lunge, higher with the A. On Easy
+   it mostly just switches.
+6. **Crouch jump.** Calm on Lots: now and then a jump with the legs
+   tucked at the top.
+7. **Super bounce.** Ascension, calm on Lots, nobody near the ramp: the
+   bot walks to the crease, jumps in place a few times, and one landing
+   throws it up (trace: two opposing contacts against the fixed body on
+   the launch tick, then +8 to +14 units a second up). With Some it gives
+   up after three tries.
+8. **Never.** It does none of these carrying the flag or the ball, with
+   its shields down, or with a second enemy close by.
+
+### 3.9 Vehicles (built: first slice)
+
+The user, after playing the Clankers: "clankers also don't seem to
+interact with vehicles, try and board, go and take, lock on with
+rockets." The first slice (`crates/bots/src/vehicle.rs` and
+`vehicle/`, glued into the mind by `crates/bots/src/mind/ride.rs`):
+
+1. **Rocket lock-on.** A rocket launcher at an enemy in a vehicle is held
+   on the vehicle's middle until it locks, then fired.
+2. **Perception.** Every vehicle, its seats, who sits in each (by player
+   and team), and the bot's own seat.
+3. **Go and take.** A calm bot walks to a free Ghost, Warthog or Scorpion
+   near it, stands beside the driver's seat and holds X; or mans the gun
+   of a teammate's Warthog.
+4. **Drive.** A driver follows the nav mesh to where it is going,
+   steering by the camera as a player does, shoots with the vehicle's
+   guns, runs infantry over, backs up when stuck, and gets out when the
+   vehicle is about to blow up, flipped, stuck for good, or where it was
+   going needs feet. A gunner or passenger shoots, and gets out when
+   nobody drives.
+5. **Board.** An enemy vehicle close and slow is boarded (X by it).
+
+**Fields.** No new disassembly was done for this slice (the lane ran no
+disassembler). Every field below comes from an earlier trace, except the
+two marked "not traced", which come from Halo 2's tag definitions and
+need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
+`vehi` tag's metadata, `S` one of its seat definitions.
+
+| Field | Where | Type | Confidence | From |
+|---|---|---|---|---|
+| parent: a rider's vehicle, a mounted turret's vehicle | `O+0x14` | datum | confirmed | live-gamestate.md; `engine::view::objects::Body::parent`; `live-telemetry` `object_in` (riders) and `vehicle_mount` (turrets) |
+| position, forward, up | `O+0x64`, `+0x70`, `+0x7c` | `f32[3]` each | confirmed; relative to the parent when there is one | `engine::view::objects::Body`; live-telemetry.md (a mounted turret's `+0x64` is relative to its vehicle). A rider's own position is not used: as telemetry does, a rider is where its vehicle is |
+| body vitality | `O+0xec` | `f32`, 0 to 1 | confirmed | `object_get_health` `0x2a1a20` (live-telemetry `layout::BODY_VITALITY`) |
+| wrecked | `O+0x10a` bit 2 | `u16` | confirmed | `0xd6800` (`guest::BODY_DEPLETED`) |
+| the unit's seat | `U+0x1fc` | `i16`, -1 none | confirmed | live-telemetry `layout::UNIT_SEAT`: the enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores -1 (`0xea995`) |
+| seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
+| seat flags | `S+0` | `u32` | position confirmed (the field before the label); **bits not traced** | bit 2 driver, bit 3 gunner, from Halo 2's tag definition (the seat flags' order: invisible, locked, driver, gunner, ...). With no seat flagged driver, the first seat that is not a gunner's is taken for the driver's (`vehicle::read::roles`) |
+| vehicle type | `V+0x1f0` | `u16` | position confirmed; **names not traced** | objects.md: the vehicle code compares it with 5 and 6 (`0xef545`). The order (tank, jeep, boat, plane, scout, fighter, turret) is Halo 2's tag definition's; 5 the Banshee's flying and 6 the turret fit the two compares |
+| the gun mounted on a Warthog | a vehicle object whose parent is the Warthog; its gunner's parent is the gun | | confirmed | live-telemetry.md (`parent` on a frame vehicle); `live-telemetry` `vehicle_mount` |
+| a rocket launcher | `weap` zoom levels `+0x1fe` 1, and the blast role (§3.6) | | checked on Zanzibar's tags (zoom) | §3.6's handling table: the rocket launcher is the only blast weapon with a zoom level |
+
+How the bot reads them (`vehicle::read::sight`, once a frame for each bot
+in a multiplayer game, after the perception): the objects array (at most
+2048 slots) for live vehicle objects that are not wrecked and whose
+definition is a `vehi` tag, each with its class and seats; a mounted
+turret's pose is made a world one from its vehicle's; then each listed
+player's living biped whose parent is one of those vehicles fills the
+seat `U+0x1fc` names, and the bot's own is its `riding`. A fault leaves
+the bot on foot, never blind. It is kept apart from `brain::Perception`
+(the mind is handed it with `Mind::see_vehicles`), so every other test
+and caller plays as before.
+
+`guest::perceive_as` now puts a rider where its vehicle is (its own
+`+0x64` is relative to it): a Warthog's driver and an enemy on its gun are
+seen at the Warthog and at the gun, not near the world's origin.
+
+**Lock-on** (`vehicle::lock`). With a rocket launcher in hand
+(`lock::locks_on`) and the target riding a vehicle, the bot aims at the
+vehicle's middle (0.3 over its origin) with no lead (a locked rocket
+follows it), and fires only once it has held the vehicle in the reticle
+(the vehicle's apparent size, 0.8 world units, plus the skill's fire
+cone) for the lock time. At infantry nothing changes: fired unlocked, at
+the feet for Heroic and Legendary (§3.4). The game's own lock time is not
+traced; the bot assumes 1 s (`lock::LOCK_TICKS`) and adds its margin:
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| waits for the lock | no (fires as at infantry) | yes | yes | yes |
+| holds past 1 s | | 0.4 s | 0.2 s | 0.07 s |
+| off the vehicle forgiven | | 3 ticks | 6 ticks | 8 ticks |
+
+The bot does not zoom: Halo 2's launcher is taken to lock without it
+(§12). "A blast weapon with a zoom" stands for the rocket launcher; the
+fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
+a bot with it waits a second at a vehicle and then fires: slower, not
+wrong.
+
+**Which vehicles.** By class (`vehicle::Class::spec`, data):
+
+| Class (`V+0x1f0`) | Taken | Driver shoots | Where to stand to get in (forward, left of its origin) |
+|---|---|---|---|
+| jeep (Warthog) | driver; its gun as a teammate's gunner | no | driver (0, 0.8); gun (-1.2, 0) |
+| scout (Ghost, Spectre, Wraith) | driver | yes | (-0.2, 0.7) |
+| tank (Scorpion) | driver | yes | (0, 1.4) |
+| fighter (Banshee), boat, plane, a turret on its own | no (the Banshee is later) | | |
+
+The points are guesses at the seats' sides: the game picks the seat whose
+entry point is nearest, and the seats' entry markers and radius (`S+0x98`,
+by the field order) are not read yet. A side that does not take is tried
+from the other side (mirrored); a Warthog's driver on the right gets the
+passenger's seat, which is still a ride.
+
+**Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
+(no enemy in view for 1.5 s), not carrying, not going for a weapon, and
+in an objective game only when the objective's point is more than 20
+away. The nearest vehicle by distance (plus 3 per unit of height) within
+the skill's range that:
+
+- is a class it drives, whole (over 0.4), upright, standing still (under
+  0.5 a second);
+- has its driver's seat free and nobody of the other side aboard;
+- no teammate on foot is clearly nearer to (within 6, and nearer than 0.8
+  of the bot's distance): they have it;
+- it has not given up on, or got out of, in the last 10 s.
+
+With the skill's gunner option, a teammate's Warthog with a free gun
+counts too, 4 units worse than a free vehicle. It walks the nav mesh to
+the point beside the seat, then stands and holds X (the action button,
+Default layout) for 40 ticks; then the other side for 40; then gives up
+on it for 10 s. Getting in is read back from `U+0x1fc` and the parent:
+from then on the mind is in the vehicle. It also gives up after 12 s, or
+when the seat is taken or an enemy gets in.
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| takes a vehicle within | 12 | 20 | 28 | 35 |
+| mans a teammate's gun | no | yes | yes | yes |
+| boards within (XY) | never | 1.5 | 2.2 | 2.8 |
+| boards going slower than (units a second) | | 1.5 | 3 | 4.5 |
+| runs infantry over | no | yes | yes | yes |
+
+**Board** (`vehicle::plan::board`). An enemy (in free-for-all, anyone)
+driving a vehicle (not a Banshee) on the bot's level (within 1 in height),
+within the skill's boarding range, slower than its boarding speed: in a
+fight or not, the bot runs straight at the driver's side and holds X
+within 1.2 of the vehicle's middle. It lets go when the vehicle speeds off
+or after 3 s. Speeds come from the vehicles' positions tick to tick
+(`vehicle::Memory`), not from `O+0x88`, whose units are not checked.
+
+**Drive** (`vehicle::drive`, `Mind::ride`). Halo 2 steers a Ghost or a
+Warthog by the camera: the left stick says where to go relative to where
+the player looks. The driver:
+
+- goes to the objective's point, else the enemy it fights, else where an
+  enemy was last seen, else a roaming goal (§3.2);
+- plans a route on the nav mesh (the bipeds' mesh: there is no vehicle
+  mesh yet) and drives at a carrot, the furthest of the next route points
+  within 4 (a point is passed within 1.5, or when the next one is
+  nearer);
+- looks at the carrot (or the enemy it fights) and pushes the stick that
+  way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
+  radians or more;
+- with infantry in front within 15, drives at them (splatter), the skill
+  allowing;
+- shoots with the vehicle's guns when its seat has them (a Ghost's, a
+  Scorpion's; not a Warthog driver's);
+- under throttle and slower than 0.4 a second for 1.5 s, backs up for 1 s;
+  the third time within 15 s it is stuck for good.
+
+A gunner aims and shoots (the gun's trigger held in the skill's bursts); a
+passenger shoots its own gun as on foot. With nothing to shoot they look
+where the enemy was last seen, else ahead.
+
+**Getting out** (`drive::leave`): the vehicle under 0.2, lying flipped
+for 1 s, stuck for good (driver), nobody driving for 4 s (gunner,
+passenger), or within 3 of an objective point it must reach on foot (the
+flag or ball it is going for). It holds X 15 ticks in every 20, so a press
+and a hold both work, and stops driving. The vehicle it left is left alone
+for 10 s, so it does not get straight back in.
+
+**Seeing it in a game.** Two or three Clankers on a map with vehicles
+(Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
+Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
+
+**Open** (§12): the seat flag bits and the type's names (the two "not
+traced" rows); the lock time and whether it needs a zoom; the entry
+points (the seats' markers and `S+0x98`); whether X held enters and a
+press exits, as assumed; a vehicle nav mesh (wider clearance, no jumps);
+the Banshee; driving tactics beyond "at the enemy" (circling, keeping
+range for a gunner); and a Warthog driver waiting for its gunner.
 
 ## 4. Way in 1: local slots
 
@@ -1534,6 +1861,55 @@ no run yet).
   had a unit, so none of it was seen; `facing` reads the unit, so a
   phantom without one is skipped.
 
+**The user's Halo 1 run (2026-11-19: Live custom game on
+`h1_bloodgulch`, 3 local Clankers and 4 phantoms, a crash a while into
+the game).** Read from the log tail and the disassembly; no run yet.
+
+- **"Every phantom got peer 4."** The raw log has all four `bots:
+  phantom Clanker N joins (peer 4, in the pregame lobby)` (N 4 to 7),
+  after `waits: not a lobby it can join (the lobby's session is not live
+  (state 7, live is 5))`, and the start found 5 peers, 4 of them
+  phantoms. The phantoms had joined before; state 7 made them unmade
+  (no session this console hosts live) but a session not live is not
+  written, so their peers stayed. Back in state 5 each rejoin found its
+  own peer, took it out (the peers above it moving down) and added it
+  again at the end: index 4 each time, every phantom's peer moved under
+  the game. Their machine ids were distinct all along (`machine_id` of
+  each handle, host-made bots and rostered alike). **Fix:** a phantom
+  whose peer is still in the session with its player takes it back in
+  place (`bots: phantom G is still in the session (peer K): it stays`);
+  only a peer the game emptied is taken out and made anew. Tests
+  `phantom::session::tests::lobby::host_made_phantoms_back_from_a_session_not_live_keep_their_peers`,
+  `a_peer_with_no_player_is_made_anew`,
+  `four_phantoms_in_one_frame_get_a_peer_each`.
+- **The crash is not the peers.** `#GP` at `0x28c589` is `movaps xmm1,
+  [eax]` in `0x28c530`, codec 8's (`blend_screen`) interpolated rotation
+  (the codec table in docs/engine/engine-map.md), called from the
+  evaluation setup `0x2798a0` (return `0x279d2c`). `eax` was
+  `0x820f922c`: not 16-byte aligned, so `movaps` faults. The address is
+  the stream (`[0x504480]`) plus `0x20` plus channel × stride plus frame
+  × 16, so a blend-screen stream or its stride in the animation data that
+  map loaded is off 16-byte alignment: the converted map's data, not a
+  session structure. Every unit with an aim screen evaluates it each
+  frame, bots or not; which animation it was is for the converted map's
+  owners (h1convert / h1map), with the stream's address in the dump.
+- **The roster refusal** (`no roster from Live (the server refused:
+  0x80155100)`). Live HLE gives `0x80155100` for a 404 or 409 on `POST
+  /v1/games/bots` (`live_hle::client`, `Work::Bots`). The roster
+  handler's only 404 is `no session of yours by that id` (the session
+  looked up by id with the caller as its host, `live_server::bots`); it
+  has no 409. So the server did not have session `8615d3735dc12a62` as
+  the caller's when asked, at once after it was advertised. Not a
+  7-bot limit (the count is cut to the room, and none is a 400), and
+  custom games ask without a playlist, which is allowed. The server's log
+  line for the request says which: a model that had not applied the new
+  session yet (the Workers home reads its own copy), or another account
+  asking than the one that made it.
+- **The local bots in the game.** `join gate port 1..3: screen 0xe7 ...
+  signed_in true: waits` is the gate saying the bots are signed in
+  already, so it has nothing to do: `waits` is every gate line out of a
+  lobby. It is no sign they were left out of the game.
+
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
 turns from the unit's facing. A radial curve maps the stick to yaw
@@ -1663,6 +2039,7 @@ layout checks and the `Page` table tests. These are its rows:
 | Aggression | Calm, Normal, Wild | `clankers.aggression` |
 | Aim style | Steady, Twitchy | `clankers.aim_style` |
 | Taunts | On, Off | `clankers.taunts` |
+| Glitches | Off, Some, Lots | `clankers.glitches` (§3.8) |
 
 **Mixed** gives each bot a difficulty drawn around Normal. Per-bot
 difficulty can come later, as a sub-page per bot; the first page does not
@@ -1911,22 +2288,19 @@ For a clanker hopper (`live_hle::clankermatch`):
    §8.2.3; `teams: true` in a team playlist) and seats the bots one at a
    time on `clankermatch::schedule` (each 0.5 to 3 s after the last,
    seeded by the session id), up to the playlist's most players less one
-   human. **Local bots first** (since 2026-11-19, phase 2): the first
-   `clankers::max_local` bots go on the free controller ports 1 to 3 and
-   sign in to the lobby as local players (the bot glue's lobby gate, as in
-   a Live custom game), with the roster's first bot accounts and its
-   skills; the rest are phantoms, which join the lobby this console hosts
-   as peers (§5.1, "Phantoms in the pregame lobby"; with
-   `H2_PHANTOM_LOBBY=0`, once the game runs). `max_local` is up to three in free for all and, in a team
-   playlist, no more than fill the human's team (`players / teams - 1`:
-   three in Clanker Teams, one in Clanker Doubles), since a console's
-   players are one party on one team. Nobody is seated before the roster
+   human. **Phantoms only** (since 2026-11-19, below): every bot is a
+   phantom with the roster's bot account and skill, joining the match's
+   target session as a peer (§5.1, "Phantoms in the pregame lobby"; with
+   `H2_PHANTOM_LOBBY=0`, once the game runs), as the players a search
+   finds are. `clankers::MATCH_LOCAL` is 0: no bot takes a controller
+   port. (Phase 2 put the first three on ports 1 to 3 as local players;
+   they showed in the human's party and failed the matchmade start's
+   controller check.) Nobody is seated before the roster
    comes (no host-made bot for it to replace, no local bot on Live as the
    human's guest first); if Live refuses it, host-made bots.
    In a team playlist each phantom without a roster team goes to the team
    with the fewest players, then the lowest total skill
-   (`clankermatch::balance`), around the human and its local bots (all on
-   the human's team): the host's first
+   (`clankermatch::balance`), around the human: the host's first
    local listed player's configuration team (player `+0xd4 + 0x7c`,
    `bots::phantom::session::host_team`), read twice a second by the bots'
    frame hook (`clankers::frame`) and followed until the first bot sits,
@@ -1995,6 +2369,9 @@ run yet).**
   matchmaking branch (`0x199971`: lobby kind 6, session `+0x49a4` 2), so
   a matchmaking lobby passes it: `bots::lobby::pregame` holds there and
   the bot glue's lobby gate signs local bots in, as in a custom game.
+  **Wrong for the lobby the bots fill** (cm-run2, below): that holds for
+  the party's lobby before the search; once the search hosts, the life
+  cycle is 6 and the lobby is the target session.
 - **What the start counts.** The matchmaking branch's state comes from
   `0x66050(session, hopper)` (through `0x63e90`, hopper `+0x49c8` via
   `0x641f0`), mapped to the status texts by `0x19a5fd`. It reads, per
@@ -2036,6 +2413,116 @@ run yet).**
   whether the game balances a matchmade team game itself at the start
   (then the phantoms' teams are its, not `clankermatch::balance`'s).
 
+**The matchmaking host's lobby (traced 2026-11-19 from the user's
+Clankermatch, cm-run2; built, no run yet).** The search hosted (`session
+893954eb98f2e2fe advertised`) and the log said `bots: lobby facts: lobby
+true, networking true, session type 6, session state 5: no pregame
+lobby`; every local bot's gate said `screen 0xd2 (top 0xd2), dialog
+none, signed_in false (slot 0x1): waits`, no phantom joined, and the
+lobby never started.
+
+- **Two sessions.** Beside the squad session `[0x527364]` (the party's,
+  whose Live session `84ad6bf112ae91df` was advertised when the playlist
+  was pressed) the game keeps a target session `[0x52736c]`: the
+  session a matchmaking search joins or hosts.
+  `0x65340` picks the session the game plays in by the life-cycle type
+  `[0x527334]` (table `0x65520`): types 1 to 4 the squad session, 6 to 9
+  the target session, 5 none. `0x59780` prefers the target session
+  whenever it has a state; `0x593e0` tears both down.
+- **The life cycle.** `[0x527334]` indexes ten state objects
+  (`[0x527338 + 4·type]`, set up by `0x58f22`): type 6 is the object at
+  `0x527500` (`0x70190`, the matchmaking one: its timers, `0x705f0`'s
+  searching states). `0x19a279` maps the types to lobby kinds: 1 and 2
+  give 3 (pregame), 6 and 7 give 2, 3 and 8 give 4 (a game: the in-game
+  player diff `0x83220` runs only for types 3 and 8), 4 and 9 give 5, 5
+  gives 7. So 6 is the hosted matchmaking lobby, 8 its game; the custom
+  game's are 1 or 2 and 3.
+- **The screen.** `0xd2` (constructor `0x2519f7`, vtable `0x45a398`)
+  is the matchmaking lobby's. Its input `0x251afa` takes B and Back
+  (buttons 1 and 13, `0x25217b`) and X (3), nothing else: a second
+  controller's A or Start does nothing there. The custom lobby's join
+  press (`0x250c80`) needs `0x19a279` 3 and refuses in a countdown or in
+  types 2 and 3 (`0x19a902`), so on retail a guest joins a matchmaking
+  party in its lobby before the search, never after it.
+- **But the session adds any local user.** The per-frame pass `0x63d80`
+  runs `0x65770` on every session with a state (the three at
+  `[0x4ce03c]`), the target session too, and `0x646b0` and `0x65a60` read
+  the session's state (3 to 8) and room (`+0x54` against `+0x4990`,
+  `+0x1118`+1 against `+0x4994`), never the type. A bot signed in while
+  the target session is up is added to it like any local user, as in the
+  custom lobby. The party's squad session is in state 5 too, so the pass
+  adds it there as well, as it would a guest signed in before the search.
+- **Built.** `bots::lobby::game_session` mirrors `0x65340` (types 6 to 9
+  the target session, else the squad's). `Facts` reads the target
+  session's state and host in types 6 and 7, and
+  `lobby::matchmaking_host` is a matchmaking lobby this console hosts
+  (type 6 or 7, the target session in a lobby state, its host peer this
+  console's). (The join gate opened there for local bots for a time;
+  "Phantoms only" below closed it.) The
+  phantoms' `host_lobby`, `live_session`, `owned_session` and the in-game
+  `host_session` read the game session too, so a Clankermatch's phantoms
+  join the target session (its hopper statuses are the host's, so
+  `0x66050` passes them) and stay in it for the matchmade game (type 8).
+  A matchmaking lobby another console hosts, or a search with no target
+  session yet, takes none. The facts line says it: `bots: lobby facts:
+  lobby true, networking true, session type 6, session state 5, match
+  session state 5 (this console hosts it): a matchmaking lobby this
+  console hosts`. `bots: lobby players: N in the game's session` says
+  the target session's player count (`+0x1118`) on each change: what the
+  matchmaking start counts.
+- **The re-search every ~4 minutes** is the game's: the hopper's search
+  timeout (`+0x59c`, read at `0x71c7a` against the time the lobby was
+  hosted; 150 000 ms in the small playlists) runs out on a lobby that
+  never reached its start, the game deletes its target session, searches
+  again and hosts a new one (`80f478...`, then `86334c...`). The fill
+  already follows it (`the game moved from session ... asking Live to
+  carry its bots there`). With the bots in the target session the lobby
+  reaches its fewest players within the fill's 15 s or so, far inside the
+  timeout, and the start wait (`+0x5a4`, 0 at the playlist's most
+  players) starts it. Nothing on our side abandons the session, so
+  nothing is changed for it; a run that still re-searches with the lobby
+  full says the start is held elsewhere.
+- **Live.** The match's bots went to the party's Live session too, and
+  each was refused there (§9.5): now only the roster's session is told.
+
+**Phantoms only (2026-11-19, the user's run on f5d3010c; built, no run
+yet).** The user saw the Clankers in their own party before the search,
+and once the match was made the game said "Player 2's controller is not
+plugged in" and went back to the lobby.
+
+- **Why in the party.** A local bot is a local user, and the local-player
+  pass (`0x63d80` → `0x65770`) adds a signed-in local user to every
+  session with a state: the party's squad session as well as the match's
+  target session. A bot cannot be in the match alone that way.
+- **Why the controller.** The matchmade start checks each local player's
+  controller, and a bot's port has no device. Which function reads it
+  (an `XGetDevices`/`XInputGetCapabilities` mask or the game's own pad
+  flags) is not traced: phantoms have no local player, so nothing reaches
+  the check.
+- **The choice: phantoms only.** A matched player is a remote peer, and
+  so is a phantom: it is listed in the match's lobby only (the target
+  session), never in the party, has no controller, and carries a roster
+  bot account (its gamertag, emblem, rank) as a local bot did. Hiding the
+  bots from the squad pass would mean hooking the pass per session and
+  the controller check besides, and would still leave the bots this
+  console's own party in the game's eyes (one team in a team playlist,
+  the host's guests on the scoreboard). What phantoms lose against local
+  bots: buttons. Their action records carry sticks, triggers and the
+  weapon, but no jump, crouch or melee bits yet (§5.1, "The action from a
+  pad"), and none of the pad-press glitches (§3.8).
+- **Built.** `clankers::MATCH_LOCAL` = 0: the fill seats every bot as a
+  phantom (`clankermatch: 0 local bots join the lobby on free controller
+  ports; 7 phantoms join the lobby as peers (...), in the match only`).
+  While a fill runs, `Phantoms::set_match_only(true)`: its phantoms join
+  only a session of the matchmaking life cycle (types 6 to 9,
+  `lobby::matchmaking_cycle`), wait in the party's lobby (`bots: phantom
+  G waits: not a lobby it can join (the party's lobby: a Clankermatch's
+  bots join the match the search hosted, never the party)`) and leave it
+  if they were in one; the flag clears once the fill's bots are gone.
+  The bot glue's join gate opens in a pregame lobby only again, never a
+  matchmaking one, so the Clankers page's local bots never sign in there
+  either.
+
 **Grep the run's log** (`h2 play ... 2>&1 | tee run.log`), in order:
 
 1. `live: clankermatch: clanker hoppers [8, 9, 10]` at logon (or `the
@@ -2058,8 +2545,12 @@ run yet).**
    Live rostered bots for session <id>` (or `no roster from Live (...):
    host-made bots`).
 7. `clankers: Clanker N on (...)` and `clankers: Clanker N is <gamertag>
-   on Xbox Live (bot account ...)` for the local bots, then `bots:` gate
-   and sign-in lines for ports 1 to 3 in the `lobby`; `clankers:
+   on Xbox Live (bot account ...)` for the local bots, then `bots: lobby
+   facts: ... session type 6, session state 5, match session state 5
+   (this console hosts it): a matchmaking lobby this console hosts` and
+   `bots:` gate and sign-in lines for ports 1 to 3 in the `lobby`
+   (`screen lobby`), then `bots: lobby players: N in the game's session`
+   rising; `clankers:
    <gamertag> (phantom, rostered) on (...)` for the rest: on the books.
 8. `bots: phantom <gamertag> joins (peer N, in the pregame lobby)` in
    the lobby, before the countdown. `bots: phantom ... waits: not a lobby
@@ -2077,9 +2568,9 @@ panes, texts, cursor rows), `-p boot --lib coop_live` (the seven-row
 menu), `-p boot --lib clankermatch` (the filter, the schedule, the
 balance, Quickmatch's hopper, the Switch To: Clankermatch row's place,
 press and plan order), `-p boot --lib clankers::tests::a_clankermatch`
-(the fill: one roster, local bots first then phantoms, one bot at a
-time, `max_local`, balanced teams around the host's party, the handoff,
-the end with the local bots off, a refused roster), `-p boot --lib
+(the fill: one roster, phantoms only, one bot at a time, no controller
+port, balanced teams around the host, the handoff, the end, a refused
+roster, the match-only flag), `-p boot --lib
 bot_mark`, `-p font gear` (the glyph on a synthetic font),
 `-p bots phantom::session` (the marked name within 15 units, the host's
 team; `phantom::session::tests::lobby`: the lobby this console hosts, the
@@ -2087,7 +2578,10 @@ reservations, the peer properties, the configuration, the teams, the
 switch, and a phantom joining the lobby, staying for the game, leaving,
 rejoining and waiting; `phantom::session::tests::in_game`: the start's
 wait without phantom machines, a phantom standing in the game, the bot
-mark on local bots), `-p live-hle --lib clankermatch` (the delay and the run),
+mark on local bots; `lobby::a_clankermatch_...`: the target session),
+`-p bots --lib lobby` (the game session by life cycle, the matchmaking
+host's lobby, its player count), `-p live-hle --lib players_tests` (the
+bots told to their roster's session only), `-p live-hle --lib clankermatch` (the delay and the run),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test
@@ -2334,10 +2828,16 @@ showed 0 filled with six players in the game. So the host says who plays.
 Every second (`clankers::frame`) while a roster is in force, the driver
 hands the HLE the bot accounts in the game (`Driver::session_bots`: the
 local bots' accounts and the rostered phantoms the game made players for);
-`Hle::set_session_players` tells each session the console hosts of them
-and of its signed-in users, as `PlayerJoined` and `PlayerLeft` on
-`session-<id>` for only what changed (`sessions::players_diff`; zero and
-host-made xuids never). One more call after the roster ends sends the
+`Hle::set_session_players` tells the session the roster is for
+(`Driver::roster_in_force`) of them, and each session the console hosts of
+its signed-in users, as `PlayerJoined` and `PlayerLeft` on `session-<id>`
+for only what changed (`sessions::session_players`, `players_diff`; zero
+and host-made xuids never). Only that session: a Clankermatch host
+advertises its party's lobby session (made before the search) beside the
+match the search hosted, and the user's run (cm-run2) told both, so every
+`PlayerJoined` and `PlayerLeft` on the party's (`84ad...`) came back 400
+(`unknown player`: the bots are leased to the match alone) while the
+match's were taken. One more call after the roster ends sends the
 bots' leaves. The server takes a `PlayerJoined` for a human account, or
 for a bot of the session's latest roster when its host posts it
 (`bots::leased_to`), and a `PlayerLeft` for anyone in the session, so a
@@ -3064,12 +3564,13 @@ list for the user to play (§11).
      - `team`: Auto-balance, Red or Blue;
      - `aggression`: Calm, Normal or Wild;
      - `aim_style`: Steady or Twitchy;
-     - `taunts`: Off or On; default On.
+     - `taunts`: Off or On; default On;
+     - `glitches`: Off, Some or Lots; default Off (§3.8, used).
 
      Teams, Aggression, Aim style and Taunts are saved but not used yet:
      they wait for the lobby teams (stage 6), the utility layer and aim
      styles (stages 4 and 5), and the emotes (stage 4).
-   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s on the
+   - **The page** is a kit screen, `clankers`: eight `ChoiceRow`s on the
      lobby's own settings dialog, Quick Options, inside and out
      (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
      Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
@@ -3189,8 +3690,8 @@ list for the user to play (§11).
         Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
         Options".
      2. Press A on it: the Clankers page opens over the dialog, with
-        seven rows and a description of the focused row. B goes back to
-        Game Setup.
+        eight rows (Glitches last) and a description of the focused row.
+        B goes back to Game Setup.
      3. Set Clankers to On and Count to 2 (the log says `clankers:
         Clanker 1 on (Normal)`). In Split Screen, bots join on the
         players screen, so back out of the lobby to it: "Clanker 1" and
@@ -3836,8 +4337,14 @@ list for the user to play (§11).
         pins have): today only the default lineup's clanker playlists,
         kept where a published file has the same playlist id at the same
         index.
-9. **Vehicles** (later). Mounting, driving along the nav mesh's vehicle
-   graph, and gunner roles.
+9. **Vehicles.** First slice built (§3.9): rocket lock-on, the vehicles'
+   perception, going to take a free Ghost, Warthog or Scorpion (or a
+   teammate's Warthog gun), driving along the bipeds' nav mesh, shooting
+   from a seat, splattering, getting out, boarding. Tests:
+   `vehicle::` (the planners, and the reader on synthetic memory) and
+   `mind::ride::` (the mind end to end). Next: a game run (§11.4), the
+   untraced fields (§12), a vehicle nav graph, the Banshee, and driving
+   tactics.
 
 ## 10.1 Library surface (for the agent API)
 
@@ -3932,6 +4439,8 @@ Each item is for the user to play, or for a coordinator run.
     surface once it is built).
 11. Whether an empty search makes the game host in each playlist type, or
     `MatchProposed` with `host = me` is needed (§8.4).
+12. Every glitch (§3.8): none has been seen working in a game. Its
+    checklist is in §3.8.
 
 ### 11.1 The brain in play (checklist)
 
@@ -4115,6 +4624,34 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    with the pickup hidden. An unseen disappearance should start no clock.
    Repeat on Easy with the same roster to compare the timing.
 
+### 11.4 Vehicles in play (checklist)
+
+For the user, or a coordinator run. Two or three Clankers on Coagulation
+or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
+
+1. Soon after spawning, a bot with no enemy in view walks to a nearby
+   Ghost or Warthog and gets in from the side.
+2. Two bots on one team do not both run to the same vehicle; with a
+   teammate driving a Warthog, another bot gets on its gun.
+3. A bot driving a Ghost follows the map's roads and paths, turns
+   without circling, and does not sit against a wall for more than a few
+   seconds (it backs up, then gets out).
+4. A driving bot drives at a human on foot in front of it and runs them
+   over, firing the Ghost's guns; a Warthog driver does not fire.
+5. A bot gunner shoots at the human; when its driver gets out, it gets
+   out within about 4 s.
+6. A bot in a vehicle about to blow up, or flipped, gets out.
+7. A bot holding the rocket launcher, at a human driving a vehicle, keeps
+   the reticle on the vehicle for about a second and fires a rocket that
+   follows it; at a human on foot it fires at once.
+8. The human driving a Ghost slowly past a Normal bot within about 1.5
+   (about 3 on Legendary) gets boarded; driving fast past it, not.
+9. The fields: on the human's own unit in a Warthog, `h2 agent object`
+   reads `+0x1fc` 0 as the driver and the gun's seat on the gun; the
+   Warthog's `vehi` seats' `+0` flags have bit 2 on the driver's seat and
+   the gun's bit 3; `+0x1f0` reads 1 for the Warthog, 4 for the Ghost, 5
+   for the Banshee.
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -4142,6 +4679,13 @@ Still open:
   (`0x2c0a7d`); whether a ball's spawn is netgame flag type 4 in the
   engine (Oddball's init); and King of the Hill's in-hill test (player
   `+0x1b8`) against our geometric one.
+- For vehicles (§3.9): the seat flags' bits (`S+0`: driver 2, gunner 3
+  assumed) and the type's values (`V+0x1f0`), from the enter-vehicle
+  routine `0xea1f0` and its caller (which seat a player near a vehicle
+  gets, and how the entry point is picked: the seats' entry markers and
+  `S+0x98`); the rocket launcher's lock (the weapon or projectile fields
+  that time it, and whether a zoom is needed); whether entering is a hold
+  of X and leaving a press; and the units of `O+0x88` (velocity).
 - For the weapons layer (§3.6): whether the flag, ball, bomb and energy
   sword's `weap` tags have no magazines and no aging barrel (the sword
   should read as a battery to be sought); the `weap` field naming the
@@ -4354,13 +4898,14 @@ the game, checks the playlist asked for is marked and on the row the plan
 expects (the Clankermatch list shows only the clanker hoppers, in index
 order: rows 0, 1, 2), and stops at once if not. The game runs with
 `--set clankers.enabled=false`: the page's Clankers stay off and only the
-fill seats bots. The plan, from the lineup and `max_local`:
+fill seats bots. The plan, from the lineup and `MATCH_LOCAL` (phantoms
+only, §8.4):
 
 | `--playlist` | Hopper | Row | Players | Bots | Local | Phantoms |
 |---|---|---|---|---|---|---|
-| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 3 | 4 |
-| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 3 | 4 |
-| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 1 | 2 |
+| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 0 | 7 |
+| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 0 | 7 |
+| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 0 | 3 |
 
 **The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
@@ -4388,11 +4933,13 @@ again first is waited out. The game runs to its own end: Rumble Slayer's
 | 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
 | 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
 | 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |
-| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N |
-| 7 | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
-| 8 | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
-| 9 | The lobby reached the playlist's fewest players | the most filled or joined players the server's session showed between the hosting line and the start |
-| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` after the hosting line |
+| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N (0 now: phantoms only) |
+| 7 | With no local bot planned: no bot in the party | no `bots: signing ...` line anywhere (a bot signed in on a controller port shows in the party and fails the matchmade start's controller check) |
+| 7 (with local bots) | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
+| 8 | With no local bot planned: the phantoms are the roster's bot accounts | a `clankers: G (phantom, rostered) on (...)` line per planned phantom; fewer says Live's roster was refused (host-made bots) |
+| 8 (with local bots) | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
+| 9 | The lobby reached the playlist's fewest players | the most players the game's own session had (`bots: lobby players: N in the game's session`, the game session's `+0x1118`) between the hosting line and the start; the Live server's count (`bots-test: session ...`) is what the host told it and no longer counts (cm-run2 listed "4 joined" with no bot in the lobby) |
+| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` on a multiplayer map after the hosting line: not `map mainmenu` or mode `main_menu` (cm-run2's `loading` was the main menu coming back) |
 | 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
 | 12 | Phantoms joined the lobby before the start | `bots: phantom G joins (peer K, in the pregame lobby)` for each phantom before the start, and no phantom failure |
 | 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |

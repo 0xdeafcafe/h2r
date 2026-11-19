@@ -12,9 +12,12 @@
 //!   lobby's own settings dialog, Quick Options, inside and out
 //!   (`DialogBase::QuickOptions`, docs/game/ui-builder.md "The Dialog
 //!   kind"): its list on the `setting_lists` skin, each row's name left
-//!   and its choice alone in the value column ("Sandbox  Halo 1"), the
-//!   row's one-line help ([`OptionRow::help`]) in Quick Options' help
-//!   line, its header and its footer.
+//!   and its choice alone in the value column ("Sandbox  Halo 1"),
+//!   Quick Options' header (the screen's icon, [`ICON`], in its game
+//!   type picture and its line, [`HEADER_HELP`], in its help line;
+//!   docs/game/ui-builder.md "A page's header"), its title bar and its
+//!   footer. A on a row opens the value picker, which says what each
+//!   choice means ([`description`]).
 //!
 //! Each row is one setting of the store with two choices, Halo 1's and
 //! Halo 2's ([`OptionRow`]); a new option is one more [`OptionRow`] in the
@@ -133,7 +136,17 @@ pub static ALL: &[&OptionRow] = &[&SANDBOX, &ASSETS, &HUD];
 /// The multiplayer screen's strings, after the rows': the two choices
 /// (its value column), then each row's name and each row's help line.
 const MP_IDS: u32 = ROW_IDS + PER_ROW * 3;
-const _: () = assert!(MP_IDS + 2 + 2 * 3 <= IDS.len);
+const _: () = assert!(MP_IDS + 2 + 2 * 3 < IDS.len);
+
+/// The multiplayer screen's own line at its top, in Quick Options' help
+/// line beside its icon (docs/game/ui-builder.md "A page's header"):
+/// [`ROW_HELP`] said in the one line the help line holds (371 of its 494
+/// units in the disc's font 1; [`ROW_HELP`] is 562).
+pub const HEADER_ID: u32 = IDS.id(MP_IDS + 2 + 2 * 3);
+pub const HEADER_HELP: &str = "Halo 1's weapons, vehicles and HUD on this map, or Halo 2's.";
+/// The screen's icon in Quick Options' game type picture: the banner of
+/// three stars.
+pub const ICON: u16 = crate::ui_kit::dialog::icon::BANNER;
 
 fn index(row: &OptionRow) -> u32 {
     ALL.iter()
@@ -188,6 +201,7 @@ static STRINGS: std::sync::LazyLock<Vec<(u32, String)>> = std::sync::LazyLock::n
         (FOOTER_ID, PROMPT.to_string()),
         (ROW_LABEL_ID, ROW_LABEL.to_string()),
         (ROW_HELP_ID, ROW_HELP.to_string()),
+        (HEADER_ID, HEADER_HELP.to_string()),
         (choice_id(true), choice(true).to_string()),
         (choice_id(false), choice(false).to_string()),
     ];
@@ -333,8 +347,13 @@ impl Rows for OptionsScreen {
             step(&self.store, r)
         ))
     }
+    /// The screen's own line ([`HEADER_HELP`]), whatever the focus: Quick
+    /// Options' header. A row's own help shows in the value picker.
     fn description(&self, row: i16) -> Option<u32> {
-        option_at(MULTIPLAYER, row).map(help_id)
+        option_at(MULTIPLAYER, row).map(|_| HEADER_ID)
+    }
+    fn picture_image(&self) -> Option<u16> {
+        DIALOG.picture().map(|_| ICON)
     }
     fn describe(&self, count: usize) -> Option<String> {
         let rows: Vec<String> = MULTIPLAYER
@@ -367,6 +386,11 @@ impl crate::ui_kit::spec::Describe for OptionsScreen {
         )));
         s.style = base.style();
         s.description = base.help().map(Into::into);
+        s.help = Some(HEADER_HELP.into());
+        if base.picture().is_some() {
+            s.art.push(crate::ui_kit::dialog::quick_icon(ICON));
+        }
+        s.ids.push(HEADER_ID);
         s.footer = true;
         s.prompts = vec![
             Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
@@ -511,8 +535,24 @@ mod tests {
             ("Sandbox", Some("Halo 1"))
         );
         assert_eq!(s.rows[1].description.as_deref(), Some(HUD.help));
-        assert_eq!(screen.description(1), Some(help_id(&HUD)));
+        // Quick Options' header: the screen's own line in the help line
+        // whatever the focus, its icon in the game type picture.
+        assert_eq!(screen.description(0), Some(HEADER_ID));
+        assert_eq!(screen.description(1), Some(HEADER_ID));
         assert_eq!(screen.description(2), None);
+        assert_eq!(s.help.as_deref(), Some(HEADER_HELP));
+        assert_eq!(s.description_text().as_deref(), Some(HEADER_HELP));
+        assert_eq!(s.art, [crate::ui_kit::dialog::quick_icon(ICON)]);
+        assert_eq!(screen.picture_image(), Some(ICON));
+        assert!(ICON < crate::ui_kit::dialog::icon::COUNT);
+        let text = strings();
+        let text = |id| text.iter().find(|(i, _)| *i == id).map(|(_, t)| *t);
+        assert_eq!(text(HEADER_ID), Some(HEADER_HELP));
+        // One line: the kit's own measure (7.5 units a character) inside
+        // Quick Options' 494-unit help line.
+        let room = i32::from(crate::ui_kit::dialog::QUICK_HELP.right)
+            - i32::from(crate::ui_kit::dialog::QUICK_HELP.left);
+        assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
     }
 
     /// Left and right each step to the other choice, A opens the value

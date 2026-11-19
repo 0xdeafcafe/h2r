@@ -153,6 +153,14 @@ pub trait Rows: Send + Sync {
     fn picture(&self, _row: i16) -> Option<u32> {
         None
     }
+    /// The image of its bitmap the picture shows, set once as the screen
+    /// opens ([`set_image`]), for a class with a picture
+    /// ([`ListClass::picture`]): a page's own icon in Quick Options'
+    /// game type picture (`crate::ui_kit::dialog::QUICK_PICTURE`). The
+    /// widget's constructor starts it at image 0. `None` leaves it.
+    fn picture_image(&self) -> Option<u16> {
+        None
+    }
     /// Text that changes while the screen is up, asked at each row text:
     /// bytes to write to guest memory first (the strings the ids this
     /// class shows are served from), and whether the description must be
@@ -692,6 +700,32 @@ pub fn set_tint(m: &mut dyn GuestMemory, widget: u32, tint: [f32; 3]) -> Result<
 /// A bitmap widget's block definition (`+0x70`, set by its constructor
 /// `0x2b01eb`).
 pub const WIDGET_BLOCK: u32 = 0x70;
+/// A bitmap widget's image index (`0x2b0a14` stores it; the constructor
+/// `0x2b01eb` zeroes it, whatever its block says).
+pub const WIDGET_IMAGE: u32 = 0x88;
+/// A `bitm` tag's image count (`0x2b0a14` checks the index against it).
+pub const BITMAP_IMAGES: u32 = 0x44;
+
+/// Sets bitmap widget `widget`'s image to `index`, as `0x2b0a14` does:
+/// only when its bitmap is loaded and has that many images. Whether it
+/// did.
+pub fn set_image(m: &mut dyn GuestMemory, widget: u32, index: u16) -> Result<bool, MemFault> {
+    let block = m.u32(widget.wrapping_add(WIDGET_BLOCK))?;
+    if block == 0 {
+        return Ok(false);
+    }
+    let datum = m.u32(block.wrapping_add(BITMAP_HANDLE as u32))?;
+    if datum == u32::MAX {
+        return Ok(false);
+    }
+    let entries = m.u32(points::TAG_ENTRIES.base)?;
+    let tag = m.u32(entries.wrapping_add((datum & 0xffff) * 0x10 + 8))?;
+    if tag == 0 || u32::from(index) >= m.u32(tag.wrapping_add(BITMAP_IMAGES))? {
+        return Ok(false);
+    }
+    m.set_u16(widget.wrapping_add(WIDGET_IMAGE), index)?;
+    Ok(true)
+}
 
 /// Points bitmap widget `widget` at `bitm` datum `datum`: its block's
 /// reference ([`BITMAP_HANDLE`]), which the draw reads each frame. The
@@ -1486,8 +1520,13 @@ pub async fn row_text(
         let moved = shown.focus(screen, focused);
         let widget = moved.or_else(|| live.redraw.then(|| shown.widget(screen)).flatten());
         if let Some(widget) = widget {
+            // `TEXT_SET` copies the string as it sets it (`0x253b1a` reads
+            // it through `0x230134` into the widget), so a slot of ours
+            // set here is written before it is named.
+            let description = focused.and_then(|r| rows.description(r));
+            cx.write(|m| rows.write_texts(m))?;
             set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
-            if let Some(id) = focused.and_then(|r| rows.description(r)) {
+            if let Some(id) = description {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
                         .edi(widget)
@@ -1776,6 +1815,15 @@ pub async fn setup_pane_footer(
             d.shown.set_widget(screen, widget);
             if let Some(spec) = d.picture {
                 add_picture(&cx, screen, &spec, d.picture_at, Some(&d.shown), name).await?;
+                let image = d.rows.as_ref().and_then(|r| r.picture_image());
+                if let (Some(picture), Some(image)) = (d.shown.picture(screen), image) {
+                    if !cx.write(|m| set_image(m, picture, image))? {
+                        once(
+                            &PICTURE_MISSING,
+                            &format!("{name}: the picture has no image {image}"),
+                        );
+                    }
+                }
             }
             if let Some(spec) = d.frame {
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
@@ -1835,10 +1883,17 @@ async fn set_panel_texts(
     shown: &Shown,
     rows: &dyn Rows,
 ) -> Result<(), EntryError> {
-    for (i, widget) in shown.panel(screen).into_iter().enumerate() {
-        let Some(id) = rows.panel_text(i).filter(|_| widget != 0) else {
-            continue;
-        };
+    let texts: Vec<(u32, u32)> = shown
+        .panel(screen)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, widget)| rows.panel_text(i).filter(|_| widget != 0).map(|id| (widget, id)))
+        .collect();
+    // Written before `TEXT_SET` copies them (see `row_text`).
+    if !texts.is_empty() {
+        cx.write(|m| rows.write_texts(m))?;
+    }
+    for (widget, id) in texts {
         cx.call(
             GuestCall::new(points::TEXT_SET.base)
                 .edi(widget)
@@ -2413,6 +2468,197 @@ mod tests {
             // Adopted as ours either way.
             assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES), "kind {kind}");
         }
+    }
+
+    /// The value picker opened as the game opens it, and every string it
+    /// names read the way `TEXT_SET` (`0x253b1a`) reads one: from the
+    /// slot at the moment of the call. It opened blank on the Clankers
+    /// and Halo 1 Options pages (2026-11-19): its class took its title's
+    /// slot at build, before any pick, and nothing filled it after; the
+    /// description's slot was set after the texts were written, so the
+    /// call read it empty. Here the class is "built" first, a row's A
+    /// offers its pick, the loader runs (the rows the Controls rows'
+    /// array is asked for, and the texts in memory before the
+    /// constructor), the pane set-up sets the title, and row text draws
+    /// each value and the focused row's description.
+    #[test]
+    fn the_value_picker_opens_with_its_pick_on_the_games_path() {
+        use crate::ui_kit::picker::{self, Pick, Picker};
+        use crate::ui_kit::screen::SLOT_LEN;
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        const TEXTS: u32 = 0x0068_0000;
+        const ITEM: u32 = 0x0060_0000;
+        let p = Arc::new(Picker::new(false));
+        p.slot_texts().base.store(TEXTS, Ordering::SeqCst);
+        let family = p.slot_texts().family;
+        let rows: Arc<dyn Rows> = Arc::clone(&p) as Arc<dyn Rows>;
+        // What a `TEXT_SET` of `id` shows: the slot's string as it is now.
+        let shown = move |m: &dyn GuestMemory, id: u32| -> String {
+            assert!(family.owns(id), "{id:#x} is not the picker's");
+            let mut b = vec![0u8; SLOT_LEN as usize];
+            m.read(TEXTS + (id - family.base) * SLOT_LEN, &mut b).unwrap();
+            let end = b.iter().position(|c| *c == 0).unwrap_or(b.len());
+            String::from_utf8_lossy(&b[..end]).into_owned()
+        };
+
+        // Built at boot, before any pick: the title's id is taken here.
+        let title = rows.title();
+        // A on a row of four values, the second held.
+        let values = ["25", "50", "75", "100"].map(String::from).to_vec();
+        let chosen = Arc::new(Mutex::new(None));
+        let set = {
+            let chosen = Arc::clone(&chosen);
+            Arc::new(move |i: usize| {
+                *chosen.lock().unwrap() = Some(i);
+                format!("score -> {i}")
+            })
+        };
+        let pick = Pick::new(
+            "Score to Win Round:",
+            values.clone(),
+            1,
+            "Points to win a round.",
+            set,
+        );
+        assert_eq!(picker::offer(pick), Some(picker::NAME));
+
+        // The loader.
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x200)
+            .map(TEXTS, family.len * SLOT_LEN);
+        g.put_u16(REQUEST + 2, 0x4)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = {
+            let rows = Arc::clone(&rows);
+            move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::clone(&rows), picker::NAME)) }
+        };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let during = std::sync::Mutex::new(None);
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                let texts: Vec<String> = (0..values.len() as u32)
+                    .map(|i| shown(&*m, family.id(3 + i)))
+                    .collect();
+                *during.lock().unwrap() = Some((
+                    array_count(crate::speaker_row::LIST_NAME, 7),
+                    shown(&*m, title),
+                    texts,
+                ));
+                construct(m, 7);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base { SCREEN } else { 0 },
+                ..Default::default()
+            }
+        });
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        let (asked, title_text, value_texts) = during.lock().unwrap().take().expect("constructed");
+        assert_eq!(asked, 4, "the Controls rows' array is asked for the four values");
+        assert_eq!(
+            title_text, "SCORE TO WIN ROUND",
+            "the title is written before the screen is built"
+        );
+        assert_eq!(value_texts, values);
+        let live = Screen::at(SCREEN)
+            .list()
+            .row_array(&run.guest)
+            .unwrap()
+            .live(&run.guest, 16)
+            .unwrap();
+        assert_eq!(live.len(), 4, "a row per value");
+        let mut g = run.guest;
+
+        // The pane set-up: the title on the header, as `TEXT_SET` reads it.
+        g.put_u32(STACK + 4, 0x55);
+        let f = move |cx| -> EntryFuture {
+            Box::pin(setup_pane_footer(cx, title, None, None, picker::NAME))
+        };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let header = std::sync::Mutex::new(Vec::new());
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::TEXT_SET.base {
+                header.lock().unwrap().push((c.edi, shown(&*m, c.args[0])));
+            }
+            Regs::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 4)));
+        assert_eq!(
+            *header.lock().unwrap(),
+            [(Some(Screen::at(SCREEN).header()), "SCORE TO WIN ROUND".to_string())]
+        );
+        let mut g = run.guest;
+
+        // Row text for each item, row 0 focused: each value on its item,
+        // the description once, as the calls read them.
+        let list = SCREEN + ui::LIST;
+        let described = Arc::new(Shown::default());
+        described.set_widget(SCREEN, 0x9000);
+        g.map(ITEM, Item::SIZE);
+        let mut drawn = Vec::new();
+        for row in 0..values.len() as u32 {
+            g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+            Item::at(ITEM)
+                .set_row(&mut g, Some(DatumHandle::new(0x8001, row)))
+                .unwrap();
+            let f = {
+                let (rows, described) = (Arc::clone(&rows), Arc::clone(&described));
+                move |cx| -> EntryFuture {
+                    Box::pin(row_text(cx, Arc::clone(&rows), Some(Arc::clone(&described)), None))
+                }
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: list,
+                ..Default::default()
+            };
+            let sets = std::sync::Mutex::new(Vec::new());
+            let run = testing::run(&f, g, regs, |c, m| {
+                if c.target == points::TEXT_SET.base {
+                    sets.lock().unwrap().push((c.edi, shown(&*m, c.args[0])));
+                }
+                Regs {
+                    eax: match c.target {
+                        t if t == points::ITEM_TEXT.base => 0x7000 + c.args[1],
+                        t if t == points::LIST_FOCUSED_ROW.base => {
+                            DatumHandle::new(0x8001, 0).raw()
+                        }
+                        _ => 0,
+                    },
+                    ..Default::default()
+                }
+            });
+            assert_eq!(run.result, Ok(Ret::new(0, 8)));
+            drawn.push(sets.into_inner().unwrap());
+            g = run.guest;
+        }
+        let label = Some(0x7000 + crate::ui::LABEL_SLOT);
+        assert_eq!(
+            drawn[0],
+            [
+                (label, "25".to_string()),
+                (Some(0x9000), "Points to win a round.".to_string())
+            ],
+            "the first item draws, then the focused row's description"
+        );
+        for (row, sets) in drawn.iter().enumerate().skip(1) {
+            assert_eq!(*sets, [(label, values[row].clone())], "row {row}");
+        }
+
+        // A on the third value sets it through the row's setter, and the
+        // action closes the picker.
+        assert_eq!(rows.press(2), Chosen::Act);
+        assert_eq!(*chosen.lock().unwrap(), Some(2));
     }
 
     /// In a game a row is one line (the in-game items have one text):

@@ -141,6 +141,16 @@ were checked against the header's declared metadata region. Index pointers
 are translated only within the index region. `AddressSpace` stores a virtual
 base, file start and size, avoiding accidental signed/wrapping subtraction.
 
+On retail maps the ordinary metadata ends the file exactly
+(`I + index size + D = file size`). Some community-modded maps (metadata
+injected by a modding tool, as in the Phantom Mappack's) grow `+0x18` and
+`+0x1c` by more than the bytes the tool wrote, so the declared region runs a
+few pages past the end of the file while every tag still lies inside it. The
+reader keeps the region it can read, cut at the declared file end
+(`Map::metadata_size`), and checks every tag against that; the writer and the
+builder's decomposition grow and rebuild from it, so an edited copy's header
+is consistent again.
+
 **S:** null slots use an absent class/datum. Null addresses can be zero or
 `0xffffffff`; they are not file offset zero. The parser preserves tags without
 local data and returns `NoTagData` on payload reads. Missing first-slot metadata

@@ -49,6 +49,8 @@ pub struct Inner {
     epoch: Instant,
     /// The menu's generation when the window last drew it.
     drawn: Option<u64>,
+    /// What the gate saw at its last filter ([`Shared::gate_report`]).
+    gate: gate::GateReport,
 }
 
 impl Inner {
@@ -99,6 +101,7 @@ impl Shared {
             rpc: None,
             epoch: Instant::now(),
             drawn: None,
+            gate: gate::GateReport::default(),
         })))
     }
 
@@ -123,6 +126,13 @@ impl Shared {
     /// The gate for the input manager.
     pub fn gate(&self) -> Gate {
         Gate::new(self.clone())
+    }
+
+    /// Whether the menu is open, and each pad's state in the gate as of
+    /// its last filter (`h2 agent hostpads`).
+    pub fn gate_report(&self) -> (bool, gate::GateReport) {
+        let g = self.lock();
+        (g.menu.is_open(), g.gate.clone())
     }
 
     /// A key from the window; true when the menu took it (so the game

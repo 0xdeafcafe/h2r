@@ -73,12 +73,14 @@ fn whole_run() -> Vec<&'static str> {
         "bots: join gate port 3: screen lobby (top none), dialog none, signed_in false (slot 0x1): signs in",
         "bots: signing Clanker 3 in on port 3 in the pregame lobby",
         "bots: Loose Bolt on port 3 is on Xbox Live as its own bot account, beside port 0's",
+        "bots: lobby players: 4 in the game's session",
         "bots-test: session 0123456789abcdef: 4 filled (public 4, private 0), 0 joined",
         "clankers: Tin Can (phantom, rostered) on (Normal)",
         "bots: phantom Tin Can joins (peer 1, in the pregame lobby)",
         "bots: phantom Oil Slick joins (peer 2, in the pregame lobby)",
         "bots: phantom Spare Gear joins (peer 3, in the pregame lobby)",
         "bots: phantom Hex Nut joins (peer 4, in the pregame lobby)",
+        "bots: lobby players: 8 in the game's session",
         "bots-test: status phase loading mode multiplayer map lockout",
         "bots-test: status phase gameplay mode multiplayer map lockout",
         "bots-test: session 0123456789abcdef: 8 filled (public 8, private 0), 0 joined",
@@ -190,7 +192,7 @@ fn a_whole_run_passes() {
         "{r}"
     );
     assert!(
-        r.contains("4 players in the lobby (the playlist starts at 2)"),
+        r.contains("8 players in the game's lobby (the playlist starts at 2)"),
         "{r}"
     );
     assert!(
@@ -367,8 +369,8 @@ fn a_lobby_short_of_players_fails_step_9_and_10() {
     })
     .into_iter()
     .map(|l| {
-        if l.starts_with("bots-test: session") {
-            "bots-test: session 0123456789abcdef: 1 filled (public 1, private 0), 0 joined"
+        if l.starts_with("bots: lobby players") {
+            "bots: lobby players: 1 in the game's session"
         } else {
             l
         }
@@ -378,11 +380,53 @@ fn a_lobby_short_of_players_fails_step_9_and_10() {
     let v = run(&plan, &lines);
     let (n, r) = first(&v);
     assert_eq!(n, 9, "{r}");
-    assert!(r.contains("at most 1 players in the lobby of the 4"), "{r}");
+    assert!(
+        r.contains("at most 1 players in the game's lobby of the 4"),
+        "{r}"
+    );
     assert!(!v.checks[9].pass);
     assert!(
         v.checks[9].detail.contains("short of its fewest players"),
         "{r}"
+    );
+}
+
+/// cm-run2: the Live server listed 4 joined (the host's report), the
+/// game's lobby never had a bot, and the "loading" that came was the main
+/// menu's. Steps 9 and 10 passed on those; now neither does.
+#[test]
+fn the_servers_count_and_the_main_menus_loading_are_no_start() {
+    let lines: Vec<&str> = without(&whole_run(), |l| {
+        l.starts_with("bots: lobby players")
+            || l.starts_with("bots-test: status phase loading")
+            || l.starts_with("bots-test: status phase gameplay")
+    })
+    .into_iter()
+    .flat_map(|l| {
+        if l.starts_with("bots: phantom Hex Nut joins") {
+            vec![
+                l,
+                "bots-test: session 0123456789abcdef: 1 filled (public 1, private 0), 4 joined",
+                "bots-test: status phase loading mode main_menu map mainmenu",
+                "bots-test: status phase menu mode main_menu map mainmenu",
+            ]
+        } else {
+            vec![l]
+        }
+    })
+    .collect();
+    let v = run(&slayer(), &lines);
+    assert!(!v.checks[8].pass, "{}", v.checks[8].detail);
+    assert!(
+        v.checks[8].detail.contains("no `bots: lobby players: N`"),
+        "{}",
+        v.checks[8].detail
+    );
+    assert!(!v.checks[9].pass, "{}", v.checks[9].detail);
+    assert!(
+        v.checks[9].detail.contains("no multiplayer map loaded"),
+        "{}",
+        v.checks[9].detail
     );
 }
 
@@ -458,4 +502,101 @@ fn progress_reads_a_clankermatch_log() {
     assert_eq!(v["checks"].as_array().unwrap().len(), 14);
     assert_eq!(v["checks"][0]["state"], "pass");
     assert_eq!(v["checks"][3]["state"], "pending");
+}
+
+/// Clanker Slayer as it is played now: every bot a phantom (no local bot,
+/// so none in the party; `boot::clankers::MATCH_LOCAL`).
+fn slayer_phantoms() -> CmPlan {
+    CmPlan {
+        local: 0,
+        ..slayer()
+    }
+}
+
+/// [`whole_run`] with phantoms only: no port seated or signed in, the
+/// fill's split line says 0 local, seven rostered phantoms join the lobby.
+fn phantom_run() -> Vec<String> {
+    const PHANTOMS: [&str; 7] = [
+        "Rusty Lugnut",
+        "Bent Sprocket",
+        "Loose Bolt",
+        "Tin Can",
+        "Oil Slick",
+        "Spare Gear",
+        "Hex Nut",
+    ];
+    let mut out = Vec::new();
+    for l in whole_run() {
+        let local = l.starts_with("clankers: Clanker ")
+            || l.starts_with("bots: join gate port")
+            || l.starts_with("bots: signing ")
+            || l.contains(" is on Xbox Live as its own bot account")
+            || l.starts_with("clankers: Tin Can (phantom")
+            || l.starts_with("bots: phantom ");
+        if l.starts_with("clankers: clankermatch: 3 local bots") {
+            out.push(
+                "clankers: clankermatch: 0 local bots join the lobby on free controller ports; \
+                 7 phantoms join the lobby as peers (\"bots: phantom ... joins\"), in the match only"
+                    .to_owned(),
+            );
+        } else if l.starts_with("bots: lobby players: 4") {
+            for (i, name) in PHANTOMS.iter().enumerate() {
+                out.push(format!("clankers: {name} (phantom, rostered) on (Normal)"));
+                out.push(format!(
+                    "bots: phantom {name} joins (peer {}, in the pregame lobby)",
+                    i + 1
+                ));
+            }
+        } else if !local {
+            out.push(l.to_owned());
+        }
+    }
+    out
+}
+
+#[test]
+fn a_phantom_only_run_passes() {
+    let lines = phantom_run();
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let v = run(&slayer_phantoms(), &lines);
+    assert!(v.passed(), "{}", v.render());
+    let r = v.render();
+    assert!(
+        r.contains("7 bots (0 local, 7 phantoms) with Tester"),
+        "{r}"
+    );
+    assert!(r.contains("no bot in the party"), "{r}");
+    assert!(r.contains("7 rostered phantoms"), "{r}");
+    assert!(r.contains("7 joined in the lobby"), "{r}");
+}
+
+/// The user's run on f5d3010c: a bot on a controller port showed in the
+/// party. Phantoms only, a signing line fails step 7.
+#[test]
+fn a_bot_signed_in_on_a_port_fails_step_7() {
+    let mut lines = phantom_run();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("bots: phantom "))
+        .unwrap();
+    lines.insert(
+        at,
+        "bots: signing Clanker 1 in on port 1 in the pregame lobby".to_owned(),
+    );
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let (n, r) = first(&run(&slayer_phantoms(), &lines));
+    assert_eq!(n, 7, "{r}");
+    assert!(r.contains("it shows in the party"), "{r}");
+}
+
+#[test]
+fn host_made_phantoms_fail_step_8() {
+    let lines: Vec<String> = phantom_run()
+        .into_iter()
+        .filter(|l| !l.contains("(phantom, rostered)"))
+        .collect();
+    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let (n, r) = first(&run(&slayer_phantoms(), &lines));
+    assert_eq!(n, 8, "{r}");
+    assert!(r.contains("0 of 7 phantoms rostered"), "{r}");
 }
