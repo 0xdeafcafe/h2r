@@ -529,3 +529,113 @@ fn stray_words_are_the_ones_no_field_touches() {
         }
     }
 }
+
+const NHDT: FourCC = FourCC(*b"nhdt");
+
+/// The HUD gate's threshold bytes (`nhdt` widget `+0x18`, both kinds) are
+/// data, not a raw-resource pointer: the checked-in schema leaves the word
+/// out, as does inference ([`super::infer::apply_engine_data`]), and no size
+/// is paired with it (the text widgets' `+0x2c` is the justification).
+#[test]
+fn hud_thresholds_are_bytes_not_raw_pointers() {
+    let widgets = |s: &Schema| -> Vec<Struct> {
+        [0x8, 0x10]
+            .iter()
+            .map(|o| match &s.groups[&NHDT].fields[o] {
+                Field::Block(c) => (**c).clone(),
+                f => panic!("nhdt +{o:#x} is {f:?}"),
+            })
+            .collect()
+    };
+    for w in widgets(Schema::builtin()) {
+        assert_eq!(w.fields.get(&0x18), None, "{w:?}");
+        assert!(
+            !w.fields
+                .values()
+                .any(|f| matches!(f, Field::Raw | Field::RawSize(_))),
+            "{w:?}"
+        );
+    }
+    // What inference made of them before: a raw pointer and, in the text
+    // widget, its size at the justification.
+    let mut inferred = Schema::builtin().clone();
+    for (o, size) in [(0x8, None), (0x10, Some(0x2c))] {
+        let Some(Field::Block(c)) = inferred.groups.get_mut(&NHDT).unwrap().fields.get_mut(&o)
+        else {
+            unreachable!()
+        };
+        c.fields.insert(0x18, Field::Raw);
+        if let Some(at) = size {
+            c.fields.insert(at, Field::RawSize(0x18));
+        }
+    }
+    super::infer::apply_engine_data(&mut inferred);
+    assert_eq!(&inferred, Schema::builtin());
+}
+
+/// An `nhdt` whose widgets hold thresholds at `+0x18` (Halo 1's "Reload":
+/// rounds loaded below 11, `00 0b 01 00`) moves into a built map with those
+/// bytes as they were, and the text widget keeps its justification. Taken
+/// for a raw pointer, the word was a file offset to copy from and came out
+/// as the copy's offset (`00 da 22 01` on a converted Blood Gulch).
+#[test]
+fn hud_thresholds_survive_an_unpinned_build() {
+    let mut set = TagSet::new(CacheType::Multiplayer, "schema", "invented\\schema");
+    for g in [b"matg", b"scnr", b"nhdt"] {
+        set.add_group(FourCC(*g), None, None);
+    }
+    set.globals = set
+        .add_tag(
+            FourCC(*b"matg"),
+            "globals",
+            TagPayload::Built(Block::zeroed(0x284)),
+        )
+        .unwrap();
+    set.scenario = set
+        .add_tag(
+            FourCC(*b"scnr"),
+            "scenario",
+            TagPayload::Built(Block::zeroed(0x3e0)),
+        )
+        .unwrap();
+    let thresholds = [0x00, 0x0b, 0x01, 0x00];
+    // Null tag references: group word zero, datum -1. The bitmap widget's
+    // bitmap and shader (+0x20, +0x28); the text widget's shader (+0x20;
+    // its +0x28 is a string ID).
+    let mut bitmap = Block::zeroed(0x64);
+    bitmap.bytes[0x18..0x1c].copy_from_slice(&thresholds);
+    bitmap
+        .string_id(0, "h1_warning_reload")
+        .put_u32(0x24, u32::MAX)
+        .put_u32(0x2c, u32::MAX);
+    let mut text = Block::zeroed(0x54);
+    text.bytes[0x18..0x1c].copy_from_slice(&thresholds);
+    text.bytes[0x2c..0x2e].copy_from_slice(&2u16.to_le_bytes());
+    text.string_id(0, "h1_weapon_number")
+        .put_u32(0x24, u32::MAX);
+    let mut root = Block::zeroed(0x28);
+    root.bytes[4..8].fill(0xff);
+    root.block(0x8, 1, bitmap).block(0x10, 1, text);
+    let id = set.add_tag(NHDT, "hud", TagPayload::Built(root)).unwrap();
+    let mut map = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+
+    let schema = Schema {
+        groups: BTreeMap::from([(NHDT, Schema::builtin().groups[&NHDT].clone())]),
+    };
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    let mut u = transplant::Unpinner::new(&schema, &mut map).unwrap();
+    assert_eq!(u.unpin(&mut map, &[id], &mut set).unwrap().unwrap(), 1);
+    assert_eq!(u.raw.0, 0, "no raw resource copied");
+    let mut out = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    let mem = Memory::of(&mut out).unwrap();
+    let a = out.tag(id).unwrap().location.unwrap().address;
+    let root = mem.slice(a, 0x28).unwrap().to_vec();
+    let element = |at: usize, size: u32| {
+        let addr = u32::from_le_bytes(root[at + 4..at + 8].try_into().unwrap());
+        mem.slice(addr, size).unwrap().to_vec()
+    };
+    let (bitmap, text) = (element(0x8, 0x64), element(0x10, 0x54));
+    assert_eq!(bitmap[0x18..0x1c], thresholds);
+    assert_eq!(text[0x18..0x1c], thresholds);
+    assert_eq!(text[0x2c..0x2e], 2u16.to_le_bytes());
+}

@@ -118,6 +118,16 @@ Then, on offsets still free:
    **V:** 27 maps, 854 scenery palette entries, 5,445 placements, every
    entry a tag reference at `+0` of a `0x28` element
    (`h1convert/tests/h2_scenario.rs`).
+9. **Engine data** (`infer::ENGINE_DATA`): words the XBE reads as data
+   that pass step 4 for raw pointers, left out (copied as bytes) with any
+   size paired to them. The `nhdt` widgets' `+0x18` (bitmap and text):
+   **E:** three threshold bytes the HUD state gate compares with the
+   weapon (`0x0013ac8f`..`0x0013acbd`), and the text widgets' `+0x2c`,
+   once paired as the size, is the justification (`0x0022ac0b`). **V:** a
+   converted Blood Gulch's Halo 1 "Reload" widget, written `00 0b 01 00`,
+   came out of the from-scratch build as `00 da 22 01`, a copied
+   "resource"'s offset, and showed on a full magazine
+   (`schema::tests::hud_thresholds_survive_an_unpinned_build`).
 
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They

@@ -1,10 +1,11 @@
 # nhdt: new HUD definition. The widget layouts the HUD draw reads (E: the
 # retail default.xbe, read with h2 disasm), gathered in
 # docs/editor/hud-editor.md and crates/hud-edit/src/layout.rs (whose tests
-# check these offsets). Two spans keep the schema's type although the
-# engine reads them otherwise (the schema infers them from the disc and the
-# definitions must agree with it): +0x18 (raw_18) and, in text widgets,
-# +0x2c (rawsize_2c). The HUD tool edits them; see the meanings.
+# check these offsets). +0x18 in both widget kinds holds three threshold
+# bytes the inferred schema once took for a raw-resource pointer (and the
+# text widgets' +0x2c, the justification, for its size); the schema now
+# leaves that word out (tags::schema::infer::ENGINE_DATA), so it is copied
+# as bytes.
 group nhdt 0x28 align 4
   0x0 unknown 0x8
   0x8 block bitmap_widgets 0x64 align 4 -- E 0x0013a532: +0x08 count, +0x0c address; drawn by 0x0022aff1
@@ -21,7 +22,10 @@ group nhdt 0x28 align 4
     0x12 u16 hide_when_b -- E 0x0013ac87: hide word B
     0x14 u16 hide_when_c -- E 0x0013ac87: hide word C
     0x16 u16 hide_when_d -- E 0x0013ac87: hide word D
-    0x18 raw raw_18 -- the schema's type; E 0x0013ac8f reads bytes +0x18..+0x1a as the state gate's weapon thresholds (the HUD tool edits them)
+    0x18 u8 threshold_battery -- E 0x0013ac8f: word C bit 0x08 when this, as a float, is above the battery's age (a fraction)
+    0x19 u8 threshold_loaded -- E 0x0013aca8: word C bit 0x10 when the rounds loaded are below this
+    0x1a u8 threshold_reserve -- E 0x0013acbd: word C bit 0x20 when the rounds in reserve are below this
+    0x1b unknown 0x1
     0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7: the corner of the view's HUD frame the offsets start from; above 4 a projected point
     0x1e flags16 flags bits=mirror_0|mirror_1 -- E 0x0022b29c: bits 0 and 1 mirror the texture
     0x20 tagref bitmap groups=bitm -- E 0x0022ae21: the art; its sequence per screen mode below
@@ -73,12 +77,16 @@ group nhdt 0x28 align 4
     0x12 u16 hide_when_b -- E 0x0013ac87
     0x14 u16 hide_when_c -- E 0x0013ac87
     0x16 u16 hide_when_d -- E 0x0013ac87
-    0x18 raw raw_18 -- the schema's type; E 0x0013ac8f reads bytes +0x18..+0x1a as the gate's thresholds
+    0x18 u8 threshold_battery -- E 0x0013ac8f: as the bitmap widgets'
+    0x19 u8 threshold_loaded -- E 0x0013aca8: as the bitmap widgets'
+    0x1a u8 threshold_reserve -- E 0x0013acbd: as the bitmap widgets'
+    0x1b unknown 0x1
     0x1c enum16 anchor values=top_right|top_left|bottom_left|bottom_right|centre -- E 0x001396c7 (from 0x0022ab17)
     0x1e flags16 flags bits=number|pad_2|pad_4|player_name -- E 0x0022a8a4: show the input as a number, padded, or the player's name
     0x20 tagref shader -- E 0x0022aa2f: no shader, no text
     0x28 string text -- E 0x0022a871: the string shown (no string, no text)
-    0x2c rawsize rawsize_2c of=0x18 -- the schema's type; E 0x0022ac0b reads +0x2c as the justification (0 start, 1 centre, 2 end; the HUD tool edits it)
+    0x2c enum16 justification values=start|centre|end -- E 0x0022ac0b: the text starts at the point, is centred on it, or ends at it
+    0x2e unknown 0x2
     0x30 i8 font_full -- E 0x0022a85b: 0 engine font 6, 1 engine font 8, else no text; fullscreen
     0x31 i8 font_half -- E 0x0022a85b: half screen
     0x32 i8 font_quarter -- E 0x0022a85b: quarter screen

@@ -273,6 +273,18 @@ flashing (a widget has no timer; the plain shader does not flash). The
 flash colour's alpha is 0 (additive in Halo 1), so the sprite draws at
 its own alpha, as an aim crosshair's.
 
+v83 showed "Reload" on a full magazine (seen 2026-11-19 on the hud
+serve: assault rifle, 60 loaded, 180 in reserve). The converter wrote the
+thresholds right (`00 0b 01 00` at the widget's `+0x18`), but the
+from-scratch map build reads every tag through the inferred schema, which
+typed that word as a raw-resource pointer; it copied "the resource" at
+file offset `0x10b00` and wrote the copy's offset there (`00 da 22 01` in
+the built map: rounds loaded below 218, so always). Since v84 the schema
+leaves the word out (`tags::schema::infer::ENGINE_DATA`,
+docs/formats/tag-schema.md step 9), so the bytes reach the map as
+written. The live proof of the gate above wrote the thresholds into
+memory with `edit.set`, after the build, which is why it did not see this.
+
 ### Zoom level
 
 Halo 1 draws the zoom-level readout (crosshair type 1) as one overlay
