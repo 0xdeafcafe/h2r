@@ -44,7 +44,7 @@ use native_render::transparent_gpu::TransparentProgram;
 use native_render::world::{LightmapKey, Owner, World};
 
 use crate::native_objects_glue::{Models, current_models, upload_pending};
-use crate::native_world_glue::{Load, Ready, StageImages, State, decode_image, upload};
+use crate::native_world_glue::{Load, Ready, StageDecoder, StageImages, State, upload};
 
 /// The world's owner of a BSP entry's geometry; `None` for an object.
 pub fn owner(source: Source) -> Option<Owner> {
@@ -244,9 +244,11 @@ impl d3d::ExternalPass for RunPass {
 
 /// At load: the transparent materials of `world` (by BSP material index;
 /// `shaders` the BSP's shader per material) whose layer-15 passes all
-/// translate, their stages' images added to `images`, and the parts the
-/// native pass can draw with their shader's tag index. Says on stderr how
-/// many and why the rest stay on the D3D path.
+/// translate, their stages' images added to `images` through `decoder`
+/// (a palettized bitmap expanded through the device palette at its stage,
+/// as the world's are), and the parts the native pass can draw with their
+/// shader's tag index. Says on stderr how many and why the rest stay on
+/// the D3D path.
 pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -254,6 +256,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     world: &World,
     lightmaps: &HashMap<LightmapKey, Image>,
     images: &mut StageImages,
+    decoder: &mut StageDecoder,
 ) -> (HashMap<u16, Vec<TransparentProgram>>, HashMap<(Owner, u8), u16>) {
     let mut programs: HashMap<u16, Vec<TransparentProgram>> = HashMap::new();
     let mut parts = HashMap::new();
@@ -292,11 +295,9 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                     for (n, s) in p.program.stages.iter().enumerate() {
                         if let Stage::Bitmap { bitmap, image } = *s
                             && p.program.dims[n].is_some()
-                            && !images.contains_key(&(bitmap, image))
                         {
-                            let i = decode_image(map, files, bitmap, image as usize)
-                                .ok_or_else(|| format!("stage {n}'s bitmap does not decode"))?;
-                            images.insert((bitmap, image), i);
+                            // Linear textures as before (not refused here).
+                            decoder.decode(map, files, images, bitmap, image, n, false)?;
                         }
                     }
                 }
