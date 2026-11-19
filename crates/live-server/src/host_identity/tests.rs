@@ -106,15 +106,20 @@ async fn record(live: &Live, events: Vec<NewEvent>) {
 #[tokio::test]
 async fn host_lifecycle_events_are_admin_only_in_feed_and_stream() {
     use crate::{sessions::Viewer, store::Query};
-    use live_proto::hosts::{HOST_REQUESTED, STREAM};
+    use live_proto::hosts::{HOST_BOOTING, HOST_REQUESTED, STREAM};
 
     let live = live().await;
     let lease = lease();
     let roster_member = lease.roster[0];
-    let requested = live.server_event(STREAM.into(), HOST_REQUESTED, json!({ "lease": lease }));
-    let rows = live.store.append(vec![requested], &[]).await.unwrap();
-    let event = &rows[0];
-    live.wait_applied(event.position).await.unwrap();
+    let requested = live.server_event(STREAM.into(), HOST_REQUESTED, json!({ "lease": &lease }));
+    let booting = live.server_event(
+        STREAM.into(),
+        HOST_BOOTING,
+        json!({ "lease_id": lease.id, "provider_ref": "test-provider" }),
+    );
+    let rows = live.store.append(vec![requested, booting], &[]).await.unwrap();
+    let last = rows.last().unwrap().position;
+    live.wait_applied(last).await.unwrap();
 
     for (viewer, visible) in [
         (Viewer::Anonymous, false),
@@ -123,23 +128,27 @@ async fn host_lifecycle_events_are_admin_only_in_feed_and_stream() {
         (Viewer::Admin, true),
         (Viewer::Operator, true),
     ] {
-        assert_eq!(
-            live.wire_for(event, viewer).is_some(),
-            visible,
-            "{viewer:?} WebSocket"
-        );
+        for event in &rows {
+            assert_eq!(
+                live.wire_for(event, viewer).is_some(),
+                visible,
+                "{viewer:?} WebSocket: {}", event.body.kind,
+            );
+        }
         for filter in [None, Some(STREAM.to_owned())] {
             let query = Query {
                 stream: filter,
-                ..Query::after(event.position - 1, 1)
+                ..Query::after(rows[0].position - 1, rows.len())
             };
             let page = live.events_for(&query, viewer).await.unwrap();
-            assert_eq!(
-                page.items.iter().any(|e| e.position == event.position),
-                visible,
-                "{viewer:?} event feed"
-            );
-            assert_eq!(page.next, Some(event.position.to_string()));
+            for event in &rows {
+                assert_eq!(
+                    page.items.iter().any(|e| e.position == event.position),
+                    visible,
+                    "{viewer:?} event feed: {}", event.body.kind,
+                );
+            }
+            assert_eq!(page.next, Some(last.to_string()));
         }
     }
 }
