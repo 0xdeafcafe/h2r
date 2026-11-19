@@ -11,6 +11,7 @@ import { TICKS_PER_SECOND, type FrameBuffer } from "../state/frames";
 import { frameHub, live } from "../state/live";
 import type { GameState } from "../state/reducer";
 import { ReplayTimeline, fetchRecording, type ReplayKill } from "../state/replay";
+import { ArchiveWindow } from "./archive";
 import { ViewerPlayback } from "./playback";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, syncChannelName, type CameraRequest, type SyncMessage } from "./sync";
 
@@ -57,6 +58,7 @@ export function createReplaySession(
   const [followingLive, setFollowingLive] = createSignal(false);
   const [camera, setCamera] = createSignal<CameraRequest | null>(null);
   const gameId = createMemo(() => game().game_id);
+  const archiveRevision = createMemo(() => game().archiveRevision);
   const isLive = createMemo(() => game().status === "live");
   let playback = new ViewerPlayback(false);
   let liveEdge = (_now: number) => 0;
@@ -116,33 +118,86 @@ export function createReplaySession(
     sought = performance.now();
     reflect(sought);
 
-    createEffect(on(isLive, (matchIsLive) => {
+    let archive: ArchiveWindow | undefined;
+    let archiveFramesChanged: (() => void) | undefined;
+    let pendingWindow: Promise<void> | null = null;
+    let recordingOpen = false;
+    const refreshWindow = (target: number) => {
+      if (!archive) return;
+      const request = archive.at(target);
+      if (!request || request === pendingWindow) return;
+      const selected = archive;
+      pendingWindow = request;
+      void request.then(() => {
+        if (archive === selected && !ac.signal.aborted && archive.frames.length) archiveFramesChanged?.();
+      }, (e: Error) => {
+        if (archive === selected && !ac.signal.aborted) { setError(e.message); archive = undefined; }
+      }).finally(() => { if (pendingWindow === request) pendingWindow = null; });
+    };
+    createEffect(on([isLive, archiveRevision], ([matchIsLive, revision]) => {
       const n = performance.now();
       if (matchIsLive) {
         refreshLive(n);
         reflect(n);
         return;
       }
-      if (openedLive) {
+      if (openedLive && !recordingOpen && releaseHistory) {
         refreshLive(n);
         playback.endLive(n, liveEdge(n));
         releaseHistory?.();
         releaseHistory = undefined;
       }
       reflect(n);
+      const request = new AbortController();
+      onCleanup(() => { request.abort(); archive = undefined; archiveFramesChanged = undefined; });
+      const signal = request.signal;
       const time = startTime();
       const open = (recording: ReplayTimeline) => {
         const now = performance.now();
-        playback.openRecording(recording, now, time);
-        sought = now;
+        if (recordingOpen) playback.updateRecording(recording, now);
+        else { playback.openRecording(recording, now, time); sought = now; }
+        recordingOpen = true;
+        setError(null);
         reflect(now);
       };
-      fetchRecording(live.api(), id, ac.signal).then(({ frames, events }) => {
-        if (ac.signal.aborted) return;
-        // The recording's event log covers the Game Record's signatures too.
-        if (events?.length) live.checkGameEvents(id, events);
-        const recording = new ReplayTimeline(frames, events?.length ? events : eventsFromState(game()));
-        open(recording.frames.length ? recording : playback.clock?.timeline ?? recording);
+      const api = live.api();
+      const read = async () => {
+        const index = await api.chunks(id, signal, revision);
+        if (signal.aborted) return;
+        if (index?.archive_sha256) {
+          const window = new ArchiveWindow(index, c => api.chunk(id, c, signal));
+          const bounds = new ReplayTimeline([], [], window.segments);
+          const clock = playback.clock;
+          const seconds = Number(Array.isArray(time) ? time[0] : time);
+          const target = clock
+            ? (recordingOpen ? clock.tickAt(performance.now()) : bounds.tickFromLatestRun(clock.tickAt(performance.now())))
+            : bounds.startTick + (Number.isFinite(seconds) ? seconds * TICKS_PER_SECOND : 0);
+          await window.at(bounds.clamp(target));
+          if (signal.aborted) return;
+          archive = window;
+          let events = eventsFromState(game());
+          archiveFramesChanged = () => open(new ReplayTimeline(window.frames, events, window.segments));
+          archiveFramesChanged();
+          // Seek and play can start while the signed event history downloads.
+          void api.streamEvents("game-" + id, signal, {exclude:"GameFrame"}).then(log => {
+            if (signal.aborted || !log.length) return;
+            live.checkGameEvents(id, log);
+            events = log;
+            archiveFramesChanged?.();
+          }).catch(() => { /* the state snapshot supplies the available events */ });
+        } else {
+          const {frames, events} = await fetchRecording({
+            frames: (game, from, to, s) => api.frames(game, from, to, s, index),
+            streamEvents: api.streamEvents,
+          }, id, signal);
+          if (signal.aborted) return;
+          if (events?.length) live.checkGameEvents(id, events);
+          const timeline = new ReplayTimeline(frames, events?.length ? events : eventsFromState(game()));
+          open(timeline.frames.length ? timeline : playback.clock?.timeline ?? timeline);
+        }
+      };
+      void read().then(() => {
+        if (signal.aborted || channel) return;
         if (typeof BroadcastChannel === "undefined") return;
         channel = new BroadcastChannel(syncChannelName(id));
         channel.onmessage = (e) => {
@@ -158,8 +213,8 @@ export function createReplaySession(
           reflect(now);
         };
       }, (e: Error) => {
-        if (ac.signal.aborted || e.name === "AbortError") return;
-        if (playback.clock) open(playback.clock.timeline);
+        if (signal.aborted || e.name === "AbortError") return;
+        if (playback.clock && !recordingOpen) open(playback.clock.timeline);
         setError(e.message);
       });
     }));
@@ -171,6 +226,7 @@ export function createReplaySession(
       if (now - last < 100) return;
       last = now;
       if (isLive()) refreshLive(now);
+      else refreshWindow(tickAt(now));
       reflect(now);
     });
     onCleanup(() => {

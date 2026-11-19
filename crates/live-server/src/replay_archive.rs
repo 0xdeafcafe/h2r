@@ -219,7 +219,24 @@ pub(crate) fn index(live: &Live, id: &str) -> Option<Response> {
     if !r.published {
         return None;
     }
-    let parts = r.parts.iter().map(|p| &p.segment).collect::<Vec<_>>();
+    let parts = r
+        .parts
+        .iter()
+        .map(|p| {
+            let mut value = serde_json::to_value(&p.segment).expect("segment serializes");
+            // JSON readers can represent the full u64 clock through these decimal
+            // strings. Ordinary clocks keep the smaller numeric representation.
+            for (key, tick) in [
+                ("from_tick", p.segment.from_tick),
+                ("to_tick", p.segment.to_tick),
+            ] {
+                if tick > (1_u64 << 53) - 1 {
+                    value[key] = serde_json::Value::String(tick.to_string());
+                }
+            }
+            value
+        })
+        .collect::<Vec<_>>();
     Some(json(
         StatusCode::OK,
         &serde_json::json!({

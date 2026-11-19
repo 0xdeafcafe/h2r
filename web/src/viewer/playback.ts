@@ -46,6 +46,18 @@ export class ViewerPlayback {
     this.clock?.play(now);
   }
 
+  /** Replace a recording's loaded window while keeping its playback clock. */
+  updateRecording(timeline: ReplayTimeline, now: number): void {
+    const previous = this.clock;
+    if (!previous) return this.openRecording(timeline, now);
+    const tick = previous.tickAt(now);
+    const clock = new ReplayClock(timeline);
+    clock.setSpeed(previous.speed, now);
+    clock.seek(tick, now);
+    if (previous.playing && tick < timeline.endTick) clock.play(now);
+    this.clock = clock;
+  }
+
   openRecording(timeline: ReplayTimeline, now: number, time?: string | string[]): void {
     const previous = this.clock;
     const clock = new ReplayClock(timeline);
