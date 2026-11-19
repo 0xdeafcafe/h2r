@@ -41,6 +41,8 @@ use serde_json::{Value, json};
 
 use bots::local::{Frame, PadSource};
 use feature::sim_frame::SimFrame;
+
+use crate::telemetry;
 use feature::{Flow, points};
 use input::host::HostPadState;
 use sim::config::{BotParams, Match};
@@ -192,6 +194,9 @@ pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
         Doing::Carry(_) => "carry",
         Doing::Keep => "keep",
         Doing::Play(_) => "play",
+        Doing::Mount(_) => "mount",
+        Doing::Drive(_) => "drive",
+        Doing::Ride(_) => "ride",
     }
 }
 
