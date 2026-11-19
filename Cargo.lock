@@ -2754,6 +2754,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "ureq",
+ "xiso",
+ "zstd",
+]
+
+[[package]]
 name = "hot-render"
 version = "0.1.0"
 dependencies = [
@@ -2784,21 +2799,6 @@ dependencies = [
  "thiserror 2.0.21",
  "xbe",
  "xiso",
-]
-
-[[package]]
-name = "host-data"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "map",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "ureq",
- "xiso",
- "zstd",
 ]
 
 [[package]]
