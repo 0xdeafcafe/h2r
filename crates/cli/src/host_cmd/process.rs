@@ -83,6 +83,7 @@ impl Game {
                 .arg(data)
                 .arg("--socket")
                 .arg(socket)
+                .env("H2_HOST_LEASE_JSON", serde_json::to_string(lease)?)
                 .env("H2_HOST_LOBBY", "1")
                 .env("H2_XNET_ADDR", address.to_string());
             if !lease.bots.is_empty() {

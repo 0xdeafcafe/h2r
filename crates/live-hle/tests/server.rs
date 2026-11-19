@@ -234,7 +234,7 @@ impl World {
         let hle = Hle::with_server_options(
             LiveConfig {
                 enabled: true,
-                accounts_path: Some(path.clone()),
+                accounts_path: options.publisher.is_none().then(|| path.clone()),
                 server_url: Some(url.into()),
                 offer_new_account: false,
             },
@@ -1841,6 +1841,110 @@ fn match_search(w: &mut World, procedure: u32, params: u32, cap: u32) -> (u32, u
     );
     (task, w.u32(OUT), w.u32(OUT + 4))
 }
+#[test]
+fn leased_publication_logs_on_and_writes_without_a_player() {
+    use live_proto::{hosts, session};
+    let s = Server::new();
+    let live = &s.embedded.live;
+    let lease: hosts::HostLease = serde_json::from_value(json!({
+        "id": hosts::HostLease::new_id(), "assignment_id":"custom-test",
+        "provider":"local", "class":"small", "map":"lockout", "transport":"udp",
+        "max_players":4, "roster":[], "bots":[],
+        "created_ms":time::OffsetDateTime::now_utc().unix_timestamp() * 1000
+    }))
+    .unwrap();
+    let requested = sign::EventBody::new(
+        &s.operator,
+        &format!("server:{}", s.discovery.id),
+        hosts::STREAM,
+        hosts::HOST_REQUESTED,
+        json!({"lease": &lease}),
+        time::OffsetDateTime::now_utc(),
+    );
+    let event = live_server::store::NewEvent {
+        jws: requested.sign(&s.operator).into(),
+        jws_index: None,
+        body: requested,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(live.store().append(vec![event], &[]))
+        .unwrap();
+    s.until(|| live.host_view(&lease.id).is_some());
+    let token = live.issue_host_token(&lease);
+    let mut different_lease = lease.clone();
+    different_lease.id = hosts::HostLease::new_id();
+    assert!(live_hle::HostPublisher::new(different_lease, token.clone()).is_err());
+    let publisher = live_hle::HostPublisher::new(lease.clone(), token).unwrap();
+    let mut w = World::with_options(
+        &s.embedded.url,
+        &[],
+        ServerOptions {
+            publisher: Some(publisher),
+            ..Default::default()
+        },
+    );
+    assert_eq!(w.call("XNetStartup", &[0]), OK);
+    assert_eq!(w.call("WSAStartup", &[2, DATA]), OK);
+    assert_eq!(w.call("XOnlineStartup", &[0]), OK);
+    assert_eq!(w.call("XOnlineGetUsers", &[DATA, OUT]), OK);
+    assert_eq!(w.u32(OUT), 0);
+
+    // The dedicated lobby never visits the controller sign-in screen.
+    assert_eq!(
+        w.call("XOnlineMatchSessionCreate", &[0, 4, 0, 0, 0, 0, 0, OUT]),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_ID, MATCH_KEY]),
+        OK
+    );
+    let id = sign::hex(&w.bytes(MATCH_ID, 8));
+    assert_eq!(w.hle.hosted_session().as_deref(), Some(id.as_str()));
+    let (lo, hi) = (w.u32(MATCH_ID), w.u32(MATCH_ID + 4));
+    let detail = || s.get_as_operator::<Value>(&format!("/v1/sessions/{id}"))["session"].clone();
+    let row = detail();
+    assert_eq!(row["host"], format!("host:{}", lease.id));
+    assert_eq!(row["host_gamertag"], "");
+    assert_eq!(row["players"], json!({}));
+    assert_eq!(row["advertisement"]["slots"]["public_filled"], 0);
+
+    assert_eq!(w.call("XOnlineLogon", &[USERS, DATA, 0, 0, OUT]), OK);
+    let logon = w.u32(OUT);
+    assert_eq!(w.wait(logon), CONNECTED);
+    let slots = w.call("XOnlineGetLogonUsers", &[]);
+    assert_ne!(slots, 0);
+    assert_eq!(w.bytes(slots, 4 * 112), vec![0; 4 * 112]);
+    assert_eq!(w.call("XOnlineFriendsStartup", &[0, OUT]), NO_SESSION);
+    assert_eq!(w.call("XOnlinePresenceInit", &[0, 0, OUT]), NO_SESSION);
+
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 0, 3, 0, 0, 0, 0, 0, OUT]
+        ),
+        OK
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(detail()["advertisement"]["slots"]["public_open"], 3);
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), OK);
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(w.hle.hosted_session(), None);
+    assert_eq!(detail()["state"], "deleted");
+    assert!(s.presence().is_empty());
+    assert!(!s.events().iter().any(|e| e.kind == types::SIGNED_IN));
+    assert!(
+        s.events()
+            .iter()
+            .any(|e| e.kind == session::DELETED && e.author == format!("host:{}", lease.id))
+    );
+}
+
 #[test]
 fn sessions_two_guests_publish_find_parse_update_and_delete() {
     let s = Server::new();

@@ -21,5 +21,6 @@ url = "2"
 tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
+tokio.workspace = true
 live-server = { path = "../live-server" }
 flate2 = "1"

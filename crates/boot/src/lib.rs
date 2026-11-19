@@ -139,7 +139,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
-pub use live_hle::LiveConfig;
+pub use live_hle::{HostPublisher, LiveConfig};
 use runtime::Event;
 
 /// The bridge source linked into the generated dylib.
@@ -865,7 +865,19 @@ pub fn run_hosted_with_live(
     host: Host,
     live: &LiveConfig,
 ) -> Result<RunReport> {
-    run_configured(xbe_bytes, dylib, opts, host, live, None, None)
+    run_hosted_with_publisher(xbe_bytes, dylib, opts, host, live, None)
+}
+
+/// A light host may publish retail sessions using its provider's lease.
+pub fn run_hosted_with_publisher(
+    xbe_bytes: &[u8],
+    dylib: &Path,
+    opts: &RunOpts,
+    host: Host,
+    live: &LiveConfig,
+    publisher: Option<HostPublisher>,
+) -> Result<RunReport> {
+    run_configured(xbe_bytes, dylib, opts, host, (live, publisher), None, None)
 }
 
 /// Runs a prepared headless match, optionally capturing it in Live.
@@ -881,7 +893,7 @@ pub fn run_sim(
         dylib,
         opts,
         Host::default(),
-        &LiveConfig::default(),
+        (&LiveConfig::default(), None),
         Some((sim, upload)),
         None,
     )
@@ -899,7 +911,7 @@ pub fn run_theater(
         enabled: true,
         ..LiveConfig::default()
     };
-    run_configured(xbe, image, opts, host, &lan, None, Some(replay))
+    run_configured(xbe, image, opts, host, (&lan, None), None, Some(replay))
 }
 
 fn run_configured(
@@ -907,7 +919,7 @@ fn run_configured(
     dylib: &Path,
     opts: &RunOpts,
     mut host: Host,
-    live: &LiveConfig,
+    (live, publisher): (&LiveConfig, Option<HostPublisher>),
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
     replay: Option<theater::Replay>,
 ) -> Result<RunReport> {
@@ -1039,7 +1051,7 @@ fn run_configured(
         };
         live_glue::install_with_network(&loaded.runtime, &k, &lan, net.config.clone(), None)?
     } else {
-        live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?
+        live_glue::install_configured(&loaded.runtime, &k, live, None, map_gate.clone(), publisher)?
     };
     let film_path = std::env::var_os("H2_FILM_OUT")
         .filter(|p| !p.is_empty())

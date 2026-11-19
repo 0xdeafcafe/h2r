@@ -21,11 +21,17 @@ use std::{
 };
 use url::Url;
 
+mod publication;
+pub use publication::HostPublisher;
+use publication::Writer;
+
 pub(crate) const MAX_FILE: usize = 2 * 1024 * 1024;
 pub(crate) const FILES: [(u32, &str); 2] =
     [(1, "message_of_the_day.dat"), (4, "multiplayer_hopper.dat")];
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
+    /// Boot credential for a playerless machine. Its only HLE service is session publication.
+    pub publisher: Option<HostPublisher>,
     pub request_timeout: Duration,
     pub heartbeat_interval: Duration,
     /// Custom maps (docs/game/maps.md §5): sessions on a map that cannot be had
@@ -50,6 +56,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
+            publisher: None,
             request_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(30),
             maps: None,
@@ -292,6 +299,7 @@ struct Command {
 }
 #[derive(Clone)]
 pub(crate) struct Service {
+    pub machine: bool,
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
     /// The sessions the worker read most recently: what their hosts advertised
@@ -336,6 +344,7 @@ impl Service {
         let counters = metrics.clone();
         let seen = Seen::default();
         let seen_by_worker = seen.clone();
+        let machine = options.publisher.is_some();
         std::thread::Builder::new()
             .name("h2-live-http".into())
             .spawn(move || {
@@ -348,6 +357,7 @@ impl Service {
                     maps: options.maps.clone(),
                     software: Software::from_options(&options),
                     agent,
+                    publisher: options.publisher,
                     connection: None,
                     active: None,
                     metrics: counters,
@@ -396,6 +406,7 @@ impl Service {
                 }
             })?;
         Ok(Self {
+            machine,
             sender,
             metrics,
             seen,
@@ -561,6 +572,7 @@ struct Identity {
     key: Arc<KeyPair>,
 }
 struct Active {
+    published: Option<live_proto::session::Session>,
     session: Session,
     users: BTreeMap<u64, Identity>,
     presence: BTreeMap<u64, Presence>,
@@ -589,6 +601,7 @@ impl Software {
     }
 }
 struct Worker {
+    publisher: Option<HostPublisher>,
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
     software: Software,
@@ -775,6 +788,9 @@ impl Worker {
             || api.fragment().is_some()
         {
             return Err(Error::Protocol);
+        }
+        if let Some(host) = &self.publisher {
+            host.verify(&discovery)?;
         }
         self.connection = Some(Connection {
             api: api.as_str().trim_end_matches('/').into(),
@@ -1156,25 +1172,7 @@ impl Worker {
                 session: new,
                 assignment,
             } => {
-                #[derive(serde::Deserialize)]
-                struct Created {
-                    session: session::Session,
-                }
-                let mut req = self.request("POST", "/sessions", user, lxm::SESSIONS_WRITE)
-                    .set("content-type", "application/json");
-                if let Some(id) = assignment.as_deref() {
-                    req = req.set(live_proto::matchmaking::MATCH_HEADER, id);
-                }
-                let bytes = self.response(
-                    req,
-                    Some(&serde_json::to_string(&new).map_err(|_| Error::Protocol)?),
-                    MAX_FILE,
-                )?;
-                vec![
-                    serde_json::from_slice::<Created>(&bytes)
-                        .map_err(|_| Error::Protocol)?
-                        .session,
-                ]
+                vec![self.create_match(Writer::Account(user), &new, assignment.as_deref())?]
             }
             MatchRequest::Queue { .. } | MatchRequest::JoinDedicated(_) => {
                 return Err(Error::Protocol);
@@ -1193,22 +1191,7 @@ impl Worker {
                 Vec::new()
             }
             MatchRequest::Players { id, joined, left } => {
-                let events = left
-                    .iter()
-                    .map(|x| (session::LEFT, x))
-                    .chain(joined.iter().map(|x| (session::JOINED, x)));
-                let mut last = Ok(());
-                for (kind, xuid) in events {
-                    if let Err(e) = self.match_event(user, &id, kind, json!({ "xuid": xuid })) {
-                        let why = match e {
-                            Error::Status(n) => format!("status {n}"),
-                            _ => "no answer".to_owned(),
-                        };
-                        eprintln!("live: session {id}: {kind} for {xuid} refused ({why})");
-                        last = Err(e);
-                    }
-                }
-                last?;
+                self.match_players(Writer::Account(user), &id, &joined, &left)?;
                 Vec::new()
             }
             MatchRequest::Find(id) => match self.fetch_match(user, &id) {
@@ -1335,6 +1318,32 @@ impl Worker {
             Vec::new()
         })
     }
+    fn match_players(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        joined: &[Xuid],
+        left: &[Xuid],
+    ) -> Result<(), Error> {
+        use live_proto::session;
+        let events = left
+            .iter()
+            .map(|x| (session::LEFT, x))
+            .chain(joined.iter().map(|x| (session::JOINED, x)));
+        let mut last = Ok(());
+        for (kind, xuid) in events {
+            if let Err(e) = self.write_match_event(writer, id, kind, json!({ "xuid": xuid })) {
+                let why = match e {
+                    Error::Status(n) => format!("status {n}"),
+                    _ => "no answer".to_owned(),
+                };
+                eprintln!("live: session {id}: {kind} for {xuid} refused ({why})");
+                last = Err(e);
+            }
+        }
+        last
+    }
+
     fn match_event(
         &self,
         user: &Identity,
@@ -1342,19 +1351,31 @@ impl Worker {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<(), Error> {
+        self.write_match_event(Writer::Account(user), id, kind, data)
+    }
+
+    fn write_match_event(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        let (author, key) = writer.signer(self);
         let body = EventBody::new(
-            &user.key,
-            &self.author(user),
+            key,
+            &author,
             &live_proto::session::stream(id),
             kind,
             data,
             time::OffsetDateTime::now_utc(),
         );
-        let jws = live_proto::sign::sign_batch(&user.key, &[body]);
+        let jws = live_proto::sign::sign_batch(key, &[body]);
         let path = format!("/sessions/{id}/events");
         self.retried(
             || {
-                self.request("POST", &path, user, lxm::SESSIONS_WRITE)
+                writer
+                    .post(self, &path)
                     .set("content-type", "application/jose")
             },
             Some(&jws),
@@ -1499,6 +1520,13 @@ impl Worker {
         if c.session.cancelled() {
             return Err(NO_SESSION);
         }
+        if self.publisher.is_some() {
+            match &c.work {
+                Work::Match(request) => return self.publish_host_match(&c.session, request),
+                Work::Logon(accounts) if accounts.is_empty() => {}
+                _ => return Err(NO_USER),
+            }
+        }
         match &c.work {
             Work::Logon(accounts) => {
                 self.sign_out();
@@ -1524,6 +1552,7 @@ impl Worker {
                     return Err(NO_SESSION);
                 }
                 self.active = Some(Active {
+                    published: None,
                     session: c.session.clone(),
                     presence: users.keys().map(|u| (*u, Presence::default())).collect(),
                     users,
@@ -1921,6 +1950,14 @@ impl Worker {
     }
     fn sign_out(&mut self) {
         if let Some(active) = self.active.take() {
+            if let (Some(host), Some(row)) = (&self.publisher, active.published) {
+                let _ = self.write_match_event(
+                    Writer::Host(host),
+                    &row.session_id,
+                    live_proto::session::DELETED,
+                    json!({"reason":"host_left"}),
+                );
+            }
             for (id, uid) in &active.matches {
                 if let Some(user) = active.users.get(uid) {
                     let _ = self.match_event(
