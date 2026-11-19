@@ -847,24 +847,35 @@ impl Session {
 
     /// A player was killed; `cinematic` when a cinematic was playing at
     /// the time, which (like a kill after the end) is not counted.
+    ///
+    /// A betrayal is a teammate killed in a game with teams
+    /// ([`live_proto::game::is_betrayal`]), by the players' teams as last
+    /// sampled. The kill function's third argument is not a betrayal flag
+    /// (it is set in free-for-all too), so it is not read.
     pub fn kill(
         &mut self,
         tick: u64,
         attacker: Option<u32>,
         victim: u32,
-        betrayal: bool,
         object: Option<ObjectState>,
         cinematic: bool,
     ) {
-        let kind = match attacker {
-            None => "world",
-            Some(killer) if killer == victim => "suicide",
-            Some(_) if betrayal => "betrayal",
-            Some(_) => "kill",
-        };
         let Some(current) = &mut self.current else {
             return;
         };
+        let betrayal = live_proto::game::is_betrayal(
+            current.team_play || current.campaign,
+            attacker,
+            victim,
+            |index| {
+                current
+                    .players
+                    .iter()
+                    .find(|p| p.player.index == index)
+                    .map(|p| p.player.team)
+            },
+        );
+        let kind = live_proto::game::kill_kind(attacker, victim, betrayal);
         // Post-end kills, and the scripts' kills in a cutscene, do not count.
         if current.ended || cinematic || current.cinematic {
             return;
@@ -1787,17 +1798,12 @@ mod tests {
             forward: [1.0, 0.0, 0.0],
             ..ObjectState::default()
         };
-        session.kill(9, Some(0), 1, false, Some(object.clone()), false);
-        session.kill(10, Some(0), 0, false, Some(object.clone()), false);
-        session.kill(11, Some(0), 1, true, Some(object.clone()), false);
-        session.kill(12, None, 1, false, Some(object), false);
+        session.kill(9, Some(0), 1, Some(object.clone()), false);
+        session.kill(10, Some(0), 0, Some(object.clone()), false);
+        session.kill(12, None, 1, Some(object), false);
         let events = session.take_output();
-        let expected = [
-            ("kill", 9),
-            ("suicide", 10),
-            ("betrayal", 11),
-            ("world", 12),
-        ];
+        let expected = [("kill", 9), ("suicide", 10), ("world", 12)];
+        assert_eq!(events.len(), expected.len());
         for (output, (kind, tick)) in events.into_iter().zip(expected) {
             let Output::Event(event) = output else {
                 panic!()
@@ -1809,13 +1815,64 @@ mod tests {
         }
     }
 
+    fn kill_kinds(session: &mut Session) -> Vec<String> {
+        session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) if e.kind == "PlayerKilled" => {
+                    Some(e.data["kind"].as_str().unwrap().to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn on_team(index: u32, team: i32) -> PlayerState {
+        let mut p = player(index, 0);
+        p.player.team = team;
+        p
+    }
+
+    /// Free-for-all (a Clankers game: the host and local bots, all team 0)
+    /// has no betrayals: every player kill is a kill.
+    #[test]
+    fn free_for_all_kills_are_never_betrayals() {
+        let mut session = Session::new("test", None);
+        let players = (0..4).map(|i| on_team(i, 0)).collect();
+        session.start(&info(), players);
+        session.take_output();
+        session.kill(9, Some(0), 3, None, false);
+        session.kill(10, Some(1), 0, None, false);
+        session.kill(11, Some(2), 1, None, false);
+        assert_eq!(kill_kinds(&mut session), ["kill", "kill", "kill"]);
+    }
+
+    /// In a team game a betrayal is a teammate killed; an enemy killed is
+    /// a kill.
+    #[test]
+    fn team_game_betrayals_are_teammates_killed() {
+        let mut session = Session::new("test", None);
+        let team = GameInfo {
+            team_play: true,
+            ..info()
+        };
+        let players = vec![on_team(0, 0), on_team(1, 0), on_team(2, 1)];
+        session.start(&team, players);
+        session.take_output();
+        session.kill(9, Some(0), 1, None, false);
+        session.kill(10, Some(0), 2, None, false);
+        session.kill(11, Some(2), 2, None, false);
+        assert_eq!(kill_kinds(&mut session), ["betrayal", "kill", "suicide"]);
+    }
+
     #[test]
     fn post_end_kills_are_ignored() {
         let mut session = Session::new("test", None);
         session.start(&info(), vec![player(0, 0), player(1, 0)]);
         session.end(&snapshot(30, vec![player(0, 0), player(1, 0)]));
         session.take_output();
-        session.kill(31, Some(0), 1, false, None, false);
+        session.kill(31, Some(0), 1, None, false);
         assert!(session.take_output().is_empty());
     }
 
@@ -2218,8 +2275,8 @@ mod tests {
         for tick in 11..=14 {
             session.sample(&state(tick, [tick as f64, 0.0, 0.0], true));
         }
-        session.kill(14, None, 0, false, None, false);
-        session.kill(14, None, 0, false, None, true);
+        session.kill(14, None, 0, None, false);
+        session.kill(14, None, 0, None, true);
         let output = session.take_output();
         assert!(
             output.iter().all(|o| matches!(o, Output::Frame(_))),
@@ -2264,7 +2321,7 @@ mod tests {
         assert_eq!(f.actors.len(), 1);
 
         // A kill outside the cutscene counts again.
-        session.kill(17, None, 0, false, None, false);
+        session.kill(17, None, 0, None, false);
         assert_eq!(kinds(&mut session), ["PlayerKilled"]);
     }
 
@@ -2330,7 +2387,7 @@ mod tests {
         }
         // The player dies and the game reverts to a checkpoint 20 seconds
         // back, then to the mission's start.
-        session.kill(661, None, 0, false, None, false);
+        session.kill(661, None, 0, None, false);
         let mut revert = campaign();
         revert.tick = 61;
         session.start(&revert, vec![p.clone()]);
@@ -2345,7 +2402,7 @@ mod tests {
             session.sample(&at(tick, -50.0));
             sent.extend(frames(&mut session));
         }
-        session.kill(31, None, 0, false, None, false);
+        session.kill(31, None, 0, None, false);
         session.end(&at(32, -50.0));
         events.extend(session.take_output());
 

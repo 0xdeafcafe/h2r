@@ -6,6 +6,7 @@ mod bench;
 mod config;
 mod event;
 pub mod havok;
+pub mod havok_agents;
 mod hooks;
 pub mod layout;
 mod memory;
@@ -25,8 +26,8 @@ pub use event::{
 pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
-    active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, players, snapshot,
-    team_scores, world, yaw,
+    ThingState, active_bsp, actors, game_info, game_tick, hit, loaded_map_name, object, players,
+    snapshot, team_scores, things, world, yaw,
 };
 pub use pipeline::Pipeline;
 pub use session::{Bots, Playlist};
