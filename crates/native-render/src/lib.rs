@@ -16,9 +16,17 @@
 //! Stage 3, transparents: the sorted transparent list's geometry
 //! entries the native renderer draws, met in the game's order and drawn in
 //! runs between the D3D path's ([`transparent`]).
+//!
+//! Stage 4b, planar fog: the world's materials drawn again with their own
+//! layer-16 passes, the fog unit resolved per view from the device's
+//! state ([`fog`], [`fog_gpu`]).
 
 pub mod camera;
 pub mod cull;
+#[cfg(feature = "gpu")]
+pub mod fog;
+#[cfg(feature = "gpu")]
+pub mod fog_gpu;
 #[cfg(feature = "gpu")]
 pub mod glow;
 #[cfg(feature = "gpu")]

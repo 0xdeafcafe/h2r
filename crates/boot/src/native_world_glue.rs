@@ -88,6 +88,10 @@ pub struct Ready {
     /// The transparent parts the native pass draws, with their shader's
     /// tag index (`native_transparents_glue`).
     pub(crate) transparent_parts: Arc<HashMap<(Owner, u8), u16>>,
+    /// The fog of this load (`native_fog_glue`, `impl.render.native_fog`):
+    /// the compiled layer-16 passes, their fog words and the parts the
+    /// fog pass draws. `None` with the fog off.
+    pub(crate) fog: Option<Arc<crate::native_fog_glue::FogView>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
@@ -256,6 +260,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device, Arc::clone(&state));
+    crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_lights_glue::install(device, state);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
@@ -306,6 +311,11 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         let set = TransparentSet::new(device, queue, g.world(), transparents, &mut stage, &mut |k| lightmaps.get(&k).cloned());
         eprintln!("native-transparents: {} transparent materials uploaded", set.len());
         g.set_transparents(set);
+    }
+    // The fog set rides the same upload (`native_fog_glue`), after the
+    // world's and the transparents' images are in.
+    if let Some(fog) = ready.fog.as_ref().filter(|f| !f.programs.is_empty()) {
+        crate::native_fog_glue::upload_fog(fog, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
     }
     *gpu = Some(g);
     gpu
@@ -994,6 +1004,15 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     };
     // The screen effects are not the world's: `native_post_glue` loads
     // them itself, with or without the native world.
+    // The fog (layer 16), over the whole world before its draws are kept:
+    // a material that stays on the D3D path for layer 3 may still fog
+    // natively.
+    let fog_on = feature::Switches::from_env().is_ok_and(|s| feature::native_fog::on(&s));
+    let fog = if fog_on {
+        Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
+    } else {
+        None
+    };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
@@ -1011,6 +1030,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
         transparent_parts: Arc::new(transparent_parts),
+        fog,
         lights,
         palettes: decoder.used().clone(),
     })

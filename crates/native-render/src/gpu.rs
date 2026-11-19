@@ -10,6 +10,7 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
@@ -273,6 +274,8 @@ pub struct GpuWorld {
     /// The transparent materials the sorted transparents' runs draw
     /// ([`crate::transparent_gpu`]).
     transparents: Option<TransparentSet>,
+    /// The fog materials layer 16 draws ([`crate::fog_gpu`]).
+    fog: Option<FogSet>,
     /// The light passes (stage 4), once a light needs them.
     lights: Option<LightSet>,
     /// Batches left out of a pass because their material program could
@@ -548,6 +551,7 @@ impl GpuWorld {
             pipelines: HashMap::new(),
             programs: None,
             transparents: None,
+            fog: None,
             lights: None,
             unbound_batches: 0,
         }
@@ -571,6 +575,16 @@ impl GpuWorld {
     /// The transparent materials, when they are uploaded.
     pub fn transparents(&self) -> Option<&TransparentSet> {
         self.transparents.as_ref()
+    }
+
+    /// Draws the world's layer-16 passes of `set`'s materials from now on.
+    pub fn set_fog(&mut self, set: FogSet) {
+        self.fog = Some(set);
+    }
+
+    /// The fog materials, when they are uploaded.
+    pub fn fog(&self) -> Option<&FogSet> {
+        self.fog.as_ref()
     }
 
     /// Records one run of sorted transparent entries, each a part
@@ -637,6 +651,65 @@ impl GpuWorld {
             }
         }
         drawn
+    }
+
+    /// Records one view's planar fog (layer 16): every part the fog set
+    /// draws, in the load's order (the world's draw order), each with
+    /// every pass of its material's layer-16 set, blended into the target
+    /// over the depth (loaded and kept). The fog units and colours are
+    /// `fogs`'s (per material, resolved over the device's words at the
+    /// ask). Returns how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fog(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) -> usize {
+        let Some(set) = self.fog.as_mut() else { return 0 };
+        set.pipelines(device, color_format, depth_format);
+        set.prepare(queue, view, fogs);
+        let set = &*set;
+        let has_stencil = depth_format.has_stencil_aspect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native fog"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // The programs carry the game's viewport in their constants: the
+        // pass covers the whole target, as the world's programs do.
+        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        set.draw(&mut pass, color_format, depth_format)
     }
 
     /// Draws lights with `set` from now on.

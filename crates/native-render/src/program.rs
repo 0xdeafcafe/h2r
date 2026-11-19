@@ -207,15 +207,26 @@ pub fn compile_pass(
 ///   native pass does not have (fog, bump matrices, the eye, borders).
 pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgram, String> {
     world_parity(&pass.look)?;
-    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    let set = set_constants(&pass.look.vertex_constants);
-    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
-        return Err(format!("vertex program reads c[{c}], which the native pass does not set"));
-    }
+    world_constants_read(&pass.look, microcode)?;
     let mut p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
+}
+
+/// [`compile_world`]'s constants check on its own: every vertex constant
+/// the pass's program reads is one the native pass sets (the view's
+/// `c[0..18]`, the instance's, the model rows `c[50..52]` and the
+/// decompression rows), and none is addressed relative to `a0.x`. Used
+/// by the passes that compile through [`compile_pass`] directly (the fog
+/// layer's, `crate::fog_gpu`).
+pub fn world_constants_read(look: &PassLook, microcode: &[u8]) -> Result<(), String> {
+    let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+    let set = set_constants(&look.vertex_constants);
+    if let Some(c) = constants_read(&program)?.into_iter().find(|&c| !set(c)) {
+        return Err(format!("vertex program reads c[{c}], which the native pass does not set"));
+    }
+    Ok(())
 }
 
 /// `pass` with its vertex program's rigid classification `microcode`
@@ -940,6 +951,15 @@ impl Gpu {
     pub(crate) fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
         queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
+    }
+
+    /// [`Gpu::prepare`] with the pixel uniforms `pixel` in place of the
+    /// program's own: for a pass whose pixel state is resolved per view
+    /// (the fog layer's `PixelUniforms::fog` and `fog_color`,
+    /// `crate::fog_gpu`).
+    pub(crate) fn prepare_with(&self, queue: &wgpu::Queue, view: &ViewInputs, pixel: &PixelUniforms) {
+        queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
+        queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
 
     /// Makes the pipeline for these target formats: the world's opaque

@@ -45,7 +45,7 @@ pub const ITEM_SIZE: u32 = 0x18;
 /// The lightmap layer the native world replaces in stage 1.
 pub const LIGHTMAP_LAYER: u32 = 3;
 /// Items walked at most (the list's capacity is far below).
-const MAX_ITEMS: u32 = 1 << 16;
+pub const MAX_ITEMS: u32 = 1 << 16;
 /// The geometry draw (an item's `+4`) that switches the stencil.
 pub const GEOMETRY_DRAW: u32 = 0x0004_d0b0;
 /// The render record's `+0` bit that marks an item's pixels in the

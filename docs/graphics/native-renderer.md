@@ -2076,8 +2076,8 @@ gates the player chain after):
 self-contained of the four: the same geometry the native world already
 loaded, drawn with each material's own translated layer-16 pass.
 
-- **The look** (`fog::fog_pass`): every pass of the material's layer 16
-  at the first level of detail, in order, each through
+- **The look** (`fog_gpu::fog_passes`): every pass of the material's
+  layer 16 at the first level of detail, in order, each through
   `look::implementation_look` (a fog pass is exactly the "combiner that
   reads the fog register" that layer 3's `world_parity` refuses: its
   colour is `SET_FOG_COLOR` and its factor the fog unit's, both device
@@ -2086,7 +2086,12 @@ loaded, drawn with each material's own translated layer-16 pass.
   passes, engine-driven render or stage states, a definition without
   its own final combiner (D3D builds one from the fog and specular
   states; first slice), bump-env/BRDF modes, border addressing — but
-  not the fog register: the pass supplies it.
+  not the fog register: the pass supplies it. The pipeline state must
+  be the implementation's own (`pass_state`'s rule but its `Fog`
+  refusal, the fog words taken out of the decode): a pass that leaves
+  blend, depth or `CULLMODE` to the previous draw stays on the D3D path
+  (inheriting the device's cull at the call, as layer 3 does, is a
+  later slice).
 - **The fog state** (`fog::FogWords`): the effective fog unit of a draw
   is the implementation's own render states overlaid on the device's
   (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`,
@@ -2120,28 +2125,29 @@ loaded, drawn with each material's own translated layer-16 pass.
   equal test: only the surface that wrote a pixel's depth passes, so
   different parts' fog never overlaps but at shared edges (S: coplanar
   ties, as the world's).
-- **The A/B and diagnostics.** `H2_NATIVE_FOG_COMPARE=<cluster|placement
-  index>:<part>[:<material>]` leaves that part's items to the D3D path
-  and arms `d3d::uniform_compare` for its layer-16 draws, as the
-  objects' compare does; the load line names the materials that stayed
-  on D3D and why, and every 1,800 layer-16 views a line with the skip
-  counts.
+- **The A/B and diagnostics.** `H2_NATIVE_FOG_COMPARE=<cluster>:<part>[:<material>]`
+  leaves that part's items to the D3D path and arms `d3d::uniform_compare`
+  with the native pass's program and uniforms for its layer-16 draws, as
+  the world's `H2_NATIVE_WORLD_DUMP` does; the load line names the
+  materials that stayed on D3D and why, and every 1,800 layer-16 views a
+  line with the skip counts.
 
 ### Water and the rest (the census first)
 
 `impl.render.native_water` (off by default), `feature::native_water`:
 in its first slice it only counts. With
 `H2_NATIVE_WATER_CENSUS=<layers>` (default `6`; `6,18,19,21` or `all`)
-each layer draw of a named layer prints, once per layer per view kind,
-the census by caller and material: items in the layer, split structure
-(BSP cluster or placement, through the render record's `+4`) against
-object, the shaders by tag index, and the water wrappers' gates (bit 4
-of `0x004b9fe0`, `0x0003ba90`'s return). At load (with the native world
-on, which loads the BSP) the glue lists every material with a pass in a
-census layer, its template's stage sources — bitmap against engine
-texture, and which engine texture: the scene-copy and reflection inputs
-the pass would sample — and the count of parts. Nothing is skipped and
-nothing is drawn natively: drawing the water edge blend needs the
+each layer draw of a named layer prints, the first view and then every
+1,800th, the census by caller and material: items in the layer, split
+structure (BSP cluster or placement, through the render record's `+4`)
+against object, the shaders by tag index, and — for layer 6 — the
+water wrappers' gates (bit 4 of `0x004b9fe0`, the cleared byte
+`0x00509430`). Nothing is skipped and nothing is drawn natively. The
+next slice is the load side (with the native world on, which loads the
+BSP): every material with a pass in a census layer, its template's
+stage sources — bitmap against engine texture, and which engine
+texture: the scene-copy and reflection inputs the pass would sample —
+and the count of parts; then drawing the water edge blend needs the
 wrapper (`0x0003ba90`/`0x0003c3c0`) traced, its alpha-channel window
 established, and the layers 18/19/21 camo and hologram passes resolved;
 each is a slice after the census has run on a water level (03b's lake,
