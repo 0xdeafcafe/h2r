@@ -155,12 +155,12 @@ impl Compiler<'_> {
         let (index, name) = if let Some(&(index, ref name)) = self.ai_scripts.get(&request) {
             (index, name.clone())
         } else {
-            let index = self.t.scripts.len() + self.ai_definitions.len();
+            let index = self.out.scripts.len();
             let index = u16::try_from(index)
                 .ok()
                 .filter(|&i| i < 0x7fff)
                 .ok_or_else(|| invalid("too many scripts for encounter controls"))?;
-            let name = format!("h1_ai_{}", self.ai_definitions.len());
+            let name = format!("h1_ai_{}", self.ai_scripts.len());
             if self
                 .t
                 .scripts
@@ -170,7 +170,7 @@ impl Compiler<'_> {
                 return Err(invalid(format!("script name collision: {name}")));
             }
             let root = self.emit_actions(control, actions, args, h2t::VOID)?;
-            self.ai_definitions
+            self.out.scripts
                 .push(definition(&name, 3, h2t::VOID, root, usize::from(index))?);
             self.ai_scripts.insert(request, (index, name.clone()));
             (index, name)
@@ -352,16 +352,30 @@ impl Compiler<'_> {
         if let Some(&(_, base)) = self.ai_registries.iter().find(|(r, _)| *r == registry) {
             return Ok(base);
         }
-        // Calls can appear in original global initializers. Reserve names
-        // after the original globals and maneuver switches in either case.
-        let base = self.t.globals.len()
-            + self.ai_control.map_or(0, |c| c.switches.len())
-            + self
-                .ai_registries
+        // Conversations and maneuver switches share this table. Allocate
+        // these cells now so that later families can append their own.
+        let start = self.out.globals.len();
+        let base = u16::try_from(start).map_err(|_| invalid("global count"))?;
+        let end = start + usize::from(registry.words());
+        if hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
+            return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
+        }
+        for index in 0..registry.words() {
+            let root = self.number(h2t::LONG, registry.initial(index));
+            let global = start + usize::from(index);
+            let name = format!("h1_ai_state_{global}");
+            if self
+                .t
+                .globals
                 .iter()
-                .map(|(r, _)| usize::from(r.words()))
-                .sum::<usize>();
-        let base = u16::try_from(base).map_err(|_| invalid("global count"))?;
+                .any(|g| g.name.eq_ignore_ascii_case(&name))
+            {
+                return Err(invalid(format!("global name collision: {name}")));
+            }
+            self.out
+                .globals
+                .push(definition(&name, h2t::LONG, 0, root, global)?);
+        }
         self.ai_registries.push((registry, base));
         Ok(base)
     }
@@ -371,27 +385,6 @@ impl Compiler<'_> {
         for (registry, base) in std::mem::take(&mut self.ai_registries) {
             if let Some(shift) = registry.hook_shift() {
                 hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
-            }
-            let start = usize::from(base);
-            let end = start + usize::from(registry.words());
-            if self.out.globals.len() != start || hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
-                return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
-            }
-            for index in 0..registry.words() {
-                let root = self.number(h2t::LONG, registry.initial(index));
-                let global = start + usize::from(index);
-                let name = format!("h1_ai_state_{global}");
-                if self
-                    .t
-                    .globals
-                    .iter()
-                    .any(|g| g.name.eq_ignore_ascii_case(&name))
-                {
-                    return Err(invalid(format!("global name collision: {name}")));
-                }
-                self.out
-                    .globals
-                    .push(definition(&name, h2t::LONG, 0, root, global)?);
             }
             let Some(operation) = registry.tick() else {
                 continue;

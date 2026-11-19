@@ -117,6 +117,9 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
+    // 0x002a3b70 passes the short as the facial-expression selector to
+    // 0x0010e9f0, also called by unit_set_emotional_state (220).
+    id("unit_set_emotion", 218, "void", &["unit", "short"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -131,6 +134,32 @@ pub const IDENTIFIED: &[Identified] = &[
     // evaluator (0x002a4780) returns the device's float at +0x134 (d40's
     // control rooms wait on it).
     id("device_get_power", 255, "real", &["device"]),
+    id(
+        "cs_stack_command_script",
+        367,
+        "void",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_running",
+        370,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_queued",
+        371,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id("cs_look_object", 394, "void", &["boolean", "object"]),
+    id("cs_face_object", 400, "void", &["boolean", "object"]),
+    id(
+        "cs_approach",
+        429,
+        "void",
+        &["object", "real", "real", "real"],
+    ),
     // Halo 1 247..250 after camera_set (450); camera_set_dead takes an
     // object in Halo 2 (a unit casts to it).
     id(
@@ -227,6 +256,5 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 25);
     }
 }

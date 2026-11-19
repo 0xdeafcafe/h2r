@@ -20,6 +20,7 @@ use crate::{Result, invalid};
 
 #[path = "aicontrol_compile.rs"]
 mod aicontrol_compile;
+mod conversations;
 
 /// Halo 2 scenario fields the tables go in (docs/formats/haloscript.md).
 pub mod field {
@@ -109,20 +110,16 @@ pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 /// What a stubbed status query returns under [`Missing::Stub`] instead of
 /// zero, where zero would hold a `sleep_until` forever. Every use in the
 /// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
-/// conversation status 5 passes `(< 4 s)`, `(> s 4)`, `(> s 3)` and
-/// `(< 2 s)`; command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
+/// command list status 2 passes `(= 2 s)` and `(!= 3 s)` (the
 /// four `(= 1 s)` waits still hold); the quiet and safe-to-speak tests
-/// are true; the HUD timer never runs out; a conversation is past any line.
+/// are true, and the HUD timer never runs out.
 pub const DONE_VALUES: &[(&str, i32)] = &[
-    ("ai_conversation_status", 5),
     ("ai_command_list_status", 2),
     ("game_all_quiet", 1),
     ("game_safe_to_speak", 1),
     // d40's escape timer: `(<= (hud_get_timer_ticks) 0)` ends the level
     // as failed; Halo 2 has no HUD timer, so it never runs out.
     ("hud_get_timer_ticks", 32767),
-    // b30: `(< 1 (ai_conversation_line jeep_load))`, a line past the first.
-    ("ai_conversation_line", 99),
 ];
 
 /// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:
@@ -298,7 +295,7 @@ pub fn compile_with(
     resolves: &dyn Fn(&str, &str) -> bool,
     reference_names: &[String],
 ) -> Result<Compiled> {
-    compile_with_ai(
+    compile_scenario(
         t,
         h1,
         table,
@@ -307,6 +304,7 @@ pub fn compile_with(
         cutscenes,
         resolves,
         reference_names,
+        None,
         None,
     )
 }
@@ -325,6 +323,54 @@ pub fn compile_with_ai(
     reference_names: &[String],
     ai_control: Option<&h1ai::control::Control>,
 ) -> Result<Compiled> {
+    compile_scenario(t, h1, table, h2, policy, cutscenes, resolves, reference_names, ai_control, None)
+}
+
+/// Compiles a level's scripts together with its scenario AI conversations.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_with_conversations(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    conversations: &[h1ai::conversations::Conversation],
+    speaker_scopes: &h1ai::conversations::SpeakerScopes,
+) -> Result<Compiled> {
+    compile_scenario(
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        cutscenes,
+        resolves,
+        reference_names,
+        None,
+        Some((conversations, speaker_scopes)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Compile with both the scenario AI controls and its conversation speaker scopes.
+pub fn compile_scenario(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    ai_control: Option<&h1ai::control::Control>,
+    conversation_data: Option<(
+        &[h1ai::conversations::Conversation],
+        &h1ai::conversations::SpeakerScopes,
+    )>,
+) -> Result<Compiled> {
     let mut c = Compiler {
         t,
         h1,
@@ -337,27 +383,31 @@ pub fn compile_with_ai(
         maneuver_switches: Default::default(),
         ai_registries: Vec::new(),
         ai_scripts: Default::default(),
-        ai_definitions: Vec::new(),
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
+        conversations: None,
+        conversation_heads: HashMap::new(),
     };
+    c.out.scripts.resize(t.scripts.len(), [0; 40]);
+    c.out.globals.resize(t.globals.len(), [0; 40]);
+    if let Some((scenes, scopes)) = conversation_data {
+        let lowering = conversations::build(&mut c, scenes, scopes)?;
+        c.conversations = Some(lowering);
+    }
+    c.install_maneuver_switches()?;
     for (i, g) in t.globals.iter().enumerate() {
         c.definition = g.name.clone();
         let ty = c.ty(g.value_type)?;
         let root = c.expr(g.root, ty)?;
-        c.out.globals.push(definition(&g.name, ty, 0, root, i)?);
+        c.out.globals[i] = definition(&g.name, ty, 0, root, i)?;
     }
-    c.install_maneuver_switches()?;
     for (i, s) in t.scripts.iter().enumerate() {
         c.definition = s.name.clone();
         let ty = c.ty(s.return_type)?;
         let root = c.expr(s.root, ty)?;
-        c.out
-            .scripts
-            .push(definition(&s.name, s.kind, ty, root, i)?);
+        c.out.scripts[i] = definition(&s.name, s.kind, ty, root, i)?;
     }
-    c.out.scripts.append(&mut c.ai_definitions);
     c.install_ai_ticks()?;
     c.out.references = t
         .references
@@ -365,6 +415,9 @@ pub fn compile_with_ai(
         .enumerate()
         .map(|(i, r)| (r.group, reference_names.get(i).cloned().unwrap_or_default()))
         .collect();
+    if let Some((scenes, _)) = conversation_data {
+        conversations::append_sound_references(&mut c.out, scenes);
+    }
     if c.out.nodes.len() > MAX_NODES {
         return Err(invalid(format!(
             "{} nodes, Halo 2 holds {MAX_NODES}",
@@ -498,10 +551,11 @@ struct Compiler<'a> {
     maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
-    ai_definitions: Vec<[u8; 40]>,
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
+    conversations: Option<conversations::Lowering>,
+    conversation_heads: HashMap<u16, Datum>,
 }
 
 /// A node before its slot is known to its parent: its fields.
@@ -554,6 +608,12 @@ impl Compiler<'_> {
     fn set_next(&mut self, d: Datum, next: Datum) {
         let mut b = self.out.nodes[d.slot()].encode();
         b[8..12].copy_from_slice(&next.0.to_le_bytes());
+        self.out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
+    }
+
+    fn set_type(&mut self, d: Datum, ty: u16) {
+        let mut b = self.out.nodes[d.slot()].encode();
+        b[4..6].copy_from_slice(&ty.to_le_bytes());
         self.out.nodes[d.slot()] = Node::decode(&b).expect("20 bytes");
     }
 
@@ -707,7 +767,13 @@ impl Compiler<'_> {
                 continue;
             }
             let token = self.t.string(n.string_offset())?;
-            if !(self.resolves)(ty, token) {
+            let captured = none_unsafe
+                && OBJECT_NAME_TYPES.contains(&ty.as_str())
+                && self
+                    .conversations
+                    .as_ref()
+                    .is_some_and(|l| l.has_alias(token));
+            if !captured && !(self.resolves)(ty, token) {
                 return Ok(Some((ty.clone(), token.to_owned())));
             }
         }
@@ -897,7 +963,11 @@ impl Compiler<'_> {
             return Ok(self.call(n.opcode(), SCRIPT_CALL, expected, token.as_bytes(), &[]));
         }
         let index = n.opcode();
-        let f = self.h1.function(index)?;
+        let catalog = self.h1;
+        let f = catalog.function(index)?;
+        if let Some(d) = conversations::translate(self, &f.name, &args, expected)? {
+            return Ok(d);
+        }
         let tr = self
             .table
             .builtin(index)
@@ -1213,7 +1283,7 @@ impl Compiler<'_> {
         let d = self.literal(expected, source, empty, &token);
         let text = String::from_utf8_lossy(&token).into_owned();
         self.hook(d, source, h1_source, &text);
-        Ok(d)
+        conversations::named_atom(self, expected, source, &text, d)
     }
 }
 

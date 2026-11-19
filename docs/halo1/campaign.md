@@ -595,12 +595,13 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
   `object_teleport` map directly; `cinematic_set_title_delayed` (561),
   `object_set_facing` (106), `object_pvs_set_camera` (471), `show_hud`
   (625, the first of three boolean-to-boolean builtins there),
-  `unit_open`/`unit_close` (194, 195), `unit_suspended` (249),
-  and `unit_enter_vehicle` (216) by position.
+  `unit_open`/`unit_close` (194, 195), `unit_set_emotion` (218),
+  `unit_suspended` (249),
+  `unit_enter_vehicle` (216) by position.
 
 Still stubbed inside cinematics (`cutscenes_convert_and_read_back` lists
 them per level; none is waited on): `object_beautify`,
-`object_pvs_activate`, `unit_set_emotion`, `unit_set_seat`, the
+`object_pvs_activate`, `unit_set_seat`, the
 `cinematic_screen_effect_set_*` effects, `cinematic_set_near_clip_distance`,
 `player_effect_set_max_translation` (camera shake), and on c10, c40, c20
 and d40 the command lists (`ai_command_list_by_unit`, `ai_attach_free`).
@@ -638,7 +639,7 @@ and not one whose zero is already the done value: `recording_time`,
 | Stub | Uses | Behaviour in the 2026-11-17 survey |
 |---|---|---|
 | `ai_status` | 35 (a50 16, b40 17, b30 2) | `ai_combat_status` on Halo 1's scale (scripts.md, Step 2) |
-| `ai_conversation_status` | 34 | done value 5 |
+| `ai_conversation_status` | 34 | live status from the generated dialogue worker |
 | `ai_command_list_status` | 20 | done value 2 |
 | `game_all_quiet` | 17 | done value true |
 | `ai_living_fraction` | 14 (a30) | `ai_strength` |
@@ -649,7 +650,7 @@ and not one whose zero is already the done value: `recording_time`,
 | `ai_going_to_vehicle` | 5 | `0` (none is going) |
 | `sound_impulse_time` | 4 (a10) | `sound_impulse_language_time` (the ticks the line has left) |
 | `hud_get_timer_ticks` | 3 (d40) | done value 32767: the escape timer never runs out |
-| `ai_conversation_line` | 1 (b30) | done value 99 |
+| `ai_conversation_line` | 1 (b30) | the current line, or 999 when inactive |
 
 `ai_living_count`, `ai_strength`, `unit_get_health`, `volume_test_objects`
 and `objects_can_see_object`/`_flag` translate directly; they are not

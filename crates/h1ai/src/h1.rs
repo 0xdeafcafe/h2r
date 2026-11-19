@@ -12,6 +12,8 @@ use h1map::{Group, H1Map, Space, Tag, TagId, TagRef};
 use crate::bytes::{f32_at, fixed_str, i16_at, u16_at, u32_at, vec3};
 use crate::{Error, Result};
 
+pub use crate::conversations::Conversation;
+
 /// Scenario field offsets and element sizes, `(offset, stride)`.
 pub mod layout {
     /// Actor palette: an `actv` reference each.
@@ -296,24 +298,6 @@ pub struct CommandList {
     pub points: Vec<Point>,
 }
 
-/// An AI conversation (`0x74` bytes); its participants and lines are
-/// counted, not converted.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Conversation {
-    /// Name.
-    pub name: String,
-    /// Flags (`u16 +0x20`).
-    pub flags: u16,
-    /// Trigger distance (`f32 +0x24`).
-    pub trigger_distance: f32,
-    /// Run-to-player distance (`f32 +0x28`).
-    pub run_to_player_distance: f32,
-    /// Participants: the encounter each names (`+0x24`, 32 chars).
-    pub participants: Vec<String>,
-    /// Lines: the participant index each is spoken by (`i16 +0x02`).
-    pub lines: Vec<i16>,
-}
-
 /// All of a Halo 1 scenario's AI data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct H1Ai {
@@ -499,24 +483,6 @@ fn command_list(sp: &Space, e: &[u8]) -> Result<CommandList> {
     })
 }
 
-fn conversation(sp: &Space, e: &[u8]) -> Result<Conversation> {
-    let b = |l: (usize, usize)| sp.block_at(e, l.0, l.1);
-    Ok(Conversation {
-        name: fixed_str(&e[..0x20]),
-        flags: u16_at(e, 0x20),
-        trigger_distance: f32_at(e, 0x24),
-        run_to_player_distance: f32_at(e, 0x28),
-        participants: b(layout::CONV_PARTICIPANTS)?
-            .into_iter()
-            .map(|p| fixed_str(&p[0x24..0x44]))
-            .collect(),
-        lines: b(layout::CONV_LINES)?
-            .into_iter()
-            .map(|l| i16_at(l, 2))
-            .collect(),
-    })
-}
-
 impl H1Ai {
     /// Reads the AI data of `m`'s scenario, and every actor variant and
     /// actor its palette names.
@@ -553,10 +519,7 @@ impl H1Ai {
                 .into_iter()
                 .map(|e| command_list(&sp, e))
                 .collect::<Result<_>>()?,
-            conversations: b(layout::CONVERSATIONS)?
-                .into_iter()
-                .map(|e| conversation(&sp, e))
-                .collect::<Result<_>>()?,
+            conversations: crate::conversations::read(m)?,
             reference_counts: [
                 b(layout::AI_ANIMATIONS)?.len(),
                 b(layout::AI_SCRIPTS)?.len(),
@@ -630,9 +593,9 @@ impl H1Ai {
             }
         }
         for c in &self.conversations {
-            for &l in &c.lines {
-                if !opt(l, c.participants.len()) {
-                    bad.push(format!("{}: line participant {l}", c.name));
+            for line in &c.lines {
+                if !opt(line.speaker, c.participants.len()) {
+                    bad.push(format!("{}: line participant {}", c.name, line.speaker));
                 }
             }
         }

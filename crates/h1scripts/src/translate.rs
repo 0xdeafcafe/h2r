@@ -18,6 +18,7 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("game_save_totally_unsafe", "game_save_immediate"),
     ("ai_attach", "ai_attach_units"),
     ("ai_exit_vehicle", "ai_vehicle_exit"),
+    ("ai_dialogue_triggers", "ai_dialogue_enable"),
     ("object_pvs_set_object", "pvs_set_object"),
     ("object_pvs_clear", "pvs_clear"),
     // The ticks left of a playing impulse sound (0 once it ends), as Halo
@@ -118,6 +119,24 @@ impl Target {
             .collect();
         crate::identified::name_unnamed(&mut builtins, c);
         crate::aicontrol::bind(&mut builtins, c);
+        for (name, index) in hs::h1_conversation::BUILTINS {
+            if let Ok(f) = c.function(index)
+                && f.evaluate() == hs::h1_conversation::EVALUATE
+                && f.return_type() == 4
+                && f.parameters() == [8; 4]
+                && f.flags() & 2 == 0
+            {
+                builtins.insert(
+                    name.into(),
+                    H2Builtin {
+                        index,
+                        return_type: f.return_type(),
+                        parameters: f.parameters().to_vec(),
+                        special: false,
+                    },
+                );
+            }
+        }
         Self {
             builtins,
             types: c.types().to_vec(),

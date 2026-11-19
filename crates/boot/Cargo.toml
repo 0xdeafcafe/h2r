@@ -24,6 +24,7 @@ content.workspace = true
 tags.workspace = true
 hs.workspace = true
 map.workspace = true
+hs.workspace = true
 # Our settings (setting_defs, the ui model).
 settings = { path = "../settings" }
 feature = { path = "../feature" }

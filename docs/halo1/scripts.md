@@ -185,8 +185,8 @@ version 27, played from 28 with the streams rewritten by
 `scenery_animation_start` 184 and `_at_frame` 188, `unit_open` 194,
 `unit_close` 195, `custom_animation_list` 205,
 `unit_custom_animation_at_frame` 206, `unit_is_playing_custom_animation`
-207, `unit_enter_vehicle` 216, `unit_suspended` 249, `camera_set_relative`
-451, `camera_set_animation` 452, `camera_set_first_person` 456,
+207, `unit_enter_vehicle` 216, `unit_set_emotion` 218, `unit_suspended` 249,
+`camera_set_relative` 451, `camera_set_animation` 452, `camera_set_first_person` 456,
 `camera_set_dead` 457 (an object in Halo 2), `object_pvs_set_camera` 471,
 `cinematic_set_title_delayed` 561, `vehicle_hover` 621 and `show_hud` 625
 (the first of three boolean-to-boolean builtins after
@@ -241,8 +241,8 @@ Historical coverage, share of builtin calls (`translation_coverage`):
 | d40 | 4,059 | 84.3% | 0.1% | 5.0% | 10.6% | 56 |
 | **all** | **33,737** | **82.0%** | **0.4%** | **6.1%** | **11.5%** | **139** |
 
-Missing builtins by calls across the campaign (top 40 of 139; 3,882 calls in
-all; the test prints the full list with signatures):
+Missing builtins in the original translation census (top 40 of 139,
+3,882 calls). The census predates the conversation conversion below.
 
 sound_impulse_time 493 (now renamed, above), ai_magically_see_players 180, ai_conversation 169,
 ai_command_list 150, ai_go_to_vehicle 143, recording_play 141,
@@ -297,12 +297,10 @@ retail compiler writes them; literals keep their source type.
 - **Missing builtins** follow `Missing`: `Stub` replaces the call with the
   expected type's zero (`false`, `0`, `none`, void) so retail Halo 2 runs it,
   except the status queries in `compile::DONE_VALUES`, which return the
-  value every use in the ten levels reads as done (`ai_conversation_status`
-  5, `ai_command_list_status` 2, `game_all_quiet` and `game_safe_to_speak`
-  true, `hud_get_timer_ticks` 32767 so d40's escape timer never runs out,
-  `ai_conversation_line` 99, past any line, for b30), so a `sleep_until`
-  on them ends;
-  `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1
+  value those waits use as done (`ai_command_list_status` 2,
+  `game_all_quiet` and `game_safe_to_speak` true, `hud_get_timer_ticks`
+  32767). Conversation calls compiled with the level's conversation data use
+  the worker state described below. `Extension` keeps the call with opcode `0x8000 + Halo 1 index` and the Halo 1
   name, for the Rust VM to bind (the retail interpreter cannot run it). Both
   list each call in `Compiled::missing`. Engine globals Halo 2's scripts
   never name become the expected type's zero and are listed in
@@ -508,6 +506,51 @@ operations use their respective families. Mission flow adds no builtin slots.
 - Names: Halo 2's 521 unnamed builtins may cover some "missing" Halo 1 names.
   Aligning the two tables by signature between named anchors could name
   some of them; not attempted.
+
+## Scripted dialogue
+
+**Built.** `compile_with_conversations` lowers `ai_conversation`,
+`ai_conversation_stop`, `ai_conversation_status`, `ai_conversation_line`
+and `ai_conversation_advance` against the decoded scenario block
+([ai.md](ai.md)). Generated static calls start, stop or advance a
+continuous worker per scene. Status and line calls read its globals. All
+campaign dialogue operands are literal scenario indices, checked against
+their original names. Original script and global indices stay stable.
+
+Halo 1's start evaluator (`0x000f2fb0`) returns whether the request was
+accepted. Its status evaluator reads 0 idle, 1 trying, 2 assembling,
+3 playing, 4 waiting for advance, 5 failed to start, 6 complete and 7
+aborted (`0x00142770` and `0x00142809`). The generated script exposes that
+scale. It reports 2 once a cast is ready and through any wait for the
+first speaker to assemble.
+The line query starts at -1 while the request is pending, counts lines from
+zero and returns 999 when idle or terminal, as at `0x00142710`.
+Pauses and advance remain asynchronous. A stop followed by a new start
+cannot resume playback from the cancelled request.
+
+**Built.** `ai_dialogue_triggers` renames to `ai_dialogue_enable`.
+Halo 1's evaluator (`0x000f0880`) writes the boolean to its AI globals
+at `+0x10`. Halo 2's named evaluator (281, `0x002a4dc0`) writes the
+counterpart at `+0x20`. This controls spontaneous AI speech.
+
+**Built.** `unit_set_emotion` uses Halo 2's unnamed `(unit, short) -> void`
+builtin 218. Halo 1 writes the expression selector at `0x000f15a5`.
+Halo 2's evaluator at `0x002a3b70` forwards the numeric selector to
+`0x0010e9f0`, the same facial expression setter used by its named
+`unit_set_emotional_state`. The original numeric argument, including the
+reset value -1, is preserved.
+
+The synthetic tests check the generated roots, speaker references and sound
+datums. The ignored disc tests check every campaign scene against Halo 2's
+retail catalog and exercise playback, hold, advance, stop/restart and
+simultaneous voices sharing one tag on the Rust HS scheduler. Boot unit
+tests cover the native call ABI and the cast rules.
+
+```sh
+cargo test -p boot -p h1ai -p h1scripts --lib conversation
+H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
+  cargo test -p h1scripts --test conversations_disc -- --ignored
+```
 
 ## Use
 
