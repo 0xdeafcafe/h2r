@@ -215,7 +215,7 @@ mod tests {
         // observer (placed only without render-timing) and the HUD's
         // screen-quad and HUD-quad befores.
         let native =
-            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_hud=on".to_owned();
+            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on,impl.render.native_hud=on".to_owned();
         for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {

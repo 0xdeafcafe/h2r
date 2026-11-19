@@ -702,6 +702,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             self.origin(id, || {
                 format!("render-to-texture surface {surface:?} in place")
             });
+            crate::native_world_layers_glue::sample_surface(surface, id);
             Tracked { id, inner }
         }))
     }
@@ -731,6 +732,13 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
+    }
+
     fn prepare_external(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
@@ -923,7 +931,18 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        crate::native_residual_glue::backend_draw(draw.entry);
         let r = self.inner.draw(color, depth, draw, inner);
+        if crate::native_world_layers_glue::comparing() {
+            crate::native_world_layers_glue::compare_draw(
+                self.in_frame,
+                draw,
+                color,
+                depth,
+                std::array::from_fn(|n| textures[n].map(|t| t.id)),
+                &r,
+            );
+        }
         if probing {
             self.probe.draw(probe_draw(color, depth, draw, &r));
         }
@@ -1039,6 +1058,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
             || self.logging()
             || self.sweep.is_some()
             || self.probe.armed()
+            || crate::native_world_layers_glue::comparing()
         {
             let r = self.draw(color, depth, &draw, textures);
             return (r, draw.streams);
@@ -1046,6 +1066,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        crate::native_residual_glue::backend_draw(draw.entry);
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)

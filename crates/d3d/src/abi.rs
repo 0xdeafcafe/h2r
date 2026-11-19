@@ -595,7 +595,7 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             name: "D3DDevice_Clear",
             convention: "stdcall(Count, pRects, Flags, Color, Z, Stencil); ret 0x18",
             call: |d, m, r| {
-                let a: Vec<u32> = (0..6).map(|i| arg(m, r, i)).collect::<Result<_, _>>()?;
+                let a = args::<6>(m, r)?;
                 d.clear(m, a[0], a[1], a[2], a[3], f32::from_bits(a[4]), a[5])?;
                 Ok(Outcome::eax(0, 0x18))
             },

@@ -85,6 +85,10 @@ use crate::shader::{ShaderProvider, VertexProcessing};
 pub type PresentHook =
     Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
 
+/// Inspects a completed batch in encoder order while its upload ranges
+/// and texture bindings still name this batch's data.
+type RecordedPassObserver = Box<dyn FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send>;
+
 /// A texture uploaded for the guest, with the view the shaders sample it
 /// through (`None` when its format cannot be bound as a filterable float
 /// texture: the program then reads a stand-in).
@@ -142,6 +146,8 @@ pub struct GfxBackend {
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
+    recorded_pass_observer: Option<RecordedPassObserver>,
+    submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
     /// [`Self::on_present_replay`]'s hook; `None`: in-between frames go
     /// through `present_hook`.
     replay_hook: Option<PresentHook>,
@@ -209,6 +215,9 @@ pub struct GfxBackend {
     external_prefix: Vec<wgpu::CommandBuffer>,
     /// Callbacks for the recordings in `external_prefix`.
     external_on_submit: Vec<Box<dyn FnOnce() + Send>>,
+    upload_pool: gfx::ring::UploadPool,
+    current_uploads: Option<gfx::ring::SubmissionUploads>,
+    submitted_uploads: Vec<gfx::ring::SubmissionUploads>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
     /// The scratch depth a colour-only external pass gets, by size.
@@ -294,6 +303,8 @@ impl GfxBackend {
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
+            recorded_pass_observer: None,
+            submitted_frame_observer: None,
             replay_hook: None,
             pending: None,
             stats: BatchStats::default(),
@@ -327,6 +338,7 @@ impl GfxBackend {
             open: None,
             external_prefix: Vec::new(),
             external_on_submit: Vec::new(),
+            upload_pool: Default::default(), current_uploads: None, submitted_uploads: Vec::new(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
             scratch_depth: None,
         }
@@ -456,6 +468,17 @@ impl GfxBackend {
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
+    }
+
+    /// Observe complete packets before their original pass records. Used by
+    /// the shadow-map differential to replay the same input on private attachments.
+    pub fn observe_recorded_pass(&mut self, observer: impl FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send + 'static) {
+        self.recorded_pass_observer = Some(Box::new(observer));
+    }
+
+    /// Recycle external renderer resources after the guest frame has been submitted.
+    pub fn observe_submitted_frames(&mut self, observer: impl FnMut() + Send + 'static) {
+        self.submitted_frame_observer = Some(Box::new(observer));
     }
 
     /// Called instead of the [`Self::on_present`] hook for host-only frames
@@ -612,6 +635,12 @@ impl GfxBackend {
         Ok(Some((cv, cf, dv, df, size, sampled)))
     }
 
+    fn retain_uploads(&mut self, uploads: gfx::ring::SubmissionUploads) {
+        if !self.submitted_uploads.iter().any(|b| b.same_submission(&uploads)) {
+            self.submitted_uploads.push(uploads);
+        }
+    }
+
     /// Submits the pending pass, if any, and every pass encoded before it.
     pub fn flush(&mut self) -> Result<(), String> {
         let encoded = self.encode_pending();
@@ -706,6 +735,10 @@ impl GfxBackend {
                 .any(RecordedDraw::counts_samples)
                 .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
+            if let Some(observer) = &mut self.recorded_pass_observer {
+                let source = self.store.get(p.color).map_err(|e| e.to_string())?.texture();
+                observer(ctx, &mut enc, source, &target, p.clear, &p.draws);
+            }
             let n = Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
                 .map_err(|e| e.to_string())?;
             self.stats.render_passes += n as u64;
@@ -921,6 +954,9 @@ impl GfxBackend {
     /// submission.
     fn submit(&mut self, enc: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
         let open = self.open.take().map(|(e, _)| e.finish());
+        self.current_uploads.take();
+        let uploads = std::mem::take(&mut self.submitted_uploads);
+        for batch in &uploads { batch.flush(&self.ctx.queue); }
         self.renderer.flush_uploads(&self.ctx.queue);
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
@@ -938,6 +974,9 @@ impl GfxBackend {
                 .queue
                 .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
         };
+        if !uploads.is_empty() {
+            self.ctx.queue.on_submitted_work_done(move || drop(uploads));
+        }
         for r in self.unsubmitted_reports.drain(..) {
             r.submitted(index.clone());
         }
@@ -997,6 +1036,9 @@ impl GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        if let Some(observer) = &mut self.submitted_frame_observer {
+            observer();
+        }
         // Occlusion grids recorded before this present are submitted now.
         for (g, _, _) in &mut self.depth_grids {
             g.map();
@@ -1633,66 +1675,70 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
-    fn prepare_external(
-        &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, request: crate::ExternalPassRequest,
-        textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
-    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+    fn external_attachments(
+        &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
+        copy: crate::TargetCopy,
+    ) -> Result<crate::ExternalCopies, String> {
         // Finish pending D3D work before the device can give up its guest draws.
         self.encode_pending()?;
-        let sampled = surfaces.sampled.into_iter().map(Some).collect();
-        let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
-            return Ok(None);
-        };
-        if sampled.iter().any(Option::is_none) {
-            return Ok(None);
-        }
-        let mut slots = Vec::with_capacity(surfaces.slots.len());
-        for (slot, guest_size) in surfaces.slots.into_iter().zip(surfaces.slot_sizes) {
-            let Some(id) = slot else { slots.push(None); continue };
-            let s = self.store.get(id).map_err(|e| e.to_string())?;
-            let t = s.texture();
-            if s.desc().samples > 1 || t.format().is_depth_stencil_format()
-                || !t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT)
-                || !gfx::program::filterable(t.format(), self.ctx.device.features()) {
+        let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let attachments: Result<Option<Vec<_>>, String> = (|| {
+            let sampled = surfaces.sampled.into_iter().map(Some).collect();
+            let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
+                return Ok(None);
+            };
+            if sampled.iter().any(Option::is_none) {
                 return Ok(None);
             }
-            slots.push(Some(crate::ExternalColor {
-                guest_size: guest_size.ok_or("missing guest slot dimensions")?,
-                sample: s.view().clone(),
-                attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
-                format: t.format(),
-                size: (t.width(), t.height()),
-            }));
-        }
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
-        let stages = textures.map(|t| t.and_then(|t| t.view.as_ref()));
-        if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
-        let mut on_submit = Vec::new();
-        let target = crate::ExternalTarget {
-            device: &self.ctx.device, queue: &self.ctx.queue, encoder: &mut enc,
-            color: &cv, color_format: cf, depth: &dv, depth_format: df,
-            viewport: crate::external_viewport(&request, size), z_scale: request.z_scale,
-            guest_size: request.surface_size, size, sampled: &sampled, slots: &slots, copy, stages,
-            on_submit: Some(&mut on_submit),
-        };
-        let prepare = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
-        if pass.prepare_copy(&target).is_err() { return Ok(None); }
-        drop(prepare);
-        let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
-        let ranges = pass.record_ranges(target);
-        if !plan.complete(copy, ranges) {
-            return Ok(None);
-        }
-        Ok(Some(vec![crate::ExternalRecording { copy, ranges, commands: enc.finish(), on_submit }]))
+            let mut slots = Vec::with_capacity(surfaces.slots.len());
+            for (slot, guest_size) in surfaces.slots.into_iter().zip(surfaces.slot_sizes) {
+                let Some(id) = slot else { slots.push(None); continue };
+                let s = self.store.get(id).map_err(|e| e.to_string())?;
+                let t = s.texture();
+                if s.desc().samples > 1 || t.format().is_depth_stencil_format()
+                    || !t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT)
+                    || !gfx::program::filterable(t.format(), self.ctx.device.features()) {
+                    return Ok(None);
+                }
+                slots.push(Some(crate::ExternalColor {
+                    guest_size: guest_size.ok_or("missing guest slot dimensions")?,
+                    sample: s.view().clone(),
+                    attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
+                    format: t.format(),
+                    size: (t.width(), t.height()),
+                }));
+            }
+            let stages = textures.map(|t| t.and_then(|t| t.view.clone()));
+            if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
+            let uploads = self.current_uploads.get_or_insert_with(|| self.upload_pool.begin()).clone();
+            Ok(Some(vec![crate::backend::ExternalAttachments {
+                uploads,
+                device: self.ctx.device.clone(), queue: self.ctx.queue.clone(), color: cv, color_format: cf,
+                depth: dv, depth_format: df, size, sampled, slots, copy, stages,
+            }]))
+        })();
+        if pollster::block_on(scope.pop()).is_some() { return Ok(crate::ExternalCopies::Missing(copy)); }
+        Ok(match attachments? {
+            Some(a) => crate::ExternalCopies::Ready(a),
+            None => crate::ExternalCopies::Missing(copy),
+        })
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+        if recording.copy == crate::TargetCopy::Reference {
+            recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
+        }
         if let Some((enc, _)) = self.open.take() {
             self.external_prefix.push(enc.finish());
         }
         self.external_prefix.push(recording.commands);
+        self.retain_uploads(recording.uploads);
+        // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
+        if self.external_prefix.len() >= MAX_ENCODED_PASSES {
+            self.submit_open();
+        }
     }
 
     fn supports_external_pass(&self) -> bool {
@@ -1713,7 +1759,9 @@ impl Backend for GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         // After the draws recorded so far, in the same submission.
         let (mut enc, passes) = self.take_open()?;
+        let uploads = self.current_uploads.get_or_insert_with(|| self.upload_pool.begin()).clone();
         pass.encode(crate::backend::ExternalTarget {
+            uploads: &uploads,
             device: &self.ctx.device,
             queue: &self.ctx.queue,
             encoder: &mut enc,
@@ -1731,6 +1779,7 @@ impl Backend for GfxBackend {
             stages: [None; 4],
             on_submit: None,
         });
+        self.retain_uploads(uploads);
         self.open = Some((enc, passes + 1));
         Ok(true)
     }

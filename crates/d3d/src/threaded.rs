@@ -1164,6 +1164,19 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.sample_depth
     }
 
+    fn external_attachments(
+        &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: crate::TargetCopy,
+    ) -> Result<crate::ExternalCopies, String> {
+        let ids = textures.map(|t| t.map(|t| t.id));
+        self.call(move |w| {
+            let Some(surfaces) = surfaces.try_map(|s| w.surfaces.get(s).copied()) else { return Ok(crate::ExternalCopies::Missing(copy)) };
+            let textures = ids.map(|id| id.and_then(|i| w.textures.get(&i)));
+            if (0..4).any(|i| ids[i].is_some() && textures[i].is_none()) { return Ok(crate::ExternalCopies::Missing(copy)); }
+            w.inner.external_attachments(surfaces, textures, copy)
+        })
+    }
+
     fn prepare_external(
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,

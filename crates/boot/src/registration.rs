@@ -334,6 +334,12 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
+    features
+        .add(&feature::native_world_layers::NativeWorldLayers)
+        .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+    features
+        .add(&feature::native_residual::NativeResidual)
+        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
     // The sorted transparents' geometry on the native GPU renderer
     // (H2_FEATURES=impl.render.native_transparents=on, off by default;
     // docs/graphics/native-renderer.md, stage 3): a context-only skip on
@@ -343,6 +349,16 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    // Dynamic decals in their seven observed pass positions
+    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // docs/graphics/native-decals-research.md). Only a fully resolved callback
+    // is replaced; all others keep their D3D draws.
+    features
+        .add(&feature::native_decals::NativeDecals)
+        .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
+    features
+        .add(&feature::native_particles::NativeParticles)
+        .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
     // The dynamic lights on the native GPU renderer
     // (H2_FEATURES=impl.render.native_lights=on, off by default;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
@@ -353,6 +369,13 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    // Shader-driven gels: observe target-13 production before light consumption.
+    features
+        .add(&feature::native_gels::NativeGels)
+        .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
+    features
+        .add(&feature::native_shadows::NativeShadows)
+        .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
     // The view's post passes on the native GPU renderer
     // (H2_FEATURES=impl.render.native_post=on, off by default;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at

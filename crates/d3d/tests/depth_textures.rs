@@ -1310,3 +1310,37 @@ fn lazy_depth_levels_are_read_back_only_when_waited_on() {
     assert_eq!(d.stats().writeback_causes.block_on_resource, 1);
     assert_eq!(d.take_events(), []);
 }
+
+
+#[test]
+fn a_native_depth_stencil_write_invalidates_the_cached_colour_alias() {
+    struct ReplaceDepth;
+    impl d3d::ExternalPass for ReplaceDepth {
+        fn writes(&self) -> d3d::ExternalWrites { d3d::ExternalWrites { color: false, depth_stencil: true } }
+        fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+            drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None, color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: t.depth,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.), store: wgpu::StoreOp::Store }),
+                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0xa7), store: wgpu::StoreOp::Store }),
+                }),
+                timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+            }));
+            1
+        }
+    }
+    let Some((mut d, mut m, scope)) = gpu() else { return };
+    set_states(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0x03, 0, 1., 0x5a).unwrap();
+    textured_quad(&mut d, &mut m);
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(back_pixel(&mut d, 20, 30), [255, 255, 0x5a, 255]);
+    let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view: 0, ranges: 1, slots: vec![] };
+    d.prepare_external_pass(&mut m, plan, Box::new(ReplaceDepth)).unwrap().unwrap().commit();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(back_pixel(&mut d, 20, 30), [0, 0, 0xa7, 0]);
+    finish(scope);
+}

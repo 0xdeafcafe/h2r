@@ -60,13 +60,25 @@ pub mod map_slots;
 pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
+pub mod native_decals_glue;
+pub mod native_gels_glue;
+mod native_gels_load;
+mod native_gels_replace;
 pub mod native_hud_glue;
 pub mod native_lights_glue;
+mod native_shadows_draw;
+mod native_shadows_scope;
+mod native_shadows_probe;
+pub mod native_shadows_glue;
 pub mod native_objects_glue;
+pub mod native_particles_glue;
+mod native_particles_admission;
 pub mod native_post_glue;
 pub mod native_post_load;
+mod native_residual_glue;
 pub mod native_transparents_glue;
 pub mod native_world_glue;
+mod native_world_layers_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;
@@ -1187,6 +1199,14 @@ pub fn run_hosted_with_live(
     };
     // No window: a headless run, which skips the movies by default.
     let headless = host.gfx.is_none();
+    if opts.d3d && let Some(b) = &mut host.gfx {
+        native_shadows_glue::configure(b, "reference");
+        if let Some((view, _)) = &mut host.gfx_view {
+            native_shadows_glue::configure(view, "display");
+        } else if interp.is_none() {
+            native_shadows_glue::configure_single(b);
+        }
+    }
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -1244,10 +1264,11 @@ pub fn run_hosted_with_live(
         )?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
-    if let Some(audio) = &ds
-        && features.switches().audio_hrtf()
-    {
-        audio.mixer().lock().unwrap().set_hrtf(true);
+    if let Some(audio) = &ds {
+        let mixer = audio.mixer();
+        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        mixer.set_hrtf(features.switches().audio_hrtf());
+        mixer.set_distance_reverb(features.switches().distance_reverb());
     }
     if let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
@@ -1338,6 +1359,9 @@ pub fn run_hosted_with_live(
     )?;
     let mut harness = late.harness;
     let agent = late.agent;
+    if let (Some(a), Some(audio)) = (&agent, &ds) {
+        dsound_glue::add_agent_methods(&a.agent, audio.mixer());
+    }
     let mut snapshot_probe = late.snapshot_probe;
     // edit.* and render.* on the agent (hot_glue.rs, docs/graphics/hot-iteration.md).
     if let Some(a) = &agent {
