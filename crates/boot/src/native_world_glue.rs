@@ -446,12 +446,11 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     // map decodes, drawn as base map times lightmap.
     let mut base_maps = HashMap::new();
     let mut native = HashSet::new();
-    let mut used_palettes = StagePalettes::default();
+    let mut decoder = StageDecoder::new(palettes);
     let mut palettized = Vec::new();
     let (programs, mut stage_images, refused) = if programs_on {
-        let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &palettes);
+        let out = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps, &mut decoder);
         native.extend(out.programs.keys().copied());
-        used_palettes = out.palettes;
         palettized = out.palettized;
         (out.programs, out.images, out.refused)
     } else {
@@ -493,7 +492,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
     // translate, and the parts the native pass can draw.
     let transparents_on = feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s));
     let (transparents, transparent_parts) = if transparents_on {
-        crate::native_transparents_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images)
+        crate::native_transparents_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder)
     } else {
         Default::default()
     };
@@ -523,7 +522,7 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         parts: Arc::new(parts),
         transparent_parts: Arc::new(transparent_parts),
         lights,
-        palettes: used_palettes,
+        palettes: decoder.used().clone(),
     })
 }
 
@@ -640,9 +639,6 @@ struct Programs {
     programs: HashMap<u16, MaterialProgram>,
     images: StageImages,
     refused: Refused,
-    /// The palettes palettized stage bitmaps were expanded through, at
-    /// their stages.
-    palettes: StagePalettes,
     /// Materials with a palettized stage bitmap.
     palettized: Vec<u16>,
 }
@@ -650,22 +646,22 @@ struct Programs {
 /// The world's materials whose layer-3 pass translates and whose every
 /// part the native pass can draw with it (`program::compile_world`,
 /// `program::world_fit`), with the images their stages sample; and the
-/// others by the reason they stay on the D3D path. A palettized stage
-/// bitmap is expanded through `palettes` at its stage ([`stage_image`]).
+/// others by the reason they stay on the D3D path. Stage images go
+/// through `decoder` (a palettized one expanded through its stage's
+/// palette, [`StageDecoder`]).
 fn material_programs<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     shaders: &[TagId],
     world: &World,
     lightmaps: &HashMap<LightmapKey, Image>,
-    palettes: &StagePalettes,
+    decoder: &mut StageDecoder,
 ) -> Programs {
     let mut out = Programs::default();
     let Programs {
         programs,
         images,
         refused,
-        palettes: used,
         palettized,
     } = &mut out;
     let materials = world.materials();
@@ -676,9 +672,6 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
             return out;
         }
     };
-    let mut failed: HashSet<(TagId, u32)> = HashSet::new();
-    // The stage each palettized image was expanded at.
-    let mut expanded_at: HashMap<(TagId, u32), usize> = HashMap::new();
     for m in materials {
         let mut uses_palette = false;
         let Some(&shader) = shaders.get(usize::from(m)) else {
@@ -700,38 +693,10 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                     if p.dims[n].is_none() {
                         continue;
                     }
-                    if let Some(&at) = expanded_at.get(&(bitmap, image)) {
-                        // One expansion per image: another stage must hold
-                        // the same palette.
-                        if n == 3 || palettes[n] != palettes[at] {
-                            return Err(format!("stage {n} bitmap is palettized and was expanded through another stage's palette"));
-                        }
-                        uses_palette = true;
-                        continue;
-                    }
-                    if images.contains_key(&(bitmap, image)) {
-                        continue;
-                    }
-                    if failed.contains(&(bitmap, image)) {
-                        return Err(format!("stage {n} bitmap does not decode"));
-                    }
-                    match decode_stage(map, files, bitmap, image as usize, n, &palettes[n]) {
-                        Ok((i, expanded)) => {
-                            images.insert((bitmap, image), i);
-                            if expanded {
-                                expanded_at.insert((bitmap, image), n);
-                                used[n].clone_from(&palettes[n]);
-                                uses_palette = true;
-                            }
-                        }
-                        Err(StageRefusal::Image(why)) => {
-                            failed.insert((bitmap, image));
-                            return Err(format!("stage {n} bitmap {why}"));
-                        }
-                        // Not the image's fault: it may do at another
-                        // stage.
-                        Err(StageRefusal::Palette(why)) => return Err(format!("stage {n} bitmap {why}")),
-                    }
+                    // A linear texture is addressed in texels on the D3D
+                    // path (`tex_scale`); the programs take normalised
+                    // coordinates.
+                    uses_palette |= decoder.decode(map, files, images, bitmap, image, n, true)?;
                 }
                 Ok(p)
             });
@@ -749,20 +714,118 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
     out
 }
 
-/// Why a stage cannot have a bitmap's image: the image itself, or (only at
-/// this stage) its palette.
+/// Stage images as their stages sample them, for every native pass that
+/// loads with the world (its layer 3, the transparents; the objects can
+/// take it too): a palettized bitmap (P8, P8 bump) is expanded through the
+/// device palette bound at its stage when the load started
+/// ([`stage_image`]), once per image, and another stage may share that
+/// expansion only when it holds the same palette. Records which palettes
+/// it used ([`Ready`] checks they stay bound) and which images do not
+/// decode.
+#[derive(Default)]
+pub(crate) struct StageDecoder {
+    /// The palettes bound at each stage when the load started.
+    palettes: StagePalettes,
+    /// Those an expansion used.
+    used: StagePalettes,
+    /// The stage each palettized image was expanded at.
+    expanded_at: HashMap<(TagId, u32), usize>,
+    /// Images that do not decode at any stage.
+    failed: HashSet<(TagId, u32)>,
+}
+
+impl StageDecoder {
+    pub(crate) fn new(palettes: StagePalettes) -> Self {
+        Self {
+            palettes,
+            ..Self::default()
+        }
+    }
+
+    /// The palettes the expansions used, at their stages (the rest
+    /// `None`).
+    pub(crate) fn used(&self) -> &StagePalettes {
+        &self.used
+    }
+
+    /// Image `image` of `bitmap` as stage `stage` samples it, put in
+    /// `images` unless there already: `true` when it is palettized (and
+    /// so went through the stage's palette), or why the stage cannot have
+    /// it, as `stage <n> bitmap <why>`. `refuse_linear`: a linear texture
+    /// is refused (it is not cached as failed: another pass may take it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode<R: std::io::Read + std::io::Seek>(
+        &mut self,
+        map: &mut Map<R>,
+        files: &mut assets::ResourceFiles,
+        images: &mut StageImages,
+        bitmap: TagId,
+        image: u32,
+        stage: usize,
+        refuse_linear: bool,
+    ) -> Result<bool, String> {
+        self.take(images, (bitmap, image), stage, &mut |palette| {
+            decode_stage(map, files, bitmap, image as usize, stage, palette, refuse_linear)
+        })
+    }
+
+    /// [`decode`](Self::decode) with the decode itself as `decode` (given
+    /// the stage's palette).
+    fn take(
+        &mut self,
+        images: &mut StageImages,
+        key: (TagId, u32),
+        stage: usize,
+        decode: &mut dyn FnMut(&Option<Vec<u32>>) -> Result<(Image, bool), StageRefusal>,
+    ) -> Result<bool, String> {
+        let palette = self.palettes.get(stage).ok_or_else(|| format!("stage {stage} does not exist"))?;
+        if let Some(&at) = self.expanded_at.get(&key) {
+            // One expansion per image: this stage must hold the same
+            // palette (and stage 3 holds the lightmap's).
+            if stage == 3 || *palette != self.palettes[at] {
+                return Err(format!("stage {stage} bitmap is palettized and was expanded through another stage's palette"));
+            }
+            return Ok(true);
+        }
+        if images.contains_key(&key) {
+            return Ok(false);
+        }
+        if self.failed.contains(&key) {
+            return Err(format!("stage {stage} bitmap does not decode"));
+        }
+        match decode(palette) {
+            Ok((i, expanded)) => {
+                images.insert(key, i);
+                if expanded {
+                    self.expanded_at.insert(key, stage);
+                    self.used[stage].clone_from(palette);
+                }
+                Ok(expanded)
+            }
+            Err(StageRefusal::Image(why)) => {
+                self.failed.insert(key);
+                Err(format!("stage {stage} bitmap {why}"))
+            }
+            // Not the image's fault: it may do at another stage or pass.
+            Err(StageRefusal::Here(why)) => Err(format!("stage {stage} bitmap {why}")),
+        }
+    }
+}
+
+/// Why a stage cannot have a bitmap's image: the image itself, or only
+/// here (this stage's palette, or a linear texture this pass refuses).
 #[derive(Debug, PartialEq, Eq)]
 enum StageRefusal {
     Image(&'static str),
-    Palette(&'static str),
+    Here(&'static str),
 }
 
 /// Image `index` of a stage's bitmap at stage `stage`, and whether it was
 /// expanded through the stage's palette; or why the stage cannot have it:
 /// it does not decode, it is a linear texture (addressed in texels on the
 /// D3D path, `tex_scale`, where the programs here take normalised
-/// coordinates), or it is palettized and the stage has no palette for it
-/// ([`stage_image`]).
+/// coordinates; only with `refuse_linear`), or it is palettized and the
+/// stage has no palette for it ([`stage_image`]).
 fn decode_stage<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -770,14 +833,15 @@ fn decode_stage<R: std::io::Read + std::io::Seek>(
     index: usize,
     stage: usize,
     palette: &Option<Vec<u32>>,
+    refuse_linear: bool,
 ) -> Result<(Image, bool), StageRefusal> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| StageRefusal::Image("does not read"))?.data else {
         return Err(StageRefusal::Image("is not a bitmap"));
     };
     let image = b.images.get(index).ok_or(StageRefusal::Image("has no such image"))?;
     let d = assets::decode_image(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
-    if d.desc.format.layout() == gfx::format::Layout::Linear {
-        return Err(StageRefusal::Image("is a linear texture"));
+    if refuse_linear && d.desc.format.layout() == gfx::format::Layout::Linear {
+        return Err(StageRefusal::Here("is a linear texture"));
     }
     stage_image(image.format, d.levels, stage, palette)
 }
@@ -799,15 +863,15 @@ fn stage_image(
 ) -> Result<(Image, bool), StageRefusal> {
     let palette: Option<[u32; 256]> = if matches!(format, tags::PixelFormat::P8 | tags::PixelFormat::P8Bump) {
         if stage == 3 {
-            return Err(StageRefusal::Palette("is palettized at stage 3 (the lightmap's palette is bound there)"));
+            return Err(StageRefusal::Here("is palettized at stage 3 (the lightmap's palette is bound there)"));
         }
         let p = palette
             .as_ref()
-            .ok_or(StageRefusal::Palette("is palettized and no palette is bound at its stage"))?;
+            .ok_or(StageRefusal::Here("is palettized and no palette is bound at its stage"))?;
         Some(
             p.as_slice()
                 .try_into()
-                .map_err(|_| StageRefusal::Palette("is palettized and its stage's palette has fewer than 256 entries"))?,
+                .map_err(|_| StageRefusal::Here("is palettized and its stage's palette has fewer than 256 entries"))?,
         )
     } else {
         None
@@ -970,7 +1034,7 @@ mod tests {
     #[test]
     fn a_palettized_stage_without_its_palette_stays_on_the_d3d_path() {
         let p8 = tags::PixelFormat::P8Bump;
-        let palette = |e: StageRefusal| matches!(e, StageRefusal::Palette(_));
+        let palette = |e: StageRefusal| matches!(e, StageRefusal::Here(_));
         assert!(palette(stage_image(p8, indexed([0; 4]), 1, &None).unwrap_err()));
         // Stage 3 holds each lightmap's palette.
         assert!(palette(stage_image(p8, indexed([0; 4]), 3, &Some(normals())).unwrap_err()));
@@ -993,5 +1057,47 @@ mod tests {
         other[5] = 0;
         assert!(!palettes_hold(&used, &|_| Some(other.clone())));
         assert!(palettes_hold(&StagePalettes::default(), &|_| None));
+    }
+
+    #[test]
+    fn passes_share_a_palettized_image_only_through_the_same_stage_palette() {
+        // Stages 1 and 2 hold the default palette, stage 0 none: as at
+        // 03a's layer 3. The world's pass expands a P8 bump map at stage
+        // 2; a transparent pass (sharing the decoder and its images)
+        // takes it at stage 1, and is refused it at stage 0 and 3.
+        let mut d = StageDecoder::new([None, Some(normals()), Some(normals()), Some(normals())]);
+        let mut images = StageImages::new();
+        let bump = (TagId(0xe000_0040), 0);
+        let mut decodes = 0;
+        let p8 = |stage: usize| {
+            move |palette: &Option<Vec<u32>>| stage_image(tags::PixelFormat::P8Bump, indexed([1, 2, 3, 4]), stage, palette)
+        };
+        assert_eq!(d.take(&mut images, bump, 2, &mut |pal| { decodes += 1; p8(2)(pal) }), Ok(true));
+        assert_eq!(images[&bump].rgba[..4], [0x81, 0xfe, 0xfe, 0xff], "palette entry 1, not grey 1");
+        assert_eq!(d.used(), &[None, None, Some(normals()), None]);
+        assert_eq!(d.take(&mut images, bump, 1, &mut |pal| { decodes += 1; p8(1)(pal) }), Ok(true));
+        assert_eq!(decodes, 1, "expanded once");
+        assert!(d.take(&mut images, bump, 0, &mut |pal| p8(0)(pal)).is_err(), "no palette at stage 0");
+        assert!(d.take(&mut images, bump, 3, &mut |pal| p8(3)(pal)).is_err(), "the lightmap's stage");
+
+        // A transparent's own palettized bitmap at a stage without a
+        // palette is refused, and not cached as failed: it still expands
+        // at a stage that has one.
+        let other = (TagId(0xe000_0041), 0);
+        let err = d.take(&mut images, other, 0, &mut |pal| p8(0)(pal)).unwrap_err();
+        assert!(err.starts_with("stage 0 bitmap is palettized"), "{err}");
+        assert!(!images.contains_key(&other));
+        assert_eq!(d.take(&mut images, other, 1, &mut |pal| p8(1)(pal)), Ok(true));
+        assert_eq!(d.used()[1], Some(normals()));
+
+        // A direct format is no palette's business; an image that does
+        // not decode fails at every stage after.
+        let plain = (TagId(0xe000_0042), 0);
+        let argb = |pal: &Option<Vec<u32>>| stage_image(tags::PixelFormat::Argb8888, indexed([5; 4]), 0, pal);
+        assert_eq!(d.take(&mut images, plain, 0, &mut |pal| argb(pal)), Ok(false));
+        let broken = (TagId(0xe000_0043), 0);
+        assert!(d.take(&mut images, broken, 1, &mut |_| Err(StageRefusal::Image("does not decode"))).is_err());
+        let err = d.take(&mut images, broken, 2, &mut |_| unreachable!("cached as failed")).unwrap_err();
+        assert_eq!(err, "stage 2 bitmap does not decode");
     }
 }

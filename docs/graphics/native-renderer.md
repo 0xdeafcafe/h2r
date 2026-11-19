@@ -564,9 +564,14 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
      native pass expands them through the same one: the load gets the
      palettes bound at stages 0..3 when it starts (`Device::stage_palette`,
      read-only), and refuses a palettized bitmap at stage 3 or at a stage
-     with no full 256-entry palette. Each ask checks that the palettes
-     the load used are still bound, and otherwise leaves the world to the
-     D3D path (said once). Research (Code, `h2 disasm`): `SetPalette`
+     with no full 256-entry palette. One decoder does this for every pass
+     loaded with the world (`native_world_glue::StageDecoder`: layer 3
+     and the transparents' layer-15 passes, which share its images; the
+     objects can take it too): an image is expanded once, and another
+     stage shares it only when it holds the same palette; a refusal for
+     the stage's palette is not the image's, so another stage may still
+     take it. Each ask checks that the palettes the load used are still
+     bound, and otherwise leaves the world to the D3D path (said once). Research (Code, `h2 disasm`): `SetPalette`
      (`0x3f84d0`) is called with the default palette (`[0x484DBC]`) on
      every stage at boot and by `0x00015b70`, which also clears the
      per-stage cache at `0x484DC0`; `0x00015c90` binds a lightmap's
