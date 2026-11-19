@@ -96,7 +96,8 @@ type Result<T> = std::result::Result<T, PackError>;
 #[derive(Debug, Default, Clone)]
 pub struct BitWriter {
     bytes: Vec<u8>,
-    len: usize,
+    word: u64,
+    used: u32,
 }
 
 impl BitWriter {
@@ -105,19 +106,19 @@ impl BitWriter {
     }
 
     /// The low `n` bits of `v` (n <= 64).
-    pub fn bits(&mut self, mut v: u64, mut n: u32) {
+    #[inline]
+    pub fn bits(&mut self, v: u64, n: u32) {
         debug_assert!(n == 64 || v >> n == 0, "{v} does not fit {n} bits");
-        while n > 0 {
-            let off = (self.len % 8) as u32;
-            if off == 0 {
-                self.bytes.push(0);
-            }
-            let take = (8 - off).min(n);
-            let last = self.bytes.last_mut().unwrap();
-            *last |= ((v & ((1 << take) - 1)) as u8) << off;
-            v = v.checked_shr(take).unwrap_or(0);
-            n -= take;
-            self.len += take as usize;
+        // Most tokens fit in the pending word. A token crossing the end
+        // fills it and leaves at most 63 bits for the next one.
+        let room = 64 - self.used;
+        self.word |= v << self.used;
+        if n < room {
+            self.used += n;
+        } else {
+            self.bytes.extend_from_slice(&self.word.to_le_bytes());
+            self.word = v.checked_shr(room).unwrap_or(0);
+            self.used = n - room;
         }
     }
 
@@ -132,9 +133,13 @@ impl BitWriter {
         let x = v + (1 << k);
         let n = 64 - x.leading_zeros();
         let z = n - 1 - k;
-        self.bits(0, z);
-        self.bit(true);
-        self.bits(x & ((1 << (n - 1)) - 1), n - 1);
+        let suffix = ((x & ((1 << (n - 1)) - 1)) << 1) | 1;
+        if z + n <= 64 {
+            self.bits(suffix << z, z + n);
+        } else {
+            self.bits(0, z);
+            self.bits(suffix, n);
+        }
     }
 
     /// Signed Exp-Golomb: zig-zag (0, -1, 1, -2, ...) then [`Self::eg`].
@@ -143,10 +148,12 @@ impl BitWriter {
     }
 
     pub fn bit_len(&self) -> usize {
-        self.len
+        self.bytes.len() * 8 + self.used as usize
     }
 
-    pub fn finish(self) -> Vec<u8> {
+    pub fn finish(mut self) -> Vec<u8> {
+        self.bytes
+            .extend_from_slice(&self.word.to_le_bytes()[..self.used.div_ceil(8) as usize]);
         self.bytes
     }
 }

@@ -41,6 +41,27 @@ fn bits_and_exp_golomb_codes_round_trip() {
 }
 
 #[test]
+fn writer_preserves_bit_order_across_word_boundaries() {
+    for offset in 0..64 {
+        let mut writer = BitWriter::new();
+        let mut bits = vec![false; offset];
+        writer.bits(0, offset as u32);
+        for n in 0..=64 {
+            let word = 0xb88e_3a71_92c6_f111u64.rotate_left(n);
+            let value = word & 1u64.checked_shl(n).unwrap_or(0).wrapping_sub(1);
+            writer.bits(value, n);
+            bits.extend((0..n).map(|i| value & (1 << i) != 0));
+        }
+        assert_eq!(writer.bit_len(), bits.len());
+        let mut expected = vec![0; bits.len().div_ceil(8)];
+        for (i, bit) in bits.into_iter().enumerate() {
+            expected[i / 8] |= u8::from(bit) << (i % 8);
+        }
+        assert_eq!(writer.finish(), expected);
+    }
+}
+
+#[test]
 fn quantisation_stays_inside_its_steps() {
     for i in 0..2000 {
         let x = (i as f64 * 0.7371).sin() * 900.0;
