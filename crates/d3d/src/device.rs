@@ -1911,12 +1911,18 @@ impl<B: Backend> Device<B> {
     pub fn prepare_external_pass(
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        if !self.begin_external_boundary(mem)? { return Ok(None); }
+        self.prepare_external_inner(mem, plan, pass, None, None)
+    }
+
+    /// Drain preceding work before a stage reads inherited state or snapshots its list.
+    pub fn begin_external_boundary(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
         self.live("external pass")?;
         if let Some(cb) = self.drain_until_callback(mem)? {
             self.undelivered = Some(cb);
-            return Ok(None);
+            return Ok(false);
         }
-        self.prepare_external_inner(mem, plan, pass, None)
+        Ok(true)
     }
 
     /// At an already drained packet boundary, use the slot handles held with
@@ -1925,7 +1931,15 @@ impl<B: Backend> Device<B> {
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
         slots: Vec<Option<B::Surface>>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
-        self.prepare_external_inner(mem, plan, pass, Some(slots))
+        self.prepare_external_inner(mem, plan, pass, Some(slots), None)
+    }
+
+    /// Held draw packets retain their final viewport in guest pixels.
+    pub fn prepare_external_bound_at(
+        &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, pass: Box<dyn crate::ExternalPass>,
+        slots: Vec<Option<B::Surface>>, rect: (u32, u32, u32, u32),
+    ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        self.prepare_external_inner(mem, plan, pass, Some(slots), Some(rect))
     }
 
     fn external_binding(
@@ -1970,12 +1984,13 @@ impl<B: Backend> Device<B> {
 
     fn prepare_external_inner(
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
-        slots: Option<Vec<Option<B::Surface>>>,
+        slots: Option<Vec<Option<B::Surface>>>, rect: Option<(u32, u32, u32, u32)>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
-        let binding = match self.external_binding(mem, &plan, &mut *pass, slots.as_deref()) {
+        let mut binding = match self.external_binding(mem, &plan, &mut *pass, slots.as_deref()) {
             Ok(b) => b,
             Err(why) => { self.refuse_external(why); return Ok(None); }
         };
+        if let Some(rect) = rect { binding.request.rect = rect; }
         let commands = self.backend.prepare_external(
             binding.surfaces.clone(), binding.request, [None; 4], &plan,
             crate::TargetCopy::Reference, Arc::new(std::sync::Mutex::new(pass)),
