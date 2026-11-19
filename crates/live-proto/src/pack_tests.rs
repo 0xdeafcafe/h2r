@@ -62,6 +62,35 @@ fn writer_preserves_bit_order_across_word_boundaries() {
 }
 
 #[test]
+fn unit_mask_can_toggle_every_nonkey_field() {
+    for (i, (schema, _)) in LISTS.iter().enumerate() {
+        let Some(layout) = unit_mask(i) else {
+            continue;
+        };
+        let mut masks = vec![0];
+        let mut all = 0;
+        for (i, field) in schema.iter().enumerate() {
+            if !field.key {
+                let bit = 1 << i;
+                all |= bit;
+                masks.push(bit);
+                masks.push(all);
+            }
+        }
+        let mut writer = BitWriter::new();
+        for &mask in &masks {
+            layout.write(&mut writer, mask);
+        }
+        let bytes = writer.finish();
+        let mut reader = BitReader::new(&bytes);
+        for mask in masks {
+            assert_eq!(layout.read(&mut reader).unwrap(), mask);
+        }
+        assert!(layout.read(&mut BitReader::new(&[0xff; 4])).is_err());
+    }
+}
+
+#[test]
 fn quantisation_stays_inside_its_steps() {
     for i in 0..2000 {
         let x = (i as f64 * 0.7371).sin() * 900.0;
