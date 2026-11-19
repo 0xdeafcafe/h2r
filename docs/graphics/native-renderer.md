@@ -923,13 +923,35 @@ synthetic tests:
   do), is drawn; one that does not is left out with its reason, and a
   material with none stays on D3D whole. An object whose records pick an
   implementation some lit part of its definition lacks stays on D3D.
+- **The normalization cube.** A stage sampling engine texture 1 is bound
+  to the vector normalization cube the lights load
+  (`native_lights_glue::light_textures`, the globals' rasterizer data),
+  sampled as a cube without a bias, as the lights sample it.
+- **The lightmap stage (not supplied).** Implementation 0 samples the
+  lightmap. The draw (`0x0004d0b0`, draw 3) takes it from the structure
+  BSP (`[0x004e0344] + 0x84`), not from the object: for a record whose
+  implementation (`+0` bits 29..31) is not 2 or 3, with a model datum at
+  `+4`, and whose lightmap index (the record's
+  `+0xc` bits 18..28) is not `0x7ff`, the BSP's `+0x64` element (stride
+  12) at that index holds per section a u16 (its `+8` table) that
+  `0x0004dc60` turns into the vertex offset of a stream of type `0x2e` in
+  the BSP geometry block its `+2` names (`+0x44`, stride `0x38`): the
+  object's lightmap texture coordinates live in the BSP, beside the
+  clusters'. Supplying it needs that stream read from the BSP per object
+  and the page and palette the clusters' path binds through `0x00015c90`
+  at stage 3; until then implementation 0 stays on D3D.
 - **Combiner constants** (`object_pixel_uniforms`). A lighting vector
   bound to a pixel combiner constant is packed per object as `0x00019ca0`
   packs an engine value (`pack_engine_colour`: alpha 0, `(x + 1) / 2`
   first where the binding halves it, each channel rounded to 8 bits) into
   the byte lanes the binding keeps, the rest as compiled. A lighting
-  scalar bound there is refused: its binding does not keep the transform
-  `0x00019ca0` applies to scalars.
+  scalar goes through its binding's transform first
+  (`tags::material::engine_scalar`, the one `0x00019ca0` applies: the
+  complement, or a cosine or sine wave over one period clamped to 0..1),
+  which the binding now keeps.
+- **Which implementations a map draws.** The observer counts live layer-3
+  object items by their record's implementation and logs the counts once
+  per map, after 600 views.
 - **The node rows at the hook** (`objects::attach_node_rows`). The
   observer copies, for each record a drawn object's items name, the rows
   that record's draw would upload, one set per mode section (two records

@@ -829,7 +829,7 @@ fn engine_vertex_constants_override_instance_vectors() {
 #[test]
 fn a_vector_binding_keeps_only_what_later_bindings_leave() {
     let v = |reg, components| VectorTarget::Vertex { bank: 1, reg, components };
-    let p = |slot, mask| VectorTarget::Pixel { c1: false, slot, mask, half: false };
+    let p = |slot, mask| VectorTarget::Pixel { c1: false, slot, mask, half: false, transform: 0 };
     let got = vector_bindings(&[
         (v(2, 0b0111), Some(5)),
         (v(2, 0b0001), None),

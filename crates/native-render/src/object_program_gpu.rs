@@ -15,7 +15,7 @@ use shaders::vsh::VertexUniforms;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::{Image, texture};
-use crate::light_gpu::{run_layout, uniforms_layout};
+use crate::light_gpu::{LayeredImage, layered_texture, run_layout, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
@@ -92,6 +92,9 @@ struct LitModel {
 pub struct LitObjects {
     uniforms_layout: wgpu::BindGroupLayout,
     models: HashMap<u32, LitModel>,
+    /// The vector normalization cube, as the lights load it (engine
+    /// texture 1).
+    normalization: Option<wgpu::TextureView>,
 }
 
 /// One part's draw this view.
@@ -135,10 +138,20 @@ pub fn frame_parts<'a>(frame: &'a ObjectFrame, parts: &[LitPart]) -> Vec<(usize,
 
 impl LitObjects {
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new() }
+        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None }
     }
 
-    /// Uploads `input` as model `index`'s lit parts (replacing any).
+    /// Uploads the normalization cube the programs' normalization stages
+    /// sample, once.
+    pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &LayeredImage) {
+        if self.normalization.is_none() {
+            self.normalization = Some(layered_texture(device, queue, image, "native object normalization"));
+        }
+    }
+
+    /// Uploads `input` as model `index`'s lit parts (replacing any); not
+    /// when a program samples the normalization cube and it is not
+    /// uploaded (the build refuses such a program without it).
     pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) {
         let buffers = input
             .buffers
@@ -157,11 +170,13 @@ impl LitObjects {
                 registers: b.registers.clone(),
             })
             .collect();
-        let programs = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect();
+        let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
+            return;
+        };
         self.models.insert(index, LitModel { programs, buffers, parts: input.parts });
     }
 
-    fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> LitProgram {
+    fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
         let LitProgramInput { pass, mut images } = input;
         let p = &pass.program;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -180,7 +195,11 @@ impl LitObjects {
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
+                    view_dimension: if pass.normalization[n] {
+                        wgpu::TextureViewDimension::Cube
+                    } else {
+                        wgpu::TextureViewDimension::D2
+                    },
                     multisampled: false,
                 },
                 count: None,
@@ -191,6 +210,11 @@ impl LitObjects {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             });
+            if pass.normalization[n] {
+                // Not biased, as the lights sample it.
+                views.push((n, self.normalization.clone()?));
+                continue;
+            }
             // Checked at load: every sampled stage has its image.
             let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new() });
             bias_signed(&mut image, p.signed[n]);
@@ -218,7 +242,7 @@ impl LitObjects {
             bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
-        LitProgram { pass, module, layout, textures, pipelines: HashMap::new() }
+        Some(LitProgram { pass, module, layout, textures, pipelines: HashMap::new() })
     }
 
     /// Whether model `index` has lit parts.
@@ -381,7 +405,7 @@ impl LitObjects {
 /// Whether every stage `pass` samples has an image in `images` (a
 /// bitmap stage) or nothing to bind (an empty one).
 pub fn stages_bound(pass: &ObjectPass, images: &[Option<Image>; 4]) -> bool {
-    pass.program.dims.iter().enumerate().all(|(n, d)| d.is_none() || (matches!(pass.program.stages[n], Stage::Bitmap { .. }) && images[n].is_some()))
+    pass.program.dims.iter().enumerate().all(|(n, d)| d.is_none() || pass.normalization[n] || (matches!(pass.program.stages[n], Stage::Bitmap { .. }) && images[n].is_some()))
 }
 
 /// One mode section as the lit build reads it: its index (the render
@@ -427,7 +451,9 @@ pub type StageSource<'s> = dyn FnMut(usize, map::TagId, u32) -> Option<Image> + 
 /// material -> what it draws with): per material, each implementation of
 /// its layer-3 pass (the record picks one, `0x0004cc70`) compiled for
 /// every section it is in, through the declaration the game would build
-/// there; an implementation that fails anywhere is left out. A material
+/// there (`normalization`: whether the vector normalization cube loads
+/// for the stages that sample it); an implementation that fails anywhere
+/// is left out. A material
 /// none of whose implementations compiles is refused, with the reasons;
 /// one in no drawn section is neither taken nor refused. When the taken
 /// materials share no implementation, they are all refused.
@@ -435,6 +461,7 @@ pub fn lit_model(
     sections: &[LitSection<'_>],
     materials: &HashMap<u16, LitMaterial>,
     formats: &StreamFormats,
+    normalization: bool,
     vertex: &mut VertexSource<'_>,
     image: &mut StageSource<'_>,
 ) -> LitBuild {
@@ -513,6 +540,12 @@ pub fn lit_model(
                     let mut images: [Option<Image>; 4] = Default::default();
                     for (k, d) in compiled.program.dims.iter().enumerate() {
                         if d.is_none() {
+                            continue;
+                        }
+                        if compiled.normalization[k] {
+                            if !normalization {
+                                return Err(format!("implementation {n} stage {k} samples the normalization cube, which does not load"));
+                            }
                             continue;
                         }
                         let Stage::Bitmap { bitmap, image: i } = compiled.program.stages[k] else {
@@ -654,7 +687,7 @@ mod tests {
             Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]))
         };
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let LitBuild { input, taken, refused, implementations } = lit_model(&[section], &materials, &formats(), &mut vertex, &mut image);
+        let LitBuild { input, taken, refused, implementations } = lit_model(&[section], &materials, &formats(), false, &mut vertex, &mut image);
         assert_eq!(taken, vec![0, 3], "refused: {refused:?}");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert_eq!(refused[0].0, 1);
