@@ -23,6 +23,9 @@
 //!   surface it cannot light, or whose pass is refused, keeps its D3D
 //!   passes.
 //! - [`Host::accepts`]: [`drawable`] and a plan over the loaded world.
+//!   Each answer is counted ([`Tally`]): a reason ([`Keep`]) is said the
+//!   first time it keeps a light on D3D, and every [`SUMMARY_EVERY`]
+//!   lights a line gives the lights planned and the kept ones by reason.
 //!   [`Host::open`]: one external pass per run, which takes the run's
 //!   lights at its issue and draws them with `GpuWorld::encode_lights`.
 //! - [`Host::tail`]: `0x00031170`'s tail on the device, in render order,
@@ -36,7 +39,7 @@
 //! Objects are not lit yet (stage 4's objects item): a native light's
 //! passes over objects are skipped with the rest.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
@@ -79,6 +82,102 @@ impl d3d::GuestMemory for DeviceMemory<'_> {
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
+    /// What `accepts` said, by reason ([`Tally`]).
+    tally: Mutex<Tally>,
+}
+
+/// Why a light keeps its D3D passes.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Keep {
+    /// The world (or its lights' part) is not loaded.
+    NoWorld,
+    /// The hook did not compute the light's constants.
+    NoConstants,
+    /// A shadowed light: the shadow maps are not drawn natively.
+    Shadowed,
+    /// Its sphere meets a world surface the native pass cannot light.
+    MeetsD3dSurface,
+    /// A part it meets has no material (its shader does not read).
+    NoMaterial,
+    /// A pass it needs is refused (`light_look`, `compile_light`, the
+    /// material), with why.
+    Refused(String),
+    /// A texture a pass samples did not load: which.
+    Unloaded(&'static str),
+    /// Split: a native shader also draws a surface left to D3D.
+    SharedShader,
+}
+
+impl std::fmt::Display for Keep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Keep::NoWorld => f.write_str("the world's lights are not loaded"),
+            Keep::NoConstants => f.write_str("no constants from the hook"),
+            Keep::Shadowed => f.write_str("shadowed"),
+            Keep::MeetsD3dSurface => f.write_str("meets a surface left to D3D"),
+            Keep::NoMaterial => f.write_str("meets a part without a material"),
+            Keep::Refused(why) => write!(f, "pass refused: {why}"),
+            Keep::Unloaded(what) => write!(f, "samples an unloaded {what}"),
+            Keep::SharedShader => f.write_str("split: a native shader also draws a surface left to D3D"),
+        }
+    }
+}
+
+/// Lights `accepts` was asked about between summaries.
+pub const SUMMARY_EVERY: u64 = 1800;
+
+/// The host's answers so far: lights asked, lights planned, and the lights
+/// kept on D3D by reason.
+#[derive(Debug, Default)]
+pub struct Tally {
+    pub asked: u64,
+    pub planned: u64,
+    /// Lights split (the host's `split`): their native surfaces
+    /// drawn natively, the rest by their D3D passes.
+    pub split: u64,
+    pub kept: BTreeMap<Keep, u64>,
+}
+
+impl Tally {
+    /// Counts one answer; returns what to say on stderr: a reason the first
+    /// time it keeps a light, and every [`SUMMARY_EVERY`] lights the
+    /// counts.
+    pub fn count(&mut self, answer: Result<(), Keep>) -> Vec<String> {
+        self.asked += 1;
+        let mut say = match answer {
+            Ok(()) => {
+                self.planned += 1;
+                Vec::new()
+            }
+            Err(k) => self.count_kept(k),
+        };
+        if self.asked % SUMMARY_EVERY == 0 {
+            say.push(self.summary());
+        }
+        say
+    }
+
+    /// Counts a reason a light keeps (some of) its D3D passes; the line to
+    /// say the first time.
+    pub fn count_kept(&mut self, k: Keep) -> Vec<String> {
+        let n = self.kept.entry(k.clone()).or_insert(0);
+        *n += 1;
+        if *n == 1 { vec![format!("native-lights: a light keeps its D3D passes: {k}")] } else { Vec::new() }
+    }
+
+    /// One line: lights asked, planned, and kept by reason, most first.
+    pub fn summary(&self) -> String {
+        let mut kept: Vec<_> = self.kept.iter().collect();
+        kept.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let kept: Vec<String> = kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
+        format!(
+            "native-lights: host planned {} of {} lights, split {}; kept on D3D: {}",
+            self.planned,
+            self.asked,
+            self.split,
+            if kept.is_empty() { "none".to_string() } else { kept.join(", ") }
+        )
+    }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
@@ -93,7 +192,41 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn accepts(&self, _mem: &dyn GuestMemory, light: &Light) -> bool {
-        drawable(light) && self.ready().is_some_and(|(_, lights)| lights.plan(light).is_some())
+        let answer = match light.constants {
+            None => Err(Keep::NoConstants),
+            Some(c) if c.shadowed() => Err(Keep::Shadowed),
+            Some(_) => match self.ready() {
+                None => Err(Keep::NoWorld),
+                Some((_, lights)) => lights.plan(light).map(|_| ()),
+            },
+        };
+        let accepted = answer.is_ok();
+        let say = self.tally.lock().unwrap_or_else(|e| e.into_inner()).count(answer);
+        for line in say {
+            eprintln!("{line}");
+        }
+        accepted
+    }
+
+    fn split(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Arc<HashSet<u16>>> {
+        let answer = match self.ready() {
+            None => Err(Keep::NoWorld),
+            Some((_, lights)) => lights.plan_split(light),
+        };
+        let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        match answer {
+            Ok((_, shaders)) => {
+                tally.split += 1;
+                Some(Arc::new(shaders))
+            }
+            Err(Keep::SharedShader) => {
+                for line in tally.count_kept(Keep::SharedShader) {
+                    eprintln!("{line}");
+                }
+                None
+            }
+            Err(_) => None,
+        }
     }
 
     fn open(&self, _camera: &RenderCamera, run: Arc<Run>) -> bool {
@@ -129,11 +262,16 @@ pub fn drawable(light: &Light) -> bool {
     light.constants.is_some_and(|c| !c.shadowed())
 }
 
-/// The `matg` tag block of rasterizer data (`+0x10c`, count then
-/// address); `0x00022590` keeps its first element at `[0x00485a80]`.
-pub const RASTERIZER_DATA: u32 = 0x10c;
+/// The `matg` tag block of rasterizer data: its count at `+0x108`, the
+/// elements' address at `+0x10c`. `0x00022590` reads the globals tag
+/// (`[0x004e034c]`), tests the count (`[eax+0x108]`) and keeps the address
+/// (`[eax+0x10c]`, the first element) at `[0x00485a80]`, zero when the
+/// block is empty.
+pub const RASTERIZER_DATA: u32 = 0x108;
 /// The element's bitmap datums the light passes sample: engine texture 1
-/// (`+0xc`, the normalization cube) and 9 (`+4`, the attenuation volume).
+/// (`+0xc`, the normalization cube) and 9 (`+4`, the attenuation volume),
+/// the datum words of the tag references at `+8` and `+0` (`0x00019581`
+/// reads `[[0x00485a80]+0xc]`, `0x00019673` `[[0x00485a80]+4]`).
 pub const NORMALIZATION_DATUM: u32 = 0xc;
 pub const ATTENUATION_DATUM: u32 = 4;
 
@@ -152,24 +290,65 @@ pub fn light_bitmaps(read: &dyn Fn(u32, usize) -> Option<Vec<u8>>, matg: u32) ->
     (datum(NORMALIZATION_DATUM), datum(ATTENUATION_DATUM))
 }
 
+/// [`light_bitmaps`] over the map's ordinary metadata (`matg` the tag's
+/// virtual address, `Tag::location`, which the element's address shares).
+pub fn matg_light_bitmaps(meta: &tags::shader::Metadata, matg: u32) -> (Option<map::TagId>, Option<map::TagId>) {
+    light_bitmaps(&|addr, len| meta.bytes(addr, len).ok().map(<[u8]>::to_vec), matg)
+}
+
 /// A decoded bitmap's first image as a cube (six faces of level 0) or a
-/// volume (level 0's slices); `None` when it is not that shape.
+/// volume (level 0's slices), with the mip chain below it; `None` when it
+/// is not that shape. `assets::decode_image` gives a cube's levels
+/// face-major, each face's levels one slice deep, and a volume's as face 0
+/// only, each level with all its slices. The texels are the decode's, as
+/// the D3D path uploads them for a stage without `D3DTSS_COLORSIGN` (the
+/// light passes' engine stages; one with signed channels is refused,
+/// `native_render::program`).
 pub fn layered(levels: Vec<assets::bitmap::Level>, dim: TextureDim) -> Option<LayeredImage> {
-    let mut top: Vec<_> = levels.into_iter().filter(|l| l.level == 0).collect();
-    match dim {
-        TextureDim::Cube => LayeredImage::cube(top.into_iter().map(|l| (l.face, l.width, l.height, l.rgba)).collect()),
-        TextureDim::D3 => {
-            top.retain(|l| l.face == 0);
-            let [l] = <[_; 1]>::try_from(top).ok()?;
-            LayeredImage::volume(l.width, l.height, l.depth, l.rgba)
-        }
-        TextureDim::D2 => None,
+    let deepest = levels.iter().map(|l| l.level).max()?;
+    let (top, rest): (Vec<_>, Vec<_>) = levels.into_iter().partition(|l| l.level == 0);
+    let mut below: Vec<Vec<assets::bitmap::Level>> = (0..deepest).map(|_| Vec::new()).collect();
+    for l in rest {
+        below[l.level as usize - 1].push(l);
     }
+    let image = match dim {
+        TextureDim::Cube => {
+            if top.iter().any(|l| l.depth != 1) {
+                return None;
+            }
+            LayeredImage::cube(top.into_iter().map(|l| (l.face, l.width, l.height, l.rgba)).collect())?
+        }
+        TextureDim::D3 => {
+            // One level 0 of face 0: a cube's six faces are not a volume.
+            let [l] = <[_; 1]>::try_from(top).ok()?;
+            (l.face == 0).then_some(())?;
+            LayeredImage::volume(l.width, l.height, l.depth, l.rgba)?
+        }
+        TextureDim::D2 => return None,
+    };
+    // Each level's layers in order (a cube's faces 0..6, a volume's one
+    // face); a level that is not whole ends the chain (`with_mips`).
+    let mips = below
+        .into_iter()
+        .map(|mut faces| {
+            faces.sort_by_key(|l| l.face);
+            let whole = faces.iter().map(|l| l.face).eq(0..faces.len() as u32);
+            if whole { faces.into_iter().flat_map(|l| l.rgba).collect() } else { Vec::new() }
+        })
+        .collect();
+    Some(image.with_mips(mips))
+}
+
+/// What a decoded light texture is, for the load's log line.
+fn shape(levels: &[assets::bitmap::Level]) -> String {
+    let faces = levels.iter().map(|l| l.face).max().map_or(0, |f| f + 1);
+    let top: Vec<_> = levels.iter().filter(|l| l.level == 0).map(|l| (l.width, l.height, l.depth)).collect();
+    format!("{faces} faces, level 0 {top:?}")
 }
 
 /// [`light_bitmaps`] of the map's `matg`, decoded: `(normalization cube,
-/// attenuation volume)`. Logs what does not load (the light passes that
-/// sample it stay on the D3D path).
+/// attenuation volume)`. Says on stderr what loaded and, for what does not,
+/// why (the light passes that sample it stay on the D3D path).
 pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
     meta: &tags::shader::Metadata,
@@ -184,19 +363,29 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
         eprintln!("native-lights: no matg; the light textures do not load");
         return (None, None);
     };
-    let (n, a) = light_bitmaps(&|addr, len| meta.bytes(addr, len).ok().map(<[u8]>::to_vec), matg);
+    let (n, a) = matg_light_bitmaps(meta, matg);
     let mut decode = |id: Option<map::TagId>, dim, what| {
-        let image = id.and_then(|id| {
-            let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).ok()?.data else {
-                return None;
+        let image = (|| -> Result<LayeredImage, String> {
+            let id = id.ok_or_else(|| format!("no datum in matg {matg:#x} +{RASTERIZER_DATA:#x}'s element"))?;
+            let tag = tags::DecodedTag::read(map, id).map_err(|e| format!("{id:?} does not read: {e}"))?;
+            let tags::TagData::Bitmap(b) = tag.data else {
+                return Err(format!("{id:?} is not a bitmap"));
             };
-            let d = assets::decode_image(b.images.first()?, files).ok()?;
-            layered(d.levels, dim)
-        });
-        if image.is_none() {
-            eprintln!("native-lights: the {what} ({id:?}) does not load");
+            let image = b.images.first().ok_or_else(|| format!("{id:?} has no image"))?;
+            let d = assets::decode_image(image, files).map_err(|e| format!("{id:?} does not decode: {e}"))?;
+            let shape = shape(&d.levels);
+            layered(d.levels, dim).ok_or_else(|| format!("{id:?} is not a {dim:?} ({shape})"))
+        })();
+        match image {
+            Ok(i) => {
+                eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)", i.width, i.height, i.layers, 1 + i.mips.len());
+                Some(i)
+            }
+            Err(why) => {
+                eprintln!("native-lights: the {what} does not load: {why}");
+                None
+            }
         }
-        image
     };
     (decode(n, TextureDim::Cube, "normalization cube"), decode(a, TextureDim::D3, "attenuation volume"))
 }
@@ -206,6 +395,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::a
     feature::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
+        tally: Mutex::new(Tally::default()),
     }));
 }
 
@@ -271,8 +461,6 @@ pub struct Planned {
 struct Resolver {
     lib: ShaderLibrary,
     cache: LookCache<Lit>,
-    /// Refusals so far by reason (each said once on stderr).
-    refused: HashMap<String, u64>,
 }
 
 /// Distinct (material, layer, implementation, inputs) kept resolved.
@@ -285,6 +473,8 @@ pub struct LightsWorld {
     parts: Vec<LitPart>,
     /// Bounds of world surfaces the native pass cannot light.
     elsewhere: Vec<Aabb>,
+    /// Those surfaces' shaders (tag indices).
+    d3d_shaders: HashSet<u16>,
     /// World-space vertex programs by `vrtx`.
     microcode: HashMap<TagId, Vec<u8>>,
     /// Stage images by (bitmap, image).
@@ -296,22 +486,46 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
-    /// What `light` draws over the world, pass by pass, or `None` when it
-    /// must keep its D3D passes. Resolves (once per distinct inputs) under
-    /// the resolver's lock, which nothing else is held across.
-    pub fn plan(&self, light: &Light) -> Option<Vec<Planned>> {
-        let c = light.constants.filter(|c| !c.shadowed())?;
+    /// What `light` draws over the world, pass by pass, or why it must keep
+    /// its D3D passes. Resolves (once per distinct inputs) under the
+    /// resolver's lock, which nothing else is held across.
+    pub fn plan(&self, light: &Light) -> Result<Vec<Planned>, Keep> {
+        self.plan_with(light, true).map(|(planned, _)| planned)
+    }
+
+    /// [`Self::plan`] for a split light: the native parts its sphere meets
+    /// whatever else it meets, with the world shaders (tag indices) of
+    /// those parts' materials, which its D3D passes then leave out
+    /// (`feature::native_lights::split_layer`). Refused when one of those
+    /// shaders also draws a surface left to D3D, since leaving its items
+    /// out would leave that surface unlit.
+    pub fn plan_split(&self, light: &Light) -> Result<(Vec<Planned>, HashSet<u16>), Keep> {
+        let (planned, shaders) = self.plan_with(light, false)?;
+        if !shaders.is_disjoint(&self.d3d_shaders) {
+            return Err(Keep::SharedShader);
+        }
+        Ok((planned, shaders))
+    }
+
+    fn plan_with(&self, light: &Light, whole: bool) -> Result<(Vec<Planned>, HashSet<u16>), Keep> {
+        let c = light.constants.ok_or(Keep::NoConstants)?;
+        if c.shadowed() {
+            return Err(Keep::Shadowed);
+        }
         let (centre, radius) = light.bounds;
-        let meeting = parts_meeting(&self.parts, &self.elsewhere, centre, radius)?;
+        let elsewhere: &[Aabb] = if whole { &self.elsewhere } else { &[] };
+        let meeting = parts_meeting(&self.parts, elsewhere, centre, radius).ok_or(Keep::MeetsD3dSurface)?;
+        let mut shaders = HashSet::new();
         // Resolved without the colours, which each light's uniforms take
         // (`colour_uniforms`): a light whose colour animates keeps its key.
         let inputs = LightInputs::from_constants(&c).without_colours();
         let key = inputs.key();
         let mut out = Vec::new();
         let mut r = self.resolver.lock().unwrap_or_else(|e| e.into_inner());
-        let Resolver { lib, cache, refused } = &mut *r;
+        let Resolver { lib, cache } = &mut *r;
         for (m, ranges) in meeting {
-            let lit = self.materials.get(&m)?;
+            let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
+            shaders.insert(lit.shader.0 as u16);
             let int_input = lit.instance.ints[4] as u16;
             for layer in [DIFFUSE_LAYER, SPECULAR_LAYER] {
                 let Some(imp) = engine::light_passes::implementation(layer as u32, c.flags, c.definition_flags as u8, int_input) else {
@@ -321,18 +535,9 @@ impl LightsWorld {
                 let made = cache.get_or_make(lit.shader, layer, imp, key, || self.resolve(lib, lit, &inputs, layer, imp));
                 match made {
                     Lit::Nothing => {}
-                    Lit::Refused(why) => {
-                        let n = refused.entry(why.clone()).or_insert(0);
-                        *n += 1;
-                        if *n == 1 {
-                            eprintln!("native-lights: a light keeps its D3D passes: {why}");
-                        }
-                        return None;
-                    }
+                    Lit::Refused(why) => return Err(Keep::Refused(why)),
                     Lit::Draw(compiled) => {
-                        if !self.binds(&compiled.program, c.gel) {
-                            return None;
-                        }
+                        self.binds(&compiled.program, c.gel)?;
                         out.push(Planned {
                             compiled,
                             ranges: ranges.clone(),
@@ -341,7 +546,7 @@ impl LightsWorld {
                 }
             }
         }
-        Some(out)
+        Ok((out, shaders))
     }
 
     /// Resolves `lit` with the light's inputs and compiles its pass.
@@ -368,18 +573,24 @@ impl LightsWorld {
     }
 
     /// Whether every texture `program` samples is loaded, with `gel` the
-    /// light's.
-    fn binds(&self, program: &LightProgram, gel: Option<u32>) -> bool {
-        program.stages.iter().zip(&program.dims).all(|(s, d)| {
-            d.is_none()
-                || match *s {
-                    LightStage::Empty => false,
-                    LightStage::Bitmap { bitmap, image } => self.images.contains_key(&(bitmap, image)),
-                    LightStage::Normalization => self.normalization.is_some(),
-                    LightStage::Attenuation => self.attenuation.is_some(),
-                    LightStage::Gel => gel.is_some_and(|g| self.gels.contains_key(&g)),
-                }
-        })
+    /// light's; the first that is not, when one is not.
+    fn binds(&self, program: &LightProgram, gel: Option<u32>) -> Result<(), Keep> {
+        for (s, d) in program.stages.iter().zip(&program.dims) {
+            if d.is_none() {
+                continue;
+            }
+            let (loaded, what) = match *s {
+                LightStage::Empty => (false, "empty stage"),
+                LightStage::Bitmap { bitmap, image } => (self.images.contains_key(&(bitmap, image)), "stage bitmap"),
+                LightStage::Normalization => (self.normalization.is_some(), "normalization cube"),
+                LightStage::Attenuation => (self.attenuation.is_some(), "attenuation volume"),
+                LightStage::Gel => (gel.is_some_and(|g| self.gels.contains_key(&g)), "gel"),
+            };
+            if !loaded {
+                return Err(Keep::Unloaded(what));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -466,6 +677,12 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
     // has (or may have) lit layers keeps the lights meeting it on D3D.
     let mut parts = Vec::new();
     let mut elsewhere = Vec::new();
+    // Why each surface is left to D3D: opaque and drawn by D3D (the world
+    // left its material there), opaque with a shader that does not read,
+    // transparent with lit layers, transparent with a shader that does not
+    // read.
+    let mut why = [0usize; 4];
+    let mut d3d_materials = Vec::new();
     for d in &world.draws {
         match lit_of.get(&d.material).copied().flatten() {
             Some(true) if native(d.material) => parts.push(LitPart {
@@ -475,20 +692,48 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                 index_count: d.index_count,
             }),
             Some(false) => {}
-            _ => elsewhere.push(d.bounds),
+            Some(true) => {
+                why[0] += 1;
+                elsewhere.push(d.bounds);
+                d3d_materials.push(d.material);
+            }
+            None => {
+                why[1] += 1;
+                elsewhere.push(d.bounds);
+                d3d_materials.push(d.material);
+            }
         }
     }
     for t in &world.transparents {
-        if lit_of.get(&t.material).copied().flatten() != Some(false) {
-            elsewhere.push(t.bounds);
+        match lit_of.get(&t.material).copied().flatten() {
+            Some(false) => {}
+            Some(true) => {
+                why[2] += 1;
+                elsewhere.push(t.bounds);
+                d3d_materials.push(t.material);
+            }
+            None => {
+                why[3] += 1;
+                elsewhere.push(t.bounds);
+                d3d_materials.push(t.material);
+            }
         }
     }
+    let d3d_shaders = d3d_materials
+        .iter()
+        .filter_map(|&m| shaders.get(usize::from(m)))
+        .map(|s| s.0 as u16)
+        .collect();
     let (normalization, attenuation) = light_textures(map, lib.metadata(), files);
     let gels = gels(map, &lib, files);
     eprintln!(
-        "native-lights: {} lit parts, {} surfaces left to D3D, {} vertex programs, {} stage images, {} gels",
+        "native-lights: {} lit parts, {} surfaces left to D3D ({} opaque D3D draws, {} opaque unread shaders, {} transparent lit, {} transparent unread; a light meeting one keeps its D3D passes), {} vertex programs, {} stage images, {} gels",
         parts.len(),
         elsewhere.len(),
+        why[0],
+        why[1],
+        why[2],
+        why[3],
         microcode.len(),
         images.len(),
         gels.len()
@@ -497,11 +742,11 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
         resolver: Mutex::new(Resolver {
             lib,
             cache: LookCache::new(CACHE_CAPACITY),
-            refused: HashMap::new(),
         }),
         materials,
         parts,
         elsewhere,
+        d3d_shaders,
         microcode,
         images,
         gels,
@@ -548,7 +793,10 @@ impl d3d::ExternalPass for RunPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
         let lights = Arc::clone(&self.lights);
-        self.plans = self.run.seal().into_iter().filter_map(|l| Some((l, lights.plan(&l)?))).collect();
+        // The native parts each light meets: a light drawn whole meets
+        // nothing else, and a split light's other surfaces are its D3D
+        // passes' (`LightsWorld::plan_split`, checked when it joined).
+        self.plans = self.run.seal().into_iter().filter_map(|l| Some((l, lights.plan_with(&l, false).ok()?.0))).collect();
     }
 
     fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
@@ -622,20 +870,154 @@ mod tests {
         }
     }
 
+    /// A synthetic metadata region at virtual `base`, zeroes but `words`.
+    fn metadata(base: u32, len: usize, words: &[(u32, u32)]) -> tags::shader::Metadata {
+        let mut b = vec![0u8; len];
+        for &(a, v) in words {
+            let o = (a - base) as usize;
+            b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        tags::shader::Metadata::new(base, b)
+    }
+
     #[test]
-    fn the_light_bitmaps_come_from_the_rasterizer_data() {
-        let mut m = std::collections::HashMap::new();
-        let mut put = |a: u32, v: u32| {
-            m.insert(a, v);
-        };
-        let matg = 0x8000_0000;
-        put(matg + RASTERIZER_DATA, 1);
-        put(matg + RASTERIZER_DATA + 4, 0x8000_1000);
-        put(0x8000_1000 + NORMALIZATION_DATUM, 0xe001_0002);
-        put(0x8000_1000 + ATTENUATION_DATUM, u32::MAX);
-        let read = |a: u32, len: usize| (len == 4).then(|| m.get(&a).map(|v| v.to_le_bytes().to_vec())).flatten();
-        assert_eq!(light_bitmaps(&read, matg), (Some(map::TagId(0xe001_0002)), None));
-        assert_eq!(light_bitmaps(&read, 0x9000_0000), (None, None), "unreadable");
+    fn the_light_bitmaps_come_from_matgs_rasterizer_block_through_the_metadata() {
+        // `0x00022590`: count at matg +0x108, the first element's address
+        // at +0x10c; `0x00019530` reads datums at the element's +0xc
+        // (texture 1) and +4 (texture 9), each a tag reference's datum.
+        assert_eq!((RASTERIZER_DATA, NORMALIZATION_DATUM, ATTENUATION_DATUM), (0x108, 0xc, 4));
+        let base = 0x8000_0000;
+        let matg = base + 0x200;
+        let element = base + 0x800;
+        let bitm = map::FourCC(*b"bitm").as_u32();
+        let mut words = vec![
+            (matg + 0x108, 1),
+            (matg + 0x10c, element),
+            // The next field: reading the block one word late took this
+            // for the elements' address (and the address for the count).
+            (matg + 0x110, 0x40),
+            (element, bitm),
+            (element + 4, 0xe000_0009),
+            (element + 8, bitm),
+            (element + 0xc, 0xe000_0001),
+        ];
+        let meta = metadata(base, 0x1000, &words);
+        assert_eq!(matg_light_bitmaps(&meta, matg), (Some(TagId(0xe000_0001)), Some(TagId(0xe000_0009))));
+        // The tag's file offset is not a metadata address.
+        assert_eq!(matg_light_bitmaps(&meta, 0x200), (None, None));
+        // A null reference is no bitmap.
+        words[6].1 = u32::MAX;
+        assert_eq!(matg_light_bitmaps(&metadata(base, 0x1000, &words), matg), (None, Some(TagId(0xe000_0009))));
+        // An empty block names nothing, whatever its address says.
+        words[0].1 = 0;
+        assert_eq!(matg_light_bitmaps(&metadata(base, 0x1000, &words), matg), (None, None));
+        // An element outside the metadata does not read.
+        words[0].1 = 1;
+        words[1].1 = base + 0x2000;
+        assert_eq!(matg_light_bitmaps(&metadata(base, 0x1000, &words), matg), (None, None));
+    }
+
+    #[test]
+    fn the_light_textures_take_the_shapes_the_bitmap_decode_gives() {
+        use gfx::D3DFormat;
+        use gfx::texture::{TextureDesc, TextureKind};
+        // A swizzled X8R8G8B8 cube (an Xrgb8888 cube bitmap's descriptor),
+        // 4x4 with three levels, each face's level 0 filled with its number.
+        let desc = TextureDesc::new(D3DFormat::X8R8G8B8, TextureKind::Cube, 4, 4, 1, 3);
+        let layout = desc.layout().unwrap();
+        let mut data = vec![0u8; layout.total_size];
+        for f in 0..6 {
+            let at = f * layout.face_stride;
+            data[at..at + layout.levels[0].size].fill(f as u8 + 1);
+        }
+        let levels = assets::bitmap::decode_bytes(&desc, &data).unwrap();
+        assert_eq!(levels.len(), 18, "six faces of three levels, face-major");
+        assert!(levels.iter().all(|l| l.depth == 1));
+        let cube_levels = levels.clone();
+        let c = layered(levels, TextureDim::Cube).expect("a cube");
+        assert_eq!((c.dim, c.width, c.height, c.layers, c.rgba.len()), (TextureDim::Cube, 4, 4, 6, 6 * 64));
+        for f in 0..6 {
+            assert_eq!(c.rgba[f * 64], f as u8 + 1, "face {f} in its layer");
+        }
+        assert!(layered(cube_levels, TextureDim::D3).is_none(), "a cube is not a volume");
+
+        // A swizzled AL8 volume (an Ay8 volume bitmap's), 4x4x4, three levels.
+        let desc = TextureDesc::new(D3DFormat::Al8, TextureKind::Volume, 4, 4, 4, 3);
+        let data = vec![0x80u8; desc.layout().unwrap().total_size];
+        let levels = assets::bitmap::decode_bytes(&desc, &data).unwrap();
+        let shape: Vec<_> = levels.iter().map(|l| (l.face, l.level, l.width, l.depth)).collect();
+        assert_eq!(shape, vec![(0, 0, 4, 4), (0, 1, 2, 2), (0, 2, 1, 1)], "face 0 only, each level all its slices");
+        let volume_levels = levels.clone();
+        let v = layered(levels, TextureDim::D3).expect("a volume");
+        assert_eq!((v.dim, v.width, v.height, v.layers, v.rgba.len()), (TextureDim::D3, 4, 4, 4, 4 * 64));
+        assert!(v.rgba.iter().all(|&b| b == 0x80), "AL8 decodes to (v, v, v, v)");
+        assert!(layered(volume_levels, TextureDim::Cube).is_none(), "a volume is not a cube");
+    }
+
+    /// A decoded texel as the sampler returns it (R, G, B, A), whichever
+    /// host format the decode chose.
+    fn sampled(host: gfx::HostFormat, px: &[u8]) -> [u8; 4] {
+        match host {
+            gfx::HostFormat::Bgra8Unorm => [px[2], px[1], px[0], px[3]],
+            gfx::HostFormat::Rgba8Unorm => [px[0], px[1], px[2], px[3]],
+            h => panic!("{h:?}"),
+        }
+    }
+
+    #[test]
+    fn the_native_light_textures_hold_the_texels_the_d3d_path_uploads() {
+        use gfx::D3DFormat;
+        use gfx::texture::{TextureDesc, TextureKind};
+        // The engine stages sample without D3DTSS_COLORSIGN (the combiner
+        // expands with _bx2), so the D3D path decodes with no sign bits.
+        let cases = [
+            (TextureDesc::new(D3DFormat::X8R8G8B8, TextureKind::Cube, 4, 4, 1, 3), TextureDim::Cube),
+            (TextureDesc::new(D3DFormat::Al8, TextureKind::Volume, 4, 4, 4, 3), TextureDim::D3),
+        ];
+        for (desc, dim) in cases {
+            let len = desc.layout().unwrap().total_size;
+            // Synthetic texels, all different nearby.
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let d3d = gfx::decode_texture(&desc, &data, None, gfx::DecodeOptions::default().with_color_sign(0)).unwrap();
+            let native = layered(assets::bitmap::decode_bytes(&desc, &data).unwrap(), dim).expect("the shape");
+            assert_eq!(1 + native.mips.len() as u32, desc.levels, "{dim:?}: the whole chain");
+            for l in &d3d.levels {
+                let bytes = if l.level == 0 { &native.rgba } else { &native.mips[l.level as usize - 1] };
+                assert_eq!(native.level_size(l.level), (l.width, l.height, if dim == TextureDim::Cube { 6 } else { l.depth }));
+                let layer = (l.width * l.height * l.depth * 4) as usize;
+                let at = l.face as usize * layer;
+                for (i, px) in l.data.chunks_exact(4).enumerate() {
+                    let ours = &bytes[at + 4 * i..at + 4 * i + 4];
+                    assert_eq!(sampled(d3d.host, px), [ours[0], ours[1], ours[2], ours[3]], "{dim:?} face {} level {} texel {i}", l.face, l.level);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_tally_says_each_reason_once_and_sums_up() {
+        let mut t = Tally::default();
+        assert_eq!(
+            t.count(Err(Keep::Unloaded("normalization cube"))),
+            vec!["native-lights: a light keeps its D3D passes: samples an unloaded normalization cube".to_string()]
+        );
+        assert!(t.count(Err(Keep::Unloaded("normalization cube"))).is_empty(), "once per reason");
+        assert_eq!(
+            t.count(Err(Keep::MeetsD3dSurface)),
+            vec!["native-lights: a light keeps its D3D passes: meets a surface left to D3D".to_string()]
+        );
+        assert!(t.count(Ok(())).is_empty());
+        assert_eq!(
+            t.summary(),
+            "native-lights: host planned 1 of 4 lights, split 0; kept on D3D: 2 samples an unloaded normalization cube, 1 meets a surface left to D3D"
+        );
+        for _ in 5..SUMMARY_EVERY {
+            assert!(t.count(Ok(())).is_empty());
+        }
+        let said = t.count(Ok(()));
+        assert_eq!(t.asked, SUMMARY_EVERY);
+        assert_eq!(said, vec![t.summary()], "the counts every SUMMARY_EVERY lights");
+        assert_eq!(Tally::default().summary(), "native-lights: host planned 0 of 0 lights, split 0; kept on D3D: none");
     }
 
     #[test]

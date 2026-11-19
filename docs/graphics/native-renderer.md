@@ -1167,9 +1167,13 @@ skipped light never reaches.
    - **Engine textures** (`0x00019530`, a jump table at `0x00019b68`
      indexed by id - 1; Code): ids 1, 9 and 14 are bitmaps from the
      globals' rasterizer data (`[0x00485a80]`, set by `0x00022590` from
-     `matg +0x10c`, the block's first element), the datums at `+0xc`,
-     `+4` and `+0x14`; S from how the light passes sample them, 1 is the
+     the `matg` block at `+0x108`: it tests the count `[eax+0x108]` and
+     keeps the address `[eax+0x10c]`, the first element, or zero), the
+     datums at `+0xc`, `+4` and `+0x14` (each the datum word of a tag
+     reference); S from how the light passes sample them, 1 is the
      vector normalization cube map and 9 the distance attenuation volume.
+     V on 03a: the block's count is 1; the bitmaps are a swizzled
+     `Xrgb8888` cube and a swizzled `Ay8` volume, both with mips.
      Id 10 is the light's own texture: with `[0x004858c8]` zero or no
      definition, `0x000196d3` (not traced); definition flag `0x80000`
      redirects to id 18; a definition `+0xe0` other than -1, with
@@ -1268,9 +1272,14 @@ skipped light never reaches.
      `native_render::light_gpu` uploads the cube and volume
      (`LayeredImage`, `layered_texture`) and draws a compiled pass with
      one uniform group per light (`LightGpu`); `boot::native_lights_glue`
-     reads the light textures' bitmaps from `matg +0x10c`
-     (`light_bitmaps`, `light_textures`) and says which lights are
-     drawable (constants, no shadow).
+     reads the light textures' bitmaps from the `matg +0x108` block
+     (`light_bitmaps`, `matg_light_bitmaps` over the ordinary metadata,
+     `light_textures`; `layered` takes a cube's six level-0 faces and a
+     volume's one level 0 of face 0, as `assets::decode_image` gives
+     them) and says which lights are drawable (constants, no shadow).
+     The first wiring read the block one word late (the address as the
+     count, the next field as the address), so neither texture loaded
+     and every pass sampling them stayed on D3D.
    - **Host wiring** (Code; `boot::native_lights_glue`). Texture 10, the
      gel (`0x00019530`'s id-10 case, `engine::light_passes::gel`): with
      the context's first word non-zero (`[0x004858c8]`, copied by
@@ -1313,6 +1322,68 @@ skipped light never reaches.
      - Uniforms: one buffer per run, each draw's vertex and pixel uniforms
        at aligned dynamic offsets (`light_gpu::uniforms_layout`,
        `run_layout`), one group for the run.
+     - Diagnostics (stderr, `native-lights:`). At load: each light
+       texture loads with its size and layers, or says why not (no datum,
+       the tag does not read, does not decode, or the wrong shape with
+       the faces and level-0 sizes it has); the surfaces left to D3D split
+       into opaque D3D draws, opaque unread shaders, transparent lit and
+       transparent unread. At run time `plan` says why a light keeps its
+       D3D passes (`Keep`: no world, no constants, shadowed, meets a
+       surface left to D3D, no material, a refused pass with why, or an
+       unloaded texture: which), `accepts` counts the answers (`Tally`),
+       says each reason the first time, and every 1800 lights prints the
+       lights planned and the kept ones by reason, most first. The
+       feature's own line (drawn natively, runs, meeting an object) only
+       prints when a run opens.
+     - Engine textures' texels (Code, V on 03a's `tile_metal_dark`): the
+       light passes' samplers for the normalization cube and the
+       attenuation volume carry no `D3DTSS_COLORSIGN` (the implementations'
+       stage states; an engine-set stage state refuses the pass in
+       `light_look`), and the combiners expand the cube with `bx2`, so
+       both are sampled unsigned. The D3D path decodes them with
+       `gfx::decode_texture` and the stage's sign bits (none), so the
+       native upload is the decode as it is, with no bias; a pass whose
+       engine stage reads signed channels is refused by
+       `program::translate_pass` (not stored biased) and the light keeps
+       its D3D passes. The samplers filter between mips (mip filter
+       linear) and the D3D path uploads the whole chain, so
+       `LayeredImage` carries it too (`with_mips`, `level_size`;
+       `layered` takes each level's faces in order). Test:
+       `the_native_light_textures_hold_the_texels_the_d3d_path_uploads`
+       (synthetic X8R8G8B8 cube and AL8 volume through both decodes,
+       every face, level and texel).
+     - **Split lights** (Code, `impl.render.native_lights_split`, off by
+       default). A light that meets a surface left to D3D, or a live
+       object, keeps all its D3D passes. Split instead: the light draws
+       its native world surfaces natively and its D3D passes draw the
+       rest, each surface once. `RENDER_LIGHT_PASSES` draws layers 14, 12
+       and 13 on the light's list `0x004c1a60` through the layer draw,
+       each followed by the layer's end `0x000445d0` (`points::LAYER_END`;
+       it sets the current layer back to 0). Where the list is emptied
+       between lights is not traced (`0x00030fa0` moves its `+0xc` up to
+       the count and zeroes its OR, so items can stay in the buffer), so
+       the bits go back at each layer's end rather than waiting for a
+       rebuild. The host's `split`
+       (`LightsWorld::plan_split`: the parts its sphere meets, whatever
+       else it meets, and their materials' shaders; refused when one of
+       those shaders also draws a surface left to D3D) names the
+       shaders; the light joins the run and its passes run; before each
+       of those three layer draws (matched by return address,
+       `0x000313e2`, `0x0003144f`, `0x000314cf`, so the first-person
+       lights' draws on the same list are not touched) the layer's bit
+       is cleared on those shaders' BSP items (`skip::clear_structure`),
+       and before the layer's end it is set back on the items that still
+       hold the mask it left. Objects' items are not BSP items, so the
+       D3D passes light objects. The run's pass is issued at the device's
+       next entry, the split light's own first D3D call, so its native
+       surfaces are lit just before its D3D ones; the lit passes test
+       depth equal, so a pixel is one surface's and the order between the
+       two sets does not matter (S: a transparent surface lit at the same
+       depth as an opaque one would see the two in the other order).
+       Residual: an unreadable item ends the clear early, and the items
+       left would be lit twice (the game reads the same items right
+       after). Tests: `a_split_light_lights_each_surface_once`
+       (feature's `native_lights_split`), and the placement test.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
