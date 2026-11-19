@@ -51,11 +51,11 @@ fn rotated(base: [f64; 3], delta: f64) -> Result<[u32; 2]> {
 
 pub(super) fn prepare(frame: &Frame) -> Result<Value> {
     let mut row = serde_json::to_value(frame)?;
-    let mut reference = None;
     for (name, rows) in row.as_object_mut().ok_or(Error::Invalid)? {
         let Some(rows) = rows.as_array_mut() else {
             continue;
         };
+        let mut reference: Option<([f64; 3], f64)> = None;
         for (i, row) in rows.iter_mut().enumerate() {
             let obj = row.as_object_mut().ok_or(Error::Invalid)?;
             // The signed JSON writer omits zero/empty optional event fields.
@@ -112,11 +112,18 @@ pub(super) fn prepare(frame: &Frame) -> Result<Value> {
                 }
                 let mut xy = q.map(i64::from);
                 let mut tag = format!("${k}");
-                if name == "players" && k == "aim" {
+                if matches!(name.as_str(), "players" | "actors") && k == "aim" {
                     if let (Some((base, h0)), Some(h)) = (reference, heading) {
-                        let pred = rotated(base, h - h0)?;
-                        xy = [xy[0] - i64::from(pred[0]), xy[1] - i64::from(pred[1])];
-                        tag = "$r".into();
+                        // Only use the common orientation when it actually
+                        // predicts both octahedral components closely.
+                        if (h - h0).abs() <= std::f64::consts::TAU {
+                            let pred = rotated(base, h - h0)?;
+                            let delta = [xy[0] - i64::from(pred[0]), xy[1] - i64::from(pred[1])];
+                            if delta.iter().all(|d| d.abs() <= 16) {
+                                xy = delta;
+                                tag = "$r".into();
+                            }
+                        }
                     } else if i == 0 {
                         reference = heading.map(|h| (v, h));
                     }
@@ -130,11 +137,11 @@ pub(super) fn prepare(frame: &Frame) -> Result<Value> {
 }
 
 pub(super) fn restore(mut row: Value) -> Result<Frame> {
-    let mut reference = None;
     for (name, rows) in row.as_object_mut().ok_or(Error::Invalid)? {
         let Some(rows) = rows.as_array_mut() else {
             continue;
         };
+        let mut reference: Option<([f64; 3], f64)> = None;
         for (i, row) in rows.iter_mut().enumerate() {
             let obj = row.as_object_mut().ok_or(Error::Invalid)?;
             if let Some(q) = obj.remove("$y") {
@@ -168,7 +175,7 @@ pub(super) fn restore(mut row: Value) -> Result<Frame> {
                         .ok_or(Error::Invalid)
                 };
                 let v = pack::unoct([get(x, base[0])?, get(y, base[1])?]);
-                if i == 0 && name == "players" && k == "aim" {
+                if i == 0 && matches!(name.as_str(), "players" | "actors") && k == "aim" {
                     reference = heading.map(|h| (v, h));
                 }
                 obj.insert(k.into(), json!(v));
