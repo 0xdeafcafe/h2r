@@ -58,6 +58,8 @@
 .s-timeline-head small { color: #aaa; font-size: 9px; }
 .s-game .replay-bar { height: 36px; border-top: 0; background: #161616; }
 .s-game .replay-bar .play { width: 28px; height: 23px; border-color: #777; border-radius: 0; background: #2b2b2b; }
+.s-game .replay-live { height: 23px; padding: 0 6px; border: 1px solid #777; background: #2b2b2b; color: #fff; cursor: pointer; font: bold 11px var(--font-ui); }
+.s-game .replay-live:hover, .s-game .replay-live[aria-pressed="true"] { border-color: #ef9e96; background: #702f29; }
 .s-game .replay-time { font-size: 10px; }
 .s-game .scrub { min-width: 30px; }
 .s-game .scrub input { height: 24px; top: -4px; }

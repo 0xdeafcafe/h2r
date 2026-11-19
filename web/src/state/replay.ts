@@ -1,6 +1,5 @@
-// Replays of ended games: 1 Hz recorded frames plus the game's events,
-// sampled at any tick, with the marks, steps and killcams the transport
-// offers.
+// Frames plus the game's events, sampled at any tick, with the marks,
+// steps and killcams the viewer offers.
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import { recordedFrame } from "../api/pack";
@@ -84,6 +83,7 @@ export class ReplayTimeline {
   readonly scores: ScoreSnapshot[];
   readonly startTick: number;
   readonly endTick: number;
+  private readonly latestRunOffset: number;
 
   /** Where the recording's ticks ran backwards (a campaign checkpoint
    *  revert or mission restart, recorded before the game's clock kept
@@ -123,6 +123,7 @@ export class ReplayTimeline {
       clock.place(sorted, ticks);
     }
     this.cuts = clock.cuts;
+    this.latestRunOffset = clock.runs.at(-1)?.offset ?? 0;
     const tickOf = (ev: WireEvent, raw: number) => ticks.get(ev) ?? raw;
 
     this.kills = [];
@@ -190,17 +191,9 @@ export class ReplayTimeline {
     return cinematicAt(this.frames, this.clamp(tick));
   }
 
-  /** Where a replay opens: the end, or when the game ended in a cutscene
-   *  (a mission's closing one), the last recorded frame before it. */
-  get openTick(): number {
-    const c = this.cinematicSpanAt(this.endTick);
-    if (!c) return this.endTick;
-    let at = this.startTick;
-    for (const f of this.frames) {
-      if (f.tick >= c.from) break;
-      if (!f.cinematic) at = f.tick;
-    }
-    return at;
+  /** Puts a live buffer tick from the match's last run on the replay clock. */
+  tickFromLatestRun(tick: number): number {
+    return this.clamp(tick + this.latestRunOffset);
   }
 
   private marksCache: TimelineMark[] | null = null;
@@ -433,22 +426,24 @@ export class ReplayClock {
   private baseTick: number;
   private baseTime = 0;
 
-  constructor(readonly timeline: ReplayTimeline) {
+  constructor(readonly timeline: ReplayTimeline, private readonly growing = false) {
     this.baseTick = timeline.startTick;
   }
 
   tickAt(now: number): number {
     if (!this.playing) return this.baseTick;
-    let t = this.baseTick + ((now - this.baseTime) / 1000) * TICKS_PER_SECOND * this.speed;
+    const elapsed = Math.max(0, now - this.baseTime);
+    let t = this.baseTick + (elapsed / 1000) * TICKS_PER_SECOND * this.speed;
     // Playing skips a cutscene: on to the first frame after it.
     const c = this.timeline.cinematicSpanAt(t);
-    if (c && c.to > t) {
+    if (elapsed > 0 && c && c.to > t) {
       this.baseTick = t = c.to;
       this.baseTime = now;
     }
     if (t >= this.timeline.endTick) {
-      this.playing = false;
+      this.playing = this.growing;
       this.baseTick = this.timeline.endTick;
+      this.baseTime = now;
       return this.baseTick;
     }
     return t;
@@ -456,7 +451,7 @@ export class ReplayClock {
 
   play(now: number): void {
     if (this.playing) return;
-    if (this.baseTick >= this.timeline.endTick) this.baseTick = this.timeline.startTick;
+    if (!this.growing && this.baseTick >= this.timeline.endTick) this.baseTick = this.timeline.startTick;
     this.baseTime = now;
     this.playing = true;
   }

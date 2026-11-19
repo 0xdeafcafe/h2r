@@ -742,8 +742,24 @@ export class FrameBuffer {
 
   /** Every machine heard of, as last sent. */
   private machines = new Map<string, SampledMachine>();
+  private historyReaders = 0;
 
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
+
+  /** Keep about 30 seconds at the live stream's maximum of 15 fps while
+   *  a viewer has a scrubber open. Other games keep their shorter buffer. */
+  keepPlaybackHistory(): () => void {
+    this.historyReaders++;
+    return () => {
+      this.historyReaders--;
+      this.trim();
+    };
+  }
+
+  private trim(): void {
+    const capacity = this.historyReaders ? Math.max(450, this.capacity) : this.capacity;
+    if (this.frames.length > capacity) this.frames.splice(0, this.frames.length - capacity);
+  }
 
   get lastTick(): number {
     return this.frames.length ? this.frames[this.frames.length - 1]!.tick : 0;
@@ -766,7 +782,7 @@ export class FrameBuffer {
       const m = fromFrameMachine(raw);
       if (m && (this.machines.has(m.id) || this.machines.size < MAX_MACHINES)) this.machines.set(m.id, m);
     }
-    if (this.frames.length > this.capacity) this.frames.splice(0, this.frames.length - this.capacity);
+    this.trim();
     for (const p of frame.players) {
       const [x, y, z] = p.pos;
       const b = this.bounds;

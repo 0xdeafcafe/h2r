@@ -1808,6 +1808,12 @@ fn reads_a_vehicle_graph_s_tables() {
         h1::weapon_types(&img, at).unwrap(),
         [("cg".to_owned(), "fixed".to_owned())]
     );
+    // The same classes in a graph without a vehicles element (a biped's,
+    // whose converted graph holds only the types its animations name).
+    let (mut img, at) = vehicle_image();
+    let o = (at - BASE) as usize;
+    img.0[o + 0x24..o + 0x28].fill(0);
+    assert!(h1::weapon_types(&img, at).unwrap().is_empty());
     // A graph without the tables has none.
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
