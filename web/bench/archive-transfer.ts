@@ -19,7 +19,7 @@ function equal(a: unknown, b: unknown): void {
 for (const prefix of ["mp16", "campaign"]) {
   const files = readdirSync(dir).filter(n => n.startsWith(prefix + "-") && n.endsWith(".br")).sort();
   if (!files.length) continue;
-  const buffers = files.map(n => readFileSync(join(dir, n)));
+  const buffers: Buffer[] = files.map(n => readFileSync(join(dir, n)));
   const jsonBuffers = files.map(n => readFileSync(join(dir, n.replace(/\.br$/, ".json"))));
   let count = 0, indexBytes = 0, playerSamples = 0;
   let previousHash: string | null = null;
