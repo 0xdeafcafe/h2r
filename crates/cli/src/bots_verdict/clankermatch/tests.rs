@@ -235,6 +235,39 @@ fn no_clanker_hoppers_from_the_server_fails_step_2_saying_why() {
 }
 
 #[test]
+fn a_picker_answered_signed_out_fails_step_2_naming_it() {
+    // Run 20261119-115144: the picker opened at boot and on each Xbox
+    // Live press, and was closed on its no-account row every time; no
+    // local bot was placed, so no join gate line named it. The game's
+    // own line does now; a cursor move is the same opening.
+    let picker = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+    let picker_row_1 = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1680001]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+    let main = "ui: screen none (slot 4: window 5 active 0x82539070 pending 0x0 list [0x1/0xe16e0001]; slot 0: no window)";
+    let lines = [
+        "bots-test: server clanker hoppers [8, 9, 10]",
+        "live: playing as Tester (0009f57cc2a65878) on http://127.0.0.1:8077",
+        picker,
+        picker_row_1,
+        main,
+        "bots-drive: press a on screen none main menu row 1 (Xbox Live (signs in))",
+        picker,
+        main,
+        "bots-drive: stuck: no Xbox Live menu after 4 tries; back on the main menu",
+    ];
+    let v = run(&slayer(), &lines);
+    let (n, r) = first(&v);
+    assert_eq!(n, 2, "{r}");
+    assert!(
+        r.contains("account picker (dialog 0x14") && r.contains("opened 2 time(s)"),
+        "{r}"
+    );
+    assert!(
+        r.contains("bots-drive: stuck"),
+        "the drive's last words: {r}"
+    );
+}
+
+#[test]
 fn an_empty_list_or_no_row_fails_step_3() {
     let mut lines = whole_run();
     lines.insert(

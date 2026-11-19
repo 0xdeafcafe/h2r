@@ -3623,11 +3623,19 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the main menu four times. Then one row per account `XOnlineGetUsers`
    lists (the run's `live/accounts.json`: Tester), then New Account. A on
    an account row copies it into the profile and logs on (`0x24b2ea`,
-   `0x24b664`). So the drive knows the picker by the bots' join gate line
-   (`dialog 0x14 (window 3, ...)`), presses DOWN off row 0 and A on the
-   account (A anyway when the cursor shows no move), once per opening, and
-   gives up after 3 picks that did not sign in, or a picker still up 30 s
-   after A. Another dialog on the way gets A, and a request for the
+   `0x24b664`). So the drive knows the picker by the game's `ui: screen
+   none` line, which names the dialog up (`, dialog 0x14
+   dialog_live_signin (window 3, slot 4)`; `ui.screen` answers it as
+   `dialog`), or by the bots' join gate line (`dialog 0x14 (window 3,
+   ...)`). The gate line alone was not enough: a Clankermatch run places
+   no local bot before the roster, so it prints none, and run
+   20261119-115144 took the picker for any dialog and pressed A on its
+   no-account row at boot and on each of four Xbox Live tries. It presses
+   DOWN off row 0 and A on the account (A anyway when the cursor shows no
+   move), once per opening, and gives up after 3 picks that did not sign
+   in, or a picker still up 30 s after A. Another dialog on the way gets
+   A, its press naming the dialog (`dialog 0x21 confirmation_dialog
+   (window 3, slot 4) on the way to Xbox Live`), and a request for the
    account's 6-digit code stops the drive. Then A on the players' screen in
    Xbox Live mode (any other mode is backed out of; the local bots no
    longer join there, but in the lobby: §4.3, "The players screen"),

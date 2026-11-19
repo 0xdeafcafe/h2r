@@ -249,6 +249,10 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
         _ => {
             let mut lines: Vec<String> = server.iter().map(|s| s.0.clone()).collect();
             lines.extend(l.last(3, |t| t.starts_with("live: clankermatch: ")));
+            if game.is_none() {
+                // Why it never logged on: the drive's last words.
+                lines.extend(l.last(3, |t| t.starts_with("bots-drive")));
+            }
             let detail = match (&server, &game) {
                 (Some((_, st)), _) if !has(*st, SERVER_MARKS) => format!(
                     "the server's marks lack hopper {} ({}): its hopper file is not the built-in \
@@ -263,10 +267,19 @@ pub fn verdict(l: &Log, plan: CmPlan) -> Verdict {
                     &gt[GAME_MARKS.len()..],
                     plan.hopper
                 ),
-                (_, None) => "the game never said `live: clankermatch: clanker hoppers [..]`: the \
-                              HLE asks at logon (`GET /v1/hoppers/clankers`); its line above says \
-                              why not, or it never signed in"
-                    .into(),
+                (_, None) => match super::picker_openings(&l.texts) {
+                    0 => "the game never said `live: clankermatch: clanker hoppers [..]`: the \
+                          HLE asks at logon (`GET /v1/hoppers/clankers`); its line above says \
+                          why not, or it never signed in"
+                        .into(),
+                    n => format!(
+                        "the game never said `live: clankermatch: clanker hoppers [..]`: it \
+                         never logged on; the account picker (dialog 0x14, \
+                         `dialog_live_signin`) opened {n} time(s) and the profile never \
+                         signed in (A on its row 0 is \"no account\"; the run's account is \
+                         row 1)"
+                    ),
+                },
             };
             check(
                 "clanker hoppers listed (server and game)",

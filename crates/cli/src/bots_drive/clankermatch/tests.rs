@@ -25,7 +25,7 @@ const LIST_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82541000 pe
 const LIST_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82541000 pending 0x0 list [0x1/0xe3010001]; slot 0: no window)";
 const LIST_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82541000 pending 0x0 list [0x1/0xe3020002]; slot 0: no window)";
 const LIST_NO_ROW: &str = "ui: screen none (slot 4: window 5 active 0x82541000 pending 0x0 list [0x1/0x4588b0]; slot 0: no window)";
-const DIALOG: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xec700000]; slot 0: no window)";
+const DIALOG: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xec700000]; slot 0: no window), dialog 0x21 confirmation_dialog (window 3, slot 4)";
 const SEARCH_LINE: &str =
     "live: clankermatch: searching clanker playlist 10: no one to find; the console hosts in 6.1 s";
 const ADVERTISED: &str = "live: session 0123456789abcdef advertised for 127.0.0.1:1000";
@@ -130,7 +130,7 @@ fn the_live_menu_row_is_clankermatch_and_the_playlist_row_is_read() {
     d.line(400_500, DIALOG);
     assert_eq!(
         presses(&mut d, 400_600, 403_600),
-        ["a a dialog on the way out: A"]
+        ["a dialog 0x21 confirmation_dialog (window 3, slot 4) on the way out: A"]
     );
     d.line(404_000, "live: session 0123456789abcdef deleted");
     d.line(404_100, LIVE_ROW_0);
