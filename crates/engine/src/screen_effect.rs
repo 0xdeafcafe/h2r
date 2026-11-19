@@ -114,8 +114,10 @@ pub enum Convolution {
 pub struct Pass {
     /// Its index in the egor's block.
     pub index: u32,
+    /// `0x00016610`'s third argument: which of layer 15's passes it draws
+    /// (the count [`Effect::implementations`] bounds).
     pub implementation: u32,
-    /// `0x00016610`'s fourth argument.
+    /// `0x00016610`'s fourth argument: that pass's implementation.
     pub selector: i32,
     /// `+0x60`: 0 the bound target, 1..3 target 1 at the window's size, a
     /// half, a quarter.
@@ -132,7 +134,7 @@ pub struct Pass {
 pub struct Effect {
     /// The egor's shader (its tag datum).
     pub shader: u32,
-    /// Layer 15's implementations.
+    /// Layer 15's pass count (the high 7 bits of the template's word).
     pub implementations: u32,
     pub passes: Vec<Pass>,
 }

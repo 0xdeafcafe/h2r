@@ -29,11 +29,23 @@
 //! The scenario's screen effects (`0x0002d140`, one call per entry that
 //! draws): each call is planned (`engine::screen_effect::plan`, bit-equal
 //! to the lifted original) and refused per reason ([`Missing`]) until
-//! every piece it needs draws natively: the layer-15 template pass
-//! through `program::translate_pass`, the blur and `0x00021360`'s
+//! every piece it needs draws natively: the blur and `0x00021360`'s
 //! convolutions through the glow machinery (`engine::screen_grid` for the
-//! latter's grids), and stand-ins for targets `0x19` to `0x1b`. Nothing is
-//! armed for them yet; each reason is counted and logged once.
+//! latter's grids), passes into target 1, and stand-ins for targets
+//! `0x19` to `0x1b`. The layer-15 template pass is missing only for a
+//! pass whose program did not load with the world
+//! (`native_post_load`) or that samples an engine texture the native pass
+//! does not supply ([`pass_drawable`]); it draws through
+//! `native_render::screen_gpu`. A call with nothing missing is armed as
+//! the glow is: one swallow of its strips (every strip a triangle strip of
+//! twice the columns, into the bound target), a [`ScreenProbe`] first
+//! (observed, nothing dropped), then the [`ScreenPass`] in place of the
+//! strips; a swallow that ends early keeps every later call on the D3D
+//! path. The stand-ins are missing only for a call with a drawn
+//! convolution (the end of the call draws nothing: [`missing`]), so a
+//! call of passes into the bound target with nothing convolved
+//! (`desaturate`'s shape) is armed with the switch on; each reason the
+//! rest are refused for is counted and logged once.
 //!
 //! The frame A/B, behind `H2_POST_AB=<dir>` ([`Ab`]): the view's colour
 //! where the glow lands (after the composite, before the screen effects,
@@ -57,10 +69,15 @@ use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use feature::native_post::{Fp, Host, ScreenEffect};
 use gfx::vertex::PrimitiveType;
+use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
+use native_render::screen_gpu::{self, ScreenDraw, ScreenKey, ScreenSet, ScreenTarget, StripVertex};
+use native_render::screen_look::ScreenStage;
 
 use crate::native_lights_glue::DeviceMemory;
+use crate::native_post_load::ScreenEffects;
+use crate::native_world_glue::{Load, State};
 
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -132,7 +149,9 @@ pub fn plan(mem: &dyn GuestMemory, args: [u32; 7], fp: Fp) -> Result<Option<Plan
 /// A piece a screen effect needs that does not draw natively yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Missing {
-    /// A layer-15 template pass (`0x00016610`, `program::translate_pass`).
+    /// A layer-15 template pass (`0x00016610`) whose program did not load
+    /// or that binds an engine texture the native pass does not supply
+    /// ([`pass_drawable`]).
     TemplatePass,
     /// A pass into target 1 at the window's size, a half or a quarter.
     PassTarget,
@@ -140,7 +159,9 @@ pub enum Missing {
     Blur,
     /// A wide convolution (`0x00021360`, `engine::screen_grid`).
     Wide,
-    /// The stand-ins for targets `0x19` to `0x1b` the call sets at its end.
+    /// Stand-ins for targets `0x19` to `0x1b`, which a drawn convolution
+    /// renders into (and a later pass samples through engine textures 24
+    /// and 25, which [`pass_drawable`] refuses on its own).
     StandIns,
 }
 
@@ -154,24 +175,57 @@ impl Missing {
     ];
 }
 
-/// What `effect` needs that is not native yet, once each, in order.
-pub fn missing(effect: &Effect) -> Vec<Missing> {
+/// Whether the native screen pass draws `p` of egor `egor`: its program
+/// loaded (`p.implementation` the layer pass, `p.selector` its
+/// implementation), every stage it samples bound with what the pass
+/// supplies, and strips of at least a triangle each.
+pub fn pass_drawable(effects: Option<&ScreenEffects>, egor: TagId, p: &screen_effect::Pass) -> bool {
+    let Ok(implementation) = usize::try_from(p.selector) else { return false };
+    let Some(program) = effects.and_then(|e| e.program(egor, p.implementation as usize, implementation)) else {
+        return false;
+    };
+    let bound = (0..4).all(|n| {
+        program.dims[n].is_none()
+            || match program.stages[n] {
+                ScreenStage::Empty => false,
+                ScreenStage::Bitmap { bitmap, image } => effects.is_some_and(|e| e.images.contains_key(&(bitmap, image))),
+                ScreenStage::Engine(id) => screen_gpu::supplied(id),
+            }
+    });
+    bound && !p.strips.is_empty() && p.strips.iter().all(|s| s.len() >= 3)
+}
+
+/// What `effect` needs that is not native yet, once each, in order;
+/// `drawable` says whether the native template pass draws a pass
+/// ([`pass_drawable`]).
+pub fn missing(effect: &Effect, drawable: &dyn Fn(&screen_effect::Pass) -> bool) -> Vec<Missing> {
     let mut m = Vec::new();
     for p in &effect.passes {
-        m.push(Missing::TemplatePass);
+        if !drawable(p) {
+            m.push(Missing::TemplatePass);
+        }
         if p.kind != 0 {
             m.push(Missing::PassTarget);
         }
         for c in &p.convolutions {
             match c {
                 Convolution::Kept { .. } => {}
-                Convolution::Blur { .. } => m.push(Missing::Blur),
-                Convolution::Wide { .. } => m.push(Missing::Wide),
+                Convolution::Blur { .. } => m.extend([Missing::Blur, Missing::StandIns]),
+                Convolution::Wide { .. } => m.extend([Missing::Wide, Missing::StandIns]),
             }
         }
     }
-    // The restores at the end run whenever the call gets past its gates.
-    m.push(Missing::StandIns);
+    // The end of the call (`0x0002dae8..0x0002db64`, Code) draws nothing:
+    // `0x0001ddd0` writes the sizes of targets 1, 0x19 and 0x1b back (the
+    // table at `0x004b4b58`: `+0x80`/`+0x84` and the surface words
+    // `+0x14`, `+0x28`), from those `0x0002d26e..0x0002d344` saved on
+    // entry (0 for a target without a surface); 0x19 is written twice,
+    // the second time with 0x1a's saved size, and 0x1a never, as the
+    // original does. `0x00016b10` applies the
+    // last pass's restore states (`0x00018900`) and clears the draw-state
+    // cache at `0x00485b48`, `[0x004670bc]` is set and the results
+    // `0x00485a78`/`7c` cleared. The game runs all of it on both paths, so
+    // an effect whose convolutions are all kept needs no stand-ins.
     m.sort();
     m.dedup();
     m
@@ -206,6 +260,147 @@ static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
 pub fn effect_refusals() -> [u64; Missing::ALL.len()] {
     std::array::from_fn(|i| EFFECT_REFUSED[i].load(Ordering::Relaxed))
 }
+
+/// A call as the native pass draws it: per pass its key and strips
+/// (`depth` the positions' z and w, `[0x0045dd40]`).
+pub struct ScreenCall {
+    pub egor: TagId,
+    pub passes: Vec<(ScreenKey, Vec<Vec<StripVertex>>)>,
+}
+
+/// `effect`'s passes for egor `egor` (each drawable: [`pass_drawable`]).
+pub fn screen_call(effect: &Effect, egor: TagId, depth: u32) -> ScreenCall {
+    let passes = effect
+        .passes
+        .iter()
+        .map(|p| {
+            let key = (egor.0, p.implementation as usize, p.selector.max(0) as usize);
+            let strips = p
+                .strips
+                .iter()
+                .map(|s| {
+                    let words: Vec<_> = s.iter().map(|v| (v.texcoords, v.position)).collect();
+                    screen_gpu::strip(&words, depth)
+                })
+                .collect();
+            (key, strips)
+        })
+        .collect();
+    ScreenCall { egor, passes }
+}
+
+/// The swallow of a call's strips: per strip slot 0 (the bound target),
+/// each a triangle strip (`SET_BEGIN_END` 6) of twice the columns.
+pub fn screen_swallow(call: &ScreenCall) -> Option<(Vec<u8>, PrimitiveType, usize)> {
+    let strips: Vec<&Vec<StripVertex>> = call.passes.iter().flat_map(|(_, s)| s).collect();
+    let vertices = strips.first()?.len();
+    if strips.iter().any(|s| s.len() != vertices) {
+        return None;
+    }
+    Some((vec![0; strips.len()], PrimitiveType::TriangleStrip, vertices))
+}
+
+/// The native screen effect, in place of a call's strips.
+struct ScreenPass {
+    effects: Arc<ScreenEffects>,
+    call: ScreenCall,
+    screens: Arc<Mutex<(usize, ScreenSet)>>,
+}
+
+impl d3d::ExternalPass for ScreenPass {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn encode(&mut self, mut t: d3d::ExternalTarget<'_>) {
+        let mut screens = self.screens.lock().unwrap_or_else(|e| e.into_inner());
+        // A new map's effects: the passes made for the last are stale.
+        let epoch = Arc::as_ptr(&self.effects) as usize;
+        if screens.0 != epoch {
+            screens.1.clear();
+            screens.0 = epoch;
+        }
+        let mut draws = Vec::new();
+        for (key, strips) in &self.call.passes {
+            let Some(program) = self.effects.program(self.call.egor, key.1, key.2) else {
+                screen_refused(&screen_gpu::ScreenRefused::NoProgram);
+                return;
+            };
+            draws.push(ScreenDraw { key: *key, program, strips });
+        }
+        let images = &self.effects.images;
+        let mut stage_image = |s: ScreenStage| match s {
+            ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
+            _ => None,
+        };
+        let target = ScreenTarget {
+            device: t.device,
+            queue: t.queue,
+            encoder: &mut *t.encoder,
+            color: t.color,
+            color_format: t.color_format,
+            guest_size: t.guest_size,
+            size: t.size,
+            z_scale: t.z_scale,
+        };
+        if let Err(r) = screens.1.encode(target, &draws, &mut stage_image) {
+            screen_refused(&r);
+        }
+    }
+}
+
+/// A screen effect not drawn after its strips were dropped: that frame's
+/// effect is missing, and later calls keep the D3D path.
+fn screen_refused(r: &screen_gpu::ScreenRefused) {
+    if !SCREEN_REFUSAL_LOGGED.swap(true, Ordering::Relaxed) {
+        eprintln!("native-post: a screen effect was not drawn: {r:?}; this frame's is missing, later calls keep the D3D path (logged once)");
+    }
+    SCREEN_FELL_BACK.store(true, Ordering::Relaxed);
+}
+
+/// Before any strip is dropped: whether each pass of the call would draw
+/// into the target its strips went to (all drawn by D3D).
+struct ScreenProbe {
+    effects: Arc<ScreenEffects>,
+    call: ScreenCall,
+}
+
+impl d3d::ExternalPass for ScreenProbe {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+        let checked = self.call.passes.iter().try_for_each(|(key, _)| {
+            let program = self.effects.program(self.call.egor, key.1, key.2).ok_or(screen_gpu::ScreenRefused::NoProgram)?;
+            screen_gpu::check(t.color, program)
+        });
+        match checked {
+            Ok(()) => {
+                if !SCREEN_PROVED.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-post: the screen effects can draw into the bound target; their strips are dropped from the next call");
+                }
+            }
+            Err(r) => {
+                if !SCREEN_FELL_BACK.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-post: the screen effects cannot draw into the bound target: {r:?}; they keep their D3D strips");
+                }
+            }
+        }
+    }
+}
+
+/// A screen swallow ended early, or a screen pass cannot draw: later
+/// calls keep the D3D path.
+static SCREEN_FELL_BACK: AtomicBool = AtomicBool::new(false);
+/// A [`ScreenProbe`] found the passes draw into the bound target.
+static SCREEN_PROVED: AtomicBool = AtomicBool::new(false);
+static SCREEN_REFUSAL_LOGGED: AtomicBool = AtomicBool::new(false);
+/// Which hook armed the last swallow (a mismatch is that one's).
+static LAST_SWALLOW: AtomicU8 = AtomicU8::new(NONE_ARMED);
+const NONE_ARMED: u8 = 0;
+const GLOW_ARMED: u8 = 1;
+const SCREEN_ARMED: u8 = 2;
 
 /// The swallow's slot per quad: the view 0, target 7 1, target 8 2.
 pub fn targets(plan: &Plan) -> Vec<u8> {
@@ -517,6 +712,11 @@ static NO_GPU_LOGGED: AtomicBool = AtomicBool::new(false);
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     gpu: Arc<Mutex<GpuGlow>>,
+    /// The world, for its screen effects.
+    state: State,
+    /// The screen passes on the GPU, with the address of the effects they
+    /// were made for.
+    screens: Arc<Mutex<(usize, ScreenSet)>>,
     calls: AtomicU64,
     mismatches: AtomicU64,
 }
@@ -536,11 +736,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 "native-post: no external passes in this run (no GPU backend: headless without H2_BOOT_GFX), so the glow stays D3D's and the A/B writes nothing; H2_BOOT_GFX=<dir> H2_BOOT_GFX_EVERY=never renders on the GPU"
             );
         }
-        if mismatches > self.mismatches.swap(mismatches, Ordering::Relaxed) && !FELL_BACK.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "native-post: the colour pass drew a quad its plan did not have; that call's glow fell back to D3D, and every later call keeps it"
-            );
-        }
+        self.note_mismatches(mismatches);
         let native = native && !FELL_BACK.load(Ordering::Relaxed);
         if !native && !ab.is_some_and(|a| a.pumps(call)) {
             return false;
@@ -577,7 +773,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             pass,
         };
         let Ok(mut d) = self.device.lock() else { return false };
-        d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false)
+        let armed = d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false);
+        if armed {
+            LAST_SWALLOW.store(GLOW_ARMED, Ordering::Relaxed);
+        }
+        armed
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
@@ -591,8 +791,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return false;
             }
         };
-        for m in missing(&effect) {
-            let i = Missing::ALL.iter().position(|&a| a == m).unwrap_or(0);
+        let effects = self.screen_effects();
+        let egor = TagId(call.datum);
+        let m = missing(&effect, &|p| pass_drawable(effects.as_deref(), egor, p));
+        for m in &m {
+            let i = Missing::ALL.iter().position(|a| a == m).unwrap_or(0);
             EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
             if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
                 eprintln!(
@@ -600,9 +803,64 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 );
             }
         }
-        // Armed only once nothing is missing; until then the D3D path
-        // draws every effect.
-        false
+        // Armed only once nothing is missing (never while the stand-ins
+        // are); until then the D3D path draws every effect.
+        if !m.is_empty() {
+            return false;
+        }
+        let Some(effects) = effects else { return false };
+        let Ok(mismatches) = self.device.lock().map(|d| d.stats().swallow_mismatches) else { return false };
+        self.note_mismatches(mismatches);
+        if SCREEN_FELL_BACK.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else { return false };
+        let call = screen_call(&effect, egor, depth);
+        let Some((targets, primitive, vertices)) = screen_swallow(&call) else { return false };
+        let (drop, pass): (bool, Box<dyn d3d::ExternalPass>) = if SCREEN_PROVED.load(Ordering::Relaxed) {
+            let pass = ScreenPass { effects, call, screens: Arc::clone(&self.screens) };
+            (true, Box::new(pass))
+        } else {
+            (false, Box::new(ScreenProbe { effects, call }))
+        };
+        let swallow = d3d::Swallow { targets, primitive, vertices, drop, pass };
+        let Ok(mut d) = self.device.lock() else { return false };
+        let armed = d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false);
+        if armed {
+            LAST_SWALLOW.store(SCREEN_ARMED, Ordering::Relaxed);
+        }
+        armed
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// The loaded world's screen effects (`None` before it loads, or with
+    /// the switch off at load).
+    fn screen_effects(&self) -> Option<Arc<ScreenEffects>> {
+        match &self.state.lock().unwrap_or_else(|e| e.into_inner()).1 {
+            Load::Ready(r) => r.screen_effects.clone(),
+            Load::Idle | Load::Loading | Load::Failed => None,
+        }
+    }
+
+    /// The device's swallow mismatches went up to `mismatches`: the last
+    /// swallow armed ended early, so its hook's later calls keep the D3D
+    /// path.
+    fn note_mismatches(&self, mismatches: u64) {
+        if mismatches <= self.mismatches.swap(mismatches, Ordering::Relaxed) {
+            return;
+        }
+        if LAST_SWALLOW.load(Ordering::Relaxed) == SCREEN_ARMED {
+            if !SCREEN_FELL_BACK.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "native-post: a screen effect drew a strip its plan did not have; that call's effect fell back to D3D, and every later call keeps it"
+                );
+            }
+        } else if !FELL_BACK.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "native-post: the colour pass drew a quad its plan did not have; that call's glow fell back to D3D, and every later call keeps it"
+            );
+        }
     }
 }
 
@@ -627,11 +885,14 @@ fn arm(native: bool, proved: bool) -> (bool, Pass) {
     }
 }
 
-/// Installs the host over `device`.
-pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+/// Installs the host over `device`, the screen effects read from the
+/// world `state` loads.
+pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
     feature::native_post::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
+        state,
+        screens: Arc::new(Mutex::new((0, ScreenSet::new()))),
         calls: AtomicU64::new(0),
         mismatches: AtomicU64::new(0),
     }));
@@ -713,9 +974,106 @@ mod tests {
             implementations: 1,
             passes,
         };
-        assert_eq!(missing(&effect(vec![])), vec![Missing::StandIns], "the restores always run");
+        let no: &dyn Fn(&screen_effect::Pass) -> bool = &|_| false;
+        let yes: &dyn Fn(&screen_effect::Pass) -> bool = &|_| true;
+        assert_eq!(missing(&effect(vec![]), no), vec![], "the restores at the end draw nothing");
         let e = effect(vec![pass(0, vec![Convolution::Kept { result: 1 }]), pass(2, vec![])]);
-        assert_eq!(missing(&e), vec![Missing::TemplatePass, Missing::PassTarget, Missing::StandIns]);
+        assert_eq!(missing(&e, no), vec![Missing::TemplatePass, Missing::PassTarget]);
+        assert_eq!(missing(&e, yes), vec![Missing::PassTarget], "the template pass draws");
+        // desaturate's shape: one pass into the bound target, nothing
+        // convolved.
+        assert_eq!(missing(&effect(vec![pass(0, vec![])]), yes), vec![], "armed");
+        assert_eq!(missing(&effect(vec![pass(0, vec![Convolution::Kept { result: 0 }])]), yes), vec![], "a kept one draws nothing");
+    }
+
+    const EGOR: TagId = TagId(0xe000_0001);
+    const BITMAP: TagId = TagId(0xe000_0002);
+
+    fn program(stages: [ScreenStage; 4]) -> native_render::screen_look::ScreenProgram {
+        native_render::screen_look::ScreenProgram {
+            wgsl: String::new(),
+            stages,
+            samplers: [None; 4],
+            dims: stages.map(native_render::screen_look::stage_dim),
+            signed: [[false; 4]; 4],
+            vertex: Default::default(),
+            pixel: Default::default(),
+            inputs: 0x1f,
+            state: native_render::pass_state::PassState {
+                blend: None,
+                blend_constant: wgpu::Color::TRANSPARENT,
+                color_writes: wgpu::ColorWrites::ALL,
+                depth_write: false,
+                depth_compare: wgpu::CompareFunction::Always,
+                primitive: wgpu::PrimitiveState::default(),
+                alpha_test: None,
+            },
+        }
+    }
+
+    /// One egor whose layer pass 1, implementation 0 binds `stages`, its
+    /// bitmap decoded.
+    fn effects(stages: [ScreenStage; 4]) -> crate::native_post_load::ScreenEffects {
+        let mut e = crate::native_post_load::ScreenEffects::default();
+        let mut programs = std::collections::HashMap::new();
+        programs.insert((1, 0), program(stages));
+        e.effects.insert(
+            EGOR,
+            crate::native_post_load::EffectPrograms {
+                shader: TagId(0xe000_0003),
+                programs,
+                refused: Default::default(),
+            },
+        );
+        e.images.insert((BITMAP, 0), native_render::gpu::Image::solid([0; 4]));
+        e
+    }
+
+    /// A pass of layer pass 1, implementation 0, with `rows` strips of
+    /// `columns` corner pairs.
+    fn drawn_pass(rows: usize, columns: usize) -> screen_effect::Pass {
+        let v = screen_effect::Vertex { texcoords: [[0; 4]; 4], position: [0; 2] };
+        screen_effect::Pass {
+            implementation: 1,
+            selector: 0,
+            strips: vec![vec![v; 2 * columns]; rows],
+            ..pass(0, vec![])
+        }
+    }
+
+    #[test]
+    fn a_template_pass_draws_with_its_program_and_what_it_binds() {
+        let bitmap = ScreenStage::Bitmap { bitmap: BITMAP, image: 0 };
+        let view = effects([ScreenStage::Engine(5), bitmap, ScreenStage::Empty, ScreenStage::Empty]);
+        let p = drawn_pass(3, 4);
+        assert!(pass_drawable(Some(&view), EGOR, &p), "the view's copy and a decoded bitmap");
+        assert!(!pass_drawable(None, EGOR, &p), "no world loaded");
+        assert!(!pass_drawable(Some(&view), TagId(0xe000_0009), &p), "another egor");
+        assert!(!pass_drawable(Some(&view), EGOR, &screen_effect::Pass { selector: 1, ..p.clone() }), "no such implementation");
+        assert!(!pass_drawable(Some(&view), EGOR, &drawn_pass(0, 4)), "no strips");
+        assert!(!pass_drawable(Some(&view), EGOR, &drawn_pass(2, 1)), "two-vertex strips");
+        let target = effects([ScreenStage::Engine(3), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        assert!(!pass_drawable(Some(&target), EGOR, &p), "target 1 has no stand-in yet");
+        let undecoded = effects([ScreenStage::Bitmap { bitmap: BITMAP, image: 1 }, ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        assert!(!pass_drawable(Some(&undecoded), EGOR, &p), "a bitmap that did not decode");
+    }
+
+    #[test]
+    fn a_calls_strips_are_one_swallow_into_the_bound_target() {
+        let effect = Effect {
+            shader: 0,
+            implementations: 2,
+            passes: vec![drawn_pass(3, 4), drawn_pass(3, 4)],
+        };
+        let call = screen_call(&effect, EGOR, 0x4b7f_ffff);
+        assert_eq!(call.passes.len(), 2);
+        assert_eq!(call.passes[0].0, (EGOR.0, 1, 0), "(egor, layer pass, implementation)");
+        assert_eq!(call.passes[0].1[0][0].position[2].to_bits(), 0x4b7f_ffff);
+        assert_eq!(screen_swallow(&call), Some((vec![0; 6], PrimitiveType::from_xbox(6).unwrap(), 8)), "SET_BEGIN_END 6");
+        let uneven = Effect { passes: vec![drawn_pass(1, 4), drawn_pass(1, 3)], ..effect.clone() };
+        assert_eq!(screen_swallow(&screen_call(&uneven, EGOR, 0)), None);
+        let empty = Effect { passes: vec![], ..effect };
+        assert_eq!(screen_swallow(&screen_call(&empty, EGOR, 0)), None);
     }
 
     #[test]
@@ -754,5 +1112,10 @@ mod tests {
         assert!(glow.colour_only(), "the composite binds no depth");
         assert!(Probe { plan, capture: None }.colour_only());
         assert!(CapturePass(None).colour_only());
+        let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
+        let call = || ScreenCall { egor: EGOR, passes: Vec::new() };
+        assert!(ScreenProbe { effects: Arc::clone(&effects), call: call() }.colour_only());
+        let screens = Arc::new(Mutex::new((0, ScreenSet::new())));
+        assert!(ScreenPass { effects, call: call(), screens }.colour_only(), "the screen passes bind no depth");
     }
 }

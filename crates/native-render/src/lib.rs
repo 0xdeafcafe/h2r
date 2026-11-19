@@ -52,6 +52,8 @@ pub mod object_streams;
 pub mod objects;
 pub mod post;
 #[cfg(feature = "gpu")]
+pub mod screen_gpu;
+#[cfg(feature = "gpu")]
 pub mod screen_look;
 pub mod skip;
 pub mod transparent;

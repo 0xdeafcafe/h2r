@@ -3,18 +3,30 @@
 //! effects") as the native renderer would draw it.
 //!
 //! `0x0002d140` draws each of its egor's passes through the shader's
-//! layer-15 template with an implementation it picks
-//! (`engine::screen_effect::Pass::implementation`), then pushes the
-//! strips by hand: per vertex the four texture coordinates as attributes
-//! 1..4 (`0x00101a10 + 16 s`) and the position as attribute 0
-//! (`0x00101a00`), so the vertex program reads `v0`..`v4`
-//! ([`STRIP_INPUTS`]). [`screen_look`] takes the egor's shader resolved
+//! layer-15 template, then pushes the strips by hand: per vertex the four
+//! texture coordinates as attributes 1..4 (`0x00101a10 + 16 s`) and the
+//! position as attribute 0 (`0x00101a00`), so the vertex program reads
+//! `v0`..`v4` ([`STRIP_INPUTS`]).
+//!
+//! `0x00016610(shader, layer, pass, implementation, target, flag)`
+//! (Code): the layer's passes are the template's word at its layer index
+//! (low 9 bits the first, high 7 the count); `pass` -1 draws them all,
+//! else only that one (`engine::screen_effect::Pass::implementation`, the
+//! layer's pass), each with implementation `implementation`
+//! (`Pass::selector`; `0x132` bytes each in the `spas`, its vertex shader
+//! at `+0x100`, a pass whose shader is -1 not drawn). After
+//! `0x0001bbf0` sets the pass up, `0x0001c590` loads that vertex shader
+//! with classification 0 (`push 0`; `0x0001c2e0`: `0x1c` bytes per
+//! classification in the `vrtx`), so a screen pass always runs its vertex
+//! shader's first program ([`SCREEN_CLASSIFICATION`]).
+//!
+//! [`screen_look`] takes the egor's shader resolved
 //! (`tags::material::ShaderLibrary::material`) and returns what the native
 //! pass draws, or why the effect keeps its D3D draws; [`compile_screen`]
 //! translates it through `program::translate_pass`.
 
 use map::TagId;
-use tags::material::{INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Register, TextureSource};
+use tags::material::{INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Origin, Register, TextureSource};
 use tags::shader::{PSDEF_SIZE, StageStates};
 
 use shaders::psh::{PixelUniforms, TextureDim};
@@ -29,6 +41,18 @@ pub const TEMPLATE_LAYER: usize = 15;
 /// The vertex registers the hand-pushed strips supply: `v0` the position,
 /// `v1`..`v4` the four texture coordinates.
 pub const STRIP_INPUTS: u16 = 0x1f;
+
+/// The vertex shader classification a screen pass runs (`0x00016610`
+/// loads its pass's vertex shader through `0x0001c590` with 0).
+pub const SCREEN_CLASSIFICATION: u32 = 0;
+
+/// The vertex registers past the strips' that a screen program may read
+/// (`screen_xform_4` moves `v5`, `v6` into the colours and `v7.w` into
+/// fog): the strips do not push them, so they hold whatever an earlier
+/// draw left. The native pass gives them [`VertexUniforms`]' defaults and
+/// is only made for a pixel side that reads no colour or fog
+/// ([`reads_vertex_colours`]), where they cannot show.
+pub const LEFT_INPUTS: u16 = 0xe0;
 
 /// What a template pass's stage binds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +128,8 @@ pub fn engine_texture(id: u8) -> EngineTexture {
 pub struct ScreenLook {
     /// The `spas` tag.
     pub pass: TagId,
+    /// Its index among the layer's passes (`0x00016610`'s third argument).
+    pub layer_pass: usize,
     pub implementation: usize,
     /// The `vrtx` tag.
     pub vertex_shader: TagId,
@@ -133,8 +159,8 @@ impl ScreenLook {
 pub enum ScreenRefusal {
     /// The template has no layer-15 pass at the first level of detail.
     NoLayer,
-    /// More than one pass in the layer.
-    Passes(usize),
+    /// The layer has no pass of this index.
+    NoPass(usize),
     /// The chosen implementation is not in the pass.
     NoImplementation(usize),
     NoVertexShader,
@@ -150,25 +176,28 @@ pub enum ScreenRefusal {
     State(StateRefusal),
     /// It reads engine-driven render or stage states.
     EngineStates,
+    /// Its pixel constants come from the engine (the effect's values,
+    /// which nothing supplies here yet).
+    EnginePixelConstants,
+    /// It tests or writes depth (the native pass is colour-only).
+    Depth,
     /// A stage binds an engine texture the draw cannot supply
     /// ([`engine_texture`]: the light's, one chosen at run time, or an
     /// invalid id).
     EngineTexture(u8),
 }
 
-/// Implementation `implementation` of `material`'s layer-15 pass (first
-/// level of detail), `material` the egor's shader resolved without
-/// engine inputs.
-pub fn screen_look(material: &Material, implementation: usize) -> Result<ScreenLook, ScreenRefusal> {
+/// Implementation `implementation` of the layer-15 pass `layer_pass` of
+/// `material` (first level of detail), `material` the egor's shader
+/// resolved without engine inputs.
+pub fn screen_look(material: &Material, layer_pass: usize, implementation: usize) -> Result<ScreenLook, ScreenRefusal> {
     let l = material
         .layers
         .iter()
         .find(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
         .filter(|l| !l.passes.is_empty())
         .ok_or(ScreenRefusal::NoLayer)?;
-    let [pass] = l.passes.as_slice() else {
-        return Err(ScreenRefusal::Passes(l.passes.len()));
-    };
+    let pass = l.passes.iter().find(|p| p.index == layer_pass).ok_or(ScreenRefusal::NoPass(layer_pass))?;
     let imp = pass
         .implementations
         .iter()
@@ -190,6 +219,9 @@ pub fn screen_look(material: &Material, implementation: usize) -> Result<ScreenL
     if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
         return Err(ScreenRefusal::EngineStates);
     }
+    if imp.pixel_constants_from_engine {
+        return Err(ScreenRefusal::EnginePixelConstants);
+    }
     let mut textures = [ScreenStage::Empty; 4];
     for (stage, t) in textures.iter_mut().zip(&imp.textures) {
         *stage = match t.map(|t| t.source) {
@@ -207,8 +239,12 @@ pub fn screen_look(material: &Material, implementation: usize) -> Result<ScreenL
         };
     }
     let state = pass_state(&imp.render_states).map_err(ScreenRefusal::State)?;
+    if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
+        return Err(ScreenRefusal::Depth);
+    }
     Ok(ScreenLook {
         pass: pass.pass,
+        layer_pass,
         implementation,
         vertex_shader,
         textures,
@@ -244,10 +280,40 @@ pub fn stage_dim(stage: ScreenStage) -> Option<TextureDim> {
     }
 }
 
+/// Whether the pixel side reads the vertex colours or fog (a general or
+/// final combiner input `v0`, `v1`, fog or the final `v1 + r0`), or
+/// leaves its final combiner to D3D (built from the fog and specular
+/// states the pass inherits).
+pub fn reads_vertex_colours(pixel_shader: &[u8; PSDEF_SIZE]) -> Result<bool, String> {
+    use shaders::psh::Reg;
+    let def = shaders::PixelShaderDef::from_bytes(pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    let c = def.decode();
+    let Some(f) = c.final_combiner else { return Ok(true) };
+    Ok(c.stages
+        .iter()
+        .flat_map(|s| s.rgb.inputs.iter().chain(&s.alpha.inputs))
+        .chain(&[f.a, f.b, f.c, f.d, f.e, f.f, f.g])
+        .any(|i| matches!(i.reg, Reg::V0 | Reg::V1 | Reg::Fog | Reg::V1R0Sum)))
+}
+
 /// Translates `look` with its vertex program `microcode` over the strips'
-/// inputs, or says why the effect keeps its D3D draws (a program reading
-/// a register the strips do not push among them).
+/// inputs, or says why the effect keeps its D3D draws: a program reading
+/// a register past [`STRIP_INPUTS`] and [`LEFT_INPUTS`], or one of the
+/// latter with a pixel side that shows it ([`reads_vertex_colours`]).
 pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgram, String> {
+    let mut defaults = look.vertex_defaults.clone();
+    if !reads_vertex_colours(&look.pixel_shader)? {
+        for index in 0..16u8 {
+            if LEFT_INPUTS & 1 << index != 0 && !defaults.iter().any(|r| r.index == index) {
+                defaults.push(Register {
+                    index,
+                    value: VertexUniforms::default().defaults[usize::from(index)],
+                    written: 0xf,
+                    origin: Origin::Instance,
+                });
+            }
+        }
+    }
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
@@ -255,9 +321,10 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         biased: look.textures.map(|s| matches!(s, ScreenStage::Bitmap { .. })),
         stage_states: &look.stage_states,
         vertex_constants: &look.vertex_constants,
-        vertex_defaults: &look.vertex_defaults,
+        vertex_defaults: &defaults,
         alpha_test: look.state.alpha_test,
         provided_inputs: STRIP_INPUTS,
+        w_buffer: false,
     })?;
     Ok(ScreenProgram {
         wgsl: t.wgsl,
@@ -275,38 +342,42 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tags::material::{EngineInputs, Origin, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture};
+    use gfx::state::RenderStateType;
+    use gfx::xdk::{HALO2_BUILD, RenderStateTable};
+    use tags::material::{EngineInputs, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture};
+    use tags::shader::RenderStateValue;
 
     fn texture(source: TextureSource) -> Option<StageTexture> {
         Some(StageTexture { source, size: None, stage_size: None })
     }
 
-    /// A blur's shape: the view's colour (an engine texture) and a bitmap;
-    /// no blending, no depth write (the states `pass_state` needs set).
+    fn state(t: RenderStateType, value: u32) -> RenderStateValue {
+        let table = RenderStateTable::for_build(HALO2_BUILD);
+        let state = (0..=255u8)
+            .find(|&s| RenderStateType::from_guest_index(&table, u32::from(s)) == Some(t))
+            .expect("a 5849 slot");
+        RenderStateValue { state, value }
+    }
+
+    /// A screen effect's states (`effects\screen_effects\desaturate`'s
+    /// shape): no blending, the depth buffer off.
+    fn screen_states() -> Vec<RenderStateValue> {
+        vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZEnable, 0)]
+    }
+
+    /// A blur's shape: the view's colour (an engine texture) and a bitmap.
     fn implementation(index: usize) -> ResolvedImplementation {
-        use gfx::state::RenderStateType as R;
-        use tags::shader::RenderStateValue;
-        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-        let slot = |t: R| {
-            (0..=255u8)
-                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
-                .unwrap()
-        };
-        let render_states = vec![
-            RenderStateValue { state: slot(R::AlphaBlendEnable), value: 0 },
-            RenderStateValue { state: slot(R::ZWriteEnable), value: 0 },
-        ];
         ResolvedImplementation {
             index,
             vertex_shader: Some(TagId(0xe000_0010 + index as u32)),
             textures: [
-                texture(TextureSource::Engine(4)),
+                texture(TextureSource::Engine(5)),
                 texture(TextureSource::Bitmap { bitmap: TagId(0xe000_0001), image: 0, lod_offset: 0.0 }),
                 None,
                 None,
             ],
             stage_states: Vec::new(),
-            render_states,
+            render_states: screen_states(),
             restore_states: Vec::new(),
             pixel_shader: [7; PSDEF_SIZE],
             variant: false,
@@ -325,6 +396,8 @@ mod tests {
         }
     }
 
+    /// `passes` passes in `layer`, pass `n`'s implementations `imps` with
+    /// their vertex shaders moved by `0x100 n`.
     fn material(layer: usize, passes: usize, imps: Vec<ResolvedImplementation>) -> Material {
         Material {
             shader: TagId(0xe000_0100),
@@ -334,7 +407,18 @@ mod tests {
                 lod: 0,
                 layer,
                 passes: (0..passes)
-                    .map(|i| ResolvedPass { index: i, pass: TagId(0xe000_0200), implementations: imps.clone() })
+                    .map(|i| ResolvedPass {
+                        index: i,
+                        pass: TagId(0xe000_0200 + i as u32),
+                        implementations: imps
+                            .iter()
+                            .cloned()
+                            .map(|mut m| {
+                                m.vertex_shader = m.vertex_shader.map(|v| TagId(v.0 + 0x100 * i as u32));
+                                m
+                            })
+                            .collect(),
+                    })
                     .collect(),
             }],
         }
@@ -343,11 +427,25 @@ mod tests {
     #[test]
     fn the_template_pass_names_its_stages() {
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0), implementation(1)]);
-        let look = screen_look(&m, 1).expect("a look");
+        let look = screen_look(&m, 0, 1).expect("a look");
+        assert_eq!((look.layer_pass, look.implementation), (0, 1));
         assert_eq!(look.vertex_shader, TagId(0xe000_0011));
-        assert_eq!(look.textures[0], ScreenStage::Engine(4));
+        assert_eq!(look.textures[0], ScreenStage::Engine(5));
         assert_eq!(look.textures[1], ScreenStage::Bitmap { bitmap: TagId(0xe000_0001), image: 0 });
-        assert_eq!(look.engine_textures(), vec![4]);
+        assert_eq!(look.engine_textures(), vec![5]);
+        assert!(!look.state.depth_write && look.state.blend.is_none());
+    }
+
+    /// `effects\screen_effects\blur`'s shape: two passes in layer 15, each
+    /// egor pass naming one (`0x00016610`'s third argument).
+    #[test]
+    fn each_pass_of_the_layer_is_its_own_look() {
+        let m = material(TEMPLATE_LAYER, 2, vec![implementation(0)]);
+        let first = screen_look(&m, 0, 0).expect("pass 0");
+        let second = screen_look(&m, 1, 0).expect("pass 1");
+        assert_eq!((first.pass, second.pass), (TagId(0xe000_0200), TagId(0xe000_0201)));
+        assert_eq!((first.vertex_shader, second.vertex_shader), (TagId(0xe000_0010), TagId(0xe000_0110)));
+        assert_eq!(screen_look(&m, 2, 0).unwrap_err(), ScreenRefusal::NoPass(2));
     }
 
     #[test]
@@ -365,29 +463,29 @@ mod tests {
 
     #[test]
     fn what_keeps_the_d3d_draws() {
-        assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0).unwrap_err(), ScreenRefusal::NoLayer);
-        assert_eq!(
-            screen_look(&material(TEMPLATE_LAYER, 2, vec![implementation(0)]), 0).unwrap_err(),
-            ScreenRefusal::Passes(2)
-        );
+        let refusal = |imp: ResolvedImplementation| screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0).unwrap_err();
+        assert_eq!(screen_look(&material(12, 1, vec![implementation(0)]), 0, 0).unwrap_err(), ScreenRefusal::NoLayer);
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        assert_eq!(screen_look(&m, 3).unwrap_err(), ScreenRefusal::NoImplementation(3));
+        assert_eq!(screen_look(&m, 0, 3).unwrap_err(), ScreenRefusal::NoImplementation(3));
         let mut imp = implementation(0);
         imp.input_reads = InputReads { scalars: 0, vectors: 1 << 5, ints: 0 };
-        assert_eq!(
-            screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0).unwrap_err(),
-            ScreenRefusal::Reads(InputReads { scalars: 0, vectors: 1 << 5, ints: 0 })
-        );
+        assert_eq!(refusal(imp), ScreenRefusal::Reads(InputReads { scalars: 0, vectors: 1 << 5, ints: 0 }));
         let mut imp = implementation(0);
         imp.textures[2] = texture(TextureSource::Engine(10));
-        assert_eq!(
-            screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0).unwrap_err(),
-            ScreenRefusal::EngineTexture(10),
-            "the light's texture"
-        );
+        assert_eq!(refusal(imp), ScreenRefusal::EngineTexture(10), "the light's texture");
         let mut imp = implementation(0);
         imp.textures[2] = texture(TextureSource::Lightmap);
-        assert_eq!(screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0).unwrap_err(), ScreenRefusal::Lightmap);
+        assert_eq!(refusal(imp), ScreenRefusal::Lightmap);
+        let mut imp = implementation(0);
+        imp.pixel_constants_from_engine = true;
+        assert_eq!(refusal(imp), ScreenRefusal::EnginePixelConstants, "copy_texaccum_to_fb's c0");
+        let mut imp = implementation(0);
+        imp.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 0),
+            state(RenderStateType::ZEnable, 1),
+            state(RenderStateType::ZWriteEnable, 0),
+        ];
+        assert_eq!(refusal(imp), ScreenRefusal::Depth, "a depth test");
     }
 
     /// `dp4 oPos, v0, c[0..3]; mov oT0, v1; mov oT1, v<texcoord>`.
@@ -405,25 +503,45 @@ mod tests {
         ])
     }
 
-    fn look() -> ScreenLook {
+    /// The look with two 2D stages and a pixel side that programs its
+    /// final combiner, reading fog with `fog`.
+    fn look(fog: bool) -> ScreenLook {
         use shaders::psh::bits::{TEX_NONE, TEX_PROJECT2D, texture_modes};
+        let (final_inputs_abcd, final_inputs_efg) = shaders::psh::d3d_default_final_combiner(fog, false);
         let def = shaders::PixelShaderDef {
             texture_modes: texture_modes([TEX_PROJECT2D, TEX_PROJECT2D, TEX_NONE, TEX_NONE]),
+            final_inputs_abcd,
+            final_inputs_efg,
             ..Default::default()
         };
         let m = material(TEMPLATE_LAYER, 1, vec![implementation(0)]);
-        ScreenLook { pixel_shader: def.to_bytes(), ..screen_look(&m, 0).unwrap() }
+        ScreenLook { pixel_shader: def.to_bytes(), ..screen_look(&m, 0, 0).unwrap() }
     }
 
     #[test]
     fn the_pass_compiles_over_the_strips_inputs() {
-        let p = compile_screen(&look(), &strip_program(2)).expect("compiles");
+        let p = compile_screen(&look(false), &strip_program(2)).expect("compiles");
         shaders::validate(&p.wgsl).expect("valid WGSL");
+        assert!(!p.wgsl.contains("frag_depth"), "colour-only: no W-buffered depth");
         assert_eq!(p.dims, [Some(TextureDim::D2), Some(TextureDim::D2), None, None]);
         assert_eq!(p.inputs & !STRIP_INPUTS, 0);
         assert_eq!(p.vertex.constants[18], [0.5, 0.5, 0.0, 0.0], "instance constants");
-        // v5 is not pushed by the strips.
-        let e = compile_screen(&look(), &strip_program(5)).unwrap_err();
+    }
+
+    /// `screen_xform_4` moves `v5`..`v7` into the colours and fog, which
+    /// the strips leave to earlier draws: fine while nothing reads them.
+    #[test]
+    fn the_registers_the_strips_leave_count_only_when_seen() {
+        assert_eq!(reads_vertex_colours(&look(false).pixel_shader), Ok(false));
+        assert_eq!(reads_vertex_colours(&look(true).pixel_shader), Ok(true));
+        let p = compile_screen(&look(false), &strip_program(5)).expect("v5 left, not seen");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        let e = compile_screen(&look(true), &strip_program(5)).unwrap_err();
         assert!(e.contains("do not supply"), "{e}");
+        let e = compile_screen(&look(false), &strip_program(8)).unwrap_err();
+        assert!(e.contains("do not supply"), "v8 is past them: {e}");
+        // No final combiner: D3D builds one from the inherited fog state.
+        let bare = shaders::PixelShaderDef::default().to_bytes();
+        assert_eq!(reads_vertex_colours(&bare), Ok(true));
     }
 }

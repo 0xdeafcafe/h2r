@@ -92,8 +92,7 @@ pub struct Ready {
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
     /// Every egor's template pass, loaded (`native_post_load`; `None` with
-    /// the native post off). Read once the screen-effect pass draws.
-    #[allow(dead_code)]
+    /// the native post off), for `native_post_glue`'s screen passes.
     pub(crate) screen_effects: Option<Arc<crate::native_post_load::ScreenEffects>>,
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
@@ -234,8 +233,8 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device, Arc::clone(&state));
-    crate::native_lights_glue::install(device, state);
-    crate::native_post_glue::install(device);
+    crate::native_lights_glue::install(device, Arc::clone(&state));
+    crate::native_post_glue::install(device, state);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that

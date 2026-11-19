@@ -1,9 +1,10 @@
 //! The screen effects' part of a map load (`native-post`,
 //! docs/graphics/native-renderer.md, stage 5, "The screen effects"):
-//! every `egor` tag's shader resolved, each implementation of its layer-15
-//! template pass looked at (`native_render::screen_look`) and translated
-//! for every classification of its vertex shader (which one a pass draws
-//! with is `0x00016610`'s to say), and the shader's stage bitmaps decoded.
+//! every `egor` tag's shader resolved, each implementation of each of its
+//! layer-15 template passes looked at (`native_render::screen_look`) and
+//! translated with its vertex shader's first program (`0x00016610` loads
+//! it with classification 0, `screen_look::SCREEN_CLASSIFICATION`), and
+//! the shader's stage bitmaps decoded.
 //! What does not load is counted by reason. Nothing here is drawn yet:
 //! the screen effects stay refused (`native_post_glue::missing`) until the
 //! GPU pass is in.
@@ -13,7 +14,9 @@ use std::collections::HashMap;
 use map::{FourCC, Map, TagId};
 use native_render::gpu::Image;
 use native_render::look;
-use native_render::screen_look::{ScreenProgram, ScreenStage, TEMPLATE_LAYER, compile_screen, screen_look};
+use native_render::screen_look::{
+    SCREEN_CLASSIFICATION, ScreenProgram, ScreenStage, TEMPLATE_LAYER, compile_screen, screen_look,
+};
 use tags::material::{Material, ShaderLibrary};
 
 use crate::native_world_glue::decode_image;
@@ -23,17 +26,13 @@ pub const EGOR: FourCC = FourCC(*b"egor");
 /// The egor's shader reference's tag id (`engine::screen_effect`: the
 /// definition's `+0x44`).
 pub const EGOR_SHADER: u32 = 0x44;
-/// Most classifications read per vertex shader.
-pub const MAX_CLASSIFICATIONS: u32 = 16;
-
 /// One egor's template pass, loaded.
 pub struct EffectPrograms {
     pub shader: TagId,
-    /// Per (implementation, classification), the translated pass.
-    pub programs: HashMap<(usize, u32), ScreenProgram>,
-    /// Per implementation, why it did not load (no program for any
-    /// classification among them).
-    pub refused: HashMap<usize, String>,
+    /// Per (layer pass, implementation), the translated pass.
+    pub programs: HashMap<(usize, usize), ScreenProgram>,
+    /// Per (layer pass, implementation), why it did not load.
+    pub refused: HashMap<(usize, usize), String>,
 }
 
 /// Every egor of a map.
@@ -47,22 +46,23 @@ pub struct ScreenEffects {
 }
 
 impl ScreenEffects {
-    /// The pass to draw for `egor`'s `implementation` with vertex shader
-    /// classification `classification`.
-    pub fn program(&self, egor: TagId, implementation: usize, classification: u32) -> Option<&ScreenProgram> {
-        self.effects.get(&egor)?.programs.get(&(implementation, classification))
+    /// The pass to draw for `egor`'s layer pass `layer_pass` with
+    /// implementation `implementation` (`engine::screen_effect::Pass`'s
+    /// `implementation` and `selector`).
+    pub fn program(&self, egor: TagId, layer_pass: usize, implementation: usize) -> Option<&ScreenProgram> {
+        self.effects.get(&egor)?.programs.get(&(layer_pass, implementation))
     }
 }
 
-/// The implementations of `material`'s layer-15 pass (first level of
-/// detail), in order.
-pub fn template_implementations(material: &Material) -> Vec<usize> {
+/// Every (layer pass, implementation) of `material`'s layer 15 (first
+/// level of detail), in order.
+pub fn template_implementations(material: &Material) -> Vec<(usize, usize)> {
     material
         .layers
         .iter()
         .filter(|l| l.lod == 0 && l.layer == TEMPLATE_LAYER)
-        .flat_map(|l| l.passes.first())
-        .flat_map(|p| p.implementations.iter().map(|i| i.index))
+        .flat_map(|l| &l.passes)
+        .flat_map(|p| p.implementations.iter().map(|i| (p.index, i.index)))
         .collect()
 }
 
@@ -102,32 +102,30 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &m
             }
         };
         let mut e = EffectPrograms { shader, programs: HashMap::new(), refused: HashMap::new() };
-        for implementation in template_implementations(&material) {
-            let look = match screen_look(&material, implementation) {
+        for key @ (layer_pass, implementation) in template_implementations(&material) {
+            let look = match screen_look(&material, layer_pass, implementation) {
                 Ok(l) => l,
                 Err(r) => {
-                    e.refused.insert(implementation, format!("{r:?}"));
+                    e.refused.insert(key, format!("{r:?}"));
                     continue;
                 }
             };
             let Some(vrtx) = map.tag(look.vertex_shader).ok().and_then(|t| t.location.as_ref()).map(|l| l.address) else {
-                e.refused.insert(implementation, "no vertex shader tag".into());
+                e.refused.insert(key, "no vertex shader tag".into());
                 continue;
             };
-            let count = look::classification_count(lib.metadata(), vrtx).unwrap_or(0).min(MAX_CLASSIFICATIONS);
-            let mut why = None;
-            for c in 0..count {
-                let Some(code) = look::vertex_program(lib.metadata(), vrtx, c) else { continue };
-                match compile_screen(&look, &code) {
-                    Ok(p) => {
-                        e.programs.insert((implementation, c), p);
-                    }
-                    Err(w) => why = Some(w),
-                }
-            }
-            if !e.programs.keys().any(|&(i, _)| i == implementation) {
-                e.refused.insert(implementation, why.unwrap_or_else(|| "no vertex program".into()));
+            let Some(code) = look::vertex_program(lib.metadata(), vrtx, SCREEN_CLASSIFICATION) else {
+                e.refused.insert(key, "no vertex program at classification 0".into());
                 continue;
+            };
+            match compile_screen(&look, &code) {
+                Ok(p) => {
+                    e.programs.insert(key, p);
+                }
+                Err(w) => {
+                    e.refused.insert(key, w);
+                    continue;
+                }
             }
             for t in look.textures {
                 if let ScreenStage::Bitmap { bitmap, image } = t
@@ -141,11 +139,12 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &m
         out.effects.insert(egor, e);
     }
     let passes: usize = out.effects.values().map(|e| e.programs.len()).sum();
-    let refused: usize = out.effects.values().map(|e| e.refused.len()).sum();
+    let mut kept: Vec<&String> = out.effects.values().flat_map(|e| e.refused.values()).collect();
+    kept.sort();
     let mut why: Vec<_> = out.refused.iter().collect();
     why.sort();
     eprintln!(
-        "native-post: {} of {} screen effects loaded ({passes} translated passes, {refused} implementations refused, {} bitmaps); not loaded: {why:?}",
+        "native-post: {} of {} screen effects loaded ({passes} translated passes, {} bitmaps; implementations kept on D3D: {kept:?}); not loaded: {why:?}",
         out.effects.len(),
         out.effects.len() + out.refused.values().sum::<usize>(),
         out.images.len(),
@@ -184,15 +183,17 @@ mod tests {
     }
 
     #[test]
-    fn the_template_implementations_are_layer_15s_first_pass() {
+    fn the_template_implementations_are_every_pass_of_layer_15() {
         let layer = |lod, layer, imps: &[usize]| ResolvedLayer {
             lod,
             layer,
-            passes: vec![ResolvedPass {
-                index: 0,
-                pass: TagId(0xe000_0200),
-                implementations: imps.iter().map(|&i| implementation(i)).collect(),
-            }],
+            passes: (0..2)
+                .map(|p| ResolvedPass {
+                    index: p,
+                    pass: TagId(0xe000_0200 + p as u32),
+                    implementations: imps.iter().map(|&i| implementation(i)).collect(),
+                })
+                .collect(),
         };
         let m = Material {
             shader: TagId(0xe000_0100),
@@ -200,7 +201,7 @@ mod tests {
             inputs: EngineInputs::default(),
             layers: vec![layer(0, 3, &[9]), layer(1, TEMPLATE_LAYER, &[7]), layer(0, TEMPLATE_LAYER, &[0, 2])],
         };
-        assert_eq!(template_implementations(&m), vec![0, 2]);
+        assert_eq!(template_implementations(&m), vec![(0, 0), (0, 2), (1, 0), (1, 2)]);
         assert!(ScreenEffects::default().program(TagId(1), 0, 0).is_none());
     }
 }
