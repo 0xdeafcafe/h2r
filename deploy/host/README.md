@@ -35,16 +35,21 @@ settings at runtime if you override defaults such as `H2_OPT`.
 
 Prepare the owner's private game-data bundle with `h2 host bundle`. The
 host needs the matching `default.xbe` at boot, supplied with the private
-runtime data. Export the lease ID, Live URL, lease token, signed bundle
-URL and bundle SHA-256 before starting the container.
+runtime data. Before starting the container, export the lease ID, Live
+URL, lease token, signed bundle URL and bundle SHA-256. Set
+`H2_HOST_LEASE_JSON` to the complete lease supplied by Live. Its `id`
+must match `H2_LEASE`.
+
 For a UDP lease through Docker, set `H2_PUBLIC_ADDR` to the Docker host's
-IPv4 address reachable by clients.
+IPv4 address reachable by clients. If you change `H2_BASE_PORT`, publish
+the matching seven-port UDP range.
 
 ```sh
 docker run --rm --name h2host-smoke --platform linux/amd64 \
   -p 31000-31006:31000-31006/udp \
-  -e H2_LEASE -e H2_LIVE -e H2_TOKEN -e H2_DATA_URL -e H2_DATA_SHA \
-  -e H2_REGION -e H2_OPT -e H2_PUBLIC_ADDR \
+  -e H2_LEASE -e H2_HOST_LEASE_JSON -e H2_LIVE -e H2_TOKEN \
+  -e H2_DATA_URL -e H2_DATA_SHA \
+  -e H2_REGION -e H2_OPT -e H2_BASE_PORT=31000 -e H2_PUBLIC_ADDR \
   h2host:local
 ```
 
