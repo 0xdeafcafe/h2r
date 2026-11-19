@@ -484,6 +484,24 @@ pub fn strip_triangles(strip: &[u16]) -> Vec<[u16; 3]> {
         .collect()
 }
 
+/// A Halo 1 strip that [`strip_triangles`] reads back as `tris`, in order
+/// and wound as given: each triangle `[a, b, c]` sits at an even window as
+/// `a c b`, and the next one, `[d, e, f]`, follows after `b b d` (every
+/// window across the join repeats an index, so is skipped, and `d f e`
+/// lands on an even window again). For a part some of whose triangles are
+/// dropped.
+pub fn triangles_strip(tris: &[[u16; 3]]) -> Vec<u16> {
+    let mut strip = Vec::with_capacity(tris.len() * 9);
+    for (i, &[a, b, c]) in tris.iter().enumerate() {
+        if i > 0 {
+            let last = strip[strip.len() - 1];
+            strip.extend([last, last, a]);
+        }
+        strip.extend([a, c, b]);
+    }
+    strip
+}
+
 // ---------------------------------------------------------------------------
 // Animation graphs
 // ---------------------------------------------------------------------------
@@ -948,7 +966,7 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
 /// lists without an animation named for it has no path there. Derelict's
 /// flamethrower, `ft`, which no Halo 1 animation name holds, took
 /// (`rifle`, `ft`) from a biped graph's lists from converter version 84
-/// to 86, a path the converted player graph does not find (`sandbox_disc`
+/// to 89, a path the converted player graph does not find (`sandbox_disc`
 /// `every_halo1_weapon_is_held_by_the_halo1_player_graph`).
 pub fn weapon_types<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<(String, String)>> {
     let h = m.read(address, ANTR_HEADER)?;

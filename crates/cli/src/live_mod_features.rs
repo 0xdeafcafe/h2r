@@ -27,6 +27,11 @@
 //! squads says `ai` in its `mod.toml`.
 //!
 //! The comparison is pure over two censuses and tested with invented ones.
+//!
+//! The census also keeps what [`crate::live_mod_contents`] reports from:
+//! every tag of every group (the checklist reads only its groups), and the
+//! walked fields of the groups that report names (references, numbers,
+//! block counts), the scenario's among them.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Seek};
@@ -60,6 +65,12 @@ pub struct Census {
     pub placed: BTreeMap<&'static str, Vec<(String, [i32; 3])>>,
     /// The scenario's scripts, hashed; None when there are none to read.
     pub scripts: Option<Sha256>,
+    /// The walked tags' fields by group and name
+    /// ([`crate::live_mod_contents::walk_tag`]).
+    pub fields: BTreeMap<(String, String), crate::live_mod_contents::Fields>,
+    /// The scenario's references and block counts (kept apart: a mod's
+    /// scenario may be named otherwise than its base's).
+    pub scenario: crate::live_mod_contents::Fields,
 }
 
 /// The feature a tag group counts for.
@@ -144,20 +155,32 @@ pub fn census<R: Read + Seek>(map: &mut Map<R>) -> Result<Census> {
     let mut c = Census::default();
     let tags: Vec<_> = map.tags().to_vec();
     let scenario = map.scenario().map(|t| t.id);
+    let names: crate::live_mod_contents::Names = tags
+        .iter()
+        .filter_map(|t| Some((t.id.0, (group_name(t.group), t.name.clone()?))))
+        .collect();
     for t in &tags {
         let (Some(loc), Some(name)) = (t.location, t.name.clone()) else {
             continue;
         };
-        if Some(t.id) == scenario {
-            continue;
-        }
         let group = group_name(t.group);
-        if feature_of_group(&group).is_none() {
+        if Some(t.id) == scenario {
+            if let Ok(bytes) = map.read_tag_bytes(t.id)
+                && let Some(f) =
+                    crate::live_mod_contents::walk_tag(t.group, "scnr", &bytes, loc.address, &names)
+            {
+                c.scenario = f;
+            }
             continue;
         }
         let Ok(bytes) = map.read_tag_bytes(t.id) else {
             continue;
         };
+        if let Some(f) =
+            crate::live_mod_contents::walk_tag(t.group, &group, &bytes, loc.address, &names)
+        {
+            c.fields.insert((group.clone(), name.clone()), f);
+        }
         if group == "bitm"
             && let Some(h) = pixels(map, &bytes, loc.address)
         {

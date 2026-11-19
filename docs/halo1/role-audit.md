@@ -8,7 +8,7 @@ overheated effect and melee damage, the projectiles' detonation effects
 and flyby sound, and the items' and projectiles' material effects are
 Halo 1's (below, "Fixed"). The v86 run passes on Blood Gulch; on every
 multiplayer map (`H1_MAPS=all`) it left one row, the flamethrower's HUD,
-fixed in v87 with the flamethrower's weapon class.
+fixed in v90 with the flamethrower's weapon class.
 
 ## Why
 
@@ -110,7 +110,7 @@ retail tags the counterparts hold in the slot (Coagulation).
 | `bipd` | `unit.obje.attachments` (shield-down effect, flashlight lights) | `effe`, `ligh` | a bug, after h1-bipd-colour: Halo 1's attachments name the functions that lane owns |
 | `vehi` | seats, hover and friction points, gears, physics, root and unit words | values | h1-veh-phys |
 
-### Fixed (v86)
+### Fixed (v90): the named slots
 
 | Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
@@ -134,7 +134,7 @@ An object whose conversion reaches itself (a projectile whose detonation
 effect creates it) is now refused at that point instead of recursed into
 (`Converter::objects_open`); the effect part is left out and reported.
 
-### Fixed (v87)
+### Fixed (v90): flamethrower
 
 | Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
@@ -215,4 +215,4 @@ v86, `H1_MAPS=all`: the thirteen multiplayer maps on this disc (the PC
 maps are not on it), eleven on Beaver Creek and two on Coagulation, from
 393 to 603 tags and 2,104 to 3,541 leaks each. Every row but one was
 classified by the Blood Gulch rules: Derelict's (`carousel`) flamethrower
-named the shotgun's HUD, fixed in v87 (above).
+named the shotgun's HUD, fixed in v90 (above).

@@ -17,7 +17,7 @@
 //! `tags::rebuild::relocate_bitmap`, which expresses retail Halo 2 bitmaps
 //! the same way.
 
-use h1map::bitmap::{Bitmap, Image};
+use h1map::bitmap::{Bitmap, Image, PixelFormat};
 use h1map::bsp::StructureBsp;
 use h1map::{H1Map, Tag, TagRef};
 use h1models::{Converted, SELF_ID};
@@ -156,6 +156,67 @@ pub fn convert_bitmap(map: &H1Map, tag: &Tag) -> Result<(Bitmap, Converted, Vec<
     let bm = Bitmap::read(map, tag)?;
     let (out, report) = convert_with(&bm, |i| Ok(bm.pixels(map, i)?.to_vec()))?;
     Ok((bm, out, report))
+}
+
+/// [`convert_bitmap`] with every image's alpha made opaque
+/// ([`force_opaque`]): for a picture whose stored alpha is not what Halo 1
+/// draws it with (`h1convert::sky_shaders`, Blood Gulch's clear blue sky).
+pub fn convert_bitmap_opaque(
+    map: &H1Map,
+    tag: &Tag,
+) -> Result<(Bitmap, Converted, Vec<ConvertedImage>)> {
+    let bm = Bitmap::read(map, tag)?;
+    let (out, report) = convert_with(&bm, |i| {
+        let mut px = bm.pixels(map, i)?.to_vec();
+        force_opaque(bm.images[i].format, &mut px);
+        Ok(px)
+    })?;
+    Ok((bm, out, report))
+}
+
+/// Sets the alpha of every texel of `px`, an image's stored bytes in
+/// `format`, to opaque, in place: the bytes are per texel or per block,
+/// so the swizzle and the mip chain don't matter. True when every texel
+/// now samples opaque: the formats with an alpha byte, nibble or bit
+/// (A8, A8R8G8B8, X8R8G8B8, A1R5G5B5, A4R4G4B4), DXT3's explicit and DXT5's
+/// interpolated alpha (both endpoints 255, every code the first), and those with none (Y8,
+/// R5G6B5, P8 bump). False, unchanged, for AY8 and A8Y8 (alpha shares or
+/// sits beside the luminance) and for DXT1, whose transparent texels are a
+/// colour code (one more than the block's opaque ones only when its first
+/// endpoint is not above its second) that can't be made opaque without
+/// re-encoding.
+pub fn force_opaque(format: PixelFormat, px: &mut [u8]) -> bool {
+    match format {
+        PixelFormat::A8 => px.fill(0xff),
+        PixelFormat::A8R8G8B8 | PixelFormat::X8R8G8B8 => {
+            // B, G, R, A per texel.
+            px.iter_mut().skip(3).step_by(4).for_each(|a| *a = 0xff);
+        }
+        PixelFormat::A1R5G5B5 | PixelFormat::A4R4G4B4 => {
+            let top = if format == PixelFormat::A1R5G5B5 {
+                0x80
+            } else {
+                0xf0
+            };
+            px.iter_mut().skip(1).step_by(2).for_each(|b| *b |= top);
+        }
+        PixelFormat::Dxt3 => px.chunks_mut(16).for_each(|b| {
+            let n = b.len().min(8);
+            b[..n].fill(0xff);
+        }),
+        PixelFormat::Dxt5 => px.chunks_mut(16).for_each(|b| {
+            // Endpoints 255 and 255, every texel code 0 (the first
+            // endpoint; with equal endpoints code 6 would be 0).
+            for (k, v) in b.iter_mut().take(8).enumerate() {
+                *v = if k < 2 { 0xff } else { 0 };
+            }
+        }),
+        PixelFormat::Y8 | PixelFormat::R5G6B5 | PixelFormat::P8Bump => {}
+        PixelFormat::Ay8 | PixelFormat::A8Y8 | PixelFormat::Dxt1 | PixelFormat::Other(_) => {
+            return false;
+        }
+    }
+    true
 }
 
 /// The image record's fields, Halo 1's values in Halo 2's places.

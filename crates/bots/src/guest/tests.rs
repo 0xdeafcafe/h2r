@@ -148,6 +148,50 @@ fn nothing_is_hidden_without_bots_or_without_a_human() {
     assert_eq!(locals(&g), before);
 }
 
+/// The walk of `SOUND_OWNER_USER` (`0x18d4f0`) that decides whose own
+/// sound a starting sound is: the first mapped local user whose player's
+/// unit (`+0x2c`) is the sound's object. (The game also takes what the
+/// unit carries, `0xbafb0`, and needs the user in first person; both are
+/// the same for a bot and a human.) `Some(user)` plays the sound with no
+/// position, in that user's ears.
+fn sound_owner(g: &FakeGuest, object: u32) -> Option<u32> {
+    (0..4u32).find(|&u| {
+        let handle = g.u32(LOCALS + LOCAL_MAP + 4 * u).unwrap();
+        handle != u32::MAX
+            && player_at(g, handle)
+                .unwrap()
+                .and_then(|p| p.unit(g).unwrap())
+                .is_some_and(|unit| unit.raw() == object)
+    })
+}
+
+fn unit_of(g: &FakeGuest, player: u32) -> u32 {
+    g.u32(PLAYERS_DATA + player * 0x21c + 0x2c).unwrap()
+}
+
+#[test]
+fn a_bots_own_sound_starts_as_a_world_sound_and_the_humans_stays_in_their_ears() {
+    let mut g = three();
+    let (human, bot1, bot2) = (unit_of(&g, 0), unit_of(&g, 1), unit_of(&g, 2));
+    // As the game ran it: each bot's own sounds (its gun, footsteps,
+    // voice) were a local user's, so they played in the ears, unpositioned.
+    assert_eq!(
+        [human, bot1, bot2].map(|u| sound_owner(&g, u)),
+        [Some(0), Some(1), Some(2)]
+    );
+    // Inside the hook's window the walk finds the human only: a bot's
+    // sound has no owner and starts positioned, where the bot is.
+    let h = hide(&mut g, 0b110).unwrap().expect("bots to hide");
+    assert_eq!(
+        [human, bot1, bot2].map(|u| sound_owner(&g, u)),
+        [Some(0), None, None]
+    );
+    restore(&mut g, &h).unwrap();
+    assert_eq!(sound_owner(&g, bot1), Some(1), "put back after the call");
+    // Without bots the window does nothing.
+    assert_eq!(hide(&mut g, 0).unwrap(), None);
+}
+
 const SOUND: u32 = 0x0068_0000;
 
 fn listener_active(g: &FakeGuest, u: u32) -> u8 {
@@ -615,7 +659,8 @@ fn sign_in_calls_the_games_sign_in_with_the_bot_block_and_joins_the_screen() {
     assert_eq!(run.calls.len(), 1);
     let c = &run.calls[0];
     assert_eq!(c.target, points::PROFILE_SIGN_IN.base);
-    assert_eq!(c.args, vec![1, BUFFER, u32::MAX], "no file: nothing saved");
+    assert_eq!(c.args, vec![1, BUFFER, NO_FILE], "no file: nothing saved");
+    assert_eq!(NO_FILE, u32::MAX, "the game's -1");
     let g = run.guest;
     assert!(signed_in(&g, 1).unwrap());
     let block = g.bytes(slot(1) + SLOT_BLOCK, BLOCK_LEN).unwrap();
@@ -626,6 +671,58 @@ fn sign_in_calls_the_games_sign_in_with_the_bot_block_and_joins_the_screen() {
         "Clanker 1"
     );
     assert_eq!(g.u16(SCREEN + SCREEN_MASK).unwrap(), 0b11);
+}
+
+#[test]
+fn a_bot_is_never_signed_in_over_a_profile_its_slot_holds() {
+    // Port 1's slot holds the user's saved profile (file handle 0x1230):
+    // the game's sign-in over it would put the bot's block in its place.
+    // Nothing is called and the slot keeps its profile and file.
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    g.put_u32(slot(0), SLOT_PROFILE)
+        .put(slot(0) + SLOT_BLOCK, &halo0001());
+    g.put_u32(slot(1), SLOT_PROFILE)
+        .put(slot(1) + SLOT_BLOCK, &halo0001())
+        .put_u32(slot(1) + SLOT_FILE, 0x1230);
+    let run = sign_in_then_run(g, Some(SCREEN));
+    let sign_in = points::PROFILE_SIGN_IN.base;
+    let ports: Vec<u32> = run
+        .calls
+        .iter()
+        .filter(|c| c.target == sign_in)
+        .map(|c| c.args[0])
+        .collect();
+    assert_eq!(ports, vec![3], "only the empty slot");
+    let g = run.guest;
+    assert_eq!(g.u32(slot(1) + SLOT_FILE).unwrap(), 0x1230);
+    assert_eq!(
+        g.bytes(slot(1) + SLOT_BLOCK, BLOCK_LEN).unwrap(),
+        halo0001().to_vec(),
+        "the user's profile untouched"
+    );
+    assert_eq!(
+        g.u16(SCREEN + SCREEN_MASK).unwrap(),
+        0b1001,
+        "port 1 not joined"
+    );
+}
+
+#[test]
+fn a_saved_profile_is_a_signed_in_slot_with_a_file() {
+    let mut g = FakeGuest::new();
+    slots(&mut g);
+    for port in 0..4 {
+        g.put_u32(slot(port) + SLOT_FILE, NO_FILE);
+    }
+    assert_eq!(saved_profile(&g, 1).unwrap(), None, "empty");
+    g.put_u32(slot(1) + SLOT_FILE, 0x1230);
+    assert_eq!(saved_profile(&g, 1).unwrap(), None, "no profile flag");
+    g.put_u32(slot(1), SLOT_PROFILE);
+    assert_eq!(saved_profile(&g, 1).unwrap(), Some(0x1230));
+    // A bot's: signed in with no file.
+    g.put_u32(slot(2), SLOT_PROFILE);
+    assert_eq!(saved_profile(&g, 2).unwrap(), None);
 }
 
 fn sign_in_then_run(mut g: FakeGuest, screen: Option<u32>) -> testing::Run {
@@ -1253,4 +1350,34 @@ mod objective_reads {
         g.put_u32(KOTH + KOTH_HILL, 9);
         assert_eq!(perceive(&g, 1).unwrap().objective.unwrap().hill, None);
     }
+}
+
+#[test]
+fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
+    let players = [
+        (0, 0, 0, [0.0; 3], [0.0, 1.0, 0.0], false),
+        (1, 1, 1, [4.0, 0.0, 0.0], X, false),
+        (-1, -1, 1, [5.0, 0.0, 0.0], X, true),
+    ];
+    let mut g = game(&players, true, &[0, 1]);
+    g.put_f32(BODIES + 0xf0, 0.3);
+    let p = perceive(&g, 1).unwrap();
+    assert_eq!(p.observations.player, Some((1, 1)));
+    assert_eq!(
+        p.observations.contacts,
+        [crate::brain::Contact {
+            id: 0,
+            aim: [0.0, 1.0, 0.0],
+            shield: Some(0.3),
+            empty_magazine: false,
+        }]
+    );
+    assert!(p.observations.pickups_scanned);
+    assert_eq!(p.observations.supplies, Some(Vec::new()));
+    g.put_u16(BODIES + 0x400 + 0x10a, BODY_DEPLETED);
+    let p = perceive(&g, 1).unwrap();
+    assert!(p.me.is_none());
+    assert_eq!(p.observations.player, Some((1, 1)));
+    assert!(!p.observations.pickups_scanned);
+    assert_eq!(p.observations.supplies, None);
 }

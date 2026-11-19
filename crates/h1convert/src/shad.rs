@@ -68,6 +68,10 @@ pub enum Role {
     Mask,
     /// A cloud layer's tiled texture (stage 2).
     Tile,
+    /// A change-colour map: each channel weighs one of the object's change
+    /// colours (red 0 .. alpha 3; [`TEX_BUMP_ENV_FOUR_CHANGE_COLOR`]). Made
+    /// from a `soso`'s multipurpose map ([`soso_change_colour`]).
+    ChangeColour,
 }
 
 /// A default bitmap of the base (every Halo 2 map has these).
@@ -160,6 +164,10 @@ pub enum Vector {
     /// default; V every retail `tex_bump` instance has vector 7 = colour 0
     /// and vector 8 = colour 1).
     ColorOf(usize),
+    /// `[0, 0, 0, a]`: colour `k`'s alpha as a float (the reflection
+    /// brightnesses [`TEX_BUMP_ENV_FOUR_CHANGE_COLOR`] binds as vertex
+    /// defaults).
+    AlphaOf(usize),
 }
 
 /// Which root parameter names the picture.
@@ -427,6 +435,78 @@ pub const TEX_BUMP_ENV: Layout = Layout {
     animation: None,
 };
 
+/// [`TEX_BUMP_ENV`] with the object's change colours: Halo 2's player
+/// armour stem (the Chief's `masterchief`, the Arbiter's first-person
+/// arms). Its colour pass draws base × detail × 2 times, for each change
+/// colour `k`, `lerp(1, colour k, cc.channel k)`, the change-colour map
+/// (bitmap 4, sampled at the base's coordinates) weighing colour 0 by its
+/// red, 1 by green, 2 by blue, 3 by alpha, each colour an engine
+/// constant read from the drawn object (`h2 shader`: stages 1 to 4 of the
+/// pass's `c0`). That is Halo 1's model shader rule for its one change
+/// colour (the multipurpose map's mask tints the diffuse toward the
+/// colour), so a `soso` with a change colour draws here with its mask in
+/// the channel of the Halo 2 slot its colour goes to
+/// ([`halo2_change_colour_slot`]); a `soso` without a reflection draws
+/// here with the black default cube, as retail's `elite_fp_leather` does.
+///
+/// The rest is [`TEX_BUMP_ENV`]'s, in other places (D, the three retail
+/// instances in `shared.map`): bitmap 0 the bump, 1 a second bump
+/// (`default_vector` on two of three), 2 the base, 3 the detail, 5 the
+/// cube, 6 the corner fade; vector 0 the detail's tiling, 1 the base's,
+/// 3 the bump's, 2, 4 and 5 constants. The environment pass reads the
+/// reflection tints facing the eye and grazing as `v[10]` and `v[11]`:
+/// colours 4 and 5 (vectors 6 and 7 their copies) with the brightnesses
+/// as colours 6 and 7's alphas (vectors 8 and 9). Colours 0 and 1
+/// (vectors 10 and 11) are the lightmap highlight tints, black as on
+/// [`TEX_BUMP_ENV`] (Halo 1 has none); colours 2 and 3, black (both on
+/// `elite_fp_leather`).
+pub const TEX_BUMP_ENV_FOUR_CHANGE_COLOR: Layout = Layout {
+    stem: "shaders\\shader_templates\\opaque\\tex_bump_env_four_change_color",
+    word_14: 1,
+    ints: [1, 0],
+    bitmaps: &[
+        Bm::Role(Role::Bump, Fixed::DefaultVector),
+        Bm::Fixed(Fixed::DefaultVector),
+        Bm::Role(Role::Base, Fixed::ColorWhite),
+        Bm::Role(Role::Detail, Fixed::DefaultDetail),
+        Bm::Role(Role::ChangeColour, Fixed::DefaultAdditive),
+        Bm::Role(Role::Cube, Fixed::DefaultCube),
+        Bm::Fixed(Fixed::CornerFade),
+    ],
+    colors: &[0, 0, 0, 0, WHITE, WHITE, OPAQUE_ALPHA, OPAQUE_ALPHA],
+    vectors: &[
+        Vector::Tile(Role::Detail),
+        Vector::Tile(Role::Base),
+        Vector::Const([0.0, 0.0, 1.0, 1.0]),
+        Vector::Tile(Role::Bump),
+        Vector::Const([0.276, 0.276, 0.93, 0.0]),
+        Vector::Const([0.39, 0.0, 0.93, 0.0]),
+        Vector::ColorOf(4),
+        Vector::ColorOf(5),
+        Vector::AlphaOf(6),
+        Vector::AlphaOf(7),
+        Vector::ColorOf(0),
+        Vector::ColorOf(1),
+    ],
+    root: Root::BaseMap,
+    animation: None,
+};
+
+/// [`TEX_BUMP_ENV`]'s reflection colours (1 to 4: tints facing the eye
+/// and grazing, their brightnesses) where
+/// [`TEX_BUMP_ENV_FOUR_CHANGE_COLOR`] keeps them (4 to 7).
+pub fn four_change_color_extras(env: &Extras) -> Extras {
+    Extras {
+        colors: env
+            .colors
+            .iter()
+            .filter(|(k, _)| (1..=4).contains(k))
+            .map(|&(k, c)| (k + 3, c))
+            .collect(),
+        scroll: env.scroll,
+    }
+}
+
 /// [`TEX_BUMP`]'s layout with the base map's alpha cutting the surface
 /// out; bitmap 1 is `color_white` in 34 of 47 retail instances.
 pub const TEX_BUMP_ALPHA_TEST: Layout = Layout {
@@ -616,9 +696,10 @@ pub const WATER_POOL: Layout = Layout {
 };
 
 /// Every layout.
-pub const LAYOUTS: [&Layout; 11] = [
+pub const LAYOUTS: [&Layout; 12] = [
     &TEX_BUMP,
     &TEX_BUMP_ENV,
+    &TEX_BUMP_ENV_FOUR_CHANGE_COLOR,
     &TEX_BUMP_DETAIL_BLEND_DETAIL,
     &TEX_BUMP_ALPHA_TEST,
     &ILLUM,
@@ -799,6 +880,10 @@ impl Library {
                     let c = colors.get(*k).copied().unwrap_or(0);
                     let ch = |s: u32| ((c >> s) & 0xff) as f32 / 255.0;
                     [ch(16), ch(8), ch(0), 0.0]
+                }
+                Vector::AlphaOf(k) => {
+                    let c = colors.get(*k).copied().unwrap_or(0);
+                    [0.0, 0.0, 0.0, (c >> 24) as f32 / 255.0]
                 }
             })
             .collect();
@@ -1266,6 +1351,10 @@ pub const SPLA_MAP: usize = 0xd4;
 ///   ([`soso_alpha_tested`], which wins over the reflection); the detail
 ///   tiled by its own scale
 ///   ([`crate::textures::scales_from`]).
+///   A `soso` with a change colour ([`soso_change_colour`]) and no
+///   cut-out draws on [`TEX_BUMP_ENV_FOUR_CHANGE_COLOR`] first, with its
+///   reflection if any, its multipurpose map in the change-colour role,
+///   falling back to the above.
 /// - `swat` with a ripple map: [`WATER_POOL`] (`swat_water`), falling
 ///   back to [`ONE_ALPHA_ENV`] with the base map, as without one.
 /// - `sgla`: [`ONE_ALPHA_ENV`] with the base map.
@@ -1394,15 +1483,39 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             // `tex_bump_env_alpha_test` binds seven maps), and the
             // reflection mask would take the base's alpha. Retail's ammo
             // bags are alpha-tested without a reflection too.
-            if group == "soso"
-                && !alpha_tested
-                && let Some((cube, extras)) = soso_reflection(h1, d)
-            {
+            let reflection = (group == "soso" && !alpha_tested)
+                .then(|| soso_reflection(h1, d))
+                .flatten();
+            if let Some((cube, extras)) = &reflection {
                 let mut env = maps.clone();
-                env.push((Role::Cube, cube));
-                let mut e = mk(&TEX_BUMP_ENV, env, extras);
+                env.push((Role::Cube, *cube));
+                let mut e = mk(&TEX_BUMP_ENV, env, extras.clone());
                 e.fallback = Some(Box::new(out));
                 out = e;
+            }
+            // A change colour draws on the change-colour stem, with the
+            // reflection when there is one (else the black cube); the
+            // multipurpose map stands for the change-colour map, which
+            // the object converter makes from its blue
+            // (`h1bitmaps::mask::channel_into`). A cut-out `soso` keeps
+            // its cut-out: no stem here alpha-tests with change colours.
+            if !alpha_tested && let Some((_, multipurpose)) = soso_change_colour(h1, tag) {
+                let mut cc = maps.clone();
+                let mut extras = Extras::default();
+                if let Some((cube, env)) = &reflection {
+                    cc.push((Role::Cube, *cube));
+                    extras = four_change_color_extras(env);
+                }
+                cc.push((
+                    Role::ChangeColour,
+                    H1Bound {
+                        bitmap: multipurpose,
+                        scale: [1.0, 1.0],
+                    },
+                ));
+                let mut c = mk(&TEX_BUMP_ENV_FOUR_CHANGE_COLOR, cc, extras);
+                c.fallback = Some(Box::new(out));
+                out = c;
             }
             Some(out)
         }
@@ -1682,6 +1795,66 @@ pub fn soso_multipurpose(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<h1map::T
     let r = h1map::TagRef::read(h1.tag_data(tag).ok()?, SOSO_MULTIPURPOSE)?;
     (r.group == h1map::Group::new(b"bitm") && !r.id.is_none() && h1.tag(r.id).is_ok())
         .then_some(r.id)
+}
+
+/// `soso` change colour source (`+0x4c`, i16): 0 none, 1 to 4 the drawn
+/// object's change colour A to D, which tints the diffuse where the
+/// multipurpose map's blue says (on the Xbox disc; the cyborg's armour
+/// plates are blue there, its undersuit not). V (every `soso` on the
+/// disc, docs/halo1/objects.md "Change colours"): 1 on the scenery,
+/// vehicles, Covenant and doors that have one, 2 on the marines' faces and
+/// the Flood, 3 on the cyborg's armour, visor and first-person hands; no
+/// object's model reads two of A and C.
+pub const SOSO_CHANGE_COLOUR: usize = 0x4c;
+
+/// The multipurpose channel holding the change-colour mask: blue.
+pub const SOSO_CHANGE_COLOUR_CHANNEL: usize = 2;
+
+/// The change colour source of a `soso` (its bytes `d`,
+/// [`SOSO_CHANGE_COLOUR`]): 1 to 4 for A to D, `None` for none or a
+/// value out of range.
+pub fn soso_change_colour_source(d: &[u8]) -> Option<u16> {
+    let v = u16::from_le_bytes(
+        d.get(SOSO_CHANGE_COLOUR..SOSO_CHANGE_COLOUR + 2)?
+            .try_into()
+            .ok()?,
+    );
+    (1..=4).contains(&v).then_some(v)
+}
+
+/// The Halo 2 change colour (object `+0xac` element, shader channel) a
+/// Halo 1 change colour source (1 to 4, A to D) goes to: A and C to 0, B
+/// to 1, D to 2.
+///
+/// Halo 2's engine writes a player's colours into their unit's change
+/// colours 0 to 3 (`0x0014bfc0`, through `0x000bacc0`, which skips a slot
+/// the object has none of): 0 the armour's primary colour, or the team's
+/// in a team game; 1 the secondary, or the player's own primary in a team
+/// game (`0x0007f790`); 2 and 3 the emblem's colours. Halo 1 gives a
+/// player's unit its colour as change colour C: the multiplayer cyborg
+/// has no C of its own (two change colours, A and B, each driven by a
+/// function) and its armour reads C, and the campaign cyborg's C is the
+/// Chief's green. So C goes to 0, where Halo 2 puts the player's colour.
+/// A, the object's own colour everywhere else (scenery, vehicles, the
+/// Covenant), goes to 0 too: every Halo 1 object reads at most one of A
+/// and C ([`crate::shad::SOSO_CHANGE_COLOUR`]), and the object's slot 0
+/// takes the one its shaders read (`h1objects`). B (the marines' skin
+/// tones beside a crewman's A) keeps a slot of its own.
+pub fn halo2_change_colour_slot(source: u16) -> Option<usize> {
+    match source {
+        1 | 3 => Some(0),
+        2 => Some(1),
+        4 => Some(2),
+        _ => None,
+    }
+}
+
+/// A `soso`'s change colour: its Halo 2 slot
+/// ([`halo2_change_colour_slot`]) and the multipurpose map whose blue
+/// masks it. `None` without either, or for another group.
+pub fn soso_change_colour(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<(usize, h1map::TagId)> {
+    let slot = halo2_change_colour_slot(soso_change_colour_source(h1.tag_data(tag).ok()?)?)?;
+    Some((slot, soso_multipurpose(h1, tag)?))
 }
 
 /// A `soso`'s reflection for [`TEX_BUMP_ENV`], as [`senv_reflection`]'s:
@@ -2103,6 +2276,130 @@ mod tests {
         assert_eq!(
             rec.at("postprocess[0].bitmaps[3].bitmap"),
             Some(&Val::Datum(Target::Id(lib.fixed[&Fixed::DefaultDetail].id)))
+        );
+    }
+
+    /// Halo 1's change colour sources (`soso +0x4c`) and the Halo 2
+    /// slots they go to: C (the player's colour in Halo 1) and A to 0,
+    /// where Halo 2 writes the player's armour or team colour; B to 1, D
+    /// to 2; none and out-of-range values to nothing.
+    #[test]
+    fn halo1_change_colours_go_to_halo2_slots() {
+        let mut d = vec![0u8; 0x60];
+        let mut source = |v: i16| {
+            d[SOSO_CHANGE_COLOUR..SOSO_CHANGE_COLOUR + 2].copy_from_slice(&v.to_le_bytes());
+            soso_change_colour_source(&d)
+        };
+        assert_eq!(source(0), None);
+        assert_eq!(source(1), Some(1));
+        assert_eq!(source(3), Some(3));
+        assert_eq!(source(4), Some(4));
+        assert_eq!(source(5), None);
+        assert_eq!(source(-1), None);
+        assert_eq!(soso_change_colour_source(&[0u8; 0x4d]), None, "short");
+        let slots: Vec<_> = (0..=5).map(halo2_change_colour_slot).collect();
+        assert_eq!(slots, [None, Some(0), Some(1), Some(0), Some(2), None]);
+    }
+
+    /// The change-colour layout: the change-colour map in bitmap 4, the
+    /// cube in 5; Halo 1's reflection tints (1 to 4 on `tex_bump_env`) in
+    /// colours 4 to 7, their copies in vectors 6 to 9 (RGB for the tints,
+    /// the alpha alone for the brightnesses); the highlight colours 0 and
+    /// 1 black, so vectors 10 and 11 too; tiling as on `tex_bump_env`.
+    #[test]
+    fn the_change_colour_layout_puts_the_mask_and_the_reflection_where_the_stem_reads_them() {
+        let lib = library();
+        let b = |id: u32, s: f32| Bound {
+            id: TagId(id),
+            scale: [s, s],
+            lod_offset: 3.0,
+        };
+        let maps: HashMap<Role, Bound> = [
+            (Role::Base, b(0xe3000001, 1.0)),
+            (Role::Detail, b(0xe3000002, 10.0)),
+            (Role::ChangeColour, b(0xe3000004, 1.0)),
+            (Role::Cube, b(0xe3000005, 1.0)),
+        ]
+        .into_iter()
+        .collect();
+        let env = Extras {
+            colors: vec![
+                (1, 0x00ff_8000),
+                (2, 0x0000_80ff),
+                (3, 0xcc00_0000),
+                (4, 0x3300_0000),
+            ],
+            scroll: None,
+        };
+        let extras = four_change_color_extras(&env);
+        assert_eq!(
+            extras.colors,
+            [
+                (4, 0x00ff_8000),
+                (5, 0x0000_80ff),
+                (6, 0xcc00_0000),
+                (7, 0x3300_0000)
+            ]
+        );
+        let rec = lib
+            .record_with(&TEX_BUMP_ENV_FOUR_CHANGE_COLOR, &maps, &extras)
+            .unwrap();
+        let bm = |k: usize| {
+            rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap"))
+                .cloned()
+        };
+        assert_eq!(
+            bm(2),
+            Some(Val::Datum(Target::Id(TagId(0xe3000001)))),
+            "base"
+        );
+        assert_eq!(
+            bm(3),
+            Some(Val::Datum(Target::Id(TagId(0xe3000002)))),
+            "detail"
+        );
+        assert_eq!(
+            bm(4),
+            Some(Val::Datum(Target::Id(TagId(0xe3000004)))),
+            "change colour"
+        );
+        assert_eq!(
+            bm(5),
+            Some(Val::Datum(Target::Id(TagId(0xe3000005)))),
+            "cube"
+        );
+        let vec = |k: usize| match rec.at(&format!("postprocess[0].vectors[{k}].vector")) {
+            Some(Val::List(v)) => v
+                .iter()
+                .map(|x| match x {
+                    Val::Float(f) => *f,
+                    _ => f32::NAN,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(vec(0), [10.0, 10.0, 0.0, 0.0], "detail tiling");
+        assert_eq!(vec(1), [1.0, 1.0, 0.0, 0.0], "base tiling");
+        assert_eq!(vec(6), [1.0, 128.0 / 255.0, 0.0, 0.0], "facing tint");
+        assert_eq!(vec(7), [0.0, 128.0 / 255.0, 1.0, 0.0], "grazing tint");
+        assert_eq!(vec(8), [0.0, 0.0, 0.0, 0.8], "facing brightness");
+        assert_eq!(vec(9), [0.0, 0.0, 0.0, 0.2], "grazing brightness");
+        assert_eq!(vec(10), [0.0; 4]);
+        assert_eq!(vec(11), [0.0; 4]);
+        let colour = |k: usize| {
+            rec.at(&format!("postprocess[0].colors[{k}].color"))
+                .cloned()
+        };
+        assert_eq!(colour(0), Some(Val::Int(0)));
+        assert_eq!(colour(4), Some(Val::Int(0x00ff_8000)));
+        assert_eq!(colour(7), Some(Val::Int(0x3300_0000)));
+        // Without a reflection: the black default cube, white tints.
+        let mut plain = maps.clone();
+        plain.remove(&Role::Cube);
+        let rec = lib.record(&TEX_BUMP_ENV_FOUR_CHANGE_COLOR, &plain).unwrap();
+        assert_eq!(
+            rec.at("postprocess[0].bitmaps[5].bitmap"),
+            Some(&Val::Datum(Target::Id(lib.fixed[&Fixed::DefaultCube].id)))
         );
     }
 

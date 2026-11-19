@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   PackageCache, customMapBadge, formatBytes, geometryChoice, isMapId, lookupFromResponse, mapGroupKey, mapGroupLabel,
-  packageImageUrl, packageTitle, parseMapSummaries, parseMapSummary, pictureChoice, type PackageLookup,
+  packImageUrl, packageImageUrl, packageScreenshotUrl, packageTitle, parseMapSummaries, parseMapSummary, pictureChoice, type PackageLookup,
 } from "../src/lib/maps";
 import { parseSession, sessionRow } from "../src/lib/sessions";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
@@ -223,5 +223,45 @@ describe("pictures and the 3D view", () => {
     expect(geometryChoice(ok({ geometry: g }))).toBe("changed");
     expect(geometryChoice(ok({ geometry: g }), g)).toBe("base");
     expect(geometryChoice(ok({ geometry: g }), "18".repeat(32))).toBe("changed");
+  });
+});
+
+describe("an admin's details", () => {
+  test("screenshots, contents and the report read; absent ones are left out", () => {
+    const m = parseMapSummary(wire({
+      images: [
+        { sha256: "01".repeat(32), caption: " The hog ", credit: "Bocked", source_url: "javascript:alert(1)" },
+        { sha256: "02".repeat(32), source_url: "https://example.invalid/post" },
+      ],
+      contents: ["model swap: warthog uses the scorpion model", "  "],
+      report: { lines: ["new vehicle placements: 4 banshees"], swaps: [{ kind: "model", tag: "objects\\v\\hog", field: "model", from: "hog", to: "tank" }], scripts: true },
+    }))!;
+    expect(m.images).toEqual([
+      { sha256: "01".repeat(32), caption: "The hog", credit: "Bocked" },
+      { sha256: "02".repeat(32), source_url: "https://example.invalid/post" },
+    ]);
+    expect(m.contents).toEqual(["model swap: warthog uses the scorpion model"]);
+    expect(m.report).toMatchObject({ lines: ["new vehicle placements: 4 banshees"], scripts: true, classes: [], stats: [] });
+    expect(m.report?.swaps[0]).toEqual({ kind: "model", tag: "objects\\v\\hog", field: "model", from: "hog", to: "tank" });
+    const plain = parseMapSummary(wire())!;
+    expect("images" in plain || "contents" in plain || "report" in plain).toBe(false);
+    expect(parseMapSummary(wire({ report: {} }))!.report).toBeUndefined();
+  });
+
+  test("a list with an unreadable image keeps none, so the indexes stay the server's", () => {
+    expect(parseMapSummary(wire({ images: [{ sha256: "01".repeat(32) }, { caption: "no hash" }] }))!.images).toBeUndefined();
+    expect(packageScreenshotUrl("https://live.example/v1", ID, 2)).toBe(`https://live.example/v1/maps/${ID}/images/2`);
+  });
+
+  test("a pack's name and info read", () => {
+    const m = parseMapSummary(wire({
+      pack: "ai-revision", pack_name: " AI Revision ",
+      pack_info: { id: "ai-revision", name: "AI Revision", authors: ["Zone 117", ""], released: "2007-06", source_url: "ftp://x", images: [{ sha256: "03".repeat(32) }] },
+    }))!;
+    expect(m.pack).toBe("ai-revision");
+    expect(m.pack_name).toBe("AI Revision");
+    expect(m.pack_info).toEqual({ id: "ai-revision", name: "AI Revision", authors: ["Zone 117"], released: "2007-06", images: [{ sha256: "03".repeat(32) }] });
+    expect(parseMapSummary(wire({ pack_info: { name: "no id" } }))!.pack_info).toBeUndefined();
+    expect(packImageUrl("https://live.example/v1", "ai-revision", 0)).toBe("https://live.example/v1/mappacks/ai-revision/images/0");
   });
 });

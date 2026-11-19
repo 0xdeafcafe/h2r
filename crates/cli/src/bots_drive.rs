@@ -35,8 +35,13 @@
 //!   `XOnlineGetUsers` lists (the run's `live/accounts.json`: the tester),
 //!   then New Account. A on an account row (`0x24b2ea`) copies it into
 //!   the profile and logs on (`0x24b664`). So: DOWN to row 1, A. The
-//!   dialog is known by the bots' join gate line (`dialog 0x14 (window
-//!   3, ...)`), its cursor by the list value's low 16 bits;
+//!   dialog is known by the `ui: screen none` line's dialog part
+//!   (`, dialog 0x14 dialog_live_signin (window 3, slot 4)`), or by the
+//!   bots' join gate line (`dialog 0x14 (window 3, ...)`), its cursor by
+//!   the list value's low 16 bits. The gate lines alone were not enough:
+//!   a Clankermatch run places no local bot before the roster, so it
+//!   prints none at boot, and run 20261119-115144 took the picker for any
+//!   dialog and pressed A on its no-account row five times;
 //! * the main menu: from its row to Xbox Live (row 1), A; signed in, that
 //!   opens the players' screen (`0x1e`) in mode 3 (the local bots no
 //!   longer join there: they join in the lobby, docs/game/bots.md §4.3);
@@ -59,6 +64,10 @@
 //!   P is on Xbox Live as ...`), or after [`LOBBY_WAIT_MS`], A on Start
 //!   Game (row 0); again (UP, A) if the phase hasn't left `menu` in
 //!   [`START_MS`].
+//!
+//! [`Driver::clankermatch`] takes the same way to the Live menu, then its
+//! Clankermatch row (row 2) and a clanker playlist instead
+//! ([`clankermatch`]).
 
 use std::collections::BTreeSet;
 
@@ -94,7 +103,7 @@ pub const DIALOG_HOLD_MS: u64 = 3_000;
 /// Dialog presses on the way to the Live menu before giving up.
 pub const DIALOG_PRESSES: u32 = 6;
 /// The account picker, `dialog_live_signin` (screen 20, loader
-/// `0x24b4a9`).
+/// `0x24b4a9`); `boot::ui_watch::ACCOUNT_PICKER`.
 pub const ACCOUNT_PICKER: u32 = 0x14;
 /// The picker's first account row; row 0 is the no-account row.
 pub const PICKER_ACCOUNT_ROW: u32 = 1;
@@ -132,8 +141,56 @@ enum Step {
         at: u64,
         tries: u32,
     },
+    /// Clankermatch ([`clankermatch`]): A on the Live menu's Clankermatch
+    /// row went at `at`; on the playlist list that opens, to the planned
+    /// playlist's row (`downs` DOWN presses sent when the row can't be
+    /// read), A.
+    Playlists {
+        at: u64,
+        tries: u32,
+        downs: u32,
+        presses: u32,
+    },
+    /// A on the playlist went at `at`; waiting for the clanker search.
+    Searching {
+        at: u64,
+        tries: u32,
+    },
+    /// The search runs (since `since`); waiting for this console to host
+    /// the clanker playlist's lobby.
+    Matching {
+        since: u64,
+    },
+    /// Hosting the Clankermatch lobby (since `since`): nothing to press,
+    /// the bots fill it and its countdown starts the game.
+    MatchLobby {
+        since: u64,
+    },
+    /// The game runs (`played`: phase gameplay seen); it ends back in the
+    /// menus.
+    Playing {
+        played: bool,
+    },
+    /// The game is over: B (A on a dialog) until this console hosts no
+    /// session, so the fill ends and the bots go. `last_b`: the last press
+    /// was B; `dialogs`: dialogs answered on the way out.
+    Leaving {
+        presses: u32,
+        last_b: bool,
+        dialogs: u32,
+    },
     Done,
     Stuck,
+}
+
+/// What the drive goes for on the Xbox Live menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Custom Game (row 4), Start Game in its lobby.
+    CustomGame,
+    /// Clankermatch (row 2), the clanker playlist on `row` of its list,
+    /// the game, then out again ([`clankermatch`]).
+    Clankermatch { row: u32 },
 }
 
 /// The host's driver (module docs). Time is milliseconds since the run
@@ -142,6 +199,7 @@ enum Step {
 pub struct Driver {
     /// Local bots to wait for in the lobby.
     local: usize,
+    target: Target,
     step: Step,
     /// The screen id (`None` for every `ui: screen none` line).
     screen: Option<u32>,
@@ -172,9 +230,15 @@ pub struct Driver {
     /// A on the players' screen for Xbox Live went; the next settled
     /// window 5 screen is the Live menu's.
     learn_live: bool,
-    /// The top dialog the bots' join gate last named (`dialog 0x14
-    /// (window 3, ...)`); `None` for `dialog none`.
+    /// The top dialog the last `ui: screen none` line or the bots' join
+    /// gate named (`dialog 0x14 (window 3, ...)`); `None` for `dialog
+    /// none` or an id not read.
     dialog_id: Option<u32>,
+    /// The dialog as the last `ui: screen none` line named it (`dialog
+    /// 0x14 dialog_live_signin (window 3, slot 4)`), for the log.
+    dialog_said: Option<String>,
+    /// The dialogs A went to on the way to Xbox Live, for the give-up.
+    dialogs_seen: BTreeSet<String>,
     /// Account rows picked in the account picker.
     picks: u32,
     /// DOWN presses in the picker since its last row change.
@@ -198,6 +262,14 @@ pub struct Driver {
     on_live: BTreeSet<u8>,
     /// The HLE advertised a hosted session (and has not deleted it).
     hosting: bool,
+    /// Clankermatch: the HLE's clanker search started
+    /// (`live: clankermatch: searching clanker playlist ...`).
+    cm_search: bool,
+    /// Clankermatch: a human playlist's search line, if one came.
+    human_search: Option<String>,
+    /// Clankermatch: the Clankers driver fills a hosted clanker lobby
+    /// (`clankers: clankermatch: hosting clanker playlist ...`).
+    cm_hosting: bool,
     said: BTreeSet<String>,
     out: Vec<String>,
 }
@@ -292,6 +364,23 @@ pub fn gate_dialog(text: &str) -> Option<Option<u32>> {
     Some(u32::from_str_radix(&hex[..end], 16).ok())
 }
 
+/// A `ui: screen none (...), dialog 0x14 dialog_live_signin (window 3,
+/// slot 4)` line's dialog part (`boot::ui_watch::Dialog::line`): the text
+/// from `dialog` on, and the id (`None` for `dialog ?`). `None` when the
+/// line names no dialog.
+pub fn line_dialog(text: &str) -> Option<(&str, Option<u32>)> {
+    if !text.starts_with("ui: screen none (") {
+        return None;
+    }
+    let at = text.rfind("), dialog ")?;
+    let part = &text[at + 3..];
+    let id = part.strip_prefix("dialog 0x").and_then(|h| {
+        let end = h.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(h.len());
+        u32::from_str_radix(&h[..end], 16).ok()
+    });
+    Some((part, id))
+}
+
 /// A players' screen mode by name, for the log.
 pub fn mode_name(mode: u32) -> &'static str {
     match mode {
@@ -311,6 +400,7 @@ impl Driver {
     pub fn new(local: usize) -> Self {
         Driver {
             local,
+            target: Target::CustomGame,
             step: Step::Boot,
             screen: None,
             screen_since: 0,
@@ -323,6 +413,8 @@ impl Driver {
             live_screen: None,
             learn_live: false,
             dialog_id: None,
+            dialog_said: None,
+            dialogs_seen: BTreeSet::new(),
             picks: 0,
             picker_downs: 0,
             picked_on: None,
@@ -339,6 +431,9 @@ impl Driver {
             dialog_presses: 0,
             on_live: BTreeSet::new(),
             hosting: false,
+            cm_search: false,
+            human_search: None,
+            cm_hosting: false,
             said: BTreeSet::new(),
             out: Vec::new(),
         }
@@ -361,6 +456,20 @@ impl Driver {
             }
             let none = none_line(text);
             let (window, value) = none.map_or((None, None), |n| (Some(n.window), n.value));
+            match (line_dialog(text), window) {
+                (Some((said, id)), _) => {
+                    self.dialog_id = id;
+                    self.dialog_said = Some(said.to_string());
+                }
+                // No dialog up: the menus are bare.
+                (None, Some(5)) => {
+                    self.dialog_id = None;
+                    self.dialog_said = None;
+                }
+                // A dialog window without a dialog part (a game from
+                // before the part): the gate lines say, if any come.
+                _ => self.dialog_said = None,
+            }
             if value != self.list_value || window != self.window {
                 self.picker_downs = 0;
             }
@@ -439,6 +548,15 @@ impl Driver {
         if let Some(p) = live_port(text) {
             self.on_live.insert(p);
         }
+        if text.starts_with(clankermatch::SEARCH) {
+            self.cm_search = true;
+        }
+        if text.starts_with(clankermatch::HUMAN_SEARCH) && self.human_search.is_none() {
+            self.human_search = Some(text.to_string());
+        }
+        if text.starts_with(clankermatch::HOSTING) {
+            self.cm_hosting = true;
+        }
         if text.contains("needs a code to sign in") {
             self.give_up(
                 "Xbox Live asks for the account's 6-digit code (the run's Live directory has no \
@@ -448,7 +566,9 @@ impl Driver {
             return;
         }
         match self.step {
-            Step::Hosting { .. } | Step::ToCustom { .. } if self.hosting_live() => {
+            Step::Hosting { .. } | Step::ToCustom { .. }
+                if self.target == Target::CustomGame && self.hosting_live() =>
+            {
                 self.queue.clear();
                 self.step = Step::Lobby { since: now };
                 self.say("in the Live custom game lobby".into());
@@ -461,7 +581,7 @@ impl Driver {
     }
 
     /// The agent API's phase (`session.status`), when it changes.
-    pub fn status(&mut self, _now: u64, phase: &str) {
+    pub fn status(&mut self, now: u64, phase: &str) {
         if self.phase.as_deref() != Some(phase) {
             self.phase = Some(phase.to_string());
         }
@@ -470,6 +590,7 @@ impl Driver {
             self.step = Step::Done;
             self.say(format!("done: the game left the menus (phase {phase})"));
         }
+        self.match_phase(now, phase);
     }
 
     fn say(&mut self, what: String) {
@@ -504,6 +625,19 @@ impl Driver {
     /// A dialog (windows 0 to 4) takes player one's input.
     fn dialog(&self) -> bool {
         self.screen.is_none() && self.window.is_some_and(|w| w < 5)
+    }
+
+    /// The dialog up, for a press's reason and the log: as the game's line
+    /// named it, else by the id the bots' gate gave, else by its window.
+    fn dialog_name(&self) -> String {
+        if let Some(d) = &self.dialog_said {
+            return d.clone();
+        }
+        match (self.dialog_id, self.window) {
+            (Some(id), Some(w)) => format!("dialog 0x{id:02x} (window {w})"),
+            (None, Some(w)) => format!("an unnamed dialog (window {w}; the game named none)"),
+            _ => "a dialog".into(),
+        }
     }
 
     /// The account picker is up and takes player one's input.
@@ -743,10 +877,11 @@ impl Driver {
         if !self.quiet(now, SETTLE_MS) {
             return;
         }
+        let (target, name) = self.live_row();
         if presses >= LIVE_MENU_PRESSES {
             let ui = self.ui.clone();
             self.give_up(format!(
-                "no Custom Game row after {LIVE_MENU_PRESSES} presses on the Xbox Live menu; \
+                "no {name} row after {LIVE_MENU_PRESSES} presses on the Xbox Live menu; \
                  the last screen: {ui}"
             ));
             return;
@@ -757,19 +892,21 @@ impl Driver {
                 "down",
                 "the Xbox Live menu shows no row yet: DOWN".to_string(),
             ),
-            Some(r) if r < CUSTOM_GAME_ROW => (
-                "down",
-                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
-            ),
-            Some(r) if r > CUSTOM_GAME_ROW => (
-                "up",
-                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
-            ),
-            Some(_) => ("a", "Custom Game".to_string()),
+            Some(r) if r < target => ("down", format!("toward {name} (row {target}, from {r})")),
+            Some(r) if r > target => ("up", format!("toward {name} (row {target}, from {r})")),
+            Some(_) => ("a", name.to_string()),
         };
         self.queue = vec![press(button, &why)];
         self.step = if button == "a" {
-            Step::Hosting { at: now, tries }
+            match self.target {
+                Target::CustomGame => Step::Hosting { at: now, tries },
+                Target::Clankermatch { .. } => Step::Playlists {
+                    at: now,
+                    tries,
+                    downs: 0,
+                    presses: 0,
+                },
+            }
         } else {
             Step::ToCustom {
                 at: now,
@@ -820,9 +957,9 @@ impl Driver {
                 }
                 self.boot_presses += 1;
                 let what = if self.dialog() {
-                    "a boot dialog (the new profile's)"
+                    format!("a boot dialog, {}", self.dialog_name())
                 } else {
-                    "the title screen"
+                    "the title screen".into()
                 };
                 self.queue = vec![press("a", &format!("{what}: on to the main menu"))];
             }
@@ -842,15 +979,23 @@ impl Driver {
                 } else if self.dialog() {
                     // Another dialog on the way: A, its first button.
                     if self.quiet(now, DIALOG_HOLD_MS) {
+                        let name = self.dialog_name();
                         if self.dialog_presses >= DIALOG_PRESSES {
                             let ui = self.ui.clone();
                             self.give_up(format!(
                                 "dialogs on the way to Xbox Live after {DIALOG_PRESSES} presses; \
-                                 the last: {ui}"
+                                 the last, {name}: {ui}"
                             ));
                         } else {
                             self.dialog_presses += 1;
-                            self.queue = vec![press("a", "a dialog on the way to Xbox Live")];
+                            self.dialogs_seen.insert(name.clone());
+                            self.say(format!(
+                                "{name} on the way to Xbox Live (row {}): A, its first button",
+                                self.list_value
+                                    .map_or_else(|| "?".into(), |v| (v & 0xffff).to_string())
+                            ));
+                            self.queue =
+                                vec![press("a", &format!("{name} on the way to Xbox Live"))];
                             self.step = Step::ToLive { at: now, tries };
                         }
                     }
@@ -858,6 +1003,18 @@ impl Driver {
                     // Back on the main menu (a sign-in that failed, or a
                     // press it missed): again from its row.
                     if tries + 1 >= TRIES {
+                        let seen = if self.dialogs_seen.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "; the dialogs on the way: {}",
+                                self.dialogs_seen
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        };
                         let why = if self.picks > 0 {
                             format!(
                                 "no Xbox Live menu after {TRIES} tries; back on the main menu \
@@ -868,7 +1025,7 @@ impl Driver {
                         } else {
                             format!("no Xbox Live menu after {TRIES} tries; back on the main menu")
                         };
-                        self.give_up(why);
+                        self.give_up(format!("{why}{seen}"));
                     } else {
                         self.say("back on the main menu; Xbox Live again".into());
                         self.go_live(now, tries + 1);
@@ -983,6 +1140,21 @@ impl Driver {
                     }
                 }
             }
+            Step::Playlists {
+                at,
+                tries,
+                downs,
+                presses,
+            } => self.on_playlists(now, at, tries, downs, presses),
+            Step::Searching { at, tries } => self.searching(now, at, tries),
+            Step::Matching { since } => self.matching(now, since),
+            Step::MatchLobby { since } => self.match_lobby(now, since),
+            Step::Playing { .. } => {}
+            Step::Leaving {
+                presses,
+                last_b,
+                dialogs,
+            } => self.leaving(now, presses, last_b, dialogs),
             Step::Done | Step::Stuck => {}
         }
     }
@@ -1006,6 +1178,8 @@ impl Driver {
         s
     }
 }
+
+pub mod clankermatch;
 
 #[cfg(test)]
 mod tests;

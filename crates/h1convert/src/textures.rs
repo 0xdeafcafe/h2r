@@ -240,6 +240,7 @@ pub fn role_name(r: shad::Role) -> &'static str {
         shad::Role::Bump => "bump",
         shad::Role::Mask => "mask",
         shad::Role::Tile => "tile",
+        shad::Role::ChangeColour => "change colour",
     }
 }
 

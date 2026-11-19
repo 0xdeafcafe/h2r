@@ -973,6 +973,11 @@ stored: players use their own disc for the base.
 | `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
+| `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
+| `GET /v1/maps/{map_id}/images/{n}` | read rule | the details' `n`th image (from 0), its content type; 404 if none |
+| `GET /v1/mappacks` | read rule | `{items: [{id, name, description?, authors?, released?, source_url?, images?}], position}` |
+| `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
+| `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
 | `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranks_as?}]}`: the served file's clanker hoppers (live-matchmaking.md §6.8) |
 
@@ -1047,7 +1052,15 @@ mod: that is `credits`, an admin's correction (below) if there is one,
 else the publisher's `credit`, else the manifest's `[package] author`;
 `credit` is its authors on one line (`A`, `A & B`, `A, B & C`) for
 readers that know only that, and `source_url` is the credit's when it
-has one. `missing` lists
+has one. An admin's details (`PUT /v1/maps/{id}/details`) add `images`
+(`[{sha256, caption?, source_url?, credit?, licence?}]`, served at
+`/v1/maps/{id}/images/{n}`), `contents` (the report's lines) and `pack`
+and `pack_name`; they replace `description` and `features` when set, and
+the first image is `image` when the package has no preview. A list page
+then has `packs: [{id, name, ...}]` for the packs its items name; a
+map's own answer has `report` (the whole contents report:
+`{lines, classes, swaps, stats, placements, scripts}`) and `pack_info`.
+`missing` lists
 layers the server no longer holds (deleted by an admin). Lists leave out
 taken-down packages. Servers before the repository send no `position` or
 `downloads`; read them as 0.
@@ -1115,6 +1128,16 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   count the same way, with no background task.
 - The picture is `GET /v1/maps/{map_id}/image` when `image` is set, else
   the base map's art.
+- **Details and packs.** `PUT /v1/maps/{map_id}/details` (the same
+  tokens) appends a server-signed `MapDetailed` event (stream
+  `package-<map_id>`, data `{map_id, details?, by?}`): a description of
+  up to 4000 characters, up to 8 images already uploaded as content (each
+  checked to be a PNG or JPEG), a contents report, a features list and a
+  pack id. `{}` clears it. `PUT /v1/mappacks/{id}` appends `MapPackSet`
+  (stream `mappack-<id>`, data `{id, pack?, by?}`); `null` clears it.
+  Both are display data only, like the credit. `h2 live maps details
+  --file docs/game/mod-details.toml` applies a file of them, and `h2 live
+  maps analyze` writes the contents reports.
 - **Credits.** `PUT /v1/maps/{map_id}/credit` (an admin's account token or
   the operator's, `lxm: content.moderate`) sets who made a published
   package, over what its publisher said: the body is a credit as above

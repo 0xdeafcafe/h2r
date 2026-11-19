@@ -1349,9 +1349,11 @@ needs its own look. Proof:
 `tests/model_shaders_disc.rs`,
 `bloodgulch_leaves_cut_out_and_details_tile_by_their_scale`. Not converted
 yet: a `soso`'s self-illumination (multipurpose green times its animated
-colour, `+0x70` to `+0x8c`), its change colour (`+0x4c`, multipurpose blue
-on this disc), its detail mask (`+0xd6`) and the reflection of a
-cut-out one. A material with no Halo 1 base map to read names the
+colour, `+0x70` to `+0x8c`), its detail mask (`+0xd6`) and the reflection of a
+cut-out one. A `soso`'s change colour (`+0x4c`, multipurpose
+blue) draws with Halo 2's change-colour stem from converter version 84
+(objects.md "Change colours"). A player biped also carries the player's
+emblem (models.md "The emblem"). A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

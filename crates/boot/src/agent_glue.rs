@@ -213,11 +213,7 @@ pub fn add_host_methods(agent: &agent::Agent) {
         method::UI_SCREEN,
         Access::Read,
         |_| match crate::ui_watch::last() {
-            Some((age, top)) => {
-                let mut v = top.map_or_else(|| json!({ "screen": null }), |t| t.json());
-                v["age_ms"] = json!(age.as_millis() as u64);
-                Ok(v)
-            }
+            Some((age, top, dialog)) => Ok(crate::ui_watch::screen_json(age, top, dialog)),
             None => Err(RpcError::new(
                 code::UNAVAILABLE,
                 "no screen read yet (H2_UI_WATCH=1; read on each game tick)",

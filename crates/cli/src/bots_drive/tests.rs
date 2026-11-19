@@ -67,7 +67,7 @@ fn a_fresh_profile_boots_with_a_presses_then_goes_to_xbox_live() {
     let p = presses(&mut d, 14_700, 18_700);
     assert_eq!(
         p,
-        ["a a boot dialog (the new profile's): on to the main menu"]
+        ["a a boot dialog, an unnamed dialog (window 3; the game named none): on to the main menu"]
     );
     d.line(19_000, DIALOG_A7);
     assert_eq!(presses(&mut d, 19_100, 23_000).len(), 1);
@@ -112,7 +112,7 @@ fn the_lobby_mode_alone_is_not_the_main_menu() {
     let p = presses(&mut d, 2000, 4500);
     assert_eq!(
         p,
-        ["a a boot dialog (the new profile's): on to the main menu"]
+        ["a a boot dialog, an unnamed dialog (window 3; the game named none): on to the main menu"]
     );
 }
 
@@ -123,10 +123,22 @@ fn main_menu_to_the_lobby_to_start() {
     let p = presses(&mut d, 2500, 5000);
     assert_eq!(p.len(), 2, "{p:?}");
     d.line(3300, MAIN_ROW_1);
-    // A sign-in dialog on the way: A.
+    // A dialog on the way (a game's line from before the dialog part,
+    // and no gate line): A, said as unnamed.
     d.line(5000, DIALOG_14);
     let p = presses(&mut d, 5100, 8500);
-    assert_eq!(p, ["a a dialog on the way to Xbox Live"]);
+    assert_eq!(
+        p,
+        ["a an unnamed dialog (window 3; the game named none) on the way to Xbox Live"]
+    );
+    // Said once, with the row its cursor is on.
+    assert_eq!(
+        d.take_said(),
+        [
+            "bots-drive: an unnamed dialog (window 3; the game named none) on the way to Xbox \
+          Live (row 0): A, its first button"
+        ]
+    );
     // The players' screen in Xbox Live mode: A on to the Live menu.
     d.line(9100, "ui: screen 0x1e (window 5, slot 4), mode 3");
     let p = presses(&mut d, 9200, 11000);
@@ -607,4 +619,112 @@ fn the_live_menu_alone_is_learnt_after_the_players_screen() {
 fn the_main_menu_alone_is_not_the_live_menu() {
     let d = at_main();
     assert!(d.at_main() && !d.live_menu());
+}
+
+/// Run 20261119-115144 (`h2 bots test --clankermatch`): no local bot is
+/// placed before the roster, so no join gate line ever names the picker;
+/// the game's own line does now.
+const CM_PICKER: &str = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+const CM_PICKER_ROW_1: &str = "ui: screen none (slot 4: window 3 active 0x8253b0b0 pending 0x0 list [0x1/0xe1680001]; slot 0: no window), dialog 0x14 dialog_live_signin (window 3, slot 4)";
+const CM_BOOT_0A: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xec700000]; slot 0: no window), dialog 0x0a (window 3, slot 4)";
+const CM_CONFIRM: &str = "ui: screen none (slot 4: window 3 active 0x8253c000 pending 0x0 list [0x1/0xe1700000]; slot 0: no window), dialog 0x21 confirmation_dialog (window 3, slot 4)";
+
+#[test]
+fn the_dialog_part_of_a_none_line_is_read() {
+    assert_eq!(
+        line_dialog(CM_PICKER),
+        Some((
+            "dialog 0x14 dialog_live_signin (window 3, slot 4)",
+            Some(0x14)
+        ))
+    );
+    assert_eq!(
+        line_dialog(CM_BOOT_0A),
+        Some(("dialog 0x0a (window 3, slot 4)", Some(0x0a)))
+    );
+    assert_eq!(
+        line_dialog(
+            "ui: screen none (slot 4: no window; slot 0: no window), dialog ? (window 0, slot 4)"
+        ),
+        Some(("dialog ? (window 0, slot 4)", None))
+    );
+    assert_eq!(line_dialog(DIALOG_14), None, "a line from before the part");
+    assert_eq!(line_dialog("ui: screen 0xb6 (window 1, slot 4)"), None);
+    // The part leaves the slot 4 parts as they were.
+    let n = none_line(CM_PICKER).unwrap();
+    assert_eq!((n.window, n.mask, n.value), (3, Some(1), Some(0xe167_0000)));
+    assert_eq!(n.active, Some(0x8253_b0b0));
+}
+
+#[test]
+fn the_picker_is_known_by_the_games_line_without_a_gate_line() {
+    // Boot: the new profile's dialog 0x0a (named in the press), then the
+    // picker: DOWN and A on the account, not A on its no-account row.
+    let mut d = Driver::new(3);
+    d.status(500, "menu");
+    d.line(1000, CM_BOOT_0A);
+    assert_eq!(
+        presses(&mut d, 1100, 5100),
+        ["a a boot dialog, dialog 0x0a (window 3, slot 4): on to the main menu"]
+    );
+    d.line(6000, CM_PICKER);
+    assert_eq!(
+        presses(&mut d, 6100, 8000),
+        ["down the account picker: off the no-account row (row 0) to the account"]
+    );
+    d.line(8100, CM_PICKER_ROW_1);
+    assert_eq!(
+        presses(&mut d, 8200, 10_000),
+        ["a the account picker's account row 1: sign in"]
+    );
+    // From the main menu's Xbox Live row too (the run's four tries).
+    let mut d = at_main();
+    assert_eq!(
+        presses(&mut d, 2500, 4000).last().unwrap(),
+        "a Xbox Live (signs in)"
+    );
+    d.line(4100, CM_PICKER);
+    assert_eq!(
+        presses(&mut d, 4200, 7000),
+        ["down the account picker: off the no-account row (row 0) to the account"]
+    );
+    // Closed: the main menu's line clears the dialog.
+    d.line(7100, MAIN_ROW_1);
+    assert!(!d.picker());
+}
+
+#[test]
+fn a_dialog_on_the_way_is_named_in_its_press_and_the_give_up() {
+    let mut d = at_main();
+    presses(&mut d, 2500, 4000);
+    d.line(4100, CM_CONFIRM);
+    let p = presses(&mut d, 4200, 7500);
+    assert_eq!(
+        p,
+        ["a dialog 0x21 confirmation_dialog (window 3, slot 4) on the way to Xbox Live"]
+    );
+    assert!(d.take_said().iter().any(|s| s
+        == "bots-drive: dialog 0x21 confirmation_dialog (window 3, slot 4) on the way to \
+            Xbox Live (row 0): A, its first button"));
+    // Back on the main menu each time, until the tries run out: the
+    // give-up names the dialogs it answered.
+    let mut t = 7600;
+    while !d.stuck() && t < 200_000 {
+        d.line(t, MAIN_ROW_1);
+        presses(&mut d, t + 100, t + STEP_MS + 2000);
+        t += STEP_MS + 2100;
+        if d.stuck() {
+            break;
+        }
+        d.line(t, CM_CONFIRM);
+        presses(&mut d, t + 100, t + 3500);
+        t += 3600;
+    }
+    assert!(d.stuck());
+    let said = d.take_said();
+    assert!(
+        said.iter().any(|s| s.contains("no Xbox Live menu after")
+            && s.contains("the dialogs on the way: dialog 0x21 confirmation_dialog")),
+        "{said:?}"
+    );
 }
