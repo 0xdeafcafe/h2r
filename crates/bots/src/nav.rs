@@ -112,9 +112,7 @@ fn penalty(k: Kind) -> f32 {
         Kind::Drop => 0.5,
         Kind::Jump => 2.0,
         Kind::CrouchJump => 2.5,
-        Kind::Teleporter => 1.0,
-        Kind::Lift => 2.0,
-        Kind::Elevator => 4.0,
+        Kind::Teleporter | Kind::Lift | Kind::Elevator => 0.0,
     }
 }
 
@@ -733,9 +731,13 @@ impl NavMesh {
                 let there = self.polys[e.to as usize].center;
                 let travel = if e.kind.traversal() {
                     let transit = match e.kind {
-                        Kind::Teleporter => 0.0,
-                        Kind::Lift => dist(e.a, e.b) * 0.45,
-                        Kind::Elevator => dist(e.a, e.b) * 0.8,
+                        // Cost in walking-distance equivalents. At six
+                        // ticks per unit, include trigger/platform wait and
+                        // charge exposed airborne time by duration. These
+                        // rates are estimates shared with supply travel.
+                        Kind::Teleporter => 6.0 / 6.0,
+                        Kind::Lift => (8.0 + dist(e.a,e.b) * 2.7 * 1.25) / 6.0,
+                        Kind::Elevator => (24.0 + dist(e.a,e.b) * 4.8 * 1.25) / 6.0,
                         _ => dist(e.a, e.b),
                     };
                     dist(here, e.a) + transit + dist(e.b, there)

@@ -63,6 +63,16 @@ pub(super) fn follow(
     }
     let just_teleported = entry.kind == Kind::Teleporter && transit.last_distance < 0.6 && d > 2.0;
     transit.last_distance = d;
+    if entry.kind == Kind::Teleporter
+        && dist_xy(at, exit) < 0.55
+        && at[2] > exit[2] + 0.45
+        && at[2] <= exit[2] + 3.6
+        && (just_teleported || transit.armed.is_some())
+    {
+        let since = *transit.armed.get_or_insert(frame);
+        steer.replan = frame.saturating_sub(since) >= 60;
+        return Some(steer);
+    }
     if just_teleported {
         return Some(Steer {
             replan: true,
