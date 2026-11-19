@@ -540,6 +540,8 @@ async fn the_credit_is_the_mods_makers_not_the_publishers() {
     drop(h);
     let _ = std::fs::remove_dir_all(&store_dir);
     let _ = std::fs::remove_dir_all(&data_dir);
+}
+
 /// The Mods page's checklist data (docs/game/maps.md §5, "A mod's page"):
 /// features, game types and version are checked at publish and listed,
 /// in the list and on the map's own answer; a document without them

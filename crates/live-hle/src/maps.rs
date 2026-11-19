@@ -815,7 +815,7 @@ mod tests {
             Got::Gone("an admin hid it".into()),
         );
         let g = gate(&maps, true);
-        let dir = g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
+        let got = g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
         assert!(
             s.asked.lock().unwrap().contains(&format!("/content/{img}")),
             "it was tried"
@@ -824,7 +824,7 @@ mod tests {
         assert_eq!(lib.packages().len(), 1);
         assert_eq!(lib.packages()[0].id, id, "the same map, with no picture");
         assert_eq!(lib.packages()[0].manifest.package.image, None);
-        assert!(!dir.join("preview.png").exists());
+        assert!(!got.join("preview.png").exists());
 
         // A good picture is kept.
         let maps2 = dir("image-ok");
