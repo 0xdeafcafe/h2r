@@ -421,6 +421,9 @@ pub struct ScriptReport {
     pub looping_dropped: Vec<String>,
     pub looping_bytes: u64,
     pub missing_calls: usize,
+    /// Missing builtin calls and external globals, with their authored definition.
+    pub missing_builtins: Vec<h1scripts::compile::Unresolved>,
+    pub missing_globals: Vec<h1scripts::compile::Unresolved>,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
     pub unindexed: Vec<String>,
@@ -514,6 +517,14 @@ impl std::fmt::Display for ScenarioReport {
                 s.references
             )?;
             writeln!(f, "    unresolved samples: {:?}", s.samples)?;
+            for (label, uses) in [("builtin", &s.missing_builtins), ("global", &s.missing_globals)] {
+                let sites: std::collections::BTreeSet<_> = uses.iter()
+                    .map(|u| (u.definition.as_str(), u.name.as_str()))
+                    .collect();
+                for (script, name) in sites {
+                    writeln!(f, "    {script}: missing {label} {name}")?;
+                }
+            }
             if !s.unindexed.is_empty() {
                 writeln!(
                     f,
@@ -2077,6 +2088,8 @@ fn install_scripts(
         looping_dropped,
         looping_bytes,
         missing_calls: c.missing.len(),
+        missing_builtins: c.missing,
+        missing_globals: c.missing_globals,
         unindexed: c
             .unindexed
             .iter()

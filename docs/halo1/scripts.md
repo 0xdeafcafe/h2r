@@ -508,6 +508,14 @@ the calls participate in waits. The clock and danger gates come from the
 unit/miscellaneous builtin family, while the recording, vehicle and HUD
 operations use their respective families. Mission flow adds no builtin slots.
 
+Two presentation calls in the source still need family support. In
+`cutscene_intro`, the lifepod opening requests a convolution effect. In
+`objective_cave`, normal difficulty in single-player shows one of two
+driving hints with `display_scenario_help`, according to controller layout.
+Neither call supplies a mission wait condition. The conversion report names
+each missing builtin and external global alongside its script. The a30 readback
+test flags additional missing calls and checks the authored globals.
+
 **Checkpoint storage.** At `0x208ff0` retail allocates 320 script threads
 (stride `0x418`) and 3,072 global cells (stride 8) in game state. The
 first 1,053 cells belong to engine globals. The a30 AI registries alone

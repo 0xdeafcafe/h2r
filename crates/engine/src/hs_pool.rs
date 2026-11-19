@@ -138,8 +138,11 @@ mod tests {
             m.set_u32(at + 4, i * 31).unwrap();
             external.push(h);
         }
-        let guard = thread + layout::HEADER_SIZE + THREAD_STORAGE;
-        m.set_u32(guard, 0xa11ce).unwrap();
+        let thread_end = thread + layout::HEADER_SIZE + THREAD_STORAGE;
+        let cell_end = cell + layout::HEADER_SIZE + RETAIL_CELLS * CELL + bitmap(RETAIL_CELLS);
+        for end in [thread_end, cell_end] {
+            m.set_u32(end, 0xa11ce).unwrap();
+        }
         for count in [4300, 4900, 80] {
             m.set_u32(sc + 0x1c0, count).unwrap();
             prepare(&mut m).unwrap();
@@ -154,8 +157,18 @@ mod tests {
             }
             let first = globals.new_datum(&mut m).unwrap().unwrap();
             assert_eq!(u32::from(first.index()), EXTERNALS);
+            let last = globals.new_datum_at_absolute(&mut m, ng as i32 - 1).unwrap().unwrap();
+            let tail = globals.try_get(&m, last).unwrap().unwrap();
+            m.set_u32(tail + 4, 0xfedc_ba98).unwrap();
+            threads.make_valid(&mut m).unwrap();
+            assert_eq!(globals.try_get(&m, last).unwrap(), Some(tail));
+            assert_eq!(m.u32(tail + 4).unwrap(), 0xfedc_ba98);
+            assert!(globals.new_datum_at_absolute(&mut m, ng as i32).unwrap().is_none());
+            globals.delete(&mut m, last).unwrap();
             globals.delete(&mut m, first).unwrap();
-            assert_eq!(m.u32(guard).unwrap(), 0xa11ce);
+            for end in [thread_end, cell_end] {
+                assert_eq!(m.u32(end).unwrap(), 0xa11ce);
+            }
         }
         assert_eq!(m.u32(cell + layout::DATA).unwrap(), cell + layout::HEADER_SIZE);
     }

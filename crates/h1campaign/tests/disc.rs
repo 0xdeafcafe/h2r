@@ -812,7 +812,14 @@ fn a30_converts_onto_its_base_and_reads_back() {
             assert_eq!(Some(written.value_type()), sc.table.ty(global.value_type));
         }
         a30_flow::titles(&mut m, &bytes, addr, &h1);
+        assert!(r.missing_globals.is_empty(), "{:?}", r.missing_globals);
         if opts.ai {
+            let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
+                !matches!((u.definition.as_str(), u.name.as_str()),
+                    ("cutscene_intro", "cinematic_screen_effect_set_convolution")
+                    | ("objective_cave", "display_scenario_help"))
+            }).collect();
+            assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
             a30_flow::mission(&hs_s, &ai, &h1);
