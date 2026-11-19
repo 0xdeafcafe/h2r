@@ -8,10 +8,8 @@
 //! drawing the quads the segment holds through an indirect draw whose
 //! count and vertices later quads extend ([`Segment::append`]) through the
 //! queue. Those writes land at the next submission, ahead of the pass's
-//! commands, so they are drawn as long as no submission came between the
-//! reservation and the write: the host only extends a segment while the
-//! device has done nothing since it reserved it, and reserves a new one
-//! otherwise (`boot::native_hud_glue`).
+//! commands. Submission seals the segment under the same lock as the
+//! queue writes, so every accepted append reaches the recorded draw.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -229,24 +227,19 @@ impl Segment {
         Self::default()
     }
 
-    /// Quads drawn so far (0 before the pass is recorded).
+    /// Quads recorded so far (0 before recording, capacity once sealed).
     pub fn quads(&self) -> u32 {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).quads
     }
 
-    /// Makes the recorded pass draw nothing and takes no more quads: for a
-    /// reservation the host gives up after it was committed, before any
-    /// submission (the write lands ahead of the pass's commands).
-    pub fn void(&self) {
-        let mut s = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let (Some(queue), Some(args)) = (&s.queue, &s.args) {
-            queue.write_buffer(args, 0, bytemuck::cast_slice(&indirect_args(0)));
-        }
-        s.quads = SEGMENT_QUADS;
+    /// Stops appends without changing the indirect draw. Called before
+    /// submitting each recorded copy.
+    pub fn seal(&self) {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).quads = SEGMENT_QUADS;
     }
 
     /// Adds `quad` to the segment's draw: false (and nothing written) when
-    /// the pass was not recorded or the segment is full.
+    /// the pass was not recorded or the segment is full or sealed.
     pub fn append(&self, quad: &[TextVertex; 4]) -> bool {
         let mut s = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if s.quads == 0 || s.quads >= SEGMENT_QUADS {
@@ -255,6 +248,7 @@ impl Segment {
         let (Some(queue), Some(vertices), Some(args)) = (&s.queue, &s.vertices, &s.args) else {
             return false;
         };
+        // Keep the lock through both writes so seal cannot split an append.
         queue.write_buffer(
             vertices,
             u64::from(s.quads) * QUAD_BYTES,
@@ -1020,6 +1014,17 @@ mod tests {
         }; 4];
         assert!(!s.append(&q));
         assert_eq!(s.quads(), 0);
+    }
+
+    #[test]
+    fn sealing_a_recorded_segment_closes_its_remaining_slots() {
+        let segment = Segment::new();
+        segment.inner.lock().unwrap().quads = 1;
+        segment.seal();
+        assert_eq!(segment.quads(), SEGMENT_QUADS);
+        // Reference and display each seal the same segment.
+        segment.seal();
+        assert_eq!(segment.quads(), SEGMENT_QUADS);
     }
 
     #[test]

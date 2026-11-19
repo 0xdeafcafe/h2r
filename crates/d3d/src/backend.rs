@@ -363,6 +363,10 @@ pub struct ExternalTarget<'a> {
     pub slots: &'a [Option<ExternalColor>],
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+    /// Initially empty for an isolated recording and absent for legacy
+    /// encodes. Callbacks run just before submission and are discarded
+    /// with a refused or cancelled recording.
+    pub on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Bound colour and depth/stencil writes. RTT mirrors and aliases follow these writes.
@@ -446,6 +450,7 @@ pub struct ExternalRecording {
     pub copy: TargetCopy,
     pub ranges: usize,
     pub commands: wgpu::CommandBuffer,
+    pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;

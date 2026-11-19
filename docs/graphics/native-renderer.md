@@ -2296,19 +2296,19 @@ A planned batch is drawn in segments, each one external pass
   the quad skipped (`ret 4`). Anything not established, or the
   reservation refused, and the quad and the rest of the batch keep
   their D3D draws (`native_hud_glue::Kept`, logged once). The states
-  are read again after the drain; one that changed (a state the game
-  pushed itself) voids the segment and the quad stays on D3D.
+  are read again after the drain and before commit. If the drain changed
+  them, the recording is discarded and the quad stays on D3D.
 - **Extension.** The pass draws its quads with an indexed indirect
   draw over buffers it made at recording (128 quads). A later quad
   joins it while the device's counters (`Device::stats`), its bound
   target and viewport, and the glyph cache's ring (`hud::GLYPH_RING`,
   which every glyph added moves) stand where they stood after the
   reservation: its corners and the new count go in through the queue
-  (`hud_gpu::Segment::append`), and it is skipped. Queue writes land
-  at the next submission ahead of its command buffers, so they reach a
-  pass not yet submitted; the device submits only for work it is asked
-  for, which moves its counters. Otherwise, or with the segment full,
-  the quad reserves a new segment. Ending the batch ends the segment.
+  (`hud_gpu::Segment::append`), and it is skipped. The backend seals
+  the segment before submitting either copy, under the lock that guards
+  both queue writes. Accepted writes reach the draw before submission.
+  A full or sealed segment refuses the append, so the quad reserves a
+  new segment. Ending the batch ends the segment.
   This is why the pass is committed at the reservation and filled up to
   the end, not committed at the end: `PreparedExternal` borrows the
   device and cannot be held across hooks.

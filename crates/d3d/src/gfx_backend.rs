@@ -207,6 +207,8 @@ pub struct GfxBackend {
     open: Option<(wgpu::CommandEncoder, usize)>,
     /// Ordered segments before the current open encoder.
     external_prefix: Vec<wgpu::CommandBuffer>,
+    /// Callbacks for the recordings in `external_prefix`.
+    external_on_submit: Vec<Box<dyn FnOnce() + Send>>,
     /// [`set_defer_side_passes`](Self::set_defer_side_passes).
     defer_side_passes: bool,
     /// The scratch depth a colour-only external pass gets, by size.
@@ -324,6 +326,7 @@ impl GfxBackend {
             swap_finish: SwapFinish::from_env(),
             open: None,
             external_prefix: Vec::new(),
+            external_on_submit: Vec::new(),
             defer_side_passes: std::env::var_os("H2_GFX_SIDE_SUBMIT").is_none_or(|v| v != "1"),
             scratch_depth: None,
         }
@@ -928,6 +931,9 @@ impl GfxBackend {
             let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
             timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            for callback in self.external_on_submit.drain(..) {
+                callback();
+            }
             self.ctx
                 .queue
                 .submit(copies.into_iter().chain(self.external_prefix.drain(..)).chain(open).chain([enc.finish()]))
@@ -1662,11 +1668,13 @@ impl Backend for GfxBackend {
         let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
         let stages = textures.map(|t| t.and_then(|t| t.view.as_ref()));
         if (0..4).any(|i| textures[i].is_some() && stages[i].is_none()) { return Ok(None); }
+        let mut on_submit = Vec::new();
         let target = crate::ExternalTarget {
             device: &self.ctx.device, queue: &self.ctx.queue, encoder: &mut enc,
             color: &cv, color_format: cf, depth: &dv, depth_format: df,
             viewport: crate::external_viewport(&request, size), z_scale: request.z_scale,
             guest_size: request.surface_size, size, sampled: &sampled, slots: &slots, copy, stages,
+            on_submit: Some(&mut on_submit),
         };
         let prepare = timeline::native::Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
         if pass.prepare_copy(&target).is_err() { return Ok(None); }
@@ -1676,7 +1684,7 @@ impl Backend for GfxBackend {
         if !plan.complete(copy, ranges) {
             return Ok(None);
         }
-        Ok(Some(vec![crate::ExternalRecording { copy, ranges, commands: enc.finish() }]))
+        Ok(Some(vec![crate::ExternalRecording { copy, ranges, commands: enc.finish(), on_submit }]))
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
@@ -1684,6 +1692,7 @@ impl Backend for GfxBackend {
             self.external_prefix.push(enc.finish());
         }
         self.external_prefix.push(recording.commands);
+        self.external_on_submit.extend(recording.on_submit);
     }
 
     fn supports_external_pass(&self) -> bool {
@@ -1720,6 +1729,7 @@ impl Backend for GfxBackend {
             slots: &[],
             copy: crate::TargetCopy::Reference,
             stages: [None; 4],
+            on_submit: None,
         });
         self.open = Some((enc, passes + 1));
         Ok(true)

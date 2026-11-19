@@ -1078,6 +1078,12 @@ pub struct PreparedExternal<'a, B: Backend> {
 }
 
 impl<B: Backend> PreparedExternal<'_, B> {
+    /// The device after the drain, for validating the state used to record
+    /// this pass before deciding whether to commit it.
+    pub fn device(&self) -> &Device<B> {
+        self.device
+    }
+
     pub fn commit(self) {
         for recording in self.recordings {
             self.plan.stage.recorded(self.plan.view, recording.copy == crate::TargetCopy::Display, recording.ranges);

@@ -14,9 +14,9 @@
 //! once). Reserved, the quad is skipped, and each later quad joins the
 //! segment (written into its buffers, then skipped) while the device's
 //! counters, bound target and the glyph cache's ring stand still since
-//! the reservation; otherwise it reserves a new segment. A state the
-//! reservation's drain changed voids the segment (it draws nothing) and
-//! the quad keeps its D3D draw.
+//! the reservation and submission has yet to seal the segment. Otherwise
+//! it reserves a new segment. A state change during the drain cancels the
+//! recording before commit, so the quad keeps its D3D draw.
 //!
 //! HUD shader quads go through a draw admission on the device
 //! ([`HudAdmission`]): the hook notes the open call's corners, and the
@@ -343,8 +343,11 @@ impl d3d::ExternalPass for TextPass {
     fn encode(&mut self, _target: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let Some(on_submit) = t.on_submit else {
+            return 0;
+        };
         let mut gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        usize::from(gpu.record(
+        if !gpu.record(
             &self.draw,
             TextTarget {
                 device: t.device,
@@ -355,7 +358,12 @@ impl d3d::ExternalPass for TextPass {
                 guest_size: t.guest_size,
                 size: t.size,
             },
-        ))
+        ) {
+            return 0;
+        }
+        let segment = Arc::clone(&self.draw.segment);
+        on_submit.push(Box::new(move || segment.seal()));
+        1
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
@@ -883,17 +891,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             draw: Arc::clone(&draw),
             gpu: Arc::clone(&self.gpu),
         };
-        match d.prepare_external_pass(&mut dm, plan, Box::new(pass)) {
-            Ok(Some(p)) => p.commit(),
-            _ => return Err(k(Kept::Reservation)),
-        }
-        if state_words(&d, &dm) != before {
-            // The drain changed what the pass was recorded with: it draws
-            // nothing (the write lands before its commands, as an
-            // append's does) and the quad keeps its D3D draw.
-            draw.segment.void();
+        let Ok(Some(prepared)) = d.prepare_external_pass(&mut dm, plan, Box::new(pass)) else {
+            return Err(k(Kept::Reservation));
+        };
+        if state_words(prepared.device(), &dm) != before {
             return Err(k(Kept::Drained));
         }
+        prepared.commit();
         SEGMENTS.fetch_add(1, Ordering::Relaxed);
         NATIVE_QUADS.fetch_add(1, Ordering::Relaxed);
         Ok(Open {
@@ -913,13 +917,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if hud::glyph_ring(&Ro(mem)) != Some(open.ring) {
             return false;
         }
-        {
-            let Ok(d) = self.device.lock() else {
-                return false;
-            };
-            if d.stats() != open.stats || d.bound_target() != open.target {
-                return false;
-            }
+        let Ok(d) = self.device.lock() else {
+            return false;
+        };
+        if d.stats() != open.stats || d.bound_target() != open.target {
+            return false;
         }
         if !open
             .draw
