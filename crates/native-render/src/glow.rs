@@ -359,6 +359,9 @@ pub struct GlowTarget<'a> {
 /// targets 7 and 8 (by size) and the sampler.
 #[derive(Default)]
 pub struct GpuGlow {
+    /// Each block translated once (the colour pass draws a few, every
+    /// frame).
+    programs: HashMap<ProgramKey, Program>,
     compiled: HashMap<String, Compiled>,
     small: Option<((u32, u32), [wgpu::TextureView; 2])>,
     sampler: Option<wgpu::Sampler>,
@@ -379,13 +382,39 @@ pub enum Refused {
 /// `guest_size`), recording nothing: the target can be sampled, is the
 /// plan's size, and every block compiles.
 pub fn check(color: &wgpu::TextureView, guest_size: (u32, u32), plan: &Plan) -> Result<(), Refused> {
+    check_target(color, guest_size, plan)?;
+    programs(plan).map(|_| ()).map_err(Refused::Program)
+}
+
+fn check_target(color: &wgpu::TextureView, guest_size: (u32, u32), plan: &Plan) -> Result<(), Refused> {
     if !color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
         return Err(Refused::ColourNotSampled);
     }
     if guest_size != plan.view {
         return Err(Refused::ViewSize(guest_size, plan.view));
     }
-    programs(plan).map(|_| ()).map_err(Refused::Program)
+    Ok(())
+}
+
+/// A draw's program's key: its block without its constants (uniforms,
+/// not code: words 10..26 and 43, 44) and what its stages bind.
+type ProgramKey = ([u32; COMBINER_WORDS], [Option<(u32, u32)>; 4]);
+
+fn program_key(combiner: &[u32; COMBINER_WORDS], stages: [Option<(u32, u32)>; 4]) -> ProgramKey {
+    let mut code = *combiner;
+    for w in (10..26).chain(43..45) {
+        code[w] = 0;
+    }
+    (code, stages)
+}
+
+/// `combiner`'s program from the cache's one for its code, with its own
+/// constants.
+fn with_constants(mut p: Program, combiner: &[u32; COMBINER_WORDS]) -> Program {
+    let (c0, c1) = PixelShaderDef::from_words(combiner).embedded_constants();
+    p.pixel.c0 = c0;
+    p.pixel.c1 = c1;
+    p
 }
 
 impl GpuGlow {
@@ -396,8 +425,24 @@ impl GpuGlow {
     /// Records `plan`'s draws in order. The stand-ins are the guest sizes
     /// times this copy's scale. Nothing is recorded when it refuses.
     pub fn encode(&mut self, mut t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
-        check(t.color, t.guest_size, plan)?;
-        let programs = programs(plan).map_err(Refused::Program)?;
+        check_target(t.color, t.guest_size, plan)?;
+        let mut programs = Vec::with_capacity(plan.draws.len());
+        for d in &plan.draws {
+            let stages = d.stages.map(|s| s.map(|s| plan.size(s)));
+            let key = program_key(&d.combiner, stages);
+            let p = match self.programs.get(&key) {
+                Some(p) => with_constants(p.clone(), &d.combiner),
+                None => {
+                    let p = program(&d.combiner, stages).map_err(Refused::Program)?;
+                    if self.programs.len() >= 256 {
+                        self.programs.clear();
+                    }
+                    self.programs.insert(key, p.clone());
+                    p
+                }
+            };
+            programs.push(p);
+        }
         for (draw, program) in plan.draws.iter().zip(&programs) {
             let reads_dest = (0..4).any(|n| program.dims[n].is_some() && draw.stages[n] == Some(draw.dest));
             if reads_dest {
@@ -642,6 +687,26 @@ mod tests {
         assert_eq!(q.dest, [2.0 / 640.0, 2.0 / 480.0, 0.0, 0.0]);
         assert_eq!(q.taps[0], [0.0, 0.0, 0.25, 0.25]);
         assert!(q.taps[1..].iter().all(|t| t[0] == 0.0 && t[1] == 0.0), "no taps past the count");
+    }
+
+    /// A block's constants are uniforms: blocks differing only there share
+    /// one translation, each with its own constants.
+    #[test]
+    fn a_program_is_cached_by_its_code() {
+        let mut a = [0u32; COMBINER_WORDS];
+        a[53] = 1; // one combiner stage
+        let mut b = a;
+        for (w, v) in [(10, 0xff10_2030), (25, 0x8000_0001), (43, 0x0102_0304), (44, 0xffff_ffff)] {
+            b[w] = v;
+        }
+        assert_eq!(program_key(&a, [None; 4]), program_key(&b, [None; 4]));
+        let mut c = a;
+        c[53] = 2;
+        assert_ne!(program_key(&a, [None; 4]), program_key(&c, [None; 4]), "code is the key");
+        let (pa, pb) = (program(&a, [None; 4]).unwrap(), program(&b, [None; 4]).unwrap());
+        assert_eq!(pa.wgsl, pb.wgsl, "constants are not code");
+        let from_cache = with_constants(pa, &b);
+        assert_eq!(from_cache.pixel.to_bytes(), pb.pixel.to_bytes());
     }
 
     #[test]
