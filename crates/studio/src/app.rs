@@ -11,6 +11,7 @@ pub(crate) mod convert;
 pub mod hud;
 mod editing;
 mod library;
+pub mod map_cards;
 pub mod map_pack;
 pub mod shared_refs;
 pub mod tag_api;
@@ -363,6 +364,12 @@ pub struct App {
     /// ones), and the problems with the install already logged.
     pack: Vec<map_pack::PackMap>,
     pack_notes: Vec<String>,
+    /// The Maps list's cards (names, descriptions, pictures): the Halo 2
+    /// source's, the Halo 1 source's, the packages' pictures; each read
+    /// on its own thread (`map_cards`).
+    h2_cards: map_cards::CardSet,
+    h1_cards: map_cards::CardSet,
+    pkg_cards: map_cards::CardSet,
     /// The open Halo 1 source and its maps.
     h1: Option<editor_core::halo1::H1Source>,
     h1_maps: Vec<String>,
@@ -424,6 +431,9 @@ impl App {
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
+            h2_cards: Default::default(),
+            h1_cards: Default::default(),
+            pkg_cards: Default::default(),
             h1: None,
             h1_maps: Vec::new(),
             h1_view: None,
@@ -1192,6 +1202,7 @@ impl App {
                     self.maps.len()
                 ));
                 self.source = Some(source);
+                self.read_halo2_cards(path.to_owned());
                 self.session.close();
                 self.loaded = None;
                 self.forget_library_state();
@@ -1280,6 +1291,8 @@ impl App {
 
 #[cfg(test)]
 pub(crate) mod tag_tests;
+#[cfg(test)]
+pub(crate) mod map_cards_tests;
 #[cfg(test)]
 mod map_pack_tests;
 #[cfg(test)]

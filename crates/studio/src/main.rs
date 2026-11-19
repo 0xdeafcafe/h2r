@@ -435,6 +435,8 @@ fn main() -> Result<()> {
         Some(d) => bail!("unknown dialog {d}\n{USAGE}"),
     }
     if let Some(out) = &args.screenshot {
+        // The Maps list's names and pictures, so a shot shows them.
+        app.wait_cards();
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;
         studio::probe::want(studio::script::labels(
             studio::script::targets(&args.steps)

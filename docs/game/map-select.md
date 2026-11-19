@@ -77,7 +77,9 @@ the user's own disc lists.
 (`0x19c120`, map-pack.md 8.1). It takes the used slots of `mainmenu.map`'s
 multiplayer list from the disc (`new_maps::IsoDisc::slots`), then each
 `TDATA\4D530064\$c\<offer>\patch.lvl` record (`Entry::from_v2`), read after
-`new_maps` has installed its packages. A record whose map id matches a
+`new_maps` has installed its packages. Each slot is read by
+`tags::ui_levels::mp_level` (`map_of_slot`), the reader the Live catalog
+and the editor's Maps list share. A record whose map id matches a
 slot replaces that slot, as `0x19be00` refills it. A map's name is the
 English one (slot `+0xc`, record names `[0]`). At most 50 maps, the
 list's slots.
