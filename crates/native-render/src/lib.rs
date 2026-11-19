@@ -13,9 +13,8 @@
 //! [`instances`]), skinned on the GPU, while the game skips their layer-3
 //! entries ([`objects::clear_objects`]).
 //!
-//! Stage 3, transparents: the sorted transparent list's geometry
-//! entries the native renderer draws, met in the game's order and drawn in
-//! runs between the D3D path's ([`transparent`]).
+//! Stage 3, transparents: sorted geometry entries ([`transparent`])
+//! use native vertex bindings at their original indexed draws.
 
 pub mod camera;
 pub mod cull;
@@ -78,7 +77,7 @@ pub mod shadows;
 pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
-pub mod transparent_gpu;
+pub mod transparent_streams;
 pub mod world;
 pub mod world_layers;
 #[cfg(feature = "gpu")]

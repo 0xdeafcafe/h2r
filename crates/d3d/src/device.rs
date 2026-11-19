@@ -953,6 +953,8 @@ pub struct Device<B: Backend> {
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
     residual: Residual,
+    /// Optional vertex-binding optimization at the resolved indexed draw.
+    indexed_geometry: Option<IndexedGeometryHook>,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing>,
     /// How the last swallow that ended early ended
@@ -1118,9 +1120,24 @@ impl<B: Backend> PreparedExternal<'_, B> {
     }
 }
 
+/// An equivalent, immutable vertex binding for an already resolved indexed
+/// draw. The original indices, shader, render state, textures and attachments
+/// are kept. A hook can decline without changing the original submission.
+pub struct IndexedGeometry {
+    /// The equivalent declaration over the replacement stream.
+    pub layout: VertexLayout,
+    /// Vertex bytes in the original draw's vertex order.
+    pub stream: StreamBytes,
+}
+
+/// Reads the live guest stack and an indexed draw to select its binding.
+pub type IndexedGeometryHook =
+    Box<dyn FnMut(&dyn GuestMemory, u32, &ResolvedDraw) -> Option<IndexedGeometry> + Send>;
+
 /// What a resolved draw needs before the backend sees it.
 struct DrawParts {
     entry: &'static str,
+    indexed_esp: Option<u32>,
     primitive: PrimitiveType,
     vertex_count: u32,
     layout: VertexLayout,
@@ -1205,6 +1222,7 @@ impl<B: Backend> Device<B> {
             admissions: Vec::new(),
             scoped_admission: None,
             residual: Residual::default(),
+            indexed_geometry: None,
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -1928,6 +1946,12 @@ impl<B: Backend> Device<B> {
         let put = self.push_viewport(mem, put, dev)?;
         mem.write_u32(dev + field::PUT, put)?;
         Ok(true)
+    }
+
+    /// Installs a vertex-binding optimizer for guest indexed API draws.
+    /// It runs after texture and attachment resolution, in submission order.
+    pub fn set_indexed_geometry(&mut self, hook: IndexedGeometryHook) {
+        self.indexed_geometry = Some(hook);
     }
 
     /// Whether the backend can draw an external pass: asked before the
@@ -3784,19 +3808,28 @@ impl<B: Backend> Device<B> {
         Ok((d.width, d.height))
     }
 
-    fn target_info(&self, mem: &dyn GuestMemory) -> Result<TargetInfo, D3dError> {
+    fn target_info(&self, mem: &dyn GuestMemory) -> Result<(TargetInfo, bool), D3dError> {
         let c = self.header_desc(mem, self.render_target)?;
-        let depth_format = if self.depth_stencil != 0 {
-            Some(self.header_desc(mem, self.depth_stencil)?.format)
+        let depth = if self.depth_stencil != 0 {
+            Some(self.header_desc(mem, self.depth_stencil)?)
         } else {
             None
         };
-        Ok(TargetInfo {
-            width: c.width,
-            height: c.height,
-            format: c.format,
-            depth_format,
-        })
+        let compatible = self.indexed_geometry.is_some()
+            && gfx::surface::color_surface_format(c.format).is_some()
+            && depth.as_ref().is_some_and(|d| {
+                d.width == c.width && d.height == c.height
+                    && gfx::surface::depth_surface_format(d.format, gfx::translate::Capabilities::ALL).is_some()
+            });
+        Ok((
+            TargetInfo {
+                width: c.width,
+                height: c.height,
+                format: c.format,
+                depth_format: depth.map(|d| d.format),
+            },
+            compatible,
+        ))
     }
 
     /// `D3DDevice_SetRenderTarget` (`0x3f7870`, stdcall `pRenderTarget,
@@ -4857,7 +4890,7 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
-        let target = self.target_info(mem)?;
+        let (target, compatible_geometry_target) = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
         let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
         // The presented image is kept before anything draws over it; what
@@ -4866,7 +4899,7 @@ impl<B: Backend> Device<B> {
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
-        let draw = ResolvedDraw {
+        let mut draw = ResolvedDraw {
             entry,
             primitive: parts.primitive,
             vertex_count: parts.vertex_count,
@@ -4948,8 +4981,30 @@ impl<B: Backend> Device<B> {
             }
             self.stats.external_passes_dropped += 1;
         }
+        // Only adapt geometry for a submission that will use the D3D draw.
+        // A committed external replacement recycles the original streams.
+        let original = if let Some(esp) = parts.indexed_esp
+            && compatible_geometry_target
+            && depth.is_some()
+            && sampled.iter().zip(&textures).all(|(&read, texture)| !read || texture.is_some())
+            && let Some(hook) = &mut self.indexed_geometry
+            && let Some(geometry) = hook(mem, esp, &draw)
+        {
+            draw.layout = geometry.layout;
+            Some(std::mem::replace(&mut draw.streams, vec![geometry.stream]))
+        } else {
+            None
+        };
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
-        *streams = spare;
+        if let Some(original) = original {
+            // A threaded backend may return buffers from an earlier draw.
+            for stream in spare {
+                self.recycle_stream(stream.data);
+            }
+            *streams = original;
+        } else {
+            *streams = spare;
+        }
         match outcome.map_err(D3dError::Backend)? {
             DrawOutcome::Drawn => self.mark_written(writes_depth),
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
@@ -5057,6 +5112,7 @@ impl<B: Backend> Device<B> {
             mem,
             DrawParts {
                 entry: E,
+                indexed_esp: None,
                 primitive,
                 vertex_count: count,
                 layout,
@@ -5078,6 +5134,17 @@ impl<B: Backend> Device<B> {
         primitive: u32,
         count: u32,
         indices: u32,
+    ) -> Result<(), D3dError> {
+        self.draw_indexed_vertices_at(mem, primitive, count, indices, None)
+    }
+
+    pub(crate) fn draw_indexed_vertices_at(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: u32,
+        count: u32,
+        indices: u32,
+        esp: Option<u32>,
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_DrawIndexedVertices";
         self.live(E)?;
@@ -5120,6 +5187,7 @@ impl<B: Backend> Device<B> {
             mem,
             DrawParts {
                 entry: E,
+                indexed_esp: esp,
                 primitive,
                 vertex_count: window,
                 layout,
@@ -5243,6 +5311,7 @@ impl<B: Backend> Device<B> {
             mem,
             DrawParts {
                 entry: E,
+                indexed_esp: None,
                 primitive,
                 vertex_count: count,
                 layout,
@@ -5432,6 +5501,7 @@ impl<B: Backend> Device<B> {
             mem,
             DrawParts {
                 entry,
+                indexed_esp: None,
                 primitive: d.primitive,
                 vertex_count: d.vertices.len() as u32,
                 layout,
@@ -5521,6 +5591,7 @@ impl<B: Backend> Device<B> {
             mem,
             DrawParts {
                 entry,
+                indexed_esp: None,
                 primitive: d.primitive,
                 vertex_count: count,
                 layout,

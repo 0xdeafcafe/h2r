@@ -155,7 +155,7 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 | 1. Static world | Structure BSP clusters and instanced geometry, layer 3 (lightmap) | Layer 3's structure entries: their builds, shader draws (`0x0001bbf0`/`0x00016b90`), geometry submission (`0x00041040`'s callbacks `0x0004cbf0`/`0x0004d0b0`) and the push-buffer words; most of the 8.26 ms layer-3 site, the matching `d3d` decode, encode and submit | Colour target and depth/stencil, viewport, the camera |
 | 1b. World, all layers | The world's layers 1 (base depth / texaccum), 5, 7 (self-illumination) and 8 (environment map) | The rest of the world's entries in the base layers | Texaccum target (when kept), depth |
 | 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
-| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | The transparent list and its per-entry handlers; particle update stays in the simulation | Depth (read), sorted order computed on the GPU or on our side |
+| 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | Persistent native vertex bindings for sorted indexed geometry. Particle and effect handlers still run through D3D. | The guest's sort, resolved per-draw state and the live depth target |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
 | 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
@@ -221,9 +221,8 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
   programs draw with them (`ViewInputs::w_clip`), as the objects' lit
   parts now do (`ObjectsPass::depth_clip`; 03a's near is 256 depth
-  units, which the objects clipped at 0). The Stage 4 cluster light pass also takes the device clip. Transparent
-  passes still take the whole range (S: the same gap for anything far in
-  a cinematic, or nearer than the view's near). That did not close the
+  units, which the objects clipped at 0). The Stage 3 transparent pass and the
+  Stage 4 cluster light pass also take the device range. That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
   line per pass (the first 8, then every 250th, or every `n`th with
@@ -264,9 +263,9 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   its translation decodes them in the shader (`xvs_normpacked3`), where
   the native programs read floats decoded on the CPU, so the two modules
   were different code. A world vertex now carries the four words too
-  (`WorldVertex::packed`, `world::pack_normpacked3`, which gives back the
-  stream's word for any value decoded from one) and the material
-  programs fetch and decode them as the D3D path does
+  (`WorldVertex::packed`). The loader now keeps the words from the
+  guest streams, including either encoding that clamps to -1. The
+  material programs fetch and decode them as the D3D path does
   (`program::INPUTS`, `WORLD_FETCH`): a world program's module is then
   the D3D path's for the same draw, text for text
   (`a_world_program_s_module_is_the_d3d_path_s`), position math included.
@@ -1663,17 +1662,13 @@ at `+0x37c`, 8 bytes each with the set's datum at `+4`). They have no
 render record, are not objects, and neither skip touches them (both take
 only build `0x0004cbf0`): they stay on D3D, a later world stage.
 
-## Stage 3: transparents (design)
+## Stage 3: transparents
 
-The sorted transparents are not layers of the scene list: after the
-opaque layers, layer 15 and the late passes, `render_scene_passes` calls
-`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run), which
-sorts a list of its own and calls one handler per entry. So the skip is
-not on `LAYER_DRAW`; it is on the geometry entries' handler. Stage 1b
-(the world's layers 1, 5, 7, 8) is not a prerequisite: the transparents
-depth-test against what the opaque layers left (the world's native pass
-writes the game's W depth already), and their materials are the
-template's layer-15 passes, which do not read the other layers' targets.
+After the opaque layers and late passes, `render_scene_passes` calls
+`SCENE_TRANSPARENTS` (`0x0001e370`, 2.58 ms on the census run). The call
+sorts its own list and invokes one handler per entry. The geometry
+handlers set up their layer-15 passes and depth-test against what the
+opaque layers left.
 
 ### The list (Code, `h2 disasm`)
 
@@ -1706,101 +1701,76 @@ template's layer-15 passes, which do not read the other layers' targets.
 Other handlers in the list (effects, particles, contrails, decals) are
 not read yet; they keep their D3D draws in this stage.
 
-### Skip point and order
+### Admission and order
 
-One `before` on `TRANSPARENT_GEOMETRY`, context-only: for an entry the
-host draws (`native_render::transparent::read_entry`, then
-`Host::accepts`), it answers `ret 4`, so the entry builds and draws
-nothing and no guest memory changes (no restore). The hook meets the
-entries in the game's sorted order, so no sort of ours is needed.
+Observers identify the sorted entry from the live guest stack and clear
+the scope when `SCENE_TRANSPARENTS` returns. The return observer uses
+the game-thread fallback under pipelined rendering. The original handler
+runs its builds, state writes, binds and
+restores. The D3D indexed draw drains pending push-buffer work, then
+resolves its own state and bindings. Stage 3 may substitute one immutable
+GPU vertex binding at that draw. It uses the original indices, shader
+classification, constants, alpha test, W clip and attachments. The
+original draw remains in place if the entry, map generation, compatible
+depth target or any sampled texture cannot be confirmed.
 
-Ordering against the D3D path's transparents uses the device's external
-pass as it already works: a pass asked for is issued at the device's
-next entry, after the draws queued before it. Consecutive native entries
-join one `transparent::Run`; the first asks the device for a pass that
-owns the run, and the pass seals the run when the device issues it
-(`ExternalPass::view_constants`, the issue moment, on the device's
-thread). A D3D entry's draw is a device entry, so the next native entry
-finds its run sealed and opens a new one. Each run therefore lands
-between the D3D draws it sorts between, and its entries draw in their
-sorted order inside the pass. An observer before `SCENE_TRANSPARENTS`
-forgets the open run, so a run never spans two views, or outlives a
-pass the device dropped.
-
-Both hooks are context-only with nothing after a body, so the pipelined
-render runs them on its own thread; the entries are read from the
-render's snapshot of the frame.
+The intervening D3D and inline draws pass through the same command
+stream. Each entry retains its own part and the implementation passes
+that the handler actually draws. No stage-3 pass is queued ahead of
+that work. The optimization targets vertex bindings. Guest handler and
+D3D state-resolution costs still apply.
 
 ### Order of work
 
-1. **The skip and the runs** (built: `feature::native_transparents`,
-   `native_render::transparent`, `impl.render.native_transparents`, off by
-   default). Without a host nothing is skipped.
-2. **The layer-15 look** (built: `look::transparent_passes`,
-   `pass_state`). Every pass of the template's layer 15 at the first
-   level of detail, in order, each with `look::implementation_look`'s
-   rules (the ones layer 3 uses) and the pipeline state from the
-   implementation's render states (`ResolvedImplementation::render_states`,
-   decoded by `gfx` as the D3D path decodes them: blend enable, factors,
-   op and constant, colour writes, depth test and write, cull, alpha
-   test). All or nothing per material. It stays on the D3D path when a
-   pass has more than one implementation (S: which one the engine binds
-   for a transparent entry is not traced), reads engine render states
-   (`engine_render_states`), turns on fog, stencil or a depth bias, or
-   leaves blend enable, its factors or depth write to whatever the
-   previous draw left (S: the states it does not set are taken at the
-   D3D defaults).
-3. **The world's transparent parts.** The draw table is built
-   (`world::TransparentDraw`, `World::transparent(owner, part)`): the
-   kind-4 parts in the world's vertex and index buffers, keyed by
-   (cluster or placement, the part's index in its section; the loader now
-   keeps every part in place, a part not drawn as an empty one), their
-   lightmap pages in the lightmap array. The GPU side is built too
-   (`transparent_gpu::TransparentSet`, `GpuWorld::encode_transparents`):
-   each material's passes compiled with `program::compile_pass` (the
-   world programs' translation plus the pass's alpha test) and uploaded
-   with the same per-program code as the world's (`program::Gpu`), one
-   pipeline per pass with its `PassState` (blend, write mask, depth write
-   and compare, cull) and its blend constant set per draw. A run's pass
-   loads the target and depth and draws, per entry in order, the part
-   with each of its passes, over the whole target (the programs carry
-   the viewport). Boot's host is built too (`boot::native_transparents_glue`, over the
-   native world's loaded BSP, so the native world must be on): at load,
-   each transparent material's passes compiled all or nothing and their
-   stage images decoded, then the parts that can draw (a compiled
-   material, and its lightmap page when a pass samples it), with one line
-   on stderr: how many materials and parts, and why the rest stay on the
-   D3D path. It accepts a cluster or placement entry whose part is in
-   that table with the entry's shader; a run's pass takes the run's
-   entries when the device issues it and draws them with
-   `GpuWorld::encode_transparents`.
-4. **Objects' transparent parts** (with `impl.render.native_objects` on
-   as well). The hook copies the object's node matrices and sphere into
-   the run (`transparent::RunEntry`, `objects::read_object`, as stage 2
-   does at layer 3), from the render's snapshot, so the pass draws the
-   frame's pose. An object's entry stands for all of its parts with that
-   shader (S: which section and part an object's render record names is
-   not read), so a later entry of the same object and shader in the view
-   is skipped without drawing again (the parts draw at the first one's
-   place in the order). On the GPU (`model_gpu`) a model keeps its
-   transparent parts in its index buffer, in their own draw table
-   (`Model::transparents`); the caller sets each transparent material's
-   base map and pass state (`GpuModels::set_transparent`; S: an
-   alpha-tested pass is refused, the models' shader has no alpha test
-   yet), and `GpuModels::encode_transparents` draws a run's object items
-   in order with the models' shading and the base map's alpha
-   (`fs_transparent`), each pass's blend and depth state, and the run's
-   node matrices in buffers of its own, so runs and the opaque objects'
-   pass in one submit do not overwrite each other's. In boot, the objects'
-   worker takes a definition's transparent materials with one layer-15
-   pass, no alpha test and a base map that decodes, and publishes the
-   definition's node count and each shader's materials; the transparents'
-   host accepts an object entry when its definition is published with
-   the copy's node count and the entry's shader, and a run's pass draws
-   its entries in order as segments: consecutive world entries through
-   the world's pass, consecutive objects through the models'.
-5. **The live A/B**, as stage 1's: the same frame with the switch on and
-   off, `external_passes_dropped` steady, and the `0x0002c19a` site's ms.
+1. **Sorted parts.** `feature::native_transparents` tracks the view and
+   geometry handler frames. It verifies the entry argument and render
+   record at each indexed draw. The switch
+   `impl.render.native_transparents` is off by default.
+2. **Draw state and attachments.** Each draw takes the D3D snapshot
+   after that handler sets up its pass, including the effects of earlier
+   setup and restore writes. The adapter requires a programmable
+   W-buffered indexed triangle draw with compatible colour and depth
+   targets. The shared backend uses the resolved state and receives the
+   actual texture bindings. Palette expansion, resident mip selection,
+   BC blocks, sampler state and render-to-texture coherency stay with
+   that path.
+3. **Vertex bindings.** `native_render::transparent_streams` packs
+   multiple immutable streams into one buffer when their live
+   declarations and strides allow it. It keeps the raw guest bytes,
+   including packed normals and normalized endpoints. The cache uses
+   immutable stream snapshots and the exact declaration, scoped to the
+   game activation and active BSP. A transparent view can use the cache
+   before any layer-3 item. The object flag also has to be on to pack
+   object entries. Object inputs and node rows come from the actual
+   draw, as do cluster and placement inputs. The opaque world keeps the
+   layers 1, 3, 5, 7 and 8 layout, with a 92-byte stride and
+   `Float32x2` for v6.
+4. **GPU submission.** The ordered draw path batches uniforms in the
+   renderer's upload arena and reuses texture/sampler groups keyed by
+   the live views and samplers. The packed vertex buffer can stay on
+   the GPU across views. No transparent draw allocates its own pair
+   of uniform buffers and group.
+5. **Live A/B pending.** Capture the same Old Mombasa frame with
+   `H2_LEVEL=03a_oldmombasa` and
+   `H2_FEATURES=impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_transparents=on`.
+   For the reference, set `impl.render.native_transparents=off` and
+   keep the other switches and capture settings the same. Compare
+   pixels, check that `native-transparents:` reports native bindings,
+   and compare the `0x0002c19a` site's time.
+
+   - `H2_NATIVE_TRANSPARENTS_PROBE=x,y` names the sorted indexed entries
+     with triangles covering a guest pixel. It reports source, part,
+     record, shader, triangle depth and edge distance from the live
+     vertex program. Coverage is measured before clip, depth and alpha
+     tests.
+   - `H2_NATIVE_TRANSPARENTS_COMPARE=placement:ID:PART[@N]` keeps the
+     selected original binding and emits a one-shot diagnostic after
+     `N` eligible draws. The other selectors are `cluster:ID:PART[@N]`
+     and `object:HANDLE:PART[:RECORD][@N]`. Handles may be hexadecimal.
+     The optional record distinguishes draws that share a handle and
+     part. Read `native-transparents compare` for both vertex fetch
+     plans and the shared W clip, constants, stage textures and render
+     states.
 
 ## Stage 4: lights and shadows (design)
 

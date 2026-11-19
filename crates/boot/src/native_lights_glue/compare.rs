@@ -100,6 +100,11 @@ impl d3d::ExternalPass for Begin {
                 pixel_options: program.pixel_options,
                 primitive,
                 depth: (write, compare, Default::default()),
+                color: Some(d3d::uniform_compare::ColorState {
+                    blend: program.state.blend,
+                    write_mask: program.state.color_writes,
+                    blend_constant: program.state.blend_constant,
+                }),
                 textures,
                 samplers: std::array::from_fn(|n| program.dims[n].and(program.samplers[n].as_ref()).and_then(sampler_key)),
                 draws: 1,

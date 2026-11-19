@@ -712,6 +712,7 @@ impl<B: Backend> Device<B> {
             admissions: _, // Host services, retained across guest loads.
             scoped_admission: _, // Quiesce the call before saving.
             residual: _,
+            indexed_geometry: _,
             swallowing: _,
             swallow_mismatch: _,
             trace: _,

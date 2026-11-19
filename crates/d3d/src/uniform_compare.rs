@@ -1,13 +1,12 @@
 //! A one-shot comparison of the uniforms the D3D path draws a model with
 //! against another renderer's for the same draw (the native world's for a
 //! placement: `H2_NATIVE_WORLD_DUMP` in the boot glue). That renderer arms
-//! it with its uniforms ([`arm`]); the next draws whose model rows
-//! `c[50..52]` hold the same bits are compared and printed, each register
-//! the D3D draw's vertex program reads that differs, the inputs it reads
-//! that one streams and the other does not, or whose defaults differ, and
-//! the pixel uniforms, and each sampled stage's sampler and the D3D
-//! draw's texture there. A light comparison uses two backend markers
-//! instead of model rows, so the frame constants can differ.
+//! it with its uniforms. A comparison matches the vertex program and,
+//! for a placement or object, the model rows ([`arm`]). A cluster's
+//! draw can leave those rows latched from another draw, so it can
+//! match by program alone ([`arm_entry`]). Differences include
+//! uniforms, input fetch, pipeline state, and sampled stages.
+//! Backend markers bracket each light comparison, so its frame constants can differ.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,6 +25,14 @@ pub const MODEL_ROWS: usize = 50;
 /// Lines at most for draws whose rows match but whose program is another
 /// (the placement's other layers).
 const OTHER_PROGRAMS: u32 = 16;
+
+/// The colour target state and the dynamic blend constant of a draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColorState {
+    pub blend: Option<wgpu::BlendState>,
+    pub write_mask: wgpu::ColorWrites,
+    pub blend_constant: wgpu::Color,
+}
 
 /// What the other renderer draws with.
 #[derive(Clone, Debug)]
@@ -47,6 +54,8 @@ pub struct Expected {
     /// write, compare and bias.
     pub primitive: wgpu::PrimitiveState,
     pub depth: (bool, wgpu::CompareFunction, wgpu::DepthBiasState),
+    /// Colour target state and constant, when known.
+    pub color: Option<ColorState>,
     /// What it binds at each stage, described (`None`: not known).
     pub textures: [Option<String>; 4],
     /// Each sampled stage with a known sampler.
@@ -56,11 +65,12 @@ pub struct Expected {
 }
 
 struct Armed {
-    /// The candidates: one per material the other renderer draws the
-    /// placement with ([`arm_all`]).
+    /// Candidate draws for the entry being compared.
     expected: Vec<Expected>,
+    require_rows: bool,
+    single_entry: bool,
     others: u32,
-    /// Draws still to compare (the candidates' [`Expected::draws`] summed).
+    /// Draws still to compare across the armed candidates.
     remaining: u32,
 }
 
@@ -77,11 +87,27 @@ pub fn arm(expected: Expected) {
 /// compared with the candidate whose pixel shader it is ([`pick`]).
 /// Nothing is armed when `candidates` is empty.
 pub fn arm_all(candidates: Vec<Expected>) {
+    arm_candidates(candidates, true, false);
+}
+
+/// Compares the passes of one entry, one draw per candidate. Vertex
+/// programs must match. The closest pixel shader wins, with earlier
+/// unused passes first when several match equally well. A cluster may leave its model rows latched.
+pub fn arm_entry(candidates: Vec<Expected>, require_rows: bool) {
+    arm_candidates(candidates, require_rows, true);
+}
+
+fn arm_candidates(candidates: Vec<Expected>, require_rows: bool, single_entry: bool) {
     if candidates.is_empty() {
         return;
     }
-    let remaining = candidates.iter().map(|e| e.draws).sum::<u32>().max(1);
-    *EXPECTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Armed { expected: candidates, others: 0, remaining });
+    let remaining = if single_entry {
+        candidates.len() as u32
+    } else {
+        candidates.iter().map(|e| e.draws).sum::<u32>().max(1)
+    };
+    let mut guard = EXPECTED.lock().unwrap_or_else(|e| e.into_inner());
+    *guard = Some(Armed { expected: candidates, require_rows, single_entry, others: 0, remaining });
     ARMED.store(true, Ordering::Release);
 }
 
@@ -109,7 +135,7 @@ pub fn pick<'a>(
 
 /// Whether a comparison waits for its draws.
 pub fn armed() -> bool {
-    ARMED.load(Ordering::Acquire)
+    ARMED.load(Ordering::Acquire) || IN_LIGHT.get()
 }
 
 // The two external passes bracketing a reference light are encoded on the
@@ -152,14 +178,14 @@ pub fn end_light(handle: u32) {
 
 /// A D3D draw with vertex program `words`, uniforms `vertex` and `pixel`,
 /// the layout's streamed registers, and its samplers and textures:
-/// printed when it matches.
+/// printed when it matches. The caller checks the arm before deriving the pipeline state.
 pub(crate) fn observe(
     words: &[u32],
     vertex: &VertexUniforms,
     pixel: &PixelUniforms,
     options: &VertexOptions,
     pixel_shader: (&PixelShaderDef, &PixelOptions),
-    pipeline: (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>),
+    pipeline: (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>, ColorState),
     samplers: &[SamplerKey; 4],
     textures: &[Option<TextureInfo>; 4],
 ) {
@@ -183,11 +209,11 @@ pub(crate) fn observe(
     let mut guard = EXPECTED.lock().unwrap_or_else(|e| e.into_inner());
     let Some(armed) = guard.as_mut() else { return };
     let Some(first) = armed.expected.first() else { return };
-    if !rows_match(vertex, &first.vertex) {
+    if armed.require_rows && !rows_match(vertex, &first.vertex) {
         return;
     }
     let Some((e, differ)) = pick(&armed.expected, words, pixel_shader) else {
-        if armed.others < OTHER_PROGRAMS {
+        if armed.require_rows && armed.others < OTHER_PROGRAMS {
             armed.others += 1;
             let depth = pipeline.1.map(|d| (d.depth_write_enabled, d.depth_compare, d.bias));
             eprintln!(
@@ -210,8 +236,16 @@ pub(crate) fn observe(
             armed.expected.len()
         );
     }
+    // A material can reuse the same shader in two passes with different
+    // blend or depth state. Once paired, each pass has had its comparison.
+    let matched = armed.single_entry.then(|| {
+        armed.expected.iter().position(|candidate| std::ptr::eq(candidate, e)).unwrap()
+    });
     for line in compare(e, words, vertex, pixel, options, pixel_shader, pipeline, samplers, textures) {
         eprintln!("{line}");
+    }
+    if let Some(index) = matched {
+        armed.expected.remove(index);
     }
     armed.remaining = armed.remaining.saturating_sub(1);
     if armed.remaining == 0 {
@@ -287,7 +321,7 @@ pub fn compare(
     pixel: &PixelUniforms,
     options: &VertexOptions,
     (def, pixel_options): (&PixelShaderDef, &PixelOptions),
-    (primitive, depth): (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>),
+    (primitive, depth, color): (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>, ColorState),
     samplers: &[SamplerKey; 4],
     textures: &[Option<TextureInfo>; 4],
 ) -> Vec<String> {
@@ -313,7 +347,7 @@ pub fn compare(
     }
     let label = &e.label;
     let mut out = vec![format!(
-        "uniform-compare {label}: a matching D3D program draw; streams {streamed:#06x} (other {:#06x}), reads v {inputs:#06x}",
+        "uniform-compare {label}: a D3D draw with the matching program; streams {streamed:#06x} (other {:#06x}), reads v {inputs:#06x}",
         e.options.provided_inputs
     )];
     let same = |a: &[f32; 4], b: &[f32; 4]| a.map(f32::to_bits) == b.map(f32::to_bits);
@@ -401,6 +435,11 @@ pub fn compare(
     if d3d_depth != Some(e.depth) {
         out.push(format!("  depth (write, compare, bias) d3d {d3d_depth:?} other {:?}", e.depth));
     }
+    if let Some(other) = e.color {
+        for (field, d, o) in field_differences(&format!("{color:?}"), &format!("{other:?}")) {
+            out.push(format!("  color {field} d3d {d} other {o}"));
+        }
+    }
     // The polygon stipple the D3D draw masks its fragments with (only
     // with `PixelOptions::stipple`; all ones masks nothing).
     if pixel_options.stipple && pixel.stipple != [u32::MAX; 32] {
@@ -461,9 +500,18 @@ mod tests {
             pixel_options: PixelOptions::default(),
             primitive: wgpu::PrimitiveState::default(),
             depth: (true, wgpu::CompareFunction::LessEqual, wgpu::DepthBiasState::default()),
+            color: Some(color()),
             textures: [None, Some("Rgba8Unorm 4x4".into()), None, None],
             samplers,
             draws: 1,
+        }
+    }
+
+    fn color() -> ColorState {
+        ColorState {
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+            blend_constant: wgpu::Color::TRANSPARENT,
         }
     }
 
@@ -529,7 +577,7 @@ mod tests {
         };
         let mut def = e.def.clone();
         assert_eq!(
-            compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth)), &samplers, &textures)[1..],
+            compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth), color()), &samplers, &textures)[1..],
             ["  0 constants the program does not read differ", "  stage 1 d3d texture none, other Rgba8Unorm 4x4, the same sampler"]
         );
         v.constants[0] = [2.0; 4];
@@ -542,7 +590,7 @@ mod tests {
         def.compare_mode = 1;
         primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
         depth.bias.constant = 2;
-        let lines = compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth)), &samplers, &textures);
+        let lines = compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth), color()), &samplers, &textures);
         assert_eq!(lines[1], "  c[0] d3d [2.0, 2.0, 2.0, 2.0] other [0.0, 0.0, 0.0, 0.0]");
         assert_eq!(lines[2], "  1 constants the program does not read differ", "c[60]");
         assert_eq!(lines[3], "  v5 d3d default [0.5, 0.5, 0.5, 1.0] other streamed");
@@ -554,6 +602,71 @@ mod tests {
         assert!(lines[9].starts_with("  stage 1 d3d texture none, other Rgba8Unorm 4x4, sampler d3d SamplerKey"), "{}", lines[9]);
         assert!(lines[9].contains("min: Nearest") && lines[9].contains("min: Linear"), "{}", lines[9]);
         assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn a_cluster_match_uses_the_program_when_model_rows_are_latched() {
+        let e = expected();
+        let mut latched = e.vertex.clone();
+        latched.constants[MODEL_ROWS] = [2.0; 4];
+        let samplers = [sampler(wgpu::FilterMode::Linear); 4];
+        let observe = |words: &[u32], vertex: &VertexUniforms| {
+            super::observe(
+                words,
+                vertex,
+                &e.pixel,
+                &e.options,
+                (&e.def, &e.pixel_options),
+                (&e.primitive, None, color()),
+                &samplers,
+                &[None; 4],
+            );
+        };
+        arm(e.clone());
+        observe(&e.words, &latched);
+        assert!(armed(), "a placement still requires matching rows");
+        observe(&e.words, &e.vertex);
+        assert!(!armed());
+
+        let second = Expected { label: "second pass".into(), ..e.clone() };
+        arm_entry(vec![e.clone(), second], false);
+        observe(&e.words[4..], &latched);
+        assert!(armed(), "a cluster still requires matching vertex code");
+        observe(&e.words, &latched);
+        {
+            let guard = EXPECTED.lock().unwrap_or_else(|e| e.into_inner());
+            let rest = &guard.as_ref().unwrap().expected;
+            assert_eq!(rest.len(), 1);
+            assert_eq!(rest[0].label, "second pass", "a consumed pass cannot match again");
+        }
+        observe(&e.words, &latched);
+        assert!(!armed(), "latched rows do not prevent a cluster match");
+    }
+
+    #[test]
+    fn color_comparison_lists_blend_mask_and_constant_differences() {
+        let e = expected();
+        let actual = ColorState {
+            blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::RED,
+            blend_constant: wgpu::Color::WHITE,
+        };
+        let lines = compare(
+            &e,
+            &e.words,
+            &e.vertex,
+            &e.pixel,
+            &e.options,
+            (&e.def, &e.pixel_options),
+            (&e.primitive, None, actual),
+            &[sampler(wgpu::FilterMode::Linear); 4],
+            &[None; 4],
+        );
+        let differences: Vec<_> = lines.iter().filter(|line| line.starts_with("  color ")).collect();
+        assert_eq!(differences.len(), 3);
+        assert!(differences[0].starts_with("  color blend d3d Some("));
+        assert!(differences[1].starts_with("  color write_mask d3d "));
+        assert!(differences[2].starts_with("  color blend_constant d3d "));
     }
 
     #[test]
