@@ -109,7 +109,7 @@ impl Range {
         copy: d3d::TargetCopy,
         guest_size: (u32, u32),
         target: RenderTarget<'_>,
-        mut stages: [Option<&wgpu::TextureView>; 4],
+        stages: [Option<&wgpu::TextureView>; 4],
     ) -> Option<(Vec<gfx::RecordedDraw>, bool)> {
         let mut gpu = self.gpu.lock().ok()?;
         let Gpu {
@@ -130,6 +130,8 @@ impl Range {
             return None;
         }
         let map = self.map.as_ref().and_then(|(out, _, _)| out.lock().ok());
+        // Shortened to the map guard's lifetime: a stage may sample its view.
+        let mut stages: [Option<&wgpu::TextureView>; 4] = stages;
         for (i, info) in draw.texture_info.iter().enumerate() {
             if info.is_some() != stages[i].is_some() {
                 return None;
