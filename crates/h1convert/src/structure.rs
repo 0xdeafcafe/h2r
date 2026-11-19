@@ -1225,7 +1225,8 @@ impl Structure<'_> {
             b[0x6c] = 0;
             b[0x6d] = 0xff;
             // The sky the camera sees from this cluster (E 0x0014b38d):
-            // Halo 1's ([`crate::clusters::cluster_skies`]), sky 0 without.
+            // Halo 1's ([`crate::clusters::cluster_skies`]), 0xff for none
+            // (a cluster no sky reaches), sky 0 with no list.
             b[0x6e] = self.visibility.skies.get(c).copied().unwrap_or(0) as u8;
             // +0x6f: the atmosphere in place of the sky's fog (E
             // 0x0012efb0), Halo 1's indoor fog on its skyless clusters.

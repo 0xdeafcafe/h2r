@@ -917,7 +917,7 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
 }
 
 #[test]
-fn a_cluster_without_a_sky_shows_its_nearest_neighbour_s() {
+fn a_cluster_without_a_sky_shows_its_nearest_neighbour_s_or_none() {
     use crate::clusters::{Portal, spread_skies};
     let portal = |a: u16, b: u16| Portal {
         clusters: [a, b],
@@ -926,11 +926,18 @@ fn a_cluster_without_a_sky_shows_its_nearest_neighbour_s() {
         radius: 1.0,
         vertices: Vec::new(),
     };
-    // 0 (sky 1) - 1 (none) - 2 (none) - 3 (sky 0); 4 sealed off.
+    // 0 (sky 1) - 1 (none) - 2 (none) - 3 (sky 0); 4 sealed off, so no
+    // sky reaches it and it shows none, as in Halo 1.
     let portals = [portal(0, 1), portal(1, 2), portal(2, 3)];
     assert_eq!(
         spread_skies(vec![1, -1, -1, 0, -1], &portals, 5),
-        vec![1, 1, 0, 0, 0]
+        vec![1, 1, 0, 0, -1]
+    );
+    // a10's cryo bay (a10a): clusters joined by portals, none with a sky.
+    // Halo 1 draws no sky there; sky 0 drew as a grey slab over the bay.
+    assert_eq!(
+        spread_skies(vec![-1, -1, -1], &[portal(0, 1), portal(1, 2)], 3),
+        vec![-1, -1, -1]
     );
     // A structure with no Halo 1 clusters shows sky 0.
     assert_eq!(spread_skies(Vec::new(), &[], 2), vec![0, 0]);

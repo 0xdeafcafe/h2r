@@ -419,8 +419,16 @@ The base's old BSP region stays in the file, unused.
   (`+0x00`, i16, -1 none). Each converted cluster keeps Halo 1's, and a
   cluster with none (an interior) takes the nearest cluster's through
   portals, so a window still shows the sky outside
-  (`clusters::cluster_skies`; sky 0 where no sky reaches). Until
-  converter version 65 every cluster named sky 0. Each
+  (`clusters::cluster_skies`). A cluster no sky reaches names none
+  (`0xff`): `0x0014b360` turns -1 into sky 0 only when the scenario's
+  `+0x12` has bit 1 and it has a sky (`0x0014b399`..`0x0014b3a6`), and
+  converted scenarios leave the bit clear, so the engine draws no sky
+  there, as Halo 1 doesn't. Until converter version 65 every cluster
+  named sky 0; until 81 so did every cluster no sky reaches, and a10's
+  cryo bay (`a10a`, 33 clusters, none with a sky or a portal to one)
+  drew `sky\space\space` as a flat grey slab over two thirds of the view
+  (proven live: the camera's cluster's `+0x6e` set to `0xff`, the bay
+  drew whole and the sky's draw left the frame). Each
   sky the Halo 1 scenario names is converted by `h1sky` (model, lights,
   fog colour, and a model scale that keeps it behind the level;
   docs/halo1/sky.md) and added as a new tag, and every
