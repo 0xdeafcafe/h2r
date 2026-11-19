@@ -2847,40 +2847,59 @@ impl<'a> Converter<'a> {
             }
         };
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
-        let mut wheels_left_out = 0;
+        let mut wheels_held: Option<(usize, f32)> = None;
         let bodies = match kind {
             PhysicsKind::Vehicle => {
                 let phys = match obj.physics {
                     Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
                     None => None,
                 };
-                // Wheels and treads stay out of the body: Halo 2 drives a
-                // vehicle on its friction points (springs at the wheel
-                // markers), and its hull rides above them.
+                // Wheels and treads are held above the hull's lowest
+                // point: Halo 2 holds a vehicle up on its friction points
+                // (springs at the wheel markers) and its body rides clear
+                // of the ground, but what of them is above the hull is
+                // solid (`held_wheels`).
                 let wheels = phys
                     .as_ref()
                     .map(|p| wheel_nodes(p, &model.nodes))
                     .unwrap_or_default();
-                let hull: Vec<_> = parts
-                    .iter()
-                    .filter(|(n, _)| !wheels.contains(n))
-                    .cloned()
-                    .collect();
-                let parts = if hull.is_empty() {
-                    parts
-                } else {
-                    wheels_left_out = parts.len() - hull.len();
-                    hull
-                };
-                let total = parts.iter().map(|p| p.1.len()).sum();
-                let mut pieces = Vec::new();
-                for (node, cells) in parts {
+                let place = |node: i16| {
                     let (r, t) = world
                         .get(node as usize)
                         .copied()
                         .unwrap_or((Transform::IDENTITY.r, Transform::IDENTITY.t));
-                    let m = Transform { r, t };
+                    Transform { r, t }
+                };
+                let (hull, wheel_parts): (Vec<_>, Vec<_>) =
+                    parts.into_iter().partition(|(n, _)| !wheels.contains(n));
+                let (parts, wheel_parts) = if hull.is_empty() {
+                    (wheel_parts, Vec::new())
+                } else {
+                    (hull, wheel_parts)
+                };
+                // One piece per wheel node at most.
+                let total = parts.iter().map(|p| p.1.len()).sum::<usize>() + wheel_parts.len();
+                let mut pieces = Vec::new();
+                for (node, cells) in parts {
+                    let m = place(node);
                     pieces.extend(cap(cells, total).iter().map(|h| h.transformed(&m)));
+                }
+                if !wheel_parts.is_empty() {
+                    let wheel_parts: Vec<_> = wheel_parts
+                        .into_iter()
+                        .map(|(node, cells)| {
+                            let m = place(node);
+                            cells.iter().map(|h| h.transformed(&m)).collect::<Vec<_>>()
+                        })
+                        .collect();
+                    let floor = pieces
+                        .iter()
+                        .flat_map(|h| h.vertices.iter())
+                        .map(|v| v[2])
+                        .fold(f32::INFINITY, f32::min);
+                    let held = held_wheels(&wheel_parts, floor);
+                    wheels_held = Some((held.len(), floor));
+                    pieces.extend(held);
                 }
                 let mass = phys
                     .as_ref()
@@ -2926,10 +2945,11 @@ impl<'a> Converter<'a> {
             } else {
                 ""
             },
-            if wheels_left_out > 0 {
-                format!(" ({wheels_left_out} wheel and tread nodes left to the friction points)")
-            } else {
-                String::new()
+            match wheels_held {
+                Some((n, floor)) => format!(
+                    " ({n} wheel and tread pieces, held above the hull's lowest point {floor:.3})"
+                ),
+                None => String::new(),
             }
         );
         let words = match kind {
@@ -3375,8 +3395,9 @@ pub fn weapon_classes(votes: HashMap<(String, String), usize>) -> HashMap<String
 /// scenario spots stand them on the ground. Halo 2 holds a vehicle up on
 /// its friction points, springs at the wheel markers, and keeps the body's
 /// shapes clear of the ground (V: the retail warthog's and scorpion's
-/// physics models have no wheel or tread shape, their lowest points 0.18
-/// and 0.22 above the origin). Built into the body, the converted
+/// physics models' lowest points are 0.18 and 0.22 above the origin; the
+/// warthog's has no wheel shape, the scorpion's has its treads above
+/// that, [`held_wheels`]). Built whole into the body, the converted
 /// warthog's tires spawned up to 0.14 into Blood Gulch's ground (a game
 /// run, `havok.contacts`), and Havok threw it over.
 pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16> {
@@ -3406,6 +3427,39 @@ pub fn wheel_nodes(phys: &h1::Physics, nodes: &[h1models::h1::Node]) -> Vec<i16>
                 }
             }
             false
+        })
+        .collect()
+}
+
+/// A vehicle's wheels and treads in its body (object space, `wheels` one
+/// list of convex pieces per wheel node): each node's pieces cut at `floor`,
+/// the lowest point of the rest of the body, and what is left enclosed in
+/// one piece; a node with nothing above `floor` gives none.
+///
+/// Halo 2 holds a vehicle up on its friction points and keeps its body's
+/// shapes clear of the ground, but the parts of the wheels above the hull
+/// are solid. V, the retail scorpion's `phmo` (coagulation): two tread
+/// shapes out to 1.13 either side, where its hull reaches 0.53, from 0.22
+/// above the origin, where the hull's lowest point is 0.25; with the
+/// converted scorpion's treads left out (versions 77 to 85) the player
+/// walked through them (a game run on Blood Gulch, 2026-11-19), its `coll`
+/// carrying them. Under the hull a wheel would meet the ground before the
+/// springs did: built whole into the body, the converted warthog's tires
+/// sank up to 0.144 into the ground at spawn and the depenetration threw
+/// it about 4.8 units (game run, 2026-11-19).
+pub fn held_wheels(wheels: &[Vec<crate::physics::Hull>], floor: f32) -> Vec<crate::physics::Hull> {
+    if !floor.is_finite() {
+        return Vec::new();
+    }
+    wheels
+        .iter()
+        .filter_map(|cells| {
+            let cut: Vec<_> = cells.iter().filter_map(|h| h.above(floor)).collect();
+            match cut.len() {
+                0 => None,
+                1 => cut.into_iter().next(),
+                _ => crate::physics::enclosing(&cut),
+            }
         })
         .collect()
 }

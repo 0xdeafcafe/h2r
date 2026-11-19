@@ -45,6 +45,24 @@ impl Hull {
         aabb(&self.vertices)
     }
 
+    /// The part of the piece at or above `z`, or `None` when nothing of it
+    /// is (or only a sliver).
+    pub fn above(&self, z: f32) -> Option<Hull> {
+        let mut planes: Vec<(V, f64)> = self
+            .planes
+            .iter()
+            .map(|p| {
+                (
+                    [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])],
+                    f64::from(p[3]),
+                )
+            })
+            .collect();
+        // -z + floor <= 0.
+        planes.push(([0.0, 0.0, -1.0], f64::from(z)));
+        hull(&planes)
+    }
+
     /// Moved by `m` (`p' = R p + t`).
     pub fn transformed(&self, m: &Transform) -> Hull {
         let v = self.vertices.iter().map(|p| m.point(*p)).collect();

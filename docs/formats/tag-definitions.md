@@ -637,14 +637,29 @@ Halo ring were already built this way.
   4, 7, 3, 6, its four wheel regions; the scorpion's -1); through
   version 76 it was the role's word. E: `0x205fd1` turns a point off
   once that region's damage state reaches `+0x42`.
-  The rigid body leaves the wheels and treads out (`convert::wheel_nodes`:
-  the gripping points' nodes and every node under them) since version
-  77: Halo 2 holds a vehicle up on its friction-point springs, and V
-  the retail warthog's `phmo` has no wheel shape (a hull on node 0 whose
-  lowest point is 0.18 above the origin, and a bumper box). With the
-  tires in the body, their lowest point 0.018 below the origin sank up
-  to 0.144 into the ground at spawn and the depenetration threw the
-  warthog about 4.8 units (game run, 2026-11-19).
+  The rigid body holds the wheels and treads (`convert::wheel_nodes`:
+  the gripping points' nodes and every node under them) only above the
+  hull's lowest point, each wheel node's cells cut there and enclosed in
+  one piece (`convert::held_wheels`, since version 86): Halo 2 holds a
+  vehicle up on its friction-point springs and keeps its body clear of
+  the ground, but the treads beside the hull are solid. V, coagulation:
+  the retail scorpion's `phmo` has two tread shapes reaching 1.13 either
+  side where its hull reaches 0.53, from 0.22 above the origin where the
+  hull's lowest point is 0.25; the retail warthog's has no wheel shape
+  (a hull on node 0 whose lowest point is 0.18 above the origin, and a
+  bumper box), so the converted warthog's tire tops are solid where
+  retail's are not. Versions 77 to 85 left the wheels and treads out
+  entirely, and the user walked through the converted scorpion's treads
+  on Blood Gulch (2026-11-19) though its `coll` carried them, so a biped
+  meets a vehicle through its `phmo` (inferred from that run; the engine
+  path was not traced). Before version 77, with the tires whole in the
+  body, their lowest point 0.018 below the origin sank up to 0.144 into
+  the ground at spawn and the depenetration threw the warthog about 4.8
+  units (game run, 2026-11-19). Proof: `tests/vehicle_rebuild_disc.rs`,
+  `wheels_and_treads_are_solid_above_the_hull` (the retail scorpion's
+  reach; the converted scorpion and warthog reach their wheels' sides
+  and nothing of them is under the hull's lowest point; the ghost has
+  no wheel nodes), and `held_wheels_keep_what_is_above_the_floor`.
 - **Control** (`+0x1f2`, the 16 bits after `vehicle_type`,
   `rebuild::VEHI_CONTROL`): the majority over the base's vehicles of the
   same `vehicle_type`. V, every `vehi` on every map of the retail disc:

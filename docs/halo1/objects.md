@@ -434,8 +434,9 @@ physics"). Retail writes the slots exactly for the `coll`s of scenery
 with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
 not weapons, equipment, devices, bipeds or crates). So:
 
-- a scenery object (every converted one: none gets a `phmo`)
-  gets its `coll` with one slot per BSP: the box of the BSP's vertices at
+- a scenery object with no `phmo` (through version 84 every converted
+  one; since 85 only those whose Halo 1 collision has no solid cell or
+  whose base has no scenery `phmo`) gets its `coll` with one slot per BSP: the box of the BSP's vertices at
   `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
   `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
   at `+0x64`;
@@ -454,8 +455,17 @@ bound even at the last lean step. With sharing b40 converts at lean 1
 `tags::collision::Collision::read` decodes against the whole metadata
 when a block is out of the tag's range (`Collision::decode_at`).
 
-No `phmo` is built: Halo 2's own static scenery (the statue the scenery
-template is) has none, and blocks through these slots.
+Through version 84 no scenery `phmo` was built: Halo 2's own static
+scenery (the statue the scenery template is) has none and blocks through
+these slots. But the player walked through converted Blood Gulch's
+boulders with their slots in place, so since version 85 scenery with
+solid Halo 1 collision gets a built `phmo` and no slots
+([tag-definitions.md](../formats/tag-definitions.md), "Scenery from
+definitions"). Vehicles likewise meet bipeds through their `phmo`: the
+converted scorpion's treads, in its `coll` but left out of its `phmo`
+through version 85, were walked through; since 86 a vehicle's wheels and
+treads are in its body above the hull's lowest point (tag-definitions.md,
+`convert::held_wheels`).
 
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each

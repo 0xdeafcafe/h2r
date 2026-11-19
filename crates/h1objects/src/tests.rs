@@ -2328,3 +2328,52 @@ fn hover_points_take_their_paired_points_words() {
     assert_eq!(at(&got, 0, "unknown_8"), word(1.85));
     assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
 }
+
+/// A wheel's pieces are cut at the hull's lowest point and what is left
+/// is one piece; a wheel wholly under it gives none; a hull of no pieces
+/// (an infinite floor) holds no wheel.
+#[test]
+fn held_wheels_keep_what_is_above_the_floor() {
+    use crate::convert::held_wheels;
+    // An axis box, lo..hi.
+    let cube = |lo: [f64; 3], hi: [f64; 3]| {
+        let mut planes = Vec::new();
+        for a in 0..3 {
+            let mut n = [0.0; 3];
+            n[a] = 1.0;
+            planes.push((n, -hi[a]));
+            n[a] = -1.0;
+            planes.push((n, lo[a]));
+        }
+        crate::physics::hull(&planes).unwrap()
+    };
+    let tread = vec![
+        cube([-1.0, 0.5, -0.5], [0.0, 1.0, 0.5]),
+        cube([0.0, 0.5, -0.5], [1.0, 1.0, 0.5]),
+    ];
+    let sunk = vec![cube([-1.0, -1.0, -0.5], [1.0, -0.5, -0.1])];
+    let held = held_wheels(&[tread, sunk], 0.0);
+    assert_eq!(held.len(), 1, "the sunk wheel gives nothing");
+    let (lo, hi) = held[0].vertices.iter().fold(
+        ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+        |(mut lo, mut hi), v| {
+            for a in 0..3 {
+                lo[a] = lo[a].min(v[a]);
+                hi[a] = hi[a].max(v[a]);
+            }
+            (lo, hi)
+        },
+    );
+    for (got, want) in lo
+        .iter()
+        .zip([-1.0, 0.5, 0.0])
+        .chain(hi.iter().zip([1.0, 1.0, 0.5]))
+    {
+        assert!((got - want).abs() < 1e-3, "{lo:?}..{hi:?}");
+    }
+    assert!((held[0].volume - 0.5).abs() < 1e-3, "{}", held[0].volume);
+    let one = cube([0.0, 0.0, -1.0], [1.0, 1.0, 1.0]).above(0.25).unwrap();
+    assert!((one.volume - 0.75).abs() < 1e-4);
+    assert!(cube([0.0; 3], [1.0; 3]).above(2.0).is_none());
+    assert!(held_wheels(&[vec![cube([0.0; 3], [1.0; 3])]], f32::INFINITY).is_empty());
+}
