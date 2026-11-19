@@ -145,6 +145,8 @@ pub enum HopperError {
     Status(u32),
     #[error("a hopper needs 1 to 100 records, got {0}")]
     Count(u32),
+    #[error("every playlist id 1..=100 is taken by another hopper")]
+    NoPlaylistId,
     #[error("the dword array has {0} entries, not 18")]
     Dwords(usize),
     #[error("{0:?} is longer than {1} ASCII characters")]

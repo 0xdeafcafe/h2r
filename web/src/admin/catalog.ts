@@ -172,3 +172,16 @@ export function playlistText(catalog: Catalog | null, key: string): CatalogPlayl
 }
 
 export { norm as normaliseName };
+
+/** The entry map id a custom map's base ("lockout", a file stem) plays as:
+ *  the catalog map whose file stem it is, else the map whose name is the
+ *  stem (case and punctuation ignored: "beavercreek" is Beaver Creek).
+ *  Null when neither knows it (without the catalog, a stem that is not
+ *  the map's name, such as Ivory Tower's). */
+export function baseMapId(maps: ReadonlyArray<{ id: number; name: string; key?: string }>, base: string): number | null {
+  const stem = (m: string) => m.split(/[\\/]/).pop()!.replace(/\.map$/i, "").toLowerCase();
+  const b = stem(base);
+  const byKey = maps.find((m) => m.key && stem(m.key) === b);
+  if (byKey) return byKey.id;
+  return maps.find((m) => norm(m.name) === norm(b))?.id ?? null;
+}

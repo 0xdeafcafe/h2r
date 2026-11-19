@@ -82,14 +82,33 @@ const MOCK_PLAYLISTS: Array<[string, string, Array<[number, string, number, bool
   ["Big Team Picnic", "Large teams on large maps.", [[5, "Team Assault", 9, true], [6, "Territories", 8, true]]],
   ["Doubles", "Two on two.", [[2, "Doubles Slayer", 2, true]]],
 ];
+// Built-in variants and templates as the server lists them (invented
+// numbers; the real ones are live-proto's defaults).
+const MOCK_VARIANTS = [
+  { key: "rumble_slayer", name: "Rumble Slayer", engine: 2, team: false },
+  { key: "team_slayer", name: "Team Slayer", engine: 2, team: true },
+  { key: "oddball", name: "Oddball", engine: 3, team: false },
+  { key: "classic_ctf", name: "Classic CTF", engine: 1, team: true },
+];
+const MOCK_TEMPLATES = [
+  { id: 1, type: 2, title: "Rumble Pit", description: "Every player for themselves.", min_players: 4, max_players: 8, ranges: [4, 8, 0], dwords: Array(18).fill(0), entry: { id: 1, variant: "rumble_slayer" } },
+  { id: 2, type: 4, title: "Team Slayer", description: "Four against four.", min_players: 6, max_players: 8, ranges: [2, 3, 4], dwords: Array(18).fill(0), entry: { id: 3, variant: "team_slayer" } },
+];
+const MOCK_MAPS = [1, 2, 3, 4, 5, 6].map((id) => ({ id, name: `Map ${id}` }));
+const unusedHopper = (index: number) => ({
+  index, type: 0, unused: true, status: 0, record_count: 0, name: "", title: "", description: "",
+  ranges: [0, 0, 0] as [number, number, number], dwords: Array.from({ length: 18 }, () => 0),
+  records: [] as Array<{ id: number; string: string; flags: number; dwords: [number, number]; variant: { name: string; engine: number; team: boolean }; builtin?: string }>,
+});
 let hoppers = Array.from({ length: 16 }, (_, index) => {
   const p = MOCK_PLAYLISTS[index];
-  const recs = (p?.[2] ?? [[1, "Slayer", 2, false]]).map(([id, name, engine, team]) => ({
+  if (!p) return unusedHopper(index);
+  const recs = p[2].map(([id, name, engine, team]) => ({
     id, string: "", flags: 0, dwords: [100, 0] as [number, number], variant: { name, engine, team },
   }));
   return {
-    index, type: p ? 2 : 1, status: 1, record_count: recs.length, name: p ? `playlist_${index}` : "",
-    title: p?.[0] ?? `Hidden ${index + 1}`, description: p?.[1] ?? "", ranges: [0, 0, 0] as [number, number, number],
+    index, type: 2, unused: false, status: 1, record_count: recs.length, name: `playlist_${index}`,
+    title: p[0], description: p[1], ranges: [0, 0, 0] as [number, number, number],
     dwords: Array.from({ length: 18 }, () => 0), records: recs,
   };
 });
@@ -379,18 +398,37 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/hopper$/)) && process.env.H2_MOCK_HOPPER === "1") {
     // Mock only: no token check; a PUT replaces the hoppers it names (variants kept by position).
     if (req.method === "PUT") {
-      type Put = Omit<(typeof hoppers)[number], "records"> & { records: Array<{ id: number; string: string; flags: number; dwords: [number, number]; from?: number }> };
+      type Put = Omit<(typeof hoppers)[number], "records"> & {
+        clear?: boolean; template?: number;
+        records: Array<{ id: number; string: string; flags: number; dwords: [number, number]; from?: number; from_hopper?: number; variant?: string }>;
+      };
       const b = (await req.json().catch(() => null)) as { hoppers?: Put[] } | null;
       if (!b || !Array.isArray(b.hoppers)) return err(400, "invalid", "{hoppers} expected");
+      const before = hoppers;
+      hoppers = [...hoppers];
       for (const h of b.hoppers) {
-        const old = hoppers[h.index];
+        const old = before[h.index];
         if (!old) continue;
-        hoppers[h.index] = { ...h, record_count: h.records.length, records: h.records.map(({ from: _from, ...r }, i) => ({ ...r, variant: old.records[_from ?? i]?.variant ?? old.records[0]!.variant })) };
+        if (h.clear) {
+          hoppers[h.index] = unusedHopper(h.index);
+          continue;
+        }
+        if (old.unused && h.template == null) return err(400, "invalid", `playlist ${h.index + 1} is an unused slot: create it from a template (\`template\`) first`);
+        const { clear: _c, template: _t, ...rest } = h;
+        hoppers[h.index] = {
+          ...rest, unused: false, record_count: h.records.length,
+          records: h.records.map(({ from, from_hopper, variant, ...r }, i) => {
+            const v = variant ? MOCK_VARIANTS.find((x) => x.key === variant) : undefined;
+            if (v) return { ...r, variant: { name: v.name, engine: v.engine, team: v.team }, builtin: v.key };
+            const src = before[from_hopper ?? h.index]?.records[from ?? i];
+            return { ...r, variant: src?.variant ?? { name: "", engine: 2, team: false } };
+          }),
+        };
       }
       const bytes = JSON.stringify(hoppers);
-      return json({ hoppers, published: { name: "multiplayer_hopper.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } });
+      return json({ hoppers, variants: MOCK_VARIANTS, templates: MOCK_TEMPLATES, maps: MOCK_MAPS, published: { name: "multiplayer_hopper.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length } });
     }
-    return json({ hoppers });
+    return json({ hoppers, variants: MOCK_VARIANTS, templates: MOCK_TEMPLATES, maps: MOCK_MAPS });
   }
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/files\/([^/]+)$/))) {
     const key = `${m[1]!.toLowerCase()}/${m[2]}`;

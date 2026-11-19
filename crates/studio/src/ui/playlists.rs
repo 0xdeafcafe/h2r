@@ -13,7 +13,7 @@ use hopper_edit::choices::{Choice, variant_label};
 use hopper_edit::model::{self, EditHopper, EditRecord, MAX_WEIGHT};
 use hopper_edit::presets::{self, PRESETS};
 use hopper_edit::{EditView, Format};
-use live_proto::hopper::{HOPPERS, MAX_NAME, MAX_RECORDS, MAX_STRING};
+use live_proto::hopper::{HOPPERS, MAX_NAME, MAX_RECORDS, MAX_STRING, defaults};
 use variants::GameVariant;
 
 use crate::app::{Action, App, PlaylistEdit};
@@ -26,12 +26,13 @@ pub struct PlaylistsUi {
     variant_path: String,
 }
 
+/// Hopper types as the game sorts them (live-proto `HopperType`).
 const TYPES: [(u32, &str); 5] = [
-    (1, "1 - hidden"),
-    (2, "2 - playlist"),
-    (3, "3 - hidden"),
-    (4, "4 - playlist"),
-    (5, "5 - playlist"),
+    (1, "1 - unranked free for all"),
+    (2, "2 - ranked free for all"),
+    (3, "3 - unranked teams"),
+    (4, "4 - ranked teams"),
+    (5, "5 - clan match"),
 ];
 const STATUSES: [(u32, &str); 3] = [(0, "0 - not loaded"), (1, "1 - ok"), (2, "2 - error")];
 
@@ -48,7 +49,11 @@ fn clip(s: &mut String, max: usize) {
 }
 
 fn title_of(h: &EditHopper) -> &str {
-    if !h.title.is_empty() {
+    if h.clear {
+        "(removed on save)"
+    } else if model::is_unused(h) {
+        "(unused)"
+    } else if !h.title.is_empty() {
         &h.title
     } else if !h.name.is_empty() {
         &h.name
@@ -225,6 +230,29 @@ pub fn entries(ui: &Ui, app: &mut App, fonts: &Fonts, actions: &mut Vec<Action>)
             h.hopper_type,
             h.records.len()
         ));
+        // An unused slot: pick a kind to make it a playlist (the
+        // template's descriptor, which the raw fields cannot build).
+        if model::is_unused(h) {
+            ui.text_disabled(if h.clear {
+                "This playlist is removed when the file is saved: its slot becomes unused."
+            } else {
+                "This slot is unused: the game shows no playlist here. Make one of these kinds; it starts with that kind's rules and one entry."
+            });
+            for t in defaults::templates() {
+                if ui.button(format!("Make a {} playlist##make-{}", t.title, t.playlist_id)) {
+                    actions.push(Action::EditPlaylist(PlaylistEdit::Kind {
+                        playlist: sel,
+                        template: t.playlist_id,
+                    }));
+                }
+            }
+            let k = fr.key;
+            return (fr, k);
+        }
+        ui.same_line();
+        if ui.small_button(format!("Remove playlist##clear-{sel}")) {
+            actions.push(Action::EditPlaylist(PlaylistEdit::Clear { playlist: sel }));
+        }
         let label_w = 110.0;
         ui.align_text_to_frame_padding();
         ui.text_disabled("Title");

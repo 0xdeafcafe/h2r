@@ -53,10 +53,17 @@ again, and so a screen can be seen and checked before anyone runs the game.
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
    page does. `.description(TextBlock)` adds the focused row's description.
    `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
-   rows over whatever opened it, on the lobby's Quick Options art (or
-   `DialogBase::Large`, the one the game maps have); see docs/game/ui-builder.md
-   "The Dialog kind". The prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
-   meant.
+   rows over whatever opened it, Quick Options inside and out: its panel and
+   header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
+   row's name left and its value alone in the value column
+   (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
+   description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
+   units at most) unless `.description` names another block. A settings
+   page that should look like the game's own (Clankers, Halo 1 Options)
+   is this and nothing more: no `.layout`, no `.description`. Or
+   `DialogBase::Large`, the one the game maps have; see
+   docs/game/ui-builder.md "The Dialog kind". The prompts go in the footer
+   (below). `.scrolls()` says more rows than the list shows is meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
    two-choice `OptionRow`. It names a settings `Def`, a label and a
@@ -70,9 +77,8 @@ again, and so a screen can be seen and checked before anyone runs the game.
    ```rust
    static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
    static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.");
-   let page = KitScreen::new("bots", "bots", ids::family("bots"), "Clankers")
-       .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-       .description(skulls_menu::DESCRIPTION_TEXT)
+   let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
+       .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
        .row(COUNT.row(Arc::clone(&store)))
        .row(LEVEL.row(store))
        .prompts(&[
