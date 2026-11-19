@@ -521,10 +521,12 @@ fn clanker_appearance_in_the_profile_comes_from_the_name() {
     human[BLOCK_LOOK + 4] = 1;
     let b = bot_block(&human, "Bolt");
     let look = &b[BLOCK_LOOK..BLOCK_LOOK + 8];
-    assert_eq!(look, bot_look(" BOLT ", 1));
+    assert_eq!(look, bot_look(" BOLT "));
     assert!(look_is_valid(look));
     assert_eq!(b[BLOCK_LOOK + 8], 0x77);
-    assert_eq!(bot_look("Bolt", 9)[4], 0);
+    human[BLOCK_LOOK..BLOCK_LOOK + 8].fill(0);
+    assert_eq!(&bot_block(&human, "Bolt")[BLOCK_LOOK..BLOCK_LOOK + 8], look);
+    assert!((0..16).any(|i| bot_look(&format!("Clanker {i}"))[4] != look[4]));
 }
 
 #[test]
@@ -1053,10 +1055,7 @@ fn a_bot_goes_on_live_as_its_own_account_not_a_guest() {
         );
     }
     let look = slot(1) + SLOT_BLOCK + BLOCK_LOOK as u32;
-    assert_eq!(
-        g.bytes(look, 8).unwrap(),
-        bot_look(&bot(1).gamertag, g.u8(look + 4).unwrap())
-    );
+    assert_eq!(g.bytes(look, 8).unwrap(), bot_look(&bot(1).gamertag));
     assert_eq!(
         g.utf16(
             slot(1) + SLOT_BLOCK + BLOCK_PROFILE_NAME as u32,

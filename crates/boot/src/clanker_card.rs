@@ -136,13 +136,7 @@ fn known(c: &Call, s: &Selection) -> Option<(String, Option<bots::BrainView>)> {
     if !(3..=8).contains(&state) {
         return None;
     }
-    marked_session_player(&*m, session, s).map(|name| {
-        if is_bot_xuid(s.xuid()) && !s.name.is_empty() {
-            (s.name.clone(), None)
-        } else {
-            (name, None)
-        }
-    })
+    marked_session_player(&*m, session, s).map(|name| (name, None))
 }
 
 /// A guest bot on another console may share an account XUID with its human.
@@ -179,6 +173,51 @@ fn marked_session_player(
         }
     }
     None
+}
+
+// The recent-players list copies 0x58-byte history records into row datums
+// at +4. Its text widget consumes the wide name. Older records may contain
+// the ASCII replacement for the gear. XUID identifies the bot in that case.
+fn recent_name(m: &dyn GuestMemory, row: u32) -> Option<[u8; 64]> {
+    let mut id = [0; 8];
+    m.read(row + 4, &mut id).ok()?;
+    if !is_bot_xuid(Xuid(u64::from_le_bytes(id))) {
+        return None;
+    }
+    let at = row + 0x10;
+    // Most rows already carry the canonical prefix.
+    if m.u16(at).ok()? == phantom::session::MARK as u16
+        && m.u16(at + 2).ok()? == 0x20
+        && m.u16(at + 4).ok()? != 0x20
+    {
+        return None;
+    }
+    let name = m.utf16(at, 31).ok()?;
+    let tag = name
+        .strip_prefix([phantom::session::MARK, '?'])
+        .unwrap_or(&name)
+        .trim_start();
+    if tag.is_empty() {
+        return None;
+    }
+    let canonical = phantom::session::marked_name(tag);
+    let mut bytes = [0; 64];
+    for (dst, unit) in bytes.chunks_exact_mut(2).zip(canonical) {
+        dst.copy_from_slice(&unit.to_le_bytes());
+    }
+    Some(bytes)
+}
+
+// Both Live selection paths pack a wide label into a 16-byte account field.
+// Strip the display decoration before retail narrows and truncates it.
+fn account_name_source(m: &dyn GuestMemory, caller: u32, src: u32) -> u32 {
+    if matches!(caller, 0x002b_3e46 | 0x0023_411e)
+        && m.u16(src).ok() == Some(phantom::session::MARK as u16)
+    {
+        let space = m.u16(src + 2).ok() == Some(0x20);
+        return src + if space { 4 } else { 2 };
+    }
+    src
 }
 
 // The card is a modal on the shared dialog window. A lookup holds only its
@@ -287,6 +326,39 @@ impl feature::Feature for Options {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        b.raw().after(
+            &points::RECENT_PLAYERS_BUILD,
+            "restore bot display names in the recent history rows",
+            |c| {
+                use engine::datum::{DatumArray, layout};
+                let m = &mut *c.ctx.memory();
+                let array = m.u32(c.cpu.eax + 0x70)?;
+                if array != 0 {
+                    let rows = DatumArray::at(array);
+                    let count = m.u32(array + layout::HIGH_WATER)? as i32;
+                    for i in 0..count.min(100) {
+                        if let Ok(Some(row)) = rows.get_absolute(m, i)
+                            && let Some(name) = recent_name(m, row)
+                        {
+                            m.write(row + 0x10, name)?;
+                        }
+                    }
+                }
+                Ok(())
+            },
+        );
+        b.raw()
+            .before(
+                &points::PLAYER_NAME_TO_ASCII,
+                "pack the account gamertag",
+                |c| {
+                    let m = c.ctx.memory();
+                    let caller = m.u32(c.cpu.esp)?;
+                    c.cpu.eax = account_name_source(&*m, caller, c.cpu.eax);
+                    Ok(Flow::Continue)
+                },
+            )
+            .context_only();
         for point in [
             &points::PLAYER_OPTIONS_CHECK_FRIEND,
             &points::PLAYER_OPTIONS_OPEN,
@@ -311,7 +383,7 @@ impl feature::Feature for Options {
                     c.ctx
                         .runtime()
                         .memory()
-                        .write(c.cpu.ecx + 0x74, guest::bot_look(&name, 0))?;
+                        .write(c.cpu.ecx + 0x74, guest::bot_look(&name))?;
                 }
                 Ok(Flow::Continue)
             },
@@ -378,7 +450,7 @@ async fn add_emblem(
         return Ok(());
     };
     let mut profile = [0; 16];
-    profile[..8].copy_from_slice(&guest::bot_look(&name, 0));
+    profile[..8].copy_from_slice(&guest::bot_look(&name));
     cx.write(|m| {
         m.write(d.page + BLOCK, &block)?;
         m.write(d.page + PROFILE, &profile)
@@ -511,6 +583,34 @@ mod tests {
         );
         s.id[8] = 0;
         assert!(marked_session_player(&m, session, &s).is_none());
+    }
+
+    #[test]
+    fn recent_bot_names_use_the_wide_gear_and_pack_the_whole_account_tag() {
+        let row = 0x4000;
+        let mut m = FakeGuest::new();
+        m.map(row, 0x5c)
+            .put(row + 4, &live_proto::bots::local_xuid(3).0.to_le_bytes());
+        let at = row + 0x10;
+        for prefix in ["", "?", "? ", "⚙", "⚙  "] {
+            m.put(
+                at,
+                &guest::profile_name_bytes(&format!("{prefix}Fifteen Chars!!")),
+            );
+            let bytes = recent_name(&m, row).unwrap();
+            m.put(at, &bytes);
+            assert_eq!(m.utf16(at, 31).unwrap(), "⚙ Fifteen Chars!!");
+            assert!(recent_name(&m, row).is_none());
+            for caller in [0x002b_3e46, 0x0023_411e] {
+                let src = account_name_source(&m, caller, at);
+                assert_eq!(m.utf16(src, 15).unwrap(), "Fifteen Chars!!");
+            }
+            assert_eq!(account_name_source(&m, 0, at), at);
+        }
+        m.put(row + 4, &1u64.to_le_bytes())
+            .put(at, &guest::profile_name_bytes("? Human"));
+        assert!(recent_name(&m, row).is_none());
+        assert_eq!(account_name_source(&m, 0x002b_3e46, at), at);
     }
 
     #[test]

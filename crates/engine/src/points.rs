@@ -520,6 +520,10 @@ points! { ALL;
     /// block definition (`0x38` bytes), a child of the screen in ESI; the
     /// widget in EAX, or 0.
     PANE_BITMAP_ADD @ 0x0022_fa30: [fn(screen: esi, block: stack 0) -> eax ret 4]; "docs/formats/ui.md";
+    /// Builds the wide-name history rows for Recent Players and returns the list.
+    RECENT_PLAYERS_BUILD @ 0x002b_393c: [fn(list: ebx, request: stack 0) -> eax ret 4]; "docs/game/bots.md";
+    /// Retail's lossy wide-to-ASCII conversion, used when packing a Live selection.
+    PLAYER_NAME_TO_ASCII @ 0x0013_fb90: [fn(source: eax, dest: ecx, capacity: edx) ret 0]; "docs/game/bots.md";
     /// The two retail player-options constructors share the current selected-player record.
     PLAYER_OPTIONS_CHECK_FRIEND @ 0x002b_70a3: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";
     PLAYER_OPTIONS_OPEN @ 0x002b_71a6: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";

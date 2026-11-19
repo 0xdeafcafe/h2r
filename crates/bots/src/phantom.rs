@@ -482,6 +482,7 @@ impl Phantoms {
             match session::find_peer(&*m, s, p.info.machine)? {
                 Some(peer) => {
                     session::sync_props(m, s, peer, &p.info.identity.gamertag)?;
+                    session::sync_identity(m, s, peer, &p.info.identity.gamertag)?;
                 }
                 None => {
                     p.made = false;
@@ -521,6 +522,7 @@ impl Phantoms {
             if let Some(stale) = session::find_peer(&*m, s, mac)? {
                 if session::peer_players(&*m, s, stale)? > 0 {
                     session::sync_props(m, s, stale, &p.info.identity.gamertag)?;
+                    session::sync_identity(m, s, stale, &p.info.identity.gamertag)?;
                     p.made = true;
                     p.waiting = None;
                     log.push(format!(
@@ -556,6 +558,10 @@ impl Phantoms {
                     p.info.identity.gamertag
                 )
             });
+        }
+
+        if in_lobby && crate::lobby::matchmaking_type(m.u32(crate::lobby::SESSION_TYPE)?) {
+            session::match_roster::sync(m, s, b.match_only)?;
         }
 
         // Even teams in the lobby: the phantoms with no team asked for

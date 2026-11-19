@@ -402,7 +402,15 @@ pub(crate) mod tests {
         std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
         let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
         let override_id = map_id(&mut v, "level").unwrap();
-        std::fs::write(dir.join("level.map"), b"edited again").unwrap();
-        assert_ne!(map_id(&mut v, "level"), Some(override_id));
+        // An editor publishes a replacement. The current mount holds its
+        // original file open and caches its identity on first use.
+        std::fs::write(dir.join("next.map"), b"edited again").unwrap();
+        std::fs::rename(dir.join("next.map"), dir.join("level.map")).unwrap();
+        assert_eq!(map_id(&mut v, "level"), Some(override_id));
+        assert_eq!(read(&mut v, r"D:\maps\level.map"), b"edited!!!");
+        drop(v);
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        assert_eq!(read(&mut v, r"D:\maps\level.map"), b"edited again");
+        assert_ne!(map_id(&mut v, "level").unwrap(), override_id);
     }
 }

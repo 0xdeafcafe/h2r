@@ -319,7 +319,7 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
         "the rest of the name cleared"
     );
     assert_eq!(c[CONFIG_TEAM], 2);
-    assert_eq!(c[0x40..0x48], crate::guest::bot_look("Bolt", 0));
+    assert_eq!(c[0x40..0x48], crate::guest::bot_look("Bolt"));
     assert_eq!(
         config(&g, "Bolt", None).unwrap().unwrap()[CONFIG_TEAM],
         0x40 + CONFIG_TEAM as u8,
@@ -328,20 +328,15 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
 }
 
 #[test]
-fn a_bots_name_is_marked_within_fifteen_units() {
-    let s = |units: Vec<u16>| String::from_utf16(&units).unwrap();
-    assert_eq!(s(marked_name("Clanker 12")), "\u{2699} Clanker 12");
-    // The longest that keeps the space: 13 characters.
-    assert_eq!(s(marked_name("Thirteen char")), "\u{2699} Thirteen char");
-    // 14: no space; 15 (the most a gamertag has): no space, its last
-    // character gone. Never more than the 15 units the name holds.
-    assert_eq!(s(marked_name("Fourteen chars")), "\u{2699}Fourteen chars");
-    assert_eq!(s(marked_name("Fifteen chars!!")), "\u{2699}Fifteen chars!");
-    for n in 1..=20 {
-        let m = marked_name(&"x".repeat(n));
-        assert!(m.len() <= CONFIG_NAME_UNITS - 1, "{n}: {}", m.len());
-        assert_eq!(m[0], MARK as u16);
+fn a_bots_name_has_one_space_and_the_full_gamertag() {
+    for tag in ["A", "Thirteen char", "Fourteen chars", "Fifteen chars!!"] {
+        assert_eq!(
+            String::from_utf16(&marked_name(tag)).unwrap(),
+            format!("{MARK} {tag}")
+        );
     }
+    assert_eq!(marked_name("  Bolt"), marked_name("Bolt"));
+    assert_eq!(marked_name(&"x".repeat(40)).len(), CONFIG_NAME_UNITS - 1);
 }
 
 #[test]
@@ -931,7 +926,7 @@ mod lobby {
     fn the_configuration_is_the_hosts_session_players() {
         let g = lobby();
         let c = config_in(&g, S, "Rusty Lugnut", None).unwrap().unwrap();
-        assert_eq!(c[0x40..0x48], crate::guest::bot_look("Rusty Lugnut", 0));
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("Rusty Lugnut"));
         assert_eq!(u16::from_le_bytes([c[0], c[1]]), MARK as u16);
         assert_eq!(c[CONFIG_TEAM], 0);
         let c = config_in(&g, S, "Rusty Lugnut", Some(1)).unwrap().unwrap();
@@ -940,7 +935,7 @@ mod lobby {
         let mut g = hosted();
         g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX);
         let c = config_in(&g, S, "X", None).unwrap().unwrap();
-        assert_eq!(c[0x40..0x48], crate::guest::bot_look("X", 0));
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("X"));
     }
 
     #[test]
@@ -1032,7 +1027,7 @@ mod lobby {
         );
         assert_eq!(
             g.u8(cfg + 0x40).unwrap(),
-            crate::guest::bot_look("Rusty Lugnut", 0)[0]
+            crate::guest::bot_look("Rusty Lugnut")[0]
         );
         assert_eq!(
             ph.list()[0].state,
@@ -1041,8 +1036,34 @@ mod lobby {
         );
         // The start checks see every peer with the map.
         assert_eq!(l::expected(&l::facts(&g).unwrap()), l::READY);
-        // Nothing more the next frames.
+        // A lobby refresh or a reclaimed peer may carry the host's look.
+        // The next tick repairs both copies without touching the host.
+        let want = crate::guest::bot_look("Rusty Lugnut");
+        let host_look = g
+            .bytes(S + PLAYERS + P_EFFECTIVE + CONFIG_LOOK as u32, 8)
+            .unwrap();
+        for offset in [P_REQUESTED, P_EFFECTIVE] {
+            g.put(
+                S + PLAYERS + PLAYER_SIZE + offset + CONFIG_LOOK as u32,
+                &host_look,
+            );
+        }
         assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        for offset in [P_REQUESTED, P_EFFECTIVE] {
+            assert_eq!(
+                g.bytes(S + PLAYERS + PLAYER_SIZE + offset + CONFIG_LOOK as u32, 8)
+                    .unwrap(),
+                want
+            );
+        }
+        assert_eq!(
+            g.bytes(S + PLAYERS + P_EFFECTIVE + CONFIG_LOOK as u32, 8)
+                .unwrap(),
+            host_look
+        );
+        let revision = g.u32(S + UPDATE).unwrap();
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        assert_eq!(g.u32(S + UPDATE).unwrap(), revision);
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
 
         // The game loads: its first frames are not hosted yet. The
@@ -1270,6 +1291,64 @@ mod lobby {
         assert_eq!(g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(), 1);
         // The party's session is left alone.
         assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_full_clankermatch_registers_the_ids_retail_waits_for() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let mut g = matchmaking();
+        let party = S + 0x4a00;
+        let host_id = [0x18; 12];
+        g.put_u32(S + MAX_PLAYERS, 8)
+            .put(S + PLAYERS, &host_id)
+            .put_u8(S + 0x49fd, 1)
+            .put_u32(party, 1)
+            .put_u32(party + 0x184, 1)
+            .put(party + 0x188, &host_id);
+        let handles: Vec<_> = (1..8)
+            .map(|n| ph.add(who(n, &format!("Bot {n}")), None, idle()).unwrap())
+            .collect();
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 8);
+        assert_eq!(g.u32(party + 0x184).unwrap(), 8);
+        assert_eq!(g.u32(party).unwrap(), 8);
+        for i in 0..8 {
+            assert_eq!(
+                g.bytes(party + 0x188 + i * 12, 12).unwrap(),
+                g.bytes(S + PLAYERS + i * PLAYER_SIZE, 12).unwrap()
+            );
+            assert_eq!(g.u32(party + 0x2c8 + 4 * i).unwrap(), i);
+            if i > 0 {
+                assert_eq!(
+                    g.bytes(S + PEERS + i * PEER_SIZE + 0xf0, 8).unwrap(),
+                    g.bytes(party + 4 + i * 8, 8).unwrap()
+                );
+            }
+        }
+        let revision = g.u32(S + 0x4978).unwrap();
+        // A real, not-yet-seated reservation behind the bots must survive
+        // compaction, with its original metadata and the new party index.
+        let reserved = [0x34; 12];
+        g.put_u32(party, 9)
+            .put_u32(party + 0x184, 9)
+            .put(party + 4 + 8 * 8, &[0x19; 8])
+            .put(party + 0x188 + 8 * 12, &reserved)
+            .put_u32(party + 0x248 + 8 * 4, 23)
+            .put_u32(party + 0x2c8 + 8 * 4, 8);
+        ph.tick(&mut g, 1).unwrap();
+        assert_eq!(g.u32(S + 0x4978).unwrap(), revision);
+        ph.remove(handles[2]).unwrap();
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(g.u32(party + 0x184).unwrap(), 8);
+        assert_eq!(g.u32(party).unwrap(), 8);
+        assert_eq!(g.bytes(party + 0x188 + 7 * 12, 12).unwrap(), reserved);
+        assert_eq!(g.u32(party + 0x248 + 7 * 4).unwrap(), 23);
+        for i in 0..8 {
+            assert_eq!(g.u32(party + 0x2c8 + 4 * i).unwrap(), i);
+        }
+        assert_eq!(g.bytes(party + 0x188, 12).unwrap(), host_id);
         assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
     }
 
@@ -1646,8 +1725,13 @@ mod in_game {
         assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
         assert_eq!(name_at(&g, bot), marked_name("Rusty Lugnut"));
         assert_eq!(
+            g.bytes(bot - P_EFFECTIVE + P_REQUESTED + CONFIG_LOOK as u32, 8)
+                .unwrap(),
+            guest::bot_look("Rusty Lugnut")
+        );
+        assert_eq!(
             g.bytes(bot + CONFIG_LOOK as u32, 8).unwrap(),
-            guest::bot_look("Rusty Lugnut", 0)
+            guest::bot_look("Rusty Lugnut")
         );
         assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
     }
@@ -1688,7 +1772,7 @@ mod in_game {
         let mut g = with_local_bot();
         g.put_u32(S + STATE, 6);
         assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-        // A long name keeps the mark within the 15 units.
+        // The entire 15-character tag fits after the mark and space.
         let mut g = with_local_bot();
         let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
         for (i, u) in "Fifteen Chars!!".encode_utf16().enumerate() {
@@ -1696,7 +1780,7 @@ mod in_game {
         }
         mark_local_bots(&mut g, 0b10).unwrap();
         let n = name_at(&g, bot);
-        assert_eq!(n.len(), 15);
+        assert_eq!(n, marked_name("Fifteen Chars!!"));
         assert_eq!(n[0], MARK as u16);
     }
 }

@@ -215,14 +215,19 @@ fn find(dir: &Path, name: &str) -> std::result::Result<Option<Override>, String>
 /// The `MapId` of a whole-file override of map `map`.
 pub(crate) fn override_id(map: &str, file: &Path) -> std::io::Result<content::MapId> {
     let mut f = File::open(file)?;
+    let len = f.metadata()?.len();
+    opened_override_id(map, &mut f, len)
+}
+
+fn opened_override_id(map: &str, file: &mut File, mut len: u64) -> std::io::Result<content::MapId> {
+    file.rewind()?;
     let mut h = content::Hasher::default();
     let mut buf = vec![0; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+    while len > 0 {
+        let n = len.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..n])?;
         h.update(&buf[..n]);
+        len -= n as u64;
     }
     let manifest = content::Manifest {
         package: content::manifest::Package {
@@ -321,7 +326,7 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
             return self.inner.map_id(path);
         };
         if o.id.is_none() {
-            o.id = Some(override_id(&map, &o.path).ok()?);
+            o.id = Some(opened_override_id(&map, &mut o.file, o.len).ok()?);
         }
         o.id
     }
@@ -457,9 +462,16 @@ mod tests {
         let t = Temp::new("id");
         std::fs::write(t.maps().join("a.map"), b"edited map bytes").unwrap();
         let (mut b, _) = backend(&t.maps());
+        let path = t.maps().join("a.map");
+        let expected = override_id("a", &path).unwrap();
+        assert_eq!(read_all(&mut b, "maps\\a.map"), b"edited map bytes");
+        // Replacement between first use and the first ID lookup.
+        let next = t.maps().join("next.map");
+        std::fs::write(&next, b"new contents").unwrap();
+        std::fs::rename(next, path).unwrap();
         let id = b.map_id("maps\\A.MAP").unwrap();
         assert_eq!(b.map_id("maps\\a.map"), Some(id));
-        assert_eq!(id, override_id("a", &t.maps().join("a.map")).unwrap());
+        assert_eq!(id, expected);
         // Not overridden, or not a map: the disc's, which says nothing.
         assert_eq!(b.map_id("maps\\b.map"), None);
         assert_eq!(b.map_id("default.xbe"), None);

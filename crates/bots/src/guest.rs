@@ -83,14 +83,14 @@ pub const EMBLEM_BACKGROUNDS: u8 = 0x20;
 
 /// The eight checked profile bytes. The primary layer shares the primary
 /// armour colour; the other three masks occupy the remaining colour slots.
-pub fn bot_look(name: &str, model: u8) -> [u8; 8] {
+pub fn bot_look(name: &str) -> [u8; 8] {
     let (e, c) = live_proto::bots::appearance(name);
     [
         c.primary,
         c.secondary,
         e.colors[1],
         e.colors[2],
-        if model < 4 { model } else { 0 },
+        e.foreground & 1, // Spartan or Elite, stable for the normalized gamertag.
         e.foreground,
         e.background,
         0,
@@ -153,13 +153,13 @@ fn account_name_bytes(name: &str) -> [u8; BLOCK_NAME_LEN] {
 
 /// A bot's profile block: the human's, with the bot's name (the profile
 /// name the game shows, [`BLOCK_PROFILE_NAME`], and [`BLOCK_NAME`]), its own look
-/// ([`bot_look`]: colours and emblem by name, the human's model) and
+/// ([`bot_look`]: colours, emblem and model by name) and
 /// controls that mean the same on every machine (inversion and the other
 /// flag off, the Default layouts, a fixed sensitivity). Everything else is
 /// the human's.
 pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str) -> [u8; BLOCK_LEN] {
     let mut b = *human;
-    let look = bot_look(name, human[BLOCK_LOOK + 4]);
+    let look = bot_look(name);
     b[BLOCK_LOOK..BLOCK_LOOK + 8].copy_from_slice(&look);
     b[BLOCK_PROFILE_NAME..BLOCK_PROFILE_NAME + BLOCK_PROFILE_NAME_UNITS * 2]
         .copy_from_slice(&profile_name_bytes(name));
@@ -176,8 +176,7 @@ pub fn bot_block(human: &[u8; BLOCK_LEN], name: &str) -> [u8; BLOCK_LEN] {
 /// The name the game shows for `port`'s slot.
 pub fn set_slot_name(m: &mut dyn GuestMemory, port: u32, name: &str) -> R<()> {
     let look = slot(port) + SLOT_BLOCK + BLOCK_LOOK as u32;
-    let model = m.u8(look + 4)?;
-    m.write(look, &bot_look(name, model))?;
+    m.write(look, &bot_look(name))?;
     // The slot refresh rebuilds its visible name from the source profile.
     let bytes = profile_name_bytes(name);
     m.write(slot(port) + SLOT_BLOCK + BLOCK_PROFILE_NAME as u32, &bytes)?;

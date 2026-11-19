@@ -132,6 +132,22 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "LIVE_MENU_CURSOR",
         "the Xbox Live menu's build, a UI event on the game thread",
     ),
+    ("clanker-options-route", "RECENT_PLAYERS_BUILD", AFTER),
+    (
+        "clanker-options-route",
+        "PLAYER_OPTIONS_OPEN",
+        "opens a dialog with a guest call and may request a Live card",
+    ),
+    (
+        "clanker-options-route",
+        "PLAYER_OPTIONS_CHECK_FRIEND",
+        "routes the selection through the same dialog and Live lookup",
+    ),
+    (
+        "clanker-options-route",
+        "EMBLEM_WIDGET_DRAW",
+        "consumes the shared card refresh flag and updates the live widget",
+    ),
     // Local bots: the game thread's frame, sound and players screen. Around
     // RENDER_FRAME, the pipeline's snapshot is taken with the bot views
     // hidden; the render thread never meets these points.

@@ -118,12 +118,15 @@ async fn a_host_gets_a_roster_of_issued_bots_for_its_session() {
     let h = harness().await;
     let a = h.create("Host").await;
     let session = host(&h, &a).await;
-    let r = roster(
+    let response = ask(
         &h,
         &a,
         json!({"session_id": session, "count": 3, "skill": 0.67}),
     )
     .await;
+    assert_eq!(response.status, StatusCode::CREATED);
+    assert_eq!(response.json()["bots"][0]["skill"], json!(0.67));
+    let r: Roster = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(r.match_id, session);
     assert_eq!(r.bots.len(), 3);
     r.check().unwrap();
@@ -152,6 +155,7 @@ async fn a_host_gets_a_roster_of_issued_bots_for_its_session() {
         )
         .await;
     assert_eq!(card.status, StatusCode::OK);
+    assert_eq!(card.json()["skill"], json!(0.67));
     let card: bots::PlayerCard = serde_json::from_slice(&card.body).unwrap();
     assert_eq!(
         (card.xuid, card.gamertag, card.skill, card.seed),

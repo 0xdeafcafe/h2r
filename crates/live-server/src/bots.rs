@@ -588,9 +588,18 @@ pub(crate) async fn post_roster(
     let req: RosterRequest =
         serde_json::from_slice(&body).map_err(|e| invalid(format!("body: {e}")))?;
     let (roster, position) = live.roster_bots(crate::http::bearer(&headers), req).await?;
-    let mut v = serde_json::to_value(roster).expect("serializes");
-    v["position"] = json!(position);
-    Ok(crate::http::json(StatusCode::CREATED, &v))
+    // Serialize skill as f32 directly, just as the player card does.
+    // An intermediate JSON Value stores floating-point numbers as f64.
+    #[derive(serde::Serialize)]
+    struct Reply {
+        #[serde(flatten)]
+        roster: Roster,
+        position: u64,
+    }
+    Ok(crate::http::json(
+        StatusCode::CREATED,
+        &Reply { roster, position },
+    ))
 }
 
 #[derive(Deserialize)]

@@ -920,6 +920,7 @@ mod tests {
         .await;
         assert_eq!(status, 200, "{card}");
         assert_eq!(card["gamertag"], bot["gamertag"]);
+        assert_eq!(bot["skill"], serde_json::json!(0.33));
         assert_eq!(card["skill"], bot["skill"]);
         assert_eq!(card["seed"], bot["personality"]["seed"]);
         // The Worker routes through the same validator on its SQLite store.

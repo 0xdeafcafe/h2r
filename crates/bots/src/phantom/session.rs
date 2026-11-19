@@ -17,6 +17,8 @@ use engine::points;
 
 use crate::guest;
 
+pub(super) mod match_roster;
+
 pub type R<T> = Result<T, MemFault>;
 
 /// Session offsets (`*SQUAD_SESSION`).
@@ -125,7 +127,8 @@ pub mod at {
     pub const PLAYER_CONFIG: u32 = 0xd4;
     pub const CONFIG_SIZE: usize = 0x90;
     pub const CONFIG_TEAM: usize = 0x7c;
-    pub const CONFIG_NAME_UNITS: usize = 16;
+    // 0x65e37 passes 32 units to the name builder. The look starts at +0x40.
+    pub const CONFIG_NAME_UNITS: usize = engine::view::players::NAME_UNITS;
     /// The retail profile appearance inside a player configuration (0x18fd94).
     pub const CONFIG_LOOK: usize = 0x40;
     /// Unit `+0x212`: the current weapon index.
@@ -771,8 +774,8 @@ pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
 /// (docs/game/bots.md §8.2.2): the name every console's lobby and the
 /// game's player show. `ports` is the bots' controller ports, as a mask.
 /// Only on the session's host (its own effective configurations are the
-/// ones the clients get), and only the effective name and appearance: the host's pass
-/// (`0x65cb0`) keeps an effective name once it has one, so a profile
+/// ones the clients get). Both appearance copies and the effective name
+/// are set. The host's pass (`0x65cb0`) keeps an effective name, so a profile
 /// refreshing the requested one does not undo it. Returns the slots it
 /// marked.
 pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
@@ -800,9 +803,8 @@ pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
             }
             name.push(u);
         }
-        // The effective name can survive a guest-to-account switch. The
-        // signed-in bot profile retains the full tag even when its gear-marked
-        // display name must be shortened to fit the configuration.
+        // The effective name can survive a guest-to-account switch.
+        // Prefer the signed-in bot's current profile tag.
         let source = guest::slot(controller) + guest::SLOT_BLOCK;
         let profile_tag = m
             .utf16(
@@ -813,15 +815,20 @@ pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
             .filter(|s| !s.is_empty());
         let tag = match profile_tag {
             Some(tag) => tag,
-            None if !name.is_empty() && name[0] != MARK as u16 => String::from_utf16_lossy(&name),
+            None if !name.is_empty() => {
+                String::from_utf16_lossy(live_proto::bots::unmarked_units(&name))
+            }
             None => continue,
         };
         let units = marked_name(&tag);
         let look_at = at + CONFIG_LOOK as u32;
-        let look = guest::bot_look(&tag, m.u8(look_at + 4)?);
-        if name == units && m.bytes(look_at, 8)? == look {
+        let look = guest::bot_look(&tag);
+        let requested = a + P_REQUESTED + CONFIG_LOOK as u32;
+        if name == units && m.bytes(look_at, 8)? == look && m.bytes(requested, 8)? == look {
             continue;
         }
+        // Retail rebuilds the effective appearance from the requested one.
+        m.write(requested, &look)?;
         m.write(look_at, &look)?;
         for i in 0..CONFIG_NAME_UNITS as u32 {
             m.set_u16(at + 2 * i, units.get(i as usize).copied().unwrap_or(0))?;
@@ -892,6 +899,9 @@ pub fn player_id(xuid: u64, mac: [u8; 6]) -> [u8; 12] {
     let mut id = [0; 12];
     id[..8].copy_from_slice(&xuid.to_le_bytes());
     id[8..].copy_from_slice(&mac[2..]);
+    // The low two bits are a Live guest number. Each phantom is its
+    // account's primary player, including in the matchmaking party summary.
+    id[8] &= !3;
     id
 }
 
@@ -946,35 +956,59 @@ pub fn lobby_host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
     ))
 }
 
-/// The mark before a bot's name: U+2699 GEAR, which our font patch draws
-/// (`font::gear`; docs/game/bots.md §8.2.2). The same as
-/// `live_proto::bots::BOT_MARK`, which takes it off again for the record.
-pub const MARK: char = '\u{2699}';
+pub use live_proto::bots::BOT_MARK as MARK;
 
-/// A bot's name as the game shows it, in the configuration name's 15
-/// units: the [`MARK`], a space, then `tag`. A gamertag is 1 to 15
-/// characters, so the mark always fits: a 14-character tag loses the space
-/// (the gear's own one-pixel gap stays), a 15-character one its last.
+/// Retail display names have 32 UTF-16 units including the terminator.
 pub fn marked_name(tag: &str) -> Vec<u16> {
-    let max = CONFIG_NAME_UNITS - 1;
-    let tag: Vec<u16> = tag.encode_utf16().collect();
-    let mut out = vec![MARK as u16];
-    if tag.len() + 2 <= max {
-        out.push(u16::from(b' '));
+    let mut units = vec![MARK as u16, u16::from(b' ')];
+    units.extend(tag.trim_start().encode_utf16().take(CONFIG_NAME_UNITS - 3));
+    units
+}
+
+// The configuration begins with the wide display name immediately followed
+// by the eight appearance bytes that retail validates at 0x153750.
+fn identity_bytes(name: &str) -> [u8; CONFIG_LOOK + 8] {
+    let mut bytes = [0; CONFIG_LOOK + 8];
+    for (dst, u) in bytes[..CONFIG_LOOK]
+        .chunks_exact_mut(2)
+        .zip(marked_name(name))
+    {
+        dst.copy_from_slice(&u.to_le_bytes());
     }
-    let room = max - out.len();
-    out.extend(tag.into_iter().take(room));
-    out
+    bytes[CONFIG_LOOK..].copy_from_slice(&guest::bot_look(name));
+    bytes
 }
 
 fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
-    // PROFILE properties builder 0x18fd94 copies the appearance here.
-    let look = crate::guest::bot_look(name, c[CONFIG_LOOK + 4]);
-    c[CONFIG_LOOK..CONFIG_LOOK + 8].copy_from_slice(&look);
-    c[..CONFIG_NAME_UNITS * 2].fill(0);
-    for (i, u) in marked_name(name).into_iter().enumerate() {
-        c[2 * i..2 * i + 2].copy_from_slice(&u.to_le_bytes());
+    c[..CONFIG_LOOK + 8].copy_from_slice(&identity_bytes(name));
+}
+
+// The host can rebuild a player's effective configuration while the phantom
+// is seated. A reclaimed peer can also carry an earlier profile. Publish the
+// identity in both copies without disturbing team, handicap or ready state.
+pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<()> {
+    let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
+    if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
+        return Ok(());
     }
+    let a = player(s, slot);
+    if m.u32(a + P_PEER)? != p {
+        return Ok(());
+    }
+    let want = identity_bytes(name);
+    let mut have = [0; CONFIG_LOOK + 8];
+    let mut changed = false;
+    for at in [a + P_REQUESTED, a + P_EFFECTIVE] {
+        m.read(at, &mut have)?;
+        if have != want {
+            m.write(at, &want)?;
+            changed = true;
+        }
+    }
+    if changed {
+        bump(m, s)?;
+    }
+    Ok(())
 }
 
 /// Adds a peer for machine `mac`, unconnected and with no channel, as
