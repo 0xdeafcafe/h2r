@@ -1133,6 +1133,16 @@ implementation samples engine texture 3.
   with another program (the object's other parts, and its earlier
   layers, which wrote the depth a later `Equal` pass tests) are named
   with their cull, winding, depth state and `c[0..4]`.
+- **The inherited cull.** A lit part whose layer-3 implementation does
+  not set `CULLMODE` (`object_program::sets_cull`; 03a's
+  `concrete_rebar` part of `concrete_chunk_j`) draws on the D3D path
+  with the device's cull and winding at the layer-3 call, as a world
+  pass does. Its program is marked (`MaterialProgram::inherits_cull`);
+  the host reads `Device::cull_state` when the feature asks for the set,
+  and the pass draws those parts with it
+  (`LitObjects::set_inherited_cull`, through `program::pipeline_state`;
+  the cull is part of the pipeline key). Before, they culled nothing.
+  `H2_NATIVE_OBJECTS_INHERIT_CULL=0` turns it off.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

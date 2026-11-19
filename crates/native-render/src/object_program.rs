@@ -76,7 +76,9 @@ pub fn object_layer3(material: &tags::material::Material) -> Result<&tags::mater
 /// The pipeline state of an object pass's implementation, or why not:
 /// its render states as [`crate::look::layer3_pass`] takes a world pass's
 /// (no engine-driven render or stage states, no blending); where it does
-/// not set the cull mode the native pass culls nothing.
+/// not set the cull mode it culls nothing, unless the pass is given the
+/// device's cull, which it inherits ([`sets_cull`],
+/// `MaterialProgram::inherits_cull`, `LitObjects::set_inherited_cull`).
 pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_state::PassState, String> {
     if !imp.engine_render_states.is_empty() {
         return Err("engine-driven render states".into());
@@ -88,14 +90,19 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
     if state.blend.is_some() {
         return Err("the pass blends".into());
     }
-    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-    let culls = imp.render_states.iter().any(|s| {
-        gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(gfx::state::RenderStateType::CullMode)
-    });
-    if !culls {
+    if !sets_cull(imp) {
         state.primitive.cull_mode = None;
     }
     Ok(state)
+}
+
+/// Whether `imp` sets `CULLMODE`; one that does not draws with the cull
+/// the device holds (as a world pass, `crate::look::WorldPass::inherits_cull`).
+pub fn sets_cull(imp: &ResolvedImplementation) -> bool {
+    let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+    imp.render_states.iter().any(|s| {
+        gfx::state::RenderStateType::from_guest_index(&table, u32::from(s.state)) == Some(gfx::state::RenderStateType::CullMode)
+    })
 }
 
 /// One implementation of an object material's layer-3 pass compiled for
@@ -138,6 +145,7 @@ pub fn object_pass(
     }
     let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
     program.state = Some(state);
+    program.inherits_cull = !sets_cull(imp);
     let count = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?.instructions.len();
     let words = microcode
         .get(4..4 + 16 * count)
@@ -720,6 +728,37 @@ pub(crate) mod tests {
             Inst::mac(MacOp::Mul, Some(r(2)), Some(O::c(19)), None).to_temp(3, 0xf),
             Inst::mac(MacOp::Add, Some(r(3)), None, Some(O::c(20))).to_out(false, OutReg::D0, 0xf),
         ])
+    }
+
+    #[test]
+    fn an_object_pass_that_does_not_set_its_cull_takes_the_devices() {
+        use gfx::state::{CompareFunc, CullMode, RenderStateType as R};
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).unwrap();
+        let with = |states: &[(R, u32)]| {
+            let mut imp = lit();
+            imp.render_states =
+                states.iter().map(|&(t, value)| tags::shader::RenderStateValue { state: slot(t), value }).collect();
+            imp
+        };
+        let fetch = [shaders::vsh::InputFetch::Float; 16];
+        // The rebar's shape: depth equal, no writes, CULLMODE unset.
+        let equal = with(&[(R::ZFunc, CompareFunc::Equal.xbox_value()), (R::ZWriteEnable, 0)]);
+        assert!(!sets_cull(&equal));
+        let p = object_pass(map::TagId(0xe000_0001), &equal, &rigid_program(), WORLD, fetch, true).unwrap();
+        assert!(p.program.inherits_cull, "CULLMODE unset: the device's at the pass");
+        assert_eq!(p.program.state.unwrap().primitive.cull_mode, None, "its own state culls nothing");
+        // Drawn as `LitObjects` draws it: the device's cull and winding.
+        let device = (Some(wgpu::Face::Back), wgpu::FrontFace::Cw);
+        let (primitive, depth) = crate::program::pipeline_state(p.program.state.as_ref(), Some(device));
+        assert_eq!((primitive.cull_mode, primitive.front_face), device);
+        assert_eq!(depth, (false, wgpu::CompareFunction::Equal), "the depth state is its own");
+        // One that sets it keeps its own.
+        let own = with(&[(R::CullMode, CullMode::Cw.xbox_value())]);
+        assert!(sets_cull(&own));
+        let p = object_pass(map::TagId(0xe000_0001), &own, &rigid_program(), WORLD, fetch, true).unwrap();
+        assert!(!p.program.inherits_cull);
+        assert!(p.program.state.unwrap().primitive.cull_mode.is_some());
     }
 
     #[test]

@@ -189,6 +189,9 @@ struct MapState {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
+    /// The device's cull at this layer-3 call, read in `native` for the
+    /// pass `draw` asks for ([`ObjectsPass::cull`]).
+    cull: Mutex<Option<native_render::program::Cull>>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -240,6 +243,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return None;
             }
         }
+        // The cull layer 3 starts in, which the passes that do not set
+        // `CULLMODE` draw with on the D3D path, as the world's.
+        let cull = if inherit_cull() {
+            self.device
+                .lock()
+                .ok()
+                .and_then(|d| d.cull_state(&crate::native_world_glue::ReadMemory(mem)))
+                .map(crate::native_world_glue::inherited_cull)
+        } else {
+            None
+        };
+        *self.cull.lock().unwrap_or_else(|e| e.into_inner()) = cull;
         Some(set)
     }
 
@@ -263,6 +278,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         else {
             return false;
         };
+        let cull = *self.cull.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(mut d) = self.device.lock() else {
             return false;
         };
@@ -286,6 +302,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             texaccum,
             w_clip: None,
+            cull,
         }));
         true
     }
@@ -309,6 +326,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
+        cull: Mutex::new(None),
     }));
 }
 
@@ -788,6 +806,23 @@ struct ObjectsPass {
     /// (03a: 256 depth units), and drew the part of an object nearer
     /// than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
+    /// The device's cull at the layer-3 call (`None`: not read, or
+    /// `H2_NATIVE_OBJECTS_INHERIT_CULL=0`): the lit parts whose
+    /// implementation does not set `CULLMODE` draw with it, as the D3D
+    /// path draws them (`LitObjects::set_inherited_cull`). Without it they
+    /// culled nothing.
+    cull: Option<native_render::program::Cull>,
+}
+
+/// Whether the lit parts that do not set `CULLMODE` take the device's
+/// cull: unless `H2_NATIVE_OBJECTS_INHERIT_CULL=0`.
+fn inherit_cull() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| parse_inherit(std::env::var("H2_NATIVE_OBJECTS_INHERIT_CULL").ok().as_deref()))
+}
+
+fn parse_inherit(v: Option<&str>) -> bool {
+    !matches!(v.map(str::trim), Some("0" | "none" | "off" | "false"))
 }
 
 impl d3d::ExternalPass for ObjectsPass {
@@ -843,6 +878,7 @@ impl d3d::ExternalPass for ObjectsPass {
         let Some(constants) = self.view else { return };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let Some(lit) = lit.as_mut() else { return };
+        lit.set_inherited_cull(self.cull);
         let compared = compare();
         let objects: Vec<(u32, &ObjectFrame)> = self
             .objects
@@ -1150,9 +1186,15 @@ mod tests {
             view: None,
             texaccum: false,
             w_clip: None,
+            cull: None,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
         assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
+        // The device's cull is inherited unless turned off.
+        assert!(parse_inherit(None));
+        assert!(parse_inherit(Some("1")));
+        assert!(!parse_inherit(Some("0")));
+        assert!(!parse_inherit(Some(" none ")));
         let constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
         let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
         let u = native_render::program::frame_vertex(&Default::default(), &view);
