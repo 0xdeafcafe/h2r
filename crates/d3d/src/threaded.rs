@@ -1258,6 +1258,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        if matches!(plan.stage, timeline::native::Stage::Objects | timeline::native::Stage::Lights)
+            && pass.lock().map_err(|_| "native pass poisoned")?.resolved_fallback().is_some()
+        {
+            // This is a resolved admission the queue declined. Keep its
+            // ordinary D3D path instead of waiting for a worker decision.
+            return Ok(None);
+        }
         if self.reusable_external_attachments && textures.iter().all(Option::is_none)
             && surfaces.sampled.is_empty() && surfaces.slots.is_empty() && surfaces.slot_sizes.is_empty()
         {

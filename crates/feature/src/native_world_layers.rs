@@ -66,17 +66,21 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let objects = b.switches().feature(crate::native_objects::SWITCH, false);
+        let lights = crate::native_lights::on(b.switches());
         if !on(b.switches())
+            && !objects
+            && !lights
             && !crate::native_residual::on(b.switches())
             && compare_frames().is_empty()
         {
             return Ok(());
         }
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", |o| {
+            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", move |o| {
                 let mut guest = o.guest();
                 let mem = Mem(&mut *guest);
-                let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n));
+                let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n) || (lights && matches!(n, 12 | 13)));
                 LAYER.set(layer.map(|number| {
                     let caller_return = mem.read_u32(o.cpu.esp).unwrap_or(0);
                     Layer {

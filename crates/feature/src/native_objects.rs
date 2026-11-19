@@ -163,6 +163,12 @@ impl ItemMasks {
     }
 }
 
+/// Layer planning may leave every guest item live for resolved-draw admission.
+pub enum Drawn {
+    Masked(ClearedObjects),
+    Queued { objects: usize, items: usize },
+}
+
 /// What draws the objects: boot's glue over the GPU models and the device.
 pub trait Host: Send + Sync {
     /// Drain work preceding the base layers' layer 3. Return the set drawn
@@ -173,10 +179,9 @@ pub trait Host: Send + Sync {
     fn want(&self, definition: u32);
     /// Plans the view's pass over `items` (in the list's order, each with
     /// its object's frame in `objects`) against the set of `generation`,
-    /// and reserves every required GPU copy. Apply the per-item flags to
-    /// `masks` after reservation, then commit and return the selected guest identities.
-    /// Per item, whether it is drawn is decided
-    /// before the hook returns. An item is drawn only when everything its
+    /// then either reserves every required GPU copy before applying `masks`
+    /// or matches the planned items to their original D3D draws as they resolve.
+    /// An item is drawn natively only when everything its
     /// draw needs resolved (its model's GPU side, its part and
     /// implementation, every per-object constant, every state field); the
     /// rest, and every item when no pass is asked for, get their bits back
@@ -184,7 +189,7 @@ pub trait Host: Send + Sync {
     fn draw(
         &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
         objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
-    ) -> Option<ClearedObjects>;
+    ) -> Option<Drawn>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -377,8 +382,8 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-/// Base-layer layer-3 views seen, views drawn natively, objects drawn,
-/// items skipped.
+/// Base-layer layer-3 views seen, views planned, objects planned and
+/// guest items skipped by masks.
 pub fn counts() -> (u64, u64, u64, u64) {
     (
         VIEWS.load(Ordering::Relaxed),
@@ -503,20 +508,27 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         plan, candidates: cleared, offered: items.iter().map(|d| (!d.shadow).then_some(d.index)).collect(),
     };
     drop(planning);
-    let Some(cleared) = host.draw(m.0, &camera, set.generation, frames, items, masks) else {
+    let Some(drawn) = host.draw(m.0, &camera, set.generation, frames, items, masks) else {
         stop(Stop::DrawRefused, || format!("the host drew none of {count} items"));
         return;
     };
-    stop(Stop::Drawn, || format!("{} objects, {} of {count} items", cleared.handles.len(), cleared.items.len()));
+    let (objects, items, skipped) = match drawn {
+        Drawn::Masked(cleared) => {
+            let counts = (cleared.handles.len(), cleared.items.len(), cleared.items.len());
+            let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+            *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
+            counts
+        }
+        Drawn::Queued { objects, items } => (objects, items, 0),
+    };
+    stop(Stop::Drawn, || format!("{objects} objects, {items} of {count} items planned"));
     DRAWN.fetch_add(1, Ordering::Relaxed);
-    OBJECTS.fetch_add(cleared.handles.len() as u64, Ordering::Relaxed);
-    ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
+    OBJECTS.fetch_add(objects as u64, Ordering::Relaxed);
+    ITEMS.fetch_add(skipped as u64, Ordering::Relaxed);
     if VIEWS.load(Ordering::Relaxed) % 1800 == 1 {
         let (v, d, o, i) = counts();
-        eprintln!("native-objects: {d} of {v} layer-3 views drawn natively, {o} objects, {i} object items skipped");
+        eprintln!("native-objects: {d} of {v} layer-3 views planned, {o} objects, {i} object items skipped");
     }
-    let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some((cleared, left));
 }
 
 /// Sets back the bits the last base-layer layer 3 cleared, on the items

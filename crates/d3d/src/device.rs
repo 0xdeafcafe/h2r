@@ -5517,8 +5517,7 @@ impl<B: Backend> Device<B> {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
             // when both routes make precisely the same guest-visible writes.
-            let fallback = if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Shadows)
-                && scoped.is_none()
+            let fallback = if scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {

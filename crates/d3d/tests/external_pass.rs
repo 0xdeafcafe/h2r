@@ -454,6 +454,16 @@ fn shadow_admission_replays_a_refused_packet_without_a_worker_read() {
     indexed_admission_replays_a_refused_packet(timeline::native::Stage::Shadows);
 }
 
+#[test]
+fn object_admission_replays_refused_packets_in_order_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Objects);
+}
+
+#[test]
+fn light_admission_replays_refused_packets_in_order_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Lights);
+}
+
 fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
     struct Retained(Arc<d3d::ResolvedDraw>);
 
@@ -468,13 +478,18 @@ fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
 
     struct Admission {
         stage: timeline::native::Stage,
-        draw: Mutex<Option<Arc<d3d::ResolvedDraw>>>,
+        draws: Mutex<Vec<Arc<d3d::ResolvedDraw>>>,
     }
     impl d3d::DrawAdmission for Admission {
         fn admit(&self, s: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
             let draw = Arc::new(s.draw.clone());
-            *self.draw.lock().unwrap() = Some(draw.clone());
-            Some((d3d::ExternalPlan { stage: self.stage, ..plan(1) }, Box::new(Retained(draw))))
+            let mut draws = self.draws.lock().unwrap();
+            draws.push(draw.clone());
+            // An original D3D draw sits between two worker refusals.
+            (draws.len() != 2).then(|| {
+                let pass: Box<dyn ExternalPass> = Box::new(Retained(draw));
+                (d3d::ExternalPlan { stage: self.stage, ..plan(1) }, pass)
+            })
         }
     }
 
@@ -485,20 +500,26 @@ fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
     set_states(&mut d, &mut m);
     quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
     bind_quad(&mut d, &mut m);
-    let probe = Arc::new(Admission { stage, draw: Mutex::default() });
+    let probe = Arc::new(Admission { stage, draws: Mutex::default() });
     d.add_draw_admission(probe.clone());
-    m.write(MISC, &[2, 0, 1, 0, 0, 0]).unwrap();
     let waits = d.backend.waits().reads;
-    d.draw_indexed_vertices(&mut m, TRIANGLESTRIP, 3, MISC).unwrap();
-    assert_eq!(d.backend.waits().reads, waits);
+    for (i, vertices) in [[2, 0, 1], [1, 2, 0], [0, 1, 2]].into_iter().enumerate() {
+        let bytes: Vec<_> = vertices.into_iter().flat_map(u16::to_le_bytes).collect();
+        let at = MISC + i as u32 * 8;
+        m.write(at, &bytes).unwrap();
+        d.draw_indexed_vertices(&mut m, TRIANGLESTRIP, 3, at).unwrap();
+        assert_eq!(d.backend.waits().reads, waits, "{stage:?} draw {i}");
+    }
     let replay = d.backend.with_inner(|b| {
-        let draws = b.draws();
-        assert_eq!(draws.len(), 1);
-        draws[0].clone()
+        b.draws().into_iter().cloned().collect::<Vec<_>>()
     }).unwrap();
-    assert_eq!(probe.draw.lock().unwrap().as_deref(), Some(&replay));
+    let planned = probe.draws.lock().unwrap();
+    assert_eq!(replay.len(), 3);
+    for (actual, original) in replay.iter().zip(planned.iter()) {
+        assert_eq!(actual, original.as_ref());
+    }
     assert_eq!(d.stats().external_passes, 0);
-    assert_eq!(d.stats().external_passes_dropped, 1);
+    assert_eq!(d.stats().external_passes_dropped, 2);
 }
 
 #[test]

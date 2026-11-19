@@ -36,7 +36,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_objects::{Host, ItemMasks, NativeSet, SetPart};
+use feature::native_objects::{Drawn, Host, ItemMasks, NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
@@ -51,7 +51,8 @@ use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
-use native_render::objects::{ItemDraw, ObjectFrame};
+use native_render::objects::{ItemDraw, ItemKey, ObjectFrame};
+use native_render::world_layers::{Geometry, Owner, Site};
 use native_render::program::ViewInputs;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
@@ -144,6 +145,7 @@ struct LayerEntry {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
+    admission: Arc<ObjectAdmission>,
 }
 
 /// The key of the load guest memory `mem` holds now, `None` without a map
@@ -166,6 +168,7 @@ fn publishes_to(current: &MapState, models: &Arc<Models>) -> bool {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        self.admission.0.lock().ok()?.take();
         if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
@@ -230,8 +233,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn draw(
         &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
-        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
-    ) -> Option<native_render::objects::ClearedObjects> {
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, _masks: ItemMasks,
+    ) -> Option<Drawn> {
         use timeline::native::{Metric, Stage, Timer};
         let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
         let models = {
@@ -254,37 +257,117 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         Stage::Objects.count(Metric::RefusedInputs, refused);
         let pending = !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
         if ranges == 0 && plan.compare.is_none() && !pending { return None; }
-        let mut drawn = vec![false; items.len()];
-        for &i in &plan.drawn { drawn[i] = true; }
-        let pass = Box::new(ObjectsPass {
-            models: Arc::clone(&models), camera: *camera, objects, draws: plan.draws, owners: plan.owners,
-            refused: plan.refused, compare: plan.compare, view: None, w_clip: None,
-        });
-        if ranges == 0 {
-            // Upload new models or arm a comparison; every guest item stays live.
-            device.request_external_pass(pass);
-            return None;
+        let probing = probe_at().is_some();
+        if pending || plan.compare.is_some() || probing {
+            device.request_external_pass(Box::new(ObjectsPass {
+                models: Arc::clone(&models), camera: *camera,
+                objects: if probing { objects.clone() } else { Vec::new() },
+                draws: if probing { plan.draws.clone() } else { Vec::new() },
+                owners: if probing { plan.owners.clone() } else { Vec::new() },
+                refused: plan.refused, compare: plan.compare,
+                view: None, w_clip: None, fallback: None, run: 0,
+            }));
         }
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
-        drop(planning);
-        let ready = device.prepare_external_bound(
-            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
-        ).ok()??;
-        // Pin the current load through the mask change and commit. The worker
-        // may publish another definition, but a replaced load cannot win here.
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !st.as_ref().is_some_and(|s| s.generation == generation && Arc::ptr_eq(&s.models, &models)) {
             Stage::Objects.count(Metric::RefusedInputs, ranges as u64);
             return None;
         }
-        let Some(cleared) = masks.apply(mem, &drawn) else {
-            Stage::Objects.count(Metric::RefusedMasks, ranges as u64);
-            return None;
-        };
-        ready.commit();
-        Some(cleared)
+        drop(planning);
+        let object_count = plan.owners.iter().copied().collect::<HashSet<_>>().len();
+        let draws: HashMap<_, _> = plan.drawn.into_iter().zip(plan.draws).map(|(index, draw)| {
+            let item = &items[index];
+            ((objects[item.object].handle, item.key), draw)
+        }).collect();
+        if draws.is_empty() { return None; }
+        let count = draws.len();
+        *self.admission.0.lock().ok()? = Some(ObjectLayer {
+            frame: crate::d3d_diag::presents() + 1,
+            bound: device.bound_target(),
+            models,
+            camera: *camera,
+            draws,
+        });
+        Some(Drawn::Queued { objects: object_count, items: count })
     }
+}
+
+#[derive(Default)]
+struct ObjectAdmission(Mutex<Option<ObjectLayer>>);
+
+struct ObjectLayer {
+    frame: u64,
+    bound: [u32; 8],
+    models: Arc<Models>,
+    camera: RenderCamera,
+    draws: HashMap<(u32, ItemKey), (u32, PlannedDraw)>,
+}
+
+fn object_key(geometry: Geometry) -> Option<(u32, ItemKey)> {
+    let Owner::Object { handle, section, .. } = geometry.owner else { return None };
+    Some((handle, ItemKey {
+        record: geometry.record, shader: geometry.shader, section: section.try_into().ok()?,
+        part: geometry.part, implementation: usize::from(geometry.implementation),
+    }))
+}
+
+impl d3d::DrawAdmission for ObjectAdmission {
+    fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let context = crate::native_world_layers_glue::indexed_draw()?;
+        let draw = snapshot.draw;
+        if context.layer.site != Site::Scene || context.layer.number != 3
+            || draw.entry != "D3DDevice_DrawIndexedVertices"
+            || context.index_count? as usize != draw.indices.as_ref()?.len()
+            || !draw.clip_rects.is_empty()
+            || !draw.clip.is_some_and(|r| r.is_whole(draw.target.width, draw.target.height))
+        {
+            return None;
+        }
+        let key = object_key(context.geometry?)?;
+        let mut pending = self.0.lock().ok()?;
+        let layer = pending.as_mut()?;
+        if layer.frame != context.frame || layer.bound[..2] != [snapshot.color_header, snapshot.depth_header] {
+            return None;
+        }
+        let (_, planned) = layer.draws.get(&key)?;
+        if !object_state_matches(draw, planned)
+            || !crate::native_world_layers_glue::matches_triangle_range(draw, planned.indices.len())
+        {
+            return None;
+        }
+        let accum = native_render::object_program::TEXACCUM_HEADER;
+        if planned.texaccum != (0..4).any(|i| snapshot.sampled_stages[i] && draw.textures[i] == Some(accum)) {
+            return None;
+        }
+        let planned = layer.draws.remove(&key)?;
+        let pass = ObjectsPass {
+            models: Arc::clone(&layer.models), camera: layer.camera, objects: Vec::new(),
+            draws: vec![planned], owners: Vec::new(), refused: Vec::new(), compare: None,
+            view: None, w_clip: None, fallback: Some(Arc::new(draw.clone())), run: layer.frame,
+        };
+        Some((d3d::ExternalPlan {
+            stage: timeline::native::Stage::Objects, view: context.layer.view, ranges: 1, slots: Vec::new(),
+        }, Box::new(pass)))
+    }
+}
+
+fn object_state_matches(draw: &d3d::ResolvedDraw, planned: &PlannedDraw) -> bool {
+    use gfx::state::{CompareFunc, DepthBufferMode, FillMode};
+    let r = &draw.state.render;
+    let p = planned.state;
+    let primitive = gfx::translate::primitive_state(r, wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()));
+    let depth = r.depth_mode != DepthBufferMode::Disabled;
+    let compare = if depth { gfx::translate::compare_function(r.depth_func) } else { wgpu::CompareFunction::Always };
+    let alpha = (r.alpha_test_enable && r.alpha_func != CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(r.alpha_func), r.alpha_ref));
+    draw.hw.control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0)
+        && draw.target.depth_format.is_some()
+        && primitive == p.primitive && compare == p.depth_compare && (depth && r.depth_write) == p.depth_write
+        && gfx::translate::color_writes(r.color_write) == p.color_writes && alpha == p.alpha_test
+        && r.depth_clamp == p.w_clamp && !r.stencil.enable && !r.blend_enable && !r.fog_enable
+        && r.fill_mode == FillMode::Solid && r.back_fill_mode == FillMode::Solid
+        && (!r.solid_offset_enable || (r.depth_bias == 0.0 && r.depth_bias_slope_scale == 0.0))
 }
 
 /// One view's plan ([`plan_view`]).
@@ -311,8 +394,8 @@ struct ViewPlan {
 fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry: &LayerEntry, levels: bool) -> ViewPlan {
     let mut plan = ViewPlan::default();
     // Locked in `upload_pending`'s order: the index, then the lit parts.
-    let index = models.index.lock().unwrap_or_else(|e| e.into_inner());
-    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(index) = models.index.try_lock() else { return plan };
+    let Ok(lit) = models.lit.try_lock() else { return plan };
     let compared = compare();
     for (k, item) in items.iter().enumerate() {
         let o = &objects[item.object];
@@ -379,10 +462,18 @@ impl native_render::camera::GuestRead for Ro<'_> {
 
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let state = Arc::new(Mutex::new(None));
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    if !switches.feature(feature::native_objects::SWITCH, false) {
+        return;
+    }
+    let admission = Arc::new(ObjectAdmission::default());
+    if let Ok(mut device) = device.lock() {
+        device.add_draw_admission(admission.clone());
+    }
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
-        state,
+        state: Arc::new(Mutex::new(None)),
+        admission,
     }));
 }
 
@@ -796,9 +887,17 @@ struct ObjectsPass {
     /// 0, not at the view's near (03a: 256 depth units), and drew the part
     /// of an object nearer than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
+    fallback: Option<Arc<d3d::ResolvedDraw>>,
+    run: u64,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn uses_validated_resources(&self) -> bool { self.fallback.is_some() }
+
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        self.fallback.clone()
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -816,6 +915,9 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
+        if self.fallback.is_none() {
+            return d3d::ExternalWrites::default();
+        }
         d3d::ExternalWrites {
             color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
             depth_stencil: self.draws.iter().any(|(_, d)| d.state.depth_write),
@@ -827,7 +929,6 @@ impl d3d::ExternalPass for ObjectsPass {
         if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
             return Err("object texture accumulation unavailable");
         }
-        drop(upload_pending(&self.models, t));
         let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         if lit.as_ref().is_some_and(|l| self.draws.iter().all(|(model, d)| l.has(*model) && !d.indices.is_empty())) {
             Ok(())
@@ -874,21 +975,21 @@ impl d3d::ExternalPass for ObjectsPass {
                 t.size
             );
         }
-        if self.draws.is_empty() { return 0; }
-        lit.encode(
-            t.device,
-            t.queue,
-            t.uploads,
-            &mut *t.encoder,
-            t.color,
-            t.color_format,
-            t.depth,
-            t.depth_format,
-            t.size,
-            &view,
-            &self.draws,
-            texaccum,
-        )
+        0
+    }
+
+    fn record_bundles(&mut self, t: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+        let constants = self.view?;
+        let view = self.view_inputs(constants, t);
+        let mut lit = self.models.lit.lock().ok()?;
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        if let Some(accum) = &texaccum
+            && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
+        {
+            return None;
+        }
+        lit.as_mut()?.bundles(t.device, t.queue, t.uploads, t.color_format, t.depth_format,
+            t.size, &view, &self.draws, texaccum, self.run)
     }
 }
 
@@ -1112,6 +1213,18 @@ mod tests {
     /// object nearer than the view's near is drawn where the D3D path
     /// culls it.
     #[test]
+    fn an_object_draw_is_keyed_by_owner_record_shader_part_and_implementation() {
+        let geometry = Geometry {
+            shader: 0xe000_0001, variant: 0, implementation: 2, sorted_slot: 16,
+            record: 5, part: 3, owner: Owner::Object { handle: 9, model: 18, section: 4 },
+        };
+        assert_eq!(object_key(geometry), Some((9, ItemKey {
+            record: 5, shader: 0xe000_0001, section: 4, part: 3, implementation: 2,
+        })));
+        assert!(object_key(Geometry { owner: Owner::Cluster(4), ..geometry }).is_none());
+    }
+
+    #[test]
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let camera = RenderCamera {
@@ -1133,6 +1246,8 @@ mod tests {
             compare: None,
             view: None,
             w_clip: None,
+            fallback: None,
+            run: 0,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
         assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));

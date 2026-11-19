@@ -56,8 +56,10 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     let switches = feature::Switches::from_env().unwrap_or_default();
     let native = feature::native_world_layers::on(&switches);
     let residual = feature::native_residual::on(&switches);
+    let objects = switches.feature(feature::native_objects::SWITCH, false);
+    let lights = feature::native_lights::on(&switches);
     let frames = compare_frames();
-    if !native && !residual && frames.is_empty() {
+    if !native && !residual && !objects && !lights && frames.is_empty() {
         return;
     }
     if native && let Ok(mut device) = device.lock() {
@@ -78,7 +80,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     let frame = crate::d3d_diag::presents() + 1;
                     let compare = frames.contains(&frame);
                     let current = current();
-                    if (!native || current.is_none()) && !residual && !compare {
+                    if current.is_none() && !compare && !residual {
                         return None;
                     }
                     let guest = ctx.memory();
@@ -124,6 +126,20 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
 
 pub(crate) fn indexed_draw() -> Option<DrawContext> {
     DRAW.get()
+}
+
+/// The native model and BSP buffers store complete triangle lists. A
+/// partial emission from the same geometry record cannot use that range.
+pub(crate) fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bool {
+    let Some(indices) = draw.indices.as_deref() else { return false };
+    use gfx::vertex::PrimitiveType::{TriangleList, TriangleStrip};
+    match draw.primitive {
+        TriangleList => indices.len() == expected,
+        TriangleStrip => indices.windows(3).filter(|t| {
+            t[0] != t[1] && t[1] != t[2] && t[0] != t[2]
+        }).count() * 3 == expected,
+        _ => false,
+    }
 }
 
 struct Admission {
@@ -243,6 +259,10 @@ struct Replacement {
 }
 
 impl ExternalPass for Replacement {
+    fn uses_validated_resources(&self) -> bool {
+        self.pass.uses_validated_resources()
+    }
+
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {

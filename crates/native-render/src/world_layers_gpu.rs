@@ -75,6 +75,9 @@ impl DeviceCache {
             return Some(buffer.clone());
         }
         let bytes = bytes()?;
+        if bytes.is_empty() || (bytes.len() as u64).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT) > device.limits().max_buffer_size {
+            return None;
+        }
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("opaque indexed geometry"),
             contents: &bytes,
@@ -187,12 +190,12 @@ impl IndexedPass {
             .entry(program.key.clone())
             .or_insert_with(|| {
                 let linked = program.key.translate().ok()?;
-                let module = target
-                    .device
-                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                let module = gfx::program::validated_resource(target.device, || {
+                    target.device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: Some("opaque indexed program"),
                         source: wgpu::ShaderSource::Wgsl(linked.source.into()),
-                    });
+                    })
+                })?;
                 Some((
                     new_id,
                     cache.bindings.program(target.device, module, linked.dims),
@@ -250,6 +253,9 @@ impl IndexedPass {
             program.samplers,
             [[false; 4]; 4],
         );
+        if textures.is_none() && dims.iter().any(Option::is_some) {
+            return None;
+        }
 
         let strides: Vec<u32> = draw.streams.iter().map(|s| s.stride).collect();
         let repack = RepackPlan::with_mode(&draw.layout, &strides, self.fetch);
@@ -279,16 +285,9 @@ impl IndexedPass {
             .pipelines
             .entry(key.clone())
             .or_insert_with(|| {
-                let scope = target
-                    .device
-                    .push_error_scope(wgpu::ErrorFilter::Validation);
-                let pipeline =
-                    create_render_pipeline(target.device, &key, &shader, "native opaque layer");
-                if let Some(error) = pollster::block_on(scope.pop()) {
-                    eprintln!("native-world-layers: pipeline refused: {error}");
-                    return None;
-                }
-                Some(pipeline)
+                gfx::program::validated_resource(target.device, || {
+                    create_render_pipeline(target.device, &key, &shader, "native opaque layer")
+                })
             })
             .clone()?;
 
@@ -348,6 +347,8 @@ impl IndexedPass {
 }
 
 impl ExternalPass for IndexedPass {
+    fn uses_validated_resources(&self) -> bool { true }
+
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {

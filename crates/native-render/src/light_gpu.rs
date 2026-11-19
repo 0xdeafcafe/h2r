@@ -211,9 +211,9 @@ pub struct LightGpu {
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
-    static_groups: HashMap<Option<u32>, wgpu::BindGroup>,
-    gel_target_group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>), wgpu::RenderPipeline>,
+    static_groups: HashMap<Option<u32>, Option<wgpu::BindGroup>>,
+    gel_target_group: Option<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Option<Cull>), Option<wgpu::RenderPipeline>>,
 }
 
 impl LightGpu {
@@ -237,10 +237,12 @@ impl LightGpu {
                 stage_views[n] = Some(texture(device, queue, &image, "native light stage"));
             }
         }
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native light pass"),
-            source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
-        });
+        let module = gfx::program::validated_resource(device, || {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native light pass"),
+                source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
+            })
+        })?;
         let mut entries = Vec::new();
         for (n, d) in program.dims.iter().enumerate() {
             let Some(d) = d else { continue };
@@ -312,22 +314,24 @@ impl LightGpu {
                 resource: wgpu::BindingResource::Sampler(&self.samplers[*n]),
             });
         }
-        Some(gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
-            label: Some("native light textures"),
-            layout: &self.textures_layout,
-            entries: &entries,
-        }))
+        gfx::program::validated_resource(device, || {
+            gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
+                label: Some("native light textures"),
+                layout: &self.textures_layout,
+                entries: &entries,
+            })
+        })
     }
 
     /// Makes the pipeline for these target formats, with the pass's own
     /// blend, depth and cull state.
-    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>) -> &wgpu::RenderPipeline {
+    pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, cull: Option<Cull>) -> Option<&wgpu::RenderPipeline> {
         let (module, layout, s) = (&self.module, &self.layout, self.program.state);
         self.pipelines.entry((color, depth, cull)).or_insert_with(|| {
             let attributes = INPUTS.map(|(location, offset, format)| wgpu::VertexAttribute {
                 format, offset, shader_location: location,
             });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native light pass"),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -361,8 +365,8 @@ impl LightGpu {
                 }),
                 multiview_mask: None,
                 cache: None,
-            })
-        })
+            }))
+        }).as_ref()
     }
 }
 
@@ -532,14 +536,14 @@ impl LightSet {
                 if let Some((cached_view, group)) = &pass.gel_target_group
                     && cached_view == view
                 {
-                    group.clone()
+                    group.clone()?
                 } else {
-                    let group = pass.textures(device, &self.textures, Some(view))?;
+                    let group = pass.textures(device, &self.textures, Some(view));
                     pass.gel_target_group = Some((view.clone(), group.clone()));
-                    group
+                    group?
                 }
             } else if let Some(group) = pass.static_groups.get(&static_gel) {
-                group.clone()
+                group.clone()?
             } else {
                 let gel = match static_gel {
                     Some(g) => self.gels.entry(g)
@@ -547,11 +551,11 @@ impl LightSet {
                         .as_ref(),
                     None => None,
                 };
-                let group = pass.textures(device, &self.textures, gel)?;
+                let group = pass.textures(device, &self.textures, gel);
                 pass.static_groups.insert(static_gel, group.clone());
-                group
+                group?
             };
-            ready.push(Prepared { draw: d, pipeline: pass.pipeline(device, color, depth, d.cull).clone(), textures });
+            ready.push(Prepared { draw: d, pipeline: pass.pipeline(device, color, depth, d.cull)?.clone(), textures });
         }
         let uniforms = uploads.uniform_run(
             device, queue, &self.uniforms_layout,
@@ -574,6 +578,11 @@ impl LightSet {
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> Option<LightBundles> {
         if vertices.size() == 0 || indices.size() == 0 { return None; }
+        if draws.iter().filter_map(|draw| draw.gel_view).any(|view| {
+            view.texture() == target.color.texture() || view.texture() == target.depth.texture()
+        }) {
+            return None;
+        }
         let (device, color, depth) = (target.device, target.color_format, target.depth_format);
         let (uniforms, prepared) = self.prepare(
             device, target.queue, color, depth, view, draws, target.uploads, stage_image, gel_image,
