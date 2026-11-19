@@ -568,6 +568,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         label: "CT-driver".into(),
         marker: "driver".into(),
         camera_marker: "camera".into(),
+        camera_tracks: Vec::new(),
     };
     let hlmt = map::TagId(0xe001_0002);
     let mode = map::TagId(0xe001_0003);
@@ -695,7 +696,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
 #[test]
 fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     use crate::rebuild::{RoleWords, VEHI_PHYSICS, VehicleRole, VehicleSpec};
-    use tags::defs::{self, Defs, Val};
+    use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
         object_type: 1,
         flags: 0,
@@ -731,7 +732,9 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
             vec![("unknown_20".into(), 0x3d00_0000)],
         ],
         flags_high: 0x0012_0000,
-        friction: Some(vec![("unknown_8".into(), 0x4160_0000)]),
+        control: 2,
+        friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
+        friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
         hover: None,
         gears: vec![vec![
             ("unknown_0".into(), 0x4795_6a00),
@@ -742,10 +745,12 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         crate::rebuild::Point {
             marker: "tire_front_left".into(),
             region: "left_front_tire".into(),
+            steered: true,
         },
         crate::rebuild::Point {
             marker: "tire_back_left".into(),
             region: String::new(),
+            steered: false,
         },
     ];
     let seat = crate::h1::Seat {
@@ -753,17 +758,22 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         label: "W-driver".into(),
         marker: "driver".into(),
         camera_marker: String::new(),
+        camera_tracks: Vec::new(),
     };
     let passenger = crate::h1::Seat {
         flags: 0x60,
         label: "W-passenger".into(),
         marker: "passenger".into(),
         camera_marker: String::new(),
+        camera_tracks: Vec::new(),
     };
-    let seats = [
+    let mut seats = [
         crate::rebuild::seat_names(&seat, &[]),
         crate::rebuild::seat_names(&passenger, &[]),
     ];
+    // The driver's camera track converted; the passenger has none.
+    let track = map::TagId(0xe001_0009);
+    seats[0].camera_track = Some(track);
     let root = crate::rebuild::vehicle(&VehicleSpec {
         object: &obj,
         bounds: Some((1.5, [0.1, 0.0, 0.5])),
@@ -825,6 +835,12 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         Some(&Val::text("left_front_tire"))
     );
     assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0x4160_0000));
+    // The role's control word (the scorpion's 2 drives as a tank).
+    assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![2, 0])));
+    // The front point steers with the role's steering words, the back one
+    // takes the others.
+    assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(0x26));
+    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x32));
     assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
     assert_eq!(got.at("block_268[0].unknown_0").cloned(), word(0x4795_6a00));
     assert_eq!(
@@ -835,6 +851,51 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
     // Turret words stay off a vehicle with its own role.
     assert_eq!(got.at("unknown_23c").cloned(), word(0));
+    // The driver's seat names its camera track; the passenger's names
+    // none (the engine's default unit track).
+    assert_eq!(
+        got.at("block_1c8[0].block_74[0].ref_0"),
+        Some(&Val::Ref {
+            group: 0,
+            target: Target::Id(track),
+        })
+    );
+    assert!(matches!(got.at("block_1c8[1].block_74"), Some(Val::Block(b)) if b.is_empty()));
+}
+
+/// A Halo 1 camera track becomes a Halo 2 `trak` with the same points, in
+/// order, and reads back through the definition.
+#[test]
+fn camera_track_keeps_halo_1s_control_points() {
+    use tags::defs::{self, Defs, Val};
+    let h1 = crate::h1::CameraTrack {
+        flags: 0,
+        points: vec![
+            ([0.5, 0.0, 3.5], [0.0, -0.7071, 0.0, 0.7071]),
+            ([-2.75, 0.0, 0.68], [0.0, 0.0, 0.0, 1.0]),
+            ([-1.0, 0.0, -0.18], [0.0, 0.7071, 0.0, 0.7071]),
+        ],
+    };
+    let root = crate::rebuild::camera_track(&h1).unwrap();
+    let def = Defs::builtin().group(map::FourCC(*b"trak")).unwrap();
+    // Root 0xc, then 0x1c per point (V: every retail track's size).
+    assert_eq!(def.size, 0xc);
+    assert_eq!(def.child("control_points").unwrap().size, 0x1c);
+    let got = defs::from_built(def, &root).unwrap();
+    assert_eq!(got.at("flags"), Some(&Val::Int(0)));
+    for (i, (p, q)) in h1.points.iter().enumerate() {
+        assert_eq!(
+            got.at(&format!("control_points[{i}].position")),
+            Some(&Val::floats(p))
+        );
+        assert_eq!(
+            got.at(&format!("control_points[{i}].orientation")),
+            Some(&Val::floats(q))
+        );
+    }
+    assert!(got.at("control_points[3].position").is_none());
+    let again = defs::to_built(def, &got, &mut |_| None).unwrap();
+    assert_eq!(defs::from_built(def, &again).unwrap(), got);
 }
 
 #[test]

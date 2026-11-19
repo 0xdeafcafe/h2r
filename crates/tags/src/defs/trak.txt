@@ -1,0 +1,11 @@
+# trak: camera track, the third-person camera's offsets from a unit's camera
+# marker by look pitch. Evidence: V on coagulation's 15 trak tags (every tag's
+# size is 0xc + n * 0x1c, the block at +4 holds n elements right after the
+# root) and h1objects tests/vehicle_camera_disc.rs (Halo 2's
+# globals\default_unit_camera_track holds Halo 1's default unit camera track's
+# nine points, position and orientation, value for value).
+group trak 0xc align 4
+  0x0 u32 flags -- V zero on every retail track
+  0x4 block control_points 0x1c align 4 -- V nine to thirteen per track, the first looking straight down, the last straight up (orientation pitch -90 to +90 degrees)
+    0x0 f32[3] position -- V the camera's offset in the unit's look frame (forward, left, up): the retail warthog driver's first point 2.05 up, its middle 3.05 back; equal to Halo 1's control point +0
+    0xc f32[4] orientation -- V unit quaternion (i, j, k, w), a pitch about the left axis; equal to Halo 1's control point +0xc
