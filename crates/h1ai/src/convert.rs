@@ -75,7 +75,7 @@ pub mod grenade {
 }
 
 /// A Halo 2 character chosen for a Halo 1 actor variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CharacterChoice {
     /// The Halo 1 actor variant (`actv`) path.
     pub h1_variant: String,

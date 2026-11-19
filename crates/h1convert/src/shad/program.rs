@@ -287,7 +287,8 @@ fn scope_template(passes: &[TagId]) -> Result<Block> {
     let mut layers = vec![IndexRange::default(); 25];
     layers[15] = IndexRange {
         start: 0,
-        count: passes.len() as u16,
+        count: u8::try_from(passes.len())
+            .map_err(|_| Error::Invalid("scope template: more passes than a layer range holds"))?,
     };
     let graph = TemplatePostprocess {
         lods: vec![TemplateLod {
