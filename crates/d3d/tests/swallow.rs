@@ -425,3 +425,37 @@ fn a_trace_keeps_each_call_arming_and_draw_in_order() {
     d.trace(true);
     assert_eq!(d.take_trace().0, Vec::new(), "nothing kept while off");
 }
+
+/// `0x0002d140` draws its strips through the `D3DDevice_End` entry
+/// (`Begin`, `SetVertexData4f` per vertex, `End`), not pushed: the swallow
+/// takes that strip, issues the pass in its place, and leaves the pushed
+/// quad after it (the UI's) alone.
+#[test]
+fn an_entry_ended_strip_is_the_swallows_and_the_pushed_quad_after_it_is_not() {
+    let (mut d, mut m, _back) = setup(takes());
+    let placed = Arc::new(AtomicU32::new(0));
+    let strip = Swallow {
+        targets: vec![1],
+        primitive: PrimitiveType::TriangleStrip,
+        vertices: 4,
+        shapes: vec![(PrimitiveType::TriangleStrip, 4)],
+        drop: true,
+        pass: Box::new(Placed(Arc::clone(&placed), true)),
+    };
+    assert!(d.swallow(&mut m, strip).unwrap());
+    d.begin(&mut m, TRIANGLESTRIP).unwrap();
+    d.set_vertex_data(&mut m, 3, [1.0, 1.0, 1.0, 1.0]).unwrap();
+    for (x, y) in [(0.0, 0.0), (8.0, 0.0), (0.0, 8.0), (8.0, 8.0)] {
+        d.set_vertex_data(&mut m, -1, [x, y, 0.5, 1.0]).unwrap();
+    }
+    d.end(&mut m).unwrap();
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches, s.draws), (1, 0, 0), "the strip dropped");
+    assert_eq!(placed.load(Ordering::Relaxed), 1, "the pass in its place");
+    assert!(!d.swallowing());
+    quad(&mut m);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    let s = d.stats();
+    assert_eq!((s.swallowed_draws, s.swallow_mismatches, s.draws), (1, 0, 1), "the quad drawn, no mismatch");
+    assert_eq!(d.swallow_mismatch(), None);
+}

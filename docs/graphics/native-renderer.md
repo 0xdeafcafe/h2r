@@ -2681,6 +2681,18 @@ effect per egor.
      that keep those chains off the pipelined render thread. Each line
      is `native-post: H2_POST_TRACE #<call> ...`, the trace written when
      it ends.
+   - **Fixed: the strip comes through the `D3DDevice_End` entry.** The
+     trace said `0x0002d140` draws (`0x00016610` from `0x0002d4bc`, the
+     port agreeing; the commit from `0x0002d51b`), but its strip is
+     `D3DDevice_End` called from `0x0002d8b2` (`Begin`,
+     `SetVertexData4f`, `End` as entries), not a pushed `Begin`/`End`.
+     The swallow watched only pushed draws, so the strip drew and the
+     UI's next pushed quad was taken for it. Both paths now go through
+     `Device::swallow_immediate`. A probe that ends early dropped
+     nothing, so the egor is only left unproved and its next call probes
+     again; only a dropping swallow that ends early keeps the egor on D3D
+     (`screen_mismatch`). A call made while the map's effects are still
+     loading is no longer counted as a `TemplatePass` refusal.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
