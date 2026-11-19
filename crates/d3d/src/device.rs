@@ -2489,7 +2489,11 @@ impl<B: Backend> Device<B> {
         if self.swallowing.is_none() {
             return Ok(());
         }
-        if entry.starts_with("D3DDevice_SetVertexData")
+        // The dedicated render-state adapters all call set_render_state.
+        // They only change state for later draws; held packets already
+        // contain their resolved state.
+        if crate::abi::RENDER_STATE_SETTERS.iter().any(|&(_, name, _)| entry == name)
+            || entry.starts_with("D3DDevice_SetVertexData")
             || entry.starts_with("D3DDevice_SetVertexShader")
             || entry.starts_with("D3DDevice_SetTextureState")
             || entry.starts_with("D3DDevice_SetRenderTarget")
