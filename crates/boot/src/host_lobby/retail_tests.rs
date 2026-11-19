@@ -407,7 +407,18 @@ fn live_open_waits_for_a_new_advertisement_and_close_for_withdrawal() {
             Ok(Ret::new(1, 0))
         })
     };
-    let run = testing::run(&test, menu(), Regs::default(), reply);
+    // The Live menu is allowed to allocate a fresh squad in Create.
+    let offline = 0x8500_0000;
+    let mut initial = menu();
+    initial
+        .map(offline, 0x7900)
+        .put_u32(lobby::SESSION, offline);
+    let run = testing::run(&test, initial, Regs::default(), |f, m| {
+        if f.target == CREATE_SQUAD {
+            m.set_u32(lobby::SESSION, S).unwrap();
+        }
+        reply(f, m)
+    });
     assert_eq!(run.result.unwrap(), Ret::new(1, 0));
     assert_eq!(run.calls[0].target, LIVE_MENU_PREPARE);
     assert_eq!(run.calls[1].target, CREATE_SQUAD);
@@ -418,4 +429,41 @@ fn live_open_waits_for_a_new_advertisement_and_close_for_withdrawal() {
             .count(),
         1
     );
+}
+
+#[test]
+fn open_tracks_the_network_squad_when_create_replaces_the_menu_squad() {
+    let mut memory = menu();
+    let offline = 0x8500_0000;
+    memory.map(offline, 0x7900).put_u32(lobby::SESSION, offline);
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let mut machine = Machine::default();
+            let open = Command::Open(config());
+            assert!(matches!(
+                machine
+                    .advance(&cx, &open, SCRATCH, None, true)
+                    .await
+                    .map_err(rpc)?,
+                Progress::Wait(_)
+            ));
+            assert!(matches!(
+                machine
+                    .advance(&cx, &open, SCRATCH, None, true)
+                    .await
+                    .map_err(rpc)?,
+                Progress::Done(_)
+            ));
+            assert_eq!(cx.read(|m| m.u32(offline + MAX_PLAYERS))?, 0);
+            assert_eq!(cx.read(|m| m.u32(S + MAX_PLAYERS))?, 2);
+            Ok(Ret::new(1, 0))
+        })
+    };
+    let run = testing::run(&test, memory, Regs::default(), |call, m| {
+        if call.target == CREATE_BROWSER_SQUAD {
+            m.set_u32(lobby::SESSION, S).unwrap();
+        }
+        reply(call, m)
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
 }

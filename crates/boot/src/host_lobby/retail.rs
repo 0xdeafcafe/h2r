@@ -418,6 +418,8 @@ impl Machine {
                     "retail refused creation of the playerless squad",
                 ));
             }
+            // Create may replace the menu's offline session object.
+            let addr = cx.read(|m| squad(m))?.unwrap_or(addr);
             self.owned = Some(Owned {
                 addr,
                 config: config.clone(),
@@ -430,7 +432,12 @@ impl Machine {
             call(cx, GuestCall::new(points::LOBBY_MODE_SET.base).args([2])).await?;
         }
         let owner = self.owned.as_mut().expect("created a squad");
-        let waiting = cx.read(|m| m.u32(owner.addr + STATE)).map_err(read_fault)?;
+        let waiting = cx.read(|m| {
+            if squad(m)? != Some(owner.addr) {
+                return Err(unavailable("the dedicated squad changed during open"));
+            }
+            m.u32(owner.addr + STATE).map_err(read_fault)
+        })?;
         if waiting != session::STATE_LIVE {
             return Ok(Progress::Wait(
                 "waiting for the retail squad to reach host state 5",
