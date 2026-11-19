@@ -10,10 +10,9 @@
 //! for the recordings, the evaluators of 138, 139 and 140 call one function
 //! (`0x001fb360`) with play flags 0, 8 and 0x10, which bounds the
 //! recording index by `scnr +0x110` and reads `0x34`-byte elements at
-//! `+0x114` (the scenario's recorded animations).
-//!
-//! Every slot this table claims is listed in docs/halo1/scripts.md beside
-//! each entry, for cross-lane clash checks.
+//! `+0x114` (the scenario's recorded animations). Kill searches by unit at
+//! `0x1fb760`; time queries `0x1fb4c0`. Hover calls the same function
+//! (`0xf0fd0`) as completion of a play-and-hover recording.
 
 use crate::translate::H2Builtin;
 use std::collections::HashMap;
@@ -118,6 +117,9 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
+    // 0x002a3b70 passes the short as the facial-expression selector to
+    // 0x0010e9f0, also called by unit_set_emotional_state (220).
+    id("unit_set_emotion", 218, "void", &["unit", "short"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -132,6 +134,32 @@ pub const IDENTIFIED: &[Identified] = &[
     // evaluator (0x002a4780) returns the device's float at +0x134 (d40's
     // control rooms wait on it).
     id("device_get_power", 255, "real", &["device"]),
+    id(
+        "cs_stack_command_script",
+        367,
+        "void",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_running",
+        370,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id(
+        "cs_command_script_queued",
+        371,
+        "boolean",
+        &["ai", "ai_command_script"],
+    ),
+    id("cs_look_object", 394, "void", &["boolean", "object"]),
+    id("cs_face_object", 400, "void", &["boolean", "object"]),
+    id(
+        "cs_approach",
+        429,
+        "void",
+        &["object", "real", "real", "real"],
+    ),
     // Halo 1 247..250 after camera_set (450); camera_set_dead takes an
     // object in Halo 2 (a unit casts to it).
     id(

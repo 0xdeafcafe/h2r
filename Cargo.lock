@@ -650,6 +650,7 @@ dependencies = [
  "h1text",
  "hot-render",
  "hot-tags",
+ "hs",
  "iced-x86",
  "input",
  "ir",
@@ -2540,6 +2541,7 @@ dependencies = [
 name = "h1scripts"
 version = "0.1.0"
 dependencies = [
+ "h1ai",
  "h1map",
  "h1models",
  "hs",

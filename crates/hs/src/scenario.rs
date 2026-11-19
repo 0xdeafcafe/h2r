@@ -326,8 +326,21 @@ impl Scenario {
                 } else {
                     let function = catalog.function(n.opcode)?;
                     if function.flags & 2 == 0 {
-                        let mut argument = self.node(Datum(n.data))?.next;
-                        for &expected in &function.parameters {
+                        let head = self.node(Datum(n.data))?;
+                        let mut argument = head.next;
+                        let parameters = if matches!(
+                            n.opcode,
+                            crate::h1_ai_slots::CONTROL | crate::h1_ai_slots::VEHICLE_COUNT
+                        ) && self.string(head.string_offset)? == crate::h1_ai_slots::CONTROL_TOKEN
+                        {
+                            let operation = crate::h1_ai_slots::Operation::from_marker(head.data)
+                                .filter(|op| op.slot() == n.opcode)
+                                .ok_or_else(|| invalid(format!("node {i}: unknown Halo 1 AI operation")))?;
+                            operation.parameters()
+                        } else {
+                            function.parameters()
+                        };
+                        for &expected in parameters {
                             let actual = self.node(argument)?;
                             if actual.value_type != expected {
                                 return Err(invalid(format!(

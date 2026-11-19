@@ -187,6 +187,10 @@ impl Event {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WalkError {
+    DurationOverflow,
+    ControlVersion(u8),
+    WeaponSlot(i16),
+    UnsupportedFlags(u16),
     /// The stream ends before the initial state does.
     ShortPrologue { need: usize, have: usize },
     /// The stream ends inside an event, or before an end event.
@@ -199,6 +203,10 @@ pub enum WalkError {
 impl fmt::Display for WalkError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            WalkError::DurationOverflow => write!(f, "recording duration exceeds u32"),
+            WalkError::ControlVersion(v) => write!(f, "unsupported unit control version {v}"),
+            WalkError::WeaponSlot(w) => write!(f, "invalid weapon slot {w}"),
+            WalkError::UnsupportedFlags(w) => write!(f, "unsupported control flags {w:#06x}"),
             WalkError::ShortPrologue { need, have } => {
                 write!(f, "initial state needs {need} bytes, stream has {have}")
             }
@@ -260,7 +268,7 @@ pub fn walk(game: Game, control_version: u8, stream: &[u8]) -> Result<Walk, Walk
         if at + e.size() > stream.len() {
             return Err(truncated);
         }
-        ticks += delay as u32;
+        ticks = ticks.checked_add(u32::from(delay)).ok_or(WalkError::DurationOverflow)?;
         events.push(e);
         at += e.size();
         if kind == END {
@@ -299,10 +307,9 @@ pub const HALO1_VERSIONS: u32 = 0x2322a4;
 /// Halo 2 animation states are string IDs (the unit's mode; Halo 2's own
 /// default control, `0xc6f07`, starts at "combat"). Engine string IDs are
 /// fixed, so these hold on every map.
-pub const MODE_ASLEEP: u32 = 0x0600_0084;
-pub const MODE_COMBAT: u32 = 0x0600_0086;
-pub const MODE_FLEE: u32 = 0x0400_0089;
-pub const MODE_FLAMING: u32 = 0x0700_0039;
+pub use map::recording::{
+    ASLEEP as MODE_ASLEEP, COMBAT as MODE_COMBAT, FLAMING as MODE_FLAMING, FLEE as MODE_FLEE,
+};
 
 /// Halo 1's animation state (a byte; Halo 1 `0x41bb5` turns it into a
 /// mode through `0x1f7684`: asleep, alert, stand or crouch, flee, flaming)
@@ -321,62 +328,50 @@ pub fn mode(h1_state: u8) -> u32 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Converted {
     pub stream: Vec<u8>,
-    /// Halo 1 animation-state events dropped to delays (see [`convert`]).
+    /// Timed mode changes encoded in the stream.
     pub animation_events: usize,
-    /// Control flag values (initial or events) that had weapon-action bits
-    /// [`flags`] drops.
+    /// Control flag words carrying weapon actions.
     pub weapon_flags: usize,
 }
 
-/// Halo 1's movement and stance control flags, bits 0 to 9, which Halo 2
-/// keeps where they were.
-///
-/// Both games group the flags the same way when one unit takes another's
-/// controls (a vehicle from its driver and gunner: Halo 1 `0x44d59`,
-/// `0x44e34`; Halo 2 `0xc4d22`, `0xc4eba`). Halo 1 takes its movement bits
-/// from the driver (`& 0x3f`) and the weapon actions, bits 10 to 14, from
-/// the gunner (`& 0x7c00`, the bits it also tests together at `0x44e58`).
-/// Halo 2 takes the whole low half from the driver and the high half from
-/// the gunner (`& 0xffff`, `& 0xffff0000`, tested together at `0xc4ef0`):
-/// its weapon actions moved above bit 15, and the low half is the movement
-/// and stance set. Within that half the converter keeps Halo 1's positions
-/// (crouch 0, jump 1, through force alert 9, the bit Halo 1 `0x41c09`
-/// turns into the alert mode); that part is assumed, not traced bit by bit
-/// through Halo 2.
-pub const MOVEMENT_FLAGS: u16 = 0x03ff;
-
-/// A Halo 1 control flag word for Halo 2: the movement and stance bits
-/// where they were; the weapon actions (reload, triggers, grenade,
-/// exchange) dropped, as where Halo 2 keeps each one above bit 15 is not
-/// established. A recorded unit moves and looks as recorded and does not
-/// fire.
-pub fn flags(h1: u16) -> u32 {
-    u32::from(h1 & MOVEMENT_FLAGS)
+/// Translate the flags present in the campaign's recordings. Both unit
+/// weapon readers produce trigger bits 1 and 2 (H1 0x456dd..0x456ea,
+/// H2 0xc5d38..0xc5d53). H2 reload is bit 28 (0xc5a9a) and the
+/// grenade request is bit 26 (0x14fe58). H1's seat exit, turn inhibition
+/// and alert override are consumed by the recording playback adapter.
+fn flags(h1: u16) -> Result<u32, WalkError> {
+    use map::recording::{EXIT_SEAT, FORCE_ALERT, HOLD_FACING};
+    let mut out = u32::from(h1 & 3); // crouch and jump
+    for (source, target) in [
+        (4, 1 << 2),
+        (5, 1 << 3),
+        (6, EXIT_SEAT),
+        (7, 1 << 4),
+        (8, HOLD_FACING),
+        (9, FORCE_ALERT),
+        (10, 1 << 28),
+        (11, 1 << 16),
+        (12, 1 << 17),
+        (13, 1 << 26),
+    ] {
+        if h1 & (1 << source) != 0 {
+            out |= target;
+        }
+    }
+    // No recording on the campaign disc uses these bits.
+    if h1 & 0xc00c != 0 {
+        return Err(WalkError::UnsupportedFlags(h1));
+    }
+    Ok(out)
 }
 
-/// Rewrite a Halo 1 version-4 stream for Halo 2's player.
-///
-/// - Initial state: each field into Halo 2's layout for the same unit
-///   control version. Animation state becomes a mode string ID ([`mode`]);
-///   aiming speed widens sign-extended, as Halo 2's type 3 handler does;
-///   control flags go through [`flags`]; the weapon index goes to Halo 2's first
-///   weapon byte with the weapon set and second weapon left at `-1`, as in
-///   Halo 2's default control (`0xc6ef0`). The rest is the same bytes.
-/// - Type 4 (control flags) payloads widen from two bytes to four, through
-///   [`flags`].
-/// - Type 2 (animation state) events carry a byte, and Halo 2 writes it
-///   sign-extended into the mode string ID, which no byte can name. Their
-///   value goes into the initial state instead (the last one, the state the
-///   recording settles in), and the events become delay-only type 0 with
-///   the same delay. On the discs every such event sets stand-or-crouch
-///   one tick in.
-/// - Everything else is copied as it is, the delays included.
+/// Rebuild a v4 stream. Each type-2 handler consumes one byte and sets the
+/// mode at that event's tick. Type 4 carries a full Halo 2 control word.
 pub fn convert(control_version: u8, h1: &[u8]) -> Result<Converted, WalkError> {
-    let walk = walk(Game::Halo1, control_version, h1)?;
-    let mut state = h1[0];
-    for e in walk.events.iter().filter(|e| e.kind == 2) {
-        state = h1[e.at + e.head_len];
+    if control_version > 4 {
+        return Err(WalkError::ControlVersion(control_version));
     }
+    let walk = walk(Game::Halo1, control_version, h1)?;
     let mut out = Vec::with_capacity(h1.len() + 32);
     let mut at = 0;
     let mut weapon_flags = 0;
@@ -384,22 +379,20 @@ pub fn convert(control_version: u8, h1: &[u8]) -> Result<Converted, WalkError> {
         let b = &h1[at..at + len];
         at += len;
         match field {
-            Field::AnimationState => out.extend_from_slice(&mode(state).to_le_bytes()),
+            Field::AnimationState => out.extend_from_slice(&mode(b[0]).to_le_bytes()),
             Field::AimingSpeed => out.extend_from_slice(&(b[0] as i8 as i16).to_le_bytes()),
             Field::ControlFlags => {
                 let f = u16::from_le_bytes([b[0], b[1]]);
-                weapon_flags += usize::from(f & !MOVEMENT_FLAGS != 0);
-                out.extend_from_slice(&flags(f).to_le_bytes())
+                weapon_flags += usize::from(f & 0x7c00 != 0);
+                out.extend_from_slice(&flags(f)?.to_le_bytes())
             }
             Field::WeaponIndex => {
                 let w = i16::from_le_bytes([b[0], b[1]]);
-                let w = if (-1..=127).contains(&w) {
-                    w as i8 as u8
-                } else {
-                    0xff
-                };
-                out.extend_from_slice(&[0xff, 0xff, w, 0xff]);
+                let slot = weapon_slot(w)?;
+                out.extend_from_slice(&map::recording::WEAPON_SET.to_le_bytes());
+                out.extend_from_slice(&[slot, map::recording::SECOND_WEAPON]);
             }
+            Field::Pad => out.extend_from_slice(&[0, 0]),
             _ => out.extend_from_slice(b),
         }
     }
@@ -415,14 +408,19 @@ pub fn convert(control_version: u8, h1: &[u8]) -> Result<Converted, WalkError> {
         match e.kind {
             2 => {
                 animation_events += 1;
-                out.push(head[0] & 3);
-                out.extend_from_slice(&head[1..]);
+                out.extend_from_slice(head);
+                out.push(mode(payload[0]) as u8);
             }
             4 => {
                 let f = u16::from_le_bytes([payload[0], payload[1]]);
-                weapon_flags += usize::from(f & !MOVEMENT_FLAGS != 0);
+                weapon_flags += usize::from(f & 0x7c00 != 0);
                 out.extend_from_slice(head);
-                out.extend_from_slice(&flags(f).to_le_bytes());
+                out.extend_from_slice(&flags(f)?.to_le_bytes());
+            }
+            5 => {
+                let slot = i16::from_le_bytes([payload[0], payload[1]]);
+                weapon_slot(slot)?;
+                out.extend_from_slice(&h1[e.at..e.at + e.size()]);
             }
             _ => out.extend_from_slice(&h1[e.at..e.at + e.size()]),
         }
@@ -434,71 +432,44 @@ pub fn convert(control_version: u8, h1: &[u8]) -> Result<Converted, WalkError> {
     })
 }
 
-/// A Halo 2 stream that holds the unit still and ends: Halo 2's default
-/// control state (`0xc6ef0`: "combat", indices `-1`), facing, aiming and
-/// looking along +x, for `control_version`, then the end event after `ticks`.
-pub fn still(control_version: u8, ticks: u16) -> Vec<u8> {
-    let mut out = Vec::new();
-    for (field, len) in initial_fields(Game::Halo2, control_version) {
-        match field {
-            Field::AnimationState => out.extend_from_slice(&MODE_COMBAT.to_le_bytes()),
-            Field::WeaponSet | Field::WeaponIndex | Field::SecondWeaponIndex => {
-                out.extend(std::iter::repeat_n(0xff, len))
-            }
-            Field::GrenadeIndex | Field::ZoomLevel => out.extend_from_slice(&[0xff, 0xff]),
-            Field::Facing | Field::Aiming | Field::Looking => {
-                for x in [1.0f32, 0.0, 0.0] {
-                    out.extend_from_slice(&x.to_le_bytes());
-                }
-            }
-            _ => out.extend(std::iter::repeat_n(0, len)),
-        }
+fn weapon_slot(slot: i16) -> Result<u8, WalkError> {
+    match slot {
+        -1..=3 => Ok(slot as u8),
+        _ => Err(WalkError::WeaponSlot(slot)),
     }
-    out.extend_from_slice(&[0; TRAILER]);
-    out.push((END << 2) | 3);
-    out.extend_from_slice(&ticks.to_le_bytes());
-    out
 }
 
-/// What [`for_halo2`] did.
+/// What [`for_halo2`] converted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Report {
     pub converted: usize,
-    /// Animation-state events turned into delays, over every stream.
     pub animation_events: usize,
-    /// Control flag values whose weapon-action bits were dropped.
     pub weapon_flags: usize,
-    /// Recordings that could not be converted, with why; each now holds
-    /// [`still`] for its length.
-    pub stilled: Vec<String>,
 }
 
-/// Every recording's stream rewritten for Halo 2's version-4 player. A
-/// stream that cannot be (another version, or one Halo 1's own player
-/// would not read through) gets [`still`] and version 4, so no element
-/// reaches a handler past the table.
-pub fn for_halo2(recordings: &mut [crate::cutscenes::Recording]) -> Report {
+/// Convert the whole block before publishing any replacement stream.
+pub fn for_halo2(recordings: &mut [crate::cutscenes::Recording]) -> crate::Result<Report> {
+    let converted = recordings
+        .iter()
+        .map(|r| {
+            if r.version != 4 {
+                return Err(crate::invalid(format!(
+                    "recording {}: stream version {}",
+                    r.name, r.version
+                )));
+            }
+            convert(r.control_version, &r.stream)
+                .map_err(|e| crate::invalid(format!("recording {}: {e}", r.name)))
+        })
+        .collect::<crate::Result<Vec<_>>>()?;
     let mut report = Report::default();
-    for r in recordings {
-        let cv = r.control_version();
-        let why = match r.version() {
-            4 => match convert(cv, &r.stream) {
-                Ok(c) => {
-                    r.stream = c.stream;
-                    report.converted += 1;
-                    report.animation_events += c.animation_events;
-                    report.weapon_flags += c.weapon_flags;
-                    continue;
-                }
-                Err(e) => e.to_string(),
-            },
-            v => format!("version {v}"),
-        };
-        report.stilled.push(format!("{}: {why}", r.name));
-        r.head[0x20] = 4;
-        r.stream = still(cv, r.ticks().max(1) as u16);
+    for (r, c) in recordings.iter_mut().zip(converted) {
+        r.stream = c.stream;
+        report.converted += 1;
+        report.animation_events += c.animation_events;
+        report.weapon_flags += c.weapon_flags;
     }
-    report
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -588,7 +559,7 @@ mod tests {
     fn convert_widens_the_state_and_flag_events() {
         let mut s = prologue(Game::Halo1, 4, &[0, 0xfe, 0x01, 0x08, 0x01, 0x00]);
         let pad = 6;
-        s[pad] = 0xaa; // dropped by both games, kept
+        s[pad] = 0xaa; // dropped by both games
         let n = s.len();
         s[n - 12..].copy_from_slice(&[7; 12]);
         s.extend_from_slice(&[(2 << 2) | 1, 3]); // animation state 3 after a tick
@@ -598,28 +569,20 @@ mod tests {
         let c = convert(4, &s).unwrap();
         assert_eq!((c.animation_events, c.weapon_flags), (1, 2));
         let h2 = &c.stream;
-        assert_eq!(&h2[0..4], &MODE_COMBAT.to_le_bytes());
+        assert_eq!(&h2[0..4], &MODE_ASLEEP.to_le_bytes());
         assert_eq!(&h2[4..6], &(-2i16).to_le_bytes());
-        // Crouch kept, the primary trigger (bit 11) dropped.
-        assert_eq!(&h2[6..10], &1u32.to_le_bytes());
-        assert_eq!(&h2[10..14], &[0xff, 0xff, 1, 0xff]);
-        assert_eq!(h2[14], 0xaa);
+        assert_eq!(&h2[6..10], &0x0001_0001u32.to_le_bytes());
+        assert_eq!(&h2[10..14], &[0xfe, 0xff, 1, 0xfe]);
+        assert_eq!(&h2[14..16], &[0, 0]);
         let p = prologue_len(Game::Halo2, 4);
         assert_eq!(&h2[p - 12..p], &[7; 12]);
         assert_eq!(
             &h2[p..],
             &[
-                1,
-                (4 << 2) | 2,
-                5,
-                0x00,
-                0x01,
-                0,
-                0,
-                (5 << 2),
-                0xff,
-                0xff,
-                (END << 2) | 1
+                (2 << 2) | 1, MODE_COMBAT as u8,
+                (4 << 2) | 2, 5, 0x00, 0x00, 0x21, 0x00,
+                5 << 2, 0xff, 0xff,
+                (END << 2) | 1,
             ]
         );
         let w = walk(Game::Halo2, 4, h2).unwrap();
@@ -628,11 +591,33 @@ mod tests {
     }
 
     #[test]
-    fn still_walks_for_its_length() {
-        for cv in 0..=4 {
-            let w = walk(Game::Halo2, cv, &still(cv, 300)).unwrap();
-            assert_eq!((w.events.len(), w.ticks, w.trailing), (1, 300, 0));
+    fn recording_controls_keep_their_actions() {
+        for (source, expected) in [
+            (1, 1), (2, 2), (0x40, map::recording::EXIT_SEAT),
+            (0x100, map::recording::HOLD_FACING), (0x200, map::recording::FORCE_ALERT),
+            (0x400, 1 << 28), (0x800, 1 << 16), (0x1000, 1 << 17), (0x2000, 1 << 26),
+        ] {
+            assert_eq!(flags(source), Ok(expected));
         }
+        assert_eq!(flags(0x8000), Err(WalkError::UnsupportedFlags(0x8000)));
+    }
+
+    #[test]
+    fn invalid_recording_does_not_publish_a_partial_block() {
+        let mut stream = prologue(Game::Halo1, 0, &[]);
+        stream.push(END << 2);
+        let first = crate::cutscenes::Recording {
+            name: "arrive".into(), version: 4,
+            control_version: 0, ticks: 1, stream,
+        };
+        let mut second = first.clone();
+        second.name = "depart".into();
+        second.stream.pop();
+        let mut block = vec![first, second];
+        let before = block.clone();
+        assert!(for_halo2(&mut block).unwrap_err().to_string().contains("depart"));
+        assert_eq!(block, before);
+        assert_eq!(convert(5, &[]), Err(WalkError::ControlVersion(5)));
     }
 
     #[test]

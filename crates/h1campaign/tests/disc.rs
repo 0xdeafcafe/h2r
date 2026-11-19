@@ -4,6 +4,8 @@
 
 #[path = "disc/ground_ai.rs"]
 mod ground_ai;
+#[path = "disc/a30_flow.rs"]
+mod a30_flow;
 
 use std::fs::File;
 use std::io::{BufReader, Cursor};
@@ -893,7 +895,6 @@ fn a30_converts_onto_its_base_and_reads_back() {
 
     // Scripts: decode, codec symmetry, validation against Halo 2's table.
     if let Some(sc) = &s {
-        let _ = sc;
         let hs_s = hs::Scenario::read(&mut m).unwrap();
         let (_, slot, _, _, _) = h1scripts::hud::SCENARIO_HELP_BUILTIN;
         let mut hints = Vec::new();
@@ -914,34 +915,47 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
-        // Halo 1's initially created encounters: a startup script places
-        // their squad groups, each argument resolved to a group.
-        if opts.ai && !r.initial.is_empty() {
-            let sc = hs_s.script(h1campaign::scenario::INITIAL_SCRIPT).unwrap();
-            assert_eq!(sc.kind(), 0, "startup");
-            let mut placed = Vec::new();
-            for n in hs_s.nodes() {
-                if n.atom() || n.data() == u32::MAX {
-                    continue;
+        if opts.sounds >= 1000 {
+            let placed: std::collections::HashSet<&str> = hs_s
+                .references()
+                .iter()
+                .filter(|r| r.group() == FourCC(*b"snd!"))
+                .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
+                .collect();
+            let scenes = h1ai::conversations::read(&h1).unwrap();
+            for scene in &scenes {
+                for path in scene
+                    .lines
+                    .iter()
+                    .flat_map(|line| line.sounds.iter().flatten())
+                {
+                    assert!(
+                        placed.contains(path.as_str()),
+                        "{}: missing converted sound {path}",
+                        scene.name
+                    );
                 }
-                let Ok(head) = hs_s.node(hs::Datum(n.data())) else {
-                    continue;
-                };
-                if hs_s.string(head.string_offset()).ok() != Some("ai_place") {
-                    continue;
-                }
-                let arg = hs_s.node(head.next()).unwrap();
-                // One argument, as most retail calls (no count).
-                assert_eq!(arg.next(), hs::Datum::NULL);
-                placed.push(arg.data());
             }
+        }
+        let original = h1scripts::Tables::read(&h1).unwrap();
+        assert_eq!(original.globals.len(), 108);
+        for (index, global) in original.globals.iter().enumerate() {
+            let written = &hs_s.globals()[index];
+            assert_eq!(written.name().unwrap(), global.name);
+            assert_eq!(Some(written.value_type()), sc.table.ty(global.value_type));
+        }
+        a30_flow::titles(&mut m, &bytes, addr, &h1);
+        assert!(r.missing_globals.is_empty(), "{:?}", r.missing_globals);
+        if opts.ai {
+            let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
+                !matches!((u.definition.as_str(), u.name.as_str()),
+                    ("cutscene_intro", "cinematic_screen_effect_set_convolution")
+                    | ("objective_cave", "display_scenario_help"))
+            }).collect();
+            assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
             let view = tags::geometry::TagView::new(&bytes, addr);
             let ai = h1ai::h2::ScenarioAi::read(&view).unwrap();
-            for g in &r.initial {
-                let i = ai.squad_groups.iter().position(|x| &x.name == g).unwrap();
-                assert!(placed.contains(&(0x4000_0000 | i as u32)), "group {g}");
-            }
-            println!("placed at startup: {:?}", r.initial);
+            a30_flow::mission(&hs_s, &ai, &h1);
         }
     }
 
@@ -2544,6 +2558,28 @@ fn campaign_hud_text_and_builtins_round_trip() {
                 );
             }
         }
+    }
+}
+
+#[test]
+#[ignore = "reads H2_DISC"]
+fn migration_speech_events_use_retail_order_patterns() {
+    let mut map = h2_map(h1campaign::base_for("a50"));
+    let tag = map.tags().iter().find(|tag| tag.group == FourCC(*b"adlg")).unwrap().clone();
+    let bytes = map.read_tag_bytes(tag.id).unwrap();
+    let base = tag.location.unwrap().address;
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let patterns = (word(0xc) - base) as usize;
+    let index = (word(0x20) - base) as usize;
+    for (event, pattern, name) in [
+        (111, 138, "newordr_advance"),
+        (114, 144, "newordr_retreat"),
+    ] {
+        let range = word(index + event * 4);
+        assert_eq!(range & 0xffff, pattern);
+        assert!(range >> 16 > 0);
+        let string = word(patterns + pattern as usize * 0x40 + 4) as u16;
+        assert_eq!(map.strings()[usize::from(string)].as_deref(), Some(name));
     }
 }
 

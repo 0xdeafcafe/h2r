@@ -57,15 +57,6 @@ pub(crate) const RETAIL_BUILTINS: &[Identified] = &[
     // returns it, as H2 0x2a2ea0 does. H2 0x0c1859 checks the resulting
     // flag before collecting the object's dynamic lights.
     id("render_lights", 143, "boolean", &["boolean"]),
-    // Halo 1 105 has no slot in Halo 2's order (nothing between
-    // unit_is_playing_custom_animation (207) and unit_set_enterable_by_player
-    // (213) has its signature), but between unit_enter_vehicle (216) and
-    // unit_set_emotional_state (220) sits the only unnamed (unit, short)
-    // -> void, and its evaluator 0x2a3b70 drives the emotion core 0x10e9f0
-    // with the short and a default transition time — the by-index emotion
-    // setter beside emotional_state's by-name one (0x10e9a0), as Halo 1
-    // has both (105 set_emotion, 109 set_emotional_state).
-    id("unit_set_emotion", 218, "void", &["unit", "short"]),
     // Halo 1 119, between vehicle_unload (233) and vehicle_driver (237). E:
     // the evaluator 0x2a41a0 none-checks and sets the animation mode ID.
     // Halo 1's 0xf11d0 looks up a pose in the six-name table at 0x1f7684.

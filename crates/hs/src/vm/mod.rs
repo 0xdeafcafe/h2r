@@ -21,7 +21,7 @@ mod thread;
 mod value;
 
 pub use convert::{Cast, PureCast, classify, cvttss2si, fistp};
-pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override};
+pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override, ScenarioGlobals};
 pub use image::{Native, SLEEP_UNTIL_INDEX, VmImage};
 pub use thread::{Category, DORMANT, FINISHED, Thread, ThreadState};
 pub use value::{Cell, HsType, StringRef, Value};

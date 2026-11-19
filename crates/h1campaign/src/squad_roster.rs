@@ -74,7 +74,7 @@ fn spawn_locations(q: &mut Squad, fps: &[FiringPosition]) {
     }
 }
 
-fn select(src: &mut H1Ai, uses: &Uses) -> HashSet<usize> {
+fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> HashSet<usize> {
     let mut generated = HashSet::new();
     let mut output_index = 0;
     let id = |e: usize, s: usize| 0x8000_0000 | ((s as u32) << 16) | e as u32;
@@ -85,7 +85,6 @@ fn select(src: &mut H1Ai, uses: &Uses) -> HashSet<usize> {
                 usize::from(!q.starting_locations.is_empty() || uses.named.contains(&id(ei, si)));
         }
     }
-    let groups = src.encounters.len();
     for (ei, e) in src.encounters.iter_mut().enumerate() {
         let mut si = 0;
         let initially_created = e.flags & 1 == 0;
@@ -124,8 +123,38 @@ fn select(src: &mut H1Ai, uses: &Uses) -> HashSet<usize> {
     generated
 }
 
-pub(crate) fn prepare(src: &mut H1Ai, tables: &Tables) -> HashSet<usize> {
-    select(src, &Uses::read(tables))
+pub(crate) fn prepare(
+    src: &mut H1Ai,
+    tables: &Tables,
+    requests: &[h1ai::control::Request],
+    options: &mut h1ai::convert::Options,
+) -> HashSet<usize> {
+    let mut uses = Uses::read(tables);
+    let mut maneuver = h1ai::control::maneuver_targets(src, requests);
+    maneuver.extend(h1ai::control::automatic_migration_targets(src));
+    let destinations: HashSet<u32> = requests.iter()
+        .filter(|r| r.operation == h1ai::control::Operation::Migrate)
+        .filter_map(|r| r.target)
+        .collect();
+    for (ei, encounter) in src.encounters.iter().enumerate() {
+        for (pi, platoon) in encounter.platoons.iter().enumerate() {
+            let datum = 0x4000_0000 | ((pi as u32) << 16) | ei as u32;
+            if uses.named.contains(&datum) {
+                options.platoon_groups.insert(format!("{}/{}", encounter.name, platoon.name).to_ascii_lowercase());
+            }
+        }
+        for (si, squad) in encounter.squads.iter().enumerate() {
+            let platoon = 0x4000_0000 | ((squad.platoon as u32) << 16) | ei as u32;
+            if (squad.platoon >= 0 && uses.named.contains(&platoon))
+                || destinations.contains(&(ei as u32))
+                || maneuver.contains(&format!("{}/{}", encounter.name, squad.name).to_ascii_lowercase())
+            {
+                uses.named.insert(0x8000_0000 | ((si as u32) << 16) | ei as u32);
+            }
+        }
+    }
+    let groups = src.encounters.len() + options.platoon_groups.len();
+    select(src, &uses, groups)
 }
 
 #[cfg(test)]
@@ -193,7 +222,8 @@ mod tests {
             let mut ai = H1Ai::read(&map).unwrap();
             let before = ai.encounters.clone();
             let uses = Uses::read(&Tables::read(&map).unwrap());
-            select(&mut ai, &uses);
+            let groups = ai.encounters.len();
+            select(&mut ai, &uses, groups);
             for &id in &uses.named {
                 if id >> 31 == 0 || id == u32::MAX {
                     continue;

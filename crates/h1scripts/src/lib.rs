@@ -14,7 +14,9 @@
 //! from the owner's disc at run time. See `docs/halo1/scripts.md`.
 #![forbid(unsafe_code)]
 
+pub mod aicontrol;
 pub mod catalog;
+pub mod commands;
 pub mod compile;
 pub mod decompile;
 pub mod hud;

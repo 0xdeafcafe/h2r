@@ -477,3 +477,64 @@ fn a30_and_a10_convert_read_back_and_sit_on_generated_pathfinding() {
         );
     }
 }
+
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn command_script_placement_uses_retail_indices_and_authored_points() {
+    let mut retail = h2_map("03a_oldmombasa");
+    let scenario = retail.scenario().unwrap().clone();
+    let payload = retail.read_tag_bytes(scenario.id).unwrap();
+    let view = TagView::new(&payload, scenario.location.unwrap().address);
+    let definitions = view.block(&payload, 0x1b8, 0x28).unwrap();
+    let retail_ai = ScenarioAi::read(&view).unwrap();
+    let mut bound = 0;
+    for loc in retail_ai.squads.iter().flat_map(|q| &q.starting_locations) {
+        if let Ok(index) = usize::try_from(loc.placement_script_index) {
+            let def = definitions[index];
+            let end = def[..32].iter().position(|&v| v == 0).unwrap_or(32);
+            assert_eq!(loc.placement_script.as_bytes(), &def[..end]);
+            assert_eq!(u16::from_le_bytes([def[32], def[33]]), 5);
+            bound += 1;
+        }
+    }
+    assert_eq!(bound, 57);
+
+    let mut lists = 0;
+    let mut placed = 0;
+    for level in CAMPAIGN_LEVELS {
+        let m = h1_map(level);
+        let src = H1Ai::read(&m).unwrap();
+        let root = m.tag_data(m.scenario()).unwrap();
+        let first = u32::from_le_bytes(root[0x49c..0x4a0].try_into().unwrap()) as u16;
+        let plan = convert(&src, &Options { first_command_script: Some(first), ..Default::default() });
+        let (out, _) = build_and_read(&plan);
+        assert_eq!(src.command_lists.len(), out.point_sets.len(), "{level}");
+        for (list, set) in src.command_lists.iter().zip(&out.point_sets) {
+            assert_eq!(list.bsp, set.bsp, "{level}");
+            assert_eq!(list.points.len(), set.points.len(), "{level}");
+            for (i, (a, b)) in list.points.iter().zip(&set.points).enumerate() {
+                assert_eq!(a.position, b.position);
+                assert_eq!(a.surface, b.surface);
+                assert_eq!(b.name, format!("p{i}"));
+            }
+            lists += 1;
+        }
+        let squads: Vec<_> = src.encounters.iter().flat_map(|e| &e.squads).collect();
+        assert_eq!(squads.len(), out.squads.len(), "{level}");
+        for (src_squad, dst_squad) in squads.into_iter().zip(&out.squads) {
+            assert_eq!(src_squad.starting_locations.len(), dst_squad.starting_locations.len());
+            for (a, b) in src_squad.starting_locations.iter().zip(&dst_squad.starting_locations) {
+                if src.command_lists.get(a.command_list as usize).is_some() {
+                    assert_eq!(b.placement_script_index, first as i16 + a.command_list);
+                    assert_eq!(b.placement_script, h1ai::h1::command_script_name(a.command_list as usize));
+                    placed += 1;
+                } else {
+                    assert_eq!(b.placement_script_index, -1);
+                    assert!(b.placement_script.is_empty());
+                }
+            }
+        }
+    }
+    assert_eq!(lists, 552);
+    assert!(placed > 0);
+}

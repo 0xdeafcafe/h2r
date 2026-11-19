@@ -95,6 +95,9 @@ pub struct StartingLocation {
     pub grenade_type: u16,
     /// Swarm count (`i16 +0x2e`).
     pub swarm_count: i16,
+    /// The command script to start on placement, name and compiled HS index.
+    pub placement_script: String,
+    pub placement_script_index: i16,
     /// Emitter vehicle, `-1` none (`i16 +0x3c`).
     pub emitter_vehicle: i16,
 }
@@ -218,7 +221,9 @@ pub struct Order {
     pub force_combat_status: u16,
     /// Entry script name (32 characters, `+0x2c`).
     pub entry_script: String,
-    /// Squad to follow, `-1` none (`i16 +0x4c`).
+    /// Static entry script index, or -1 (i16 +0x4c).
+    pub entry_script_index: i16,
+    /// Squad whose orders this one follows, or -1 (i16 +0x4e).
     pub follow_squad: i16,
     /// Follow radius (`f32 +0x50`).
     pub follow_radius: f32,
@@ -359,6 +364,8 @@ impl ScenarioAi {
                             grenade_type: u16_at(s, 0x2c),
                             swarm_count: i16_at(s, 0x2e),
                             emitter_vehicle: i16_at(s, 0x3c),
+                            placement_script: name32(s, 0x40),
+                            placement_script_index: i16_at(s, 0x60),
                         })
                         .collect(),
                 })
@@ -415,7 +422,8 @@ impl ScenarioAi {
                     flags: u32_at(e, 0x24),
                     force_combat_status: u16_at(e, 0x28),
                     entry_script: name32(e, 0x2c),
-                    follow_squad: i16_at(e, 0x4c),
+                    entry_script_index: i16_at(e, 0x4c),
+                    follow_squad: i16_at(e, 0x4e),
                     follow_radius: f32_at(e, 0x50),
                     primary_areas: area_refs(v, e, layout::ORDER_PRIMARY_AREAS)?,
                     secondary_areas: area_refs(v, e, layout::ORDER_SECONDARY_AREAS)?,

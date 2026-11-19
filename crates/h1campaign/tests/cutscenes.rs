@@ -594,7 +594,7 @@ fn cutscenes_convert_and_read_back() {
         if let Some(m) = played
             .missing
             .iter()
-            .find(|m| m.name.starts_with("recording_"))
+            .find(|m| m.name.starts_with("recording_") || m.name == "vehicle_hover")
         {
             failed.push(format!("{level}: {} still missing", m.name));
         }
@@ -711,11 +711,23 @@ fn cutscenes_convert_and_read_back() {
             }
             println!("  without cutscene data; its graphs need {need:#x} bytes of animation data");
         }
-        let recs = if with_data {
-            h1campaign::cutscenes::read_recordings(&h1).unwrap()
-        } else {
-            Vec::new()
-        };
+        let recs = h1campaign::cutscenes::read_recordings(&h1).unwrap();
+        let scripts = hs::Scenario::read(&mut m).unwrap();
+        let ty = s.target.type_index("cutscene_recording").unwrap();
+        for node in scripts.nodes().iter().filter(|n| {
+            n.atom() && !n.global() && n.value_type() == ty && n.opcode() == ty
+        }) {
+            let name = scripts.string(node.string_offset()).unwrap();
+            if name.is_empty() || name.eq_ignore_ascii_case("none") {
+                assert_eq!(node.data(), u32::MAX);
+            } else {
+                assert_eq!(
+                    h1campaign::cutscenes::recording_index(&recs, name),
+                    Some(node.data()),
+                    "{level} recording literal {name}"
+                );
+            }
+        }
         let (n, at) = (w(0x110) as usize, w(0x114));
         if n != recs.len() {
             failed.push(format!(
@@ -731,34 +743,36 @@ fn cutscenes_convert_and_read_back() {
             let o = (a - space.virtual_base) as usize;
             meta[o..o + len].to_vec()
         };
-        let original = recs;
-        let mut recs = original.clone();
-        let rewritten = h1campaign::recordings::for_halo2(&mut recs);
-        if !rewritten.stilled.is_empty() {
-            failed.push(format!("{level}: held still {:?}", rewritten.stilled));
-        }
+        let mut recs = recs;
+        h1campaign::recordings::for_halo2(&mut recs).unwrap();
         for (i, rec) in recs.iter().enumerate().take(n) {
             let e = mem(at + (i * 0x34) as u32, 0x34);
             let size = u32::from_le_bytes(e[0x2c..0x30].try_into().unwrap()) as usize;
             let p = u32::from_le_bytes(e[0x30..0x34].try_into().unwrap());
-            if e[..0x2c] != rec.head[..] || size != rec.stream.len() {
+            if &e[..rec.name.len()] != rec.name.as_bytes()
+                || e[rec.name.len()..32].iter().any(|b| *b != 0)
+                || e[0x20..0x24] != [rec.version, 0, rec.control_version, 0]
+                || e[0x24..0x26] != rec.ticks.to_le_bytes()
+                || e[0x26..0x2c] != [0; 6]
+                || size != rec.stream.len()
+            {
                 failed.push(format!("{level}: recording {i} differs"));
             } else if size > 0 && mem(p, size) != rec.stream {
                 failed.push(format!("{level}: recording {i}'s stream differs"));
             } else if let Err(e) = h1campaign::recordings::walk(
                 h1campaign::recordings::Game::Halo2,
-                rec.control_version(),
+                rec.control_version,
                 &mem(p, size),
             ) {
                 failed.push(format!("{level}: recording {i} as Halo 2 reads it: {e}"));
             }
-            if !(1..=4).contains(&rec.version()) {
-                failed.push(format!("{level}: recording {i} version {}", rec.version()));
+            if !(1..=4).contains(&rec.version) {
+                failed.push(format!("{level}: recording {i} version {}", rec.version));
             }
         }
         let versions: BTreeSet<(u8, u8)> = recs
             .iter()
-            .map(|r| (r.version(), r.control_version()))
+            .map(|r| (r.version, r.control_version))
             .collect();
         println!("  recording (version, unit control version): {versions:?}");
         let jmad = map::FourCC(*b"jmad");

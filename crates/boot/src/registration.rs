@@ -80,6 +80,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
+    features
+        .add(&crate::h1_recordings::Playback)
+        .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
     layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
     features
         .add(&crate::list_class::ScrollArrowLayout)
@@ -173,13 +176,22 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&crate::h1_particle_physics::H1ParticlePhysics)
         .context("installing Halo 1 attachment particle physics")?;
+    features
+        .add(&crate::h1_conversation::Conversations)
+        .context("installing converted conversation playback and casting")?;
+    features
+        .add(&crate::h1_command_atoms::CommandAtoms)
+        .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
     features
-        .add(&crate::h1_squads::SquadPools)
-        .map_err(|e| anyhow::anyhow!("campaign squad pools: {e}"))?;
+        .add(&crate::h1_pools::CampaignPools)
+        .map_err(|e| anyhow::anyhow!("campaign datum pools: {e}"))?;
     let health_on = health::install(features).context("installing the health model")?;
+    features
+        .add(&crate::h1_ai_control::AiControl)
+        .map_err(|e| anyhow::anyhow!("Halo 1 AI control: {e}"))?;
     features
         .add(&crate::h1_script_builtins::ScriptBuiltins::default())
         .map_err(|e| anyhow::anyhow!("Halo 1 script builtins: {e}"))?;

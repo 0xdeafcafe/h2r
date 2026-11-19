@@ -11,6 +11,7 @@ use crate::hud;
 
 /// The scenario's legacy localized object-name reference.
 const SCENARIO_OBJECT_NAMES: u32 = 0x1f8;
+const CHAPTER_TITLES: u32 = 0x200;
 
 /// The converted data for a campaign scenario's text references and script
 /// message literals. The help list and HUD messages also have `unic` tags
@@ -22,6 +23,7 @@ pub struct LevelText {
     events: Vec<crate::events::Event>,
     subjects: Vec<crate::events::Subject>,
     control_phrases: Vec<Option<usize>>,
+    chapters: Option<(TagId, Vec<u32>)>,
 }
 
 impl LevelText {
@@ -30,19 +32,23 @@ impl LevelText {
     pub fn install(map: &H1Map, set: &mut TagSet, locales: &mut Locales) -> Result<Self> {
         let refs = scenario_text(map)?;
         let mut object_names = None;
+        let mut chapters = None;
         for tag in map
             .tags()
             .iter()
             .filter(|tag| tag.group == h1map::Group::new(b"ustr"))
         {
             let list = Ustr::read(map, tag)?;
-            let (converted, _) = locales.add_ustr(set, &tag.name, &list)?;
+            let (converted, ids) = locales.add_ustr(set, &tag.name, &list)?;
             let id = converted.install(set, &unicode_path(&tag.name))?;
             if refs
                 .object_names
                 .is_some_and(|reference| reference.id == tag.id)
             {
                 object_names = Some(id);
+            }
+            if refs.help_text.is_some_and(|reference| reference.id == tag.id) {
+                chapters = Some((id, ids.into_iter().map(|key| key.0).collect()));
             }
         }
 
@@ -88,6 +94,7 @@ impl LevelText {
             events: events.routes,
             subjects: events.subjects,
             control_phrases: events.control_phrases,
+            chapters,
         })
     }
 
@@ -95,6 +102,7 @@ impl LevelText {
     /// rebuilt, or clears those references when Halo 1 leaves them null.
     pub fn write(&self, scenario: &mut Block) {
         for (at, group, id) in [
+            (CHAPTER_TITLES, FourCC(*b"unic"), self.chapters.as_ref().map(|(id, _)| *id)),
             (SCENARIO_OBJECT_NAMES, FourCC(*b"unic"), self.object_names),
             (hud::SCENARIO_HMT, hud::GROUP, self.hud_messages),
         ] {
@@ -171,6 +179,11 @@ impl LevelText {
             root.fixups.retain(|fixup| fixup.offset != hud::CONTROL_PROMPTS);
             root.block(hud::CONTROL_PROMPTS, count, Block::new(bytes));
         }
+    }
+
+    /// The shared locale IDs addressed by the chapter records' source text indices.
+    pub fn chapter_text_ids(&self) -> &[u32] {
+        self.chapters.as_ref().map_or(&[], |(_, ids)| ids.as_slice())
     }
 
     /// Retail Halo 2's legacy script setters take a signed short index.

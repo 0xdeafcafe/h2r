@@ -127,6 +127,7 @@ fn invented() -> H1Ai {
             name: "walk".into(),
             flags: 0,
             manual_bsp: 0,
+            bsp: 2,
             atoms: vec![Atom {
                 kind: 1,
                 modifier: 0,
@@ -160,7 +161,6 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert!(src.check_indices().is_empty());
     let plan = convert(&src, &Options::default());
     let ai = &plan.ai;
-
     // Two palette entries name one character.
     let chars: Vec<_> = plan
         .characters
@@ -232,20 +232,11 @@ fn encounters_become_groups_zones_squads_and_orders() {
         [0, 1]
     );
 
-    // The command list: a point set and an order stub of its name, and its
-    // atoms for the scripts lane.
+    // Commands use the scripting point set. Only squad orders occupy the order table.
     assert_eq!(ai.point_sets[0].name, "walk");
     assert_eq!(ai.point_sets[0].points[1].position, [5.0, 6.0, 7.0]);
     assert_eq!(ai.point_sets[0].points[1].surface, 8);
-    assert!(
-        ai.orders
-            .iter()
-            .any(|o| o.name == "walk" && o.primary_areas.is_empty())
-    );
-    assert_eq!(
-        plan.command_scripts[0].atoms,
-        [("atom 1".to_owned(), [1, -1])]
-    );
+    assert!(!ai.orders.iter().any(|o| o.name == "walk"));
 }
 
 #[test]
@@ -332,6 +323,20 @@ fn a_built_plan_reads_back_unchanged() {
 }
 
 #[test]
+fn placement_list_reads_back_as_a_command_script() {
+    let mut src = invented();
+    src.encounters[0].squads[0].starting_locations[0].command_list = 0;
+    let plan = convert(&src, &Options { first_command_script: Some(23), ..Default::default() });
+    let (back, _) = build_and_read(&plan);
+    let starts = &back.squads[0].starting_locations;
+    assert_eq!(starts[0].placement_script, "h1_cmd_0");
+    assert_eq!(starts[0].placement_script_index, 23);
+    assert_eq!(starts[1].placement_script_index, -1);
+    assert!(starts[1].placement_script.is_empty());
+    assert_eq!(back.point_sets[0].bsp, 2);
+}
+
+#[test]
 fn an_unresolved_character_is_an_error() {
     let plan = convert(&invented(), &Options::default());
     assert!(plan.blocks(|_| None).is_err());
@@ -344,6 +349,9 @@ fn long_names_are_cut_to_31_characters() {
     let plan = convert(&src, &Options::default());
     assert_eq!(plan.ai.zones[0].name.len(), 31);
     assert_eq!(plan.ai.squads[0].name.len(), 31);
+    assert_ne!(plan.squad_names[0], plan.squad_names[1]);
+    assert_eq!(plan.ai.squads[0].name, plan.ai.squads[1].name);
+    assert_eq!(plan.group_names[0], src.encounters[0].name);
     let (back, _) = build_and_read(&plan);
     assert_eq!(back.squads[0].name, plan.ai.squads[0].name);
 }
@@ -390,6 +398,249 @@ fn the_character_table_picks_by_species_and_rank() {
     assert_eq!(c(14, "anything"), "ai\\generic");
     assert_eq!(character_for(ActorType(7), "").1, grenade::HUMAN);
     assert_eq!(character_for(ActorType(10), "").1, grenade::NONE);
+}
+
+/// Platoons the scripts name become child squad groups of the encounter's,
+/// holding exactly their squads; the others keep the encounter's group, and
+/// an empty platoon set converts nothing (as before).
+#[test]
+fn named_platoons_become_child_squad_groups() {
+    use h1ai::h1::Platoon;
+    let mut src = invented();
+    let e = &mut src.encounters[0];
+    e.platoons = vec![
+        Platoon {
+            name: "lz_toon".into(),
+            flags: 0,
+            change: h1ai::h1::PlatoonTrigger::DISABLED,
+            maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
+        },
+        Platoon {
+            name: "unnamed_toon".into(),
+            flags: 0,
+            change: h1ai::h1::PlatoonTrigger::DISABLED,
+            maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
+        },
+    ];
+    // elites and grunts in the named platoon, empty squad left in the
+    // encounter's.
+    e.squads[0].platoon = 0;
+    e.squads[1].platoon = 0;
+    let named = ["first/lz_toon".to_string()].into_iter().collect();
+    let plan = convert(
+        &src,
+        &Options {
+            platoon_groups: named,
+            ..Default::default()
+        },
+    );
+    let ai = &plan.ai;
+    // The encounter's group, then the named platoon's as its child.
+    assert_eq!(ai.squad_groups.len(), 2);
+    assert_eq!(ai.squad_groups[0].name, "first");
+    assert_eq!(ai.squad_groups[0].parent, -1);
+    assert_eq!(ai.squad_groups[1].name, "first/lz_toon");
+    assert_eq!(ai.squad_groups[1].parent, 0);
+    let by_name = |n: &str| ai.squads.iter().position(|q| q.name == n).unwrap();
+    assert_eq!(ai.squads[by_name("first/elites")].parent, 1);
+    assert_eq!(ai.squads[by_name("first/grunts")].parent, 1);
+    // A squad of no named platoon stays in the encounter's group.
+    assert_eq!(ai.squads[by_name("first/empty")].parent, 0);
+
+    // Without the set, every squad is in the encounter's group, as before.
+    let plain = convert(&src, &Options::default());
+    assert_eq!(plain.ai.squad_groups.len(), 1);
+    assert!(plain.ai.squads.iter().all(|q| q.parent == 0));
+}
+
+#[test]
+fn scripted_platoon_controls_follow_source_indices_and_round_trip() {
+    use h1ai::control::{Action, Operation, Platoon, Request, maneuver_targets, prepare};
+
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.platoons.push(h1ai::h1::Platoon {
+        name: "front".into(),
+        flags: 0,
+        change: h1ai::h1::PlatoonTrigger::DISABLED,
+        maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
+    });
+    encounter.squads[0].platoon = 0;
+    encounter.squads[0].groups[3] = 1;
+    encounter.squads[0].maneuver_to = 2;
+    encounter.squads[2].groups[0] = 1 << 2;
+
+    let request = |operation, reference, target| Request {
+        operation,
+        reference,
+        target,
+    };
+    let defend = request(Operation::Defend, 0x8000_0000, None);
+    let maneuver = request(Operation::Maneuver, 0x4000_0000, None);
+    let enable = request(Operation::ManeuverEnable, 0, None);
+    let follow = request(Operation::FollowPlayers, 0x8000_0000, None);
+    let leader = request(Operation::FollowAi, 0, Some(0x8001_0000));
+    let stop = request(Operation::FollowDisable, 0, None);
+    let requests = [defend, maneuver, enable, follow, leader, stop];
+
+    assert_eq!(
+        maneuver_targets(&source, &requests)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["first/empty"]
+    );
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let actions = prepare(&source, &mut plan, &opts, &requests);
+    let platoon = Platoon {
+        encounter: 0,
+        index: 0,
+    };
+    assert_eq!(
+        actions.actions[&maneuver],
+        [Action::Migrate {
+            from: 0,
+            to: 2,
+            platoon: Some(platoon)
+        }]
+    );
+    assert_eq!(actions.actions[&enable], [Action::Enable(platoon)]);
+    assert!(actions.switches.contains(&platoon));
+
+    let (back, _) = build_and_read(&plan);
+    let [Action::SetOrder { squad: 0, order }] = actions.actions[&defend].as_slice() else {
+        panic!("one defending squad");
+    };
+    assert_eq!(back.orders[usize::from(*order)].primary_areas[0].area, 0);
+    let destination = back.squads[2].initial_order as usize;
+    assert_eq!(back.orders[destination].primary_areas[0].area, 1);
+
+    let order_for = |request, target| {
+        actions.actions[&request]
+            .iter()
+            .find_map(|action| match *action {
+                Action::SetOrder { squad, order } if squad == target => {
+                    Some(&back.orders[usize::from(order)])
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let player_order = order_for(follow, 0);
+    assert_eq!((player_order.flags, player_order.follow_squad), (0x10, -1));
+    assert_eq!(player_order.follow_radius, 4.0);
+    let ai_order = order_for(leader, 0);
+    assert_eq!(
+        (
+            ai_order.flags,
+            ai_order.follow_squad,
+            ai_order.entry_script_index
+        ),
+        (0x20, 1, -1)
+    );
+    assert_eq!(order_for(leader, 1).flags, 0);
+    assert_eq!(order_for(stop, 0).flags, 0);
+    assert!(back.check_indices().is_empty());
+}
+
+#[test]
+fn automatic_platoon_rules_retain_routes_and_use_the_selected_platoons_health() {
+    use h1ai::{
+        control::{Trigger, maneuver_targets, prepare},
+        h1::{Platoon, PlatoonTrigger},
+    };
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.platoons = vec![
+        Platoon {
+            name: "front".into(),
+            flags: 4,
+            change: PlatoonTrigger {
+                condition: 2,
+                subject: 1,
+            },
+            maneuver: PlatoonTrigger {
+                condition: 6,
+                subject: -1,
+            },
+        },
+        Platoon {
+            name: "rear".into(),
+            flags: 0,
+            change: PlatoonTrigger::DISABLED,
+            maneuver: PlatoonTrigger::DISABLED,
+        },
+    ];
+    encounter.squads[0].platoon = 0;
+    encounter.squads[0].groups[3] = 1 << 2;
+    encounter.squads[0].maneuver_to = 2;
+    encounter.squads[1].platoon = 1;
+    assert!(maneuver_targets(&source, &[]).contains("first/empty"));
+
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let control = prepare(&source, &mut plan, &opts, &[]);
+    let [rule] = control.platoon_rules.as_slice() else {
+        panic!("one platoon has automatic rules");
+    };
+    assert_eq!(rule.members, [0]);
+    assert_eq!(rule.routes, [(0, 2)]);
+    assert_eq!(
+        rule.change,
+        Some(Trigger {
+            condition: 2,
+            squads: vec![1]
+        })
+    );
+    assert_eq!(
+        rule.maneuver,
+        Some(Trigger {
+            condition: 6,
+            squads: vec![0, 1, 2]
+        })
+    );
+
+    let (back, _) = build_and_read(&plan);
+    assert!(back.squads[2].initial_order >= 0);
+    let initial = &back.orders[back.squads[0].initial_order as usize];
+    assert_eq!(initial.primary_areas[0].area, 1);
+    assert_ne!(rule.orders[0].1, back.squads[0].initial_order as u16);
+}
+
+#[test]
+fn encounter_migration_chooses_a_destination_for_each_character() {
+    use h1ai::control::{Action, Operation, Request, prepare};
+
+    let mut source = invented();
+    let mut target = source.encounters[0].clone();
+    target.name = "second".into();
+    target.squads.pop();
+    target.squads.reverse();
+    source.encounters.push(target);
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let migrate = Request {
+        operation: Operation::Migrate,
+        reference: 0,
+        target: Some(1),
+    };
+    let routes = prepare(&source, &mut plan, &opts, &[migrate]);
+    assert_eq!(
+        routes.actions[&migrate][0],
+        Action::Migrate {
+            from: 0,
+            to: 4,
+            platoon: None
+        }
+    );
+    assert_eq!(
+        routes.actions[&migrate][1],
+        Action::Migrate {
+            from: 1,
+            to: 3,
+            platoon: None
+        }
+    );
 }
 
 #[test]

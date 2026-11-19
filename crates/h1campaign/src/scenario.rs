@@ -416,6 +416,9 @@ pub struct ScriptReport {
     pub sounds: usize,
     pub sounds_dropped: usize,
     pub missing_calls: usize,
+    /// Missing builtin calls and external globals, with their authored definition.
+    pub missing_builtins: Vec<h1scripts::compile::Unresolved>,
+    pub missing_globals: Vec<h1scripts::compile::Unresolved>,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
     pub unindexed: Vec<String>,
@@ -509,6 +512,14 @@ impl std::fmt::Display for ScenarioReport {
                 s.references
             )?;
             writeln!(f, "    unresolved samples: {:?}", s.samples)?;
+            for (label, uses) in [("builtin", &s.missing_builtins), ("global", &s.missing_globals)] {
+                let sites: std::collections::BTreeSet<_> = uses.iter()
+                    .map(|u| (u.definition.as_str(), u.name.as_str()))
+                    .collect();
+                for (script, name) in sites {
+                    writeln!(f, "    {script}: missing {label} {name}")?;
+                }
+            }
             if !s.unindexed.is_empty() {
                 writeln!(
                     f,
@@ -527,9 +538,11 @@ impl std::fmt::Display for ScenarioReport {
                 "    placed at startup ({INITIAL_SCRIPT}): {:?}",
                 s.initial
             )?;
-            for r in &s.recordings_rewritten.stilled {
-                writeln!(f, "    recording held still: {r}")?;
-            }
+            writeln!(
+                f,
+                "    recordings: {}, {} timed mode changes, {} weapon controls",
+                s.recordings, s.recordings_rewritten.animation_events, s.recordings_rewritten.weapon_flags
+            )?;
         }
         Ok(())
     }
@@ -711,6 +724,7 @@ pub fn replaced_fields() -> Vec<u32> {
         STARTING_LOCATIONS,
         crate::profiles::H2.0,
         TRIGGER_VOLUMES,
+        crate::cutscenes::H2_RECORDINGS,
         BSP_SWITCHES,
         BSPS,
         CLUSTER_DATA,
@@ -945,7 +959,7 @@ pub fn write(
         }
     }
     let mut aliases = crate::h2assets::Aliases::default();
-    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
     let ai_weapon_tags = if opts.ai {
         ai_weapons::retail_tags(h1, &ai_src, set, &mut report.dropped)?
     } else {
@@ -1082,18 +1096,25 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-
-    let generated_starts = if opts.ai {
-        let tables = h1scripts::Tables::read(h1)
-            .map_err(|e| invalid(format!("AI script references: {e}")))?;
-        crate::squad_roster::prepare(&mut ai_src, &tables)
+    let source_tables = (opts.ai || opts.scripts.is_some())
+        .then(|| h1scripts::Tables::read(h1))
+        .transpose()
+        .map_err(|e| invalid(format!("AI script references: {e}")))?;
+    let mut retained = ai_src.clone();
+    let mut ai_options = h1ai::convert::Options::default();
+    let mut requests = Vec::new();
+    let generated_starts = if let Some(tables) = source_tables.as_ref().filter(|_| opts.ai) {
+        if let Some(scripts) = opts.scripts {
+            ai_options.first_command_script = Some(u16::try_from(tables.scripts.len()).map_err(|_| invalid("too many scripts"))?);
+            requests = h1scripts::aicontrol::requests(tables, &scripts.catalog);
+        }
+        crate::squad_roster::prepare(&mut retained, tables, &requests, &mut ai_options)
     } else {
         Default::default()
     };
     let weapons = ai_weapons::install(&mut root, weapon_palette, &ai_weapon_tags)?;
-    let mut plan = h1map::phase::time("ai", || {
-        h1ai::convert::convert_for_map(&ai_src, &Default::default(), pathfinding, &weapons)
-    });
+    let mut plan = h1map::phase::time("ai", || h1ai::convert::convert_for_map(&retained, &ai_options, pathfinding, &weapons));
+    let ai_control = h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests);
     if opts.ai {
         kit.equip(&mut root, &mut plan)?;
         for (i, bsp) in structures.iter().enumerate() {
@@ -1130,6 +1151,20 @@ pub fn write(
             plan.ai.squads.len(),
             plan.ai.squad_groups.len()
         )));
+    }
+    if opts.ai && opts.scripts.is_some()
+        && source_tables.as_ref().is_some_and(|t| !t.commands.timing.is_empty())
+    {
+        let squads = retained.encounters.iter().flat_map(|e| &e.squads);
+        for (src, dst) in squads.zip(&mut plan.ai.squads) {
+            let locations = src.starting_locations.iter().zip(&mut dst.starting_locations);
+            for (i, (source, target)) in locations.enumerate() {
+                let variant = if source.actor >= 0 { source.actor } else { src.actor };
+                if variant >= 0 {
+                    target.name = set.intern(&h1scripts::commands::placement_name(variant, i))?;
+                }
+            }
+        }
     }
     let mut chars = Vec::new();
     let resolve = |p: &str| -> Option<TagId> {
@@ -1190,27 +1225,39 @@ pub fn write(
             notes: plan.notes.len(),
         });
     } else {
-        for (at, _, _) in blocks.fields {
+        for (at, count, data) in blocks.fields {
             put_block(&mut root, at, 0, Vec::new());
+            if opts.scripts.is_some() && at as usize == h1ai::h2::layout::SCRIPTING_DATA.0 && count > 0 {
+                root.block(at, count, data);
+            }
         }
     }
+
+    // Recordings also drive gameplay outside cinematics, on every lean step.
+    let command_recording = opts.scripts.is_some() && ai_src.command_lists.iter()
+        .any(|list| list.atoms.iter().any(|atom| atom.kind == 14));
+    let mut recordings = if opts.cutscene_data || command_recording {
+        crate::cutscenes::read_recordings(h1)?
+    } else {
+        Vec::new()
+    };
+    let rewritten = crate::recordings::for_halo2(&mut recordings)?;
+    put_block(
+        &mut root,
+        crate::cutscenes::H2_RECORDINGS,
+        crate::cutscenes::H2_RECORDING_LEN,
+        crate::cutscenes::recordings_block(&recordings)?,
+    );
 
     // Scripts.
     match opts.scripts {
         Some(s) => {
             let names: Vec<String> = h1_names.iter().map(|e| name32(e)).collect();
             let volume_names: Vec<&str> = h1_volumes.iter().map(|v| v.name.as_str()).collect();
-            let (squads, groups): (Vec<String>, Vec<String>) = if opts.ai {
-                (
-                    ai_src
-                        .encounters
-                        .iter()
-                        .flat_map(|e| e.squads.iter().map(move |q| format!("{}/{}", e.name, q.name)))
-                        .collect(),
-                    ai_src.encounters.iter().map(|e| e.name.clone()).collect(),
-                )
+            let (squads, groups): (&[String], &[String]) = if opts.ai {
+                (&plan.squad_names, &plan.group_names)
             } else {
-                Default::default()
+                (&[], &[])
             };
             // Encounters Halo 1 creates at load (encounter flag bit 0, "not
             // initially created", clear): their squad groups, placed by a
@@ -1228,6 +1275,7 @@ pub fn write(
             let _scripts = h1map::phase::start("scripts");
             rep.scripts = Some(install_scripts(
                 h1,
+                source_tables.as_ref().expect("read for the scripts layer"),
                 s,
                 set,
                 &mut root,
@@ -1236,15 +1284,25 @@ pub fn write(
                     placed: &names_placed,
                     volumes: &volume_names,
                     parked,
-                    squads: &squads,
-                    groups: &groups,
+                    squads,
+                    groups,
                 },
                 &initial,
+                &ai_control,
+                &ai_src.conversations,
+                &if opts.ai {
+                    h1ai::conversations::SpeakerScopes::from_plan(&plan)
+                } else {
+                    Default::default()
+                },
                 opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
-                (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
-                    .then_some(opts.cutscene_graphs),
+                opts.cutscene_data
+                    && opts.cutscene_graphs
+                    && !lean.leaves_out(crate::Lean::CutsceneData),
+                &recordings,
+                rewritten,
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
                 level_text,
@@ -1845,16 +1903,7 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
                     .position(|n| n.eq_ignore_ascii_case(g))
                     .map(|i| 0x4000_0000 | i as u32)
             };
-            group(token).or_else(|| {
-                // A Halo 1 platoon has no independent group in this conversion.
-                let (encounter, _) = token.split_once('/')?;
-                let prefix = format!("{encounter}/").to_ascii_lowercase();
-                t.squads
-                    .iter()
-                    .position(|q| q.to_ascii_lowercase().starts_with(&prefix))
-                    .map(|i| i as u32)
-                    .or_else(|| group(encounter))
-            })
+            group(token)
         }
         _ => None,
     }
@@ -1863,21 +1912,26 @@ pub fn hook_value(h: &h1scripts::compile::Hook, t: &Targets) -> Option<u32> {
 #[allow(clippy::too_many_arguments)]
 fn install_scripts(
     h1: &H1Map,
+    t: &h1scripts::Tables,
     s: &crate::Scripting,
     set: &mut TagSet,
     root: &mut Block,
     targets: &Targets,
     initial: &[String],
+    ai_control: &h1ai::control::Control,
+    conversations: &[h1ai::conversations::Conversation],
+    speaker_scopes: &h1ai::conversations::SpeakerScopes,
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
-    cutscene_data: Option<bool>,
+    cutscene_graphs: bool,
+    recordings: &[crate::cutscenes::Recording],
+    rewritten: crate::recordings::Report,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
     level_text: &h1text::scenario::LevelText,
 ) -> Result<ScriptReport> {
-    use h1scripts::compile::{Missing, compile_with};
-    let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
+    use h1scripts::compile::{Missing, compile_scenario};
     let refs: Vec<String> = t
         .references
         .iter()
@@ -1912,8 +1966,8 @@ fn install_scripts(
             })
             .is_some()
     };
-    let mut c = compile_with(
-        &t,
+    let mut c = compile_scenario(
+        t,
         &s.catalog,
         &s.table,
         &s.target,
@@ -1921,33 +1975,28 @@ fn install_scripts(
         cutscenes,
         &resolves,
         &refs,
+        Some(ai_control),
+        Some((conversations, speaker_scopes)),
     )
     .map_err(|e| invalid(format!("scripts: {e}")))?;
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
+    let (threads, _) = engine::hs_pool::capacities(c.globals.len() as u32)
+        .ok_or_else(|| invalid("scenario globals exceed HaloScript storage"))?;
+    let persistent = c.scripts.iter().filter(|s| u16::from_le_bytes([s[32], s[33]]) <= 2).count();
+    if persistent >= threads as usize {
+        return Err(invalid(format!("{persistent} persistent scripts leave no free thread in {threads}")));
+    }
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).
-    // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
-    // are left out at `Lean::CutsceneData`.
-    // `cutscene_data` is `None` without either, `Some(false)` without the
-    // graphs.
-    let graphs = match cutscene_data {
-        Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
-        _ => Default::default(),
+    let graphs = if cutscene_graphs {
+        crate::cutscenes::install_graphs(h1, set, &c)?
+    } else {
+        crate::cutscenes::install_graph_hooks(h1, set, c.hooks.iter().filter(|h| {
+            h.h1_type == h1scripts::commands::ANIMATION_GRAPH
+        }))?
     };
-    let mut recordings = match cutscene_data {
-        Some(_) => crate::cutscenes::read_recordings(h1)?,
-        None => Vec::new(),
-    };
-    // Halo 1's event streams in Halo 2's encoding (crate::recordings).
-    let rewritten = crate::recordings::for_halo2(&mut recordings);
-    put_block(
-        root,
-        crate::cutscenes::H2_RECORDINGS,
-        crate::cutscenes::H2_RECORDING_LEN,
-        crate::cutscenes::recordings_block(&recordings),
-    );
     let mut interned = HashMap::new();
     for h in c.hooks.iter().filter(|h| h.type_name == "string_id") {
         let text = match h.h1_type.as_str() {
@@ -1986,11 +2035,14 @@ fn install_scripts(
     } else {
         Default::default()
     };
-    for (at, stride, elements) in level.blocks() {
+    let blocks = level.blocks(level_text.chapter_text_ids())
+        .map_err(|e| invalid(format!("script level data: {e}")))?;
+    for (at, stride, elements) in blocks {
         put_block(root, at, stride, elements);
     }
     let (at, stride) = h1scripts::seats::MAPPINGS;
     put_block(root, at, stride, seats.elements());
+    let free_characters = crate::actor_control::install(h1, set, aliases, &c.hooks)?;
     let tags_by_name: HashMap<(FourCC, String), TagId> = set
         .slots
         .iter()
@@ -2002,14 +2054,18 @@ fn install_scripts(
     let mut resolved_by_level = 0;
     let left = c.resolve_hooks(|h| {
         match h.type_name.as_str() {
+            "long" if h.h1_type == "actor_variant" => free_characters.get(&h.token).map(|id| id.0),
             "string_id" => interned.get(&h.slot).copied(),
-            "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
             "hud_message" => level_text.message_index(&h.token),
             "hud_corner" => h1scripts::hud::corner(&h.token),
+            "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
             "sound" => sounds.get(&h.token.to_ascii_lowercase()).map(|id| id.0),
+            _ if h.h1_type == "command_voice_tag" => Some(tags_by_name
+                .get(&(FourCC(*b"udlg"), h.token.to_ascii_lowercase()))
+                .map_or(u32::MAX, |id| id.0)),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
-            "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
+            "cutscene_recording" => crate::cutscenes::recording_index(recordings, &h.token),
             // An object definition: the converted tag of that name, or the
             // Halo 2 tag placed instead of it (`crate::h2assets`).
             "object_definition" => {
@@ -2036,6 +2092,11 @@ fn install_scripts(
             );
         })
     });
+    if let Some(h) = left.iter().find(|h| {
+        h.h1_type == h1scripts::commands::ANIMATION_GRAPH || h.h1_type == "command_voice_sound"
+    }) {
+        return Err(invalid(format!("AI command {} {} could not be installed", h.type_name, h.token)));
+    }
     if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {
         return Err(invalid(format!("HUD message {:?} is missing", hook.token)));
     }
@@ -2081,6 +2142,8 @@ fn install_scripts(
         sounds: sounds.len(),
         sounds_dropped,
         missing_calls: c.missing.len(),
+        missing_builtins: c.missing,
+        missing_globals: c.missing_globals,
         unindexed: c
             .unindexed
             .iter()
