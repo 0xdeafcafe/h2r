@@ -25,6 +25,7 @@ const parts = {
   players: () => import("./stats/Players"),
   player: () => import("./stats/Player"),
   campaign: () => import("./stats/CampaignRecord"),
+  theater: () => import("./theater/Theater"),
   events: () => import("./stats/Events"),
   clans: () => import("./stats/Clans"),
   ranks: () => import("./stats/Ranks"),
@@ -43,6 +44,8 @@ const ServiceRecordPage = lazy(() => parts.player().then((m) => ({ default: m.Se
 const HistoryPage = lazy(() => parts.player().then((m) => ({ default: m.HistoryPage })));
 const CareerPage = lazy(() => parts.player().then((m) => ({ default: m.CareerPage })));
 const CampaignRecordPage = lazy(parts.campaign);
+const FilmsPage = lazy(() => parts.player().then((m) => ({ default: m.FilmsPage })));
+const Theater = lazy(parts.theater);
 const Events = lazy(parts.events);
 const Ranks = lazy(parts.ranks);
 const PlayerRanksPage = lazy(() => parts.ranks().then((m) => ({ default: m.PlayerRanksPage })));
@@ -108,6 +111,7 @@ render(
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
         <Route path="/players/:tag/campaign" component={CampaignRecordPage} />
+        <Route path="/players/:tag/films" component={FilmsPage} />
         <Route path="/players/:tag/ranks" component={PlayerRanksPage} />
         <Route path={["/ranks", "/ranks/:playlist"]} component={Ranks} />
         <Route path="/clans" component={Clans} />
@@ -119,6 +123,9 @@ render(
         <Route path="/events" component={Events} />
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
+      </Route>
+      <Route path="/theater" component={StatsLayout}>
+        <Route path={["/:game", "/:game/clip/:clip"]} component={Theater} />
       </Route>
       <Route path={statsPath("/games/:id/3d")} component={Old3dView} />
       <Route path={[OLD_STATS_ROOT, `${OLD_STATS_ROOT}/*rest`]} component={OldStats} />

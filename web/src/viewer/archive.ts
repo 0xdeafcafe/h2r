@@ -8,15 +8,22 @@ export class ArchiveWindow {
   private readonly loaded = new Map<number, Frame[]>();
   private readonly pending = new Map<number, {request: Promise<void>; controller: AbortController}>();
   private current = -1;
+  private readonly pinned: number | undefined;
 
-  constructor(index: ChunkIndex, private readonly fetch: (c: RecordingChunk, signal: AbortSignal) => Promise<Uint8Array>) {
+  constructor(index: ChunkIndex, private readonly fetch: (c: RecordingChunk, signal: AbortSignal) => Promise<Uint8Array>, loopStart?: number) {
     this.segments = index.items.filter((m): m is ArchiveSegment => m.codec === "archive");
     if (!this.segments.length || this.segments.length !== index.items.length) throw new Error("empty or mixed archive index");
+    // Keep the loop's first segment ready when playback comes back to it.
+    if (loopStart !== undefined) {
+      const start = (chunkAt(this.segments, loopStart) ?? this.segments[0]!) as ArchiveSegment;
+      this.pinned = start.ordinal;
+    }
   }
 
   ready(tick: number): boolean {
     const segment = chunkAt(this.segments, tick) as ArchiveSegment | null;
-    return this.loaded.has(segment?.ordinal ?? 0);
+    const ordinal = segment?.ordinal ?? 0;
+    return Math.abs(ordinal - this.current) <= 1 && this.loaded.has(ordinal);
   }
 
   get frames(): Frame[] {
@@ -52,7 +59,7 @@ export class ArchiveWindow {
     const changed = this.current !== meta.ordinal;
     this.current = meta.ordinal;
     if (changed) {
-      for (const i of this.loaded.keys()) if (Math.abs(i - this.current) > 1) this.loaded.delete(i);
+      for (const i of this.loaded.keys()) if (i !== this.pinned && Math.abs(i - this.current) > 1) this.loaded.delete(i);
       for (const [i, p] of this.pending) if (Math.abs(i - this.current) > 1) {
         p.controller.abort();
         this.pending.delete(i);

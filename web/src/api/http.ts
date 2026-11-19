@@ -22,22 +22,24 @@ export function withAuthMark(url: string): string {
   return u.toString();
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
+export async function requireOk(r: Response): Promise<Response> {
+  if (r.ok) return r;
+  let code = "http_" + r.status, message = r.statusText || `HTTP ${r.status}`;
+  try {
+    const b = await r.json();
+    // {error: "<code>", message} (contract clarification 4).
+    if (typeof b?.error === "string") { code = b.error; message = b.message ?? message; }
+  } catch { /* not JSON */ }
+  throw new ApiError(r.status, code, message);
+}
+
+export async function getJson<T>(url: string, signal?: AbortSignal, bearer?: string | null): Promise<T> {
   const headers: Record<string, string> = { accept: "application/json" };
   if (bearer) {
     headers.authorization = `Bearer ${bearer}`;
     url = withAuthMark(url);
   }
-  const r = await fetch(url, { signal, headers });
-  if (!r.ok) {
-    let code = "http_" + r.status, message = r.statusText;
-    try {
-      const b = await r.json();
-      // {error: "<code>", message} (contract clarification 4).
-      if (typeof b?.error === "string") { code = b.error; message = b.message ?? message; }
-    } catch { /* not JSON */ }
-    throw new ApiError(r.status, code, message);
-  }
+  const r = await requireOk(await fetch(url, { signal, headers }));
   return (await r.json()) as T;
 }
 

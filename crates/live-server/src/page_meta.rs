@@ -236,7 +236,7 @@ pub fn is_page(path: &str) -> bool {
     let first = path.trim_start_matches('/').split('/').next().unwrap_or("");
     matches!(
         first,
-        "" | "dash" | "stats" | "players" | "games" | "events" | "signin"
+        "" | "dash" | "stats" | "players" | "games" | "events" | "signin" | "theater"
     )
 }
 
@@ -292,6 +292,14 @@ pub fn describe_static(path: &str) -> PageMeta {
         ["games", ..] => stats(Some("Game"), STATS),
         ["players", ..] => stats(Some("Service Record"), STATS),
         ["events"] => stats(Some("Event Log"), "The service's signed public event log."),
+        ["theater", _, "clip", _] => stats(
+            Some("Theater Clip"),
+            "Watch a shared clip from a recorded h2recomp game.",
+        ),
+        ["theater", ..] => stats(
+            Some("Theater"),
+            "Watch a recorded h2recomp game and follow the players in 3D.",
+        ),
         _ => dash(None, DASH),
     }
 }
@@ -777,6 +785,8 @@ mod tests {
             "/stats/games/x",
             "/players/x",
             "/signin",
+            "/theater/abc",
+            "/theater/abc/clip/xyz",
         ] {
             assert!(is_page(page), "{page}");
         }
@@ -811,6 +821,11 @@ mod tests {
         assert_eq!((m.page.as_deref(), m.side), (Some("Event Log"), Side::Stats));
         let m = describe_static("/games");
         assert_eq!((m.page, m.side), (None, Side::Stats));
+        let m = describe_static("/theater/abc/clip/xyz");
+        assert_eq!(
+            (m.page.as_deref(), m.side),
+            (Some("Theater Clip"), Side::Stats)
+        );
     }
 
     #[test]

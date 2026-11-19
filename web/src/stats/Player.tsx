@@ -30,6 +30,7 @@ import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
 import PlayerSocial from "./PlayerSocial";
 import CoopGames from "./CoopGames";
+import PlayerFilms from "../theater/PlayerFilms";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
 import { parseCommendations, type Commendations } from "../admin/bans";
 import { STATS_ROOT, statsPath } from "../routes";
@@ -97,16 +98,16 @@ export function PlayerStrip(props: { account: AccountState; rec: ServiceRecord }
   );
 }
 
-type Which = "record" | "history" | "career" | "campaign";
-const TITLES: Record<Which, string> = { record: "Service Record", history: "Game History", career: "Career Stats", campaign: "Campaign Record" };
+type Which = "record" | "history" | "career" | "campaign" | "films";
+const TITLES: Record<Which, string> = { record: "Service Record", history: "Game History", career: "Career Stats", campaign: "Campaign Record", films: "Films" };
 
-/** The service record's two halves, as Bungie.net had them: multiplayer
- *  (the default) and campaign. */
-export function ModeTabs(props: { gamertag: string; mode: GameMode }) {
+/** The two service records and the player’s film library. */
+export function ModeTabs(props: { gamertag: string; mode: GameMode | "films" }) {
   return (
     <Tabs label="Service record" active={props.mode} tabs={[
       { id: "multiplayer", label: "Multiplayer", href: recordHref(props.gamertag, "multiplayer") },
       { id: "campaign", label: "Campaign", href: recordHref(props.gamertag, "campaign") },
+      { id: "films", label: "Films", href: `${playerHref(props.gamertag)}/films` },
     ]} />
   );
 }
@@ -125,6 +126,19 @@ export function PlayerFrame(props: { which: Which; children: (a: () => AccountSt
         </>
       )}
     </Show>
+  );
+}
+
+export function FilmsPage() {
+  return (
+    <PlayerFrame which="films">
+      {(a) => (
+        <div class="s-full">
+          <ModeTabs gamertag={a().gamertag} mode="films" />
+          <PlayerFilms xuid={a().xuid} />
+        </div>
+      )}
+    </PlayerFrame>
   );
 }
 
