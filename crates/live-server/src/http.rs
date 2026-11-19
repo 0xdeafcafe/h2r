@@ -13,7 +13,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use live_proto::{ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, TitleId, Xuid, lxm};
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
@@ -361,6 +361,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/sessions",
             get(crate::sessions::list).post(crate::sessions::create),
         )
+        .route("/v1/matchmaking/queue", put(crate::matchmaking::queue))
+        .route("/v1/matchmaking/dedicated/{xuid}", put(crate::matchmaking::register))
         .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))

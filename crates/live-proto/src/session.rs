@@ -263,6 +263,9 @@ pub struct Session {
     pub xnkid: String,
     pub endpoint: Endpoint,
     pub advertisement: NewSession,
+    /// Server-issued OptiMatch assignment, retained with the session for replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matchmaking: Option<crate::matchmaking::Assignment>,
     pub since: String,
     pub last_activity: i64,
     pub state: String,
@@ -567,6 +570,7 @@ mod tests {
                 source: "declared".into(),
             },
             advertisement: new(),
+            matchmaking: None,
             since: "synthetic".into(),
             last_activity: 100,
             state: "open".into(),
@@ -604,6 +608,7 @@ mod tests {
                 visibility: v,
                 ..new()
             },
+            matchmaking: None,
             since: "synthetic".into(),
             last_activity: 100,
             state: "open".into(),

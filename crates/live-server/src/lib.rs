@@ -55,6 +55,7 @@ pub mod invites;
 pub mod local_signin;
 pub mod logio;
 mod mailbox;
+mod matchmaking;
 pub mod model;
 pub mod mutes;
 pub mod page_header;

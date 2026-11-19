@@ -31,23 +31,66 @@ impl Live {
         new: NewSession,
         observed: Option<IpAddr>,
     ) -> Result<Session, ApiError> {
+        self.create_session_with_assignment(bearer, new, observed, None).await
+    }
+
+    async fn create_session_with_assignment(
+        &self,
+        bearer: Option<&str>,
+        mut new: NewSession,
+        observed: Option<IpAddr>,
+        match_id: Option<&str>,
+    ) -> Result<Session, ApiError> {
         let author = self.authenticate(bearer, lxm::SESSIONS_WRITE)?;
         self.rate_limit(&author, lxm::SESSIONS_WRITE)?;
         let Author::Account { xuid, .. } = author else {
             return Err(forbidden("a session host must be an account"));
         };
         new.validate().map_err(invalid)?;
-        self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
         let seen = observed.and_then(|ip| match ip {
             IpAddr::V4(v) => Some(v),
             _ => None,
         });
-        // A listed session draws every browsing console's discovery probes
-        // to its address, so off-loopback it is the address the host
-        // connected from, whatever was declared. A declared address is kept
-        // otherwise, and lists show the session only if that address is a
-        // local-network one (Endpoint::listable, docs/live/live-custom-games.md).
+        let _guard = self.session_writes.lock().await;
+        let matchmaking = if let Some(id) = match_id {
+            if !session::valid_id(id) {
+                return Err(invalid("invalid matchmaking assignment id"));
+            }
+            if let Some(existing) = self.model.read().sessions.get(id) {
+                if existing.host_xuid == xuid && existing.matchmaking.is_some() {
+                    return Ok(existing.clone());
+                }
+                return Err(forbidden("only the elected host may publish the assigned session"));
+            }
+            let matcher = self.matchmaking.lock().unwrap();
+            let lease = matcher
+                .lease(id, now())
+                .ok_or_else(|| conflict("matchmaking assignment expired"))?;
+            if lease.assignment.host != xuid {
+                return Err(forbidden("only the elected host may publish the assigned session"));
+            }
+            if seen != Some(*lease.endpoint.ip()) || new.port != lease.endpoint.port() {
+                return Err(conflict("session endpoint changed after the QoS probes"));
+            }
+            if new.is_coop()
+                || live_proto::optimatch::playlist(&new.attributes) != Some(lease.assignment.hopper)
+                || new.slots.public_open < lease.joiners
+            {
+                return Err(invalid(
+                    "assigned session needs the matching hopper and room for its roster",
+                ));
+            }
+            new.hopper_id = Some(lease.assignment.hopper);
+            new.flags = if lease.ranked { "ranked" } else { "hopper" }.into();
+            Some(lease.assignment.clone())
+        } else {
+            None
+        };
+        self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
+        // Off loopback, listed sessions use the observed client address.
+        // An assigned session always uses the address the roster probed.
         let declared = match seen {
+            _ if matchmaking.is_some() => None,
             Some(v) if new.visibility.is_listed() && !v.is_loopback() => None,
             _ => new.addr,
         };
@@ -57,7 +100,6 @@ impl Live {
         if addr.is_unspecified() || addr.is_multicast() || addr.is_broadcast() || new.port > 65529 {
             return Err(invalid("invalid gameplay endpoint"));
         }
-        let _guard = self.session_writes.lock().await;
         let tag = {
             let s = self.model.read();
             if s.sessions
@@ -74,13 +116,17 @@ impl Live {
                 .gamertag
                 .to_string()
         };
-        let id = loop {
-            let mut bytes = [0; 8];
-            getrandom::fill(&mut bytes).map_err(|_| invalid("random source unavailable"))?;
-            bytes[0] = (bytes[0] & 15) | 0x80;
-            let id = live_proto::sign::hex(&bytes);
-            if !self.model.read().sessions.contains_key(&id) {
-                break id;
+        let id = if let Some(assignment) = &matchmaking {
+            assignment.id.clone()
+        } else {
+            loop {
+                let mut bytes = [0; 8];
+                getrandom::fill(&mut bytes).map_err(|_| invalid("random source unavailable"))?;
+                bytes[0] = (bytes[0] & 15) | 0x80;
+                let id = live_proto::sign::hex(&bytes);
+                if !self.model.read().sessions.contains_key(&id) {
+                    break id;
+                }
             }
         };
         let time = time::OffsetDateTime::now_utc();
@@ -104,6 +150,7 @@ impl Live {
                 .into(),
             },
             advertisement: new,
+            matchmaking,
             since: at,
             last_activity: time.unix_timestamp(),
             state: "open".into(),
@@ -760,8 +807,12 @@ pub(crate) async fn create(HttpState(live): Shared, req: Request) -> Result<Resp
         .await
         .map_err(|_| invalid("session request too large"))?;
     let new = serde_json::from_slice(&bytes).map_err(|_| invalid("invalid session request"))?;
+    let match_id = headers
+        .get(live_proto::matchmaking::MATCH_HEADER)
+        .map(|value| value.to_str().map_err(|_| invalid("invalid matchmaking assignment id")))
+        .transpose()?;
     let item = live
-        .create_session(crate::http::bearer(&headers), new, observed)
+        .create_session_with_assignment(crate::http::bearer(&headers), new, observed, match_id)
         .await?;
     Ok(crate::http::json(
         StatusCode::CREATED,
@@ -791,13 +842,14 @@ pub(crate) async fn detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
+    let token = crate::http::bearer(&headers);
+    let viewer = live.read_caller(token)?;
     let state = live.model.read();
     let item = state
         .sessions
         .get(&id)
         .ok_or_else(|| not_found("no such session"))?;
-    let item = for_reader(item, viewer != Viewer::Anonymous);
+    let item = for_reader(item, token.is_some() && assignment_endpoint_shows(item, viewer));
     Ok(crate::http::json(
         StatusCode::OK,
         &json!({"session":item,"position":live.position()}),
@@ -858,15 +910,20 @@ pub(crate) async fn list(
             && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
             && q.get("visibility")
                 .is_none_or(|v| v == s.advertisement.visibility.as_str())
+            && (!signed || assignment_endpoint_shows(s, viewer))
             && s.listed_for(viewer, |a, b| state.is_friends(a, b))
     });
     if let Some(query) = optimatch {
         // Ordered by match quality, so one page: no cursor.
-        let items: Vec<_> =
-            live_proto::optimatch::select(&query, listed, |s| &s.advertisement.attributes, limit)
-                .into_iter()
-                .cloned()
-                .collect();
+        let items: Vec<_> = live_proto::optimatch::select(
+            &query,
+            listed.filter(|s| s.matchmaking.is_none()),
+            |s| &s.advertisement.attributes,
+            limit,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
         return Ok(crate::http::json(
             StatusCode::OK,
             &Page {
@@ -892,6 +949,12 @@ pub(crate) async fn list(
         },
     ))
 }
+fn assignment_endpoint_shows(s: &Session, viewer: Option<live_proto::Xuid>) -> bool {
+    s.matchmaking.as_ref().is_none_or(|assignment| {
+        viewer.is_some_and(|xuid| xuid == assignment.host || assignment.members.contains(&xuid))
+    })
+}
+
 /// A session as the session endpoints answer it: whole for a signed-in
 /// reader (a game joins by its addresses), without them
 /// ([`strip_addresses`]) for an anonymous one.

@@ -18,6 +18,7 @@ pub mod map_details;
 pub mod maps;
 pub mod motd;
 pub mod mutes;
+pub mod matchmaking;
 pub mod optimatch;
 pub mod pack;
 pub mod rank;

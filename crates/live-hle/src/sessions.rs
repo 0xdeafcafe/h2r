@@ -75,6 +75,10 @@ enum Task {
     HeldEmpty { until: std::time::Instant },
     Search { array: u32, count: u32 },
     Pending { request: Pending, intent: Intent },
+    Queue {
+        search: Box<crate::matchmaking::Search>,
+        intent: Intent,
+    },
     Failed(u32),
 }
 enum Intent {
@@ -125,6 +129,8 @@ pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
     results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
+    /// The elected host gets an empty search, then publishes using this lease.
+    matchmaking: Option<(live_proto::matchmaking::Assignment, std::time::Instant)>,
     /// The host's visibility setting, for new and updated advertisements.
     visibility: Visibility,
     /// Visibility updates sent outside a guest task; dropped once answered.
@@ -522,6 +528,7 @@ impl Sessions {
         self.records.clear();
         self.looked_up.clear();
         self.tasks.clear();
+        self.matchmaking = None;
         self.results.clear();
     }
     pub fn poll(
@@ -559,8 +566,26 @@ impl Sessions {
         } else {
             task
         };
+        let task = if let Task::Queue { mut search, intent } = task {
+            use crate::matchmaking::Outcome;
+            match search.poll() {
+                Ok(None) => Task::Queue { search, intent },
+                Ok(Some(Outcome::Host(assignment))) => {
+                    self.matchmaking = Some((assignment, std::time::Instant::now()));
+                    Task::EmptySearch
+                }
+                Ok(Some(Outcome::Join(rows))) => match self.complete(m, intent, rows) {
+                    Ok(v) => v,
+                    Err(Failure::Hr(e)) => Task::Failed(e),
+                    Err(Failure::Fault(f)) => return Err(f),
+                },
+                Err(e) => Task::Failed(e),
+            }
+        } else {
+            task
+        };
         let status = match task {
-            Task::Pending { .. } | Task::HeldEmpty { .. } => 0,
+            Task::Pending { .. } | Task::HeldEmpty { .. } | Task::Queue { .. } => 0,
             Task::Failed(e) => e,
             _ => TASK_SUCCESS,
         };
@@ -696,7 +721,23 @@ impl Sessions {
                 if let (Some(service), Some(connection)) = (service, connection) {
                     let data = advertisement(&session);
                     let request = if op == Op::Create {
-                        MatchRequest::Create(data)
+                        let publish_window = std::time::Duration::from_secs(
+                            live_proto::matchmaking::ASSIGNMENT_SECONDS as u64,
+                        );
+                        let assignment = self
+                            .matchmaking
+                            .as_ref()
+                            .filter(|(lease, elected)| {
+                                elected.elapsed() < publish_window
+                                    && !data.is_coop()
+                                    && live_proto::optimatch::playlist(&data.attributes)
+                                        == Some(lease.hopper)
+                            })
+                            .map(|(lease, _)| lease.id.clone());
+                        MatchRequest::Create {
+                            session: data,
+                            assignment,
+                        }
                     } else {
                         MatchRequest::Update {
                             id: live_proto::sign::hex(&id),
@@ -868,6 +909,37 @@ impl Sessions {
                             eprintln!("{line}");
                         }
                     }
+                    if a[1] > 0
+                        && let Some(query) = optimatch
+                        && let Some(hopper) = crate::matchmaking::solo_hopper(query, users)
+                        && let Some(connectivity) = crate::matchmaking::config()
+                    {
+                        let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+                        let ticket = live_proto::matchmaking::Ticket {
+                            hopper,
+                            port: u16::from_be_bytes([host[8], host[9]]),
+                            dedicated: false,
+                            connectivity,
+                            samples: Vec::new(),
+                        };
+                        let search =
+                            crate::matchmaking::Search::new(service, connection, ticket, query, a[1])
+                                .map_err(Failure::Hr)?;
+                        m.set_u32(a[6], h)?;
+                        self.tasks.insert(
+                            h,
+                            Task::Queue {
+                                search: Box::new(search),
+                                intent: Intent::Search {
+                                    limit: a[1],
+                                    bytes: a[4],
+                                    retail: true,
+                                    find: None,
+                                },
+                            },
+                        );
+                        return Ok(0);
+                    }
                     let filters = if a[0] == 1 {
                         BTreeMap::new()
                     } else {
@@ -985,6 +1057,11 @@ impl Sessions {
                     .next()
                     .ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
                 let id = wire_id(&row.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
+                if let Some(lease) = &row.matchmaking
+                    && self.matchmaking.as_ref().is_some_and(|(held, _)| held.id == lease.id)
+                {
+                    self.matchmaking = None;
+                }
                 session.id = id;
                 session.slots = row.advertisement.slots;
                 session.attributes = row.advertisement.attributes;
@@ -1277,7 +1354,7 @@ fn optimatch_line(q: &live_proto::optimatch::Query) -> String {
         q.hopper, q.average
     )
 }
-fn wire_id(s: &str) -> Option<[u8; 8]> {
+pub(crate) fn wire_id(s: &str) -> Option<[u8; 8]> {
     if !live_proto::session::valid_id(s) {
         return None;
     }

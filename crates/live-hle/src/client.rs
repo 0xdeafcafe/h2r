@@ -105,6 +105,8 @@ pub(crate) enum Reply {
     Done,
     Teams(Vec<live_proto::team::Team>),
     Matches(Vec<live_proto::session::Session>),
+    Matchmaking(Box<crate::matchmaking::Step>),
+    MatchmakingUnsupported,
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
     /// A mute list, oldest first.
@@ -189,7 +191,11 @@ pub(crate) enum TeamRequest {
 }
 #[derive(Clone)]
 pub(crate) enum MatchRequest {
-    Create(live_proto::session::NewSession),
+    Create {
+        session: live_proto::session::NewSession,
+        assignment: Option<String>,
+    },
+    Queue(live_proto::matchmaking::Ticket),
     Update {
         id: String,
         update: live_proto::session::Update,
@@ -278,6 +284,7 @@ struct Command {
     result: Pending,
     then: Option<Then>,
 }
+#[derive(Clone)]
 pub(crate) struct Service {
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
@@ -931,6 +938,67 @@ impl Worker {
         }
         Ok(vec![reply.team])
     }
+    fn matchmaking(
+        &self,
+        user: &Identity,
+        ticket: &live_proto::matchmaking::Ticket,
+    ) -> Result<Reply, Error> {
+        use crate::matchmaking::{Outcome, Step, valid_probe_targets};
+        use live_proto::{matchmaking::Queue, session::valid_id};
+
+        let body = serde_json::to_string(ticket).map_err(|_| Error::Protocol)?;
+        let bytes = match self.response(
+            self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
+                .set("content-type", "application/json"),
+            Some(&body),
+            64 * 1024,
+        ) {
+            Err(Error::Status(404)) => return Ok(Reply::MatchmakingUnsupported),
+            other => other?,
+        };
+        let me = Xuid(user.xuid);
+        let value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        let step = match value {
+            Queue::Probing { candidates } if valid_probe_targets(&candidates, me) => {
+                let samples = crate::qos::measure(candidates, Duration::from_millis(450))
+                    .map_err(|_| Error::Transport)?;
+                Step::Retry(samples)
+            }
+            Queue::Waiting { assignment }
+                if assignment.hopper == ticket.hopper && assignment.members.contains(&me) =>
+            {
+                Step::Retry(Vec::new())
+            }
+            Queue::Host { assignment }
+                if assignment.hopper == ticket.hopper
+                    && assignment.host == me
+                    && valid_id(&assignment.id) =>
+            {
+                Step::Complete(Outcome::Host(assignment))
+            }
+            Queue::Join { session_id } if valid_id(&session_id) => {
+                let rows = self.matches_request(user, MatchRequest::Find(session_id.clone()))?;
+                let Some(row) = rows.first() else {
+                    return Ok(Reply::Matchmaking(Box::new(Step::Retry(Vec::new()))));
+                };
+                if !row.matchmaking.as_ref().is_some_and(|a| {
+                    a.id == session_id && a.hopper == ticket.hopper
+                        && a.host == row.host_xuid && a.members.contains(&me)
+                }) {
+                    return Err(Error::Protocol);
+                }
+                let kid = crate::sessions::wire_id(&session_id).ok_or(Error::Protocol)?;
+                let endpoint = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
+                if crate::qos::query_why(endpoint, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
+                    Step::Complete(Outcome::Join(rows))
+                } else {
+                    Step::Retry(Vec::new())
+                }
+            }
+            _ => return Err(Error::Protocol),
+        };
+        Ok(Reply::Matchmaking(Box::new(step)))
+    }
     fn matches_request(
         &self,
         user: &Identity,
@@ -938,14 +1006,21 @@ impl Worker {
     ) -> Result<Vec<live_proto::session::Session>, Error> {
         use live_proto::session;
         let items = match request {
-            MatchRequest::Create(new) => {
+            MatchRequest::Create {
+                session: new,
+                assignment,
+            } => {
                 #[derive(serde::Deserialize)]
                 struct Created {
                     session: session::Session,
                 }
+                let mut req = self.request("POST", "/sessions", user, lxm::SESSIONS_WRITE)
+                    .set("content-type", "application/json");
+                if let Some(id) = assignment.as_deref() {
+                    req = req.set(live_proto::matchmaking::MATCH_HEADER, id);
+                }
                 let bytes = self.response(
-                    self.request("POST", "/sessions", user, lxm::SESSIONS_WRITE)
-                        .set("content-type", "application/json"),
+                    req,
                     Some(&serde_json::to_string(&new).map_err(|_| Error::Protocol)?),
                     MAX_FILE,
                 )?;
@@ -955,6 +1030,7 @@ impl Worker {
                         .session,
                 ]
             }
+            MatchRequest::Queue(_) => return Err(Error::Protocol),
             MatchRequest::Update { id, update } => {
                 self.match_event(
                     user,
@@ -1434,6 +1510,9 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.values().next().ok_or(NO_USER)?.clone();
+                if let MatchRequest::Queue(ticket) = request {
+                    return self.matchmaking(&user, ticket).map_err(|e| e.result());
+                }
                 let rows = self
                     .matches_request(&user, request.clone())
                     .map_err(|e| match e {
@@ -1443,7 +1522,7 @@ impl Worker {
                     })?;
                 let active = self.active.as_mut().unwrap();
                 match request {
-                    MatchRequest::Create(_) => {
+                    MatchRequest::Create { .. } => {
                         if let Some(row) = rows.first() {
                             active.matches.insert(row.session_id.clone(), user.xuid);
                         }
