@@ -1,3 +1,5 @@
+import { PackError } from "./pack";
+
 const TAU = Math.PI * 2;
 const DIR_MAX = 16382;
 
@@ -14,7 +16,7 @@ export function sin(x: number): number {
 
 export function oct(x: number, y: number, z: number): [number, number] {
   const l = Math.abs(x) + Math.abs(y) + Math.abs(z);
-  if (!Number.isFinite(l) || l < 1e-12) throw new RangeError("invalid octahedral direction");
+  if (!Number.isFinite(l) || l < 1e-12) throw new PackError("invalid octahedral direction");
   x /= l; y /= l;
   if (z < 0) {
     const t = (1 - Math.abs(y)) * (x >= 0 ? 1 : -1);

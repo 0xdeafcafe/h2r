@@ -12,7 +12,7 @@ const load = (name: string) => ({
 });
 
 /** V7 delta header for malformed-record tests. */
-function deltaHeader(key: { sid: number; seq: number }) {
+function deltaHeader(key: { sid: number | bigint; seq: number | bigint }) {
   const bits: number[] = [];
   const u = (n: number, width: number) => {
     for (let i = 0; i < width; i++) bits.push((n >> i) & 1);
@@ -24,7 +24,7 @@ function deltaHeader(key: { sid: number; seq: number }) {
     u(1, 1);
     u(x, width);
   };
-  u(7, 4); u(0, 1); eg(key.sid, 0); eg(key.seq + 1, 8);
+  u(7, 4); u(0, 1); eg(Number(key.sid), 0); eg(Number(key.seq) + 1, 8);
   eg(1, 2); u(0, 3); eg(0, 1); // dt, no BSP change, cut or cinematic, zero strings
   const bytes = () => {
     const record = new Uint8Array(Math.ceil(bits.length / 8));
@@ -35,7 +35,7 @@ function deltaHeader(key: { sid: number; seq: number }) {
 }
 
 describe("packed frames", () => {
-  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic", "v6-multiplayer", "v6-campaign", "v6-odd", "v6-cinematic", "v7-multiplayer", "v7-campaign", "v7-odd", "v7-cinematic", "v7-motion"]) {
+  for (const name of ["multiplayer", "campaign", "odd", "cinematic", "v1-multiplayer", "v2-multiplayer", "v3-multiplayer", "v4-multiplayer", "v4-cinematic", "v6-multiplayer", "v6-campaign", "v6-odd", "v6-cinematic", "v7-multiplayer", "v7-campaign", "v7-odd", "v7-cinematic", "v7-motion", "v8-motion", "v8-machine-positions", "v8-multiplayer", "v8-campaign"]) {
     test(`decodes the Rust encoder's ${name} stream exactly`, () => {
       const { bin, json } = load(name);
       const d = new FrameDecoder();
