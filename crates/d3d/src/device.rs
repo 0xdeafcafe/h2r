@@ -2072,6 +2072,7 @@ impl<B: Backend> Device<B> {
         crate::backend::DepthClip {
             range: crate::nv2a::w_clip_range(&self.hw, z_max),
             clamp: crate::nv2a::clamps_depth(control),
+            w_buffered: self.hw.control0.map(|c| c & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
 

@@ -172,6 +172,8 @@ pub struct GpuWorld {
     world: World,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
+    /// Whether [`GpuWorld::prepare`] culls on the CPU ([`GpuWorld::set_cull`]).
+    culls: bool,
     vertices: wgpu::Buffer,
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
@@ -407,6 +409,7 @@ impl GpuWorld {
         Self {
             world,
             stencil: PassStencil::default(),
+            culls: true,
             vertices,
             program_vertices,
             indices,
@@ -568,6 +571,14 @@ impl GpuWorld {
         self.stencil = stencil;
     }
 
+    /// Whether [`GpuWorld::prepare`] culls by the frustum (on by default).
+    /// Off, every draw is drawn and the programs' own clipping alone
+    /// decides: a diagnostic, telling a part culled on the CPU from one
+    /// clipped or failing depth on the GPU.
+    pub fn set_cull(&mut self, on: bool) {
+        self.culls = on;
+    }
+
     /// Draws `programs`' materials with their own programs from now on.
     pub fn set_programs(&mut self, programs: ProgramSet) {
         self.programs = Some(programs);
@@ -656,7 +667,14 @@ impl GpuWorld {
         } else {
             Frustum::from_view_projection(&view_proj)
         };
-        let stats = cull(&self.world, &frustum, &mut self.slots);
+        let stats = if self.culls {
+            cull(&self.world, &frustum, &mut self.slots)
+        } else {
+            for slot in &mut self.slots {
+                slot.instance_count = 1;
+            }
+            CullStats { visible: self.slots.len() as u32, total: self.world.draws.len() as u32 }
+        };
         let u = FrameUniform {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],

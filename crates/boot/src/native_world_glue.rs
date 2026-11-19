@@ -186,6 +186,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if !d.can_external_pass() {
             return None;
         }
+        // The programs write w as depth and clip w (`xps_w_depth`): a view
+        // whose draws store z instead (`SET_CONTROL0` without
+        // z-perspective) is the D3D path's.
+        if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
+            let n = NOT_W_BUFFERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n % 600 == 0 {
+                eprintln!("native-world: {} views left to the D3D path: not W-buffered (SET_CONTROL0 without z-perspective)", n + 1);
+            }
+            return None;
+        }
         // The palettes the load expanded its palettized stage bitmaps
         // through must still be the ones bound: otherwise the D3D path
         // draws the world (its samples would differ).
@@ -218,6 +228,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             camera: *camera,
             view: None,
             w_clip: None,
+            clip: None,
+            traced: false,
             stencil,
         }));
         Some(Arc::clone(&ready.parts))
@@ -299,6 +311,11 @@ struct WorldPass {
     /// reaches further and clamps (03a's intro: distant buildings left as
     /// sky-coloured slivers).
     w_clip: Option<([f32; 2], bool)>,
+    /// The whole clip as the device gave it, for [`trace`].
+    clip: Option<d3d::DepthClip>,
+    /// Whether this pass was traced (it encodes once per copy of the
+    /// targets).
+    traced: bool,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
 }
@@ -310,6 +327,7 @@ impl d3d::ExternalPass for WorldPass {
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.w_clip = Some((clip.range, clip.clamp));
+        self.clip = Some(clip);
     }
 
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
@@ -336,7 +354,9 @@ impl d3d::ExternalPass for WorldPass {
                 },
             );
         }
-        gpu.prepare(
+        let diag = Diagnostics::get();
+        gpu.set_cull(!diag.no_cull);
+        let culled = gpu.prepare(
             t.queue,
             &self.camera,
             DepthRule {
@@ -344,6 +364,9 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
+        if diag.trace && !std::mem::replace(&mut self.traced, true) {
+            trace(&self.camera, self.view.as_ref(), self.clip, &t, culled);
+        }
         let (state, marked) = &self.stencil;
         let mut stencil = PassStencil::from_device(state, t.depth_format);
         if stencil != PassStencil::default() {
@@ -367,6 +390,81 @@ impl d3d::ExternalPass for WorldPass {
         }
     }
 }
+
+/// The pass's diagnostics, from the environment (read once):
+///
+/// - `H2_NATIVE_WORLD_TRACE=1`: a line per pass for the first
+///   [`TRACE_FIRST`] passes, then every [`TRACE_EVERY`]th ([`trace`]);
+/// - `H2_NATIVE_WORLD_NO_CULL=1`: every draw drawn, no CPU cull
+///   (`GpuWorld::set_cull`): a part the cull leaves out is then drawn, one
+///   the GPU clips or the depth test rejects is still missing.
+#[derive(Clone, Copy, Debug, Default)]
+struct Diagnostics {
+    trace: bool,
+    no_cull: bool,
+}
+
+impl Diagnostics {
+    fn get() -> Self {
+        static D: std::sync::OnceLock<Diagnostics> = std::sync::OnceLock::new();
+        *D.get_or_init(|| {
+            let on = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0");
+            let d = Diagnostics {
+                trace: on("H2_NATIVE_WORLD_TRACE"),
+                no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
+            };
+            if d.trace || d.no_cull {
+                eprintln!("native-world: diagnostics {d:?}");
+            }
+            d
+        })
+    }
+}
+
+const TRACE_FIRST: u64 = 8;
+const TRACE_EVERY: u64 = 250;
+static TRACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One pass's view as the native pass draws it, on one line: the device's
+/// W-buffer clip at the issue (range, clamp, whether draws are
+/// W-buffered: `d3d::DepthClip`) against the depth full scale, the render
+/// camera the CPU cull uses (position, forward, fov, near, far) and its
+/// view-projection beside the device's first four view constants (the
+/// programs' transform: a cull by another camera than the constants' shows
+/// as rows that disagree), the viewport, and the cull's count.
+fn trace(
+    camera: &RenderCamera,
+    view: Option<&[[f32; 4]; d3d::VIEW_CONSTANTS]>,
+    clip: Option<d3d::DepthClip>,
+    t: &d3d::ExternalTarget<'_>,
+    culled: native_render::cull::CullStats,
+) {
+    let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if n >= TRACE_FIRST && n % TRACE_EVERY != 0 {
+        return;
+    }
+    let vp = camera.view_projection();
+    let constants = view.map(|c| [c[0], c[1], c[2], c[3]]);
+    eprintln!(
+        "native-world trace {n}: z_scale {} clip {:?} camera pos {:?} fwd {:?} fov {} near {} far {} vp {:?} c0..3 {:?} viewport {:?} guest {:?} size {:?} cull {}/{}",
+        t.z_scale,
+        clip,
+        camera.position,
+        camera.forward,
+        camera.fov,
+        camera.near,
+        camera.far,
+        vp,
+        constants,
+        t.viewport,
+        t.guest_size,
+        t.size,
+        culled.visible,
+        culled.total,
+    );
+}
+
+static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Said once: a pass without view constants, batches left out.
 static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

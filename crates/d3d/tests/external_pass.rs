@@ -178,8 +178,10 @@ fn the_pass_gets_the_depth_clip_at_issue() {
         let clip: Option<d3d::DepthClip> = *got.lock().unwrap();
         clip.expect("given at issue, with or without a backend that draws it")
     };
-    let full = d3d::DepthClip { range: [0.0, 16_777_215.0], clamp: false };
-    assert_eq!(issue(&mut d, &mut m), full, "nothing pushed: [0, z_max] of D24S8");
+    let first = issue(&mut d, &mut m);
+    let full = d3d::DepthClip { range: [0.0, 16_777_215.0], clamp: false, w_buffered: first.w_buffered };
+    assert_eq!(first, full, "nothing pushed: [0, z_max] of D24S8");
+    assert_eq!(first.w_buffered, d.hw().control0.map(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0));
     let slot = gfx::xdk::RenderStateTable::default()
         .canonical_to_guest(d3d::nv2a::RS_DEPTHCLIPCONTROL)
         .expect("a guest slot");

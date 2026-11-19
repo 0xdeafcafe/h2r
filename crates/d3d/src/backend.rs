@@ -298,6 +298,11 @@ pub trait ExternalPass: Send {
 pub struct DepthClip {
     pub range: [f32; 2],
     pub clamp: bool,
+    /// Whether draws are W-buffered (`SET_CONTROL0` z-perspective,
+    /// `nv2a::CONTROL0_Z_PERSPECTIVE`); `None` before any `SET_CONTROL0`.
+    /// Not W-buffered, the D3D path stores z, not the w the native
+    /// programs write, and clips z, not w.
+    pub w_buffered: Option<bool>,
 }
 
 /// How many vertex constants [`ExternalPass::view_constants`] gives: the
