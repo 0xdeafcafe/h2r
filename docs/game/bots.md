@@ -1392,6 +1392,47 @@ ran. They now join the lobby as a real peer does.
   it polls (the lobby summary `0x7e210`) or only on join events; whether
   the lobby roster draws anything from a peer's second name (`+0x48`).
 
+**Phantoms in the game** (traced 2026-11-19 after the user's
+Clankermatch: "the GAME OVER scoreboard lists all 7 clankers; only local
+Clankers 1 to 3 were ever in the world; map loading got slower"; built,
+no run yet).
+
+- **Why they never spawned.** Each tick the player update `0x14d2a0`
+  (from `0x14d3a0`, in turn from `0x137fe0`) sets every player's flag bit
+  0 (`+2`) from `0x686e0(&player +0x14)`, "is this machine in the game":
+  1 with no simulation (`[0x4cf770]` 0), 1 for this console's own machine
+  (the world's `+0xd`), else the byte `+0x78` of the machine's
+  simulation view (`0x6ad40`: the world's entities of kind `0x14` whose
+  `+0x14` is the machine id), 0 with no view. The spawn pass
+  (`0x14d3a0`) takes only players with bit 0 set, not leaving (bit 1),
+  with no unit (`+0x2c` -1), and, on anything but a distributed client
+  (`[0x4e6948]+0xc` not 4), whose respawn check `0x15dd40` passes; it
+  spawns one of them at random through `0x14f2e0`. A phantom has no
+  channel, so no view, so bit 0 stayed 0: its player was made (it was on
+  the scoreboard) but never spawned. **Fix:** `MACHINE_IN_GAME`
+  (`0x686e0`, its only caller is `0x14d2a0`) is hooked
+  (`boot::bot_glue`): for a machine id that is a phantom of the books
+  with a peer in the session (`Phantoms::stands_for`), it answers 1 at
+  once. Every other machine goes to the game's own code.
+- **Why loading got slower.** When a server's world starts (state 3 at
+  `+0x18`, entered by `0x6b1f0`, which sets the wait mask `+0x20` to the
+  whole machine set `[[0x4cf780]+0x1c]` and the time `+0x1c`), `0x69c80`
+  holds it until every machine in the mask but its own (`+0x14`) has a
+  joined view, or until the timeout `[0x4ced4c]` (a run-time value) has
+  passed, and only then moves to state 4 (`0x6b2a0`). The machine set is
+  the session's peers (`0x83f00`), phantoms included, and no phantom ever
+  has a view: every game start waited the whole timeout. **Fix:** each
+  frame `Phantoms::tick` first clears the phantoms' bits from the wait
+  mask of a starting server world (mode 2 or 4, state 3;
+  `session::unwait_phantoms`, machine `i` is the set's id at `+0x24 +
+  6i`), once per start: `bots: phantoms: the game's start waits for real
+  consoles only (machines 0x0007 -> 0x0005)`. Real consoles are still
+  waited for.
+- **Actions.** Unchanged: a spawned phantom's unit takes the action the
+  bots write in its simulation slot (step 5 above). Until now no phantom
+  had a unit, so none of it was seen; `facing` reads the unit, so a
+  phantom without one is skipped.
+
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
 turns from the unit's facing: yaw minus x, pitch plus y, at 3 rad/s
@@ -1582,7 +1623,16 @@ playlist's size, so Clankermatch needs stage 6.
    wherever a bot's name appears:
    - in the game, the host writes `⚙ ` + tag into the player configuration's
      UTF-16 name (player `+0x44`), which is what the lobby, scoreboard and
-     carnage report draw;
+     carnage report draw. A phantom gets it in its configuration; a local
+     bot (whose name comes from its profile) gets it in its session
+     player's effective configuration, on the session's host, each frame
+     a bot port's player lacks it (`session::mark_local_bots`, from the
+     bot glue: `bots: the bot mark on local bots' names (session players
+     [1, 2, 3])`). Only the effective name is written: the host's pass
+     (`0x65cb0`) keeps an effective name once set and takes the rest from
+     the requested configuration, so the profile cannot undo it, and the
+     clients and the game's player take the effective one. Before this
+     (the user's run, 2026-11-19) local Clankers had no mark;
    - on the site, it is drawn from the server's bot flag.
 
    The server knows which accounts are bots (§9). Every client patches the
@@ -1933,7 +1983,9 @@ bot_mark`, `-p font gear` (the glyph on a synthetic font),
 team; `phantom::session::tests::lobby`: the lobby this console hosts, the
 reservations, the peer properties, the configuration, the teams, the
 switch, and a phantom joining the lobby, staying for the game, leaving,
-rejoining and waiting), `-p live-hle --lib clankermatch` (the delay and the run),
+rejoining and waiting; `phantom::session::tests::in_game`: the start's
+wait without phantom machines, a phantom standing in the game, the bot
+mark on local bots), `-p live-hle --lib clankermatch` (the delay and the run),
 `-p live-proto bots hopper::clankers`, `-p live-telemetry
 games_say_their_kind a_bots_name_reads_without_its_mark`, `-p cli
 bots_drive coop_drive`, and the server's: `-p live-server --test

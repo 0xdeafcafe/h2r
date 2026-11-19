@@ -100,6 +100,20 @@ pub mod at {
     /// not the game's), and the player slots.
     pub const SIM_GLOBALS: u32 = 0x004c_f77c;
     pub const SIM_MODE: u32 = 8;
+    /// The world's state (`+0x18`): on a server 3 while the game starts
+    /// and waits for every machine's view (`0x69c80`), 4 while views
+    /// join (`0x69d50`), 5 running (`0x69dd0`).
+    pub const SIM_STATE: u32 = 0x18;
+    /// The machines the start waits for (`+0x20`; `0x6b1f0` sets it to the
+    /// whole machine set, and `+0x1c` the time it began).
+    pub const SIM_WAIT: u32 = 0x20;
+    /// Pointer to the machine set (the world's `+0`, `[0x4cf780]`): its
+    /// valid mask at `+0x1c`, its machine ids at `+0x24`, 6 bytes each
+    /// (`0x83b80` finds one), rebuilt from the session's peers
+    /// (`0x83f00`), so machine `i` is peer `i`.
+    pub const MACHINES: u32 = 0x004c_f780;
+    pub const MACHINES_MASK: u32 = 0x1c;
+    pub const MACHINES_IDS: u32 = 0x24;
     pub const SIM_SLOTS: u32 = 0x7c;
     pub const SLOT_SIZE: u32 = 0x88;
     pub const SLOT_MAC: u32 = 0x18;
@@ -701,6 +715,97 @@ pub fn rebalance(m: &mut dyn GuestMemory, s: u32, movable: &[u32]) -> R<Vec<(u32
         moved.push((p, team, to));
     }
     Ok(moved)
+}
+
+/// The world's state while a server's game starts ([`SIM_STATE`]).
+pub const SIM_STARTING: u32 = 3;
+
+/// The game's start stops waiting for phantom machines (docs/game/bots.md
+/// §5.1, "Phantoms in the game"). A server's world, starting (state 3),
+/// waits until every machine in its wait mask (`+0x20`) but its own has a
+/// joined view, or until the timeout `[0x4ced4c]` (`0x69c80`); a phantom
+/// has no channel, so no view, and the game waited the whole timeout
+/// with phantoms in it. Their bits come out of the mask, so the start
+/// waits for real consoles only. Returns the mask before and after, when
+/// it changed.
+pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
+    let sim = m.u32(SIM_GLOBALS)?;
+    if sim == 0 {
+        return Ok(None);
+    }
+    let mode = m.u32(sim + SIM_MODE)?;
+    // The servers: synchronous (2) and distributed (4).
+    if !matches!(mode, 2 | WORLD_DIST_SERVER) || m.u32(sim + SIM_STATE)? != SIM_STARTING {
+        return Ok(None);
+    }
+    let set = m.u32(MACHINES)?;
+    if set == 0 {
+        return Ok(None);
+    }
+    let valid = m.u32(set + MACHINES_MASK)?;
+    let wait = m.u32(sim + SIM_WAIT)?;
+    let mut left = wait;
+    for i in (0..MAX).filter(|i| wait & valid & 1 << i != 0) {
+        let id = mac_at(&*m, set + MACHINES_IDS + 6 * i)?;
+        if crate::phantom::handle_of(id).is_some() {
+            left &= !(1 << i);
+        }
+    }
+    if left == wait {
+        return Ok(None);
+    }
+    m.set_u32(sim + SIM_WAIT, left)?;
+    Ok(Some((wait, left)))
+}
+
+/// Gives each local bot's session player the bot mark ([`MARK`],
+/// [`marked_name`]) in its effective configuration, as a phantom has it
+/// (docs/game/bots.md §8.2.2): the name every console's lobby and the
+/// game's player show. `ports` is the bots' controller ports, as a mask.
+/// Only on the session's host (its own effective configurations are the
+/// ones the clients get), and only the effective name: the host's pass
+/// (`0x65cb0`) keeps an effective name once it has one, so a profile
+/// refreshing the requested one does not undo it. Returns the slots it
+/// marked.
+pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
+    let Some(s) = live_session(&*m) else {
+        return Ok(Vec::new());
+    };
+    let local = m.u32(s + LOCAL_PEER)?;
+    if m.u32(s + HOST_PEER)? != local || ports == 0 {
+        return Ok(Vec::new());
+    }
+    let mask = m.u32(s + PLAYER_MASK)?;
+    let mut marked = Vec::new();
+    for slot in (0..MAX).filter(|i| mask & 1 << i != 0) {
+        let a = player(s, slot);
+        let controller = m.u32(a + P_CONTROLLER)?;
+        if m.u32(a + P_PEER)? != local || controller >= 4 || ports & 1 << controller == 0 {
+            continue;
+        }
+        let at = a + P_EFFECTIVE;
+        let mut name = Vec::new();
+        for i in 0..CONFIG_NAME_UNITS as u32 {
+            let u = m.u16(at + 2 * i)?;
+            if u == 0 {
+                break;
+            }
+            name.push(u);
+        }
+        if name.is_empty() || name[0] == MARK as u16 {
+            continue;
+        }
+        let tag = String::from_utf16_lossy(&name);
+        let units = marked_name(&tag);
+        for i in 0..CONFIG_NAME_UNITS as u32 {
+            m.set_u16(at + 2 * i, units.get(i as usize).copied().unwrap_or(0))?;
+        }
+        marked.push(slot);
+    }
+    if !marked.is_empty() {
+        bump(m, s)?;
+    }
+    Ok(marked)
 }
 
 fn multiplayer(m: &dyn GuestMemory) -> bool {

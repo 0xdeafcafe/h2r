@@ -644,6 +644,26 @@ impl feature::Feature for Bots {
             },
         );
 
+        // A phantom's machine has no simulation view, so the game's "is
+        // this machine in the game" says no and its player never spawns
+        // (docs/game/bots.md §5.1, "Phantoms in the game"): yes for a
+        // phantom with a peer in the session.
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::MACHINE_IN_GAME,
+            "phantoms: their machines are in the game",
+            move |c| {
+                let at = c.cpu.eax;
+                let rt = Arc::clone(c.ctx.runtime());
+                let id = rt.memory().read::<6>(at);
+                if !id.is_ok_and(|id| phantoms.stands_for(id)) {
+                    return Ok(Flow::Continue);
+                }
+                c.cpu.eax = (c.cpu.eax & !0xff) | 1;
+                Ok(Flow::Return(c.ret(0)?))
+            },
+        );
+
         // A game starting from the session with phantoms planned: this
         // console must start it as the distributed server, or phantoms
         // never join (docs/game/bots.md §5.1, "Hosting the game").
@@ -721,6 +741,17 @@ impl feature::Feature for Bots {
                 }
                 if bots == 0 {
                     return Ok(Flow::Continue);
+                }
+                // The local bots' names carry the bot mark, as phantoms'
+                // do (docs/game/bots.md §8.2.2), on the session's host.
+                match bots::phantom::session::mark_local_bots(&mut *mem, bots) {
+                    Ok(slots) if !slots.is_empty() => {
+                        eprintln!(
+                            "bots: the bot mark on local bots' names (session players {slots:?})"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("bots: bot mark: fault at {:#x}", e.addr),
                 }
                 // The join gate, per port, logged when it changes; a bot it
                 // lets through presses nothing (the sign-in is before

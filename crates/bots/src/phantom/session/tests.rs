@@ -1272,3 +1272,188 @@ mod lobby {
         );
     }
 }
+
+/// Phantoms in the game: spawning, the start's wait, the bot mark on
+/// local bots (docs/game/bots.md §5.1, "Phantoms in the game").
+mod in_game {
+    use super::*;
+    use crate::phantom::{Identity, Phantoms, machine_id};
+
+    const SET: u32 = 0x0076_0000;
+    const REAL: [u8; 6] = [0x00, 0x50, 0xf2, 9, 9, 9];
+
+    /// [`hosted`]'s game starting: the world in state 3 waiting for
+    /// machines 0 to 2 (the host, `ids[1]`, `ids[2]`).
+    fn starting(ids: [[u8; 6]; 2]) -> FakeGuest {
+        let mut g = hosted();
+        g.put_u32(SIM + SIM_STATE, SIM_STARTING)
+            .put_u32(SIM + SIM_WAIT, 0b111)
+            .put_u32(MACHINES, SET)
+            .map(SET, 0x100)
+            .put_u32(SET + MACHINES_MASK, 0b111);
+        g.put(SET + MACHINES_IDS, &HOST_MAC);
+        g.put(SET + MACHINES_IDS + 6, &ids[0]);
+        g.put(SET + MACHINES_IDS + 12, &ids[1]);
+        g
+    }
+
+    #[test]
+    fn the_start_stops_waiting_for_phantom_machines() {
+        let mut g = starting([MAC_A, REAL]);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), Some((0b111, 0b101)));
+        assert_eq!(
+            g.u32(SIM + SIM_WAIT).unwrap(),
+            0b101,
+            "the real console still waited for"
+        );
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None, "once");
+
+        // Real consoles only: nothing changes.
+        let mut g = starting([REAL, [0x00, 0x50, 0xf2, 8, 8, 8]]);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        // Not starting (state 4, views joining), or a client's world.
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_STATE, 4);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_MODE, 5);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), None);
+        // A synchronous server waits the same way.
+        let mut g = starting([MAC_A, MAC_B]);
+        g.put_u32(SIM + SIM_MODE, 2);
+        assert_eq!(unwait_phantoms(&mut g).unwrap(), Some((0b111, 0b001)));
+    }
+
+    #[test]
+    fn the_tick_says_the_start_no_longer_waits() {
+        let ph = Phantoms::default();
+        let h = ph
+            .add(
+                Identity {
+                    xuid: 1,
+                    gamertag: "A".into(),
+                    ..Default::default()
+                },
+                None,
+                Box::new(|_: &crate::local::Frame<'_>| HostPadState::default()),
+            )
+            .unwrap();
+        let mut g = starting([machine_id(h), REAL]);
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log[0],
+            "bots: phantoms: the game's start waits for real consoles only (machines 0x0007 -> 0x0005)"
+        );
+        assert!(
+            !ph.tick(&mut g, 1)
+                .unwrap()
+                .iter()
+                .any(|l| l.contains("start waits"))
+        );
+    }
+
+    #[test]
+    fn a_phantom_in_the_session_stands_in_the_game() {
+        let ph = Phantoms::default();
+        let who = |x: u64| Identity {
+            xuid: x,
+            gamertag: format!("B{x}"),
+            ..Default::default()
+        };
+        let idle = || -> Box<dyn crate::local::PadSource> {
+            Box::new(|_: &crate::local::Frame<'_>| HostPadState::default())
+        };
+        let a = ph.add(who(1), None, idle()).unwrap();
+        assert!(
+            !ph.stands_for(machine_id(a)),
+            "on the books, not in the session"
+        );
+        let mut g = hosted();
+        ph.tick(&mut g, 0).unwrap();
+        assert!(ph.stands_for(machine_id(a)));
+        assert!(!ph.stands_for(HOST_MAC), "a console answers for itself");
+        assert!(!ph.stands_for(machine_id(crate::phantom::PhantomHandle(99))));
+        ph.remove(a).unwrap();
+        assert!(!ph.stands_for(machine_id(a)));
+    }
+
+    /// [`hosted`]'s session with a local bot on controller 1 in slot 1
+    /// (effective name "Clanker 1", requested "Profile") and the human on
+    /// controller 0 in slot 0.
+    fn with_local_bot() -> FakeGuest {
+        let mut g = hosted();
+        g.put_u32(S + PLAYER_MASK, 0b11)
+            .put_u32(S + PLAYER_COUNT, 2)
+            .put_u32(S + PEERS + PEER_SLOTS + 4, 1)
+            .put_u32(S + PEERS + PEER_PLAYERS, 2);
+        let name = |g: &mut FakeGuest, at: u32, s: &str| {
+            for (i, u) in s.encode_utf16().enumerate() {
+                g.put_u16(at + 2 * i as u32, u);
+            }
+        };
+        let human = S + PLAYERS;
+        name(&mut g, human + P_EFFECTIVE, "Tester");
+        let bot = S + PLAYERS + PLAYER_SIZE;
+        g.put_u32(bot + P_PEER, 0)
+            .put_u32(bot + P_USER, 1)
+            .put_u32(bot + P_CONTROLLER, 1);
+        name(&mut g, bot + P_EFFECTIVE, "Clanker 1");
+        name(&mut g, bot + P_REQUESTED, "Profile");
+        g
+    }
+
+    fn name_at(g: &FakeGuest, at: u32) -> Vec<u16> {
+        (0..CONFIG_NAME_UNITS as u32)
+            .map(|i| g.u16(at + 2 * i).unwrap())
+            .take_while(|&u| u != 0)
+            .collect()
+    }
+
+    #[test]
+    fn a_local_bot_gets_the_bot_mark_on_the_host() {
+        let mut g = with_local_bot();
+        let before = counters(&g);
+        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
+        let bot = S + PLAYERS + PLAYER_SIZE;
+        assert_eq!(name_at(&g, bot + P_EFFECTIVE), marked_name("Clanker 1"));
+        assert_eq!(
+            name_at(&g, bot + P_REQUESTED),
+            "Profile".encode_utf16().collect::<Vec<_>>(),
+            "the requested name is the profile's"
+        );
+        assert_eq!(
+            name_at(&g, S + PLAYERS + P_EFFECTIVE),
+            "Tester".encode_utf16().collect::<Vec<_>>(),
+            "the human is no bot"
+        );
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+        // Marked once.
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        assert_eq!(counters(&g), (before.0 + 1, before.1 + 1));
+    }
+
+    #[test]
+    fn the_bot_mark_waits_for_the_host_and_a_bots_port() {
+        // Not this console's session: its host's configurations win.
+        let mut g = with_local_bot();
+        g.put_u32(S + HOST_PEER, 1).put_u32(S + PEER_COUNT, 2);
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        // Port 1 is no bot's.
+        let mut g = with_local_bot();
+        assert!(mark_local_bots(&mut g, 0b100).unwrap().is_empty());
+        // No live session.
+        let mut g = with_local_bot();
+        g.put_u32(S + STATE, 6);
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+        // A long name keeps the mark within the 15 units.
+        let mut g = with_local_bot();
+        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        for (i, u) in "Fifteen Chars!!".encode_utf16().enumerate() {
+            g.put_u16(bot + 2 * i as u32, u);
+        }
+        mark_local_bots(&mut g, 0b10).unwrap();
+        let n = name_at(&g, bot);
+        assert_eq!(n.len(), 15);
+        assert_eq!(n[0], MARK as u16);
+    }
+}

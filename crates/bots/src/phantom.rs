@@ -215,6 +215,19 @@ impl Phantoms {
         Ok(handle)
     }
 
+    /// Whether `machine` is a phantom of these books with a peer in the
+    /// session: the game's "is this machine in the game" (`0x686e0`) is
+    /// answered yes for it (docs/game/bots.md §5.1, "Phantoms in the
+    /// game"), since it has no simulation view to say so.
+    pub fn stands_for(&self, machine: [u8; 6]) -> bool {
+        handle_of(machine).is_some()
+            && self
+                .lock()
+                .list
+                .iter()
+                .any(|p| p.made && p.info.machine == machine)
+    }
+
     /// Whether phantoms join the pregame lobby (the default), or only a
     /// running game ([`LOBBY_ENV`]).
     pub fn set_lobby(&self, on: bool) {
@@ -316,6 +329,14 @@ impl Phantoms {
     /// out and the phantom waits for the next. Returns lines for the log.
     pub fn tick(&self, m: &mut dyn GuestMemory, frame: u64) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
+        // A starting game waits for no phantom (§5.1, "Phantoms in the
+        // game"), whichever way they came in.
+        if let Some((was, now)) = session::unwait_phantoms(m)? {
+            log.push(format!(
+                "bots: phantoms: the game's start waits for real consoles only \
+                 (machines {was:#06x} -> {now:#06x})"
+            ));
+        }
         let mut b = self.lock();
         let game = session::host_session(&*m);
         let lobby = match &game {
