@@ -842,6 +842,9 @@ pub struct Converter<'a> {
     /// Change-colour maps ([`Self::change_colour_bitmap`]), by
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
+    /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
+    /// `schi`, permutation).
+    counter_shaders: HashMap<(u32, i16), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -907,6 +910,7 @@ impl<'a> Converter<'a> {
             masked_bitmaps: HashMap::new(),
             brightest_bitmaps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
+            counter_shaders: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1495,7 +1499,7 @@ impl<'a> Converter<'a> {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model);
+                let mut shaders = self.model_shaders(rep, &h1_model, None);
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
@@ -2011,7 +2015,18 @@ impl<'a> Converter<'a> {
     /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
     /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
     /// template at all the materials stay null.
-    fn model_shaders(&mut self, rep: &mut ObjectReport, model: &h1models::h1::Model) -> Vec<TagId> {
+    ///
+    /// `rounds` is the loaded maximum of the weapon whose model this is
+    /// when Halo 1's counters on it count its rounds
+    /// ([`h1::Weapon::rounds_counter`]): a numeric `schi` entry then
+    /// becomes the Halo 2 digit its permutation names
+    /// ([`Self::counter_shader`]), one `shad` per digit.
+    fn model_shaders(
+        &mut self,
+        rep: &mut ObjectReport,
+        model: &h1models::h1::Model,
+        rounds: Option<i16>,
+    ) -> Vec<TagId> {
         let Some(template) = self.base.model_shader.clone() else {
             rep.no_home
                 .push("model shaders: the base has no model shader to copy; materials null".into());
@@ -2019,6 +2034,13 @@ impl<'a> Converter<'a> {
         };
         let mut out = Vec::new();
         for s in &model.shaders {
+            if let Some(loaded) = rounds
+                && let Some(id) =
+                    self.counter_shader(&template.library, s.tag, s.permutation, loaded)
+            {
+                out.push(id);
+                continue;
+            }
             let id = (|| -> Option<TagId> {
                 let tag = self.h1.tag(s.tag).ok()?;
                 if let Some(id) = self.done.get(&tag.id.0) {
@@ -2172,6 +2194,58 @@ impl<'a> Converter<'a> {
             },
         )
         .ok()
+    }
+
+    /// Digit `permutation` of the Halo 1 numeric `schi` `id` on a weapon
+    /// whose counters count its rounds loaded (out of `loaded`), as a
+    /// Halo 2 ammunition counter digit
+    /// (`h1convert::shad::H1Numeric::ammunition_digit`): `illum_detail`
+    /// drawing Halo 1's digits, the frame picked by the weapon's
+    /// `primary_ammunition_ones` or `_tens`, as retail's battle rifle
+    /// counter is drawn (`h1convert::shad::counter_shader`). Named
+    /// `<schi>_ones` or `_tens`, built once per digit. `None` for any other
+    /// shader, or when the base lacks the stem; the entry then converts
+    /// as any other shader. Before converter version 92 both digits drew
+    /// the one `one_add_illum` copy of the digits' first image: the
+    /// assault rifle read 00.
+    fn counter_shader(
+        &mut self,
+        library: &h1convert::shad::Library,
+        id: h1map::TagId,
+        permutation: i16,
+        loaded: i16,
+    ) -> Option<TagId> {
+        let key = (id.0, permutation);
+        if let Some(t) = self.counter_shaders.get(&key) {
+            return *t;
+        }
+        let out = (|| {
+            let tag = self.h1.tag(id).ok()?.clone();
+            let n = h1convert::shad::chicago_numeric(self.h1, &tag)?;
+            let input = n.ammunition_digit(permutation, loaded)?;
+            let s = h1convert::shad::counter_shader(&tag.name, &n, input);
+            let digits = self.bitmap(n.bitmap)?;
+            let maps = HashMap::from([(
+                h1convert::shad::Role::Base,
+                h1convert::shad::Bound {
+                    id: digits,
+                    scale: n.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
+                },
+            )]);
+            let tree = library.build_with(s.layout, &maps, &s.extras).ok()?;
+            let place = input.rsplit('_').next().unwrap_or(input);
+            Some(self.tree.push(
+                &format!("{}_{place}", tag.name),
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root: tree,
+                    raw: Vec::new(),
+                },
+            ))
+        })();
+        self.counter_shaders.insert(key, out);
+        out
     }
 
     /// The Halo 1 bitmap `id`, converted once.

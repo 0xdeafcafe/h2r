@@ -60,7 +60,7 @@ unused.
 | `b8` | nodes, stride `0x9c` | V1 |
 | `c4` | regions, stride `0x4c` | V1 |
 | `d0` | geometries, stride `0x30` | V1 |
-| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`) | V1 (references name `soso`/`schi`/... tags) |
+| `dc` | shaders, stride `0x20`: tag reference (`00`), i16 permutation (`10`): which digit a numeric `schi` draws ([objects.md](objects.md), "Ammunition counter") | V1 (references name `soso`/`schi`/... tags); the assault rifle's first-person model names its `numbers` twice, permutations 1 and 0 |
 
 **Marker** (`0x40`): `char[32]` name, `34` block of instances (`0x20`):
 i8 region, i8 permutation, i8 node, pad, f32x3 translation (`04`), f32x4

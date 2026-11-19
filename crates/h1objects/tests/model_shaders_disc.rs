@@ -564,3 +564,151 @@ fn change_colour_map_is_the_multipurpose_blue(
     eprintln!("{name}: red off the mask's blue by {mean:.2} on average");
     assert!(mean < 4.0);
 }
+
+/// Blood Gulch's assault rifle counter (`schi weapons\assault rifle\fp\
+/// shaders\numbers`, numeric, limit 60, ten digit images): Halo 1 draws
+/// digit `p` of `round(60 × A out)` for the model's shader entry of
+/// permutation `p`, and the rifle's A out is its primary ammunition, so
+/// the two entries show the rounds loaded, tens (permutation 1) and ones
+/// (0). Converted (version 92), each entry is its own `shad` on
+/// `illum_detail` drawing the converted digits, its frame picked by the
+/// weapon's `primary_ammunition_tens` or `_ones` through retail's counter
+/// tree, as the battle rifle's are. Before, both entries drew one
+/// `one_add_illum` copy of the digits' first image: "00".
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_assault_rifle_counter_shows_the_rounds_loaded() {
+    use h1convert::shad::{AMMUNITION_DIGITS, COUNTER_TREE, ILLUM_DETAIL};
+    use tags::defs::{Defs, Str, Target, Val};
+    use tags::effects::function::{Function, FunctionType};
+    let h1 = h1_map("bloodgulch");
+    let mut base_map = h2_map("coagulation");
+    let library = h1convert::shad::Library::read(&mut base_map);
+    let stem = library
+        .stem(&ILLUM_DETAIL)
+        .expect("the base has illum_detail");
+    let base = Base::read(&mut base_map).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    let rifle = h1
+        .tags()
+        .iter()
+        .find(|t| {
+            t.group == Group::new(b"weap") && t.name == "weapons\\assault rifle\\assault rifle"
+        })
+        .expect("the assault rifle");
+    // Halo 1's side: A out is the primary ammunition over 60 rounds.
+    let w = h1objects::h1::Weapon::read(&h1, rifle).unwrap();
+    assert_eq!(
+        w.rounds_counter(),
+        Some(60),
+        "A out counts the rounds loaded"
+    );
+    let fp_tag = h1
+        .tag(w.first_person_model.expect("a first-person model"))
+        .unwrap()
+        .clone();
+    let (fp, _) = h1models::model_from_map(&h1, &fp_tag, &Default::default()).unwrap();
+    let numbers: Vec<(usize, i16)> = fp
+        .shaders
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            h1.tag(s.tag)
+                .is_ok_and(|t| t.name == "weapons\\assault rifle\\fp\\shaders\\numbers")
+        })
+        .map(|(k, s)| (k, s.permutation))
+        .collect();
+    let mut perms: Vec<i16> = numbers.iter().map(|n| n.1).collect();
+    perms.sort();
+    assert_eq!(perms, [0, 1], "the counter's two digits: {numbers:?}");
+    let n = h1convert::shad::chicago_numeric(&h1, h1.tag(fp.shaders[numbers[0].0].tag).unwrap())
+        .expect("a numeric schi");
+    assert_eq!((n.limit, n.images, n.engine_number), (60, 10, false));
+
+    conv.object(rifle).unwrap();
+    let tree = &conv.tree;
+    let index = |name: &str, group: &[u8; 4]| {
+        tree.tags
+            .iter()
+            .position(|(n, c)| n == name && c.group.0 == *group)
+            .unwrap_or_else(|| panic!("{name}: a tag of the tree"))
+    };
+    let record = |k: usize| {
+        let c = &tree.tags[k].1;
+        let def = Defs::builtin().group(c.group).unwrap();
+        tags::defs::from_built(def, &c.root).unwrap()
+    };
+    assert!(
+        !tree
+            .tags
+            .iter()
+            .any(|(n, c)| n == "weapons\\assault rifle\\fp\\shaders\\numbers"
+                && c.group.0 == *b"shad"),
+        "no single static copy of the digits"
+    );
+    let digits = local(index(
+        "weapons\\assault rifle\\fp\\bitmaps\\numbers_plate",
+        b"bitm",
+    ));
+    let mode = record(index("weapons\\assault rifle\\fp\\fp", b"mode"));
+    for &(k, p) in &numbers {
+        let input = AMMUNITION_DIGITS[p as usize];
+        let place = input.rsplit('_').next().unwrap();
+        let name = format!("weapons\\assault rifle\\fp\\shaders\\numbers_{place}");
+        let id = local(index(&name, b"shad"));
+        // The fp model's material for this entry is that digit.
+        match mode.at(&format!("materials[{k}].shader")) {
+            Some(Val::Ref {
+                target: Target::Id(t),
+                ..
+            }) => assert_eq!(*t, id, "material {k} (permutation {p}) is {name}"),
+            other => panic!("material {k}: {other:?}"),
+        }
+        let rec = record(index(&name, b"shad"));
+        let at = |p: &str| rec.at(p).cloned();
+        assert_eq!(
+            at("postprocess[0].template"),
+            Some(Val::Datum(Target::Id(stem))),
+            "{name}"
+        );
+        assert_eq!(
+            at("postprocess[0].bitmaps[0].bitmap"),
+            Some(Val::Datum(Target::Id(digits))),
+            "{name}"
+        );
+        assert_eq!(
+            at("postprocess[0].properties[0].input"),
+            Some(Val::String(Str::Text(input.into()))),
+            "{name}"
+        );
+        let f = match at("postprocess[0].properties[0].function") {
+            Some(Val::Data(d)) => Function::parse(&d).unwrap(),
+            other => panic!("{name}: {other:?}"),
+        };
+        assert_eq!(
+            (f.kind, f.range),
+            (FunctionType::Identity, [0.0, 10.0]),
+            "{name}"
+        );
+        assert_eq!(
+            at("postprocess[0].lods[0].layer_mask"),
+            Some(Val::Int(1 << COUNTER_TREE.animated_layer)),
+            "{name}"
+        );
+        let binds: Vec<i64> = (0..COUNTER_TREE.bindings.len())
+            .map(
+                |b| match at(&format!("postprocess[0].animations[{b}].target")) {
+                    Some(Val::Int(t)) => t,
+                    other => panic!("{name}: binding {b}: {other:?}"),
+                },
+            )
+            .collect();
+        let want: Vec<i64> = COUNTER_TREE
+            .bindings
+            .iter()
+            .map(|b| i64::from(b[0]))
+            .collect();
+        assert_eq!(binds, want, "{name}");
+        eprintln!("material {k} (permutation {p}): {name}, frame from {input}");
+    }
+}
