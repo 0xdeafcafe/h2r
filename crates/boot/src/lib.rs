@@ -1158,7 +1158,7 @@ pub fn run_hosted_with_live(
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
         t.set_map_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            let file = map_override::map_file(&mut v, map)?;
             Some(telemetry::MapFile {
                 path: file.path,
                 offset: file.offset,
@@ -1309,7 +1309,7 @@ pub fn run_hosted_with_live(
     if let Some(vfs) = k.vfs() {
         native_world_glue::set_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            let file = map_override::map_file(&mut v, map)?;
             Some(telemetry::MapFile {
                 path: file.path,
                 offset: file.offset,
@@ -1344,7 +1344,7 @@ pub fn run_hosted_with_live(
             k.vfs().map(|vfs| -> hot_glue::MapLocator {
                 Box::new(move |map| {
                     let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-                    let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+                    let file = map_override::map_file(&mut v, map)?;
                     Some(telemetry::MapFile {
                         path: file.path,
                         offset: file.offset,
@@ -1358,6 +1358,8 @@ pub fn run_hosted_with_live(
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
         }
+        // world.* results name their tags the same way.
+        a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
     }
     // The debug menu's host methods and connection (debug_menu_glue.rs).
     if let Some(a) = &agent {

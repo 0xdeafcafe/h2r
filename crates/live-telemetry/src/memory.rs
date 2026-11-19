@@ -894,6 +894,70 @@ pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
     })
 }
 
+/// Any live object, as [`things`] lists it: its object type (the header's
+/// `+3`: 2 weapon, 3 equipment, 6 scenery, 8 control, 11 crate and so on,
+/// [`object_kind`]'s table), definition and pose.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThingState {
+    pub datum: u32,
+    pub object_type: u8,
+    pub definition: Option<u32>,
+    /// The object it is attached to (a held weapon's unit); its pose is
+    /// then relative to that object.
+    pub parent: Option<u32>,
+    /// The scenario placement it came from (`+0x1a`).
+    pub placement: Option<u16>,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+}
+
+/// Every live object whose type `wanted` takes, in slot order: one pass
+/// over the object header table, as [`world`] makes, reading only the
+/// wanted objects' bodies. A fault on one object skips it. For the agent
+/// API's object kinds the telemetry scan does not follow (scenery, items
+/// on the ground, device controls, crates).
+pub fn things(guest: &Guest, wanted: impl Fn(u8) -> bool) -> ReadResult<Vec<ThingState>> {
+    let array = ptr(guest, layout::OBJECTS_PTR)?;
+    let high_water = guest
+        .u32(array + layout::DATUM_HIGH_WATER)?
+        .min(layout::OBJECT_CAPACITY);
+    let data = ptr(guest, array + layout::DATUM_DATA)?;
+    let mut headers = vec![0u8; (high_water * layout::OBJECT_HEADER_SIZE) as usize];
+    guest.read_bytes(data, &mut headers, 1)?;
+    const HEADER: usize = layout::OBJECT_HEADER_SIZE as usize;
+    let mut out = Vec::new();
+    for (slot, header) in headers.as_chunks::<HEADER>().0.iter().enumerate() {
+        let salt = u16::from_le_bytes([header[0], header[1]]);
+        let at = layout::OBJECT_BODY as usize;
+        let body = u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
+        let object_type = header[layout::OBJECT_TYPE as usize];
+        if salt == 0 || body == 0 || !wanted(object_type) {
+            continue;
+        }
+        let read = || -> ReadResult<ThingState> {
+            let (definition, [pos, forward, up]) = transform(guest, body)?;
+            let parent = Some(guest.u32(body + layout::BODY_PARENT)?).filter(|p| *p != u32::MAX);
+            let placement =
+                Some(guest.u16(body + layout::BODY_PLACEMENT_INDEX)?).filter(|p| (*p as i16) >= 0);
+            Ok(ThingState {
+                datum: (u32::from(salt) << 16) | slot as u32,
+                object_type,
+                definition,
+                parent,
+                placement,
+                pos,
+                forward,
+                up,
+            })
+        };
+        if let Ok(thing) = read() {
+            out.push(thing);
+        }
+    }
+    Ok(out)
+}
+
 /// Notes an object that came from a scenario placement (`+0x1a`) or a
 /// netgame equipment entry (`+0xaf`).
 fn placed(
@@ -2536,6 +2600,41 @@ mod tests {
         assert_eq!(placed[0].pos, [5.0, 6.0, 7.0]);
         assert_eq!(placed[0].forward, [0.0, 1.0, 0.0]);
         assert_eq!(placed[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn things_lists_objects_of_the_wanted_types_with_their_tag_and_pose() {
+        let mut guest = fixture::memory();
+        // Scenery from placement 3, a weapon on the ground, a weapon a
+        // unit holds, a dynamic equipment, and a vehicle (not wanted).
+        fixture::put_placed(&mut guest, 1, 6, 3, -1, [5.0, 6.0, 7.0], u32::MAX);
+        fixture::put_placed(&mut guest, 2, 2, -1, -1, [1.0, 1.0, 1.0], u32::MAX);
+        let holder = fixture::object_datum(9);
+        fixture::put_placed(&mut guest, 3, 2, -1, -1, [0.0, 0.0, 0.0], holder);
+        fixture::put_placed(&mut guest, 4, 3, -1, -1, [2.0, 0.0, 0.0], u32::MAX);
+        fixture::put_vehicle(&mut guest, 5);
+        guest
+            .set_u32(fixture::body(1) + layout::BODY_DEFINITION, 0xe123_0456)
+            .unwrap();
+        let found = things(&guest, |t| matches!(t, 2 | 3 | 6)).unwrap();
+        let seen: Vec<_> = found
+            .iter()
+            .map(|t| (t.datum, t.object_type, t.parent, t.placement))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (fixture::object_datum(1), 6, None, Some(3)),
+                (fixture::object_datum(2), 2, None, None),
+                (fixture::object_datum(3), 2, Some(holder), None),
+                (fixture::object_datum(4), 3, None, None),
+            ]
+        );
+        assert_eq!(found[0].definition, Some(0xe123_0456));
+        assert_eq!(found[0].pos, [5.0, 6.0, 7.0]);
+        assert_eq!(found[0].forward, [0.0, 1.0, 0.0]);
+        assert_eq!(found[0].up, [0.0, 0.0, 1.0]);
+        assert!(things(&guest, |_| false).unwrap().is_empty());
     }
 
     #[test]

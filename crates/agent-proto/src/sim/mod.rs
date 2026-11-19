@@ -205,7 +205,8 @@ pub struct SetParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch: Option<f64>,
     /// Or the facing as a direction (normalised); not with `yaw`/`pitch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Also taken as `forward`, the name `world.query` gives it.
+    #[serde(default, alias = "forward", skip_serializing_if = "Option::is_none")]
     pub facing: Option<[f64; 3]>,
     /// The player's team and its unit's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -613,6 +614,11 @@ mod tests {
         .unwrap();
         assert_eq!(p.pos, Some([1.0, 2.0, 3.0]));
         assert_eq!(p.grenades.unwrap().frag, Some(2));
+        let p: SetParams = serde_json::from_value(json!({
+            "player": "player.0", "pos": [1, 2, 3], "forward": [0, 1, 0]
+        }))
+        .unwrap();
+        assert_eq!(p.facing, Some([0.0, 1.0, 0.0]), "forward is facing");
         assert!(
             serde_json::from_value::<SetParams>(json!({"player": "player.1", "god": true}))
                 .is_err()

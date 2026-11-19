@@ -450,6 +450,21 @@ fn an_edit_passes_the_write_barrier() {
 }
 
 #[test]
+fn names_of_names_datums_in_order_and_none_without_names() {
+    let g = level();
+    let mut ed = Editor::new().with_names(names());
+    assert_eq!(
+        ed.names_of(&g, &[SHAD, 0x1234_5678, BITM2]),
+        [
+            Some("shaders\\test\\metal".to_owned()),
+            None,
+            Some("bitmaps\\test\\rust".to_owned()),
+        ]
+    );
+    assert_eq!(Editor::new().names_of(&g, &[SHAD]), [None]);
+}
+
+#[test]
 fn find_tag_resolves_a_name_or_a_datum() {
     let g = level();
     let mut ed = Editor::new().with_names(names());

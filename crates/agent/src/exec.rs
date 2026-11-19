@@ -27,7 +27,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::reader::{GameStatus, Reader};
+use crate::reader::{GameStatus, Reader, TagNames};
 
 mod snap;
 pub use snap::{SnapshotMachine, Snapshots};
@@ -186,6 +186,8 @@ struct State {
     snap_jobs: VecDeque<snap::Job>,
     /// Game methods' answers still coming ([`GameCtx::defer`]).
     deferred: Vec<Deferred>,
+    /// Names `world.*` results' tags ([`Agent::set_tag_names`]).
+    tag_names: Option<Mutex<Box<dyn TagNames>>>,
 }
 
 /// A `profile.capture` waiting for its window to pass.
@@ -484,6 +486,12 @@ impl Agent {
     /// The sampling profiler `profile.capture {"sample": true}` runs.
     pub fn set_sampler(&self, sampler: Box<dyn Sampler>) {
         self.lock().sampler = Some(sampler);
+    }
+
+    /// Where `world.*` results' `tag_name`s come from (the loaded map's
+    /// tag names); without it objects carry only the `tag` datum.
+    pub fn set_tag_names(&self, names: Box<dyn TagNames>) {
+        self.lock().tag_names = Some(Mutex::new(names));
     }
 
     #[cfg(test)]
@@ -1206,11 +1214,16 @@ impl State {
     }
 
     fn objects(&self, reader: &mut dyn Reader) -> Result<Vec<Object>, RpcError> {
-        reader.objects().map_err(|e| {
+        let mut objects = reader.objects().map_err(|e| {
             let mut err = RpcError::new(code::UNAVAILABLE, format!("reading the world: {e}"));
             err.data = Some(to_value(self.at()));
             err
-        })
+        })?;
+        if let Some(names) = &self.tag_names {
+            let mut names = names.lock().unwrap_or_else(|e| e.into_inner());
+            crate::reader::name_tags(&mut **names, &mut objects);
+        }
+        Ok(objects)
     }
 
     fn count(&self, reader: &mut dyn Reader, p: CountParams) -> Result<Counts, RpcError> {
@@ -1518,9 +1531,11 @@ pub fn query(objects: Vec<Object>, p: &QueryParams) -> Result<Page, RpcError> {
             }
         }),
     };
+    let tag = p.tag.as_deref().map(TagMatch::new);
     let mut hits: Vec<Object> = objects
         .into_iter()
         .filter(|o| p.kind.as_ref().is_none_or(|k| k.contains(&o.kind)))
+        .filter(|o| tag.as_ref().is_none_or(|t| t.matches(o)))
         .collect();
     if let (Some(c), Some(n)) = (center, &p.near) {
         hits = hits
@@ -1548,6 +1563,45 @@ pub fn query(objects: Vec<Object>, p: &QueryParams) -> Result<Page, RpcError> {
         more: offset + page.len() < total,
         objects: page,
     })
+}
+
+/// A query's `tag`: a datum, or text the tag's name contains.
+enum TagMatch {
+    Datum(u32),
+    Name(String),
+}
+
+impl TagMatch {
+    fn new(t: &str) -> TagMatch {
+        let t = t.trim();
+        let hex = t.strip_prefix("0x").unwrap_or(t);
+        if hex.len() == 8
+            && let Ok(d) = u32::from_str_radix(hex, 16)
+        {
+            return TagMatch::Datum(d);
+        }
+        TagMatch::Name(fold_tag_name(t))
+    }
+
+    fn matches(&self, o: &Object) -> bool {
+        match self {
+            TagMatch::Datum(d) => {
+                o.tag
+                    .as_deref()
+                    .and_then(|t| u32::from_str_radix(t, 16).ok())
+                    == Some(*d)
+            }
+            TagMatch::Name(n) => o
+                .tag_name
+                .as_deref()
+                .is_some_and(|name| fold_tag_name(name).contains(n.as_str())),
+        }
+    }
+}
+
+/// A tag name for matching: lower case, `/` as `\`.
+fn fold_tag_name(name: &str) -> String {
+    name.to_ascii_lowercase().replace('/', "\\")
 }
 
 pub(crate) fn trim(v: Value, fields: Option<&[String]>) -> Value {

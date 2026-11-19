@@ -63,7 +63,8 @@ pub use exec::{
 };
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
-    GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
+    GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,
+    player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
 pub use tap::{AgentTap, Chain, Input, pad_steps};

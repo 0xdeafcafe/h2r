@@ -219,6 +219,23 @@ impl Editor {
         Ok((e, name))
     }
 
+    /// The names of the tags `datums`, in order (from the loaded map's
+    /// file): `None` for one the map does not name, and for all of them
+    /// when there are no names (no source, no map loaded, or a file whose
+    /// scenario is not the loaded one).
+    pub fn names_of(&mut self, g: &Guest, datums: &[u32]) -> Vec<Option<String>> {
+        let named = self.index(g).ok().and_then(|idx| {
+            let n = self.names(g, &idx)?;
+            Some(
+                datums
+                    .iter()
+                    .map(|d| n.name(*d).map(str::to_owned))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        named.unwrap_or_else(|| vec![None; datums.len()])
+    }
+
     fn describe(&mut self, g: &Guest, idx: &index::TagIndex, e: &index::Entry) -> Value {
         let name = self
             .names(g, idx)

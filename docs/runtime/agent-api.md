@@ -247,6 +247,9 @@ can point at.
   vehicle, weapon, projectile, equipment, scenery, machine, effect, light,
   sound source, particle system. The first six exist in `live-telemetry`
   (**Code**); effects, particles and sound sources are new reads (**S**).
+  Built (**Code**): player, actor, vehicle, machine, body, scenery,
+  weapon, equipment, control, crate, creature (see "Every kind of object"
+  under Phase 1).
 - `world.count {group_by: "kind" | "squad" | "bsp" | "zone"}` is the cheap
   first call. It answers "how much is alive" before anything is listed.
 - `world.object {id}` gives everything about one object, including its tag
@@ -617,6 +620,44 @@ How it behaves (**Code**, with tests in `crates/agent`):
   a slot reused by another object answers `gone` (code 3). A turret is a
   vehicle with `mounted_on` set; its `pos` is relative to that vehicle. `near` sorts
   nearest first; `fields` trims; pages default to 50, at most 500.
+- **Every kind of object** (**Code**, 2026-11-19). Besides those, a
+  second pass over the object header table (`live_telemetry::things`)
+  lists the engine's other object types by the header's type byte
+  (`+3`): `scenery` (6), `weapon` (2), `equipment` (3), `control` (8, a
+  device's switch or panel), `crate` (11) and `creature` (12), each with
+  `pos`, `forward`, `yaw`/`pitch`, `tag` and `placement` (the scenario
+  placement that made it). An object attached to another (a weapon a unit
+  holds) is left out: its pose is relative to its holder, and the unit's
+  `weapon` names it. So `weapon` and `equipment` are what lies in the
+  world. `kind` filters, `near` and `world.count` cover the new kinds.
+  Garbage, projectiles, light fixtures and sound scenery are not listed.
+- **Tag names** (**Code**, 2026-11-19). Every object with a `tag` also
+  has `tag_name`, the definition's path in the loaded map
+  (`objects\vehicles\warthog\warthog`), from the map file's tag names as
+  `edit.tags` reads them; it is absent when the names can't be read. A
+  query's `tag` keeps one tag: a datum (8 hex digits, `0x` optional), or
+  text the tag's name contains (any case, `/` for `\`). Halo 1 Blood
+  Gulch's teleporter receivers, nearest first:
+
+  ```sh
+  h2 agent query '{"kind":["scenery"],"tag":"teleporter_base","near":{"player":0,"radius":500},"fields":["pos","tag_name"]}'
+  h2 agent sim set player.0 'pos=[x,y,z]' 'forward=[1,0,0]'
+  ```
+
+  The names come from the file the game actually loaded. The loaded
+  map's name is its cache header's (`0x00547898`); a converted map is
+  served under a disc map's file name with its own name in its header
+  (Blood Gulch is `h1_bloodgulch` in `H2_MAP_DIR`'s `coagulation.map`),
+  so looking for `maps\h1_bloodgulch.map` found nothing, and every
+  `edit.tags` name was null; now `h2 agent edit tags scen` names
+  `scenery\teleporter_base\teleporter_base`.
+  `boot::map_override::map_file` now tries the file name first, then the
+  maps folder's files by their header's name (`+0x198`), each through
+  the VFS's own layers, so the override is the file found. Telemetry,
+  the native world, our skulls and `sim.give`/`sim.spawn` find the map
+  the same way. If two files in the folder carry the same name, the
+  first in folder order wins. A map installed as content on the data
+  partition (not under the disc's `maps`) is not searched.
 - **Control.** `pause`, `resume` and `step` need `session.claim`; one
   connection holds it. A pause blocks the game thread inside the tick
   observer, still answering requests, and resumes by itself after `max_ms`
@@ -1162,7 +1203,7 @@ starts another game instance.
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
 | `sim.player.list` | read | the simulated players and the game player each became (`player.<i>`) |
 | `sim.player.pad` | act | `{id, steps, append?}`: pad steps (`input.pad`'s) for one |
-| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing?, team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
+| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
 | `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
 | `sim.spawn` | act | `{tag, pos, yaw?}`: the game makes an object from its tag at `pos`; answered after the next tick |
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
@@ -1320,7 +1361,9 @@ calls are queued.
   at once. The answer: `wrote` (with `pos`, `facing`) and `teleport`
   (`pos` and `body_forward` where the game put it, `faced`, `unit`).
   `yaw` is degrees about +z from +x and `pitch` degrees up (-89 to 89),
-  as `world.query` reports them; or `facing: [x,y,z]`.
+  as `world.query` reports them; or `facing: [x,y,z]` (also taken as
+  `forward`, `world.query`'s name for it), so a check can turn the
+  player to face what a query found.
 - **`sim.give`** gives a weapon as a starting profile does (`0xcce78`)
   and as an AI's equipment does (`0x1e05c8`): `placement_data_new`
   (`0xb7930`, owner the unit), `object_new` (`0xb7b40`), then

@@ -234,6 +234,16 @@ impl Tags for MapTags {
     }
 }
 
+/// `world.*`'s tag names, from the same editor.
+impl crate::TagNames for MapTags {
+    fn names(&mut self, datums: &[u32]) -> Vec<Option<String>> {
+        let mut out = vec![None; datums.len()];
+        let ed = &mut self.editor;
+        (self.guest)(&mut |g| out = ed.names_of(g, datums));
+        out
+    }
+}
+
 /// An up vector square to `forward` (a unit vector): world up with the
 /// forward part taken out, or +x for a forward straight up or down.
 pub fn up_of(f: [f32; 3]) -> [f32; 3] {

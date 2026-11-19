@@ -517,16 +517,50 @@ pub enum Kind {
     Machine,
     /// A dead biped not cleared away yet.
     Body,
+    /// Scenery (object type 6): rocks, trees, teleporter bases.
+    Scenery,
+    /// A weapon lying in the world (type 2); held weapons are their
+    /// unit's `weapon`, not listed.
+    Weapon,
+    /// Equipment lying in the world (type 3): grenades, powerups.
+    Equipment,
+    /// A device control (type 8): a switch or panel.
+    Control,
+    /// A crate (type 11).
+    Crate,
+    /// A creature (type 12).
+    Creature,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Player,
         Kind::Actor,
         Kind::Vehicle,
         Kind::Machine,
         Kind::Body,
+        Kind::Scenery,
+        Kind::Weapon,
+        Kind::Equipment,
+        Kind::Control,
+        Kind::Crate,
+        Kind::Creature,
     ];
+
+    /// The kind objects of engine object type `t` (the object header's
+    /// `+3`) are listed as, for the types the reader lists without a scan
+    /// of its own (units, vehicles and machines have theirs).
+    pub fn of_object_type(t: u8) -> Option<Kind> {
+        Some(match t {
+            2 => Kind::Weapon,
+            3 => Kind::Equipment,
+            6 => Kind::Scenery,
+            8 => Kind::Control,
+            11 => Kind::Crate,
+            12 => Kind::Creature,
+            _ => return None,
+        })
+    }
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -535,6 +569,12 @@ impl Kind {
             Kind::Vehicle => "vehicle",
             Kind::Machine => "machine",
             Kind::Body => "body",
+            Kind::Scenery => "scenery",
+            Kind::Weapon => "weapon",
+            Kind::Equipment => "equipment",
+            Kind::Control => "control",
+            Kind::Crate => "crate",
+            Kind::Creature => "creature",
         }
     }
 
@@ -608,6 +648,11 @@ pub struct Object {
     /// The definition tag's datum handle, as 8 hex digits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// The definition tag's name (`scenery\teleporter_base\teleporter_base`),
+    /// from the loaded map's file; absent when the map's names can't be
+    /// read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_name: Option<String>,
     /// The vehicle it rides, as an object id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vehicle: Option<String>,
@@ -631,7 +676,8 @@ pub struct Object {
     /// Vehicles only: someone is in it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occupied: Option<bool>,
-    /// Machines only: the scenario placement index.
+    /// Machines, scenery, items, controls and crates: the scenario
+    /// placement index, when a placement made it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<u16>,
     /// Machines only: the device position, 0 to 1.
@@ -753,6 +799,7 @@ pub const OBJECT_FIELDS: &[&str] = &[
     "velocity",
     "team",
     "tag",
+    "tag_name",
     "vehicle",
     "weapon",
     "name",
@@ -788,6 +835,11 @@ pub struct QueryParams {
     /// Only objects within a radius; results are then sorted nearest first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub near: Option<Near>,
+    /// Only objects whose definition tag is this: a datum (8 hex digits,
+    /// `0x` optional), or text the tag's name contains (any case, `/` for
+    /// `\`). A name matches nothing when the map's names can't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     /// Keep only these fields of each object (default: all).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<String>>,

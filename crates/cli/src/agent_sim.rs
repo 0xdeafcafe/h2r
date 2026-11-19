@@ -18,7 +18,8 @@ pub const USAGE: &str = "  sim add <local|phantom> [script|recording|brain] [tea
   sim pad <sim.N> <JSON steps> [append]  sim.player.pad
   sim set <player.N|sim.N> key=JSON...  sim.state.set: pos=[x,y,z] (the
                          game's own teleport, answered after the next tick)
-                         yaw=DEG [pitch=DEG] or facing=[x,y,z] (turns the
+                         yaw=DEG [pitch=DEG] or facing=[x,y,z] (or forward=,
+                         as world.query names it; turns the
                          unit and the player's view) team=N health=0..1
                          shield=0..3 grenades={\"frag\":N}
                          ammo={\"loaded\":N,\"reserve\":N}; host only, never
