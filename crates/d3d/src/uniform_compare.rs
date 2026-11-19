@@ -42,6 +42,10 @@ pub struct Expected {
     /// The pixel shader definition and the options it is translated with.
     pub def: PixelShaderDef,
     pub pixel_options: PixelOptions,
+    /// Its pipeline's primitive (topology, winding, cull, fill) and depth
+    /// write, compare and bias.
+    pub primitive: wgpu::PrimitiveState,
+    pub depth: (bool, wgpu::CompareFunction, wgpu::DepthBiasState),
     /// What it binds at each stage, described (`None`: not known).
     pub textures: [Option<String>; 4],
     /// Each stage it samples, with its sampler (`None`: not sampled).
@@ -78,6 +82,7 @@ pub(crate) fn observe(
     pixel: &PixelUniforms,
     options: &VertexOptions,
     pixel_shader: (&PixelShaderDef, &PixelOptions),
+    pipeline: (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>),
     samplers: &[SamplerKey; 4],
     textures: &[Option<TextureInfo>; 4],
 ) {
@@ -102,7 +107,7 @@ pub(crate) fn observe(
         }
         return;
     }
-    for line in compare(e, words, vertex, pixel, options, pixel_shader, samplers, textures) {
+    for line in compare(e, words, vertex, pixel, options, pixel_shader, pipeline, samplers, textures) {
         eprintln!("{line}");
     }
     armed.expected.draws = armed.expected.draws.saturating_sub(1);
@@ -110,6 +115,52 @@ pub(crate) fn observe(
         *guard = None;
         ARMED.store(false, Ordering::Release);
     }
+}
+
+/// The top-level fields of two `{:?}` renderings of one struct
+/// (`Name { field: value, ... }`) whose values differ, as (field, `a`'s,
+/// `b`'s); the whole of each when they do not split alike.
+pub fn field_differences(a: &str, b: &str) -> Vec<(String, String, String)> {
+    if a == b {
+        return Vec::new();
+    }
+    let (fa, fb) = (fields(a), fields(b));
+    if fa.is_empty() || fa.len() != fb.len() || fa.iter().zip(&fb).any(|(x, y)| x.0 != y.0) {
+        return vec![("(whole)".into(), a.into(), b.into())];
+    }
+    fa.into_iter()
+        .zip(fb)
+        .filter(|(x, y)| x.1 != y.1)
+        .map(|((name, x), (_, y))| (name, x, y))
+        .collect()
+}
+
+/// `Name { f: v, g: w }` as `[(f, v), (g, w)]`, split at the commas
+/// outside brackets.
+fn fields(s: &str) -> Vec<(String, String)> {
+    let Some(open) = s.find('{') else { return Vec::new() };
+    let Some(close) = s.rfind('}') else { return Vec::new() };
+    let body = &s[open + 1..close];
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    let mut push = |part: &str| {
+        if let Some((k, v)) = part.split_once(':') {
+            out.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    };
+    for (i, c) in body.char_indices() {
+        match c {
+            '[' | '(' | '{' => depth += 1,
+            ']' | ')' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                push(&body[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    push(&body[start..]);
+    out
 }
 
 /// Whether `a` and `b` hold the same bits in the model rows.
@@ -133,6 +184,7 @@ pub fn compare(
     pixel: &PixelUniforms,
     options: &VertexOptions,
     (def, pixel_options): (&PixelShaderDef, &PixelOptions),
+    (primitive, depth): (&wgpu::PrimitiveState, Option<&wgpu::DepthStencilState>),
     samplers: &[SamplerKey; 4],
     textures: &[Option<TextureInfo>; 4],
 ) -> Vec<String> {
@@ -230,12 +282,27 @@ pub fn compare(
             out.push(format!("  {name} d3d {d} other {o}"));
         }
     }
-    // The combiners and what changes their code (whole, when they differ).
-    if *def != e.def {
-        out.push(format!("  pixel shader d3d {def:?} other {:?}", e.def));
+    // The combiners and what changes their code: the fields that differ.
+    for (field, d, o) in field_differences(&format!("{def:?}"), &format!("{:?}", e.def)) {
+        out.push(format!("  pixel shader {field} d3d {d} other {o}"));
     }
-    if *pixel_options != e.pixel_options {
-        out.push(format!("  pixel options d3d {pixel_options:?} other {:?}", e.pixel_options));
+    for (field, d, o) in field_differences(&format!("{pixel_options:?}"), &format!("{:?}", e.pixel_options)) {
+        out.push(format!("  pixel options {field} d3d {d} other {o}"));
+    }
+    // The pipeline: the D3D draw's topology is the guest's (a strip where
+    // the other renderer draws the strip's triangles as a list).
+    for (field, d, o) in field_differences(&format!("{primitive:?}"), &format!("{:?}", e.primitive)) {
+        out.push(format!("  primitive {field} d3d {d} other {o}"));
+    }
+    let d3d_depth = depth.map(|d| (d.depth_write_enabled.unwrap_or(false), d.depth_compare.unwrap_or(wgpu::CompareFunction::Always), d.bias));
+    if d3d_depth != Some(e.depth) {
+        out.push(format!("  depth (write, compare, bias) d3d {d3d_depth:?} other {:?}", e.depth));
+    }
+    // The polygon stipple the D3D draw masks its fragments with (only
+    // with `PixelOptions::stipple`; all ones masks nothing).
+    if pixel_options.stipple && pixel.stipple != [u32::MAX; 32] {
+        let rows: Vec<String> = pixel.stipple.iter().map(|r| format!("{r:08x}")).collect();
+        out.push(format!("  stipple d3d {}", rows.join(" ")));
     }
     // The stages the other renderer samples: the D3D draw's texture
     // there, and the samplers when they differ.
@@ -285,6 +352,8 @@ mod tests {
             options: VertexOptions { provided_inputs: 0x7f, ..Default::default() },
             def: PixelShaderDef::default(),
             pixel_options: PixelOptions::default(),
+            primitive: wgpu::PrimitiveState::default(),
+            depth: (true, wgpu::CompareFunction::LessEqual, wgpu::DepthBiasState::default()),
             textures: [None, Some("Rgba8Unorm 4x4".into()), None, None],
             samplers,
             draws: 1,
@@ -319,9 +388,17 @@ mod tests {
         let mut samplers = [sampler(wgpu::FilterMode::Linear); 4];
         let textures = [None; 4];
         let mut options = e.options;
+        let mut primitive = e.primitive;
+        let mut depth = wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth24PlusStencil8,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
         let mut def = e.def.clone();
         assert_eq!(
-            compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), &samplers, &textures)[1..],
+            compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth)), &samplers, &textures)[1..],
             ["  0 constants the program does not read differ", "  stage 1 d3d texture none, other Rgba8Unorm 4x4, the same sampler"]
         );
         v.constants[0] = [2.0; 4];
@@ -332,16 +409,41 @@ mod tests {
         samplers[1] = sampler(wgpu::FilterMode::Nearest);
         options.provided_inputs = 0x1f;
         def.compare_mode = 1;
-        let lines = compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), &samplers, &textures);
+        primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
+        depth.bias.constant = 2;
+        let lines = compare(&e, &e.words, &v, &p, &options, (&def, &e.pixel_options), (&primitive, Some(&depth)), &samplers, &textures);
         assert_eq!(lines[1], "  c[0] d3d [2.0, 2.0, 2.0, 2.0] other [0.0, 0.0, 0.0, 0.0]");
         assert_eq!(lines[2], "  1 constants the program does not read differ", "c[60]");
         assert_eq!(lines[3], "  v5 d3d default [0.5, 0.5, 0.5, 1.0] other streamed");
         assert!(lines[4].starts_with("  w_clip d3d [1.0, 2.0] other [NaN, NaN]"), "{}", lines[4]);
         assert!(lines[5].starts_with("  c0 d3d"), "{}", lines[5]);
-        assert!(lines[6].starts_with("  pixel shader d3d PixelShaderDef"), "{}", lines[6]);
-        assert!(lines[6].contains("compare_mode: 1") && lines[6].contains("compare_mode: 0"), "{}", lines[6]);
-        assert!(lines[7].starts_with("  stage 1 d3d texture none, other Rgba8Unorm 4x4, sampler d3d SamplerKey"), "{}", lines[7]);
-        assert!(lines[7].contains("min: Nearest") && lines[7].contains("min: Linear"), "{}", lines[7]);
-        assert_eq!(lines.len(), 8);
+        assert_eq!(lines[6], "  pixel shader compare_mode d3d 1 other 0");
+        assert_eq!(lines[7], "  primitive topology d3d TriangleStrip other TriangleList");
+        assert!(lines[8].starts_with("  depth (write, compare, bias) d3d Some((true, LessEqual, DepthBiasState { constant: 2"), "{}", lines[8]);
+        assert!(lines[9].starts_with("  stage 1 d3d texture none, other Rgba8Unorm 4x4, sampler d3d SamplerKey"), "{}", lines[9]);
+        assert!(lines[9].contains("min: Nearest") && lines[9].contains("min: Linear"), "{}", lines[9]);
+        assert_eq!(lines.len(), 10);
+    }
+
+    #[test]
+    fn only_the_fields_that_differ_are_listed() {
+        #[derive(Debug)]
+        #[allow(dead_code)]
+        struct S {
+            a: [u32; 2],
+            b: Option<(u8, u8)>,
+            c: bool,
+        }
+        let x = format!("{:?}", S { a: [1, 2], b: Some((3, 4)), c: true });
+        let y = format!("{:?}", S { a: [1, 2], b: Some((3, 5)), c: false });
+        assert_eq!(
+            field_differences(&x, &y),
+            vec![
+                ("b".to_string(), "Some((3, 4))".to_string(), "Some((3, 5))".to_string()),
+                ("c".to_string(), "true".to_string(), "false".to_string())
+            ]
+        );
+        assert!(field_differences(&x, &x).is_empty());
+        assert_eq!(field_differences("A", "B"), vec![("(whole)".to_string(), "A".to_string(), "B".to_string())]);
     }
 }

@@ -1018,6 +1018,15 @@ impl ShaderProvider for Nv2aShaders {
                 &pu,
                 &key.vertex_options,
                 (&def, &key.pixel_options),
+                (
+                    &gfx::translate::primitive_state(&draw.state.render, draw.primitive.host_topology(), ctx.caps),
+                    gfx::translate::depth_stencil_state(
+                        &draw.state.render,
+                        Some(wgpu::TextureFormat::Depth24PlusStencil8),
+                        draw.primitive.host_topology(),
+                    )
+                    .as_ref(),
+                ),
                 &samplers,
                 &draw.texture_info,
             );
