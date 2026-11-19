@@ -361,7 +361,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         // dh-api: dedicated host, tunnel and sim host routes.
         .merge({
-            #[path = "http/hosts.rs"]
+            #[path = "http_hosts.rs"]
             mod hosts;
 
             hosts::routes()
