@@ -1860,8 +1860,9 @@ preparation still waits synchronously for each reservation.
      to `c[31]`..`c[39]` (`0x003f7330` takes ECX the first register in
      hardware numbering and the dword count on the stack: it writes the
      push-buffer methods `0x1ea4` and `0x0b80`). The shadow block goes to
-     `c[40]`..`c[48]` the same way. A skipped light uploads nothing, so the
-     host fills those registers from `LightGlobals::frame_constants`. The
+     `c[40]`..`c[48]` the same way. The original constants call runs
+     before admission. The host checks its 36 frame words against
+     `LightGlobals::frame_constants` before taking any dispatches. The
      same function then, for a definition with a `shad` at `+0xdc`/`+0xe0`,
      draws that shader into render target 13 (shader layer 1, pass -1,
      selector 0, target 13, draw 1 at `0x00016610`, return `0x0003a5b0`,
@@ -2011,7 +2012,8 @@ preparation still waits synchronously for each reservation.
    On stderr the first eligible diagnostic light stays on D3D. Two
    external-pass markers bracket its draws on the backend. Look for
    `native-lights compare: paired`, the material, layer and
-   implementation, then the indented `uniform-compare` fields (D3D
+   implementation, the projected float rectangle and rounded guest scissor,
+   then the indented `uniform-compare` fields (D3D
    first). Pairing uses the vertex program and closest pixel definition.
    Zero matching draws means the comparison found no program to compare.
    Separately, `D3D fallback light` compares the original pass flags

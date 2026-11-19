@@ -108,8 +108,8 @@ pub struct LightConstants {
     /// Falloff word 0 (`[0x00485a30]`, scalar 16).
     pub falloff_0: u32,
     /// The `bitm` datum engine texture 10 (the gel) binds, image 0
-    /// (`engine::light_passes::gel`); `None`: something else, which the
-    /// host does not draw.
+    /// (`engine::light_passes::gel`). A shader-driven gel uses the live
+    /// target-13 binding supplied separately by its producer.
     pub gel: Option<u32>,
     /// The constants setup also renders a shader into target 13.
     pub animated_gel: bool,

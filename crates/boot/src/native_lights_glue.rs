@@ -274,7 +274,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled, binding)?;
         if Self::probe(&mut d, mem, &plan, probe.as_deref_mut()) {
-            eprintln!("native-lights compare: projected scissor {:?}, consuming {count}/{} sorted dispatches",
+            let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
+                mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
+            eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
                 plan.scissor, sorted.entries.len());
             for (i, e) in sorted.entries.iter().enumerate() {
                 eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
