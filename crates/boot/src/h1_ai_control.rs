@@ -246,6 +246,7 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
         awareness(&cx, args[0], None).await?;
     } else if cx.read(actors::active)? {
         match op {
+            Operation::AttachFree => actors::attach_free(&cx, args[0], args[1]).await?,
             Operation::Free => {
                 for actor in cx.read(|m| actors::selected(m, args[0]))? {
                     actors::move_actor(&cx, actor, NONE).await?;

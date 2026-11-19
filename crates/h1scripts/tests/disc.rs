@@ -763,6 +763,7 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
     for operation in [
         RuntimeOperation::SeePlayers,
         RuntimeOperation::Free,
+        RuntimeOperation::AttachFree,
         RuntimeOperation::FreeUnits,
         RuntimeOperation::MigrateUnits,
         RuntimeOperation::Teleport,

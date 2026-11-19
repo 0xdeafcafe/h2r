@@ -25,6 +25,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_migrate` | Halo 2's 308 accepts encounter sources and bare squad destinations. It rejects group destinations at `0x002a54cc`. The converter resolves literal Halo 1 encounter and platoon destinations per source squad, preferring compatible variants and character types as in the selector at `0x001402a0`. Literal platoon sources expand to their member squads. |
 | `ai_migrate_by_unit` | Evaluates the HaloScript object list, collects the actors of its units and vehicles’ riders, and migrates each with Halo 2 `0x001e3400`. Group destinations prefer a squad of the same actor type. |
 | `ai_free`, `ai_free_units` | Call Halo 2's actor migration routine `0x001e3400` with no destination. It unlinks the old squad at `0x00203ed0` and puts the actor on the free-actor list at `0x00203f60`. A unit-list argument is evaluated by the VM and traversed through the native list pool. |
+| `ai_attach_free` | Compiles the actor-variant token to a rebuilt `char` at the original tag path. Source `actr` perception and `actv` vitality and weapon tuning populate the Halo 2 character records. The hook uses Halo 2 `0x001e0160` with no squad to attach that character to the supplied unit. The routine replaces any previous actor at `0x001e0d98` and puts the new actor on the free list. Halo 1's allocator and free-list insertion are `0x0014b810` and `0x0013bdd0`. |
 | `ai_teleport_to_starting_location` and its unsupported-only form | Select a starting pose in the actor's current squad and set the unit's transform with Halo 2 `0x000b7430`, then wake physics at `0x000b7360`. Halo 1 `0x00141510` checks support before the conditional move. The port uses Halo 2's biped support flag and seat attachment. When a start has no name, it selects the nearest available start in the squad. |
 | `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
@@ -62,7 +63,7 @@ or Agent API method.
 
 ## Open
 
-The remaining campaign calls need runtime behavior for `ai_attach_free`, automatic
+The remaining campaign calls need runtime behavior for automatic
 migration targeting (`ai_automatic_migration_target`), linked activation
 (`ai_link_activation`), `ai_playfight`, actor-local target preferences
 (`ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing`),
@@ -86,6 +87,7 @@ cargo test -p h1ai --test convert
 cargo test -p hs --lib h1_ai_slots
 cargo test -p h1scripts --lib ai_control
 cargo test -p boot --lib h1_ai_control
+cargo test -p h1campaign --lib actor_control
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1scripts --test disc encounter_controls_emit_live_evaluators_and_native_orders -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc every_level_s_scripts_run_on_the_retail_interpreter -- --ignored
 ```

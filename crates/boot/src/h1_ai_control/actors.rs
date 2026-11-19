@@ -24,6 +24,7 @@ const LIST_NODES: u32 = 0x004f_55d4;
 const ACTOR_UNIT: u32 = 0x18;
 const ACTOR_SQUAD: u32 = 0x30;
 const ACTOR_STARTING_LOCATION: u32 = 0x38;
+const ACTOR_ATTACH: u32 = 0x001e_0160;
 const ACTOR_MIGRATE: u32 = 0x001e_3400;
 const UNIT_DETACH_FROM_PARENT: u32 = 0x000c_c590;
 const OBJECT_SET_TRANSFORM: u32 = 0x000b_7430;
@@ -205,6 +206,32 @@ fn character_type(m: &dyn GuestMemory, index: u16) -> R<Option<u32>> {
     }
     let general = m.u32(at + 0x38)?;
     Ok(Some(u32::from(m.u16(general + 4)?)))
+}
+
+pub(super) async fn attach_free(cx: &Cx, unit: u32, character: u32) -> Result<(), EntryError> {
+    use engine::tags::{GroupTag, tag_get_checked};
+
+    let valid = cx.read(|m| {
+        let Some((kind, body)) = objects::get(m, DatumHandle(unit))? else {
+            return Ok(false);
+        };
+        Ok::<_, MemFault>(
+            matches!(kind, objects::BIPED | objects::VEHICLE)
+                && body.damage_flags(m)? & 4 == 0
+                && tag_get_checked(m, DatumHandle(character), GroupTag::from_chars(*b"char"))?
+                    .is_some(),
+        )
+    })?;
+    if valid {
+        cx.call(
+            GuestCall::new(ACTOR_ATTACH)
+                .eax(NONE)
+                .edx(character)
+                .args([unit, 0]),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(super) async fn move_actor(cx: &Cx, actor: Actor, destination: u32) -> Result<(), EntryError> {

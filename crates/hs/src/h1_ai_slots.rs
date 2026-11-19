@@ -81,6 +81,7 @@ pub enum Operation {
     VehicleDisable = 13,
     VehicleTick = 14,
     VehicleCount = 15,
+    AttachFree = 16,
 }
 
 impl Operation {
@@ -107,6 +108,7 @@ impl Operation {
             13 => Self::VehicleDisable,
             14 => Self::VehicleTick,
             15 => Self::VehicleCount,
+            16 => Self::AttachFree,
             _ => return None,
         })
     }
@@ -144,6 +146,7 @@ impl Operation {
             Self::VehicleDisable => &[UNIT, LONG],
             Self::VehicleTick => &[LONG],
             Self::VehicleCount => &[UNIT],
+            Self::AttachFree => &[UNIT, LONG],
         }
     }
 }

@@ -26,6 +26,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cutscenes;
+mod actor_control;
 pub mod donor;
 pub mod h2assets;
 pub mod manifest;
@@ -688,6 +689,9 @@ fn convert_with<R: Read + Seek>(
     let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
         let mut wanted = donor::wanted(h1)?;
+        if let Some(scripts) = opts.scripts {
+            wanted.extend(actor_control::wanted(h1, &scripts.catalog)?);
+        }
         // The retail weapons, vehicles and player the Halo 2-assets
         // variant places that the base lacks.
         if opts.objects && opts.assets == h2assets::Assets::Halo2 {

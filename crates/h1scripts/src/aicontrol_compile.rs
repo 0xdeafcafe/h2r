@@ -73,6 +73,7 @@ impl Compiler<'_> {
             "ai_vehicle_enterable_actors" => Some(RuntimeOperation::VehicleActors),
             "ai_vehicle_enterable_disable" => Some(RuntimeOperation::VehicleDisable),
             "ai_going_to_vehicle" => Some(RuntimeOperation::VehicleCount),
+            "ai_attach_free" => Some(RuntimeOperation::AttachFree),
             "ai_free" => Some(RuntimeOperation::Free),
             "ai_free_units" => Some(RuntimeOperation::FreeUnits),
             "ai_migrate_by_unit" => Some(RuntimeOperation::MigrateUnits),
