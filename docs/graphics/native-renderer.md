@@ -1667,6 +1667,7 @@ any shader gel, selects the layer, runs the build callbacks and sorts
 their output. The native decision is at the first BSP geometry handler
 called from the sorted dispatch loop (`0x0004d0b0`, return
 `0x0003bc90`). The owning light-layer call site and list must match.
+The ported layer loop supplies a named continuation for the same call.
 The original layer setup, teardown and light tail run on both paths.
 
 `light_list::sorted` reads the dispatcher's stack array, skips its
@@ -1948,7 +1949,7 @@ preparation still waits synchronously for each reservation.
        into opaque D3D draws, opaque unread shaders, transparent lit and
        transparent unread. At run time each refusal reason prints on its
        first occurrence.
-       The host reports admissions, splits, reference and scaled passes and
+       The host reports admissions, splits, lights sampling shader gels, reference and scaled passes and
        actual synchronous worker round trips. Every 1800 host decisions it
        also prints counts by reason.
      - Engine textures' texels (Code, V on 03a's `tile_metal_dark`): the
@@ -1998,6 +1999,12 @@ preparation still waits synchronously for each reservation.
    | D3D lights | `impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_lights=off` | `0` |
    | Native diagnostic | `impl.render.native_world=on,impl.render.native_objects=on,impl.render.native_lights=on` | `1` |
    | Native pixel comparison | same as native diagnostic | `0` |
+
+   For the combined target-13 test add `impl.render.native_gels=on`
+   to both arms. Set `H2_NATIVE_GELS_COMPARE=16` for the producer
+   diagnostic and `0` for pixel comparisons. Repeat at scale 2 to
+   exercise display-copy reservations. A scene with zero shader-gel
+   admissions provides no evidence for that binding.
 
    On stderr the first eligible diagnostic light stays on D3D. Two
    external-pass markers bracket its draws on the backend. Look for

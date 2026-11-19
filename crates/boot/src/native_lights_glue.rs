@@ -102,6 +102,7 @@ pub struct Tally {
     /// Lights split (the host's `split`): their native surfaces
     /// drawn natively, the rest by their D3D passes.
     pub split: u64,
+    pub shader_gels: u64,
     pub kept: BTreeMap<Keep, u64>,
 }
 
@@ -173,12 +174,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return if c.animated_gel { Err(Keep::Unsupported("missing gel invocation")) } else { Ok(None) };
         };
         use native_render::gels;
-        if c.flags & engine::light_passes::flag::CONTEXT_ZERO != 0
-            || c.definition_flags & engine::light_passes::DEFINITION_TEXTURE_18 != 0
-            || mem.u8(gels::BUILDING).ok() != Some(0)
-            || mem.u32(gels::DEFINITION).ok() != Some(definition)
-            || mem.u32(definition.wrapping_add(engine::light_passes::DEFINITION_GEL_SHADER)).ok() != Some(shader)
-        { return Err(Keep::Unsupported("engine texture 10 does not select this gel invocation")); }
+        if !uses_gel_target(mem, definition, shader, c.flags, c.definition_flags) {
+            return Err(Keep::Unsupported("engine texture 10 does not select this gel invocation"));
+        }
         let (_, before) = self.checkpoint.lock().unwrap_or_else(|e| e.into_inner())
             .take_if(|(id, _)| *id == serial).ok_or(Keep::Unsupported("missing gel entry checkpoint"))?;
         let target = gels::Target::read(&ReadMemory(mem)).ok_or(Keep::Unsupported("unavailable gel target 13"))?;
@@ -330,15 +328,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool {
+        let shader_gel = dispatch.shader_gel.is_some();
         let result = self.reserve(mem, dispatch, esi);
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        if shader_gel && ok { t.shader_gels += 1; }
         if matches!(&result, Ok(true)) { t.split += 1; }
         for msg in t.count(result.map(|_| ())) { eprintln!("{msg}"); }
-        if t.asked == 1 || (ok && t.planned.is_power_of_two()) || t.asked % SUMMARY_EVERY == 0 {
+        if t.asked == 1 || (ok && t.planned.is_power_of_two()) || (ok && shader_gel && t.shader_gels == 1) || t.asked % SUMMARY_EVERY == 0 {
             let [reference, display] = d3d::GfxBackend::native_bundle_passes();
-            eprintln!("native-lights: {} admitted, {} split, {} reference passes, {} scaled passes, {} worker round trips",
-                t.planned, t.split, reference, display,
+            eprintln!("native-lights: {} admitted, {} split, {} shader gels, {} reference passes, {} scaled passes, {} worker round trips",
+                t.planned, t.split, t.shader_gels, reference, display,
                 d3d::threaded::LIGHT_WORKER_WAITS.load(Ordering::Relaxed));
         }
         ok
@@ -359,6 +359,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn target(&self) -> Option<[u32; 8]> {
         self.device.lock().ok().map(|d| d.bound_target())
     }
+}
+
+fn uses_gel_target(mem: &dyn GuestMemory, definition: u32, shader: u32, flags: u32, definition_flags: u32) -> bool {
+    use native_render::gels;
+    shader != u32::MAX && definition != 0
+        && flags & engine::light_passes::flag::CONTEXT_ZERO == 0
+        && definition_flags & engine::light_passes::DEFINITION_TEXTURE_18 == 0
+        && mem.u8(gels::BUILDING).ok() == Some(0)
+        && mem.u32(gels::DEFINITION).ok() == Some(definition)
+        && definition.checked_add(engine::light_passes::DEFINITION_GEL_SHADER)
+            .and_then(|a| mem.u32(a).ok()) == Some(shader)
 }
 
 fn constants(light: &Light) -> Result<LightConstants, Keep> {
@@ -1235,6 +1246,23 @@ mod tests {
         let v = layered(vec![level(0, 0, 4), level(0, 1, 2)], TextureDim::D3).expect("level 0's slices");
         assert_eq!((v.layers, v.rgba.len()), (4, 64));
         assert!(layered(vec![level(0, 1, 4)], TextureDim::D3).is_none(), "no level 0");
+    }
+
+    #[test]
+    fn target_13_requires_the_current_light_and_engine_texture_10_selector() {
+        use native_render::gels;
+        let mut mem = FlatMemory::new(gels::DEFINITION, 0x1000);
+        let definition = gels::DEFINITION + 0x400;
+        let shader = 0xabcd_0005;
+        mem.set_u32(gels::DEFINITION, definition).unwrap();
+        mem.set_u32(definition + engine::light_passes::DEFINITION_GEL_SHADER, shader).unwrap();
+        assert!(uses_gel_target(&mem, definition, shader, 0, 0));
+        assert!(!uses_gel_target(&mem, definition, shader, engine::light_passes::flag::CONTEXT_ZERO, 0));
+        assert!(!uses_gel_target(&mem, definition, shader, 0, engine::light_passes::DEFINITION_TEXTURE_18));
+        assert!(!uses_gel_target(&mem, definition, shader + 1, 0, 0));
+        assert!(!uses_gel_target(&mem, definition + 4, shader, 0, 0));
+        mem.write(gels::BUILDING, &[1]).unwrap();
+        assert!(!uses_gel_target(&mem, definition, shader, 0, 0));
     }
 
     #[test]

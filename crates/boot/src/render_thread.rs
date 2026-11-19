@@ -257,6 +257,7 @@ mod tests {
             "LAYER_DRAW",
             "TRANSPARENT_GEOMETRY",
             "RENDER_LIGHT_PASSES",
+            "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",
             "COLOUR_PASS",
             "SCREEN_EFFECT",
