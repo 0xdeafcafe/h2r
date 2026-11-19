@@ -501,6 +501,79 @@ fn golden_vectors_match_the_encoder() {
     }
 }
 
+/// Check the public frame after encoding and decoding as well as each
+/// quantizer. All transforms share the same position and direction grids.
+#[test]
+fn entity_transforms_stay_inside_the_v7_error_bounds() {
+    fn axes(a: [f64; 3], b: [f64; 3], max: f64) {
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() <= max, "{a:?} -> {b:?}");
+        }
+    }
+    fn direction(a: [f64; 3], b: [f64; 3]) {
+        let dot: f64 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        assert!(
+            dot.clamp(-1.0, 1.0).acos().to_degrees() < 0.02,
+            "{a:?} -> {b:?}"
+        );
+    }
+    let mut f = samples::multiplayer(1).pop().unwrap();
+    let mut encoder = Encoder::new(0, 30);
+    let mut decoder = Decoder::new();
+    let mut odd = odd_frame();
+    f.objects = std::mem::take(&mut odd.objects);
+    f.projectiles = std::mem::take(&mut odd.projectiles);
+    f.items = std::mem::take(&mut odd.items);
+    for i in 0..120 {
+        f.tick += 2;
+        let t = i as f64 * 0.071;
+        let pos = [t.sin() * 271.7, t.cos() * 12.03, -0.551 * t];
+        let vel = [1.713 * t.sin(), -8.31 * t.cos(), t * 0.89];
+        let (sy, cy) = t.sin_cos();
+        let (sp, cp) = (t * 0.83).sin_cos();
+        let forward = [cp * cy, cp * sy, sp];
+        let up = [-sp * cy, -sp * sy, cp];
+        f.players[0].pos = pos;
+        f.players[0].aim = Some(forward);
+        f.players[0].vel = Some(vel);
+        f.vehicles[0].pos = pos;
+        f.vehicles[0].forward = forward;
+        f.vehicles[0].up = up;
+        f.vehicles[0].vel = Some(vel);
+        f.objects[0].p = Some(pos);
+        f.objects[0].f = Some(forward);
+        f.objects[0].u = Some(up);
+        f.items[0].pos = pos;
+        f.items[0].forward = forward;
+        f.items[0].up = up;
+        f.projectiles[1].pos = pos;
+        f.projectiles[1].vel = Some(vel);
+        let record = encoder.encode(&f).unwrap().0;
+        let back = decoder.decode(&record).unwrap().frame;
+        let (p, v, o, item, rocket) = (
+            &back.players[0],
+            &back.vehicles[0],
+            &back.objects[0],
+            &back.items[0],
+            &back.projectiles[1],
+        );
+        for got in [p.pos, v.pos, o.p.unwrap(), item.pos, rocket.pos] {
+            axes(pos, got, 0.5 / 1024.0);
+        }
+        for got in [p.vel, v.vel, rocket.vel] {
+            axes(vel, got.unwrap(), 0.5 / 128.0);
+        }
+        for got in [p.aim.unwrap(), v.forward, o.f.unwrap(), item.forward] {
+            direction(forward, got);
+        }
+        for got in [v.up, o.u.unwrap(), item.up] {
+            direction(up, got);
+        }
+        let pitch_error = (p.aim.unwrap()[2].clamp(-1.0, 1.0).asin() - sp.asin()).abs();
+        assert!(pitch_error.to_degrees() < 0.02);
+    }
+}
+
 /// Two units move through an irregular run, correct a single axis, swap
 /// slots, cross the yaw seam and then seek to a cut.
 fn motion_stream() -> Vec<Frame> {
