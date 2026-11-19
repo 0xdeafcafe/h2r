@@ -959,6 +959,7 @@ fn invoke(
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
+    let thread_id = ctx.thread_id;
     let (result, cleanup) = {
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -967,7 +968,7 @@ fn invoke(
         let had_match_tunnel = state.has_match_tunnel();
         let mut invoke = || state.invoke(e.operation, &args, &mut m, hle);
         let result = match hle.network.tap.get() {
-            Some(tap) => network::film::with_random(tap, e.name, ctx.thread_id, invoke),
+            Some(tap) => network::film::with_random(tap, e.name, thread_id, invoke),
             None => invoke(),
         };
         if had_match_tunnel && !state.has_match_tunnel() {
