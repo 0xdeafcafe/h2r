@@ -604,7 +604,7 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
     let endpoint = SocketAddrV4::new(addr, ticket.port);
     let clock = now();
     let provider = live.host_provider_kind();
-    let (result, request) = {
+    let (mut result, request) = {
         let mut matcher = live.matchmaking.lock().unwrap();
         if let Some((assignment, lease_id)) = matcher.booting_host(xuid, ticket.hopper) {
             // Provider callbacks also take the matcher lock.
@@ -618,15 +618,29 @@ pub(crate) async fn queue(State(live): State<Arc<Live>>, req: Request) -> Result
         matcher.submit(ticket, endpoint, xuid, clock, provider, &live)?
     };
     if let Some(request) = request {
-        // The cohort is already reserved. Returning now keeps every member
-        // polling while the provider allocates the process.
-        let live = live.clone();
-        crate::rt::spawn(async move {
-            let id = request.assignment_id.clone();
-            if live.request_host(request).await.is_err() {
-                live.matchmaking.lock().unwrap().host_request_failed(&id, now());
-            }
+        // LiveHub schedules its next sweep after this response. Wait for the
+        // host request to be recorded with the matcher lock released.
+        let assignment_id = request.assignment_id.clone();
+        let observed = live.request_host(request).await.ok().map(|host| {
+            let progress = BootProgress::from_view(live.host_view(&host.id));
+            (host.id, progress)
         });
+        let clock = now();
+        let mut matcher = live.matchmaking.lock().unwrap();
+        if let Some((lease_id, progress)) = observed {
+            if let Some(lease) = matcher.leases.get_mut(&assignment_id) {
+                lease.poll_host(&lease_id, clock, progress);
+            }
+        } else {
+            matcher.host_request_failed(&assignment_id, clock);
+        }
+        if matches!(result, Queue::Waiting { .. }) {
+            matcher.expire(clock);
+            result = match matcher.leases.get(&assignment_id) {
+                Some(lease) => lease.queue(xuid, &live.model),
+                None => Queue::Probing { candidates: Vec::new() },
+            };
+        }
     }
     Ok(json(StatusCode::OK, &result))
 }

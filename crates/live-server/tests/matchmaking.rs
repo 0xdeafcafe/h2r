@@ -7,12 +7,20 @@ use axum::{
 use common::{Harness, Resp, User, start_driven};
 use http_body_util::BodyExt;
 use live_proto::{
+    hosts::{HostLease, ProviderKind},
     lxm,
     matchmaking::{Assignment, Candidate, MATCH_HEADER},
 };
-use live_server::{ConnectInfo, Policy, store::MemoryStore};
+use live_server::{
+    ConnectInfo, Live, Policy, ServerIdentity,
+    app::Timers,
+    host_costs::HostCosts,
+    hosts::{HostBoot, HostConfig, HostError, HostProvider},
+    store::MemoryStore,
+};
 use serde_json::{Value, json};
 use std::{net::SocketAddr, sync::Arc};
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
 const HOPPER: u32 = 2; // Default Team Skirmish, two teams of two.
@@ -59,6 +67,122 @@ fn candidates(resp: Resp) -> Vec<Candidate> {
     let value = resp.json();
     assert_eq!(value["state"], "probing");
     serde_json::from_value(value["candidates"].clone()).unwrap()
+}
+
+#[derive(Default)]
+struct GatedProvider {
+    started: Notify,
+    release: Notify,
+}
+
+#[async_trait::async_trait]
+impl HostProvider for GatedProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Cloudflare
+    }
+
+    async fn start(&self, _lease: &HostLease, _boot: &HostBoot) -> Result<String, HostError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok("first-sweep-fixture".into())
+    }
+
+    async fn stop(&self, _lease_id: &str, _provider_ref: &str) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    async fn alive(&self, _provider_ref: &str) -> Result<bool, HostError> {
+        Ok(true)
+    }
+}
+
+#[tokio::test]
+async fn matchmaking_exposes_first_host_sweep_deadline_in_the_forming_response() {
+    let dir = common::temp_dir();
+    let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
+    let operator = ServerIdentity::load(&dir).unwrap().key;
+    let id = identity.id.clone();
+    let live = Live::start_with_host_costs(
+        Arc::new(MemoryStore::new()),
+        identity,
+        Policy::default(),
+        Timers::Driven,
+        HostCosts::default(),
+    )
+    .await
+    .unwrap();
+    live.configure_dedicated_matchmaking(|name| match name {
+        "LIVE_DEDICATED" => Some("1".into()),
+        "LIVE_DEDICATED_HOPPERS" => Some(r#"{"2":{"map":"lockout"}}"#.into()),
+        _ => None,
+    })
+    .unwrap();
+    live.set_host_config(HostConfig {
+        live_url: "https://live.test".into(),
+        data_url: "https://private.test/bundle".into(),
+        data_sha256: "ab".repeat(32),
+        max_hosts: 4,
+    });
+    let provider = Arc::new(GatedProvider::default());
+    live.set_host_provider(provider.clone());
+    let h = Harness {
+        app: live_server::http::router(live.clone()),
+        live,
+        operator,
+        id,
+        dir,
+    };
+    let players = [
+        h.create("First").await,
+        h.create("Second").await,
+        h.create("Third").await,
+        h.create("Fourth").await,
+    ];
+    let ports = [31000, 31010, 31020, 31030];
+    for (player, port) in players.iter().zip(ports) {
+        candidates(ticket(&h, player, port, false, json!([])).await);
+    }
+
+    let mut reports = Vec::new();
+    for (player, port) in players.iter().zip(ports) {
+        let targets = candidates(ticket(&h, player, port, false, json!([])).await);
+        let samples: Vec<_> = targets
+            .into_iter()
+            .map(|target| json!({
+                "target": target.xuid, "generation": target.generation, "rtt_ms": 40,
+            }))
+            .collect();
+        reports.push(json!(samples));
+    }
+    let last_report = reports.pop().unwrap();
+    for ((player, port), samples) in players.iter().zip(ports).zip(reports) {
+        candidates(ticket(&h, player, port, false, samples).await);
+    }
+
+    assert_eq!(h.live.sweep_due_with_hosts(), None);
+    let forming = ticket(&h, &players[3], ports[3], false, last_report);
+    tokio::pin!(forming);
+    tokio::select! {
+        biased;
+        response = &mut forming => {
+            panic!("queue replied before provider startup: {}", response.json());
+        }
+        _ = provider.started.notified() => {}
+    }
+    provider.release.notify_one();
+    let response = forming.await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.error());
+    let body = response.json();
+    assert_eq!(body["state"], "waiting");
+    let id = body["assignment"]["host_lease"].as_str().unwrap();
+    let host = h.live.host_view(id).unwrap();
+    let due = h.live.host_sweep_due_ms().expect("first host sweep deadline");
+    assert!(due > host.lease.created_ms);
+    assert!(due <= host.lease.created_ms + 60_000);
+    assert_eq!(
+        h.live.sweep_due_with_hosts(),
+        Some((due + 999).div_euclid(1000))
+    );
 }
 
 #[tokio::test]

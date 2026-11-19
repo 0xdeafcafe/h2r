@@ -1234,13 +1234,16 @@ code order. If no region has measurements from every member, Live
 uses the configured default. Regional probes occupy no player seats.
 
 Live reserves a cohort with an eligible peer fallback and requests
-the dedicated host as soon as the cohort forms. The playerless host
-occupies a machine slot, so an ad-hoc assignment can take at most
-15 solo entrants. Cohorts reachable only through a registered host
-use the existing registered-host path. All ad-hoc members receive
-`waiting` during boot. Live binds `host_lease` before starting the
-process, so the host can publish its lobby under that lease. The
-dedicated lobby has a session ID distinct from the assignment ID.
+the dedicated host as soon as the cohort forms. The forming request
+waits for the allocation result while other members can keep polling.
+This lets the Worker schedule the first lease sweep even if polling
+stops. The playerless host occupies a machine slot, so an ad-hoc
+assignment can take at most 15 solo entrants. Cohorts reachable only
+through a registered host use the existing registered-host path.
+All ad-hoc members receive `waiting` during boot. Live binds
+`host_lease` before starting the process, so the host can publish its
+lobby under that lease. The dedicated lobby has a session ID distinct
+from the assignment ID.
 After `HostReady` supplies the session ID, the queue sends `join`
 with that ID and `frames_from_host: true`.
 
