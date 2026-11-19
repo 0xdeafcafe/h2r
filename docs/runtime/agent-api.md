@@ -1297,7 +1297,7 @@ Game methods (`agent::havok::install`), answered at a tick boundary.
 
 | Method | Access | What |
 |---|---|---|
-| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`. `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
+| `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b` in the body's frame, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
 | `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
 
 ```sh
@@ -1310,6 +1310,49 @@ on one `h2 agent -` connection next to `object player.0`: the contact
 with `b.fixed` is the level, and `impulse` over the body's `mass` is the
 velocity it gave. Which triangle a point is on is not read yet
 ([havok-runtime.md](../engine/havok-runtime.md), "Open").
+
+A biped's `shape` is its standing or its crouching pill, chosen when its
+body is built ([havok-runtime.md](../engine/havok-runtime.md), "Shapes"):
+`height` says which (0.725 and 0.5 for `masterchief_mp`), and the address
+names the pill.
+
+## `world.raw`: an object's bytes, before and after
+
+Built 2026-11-19 to look for state a forced crouch leaves behind (the
+superbounce, [superbounce.md](../game/superbounce.md)); tested over
+synthetic guest memory, not run against the game. A game method
+(`agent::raw::install`; reader `crates/live-telemetry/src/raw.rs`), read
+only, no claim.
+
+| Method | Access | What |
+|---|---|---|
+| `world.raw` | read | `{id, parts?, len?}`: `id`, `datum`, and `parts`, each `{part, base, hex}` or `{part, missing}` (why: an unset pointer, a fault) |
+
+The parts, each found through the one before it
+([havok-runtime.md](../engine/havok-runtime.md)):
+
+| Part | Where | Bytes |
+|---|---|---|
+| `object` | the object's body (`player.N`: its unit) | the header's size (`+0x06`), else `len` (default `0x400`), at most `0x2000` |
+| `physics_component` | body `+0xb4` into the component array | `0xa0` |
+| `entity` | the component's first rigid body (`+0x70`, `+0x40`) | `0x200` |
+| `motion` | entity `+0x3c` | `0x140` |
+| `shape` | entity `+0x0c` | `0x80` |
+
+`h2 agent raw-diff a.json b.json` (no game needed) prints, per part, the
+32-bit words that differ, with their offset from the part's base, and
+both as floats where they read as ones. A part on one side only, or
+whose base moved (another structure), is listed, not compared. It reads
+what `h2 agent raw` prints, or a `-` script's output (its last line).
+
+```sh
+h2 agent raw player.0 > before.json             # world.raw {"id":"player.0"}
+# ... force a crouch, walk out, stand ...
+h2 agent raw player.0 > after.json
+h2 agent raw-diff before.json after.json
+h2 agent raw player.0 entity,shape              # some parts
+h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
+```
 
 ## Tick traces and the flight recorder
 
