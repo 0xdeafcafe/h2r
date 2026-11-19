@@ -1552,6 +1552,29 @@ colour for *a*, a second background colour for *b*). The masks were
 measured on the disc. Which profile colour fills which mask has not been
 confirmed against the game.
 
+**Composed emblem images.** `GET /art/emblem/{fg}-{bg}-{primary}-{secondary}-{tertiary}-{quaternary}.png`
+takes foreground (0–63) and background (0–31) layer numbers followed by
+four palette indices (0–255, wrapped to the palette length). For example,
+`/art/emblem/30-7-3-6-8-2.png` displays layers 30 and 7 with colours 3 and 6
+on the foreground and 8 and 2 on the background. The server uses the
+extraction's palette when it contains at least two valid colours and
+otherwise uses the web app's default 18 colours.
+
+The web client uses `s` plus eight lowercase hex digits for a seed-derived
+selector when an appearance field is absent. If a seeded colour depends
+on an overridden primary or tertiary, a final hyphen-separated field
+carries the original primary and tertiary hashes as 16 lowercase hex
+digits. A colour can also be an explicit `rRRGGBB` value with lowercase
+hex digits.
+
+The route redirects to the current revision's `?v=<revision>` URL, which
+returns a PNG at the background mask's pixel size. The foreground scales
+to fit it. Successful images with shared game art are served with
+`Cache-Control: public, max-age=31536000, immutable`. Loopback-only art
+keeps a private cache policy. Invalid specs return 400. Missing art,
+layers, or revisions return 404, and these replies are uncached. The same
+access rules apply as for `/art/game/*`.
+
 ## Clarifications (2026-11-15)
 
 Settled after the first client was built against this page.
