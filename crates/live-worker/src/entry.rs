@@ -37,7 +37,7 @@ use crate::sqlstore::SqlStore;
 async fn fetch(
     req: HttpRequest,
     env: Env,
-    _ctx: Context,
+    ctx: Context,
 ) -> Result<http::Response<axum::body::Body>> {
     let path = req.uri().path().to_string();
     // Game art is a redirect or a 404 from here, without waking the hub.
@@ -45,6 +45,9 @@ async fn fetch(
         .var(crate::settings::GAME_ART_URL)
         .ok()
         .map(|v| v.to_string());
+    if crate::site::is_emblem(&path) {
+        return Ok(crate::emblem::image(&req, art_url.as_deref(), &ctx).await);
+    }
     if let Some(art) = crate::site::game_art(art_url.as_deref(), &path, req.uri().query()) {
         use axum::response::IntoResponse;
         return Ok(match art {
@@ -96,9 +99,11 @@ async fn fetch(
 }
 
 /// A page of the web app: the built `index.html` from the assets, with
-/// the page's link preview in it ([`live_server::page_meta`]). Only a
-/// page that names a player, game or clan asks the hub; if that fails the
-/// page still gets its section's preview.
+/// the page's link preview in it ([`live_server::page_meta`]) and, for a
+/// game page, its pre-rendered header above the app
+/// ([`live_server::page_header`]). Only a page that names a player, game
+/// or clan asks the hub; if that fails the page still gets its section's
+/// preview (and no header, which the client then renders itself).
 async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::body::Body>> {
     use live_server::page_meta;
     let path = req.uri().path();
@@ -143,7 +148,15 @@ async fn app_page(req: &HttpRequest, env: &Env) -> Result<http::Response<axum::b
     let body = if *req.method() == http::Method::HEAD {
         String::new()
     } else {
-        page_meta::page_html(&html, &meta, &origin, path)
+        // A game page's header, pre-rendered above the app (page_header),
+        // as the hub's answer carries it.
+        match &meta.header {
+            Some(header) => live_server::page_header::inject(
+                &page_meta::page_html(&html, &meta, &origin, path),
+                header,
+            ),
+            None => page_meta::page_html(&html, &meta, &origin, path),
+        }
     };
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")

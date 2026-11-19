@@ -1,6 +1,6 @@
 import { Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
 import type { FrameObject, MapOutline } from "../api/types";
-import type { SampledHit, SampledMachine, SampledPlayer, SampledVehicle } from "../state/frames";
+import type { SampledHit, SampledMachine, SampledMachinePosition, SampledPlayer, SampledVehicle } from "../state/frames";
 import type { MapFeatures } from "../map/features";
 import { onAnimationFrame } from "../map/scheduler";
 import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type RosterEntry } from "../map/render";
@@ -22,6 +22,8 @@ export interface MapFrame {
   bsp?: number | null;
   /** Machines that move (lift platforms, doors, big scripted things), when the frames have them. */
   machines?: SampledMachine[];
+  /** Device animation endpoints by scenario placement index. */
+  machinePositions?: ReadonlyMap<number, SampledMachinePosition>;
   /** Scenario objects moved or gone (`Frame.objects`), when the frames have them. */
   objects?: FrameObject[] | null;
   /** A cutscene is playing: there is no one to draw, and the views say so. */

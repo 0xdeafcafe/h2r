@@ -828,6 +828,10 @@ pub const VARIANT_FLAGS: u32 = 0x134 + 0x48;
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
 pub const UNIT_AIM: u32 = 0x168;
+/// Crouch request bit on a biped (docs/live/live-gamestate.md).
+const BIPED_UNIT_FLAGS: u32 = 0x134;
+const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
+
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
@@ -953,12 +957,14 @@ fn perception(
         return Ok((out, grenades));
     };
     let mut me_index = None;
+    let mut scoreboard = Vec::new();
     for (handle, p) in array.live(m, 16)? {
         if !p.listed(m)? {
             continue;
         }
         let id = u32::from(handle.index());
         let team = i16::from(p.team(m)?);
+        scoreboard.push((id, team));
         let ours = is(m, &p, who)?;
         if ours {
             out.observations.player = Some((id, team));
@@ -1007,22 +1013,28 @@ fn perception(
             });
         } else {
             out.observations.contacts.push(crate::brain::Contact {
+                weapon: intel::held_model(m, body.addr).ok().flatten(),
                 id,
                 aim,
-                shield: body.shield(m).ok().filter(|s| s.is_finite()),
-                empty_magazine: crate::arms::held_empty_magazine(m, body.addr).unwrap_or(false),
+                // These cues require a visible effect or reload animation.
+                shield: None,
+                empty_magazine: false,
+                crouching: m
+                    .u32(body.addr + BIPED_UNIT_FLAGS)
+                    .is_ok_and(|flags| flags & BIPED_CROUCH_REQUEST != 0),
             });
             out.others.push(Seen { id, position, team });
         }
     }
     if let Some(me) = me_index {
+        out.observations.ahead = intel::ahead(m, me, out.teams, &scoreboard).unwrap_or(false);
         let near = out.me.filter(|_| sense_grenades).map(|me| me.position);
         if let Ok(ground) = crate::arms::ground(m, near) {
             out.pickups = ground.weapons;
             out.observations.held_power = ground.held_power;
             out.observations.takes = pickups::recent(out.tick);
             out.observations.supplies = ground.supplies;
-            out.observations.placement_clocks = intel::clocks(m, out.tick).unwrap_or_default();
+            out.observations.service_rate = intel::service_rate(m);
             out.observations.pickups_scanned = true;
             grenades = ground.grenades;
         }

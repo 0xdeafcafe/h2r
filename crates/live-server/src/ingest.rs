@@ -172,7 +172,11 @@ impl IngestSession {
         for record in pack::records(bytes) {
             let decoded = record.and_then(|r| self.decoder.decode(r));
             let result = match decoded {
-                Ok(d) => self.live.ingest_frame(author, d.frame).await.map(|_| ()),
+                Ok(d) => self
+                    .live
+                    .ingest_frame_with_machine_baseline(author, d.frame, d.machine_baseline)
+                    .await
+                    .map(|_| ()),
                 Err(e) => Err(ApiError::new(ErrorCode::Invalid, format!("frame: {e}"))),
             };
             if let Err(e) = result {

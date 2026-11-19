@@ -585,12 +585,24 @@ struct Clanker {
     taunts: Arc<AtomicBool>,
     /// Its taunt with Taunts on: the default, or a roster bot's own.
     taunt: f32,
+    /// Identity and taunt to restore when a local bot goes offline.
+    fallback: (u64, f32),
     /// The page's Glitches (a [`GLITCHES`] value; shared by every
     /// Clanker of the driver).
     glitches: Arc<AtomicU8>,
 }
 
 impl local::PadSource for Clanker {
+    fn brain_view(&self) -> Option<bots::BrainView> {
+        Some(self.brain.view())
+    }
+
+    fn set_roster_personality(&mut self, personality: Option<(u64, f32)>) {
+        let (seed, taunt) = personality.unwrap_or(self.fallback);
+        self.brain.set_identity_seed(seed);
+        self.taunt = taunt;
+    }
+
     fn reset_input(&mut self) {
         self.brain.reset_input();
     }
@@ -601,9 +613,7 @@ impl local::PadSource for Clanker {
 
     fn pad(&mut self, f: &local::Frame<'_>) -> input::host::HostPadState {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
-        if self.brain.mind.skill != want {
-            self.brain.mind.skill = want;
-        }
+        self.brain.set_skill(want);
         self.brain.mind.emote.taunt = if self.taunts.load(Ordering::Relaxed) {
             self.taunt
         } else {
@@ -1162,6 +1172,7 @@ impl Driver {
             if let Some(r) = entry.as_ref().filter(|_| seating.fill) {
                 o.skill.store(skill_index(r.skill), Ordering::Relaxed);
             }
+            let personality = entry.as_ref().map(|r| (r.seed, r.taunt));
             let account = entry.map(|r| bots::guest::BotAccount {
                 xuid: r.identity.xuid,
                 gamertag: r.identity.gamertag,
@@ -1176,7 +1187,11 @@ impl Driver {
                     None => log.push(format!("Clanker {port} has no bot account")),
                 }
             }
-            if self.local.set_account(h, account).is_ok() {
+            if self
+                .local
+                .set_roster_account(h, account, personality)
+                .is_ok()
+            {
                 o.xuid = xuid;
             }
         }
@@ -1207,7 +1222,7 @@ impl Driver {
                             },
                             team: None,
                             skill: k,
-                            seed: 0xc1a4 ^ u64::from(n),
+                            seed: 0xc1a4_0000 ^ u64::from(n),
                             taunt: bots::emote::DEFAULT_TAUNT,
                         },
                         false,
@@ -1299,6 +1314,7 @@ impl Driver {
             skill: Arc::clone(&s),
             taunts: Arc::clone(&self.taunts),
             taunt,
+            fallback: (seed, taunt),
             glitches: Arc::clone(&self.glitches),
         };
         (c, s)

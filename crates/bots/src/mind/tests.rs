@@ -104,6 +104,7 @@ fn the_skills_get_better_in_order() {
 #[test]
 fn a_wall_hides_an_enemy_and_so_does_its_back() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: wall(),
     };
@@ -225,8 +226,39 @@ fn it_chases_where_it_last_saw_someone_then_forgets() {
 }
 
 #[test]
+fn public_death_replaces_the_last_sighting_with_a_fading_possible_spawn() {
+    let mut m = Mind::new(Skill::Normal, 17);
+    let mut map = MapData::default();
+    let possible = [-12., 0., 0.];
+    map.places.starts = vec![[10., 0., 0.], possible];
+    look(&mut m, X, vec![enemy(1, [5., 0., 0.])], 0, Some(&map));
+    let p = Perception {
+        me: me([0.; 3], X),
+        tick: 1,
+        ..Default::default()
+    };
+    let death = crate::emote::Kill {
+        seq: 1,
+        tick: 1,
+        attacker: Some(2),
+        victim: 1,
+        betrayal: false,
+        at: None,
+    };
+    m.hear_deaths(&p, &[death], Some(&map));
+    assert_eq!(m.last_seen, None);
+    assert_eq!(m.search, Some((possible, 1)));
+    let pad = m.step(&p, Some(&map));
+    assert_eq!(m.doing, Doing::Support(possible));
+    assert_eq!(pad.right_trigger, 0.);
+    look(&mut m, X, vec![], 2 + MEMORY_TICKS, Some(&map));
+    assert_eq!(m.doing, Doing::Roam);
+}
+
+#[test]
 fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -661,6 +693,7 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
         }
     }
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![sq(0.0, 0.0), sq(2.0, 0.0), sq(0.0, 2.0), sq(2.0, 2.0)],
             edges,
@@ -698,6 +731,7 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
 #[test]
 fn roaming_goes_where_it_last_saw_an_enemy() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -723,6 +757,7 @@ fn it_chases_someone_last_seen_in_the_air() {
     // Seen mid-jump, 2.5 over the floor: the chase goes to the floor under
     // that point instead of giving up for want of a path.
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -751,6 +786,7 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
         Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
     };
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(
             vec![
                 quad(-20.0, -0.4, 20.0, 0.4, 2.0),
@@ -845,6 +881,7 @@ fn play(
 #[test]
 fn the_flag_carrier_walks_home_along_the_nav_mesh() {
     let map = MapData {
+        places: Default::default(),
         nav: floor(),
         walls: Walls::default(),
     };
@@ -1083,6 +1120,7 @@ fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
 #[test]
 fn occluded_positions_never_drive_the_stick_or_projectile_lead() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::default(),
         walls: wall(),
     };
@@ -1137,6 +1175,7 @@ fn a_gunshot_can_turn_the_head_without_creating_a_target() {
         tick: 0,
     }];
     let mut looked = false;
+    let mut investigated = false;
     for tick in 0..26 {
         let p = Perception {
             me: me([0.0; 3], X),
@@ -1144,16 +1183,25 @@ fn a_gunshot_can_turn_the_head_without_creating_a_target() {
             ..Perception::default()
         };
         let pad = m.step_with_cues(&p, None, &report, &[]);
-        assert_eq!(pad.left_stick, (0.0, 0.0));
         assert_eq!((pad.left_trigger, pad.right_trigger), (0.0, 0.0));
-        assert_ne!(m.doing, Doing::Fight(1));
+        assert!(!matches!(m.doing, Doing::Fight(_)));
         assert!(m.target.is_none());
         if tick < 5 {
             assert_eq!(pad.right_stick, (0.0, 0.0));
+            assert_eq!(pad.left_stick, (0.0, 0.0));
+        }
+        if let Doing::Support(at) = m.doing {
+            assert!(looked, "the glance precedes the search");
+            assert!(
+                at[1] > at[0].abs(),
+                "search along the heard bearing: {at:?}"
+            );
+            investigated |= pad.left_stick != (0.0, 0.0);
         }
         looked |= pad.right_stick.0 < -0.1;
     }
     assert!(looked);
+    assert!(investigated);
 }
 
 #[test]
@@ -1229,6 +1277,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
         (Doing::Roam, true),
         (Doing::Idle, false),
         (Doing::Chase([1.0; 3]), false),
+        (Doing::HoldAngle([1.0; 3]), false),
         (Doing::Support([1.0; 3]), false),
         (Doing::Supply([1.0; 3]), false),
         (Doing::Rearm([1.0; 3]), false),
@@ -1249,7 +1298,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
     look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);
     m.stunt = Some(hop());
     look(&mut m, X, vec![], 5, None);
-    assert_eq!(m.doing, Doing::Chase([6.0, 3.0, 0.0]));
+    assert_eq!(m.doing, Doing::HoldAngle([6.0, 3.0, 0.0]));
     assert!(m.stunt.is_none());
     // The hook a seat's pad calls stops both kinds.
     m.stunt = Some(hop());
@@ -1270,4 +1319,27 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
     look(&mut m, X, vec![], 6, None);
     assert_eq!(m.doing, Doing::Drive(100));
     assert!(m.stunt.is_none() && !m.combo.tricking());
+}
+
+#[test]
+fn temperament_showboats_attempt_risky_melee_but_still_reach_for_the_button() {
+    let mut careful = Mind::new(Skill::Legendary, 1);
+    careful.decisions.personality.showboating = 0.15;
+    let mut showboat = careful.clone();
+    showboat.decisions.personality.showboating = 0.9;
+    let foe = || vec![enemy(1, [1.0, 0.0, 0.0])];
+    let mut first = None;
+    for tick in 0..30 {
+        let pad = look(&mut showboat, X, foe(), tick, None);
+        assert!(
+            !look(&mut careful, X, foe(), tick, None)
+                .buttons
+                .contains(MELEE)
+        );
+        if pad.buttons.contains(MELEE) {
+            first.get_or_insert(tick);
+            assert_eq!(pad.right_trigger, 0.0);
+        }
+    }
+    assert!((3..30).contains(&first.expect("showboat tries the melee")));
 }

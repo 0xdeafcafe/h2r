@@ -811,6 +811,8 @@ pub struct Converter<'a> {
     /// ([`Self::dialogue`]).
     pub dialogue_bytes: u64,
     done: HashMap<u32, TagId>,
+    /// Render models by source tag and weapon counter's loaded maximum.
+    render_models: HashMap<(h1map::TagId, Option<i16>), TagId>,
     colls: HashMap<(u32, bool), TagId>,
     coll_names: HashMap<(u32, bool), Vec<(String, Vec<String>)>>,
     /// Per converted `coll`, the `hlmt` materials it needs
@@ -836,9 +838,15 @@ pub struct Converter<'a> {
     /// Plasma pictures with their brightness as alpha
     /// ([`Self::brightest_bitmap`]), by (bitmap tag, gain bits).
     brightest_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Flat bump maps cut out by a base map's alpha
+    /// ([`Self::cutout_bump`]), by base map tag.
+    cutout_bumps: HashMap<u32, Option<TagId>>,
     /// Change-colour maps ([`Self::change_colour_bitmap`]), by
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
+    /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
+    /// `schi`, permutation, loaded maximum).
+    counter_shaders: HashMap<(u32, i16, i16), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -886,6 +894,7 @@ impl<'a> Converter<'a> {
             tree: Tree::default(),
             coll_reports: Vec::new(),
             done: HashMap::new(),
+            render_models: HashMap::new(),
             colls: HashMap::new(),
             coll_names: HashMap::new(),
             coll_materials: HashMap::new(),
@@ -897,7 +906,9 @@ impl<'a> Converter<'a> {
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
             brightest_bitmaps: HashMap::new(),
+            cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
+            counter_shaders: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1444,7 +1455,7 @@ impl<'a> Converter<'a> {
         // The converted model has no variants; the engine then uses none.
         root.bytes[h2::DEFAULT_VARIANT..h2::DEFAULT_VARIANT + 4].fill(0);
         let template_hlmt = self.base.reference(&root.bytes, h2::MODEL);
-        let hlmt = self.model(rep, obj, template_hlmt, name, false)?;
+        let hlmt = self.model(rep, obj, template_hlmt, name, false, None)?;
         root.tag_ref(h2::MODEL as u32, hlmt.unwrap_or(TagId::NULL));
         if obj.physics.is_some() {
             rep.no_home.push(
@@ -1458,6 +1469,8 @@ impl<'a> Converter<'a> {
     /// The `hlmt` and the converted tags under it. `None` when the Halo 1
     /// object has no render model. `rebuild`: the `hlmt` and the `mode`'s
     /// materials from the definitions ([`crate::rebuild`]), no template.
+    /// `rounds` is the weapon's loaded maximum when its counters count
+    /// the rounds loaded ([`h1::Weapon::rounds_counter`]).
     fn model(
         &mut self,
         rep: &mut ObjectReport,
@@ -1465,26 +1478,26 @@ impl<'a> Converter<'a> {
         template_hlmt: Option<TagId>,
         name: &str,
         rebuild: bool,
+        rounds: Option<i16>,
     ) -> Result<Option<TagId>> {
         let Some(mode_id) = obj.model else {
             return Ok(None);
         };
         let scenery = h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen");
         let mode_tag = self.h1_tag(mode_id)?;
-        let (h1_model, mode) = match self.done.get(&mode_tag.id.0) {
-            // Converted already (shared by two objects): only the Halo 1
-            // model is needed again.
-            Some(_) => h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?,
+        let (mut h1_model, _) =
+            h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
+        let key = (mode_id, rounds);
+        let mode = match self.render_models.get(&key) {
+            Some(&mode) => mode,
             None => {
-                let (mut h1_model, _) =
-                    h1models::model_from_map(self.h1, mode_tag, &ModelOptions::default())?;
                 // A vehicle's powered mass points become markers, which
                 // its friction or hover points name (crate::rebuild::Point).
                 if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi") {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model);
+                let mut shaders = self.model_shaders(rep, &h1_model, rounds);
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
@@ -1496,7 +1509,10 @@ impl<'a> Converter<'a> {
                 // One material per Halo 1 shader, as convert_model writes.
                 let mut padded = shaders.clone();
                 padded.resize(h1_model.shaders.len(), TagId::NULL);
-                let opts = ModelOptions { shaders };
+                let opts = ModelOptions {
+                    shaders,
+                    ..ModelOptions::default()
+                };
                 let mut mode = h1models::mode::convert_model(
                     &h1_model,
                     h1models::short_name(&mode_tag.name),
@@ -1505,10 +1521,11 @@ impl<'a> Converter<'a> {
                 if rebuild {
                     crate::rebuild::mode_materials(&mut mode.root, &padded)?;
                 }
-                (h1_model, mode)
+                let mode = self.tree.push(&mode_tag.name, mode);
+                self.render_models.insert(key, mode);
+                mode
             }
         };
-        let mode = self.cached(mode_tag, mode)?;
         let mut hlmt = match template_hlmt {
             Some(t) => Block::new(self.base.root(t)?),
             None => Block::zeroed(
@@ -1782,14 +1799,14 @@ impl<'a> Converter<'a> {
         let mut object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
         rep.physics = Some(match object.collision {
             Some(_) => {
                 "none: the coll's BSP physics slots; placements' collision joins the level's".into()
             }
             None => "none (no Halo 1 collision)".into(),
         });
-        let predicted = self.predicted(&object)?;
+        let predicted = self.predicted(hlmt);
         let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::scenery(&object, hlmt, &predicted, &words)
@@ -1972,7 +1989,18 @@ impl<'a> Converter<'a> {
     /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
     /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
     /// template at all the materials stay null.
-    fn model_shaders(&mut self, rep: &mut ObjectReport, model: &h1models::h1::Model) -> Vec<TagId> {
+    ///
+    /// `rounds` is the loaded maximum of the weapon whose model this is
+    /// when Halo 1's counters on it count its rounds
+    /// ([`h1::Weapon::rounds_counter`]): a numeric `schi` entry then
+    /// becomes the Halo 2 digit its permutation names
+    /// ([`Self::counter_shader`]), one `shad` per digit.
+    fn model_shaders(
+        &mut self,
+        rep: &mut ObjectReport,
+        model: &h1models::h1::Model,
+        rounds: Option<i16>,
+    ) -> Vec<TagId> {
         let Some(template) = self.base.model_shader.clone() else {
             rep.no_home
                 .push("model shaders: the base has no model shader to copy; materials null".into());
@@ -1980,6 +2008,13 @@ impl<'a> Converter<'a> {
         };
         let mut out = Vec::new();
         for s in &model.shaders {
+            if let Some(loaded) = rounds
+                && let Some(id) =
+                    self.counter_shader(&template.library, s.tag, s.permutation, loaded)
+            {
+                out.push(id);
+                continue;
+            }
             let id = (|| -> Option<TagId> {
                 let tag = self.h1.tag(s.tag).ok()?;
                 if let Some(id) = self.done.get(&tag.id.0) {
@@ -2021,7 +2056,11 @@ impl<'a> Converter<'a> {
     /// A `soso` whose base is cut out (an alpha Halo 1 tests,
     /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
     /// trees, decals) takes this path onto `tex_bump_alpha_test_single_pass`
-    /// (converter version 84; they drew as solid cards before).
+    /// (converter version 84; they drew as solid cards before). Its bump
+    /// slot takes a flat bump map cut out where the base is
+    /// ([`Self::cutout_bump`], converter version 92): the stem's depth
+    /// and shadow passes kill by the bump's alpha, so with the default
+    /// bump the cards stayed whole and dark.
     ///
     /// A `soso` with a reflection cube map takes this path too, onto
     /// `tex_bump_env` with Halo 1's cube map and tints
@@ -2123,6 +2162,28 @@ impl<'a> Converter<'a> {
         if maps.is_empty() {
             return None;
         }
+        // The cut-out stem's depth and shadow passes kill by its bump
+        // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
+        // a `soso` has no bump map, so it takes a flat one cut out where
+        // its base is (converter version 92; the stem's default bump is
+        // opaque, and the leaves drew as whole dark cards).
+        if chosen.layout.stem == h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
+            && !maps.contains_key(&h1convert::shad::Role::Bump)
+            && let Some((_, base)) = chosen
+                .maps
+                .iter()
+                .find(|(r, _)| *r == h1convert::shad::Role::Base)
+            && let Some(id) = self.cutout_bump(base.bitmap)
+        {
+            maps.insert(
+                h1convert::shad::Role::Bump,
+                h1convert::shad::Bound {
+                    id,
+                    scale: base.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, base.bitmap),
+                },
+            );
+        }
         let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
         self.cached(
             tag,
@@ -2133,6 +2194,58 @@ impl<'a> Converter<'a> {
             },
         )
         .ok()
+    }
+
+    /// Digit `permutation` of the Halo 1 numeric `schi` `id` on a weapon
+    /// whose counters count its rounds loaded (out of `loaded`), as a
+    /// Halo 2 ammunition counter digit
+    /// (`h1convert::shad::H1Numeric::ammunition_digit`): `illum_detail`
+    /// drawing Halo 1's digits, the frame picked by the weapon's
+    /// `primary_ammunition_ones` or `_tens`, as retail's battle rifle
+    /// counter is drawn (`h1convert::shad::counter_shader`). Named
+    /// `<schi>_ones` or `_tens`, built once per digit. `None` for any other
+    /// shader, or when the base lacks the stem; the entry then converts
+    /// as any other shader. Before converter version 95 both digits drew
+    /// the one `one_add_illum` copy of the digits' first image: the
+    /// assault rifle read 00.
+    fn counter_shader(
+        &mut self,
+        library: &h1convert::shad::Library,
+        id: h1map::TagId,
+        permutation: i16,
+        loaded: i16,
+    ) -> Option<TagId> {
+        let key = (id.0, permutation, loaded);
+        if let Some(t) = self.counter_shaders.get(&key) {
+            return *t;
+        }
+        let out = (|| {
+            let tag = self.h1.tag(id).ok()?.clone();
+            let n = h1convert::shad::chicago_numeric(self.h1, &tag)?;
+            let input = n.ammunition_digit(permutation, loaded)?;
+            let s = h1convert::shad::counter_shader(&tag.name, &n, input);
+            let digits = self.bitmap(n.bitmap)?;
+            let maps = HashMap::from([(
+                h1convert::shad::Role::Base,
+                h1convert::shad::Bound {
+                    id: digits,
+                    scale: n.scale,
+                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
+                },
+            )]);
+            let tree = library.build_with(s.layout, &maps, &s.extras).ok()?;
+            let place = input.rsplit('_').next().unwrap_or(input);
+            Some(self.tree.push(
+                &format!("{}_{place}", tag.name),
+                Converted {
+                    group: FourCC(*b"shad"),
+                    root: tree,
+                    raw: Vec::new(),
+                },
+            ))
+        })();
+        self.counter_shaders.insert(key, out);
+        out
     }
 
     /// The Halo 1 bitmap `id`, converted once.
@@ -2178,6 +2291,26 @@ impl<'a> Converter<'a> {
                 self.tree.push(&name, conv)
             });
         self.brightest_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
+    /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
+    /// name>_alpha_test_bump`, built once per base. `None` when the base
+    /// does not read or decode, or has more than one image: the stem's
+    /// default bump then stands, uncut, as before.
+    fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
+        if let Some(t) = self.cutout_bumps.get(&base.0) {
+            return *t;
+        }
+        let tag = self.h1.tag(base).ok()?.clone();
+        let out = h1bitmaps::mask::convert_cutout_bump(self.h1, &tag)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::cutout_bump_name(&tag.name);
+                self.tree.push(&name, conv)
+            });
+        self.cutout_bumps.insert(base.0, out);
         out
     }
 
@@ -2421,10 +2554,10 @@ impl<'a> Converter<'a> {
             b"mach"
         };
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true, None)?;
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
-        let predicted = self.predicted(&dev.object)?;
+        let predicted = self.predicted(hlmt);
         let mut root = crate::rebuild::device(&dev, hlmt, &predicted)?;
         rep.no_home.push(
             "devi sounds and effects (Halo 1 effe references): null; the device is silent".into(),
@@ -2486,7 +2619,7 @@ impl<'a> Converter<'a> {
                 ),
             },
         );
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
         self.object_physics(
             &mut rep,
@@ -2495,7 +2628,7 @@ impl<'a> Converter<'a> {
             &tag.name,
             PhysicsKind::Vehicle { wheels },
         )?;
-        let predicted = self.predicted(&u.object)?;
+        let predicted = self.predicted(hlmt);
         let (markers, bounds) = match u.object.model {
             Some(m) => {
                 let model =
@@ -2719,16 +2852,27 @@ impl<'a> Converter<'a> {
         );
         let mut out: Vec<PoweredPoint> = Vec::new();
         for m in phys.mass_points.iter().filter(|m| m.powered_mass_point >= 0) {
+            // Every point rides the root node, not its own. A wheel's or
+            // tread's node turns and rises with the spin and suspension
+            // animations, and a contact point that moves with it pushes
+            // the vehicle about. A hover point on any other node lifts
+            // nothing: the converted ghost's back point ("hull back
+            // seat", on its seat node) gave no lift at any strength, so
+            // the ghost rode nose up on its tail with a driver, and the
+            // same point moved live to node 0 at the same place held it
+            // level (game run, 2026-11-19). V: every friction and hover
+            // marker of every retail vehicle is on node 0
+            // (`tests/vehicle_rebuild_disc.rs`,
+            // `every_powered_point_rides_the_root_node`).
+            let node = 0;
+            // The region is unchanged by that: a gripping point's is the
+            // root node's collision region (as through version 92), any
+            // other point's its own node's.
             let grips = phys
                 .powered_flags
                 .get(m.powered_mass_point as usize)
                 .is_some_and(|f| f & h1::POWERED_GROUND_FRICTION != 0);
-            // A wheel or tread rides the root node, not its own: the
-            // wheel's node turns and rises with the spin and suspension
-            // animations, and a contact point that moves with it pushes
-            // the vehicle about (V: the retail warthog's and scorpion's
-            // friction markers are on node 0).
-            let node = if grips {
+            let own = if grips {
                 0
             } else if (m.model_node as usize) < model.nodes.len() && m.model_node >= 0 {
                 m.model_node
@@ -2750,7 +2894,7 @@ impl<'a> Converter<'a> {
             let d: [f32; 3] = std::array::from_fn(|a| m.position[a] - t[a]);
             // The inverse of a rotation is its transpose.
             let local = std::array::from_fn(|a| (0..3).map(|k| r[k][a] * d[k]).sum());
-            let node_name = model.nodes.get(node as usize).map(|n| n.name.as_str());
+            let node_name = model.nodes.get(own as usize).map(|n| n.name.as_str());
             let region = coll
                 .as_ref()
                 .and_then(|c| {
@@ -2853,7 +2997,7 @@ impl<'a> Converter<'a> {
             .group(FourCC(*b"bipd"))
             .ok_or_else(|| Error::Invalid("no bipd definition".into()))?;
         let counterpart = self.base.record(bipd_def, cid)?;
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
         // Halo 1's dialogue: the first `udlg` the unit names (its
         // dialogue variants block), in place of the counterpart's. V:
@@ -2908,7 +3052,7 @@ impl<'a> Converter<'a> {
             ));
         }
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
-        let predicted = self.predicted(&u.object)?;
+        let predicted = self.predicted(hlmt);
         let mut swap = None;
         let hud = if health_hud::is_player_biped(&tag.name) {
             let tpl_root = self.base.root(cid)?;
@@ -3281,20 +3425,23 @@ impl<'a> Converter<'a> {
     }
 
     /// The resources an object built from scratch predicts
-    /// ([`crate::rebuild::Predicted`]): its converted render model, then
-    /// every converted bitmap its shaders draw. V: every retail vehicle
+    /// ([`crate::rebuild::Predicted`]): the render model its `hlmt` names,
+    /// then every converted bitmap its shaders draw. V: every retail vehicle
     /// lists its `mode` once (`+0` 2, `+2` -1) and its bitmaps (`+0` 0,
     /// `+2` 0), the model first.
-    fn predicted(&self, obj: &h1::Object) -> Result<Vec<crate::rebuild::Predicted>> {
-        let Some(m) = obj.model else {
-            return Ok(Vec::new());
+    fn predicted(&self, hlmt: Option<TagId>) -> Vec<crate::rebuild::Predicted> {
+        let Some((_, hlmt)) = hlmt.and_then(local_index).and_then(|k| self.tree.tags.get(k)) else {
+            return Vec::new();
         };
-        let Some(&mode) = self.done.get(&self.h1_tag(m)?.id.0) else {
-            return Ok(Vec::new());
+        let Some(mode) = hlmt.root.fixups.iter().find_map(|f| match &f.kind {
+            FixupKind::TagRef(id) if f.offset == h2::HLMT_RENDER as u32 => Some(*id),
+            _ => None,
+        }) else {
+            return Vec::new();
         };
         let mut out = vec![crate::rebuild::Predicted::RenderModel(mode)];
-        let Some((_, conv)) = self.tree.tags.get(mode.0 as usize & 0xffff) else {
-            return Ok(out);
+        let Some((_, conv)) = local_index(mode).and_then(|k| self.tree.tags.get(k)) else {
+            return out;
         };
         let mut shaders = Vec::new();
         self.locals_in(&conv.root, FourCC(*b"shad"), &mut shaders);
@@ -3304,7 +3451,7 @@ impl<'a> Converter<'a> {
             self.locals_in(&c.root, FourCC(*b"bitm"), &mut bitmaps);
         }
         out.extend(bitmaps.into_iter().map(crate::rebuild::Predicted::Bitmap));
-        Ok(out)
+        out
     }
 
     fn unit(&mut self, tag: &Tag) -> Result<TagId> {

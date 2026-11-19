@@ -196,6 +196,10 @@ pub enum Doing {
     Support(Vec3),
     /// Going to a sighted powerup or a supply expected back soon.
     Supply(Vec3),
+    /// Walk to this position, then watch the lane it covers.
+    Vantage(crate::places::Vantage),
+    /// Holding aim on the last sighting before following it.
+    HoldAngle(Vec3),
     /// Going for the weapon at this point (section 3.6).
     Rearm(Vec3),
     /// Shields down: backing away from where the enemy was, facing it.
@@ -228,6 +232,7 @@ struct Track {
 pub struct Mind {
     pub skill: Skill,
     pub decisions: Decisions,
+    pub experience: crate::experience::Experience,
     pub doing: Doing,
     rng: Rng,
     tick: Option<u32>,
@@ -236,6 +241,8 @@ pub struct Mind {
     target: Option<(u32, u32)>,
     tracks: std::collections::HashMap<u32, Track>,
     last_seen: Option<(u32, Vec3, u32)>,
+    /// An uncertain search area from hearing or a public kill announcement.
+    search: Option<(Vec3, u32)>,
     hand: Hand,
     feet: Feet,
     buttons: Buttons,
@@ -344,7 +351,8 @@ impl Mind {
     pub fn new(skill: Skill, seed: u64) -> Self {
         Mind {
             skill,
-            decisions: Decisions::new(seed),
+            decisions: Decisions::for_skill(seed, skill),
+            experience: Default::default(),
             doing: Doing::Idle,
             rng: Rng::new(seed),
             tick: None,
@@ -352,6 +360,7 @@ impl Mind {
             target: None,
             tracks: Default::default(),
             last_seen: None,
+            search: None,
             hand: Hand::new(seed),
             feet: Feet::new(seed),
             buttons: Buttons::new(seed),
@@ -419,7 +428,9 @@ impl Mind {
         self.tracks.clear();
         self.last_seen = None;
         self.last_threat = None;
+        self.search = None;
         self.decisions.died(tick);
+        self.experience.new_life();
         self.goal = None;
         self.evasion = Evasion::default();
         self.fidget.reset();
@@ -446,6 +457,7 @@ impl Mind {
         grenades: &[Grenade],
     ) -> HostPadState {
         let mut pad = HostPadState::default();
+        self.decisions.advance_mood(p.tick);
         let Some(me) = p.me else {
             self.release(p.tick);
             return pad;
@@ -490,9 +502,28 @@ impl Mind {
 
         let eye = up(me.position, EYE);
         let facing = angles(me.aim);
-        let style = Style::of(self.skill);
+        let behavior = self.decisions.behavior();
+        let style = Style::with_behavior(self.skill, behavior);
         // The target (crate::decisions): the team's split, trades and
         // threats weigh tactics' nearest-and-in-front choice.
+        // Count an actual visit once. Only an observed placement and the
+        // bot's own feet can establish a successful or empty trip.
+        let checked = match self.doing {
+            Doing::Supply(goal) | Doing::Rearm(goal) => map.and_then(|m| {
+                let items = p.observations.supplies.as_deref()?;
+                let pad = m
+                    .places
+                    .pads
+                    .iter()
+                    .filter(|s| len(sub(s.at, goal)) <= 1.5)
+                    .min_by(|a, b| len(sub(a.at, goal)).total_cmp(&len(sub(b.at, goal))))?;
+                (len(sub(pad.at, me.position)) <= 2.
+                    && crate::perceive::in_view(me, pad.at, 0.2, map))
+                .then(|| (pad.at, items.iter().any(|s| s.site == pad.site)))
+            }),
+            _ => None,
+        };
+        self.experience.visit(me.position, checked);
         let (goal, intent) = self.decide(p, me, &seen, map);
         let chosen = intent
             .chosen
@@ -500,6 +531,7 @@ impl Mind {
         self.target = chosen.map(|(o, ready)| (o.id, ready));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
+            self.search = None;
             self.roam.saw(o.position, p.tick);
             self.last_threat = Some(p.tick);
         }
@@ -518,7 +550,7 @@ impl Mind {
         self.kit = match me.arms {
             Some(a) => {
                 let (st, tick) = (&self.stuck, p.tick);
-                arms::plan(
+                arms::plan_with_personality(
                     &Situation {
                         arms: &a,
                         at: me.position,
@@ -543,6 +575,7 @@ impl Mind {
                                 .and_then(|o| o.hill.as_ref())
                                 .is_some_and(|h| !h.contains(pk.position))
                     },
+                    Some(behavior.personality),
                 )
             }
             None => Kit::Fine,
@@ -574,14 +607,16 @@ impl Mind {
 
         // In a vehicle (bots.md, Vehicles; mind::ride): it drives or
         // shoots from its seat, and that is the whole pad.
-        if let Some(pad) = self.ride(p, map, &me, chosen, goal, dt) {
+        if let Some(pad) = self.ride(p, map, &me, chosen, &seen, goal, dt) {
             self.last_pad = pad;
             return pad;
         }
-        self.choose_activity(p, me, goal, &intent, calm);
+        self.choose_activity(p, me, goal, &intent, calm, map);
         // A vehicle to take or board (bots.md, Vehicles): boarding in a
         // fight too, taking only when calm; never carrying.
-        if let Some(id) = self.mount_plan(p, &me, calm, goal) {
+        if let Some(id) =
+            self.mount_plan(p, map, &me, self.last_seen.map(|(_, at, _)| at), calm, goal)
+        {
             self.doing = Doing::Mount(id);
         }
         if !matches!(self.doing, Doing::Rearm(_)) {
@@ -619,7 +654,18 @@ impl Mind {
             self.hand.lose_target();
             self.fight.stop_trigger(p.tick);
         }
+        let traversal = self
+            .follower
+            .as_ref()
+            .filter(|f| f.committed())
+            .and_then(Follower::goal);
         match self.doing {
+            _ if traversal.is_some() => {
+                // The lift or jump already owns lateral input until landing.
+                walk = traversal.and_then(|destination| {
+                    self.go(me.position, destination, p.tick, map, &mut pad, &bodies)
+                });
+            }
             Doing::Fight(_) => {
                 let (o, ready) = chosen.unwrap();
                 // The weapon in hand (tactics): the trigger, the lead
@@ -659,14 +705,27 @@ impl Mind {
                         self.fight.stop_trigger(p.tick);
                         false
                     };
+                    let risky = behavior.melee_risk()
+                        && !carrying
+                        && self.decisions.posture != Posture::Withdraw;
                     let reach = if blade {
-                        shot.lunge
-                    } else if melee || juggernaut {
+                        if risky || juggernaut || !self.recovering {
+                            shot.lunge
+                        } else {
+                            MELEE_RANGE
+                        }
+                    } else if melee || risky || juggernaut {
                         MELEE_RANGE * 1.3
                     } else {
                         MELEE_RANGE
                     };
-                    let in_melee = dist < reach && angle_between(sub(target, eye), me.aim) < 0.85;
+                    let melee_cone = if blade && !risky && !juggernaut && dist >= MELEE_RANGE {
+                        0.52
+                    } else {
+                        0.85
+                    };
+                    let in_melee =
+                        dist < reach && angle_between(sub(target, eye), me.aim) < melee_cone;
                     // Glitches (crate::glitches) only where the fight is not
                     // obviously lost: not low, not withdrawing, nobody else
                     // close; a sword fly never into a group.
@@ -779,7 +838,8 @@ impl Mind {
                         reloading: self.fight.wants_cover,
                         range: self.fight.band,
                     };
-                    let mv = self.moves.fight(&fight, map, &bodies);
+                    let st = crate::moves::Style::with_behavior(self.skill, behavior);
+                    let mv = self.moves.fight_with_style(&fight, map, &bodies, st);
                     if mv.jump {
                         pad.buttons.set(JUMP, true);
                     }
@@ -811,6 +871,10 @@ impl Mind {
                         seen: false,
                     });
                 }
+            }
+            Doing::HoldAngle(at) => {
+                look = Some(up(at, CHEST));
+                self.follower = None;
             }
             Doing::Recover(from) => {
                 // Back away from it, facing it, while the shields come back.
@@ -866,6 +930,17 @@ impl Mind {
                     if self.gave_up || (walk.is_none() && !near && dist_xy(me.position, at) > 1.0) {
                         // No way there.
                         self.stuck.blacklist(at, p.tick);
+                    }
+                }
+            }
+            Doing::Vantage(v) => {
+                if len(sub(me.position, v.at)) < 0.8 {
+                    look = Some(up(v.watches, CHEST));
+                    self.follower = None;
+                } else {
+                    walk = self.go(me.position, v.at, p.tick, map, &mut pad, &bodies);
+                    if walk.is_none() || self.gave_up {
+                        self.stuck.blacklist(v.at, p.tick);
                     }
                 }
             }
@@ -957,7 +1032,7 @@ impl Mind {
                 }
             }
             Doing::Mount(_) => {
-                let (w, l) = self.mount_step(me.position, p.tick, map, &mut pad, &bodies);
+                let (w, l) = self.mount_step(me.position, me.aim, p.tick, map, &mut pad, &bodies);
                 walk = w;
                 look = l.or(look);
             }
@@ -1043,13 +1118,21 @@ impl Mind {
             world,
             self.skill,
             dual.is_some(),
+            behavior.grenade_rate(),
         );
         // Aiming a throw: the hand turns to the throw's line instead of the
         // target (tracked still, so the flick and lag are the same hand's).
         match (track, nade.look) {
             (Some((id, raw, led)), at) => {
                 let goal = at.map_or(led, |l| sub(l, eye));
-                aim_error = Some(self.hand.track(self.skill, id, p.tick, facing, raw, goal));
+                aim_error = Some(self.hand.track(
+                    self.skill,
+                    id,
+                    p.tick,
+                    facing,
+                    [raw, goal],
+                    behavior.aim_noise_extra(),
+                ));
             }
             (None, Some(at)) => look = Some(at),
             (None, None) => {}
@@ -1099,7 +1182,11 @@ impl Mind {
             pad.right_trigger = 0.0;
         }
 
-        let dodge = self.evasion.dodge(p.tick, self.skill, &me, map, grenades);
+        let dodge = if traversal.is_none() {
+            self.evasion.dodge(p.tick, self.skill, &me, map, grenades)
+        } else {
+            None
+        };
         if let Some((dir, jump)) = dodge {
             walk = Some(Walk {
                 walk: dir,
@@ -1118,6 +1205,15 @@ impl Mind {
                 self.hand
                     .sound(eye, p.tick, map, sounds)
                     .map(|yaw| {
+                        // A bearing gives a search direction, never a target or range.
+                        self.search = Some((
+                            [
+                                me.position[0] + 6.0 * yaw.cos(),
+                                me.position[1] + 6.0 * yaw.sin(),
+                                me.position[2],
+                            ],
+                            p.tick,
+                        ));
                         let base = travel.map_or(facing.0, |w| w.face[1].atan2(w.face[0]));
                         let limit = if travel.is_some() { 0.9 } else { 1.5 };
                         (base + wrap(yaw - base).clamp(-limit, limit), 0.0)
@@ -1156,7 +1252,8 @@ impl Mind {
             pad.buttons.set(CROUCH, true);
         }
         // A crouch jump's crouch is in the air: no slowing for it.
-        let hop = matches!(self.stunt, Some(Stunt::Hop(_)));
+        let hop = matches!(self.stunt, Some(Stunt::Hop(_)))
+            || self.follower.as_ref().is_some_and(Follower::crouch_jumping);
         let slow = if pad.buttons.contains(CROUCH) && !jump && !hop {
             0.55
         } else {
@@ -1184,6 +1281,11 @@ impl Mind {
             self.feet.stop();
             self.buttons.release();
             self.fidget.reset();
+        }
+        if pad.right_trigger > 0.
+            && let Doing::Fight(target) = self.doing
+        {
+            self.experience.fired(me.position, target, p.tick);
         }
         self.last_pad = pad;
         pad
@@ -1216,12 +1318,13 @@ impl Mind {
                 )
             }
             Some(m) => {
-                let stale = self.carrier_threat_changed(tick)
-                    || self
-                        .follower
-                        .as_ref()
-                        .and_then(Follower::goal)
-                        .is_none_or(|g| len(sub(g, goal)) > 1.0);
+                let stale = !self.follower.as_ref().is_some_and(Follower::committed)
+                    && (self.carrier_threat_changed(tick)
+                        || self
+                            .follower
+                            .as_ref()
+                            .and_then(Follower::goal)
+                            .is_none_or(|g| len(sub(g, goal)) > 1.0));
                 if stale {
                     // Around the edges it got stuck on, if it can be.
                     let path = self.decisions.map.path(
@@ -1244,11 +1347,29 @@ impl Mind {
                 });
                 if s.replan {
                     let done = f.done();
+                    if s.traversing
+                        && let Some(entry) = f.waypoint()
+                    {
+                        self.stuck.blacklist(entry, tick);
+                        self.gave_up = true;
+                    }
                     self.follower = None;
                     return (!done).then_some(Walk::straight([0.0, 0.0]));
                 }
                 if s.jump {
                     pad.buttons.set(JUMP, true);
+                }
+                if s.crouch {
+                    pad.buttons.set(CROUCH, true);
+                }
+                if s.traversing {
+                    self.stuck.reset();
+                    let dir = if f.committed() || crate::moves::headroom(m, at, s.dir) {
+                        s.dir
+                    } else {
+                        [0.0; 2]
+                    };
+                    return Some(Walk::straight(dir));
                 }
                 (s.dir, f.waypoint(), f.pace(at))
             }
@@ -1266,6 +1387,13 @@ impl Mind {
             pad.buttons.set(CROUCH, true);
         }
         let walk = around_bodies(at, u.dir.unwrap_or(dir), bodies);
+        let walk = if !pad.buttons.contains(JUMP)
+            && map.is_some_and(|m| !crate::moves::headroom(m, at, walk))
+        {
+            [0.0; 2]
+        } else {
+            walk
+        };
         Some(Walk {
             walk: if u.dir.is_some() || pad.buttons.contains(JUMP) {
                 walk

@@ -1,3 +1,4 @@
+import { watchHeaderEmblems } from "./lib/emblem";
 import { lazy } from "solid-js";
 import { render } from "solid-js/web";
 import { Navigate, Route, Router, useLocation, useParams } from "@solidjs/router";
@@ -86,6 +87,7 @@ const OldStats = () => {
   return <Navigate href={`${movedStatsPath(at.pathname) ?? STATS_ROOT}${at.search}${at.hash}`} />;
 };
 
+watchHeaderEmblems(document);
 render(
   () => (
     <Router root={(p) => <><ThemeColor /><Veil {...p} /></>}>

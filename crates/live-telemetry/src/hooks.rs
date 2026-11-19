@@ -64,6 +64,13 @@ impl Telemetry {
         }
     }
 
+    /// Finish the ordinary game stream and wait for Live to store its report.
+    pub fn finish_sim(&self, report: serde_json::Value) -> Result<(), String> {
+        self.pipeline.push(Work::FinishSim(report))?;
+        self.pipeline.settle();
+        self.pipeline.worker_error().map_or(Ok(()), Err)
+    }
+
     /// Lets each match look up its map's biped and weapon tag names (frame
     /// `species` and `weapon`). Without it those fields are never sent.
     pub fn set_map_locator(&self, locator: MapLocator) {
@@ -441,6 +448,16 @@ pub fn install(
         TelemetrySinkConfig::Server { base_url, account } => {
             Telemetry::new(session, ServerSink::new(base_url.clone(), account.clone())?)
         }
+        TelemetrySinkConfig::Simulation {
+            base_url,
+            account,
+            game,
+            deferred_lock,
+        } => Telemetry::new(
+            session.with_sim(game.clone()),
+            ServerSink::new(base_url.clone(), account.clone())?
+                .with_sim(game, deferred_lock.clone()),
+        ),
     });
     match registry.add(&TelemetryFeature(Arc::clone(&telemetry))) {
         Ok(true) => Ok(Some(telemetry)),
@@ -454,7 +471,7 @@ pub fn install(
 fn signed_in(config: &TelemetryConfig) -> Option<live_proto::Xuid> {
     match &config.sink {
         TelemetrySinkConfig::Server { account, .. } => live_proto::Xuid::parse(&account.xuid).ok(),
-        TelemetrySinkConfig::File(_) => None,
+        TelemetrySinkConfig::File(_) | TelemetrySinkConfig::Simulation { .. } => None,
     }
 }
 
@@ -837,9 +854,12 @@ mod tests {
         assert_eq!(data["vehicles"][0]["occupied"], false);
         // Machines go out in the game's first frame (and then only when they
         // move); the sink may have folded that frame into a later one.
-        let machines = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"]["machines"];
-        assert_eq!(machines[0]["position"], 0.5);
-        assert_eq!(machines[0].get("node"), None, "no name, no node");
+        let frame = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"];
+        assert_eq!(
+            frame["machine_positions"],
+            serde_json::json!([{ "i": 2, "p": 128 }])
+        );
+        assert_eq!(frame["machines"][0].get("node"), None, "no name, no node");
         assert_eq!(
             data["hits"][0]["from"],
             format!("{:08x}", fixture::object_datum(2))

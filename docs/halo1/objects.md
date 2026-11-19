@@ -72,6 +72,7 @@ effect, `2f8` detonation effect (V1: groups).
 | Offset | Field | Evidence |
 |---|---|---|
 | `308` | u32 flags; `30c` label (`char[32]`): the weapon type the units' graphs animate it by (`stand rifle ar idle`): `ar`, `hp`, `sg`, `pr`, `rl`, `sr`, `pp`, `ne`, `ft`; `cg`, `cannon`, `gun` on vehicle guns | S; V1 (every Blood Gulch `weap`) |
+| `330`..`336` | u16 A to D in sources, the weapon enum: 2 primary ammunition, 12 illumination, 14 integrated light ("Ammunition counter") | D (the assault rifle: 14, 2, 12, 0) |
 | `338` | f32 ready time, `33c` ready effect | S, V1 |
 | `34c`..`360` | heat recovery threshold, overheated threshold, detonation threshold, detonation fraction, heat loss per second, illumination | S; V1 (set on the plasma rifle, zero on the assault rifle) |
 | `374`, `384` | overheated, detonation effects | S |
@@ -309,6 +310,55 @@ things the engine reads at a vehicle's base, proved in
   (`h1convert::placements::retail_vehicle_depth`: the retail ghost
   0.15, the warthog 0.02, the wraith none).
 
+**The Blood Gulch ghost (converter version 94).** User report on
+converted Blood Gulch (v90/v91): "physics totally fucked and looks like
+using damage state model"; one ghost lay nose down at pitch -10.8,
+partly in the ground. Both halves were checked in a game run
+(2026-11-19) and against the discs:
+
+- **Model: the intact permutation draws.** Halo 1's `ghost` model has
+  one region, `__unnamed`, with `__base` (geometries 3, 3, 2, 1, 0 from
+  super low to super high, shaders 0 to 2) and `~damaged` (3, 7, 6, 5,
+  4, shaders 3 to 5: the `damaged ghost ...` shaders on the
+  `ghost_destroyed` bitmaps). The converted `mode` keeps both in that
+  order and its `hlmt` has no variants, no damage sections
+  (`hlmt +0x60` empty) and one region naming both permutations. E: the
+  region permutation update (`0x0016d660`) gathers candidates only from
+  the object's variant (`0x0016dad0`, through `hlmt +0x54`); with none
+  it chooses nothing and the region keeps permutation 0. In the game the
+  ghost drew 1,082, 28 and 109 vertex parts (`render.frame` draws):
+  geometry 0, `__base` at super high, with the `ghost hull metal`, `ghost
+  self illuminated` and `ghost hull diffuse shine` shaders in its
+  materials 0 to 2. Side by side with a spawned retail ghost on flat
+  ground the two look alike. So nothing selects the damaged model; the
+  "fragment" was the ghost lying on a slope, half hidden by it.
+- **At rest the ghost lies on its hull.** Its `phmo` is Halo 1's
+  collision (lowest point 0.134 below the origin; the retail ghost's
+  `phmo` 0.019) of Halo 1's `phys` mass, 2000 (retail 907), centre of
+  mass (0.376, 0, 0.133) from the pieces (Halo 1's own 0.362, 0, 0.108;
+  retail 0.287, 0, 0.177). Empty, both rest on their physics shapes
+  (neither hovers without a driver): spawned on flat ground the
+  converted ghost's origin was 0.13 above it at pitch -2.8, the retail
+  one's 0.01 at -2.3 (its model dipping into the ground). The nose-down
+  ghost lay on a slope falling 7 degrees forward with its hull on the
+  ground, as Halo 1's hull would.
+- **Driven, its back hover point gave no lift.** With a driver the
+  converted ghost rode at pitch +19.9, its tail on the ground; the
+  retail ghost rides at -7.9, 0.39 above it. The back point (`hull back
+  seat`, the retail back point's strength 3.75) sat on Halo 1's seat
+  node; a hover point whose marker is on any node but the root lifts
+  nothing (live: eight times its strength changed nothing; named to a
+  node-0 marker it lifted). Every friction and hover marker of every
+  retail vehicle is on node 0, so since version 94 every powered point's
+  marker is (tag-definitions.md, "Every vehicle from definitions";
+  `h1objects/tests/vehicle_rebuild_disc.rs`,
+  `every_powered_point_rides_the_root_node`). Moved live to node 0 at
+  the same place, the ghost rode at -7.7, 0.33 above the ground, and
+  drove. The hover points' positions match the retail ghost's within
+  0.06 (Halo 1's back point (-0.25, 0, 0.08), retail (-0.27, 0, 0.10);
+  the front pair (0.62, ±0.4, 0.06) and (0.68, ±0.4, 0.10)); the
+  skeletons are the same five nodes at the same rest pose.
+
 **Functions and what they scale (vehicles).** Halo 1 scales an
 attachment (a looping engine sound, a headlight) by one of the object's
 four outputs (attachment `+0x30`: 1 to 4, A to D); output *k* is the
@@ -497,7 +547,7 @@ bodies). Retail Blood Gulch's base keeps its rocks in the structure and
 its one solid prop as a crate with a fixed body, so the fix is one of
 those two, not more scenery physics.
 
-**Since version 92 placed scenery is structure.** The built scenery
+**Since version 96 placed scenery is structure.** The built scenery
 `phmo` (versions 85 to 91, `rebuild::scenery_body`, the base's scenery
 body words and size classes) is gone: scenery has no `phmo` again and
 its `coll` keeps its BSP physics slots, as retail scenery with no `phmo`.
@@ -653,6 +703,63 @@ built map; `tests/sandbox_disc.rs`
 `h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
 every converted map against what the retail base already breaks.
 
+### Cut-out model shaders (**Built**, converter version 92)
+
+Halo 1 alpha-tests a model shader (`soso`) on its base map's alpha
+unless its flags (`+0x28`) set bit 2, which no Blood Gulch `soso` does
+(`h1convert::shad::soso_alpha_tested`). The leaf cards of the trees and
+plants are such shaders, each a DXT3 base three quarters clear:
+
+| Object | `soso` | Base |
+|---|---|---|
+| `tree_desert_whitebark` | `whitebark_leaves` (flags 2, two-sided) | `whitebark_leaves`, 128², 72 % clear |
+| `shrub_large` | `tree_leafy_leaves` (2) | `tree_leafy_leaves`, 256² |
+| `plant fern` | `plant fern` (2) | `plant fern`, 256² |
+| `plant_broadleaf_short` | `broadleaf top`, `broadleaf bottom` (0) | `plant_broadleaf_leaf`, 256² |
+
+`tree_desert_dead` has no leaves: its one shader is its trunk (V, Blood
+Gulch on the disc). The whitebark's model scales its texture coordinates
+by (255.9, 119.1) (`mode +0x30`); its leaf cards span one tile each, u
+104.9 to 106.0, v 95.0 to 96.0, so the whole leaf image lies on each card.
+
+From converter version 84 these draw on
+`opaque\tex_bump_alpha_test_single_pass` with the leaf in slot 2, the
+base. That stem cuts out in two places (V, `h2 shader` on coagulation's
+`bush_vine` and `tree_cliff_leaf`, both on it; and
+`tests/model_shaders_disc.rs`): its colour pass (layer 3,
+`lightmap_tex_detail_alpha_test`) alpha-tests with the base at stage 0,
+and its layer 10 (`shadow\shadow_generate`, whose implementations 1 and 2
+write depth only, the depth the light passes then test equal against)
+samples **slot 0, the bump map**, at stage 0 with `D3DTSS_ALPHAKILL` on.
+Retail's alpha-tested bump maps carry the cut-out: they are P8 bump with
+palette index 255 exactly where the colour map is clear
+(`tree_cliff_leaf_bump`: 24,367 of its 24,396 texels with colour alpha
+below 128 are index 255, none above 159). The converted shaders had
+`default_vector` there, opaque, so each card's depth covered the whole
+card: live on Blood Gulch (version 91) the whitebark's canopies drew as
+flat near-black diamonds, the clear part showing the dark colour behind
+the depth, not the cliff. Pointing the leaf shader's slot 0 at the leaf
+bitmap itself (`h2 agent edit set`) cut the canopies into the leaf's
+star shape at once.
+
+The converter now binds a bump map of its own in slot 0 when a cut-out
+`soso` has none (`h1bitmaps::mask::cutout_bump`, tag `<base
+name>_alpha_test_bump`, built once per base): DXT5 of the base's size and
+mip chain, every texel the flat normal (129, 128, 255, a fixed colour
+block within a step of `default_vector`'s 128, 128, 255), its alpha 0
+where the base's level is below 128 and 255 elsewhere. A binary alpha
+keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
+half and agrees with retail's leaf bump above. Its tiling and LOD offset
+are the base's. A base that doesn't decode, or has more than one image,
+keeps the default bump, uncut, as before. Proof:
+`h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
+`tests/model_shaders_disc.rs`,
+`bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
+slots on coagulation, then every converted shader on the cut-out stem
+among the five plants and trees). Not covered: an alpha-tested `senv`
+(structure) shader on the same stem still binds its own P8 bump or the
+default, whether or not that bump's alpha cuts.
+
 ### Change colours (`obje +0xac`, **Built**, converter version 84)
 
 Halo 2 colours a player by its object's change colours, not by its
@@ -728,6 +835,64 @@ vehicle keeps its own colour (the Scorpion's grey). Proof:
 `rebuilt_scenery_carries_its_change_colours`, and the disc tests
 `tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
 and `tests/rebuild_disc.rs`.
+
+### Ammunition counter (**Built**, converter version 95)
+
+The assault rifle's first-person model shows the rounds loaded on two
+digits at its back. Halo 1 and Halo 2 draw such a counter differently.
+
+**Halo 1** (E, Halo 1's XBE; D, Blood Gulch). The digits are a
+`schi` with the numeric flag (flags `+0x29` bit 7): `weapons\assault
+rifle\fp\shaders\numbers`, counter limit (`+0x28`) 60, one additive map,
+`numbers_plate`, whose ten images are the digits 0 to 9. The model
+(`weapons\assault rifle\fp\fp`) names that shader twice in its shader
+block, with permutation (`mode +0xdc` element `+0x10`) 1 on the left digit
+and 0 on the right. The model draw (`0x00067ad1`..`0x00067c32`) gives a
+numeric `schi` image `(n / base^p) mod base` of its first map: `base` the
+bitmap's image count, `p` the entry's permutation, and
+`n = floor(limit × out + 0.5)` clamped to 0..limit, `out` the object's A
+out (D out when the bitmap has eight images: the rifle's `compass`, limit
+8). Extra flags (`+0x60`) bit 1 takes an engine number instead
+(`[0x2e34a0]`, `0x00056aa0`). The rifle's A out is its function 0, "one"
+scaled by B in, and its B in (`weap +0x332`) is 2, primary ammunition: the
+rounds loaded over 60. So permutation 0 is the ones and 1 the tens of the
+rounds loaded.
+
+**Halo 2** (E, V). The battle rifle's digits are two `shad`s, `tens` and
+`ones`, on `opaque\illum_detail` (additive on layer 7), bitmap 0 its own
+`numbers_plate` of ten images. Each animates bitmap 0's frame (and an
+identity texture transform) from one property whose input is a weapon
+function: `primary_ammunition_tens` or `primary_ammunition_ones`, an
+identity mapped onto 0 to 10. The weapon's function handler
+(`0x000ff600`..`0x000ffc57`) answers those with the tens or ones digit of
+magazine 0's rounds loaded (weapon `+0x22c`) times 0.1, so the frame is
+the digit (`h1convert::shad::AMMUNITION_DIGITS`, `COUNTER_TREE`).
+
+**The conversion.** When a weapon's A out is its primary ammunition as it
+is (`h1::Weapon::rounds_counter`, the first magazine's loaded maximum),
+its first-person model's numeric `schi` entries whose bitmap has ten
+images, whose limit is that maximum and whose permutation is 0 or 1 become
+Halo 2 counter digits (`Converter::counter_shader`): one `shad` per digit,
+`<schi>_ones` or `<schi>_tens`, on `illum_detail` with retail's counter
+tree, drawing Halo 1's digits (`h1convert::shad::counter_shader`). The
+detail is the plain grey default and colour 0 white, so the digit draws
+as Halo 1's additive `schi` drew it; Halo 1's digits carry their colour.
+Any other numeric `schi`, and every model of a weapon whose counters
+don't count its rounds, converts as before. Before version 95 both
+entries drew one `one_add_illum` copy of the digits' first image, so the
+rifle read 00 whatever it held.
+
+Not converted: the rifle's `compass` (D out, the compass heading over
+eight images). It still draws its first image.
+
+Proof: `h1convert` unit tests
+`a_counter_digit_is_halo2s_ammunition_digit_only_when_it_counts_the_rounds`
+and `a_counter_digit_draws_on_illum_detail_its_frame_from_the_weapons_digit`,
+`tests/shad_rebuild.rs` `ammunition_counter_instances_share_one_tree`
+(retail's counters against the tree and properties written), and
+`h1objects/tests/model_shaders_disc.rs`
+`bloodgulch_assault_rifle_counter_shows_the_rounds_loaded`. The digits
+changing as the rifle fires needs a live check.
 
 ### Tuning carried over
 

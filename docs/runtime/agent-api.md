@@ -1205,7 +1205,7 @@ starts another game instance.
 |---|---|---|
 | `sim.player.add` | act | `{kind: local\|phantom, source: script\|recording\|brain, team?, steps?, recording?, port?, identity?}`: a simulated player, `sim.<n>` |
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
-| `sim.player.list` | read | the simulated players and the game player each became (`player.<i>`) |
+| `sim.player.list` | read | `players` lists simulated players and their game player (`player.<i>`). `clankers` lists the host's brain-driven bots and their current brain state. |
 | `sim.player.pad` | act | `{id, steps, append?}`: pad steps (`input.pad`'s) for one |
 | `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
 | `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
@@ -1213,6 +1213,19 @@ starts another game instance.
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
+
+For a brain-driven simulated player, `sim.player.add`, `sim.player.list`
+and the `sim` root of `sim.view` include `brain` when the backend provides
+it. The list response's `clankers` array includes brain-driven local and
+phantom bots added by the game, headless matches, and sim. Its entries have
+`name`, `kind`, `brain`, and `port` or `player` once placed or joined.
+Script and recording sources have no brain state.
+
+The `brain` object has `skill`, `personality` and `mood`. Personality
+contains the nine 0–1 traits in [the Clankers trait table](../game/bots.md#personality-and-temperament)
+and `favorite_weapon` (`spray`, `precise`, `scatter`, `sniper`, `blast`,
+or `blade`). Mood has `confidence`, `tilt`, `fear`, `streak`, and an
+optional `revenge_target` (`player.<i>`) while a killer is remembered.
 
 They are game methods (`Agent::add_game_method`, `crates/agent/src/sim/`):
 answered on the game's thread with guest memory at hand, and, like
@@ -1598,6 +1611,35 @@ h2 agent raw player.0 > after.json
 h2 agent raw-diff before.json after.json
 h2 agent raw player.0 entity,shape              # some parts
 h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
+```
+
+## `world.poke`: replace bytes in one object part
+
+| Method | Access | What |
+|---|---|---|
+| `world.poke` | claim | `{id, part?, offset, hex}` |
+
+Writes 1 to 64 bytes at a tick boundary. `id` and `part` use the same
+names as `world.raw`, and `part` defaults to `object`. `offset` is a
+nonnegative byte offset from the part's base. `hex` takes two hex digits
+per byte. The entire range must fit in the part that `world.raw` reads
+with its default lengths.
+
+The calling connection must hold `session.claim`. `sim.session` reports
+whether the current session allows host writes. A session refusal
+returns `INVALID_REQUEST` with `data.session`, and a request served
+between slices returns `UNAVAILABLE` when the session allows writes.
+
+The result includes `id`, `datum`, `part`, `base`, `offset`, and `at`.
+`base` is the first address of the part. `before` and `after` give the
+bytes at the requested offset as lowercase hex.
+
+The standalone short form takes a claim for the life of its connection.
+Its offset can be decimal or prefixed with `0x`. In a script, send
+`claim` on the same connection first.
+
+```sh
+h2 agent poke <id> <part> <offset> <hex>
 ```
 
 ## Tick traces and the flight recorder

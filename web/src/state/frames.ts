@@ -1,6 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
+import { isMachineBaseline } from "../api/pack";
 import type { Frame, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
@@ -391,7 +392,7 @@ export function withoutUnplaced(f: Frame): Frame {
 }
 
 /** Index of the last frame with tick <= `tick` in a tick-sorted array, or -1. */
-export function findFrame(frames: readonly Frame[], tick: number): number {
+export function findFrame(frames: readonly { tick: number }[], tick: number): number {
   let lo = 0, hi = frames.length - 1, ans = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
@@ -672,6 +673,81 @@ export function sampleMachines(frames: readonly Frame[], tick: number): SampledM
   return out;
 }
 
+/** The animation endpoints at the render tick. A looping rig can blend
+ *  across the seam using the same endpoints. */
+export interface SampledMachinePosition {
+  from: number;
+  to: number;
+  mix: number;
+}
+
+export const MAX_MACHINE_POSITIONS = 255;
+
+interface TravelSample {
+  tick: number;
+  position: number;
+}
+
+/** Only the received changes are stored. An unchanged device holds its
+ *  position through quiet frames, including when a replay seeks there. */
+export class MachinePositionHistory {
+  private readonly positions = new Map<number, TravelSample[]>();
+  private readonly resets: { tick: number }[] = [];
+
+  push(frame: Frame, tick = frame.tick, rewind = false): void {
+    if (this.positions.size && (rewind || frame.cut != null || isMachineBaseline(frame))) {
+      this.resets.push({ tick });
+    }
+    if (!Array.isArray(frame.machine_positions)) return;
+    const reset = this.resets.at(-1)?.tick ?? -Infinity;
+    for (let n = 0; n < Math.min(frame.machine_positions.length, MAX_MACHINE_POSITIONS); n++) {
+      const m = frame.machine_positions[n];
+      if (!m || !Number.isInteger(m.i) || m.i < 0 || m.i > 0x7fff ||
+          !Number.isInteger(m.p) || m.p < 0 || m.p > 255) continue;
+      let samples = this.positions.get(m.i);
+      if (!samples) { samples = []; this.positions.set(m.i, samples); }
+      const position = m.p / 255;
+      const last = samples.at(-1);
+      if (last?.tick === tick) last.position = position;
+      else if (!last || last.tick < reset || last.position !== position) samples.push({ tick, position });
+    }
+  }
+
+  /** Live only: keep the last word before the buffer's first frame. */
+  prune(tick: number): void {
+    const resetAt = findFrame(this.resets, tick);
+    const reset = this.resets[resetAt]?.tick ?? -Infinity;
+    if (resetAt > 0) this.resets.splice(0, resetAt);
+    for (const [i, samples] of this.positions) {
+      const last = findFrame(samples, tick);
+      if (last > 0) samples.splice(0, last);
+      if (samples[0]!.tick < reset) samples.shift();
+      if (!samples.length) this.positions.delete(i);
+    }
+  }
+
+  sample(frames: readonly Frame[], tick: number): ReadonlyMap<number, SampledMachinePosition> | undefined {
+    if (!this.positions.size) return;
+    const at = findFrame(frames, tick);
+    if (at < 0 || frames[at]!.cinematic) return;
+    const reset = this.resets[findFrame(this.resets, tick)]?.tick ?? -Infinity;
+    const before = frames[at]!.tick;
+    const next = frames[at + 1];
+    const blend = next && next.cut == null && !next.cinematic && next.tick > before;
+    const mix = blend ? (tick - before) / (next.tick - before) : 0;
+    const out = new Map<number, SampledMachinePosition>();
+    for (const [i, samples] of this.positions) {
+      const index = findFrame(samples, tick);
+      const a = samples[index];
+      if (!a || a.tick < reset) continue;
+      const b = samples[index + 1];
+      const follows = blend && b?.tick === next.tick;
+      out.set(i, { from: a.position, to: follows ? b.position : a.position, mix: follows ? mix : 0 });
+    }
+    return out.size ? out : undefined;
+  }
+}
+
 /** Most scenario objects a frame is read for. */
 export const MAX_OBJECTS = 2048;
 
@@ -742,6 +818,7 @@ export class FrameBuffer {
 
   /** Every machine heard of, as last sent. */
   private machines = new Map<string, SampledMachine>();
+  private travel = new MachinePositionHistory();
   private historyReaders = 0;
 
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
@@ -758,7 +835,10 @@ export class FrameBuffer {
 
   private trim(): void {
     const capacity = this.historyReaders ? Math.max(450, this.capacity) : this.capacity;
-    if (this.frames.length > capacity) this.frames.splice(0, this.frames.length - capacity);
+    if (this.frames.length > capacity) {
+      this.frames.splice(0, this.frames.length - capacity);
+      this.travel.prune(this.frames[0]?.tick ?? this.lastTick);
+    }
   }
 
   get lastTick(): number {
@@ -766,16 +846,18 @@ export class FrameBuffer {
   }
 
   push(frame: Frame, now: number): void {
-    frame = withoutUnplaced(frame);
     const last = this.frames[this.frames.length - 1];
     if (last && frame.tick <= last.tick) {
       if (frame.tick < last.tick - TICKS_PER_SECOND * 5) {
         // The game restarted its tick counter: start over.
         this.frames = [];
         this.machines.clear();
+        this.travel = new MachinePositionHistory();
         this.offset = null;
       } else return;
     }
+    this.travel.push(frame);
+    frame = withoutUnplaced(frame);
     this.frames.push(frame);
     // Machines are only sent when they move: keep the last word on each.
     for (const raw of (frame.machines ?? []).slice(0, MAX_MACHINES)) {
@@ -834,6 +916,10 @@ export class FrameBuffer {
     const out = new Map(this.machines);
     for (const m of sampleMachines(this.frames, this.renderTick(now))) out.set(m.id, m);
     return [...out.values()];
+  }
+
+  sampleMachinePositions(now: number): ReadonlyMap<number, SampledMachinePosition> | undefined {
+    return this.travel.sample(this.frames, this.renderTick(now));
   }
 
   /** Scenario objects out of place at the render tick (null before the

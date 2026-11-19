@@ -9,6 +9,7 @@
 //!   falling back to its own boot when the snapshot is refused.
 //! - `compare <dir>`: the comparison of a batch's results again.
 
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -20,9 +21,11 @@ use serde_json::{Value, json};
 
 const USAGE: &str = "usage:
   h2 sim run <match.toml> [--disc ISO] [--out DIR] [--data DIR] [--report FILE]
-                          [--socket PATH] [--tier auto|fast|clang]
+                          [--socket PATH] [--tier auto|fast|clang] [--pace PACE]
+                          [--upload [--as GAMERTAG] [--server URL]]
   h2 sim batch <batch.toml> [--dry-run] [--fork] [--parallel N] [--keep-data]
-                          [--disc ISO] [--out DIR] [--data DIR] [--tier ...]
+                          [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
+                          [--upload [--as GAMERTAG] [--server URL]]
   h2 sim compare <results dir>
 
 A match file names the map, the game type, the limits, the seed and 1 to 4
@@ -31,6 +34,8 @@ bots with their skill, team and tuning (docs/runtime/sim.md, \"Match file\").
 and writes a JSON report (--report, default $TMPDIR/h2sim/<match>.report.json).
 It never builds: build the image first with `h2 build` (same H2_OPT).
 --socket turns the agent API on (match.status, match.report, match.stop).
+--upload sends a private recording and report to Live's Clanker Training.
+Choose a stored admin account with --as, or leave it off if there is only one.
 --data defaults to h2's data root; its bots/ must hold the map's nav mesh
 (`h2 bots nav <map>`): sim mode never builds one.
 
@@ -64,6 +69,10 @@ struct Common {
     out: Option<PathBuf>,
     data: Option<PathBuf>,
     tier: Option<String>,
+    upload: bool,
+    as_tag: Option<String>,
+    server: Option<String>,
+    pace: Option<sim::clock::Pace>,
 }
 
 impl Common {
@@ -74,6 +83,12 @@ impl Common {
             "--out" => self.out = Some(PathBuf::from(val()?)),
             "--data" => self.data = Some(PathBuf::from(val()?)),
             "--tier" => self.tier = Some(val()?),
+            "--upload" => self.upload = true,
+            "--as" => self.as_tag = Some(val()?),
+            "--server" => self.server = Some(val()?),
+            "--pace" => {
+                self.pace = Some(sim::clock::Pace::parse(&val()?).map_err(anyhow::Error::msg)?)
+            }
             _ => return Ok(false),
         }
         Ok(true)
@@ -111,8 +126,71 @@ impl Common {
             v.push("--tier".into());
             v.push(t.clone());
         }
+        if let Some(pace) = self.pace {
+            v.extend(["--pace".into(), pace.label()]);
+        }
         v
     }
+
+    fn upload_account(&self) -> Result<Option<(String, boot::telemetry::TelemetryAccount)>> {
+        if !self.upload {
+            if self.as_tag.is_some() || self.server.is_some() {
+                bail!("--as and --server require --upload");
+            }
+            return Ok(None);
+        }
+        let accounts = crate::live_accounts::load(&crate::live_cmd::accounts_path()?)?;
+        let mut choices = accounts.iter().filter(|account| {
+            self.as_tag
+                .as_ref()
+                .is_none_or(|tag| account.gamertag.eq_ignore_ascii_case(tag))
+                && self.server.as_ref().is_none_or(|server| {
+                    account.server.trim_end_matches('/') == server.trim_end_matches('/')
+                })
+        });
+        let entry = choices
+            .next()
+            .context("no stored Live account matches the upload options")?;
+        if choices.next().is_some() {
+            bail!(
+                "multiple stored Live accounts match; choose one with --as GAMERTAG and --server URL"
+            );
+        }
+        let base = self.server.as_ref().unwrap_or(&entry.server);
+        if !live_proto::bearer_allowed(base) {
+            bail!("sim upload requires HTTPS or a loopback URL");
+        }
+        Ok(Some((
+            base.to_owned(),
+            boot::telemetry::TelemetryAccount {
+                xuid: entry.xuid.to_string(),
+                gamertag: entry.gamertag.clone(),
+                key: entry.key_pair()?.private_jwk(),
+            },
+        )))
+    }
+}
+
+const LIVE_SIM_SLOTS: usize = 2;
+const BATCH_ID_ENV: &str = "H2_SIM_BATCH_ID";
+const BATCH_LOCKS_ENV: &str = "H2_SIM_BATCH_LOCKS";
+
+/// Run in the child so the OS releases the slot even if the sim crashes.
+fn live_slot(dir: &Path) -> Result<Option<File>> {
+    for slot in 0..LIVE_SIM_SLOTS {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dir.join(format!("live-{slot}.lock")))?;
+        match file.try_lock() {
+            Ok(()) => return Ok(Some(file)),
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    Ok(None)
 }
 
 /// `h2 sim run`.
@@ -138,8 +216,13 @@ fn run_one(args: Vec<String>) -> Result<()> {
     let file = file.context(USAGE)?;
     let file = std::path::absolute(&file)?;
     // Checked here, with every problem listed, before anything boots.
-    let m =
+    let mut m =
         sim::config::load_match(&file).map_err(|e| anyhow::anyhow!("{}:\n{e}", file.display()))?;
+    if let Some(pace) = common.pace {
+        m.pace = pace;
+        m.config.pace = pace.label();
+    }
+    let account = common.upload_account()?;
     let report = match report {
         Some(r) => r,
         None => default_report(&file),
@@ -170,10 +253,52 @@ fn run_one(args: Vec<String>) -> Result<()> {
         );
     }
     let lib = boot::tier::prepare(&xbe, &disc, &out, choice, 1, false)?.dylib;
+    let mut slot = None;
+    let upload = if let Some((base_url, account)) = account {
+        use boot::telemetry::{TelemetryConfig, TelemetrySinkConfig};
+        let batch_id = std::env::var(BATCH_ID_ENV).ok();
+        let deferred_lock = if let Some(dir) = std::env::var_os(BATCH_LOCKS_ENV).map(PathBuf::from)
+        {
+            slot = live_slot(&dir)?;
+            slot.is_none().then(|| dir.join("upload.lock"))
+        } else {
+            None
+        };
+        let game = live_proto::game::SimGame {
+            run_id: live_proto::sign::random_id(),
+            batch_id,
+            seed: m.config.seed.to_string(),
+            gametype: m.game_type.name().into(),
+            pace: m.pace.label(),
+            bots: m.resolved_json()["bot"]
+                .as_array()
+                .context("resolved sim bots are missing")?
+                .clone(),
+            deferred: deferred_lock.is_some(),
+        };
+        eprintln!(
+            "sim: Live run {} ({})",
+            game.run_id,
+            if game.deferred {
+                "upload after match"
+            } else {
+                "stream live"
+            }
+        );
+        Some(TelemetryConfig {
+            enabled: true,
+            sink: TelemetrySinkConfig::Simulation {
+                base_url,
+                account,
+                game,
+                deferred_lock,
+            },
+        })
+    } else {
+        None
+    };
     // SAFETY: set before the run starts any thread; boot reads them once.
     unsafe {
-        std::env::set_var(sim::ENV, &file);
-        std::env::set_var(sim::REPORT_ENV, &report);
         std::env::set_var("H2_BOTS_NAV_AUTO", "0");
         std::env::remove_var(bots::ENV);
         std::env::remove_var("H2_LEVEL");
@@ -191,7 +316,8 @@ fn run_one(args: Vec<String>) -> Result<()> {
         m.game_type.name(),
         report.display()
     );
-    let r = boot::run_hosted(
+    let matched = boot::sim_glue::Sim::new(file, m, Some(report.clone()));
+    let r = boot::run_sim(
         &xbe,
         &lib,
         &boot::RunOpts {
@@ -207,8 +333,10 @@ fn run_one(args: Vec<String>) -> Result<()> {
             xapi: true,
             movies: boot::movies_glue::Movies::Off,
         },
-        boot::Host::default(),
+        matched,
+        upload,
     );
+    drop(slot);
     vfs::flush_pending_metadata();
     if let Some(s) = &socket {
         let _ = std::fs::remove_file(s);
@@ -316,12 +444,33 @@ fn child_args(common: &Common, run: &RunDir, socket: Option<&Path>) -> Vec<Strin
     v
 }
 
-fn spawn(common: &Common, run: &RunDir, socket: Option<&Path>, snapshots: &Path) -> Result<Child> {
+fn spawn(
+    common: &Common,
+    run: &RunDir,
+    socket: Option<&Path>,
+    snapshots: &Path,
+    batch: Option<(&str, &Path)>,
+) -> Result<Child> {
     let log = std::fs::File::create(run.log())?;
     let err = log.try_clone()?;
-    Command::new(std::env::current_exe()?)
+    let mut child = Command::new(std::env::current_exe()?);
+    child
         .args(child_args(common, run, socket))
-        .env(snapshot::store::ENV, snapshots)
+        .env_remove(BATCH_ID_ENV)
+        .env_remove(BATCH_LOCKS_ENV)
+        .env(snapshot::store::ENV, snapshots);
+    if let Some((id, locks)) = batch {
+        child
+            .arg("--upload")
+            .env(BATCH_ID_ENV, id)
+            .env(BATCH_LOCKS_ENV, locks);
+        for (flag, value) in [("--as", &common.as_tag), ("--server", &common.server)] {
+            if let Some(value) = value {
+                child.args([flag, value]);
+            }
+        }
+    }
+    child
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(err)
@@ -382,7 +531,7 @@ fn seed_snapshot(
     n: usize,
 ) -> Result<()> {
     let socket = socket_for(n);
-    let mut child = spawn(common, run, Some(&socket), snapshots)?;
+    let mut child = spawn(common, run, Some(&socket), snapshots, None)?;
     let r = (|| -> Result<()> {
         let mut c = connect(&mut child, &socket, Duration::from_secs(600))?;
         wait_playing(&mut c, &mut child, 30, Duration::from_secs(900))?;
@@ -410,9 +559,10 @@ fn run_child(
     fork: Option<&str>,
     snapshots: &Path,
     n: usize,
+    batch: Option<(&str, &Path)>,
 ) -> Result<String> {
     let socket = fork.map(|_| socket_for(n));
-    let mut child = spawn(common, run, socket.as_deref(), snapshots)?;
+    let mut child = spawn(common, run, socket.as_deref(), snapshots, batch)?;
     let mut how = "boot".to_string();
     if let (Some(name), Some(socket)) = (fork, socket.as_deref()) {
         let loaded = (|| -> Result<()> {
@@ -435,6 +585,12 @@ fn run_child(
         let _ = std::fs::remove_file(s);
     }
     if !status.success() {
+        if batch.is_some() {
+            bail!(
+                "sim upload child exited {status}; see {}",
+                run.log().display()
+            );
+        }
         how.push_str(&format!("; exit {status}"));
     }
     Ok(how)
@@ -505,6 +661,7 @@ fn batch(args: Vec<String>) -> Result<()> {
     if dry {
         return Ok(());
     }
+    let upload = common.upload_account()?.is_some();
     // Checked before the children start: a missing image fails once.
     let disc = common.disc()?;
     let xbe = boot::read_xbe(&disc)?;
@@ -518,10 +675,18 @@ fn batch(args: Vec<String>) -> Result<()> {
     let shared = common.data();
     std::fs::create_dir_all(&b.out)?;
     let snapshots = b.out.join("snapshots");
+    let batch_id = upload.then(live_proto::sign::random_id);
+    let locks = b.out.join(".live-locks");
+    if let Some(id) = &batch_id {
+        std::fs::create_dir_all(&locks)?;
+        println!("Live batch {id}");
+    }
+    let batch = batch_id.as_deref().map(|id| (id, locks.as_path()));
     std::fs::write(
         b.out.join("batch.json"),
         serde_json::to_string_pretty(&json!({
             "batch": file.display().to_string(),
+            "live_batch_id": batch_id,
             "arms": arms,
             "mode": format!("{:?}", b.mode).to_ascii_lowercase(),
             "fork": fork,
@@ -560,6 +725,7 @@ fn batch(args: Vec<String>) -> Result<()> {
     }
     let next = AtomicUsize::new(0);
     let lines = Mutex::new(Vec::new());
+    let failed = AtomicUsize::new(0);
     let t = Instant::now();
     std::thread::scope(|s| {
         for _ in 0..parallel.min(b.runs.len().max(1)) {
@@ -571,8 +737,11 @@ fn batch(args: Vec<String>) -> Result<()> {
                     let name = snapshot_name(&r.map, &r.config.game_type);
                     let from = (fork && forks.get(&name) == Some(&true)).then_some(name.as_str());
                     let how = make_data(&rd, &shared)
-                        .and_then(|()| run_child(&common, &rd, from, &snapshots, n))
-                        .unwrap_or_else(|e| format!("failed: {e:#}"));
+                        .and_then(|()| run_child(&common, &rd, from, &snapshots, n, batch))
+                        .unwrap_or_else(|e| {
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            format!("failed: {e:#}")
+                        });
                     if !keep {
                         let _ = std::fs::remove_dir_all(rd.data());
                     }
@@ -602,6 +771,12 @@ fn batch(args: Vec<String>) -> Result<()> {
     );
     print!("{table}");
     println!("\n{}", b.out.join("compare.json").display());
+    if upload && failed.load(Ordering::Relaxed) > 0 {
+        bail!(
+            "{} sim uploads failed; see the run logs",
+            failed.load(Ordering::Relaxed)
+        );
+    }
     Ok(())
 }
 
@@ -663,6 +838,7 @@ mod tests {
             out: Some("/o".into()),
             data: Some("/shared".into()),
             tier: Some("fast".into()),
+            ..Default::default()
         };
         let rd = RunDir::new(Path::new("/res"), "lockout-s1");
         let a = child_args(&common, &rd, Some(Path::new("/tmp/s.sock")));
@@ -733,6 +909,18 @@ mod tests {
             nav: "loaded".into(),
             notes: vec![],
         }
+    }
+
+    #[test]
+    fn sim_upload_caps_the_live_slots_and_reuses_them() {
+        let dir = scratch("live-slots");
+        let first = live_slot(&dir).unwrap().unwrap();
+        let second = live_slot(&dir).unwrap().unwrap();
+        assert!(live_slot(&dir).unwrap().is_none());
+        drop(first);
+        assert!(live_slot(&dir).unwrap().is_some());
+        drop(second);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

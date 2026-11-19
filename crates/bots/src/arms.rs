@@ -653,6 +653,14 @@ fn dist(a: Vec3, b: Vec3) -> f32 {
 ///
 /// `skip` rules out pickups (those the bot could not reach).
 pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
+    plan_with_personality(s, skip, None)
+}
+
+pub(crate) fn plan_with_personality(
+    s: &Situation<'_>,
+    skip: impl Fn(&Pickup) -> bool,
+    personality: Option<crate::decisions::Personality>,
+) -> Kit {
     let held_gun = s.arms.held;
     let other_gun = s.arms.other;
     let held = held_gun.map_or(Ammo::None, |g| g.ammo);
@@ -664,6 +672,8 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
     // assist reach (crate::weapons::reach).
     let held_misfit = |d: f32| held_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
     let other_misfit = |d: f32| other_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
+    // All pickup choices, including the off hand, apply interest after
+    // filtering for reach, safety and weapon compatibility.
     let nearest = |range: f32, want: &dyn Fn(&Pickup) -> bool| {
         s.pickups
             .iter()
@@ -671,7 +681,10 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
             .map(|p| (dist(p.position, s.at), *p))
             .filter(|(d, _)| *d < range)
             .min_by(|a, b| {
-                let cost = |(d, p): &(f32, Pickup)| d - RATING_PULL * p.gun.rating() as f32;
+                let cost = |(d, p): &(f32, Pickup)| {
+                    d - RATING_PULL * p.gun.rating() as f32
+                        - crate::weapons::pickup_bias(personality, p.gun.role())
+                };
                 cost(a).total_cmp(&cost(b))
             })
             .map(|(_, p)| p)
@@ -777,6 +790,28 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         // Same kind tops up by walking over it; any useful gun will do.
         if let Some(p) = nearest(TOP_UP_RANGE, &|_| true) {
             return Kit::Seek(p);
+        }
+    }
+    if s.calm
+        && s.enemy.is_none()
+        && let Some(traits) = personality
+        && ![held_gun, other_gun]
+            .into_iter()
+            .flatten()
+            .any(|g| g.rating() > 0 && g.role() == traits.favorite_weapon)
+        && let Some(p) = nearest(traits.favorite_detour(), &|p| {
+            traits.weapon_interest(p.gun.role()) > 0.0 && !s.arms.carries(p.gun.def)
+        })
+    {
+        let rate = |g: Option<Gun>| g.map_or(0, |g| g.rating());
+        // Preserve the stronger gun and never trade a stronger pair just
+        // for a favorite. A single gun has an open second slot.
+        if other_gun.is_none() || p.gun.rating() >= rate(held_gun).min(rate(other_gun)) {
+            return if other_gun.is_some() && rate(held_gun) > rate(other_gun) {
+                Kit::Switch
+            } else {
+                Kit::Seek(p)
+            };
         }
     }
     if s.calm && s.by_range {
@@ -952,37 +987,6 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
-/// Whether the selected gun has run out of loaded rounds, with rounds
-/// still in reserve. Only the held instance is needed for this cue.
-pub(crate) fn held_empty_magazine(m: &dyn GuestMemory, unit: u32) -> R<bool> {
-    let slot = u32::from(m.u8(unit + UNIT_WEAPON_INDEX)?);
-    if slot >= UNIT_WEAPON_SLOTS {
-        return Ok(false);
-    }
-    let Some(h) = DatumHandle::from_raw(m.u32(unit + UNIT_WEAPONS + 4 * slot)?) else {
-        return Ok(false);
-    };
-    let Some((objects::WEAPON, body)) = objects::get(m, h)? else {
-        return Ok(false);
-    };
-    let mag = body.addr + WEAPON_MAGAZINES;
-    if m.u16(mag + MAGAZINE_LOADED)? != 0 || m.u16(mag + MAGAZINE_RESERVE)? as i16 <= 0 {
-        return Ok(false);
-    }
-    let Some(def) = body.definition(m)? else {
-        return Ok(false);
-    };
-    let Some(tag) = Tags.entry(m, def)? else {
-        return Ok(false);
-    };
-    let meta = tag.address(m)?;
-    if meta == 0 {
-        return Ok(false);
-    }
-    let layout = WeaponDef::read(m, meta)?;
-    Ok(layout.magazine.is_some() && !layout.ages)
-}
-
 /// What the unit whose body is at `unit` carries.
 pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
     let held_slot = m.u8(unit + UNIT_WEAPON_INDEX)? as i8;
@@ -1079,7 +1083,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                     continue;
                 };
                 if body.parent(m)?.is_some() {
-                    if gun.role().power() && gun.rating() > 0 {
+                    if gun.role().power() {
                         out.held_power.push(h.raw());
                     }
                     continue;
@@ -1092,7 +1096,7 @@ pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R
                 if out.supplies.is_none() || !gun.role().power() {
                     continue;
                 }
-                crate::guest::intel::supply(m, h, body, None)
+                crate::guest::intel::supply(m, h, body, None, gun.role())
             }
             crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
                 .body(m)

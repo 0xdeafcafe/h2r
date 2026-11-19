@@ -27,6 +27,8 @@ use anyhow::{Context, Result, anyhow};
 use assets::ResourceFiles;
 use map::{CacheType, FourCC, Map, RawPointer, TagId};
 use serde::{Deserialize, Serialize};
+use tags::anim::{AnimationGraph, AnimationType};
+use tags::anim_sample::{Mat4, NodeTransform};
 use tags::geometry::{RawSource, Section, TagView};
 use tags::structure::StructureRender;
 
@@ -35,6 +37,7 @@ use crate::live_features::{Features, read_features};
 pub use crate::live_layers::{Blend, Layer};
 use crate::live_layers::{LayerMaterial, LayerPrim, LayerTri};
 use crate::live_looks::Looks;
+use crate::live_models::{self, Bone};
 use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 
 /// The geometry files' format (contract `GEOMETRY_VERSION`).
@@ -484,6 +487,8 @@ pub struct Primitive {
     pub indices: Vec<u32>,
     /// The textured look its triangles share ([`crate::live_looks`]).
     pub look: Option<u32>,
+    /// Joint indices and normalized weights for an animated machine mesh.
+    skin: Vec<([u16; 4], [f32; 4])>,
 }
 
 /// The level, welded, one primitive per class present.
@@ -797,6 +802,9 @@ pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
                 if let Some(uv) = p.uvs.get(i as usize) {
                     cur.uvs.push(*uv);
                 }
+                if let Some(skin) = p.skin.get(i as usize) {
+                    cur.skin.push(*skin);
+                }
                 (cur.positions.len() - 1) as u32
             });
             cur.indices.push(j);
@@ -809,7 +817,7 @@ pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
 }
 
 /// One node of `map.glb`: an optional mesh (its primitives, game
-/// coordinates), `extras`, and child nodes. Nodes carry no transforms.
+/// coordinates), placement transform, `extras`, and child nodes.
 pub struct GlbNode<'a> {
     pub name: String,
     /// Its mesh; a mesh given to several nodes (the same slice) is written
@@ -822,6 +830,7 @@ pub struct GlbNode<'a> {
     pub matrix: Option<[f32; 16]>,
     pub extras: Option<serde_json::Value>,
     pub children: Vec<GlbNode<'a>>,
+    rig: Option<(&'a MachineRig, usize)>,
 }
 
 impl<'a> GlbNode<'a> {
@@ -833,6 +842,7 @@ impl<'a> GlbNode<'a> {
             matrix: None,
             extras: None,
             children: Vec::new(),
+            rig: None,
         }
     }
 
@@ -849,6 +859,7 @@ impl<'a> GlbNode<'a> {
             matrix: None,
             extras: Some(extras),
             children: Vec::new(),
+            rig: None,
         }
     }
 
@@ -947,6 +958,12 @@ pub fn write_nodes_with(
     pictures: &Pictures,
 ) -> Vec<u8> {
     use serde_json::{Value, json};
+    struct RigAccessors {
+        inverse_bind: usize,
+        time: usize,
+        tracks: Vec<Option<[usize; 2]>>,
+    }
+
     struct Out<'m> {
         layer_materials: &'m [LayerMaterial],
         pictures: &'m Pictures<'m>,
@@ -966,18 +983,142 @@ pub fn write_nodes_with(
         meshes: Vec<Value>,
         mesh_of: HashMap<*const (Class, Primitive), usize>,
         nodes: Vec<Value>,
+        skins: Vec<Value>,
+        animations: Vec<Value>,
+        rig_accessors: HashMap<*const MachineRig, RigAccessors>,
     }
     impl Out<'_> {
         fn view(&mut self, bytes: &[u8], target: u32) -> usize {
             while !self.bin.len().is_multiple_of(4) {
                 self.bin.push(0);
             }
-            self.views.push(json!({
-                "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len(), "target": target
-            }));
+            let mut view = json!({
+                "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len()
+            });
+            if target != 0 {
+                view["target"] = json!(target);
+            }
+            self.views.push(view);
             self.bin.extend_from_slice(bytes);
             self.views.len() - 1
         }
+        fn accessor(
+            &mut self,
+            bytes: &[u8],
+            component: u32,
+            count: usize,
+            kind: &str,
+            target: u32,
+        ) -> usize {
+            let view = self.view(bytes, target);
+            let index = self.accessors.len();
+            self.accessors.push(json!({
+                "bufferView": view, "componentType": component, "count": count, "type": kind
+            }));
+            index
+        }
+
+        fn rig_accessors(&mut self, rig: &MachineRig) -> &RigAccessors {
+            let key = std::ptr::from_ref(rig);
+            if !self.rig_accessors.contains_key(&key) {
+                let floats = |items: &[[f32; 4]]| -> Vec<u8> {
+                    items
+                        .iter()
+                        .flatten()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect()
+                };
+                let inverse_bind = self.accessor(
+                    &floats(rig.inverse_bind.as_flattened()),
+                    5126,
+                    rig.bones.len(),
+                    "MAT4",
+                    0,
+                );
+                let times: Vec<u8> = (0..rig.frames)
+                    .flat_map(|frame| (frame as f32 / (rig.frames - 1) as f32).to_le_bytes())
+                    .collect();
+                let time = self.accessor(&times, 5126, rig.frames, "SCALAR", 0);
+                self.accessors[time]["min"] = json!([0]);
+                self.accessors[time]["max"] = json!([1]);
+                let tracks = rig
+                    .bones
+                    .iter()
+                    .map(|bone| {
+                        let track = bone.track.as_ref()?;
+                        let translations: Vec<u8> = track
+                            .iter()
+                            .flat_map(|(t, _)| t.iter())
+                            .flat_map(|v| v.to_le_bytes())
+                            .collect();
+                        let rotations: Vec<_> =
+                            live_models::continuous(track.iter().map(|(_, q)| *q));
+                        Some([
+                            self.accessor(&translations, 5126, rig.frames, "VEC3", 0),
+                            self.accessor(&floats(&rotations), 5126, rig.frames, "VEC4", 0),
+                        ])
+                    })
+                    .collect();
+                self.rig_accessors.insert(
+                    key,
+                    RigAccessors {
+                        inverse_bind,
+                        time,
+                        tracks,
+                    },
+                );
+            }
+            &self.rig_accessors[&key]
+        }
+
+        /// Each placement has its own joints and clip targets. The model's
+        /// vertex data, animation samples and inverse binds are shared.
+        fn add_rig(&mut self, at: usize, rig: &MachineRig, placement: usize) {
+            let first = self.nodes.len();
+            let mut children = vec![Vec::new(); rig.bones.len()];
+            let mut roots = Vec::new();
+            for (j, bone) in rig.bones.iter().enumerate() {
+                if let Some(parent) = bone.parent {
+                    children[parent].push(first + j);
+                } else {
+                    roots.push(first + j);
+                }
+            }
+            for (bone, children) in rig.bones.iter().zip(children) {
+                let (translation, rotation) = bone.rest;
+                let mut node = json!({
+                    "name": bone.name, "translation": translation, "rotation": rotation,
+                });
+                if !children.is_empty() {
+                    node["children"] = json!(children);
+                }
+                self.nodes.push(node);
+            }
+            self.nodes[at]["children"] = json!(roots);
+
+            let data = self.rig_accessors(rig);
+            let mut channels = Vec::new();
+            let mut samplers = Vec::new();
+            for (j, track) in data.tracks.iter().enumerate() {
+                if let Some([t, r]) = *track {
+                    for (path, output) in [("translation", t), ("rotation", r)] {
+                        channels.push(json!({
+                            "sampler": samplers.len(), "target": {"node": first + j, "path": path}
+                        }));
+                        samplers.push(json!({"input": data.time, "output": output}));
+                    }
+                }
+            }
+            let joints: Vec<_> = (first..first + rig.bones.len()).collect();
+            let skin = json!({"joints": joints, "inverseBindMatrices": data.inverse_bind});
+            self.nodes[at]["skin"] = json!(self.skins.len());
+            self.skins.push(skin);
+            self.animations.push(json!({
+                "name": format!("device_position_{placement}"),
+                "channels": channels, "samplers": samplers,
+            }));
+        }
+
         fn layer_material(&mut self, i: usize) -> usize {
             if let Some(&m) = self.layer_material_of.get(&i) {
                 return m;
@@ -1217,6 +1358,24 @@ pub fn write_nodes_with(
                     out["extras"] = json!({"class": class.name(), "flat": flat});
                 }
             }
+            if !p.skin.is_empty() {
+                let joints: Vec<_> = p
+                    .skin
+                    .iter()
+                    .flat_map(|(j, _)| j)
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                let weights: Vec<_> = p
+                    .skin
+                    .iter()
+                    .flat_map(|(_, w)| w)
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect();
+                out["attributes"]["JOINTS_0"] =
+                    json!(self.accessor(&joints, 5123, pos.len(), "VEC4", 34962));
+                out["attributes"]["WEIGHTS_0"] =
+                    json!(self.accessor(&weights, 5126, pos.len(), "VEC4", 34962));
+            }
             out
         }
         /// Adds a node and its children; returns its index.
@@ -1266,6 +1425,9 @@ pub fn write_nodes_with(
                 let kids: Vec<usize> = n.children.iter().map(|c| self.node(c)).collect();
                 self.nodes[at]["children"] = json!(kids);
             }
+            if let Some((rig, placement)) = n.rig {
+                self.add_rig(at, rig, placement);
+            }
             at
         }
     }
@@ -1288,6 +1450,9 @@ pub fn write_nodes_with(
         meshes: Vec::new(),
         mesh_of: HashMap::new(),
         nodes: Vec::new(),
+        skins: Vec::new(),
+        animations: Vec::new(),
+        rig_accessors: HashMap::new(),
     };
     let top: Vec<usize> = roots.iter().map(|n| o.node(n)).collect();
     while !o.bin.len().is_multiple_of(4) {
@@ -1308,6 +1473,10 @@ pub fn write_nodes_with(
         "scenes": [{"nodes": top}],
         "nodes": o.nodes,
     });
+    if !o.skins.is_empty() {
+        doc["skins"] = json!(o.skins);
+        doc["animations"] = json!(o.animations);
+    }
     for (k, v) in more {
         doc["asset"]["extras"][k] = v;
     }
@@ -1698,6 +1867,26 @@ pub struct MachineModel {
     pub stem: String,
     /// Model space, welded; see [`object_mesh`].
     pub mesh: LevelMesh,
+    rig: Option<MachineRig>,
+}
+
+type BoneFrame = ([f32; 3], [f32; 4]);
+
+#[derive(Clone, Debug)]
+struct MachineBone {
+    name: String,
+    parent: Option<usize>,
+    rest: BoneFrame,
+    track: Option<Vec<BoneFrame>>,
+}
+
+#[derive(Clone, Debug)]
+struct MachineRig {
+    primitives: Vec<(Class, Primitive)>,
+    bones: Vec<MachineBone>,
+    inverse_bind: Vec<Mat4>,
+    frames: usize,
+    loops: bool,
 }
 
 /// A placed object's mesh: welded like the level, but every surface is
@@ -1738,6 +1927,7 @@ pub fn place_mesh(mesh: &LevelMesh, at: &Placement) -> Vec<(Class, Primitive)> {
                     uvs: p.uvs.clone(),
                     indices: p.indices.clone(),
                     look: p.look,
+                    ..Primitive::default()
                 },
             )
         })
@@ -1749,6 +1939,7 @@ pub fn place_mesh(mesh: &LevelMesh, at: &Placement) -> Vec<(Class, Primitive)> {
 #[derive(Clone, Debug)]
 pub struct PlacedMachine {
     pub name: String,
+    pub index: usize,
     pub model: usize,
     pub at: Placement,
 }
@@ -1920,9 +2111,204 @@ pub(crate) fn object_model(
             model.regions.len()
         ))));
     }
-    Ok(Some(MachineModel {
-        stem,
-        mesh: object_mesh(&tris),
+    let mesh = object_mesh(&tris);
+    let rig = if tag.group == MACH {
+        let animation = hlmt.layer("hlmt").and_then(|r| r.tag_ref("animation"));
+        let loops = map
+            .read_tag_bytes(object)
+            .ok()
+            .and_then(|b| b.get(0x11c..0x11e).map(|v| v == [2, 0]))
+            .unwrap_or(false);
+        animation.filter(|r| r.id != TagId::NULL).and_then(|r| {
+            match machine_rig(
+                map,
+                files,
+                r.id,
+                &model,
+                &surfaces,
+                &material_looks,
+                loops,
+            ) {
+                Ok(rig) => rig,
+                Err(e) => {
+                    eprintln!("live art: {name}: device animation: {e:#}");
+                    None
+                }
+            }
+        })
+    } else {
+        None
+    };
+    Ok(Some(MachineModel { stem, mesh, rig }))
+}
+
+/// The engine installs a device's position channel using the "position"
+/// overlay (0x00107815 -> 0x001086e0, lookup at 0x001dbd12). Placed devices
+/// use the generic mode, class and type.
+fn machine_rig(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    id: TagId,
+    model: &tags::model::RenderModelGeometry,
+    surfaces: &[Surface],
+    material_looks: &[Option<u32>],
+    loops: bool,
+) -> Result<Option<MachineRig>> {
+    let graph = AnimationGraph::read(map, id)?;
+    let strings = map.strings();
+    let any = |name: tags::wire::StringId| name.resolve(strings).ok().flatten() == Some("any");
+    let Some(action) = graph
+        .modes
+        .iter()
+        .filter(|m| any(m.name))
+        .flat_map(|m| &m.classes)
+        .filter(|c| any(c.name))
+        .flat_map(|c| &c.types)
+        .filter(|t| any(t.name))
+        .flat_map(|t| &t.overlays)
+        .find(|a| a.name.resolve(strings).ok().flatten() == Some("position"))
+        .copied()
+    else {
+        return Ok(None);
+    };
+    let graph = if let Ok(inherited) = usize::try_from(action.graph_index) {
+        let inherited = graph
+            .inheritance
+            .get(inherited)
+            .context("bad device graph index")?;
+        AnimationGraph::read(map, inherited.graph.id)?
+    } else {
+        graph
+    };
+    let index = usize::try_from(action.animation_index).context("bad device animation index")?;
+    let clip = graph.load_clip(index, &mut live_models::Res(files))?;
+    let frames = clip.frame_count();
+    anyhow::ensure!(
+        !clip.is_aim_grid() && (2..=1024).contains(&frames),
+        "bad device animation length"
+    );
+    let names: Vec<String> = graph
+        .nodes
+        .iter()
+        .map(|n| {
+            n.name
+                .resolve(map.strings())
+                .ok()
+                .flatten()
+                .unwrap_or("")
+                .to_owned()
+        })
+        .collect();
+    let bones: Vec<_> = model
+        .nodes
+        .iter()
+        .map(|n| Bone {
+            name: n.name.clone().unwrap_or_default(),
+            parent: usize::try_from(n.wire.parent_index).ok(),
+            translation: n.wire.translation,
+            rotation: n.wire.orientation,
+        })
+        .collect();
+    if bones.is_empty() {
+        return Ok(None);
+    }
+    let parents: Vec<_> = bones.iter().map(|b| b.parent).collect();
+    for (i, parent) in parents.iter().enumerate() {
+        let mut p = *parent;
+        for _ in 0..bones.len() {
+            let Some(j) = p else { break };
+            anyhow::ensure!(i != j, "cyclic device skeleton");
+            p = *parents.get(j).context("bad device joint parent")?;
+        }
+    }
+    let base: Vec<_> = bones.iter().map(|b| (b.translation, b.rotation)).collect();
+    let first = clip.sample_frame(0)?;
+    let overlay = (graph.animations[index].anim_type == AnimationType::Overlay).then_some(&first);
+    let mut tracks = vec![Vec::with_capacity(frames); bones.len()];
+    for frame in 0..frames {
+        let pose = clip.sample_frame(frame)?;
+        let locals = live_models::clip_locals(&bones, &names, &pose, &base, overlay);
+        for (track, m) in tracks.iter_mut().zip(locals) {
+            track.push(live_models::gltf_trs(&m));
+        }
+    }
+    let inverse_bind = live_models::rest_world(&bones)
+        .iter()
+        .map(|m| live_models::to_gltf_frame(&live_models::invert_rigid(m)))
+        .collect();
+    let joints: Vec<_> = bones
+        .iter()
+        .zip(tracks)
+        .map(|(bone, track)| {
+            let rest = NodeTransform {
+                translation: bone.translation,
+                rotation: bone.rotation,
+                ..NodeTransform::default()
+            };
+            MachineBone {
+                name: bone.name.clone(),
+                parent: bone.parent,
+                rest: live_models::gltf_trs(&rest.matrix()),
+                track: (track.windows(2).any(|w| w[0] != w[1]) || overlay.is_none())
+                    .then_some(track),
+            }
+        })
+        .collect();
+    if joints.iter().all(|j| j.track.is_none()) {
+        return Ok(None);
+    }
+
+    let skip: Vec<_> = surfaces.iter().map(|s| !s.is_level()).collect();
+    let mut primitives = BTreeMap::<_, Primitive>::new();
+    for piece in live_models::pieces(model, &object_sections(model), &skip) {
+        let class = match surfaces.get(piece.material) {
+            Some(Surface::Class(c @ (Class::Glass | Class::Water | Class::Foliage))) => *c,
+            _ => Class::Metal,
+        };
+        let look = material_looks
+            .get(piece.material)
+            .copied()
+            .flatten()
+            .filter(|_| !class.transparent());
+        let p = primitives
+            .entry((class, look))
+            .or_insert_with(|| Primitive {
+                look,
+                ..Primitive::default()
+            });
+        let start = p.positions.len() as u32;
+        p.positions.extend(piece.positions);
+        p.normals.extend(piece.normals.into_iter().map(|n| {
+            let len = dot(n, n).sqrt();
+            if len > 0.0 {
+                n.map(|v| v / len)
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        }));
+        p.uvs.extend(piece.uvs);
+        p.indices
+            .extend(piece.triangles.into_iter().flatten().map(|i| i + start));
+        p.skin.extend(
+            piece
+                .nodes
+                .into_iter()
+                .zip(piece.weights)
+                .map(|(n, w)| live_models::joint_weights(n, w, bones.len())),
+        );
+    }
+    if primitives.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(MachineRig {
+        primitives: primitives
+            .into_iter()
+            .map(|((class, _), p)| (class, p))
+            .collect(),
+        bones: joints,
+        inverse_bind,
+        frames,
+        loops,
     }))
 }
 
@@ -1995,6 +2381,7 @@ fn load_machines(
             Ok(None) => {}
             Ok(Some(m)) => out.push(PlacedMachine {
                 name: format!("{}_{i}", models[*m].stem),
+                index: i,
                 model: *m,
                 at,
             }),
@@ -2243,23 +2630,29 @@ impl Level {
                 layers: &[],
                 extras: None,
                 matrix: None,
+                rig: None,
                 children: self
                     .machines
                     .iter()
                     .map(|m| {
                         let model = &self.machine_models[m.model];
                         let [forward, _, up] = m.at.axes();
-                        GlbNode {
-                            matrix: Some(m.at.gltf_matrix()),
-                            extras: Some(serde_json::json!({
-                                "pos": m.at.position,
-                                "forward": forward,
-                                "up": up,
-                                "scale": m.at.scale(),
-                            })),
-                            ..GlbNode::mesh(model.stem.clone(), &model.mesh)
+                        let mut extras = serde_json::json!({
+                            "pos": m.at.position,
+                            "forward": forward,
+                            "up": up,
+                            "scale": m.at.scale(),
+                        });
+                        let mut node = GlbNode::mesh(&m.name, &model.mesh);
+                        node.matrix = Some(m.at.gltf_matrix());
+                        if let Some(rig) = &model.rig {
+                            node.mesh = Some(&rig.primitives);
+                            node.rig = Some((rig, m.index));
+                            extras["device"] =
+                                serde_json::json!({"index": m.index, "loop": rig.loops});
                         }
-                        .named(m.name.clone())
+                        node.extras = Some(extras);
+                        node
                     })
                     .collect(),
             });
@@ -2271,6 +2664,7 @@ impl Level {
                 layers: &[],
                 extras: None,
                 matrix: None,
+                rig: None,
                 children: self
                     .objects
                     .iter()

@@ -31,17 +31,19 @@
 //!   its image the number of earlier entries naming the same bitmap (V);
 //! - `slit_ref_34` the `slit` group with no tag, as on every retail tag;
 //! - each bitmap's `lod_offset` from its size ([`lod_offset`]);
-//! - no animation: the LOD/layer/pass/implementation tree and the
-//!   animated properties are empty, which the engine reads as "not
-//!   animated" (`0x000174d0` bounds-checks each level). Halo 1's map
-//!   animation (scrolling clouds, water) is not converted yet.
+//! - no animation unless the layout has an [`AnimTree`] and the shader
+//!   something to drive it: the LOD/layer/pass/implementation tree and
+//!   the animated properties are otherwise empty, which the engine reads
+//!   as "not animated" (`0x000174d0` bounds-checks each level). Animated:
+//!   a scrolling map ([`TextureScroll`]) and a weapon's ammunition
+//!   counter digit ([`counter_properties`]).
 
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
 use map::build::Block;
 use map::{FourCC, Map, TagId};
-use tags::defs::{self, Defs, Record, Target, Val};
+use tags::defs::{self, Defs, Record, Str, Target, Val};
 use tags::shader::SHAD;
 use tags::{DecodedTag, TagData};
 
@@ -301,6 +303,85 @@ pub const WATER_TREE: AnimTree = AnimTree {
     implementation: [(1, 1), (1, 0), (1, 0), (0, 0), (0, 1)],
     bindings: &[[178, 1, 0, 0], [0, 0, 0, 0]],
 };
+
+/// The ammunition counter's animated tree on `illum_detail`
+/// ([`ILLUM_DETAIL`]): retail's battle rifle digits'. V (Coagulation's
+/// `objects\weapons\rifle\battle_rifle\shaders\tens` and `ones`, the
+/// stem's only instances there; `tests/shad_rebuild.rs`,
+/// `ammunition_counter_instances_share_one_tree`): layer 7 of 25
+/// animated, one vertex binding (target 177, parameter 1) and one bitmap
+/// binding (target 0: bitmap 0's frame), both reading the ten components
+/// [`counter_properties`] writes. Component 0, the frame, is the
+/// weapon's digit; 1 to 3 are one and 4 to 9 zero (an identity texture
+/// transform).
+pub const COUNTER_TREE: AnimTree = AnimTree {
+    layers: 25,
+    animated_layer: 7,
+    implementation: [(1, 1), (1, 0), (1, 0), (0, 0), (0, 1)],
+    bindings: &[[177, 1, 0, 0], [0, 0, 0, 0]],
+};
+
+/// The Halo 2 weapon functions giving one digit of the rounds loaded in
+/// its first magazine, by place (0 the ones, 1 the tens). E: the weapon's
+/// function handler (`0x000ff600`..`0x000ffc57`) answers
+/// `primary_ammunition_ones` (`0x1700056b`) with `(weapon +0x22c) mod 10`
+/// and `primary_ammunition_tens` (`0x1700056c`) with `(weapon +0x22c / 10)
+/// mod 10`, each times 0.1 (`[0x45dc68]`) and clamped to 0..1, when the
+/// definition has a magazine (`weap +0x2c0`); `+0x22c` is magazine 0's
+/// rounds loaded (`i16`, the value `primary_ammunition` divides by the
+/// magazine's loaded maximum, `0x000ffadf`).
+pub const AMMUNITION_DIGITS: [&str; 2] = ["primary_ammunition_ones", "primary_ammunition_tens"];
+
+/// A counter digit's frames: a digit's bitmap holds one image per digit,
+/// 0 to 9 in order (Halo 1's `numbers_plate` and retail's).
+pub const COUNTER_FRAMES: f32 = 10.0;
+
+/// One animated property of a `shad`: what drives it (an object function
+/// by name, or game time with `None`), its period in seconds when time
+/// drives it, and its function blob (`tags::effects::function`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Property {
+    pub input: Option<&'static str>,
+    pub period: f32,
+    pub function: Vec<u8>,
+}
+
+/// The ten properties of a counter digit ([`COUNTER_TREE`]) driven by the
+/// object function `input` (one of [`AMMUNITION_DIGITS`]): component 0 is
+/// the input mapped by an identity onto 0..[`COUNTER_FRAMES`], so the
+/// handler's `digit × 0.1` picks frame `digit`; the rest an identity
+/// transform. V: retail's `tens` and `ones` hold exactly these (property
+/// 0 `primary_ammunition_tens` or `_ones`, period 1, an identity over 0
+/// to 10; 1 to 3 the constant 1, 4 to 9 the constant 0).
+pub fn counter_properties(input: &'static str) -> Vec<Property> {
+    use tags::effects::function::{Function, FunctionType};
+    let mut out: Vec<Property> = TextureScroll {
+        scale: [1.0, 1.0],
+        offset: [None, None],
+    }
+    .properties()
+    .into_iter()
+    .map(|(period, function)| Property {
+        input: None,
+        period,
+        function,
+    })
+    .collect();
+    out[0] = Property {
+        input: Some(input),
+        period: 1.0,
+        function: Function {
+            kind: FunctionType::Identity,
+            flags: 0,
+            sub_types: [0, 0],
+            range: [0.0, COUNTER_FRAMES],
+            unknown_0c: [0; 8],
+            payload: Vec::new(),
+        }
+        .to_bytes(),
+    };
+    out
+}
 
 /// A texture transform's scroll on one axis: the offset runs linearly
 /// from `from` to `to` every `period` seconds of game time.
@@ -604,6 +685,37 @@ pub const ILLUM: Layout = Layout {
     tint: None,
 };
 
+/// Self-illuminated over a detail, the ammunition counter's stem: `h2
+/// shader` on retail's battle rifle `tens` draws `t0 × t1 × 2 × c0`
+/// added (one/one) on layer 7, alpha-tested on its brightness, bitmap 0
+/// the digits (`numbers_plate`, ten images) on stage 0 and bitmap 1 a
+/// detail on stage 1; bitmap 2 null. Vector 0 the digits' tiling, 1 and 2
+/// the unit rows, 3 the detail's tiling (retail 8×8 over its
+/// `wacky_globs`). Here the detail is the plain grey default, so the
+/// digit is drawn as Halo 1's additive `schi` draws it, and colour 0 is
+/// white: Halo 1's digits carry their own colour (retail tints its white
+/// ones cyan). [`COUNTER_TREE`] picks the digit. In `shared.map`.
+pub const ILLUM_DETAIL: Layout = Layout {
+    stem: "shaders\\shader_templates\\opaque\\illum_detail",
+    word_14: 1,
+    ints: [0, 0],
+    bitmaps: &[
+        Bm::Role(Role::Base, Fixed::ColorWhite),
+        Bm::Role(Role::Detail, Fixed::DefaultDetail),
+        Bm::Null,
+    ],
+    colors: &[WHITE],
+    vectors: &[
+        Vector::Tile(Role::Base),
+        Vector::Const(U1),
+        Vector::Const(V1),
+        Vector::Tile(Role::Detail),
+    ],
+    root: Root::BaseMap,
+    animation: Some(&COUNTER_TREE),
+    tint: None,
+};
+
 /// Additive: stage 1 bitmap 0, its rows vectors 0 and 1; vectors 2 to 5
 /// the [`Tint`] (white, no fade, by default). `h2 shader` on retail's
 /// `teleporter_emitter_core`: `rgb = t1.rgb × c0.rgb × v0.rgb × v0.a`,
@@ -851,13 +963,14 @@ pub const WATER_POOL: Layout = Layout {
 };
 
 /// Every layout.
-pub const LAYOUTS: [&Layout; 14] = [
+pub const LAYOUTS: [&Layout; 15] = [
     &TEX_BUMP,
     &TEX_BUMP_ENV,
     &TEX_BUMP_ENV_FOUR_CHANGE_COLOR,
     &TEX_BUMP_DETAIL_BLEND_DETAIL,
     &TEX_BUMP_ALPHA_TEST,
     &ILLUM,
+    &ILLUM_DETAIL,
     &ONE_ADD_ILLUM,
     &TWO_ADD_CLOUDS,
     &PLASMA_ALPHA,
@@ -907,6 +1020,10 @@ pub struct Extras {
     /// (`h1bitmaps::mask::convert_brightest`, [`plasma_shader`]); the
     /// caller converting the maps makes it. `None`: the map as it is.
     pub brightest_mask: Option<f32>,
+    /// The weapon function picking the layout's animated map's frame, one
+    /// of [`AMMUNITION_DIGITS`] ([`counter_properties`]); over
+    /// [`Self::scroll`]. `None`: no counter.
+    pub counter: Option<&'static str>,
 }
 
 impl Extras {
@@ -1100,8 +1217,25 @@ impl Library {
             _ => None,
         };
         let mut rec = build_record(layout, stem, &bitmaps, &colors, &vectors, picture)?;
-        if let (Some(tree), Some(scroll)) = (layout.animation, scroll) {
-            animate(&mut rec, tree, &scroll)?;
+        if let Some(tree) = layout.animation {
+            let props = match (extras.counter, scroll) {
+                (Some(input), _) => Some(counter_properties(input)),
+                (None, Some(scroll)) => Some(
+                    scroll
+                        .properties()
+                        .into_iter()
+                        .map(|(period, function)| Property {
+                            input: None,
+                            period,
+                            function,
+                        })
+                        .collect(),
+                ),
+                (None, None) => None,
+            };
+            if let Some(props) = props {
+                animate(&mut rec, tree, &props)?;
+            }
         }
         Ok(rec)
     }
@@ -1129,9 +1263,9 @@ fn range16(start: u16, count: u16) -> Val {
     Val::Int(i64::from(start | (count << 9)))
 }
 
-/// Writes `tree` with `scroll`'s properties into the record's
-/// postprocess.
-fn animate(rec: &mut Record, tree: &AnimTree, scroll: &TextureScroll) -> Result<()> {
+/// Writes `tree` with `props` (property `k` driving component `k`) into
+/// the record's postprocess.
+fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> {
     let def = shad_def();
     let ppdef = child(def, "postprocess")?;
     let Some(Val::Block(pps)) = rec.at("postprocess").cloned() else {
@@ -1182,13 +1316,20 @@ fn animate(rec: &mut Record, tree: &AnimTree, scroll: &TextureScroll) -> Result<
         .map(|(n, (a, b))| (*n, range16(a, b)))
         .collect();
     set(&mut pp, "implementations", Val::Block(vec![mk("implementations", &fields)?]))?;
-    let props = scroll.properties();
     let precs = props
         .iter()
-        .map(|(period, blob)| {
+        .map(|p| {
+            let input = match p.input {
+                Some(name) => Str::Text(name.to_owned()),
+                None => Str::Null,
+            };
             mk(
                 "properties",
-                &[("input_b", Val::Float(*period)), ("function", Val::Data(blob.clone()))],
+                &[
+                    ("input", Val::String(input)),
+                    ("input_b", Val::Float(p.period)),
+                    ("function", Val::Data(p.function.clone())),
+                ],
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1482,12 +1623,13 @@ pub const SOSO_NOT_ALPHA_TESTED: u16 = 1 << 2;
 /// [`h1_has_alpha`]) has anything to cut; an opaque one keeps the plain
 /// stem. Before converter version 84 every `soso` drew opaque: Blood
 /// Gulch's leaves are solid dark green cards in a live frame, the clear
-/// part of their texture (62 % of the broadleaf's) drawn too. A cut-out
-/// live is not shown yet: pointing the broadleaf's leaf materials at an
-/// alpha-tested shader drawing its leaf texture (ours, or retail's
-/// `br_ammo_bag` with the texture swapped in) left the cards whole, so
-/// the object path's alpha test (or the edit reaching it) needs a look of
-/// its own.
+/// part of their texture (62 % of the broadleaf's) drawn too. The stem
+/// alone left the cards whole: its depth and shadow passes kill by its
+/// bump map's alpha (slot 0), not the base's, so the object converter
+/// binds a flat bump cut out where the base is
+/// (`h1bitmaps::mask::cutout_bump`, converter version 92; shown live on
+/// Blood Gulch's whitebark tree, docs/halo1/objects.md "Cut-out model
+/// shaders").
 pub fn soso_alpha_tested(flags: u16, base_has_alpha: bool) -> bool {
     flags & SOSO_NOT_ALPHA_TESTED == 0 && base_has_alpha
 }
@@ -1848,6 +1990,119 @@ pub const TRANSPARENT_FADE: usize = 0x2e;
 /// `schi` / `scex` flags byte: bit 3 the first map is in screen space.
 pub const CHICAGO_FLAGS: usize = 0x29;
 pub const CHICAGO_SCREENSPACE: u8 = 1 << 3;
+/// `schi` flags bit 7: numeric, the shader draws one digit of a number
+/// (E, below).
+pub const CHICAGO_NUMERIC: u8 = 1 << 7;
+/// `schi` numeric counter limit (`u8`): the largest number counted.
+pub const CHICAGO_COUNTER_LIMIT: usize = 0x28;
+/// `schi` extra flags (`u32`); bit 1 takes the engine's own number
+/// ([`H1Numeric::engine_number`]).
+pub const CHICAGO_EXTRA_FLAGS: usize = 0x60;
+pub const CHICAGO_ENGINE_NUMBER: u32 = 1 << 1;
+
+/// A Halo 1 numeric `schi`: a counter digit. E, Halo 1's model draw
+/// (`0x00067ad1`..`0x00067c32` in Halo 1's XBE): a `schi` whose flags
+/// (`+0x29`) have bit 7 set and that has a map draws its first map's
+/// bitmap at image `digit`, where `digit` is
+/// `(n / base^p) mod base`: `base` the bitmap's image count (Halo 1
+/// `bitm +0x60`), `p` the permutation the model's shader entry names
+/// (`mode +0xdc` element `+0x10`) and `n` the number. `n` is the engine's
+/// (`[0x2e34a0]`, through `0x00056aa0`) when extra flags bit 1 is set;
+/// otherwise `floor(limit × out + 0.5)` clamped to 0..limit, `limit` the
+/// counter limit (`+0x28`) and `out` the drawn object's A out, or its D
+/// out when the bitmap has eight images. D (every `schi` on the disc's
+/// Blood Gulch): the assault rifle's first-person `numbers` (limit 60, ten
+/// digit images, named twice by its model: permutation 1 on the left
+/// digit, 0 on the right) and `compass` (limit 8, eight images).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct H1Numeric {
+    pub limit: u8,
+    /// The first map's bitmap and its u and v scale.
+    pub bitmap: h1map::TagId,
+    pub scale: [f32; 2],
+    /// The bitmap's image count: the digits' base.
+    pub images: usize,
+    /// Extra flags [`CHICAGO_ENGINE_NUMBER`].
+    pub engine_number: bool,
+}
+
+impl H1Numeric {
+    /// The Halo 2 weapon function ([`AMMUNITION_DIGITS`]) drawing digit
+    /// `permutation` of this counter on a weapon whose A out is its
+    /// rounds loaded over `loaded_maximum` (Halo 1's primary ammunition):
+    /// Halo 1 counts `floor(limit × rounds / loaded_maximum + 0.5)`, the
+    /// rounds themselves when the limit is the loaded maximum, in base 10
+    /// when the bitmap has ten images. `None` for any other counter, or a
+    /// place Halo 2 has no function for (hundreds and up).
+    pub fn ammunition_digit(&self, permutation: i16, loaded_maximum: i16) -> Option<&'static str> {
+        if self.engine_number
+            || self.images != COUNTER_FRAMES as usize
+            || i16::from(self.limit) != loaded_maximum
+        {
+            return None;
+        }
+        AMMUNITION_DIGITS
+            .get(usize::try_from(permutation).ok()?)
+            .copied()
+    }
+}
+
+/// Reads the Halo 1 shader `tag` as a numeric `schi` ([`H1Numeric`]);
+/// `None` for another group, a `schi` not numeric or one whose first map
+/// names no bitmap that reads.
+pub fn chicago_numeric(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Numeric> {
+    use crate::sky_shaders::{MAPS, SCHI_MAP};
+    if tag.group != h1map::Group::new(b"schi") {
+        return None;
+    }
+    let d = h1.tag_data(tag).ok()?;
+    if d.get(CHICAGO_FLAGS)? & CHICAGO_NUMERIC == 0 {
+        return None;
+    }
+    let (size, at, scale_at) = SCHI_MAP;
+    let block = h1map::Block::read(d, MAPS)?;
+    let e = h1.block(block, size).ok()?.get(..size)?;
+    let r = h1map::TagRef::read(e, at)?;
+    if r.group != h1map::Group::new(b"bitm") || r.id.is_none() {
+        return None;
+    }
+    let f32_at = |o: usize| Some(f32::from_le_bytes(e.get(o..o + 4)?.try_into().ok()?));
+    let bitmap = h1map::bitmap::Bitmap::read(h1, h1.tag(r.id).ok()?).ok()?;
+    let extra = d
+        .get(CHICAGO_EXTRA_FLAGS..CHICAGO_EXTRA_FLAGS + 4)
+        .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    Some(H1Numeric {
+        limit: *d.get(CHICAGO_COUNTER_LIMIT)?,
+        bitmap: r.id,
+        scale: [f32_at(scale_at)?, f32_at(scale_at + 4)?],
+        images: bitmap.images.len(),
+        engine_number: extra & CHICAGO_ENGINE_NUMBER != 0,
+    })
+}
+
+/// A counter digit of `n` drawn by the Halo 2 weapon function `input`
+/// ([`H1Numeric::ammunition_digit`]): [`ILLUM_DETAIL`] with the digits'
+/// bitmap, its frame picked by [`COUNTER_TREE`].
+pub fn counter_shader(name: &str, n: &H1Numeric, input: &'static str) -> H1Shader {
+    H1Shader {
+        name: name.to_owned(),
+        group: "schi".into(),
+        layout: &ILLUM_DETAIL,
+        maps: vec![(
+            Role::Base,
+            H1Bound {
+                bitmap: n.bitmap,
+                scale: n.scale,
+            },
+        )],
+        extras: Extras {
+            counter: Some(input),
+            ..Extras::default()
+        },
+        fallback: None,
+    }
+}
+
 /// `schi` / `scex` first map type (`u16`): 0 a 2D map (the others are
 /// reflection cubes and object-centred maps).
 pub const CHICAGO_FIRST_MAP_TYPE: usize = 0x2a;
@@ -2118,6 +2373,13 @@ pub fn brightness_mask_name(name: &str, gain: f32) -> String {
     format!("{name}_brightness_{}", (gain * 1000.0).round() as u32)
 }
 
+/// The name of the bump map cut out by the base map `name`'s alpha that
+/// an alpha-tested model shader binds in its bump slot
+/// (`h1bitmaps::mask::cutout_bump`): `<name>_alpha_test_bump`.
+pub fn cutout_bump_name(name: &str) -> String {
+    format!("{name}_alpha_test_bump")
+}
+
 /// One `sotr` stage's size, and its fields (`d`: the stage): `+0` flags
 /// (bit 0 colour mux, bit 1 alpha mux, bit 2 [`STAGE_A_OUT_COLOR0`]),
 /// `+0x0c` and `+0x1c` colour 0's lower and upper bounds (alpha, red,
@@ -2286,6 +2548,7 @@ pub fn plasma_shader(
             scroll: Some(maps[1].scroll),
             tint: Some(Tint::faded([1.0; 3], fade)),
             brightest_mask: Some(light.gain()),
+            counter: None,
         },
         fallback: Some(Box::new(plain)),
     }
@@ -3495,5 +3758,103 @@ mod tests {
         let lib = Library::new(&[], &[]);
         assert!(!lib.has(&TEX_BUMP));
         assert!(lib.record(&TEX_BUMP, &HashMap::new()).is_err());
+    }
+
+    fn numeric(limit: u8, images: usize, engine_number: bool) -> H1Numeric {
+        H1Numeric {
+            limit,
+            bitmap: h1map::TagId(0xe000_0001),
+            scale: [1.0, 1.0],
+            images,
+            engine_number,
+        }
+    }
+
+    /// Halo 1's counter digit `p` is `(n / 10^p) mod 10`; with the limit
+    /// at the loaded maximum `n` is the rounds loaded, Halo 2's ones (0)
+    /// and tens (1). Anything else has no Halo 2 weapon function.
+    #[test]
+    fn a_counter_digit_is_halo2s_ammunition_digit_only_when_it_counts_the_rounds() {
+        let ar = numeric(60, 10, false);
+        assert_eq!(ar.ammunition_digit(0, 60), Some("primary_ammunition_ones"));
+        assert_eq!(ar.ammunition_digit(1, 60), Some("primary_ammunition_tens"));
+        assert_eq!(ar.ammunition_digit(2, 60), None, "no hundreds function");
+        assert_eq!(ar.ammunition_digit(-1, 60), None);
+        // A limit other than the loaded maximum scales the rounds.
+        assert_eq!(ar.ammunition_digit(0, 32), None);
+        // Eight images: the compass (D out, not the rounds).
+        assert_eq!(numeric(8, 8, false).ammunition_digit(0, 8), None);
+        // The engine's own number.
+        assert_eq!(numeric(60, 10, true).ammunition_digit(0, 60), None);
+    }
+
+    /// A counter digit draws on `illum_detail`: the digits as bitmap 0 at
+    /// their tiling, the plain detail, colour white, and retail's counter
+    /// tree whose property 0 is the weapon's digit, an identity over the
+    /// ten frames; the rest an identity transform, driven by time.
+    #[test]
+    fn a_counter_digit_draws_on_illum_detail_its_frame_from_the_weapons_digit() {
+        use tags::effects::function::{Function, FunctionType};
+        let lib = library();
+        let n = numeric(60, 10, false);
+        let s = counter_shader("numbers", &n, "primary_ammunition_tens");
+        assert_eq!(s.layout, &ILLUM_DETAIL);
+        assert!(lib.has(s.layout));
+        let digits = Bound {
+            id: TagId(0xe300_0001),
+            scale: [1.0, 1.0],
+            lod_offset: 1.0,
+        };
+        let maps: HashMap<Role, Bound> = [(Role::Base, digits)].into_iter().collect();
+        let rec = lib.record_with(s.layout, &maps, &s.extras).unwrap();
+        let at = |p: &str| rec.at(p).cloned();
+        assert_eq!(
+            at("postprocess[0].bitmaps[0].bitmap"),
+            Some(Val::Datum(Target::Id(TagId(0xe300_0001))))
+        );
+        assert_eq!(
+            at("postprocess[0].bitmaps[2].bitmap"),
+            Some(Val::Datum(Target::Null))
+        );
+        assert_eq!(
+            at("postprocess[0].colors[0].color"),
+            Some(Val::Int(i64::from(WHITE)))
+        );
+        assert_eq!(
+            at("postprocess[0].lods[0].layer_mask"),
+            Some(Val::Int(1 << COUNTER_TREE.animated_layer))
+        );
+        let n = |p: &str| match rec.at(p) {
+            Some(Val::Block(b)) => b.len(),
+            _ => usize::MAX,
+        };
+        assert_eq!(n("postprocess[0].layers"), 25);
+        assert_eq!(n("postprocess[0].properties"), 10);
+        assert_eq!(n("postprocess[0].property_refs"), 10);
+        for (k, b) in COUNTER_TREE.bindings.iter().enumerate() {
+            assert_eq!(
+                at(&format!("postprocess[0].animations[{k}].target")),
+                Some(Val::Int(i64::from(b[0])))
+            );
+        }
+        assert_eq!(
+            at("postprocess[0].properties[0].input"),
+            Some(Val::String(Str::Text("primary_ammunition_tens".into())))
+        );
+        let blob = |k: usize| match rec.at(&format!("postprocess[0].properties[{k}].function")) {
+            Some(Val::Data(d)) => Function::parse(d).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        let f = blob(0);
+        assert_eq!((f.kind, f.range), (FunctionType::Identity, [0.0, 10.0]));
+        for k in 1..10 {
+            assert_eq!(
+                at(&format!("postprocess[0].properties[{k}].input")),
+                Some(Val::String(Str::Null))
+            );
+            let f = blob(k);
+            assert_eq!(f.kind, FunctionType::Constant, "property {k}");
+            assert_eq!(f.range[0], if k <= 3 { 1.0 } else { 0.0 }, "property {k}");
+        }
     }
 }

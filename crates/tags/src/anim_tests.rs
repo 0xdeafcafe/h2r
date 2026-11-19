@@ -110,6 +110,12 @@ fn sample_graph() -> Vec<u8> {
     ty[0..4].copy_from_slice(&le32(0x0700_0001));
     ty[4..8].copy_from_slice(&le32(1));
     ty[8..12].copy_from_slice(&le32(BASE + at as u32));
+    let overlay = t.bytes.len();
+    t.bytes.extend(le32(0x0800_0080));
+    t.bytes.extend((-1i16).to_le_bytes());
+    t.bytes.extend(0i16.to_le_bytes());
+    ty[0xc..0x10].copy_from_slice(&le32(1));
+    ty[0x10..0x14].copy_from_slice(&le32(BASE + overlay as u32));
     // preload list a: two ints
     let pre = t.bytes.len();
     t.bytes.extend([le32(0), le32(7)].concat());
@@ -190,6 +196,14 @@ fn graph_decodes_every_block() {
         ty.actions,
         [Action {
             name: StringId(0x0900_0015),
+            graph_index: -1,
+            animation_index: 0
+        }]
+    );
+    assert_eq!(
+        ty.overlays,
+        [Action {
+            name: StringId(0x0800_0080),
             graph_index: -1,
             animation_index: 0
         }]

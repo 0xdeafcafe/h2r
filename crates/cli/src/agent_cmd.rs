@@ -186,6 +186,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         _ => {
             let (m, p) = parse_call(&rest)?;
+            if first == "poke" {
+                call(&mut c, method::CLAIM, Value::Null)?;
+            }
             let v = call(&mut c, &m, p)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())

@@ -77,6 +77,9 @@ pub const KEPT_KILLS: usize = 50;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Game {
     pub started: GameStarted,
+    pub(crate) sim_report: Option<crate::sim_runs::StoredReport>,
+    pub(crate) sim_recorded_bytes: u64,
+    pub(crate) sim_recording_limited: bool,
     pub started_at: String,
     pub position: u64,
     pub players: Vec<Player>,
@@ -153,6 +156,9 @@ impl Game {
         viewer: crate::sessions::Viewer,
         friends: impl Fn(Xuid, Xuid) -> bool,
     ) -> bool {
+        if self.started.game.sim.is_some() {
+            return viewer.is_admin();
+        }
         let Some(c) = &self.coop else { return true };
         crate::sessions::finished_shows_to(
             c.visibility,
@@ -168,7 +174,8 @@ impl Game {
         if author.to_string() == self.started.host {
             return true;
         }
-        matches!(author, live_proto::Author::Account { xuid, .. } if self.xuids.contains(xuid))
+        self.started.game.sim.is_none()
+            && matches!(author, live_proto::Author::Account { xuid, .. } if self.xuids.contains(xuid))
     }
 }
 
@@ -427,6 +434,9 @@ impl Model {
                 coop,
                 players,
                 started,
+                sim_report: None,
+                sim_recorded_bytes: 0,
+                sim_recording_limited: false,
                 started_at: b.at.clone(),
                 position: e.position,
                 scoreboard: Vec::new(),
@@ -446,6 +456,12 @@ impl Model {
         let Some(g) = s.games.get_mut(id) else { return };
         g.last_activity = g.last_activity.max(at);
         match b.kind.as_str() {
+            crate::sim_runs::REPORT_STORED if g.started.game.sim.is_some() => {
+                g.sim_report = data::<crate::sim_runs::StoredReport>(e);
+            }
+            crate::sim_runs::RECORDING_LIMITED if g.started.game.sim.is_some() => {
+                g.sim_recording_limited = true;
+            }
             game::PLAYER_JOINED => {
                 let Some(d) = data::<game::PlayerJoined>(e) else {
                     return;
@@ -492,6 +508,11 @@ impl Model {
                 }
             }
             live_proto::chunk::FRAME_CHUNK => {
+                if g.started.game.sim.is_some()
+                    && let Some(bytes) = b.data["bytes"].as_u64()
+                {
+                    g.sim_recorded_bytes = g.sim_recorded_bytes.saturating_add(bytes);
+                }
                 if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
                 }

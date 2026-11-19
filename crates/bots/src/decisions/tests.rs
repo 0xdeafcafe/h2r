@@ -111,7 +111,11 @@ fn a_call_moves_the_receiver_without_giving_it_a_shot_or_live_enemy_position() {
     p.teams = true;
     let mut dead = p.clone();
     dead.others.retain(|s| s.id != 2);
-    assert!(board.listen(&dead).is_empty(), "target died");
+    assert_eq!(
+        board.listen(&dead).len(),
+        1,
+        "losing sight cannot retract a call"
+    );
     board.advance(12);
     board.forget_deaths(&[Kill {
         seq: 5,
@@ -220,10 +224,12 @@ fn a_two_on_one_backs_off_then_regroups_when_sight_breaks() {
 
 fn cue(id: u32, aim: Vec3, shield: f32, empty_magazine: bool) -> Contact {
     Contact {
+        weapon: None,
         id,
         aim,
         shield: Some(shield),
         empty_magazine,
+        crouching: false,
     }
 }
 
@@ -352,7 +358,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         victim: 4,
         betrayal: false,
     };
-    m.hear_deaths(&p, &[death]);
+    m.hear_deaths(&p, &[death], None);
     m.step(
         &Perception {
             me: None,
@@ -414,6 +420,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         .steer(start, 21)
         .dir;
     let map = MapData {
+        places: Default::default(),
         nav,
         walls: Walls::default(),
     };
@@ -435,6 +442,7 @@ fn a_ball_holder_finds_and_holds_a_screened_position() {
         [-8.0, 6.0, 3.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-10.0, -10.0, 20.0)], vec![]),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -550,7 +558,10 @@ fn the_next_round_forgets_old_calls_chases_and_trade_targets() {
     assert_eq!(a.mind.doing, Doing::Roam);
     assert!(a.mind.decisions.inbox.is_empty());
     assert_eq!(a.mind.emote.taunt, 0.7);
-    assert_eq!(a.mind.decisions.personality, Personality::seeded(3));
+    assert_eq!(
+        a.mind.decisions.personality,
+        Personality::for_skill(3, Skill::Legendary)
+    );
 }
 
 #[test]
@@ -641,6 +652,7 @@ fn an_attacker_keeps_progressing_when_a_close_enemy_baits_it_away_from_the_flag(
 #[test]
 fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-20.0, -20.0, 40.0)], vec![]),
         walls: Walls::default(),
     };
@@ -660,6 +672,7 @@ fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
             attacker: Some(1),
             betrayal: false,
         }],
+        Some(&map),
     );
     let pad = m.step(&p, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
@@ -697,4 +710,241 @@ fn a_dry_bot_holds_a_scoring_hill_with_the_only_gun_outside() {
     let pad = m.step(&p, None);
     assert!(matches!(m.doing, Doing::Play(Goal::Hold(..))));
     assert_eq!(pad.left_stick, (0.0, 0.0));
+}
+
+fn temperament_death(tick: u32, victim: u32, attacker: u32) -> Kill {
+    Kill {
+        seq: u64::from(tick),
+        tick,
+        victim,
+        attacker: Some(attacker),
+        betrayal: false,
+        at: Some([0.0; 3]),
+    }
+}
+
+#[test]
+fn temperament_deaths_streaks_composure_and_clock_decay() {
+    let ps = [player(0, 0, 0.0, 0.0), player(1, 1, 8.0, 0.0)];
+    let mut p = scene(0, 10, &ps);
+    let mut easy = Mind::new(Skill::Easy, 10);
+    let mut legendary = Mind::new(Skill::Legendary, 10);
+    for m in [&mut easy, &mut legendary] {
+        m.hear_deaths(
+            &p,
+            &[temperament_death(10, 1, 0), temperament_death(10, 2, 0)],
+            None,
+        );
+        assert_eq!(m.decisions.mood().streak, 2);
+        assert!(m.decisions.mood().confidence > 0.0);
+    }
+    assert!(easy.decisions.mood().confidence > legendary.decisions.mood().confidence);
+    p.tick = 11;
+    p.me = None;
+    let allied_betrayal = Kill {
+        betrayal: true,
+        ..temperament_death(11, 0, 1)
+    };
+    for m in [&mut easy, &mut legendary] {
+        let before = m.decisions.mood().confidence;
+        m.hear_deaths(&p, &[allied_betrayal], None);
+        m.step(&p, None);
+        let mood = m.decisions.mood();
+        assert_eq!(mood.streak, 0);
+        assert!(mood.confidence < before);
+        assert!(mood.tilt > 0.0 && mood.fear > 0.0);
+        assert_eq!(mood.revenge_target, None);
+    }
+    let easy_tilt = easy.decisions.mood().tilt;
+    let legendary_tilt = legendary.decisions.mood().tilt;
+    assert!(easy_tilt > legendary_tilt);
+    p.tick = 300;
+    // The same elapsed game time gives the same decay when frames are skipped.
+    let mut every_tick = easy.clone();
+    for tick in 12..=p.tick {
+        let mut frame = p.clone();
+        frame.tick = tick;
+        every_tick.step(&frame, None);
+    }
+    easy.step(&p, None);
+    legendary.step(&p, None);
+    assert!((every_tick.decisions.mood().tilt - easy.decisions.mood().tilt).abs() < 1e-5);
+    assert!(easy.decisions.mood().tilt < easy_tilt);
+    assert!(
+        legendary.decisions.mood().tilt / legendary_tilt < easy.decisions.mood().tilt / easy_tilt
+    );
+    p.tick = 1;
+    easy.step(&p, None);
+    assert_eq!(easy.decisions.mood(), MoodView::default());
+}
+
+#[test]
+fn temperament_favored_duel_and_two_crouch_presses_raise_tilt() {
+    use crate::arms::{Ammo, Arms, Gun};
+
+    let ps = [
+        player(0, 0, 0.0, 0.0),
+        player(1, 1, 4.0, 0.0),
+        player(2, 1, 3.0, 0.0),
+    ];
+    let mut p = scene(0, 10, &ps[..2]);
+    p.me.as_mut().unwrap().arms = Some(Arms {
+        held: Some(Gun {
+            ammo: Ammo::Battery(1.0),
+            ..Gun::default()
+        }),
+        ..Arms::default()
+    });
+    p.observations.contacts = vec![cue(1, [-1.0, 0.0, 0.0], 0.4, false)];
+    let mut duel = Mind::new(Skill::Easy, 5);
+    let mut ordinary = duel.clone();
+    duel.step(&p, None);
+    p.others.push(ps[2]);
+    ordinary.step(&p, None);
+    p.tick += 1;
+    p.me = None;
+    let k = temperament_death(p.tick, 0, 1);
+    duel.hear_deaths(&p, &[k], None);
+    ordinary.hear_deaths(&p, &[k], None);
+    assert!(duel.decisions.mood().tilt > ordinary.decisions.mood().tilt);
+    assert_eq!(duel.decisions.mood().revenge_target, Some(1));
+
+    let mut no_taunt = duel.clone();
+    for tick in 12..=17 {
+        p.tick = tick;
+        p.others[0].position = if tick <= 14 {
+            [4.0, 0.0, 0.0]
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        p.observations.contacts[0].crouching = matches!(tick, 12 | 14 | 15 | 17);
+        duel.hear_deaths(&p, &[], None);
+        p.observations.contacts[0].crouching = false;
+        no_taunt.hear_deaths(&p, &[], None);
+        if tick < 17 {
+            assert_eq!(duel.decisions.mood().tilt, no_taunt.decisions.mood().tilt);
+        }
+    }
+    assert!(duel.decisions.mood().tilt > no_taunt.decisions.mood().tilt);
+    p.tick += 1;
+    let before = duel.decisions.mood().tilt;
+    p.observations.contacts[0].crouching = true;
+    duel.hear_deaths(&p, &[temperament_death(p.tick, 1, 2)], None);
+    assert!(
+        duel.decisions.mood().tilt < before,
+        "the taunt only counts once"
+    );
+    assert_eq!(duel.decisions.mood().revenge_target, None);
+}
+
+#[test]
+fn temperament_confidence_presses_tilt_pursues_and_fear_regroups() {
+    let ps = [
+        player(0, 0, 0.0, 0.0),
+        player(1, 1, 7.0, 0.0),
+        player(2, 1, 8.0, 0.0),
+        player(3, 0, -20.0, 0.0),
+    ];
+    let mut p = scene(0, 10, &[ps[0], ps[2], ps[3]]);
+    p.me.as_mut().unwrap().shield = 0.7;
+    let mut calm = Mind::new(Skill::Easy, 10);
+    calm.decisions.personality.aggression = 0.55;
+    calm.decisions.personality.composure = 0.08;
+    calm.decisions.personality.caution = 0.9;
+    let mut confident = calm.clone();
+    let mut fearful = calm.clone();
+    let mut vengeful = calm.clone();
+    vengeful.decisions.personality.caution = 0.1;
+    let mut dead = p.clone();
+    dead.me = None;
+    for tick in [p.tick - 1, p.tick] {
+        dead.tick = tick;
+        let death = temperament_death(tick, 0, 2);
+        for bot in [&mut vengeful, &mut fearful] {
+            bot.hear_deaths(&dead, &[death], None);
+            bot.step(&dead, None);
+        }
+    }
+    confident.hear_deaths(
+        &p,
+        &[
+            temperament_death(p.tick, 1, 0),
+            temperament_death(p.tick, 2, 0),
+        ],
+        None,
+    );
+    let mut both = p.clone();
+    both.others.push(ps[1]);
+    let mut avenger = vengeful.clone();
+    avenger.step(&both, None);
+    assert_eq!(
+        avenger.doing,
+        Doing::Fight(2),
+        "retaliates against the farther visible target"
+    );
+
+    for (bot, expected) in [
+        (&mut calm, Posture::Normal),
+        (&mut confident, Posture::Press),
+        (&mut vengeful, Posture::Press),
+        (&mut fearful, Posture::Withdraw),
+    ] {
+        bot.step(&p, None);
+        assert_eq!(
+            bot.decisions.posture,
+            expected,
+            "{:?}",
+            bot.decisions.mood()
+        );
+    }
+    p.tick += 1;
+    p.others.push(ps[1]);
+    vengeful.step(&p, None);
+    assert_eq!(vengeful.doing, Doing::Fight(2));
+    p.tick += 1;
+    p.me.as_mut().unwrap().aim = [-1.0, 0.0, 0.0];
+    fearful.step(&p, None);
+    assert_eq!(fearful.doing, Doing::Support(ps[3].position));
+    // Turning away gives the avenger no new position from the kill feed.
+    p.others[0].position = [15.0, 2.0, 0.0];
+    vengeful.step(&p, None);
+    assert_eq!(vengeful.doing, Doing::Chase(ps[2].position));
+}
+
+#[test]
+fn temperament_patience_holds_an_angle_and_changes_radio_cadence() {
+    let ps = [player(0, 0, 0.0, 0.0), player(1, 1, 8.0, 0.0)];
+    let mut p = scene(0, 0, &ps);
+    let mut patient = Mind::new(Skill::Legendary, 2);
+    patient.decisions.personality.patience = 0.9;
+    patient.decisions.personality.chattiness = 0.8;
+    let mut eager = patient.clone();
+    eager.decisions.personality.patience = 0.35;
+    eager.decisions.personality.chattiness = 0.36;
+
+    for t in 0..=20 {
+        p.tick = t;
+        for (m, interval) in [(&mut patient, 8), (&mut eager, 17)] {
+            m.step(&p, None);
+            assert_eq!(m.decisions.report.is_some(), t % interval == 0);
+        }
+    }
+    p.tick += 1;
+    p.me.as_mut().unwrap().shield = 0.35;
+    eager.step(&p, None);
+    assert!(
+        eager.decisions.report.is_some_and(|c| c.help),
+        "help goes out immediately"
+    );
+
+    p.tick += 1;
+    p.me.as_mut().unwrap().shield = 1.0;
+    p.others.clear();
+    assert_eq!(patient.step(&p, None).left_stick, (0.0, 0.0));
+    assert_eq!(patient.doing, Doing::HoldAngle(ps[1].position));
+    assert!(eager.step(&p, None).left_stick.1 > 0.0);
+    assert_eq!(eager.doing, Doing::Chase(ps[1].position));
+    p.tick += 35;
+    patient.step(&p, None);
+    assert_eq!(patient.doing, Doing::Chase(ps[1].position));
 }

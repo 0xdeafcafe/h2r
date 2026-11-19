@@ -444,6 +444,13 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   }
   if (path.startsWith("/v1/")) return err(404, "not_found", `no route ${req.method} ${path}`);
 
+  if (path.startsWith("/art/emblem/")) {
+    const png = artDir ? null : art?.emblem(path);
+    return png
+      ? new Response(png as Uint8Array<ArrayBuffer>, { headers: { "content-type": "image/png", "cache-control": "no-cache", ...CORS } })
+      : err(404, "not_found", "no emblem art");
+  }
+
   if (path.startsWith("/art/game/")) {
     const name = decodeURIComponent(path.slice("/art/game/".length));
     if (artDir) {
