@@ -110,6 +110,8 @@ struct Checkpoint {
     failed: Vec<Failed>,
     migrated: u64,
     skipped: u64,
+    #[serde(default)]
+    unpublished: u64,
     chunks: u64,
     legacy_frames: u64,
     totals: Totals,
@@ -127,6 +129,7 @@ impl Checkpoint {
             failed: vec![],
             migrated: 0,
             skipped: 0,
+            unpublished: 0,
             chunks: 0,
             legacy_frames: 0,
             totals: Totals::default(),
@@ -150,7 +153,11 @@ impl Checkpoint {
                 (_, "live" | "empty") => false,
                 (Mode::DryRun | Mode::Apply, "published") => false,
                 (Mode::Verify, "published") => true,
-                (_, "raw" | "staging" | "rolled_back") => true,
+                (Mode::Verify, "raw" | "staging" | "rolled_back") => {
+                    self.unpublished += 1;
+                    false
+                }
+                (Mode::DryRun | Mode::Apply, "raw" | "staging" | "rolled_back") => true,
                 _ => bail!("unsupported recording state {:?}", game.state),
             };
             if eligible {
@@ -408,6 +415,12 @@ pub(crate) fn migrate(mut args: Args) -> Result<()> {
         state.totals.source_bytes,
         state.totals.archive_bytes
     );
+    if mode == Mode::Verify {
+        println!(
+            "{} finished recordings still have an unpublished archive",
+            state.unpublished
+        );
+    }
     ensure!(
         state.failed.is_empty(),
         "failed game IDs and last verified cursors saved in {}",
@@ -522,6 +535,7 @@ mod tests {
         assert_eq!(s.totals.segments, 2);
         let v = state(Mode::Verify);
         assert!(v.pending.iter().any(|j| j.game.state == "published"));
-        assert!(v.pending.iter().any(|j| j.game.state == "raw"));
+        assert_eq!(v.pending.len(), 1);
+        assert_eq!(v.unpublished, 1);
     }
 }
