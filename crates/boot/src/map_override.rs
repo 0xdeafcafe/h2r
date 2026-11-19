@@ -46,6 +46,52 @@ pub fn map_id(vfs: &mut vfs::Vfs, data_root: &Path, name: &str) -> Option<conten
     vfs.map_id(&path)
 }
 
+/// Where the host bytes of the loaded map named `name` are (its cache
+/// header's name, `0x00547898`): `maps\<name>.map` when the disc has that
+/// file, else the map in `maps` whose header carries that name. A
+/// converted map is served under a disc map's file name with its own name
+/// in the header (Halo 1's Blood Gulch is `h1_bloodgulch` in
+/// `coagulation.map`, docs/halo1/multiplayer.md), so the file name
+/// alone does not find it. Each candidate is read through the VFS's own
+/// layers ([`vfs::Vfs::host_file`]), so an `H2_MAP_DIR` or package file is
+/// the one found, as the game reads it. Tag names, telemetry and the
+/// native world read the map through this.
+pub fn map_file(vfs: &mut vfs::Vfs, name: &str) -> Option<vfs::HostFile> {
+    let dir = format!("{}\\maps", vfs::CDROM_DEVICE);
+    if let Some(file) = vfs.host_file(&format!("{dir}\\{name}.map")) {
+        return Some(file);
+    }
+    let entries = vfs.list_directory(&dir).ok()?;
+    entries
+        .iter()
+        .filter(|e| {
+            let n = e.name.as_bytes();
+            !e.metadata.is_directory()
+                && n.len() > 4
+                && n[n.len() - 4..].eq_ignore_ascii_case(b".map")
+        })
+        .filter_map(|e| vfs.host_file(&format!("{dir}\\{}", e.name)))
+        .find(|file| header_name(file).is_some_and(|n| n.eq_ignore_ascii_case(name)))
+}
+
+/// The map name in a map file's header: 32 bytes at `+0x198`, as
+/// `map::Map` reads it; `None` for a file too short or not text.
+pub fn header_name(file: &vfs::HostFile) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const NAME: u64 = 0x198;
+    const LEN: usize = 32;
+    if file.len < NAME + LEN as u64 {
+        return None;
+    }
+    let mut f = std::fs::File::open(&file.path).ok()?;
+    f.seek(SeekFrom::Start(file.offset + NAME)).ok()?;
+    let mut b = [0u8; LEN];
+    f.read_exact(&mut b).ok()?;
+    let end = b.iter().position(|c| *c == 0).unwrap_or(LEN);
+    let name = std::str::from_utf8(&b[..end]).ok()?;
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
 /// Where the VFS serves map pack map `name` installed under `data_root`:
 /// `\Device\Harddisk0\Partition1\TDATA\<title>\$c\<offer>\<file>`.
 pub fn map_pack_path(data_root: &Path, name: &str) -> Option<String> {
@@ -314,6 +360,37 @@ pub(crate) mod tests {
             let font: &[u8] = if fonts { b"GLYPHS" } else { b"glyphs" };
             assert_eq!(read(&mut v, "D:\\fonts\\font"), font);
         }
+    }
+
+    /// A map file whose header names it `name`.
+    fn named_map(name: &str) -> Vec<u8> {
+        let mut b = vec![0u8; 0x800];
+        b[0x198..0x198 + name.len()].copy_from_slice(name.as_bytes());
+        b
+    }
+
+    #[test]
+    fn a_map_is_found_by_its_file_name_or_by_the_name_in_its_header() {
+        let t = Temp::new();
+        let dir = t.0.join("maps");
+        // A converted map served as the disc's level.map, named otherwise.
+        std::fs::write(dir.join("level.map"), named_map("h1_bloodgulch")).unwrap();
+        let mut v = mounted(&t, false, Some(&dir));
+        let by_header = map_file(&mut v, "h1_bloodgulch").unwrap();
+        assert_eq!(
+            by_header.path,
+            dir.join("level.map").canonicalize().unwrap()
+        );
+        assert_eq!((by_header.offset, by_header.len), (0, 0x800));
+        assert_eq!(header_name(&by_header).as_deref(), Some("h1_bloodgulch"));
+        // By its file name, as before.
+        assert_eq!(map_file(&mut v, "level"), Some(by_header));
+        assert_eq!(map_file(&mut v, "h1_sidewinder"), None);
+        // Without the override the disc's level.map ("disc map", no
+        // header) names nothing.
+        let mut v = mounted(&t, false, None);
+        assert!(map_file(&mut v, "level").is_some());
+        assert_eq!(map_file(&mut v, "h1_bloodgulch"), None);
     }
 
     #[test]

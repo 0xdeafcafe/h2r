@@ -247,10 +247,22 @@ can point at.
   vehicle, weapon, projectile, equipment, scenery, machine, effect, light,
   sound source, particle system. The first six exist in `live-telemetry`
   (**Code**); effects, particles and sound sources are new reads (**S**).
+  Built (**Code**): player, actor, vehicle, machine, body, scenery,
+  weapon, equipment, control, crate, creature (see "Every kind of object"
+  under Phase 1).
 - `world.count {group_by: "kind" | "squad" | "bsp" | "zone"}` is the cheap
   first call. It answers "how much is alive" before anything is listed.
 - `world.object {id}` gives everything about one object, including its tag
   path and the effects attached to it.
+- **Facing** (**Code**, 2026-11-19). `forward` is where an object faces;
+  for a unit (a player's, an actor, a body) it is where the unit aims:
+  its aiming vector (unit `+0x168`, the vector the held weapon's targeting
+  ray follows, `0x000cf3d0`), which turns with the camera. A biped's body
+  turns only as it moves, so its own forward (`+0x70`) stayed put while the
+  view turned; that is `body_forward` now. `yaw` (degrees about +z from
+  +x, 0 to 360) and `pitch` (degrees up from level) are `forward` as
+  angles, on every object with a `forward`. A unit whose aim reads as not
+  finite or not unit length falls back to the body's forward.
   Units also carry `physics` (**Code**): crouch amount, the crouch request
   (unit flags bit 23, which stays set after release until there is room to
   stand), physics mode, the biped airborne bit (`+0x348` bit 0, likely) and
@@ -359,6 +371,15 @@ connection holds it. CLI: `h2 agent state save NAME [replace]`,
 `state load NAME`, `state list`, `state drop NAME`,
 `state fork FROM NAME [replace]`.
 
+Until 2026-11-19 every save on a serve answered `BUSY` with
+"occlusion/native-world/native-objects/native-transparents/native-lights/native-post:
+not audited for snapshots": each of those features declared its policy
+after the early return it takes when its switch is off, so it counted as
+unaudited. They declare it first now; switched on, each is a derived
+render cache whose load drops what it holds (occlusion streaks, pending
+guest-bit restores, light runs) or holds nothing past a frame
+([snapshots.md, "The render features"](snapshots.md#the-render-features)).
+
 The user plays to the fight once, presses a key (or the agent does it via
 `session.wait` on a script global), and that moment becomes a fixture:
 `oldmombasa.courtyard_fight`. Agents load it as often as they like. That
@@ -379,7 +400,10 @@ Snapshots never enter the repository: they contain game data.
 **Edits** change the state directly, at a tick boundary:
 
 - `state.set {id, field, value}`: position, health, shields, ammo, team.
-- `state.give {player, weapon}`, `state.teleport {player, to}`.
+- `state.give {player, weapon}`, `state.teleport {player, to}`: built as
+  `sim.give` and `sim.state.set {pos, yaw}`
+  ([the game's own functions](#the-games-own-functions-teleport-give-spawn)),
+  and `sim.spawn` for an object.
 - `state.game {difficulty, skulls}`.
 - `hs.eval {expr}`: run a HaloScript expression in the level, e.g.
   `(ai_place squad_12)`, `(ai_erase squad_12)`, `(object_create crate_3)`,
@@ -596,6 +620,44 @@ How it behaves (**Code**, with tests in `crates/agent`):
   a slot reused by another object answers `gone` (code 3). A turret is a
   vehicle with `mounted_on` set; its `pos` is relative to that vehicle. `near` sorts
   nearest first; `fields` trims; pages default to 50, at most 500.
+- **Every kind of object** (**Code**, 2026-11-19). Besides those, a
+  second pass over the object header table (`live_telemetry::things`)
+  lists the engine's other object types by the header's type byte
+  (`+3`): `scenery` (6), `weapon` (2), `equipment` (3), `control` (8, a
+  device's switch or panel), `crate` (11) and `creature` (12), each with
+  `pos`, `forward`, `yaw`/`pitch`, `tag` and `placement` (the scenario
+  placement that made it). An object attached to another (a weapon a unit
+  holds) is left out: its pose is relative to its holder, and the unit's
+  `weapon` names it. So `weapon` and `equipment` are what lies in the
+  world. `kind` filters, `near` and `world.count` cover the new kinds.
+  Garbage, projectiles, light fixtures and sound scenery are not listed.
+- **Tag names** (**Code**, 2026-11-19). Every object with a `tag` also
+  has `tag_name`, the definition's path in the loaded map
+  (`objects\vehicles\warthog\warthog`), from the map file's tag names as
+  `edit.tags` reads them; it is absent when the names can't be read. A
+  query's `tag` keeps one tag: a datum (8 hex digits, `0x` optional), or
+  text the tag's name contains (any case, `/` for `\`). Halo 1 Blood
+  Gulch's teleporter receivers, nearest first:
+
+  ```sh
+  h2 agent query '{"kind":["scenery"],"tag":"teleporter_base","near":{"player":0,"radius":500},"fields":["pos","tag_name"]}'
+  h2 agent sim set player.0 'pos=[x,y,z]' 'forward=[1,0,0]'
+  ```
+
+  The names come from the file the game actually loaded. The loaded
+  map's name is its cache header's (`0x00547898`); a converted map is
+  served under a disc map's file name with its own name in its header
+  (Blood Gulch is `h1_bloodgulch` in `H2_MAP_DIR`'s `coagulation.map`),
+  so looking for `maps\h1_bloodgulch.map` found nothing, and every
+  `edit.tags` name was null; now `h2 agent edit tags scen` names
+  `scenery\teleporter_base\teleporter_base`.
+  `boot::map_override::map_file` now tries the file name first, then the
+  maps folder's files by their header's name (`+0x198`), each through
+  the VFS's own layers, so the override is the file found. Telemetry,
+  the native world, our skulls and `sim.give`/`sim.spawn` find the map
+  the same way. If two files in the folder carry the same name, the
+  first in folder order wins. A map installed as content on the data
+  partition (not under the disc's `maps`) is not searched.
 - **Control.** `pause`, `resume` and `step` need `session.claim`; one
   connection holds it. A pause blocks the game thread inside the tick
   observer, still answering requests, and resumes by itself after `max_ms`
@@ -1145,7 +1207,9 @@ starts another game instance.
 | `sim.player.remove` | act | `{id}` or `{all: true}` |
 | `sim.player.list` | read | the simulated players and the game player each became (`player.<i>`) |
 | `sim.player.pad` | act | `{id, steps, append?}`: pad steps (`input.pad`'s) for one |
-| `sim.state.set` | act | `{player, pos?, team?, health?, shield?, grenades?, ammo?}`: host writes |
+| `sim.state.set` | act | `{player, pos?, yaw?, pitch?, facing? (or forward?), team?, health?, shield?, grenades?, ammo?}`: host writes; `pos` and the facing are the game's own teleport, answered after the next tick |
+| `sim.give` | act | `{player, weapon, ammo?, keep?}`: the game makes a weapon from a `weap` tag (datum or name) and gives it to the player's unit; answered after the next tick |
+| `sim.spawn` | act | `{tag, pos, yaw?}`: the game makes an object from its tag at `pos`; answered after the next tick |
 | `sim.view` | read | `{roots?}`: the game as one JSON document |
 | `sim.expect` | read | `{checks}`: expectations judged against `sim.view`, at one tick |
 | `sim.session` | read | the session kind and whether writes are allowed |
@@ -1201,7 +1265,9 @@ h2 agent sim run bot-team.txt
 
 Verbs (`crates/cli/src/agent_sim.rs`): `add <local|phantom> [source]
 [key=JSON...]`, `remove <sim.N|all>`, `list`, `pad <sim.N> <steps>
-[append]`, `set <player.N|sim.N> key=JSON...`, `view [root...]`,
+[append]`, `set <player.N|sim.N> key=JSON...`, `give <player.N|sim.N>
+<weap tag> [loaded=N] [reserve=N] [keep]`, `spawn <tag> pos=[x,y,z]
+[yaw=DEG]`, `view [root...]`,
 `expect <expectation>`, `until <ticks> <expectation>` (`sim.expect` every
 5 ticks until it passes; a timeout fails with the last verdict),
 `session`, `lobby ...` and `run`. In `h2 agent run`, a failed `sim
@@ -1256,14 +1322,89 @@ write there makes the runs differ by design.
 
 At the addresses Live telemetry reads (`live_telemetry::layout`, now
 public, and `engine::view`): the player record's team (`+0xc0`); the
-unit's position (body `+0x64`, its velocity `+0x88` zeroed), team
-(`+0x138`), body and shield vitality (`+0xec`, `+0xf0`, docs/halo1/health.md;
-added to `engine::view::objects::Body`), grenade counts (`+0x23e`) and
-the held weapon's first magazine (`+0x22c` loaded, `+0x22a` reserve).
-Not built: spawning a player between lives (that needs the game's
-respawn, not a write), and giving weapons (an object to create). Whether
-a written position sticks for a biped in motion (the physics may keep its
-own copy) needs a game run.
+unit's team (`+0x138`), body and shield vitality (`+0xec`, `+0xf0`,
+docs/halo1/health.md; added to `engine::view::objects::Body`), grenade
+counts (`+0x23e`) and the held weapon's first magazine (`+0x22c` loaded,
+`+0x22a` reserve). Not built: spawning a player between lives (that needs
+the game's respawn, not a write).
+
+### The game's own functions: teleport, give, spawn
+
+Built 2026-11-19 (`crates/agent/src/sim/calls.rs`), tested over fake
+guests with the callees played by the tests; a live check is pending.
+
+**Why.** Until then `pos` wrote the body's position (`+0x64`) and zeroed
+its velocity: the answer said `"wrote": ["pos"]`, and the biped's physics
+put the body back at the next tick, so the player never moved. A move
+has to go through the game, so its physics, cluster and vehicle seat
+hear of it.
+
+**How.** A game method answers in the tick observer, after the tick, where
+nothing can call into the guest. So it queues a call and defers its
+answer (`GameCtx::defer`, the executor's deferred answers: polled at each
+tick boundary from the next, `TIMEOUT` after 30 ticks, held while
+paused). The `agent-calls` feature (a `before` on `game_tick`, first,
+`H2_FEATURES=-agent-calls` turns it off) finds the queue full at the start
+of the next tick, makes the calls, then runs the tick itself, as our
+skulls do. The answer comes after that tick. A snapshot is refused while
+calls are queued.
+
+- **Teleport** (`sim.state.set` with `pos`, `yaw`/`pitch` or `facing`) is
+  HaloScript `object_teleport`'s body (`0x29ffb0`) for a player's unit,
+  with our position in place of a cutscene flag's. The position goes to
+  the co-op placement `PLAYER_PLACE_NEAR` (`0x14e970`; EBX the player,
+  ESI the point, anchor -1, as `0x2a01ec` calls it), which takes the unit
+  out of a vehicle (`0xe68c0` action `0x1e`) and places it through
+  `0x14e200` a little above the point. The facing: the unit's desired
+  facing, aiming and looking vectors (`+0x150`, `+0x15c`, `+0x180`, as
+  `0x2a019e..0x2a01d9` writes them), a local player's view (`0x1874b0`:
+  yaw and pitch into the player controls, `[0x4ed284] + 0x14 + 0x94 *
+  user`, `+0x10`, `+0x14`), then `object_set_position` (`0xb75a0`) with no
+  position for the orientation. A seated unit's facing is left (its
+  seat's); the answer says so. Other fields of the same call are written
+  at once. The answer: `wrote` (with `pos`, `facing`) and `teleport`
+  (`pos` and `body_forward` where the game put it, `faced`, `unit`).
+  `yaw` is degrees about +z from +x and `pitch` degrees up (-89 to 89),
+  as `world.query` reports them; or `facing: [x,y,z]` (also taken as
+  `forward`, `world.query`'s name for it), so a check can turn the
+  player to face what a query found.
+- **`sim.give`** gives a weapon as a starting profile does (`0xcce78`)
+  and as an AI's equipment does (`0x1e05c8`): `placement_data_new`
+  (`0xb7930`, owner the unit), `object_new` (`0xb7b40`), then
+  `unit_add_weapon` (`0xcd0c0`, stdcall `(unit, weapon, mode)`), deleting
+  the weapon (`0xb8540`) if the unit refuses it. Default mode 2: the
+  unit's weapon slots are emptied first (`0xccff0`) and it readies the
+  new one. `keep: true` is mode 1, the starting profile's: added, held
+  only if the unit's own weapon choice (`0xcdeb0`) picks it. `ammo`
+  writes the new weapon's first magazine once it is made. The tag is a
+  datum or a name with `/` or `\` (names come from the map file, as
+  `edit.tags` lists them: `h2 agent edit tags weap`). A bare name is
+  looked for among `weap` tags only: a weapon shares its name with its
+  model, render model, collision and animations (`hlmt mode coll jmad`),
+  so on Halo 1 Blood Gulch `weapons\sniper rifle\sniper rifle` named five
+  tags and was refused. `group:name` (`weap:weapons\sniper rifle\sniper
+  rifle`) or `name.group` gives the group outright. The answer:
+  `weapon` (`tag`, `group`, `name`), `object`, `mode`, `held`.
+- **`sim.spawn`** makes an object as the netgame equipment spawn does
+  (`0x15ab94..0x15abe6`): `placement_data_new` with no owner, the
+  position at placement `+0x1c`, forward and up at `+0x28`/`+0x34`, then
+  `object_new`. Any object group `object_new` knows (`bipd vehi weap eqip
+  garb proj scen mach ctrl lifi ssce bloc crea`). A bare name is looked
+  for among those groups, so `vehicles\warthog\warthog` finds the `vehi`
+  and not its model's tags; if it names tags in more than one of them
+  the answer asks for the group (`vehi:vehicles\warthog\warthog`). The
+  answer: `object`, `pos` (where it was made), `tag`.
+
+All three are host writes: refused in a co-op session or on a
+multiplayer client, and only at a tick boundary, as `sim.state.set`.
+
+```sh
+h2 agent sim set player.0 'pos=[36.7,-80.8,1.7]' yaw=90 pitch=-10
+h2 agent query '{"kind":["player"],"fields":["pos","forward","yaw","pitch"]}'
+h2 agent edit tags weap
+h2 agent sim give player.0 objects/weapons/rifle/battle_rifle/battle_rifle reserve=108
+h2 agent sim spawn objects/vehicles/warthog/warthog 'pos=[40,-80,2]' yaw=180
+```
 
 ### The split with docs/game/bots.md
 
@@ -1282,8 +1423,9 @@ What sim reuses from bed6c8dc's lane:
 - **In the game** `boot::sim_bots::LocalBots` implements `Bots` over the
   process-wide `bots::local::global()`, so a local sim player is a
   Clanker like an `H2_BOTS` one: on the lowest port from 1 that no bot
-  asked for (or `port`), named "Clanker N", signed in on the players
-  screen by pressing A. A script source is read each rendered frame, so a
+  asked for (or `port`), named "Clanker N", signed in by the bot glue on
+  the Split Screen players screen or in a pregame lobby, never while a
+  game runs (`bot_glue::to_sign_in`). A script source is read each rendered frame, so a
   step's `ticks` count bot frames there, not game ticks (`ms` is wall
   time). A recording is an input log's successful reads of its first
   pad, one per frame. The brain plays at `H2_BOTS_SKILL`. The bots
@@ -1297,6 +1439,21 @@ What sim reuses from bed6c8dc's lane:
   bot's pad (bots.md 4.1). A phantom's pad comes only from its source.
 - A local bot's `team` is kept and reported (`team_pending`): the lobby
   or a `sim.state.set` decides it in game.
+- **No local player mid-game.** `sim.player.add {kind: local}` while a
+  game runs (`bots::guest::in_game`: a tick, and not the main menu's) is
+  refused with `UNAVAILABLE` and the reason, where it used to answer
+  success for a pad that never became a player. Two things stand in the
+  way. The glue signs a bot in only on the players screen or in a pregame
+  lobby. And the game makes a player for a newly signed-in local user
+  only through a squad session's local-player pass (`0x65770` ->
+  `0x5a880`, bots.md 4.2), which a game started by level boot (`h2 serve`)
+  doesn't have: there is no session at all (level-boot.md), so
+  `sim.session` says `local`. Phantoms need a networked game this console
+  hosts (`bots::phantom::session::host_session`), so they don't join a
+  serve's game either. On a serve, drive the existing player
+  (`input.pad`, `sim.state.set`, `sim.give`). Whether retail's pass would
+  seat a local user mid-game in a hosted System Link game (`0x58d90`
+  passes session state 5, which is both the lobby and a game) is untested.
 
 ### Live
 

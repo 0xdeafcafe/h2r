@@ -212,6 +212,39 @@ fn the_feature_skips_occluded_objects_from_the_second_frame() {
         .map(|i| rt.memory().u8(FLAGS + 2 * i).unwrap())
         .collect();
     assert_eq!(flags, vec![0, FLAG_NOT_DRAWN, 0, 0]);
+
+    // A snapshot load: its section drops the streaks, the depth and the
+    // last grid, so the next frame (later, the camera where it was, which
+    // the tracker alone would not take for a cut) culls nothing.
+    let policies: Vec<_> = plan
+        .snapshot
+        .iter()
+        .map(|f| (f.id, f.policy.name()))
+        .collect();
+    assert_eq!(policies, vec![("occlusion", "section")]);
+    assert!(plan.snapshot_blockers().is_empty());
+    let saved: Vec<(String, Vec<u8>)> = plan
+        .save_sections()
+        .into_iter()
+        .map(|(id, b)| (id.to_string(), b))
+        .collect();
+    assert_eq!(saved, vec![("occlusion".to_string(), vec![])]);
+    plan.load_sections(&saved, &rt).unwrap();
+    assert!(feature::occlusion::last_grid().is_none());
+    assert!(feature::occlusion::MAILBOX.latest(0).is_none());
+    rt.memory().set_u32(FRAME, 4).unwrap();
+    call(
+        &rt,
+        RECORDS,
+        CpuAbi {
+            eax: MAIN_VIS,
+            ..Default::default()
+        },
+    );
+    for i in 0..4 {
+        rt.memory().set_u8(FLAGS + 2 * i, 0).unwrap();
+        assert_eq!(setup(&rt, i).eax, 41, "object {i} drawn after the load");
+    }
 }
 
 #[test]
@@ -219,7 +252,9 @@ fn occlusion_is_off_unless_switched_exactly() {
     for switches in ["", "impl.render=on"] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         r.add(&feature::occlusion::OcclusionCull).unwrap();
-        let text = r.build(&feature::Base).unwrap().text();
-        assert_eq!(text, "feature occlusion: on\n", "{switches:?}");
+        let plan = r.build(&feature::Base).unwrap();
+        assert_eq!(plan.text(), "feature occlusion: on\n", "{switches:?}");
+        // Nothing placed, nothing held: no snapshot blocker.
+        assert!(plan.snapshot_blockers().is_empty(), "{switches:?}");
     }
 }

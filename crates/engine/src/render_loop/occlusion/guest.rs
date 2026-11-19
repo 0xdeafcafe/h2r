@@ -179,6 +179,11 @@ impl Mailbox {
             .find(|(v, _)| *v == view)
             .map(|(_, f)| Arc::clone(f))
     }
+    /// Forgets every view's frame (a snapshot load: they are of a render
+    /// the loaded machine never made).
+    pub fn clear(&self) {
+        self.slots.lock().unwrap().clear();
+    }
 }
 
 /// The per-view trackers and what a run of hooks needs between calls.

@@ -117,10 +117,19 @@ struct Phantom {
     /// Its peer is in the host's session.
     made: bool,
     buttons: action::ButtonState,
+    uplink: action::Uplink,
     /// Frame-indexed sources advance once per simulation sample, across respawns.
     samples: u64,
     /// Why it waits for hosting, as last logged ([`waiting_line`]).
     waiting: Option<String>,
+}
+
+impl Phantom {
+    fn reset_input(&mut self) {
+        self.buttons = Default::default();
+        self.uplink.clear();
+        self.source.reset_input();
+    }
 }
 
 /// The log line for a phantom that waits because this console is not (or
@@ -152,7 +161,7 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 #[derive(Default)]
 struct Books {
     list: Vec<Phantom>,
-    hosting_game: bool,
+    hosted_game: Option<u32>,
     next: u32,
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
@@ -208,6 +217,7 @@ impl Phantoms {
         }
         let handle = PhantomHandle(b.next);
         b.next += 1;
+        let uplink = action::Uplink::new(identity.xuid);
         b.list.push(Phantom {
             info: PhantomInfo {
                 handle,
@@ -220,6 +230,7 @@ impl Phantoms {
             source,
             made: false,
             buttons: Default::default(),
+            uplink,
             samples: 0,
             waiting: None,
         });
@@ -381,12 +392,16 @@ impl Phantoms {
             (_, Ok(s)) => Some(Phase::Lobby(*s)),
             _ => None,
         };
-        b.hosting_game = matches!(phase, Some(Phase::Game(_)));
-        if !b.hosting_game {
+        let hosted_game = match phase {
+            Some(Phase::Game(session)) => Some(session),
+            _ => None,
+        };
+        if b.hosted_game.is_some() && b.hosted_game != hosted_game {
             for p in &mut b.list {
-                p.buttons = Default::default();
+                p.reset_input();
             }
         }
+        b.hosted_game = hosted_game;
         let live = session::live_session(&*m);
 
         // Out: removed phantoms, and all of them once this console hosts
@@ -465,7 +480,7 @@ impl Phantoms {
                 }
                 None => {
                     p.made = false;
-                    p.buttons = Default::default();
+                    p.reset_input();
                     log.push(format!(
                         "bots: phantom {} is no longer in the session: it joins again",
                         p.info.identity.gamertag

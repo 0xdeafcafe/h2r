@@ -448,3 +448,94 @@ fn an_edit_passes_the_write_barrier() {
     ed.revert(&mut g, None).unwrap();
     assert_eq!(g.take_dirty(id).unwrap().len(), 1, "a revert too");
 }
+
+#[test]
+fn names_of_names_datums_in_order_and_none_without_names() {
+    let g = level();
+    let mut ed = Editor::new().with_names(names());
+    assert_eq!(
+        ed.names_of(&g, &[SHAD, 0x1234_5678, BITM2]),
+        [
+            Some("shaders\\test\\metal".to_owned()),
+            None,
+            Some("bitmaps\\test\\rust".to_owned()),
+        ]
+    );
+    assert_eq!(Editor::new().names_of(&g, &[SHAD]), [None]);
+}
+
+/// A map where a shader and a bitmap share a name (as a weapon's `weap`,
+/// `hlmt`, `mode`, `coll` and `jmad` tags share theirs).
+fn shared_names() -> NameSource {
+    Box::new(|_| {
+        Some(Names::new(
+            SCNR,
+            [
+                (SCNR, FourCC(*b"scnr"), "scenarios\\test\\test".to_string()),
+                (SHAD, FourCC(*b"shad"), "objects\\thing".to_string()),
+                (BITM, FourCC(*b"bitm"), "objects\\thing".to_string()),
+                (BITM2, FourCC(*b"bitm"), "objects\\other".to_string()),
+            ],
+        ))
+    })
+}
+
+#[test]
+fn a_shared_name_resolves_among_the_wanted_groups_or_by_its_group() {
+    let g = level();
+    let mut ed = Editor::new().with_names(shared_names());
+    let (shad, bitm) = ("shad", "bitm");
+    // Any group: two tags, so the group is asked for, with the form.
+    let e = ed.find_tag(&g, "objects\\thing").unwrap_err();
+    assert!(
+        e.message.contains("names 2 tags (shad, bitm)"),
+        "{}",
+        e.message
+    );
+    assert!(
+        e.message.contains("as shad:objects\\thing"),
+        "{}",
+        e.message
+    );
+    // Among one group: the one tag of it.
+    let (e, name) = ed.find_tag_in(&g, "objects\\thing", &[shad]).unwrap();
+    assert_eq!((e.datum, name.as_deref()), (SHAD, Some("objects\\thing")));
+    let (e, _) = ed.find_tag_in(&g, "objects/thing", &[bitm]).unwrap();
+    assert_eq!(e.datum, BITM);
+    // Among both: still two.
+    let e = ed
+        .find_tag_in(&g, "objects\\thing", &[shad, bitm])
+        .unwrap_err();
+    assert!(e.message.contains("give the group"), "{}", e.message);
+    // None of the wanted groups: says what the name does name.
+    let e = ed.find_tag_in(&g, "objects\\other", &[shad]).unwrap_err();
+    assert!(
+        e.message.contains("names no shad tag") && e.message.contains("bitm"),
+        "{}",
+        e.message
+    );
+    // An explicit group, as group:name or name.group, is taken as given.
+    let (e, _) = ed.find_tag(&g, "bitm:objects\\thing").unwrap();
+    assert_eq!(e.datum, BITM);
+    let (e, _) = ed.find_tag_in(&g, "shad:objects\\thing", &[bitm]).unwrap();
+    assert_eq!(e.datum, SHAD);
+    let (e, _) = ed.find_tag(&g, "objects\\thing.shad").unwrap();
+    assert_eq!(e.datum, SHAD);
+    assert!(ed.find_tag(&g, "nope:objects\\thing").is_err());
+}
+
+#[test]
+fn find_tag_resolves_a_name_or_a_datum() {
+    let g = level();
+    let mut ed = Editor::new().with_names(names());
+    let (e, name) = ed.find_tag(&g, "Bitmaps/Test/Rust").unwrap();
+    assert_eq!((e.datum, e.group), (BITM2, FourCC(*b"bitm")));
+    assert_eq!(name.as_deref(), Some("bitmaps\\test\\rust"));
+    let (e, name) = ed.find_tag(&g, &format!("{SHAD:#010x}")).unwrap();
+    assert_eq!(
+        (e.datum, name.as_deref()),
+        (SHAD, Some("shaders\\test\\metal"))
+    );
+    assert!(ed.find_tag(&g, "nothing").is_err());
+    assert!(ed.find_tag(&g, "0x12345678").is_err(), "not in the index");
+}

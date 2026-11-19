@@ -3,10 +3,8 @@
 //! timed presses on its pad and nothing else.
 //!
 //! The Clankers page's **Glitches** row ([`Glitches`]) turns them on: Off
-//! never, Some now and then, Lots whenever there is an opening. Skill
-//! decides how cleanly: a Legendary bot presses on the tick, an Easy one
-//! a tick or three late, often outside the window, and the trick then
-//! fails the way a player's does.
+//! never, Some now and then, Lots whenever there is an opening. The
+//! controller applies timing scatter to the requested button edges.
 //!
 //! Two kinds:
 //!
@@ -174,15 +172,6 @@ impl Macro {
         }
         k
     }
-
-    /// When `key` is first pressed, if it is.
-    pub fn first(&self, key: Key) -> Option<u32> {
-        self.beats
-            .iter()
-            .filter(|b| b.key == key)
-            .map(|b| b.at)
-            .min()
-    }
 }
 
 /// A tap's length (ticks).
@@ -207,17 +196,6 @@ pub const FLY_JUMP: u32 = 8;
 pub const CROUCH_APEX: u32 = 7;
 pub const CROUCH_HOLD: u32 = 10;
 
-/// How late a bot of this skill can be on each press after the first
-/// (ticks, inclusive).
-pub fn slop(skill: Skill) -> (u32, u32) {
-    match skill {
-        Skill::Easy => (1, 3),
-        Skill::Normal => (0, 2),
-        Skill::Heroic => (0, 1),
-        Skill::Legendary => (0, 0),
-    }
-}
-
 /// How much of the setting's chance a bot of this skill takes.
 pub fn eagerness(skill: Skill) -> f32 {
     match skill {
@@ -233,16 +211,13 @@ pub fn chance(setting: Glitches, skill: Skill) -> f32 {
     setting.fight_chance() * eagerness(skill)
 }
 
-/// `trick`'s presses for a bot of `skill`; `roll` gives uniform numbers
-/// in 0..1 for its lateness.
-pub fn plan(trick: Trick, skill: Skill, roll: &mut dyn FnMut() -> f32) -> Macro {
-    let (lo, hi) = slop(skill);
-    let mut late = || lo + ((roll() * (hi - lo + 1) as f32) as u32).min(hi - lo);
+/// The nominal presses; the pad pipeline applies timing scatter during play.
+pub fn plan(trick: Trick) -> Macro {
     let tap = |key, at| Beat { key, at, hold: TAP };
     let beats = match trick {
         Trick::Bxr => {
-            let x = MELEE_CONNECT + late();
-            let r = x + TAP + late();
+            let x = MELEE_CONNECT;
+            let r = x + TAP;
             // "Hold X while pressing R."
             vec![
                 tap(Key::Melee, 0),
@@ -255,9 +230,9 @@ pub fn plan(trick: Trick, skill: Skill, roll: &mut dyn FnMut() -> f32) -> Macro 
             ]
         }
         Trick::Byyr => {
-            let y1 = MELEE_CONNECT + late();
-            let y2 = y1 + TAP + 1 + late();
-            let r = y2 + TAP + late();
+            let y1 = MELEE_CONNECT;
+            let y2 = y1 + TAP + 1;
+            let r = y2 + TAP;
             vec![
                 tap(Key::Melee, 0),
                 tap(Key::Switch, y1),
@@ -266,24 +241,24 @@ pub fn plan(trick: Trick, skill: Skill, roll: &mut dyn FnMut() -> f32) -> Macro 
             ]
         }
         Trick::Bxb => {
-            let x = MELEE_CONNECT + late();
-            let b = x + TAP + late();
+            let x = MELEE_CONNECT;
+            let b = x + TAP;
             vec![tap(Key::Melee, 0), tap(Key::Reload, x), tap(Key::Melee, b)]
         }
-        Trick::DoubleShot => double_shot(0, &mut late),
+        Trick::DoubleShot => double_shot(0),
         Trick::QuadShot => {
-            let mut v = double_shot(0, &mut late);
+            let mut v = double_shot(0);
             let x = v[2].at;
-            let y1 = x + TAP + 1 + late();
-            let y2 = y1 + TAP + 1 + late();
+            let y1 = x + TAP + 1;
+            let y2 = y1 + TAP + 1;
             v.push(tap(Key::Switch, y1));
             v.push(tap(Key::Switch, y2));
-            v.extend(double_shot(y2 + TAP + 1 + late(), &mut late));
+            v.extend(double_shot(y2 + TAP + 1));
             v
         }
         Trick::SwordFly => {
-            let x = FLY_SLIDE + late();
-            let r = x + FLY_PULL + late();
+            let x = FLY_SLIDE;
+            let r = x + FLY_PULL;
             vec![
                 Beat {
                     key: Key::Switch,
@@ -311,7 +286,7 @@ pub fn plan(trick: Trick, skill: Skill, roll: &mut dyn FnMut() -> f32) -> Macro 
             },
             Beat {
                 key: Key::Crouch,
-                at: CROUCH_APEX + late(),
+                at: CROUCH_APEX,
                 hold: CROUCH_HOLD,
             },
         ],
@@ -319,9 +294,9 @@ pub fn plan(trick: Trick, skill: Skill, roll: &mut dyn FnMut() -> f32) -> Macro 
     Macro { trick, beats }
 }
 
-fn double_shot(at: u32, late: &mut dyn FnMut() -> u32) -> Vec<Beat> {
-    let r2 = at + BURST + late();
-    let x = r2 + TAP + late();
+fn double_shot(at: u32) -> Vec<Beat> {
+    let r2 = at + BURST;
+    let x = r2 + TAP;
     vec![
         Beat {
             key: Key::Fire,
@@ -340,15 +315,6 @@ fn double_shot(at: u32, late: &mut dyn FnMut() -> u32) -> Vec<Beat> {
             hold: TAP,
         },
     ]
-}
-
-/// Whether sword flying's switch and reload landed in the window: the
-/// trick goes, else it is an ordinary switch.
-pub fn clean_fly(m: &Macro) -> bool {
-    match (m.first(Key::Switch), m.first(Key::Reload)) {
-        (Some(y), Some(x)) => x > y && x - y <= FLY_WINDOW,
-        _ => false,
-    }
 }
 
 /// A macro under way.

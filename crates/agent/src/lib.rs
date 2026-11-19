@@ -28,8 +28,10 @@
 //!   Havok entity, motion and shape as raw bytes. `world.poke` writes
 //!   bounded byte ranges within those parts.
 //! * [`sim`] answers `sim.*`: simulated players (through the bots),
-//!   host writes to player state, and expectations over one view of the
-//!   game ([`Agent::add_game_method`]).
+//!   host writes to player state, the game's own teleport, give and spawn
+//!   (`sim::calls`, whose feature makes the calls at the next tick and
+//!   whose methods answer then, [`GameCtx::defer`]), and expectations over
+//!   one view of the game ([`Agent::add_game_method`]).
 //! * `trace` answers `trace.*` and `flight.*`: rows of chosen objects
 //!   taken at every tick, streamed to a file or kept in a ring with the
 //!   tick's controller reads.
@@ -57,12 +59,13 @@ mod trace;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
-    Access, Agent, ConnId, GameCtx, GameMethod, HostMethod, Page, SnapshotMachine, Snapshots,
-    TICK_STALE, query,
+    Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, Page,
+    SnapshotMachine, Snapshots, TICK_STALE, query,
 };
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{
-    GameStatus, GuestReader, Reader, actor_object, machine_object, player_object, vehicle_object,
+    GameStatus, GuestReader, Reader, TagNames, actor_object, machine_object, name_tags,
+    player_object, thing_object, vehicle_object,
 };
 pub use server::Server;
 pub use tap::{AgentTap, Chain, Input, pad_steps};
