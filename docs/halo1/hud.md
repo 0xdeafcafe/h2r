@@ -131,6 +131,34 @@ nothing in Halo 1 and becomes an `nhdt` with no widget (since converter
 v87; before, it was refused and the flamethrower kept the shotgun's
 Halo 2 HUD). A chain whose elements all fail to convert is refused.
 
+### Held and stowed weapons
+
+Halo 2 calls a weapon's `nhdt` for the primary weapon, the off-hand weapon
+and the stowed weapon. It looks up those three weapons separately
+(E `0x00139ca0`, `0x00139d00`, `0x00139dba`) and sets word C to
+`0x01`, `0x02` or `0x04` for their passes (`0x0013a1d8`).
+Retail Coagulation and Zanzibar's shotgun and sniper rifle panels hide
+on `0x06`. The magnum has a second panel on the opposite corner for the
+off hand. All three use a dedicated `backpack` bitmap widget at a different
+offset from their held panels. It shows on `0x04`.
+
+The overlap in converted Blood Gulch came from using the shield-meter
+state for weapon panels, meters, icons and counts. Word A could show them
+on every pass, so a stowed weapon drew its entire panel at the same
+top-left coordinates as the held weapon. The older Blood Gulch serve
+reported both the assault rifle and sniper reserve counts at the same
+top-left offset with `hide_when_c` zero (`h2 agent edit get`).
+The widget gate (`0x0013ac87`) accepts a match on **any** show word. A primary show bit
+alone would still permit a stowed draw when another show word matched.
+
+Halo 1 draws a single weapon HUD. Its converted bitmap and text widgets
+all set the retail primary panel's hide mask `0x06` in word C
+(`h1hud::primary_weapon_state`). The panel, reticle, warnings and
+zoom widgets draw for the active weapon at Halo 1's positions.
+The converted Halo 1 HUD has no separate backpack icon.
+
+### Elements
+
 Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 `ebx` the `wphi`): child `+0x00`, anchor `+0x3c`, static elements `+0x60`
 (`0xb4`), meters `+0x6c` (`0xb4`), numbers `+0x78` (`0xa0`), crosshairs
@@ -149,7 +177,7 @@ Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 | number on rounds loaded (state 1) | number text on input `0x30` (E `0x0013ae43`, `[ecx+6]`) |
 | number on battery (state 3) | number text on input `0x32`, `100 - age * 100` (E `0x0013aee3`; V: retail Halo 2's plasma rifle, energy sword and sentinel beam battery counts) |
 | aim crosshair overlay (type 0) | centred (E `0x000dad9e`: the crosshairs' header anchor is 4), Halo 2's battle rifle reticle's state flags |
-| aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' state flags (`+0x08` bit `0x40`, zoomed only) |
+| aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' zoom gate (hide word A `0x40`, zoomed only) |
 | overlay of an overlay element, shown always (`+0x4a` bit `0x10`) | static, as a static element ("Overlay elements" below) |
 | warning crosshair "Reload" (type 3) | centred, shown on Halo 2's word C `0x10` with threshold `+0x19` the weapon's loaded threshold plus one, hidden on `0x20` with `+0x1a` 1 ("Warnings" below) |
 | warning crosshairs "No ammo" (8) and "Battery depleted" (18) | centred, shown on word C `0x80` (nothing to fire) |
@@ -265,7 +293,7 @@ crosshair is, through the plain HUD shader):
   needler 9.
 - **No ammo** and **Battery depleted** (`h1hud::EMPTY_STATE`): shown on
   `0x80`.
-- Both hide where the aim crosshair hides (word B `0x11`, word C `0x04`,
+- Both hide where the aim crosshair hides (word B `0x11`, word C `0x06`,
   `AIM_STATE`).
 - **Low ammo** needs "nothing in reserve" and "loaded at or below" at
   once: one show word meeting is enough to show, and no hide bit says
@@ -317,8 +345,28 @@ level 1 on a copy whose sequence starts at sprite 1
 (`<bitmap>_seq<s>_sprite<k>`). The states are Halo 2's own sniper rifle
 "5x" and "10x" (V: `ui\hud\sniper_rifle`): show word A `0x90`, hide
 `0x140`; show `0x110`, hide `0xc0`; both shown on word C `0x01` and
-hidden on `0x04` (`ZOOM_LEVEL_STATES`). Placed as Halo 1 places the
-level's sprite. Inferred, not yet seen in a game run.
+hidden on `0x06` (`ZOOM_LEVEL_STATES`). The widgets use Halo 1's
+sprite placement. Their draw has yet to be checked in a game run.
+
+Halo 1's pistol and sniper rifle retain their zoom levels through the
+weapon conversion. The assault rifle and other unscoped weapons have
+zero levels and suppress Halo 2's binocular fallback.
+See [Weapon zoom](objects.md#weapon-zoom).
+
+### Scope mask
+
+The sniper rifle's scope lines and zoom labels come from the converted
+crosshairs. Its surrounding mask is a separate screen effect. The
+sniper rifle's `wphi +0xac` block references the full-screen
+`sniper_scope_mask2` and split-screen `sniper_scope_mask_sm` at
+element `+0x18` and `+0x28` on Blood Gulch. The pistol and rocket
+launcher reference their scope masks through the same block.
+
+The converter has no reader for that block. A full mask conversion
+needs to carry the Halo 1 bitmaps, reproduce the effect's screen
+coverage and compositing for each viewport, and draw it behind the
+scope lines at the weapon's zoom levels. Retail Halo 2 draws a
+centred, zoom-gated `scope_mask` bitmap widget for its sniper rifle.
 
 ### The sniper rifle's angle ticks
 
@@ -637,6 +685,13 @@ Not converted, for two reasons:
 
 ## Tests
 
+- `cargo test -p h1objects --lib` covers primary-only weapon widget
+  visibility with the retail widget gate and zoom fields rebuilt from
+  synthetic Halo 1 weapon tags.
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- weapon_hud_ --ignored`
+  checks retail held, off-hand and stowed placement and gating on
+  Coagulation and Zanzibar. It also checks the weapon zoom fields and
+  both widget types' hide flags in the freshly built Blood Gulch map.
 - `cargo test -p h1objects --lib h1hud`: weapon meters on Halo 2's
   inputs, weapon numbers as number texts on `0x33`, `0x30` and `0x32`
   and the numbers refused, statics of colour 0 refused,

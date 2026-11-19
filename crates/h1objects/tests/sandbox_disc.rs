@@ -1015,6 +1015,141 @@ fn every_map_builds_in_both_sandboxes_with_the_objects_sounds() {
     assert!(maps > 0);
 }
 
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn retail_weapon_hud_uses_separate_held_and_backpack_widgets() {
+    use h1objects::h1hud::weapon_word_c::{BACKPACK, OFF_HAND, PRIMARY};
+
+    for map in ["coagulation", "zanzibar"] {
+        let mut retail = h2_map(map);
+        let base = Base::read(&mut retail).unwrap();
+        let widget = |hud, block, size, label: &str| {
+            let root = base.head(hud, 0x28).unwrap();
+            (0..)
+                .map_while(|i| base.element(&root, block, size, i).unwrap())
+                .find(|bytes| {
+                    let sid = u32::from_le_bytes(bytes[..4].try_into().unwrap()) & 0x00ff_ffff;
+                    retail.strings()[sid as usize].as_deref() == Some(label)
+                })
+                .unwrap_or_else(|| panic!("{map}: missing HUD widget {label}"))
+        };
+        // Retail uses nhdt for the same role as Halo 1's wphi. Follow the
+        // weapon's HUD reference so the test checks the HUD the game loads.
+        for (weapon, levels) in [("shotgun", 0), ("magnum", 0), ("sniper_rifle", 2)] {
+            let (id, _, _, _) = base
+                .tags
+                .iter()
+                .find(|(_, group, name, _)| {
+                    *group == FourCC(*b"weap") && name.rsplit('\\').next() == Some(weapon)
+                })
+                .unwrap_or_else(|| panic!("{map}: missing weapon {weapon}"));
+            let root = base.head(*id, 0x2b8).unwrap();
+            assert_eq!(
+                i16::from_le_bytes(root[0x1fe..0x200].try_into().unwrap()),
+                levels,
+                "{map}: {weapon}",
+            );
+            let hud = base.reference(&root, 0x2b0).unwrap();
+            let suffix = if weapon == "magnum" {
+                "right"
+            } else {
+                "single"
+            };
+            let bg = widget(hud, 8, 0x64, &format!("weapon_background_{suffix}"));
+            let meter = widget(hud, 8, 0x64, &format!("ammo_meter_{suffix}"));
+            let count = widget(hud, 0x10, 0x54, &format!("bullets_{suffix}"));
+            let backpack = widget(hud, 8, 0x64, "backpack");
+            let word = |w: &[u8], at: usize| u16::from_le_bytes(w[at..at + 2].try_into().unwrap());
+            for held in [&bg, &meter, &count] {
+                assert_eq!(word(held, 0x0c) & 7, PRIMARY, "{map}: {weapon}");
+                assert_eq!(word(held, 0x14) & 7, OFF_HAND | BACKPACK, "{map}: {weapon}");
+            }
+            assert_eq!(word(&backpack, 0x0c) & 7, BACKPACK, "{map}: {weapon}");
+            assert_eq!(word(&backpack, 0x1c), word(&bg, 0x1c), "{map}: {weapon}");
+            assert_ne!(word(&backpack, 0x34), word(&bg, 0x34), "{map}: {weapon}");
+            if weapon == "magnum" {
+                let left = widget(hud, 8, 0x64, "weapon_background_left");
+                assert_eq!(word(&left, 0x0c) & 7, OFF_HAND, "{map}: {weapon}");
+                assert_ne!(word(&left, 0x1c), word(&bg, 0x1c), "{map}: {weapon}");
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
+    use h1objects::h1;
+    use h1objects::h1hud::{self, weapon_word_c};
+    use h1objects::health_hud::{BITMAP_WIDGET_SIZE, NHDT_BITMAP_WIDGETS, NHDT_ROOT};
+
+    let h1 = bloodgulch();
+    let mut retail = h2_map("coagulation");
+    let base = Base::read(&mut retail).unwrap();
+    let mut objects = Objects::new(&h1, &base);
+    let p = prepare_halo1(
+        &h1,
+        content::Sha256::of(b"bloodgulch"),
+        &mut retail,
+        &mut objects,
+    )
+    .unwrap();
+    let mopp = structure_mopp(&p.collision).unwrap();
+    let fresh = p.build_fresh(&mut retail, &mopp).unwrap();
+    assert!(
+        fresh.report.scratch.is_some(),
+        "{:?}",
+        fresh.report.scratch_failed
+    );
+    let mut converted = Map::from_reader(Cursor::new(fresh.bytes)).unwrap();
+    let base = Base::read(&mut converted).unwrap();
+
+    for (weapon, levels) in [("assault rifle", 0), ("pistol", 1), ("sniper rifle", 2)] {
+        let name = format!("weapons\\{weapon}\\{weapon}");
+        let h1_tag = h1.find(h1map::Group::new(b"weap"), &name).unwrap();
+        let source = h1::Weapon::read(&h1, h1_tag).unwrap();
+        assert_eq!(source.magnification_levels, levels, "{name}");
+        let id = base.find(b"weap", &name).unwrap();
+        let root = base.head(id, 0x2b8).unwrap();
+        let word = |at: usize| u32::from_le_bytes(root[at..at + 4].try_into().unwrap());
+        assert_eq!(
+            i16::from_le_bytes(root[0x1fe..0x200].try_into().unwrap()),
+            levels,
+            "{name}",
+        );
+        assert_eq!(
+            [f32::from_bits(word(0x200)), f32::from_bits(word(0x204))],
+            source.magnification_range,
+            "{name}",
+        );
+        assert_eq!(word(0x12c) & (1 << 16) != 0, levels == 0, "{name}");
+
+        let hud = base.reference(&root, 0x2b0).unwrap();
+        let (_, path) = base.name(hud).unwrap();
+        assert!(path.ends_with(h1hud::WEAPON_NHDT_SUFFIX), "{name}: {path}");
+        let root = base.head(hud, NHDT_ROOT).unwrap();
+        for (block, size) in [
+            (NHDT_BITMAP_WIDGETS, BITMAP_WIDGET_SIZE),
+            (h1hud::NHDT_TEXT_WIDGETS, h1hud::text::SIZE),
+        ] {
+            assert!(
+                base.element(&root, block, size, 0).unwrap().is_some(),
+                "{name}"
+            );
+            let mut i = 0;
+            while let Some(w) = base.element(&root, block, size, i).unwrap() {
+                let hide = u16::from_le_bytes(w[0x14..0x16].try_into().unwrap());
+                assert_eq!(
+                    hide & 7,
+                    weapon_word_c::OFF_HAND | weapon_word_c::BACKPACK,
+                    "{name}",
+                );
+                i += 1;
+            }
+        }
+    }
+}
+
 /// Prints Halo 2's weapon HUD widgets on coagulation (inputs, state flags,
 /// anchor, special type): the evidence for the inputs and states the
 /// converted Halo 1 weapon HUDs use.
