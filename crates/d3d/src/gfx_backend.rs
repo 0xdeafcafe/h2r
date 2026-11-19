@@ -85,6 +85,10 @@ use crate::shader::{ShaderProvider, VertexProcessing};
 pub type PresentHook =
     Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
 
+/// Inspects a completed batch in encoder order while its upload ranges
+/// and texture bindings still name this batch's data.
+type RecordedPassObserver = Box<dyn FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send>;
+
 /// A texture uploaded for the guest, with the view the shaders sample it
 /// through (`None` when its format cannot be bound as a filterable float
 /// texture: the program then reads a stand-in).
@@ -142,6 +146,8 @@ pub struct GfxBackend {
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
+    recorded_pass_observer: Option<RecordedPassObserver>,
+    submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
     /// [`Self::on_present_replay`]'s hook; `None`: in-between frames go
     /// through `present_hook`.
     replay_hook: Option<PresentHook>,
@@ -295,6 +301,8 @@ impl GfxBackend {
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
+            recorded_pass_observer: None,
+            submitted_frame_observer: None,
             replay_hook: None,
             pending: None,
             stats: BatchStats::default(),
@@ -457,6 +465,17 @@ impl GfxBackend {
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
+    }
+
+    /// Observe complete packets before their original pass records. Used by
+    /// the shadow-map differential to replay the same input on private attachments.
+    pub fn observe_recorded_pass(&mut self, observer: impl FnMut(&GfxContext, &mut wgpu::CommandEncoder, &wgpu::Texture, &gfx::RenderTarget<'_>, Clear, &[RecordedDraw]) + Send + 'static) {
+        self.recorded_pass_observer = Some(Box::new(observer));
+    }
+
+    /// Recycle external renderer resources after the guest frame has been submitted.
+    pub fn observe_submitted_frames(&mut self, observer: impl FnMut() + Send + 'static) {
+        self.submitted_frame_observer = Some(Box::new(observer));
     }
 
     /// Called instead of the [`Self::on_present`] hook for host-only frames
@@ -713,6 +732,10 @@ impl GfxBackend {
                 .any(RecordedDraw::counts_samples)
                 .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
+            if let Some(observer) = &mut self.recorded_pass_observer {
+                let source = self.store.get(p.color).map_err(|e| e.to_string())?.texture();
+                observer(ctx, &mut enc, source, &target, p.clear, &p.draws);
+            }
             let n = Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
                 .map_err(|e| e.to_string())?;
             self.stats.render_passes += n as u64;
@@ -1007,6 +1030,9 @@ impl GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        if let Some(observer) = &mut self.submitted_frame_observer {
+            observer();
+        }
         // Occlusion grids recorded before this present are submitted now.
         for (g, _, _) in &mut self.depth_grids {
             g.map();
