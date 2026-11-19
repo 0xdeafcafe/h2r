@@ -1615,3 +1615,290 @@ fn every_engine_marker_resolves_on_the_converted_objects() {
     assert!(checked > 0);
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+/// Pinned Blood Gulch (`Prepared::build`, the `--pinned` map) in each
+/// sandbox fits the engine's tag memory with room to spare: the base's
+/// tags nothing reaches are dropped (`h1convert::fresh::prune_pinned`) and
+/// the built tags take their bytes. Before (converter version 97's weapon
+/// effects, Halo 1 sandbox) it was 0x634000 of 0x62c000. And what stays
+/// is whole: no word of any kept tag names a dropped base tag, the
+/// globals, multiplayer globals and gestalt are kept, and every base tag
+/// the built scenario names is in the map.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn pinned_bloodgulch_fits_its_tag_memory() {
+    let h1 = bloodgulch();
+    let budget = map::writer::max_metadata_size(map::CacheType::Multiplayer).unwrap();
+    for sandbox in [Sandbox::Halo1, Sandbox::Halo2] {
+        let mut base = h2_map("coagulation");
+        let base_ids: Vec<(TagId, FourCC, Option<String>)> = base
+            .tags()
+            .iter()
+            .map(|t| (t.id, t.group, t.name.clone()))
+            .collect();
+        let first = base.index_slots() as usize;
+        let templates = Base::read(&mut base).unwrap();
+        let mut objects = Objects::new(&h1, &templates);
+        let sha = content::Sha256::of(b"bloodgulch");
+        let p = match sandbox {
+            Sandbox::Halo1 => prepare_halo1(&h1, sha, &mut base, &mut objects).unwrap(),
+            Sandbox::Halo2 => {
+                h1convert::convert::halo1::prepare_halo2(&h1, sha, &mut base, &mut objects).unwrap()
+            }
+        };
+        let mopp = structure_mopp(&p.collision).unwrap();
+        // What pinned pruning keeps and why, printed before the build so
+        // a map over its tag memory still shows it: for the warthog's and
+        // wraith's collision and every base vehicle kept, the chain of
+        // edges it was reached by (`fresh::Pruned::why`) back to its root,
+        // and the pinned tags read word by word (`Pruned::word_read`).
+        {
+            let (set, _, pruned) = p
+                .pinned_set(&mut base, &mopp, false)
+                .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
+            let label = |id: TagId| {
+                set.slots
+                    .get(id.index())
+                    .and_then(|s| Some((s.tag.as_ref()?, s.name.as_deref())))
+                    .filter(|(t, _)| t.id == id)
+                    .map(|(t, n)| {
+                        let built = if id.index() < first { "" } else { " (built)" };
+                        format!("{} {}{built}", t.group, n.unwrap_or("?"))
+                    })
+                    .unwrap_or_else(|| format!("{:#x}", id.0))
+            };
+            let mut asked = Vec::new();
+            for s in set.slots.iter().take(first) {
+                let Some(t) = &s.tag else { continue };
+                let n = s.name.as_deref().unwrap_or_default();
+                let coll = t.group == FourCC(*b"coll")
+                    && matches!(
+                        n,
+                        "objects\\vehicles\\warthog\\warthog" | "objects\\vehicles\\wraith\\wraith"
+                    );
+                if coll || t.group == FourCC(*b"vehi") {
+                    asked.push(t.id);
+                }
+            }
+            for id in asked {
+                let mut chain = vec![label(id)];
+                let mut at = id;
+                for _ in 0..64 {
+                    let step = match pruned.why.get(&at) {
+                        None => "not reached".to_string(),
+                        Some(h1convert::fresh::Reach::Root(r)) => format!("root: {r}"),
+                        Some(h1convert::fresh::Reach::Datum { by }) => {
+                            at = *by;
+                            format!("datum in {}", label(*by))
+                        }
+                        Some(h1convert::fresh::Reach::Address { by, word }) => {
+                            at = *by;
+                            format!("address {word:#x} in {}", label(*by))
+                        }
+                        Some(h1convert::fresh::Reach::Holds { by, block }) => {
+                            at = *by;
+                            format!("holds the block at {block:#x} of {}", label(*by))
+                        }
+                        Some(h1convert::fresh::Reach::Gap { by, gap }) => {
+                            at = *by;
+                            format!(
+                                "datum in the unowned bytes at {gap:#x} {} points into",
+                                label(*by)
+                            )
+                        }
+                    };
+                    let end = step.starts_with("root") || step.starts_with("not");
+                    chain.push(step);
+                    if end {
+                        break;
+                    }
+                }
+                eprintln!("{sandbox:?}: kept: {}", chain.join("\n      <- "));
+            }
+            let word_read: Vec<String> = pruned.word_read.iter().map(|id| label(*id)).collect();
+            let partly: Vec<String> = pruned.partly_walked.iter().map(|id| label(*id)).collect();
+            eprintln!(
+                "{sandbox:?}: {} base tags dropped ({:#x} bytes), {} kept by an address; read word by word: {word_read:?}; walked with arrays skipped: {partly:?}",
+                pruned.tags(),
+                pruned.freed,
+                pruned.kept_by_pointer
+            );
+            // Retail block data shared between tags: the tags kept only
+            // because a kept tag's block sits in their bytes.
+            let holders: Vec<String> = pruned.holders.iter().map(|id| label(*id)).collect();
+            eprintln!(
+                "{sandbox:?}: {} holders of shared blocks; {} words naming dropped tags nulled: {holders:?}",
+                holders.len(),
+                pruned.nulled_words
+            );
+        }
+        let (done, _) = p
+            .build_pruned(&mut base, &mopp)
+            .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let (memory, metadata) = (word(&done.bytes, 0x1c), word(&done.bytes, 0x18));
+        let mut out = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        let live: std::collections::HashSet<TagId> = out.tags().iter().map(|t| t.id).collect();
+        let dropped: std::collections::HashSet<u32> = base_ids
+            .iter()
+            .filter(|t| !live.contains(&t.0))
+            .map(|t| t.0.0)
+            .collect();
+        eprintln!(
+            "{sandbox:?}: tag memory {memory:#x} of {budget:#x}, {:#x} free; metadata {:#x}; {} base tags dropped",
+            budget.saturating_sub(memory),
+            metadata,
+            dropped.len(),
+        );
+        // The largest base tags kept, and what names each (by datum), to
+        // see what holds the room.
+        // Only the metadata counts here: the structure BSP (Halo 1's,
+        // written into the base's `sbsp` slot, so under its name) lives in
+        // the BSP region.
+        let meta = out.metadata_space();
+        let all: Vec<(TagId, FourCC, Option<String>)> = out
+            .tags()
+            .iter()
+            .filter(|t| t.location.is_some_and(|l| Some(l.space) == meta))
+            .map(|t| (t.id, t.group, t.name.clone()))
+            .collect();
+        let mut bytes_of = std::collections::HashMap::new();
+        for (id, _, _) in &all {
+            if let Ok(b) = out.read_tag_bytes(*id) {
+                bytes_of.insert(*id, b);
+            }
+        }
+        let mut kept: Vec<(usize, &(TagId, FourCC, Option<String>))> = all
+            .iter()
+            .filter(|t| t.0.index() < first)
+            .map(|t| (bytes_of.get(&t.0).map_or(0, Vec::len), t))
+            .collect();
+        kept.sort_by(|a, b| b.0.cmp(&a.0));
+        let kept_total: usize = kept.iter().map(|k| k.0).sum();
+        eprintln!(
+            "{sandbox:?}: {} base tags kept, {kept_total:#x} bytes; the largest and what names them:",
+            kept.len()
+        );
+        for (len, (id, g, n)) in kept.iter().take(40) {
+            let by: Vec<String> = all
+                .iter()
+                .filter(|o| o.0 != *id)
+                .filter(|o| {
+                    bytes_of.get(&o.0).is_some_and(|b| {
+                        b.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .any(|w| u32::from_le_bytes(*w) == id.0)
+                    })
+                })
+                .take(4)
+                .map(|o| format!("{} {}", o.1, o.2.as_deref().unwrap_or("?")))
+                .collect();
+            eprintln!("  {len:#8x} {g} {}  <- {by:?}", n.as_deref().unwrap_or("?"));
+        }
+        let mut groups: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+        for (len, (_, g, _)) in &kept {
+            let e = groups.entry(g.to_string()).or_default();
+            e.0 += 1;
+            e.1 += len;
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
+        let label = |id: TagId| {
+            base_ids
+                .iter()
+                .find(|t| t.0 == id)
+                .map(|t| format!("{} {}", t.1, t.2.as_deref().unwrap_or("?")))
+                .unwrap_or_else(|| format!("{:#x}", id.0))
+        };
+        // The scenario's vehicle palette: what it names, and how many
+        // placements use each entry (fresh::null_unplaced nulls a base
+        // entry none uses).
+        if let Some(scnr) = out
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"scnr"))
+            .cloned()
+            && let Some(b) = bytes_of.get(&scnr.id)
+        {
+            let at = scnr.location.unwrap().address;
+            let (pl, pal, stride) = tags::object::OBJECT_TYPES[1].placement.unwrap();
+            let w = |o: u32| {
+                let o = o.checked_sub(at)? as usize;
+                Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
+            };
+            let (n, p) = (word(b, pl as usize), word(b, pl as usize + 4));
+            let (e, q) = (word(b, pal as usize), word(b, pal as usize + 4));
+            let used: Vec<Option<i16>> = (0..n)
+                .map(|k| w(p + k * u32::from(stride)).map(|x| x as u16 as i16))
+                .collect();
+            for k in 0..e {
+                let d = w(q + k * 0x28 + 4);
+                let n = used.iter().filter(|u| **u == Some(k as i16)).count();
+                eprintln!(
+                    "{sandbox:?}: vehicle palette {k}: {} ({n} placements)",
+                    d.map_or("outside the scenario's bytes".into(), |d| label(TagId(d)))
+                );
+            }
+        }
+        // The Halo 1 sandbox's vehicle list names Blood Gulch's Halo 1
+        // warthog, ghost and scorpion in place of Halo 2's warthog, ghost,
+        // scorpion and wraith (`plan_vehicle_list`), so those retail
+        // vehicles are dropped: the wraith's minigun named
+        // `ai\generic_turret`, whose `ai\generic` names every retail
+        // vehicle, so a kept wraith kept them all.
+        if matches!(sandbox, Sandbox::Halo1) {
+            let retail: Vec<String> = ["warthog", "ghost", "scorpion", "wraith"]
+                .iter()
+                .map(|v| format!("objects\\vehicles\\{v}\\{v}"))
+                .collect();
+            let still: Vec<&str> = all
+                .iter()
+                .filter(|t| t.0.index() < first && t.1 == FourCC(*b"vehi"))
+                .filter_map(|t| t.2.as_deref())
+                .filter(|n| retail.iter().any(|r| r == n))
+                .collect();
+            assert!(
+                still.is_empty(),
+                "{sandbox:?}: retail vehicles kept: {still:?}"
+            );
+        }
+        assert!(
+            memory + 0x10000 <= budget,
+            "{sandbox:?}: {memory:#x} leaves under 0x10000 of {budget:#x}"
+        );
+        assert!(!dropped.is_empty(), "nothing dropped");
+        for g in [b"matg", b"mulg", b"ugh!", b"scnr"] {
+            assert!(
+                out.tags().iter().any(|t| t.group == FourCC(*g)),
+                "{sandbox:?}: no {}",
+                FourCC(*g)
+            );
+        }
+        // No kept tag names a dropped one.
+        let ids: Vec<TagId> = out
+            .tags()
+            .iter()
+            .filter(|t| t.location.is_some())
+            .map(|t| t.id)
+            .collect();
+        let mut dangling = Vec::new();
+        for id in ids {
+            let Ok(b) = out.read_tag_bytes(id) else {
+                continue;
+            };
+            for w in b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)) {
+                if dropped.contains(&w) {
+                    let name = out.tag(id).ok().and_then(|t| t.name.clone());
+                    let gone = base_ids
+                        .iter()
+                        .find(|t| t.0.0 == w)
+                        .and_then(|t| t.2.clone());
+                    dangling.push(format!("{name:?} names {gone:?} ({w:#x})"));
+                }
+            }
+        }
+        assert!(dangling.is_empty(), "{sandbox:?}: {dangling:#?}");
+    }
+}

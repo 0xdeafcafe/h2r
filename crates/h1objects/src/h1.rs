@@ -77,7 +77,7 @@ pub const OBJECT_TYPES: [&[u8; 4]; 12] = [
 ];
 
 /// The shared `obje` header.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Object {
     /// `0x00`: index into [`OBJECT_TYPES`].
     pub object_type: u16,
@@ -202,7 +202,7 @@ impl Object {
 }
 
 /// A weapon's magazine (`0x70`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Magazine {
     pub flags: u32,
     /// `+4` rounds recharged per second, `+6` total initial, `+8` total
@@ -225,7 +225,7 @@ pub struct Magazine {
 }
 
 /// A weapon's trigger (`0x114`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Trigger {
     pub flags: u32,
     /// `+4` rounds per second, from and to.
@@ -260,13 +260,43 @@ pub struct Trigger {
     pub projectile: Option<TagId>,
     /// `+0xb8` heat generated per round.
     pub heat_per_round: f32,
-    /// `+0x108` firing effects (`0x84`): each holds references only read
-    /// here.
-    pub firing_effects: Vec<Vec<Option<TagId>>>,
+    /// `+0x108` firing effects (`0x84`, [`FiringEffect`]).
+    pub firing_effects: Vec<FiringEffect>,
+}
+
+/// A trigger's firing effect element (`FIRING_EFFECT_SIZE`): what a shot
+/// plays. V (`weapon_sounds_disc`, every map): the only references in an
+/// element are `effe` at [`FIRING_EFFECT_EFFECTS`] and `jpt!` at
+/// [`FIRING_EFFECT_DAMAGE`]; names S.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FiringEffect {
+    /// `+0`, `+2` (i16): the shot counts the element covers, lower and upper.
+    pub shot_count: [i16; 2],
+    /// Firing, misfire and empty effects (`effe`).
+    pub effects: [Option<TagId>; 3],
+    /// Firing, misfire and empty damage (`jpt!`: the shot's rumble and
+    /// camera shake).
+    pub damage: [Option<TagId>; 3],
+}
+
+pub const FIRING_EFFECT_SIZE: usize = 0x84;
+/// The firing, misfire and empty effect references of a firing effect.
+pub const FIRING_EFFECT_EFFECTS: [usize; 3] = [0x24, 0x34, 0x44];
+/// The firing, misfire and empty damage references of a firing effect.
+pub const FIRING_EFFECT_DAMAGE: [usize; 3] = [0x54, 0x64, 0x74];
+
+impl FiringEffect {
+    pub fn read(map: &H1Map, e: &[u8]) -> Self {
+        Self {
+            shot_count: [i16_at(e, 0), i16_at(e, 2)],
+            effects: FIRING_EFFECT_EFFECTS.map(|o| reference(map, e, o)),
+            damage: FIRING_EFFECT_DAMAGE.map(|o| reference(map, e, o)),
+        }
+    }
 }
 
 /// `weap`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Weapon {
     pub object: Object,
     pub flags: u32,
@@ -370,14 +400,9 @@ impl Weapon {
                     first_person_offset: vec3(t, 0x84),
                     projectile: reference(map, t, 0x94),
                     heat_per_round: f32_at(t, 0xb8),
-                    firing_effects: elements(map, t, 0x108, 0x84)?
+                    firing_effects: elements(map, t, 0x108, FIRING_EFFECT_SIZE)?
                         .into_iter()
-                        .map(|e| {
-                            crate::refs::scan(map, e)
-                                .into_iter()
-                                .map(|f| f.tag)
-                                .collect()
-                        })
+                        .map(|e| FiringEffect::read(map, e))
                         .collect(),
                 })
             })

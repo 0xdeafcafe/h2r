@@ -1541,15 +1541,46 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): effects and sounds, the barrels'
-  firing effects. A projectile takes no `jpt!` from Halo 2. Since
-  converter v86 the slots named by the retail tags they hold
-  (`arsenal::WEAPON_OVERHEATED`, `WEAPON_MELEE_DAMAGE`,
+  `TEMPLATES` row; references only): each firing effect's damage
+  (the shot's rumble and shake: a `jpt!` from Halo 1 carries only damage
+  bounds) and the slots below Halo 1 has no counterpart for. A
+  projectile takes no `jpt!` from Halo 2. Since converter v86 the slots
+  named by the retail tags they hold (`arsenal::WEAPON_OVERHEATED`, which
+  is the weapon's `overheated_effect` below, `WEAPON_MELEE_DAMAGE`,
   `WEAPON_MELEE_RESPONSE`, `PROJECTILE_DETONATION_STARTED`,
   `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
   `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
   material effects take Halo 1's converted tags, or none
-  ([../halo1/role-audit.md](../halo1/role-audit.md)). The HUD (`+0x2b0`) is Halo 1's
+  ([../halo1/role-audit.md](../halo1/role-audit.md)).
+- **What a shot and a reload play** (converter version 97): each barrel's
+  firing effects (`barrels.block_e4`, `0x34`) are its Halo 1 trigger's
+  (`+0x108`, `0x84`: `h1::FiringEffect`), one element per Halo 1
+  element, the firing, misfire and empty effects (Halo 1 `+0x24`,
+  `+0x34`, `+0x44`) converted with `Converter::effect` (their `snd!`
+  parts with `h1sounds`) into `ref_4`, `ref_c`, `ref_14`
+  (`arsenal::FIRING_EFFECT_REFS`); one Halo 1 names as a bare `snd!`
+  (the plasma rifle's empty effect) is converted as a sound and named
+  as one, which retail's slots also hold. Each magazine's reloading effect
+  (Halo 1 `+0x38`) is Halo 1's at magazine `+0x34`. Until version 97
+  every barrel took the counterpart's firing effects, so the assault
+  rifle fired with the SMG's sound (its counterpart, `TEMPLATES`) and a
+  weapon with no counterpart (the vehicle guns) had none and fired
+  silent; magazines had no reloading effect. Live (converter version
+  83, Blood Gulch, `h2 agent edit get`): each of the eight converted
+  hand weapons' `block_e4` elements was datum for datum a retail
+  weapon's, and the three converted vehicle guns had none. V
+  (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` or `snd!`
+  only at `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
+  map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
+  `ref_1c..ref_2c` `jpt!`; on Blood Gulch every weapon's built firing
+  and reloading effects are Halo 1's by path and play Halo 1's sounds.
+  The weapon's own effects and sounds (ready, overheated, detonation,
+  light, pickup, zoom, collision) and the chambering effect are Halo 1's
+  too, or empty (docs/halo1/objects.md, "Weapon effects and sounds"),
+  and the first-person graphs carry Halo 1's animation sounds
+  (docs/halo1/models.md, "Animation sounds"). Not carried yet: the shot counts (`+0` of both elements; Halo 2's word
+  stays the role's: live on converted Blood Gulch every retail element,
+  33 weapons' worth, holds i16 1, 1, so the role word is that). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

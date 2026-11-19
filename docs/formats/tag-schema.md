@@ -128,6 +128,17 @@ Then, on offsets still free:
    came out of the from-scratch build as `00 da 22 01`, a copied
    "resource"'s offset, and showed on a full magazine
    (`schema::tests::hud_thresholds_survive_an_unpinned_build`).
+10. **Engine references** (`infer::ENGINE_REFS`): tag references no
+   retail tag fills. Step 4 takes a field for a reference only when some
+   element holds a live datum there; these hold a group word and a null
+   datum on every retail map, so they came out as bytes, and a datum a
+   converter writes there was extracted and moved as data, naming no
+   tag. `weap`'s item layer `+0xfc`, `+0x11c`, `+0x124`, `weap +0x17c`,
+   `+0x244`, `+0x24c` and its magazines' `+0x44`, which Halo 1's weapons
+   fill (docs/halo1/objects.md, "Weapon effects and sounds"). **V:** the
+   converted Blood Gulch's assault rifle read back with no flashlight
+   effect at `+0x244` (`h1objects/tests/weapon_sounds_disc.rs`;
+   `schema::tests::weapon_slots_retail_leaves_empty_are_tag_references`).
 
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They

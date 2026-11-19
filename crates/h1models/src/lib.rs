@@ -27,6 +27,7 @@ pub mod jmad;
 pub mod mode;
 pub mod names;
 mod out;
+pub mod sounds;
 
 pub use out::{Converted, SELF_ID};
 
