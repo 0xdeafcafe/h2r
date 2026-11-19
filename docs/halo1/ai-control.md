@@ -29,7 +29,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_migrate_by_unit` | Evaluates the HaloScript object list, collects the actors of its units and vehicles’ riders, and migrates each with Halo 2 `0x001e3400`. Group destinations prefer a squad of the same actor type. |
 | `ai_free`, `ai_free_units` | Call Halo 2's actor migration routine `0x001e3400` with no destination. It unlinks the old squad at `0x00203ed0` and puts the actor on the free-actor list at `0x00203f60`. A unit-list argument is evaluated by the VM and traversed through the native list pool. |
 | `ai_attach_free` | Compiles the actor-variant token to a rebuilt `char` at the original tag path. Source `actr` perception and `actv` vitality and weapon tuning populate the Halo 2 character records. The hook uses Halo 2 `0x001e0160` with no squad to attach that character to the supplied unit. The routine replaces any previous actor at `0x001e0d98` and puts the new actor on the free list. Halo 1's allocator and free-list insertion are `0x0014b810` and `0x0013bdd0`. |
-| `ai_teleport_to_starting_location` and its unsupported-only form | Select a starting pose in the actor's current squad and set the unit's transform with Halo 2 `0x000b7430`, then wake physics at `0x000b7360`. Halo 1 `0x00141510` checks support before the conditional move. The port uses Halo 2's biped support flag and seat attachment. When a start has no name, it selects the nearest available start in the squad. |
+| `ai_teleport_to_starting_location` and its unsupported-only form | **Built.** Halo 1 `0x00141510` skips seated actors in the conditional form and casts a two-metre downward ray from 0.4 m above the unit. Halo 2 `0x001697c0` tests front-facing BSP geometry, `0x000b7430` sets the selected transform, and `0x000b7360` wakes physics. Authored required starts are consumed first. The ordinary pool resets only on exhaustion, following Halo 1 `0x0013b270` and `0x0013b500`. The Halo 2 spawn selector at `0x002039d0` shares these guest-backed reservations and honors the native wave's exclusions. New maps encode both teleport forms in slot 300 with markers 38 and 39. |
 | `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
 | `ai_go_to_vehicle`, `ai_go_to_vehicle_override` | Both use Halo 2's native pathing and seat assignment at `0x00274a50`. Normal entry excludes actors already queued to board, matching Halo 1 `0x00141819`. Override uses retail 343, which writes the new transport command into slot 1 via `0x001a80e0` and invalidates the commands it replaces. The scenario seat mapping preserves labels such as the transport seat `p_riderlm`. |
@@ -76,9 +76,8 @@ Halo 2 active/visible perception states, and movement holds leave the
 Halo 2 behavior evaluator running. The aim/movement-state override on
 Halo 1 platoon flag `0x1` remains open until its Halo 2 equivalent is
 identified. The native follow collector still needs firing-position
-areas in the current BSP. The unsupported-only teleport uses native
-contact state in place of Halo 1's two-metre ray, and start selection
-uses available converted starts with no cross-call reservation pool.
+areas in the current BSP. The reservation hook covers native random spawn
+selection. Native explicit start placement bypasses that selector.
 
 The converter retains empty maneuver destinations first, followed by
 literal migration and vehicle destinations, other script-named squads,

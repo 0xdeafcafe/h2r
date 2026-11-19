@@ -34,6 +34,7 @@ pub enum Registry {
     Playfight,
     TargetPreference,
     Follow,
+    TeleportStarts,
 }
 
 impl Registry {
@@ -44,6 +45,7 @@ impl Registry {
             Self::Playfight => 4,
             Self::TargetPreference => 512,
             Self::Follow => FOLLOW_WORDS + MIGRATION_WORDS * 2,
+            Self::TeleportStarts => 0, // Sized from authored starts by the compiler.
         }
     }
 
@@ -70,13 +72,14 @@ impl Registry {
             Self::Vehicles => Some(Operation::VehicleTick),
             Self::ActivationLinks => Some(Operation::ActivationTick),
             Self::Follow => Some(Operation::FollowTick),
-            Self::Playfight | Self::TargetPreference => None,
+            Self::Playfight | Self::TargetPreference | Self::TeleportStarts => None,
         }
     }
 }
 
 /// The final global packs the indices of data needed by native hooks.
 pub const HOOK_STATE: &str = "h1_ai_hook_state";
+pub const TELEPORT_STATE: &str = "h1_ai_teleport_state";
 
 pub const CONTROL_TOKEN: &str = "h1_ai_control";
 pub const DISCARD_EVALUATOR: u32 = 0x002a_b6c0;
@@ -163,6 +166,8 @@ pub enum Operation {
     ExpireSquadTimers = 35,
     VehicleEnter = 36,
     FollowWithDestinations = 37,
+    TeleportReserved = 38,
+    TeleportUnsupportedReserved = 39,
 }
 
 impl Operation {
@@ -211,6 +216,8 @@ impl Operation {
             35 => Self::ExpireSquadTimers,
             36 => Self::VehicleEnter,
             37 => Self::FollowWithDestinations,
+            38 => Self::TeleportReserved,
+            39 => Self::TeleportUnsupportedReserved,
             _ => return None,
         })
     }
@@ -281,6 +288,7 @@ impl Operation {
             Self::FollowDistance => &[AI, REAL, LONG],
             Self::FollowTick | Self::TimerTick => &[LONG],
             Self::FollowWithDestinations => &[LONG, STRING],
+            Self::TeleportReserved | Self::TeleportUnsupportedReserved => &[AI, LONG],
             Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }
     }

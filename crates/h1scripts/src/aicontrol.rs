@@ -287,12 +287,14 @@ pub(crate) fn request(
 #[derive(Default)]
 pub struct RetainedSubjects {
     pub follow_encounters: Option<std::collections::BTreeSet<u16>>,
+    pub teleport_subjects: Option<std::collections::BTreeSet<u32>>,
     pub migration_destinations: std::collections::BTreeSet<String>,
 }
 
 pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> RetainedSubjects {
     let mut retained = RetainedSubjects {
         follow_encounters: Some(Default::default()),
+        teleport_subjects: Some(Default::default()),
         ..RetainedSubjects::default()
     };
     let literal_ai = |node: &hs::Node| {
@@ -314,6 +316,15 @@ pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> Re
                     }
                 } else {
                     retained.follow_encounters = None;
+                }
+            }
+            "ai_teleport_to_starting_location" | "ai_teleport_to_starting_location_if_unsupported" => {
+                if let Some(subject) = first().filter(|n| literal_ai(n)) {
+                    if let Some(subjects) = &mut retained.teleport_subjects {
+                        subjects.insert(subject.data());
+                    }
+                } else {
+                    retained.teleport_subjects = None;
                 }
             }
             "ai_migrate" | "ai_migrate_and_speak" | "ai_migrate_by_unit" | "ai_vehicle_encounter" => {

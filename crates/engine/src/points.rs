@@ -240,6 +240,8 @@ points! { ALL;
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// Choose and reserve an available actor starting location.
+    AI_CHOOSE_SQUAD_START @ 0x0020_39d0: [fn(squad: eax, available: stack 0, excluded: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
     AI_SQUADS_INITIALIZE @ 0x0020_0b30: [fn() ret 0]; "docs/halo1/ai.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.

@@ -17,6 +17,7 @@ mod speech;
 #[path = "h1_ai_control/squads.rs"]
 mod squad_control;
 mod state;
+mod teleport;
 mod timers;
 mod vehicles;
 
@@ -106,6 +107,7 @@ impl feature::Feature for AiControl {
             },
         );
         playfight::register_firing_hooks(b);
+        teleport::register_spawn_hook(b);
         b.raw().before(
             &points::AI_SUBMIT_UNIT_CONTROL,
             "hold actor movement during the Halo 1 combat timer",
@@ -330,6 +332,12 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             }
             Operation::Teleport | Operation::TeleportUnsupported => {
                 actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
+            }
+            Operation::TeleportReserved | Operation::TeleportUnsupportedReserved => {
+                let pools = cx.read(|m| teleport::pools(m, args[1]))?;
+                actors::teleport_reserved(
+                    &cx, args[0], op == Operation::TeleportUnsupportedReserved, &pools,
+                ).await?;
             }
             Operation::Maneuver => actors::maneuver(&cx, args[0]).await?,
             Operation::PlatoonTick => platoons::tick(&cx, args[0]).await?,

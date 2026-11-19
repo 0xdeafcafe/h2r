@@ -43,11 +43,8 @@ pub(super) fn hook_base(
     let Some(shift) = kind.hook_shift() else {
         return Ok(None);
     };
-    let index = if timers_base(m)?.is_some() {
-        global_index_from_end(m, hs::h1_ai_slots::HOOK_STATE, 1)?
-    } else {
-        global_index_from_end(m, hs::h1_ai_slots::HOOK_STATE, 0)?
-    };
+    let trailing = teleport_trailer(m)? + u32::from(timers_base(m)?.is_some());
+    let index = global_index_from_end(m, hs::h1_ai_slots::HOOK_STATE, trailing)?;
     let Some(index) = index else {
         return Ok(None);
     };
@@ -56,7 +53,17 @@ pub(super) fn hook_base(
 }
 
 pub(super) fn timers_base(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
-    global_index_from_end(m, hs::h1_ai_slots::timers::GLOBAL, 0)?
+    global_index_from_end(m, hs::h1_ai_slots::timers::GLOBAL, teleport_trailer(m)?)?
+        .map(|index| m.u32(addr(m, index)?))
+        .transpose()
+}
+
+fn teleport_trailer(m: &dyn GuestMemory) -> Result<u32, MemFault> {
+    Ok(u32::from(global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, 0)?.is_some()))
+}
+
+pub(super) fn teleport_base(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
+    global_index_from_end(m, hs::h1_ai_slots::TELEPORT_STATE, 0)?
         .map(|index| m.u32(addr(m, index)?))
         .transpose()
 }

@@ -95,6 +95,7 @@ pub struct Control {
     pub maneuver_requests: BTreeMap<Request, Vec<Platoon>>,
     pub platoon_rules: Vec<PlatoonRule>,
     pub combat_timers: BTreeMap<u16, CombatTimer>,
+    pub teleport_starts: BTreeMap<u16, Vec<bool>>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
     /// Deferred orders on a physical carrier for destinations beyond the native pool.
@@ -363,6 +364,37 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
         }
     }
     control
+}
+
+/// Preserve flags in native start order. Roster-generated starts are spawn-only.
+pub fn install_teleport_starts(
+    source: &H1Ai,
+    plan: &Plan,
+    control: &mut Control,
+    subjects: Option<&BTreeSet<u32>>,
+) {
+    let indices = converted_indices(source, plan);
+    for (ei, (encounter, ids)) in source.encounters.iter().zip(indices).enumerate() {
+        for (si, (squad, id)) in encounter.squads.iter().zip(ids).enumerate() {
+            let Some(id) = id else { continue };
+            if squad.starting_locations.is_empty() {
+                continue;
+            }
+            let applies = subjects.is_none_or(|subjects| subjects.iter().any(|&subject| {
+                let local = (subject >> 16) as u8;
+                subject as u16 == ei as u16 && match subject >> 30 {
+                    0 => true,
+                    1 => squad.platoon == i16::from(local),
+                    2 | 3 => si == usize::from(local),
+                    _ => unreachable!(),
+                }
+            }));
+            if applies {
+                control.teleport_starts.insert(id, squad.starting_locations.iter()
+                    .map(|start| start.flags & 1 != 0).collect());
+            }
+        }
+    }
 }
 
 pub fn install_automatic_destinations(

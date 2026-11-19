@@ -11,7 +11,6 @@ use engine::{
 };
 use feature::points;
 use hs::h1_ai_slots::ManeuverEdge;
-use live_telemetry::layout as unit;
 
 use super::{AI_KIND, NONE, SQUAD_COUNT, SQUAD_SIZE, SQUADS, squads};
 
@@ -29,6 +28,8 @@ const ACTOR_MIGRATE: u32 = 0x001e_3400;
 const UNIT_DETACH_FROM_PARENT: u32 = 0x000c_c590;
 const OBJECT_SET_TRANSFORM: u32 = 0x000b_7430;
 const OBJECT_WAKE_PHYSICS: u32 = 0x000b_7360;
+const WORLD_VECTOR_TEST: u32 = 0x0016_97c0;
+const FRONT_FACING_STRUCTURE: u32 = 0x0080_0001;
 
 type R<T> = Result<T, MemFault>;
 
@@ -348,9 +349,16 @@ struct Teleport {
     unseat: bool,
 }
 
-fn teleports(m: &dyn GuestMemory, reference: u32, unsupported_only: bool) -> R<Vec<Teleport>> {
-    let mut out = Vec::new();
-    let mut claimed = BTreeSet::new();
+async fn supported(cx: &Cx, position: [f32; 3]) -> Result<bool, EntryError> {
+    let data = cx.entry().esp.wrapping_sub(24 + 0x68);
+    let ray = [position[0], position[1], position[2] + 0.4, 0.0, 0.0, -2.0];
+    let args = [FRONT_FACING_STRUCTURE, data, data + 12, NONE, NONE, data + 24]
+        .into_iter().chain(ray.into_iter().map(f32::to_bits)).chain([0; 0x68 / 4]);
+    Ok(cx.call(GuestCall::new(WORLD_VECTOR_TEST).args(args)).await?.eax as u8 != 0)
+}
+
+fn teleportable(m: &dyn GuestMemory, reference: u32) -> R<Vec<(Actor, [f32; 3], bool)>> {
+    let mut ready = Vec::new();
     for actor in selected(m, reference)? {
         if actor.squad == NONE {
             continue;
@@ -361,60 +369,98 @@ fn teleports(m: &dyn GuestMemory, reference: u32, unsupported_only: bool) -> R<V
         if !matches!(kind, objects::BIPED | objects::VEHICLE) || object.damage_flags(m)? & 4 != 0 {
             continue;
         }
-        let parent = object.parent(m)?;
-        if unsupported_only
-            && (kind != objects::BIPED
-                || parent.is_some()
-                || m.u8(object.addr() + unit::BIPED_SUPPORT_FLAGS)? & unit::BIPED_SUPPORT_COPIED
-                    != 0)
-        {
-            continue;
-        }
-        let Some(record) = squad_record(m, u32::from(actor.squad as u16))? else {
+        ready.push((actor, object.position(m)?, object.parent(m)?.is_some()));
+    }
+    Ok(ready)
+}
+
+pub(super) async fn teleport_reserved(
+    cx: &Cx,
+    reference: u32,
+    unsupported_only: bool,
+    pools: &BTreeMap<u32, super::teleport::Pool>,
+) -> Result<(), EntryError> {
+    for (actor, position, seated) in cx.read(|m| teleportable(m, reference))? {
+        let Some(pool) = pools.get(&actor.squad) else {
             continue;
         };
-        let position = object.position(m)?;
-        let own = m.u32(actor.at + ACTOR_STARTING_LOCATION)?;
-        let count = m.u32(record + 0x48)?;
-        if count == 0 {
+        if unsupported_only && (seated || supported(cx, position).await?) {
             continue;
         }
-        let starts = m.u32(record + 0x4c)?;
-        let mut best = None::<(u32, u32, f32, [f32; 3])>;
-        for index in 0..count {
-            let at = starts + index * 0x64;
-            let candidate = m.vec3(at + 4)?;
-            let distance: f32 = candidate
-                .iter()
-                .zip(position)
-                .map(|(a, b)| (a - b).powi(2))
-                .sum();
-            let name = m.u32(at)?;
-            let rank = 2 * u32::from(claimed.contains(&at)) + u32::from(name != own || name == 0);
-            if distance.is_finite()
-                && best
-                    .as_ref()
-                    .is_none_or(|(_, old, d, _)| rank < *old || (rank == *old && distance < *d))
-            {
-                best = Some((at, rank, distance, candidate));
-            }
-        }
-        if let Some((at, _, _, position)) = best {
-            let yaw = m.f32(at + 0x14)?;
-            let pitch = m.f32(at + 0x18)?;
-            if yaw.is_finite() && pitch.is_finite() {
-                claimed.insert(at);
-                out.push(Teleport {
-                    unit: actor.unit,
-                    position,
-                    yaw,
-                    pitch,
-                    unseat: parent.is_some(),
-                });
-            }
+        let pose = cx.write(|m| {
+            let Some(record) = squad_record(m, actor.squad)? else {
+                return Ok(None);
+            };
+            let count = m.u32(record + 0x48)?;
+            let Some(index) = pool.reserve(m, count)? else {
+                return Ok(None);
+            };
+            let at = m.u32(record + 0x4c)? + index * 0x64;
+            Ok::<_, MemFault>(Some(Teleport {
+                unit: actor.unit,
+                position: m.vec3(at + 4)?,
+                yaw: m.f32(at + 0x14)?,
+                pitch: 0.0,
+                unseat: seated,
+            }))
+        })?;
+        if let Some(pose) = pose {
+            teleport_unit(cx, pose).await?;
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+fn starting_pose(
+    m: &dyn GuestMemory,
+    actor: Actor,
+    position: [f32; 3],
+    seated: bool,
+    claimed: &mut BTreeSet<u32>,
+) -> R<Option<Teleport>> {
+    let Some(record) = squad_record(m, u32::from(actor.squad as u16))? else {
+        return Ok(None);
+    };
+    let own = m.u32(actor.at + ACTOR_STARTING_LOCATION)?;
+    let count = m.u32(record + 0x48)?;
+    if count == 0 {
+        return Ok(None);
+    }
+    let starts = m.u32(record + 0x4c)?;
+    let mut best = None::<(u32, u32, f32, [f32; 3])>;
+    for index in 0..count {
+        let at = starts + index * 0x64;
+        let candidate = m.vec3(at + 4)?;
+        let distance: f32 = candidate
+            .iter()
+            .zip(position)
+            .map(|(a, b)| (a - b).powi(2))
+            .sum();
+        let name = m.u32(at)?;
+        let rank = 2 * u32::from(claimed.contains(&at)) + u32::from(name != own || name == 0);
+        if distance.is_finite()
+            && best
+                .as_ref()
+                .is_none_or(|(_, old, d, _)| rank < *old || (rank == *old && distance < *d))
+        {
+            best = Some((at, rank, distance, candidate));
+        }
+    }
+    if let Some((at, _, _, position)) = best {
+        let yaw = m.f32(at + 0x14)?;
+        let pitch = m.f32(at + 0x18)?;
+        if yaw.is_finite() && pitch.is_finite() {
+            claimed.insert(at);
+            return Ok(Some(Teleport {
+                unit: actor.unit,
+                position,
+                yaw,
+                pitch,
+                unseat: seated,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 pub(super) async fn teleport(
@@ -422,8 +468,14 @@ pub(super) async fn teleport(
     reference: u32,
     unsupported_only: bool,
 ) -> Result<(), EntryError> {
-    for motion in cx.read(|m| teleports(m, reference, unsupported_only))? {
-        teleport_unit(cx, motion).await?;
+    let mut claimed = BTreeSet::new();
+    for (actor, position, seated) in cx.read(|m| teleportable(m, reference))? {
+        if unsupported_only && (seated || supported(cx, position).await?) {
+            continue;
+        }
+        if let Some(pose) = cx.read(|m| starting_pose(m, actor, position, seated, &mut claimed))? {
+            teleport_unit(cx, pose).await?;
+        }
     }
     Ok(())
 }
@@ -458,6 +510,31 @@ async fn teleport_unit(cx: &Cx, motion: Teleport) -> Result<(), EntryError> {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
+
+    #[test]
+    fn unsupported_teleport_uses_a_front_facing_bsp_ray() {
+        use engine::entry::{EntryFuture, Regs, Ret, testing};
+
+        const STACK: u32 = 0x800100;
+        let run = testing::run(
+            &|cx| -> EntryFuture {
+                Box::pin(async move {
+                    Ok(Ret::new(u32::from(supported(&cx, [1.0, 2.0, 3.0]).await?), 0))
+                })
+            },
+            FakeGuest::new(),
+            Regs { esp: STACK, ..Default::default() },
+            |call, _| {
+                assert_eq!(call.target, WORLD_VECTOR_TEST);
+                let data = STACK - 24 - 0x68;
+                assert_eq!(call.args[..6], [FRONT_FACING_STRUCTURE, data, data + 12, NONE, NONE, data + 24]);
+                let ray = call.args[6..12].iter().map(|&bits| f32::from_bits(bits)).collect::<Vec<_>>();
+                assert_eq!(ray, [1.0, 2.0, 3.4, 0.0, 0.0, -2.0]);
+                Regs { eax: 1, ..Default::default() }
+            },
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 0)));
+    }
 
     #[test]
     fn teleports_unseat_transform_and_wake_the_same_unit() {

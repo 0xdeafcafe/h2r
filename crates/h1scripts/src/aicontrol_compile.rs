@@ -91,6 +91,11 @@ impl Compiler<'_> {
             {
                 return self.emit_actions(control, actions, args, expected).map(Some);
             }
+            if matches!(op, RuntimeOperation::Teleport | RuntimeOperation::TeleportUnsupported)
+                && self.ai_control.is_some()
+            {
+                return self.teleport_control(op, args, expected).map(Some);
+            }
             return self.runtime_control(op, args, expected).map(Some);
         }
         match name {
@@ -387,6 +392,34 @@ impl Compiler<'_> {
         self.runtime_control_call(op, &compiled, expected)
     }
 
+    fn teleport_control(
+        &mut self,
+        op: RuntimeOperation,
+        args: &[Datum],
+        expected: u16,
+    ) -> Result<Datum> {
+        let [reference] = args else {
+            return Err(invalid("teleport argument count"));
+        };
+        let reference = self.expr(*reference, self.ty(types::AI)?)?;
+        let base = self.registry_base(Registry::TeleportStarts)?;
+        let base = self.number(h2t::LONG, i32::from(base));
+        let operation = if op == RuntimeOperation::Teleport {
+            RuntimeOperation::TeleportReserved
+        } else {
+            RuntimeOperation::TeleportUnsupportedReserved
+        };
+        self.runtime_control_call(operation, &[reference, base], expected)
+    }
+
+    fn registry_words(&self, registry: Registry) -> usize {
+        if registry == Registry::TeleportStarts {
+            return 1 + self.ai_control.map_or(0, |control| control.teleport_starts.values()
+                .map(|starts| 1 + 2 * starts.len().div_ceil(32)).sum::<usize>());
+        }
+        usize::from(registry.words())
+    }
+
     fn registry_base(&mut self, registry: Registry) -> Result<u16> {
         if let Some(&(_, base)) = self.ai_registries.iter().find(|(r, _)| *r == registry) {
             return Ok(base);
@@ -400,23 +433,48 @@ impl Compiler<'_> {
             + self
                 .ai_registries
                 .iter()
-                .map(|(r, _)| usize::from(r.words()))
+                .map(|(r, _)| self.registry_words(*r))
                 .sum::<usize>();
         let base = u16::try_from(base).map_err(|_| invalid("global count"))?;
         self.ai_registries.push((registry, base));
         Ok(base)
     }
 
-    pub(super) fn install_ai_ticks(&mut self) -> Result<()> {
+    pub(super) fn install_ai_ticks(&mut self) -> Result<Option<u16>> {
+        let mut teleport_base = None;
         let mut hook_state = u32::MAX;
         for (registry, base) in std::mem::take(&mut self.ai_registries) {
             if let Some(shift) = registry.hook_shift() {
                 hook_state = (hook_state & !(0xffff << shift)) | (u32::from(base) << shift);
             }
             let start = usize::from(base);
-            let end = start + usize::from(registry.words());
+            let end = start + self.registry_words(registry);
             if self.out.globals.len() != start || hs::vm::EXTERNAL_GLOBALS + end > 0xc00 {
                 return Err(invalid("converted AI state exceeds the Halo 2 global pool"));
+            }
+            if registry == Registry::TeleportStarts {
+                let empty = Default::default();
+                let pools = self.ai_control.map_or(&empty, |control| &control.teleport_starts);
+                let mut initial = vec![pools.len() as u32];
+                if !pools.is_empty() {
+                    teleport_base = Some(base);
+                    for (&squad, starts) in pools {
+                        let count = u16::try_from(starts.len())
+                            .map_err(|_| invalid("too many AI starts in a squad"))?;
+                        initial.push(u32::from(squad) << 16 | u32::from(count));
+                        for block in starts.chunks(32) {
+                            let preferred = block.iter().enumerate().fold(0u32, |mask, (index, required)| {
+                                mask | (u32::from(*required) << index)
+                            });
+                            let available = u32::MAX >> (32 - block.len());
+                            initial.extend([preferred, available]);
+                        }
+                    }
+                }
+                for (index, value) in (start..end).zip(initial) {
+                    self.declare_state_word(&format!("h1_ai_state_{index}"), value)?;
+                }
+                continue;
             }
             for index in 0..registry.words() {
                 let initial =
@@ -501,7 +559,14 @@ impl Compiler<'_> {
                 .globals
                 .push(definition(name, h2t::LONG, 0, root, index)?);
         }
-        Ok(())
+        Ok(teleport_base)
+    }
+
+    pub(super) fn install_teleport_state(&mut self, base: u16) -> Result<()> {
+        if hs::vm::EXTERNAL_GLOBALS + self.out.globals.len() >= 0xc00 {
+            return Err(invalid("converted AI teleport state exceeds the Halo 2 global pool"));
+        }
+        self.declare_state_word(hs::h1_ai_slots::TELEPORT_STATE, u32::from(base))
     }
 
     pub(super) fn install_combat_timers(&mut self) -> Result<()> {
@@ -520,9 +585,9 @@ impl Compiler<'_> {
             return Err(invalid("converted AI timers exceed the Halo 2 global pool"));
         }
         for (offset, value) in words.into_iter().enumerate() {
-            self.declare_timer_word(&format!("h1_ai_timer_{offset}"), value)?;
+            self.declare_state_word(&format!("h1_ai_timer_{offset}"), value)?;
         }
-        self.declare_timer_word(timers::GLOBAL, base as u32)?;
+        self.declare_state_word(timers::GLOBAL, base as u32)?;
         let name = "h1_ai_timer_tick";
         if self.t.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
             return Err(invalid(format!("script name collision: {name}")));
@@ -533,7 +598,7 @@ impl Compiler<'_> {
         Ok(())
     }
 
-    fn declare_timer_word(&mut self, name: &str, value: u32) -> Result<()> {
+    fn declare_state_word(&mut self, name: &str, value: u32) -> Result<()> {
         if self.t.globals.iter().any(|g| g.name.eq_ignore_ascii_case(name)) {
             return Err(invalid(format!("global name collision: {name}")));
         }

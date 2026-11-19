@@ -359,8 +359,11 @@ pub fn compile_with_ai(
             .push(definition(&s.name, s.kind, ty, root, i)?);
     }
     c.out.scripts.append(&mut c.ai_definitions);
-    c.install_ai_ticks()?;
+    let teleport = c.install_ai_ticks()?;
     c.install_combat_timers()?;
+    if let Some(base) = teleport {
+        c.install_teleport_state(base)?;
+    }
     c.install_platoon_tick()?;
     c.out.references = t
         .references
