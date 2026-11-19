@@ -291,6 +291,12 @@ fn ended_off_live(l: &Log) -> Option<(&'static str, String)> {
     ended
 }
 
+/// The account picker opening, as port 1's join gate names it (one line
+/// per change, so one per opening).
+fn picker_opened(text: &str) -> bool {
+    text.starts_with("bots: join gate port 1: ") && text.contains(", dialog 0x14 (")
+}
+
 const TROUBLE: [&str; 7] = [
     "panicked",
     "guest thread exited",
@@ -374,14 +380,20 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         (None, None) => {
             let mut lines = l.last(5, |t| t.starts_with("bots-drive"));
             lines.extend(l.last(1, |t| t.starts_with("ui: screen")));
-            check(
-                "on Xbox Live",
-                false,
+            let pickers = l.texts.iter().filter(|t| picker_opened(t)).count();
+            let detail = if pickers > 0 {
+                format!(
+                    "never on Xbox Live: the game's account picker (dialog 0x14, \
+                     `dialog_live_signin`) opened {pickers} time(s) and the profile never signed \
+                     in (A on its row 0 is \"no account\"; the run's account is row 1); the last \
+                     presses and screen follow"
+                )
+            } else {
                 "never on Xbox Live (no players' screen in mode 3, no Xbox Live menu `0xba`): \
                  the last presses and screen follow"
-                    .into(),
-                lines,
-            )
+                    .into()
+            };
+            check("on Xbox Live", false, detail, lines)
         }
     });
 

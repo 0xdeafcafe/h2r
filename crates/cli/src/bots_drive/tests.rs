@@ -231,6 +231,125 @@ fn back_on_the_main_menu_tries_again() {
     assert!(d.take_said().iter().any(|s| s.contains("Xbox Live again")));
 }
 
+/// Run 20261119-001305's picker: the join gate names it, the list is on
+/// row 0 (the no-account row).
+const GATE_14: &str = "bots: join gate port 1: screen none (top none), dialog 0x14 (window 3, slot 4), signed_in false (slot 0x1): waits";
+const GATE_NONE: &str = "bots: join gate port 1: screen none (top none), dialog none, signed_in false (slot 0x1): waits";
+/// The same list one row down (the tester's account).
+const DIALOG_14_ROW_1: &str = "ui: screen none (slot 4: window 3 active 0x82539070 pending 0x0 list [0x1/0xe1680001]; slot 0: no window)";
+
+#[test]
+fn the_join_gate_names_the_dialog() {
+    assert_eq!(gate_dialog(GATE_14), Some(Some(0x14)));
+    assert_eq!(gate_dialog(GATE_NONE), Some(None));
+    assert_eq!(gate_dialog("bots: Clanker 1 on port 1"), None);
+}
+
+#[test]
+fn the_account_picker_gets_down_then_a_not_a_on_no_account() {
+    let mut d = at_main();
+    let p = presses(&mut d, 2500, 4000);
+    assert_eq!(
+        p.last().unwrap(),
+        "a Xbox Live (signs in; the bots join here)"
+    );
+    // The picker over the main menu, on row 0 (run 2: A here signed out).
+    d.line(4100, DIALOG_14);
+    d.line(4100, GATE_14);
+    let p = presses(&mut d, 4200, 7000);
+    assert_eq!(
+        p,
+        ["down the account picker: off the no-account row (row 0) to the account"]
+    );
+    d.line(7100, DIALOG_14_ROW_1);
+    let p = presses(&mut d, 7200, 10_000);
+    assert_eq!(p, ["a the account picker's account row 1: sign in"]);
+    assert!(d.take_said().iter().any(|s| s.contains("account picker")));
+    // Signed in: the players' screen in Xbox Live mode.
+    d.line(10_100, GATE_NONE);
+    d.line(10_100, "ui: screen 0x1e (window 5, slot 4), mode 3");
+    let p = presses(&mut d, 10_200, 13_000);
+    assert_eq!(
+        p,
+        ["a the players' screen for Xbox Live: on to the Live menu"]
+    );
+}
+
+#[test]
+fn the_picker_at_boot_picks_the_account_too() {
+    let mut d = Driver::new(3);
+    d.status(500, "menu");
+    d.line(1000, DIALOG_14);
+    d.line(1000, GATE_14);
+    let p = presses(&mut d, 1100, 3000);
+    assert_eq!(
+        p,
+        ["down the account picker: off the no-account row (row 0) to the account"]
+    );
+    d.line(3000, DIALOG_14_ROW_1);
+    assert_eq!(
+        presses(&mut d, 3100, 6000),
+        ["a the account picker's account row 1: sign in"]
+    );
+    // One A per opening: the same line held gets no second press.
+    assert!(presses(&mut d, 6100, 20_000).is_empty());
+}
+
+#[test]
+fn a_picker_whose_cursor_does_not_move_gets_a_after_one_down() {
+    let mut d = at_main();
+    presses(&mut d, 2500, 4000);
+    d.line(4100, DIALOG_14);
+    d.line(4100, GATE_14);
+    let p = presses(&mut d, 4200, 9000);
+    assert_eq!(
+        p,
+        [
+            "down the account picker: off the no-account row (row 0) to the account",
+            "a the account picker: A after DOWN, row unconfirmed"
+        ]
+    );
+    assert!(
+        d.take_said()
+            .iter()
+            .any(|s| s.contains("did not leave row 0"))
+    );
+}
+
+#[test]
+fn a_picker_that_keeps_coming_back_gives_up() {
+    let mut d = at_main();
+    presses(&mut d, 2500, 4000);
+    let mut t = 4100;
+    for _ in 0..PICKER_PICKS {
+        d.line(t, DIALOG_14_ROW_1);
+        d.line(t, GATE_14);
+        let p = presses(&mut d, t + 100, t + 3000);
+        assert_eq!(p, ["a the account picker's account row 1: sign in"]);
+        // Closed, then open again.
+        d.line(t + 3100, GATE_NONE);
+        d.line(t + 3100, MAIN_ROW_1);
+        t += 3200;
+    }
+    d.line(t, DIALOG_14_ROW_1);
+    d.line(t, GATE_14);
+    assert!(presses(&mut d, t + 100, t + 3000).is_empty());
+    assert!(d.stuck());
+    assert!(d.take_said().iter().any(|s| s.contains("never signed in")));
+}
+
+#[test]
+fn a_picker_that_stays_up_after_a_gives_up() {
+    let mut d = at_main();
+    presses(&mut d, 2500, 4000);
+    d.line(4100, DIALOG_14_ROW_1);
+    d.line(4100, GATE_14);
+    assert_eq!(presses(&mut d, 4200, 6000).len(), 1);
+    assert!(presses(&mut d, 6100, 5600 + 2 * STEP_MS + 500).is_empty());
+    assert!(d.stuck());
+    assert!(d.take_said().iter().any(|s| s.contains("stayed up")));
+}
+
 #[test]
 fn the_live_menu_cursor_left_lower_goes_up() {
     let mut d = at_main();

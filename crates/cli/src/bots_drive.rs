@@ -26,12 +26,23 @@
 //! * boot: a fresh data folder stops on the title screen and the new
 //!   profile's dialogs, so once the screen has held [`BOOT_HOLD_MS`]
 //!   without the main menu, A (at most [`BOOT_PRESSES`]);
-//! * the main menu: from its row to Xbox Live (row 1), A; that signs the
-//!   profile in to Live (the HLE logs on with the run's account) and opens
-//!   the players' screen (`0x1e`) in mode 3, where the local bots join; A
-//!   there opens the Xbox Live menu (`0xba`). A dialog on the way (the
-//!   sign-in's) gets A; a players' screen in another mode is backed out
-//!   of and corrected; Live asking for a 6-digit code stops the drive;
+//! * the account picker (`dialog_live_signin`, dialog `0x14`): the game
+//!   opens it at boot (a new profile) and from the main menu's Xbox Live
+//!   row while the profile is not signed in (`0x2308e0`). Its rows
+//!   (`0x24af1a`): row 0 is the no-account row (item `0x1023`, there
+//!   while not signed in; A on it closes the picker signed out, which is
+//!   what run 20261119-001305 did four times), then one row per account
+//!   `XOnlineGetUsers` lists (the run's `live/accounts.json`: the tester),
+//!   then New Account. A on an account row (`0x24b2ea`) copies it into
+//!   the profile and logs on (`0x24b664`). So: DOWN to row 1, A. The
+//!   dialog is known by the bots' join gate line (`dialog 0x14 (window
+//!   3, ...)`), its cursor by the list value's low 16 bits;
+//! * the main menu: from its row to Xbox Live (row 1), A; signed in, that
+//!   opens the players' screen (`0x1e`) in mode 3, where the local bots
+//!   join; A there opens the Xbox Live menu (`0xba`). Not signed in, it
+//!   opens the picker first. Another dialog on the way gets A; a players'
+//!   screen in another mode is backed out of and corrected; Live asking
+//!   for a 6-digit code stops the drive;
 //! * the Live menu: from its restored row to row 2, A; the lobby is a Live
 //!   one only once the HLE says `live: session ... advertised`;
 //! * the lobby: once every local bot is on Xbox Live (`bots: NAME on port
@@ -58,6 +69,13 @@ pub const BOOT_PRESSES: u32 = 12;
 pub const DIALOG_HOLD_MS: u64 = 3_000;
 /// Dialog presses on the way to the Live menu before giving up.
 pub const DIALOG_PRESSES: u32 = 6;
+/// The account picker, `dialog_live_signin` (screen 20, loader
+/// `0x24b4a9`).
+pub const ACCOUNT_PICKER: u32 = 0x14;
+/// The picker's first account row; row 0 is the no-account row.
+pub const PICKER_ACCOUNT_ROW: u32 = 1;
+/// Accounts picked before the driver gives up on signing in.
+pub const PICKER_PICKS: u32 = 3;
 /// How long the host waits in the lobby for its local bots to be on Xbox
 /// Live before it starts anyway (the verdict then says which did not).
 pub const LOBBY_WAIT_MS: u64 = 90_000;
@@ -90,6 +108,15 @@ pub struct Driver {
     window: Option<u32>,
     /// A `none` line's first list value.
     list_value: Option<u32>,
+    /// The top dialog the bots' join gate last named (`dialog 0x14
+    /// (window 3, ...)`); `None` for `dialog none`.
+    dialog_id: Option<u32>,
+    /// Account rows picked in the account picker.
+    picks: u32,
+    /// DOWN presses in the picker since its last row change.
+    picker_downs: u32,
+    /// When the `ui: screen` line the last account pick was made on came.
+    picked_on: Option<u64>,
     /// The last `ui: screen` line, and when it came.
     ui: String,
     ui_since: u64,
@@ -150,6 +177,21 @@ pub fn none_window(text: &str) -> Option<(u32, Option<u32>)> {
     Some((window, value))
 }
 
+/// A `bots: join gate port P: ..., dialog D, ...` line's dialog: `Some(None)`
+/// for `dialog none`, `Some(Some(id))` for `dialog 0xNN (window ...)`.
+pub fn gate_dialog(text: &str) -> Option<Option<u32>> {
+    let rest = text.strip_prefix("bots: join gate port ")?;
+    let (_, d) = rest.split_once(", dialog ")?;
+    if d.starts_with("none") {
+        return Some(None);
+    }
+    let hex = d.strip_prefix("0x")?;
+    let end = hex
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(hex.len());
+    Some(u32::from_str_radix(&hex[..end], 16).ok())
+}
+
 /// A players' screen mode by name, for the log.
 pub fn mode_name(mode: u32) -> &'static str {
     match mode {
@@ -174,6 +216,10 @@ impl Driver {
             screen_since: 0,
             window: None,
             list_value: None,
+            dialog_id: None,
+            picks: 0,
+            picker_downs: 0,
+            picked_on: None,
             ui: String::new(),
             ui_since: 0,
             mode: None,
@@ -208,6 +254,9 @@ impl Driver {
                 self.ui_since = now;
             }
             let (window, value) = none_window(text).map_or((None, None), |(w, v)| (Some(w), v));
+            if value != self.list_value || window != self.window {
+                self.picker_downs = 0;
+            }
             self.window = window;
             self.list_value = value;
             self.mode = mode;
@@ -217,6 +266,10 @@ impl Driver {
                 self.cursor =
                     (screen == Some(LIVE_MENU)).then(|| row.filter(|r| *r <= 5).unwrap_or(0));
             }
+            return;
+        }
+        if let Some(d) = gate_dialog(text) {
+            self.dialog_id = d;
             return;
         }
         if let Some(m) = text.strip_prefix("coop-live: lobby mode ") {
@@ -293,6 +346,73 @@ impl Driver {
     /// A dialog (windows 0 to 4) takes player one's input.
     fn dialog(&self) -> bool {
         self.screen.is_none() && self.window.is_some_and(|w| w < 5)
+    }
+
+    /// The account picker is up and takes player one's input.
+    fn picker(&self) -> bool {
+        self.dialog() && self.dialog_id == Some(ACCOUNT_PICKER)
+    }
+
+    /// In the account picker: DOWN off the no-account row, then A on the
+    /// first account. Whether the picker is up.
+    fn in_picker(&mut self, now: u64) -> bool {
+        if !self.picker() {
+            return false;
+        }
+        if self.picked_on == Some(self.ui_since) {
+            // A sent on this opening: it closes, or it is stuck.
+            if now.saturating_sub(self.last_press) > 2 * STEP_MS {
+                let ui = self.ui.clone();
+                self.give_up(format!(
+                    "the account picker (dialog 0x14) stayed up after A on its account row; \
+                     the last screen: {ui}"
+                ));
+            }
+            return true;
+        }
+        if !self.quiet(now, SETTLE_MS) {
+            return true;
+        }
+        if self.picks >= PICKER_PICKS {
+            self.give_up(format!(
+                "the account picker (dialog 0x14) is back after {PICKER_PICKS} picks of its \
+                 account row: the game never signed in to Xbox Live (if the cursor never left \
+                 row 0, the picker lists no account: XOnlineGetUsers reads the run's \
+                 live/accounts.json; otherwise the logon failed, and the game's full log has \
+                 the HLE's `live:` lines)"
+            ));
+            return true;
+        }
+        let row = self.list_value.map(|v| v & 0xffff);
+        let why = match row {
+            Some(r) if r >= PICKER_ACCOUNT_ROW => {
+                format!("the account picker's account row {r}: sign in")
+            }
+            _ if self.picker_downs >= 1 => {
+                self.say(
+                    "the account picker's cursor did not leave row 0 after DOWN (one row only: \
+                     no account listed?); A anyway"
+                        .into(),
+                );
+                "the account picker: A after DOWN, row unconfirmed".into()
+            }
+            _ => {
+                self.picker_downs += 1;
+                self.queue = vec![press(
+                    "down",
+                    "the account picker: off the no-account row (row 0) to the account",
+                )];
+                return true;
+            }
+        };
+        self.picks += 1;
+        self.picked_on = Some(self.ui_since);
+        self.say(format!(
+            "the account picker (dialog 0x14): A on its account row (pick {})",
+            self.picks
+        ));
+        self.queue = vec![press("a", &why)];
+        true
     }
 
     /// On the main menu: screen 9, or a window 5 `none` screen once the
@@ -449,6 +569,9 @@ impl Driver {
                     self.step = Step::ToLive { at: now, tries: 0 };
                     return;
                 }
+                if self.in_picker(now) {
+                    return;
+                }
                 // The title screen and a fresh profile's dialogs wait for
                 // A; nothing before the game shows a screen.
                 if self.ui.is_empty() || !self.quiet(now, BOOT_HOLD_MS) {
@@ -478,8 +601,12 @@ impl Driver {
                     if !self.queue.is_empty() {
                         self.step = Step::ToLive { at: now, tries };
                     }
+                } else if self.in_picker(now) {
+                    if !self.queue.is_empty() {
+                        self.step = Step::ToLive { at: now, tries };
+                    }
                 } else if self.dialog() {
-                    // The sign-in's dialogs: A, their first button.
+                    // Another dialog on the way: A, its first button.
                     if self.quiet(now, DIALOG_HOLD_MS) {
                         if self.dialog_presses >= DIALOG_PRESSES {
                             let ui = self.ui.clone();
@@ -497,9 +624,17 @@ impl Driver {
                     // Back on the main menu (a sign-in that failed, or a
                     // press it missed): again from its row.
                     if tries + 1 >= TRIES {
-                        self.give_up(format!(
-                            "no Xbox Live menu after {TRIES} tries; back on the main menu"
-                        ));
+                        let why = if self.picks > 0 {
+                            format!(
+                                "no Xbox Live menu after {TRIES} tries; back on the main menu \
+                                 after picking the account {} time(s) in the account picker \
+                                 (the logon did not take)",
+                                self.picks
+                            )
+                        } else {
+                            format!("no Xbox Live menu after {TRIES} tries; back on the main menu")
+                        };
+                        self.give_up(why);
                     } else {
                         self.say("back on the main menu; Xbox Live again".into());
                         self.go_live(now, tries + 1);
