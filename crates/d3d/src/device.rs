@@ -714,6 +714,49 @@ pub struct Swallow {
     pub pass: Box<dyn crate::backend::ExternalPass>,
 }
 
+/// What the device saw while tracing ([`Device::trace`]): a runtime
+/// account of a pass for `H2_POST_TRACE` (docs/graphics/native-renderer.md,
+/// stage 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Traced {
+    /// A D3D entry called from the guest, with its return address: the
+    /// draws it drains follow it (a hand-pushed draw executes when the
+    /// next entry drains the push buffer).
+    Call { entry: &'static str, ret: u32 },
+    /// [`Device::swallow`] called: what it drains first follows.
+    Arming,
+    /// A swallow armed for `draws` draws.
+    Armed { draws: usize },
+    /// A draw.
+    Draw(TracedDraw),
+    /// A line the host adds ([`Device::trace_note`]).
+    Note(String),
+}
+
+/// One draw while tracing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TracedDraw {
+    /// The entry (`"inline Begin/End"` for a pushed `Begin`/`End`).
+    pub entry: &'static str,
+    pub primitive: PrimitiveType,
+    /// Assembled vertices (a pushed draw), or the entry's count.
+    pub vertices: usize,
+    /// `INLINE_ARRAY` words between the `Begin` and `End`.
+    pub inline: usize,
+    /// The push-buffer address of the `End` (a pushed draw).
+    pub push: Option<u32>,
+    /// The colour target bound.
+    pub target: u32,
+    /// [`Stats::draws`] before it.
+    pub draws: u64,
+    /// A pushed draw's fate: `drawn` (nothing armed), `dropped`,
+    /// `observed`, or `mismatch` (it ended the swallow).
+    pub fate: Option<&'static str>,
+}
+
+/// Events a trace keeps; those past it are counted.
+pub const TRACE_CAP: usize = 512;
+
 struct Swallowing {
     targets: Vec<u8>,
     next: usize,
@@ -906,6 +949,9 @@ pub struct Device<B: Backend> {
     /// How the last swallow that ended early ended
     /// ([`Device::swallow_mismatch`]).
     swallow_mismatch: Option<String>,
+    /// What the device saw since [`Device::trace`] turned it on, and the
+    /// events past [`TRACE_CAP`].
+    trace: Option<(Vec<Traced>, u64)>,
     /// Display state: flicker filter, persisted surface, vertical blank.
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
@@ -1093,6 +1139,7 @@ impl<B: Backend> Device<B> {
             pending_external: Vec::new(),
             swallowing: None,
             swallow_mismatch: None,
+            trace: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
             rtt_epoch: 0,
@@ -1906,6 +1953,7 @@ impl<B: Backend> Device<B> {
     pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
         const E: &str = "swallow";
         self.live(E)?;
+        self.traced(|| Traced::Arming);
         if let Some(cb) = self.drain_until_callback(mem)? {
             self.undelivered = Some(cb);
             return Ok(false);
@@ -1936,6 +1984,8 @@ impl<B: Backend> Device<B> {
         let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
         let mut headers = vec![None; slots];
         headers[0] = s.targets.contains(&0).then_some(self.render_target);
+        let draws = s.targets.len();
+        self.traced(|| Traced::Armed { draws });
         self.swallowing = Some(Swallowing {
             targets: s.targets,
             next: 0,
@@ -1960,6 +2010,58 @@ impl<B: Backend> Device<B> {
     /// pushed), or that another swallow was armed over it.
     pub fn swallow_mismatch(&self) -> Option<&str> {
         self.swallow_mismatch.as_deref()
+    }
+
+    /// Turns the trace on (empty) or off: while on, each D3D entry called
+    /// ([`Device::trace_call`]), each swallow armed and each draw is kept
+    /// ([`Traced`]), the first [`TRACE_CAP`].
+    pub fn trace(&mut self, on: bool) {
+        self.trace = on.then(|| (Vec::new(), 0));
+    }
+
+    /// Whether the trace is on.
+    pub fn tracing(&self) -> bool {
+        self.trace.is_some()
+    }
+
+    /// What the trace kept since it was turned on or last taken, and how
+    /// many events it did not keep; it stays on.
+    pub fn take_trace(&mut self) -> (Vec<Traced>, u64) {
+        self.trace.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// The runtime's adapter calls entry `entry`, returning to `ret`
+    /// (before what the entry drains).
+    pub fn trace_call(&mut self, entry: &'static str, ret: u32) {
+        self.traced(|| Traced::Call { entry, ret });
+    }
+
+    /// Adds the host's `note` to the trace (made only while it is on).
+    pub fn trace_note(&mut self, note: impl FnOnce() -> String) {
+        self.traced(|| Traced::Note(note()));
+    }
+
+    fn traced(&mut self, event: impl FnOnce() -> Traced) {
+        if let Some((events, past)) = self.trace.as_mut() {
+            if events.len() < TRACE_CAP {
+                events.push(event());
+            } else {
+                *past += 1;
+            }
+        }
+    }
+
+    fn trace_draw(
+        &mut self,
+        entry: &'static str,
+        primitive: PrimitiveType,
+        vertices: usize,
+        inline: usize,
+        push: Option<u32>,
+        fate: Option<&'static str>,
+    ) {
+        let (target, draws) = (self.render_target, self.stats.draws);
+        self.traced(|| Traced::Draw(TracedDraw { entry, primitive, vertices, inline, push, target, draws, fate }));
     }
 
     /// What becomes of inline draw `d` under the armed swallow.
@@ -2258,7 +2360,18 @@ impl<B: Backend> Device<B> {
                     }
                     match self.immediate.apply(c.at, m, w)? {
                         Some(Effect::Draw(d)) => {
+                            let armed = self.swallowing.is_some();
                             let fate = self.swallow_fate(&d);
+                            if self.trace.is_some() {
+                                let name = match fate {
+                                    Fate::Dropped => "dropped",
+                                    Fate::Observed => "observed",
+                                    Fate::Drawn if armed => "mismatch",
+                                    Fate::Drawn => "drawn",
+                                };
+                                let (p, v, i) = (d.primitive, d.vertices.len(), d.inline.len());
+                                self.trace_draw("inline Begin/End", p, v, i, Some(c.at), Some(name));
+                            }
                             if fate != Fate::Dropped {
                                 self.stats.inline_draws += 1;
                                 self.immediate_draw(mem, "inline Begin/End", d)?;
@@ -4373,6 +4486,10 @@ impl<B: Backend> Device<B> {
     }
 
     fn submit(&mut self, mem: &mut dyn GuestMemory, mut parts: DrawParts) -> Result<(), D3dError> {
+        if self.trace.is_some() && parts.entry != "inline Begin/End" {
+            let (e, p, v) = (parts.entry, parts.primitive, parts.vertex_count as usize);
+            self.trace_draw(e, p, v, 0, None, None);
+        }
         let mut streams = std::mem::take(&mut parts.streams);
         let result = self.submit_inner(mem, parts, &mut streams);
         self.recycle_streams(streams);

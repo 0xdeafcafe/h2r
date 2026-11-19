@@ -2641,6 +2641,25 @@ effect per egor.
      implementation's `+0x100` not -1), and a call with a pass it skips
      keeps its D3D draws (`Missing::TemplateSkipped`). The menu's other
      egor is never called there; the blur needs another scene.
+   - **The next A/B was the same**: no `TemplateSkipped`, the same
+     mismatch. So the static reading is set aside for a runtime account,
+     `H2_POST_TRACE=N` (`N,after`; empty, 4): for the first `N` calls of
+     `0x0002d140` the device keeps, from the hook to the next hook of
+     either kind (`d3d::Traced`, the first 512 events): every D3D entry
+     the runtime calls and its guest return address (so a call from
+     inside `0x0002d140..0x0002db67` is its own); `Arming` before the
+     drain at arming, so a draw pushed before the hook shows ahead of
+     `Armed`; every draw with its entry, primitive, vertex count, inline
+     array words, the push-buffer address of its `End`, the colour target,
+     `Stats::draws` before it, and a pushed draw's fate (`drawn`,
+     `dropped`, `observed`, `mismatch`). The host adds the call, the
+     hook's plan, whether it armed or what it refused, and each
+     `0x00016610` (`points::TEMPLATE_PASS`, a context-only `before`) with
+     its words, caller and what `template_draws` says of it. `,after`
+     notes the returns of `0x00016610` (AL) and `0x0002d140`, after-hooks
+     that keep those chains off the pipelined render thread. Each line
+     is `native-post: H2_POST_TRACE #<call> ...`, the trace written when
+     it ends.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

@@ -231,7 +231,14 @@ where
                     // first, where the GPU would have run them; the entry
                     // itself runs again afterwards (see
                     // `deliver_push_callback`).
-                    Ok(mut d) => match d.drain_until_callback(&mut mem) {
+                    Ok(mut d) => match {
+                        // H2_POST_TRACE: the entry and its caller, before
+                        // the draws its drain executes.
+                        if d.tracing() {
+                            d.trace_call(e.name, mem.read_u32(regs.esp).unwrap_or(0));
+                        }
+                        d.drain_until_callback(&mut mem)
+                    } {
                         Ok(Some(cb)) => {
                             drop(d);
                             drop(guest);

@@ -310,6 +310,12 @@ points! { ALL;
     /// columns, rows, &corners)` (`engine::screen_effect::plan`), `ret
     /// 0x10`.
     SCREEN_EFFECT @ 0x0002_d140: [fn(datum: eax, values: stack 0, columns: stack 1, rows: stack 2, corners: stack 3) ret 16]; "docs/graphics/native-renderer.md";
+    /// A shader template's pass set up (`0x00016610`, called by
+    /// `0x0002d140` at `0x0002d4b7` per pass): stack `(shader, layer,
+    /// implementation, selector, target, 0)`, AL whether the pass draws
+    /// (`engine::screen_effect::template_draws`; `0x0002d4be` skips the
+    /// pass when it does not), `ret 0x18`. Hooked only by `H2_POST_TRACE`.
+    TEMPLATE_PASS @ 0x0001_6610: [fn(shader: stack 0, layer: stack 1, implementation: stack 2, selector: stack 3, target: stack 4, flags: stack 5) -> al ret 24], Optional; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

@@ -124,3 +124,20 @@ fn the_screen_effect_hook_is_the_switchs_only() {
     assert!(!chain.needs_shadow(), "nothing after the body");
     assert!(chain.render_thread().is_ok());
 }
+
+/// `H2_POST_TRACE`: a count (empty: the default), `,after` to note the
+/// returns too; anything else traces nothing.
+#[test]
+fn the_trace_variable_is_a_count_and_after() {
+    use native_post::{TraceSpec, TRACE_CALLS};
+    let spec = |calls, after| Some(TraceSpec { calls, after });
+    assert_eq!(TraceSpec::parse(""), spec(TRACE_CALLS, false));
+    assert_eq!(TraceSpec::parse("8"), spec(8, false));
+    assert_eq!(TraceSpec::parse("8,after"), spec(8, true));
+    assert_eq!(TraceSpec::parse(" 2 , after "), spec(2, true));
+    assert_eq!(TraceSpec::parse(",after"), spec(TRACE_CALLS, true));
+    for bad in ["0", "-1", "x", "8,before", "8,after,x"] {
+        assert_eq!(TraceSpec::parse(bad), None, "{bad}");
+    }
+    assert_eq!(native_post::return_line("0x0002d140", 0xffff_ff01), "0x0002d140 returned, AL 1");
+}
