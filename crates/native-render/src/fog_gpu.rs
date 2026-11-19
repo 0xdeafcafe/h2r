@@ -392,18 +392,30 @@ impl FogSet {
         &self.parts
     }
 
+    /// Whether the set draws `part` of `owner` (whatever the shader): the
+    /// `prepare_copy` check that every selected part will record.
+    pub fn draws_part(&self, owner: Owner, part: u8) -> bool {
+        self.parts.iter().any(|&((o, p), _)| o == owner && p == part)
+    }
+
     /// The frame's uniforms for every pass, with each material's fog
     /// resolved over the device's words (`fogs`, material by material:
     /// `FogWords::resolve` through `d3d::nv2a::d3d_fog` in the glue) and
-    /// its colour (`psh::argb` of `FOGCOLOR`).
-    pub fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs, fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>) {
+    /// its colour (`psh::argb` of `FOGCOLOR`), written through the
+    /// submission's upload arena.
+    pub fn prepare(
+        &self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
+    ) {
         for (&material, m) in &self.materials {
             let Some((fog, color)) = fogs.get(&material) else { continue };
             for (g, _) in &m.passes {
                 let mut pixel = g.program.pixel;
                 pixel.fog = fog.uniform();
                 pixel.fog_color = *color;
-                g.prepare_with(queue, view, &pixel);
+                g.prepare_with(uploads, view, &pixel);
             }
         }
     }

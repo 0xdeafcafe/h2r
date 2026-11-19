@@ -14,25 +14,34 @@ use engine::memory::{FlatMemory, GuestMemory};
 use feature::native_fog::{self, Host, NativeFog};
 use feature::plan::Base;
 use feature::{Registry, Switches};
-use native_render::fog::{FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
-use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS};
+use native_render::camera::GuestWrite;
+use native_render::fog::{self, FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
+use native_render::skip::{Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS};
 use native_render::world::Owner;
 
 /// `HOST` and `CLEARED` are process-wide: the tests that touch them run
 /// one at a time.
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// A host that draws one part: cluster 37's part 1 with shader 0x10.
-struct OnePart(Option<Arc<HashMap<(Owner, u8), u16>>>);
+/// A host that draws cluster 37's part 1 with shader 0x10 when `0`,
+/// clearing its bits itself as the real one does.
+struct OnePart(bool);
 
 impl Host for OnePart {
-    fn ask(&self, _mem: &dyn GuestMemory) -> Option<Arc<HashMap<(Owner, u8), u16>>> {
-        self.0.clone()
+    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<Cleared> {
+        if !self.0 {
+            return None;
+        }
+        let parts: HashMap<(Owner, u8), u16> = [((Owner::Cluster(37), 1), 0x10)].into_iter().collect();
+        fog::clear_fog(&mut feature::native_fog::Mem(mem), FOG_LAYER as u32, &|item| {
+            parts.get(&(item.owner, item.part)) == Some(&(item.shader))
+        })
+        .map(|(_, cleared)| cleared)
     }
 }
 
-fn install_host(parts: Option<HashMap<(Owner, u8), u16>>) {
-    native_fog::set_host(Arc::new(OnePart(parts.map(Arc::new))));
+fn install_host(draws: bool) {
+    native_fog::set_host(Arc::new(OnePart(draws)));
 }
 
 /// A layer-16 list of three items: a BSP cluster, an object, and another
@@ -112,15 +121,10 @@ fn it_is_off_by_default() {
     assert!(!r.build(&Base).unwrap().text().contains("native_fog"));
 }
 
-/// A host that takes every part.
-fn all_parts() -> HashMap<(Owner, u8), u16> {
-    [((Owner::Cluster(37), 1), 0x10)].into_iter().collect()
-}
-
 #[test]
 fn the_hosts_parts_lose_their_bit_and_get_it_back() {
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_host(Some(all_parts()));
+    install_host(true);
     let mut m = scene();
     draw(&mut m);
     assert_eq!(mask(&m, 0), 1 << 3, "the cluster's layer-16 bit gone, layer 3 kept");
@@ -135,12 +139,12 @@ fn the_hosts_parts_lose_their_bit_and_get_it_back() {
 #[test]
 fn nothing_changes_without_a_host_for_another_layer_or_gate_off() {
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_host(None);
+    install_host(false);
     let mut m = scene();
     draw(&mut m);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
     // Another layer.
-    install_host(Some(all_parts()));
+    install_host(true);
     m.set_u32(CURRENT_LAYER, 6).unwrap();
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
@@ -160,13 +164,12 @@ fn nothing_changes_without_a_host_for_another_layer_or_gate_off() {
 #[test]
 fn another_caller_or_a_part_left_to_d3d_keeps_the_layer() {
     let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    install_host(Some(all_parts()));
+    install_host(true);
     let mut m = scene();
     native_fog::before_layer(&mut m, 0x0004_0136);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3, "not the late passes' call");
-    // A part the host does not draw (another shader on it).
-    let other: HashMap<_, _> = [((Owner::Cluster(37), 1), 0x99)].into_iter().collect();
-    install_host(Some(other));
+    // A shader the host does not draw with: kept, even on the part.
+    m.set_u32(0x0060_0000 + 8, 0xe000_0099).unwrap();
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3, "the shader is not the item's");
 }

@@ -656,29 +656,38 @@ impl GpuWorld {
         drawn
     }
 
+    /// The fog uniforms for one view ([`FogSet::prepare`]), through the
+    /// submission's upload arena (the reservation records into an
+    /// isolated encoder, where a queue write would escape cancellation).
+    pub fn prepare_fog(
+        &mut self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.fog.as_ref() {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
     /// Records one view's planar fog (layer 16): every part the fog set
     /// draws, in the load's order (the world's draw order), each with
     /// every pass of its material's layer-16 set, blended into the target
-    /// over the depth (loaded and kept). The fog units and colours are
-    /// `fogs`'s (per material, resolved over the device's words at the
-    /// ask). Returns how many parts were drawn.
+    /// over the depth (loaded and kept). The uniforms are
+    /// [`GpuWorld::prepare_fog`]'s. Returns how many parts were drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_fog(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
-        view: &ViewInputs,
-        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     ) -> usize {
         let Some(set) = self.fog.as_mut() else { return 0 };
         set.pipelines(device, color_format, depth_format);
-        set.prepare(queue, view, fogs);
         let set = &*set;
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

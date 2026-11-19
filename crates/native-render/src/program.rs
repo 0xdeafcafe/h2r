@@ -954,12 +954,19 @@ impl Gpu {
     }
 
     /// [`Gpu::prepare`] with the pixel uniforms `pixel` in place of the
-    /// program's own: for a pass whose pixel state is resolved per view
-    /// (the fog layer's `PixelUniforms::fog` and `fog_color`,
-    /// `crate::fog_gpu`).
-    pub(crate) fn prepare_with(&self, queue: &wgpu::Queue, view: &ViewInputs, pixel: &PixelUniforms) {
-        queue.write_buffer(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
-        queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
+    /// program's own, written through the submission's upload arena (the
+    /// reservation path records into an isolated encoder, where a queue
+    /// write would escape cancellation): for a pass whose pixel state is
+    /// resolved per view (the fog layer's `PixelUniforms::fog` and
+    /// `fog_color`, `crate::fog_gpu`).
+    pub(crate) fn prepare_with(
+        &self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        pixel: &PixelUniforms,
+    ) {
+        uploads.write(&self.vertex_buffer, 0, &frame_vertex(&self.program.vertex, view).to_bytes());
+        uploads.write(&self.pixel_buffer, 0, &frame_pixel(pixel, view).to_bytes());
     }
 
     /// Makes the pipeline for these target formats: the world's opaque

@@ -37,7 +37,6 @@
 //! the point (`after_feature`), after the world's (which restores its
 //! own bits first).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +45,6 @@ use engine::points;
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::fog::{self, FOG_LAYER};
 use native_render::skip::{self, Cleared};
-use native_render::world::Owner;
 
 use crate::{BuildError, Builder, Feature, Manifest};
 
@@ -61,20 +59,15 @@ pub fn on(switches: &crate::Switches) -> bool {
     switches.feature(SWITCH, DEFAULT)
 }
 
-/// The fog parts the native pass draws, by owner (a cluster; placements
-/// stay on the D3D path in this slice) and part index, each with its
-/// material's shader by tag index (the low word of the datum an item's
-/// `+8` holds): the world's part set's shape.
-pub type PartSet = HashMap<(Owner, u8), u16>;
-
 /// What draws the fog: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
-    /// Before layer 16 of a view (`mem` the guest, read only): asks for
-    /// the native pass when a world with fog materials is ready and the
-    /// device can draw it (it reads the fog render states itself, and
-    /// refuses a view whose do not read). Returns the parts it draws, or
-    /// `None` to leave the fog to the D3D path.
-    fn ask(&self, mem: &dyn GuestMemory) -> Option<Arc<PartSet>>;
+    /// Before layer 16 of a view (`mem` the guest): plans the skip over a
+    /// preview, reserves the native replacement (the handoff's ordered
+    /// reservation, recording on every copy before anything is
+    /// surrendered), applies the mask edits and commits. Returns what was
+    /// cleared for the restore at the next layer draw, or `None` to leave
+    /// the fog to the D3D path (the guest items untouched).
+    fn ask(&self, mem: &mut dyn GuestMemory) -> Option<Cleared>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -165,12 +158,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
-    let Some(parts) = host.ask(&*m.0) else {
-        return;
-    };
-    let Some((drawn, cleared)) = fog::clear_fog(&mut m, FOG_LAYER as u32, &|item| {
-        parts.get(&(item.owner, item.part)) == Some(&(item.shader))
-    }) else {
+    let Some(cleared) = host.ask(&mut *m.0) else {
         return;
     };
     if cleared.items.is_empty() {
@@ -181,7 +169,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let views = VIEWS.load(Ordering::Relaxed);
     if views % 1800 == 1 {
         let (v, d, i, g, w) = counts();
-        eprintln!("native-fog: {d} of {v} layer-16 views drawn natively ({g} gated off, {w} other callers), {i} items skipped, {} parts", drawn.len());
+        eprintln!("native-fog: {d} of {v} layer-16 views drawn natively ({g} gated off, {w} other callers), {i} items skipped");
     }
     let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
     *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left });
