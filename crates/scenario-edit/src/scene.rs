@@ -1214,6 +1214,12 @@ pub fn markers_in(
 /// reference, `shad +0x20` the compiled postprocess (one element), whose
 /// `+4` block lists the bitmap parameters (0xc bytes, datum first;
 /// docs/formats/shader-instances.md).
+///
+/// The compiler shares identical compiled data between shaders: a
+/// shader whose postprocess matches another's points into that one's
+/// payload (many retail shaders, Containment's blue base banner and lights
+/// among them), so the blocks are read wherever in the metadata they lie
+/// ([`metadata_block`]), as `cli::live_models::shader_bitmaps` does.
 pub fn shader_bitmaps<R: Read + Seek>(
     map: &mut Map<R>,
     shader: TagId,
@@ -1222,12 +1228,13 @@ pub fn shader_bitmaps<R: Read + Seek>(
     if tag.group != FourCC(*b"shad") {
         return Err(crate::Error::Invalid("not a shader"));
     }
-    let address = tag
-        .location
-        .ok_or(crate::Error::Invalid("shader has no payload"))?
-        .address;
+    if tag.location.is_none() {
+        return Err(crate::Error::Invalid("shader has no payload"));
+    }
     let bytes = map.read_tag_bytes(shader)?;
-    let view = TagView::new(&bytes, address);
+    if bytes.len() < 0x54 {
+        return Err(crate::Error::Invalid("shader too short"));
+    }
     let word = |b: &[u8], o: usize| -> Option<u32> {
         Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
     };
@@ -1235,18 +1242,44 @@ pub fn shader_bitmaps<R: Read + Seek>(
         .and_then(|id| map.tag(TagId(id)).ok())
         .and_then(|t| t.name.clone())
         .unwrap_or_default();
-    let root = view.at(0, 0x54)?;
-    let post = view.block(root, 0x20, 0x7c)?;
+    let post = metadata_block(map, &bytes, 0x20, 0x7c)?;
     let post = post
         .first()
         .ok_or(crate::Error::Invalid("no compiled postprocess"))?;
-    let ids = view
-        .block(post, 4, 0xc)?
+    let ids = metadata_block(map, post, 4, 0xc)?
         .iter()
         .filter_map(|b| word(b, 0).map(TagId))
         .filter(|id| *id != TagId::NULL)
         .collect();
     Ok((template, ids))
+}
+
+/// The largest tag block [`metadata_block`] reads.
+const MAX_METADATA_BLOCK: u64 = 1 << 20;
+
+/// The elements of the tag block whose (count, address) pair is at
+/// `field` in `record`, read wherever in the ordinary metadata they lie.
+pub fn metadata_block<R: Read + Seek>(
+    map: &mut Map<R>,
+    record: &[u8],
+    field: usize,
+    stride: usize,
+) -> crate::Result<Vec<Vec<u8>>> {
+    let pair = record
+        .get(field..field + 8)
+        .ok_or(crate::Error::Invalid("tag block field outside its record"))?;
+    let count = u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
+    let address = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+    if count == 0 || stride == 0 {
+        return Ok(Vec::new());
+    }
+    let len = u64::from(count) * stride as u64;
+    if len > MAX_METADATA_BLOCK {
+        return Err(crate::Error::Invalid("tag block too large"));
+    }
+    let at = map.file_offset(address, len as u32)?;
+    let bytes = map.read_file_range(at, len)?;
+    Ok(bytes.chunks_exact(stride).map(<[u8]>::to_vec).collect())
 }
 
 /// The first image of a bitmap tag, its largest decoded level, as RGBA.
@@ -1619,5 +1652,87 @@ mod tests {
             f.iter().map(z).collect::<Vec<_>>(),
             [3.0, 2.0, 5.0, 0.0, 0.0]
         );
+    }
+
+    /// Two invented shaders: `own` holds its compiled postprocess and
+    /// bitmap list in its own payload; `shared` has no postprocess of its
+    /// own and points at `own`'s, as the compiler shares identical
+    /// compiled data. Both read the same template and bitmaps.
+    #[test]
+    fn a_shader_sharing_anothers_postprocess_reads_its_bitmaps() {
+        use map::build::{Block, FixupKind, TagPayload, TagSet};
+        let cc = |s: &[u8; 4]| FourCC(*s);
+        let mut set = TagSet::new(
+            map::CacheType::Multiplayer,
+            "invented",
+            "invented\\scenarios\\invented",
+        );
+        for g in [b"stem", b"bitm", b"shad"] {
+            set.add_group(cc(g), None, None);
+        }
+        let template = set
+            .add_tag(
+                cc(b"stem"),
+                "invented\\templates\\opaque\\tex_bump",
+                TagPayload::Built(Block::zeroed(0x10)),
+            )
+            .unwrap();
+        let bitmap = |set: &mut TagSet, name: &str| {
+            set.add_tag(cc(b"bitm"), name, TagPayload::Built(Block::zeroed(0x10)))
+                .unwrap()
+        };
+        let bump = bitmap(&mut set, "invented\\bitmaps\\wall_bump");
+        let diffuse = bitmap(&mut set, "invented\\bitmaps\\wall");
+        let own = set
+            .add_tag(cc(b"shad"), "invented\\shaders\\own", TagPayload::Empty)
+            .unwrap();
+        // The root (0x54), its postprocess element at 0x58 (0x7c), and
+        // the two bitmap parameters at 0xd4 (0xc each), in one payload.
+        let mut b = Block::zeroed(0xec);
+        b.tag_ref(0, template)
+            .fixup(
+                0x20,
+                FixupKind::TagOffset {
+                    count: 1,
+                    tag: own,
+                    offset: 0x58,
+                },
+            )
+            .fixup(
+                0x58 + 4,
+                FixupKind::TagOffset {
+                    count: 2,
+                    tag: own,
+                    offset: 0xd4,
+                },
+            )
+            .tag_id(0xd4, bump)
+            .tag_id(0xe0, diffuse);
+        set.tag_mut(own).unwrap().payload = TagPayload::Built(b);
+        let mut b = Block::zeroed(0x54);
+        b.tag_ref(0, template).fixup(
+            0x20,
+            FixupKind::TagOffset {
+                count: 1,
+                tag: own,
+                offset: 0x58,
+            },
+        );
+        let shared = set
+            .add_tag(
+                cc(b"shad"),
+                "invented\\shaders\\shared",
+                TagPayload::Built(b),
+            )
+            .unwrap();
+        let (bytes, _) = set.build().unwrap();
+        let mut map = Map::from_reader(std::io::Cursor::new(bytes)).unwrap();
+        let want = (
+            "invented\\templates\\opaque\\tex_bump".to_owned(),
+            vec![bump, diffuse],
+        );
+        assert_eq!(shader_bitmaps(&mut map, own).unwrap(), want);
+        assert_eq!(shader_bitmaps(&mut map, shared).unwrap(), want);
+        assert!(shader_bitmaps(&mut map, template).is_err(), "not a shader");
     }
 }
