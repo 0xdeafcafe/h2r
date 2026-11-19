@@ -911,42 +911,5 @@ pub fn host_maps(data_root: &Path, state: &State) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// The shared caches our campaigns replace the disc's own with, for the
-/// VFS (`map_override::mount_with_hashes`): the first installed
-/// campaign's `single_player_shared.map`, which is the disc's own file
-/// with the converted levels' sound chunks past it
-/// (`h1sounds::bank`, docs/halo1/sounds.md "The sound bank"). One file
-/// serves every campaign level, so with more than one campaign carrying
-/// one, the first wins and the rest are named on stderr — their levels'
-/// own looping sounds then need their campaign served to play.
-pub fn shared_caches(data_root: &Path, state: &State) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    for b in &state.built {
-        let dir = data_root.join("campaigns").join(&b.key);
-        let bank = dir.join("single_player_shared.map");
-        if !bank.is_file() {
-            // Levels without their bank: their looping sounds' chunks name
-            // a file that is not there. Say so rather than serving the
-            // disc's silently.
-            if b.levels.iter().any(|l| dir.join(format!("{}.map", l.map)).is_file()) {
-                eprintln!(
-                    "campaigns: {}: its levels are converted but their single_player_shared.map is missing; their looping sounds will not play (convert the campaign again)",
-                    b.key
-                );
-            }
-            continue;
-        }
-        if out.is_empty() {
-            out.push(("single_player_shared".to_owned(), bank));
-        } else {
-            eprintln!(
-                "campaigns: {}: its single_player_shared.map is not served (another campaign's is); its levels' looping sounds will not play",
-                b.key
-            );
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests;

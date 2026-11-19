@@ -6,8 +6,7 @@ group lsnd 0x2c align 4
   0x8 unknown 0x4 seen=zero
   0xc f32 distance_c -- D looping.rs: retail 0.9..15, converter writes 1
   0x10 f32 distance_10 -- D looping.rs: retail 5..60, converter writes Halo 1's maximum distance
-  0x14 unknown 0x4 seen=2 -- D looping.rs: continuous damage effect reference (cdmg group)
-  0x18 unknown 0x4 seen=const -- D looping.rs: its datum (none on retail)
+  0x14 tagref continuous_damage -- D looping.rs: cdmg, null on retail campaign loops
   0x1c block tracks 0x58 align 4 -- D looping.rs H2_TRACK
     0x0 string name -- D looping.rs
     0x4 u32 flags -- D looping.rs (fade in at start, fade out at stop, fade in alternate)

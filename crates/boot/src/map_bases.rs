@@ -548,7 +548,6 @@ mod tests {
             None,
             hashes.clone(),
             &[],
-            &[],
         )
         .unwrap();
         assert!(crate::map_override::map_id(&mut v, &t.0.join("data"), "level").is_some());

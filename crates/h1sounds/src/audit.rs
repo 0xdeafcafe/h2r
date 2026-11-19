@@ -20,17 +20,13 @@
 //!
 //! A sound whose chunks point at the wrong bytes, or at too few, plays as a
 //! short buzz that repeats; this finds it without running the game.
-//!
-//! A chunk's pointer can name another cache file (`shared`,
-//! `single_player_shared`); [`audit_with`] reads the single-player shared
-//! one from bytes the caller gives — a converted campaign level built with
-//! a sound bank (`crate::bank`) keeps its looping sounds' chunks there.
 
 use std::collections::HashMap;
 use std::io::Cursor;
 
 use h1map::H1Map;
-use map::{FourCC, Map};
+use map::{CacheType, FourCC, Map, TagId, TagQuery};
+use tags::geometry::TagView;
 
 use crate::convert::snd;
 use crate::gestalt::{ChunkPointer, SoundGestalt, UGH, blocks};
@@ -42,6 +38,8 @@ use crate::{Result, convert_sound};
 pub struct Audit {
     /// `snd!` tags in the built map.
     pub sounds: usize,
+    /// Halo 1 campaign looping definitions with their tracks and details checked.
+    pub loops: usize,
     /// Sounds matched to a Halo 1 sound and checked against it.
     pub converted: usize,
     /// Sounds matched to a retail sound and checked against it.
@@ -111,34 +109,36 @@ fn block_len(header: &[u8]) -> Option<usize> {
 
 /// Every `snd!` of `bytes` (a whole map file) by name, read through its
 /// gestalt; what can't be read goes to `problems`, prefixed with `label`.
-/// `shared`, when given, is the whole `single_player_shared.map` the map's
-/// campaign plays with (a converted level's augmented one, `bank`): a
-/// chunk that names it is read from there.
 fn read_map(
     bytes: &[u8],
     label: &str,
     problems: &mut Vec<String>,
-    shared: Option<&[u8]>,
 ) -> Result<HashMap<String, Read>> {
     let mut m = Map::from_reader(Cursor::new(bytes))?;
     let mut out = HashMap::new();
-    let Some(t) = m.tags().iter().find(|t| t.group == UGH).cloned() else {
-        return Ok(out);
-    };
-    let Some(loc) = t.location else {
-        return Ok(out);
-    };
-    let g = SoundGestalt::decode(&m.read_tag_bytes(t.id)?, loc.address)?;
-    let element = |i: usize, n: usize| (n < g.count(i)).then(|| g.element(i, n).to_vec());
     let ids: Vec<_> = m
         .tags()
         .iter()
         .filter(|t| t.group == FourCC(*b"snd!") && t.location.is_some())
         .map(|t| (t.id, t.name.clone().unwrap_or_default()))
         .collect();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let gestalt = m.tags().iter().find(|t| t.group == UGH)
+        .and_then(|t| t.location.map(|loc| (t.id, loc.address)));
+    let Some((id, address)) = gestalt else {
+        problems.push(format!("{label}: {} sound tags without a sound gestalt", ids.len()));
+        return Ok(out);
+    };
+    let g = SoundGestalt::decode(&m.read_tag_bytes(id)?, address)?;
+    let element = |i: usize, n: usize| (n < g.count(i)).then(|| g.element(i, n).to_vec());
     for (id, name) in ids {
         let b = m.read_tag_bytes(id)?;
         let mut bad = |what: String| problems.push(format!("{label}: {name}: {what}"));
+        if out.contains_key(&name) {
+            bad("duplicate snd! path".into());
+        }
         if b.len() < snd::LEN {
             bad(format!("snd! is {} bytes", b.len()));
             continue;
@@ -190,7 +190,7 @@ fn read_map(
                 if sum != u64::from(size) {
                     bad(format!("{at}: size {size}, its chunks {sum}"));
                 }
-                let mut local = Some(Vec::with_capacity(size as usize));
+                let mut local = Some(Vec::new());
                 let mut stored = Vec::with_capacity(nc);
                 for c in chunks {
                     let len = c.size & 0x7fff_ffff;
@@ -198,32 +198,19 @@ fn read_map(
                         unreachable!("decoded chunks are stored pointers")
                     };
                     stored.push((ptr, len));
-                    // A chunk's top two bits name its file: this one, or
-                    // one of the shared caches. The single-player shared
-                    // cache can be given; anything else is only recorded.
-                    let file = match ptr >> 30 {
-                        0 => bytes,
-                        3 => match shared {
-                            Some(s) => s,
-                            None => {
-                                local = None;
-                                continue;
-                            }
-                        },
-                        _ => {
-                            local = None;
-                            continue;
-                        }
-                    };
-                    let at_byte = (ptr & 0x3fff_ffff) as usize;
-                    match file.get(at_byte..at_byte + len as usize) {
+                    if ptr >> 30 != 0 {
+                        local = None;
+                        continue;
+                    }
+                    let at_byte = ptr as usize;
+                    match bytes.get(at_byte..at_byte + len as usize) {
                         Some(s) => {
                             if let Some(l) = local.as_mut() {
                                 l.extend_from_slice(s);
                             }
                         }
                         None => {
-                            bad(format!("{at}: chunk at {ptr:#x}+{len:#x} past its file"));
+                            bad(format!("{at}: chunk at {ptr:#x}+{len:#x} past the file"));
                             local = None;
                         }
                     }
@@ -265,47 +252,98 @@ fn shared_fields(h: &[u8; snd::LEN]) -> Vec<u8> {
     v
 }
 
+/// Start at the source tag list so a pruned loop also produces a finding.
+fn audit_loops(bytes: &[u8], h1: &H1Map, audit: &mut Audit) -> Result<()> {
+    use crate::looping::{H2_DETAIL, H2_TRACK, LSND, read_definition};
+    let mut map = Map::from_reader(Cursor::new(bytes))?;
+    if map.header().cache_type != CacheType::Campaign {
+        return Ok(());
+    }
+    let space = map.metadata_space().ok_or(map::Error::NoTagData)?;
+    let metadata = map.read_file_range(space.file_offset, u64::from(space.size))?;
+    for source in h1.tags().iter().filter(|t| t.group == LSND) {
+        let name = &source.name;
+        let address = match map
+            .tag(TagQuery::NameInGroup(name, FourCC(*b"lsnd")))
+            .ok()
+            .and_then(|t| t.location)
+        {
+            Some(loc) => loc.address,
+            _ => {
+                audit
+                    .problems
+                    .push(format!("{name}: missing or ambiguous lsnd"));
+                continue;
+            }
+        };
+        // Equal arrays may be shared between tags in a fresh map.
+        let view = TagView::new(&metadata, space.virtual_base);
+        let data = view
+            .range(address, crate::looping::H2_LEN as u64)
+            .map_err(|e| crate::Error::Invalid(format!("{name}: {e}")))?;
+        let want = read_definition(h1, source)?;
+        let rows = |offset, stride| {
+            view.block(data, offset, stride)
+                .map_err(|e| crate::Error::Invalid(format!("{name}: {e}")))
+        };
+        let tracks = rows(0x1c, H2_TRACK)?;
+        let details = rows(0x24, H2_DETAIL)?;
+        if tracks.len() != want.tracks.len() || details.len() != want.details.len() {
+            audit.problems.push(format!(
+                "{name}: {} tracks, {} details; expected {} and {}",
+                tracks.len(),
+                details.len(),
+                want.tracks.len(),
+                want.details.len()
+            ));
+        }
+        let mut check = |row: &[u8], at: usize, expected: &Option<String>, field: String| {
+            let datum = TagId(u32_at(row, at + 4));
+            let valid = match expected {
+                None => datum == TagId::NULL,
+                Some(n) => {
+                    u32_at(row, at) == FourCC(*b"snd!").as_u32()
+                        && map.tag(datum).is_ok_and(|t| {
+                            t.location.is_some()
+                                && t.group == FourCC(*b"snd!")
+                                && t.name.as_ref() == Some(n)
+                        })
+                }
+            };
+            if !valid {
+                audit.problems.push(format!(
+                    "{name}: {field} points to {datum}, expected {expected:?}"
+                ));
+            }
+        };
+        for (i, (row, t)) in tracks.iter().zip(&want.tracks).enumerate() {
+            for (at, expected) in [0x14, 0x1c, 0x24, 0x2c, 0x34].into_iter().zip(&t.sounds) {
+                check(row, at, expected, format!("track {i} +{at:#x}"));
+            }
+        }
+        for (i, (row, d)) in details.iter().zip(&want.details).enumerate() {
+            check(row, 4, &d.sound, format!("detail {i}"));
+        }
+        audit.loops += 1;
+    }
+    Ok(())
+}
+
 /// Audits every sound of `built` (a whole map file). Sounds named as a
 /// Halo 1 sound of `h1` are checked against its conversion; the rest
 /// against the same-named sound in the first of `retail` (`(label, map
 /// bytes)`) that has one.
 pub fn audit(built: &[u8], h1: Option<&H1Map>, retail: &[(&str, &[u8])]) -> Result<Audit> {
-    audit_with(built, h1, retail, None)
-}
-
-/// [`audit`] with the campaign's `single_player_shared.map` given whole
-/// (`shared`): a converted level built with a sound bank
-/// (`crate::bank`) keeps its looping sounds' chunks there, past the
-/// retail bytes, and this reads them back from it as the engine does,
-/// from the loaded cache file the pointer's top bits name.
-pub fn audit_with(
-    built: &[u8],
-    h1: Option<&H1Map>,
-    retail: &[(&str, &[u8])],
-    shared: Option<&[u8]>,
-) -> Result<Audit> {
     let mut a = Audit::default();
-    // The copy machine compares the checksum at +0x2d0 with the XOR of
-    // everything it copies (docs/formats/map-format.md, "Checksum
-    // evidence"); an augmented single_player_shared.map that got it wrong
-    // would never load, so say so here rather than at boot.
-    if let Some(s) = shared
-        && s.len() >= 0x800
-    {
-        let at = u32_at(s, 0x2d0);
-        if at != map::checksum::engine_xor(&s[0x800..]) {
-            a.problems.push(
-                "single_player_shared.map: checksum at +0x2d0 does not cover the whole file"
-                    .into(),
-            );
-        }
+    if let Some(source) = h1 {
+        audit_loops(built, source, &mut a)?;
     }
-    let out = read_map(built, "built", &mut a.problems, shared)?;
+    let out = read_map(built, "built", &mut a.problems)?;
     a.sounds = out.len();
     let mut sources = Vec::with_capacity(retail.len());
     for (label, bytes) in retail {
         let mut ignored = Vec::new();
-        sources.push(read_map(bytes, label, &mut ignored, shared)?);
+        sources.push(read_map(bytes, label, &mut ignored)?);
     }
     let mut names: Vec<&String> = out.keys().collect();
     names.sort();

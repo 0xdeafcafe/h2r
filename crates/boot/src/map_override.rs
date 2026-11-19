@@ -129,7 +129,6 @@ pub fn mount<R: vfs::Rewrite + 'static>(
         None,
         content::DiscHashes::default(),
         &[],
-        &[],
     )
 }
 
@@ -138,11 +137,7 @@ pub fn mount<R: vfs::Rewrite + 'static>(
 /// them; `None` is the default, Halo 1's), with the package resolver recording each disc base it hashes
 /// in `hashes` (shared with [`crate::map_bases::DiscBases`]), and
 /// `campaign_maps` (map name, host file) served as `maps\<map>.map` where
-/// the disc has no such map (docs/halo1/campaign-picker.md §3), and
-/// `shared_caches` (map name, host file) — a campaign's
-/// `single_player_shared.map` with the converted levels' sound chunks
-/// past it — served in place of the disc's own of that name
-/// (docs/halo1/sounds.md, "The sound bank").
+/// the disc has no such map (docs/halo1/campaign-picker.md §3).
 ///
 /// Given a packages directory, the packages layer is always mounted, even
 /// with no package there yet, over the disc and (`vfs::Config::map_packages`)
@@ -160,7 +155,6 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     sandbox: Option<&str>,
     hashes: content::DiscHashes,
     campaign_maps: &[(String, PathBuf)],
-    shared_caches: &[(String, PathBuf)],
 ) -> vfs::Result<vfs::Vfs> {
     let mut cfg = cfg;
     if let Some(p) = packages {
@@ -168,8 +162,7 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
     }
     let library =
         packages.map(|p| content::Library::open_with_sandbox(p, sandbox).with_disc_hashes(hashes));
-    if library.is_none() && maps.is_none() && campaign_maps.is_empty() && shared_caches.is_empty()
-    {
+    if library.is_none() && maps.is_none() && campaign_maps.is_empty() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
@@ -181,18 +174,11 @@ pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
         .with_assets(
             crate::h1_variants::campaign_choice(),
             crate::h1_variants::campaign_alternates(campaign_maps),
-        )
-        .with_shared_caches(shared_caches.iter().cloned());
+        );
     if !campaign_maps.is_empty() {
         eprintln!(
             "campaigns: {} map(s) served from <data>/campaigns",
             campaign_maps.len()
-        );
-    }
-    if !shared_caches.is_empty() {
-        eprintln!(
-            "campaigns: {} shared cache(s) served from <data>/campaigns",
-            shared_caches.len()
         );
     }
     if let Some(l) = &library {

@@ -18,14 +18,6 @@
 //! what it was opened with, and [`Backend::map_changed`] says when the map
 //! would now come from the other file, so the game's cached copy is
 //! dropped (docs/runtime/cache-slots.md).
-//!
-//! **Shared caches.** [`CampaignMapsBackend::with_shared_caches`] serves a
-//! campaign's `single_player_shared.map` — the disc's own file with the
-//! converted levels' sound chunks past it (docs/halo1/sounds.md, "The
-//! sound bank") — in place of the disc's, so every level's music plays
-//! from it as retail's does. Unlike a campaign map it shadows a disc file
-//! (it contains the disc's bytes unchanged), and it serves only while it
-//! holds the disc's whole file.
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -56,9 +48,6 @@ pub struct CampaignMapsBackend<B> {
     /// `assets` says Halo 2 and the file is there.
     alternates: BTreeMap<String, PathBuf>,
     assets: SandboxChoice,
-    /// By lower-case map name: a shared cache this campaign replaces
-    /// (`single_player_shared`), served over the disc's own file.
-    shared: BTreeMap<String, PathBuf>,
     /// Handles open per lower-case map name.
     handles: BTreeMap<String, usize>,
     /// The host file each map was last opened from.
@@ -79,28 +68,10 @@ impl<B: Backend> CampaignMapsBackend<B> {
             open: BTreeMap::new(),
             alternates: BTreeMap::new(),
             assets: SandboxChoice::default(),
-            shared: BTreeMap::new(),
             handles: BTreeMap::new(),
             last_opened: BTreeMap::new(),
             warned: BTreeSet::new(),
         }
-    }
-
-    /// Serve `shared` (map name, host file) in place of the disc's own
-    /// files of those names: the campaign's `single_player_shared.map`,
-    /// which is the disc's file with the converted levels' sound chunks
-    /// past it (docs/halo1/sounds.md, "The sound bank"). Ours shadows the
-    /// disc's, never the reverse, and only while it holds the disc's whole
-    /// file: a copy shorter than the disc's is refused.
-    pub fn with_shared_caches(
-        mut self,
-        shared: impl IntoIterator<Item = (String, PathBuf)>,
-    ) -> Self {
-        self.shared = shared
-            .into_iter()
-            .map(|(n, p)| (n.to_ascii_lowercase(), p))
-            .collect();
-        self
     }
 
     /// Serve `alternates` (map name, host file of its Halo 2-assets level)
@@ -147,9 +118,7 @@ impl<B: Backend> CampaignMapsBackend<B> {
     fn ours(&mut self, path: &str) -> Option<(String, &mut Open)> {
         let name = is_map_path(path)?;
         let stem = name[..name.len() - 4].to_ascii_lowercase();
-        if !self.maps.contains_key(&stem) {
-            return self.shared_ours(&stem, path);
-        }
+        self.maps.get(&stem)?;
         // An open map keeps its file; otherwise a changed choice reopens.
         if self.handles.get(&stem).copied().unwrap_or(0) == 0
             && let Some(Some(o)) = self.open.get(&stem)
@@ -184,51 +153,6 @@ impl<B: Backend> CampaignMapsBackend<B> {
         let mut m = self.inner.stat(TEMPLATE)?;
         resize(&mut m, len);
         Ok(m)
-    }
-
-    /// A shared cache we replace ([`Self::with_shared_caches`]) for `stem`,
-    /// when its host file is there and at least the disc's whole file.
-    /// Unlike a campaign map it has no alternate: it is served as it is.
-    fn shared_ours(&mut self, stem: &str, path: &str) -> Option<(String, &mut Open)> {
-        let host = self.shared.get(stem)?.clone();
-        if !self.open.contains_key(stem) {
-            let disc_len = self.inner.stat(path).ok().map(|m| m.len);
-            let opened = File::open(&host)
-                .ok()
-                .and_then(|file| Some((file, file.metadata().ok()?.len())));
-            let chosen = match opened {
-                Some((file, len))
-                    if (len <= u64::from(u32::MAX))
-                        && disc_len.is_none_or(|d| len >= d) =>
-                {
-                    Some(Open {
-                        file,
-                        len,
-                        id: None,
-                        host,
-                    })
-                }
-                // Only a file holding all of the disc's own serves: one
-                // shorter or unreadable is refused and the disc's served,
-                // rather than cutting sounds off.
-                Some((_, len)) => {
-                    eprintln!(
-                        "campaigns: {stem}.map under <data>/campaigns is {len} bytes, not the disc's whole file ({:?}); serving the disc's",
-                        disc_len
-                    );
-                    None
-                }
-                None => {
-                    eprintln!(
-                        "campaigns: {stem}.map under <data>/campaigns will not open; serving the disc's"
-                    );
-                    None
-                }
-            };
-            self.open.insert(stem.to_owned(), chosen);
-        }
-        let o = self.open.get_mut(stem)?.as_mut()?;
-        Some((stem.to_owned(), o))
     }
 }
 
@@ -483,72 +407,6 @@ mod tests {
         let mut buf = vec![0u8; len];
         assert_eq!(b.read_at(path, 0, &mut buf).unwrap(), len);
         buf
-    }
-
-    /// A shared cache the campaign replaces is served over the disc's own
-    /// file — it is the disc's bytes with sound chunks past them (docs/
-    /// halo1/sounds.md, "The sound bank") — but only while it holds the
-    /// disc's whole file.
-    #[test]
-    fn a_shared_cache_is_served_over_the_discs_own() {
-        let d = dir("shared");
-        let disc = vec![0x5a; 64];
-        let mut augmented = disc.clone();
-        augmented.extend_from_slice(b"bank");
-        std::fs::write(d.join("sp.map"), &augmented).unwrap();
-        std::fs::write(d.join("short.map"), [0x5a; 32]).unwrap();
-        let empty: Vec<(String, PathBuf)> = Vec::new();
-        let mut ours = CampaignMapsBackend::new(
-            Fake::with(&[
-                ("maps\\mainmenu.map", b"menu"),
-                ("maps\\single_player_shared.map", &disc),
-            ]),
-            empty,
-        )
-        .with_shared_caches([(
-            "single_player_shared".to_string(),
-            d.join("sp.map"),
-        )]);
-        assert_eq!(
-            read(&mut ours, "maps\\single_player_shared.map"),
-            augmented,
-            "the disc's bytes with ours past them"
-        );
-        assert_eq!(
-            ours.host_file("maps\\single_player_shared.map")
-                .unwrap()
-                .len,
-            augmented.len() as u64
-        );
-        // A copy shorter than the disc's serves the disc's own instead.
-        let empty: Vec<(String, PathBuf)> = Vec::new();
-        let mut short = CampaignMapsBackend::new(
-            Fake::with(&[
-                ("maps\\mainmenu.map", b"menu"),
-                ("maps\\single_player_shared.map", &disc),
-            ]),
-            empty,
-        )
-        .with_shared_caches([(
-            "single_player_shared".to_string(),
-            d.join("short.map"),
-        )]);
-        assert_eq!(read(&mut short, "maps\\single_player_shared.map"), disc);
-        // A missing host file serves the disc's.
-        let empty: Vec<(String, PathBuf)> = Vec::new();
-        let mut missing = CampaignMapsBackend::new(
-            Fake::with(&[
-                ("maps\\mainmenu.map", b"menu"),
-                ("maps\\single_player_shared.map", &disc),
-            ]),
-            empty,
-        )
-        .with_shared_caches([(
-            "single_player_shared".to_string(),
-            d.join("nope.map"),
-        )]);
-        assert_eq!(read(&mut missing, "maps\\single_player_shared.map"), disc);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// The assets choice picks the file at the next open; an open map keeps

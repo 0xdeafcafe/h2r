@@ -221,17 +221,13 @@ bounds, all `i16` cents.
 ## API
 
 ```rust
-use h1sounds::{convert_sound, install_sounds, install_sounds_with, h1::Sound};
+use h1sounds::{convert_sound, install_sounds, h1::Sound};
 
 let s = Sound::read(&h1, tag)?;                 // Halo 1 tag, via h1map
 let pcm = h1sounds::decode_all(&s, h1.bytes())?; // (range, permutation, Pcm)
 let c = convert_sound(&s, h1.bytes())?;         // ConvertedSound: map-independent
 h1sounds::convert::make_index_room(&mut set);   // a set from TagSet::from_map only
-let ids = install_sounds(&mut set, vec![(name, c.clone())])?;
-// With a sound bank (below): the chunks go into the bank's file, not the map's.
-let bank = h1sounds::bank::SoundBank::new(retail_sp_shared.len() as u32);
-let ids = install_sounds_with(&mut set, vec![(name, c)], Some(&bank))?;
-let (file, index) = bank.finish(&retail_sp_shared)?;
+let ids = install_sounds(&mut set, vec![(name, c)])?;
 ```
 
 - `ConvertedSound` holds the header with its indices unset, the playback and
@@ -266,67 +262,41 @@ gestalt pass, skipping paths the set already has, and reuses an `lsnd` of
 the same path. `tests/looping_disc.rs`: every `lsnd` (734) and `snde` (63)
 on the Halo 1 disc converts, every named sound with it.
 
-The campaign converter (`h1campaign`, campaign.md §9, "Music, ambience and the map
-file") installs the looping sounds a level's scripts name; with a sound
-bank (below) every one of them goes in.
+### Campaign loops and cache slots (**Built**)
 
-### The sound bank (`h1sounds::bank`) — **Built**
+The converter enumerates every `lsnd` in the level. It builds the tracks and
+detail sounds from the Halo 2 definition, converts each distinct referenced
+`snd!` once, and writes the original samples to local chunks in the level's
+`ugh!`. It retains each loop as an explicit root when rebuilding or pruning
+the map. Scripts, objects and BSP palettes can all reference the same datum.
 
-A converted level's looping sounds are hours of Xbox ADPCM that its map
-file's size bound (`0x11800000`) cannot hold, and were dropped for it.
-The fix is the way retail carries its own longest sounds: chunks in
-`single_player_shared.map`. A [`SoundBank`] stores every chunk past the
-end of the retail file and hands back a stored pointer with the
-`single_player_shared` file bits set (top two bits `11`), which the level's
-gestalt keeps as stored (`ChunkPointer::Stored`); the level map itself
-gains only the gestalt entries.
+**Disc evidence.** In campaign order from a10 to d40 the source levels contain
+50, 55, 47, 49, 62, 55, 35, 66, 51 and 78 loops. Their distinct sample spans
+range from 41.9 MiB on c20 to 104.2 MiB on d40. Every populated track or
+detail reference resolves to a sound. All ten levels leave continuous damage
+empty. On a30, `vehicles\lifepod_entry\lifepod_entry` attaches
+`sound\sfx\vehicles\lifeboat` to the object origin with no scale function.
+Its track plays `sound\sfx\vehicles\lifeboat_entry`. The other campaign
+lifepod variants have no engine attachment in the source.
 
-**Evidence the engine plays it** (no engine change was needed):
+**Engine evidence.** The retail header validator at `0x12289b` accepts up to
+520 MiB and calls `0x214ed0` to look up the lower per-type limit. Campaign
+slots 4 and 5 have a 280 MiB capacity in the row at `0x448fc8`. The allocator
+at `0x2139d4` and selector at `0x214bd0` both read that row. At boot,
+`boot::campaign_cache` takes the largest converted campaign map installed
+across both asset variants and loose overrides. For a level over 280 MiB
+it sizes both slots to the next whole MiB, up to 520 MiB, and supplies that
+capacity to the validator for Halo 1 campaign headers. The utility volume
+has room for both slots. The regular cache copy, checksum and sound streamer
+consume the entire declared file. A conversion over 520 MiB reports its
+required size.
 
-- Chunk pointers already name other files in retail: the audit reads such
-  chunks from the loaded cache they name (`Data::Elsewhere`), and every
-  retail campaign level's 44.1 kHz music lives in `single_player_shared.map`
-  (409 MiB of it on the owner's disc).
-- The loader (`0x122870`) checks the header's *declared* file length
-  (`+0x08`) against the per-type limit (`0x214ed0`: `0x20800000` here);
-  the bank leaves the retail header's declaration untouched, so the check
-  passes as before. The appended bytes are raw samples nothing but a
-  chunk pointer names.
-- The copy machine (`0x2141f0`) copies the source file's *physical*
-  length through EOF (obtained at `0x2143ff`, clipped at `0x21455b`) and
-  compares its running XOR of everything copied with the checksum at
-  `+0x2d0` (`0x214616`, docs/formats/map-format.md "Checksum evidence"),
-  so the bank recomputes that field over the whole file
-  (`map::checksum::engine_xor` of `[0x800..]`) when it writes it.
-- A chunk's offset stays under 2^30, the pointer's low 30 bits: retail
-  `single_player_shared.map` (409 MiB) plus every looping sound of the
-  ten campaign levels (455 MiB over all `lsnd` tags, so the scripts'
-  subset is less) stays under the limit, and the bank refuses a chunk
-  that would cross it.
-- Cache slot 1 (single-player shared) is the one slot re-checked against
-  the DVD at boot (`0x2136c0`, `+0x144`; docs/runtime/cache-slots.md), so
-  a bank that changed between runs is copied afresh. The boot serves it
-  over the disc's own file (`vfs::CampaignMapsBackend::with_shared_caches`)
-  only while it holds the disc's whole bytes.
-
-**Sharing.** Chunks are addressed by content (SHA-256), so two levels
-that play the same loop store one copy; a conversion that runs again asks
-for the same bytes and gets the same pointer. The import loads the bank a
-previous run wrote (its index file records every chunk; each entry's
-bytes are hashed against it) and grows it, so the level maps already
-written keep their pointers. It writes the bank before each level map, so
-a level is never on disk naming chunks the bank file lacks.
-
-**Cost.** The boot copies the whole file into cache slot 1 as it always
-did retail's: 409 MiB plus the bank (the ten levels' looping sounds),
-once per fresh data, at the `map-copy` feature's pace.
-
-`h2 h1 convert <level>` builds the bank from `<out>` the same way, so
-single-level conversions keep every other level's chunks.
-
-The audit (`audit_with`) reads the single-player shared file the caller
-gives, so a converted level's banked sounds are checked against their
-Halo 1 samples exactly as local ones are.
+The synthetic test `two_unreferenced_loops_share_one_sample_and_keep_existing_datums`
+covers shared samples, stable references and a corrupted detail datum. The
+ignored campaign disc audit follows every source loop back through the built
+tracks and details, then compares each sound's permutation bytes. The cache
+table and header selection have separate synthetic and disc checks. The
+integration build and playback check are pending.
 
 ### Proof (V)
 
@@ -353,14 +323,9 @@ must have the header, playback, scale, permutation elements and bytes
 `convert_sound` makes (so it plays as long as in Halo 1); any other must
 be byte for byte the same-named sound of the base or a donor. A sound
 pointing at the wrong or too few bytes plays as a short repeating buzz.
-`audit_with` also takes the campaign's augmented `single_player_shared.map`
-whole, and reads the chunks that name it from there, as the engine does
-from the loaded cache.
 
 `every_campaign_sound_plays_what_it_was_made_from` (h1campaign,
-`H1_LEVELS`, default a10; with a sound bank, so every looping sound the
-scripts names converts and none is left out) and
-`every_multiplayer_sound_plays_what_it_was_made_from`
+`H1_LEVELS`, default all ten) and `every_multiplayer_sound_plays_what_it_was_made_from`
 (h1convert, `H1_MAPS`, default bloodgulch) run it on converted maps.
 **V (2026-11-17):** a10 on 05a_deltaapproach, 3,988 sounds: 175 from
 Halo 1 (602.4 s), 3,813 the base's and donors', 14,667 permutations, no

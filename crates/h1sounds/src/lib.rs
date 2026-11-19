@@ -15,8 +15,6 @@
 //! - [`class`] maps Halo 1 sound classes to Halo 2's.
 //! - [`looping`] converts looping sounds (`lsnd`, with the sounds they
 //!   play) and sound environments (`snde`).
-//! - [`bank`] stores looping sound chunks in an augmented
-//!   `single_player_shared.map`, shared by every converted level.
 //!
 //! Layouts and evidence: `docs/halo1/sounds.md`. No game data is in
 //! this crate or its tests; real maps are read only by `#[ignore]` tests.
@@ -25,7 +23,6 @@
 #![allow(clippy::chunks_exact_to_as_chunks, clippy::needless_range_loop)]
 
 pub mod audit;
-pub mod bank;
 pub mod class;
 pub mod convert;
 pub mod decode;
@@ -34,7 +31,7 @@ pub mod h1;
 pub mod looping;
 pub mod merge;
 
-pub use convert::{ConvertedSound, convert_sound, install_sounds, install_sounds_with};
+pub use convert::{ConvertedSound, convert_sound, install_sounds};
 pub use decode::{Pcm, decode_all, decode_chain};
 pub use gestalt::SoundGestalt;
 pub use h1::Sound;

@@ -837,32 +837,8 @@ fn a30_converts_onto_its_base_and_reads_back() {
         println!("sounds read back: {ours} converted, {} in all", ids.len());
         // The scripts' own sounds and the looping sounds' tracks.
         assert!(ours >= r.sounds, "{ours} < {}", r.sounds);
-        // Each looping sound the scripts name is in the map under its
-        // Halo 1 name, or reported left out. The clusters' background
-        // sounds (h1convert::ambience) are Halo 1 looping sounds too, and
-        // not the scripts' unless a script also names one.
-        let ambient: std::collections::HashSet<String> = h1convert::ambience::read(&h1)
-            .backgrounds
-            .into_iter()
-            .map(|(_, l)| l.name)
-            .collect();
-        let lsnd = m
-            .tags()
-            .iter()
-            .filter(|t| t.group == FourCC(*b"lsnd") && t.location.is_some())
-            .filter(|t| {
-                t.name
-                    .as_deref()
-                    .is_some_and(|n| h1.find(h1sounds::looping::LSND, n).is_some())
-            })
-            .filter(|t| !t.name.as_deref().is_some_and(|n| ambient.contains(n)))
-            .count();
-        println!(
-            "looping sounds read back: {lsnd} ({} left out)",
-            r.looping_dropped.len()
-        );
-        assert_eq!(lsnd, r.looping);
-        assert!(r.looping > 0);
+        let loops = h1.tags().iter().filter(|t| t.group == h1sounds::looping::LSND).count();
+        assert_eq!(done.report.looping_sounds, loops);
     }
 
     // Listed by the Halo 1 campaign manifest under the map's own path.
@@ -1394,7 +1370,7 @@ fn check_sound(
     (heard, total)
 }
 
-/// Every sound of a converted campaign level (`H1_LEVELS`, default a10)
+/// Every sound of each converted campaign level (`H1_LEVELS` selects a subset)
 /// read back through the gestalt as the engine plays it
 /// (`h1sounds::audit`): Halo 1 sounds (the scripts' dialogue and effects)
 /// hold exactly their Halo 1 samples, as long as they played there, and
@@ -1406,54 +1382,24 @@ fn check_sound(
 fn every_campaign_sound_plays_what_it_was_made_from() {
     let s = scripting();
     let donors = donors();
-    let levels = std::env::var("H1_LEVELS").unwrap_or_else(|_| "a10".into());
+    let levels = std::env::var("H1_LEVELS")
+        .unwrap_or_else(|_| h1map::disc::CAMPAIGN_LEVELS.join(","));
     let mut failed = Vec::new();
     for level in levels.split(',') {
         let h1 = h1_level(level);
         let base_name = h1campaign::base_for(level);
         let base_bytes = h2_bytes(base_name);
         let mut base = Map::from_reader(Cursor::new(base_bytes.clone())).unwrap();
-        // The campaign's sound bank: the level's looping sounds (music and
-        // ambience) store their samples past the retail
-        // `single_player_shared.map`, and every one of them converts
-        // instead of the ones that fit the map file's size limit
-        // (docs/halo1/sounds.md, "The sound bank").
-        let sp_shared = h2_bytes("single_player_shared");
-        let bank = h1sounds::bank::SoundBank::new(sp_shared.len() as u32);
         let opts = Options {
             scripts: Some(&s),
-            sounds: 1000,
+            sounds: usize::MAX,
             donors: Some(&donors),
-            bank: Some(&bank),
             ..Default::default()
         };
         let done = h1campaign::convert(&h1, &mut base, &opts).unwrap();
-        let (bank_file, bank_index) = bank.finish(&sp_shared).unwrap();
         let mut retail: Vec<(&str, &[u8])> = vec![(base_name, &base_bytes)];
         retail.extend(donors.maps.iter().map(|(n, b)| (n.as_str(), b.as_slice())));
-        let a = h1sounds::audit::audit_with(&done.bytes, Some(&h1), &retail, Some(&bank_file))
-            .unwrap();
-        // The bank's file is the retail one with the chunks past it and the
-        // copy-time checksum recomputed; its index names every chunk.
-        assert_eq!(&bank_file[..sp_shared.len()], &sp_shared[..]);
-        assert_eq!(
-            u32::from_le_bytes(bank_file[0x2d0..0x2d4].try_into().unwrap()),
-            map::checksum::engine_xor(&bank_file[0x800..])
-        );
-        assert!(bank_index.chunks.iter().all(|c| c.offset as usize >= sp_shared.len()));
-        println!(
-            "{level} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
-             {} unmatched {:?}; sound bank {} chunks ({:.1} MiB past retail)",
-            a.sounds,
-            a.converted,
-            a.converted_seconds,
-            a.retail,
-            a.permutations,
-            a.unmatched.len(),
-            &a.unmatched[..a.unmatched.len().min(10)],
-            bank_index.chunks.len(),
-            (bank_file.len() - sp_shared.len()) as f64 / 1048576.0
-        );
+        let a = h1sounds::audit::audit(&done.bytes, Some(&h1), &retail).unwrap();
         println!(
             "{level} on {base_name}: {} sounds, {} from Halo 1 ({:.1} s), {} retail, {} permutations; \
              {} unmatched {:?}",
@@ -1468,20 +1414,6 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
         for p in &a.problems {
             println!("  {p}");
         }
-        // Nothing is left out for the map file's size limit any more: with
-        // the bank, every looping sound the scripts name converts.
-        if done.report.lean == h1campaign::Lean::Everything {
-            let dropped = done
-                .report
-                .scenario
-                .scripts
-                .as_ref()
-                .map_or(&[], |s| &s.looping_dropped);
-            assert!(
-                dropped.is_empty(),
-                "{level}: looping sounds left out: {dropped:?}"
-            );
-        }
         if !a.problems.is_empty() || !a.unmatched.is_empty() {
             failed.push(format!(
                 "{level}: {} problems, {} unmatched",
@@ -1489,34 +1421,46 @@ fn every_campaign_sound_plays_what_it_was_made_from() {
                 a.unmatched.len()
             ));
         }
-        // Halo 1's vehicles are built from the `vehi` definition and loop
-        // no retail sound (the lifepods once hummed the pelican's engine
-        // from its template's attachments).
-        let mut m = Map::from_reader(Cursor::new(done.bytes.clone())).unwrap();
+        let source_count = h1.tags().iter().filter(|t| t.group == h1sounds::looping::LSND).count();
+        assert_eq!(a.loops, source_count, "{level}: audited loops");
+        assert_eq!(done.report.looping_sounds, source_count);
+        let mut m = Map::from_reader(Cursor::new(done.bytes)).unwrap();
+        assert_eq!(u64::from(m.header().file_size), done.report.file_size);
+        assert_eq!(m.storage_length(), done.report.file_size);
+        m.validate_checksum().unwrap();
         let mem = map_memory(&mut m);
         let word = |a: u32| u32::from_le_bytes(mem.slice(a, 4).unwrap().try_into().unwrap());
-        let (at, stride) = (
-            h1objects::convert::h2::ATTACHMENTS as u32,
-            h1objects::convert::h2::ATTACHMENT as u32,
-        );
-        let mut pods = 0;
+        let at = h1objects::convert::h2::ATTACHMENTS as u32;
+        let stride = h1objects::convert::h2::ATTACHMENT as u32;
+        let pod = r"vehicles\lifepod_entry\lifepod_entry";
+        let mut saw_entry_pod = false;
         for t in m.tags().iter().filter(|t| t.group == FourCC(*b"vehi")) {
-            let name = t.name.clone().unwrap_or_default();
-            if name.starts_with("objects\\") {
-                continue;
+            let Some(name) = t.name.as_deref() else { continue };
+            let Some(vehicle) = h1.find(h1map::Group::new(b"vehi"), name) else { continue };
+            let attachments = h1objects::h1::attachments(&h1, h1.tag_data(vehicle).unwrap()).unwrap();
+            let expected: Vec<_> = attachments.iter().filter(|a| a.group == h1sounds::looping::LSND)
+                .filter_map(|a| a.tag).map(|id| h1.tag(id).unwrap().name.as_str()).collect();
+            let header = t.location.unwrap().address + at;
+            let rows = (0..word(header)).map(|i| word(header + 4) + i * stride);
+            let mut actual = Vec::new();
+            for row in rows.filter(|&r| word(r) == FourCC(*b"lsnd").as_u32()) {
+                let sound = m.tag(TagId(word(row + 4))).unwrap();
+                assert_eq!(sound.group, FourCC(*b"lsnd"));
+                actual.push(sound.name.as_deref().unwrap());
+                if name == pod {
+                    assert_eq!(word(row + 8), 0, "pod engine uses the root marker");
+                    assert_eq!(word(row + 0x10), 0, "pod engine has no primary scale");
+                }
             }
-            pods += 1;
-            let a = t.location.unwrap().address;
-            let (n, first) = (word(a + at), word(a + at + 4));
-            let loops = (0..n)
-                .filter(|i| word(first + i * stride) == u32::from_be_bytes(*b"lsnd"))
-                .count();
-            println!("  {name}: {n} attachments, {loops} looping sounds");
-            if loops > 0 {
-                failed.push(format!("{level}: {name} loops {loops} sounds"));
+            assert_eq!(actual, expected, "{level}: {name} engine loops");
+            if name == pod && level == "a30" {
+                saw_entry_pod = true;
+                assert_eq!(actual, [r"sound\sfx\vehicles\lifeboat"]);
             }
         }
-        println!("  {pods} Halo 1 vehicles");
+        if level == "a30" {
+            assert!(saw_entry_pod, "missing a30 entry pod");
+        }
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }

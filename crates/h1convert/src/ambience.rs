@@ -23,9 +23,7 @@
 //! with the structure's next round.
 
 use h1map::{H1Map, TagRef};
-use h1sounds::looping::{
-    Looping, SNDE, install_environment, install_looping, install_looping_with,
-};
+use h1sounds::looping::{Looping, SNDE, install_environment, install_looping};
 use map::build::TagSet;
 use map::{FourCC, TagId};
 
@@ -91,6 +89,18 @@ fn entry_name(e: &[u8]) -> String {
 /// Reads both palettes of every structure BSP (entries the BSPs share
 /// once), converting each looping sound with its sounds.
 pub fn read(h1: &H1Map) -> Ambience {
+    read_with(h1, h1sounds::looping::read_looping)
+}
+
+/// Read the palettes when the campaign installs all looping sounds in a single pass.
+pub fn read_campaign(h1: &H1Map) -> Ambience {
+    read_with(h1, h1sounds::looping::read_definition)
+}
+
+fn read_with(
+    h1: &H1Map,
+    read_loop: fn(&H1Map, &h1map::Tag) -> h1sounds::Result<Looping>,
+) -> Ambience {
     let mut out = Ambience::default();
     let bsps = match h1.structure_bsps() {
         Ok(b) => b,
@@ -128,7 +138,7 @@ pub fn read(h1: &H1Map) -> Ambience {
                         push_index(&mut out.bsp_backgrounds, Some(k));
                         continue;
                     }
-                    match h1sounds::looping::read_looping(h1, t) {
+                    match read_loop(h1, t) {
                         Ok(l) => {
                             out.notes.extend(l.notes.iter().cloned());
                             out.backgrounds.push((entry, l));
@@ -220,21 +230,8 @@ impl Ambience {
 
     /// Adds every looping sound (with its sounds) and sound environment.
     pub fn install(&self, set: &mut TagSet) -> Result<Installed> {
-        self.install_with(set, None)
-    }
-
-    /// [`Self::install`] with the looping sounds' chunks stored in a
-    /// [`h1sounds::bank::SoundBank`] when there is one: a converted
-    /// campaign level's background sounds, kept out of the level's own
-    /// file (docs/halo1/sounds.md, "The sound bank").
-    pub fn install_with(
-        &self,
-        set: &mut TagSet,
-        bank: Option<&h1sounds::bank::SoundBank>,
-    ) -> Result<Installed> {
         let loops: Vec<Looping> = self.backgrounds.iter().map(|(_, l)| l.clone()).collect();
-        let ids =
-            install_looping_with(set, &loops, bank).map_err(|e| Error::Sound(e.to_string()))?;
+        let ids = install_looping(set, &loops).map_err(|e| Error::Sound(e.to_string()))?;
         let backgrounds = self
             .backgrounds
             .iter()

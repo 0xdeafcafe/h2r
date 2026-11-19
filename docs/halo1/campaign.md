@@ -383,7 +383,7 @@ and all; pruned is version 23's fresh build):
 
 The bound is `0xc24000`: every level has 3.6 to 4.9 MB to spare, and the
 lean ladder fires nowhere (b40 keeps its level data, seat table and object
-textures; the ladder stays as a safety net). The file bound is
+textures; the ladder stays as a safety net). The file bound for these measurements was
 `0x11800000` (293,601,280 bytes). On every level the map is built from
 scratch with one index slot per tag, and: no tag from
 `scenarios\solo\05a_deltaapproach\` or `scenarios\multi\`, every script
@@ -492,8 +492,8 @@ What each layer writes, from the base map up:
 | Trigger volumes | The base's parked (`h1convert::convert::PARKED`, object name -1); the level's appended after them | |
 | Donors | `h1campaign::donor`: each character `h1ai`'s table names, copied whole from the first donor that has it (`03a_oldmombasa`, `04b_floodlab`, `06a_sentinelwalls`) by `h1sounds::transplant`: the tag tree, its raw, and its sounds' gestalt entries | The sentinel (its animation graph does not relocate) and the crewman (no donor) |
 | AI | `h1ai`: squad groups, squads, zones, orders, character palette. Characters the base lacks and no donor brought fall back to the marine (marine kinds) or the folder's first | Sentinels: `none` |
-| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Looping sounds left out for room (Sounds, below), effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
-| Sounds | The `snd!` tags the scripts name (`h1sounds`, onto the base's gestalt), halving the count until the gestalt's 16-bit indices fit; each permutation's length at `+6`, which the scripts' waits read (`sound_impulse_time` is Halo 2's `sound_impulse_language_time`). `h1sounds::audit` reads every sound of a converted level back: a10's 3,988 play exactly what they were made from. The looping sounds (`lsnd`: music and ambience) the scripts start, stop or switch (`sound_looping_start`, `_stop`, `_set_alternate`), with their tracks' sounds (`h1sounds::looping`) — **Built**: every one of them, their samples in the campaign's sound bank (`h1sounds::bank`), the augmented `single_player_shared.map` all ten levels share, with the BSPs' background sounds' samples too (Music, below). Every BSP's background sounds and sound environments (`h1convert::ambience`, all BSPs' together) as the scenario's palettes `+0x250`/`+0x258` and each structure's copy (`sbsp+0xd4`/`+0xdc`) | Every other sound; lifepods drop the pelican template's engine loops (their own loops come with the lifepod's vehicle remake, `objects`) |
+| Scripts | `h1scripts` with `Missing::Stub` and each level's cutscene policy (below); `ai_place` with one argument. A startup script `h1_initial_encounters` places the encounters Halo 1 creates at load. Hooks: object, unit and vehicle names, `short`, team and difficulty as `0xffff0000 \| index`; trigger volumes as the index; AI squads as the index and squad groups as `0x40000000 \| index`; string IDs interned; sounds as the converted tag's datum (encodings V: every such atom in 05a's and 03a's retail scripts). Halo 1's cutscene flags, camera points, titles and device groups written to Halo 2's blocks in Halo 1's order (`h1scripts::level`), their atoms the index (a device group's runtime datum); the seat-mapping table `+0x228` built from the vehicles' seat labels (`h1scripts::seats`); navpoints `default`; looping sounds, effects, damage and animation graphs by tag name among the converted tags. Squads with no starting locations that the scripts name are kept empty (`h1ai`), so their names resolve. Script references resolved by tag name ([scripts.md](scripts.md), "Level data the scripts name") | Effects, damage effects, animation graphs and object definitions with no converted tag of that name: `none` |
+| Sounds | **Built.** Every source looping sound, its tracks and details, and each distinct referenced sound rebuilt in the level's gestalt. All loops survive the fresh-map and pruning passes. Script sounds, object attachments, BSP background palettes and environments resolve by tag. The a30 entry pod plays its Halo 1 lifeboat track. Source inventory and cache evidence are in [sounds.md](sounds.md#campaign-loops-and-cache-slots-built). | End-to-end disc audit and playback pending |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
 ### Cutscenes (played on eight levels)
@@ -515,7 +515,7 @@ compiles every call of the level's `cinematic_skip_start` guard as
 | a30, a50, b30, c20, d20 | `Play` | every cutscene converts |
 | c10, c40 | `Play` | every cutscene converts; the command lists that walk actors through x50 and c40's cinematics are stubbed (they stand) |
 | b40 | `Skip` | at the tag memory bound: converted without level data, graphs and recordings (`Lean::LevelData`), so its cinematics would have no camera points, flags or animations |
-| d40 | `Skip` | over the campaign cache's file size (`0x11800000`) with its cutscene graphs: they need `0x1baa00` bytes of animation data and `0x7c000` are left, so its characters would not animate |
+| d40 | `Skip` | policy set from the earlier 280 MiB cache measurement. Re-evaluate cinematic playback in the enlarged cache |
 
 What a cutscene needed (survey `cutscene_survey`, h1campaign
 `tests/cutscenes.rs`, over all ten levels):
@@ -669,7 +669,7 @@ load (Objects, above): a10's x10 crew in the space BSP (`keyes_x10_space`,
 crew, the hangar marines. Skipped cinematics never create them.
 
 **Tag memory and file size.** Graphs put their animation data in the
-map file (raw; the campaign cache bounds the file at `0x11800000`),
+map file (raw, measured here with the retail 280 MiB slot),
 recordings their streams in tag memory, inside the scenario. Per level, tag memory and file with them, and tag memory
 without (`Options::cutscene_data` off):
 
@@ -843,39 +843,20 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the empty squads kept for their names (`EmptySquads`), the
   seat table (`SeatTable`), Halo 1's textures on object models
-  (`ObjectTextures`), the music (`Music`), the cutscenes' graphs and
+  (`ObjectTextures`), the cutscenes' graphs and
   recordings (`CutsceneData`), the level data (`LevelData`). A level
-  still over this bound or the file's (below) places fewer devices
+  still over the tag memory bound places fewer devices
   (`Options::devices`): no light fixtures (lamp models that give no
-  light in Halo 2), then none. b40 still
-  converts only without its level data (`0xc22000` of `0xc24000`): its
+  light in Halo 2), then none. The older pinned b40 build converted only without its level data (`0xc22000` of `0xc24000`): its
   74 calls naming a flag, camera point, title or device group are
   stubbed (the insertion's teleports and camera moves among them), and
-  it has no music.
-- **Music, ambience and the map file.** Halo 2's campaign map file is
-  capped at `0x11800000` bytes (`map::writer::cache_size_limit`, the
-  header validator's table at `0x00214ed0`). The level's looping sounds
-  and background sounds, which Halo 1 ships as Xbox ADPCM kept as they
-  are, no longer compete for it (**Built**, `h1sounds::bank`): their
-  samples live in the campaign's augmented `single_player_shared.map`
-  (see [sounds.md](sounds.md), "The sound bank"), shared by all ten
-  levels, and a level over the cap with them out of the file is over it
-  for its own data. The ladder of last resorts stands for that: a level
-  over the cap (`Error::FileSize`) is converted again with that many
-  fewer biped dialogue bytes, down to none; then with that many fewer
-  background sound entries (`scenario::bound_ambience`: an entry left
-  out keeps its palette slot and tracks, with null sounds, so the
-  clusters' indices stand), down to none; then without the cutscenes'
-  animation graphs, which the cutscenes need. Each retry is in the
-  report (`Report::retries`). Before the bank (2026-11-19): the looping
-  sounds went in in first-use order while they fit — a30 kept 5 of 16,
-  b30 6 of 14 — and d40, still `0x12254800` without music, had its 13
-  background sounds silenced and its graphs dropped. The sound-zone split
-  of the clusters (`h1convert::structure::sound_zones`) costs next to
-  nothing: Halo 1's sections already outnumber the zones everywhere but
-  c40's BSPs 3 and 4 (1 and 2 sections to 4: 322 and 710 vertices more).
-  Building the levels fresh (no pinned base, its unreachable raw
-  dropped) frees 30 to 60 MB of file a level.
+  that build omitted its music.
+- **Music, ambience and the map file. Built.** All 548 source loop
+  definitions across the ten levels have explicit roots. Local raw chunks
+  hold their samples. Native campaign slots 4 and 5 grow for installed
+  Halo 1 maps up to the header validator's 520 MiB maximum. A level over
+  that limit reports its size. The disc audit compares the built tags and
+  sample chains with the source. [Cache and disc evidence](sounds.md#campaign-loops-and-cache-slots-built).
 
 Hooks left `none` after the level data, seat table and kept squads
 (2026-11-17, `h1scripts` round 2; the table's columns are from round 3,

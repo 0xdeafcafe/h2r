@@ -49,6 +49,7 @@ use h1map::{Block as H1Block, Group, H1Map, Tag, TagRef};
 use h1models::Converted;
 use map::build::{Block, TagSet};
 use map::{FourCC, TagId};
+use tags::defs::{self, Defs, Target, Val};
 
 use crate::convert::{ConvertedSound, convert_sound, decibels};
 use crate::h1::{SND, Sound};
@@ -139,52 +140,7 @@ fn elements<'a>(h1: &'a H1Map, b: &[u8], at: usize, len: usize) -> Result<Vec<&'
 
 /// Reads `tag` (an `lsnd`) and converts every sound it names.
 pub fn read_looping(h1: &H1Map, tag: &Tag) -> Result<Looping> {
-    if tag.group != LSND {
-        return Err(Error::Invalid(format!("{} is a {}", tag.name, tag.group)));
-    }
-    let b = h1.tag_data(tag)?;
-    if b.len() < H1_LEN {
-        return Err(Error::Invalid(format!("{}: {} bytes", tag.name, b.len())));
-    }
-    let sound_at = |e: &[u8], at: usize| -> Option<String> {
-        let r = TagRef::read(e, at)?;
-        let t = h1.tag(r.id).ok()?;
-        (t.group == SND).then(|| t.name.clone())
-    };
-    let tracks = elements(h1, b, 0x3c, H1_TRACK)?
-        .into_iter()
-        .map(|e| Track {
-            // Fade in at start, fade out at stop; Halo 1's "fade in
-            // alternate" is Halo 2's crossfade of the alternate loop.
-            flags: u32_at(e, 0) & 0b111,
-            gain_db: gain_db(f32_at(e, 4)),
-            fade_in: f32_at(e, 8),
-            fade_out: f32_at(e, 0xc),
-            sounds: [0x30, 0x40, 0x50, 0x80, 0x90].map(|at| sound_at(e, at)),
-        })
-        .collect();
-    let details = elements(h1, b, 0x48, H1_DETAIL)?
-        .into_iter()
-        .map(|e| Detail {
-            sound: sound_at(e, 0),
-            period: [f32_at(e, 0x10), f32_at(e, 0x14)],
-            gain_db: gain_db(f32_at(e, 0x18)),
-            // Don't play with, or without, the alternate: the same bits.
-            flags: u32_at(e, 0x1c) & 0b11,
-            yaw: [f32_at(e, 0x50), f32_at(e, 0x54)],
-            pitch: [f32_at(e, 0x58), f32_at(e, 0x5c)],
-            distance: [f32_at(e, 0x60), f32_at(e, 0x64)],
-        })
-        .collect();
-    let mut out = Looping {
-        name: tag.name.clone(),
-        flags: u32_at(b, 0) & SHARED_FLAGS,
-        max_distance: f32_at(b, 0x20),
-        tracks,
-        details,
-        sounds: Vec::new(),
-        notes: Vec::new(),
-    };
+    let mut out = read_definition(h1, tag)?;
     for name in out.sound_names() {
         let t = h1.find(SND, &name).expect("named by a reference above");
         match Sound::read(h1, t).and_then(|s| convert_sound(&s, h1.bytes())) {
@@ -193,6 +149,86 @@ pub fn read_looping(h1: &H1Map, tag: &Tag) -> Result<Looping> {
         }
     }
     Ok(out)
+}
+
+/// The looping definition and its named dependencies, before reading any samples.
+pub fn read_definition(h1: &H1Map, tag: &Tag) -> Result<Looping> {
+    if tag.group != LSND {
+        return Err(Error::Invalid(format!("{} is a {}", tag.name, tag.group)));
+    }
+    let b = h1.tag_data(tag)?;
+    if b.len() < H1_LEN {
+        return Err(Error::Invalid(format!("{}: {} bytes", tag.name, b.len())));
+    }
+    if !TagRef::read(b, 0x2c)
+        .expect("complete lsnd header")
+        .id
+        .is_none()
+    {
+        return Err(Error::Unsupported(format!(
+            "{}: continuous damage on a looping sound",
+            tag.name
+        )));
+    }
+    let sound_at = |e: &[u8], at: usize| -> Result<Option<String>> {
+        let r = TagRef::read(e, at)
+            .ok_or_else(|| Error::Invalid(format!("{}: truncated snd! reference", tag.name)))?;
+        if r.id.is_none() {
+            return Ok(None);
+        }
+        let t = h1.tag(r.id)?;
+        if r.group != SND || t.group != SND {
+            return Err(Error::Invalid(format!(
+                "{}: expected snd!, found {} {}",
+                tag.name, t.group, t.name
+            )));
+        }
+        Ok(Some(t.name.clone()))
+    };
+    let tracks = elements(h1, b, 0x3c, H1_TRACK)?
+        .into_iter()
+        .map(|e| {
+            Ok(Track {
+                // Fade in at start, fade out at stop; Halo 1's "fade in
+                // alternate" is Halo 2's crossfade of the alternate loop.
+                flags: u32_at(e, 0) & 0b111,
+                gain_db: gain_db(f32_at(e, 4)),
+                fade_in: f32_at(e, 8),
+                fade_out: f32_at(e, 0xc),
+                sounds: [
+                    sound_at(e, 0x30)?,
+                    sound_at(e, 0x40)?,
+                    sound_at(e, 0x50)?,
+                    sound_at(e, 0x80)?,
+                    sound_at(e, 0x90)?,
+                ],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let details = elements(h1, b, 0x48, H1_DETAIL)?
+        .into_iter()
+        .map(|e| {
+            Ok(Detail {
+                sound: sound_at(e, 0)?,
+                period: [f32_at(e, 0x10), f32_at(e, 0x14)],
+                gain_db: gain_db(f32_at(e, 0x18)),
+                // Don't play with, or without, the alternate: the same bits.
+                flags: u32_at(e, 0x1c) & 0b11,
+                yaw: [f32_at(e, 0x50), f32_at(e, 0x54)],
+                pitch: [f32_at(e, 0x58), f32_at(e, 0x5c)],
+                distance: [f32_at(e, 0x60), f32_at(e, 0x64)],
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Looping {
+        name: tag.name.clone(),
+        flags: u32_at(b, 0) & SHARED_FLAGS,
+        max_distance: f32_at(b, 0x20),
+        tracks,
+        details,
+        sounds: Vec::new(),
+        notes: Vec::new(),
+    })
 }
 
 impl Looping {
@@ -215,66 +251,107 @@ impl Looping {
     /// The Halo 2 tag, its sounds named through `ids` (path to datum); a
     /// path `ids` lacks stays a null reference.
     pub fn to_h2(&self, ids: &HashMap<String, TagId>) -> Converted {
-        let snd = FourCC(*b"snd!");
-        let refer = |b: &mut Block, at: usize, name: &Option<String>| match name
-            .as_ref()
-            .and_then(|n| ids.get(n))
-        {
-            Some(&id) => {
-                b.tag_ref(at as u32, id);
-            }
-            None => {
-                b.put_u32(at, snd.as_u32()).put_u32(at + 4, u32::MAX);
-            }
+        let def = Defs::builtin()
+            .group(FourCC(*b"lsnd"))
+            .expect("lsnd definition");
+        let mut root = defs::default_record(def);
+        let snd_ref = |name: Option<&String>| Val::Ref {
+            group: FourCC(*b"snd!").as_u32(),
+            target: name
+                .and_then(|n| ids.get(n))
+                .copied()
+                .map_or(Target::Null, Target::Id),
         };
-        let mut root = Block::zeroed(H2_LEN);
-        root.put_u32(0, self.flags)
-            .put_f32(0xc, 1.0)
-            .put_f32(0x10, self.max_distance)
-            .put_u32(0x14, FourCC(*b"cdmg").as_u32())
-            .put_u32(0x18, u32::MAX);
-        let mut tracks = Block::zeroed(H2_TRACK * self.tracks.len());
-        for (k, t) in self.tracks.iter().enumerate() {
-            let e = k * H2_TRACK;
-            tracks
-                .put_u32(e + 4, t.flags)
-                .put_f32(e + 8, t.gain_db)
-                .put_f32(e + 0xc, t.fade_in)
-                .put_f32(e + 0x10, t.fade_out);
-            for (s, at) in t.sounds.iter().zip([0x14, 0x1c, 0x24, 0x2c, 0x34]) {
-                refer(&mut tracks, e + at, s);
+        root.set("flags", Val::Int(self.flags.into()))
+            .expect("lsnd flags");
+        root.set("distance_c", Val::Float(1.0))
+            .expect("lsnd distance");
+        root.set("distance_10", Val::Float(self.max_distance))
+            .expect("lsnd distance");
+        root.set(
+            "continuous_damage",
+            Val::Ref {
+                group: FourCC(*b"cdmg").as_u32(),
+                target: Target::Null,
+            },
+        )
+        .expect("lsnd damage");
+        let track = def.child("tracks").expect("lsnd track");
+        let mut tracks = Vec::with_capacity(self.tracks.len());
+        for t in &self.tracks {
+            let mut r = defs::default_record(track);
+            for (key, value) in [
+                ("flags", Val::Int(t.flags.into())),
+                ("gain", Val::Float(t.gain_db)),
+                ("fade_in", Val::Float(t.fade_in)),
+                ("fade_out", Val::Float(t.fade_out)),
+            ] {
+                r.set(key, value).expect("lsnd track field");
             }
-            refer(&mut tracks, e + 0x40, &None);
-            refer(&mut tracks, e + 0x48, &None);
-        }
-        let mut details = Block::zeroed(H2_DETAIL * self.details.len());
-        for (k, d) in self.details.iter().enumerate() {
-            let e = k * H2_DETAIL;
-            refer(&mut details, e + 4, &d.sound);
-            let floats = [
-                (0xc, d.period[0]),
-                (0x10, d.period[1]),
-                (0x14, d.gain_db),
-                (0x1c, d.yaw[0]),
-                (0x20, d.yaw[1]),
-                (0x24, d.pitch[0]),
-                (0x28, d.pitch[1]),
-                (0x2c, d.distance[0]),
-                (0x30, d.distance[1]),
-            ];
-            for (at, v) in floats {
-                details.put_f32(e + at, v);
+            for (key, name) in [
+                "sound_in",
+                "sound_loop",
+                "sound_out",
+                "sound_alternate_loop",
+                "sound_alternate_out",
+            ]
+            .into_iter()
+            .zip(&t.sounds)
+            {
+                r.set(key, snd_ref(name.as_ref())).expect("track sound");
             }
-            details.put_u32(e + 0x18, d.flags);
+            for key in [
+                "sound_alternate_transition_in",
+                "sound_alternate_transition_out",
+            ] {
+                r.set(key, snd_ref(None)).expect("transition sound");
+            }
+            tracks.push(r);
         }
-        root.block(0x1c, self.tracks.len() as u32, tracks);
-        root.block(0x24, self.details.len() as u32, details);
+        root.set("tracks", Val::Block(tracks)).expect("lsnd tracks");
+        let detail = def.child("detail_sounds").expect("lsnd detail");
+        let mut details = Vec::with_capacity(self.details.len());
+        for d in &self.details {
+            let mut r = defs::default_record(detail);
+            for (key, value) in [
+                ("sound", snd_ref(d.sound.as_ref())),
+                ("random_period_bounds", Val::floats(&d.period)),
+                ("gain", Val::Float(d.gain_db)),
+                ("flags", Val::Int(d.flags.into())),
+                ("yaw_bounds", Val::floats(&d.yaw)),
+                ("pitch_bounds", Val::floats(&d.pitch)),
+                ("distance_bounds", Val::floats(&d.distance)),
+            ] {
+                r.set(key, value).expect("lsnd detail field");
+            }
+            details.push(r);
+        }
+        root.set("detail_sounds", Val::Block(details))
+            .expect("lsnd details");
         Converted {
             group: FourCC(*b"lsnd"),
-            root,
+            root: defs::to_built(def, &root, &mut |_| None).expect("lsnd fields match definition"),
             raw: Vec::new(),
         }
     }
+}
+
+/// Install every source loop, including ones with no script or BSP reference.
+/// Each source sample tag is read once even when several tracks share it.
+/// Replace a retail namesake in its original slot so existing datums stay valid.
+pub fn install_level_loops(h1: &H1Map, set: &mut TagSet) -> Result<Vec<TagId>> {
+    let loops = h1
+        .tags()
+        .iter()
+        .filter(|t| t.group == LSND)
+        .map(|t| read_definition(h1, t))
+        .collect::<Result<Vec<_>>>()?;
+    let names = loops.iter().flat_map(Looping::sound_names);
+    let sounds = crate::convert::install_source_sounds(h1, set, names)?;
+    loops
+        .iter()
+        .map(|l| crate::convert::install_named(l.to_h2(&sounds), set, &l.name))
+        .collect()
 }
 
 /// Adds `loops` to `set`: every sound they name that the set has no `snd!`
@@ -282,17 +359,6 @@ impl Looping {
 /// looping sound, or the set's own `lsnd` of that path. Returns the
 /// looping sounds' datums, in order.
 pub fn install_looping(set: &mut TagSet, loops: &[Looping]) -> Result<Vec<TagId>> {
-    install_looping_with(set, loops, None)
-}
-
-/// [`install_looping`] with the sounds' chunks stored in a [`SoundBank`]
-/// when there is one ([`crate::install_sounds_with`]): a converted
-/// campaign level's looping sounds, kept out of the level's own file.
-pub fn install_looping_with(
-    set: &mut TagSet,
-    loops: &[Looping],
-    bank: Option<&crate::bank::SoundBank>,
-) -> Result<Vec<TagId>> {
     let snd = FourCC(*b"snd!");
     let mut ids: HashMap<String, TagId> = HashMap::new();
     let mut new = Vec::new();
@@ -309,7 +375,7 @@ pub fn install_looping_with(
     }
     let names: Vec<String> = new.iter().map(|(n, _)| n.clone()).collect();
     if !new.is_empty() {
-        let got = crate::install_sounds_with(set, new, bank)?;
+        let got = crate::install_sounds(set, new)?;
         ids.extend(names.into_iter().zip(got));
     }
     let mut out = Vec::with_capacity(loops.len());
@@ -366,6 +432,90 @@ pub fn install_environment(set: &mut TagSet, name: &str, c: &Converted) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_unreferenced_loops_share_one_sample_and_keep_existing_datums() {
+        use h1map::testing::{BASE, SCNR_ID, Spec, build_with_extra_tags, put};
+        use map::build::TagPayload;
+        use map::{CacheType, Map};
+        use std::io::Cursor;
+
+        let sample = "engine_sample";
+        let spec = |group, name, len| Spec {
+            group,
+            parent: None,
+            name,
+            data: Some(vec![0; len]),
+        };
+        let mut fixture = build_with_extra_tags(
+            &Default::default(),
+            vec![
+                spec(b"snd!", sample, 0x180),
+                spec(b"lsnd", "engine", H1_LEN + H1_DETAIL),
+                spec(b"lsnd", "ambient", H1_LEN + H1_DETAIL),
+            ],
+        );
+        let slot = fixture.data_at.len() - 3;
+        let sound = fixture.data_at[slot].unwrap();
+        let range = sound + crate::h1::HEADER_LEN;
+        let perm = range + crate::h1::PITCH_RANGE_LEN;
+        let address = |off: usize| BASE + (off - h1map::HEADER_LEN) as u32;
+        let f = &mut fixture.file;
+        put(f, sound + 4, 13);
+        put(f, sound + 0x7c, u32::MAX);
+        put(f, sound + 0x98, 1);
+        put(f, sound + 0x9c, address(range));
+        put(f, range + 0x2c, 1);
+        put(f, range + 0x3c, 1);
+        put(f, range + 0x40, address(perm));
+        f[perm + 0x2a..perm + 0x2c].copy_from_slice(&u16::MAX.to_le_bytes());
+        put(f, perm + 0x40, 4);
+        put(f, perm + 0x48, (perm + crate::h1::PERMUTATION_LEN) as u32);
+        f[perm + crate::h1::PERMUTATION_LEN..][..4].copy_from_slice(&[1, 2, 3, 4]);
+
+        for off in &fixture.data_at[slot + 1..] {
+            let at = off.unwrap();
+            let detail = at + H1_LEN;
+            put(f, at + 0x38, u32::MAX);
+            put(f, at + 0x48, 1);
+            put(f, at + 0x4c, address(detail));
+            put(f, detail, SND.0);
+            put(f, detail + 12, SCNR_ID + slot as u32);
+        }
+        let source = H1Map::from_decompressed(fixture.file).unwrap();
+        let mut set = TagSet::new(CacheType::Campaign, "tiny", "tiny");
+        let old_sound = set
+            .add_tag(FourCC(*b"snd!"), sample, TagPayload::Empty)
+            .unwrap();
+        let old_loop = set
+            .add_tag(FourCC(*b"lsnd"), "engine", TagPayload::Empty)
+            .unwrap();
+        let loops = install_level_loops(&source, &mut set).unwrap();
+        assert_eq!(loops.len(), 2);
+        assert_eq!(loops[0], old_loop);
+        assert_eq!(set.find(FourCC(*b"snd!"), sample), Some(old_sound));
+        assert_eq!(set.raw.len(), 1);
+        assert_eq!(set.raw[0].bytes, [1, 2, 3, 4]);
+
+        let (mut bytes, _) = set.build().unwrap();
+        let clean = crate::audit::audit(&bytes, Some(&source), &[]).unwrap();
+        assert_eq!((clean.loops, clean.converted), (2, 1));
+        assert!(clean.problems.is_empty(), "{:?}", clean.problems);
+
+        // Replace a valid detail sound's datum with a stale one. The sound
+        // tag and its samples still audit cleanly, but the loop cannot play it.
+        let mut m = Map::from_reader(Cursor::new(&bytes)).unwrap();
+        let root = m.read_tag_bytes(old_loop).unwrap();
+        let at = m.file_offset(u32_at(&root, 0x28) + 8, 4).unwrap() as usize;
+        put(&mut bytes, at, old_sound.0 ^ (1 << 16));
+        let audit = crate::audit::audit(&bytes, Some(&source), &[]).unwrap();
+        assert!(
+            audit
+                .problems
+                .iter()
+                .any(|s| s.contains("engine: detail 0"))
+        );
+    }
 
     #[test]
     fn environment_intensities_become_decibels() {

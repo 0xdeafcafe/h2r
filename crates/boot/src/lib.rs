@@ -13,6 +13,7 @@
 pub mod account_screen;
 pub mod agent_glue;
 pub mod aim_assist;
+mod campaign_cache;
 pub mod campaign_cards;
 pub mod campaign_info;
 pub mod campaign_menu;
@@ -981,17 +982,13 @@ fn run_configured(
         .as_ref()
         .map(|s| campaigns::host_maps(&opts.data_root, s))
         .unwrap_or_default();
-    // A campaign's augmented `single_player_shared.map`, served over the
-    // disc's own: the converted levels' looping sounds stream from it
-    // (docs/halo1/sounds.md, "The sound bank").
-    let shared_caches = campaigns
-        .as_ref()
-        .map(|s| campaigns::shared_caches(&opts.data_root, s))
-        .unwrap_or_default();
     // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
     // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
+    campaign_cache::configure(
+        &mut features, &loaded.runtime, &mut cfg, &campaign_maps, maps.as_deref(),
+    )?;
     let packages = map_override::packages_dir(&opts.data_root);
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
     // (docs/halo1/campaign-picker.md, "Pictures").
@@ -1022,7 +1019,6 @@ fn run_configured(
         Some(halo1_sandbox),
         disc_hashes,
         &campaign_maps,
-        &shared_caches,
     );
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;

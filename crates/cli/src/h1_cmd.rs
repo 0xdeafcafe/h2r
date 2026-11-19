@@ -1060,53 +1060,8 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         println!("  scripts: left out (they need the Halo 1 disc's XBE; give the disc, not a map)");
     }
     let donors = campaign_donors(&disc)?;
-    // The campaign's sound bank: the level's looping sounds store their
-    // samples past a retail `single_player_shared.map` (h1sounds::bank),
-    // so none is dropped for the map file's size limit. An earlier
-    // conversion's bank under `--out` is grown in place: the levels
-    // already written keep their chunk pointers.
-    let retail_sp = read_h2_map(&disc, "single_player_shared")
-        .with_context(|| "reading single_player_shared.map")?;
-    let existing = |name: &str| -> std::io::Result<Vec<u8>> {
-        let dir = a
-            .out
-            .as_ref()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no --out"))?;
-        std::fs::read(dir.join(name))
-    };
-    let bank = match (
-        existing(h1sounds::bank::FILE_NAME),
-        existing(h1sounds::bank::INDEX_NAME),
-    ) {
-        (Ok(file), Ok(index)) => match std::str::from_utf8(&index)
-            .map_err(|e| e.to_string())
-            .and_then(|t| h1sounds::bank::Index::parse(t).map_err(|e| e.to_string()))
-        {
-            Ok(index) => match h1sounds::bank::SoundBank::load_matching(&retail_sp, &file, &index)
-            {
-                Ok(b) => {
-                    println!(
-                        "  sound bank: {} chunks from an earlier conversion, {} bytes",
-                        index.chunks.len(),
-                        file.len() - retail_sp.len()
-                    );
-                    b
-                }
-                Err(e) => {
-                    println!("  sound bank: an earlier bank is unusable ({e}); starting a new one");
-                    h1sounds::bank::SoundBank::new(retail_sp.len() as u32)
-                }
-            },
-            Err(e) => {
-                println!("  sound bank: an earlier index is unreadable ({e}); starting a new one");
-                h1sounds::bank::SoundBank::new(retail_sp.len() as u32)
-            }
-        },
-        _ => h1sounds::bank::SoundBank::new(retail_sp.len() as u32),
-    };
     let mut opts = campaign_options(scripting.as_ref(), Some(&donors));
     opts.pinned = a.fresh == Some(false);
-    opts.bank = Some(&bank);
     let done = h1campaign::convert(h1, &mut base, &opts)?;
     print!("{}", done.report);
     let map_name = h1campaign::manifest::map_file(&level);
@@ -1122,28 +1077,7 @@ fn convert_campaign(a: &ConvertArgs, h1: &H1Map) -> Result<()> {
         );
         return Ok(());
     }
-    let (bank_file, bank_index) = bank
-        .finish(&retail_sp)
-        .context("building the campaign's sound bank")?;
     let out = OutDir::new(out_dir, a.force)?.protecting(&a.path);
-    // The bank before the map — the map's sounds name it — and whole,
-    // through a rename, so a level never points at a torn bank.
-    for (name, bytes) in [
-        (h1sounds::bank::FILE_NAME, &bank_file[..]),
-        (h1sounds::bank::INDEX_NAME, bank_index.to_text().as_bytes()),
-    ] {
-        let to = out_dir.join(name);
-        let tmp = to.with_extension("tmp");
-        std::fs::write(&tmp, bytes)
-            .and_then(|_| std::fs::rename(&tmp, &to))
-            .with_context(|| to.display().to_string())?;
-    }
-    println!(
-        "wrote {} ({} chunks, {} bytes past the retail file)",
-        out_dir.join(h1sounds::bank::FILE_NAME).display(),
-        bank_index.chunks.len(),
-        bank_file.len() - retail_sp.len()
-    );
     let written = write_campaign_level(
         &out,
         out_dir,
@@ -1171,7 +1105,7 @@ pub(crate) fn campaign_options<'a>(
 ) -> h1campaign::Options<'a> {
     h1campaign::Options {
         scripts,
-        sounds: 1000,
+        sounds: usize::MAX,
         donors,
         ..Default::default()
     }

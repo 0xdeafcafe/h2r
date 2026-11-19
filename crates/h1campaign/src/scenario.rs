@@ -350,7 +350,7 @@ pub struct ScenarioReport {
     pub object_loops: usize,
     pub object_sound_bytes: u64,
     /// Of those, the sample bytes of the sounds only the rebuilt bipeds'
-    /// dialogue plays (within the size ladder's dialogue budget).
+    /// dialogue plays.
     pub dialogue_bytes: u64,
     /// The player biped, converted and set as the campaign players' unit.
     pub player_biped: Option<String>,
@@ -410,16 +410,9 @@ pub struct ScriptReport {
     /// A few unresolved tokens per type.
     pub samples: Vec<(String, String)>,
     /// Sounds the scripts name, converted (`h1sounds`), and those left out
-    /// (over the cap, or the gestalt's 16-bit indices).
+    /// by the caller's explicit count limit.
     pub sounds: usize,
     pub sounds_dropped: usize,
-    /// Looping sounds (music and ambience) the scripts name, converted with
-    /// `h1sounds::looping`, and those left out (not in the level, failed,
-    /// or no room: `Lean::Music` leaves them all out, a map over the engine's
-    /// file size limit fewer of them), and the sample bytes they added.
-    pub looping: usize,
-    pub looping_dropped: Vec<String>,
-    pub looping_bytes: u64,
     pub missing_calls: usize,
     /// Calls stubbed because a cutscene flag, camera point, title or device
     /// group they name does not resolve (`h1scripts::compile::INDEXED`).
@@ -524,12 +517,8 @@ impl std::fmt::Display for ScenarioReport {
             }
             writeln!(
                 f,
-                "    sounds: {} converted, {} left out; looping sounds: {} converted, {} left out {:?}",
-                s.sounds,
-                s.sounds_dropped,
-                s.looping,
-                s.looping_dropped.len(),
-                s.looping_dropped
+                "    script sounds: {} converted, {} left out",
+                s.sounds, s.sounds_dropped
             )?;
             writeln!(
                 f,
@@ -790,10 +779,7 @@ pub fn fresh_root() -> Block {
 
 /// Writes the scenario layers into `set` (built from the base), leaving
 /// out what `lean` says ([`crate::Lean`]; object textures are left out in
-/// `lib.rs`). Unless `lean` leaves out the music, `music` caps the looping
-/// sounds' sample bytes (the map file's own bound; with [`Options::bank`]
-/// their samples are not in this file, so every one goes in) and
-/// `dialogue` the rebuilt bipeds' dialogue sounds'.
+/// `lib.rs`).
 /// `bsps[k]` is Halo 1 BSP `k`, converted.
 #[allow(clippy::too_many_arguments)]
 pub fn write(
@@ -805,7 +791,6 @@ pub fn write(
     objects: Option<&h1objects::base::Base>,
     opts: &Options,
     lean: crate::Lean,
-    [music, dialogue]: [u64; 2],
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -970,7 +955,6 @@ pub fn write(
                     groups,
                     opts.devices,
                     opts.rebuild_bipeds,
-                    dialogue,
                     opts.assets,
                     &mut aliases,
                 )
@@ -1207,12 +1191,6 @@ pub fn write(
                 opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
-                if lean.leaves_out(crate::Lean::Music) {
-                    0
-                } else {
-                    music
-                },
-                opts.bank,
                 (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
                     .then_some(opts.cutscene_graphs),
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
@@ -1301,7 +1279,6 @@ fn place_objects(
     device_groups: bool,
     devices: crate::Devices,
     rebuild_bipeds: bool,
-    dialogue: u64,
     assets: crate::h2assets::Assets,
     aliases: &mut crate::h2assets::Aliases,
 ) -> Result<HashMap<(i16, i16), (i16, i16)>> {
@@ -1318,7 +1295,6 @@ fn place_objects(
     };
     let mut conv = h1objects::convert::Converter::new(h1, base);
     conv.options.rebuild_bipeds = rebuild_bipeds;
-    conv.options.dialogue_budget = dialogue;
     let mut palettes = Vec::new();
     for k in &KINDS {
         let mut pal = Vec::new();
@@ -1479,7 +1455,7 @@ fn place_objects(
     rep.object_sounds = tree.sounds.len();
     rep.object_loops = tree.loops.len();
     let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
-    tree.install_audio(set, true);
+    tree.try_install_audio(set).map_err(|e| invalid(format!("object audio: {e}")))?;
     rep.object_sound_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
     dropped.extend(tree.audio_notes.drain(..).map(|n| format!("object sounds: {n}")));
     rep.hud_sensor = tree.hud_sensor;
@@ -1785,8 +1761,6 @@ fn install_scripts(
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
-    music: u64,
-    bank: Option<&h1sounds::bank::SoundBank>,
     cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
@@ -1841,10 +1815,6 @@ fn install_scripts(
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)
         .map_err(|e| invalid(format!("scripts: {e}")))?;
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
-    // The looping sounds (`lsnd`: music and ambience) the scripts start,
-    // found by the tag-name lookup below.
-    let (looping, looping_dropped, looping_bytes) =
-        install_looping_sounds(h1, set, &c, music, bank);
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).
     // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
@@ -1906,7 +1876,7 @@ fn install_scripts(
     let left = c.resolve_hooks(|h| {
         match h.type_name.as_str() {
             "string_id" => interned.get(&h.token).copied(),
-            "sound" => sounds.get(&h.token).map(|id| id.0),
+            "sound" => sounds.get(&h.token.to_ascii_lowercase()).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
             "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
@@ -1977,9 +1947,6 @@ fn install_scripts(
         samples,
         sounds: sounds.len(),
         sounds_dropped,
-        looping: looping.len(),
-        looping_dropped,
-        looping_bytes,
         missing_calls: c.missing.len(),
         unindexed: c
             .unindexed
@@ -1998,127 +1965,7 @@ fn install_scripts(
 
 /// Converts the `snd!` tags the scripts name (sound hooks and script
 /// references), at most `max` of them, and installs them under their
-/// Halo 1 names with the base's gestalt. When the gestalt's 16-bit indices
-/// overflow, half as many are tried, down to none. Returns each installed
-/// sound's datum by name, and how many were left out.
-/// The Halo 1 `lsnd` tags the scripts name (`looping_sound` hooks), in
-/// first-use order.
-fn looping_names(h1: &H1Map, c: &h1scripts::compile::Compiled) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for h in c.hooks.iter().filter(|h| h.type_name == "looping_sound") {
-        if !names.iter().any(|n| n.eq_ignore_ascii_case(&h.token))
-            && h1.find(h1sounds::looping::LSND, &h.token).is_some()
-        {
-            names.push(h.token.clone());
-        }
-    }
-    names
-}
-
-/// Converts and installs the looping sounds the scripts name, in first-use
-/// order. With a [`SoundBank`] every one of them goes in: their samples
-/// live past a retail `single_player_shared.map` the whole campaign
-/// shares, not in the level's own file, so the map file's size bound
-/// leaves nothing out (`docs/halo1/sounds.md`, "The sound bank"). Without
-/// one they go in while their samples fit in `budget` bytes (0 installs
-/// none). Returns the installed tags, per sound left out why, and the
-/// sample bytes added to this map's own file. The ones that fit go in at
-/// once or none do (a failure leaves `set` as it was).
-fn install_looping_sounds(
-    h1: &H1Map,
-    set: &mut TagSet,
-    c: &h1scripts::compile::Compiled,
-    budget: u64,
-    bank: Option<&h1sounds::bank::SoundBank>,
-) -> (Vec<TagId>, Vec<String>, u64) {
-    let mut loops = Vec::new();
-    let mut dropped = Vec::new();
-    let mut counted: Vec<String> = Vec::new();
-    let mut bytes = 0u64;
-    for n in looping_names(h1, c) {
-        if budget == 0 {
-            dropped.push(format!("{n}: no room"));
-            continue;
-        }
-        let tag = h1.find(h1sounds::looping::LSND, &n).expect("found above");
-        let l = match h1sounds::looping::read_looping(h1, tag) {
-            Ok(l) => l,
-            Err(e) => {
-                dropped.push(format!("{n}: {e}"));
-                continue;
-            }
-        };
-        if bank.is_none() {
-            let new: u64 = l
-                .sounds
-                .iter()
-                .filter(|(s, _)| !counted.contains(s))
-                .map(|(_, s)| sample_bytes(s))
-                .sum();
-            if bytes + new > budget {
-                dropped.push(format!("{n}: over the map file's size limit"));
-                continue;
-            }
-            bytes += new;
-        }
-        counted.extend(l.sounds.iter().map(|(s, _)| s.clone()));
-        loops.push(l);
-    }
-    match on_trial(set, |trial| {
-        h1sounds::looping::install_looping_with(trial, &loops, bank)
-    }) {
-        Ok(ids) => (ids, dropped, bytes),
-        Err(e) => {
-            dropped.extend(loops.iter().map(|l| format!("{}: {e}", l.name)));
-            (Vec::new(), dropped, 0)
-        }
-    }
-}
-
-/// `f` on a copy of `set`, which becomes `set` when it succeeds; when it
-/// fails `set` is as it was. The pinned base's file (the biggest part of a
-/// set, which nothing but the builder reads) is moved into the copy and
-/// back, not copied.
-fn on_trial<T, E>(
-    set: &mut TagSet,
-    f: impl FnOnce(&mut TagSet) -> std::result::Result<T, E>,
-) -> std::result::Result<T, E> {
-    let file = set.pinned.as_mut().map(|p| std::mem::take(&mut p.file));
-    let mut trial = set.clone();
-    if let (Some(p), Some(file)) = (trial.pinned.as_mut(), file) {
-        p.file = file;
-    }
-    match f(&mut trial) {
-        Ok(v) => {
-            *set = trial;
-            Ok(v)
-        }
-        Err(e) => {
-            if let Some(p) = set.pinned.as_mut() {
-                p.file = std::mem::take(
-                    &mut trial
-                        .pinned
-                        .as_mut()
-                        .expect("a trial keeps the pinned image it was given")
-                        .file,
-                );
-            }
-            Err(e)
-        }
-    }
-}
-
-/// A converted sound's sample bytes in the map file, each chunk rounded up
-/// to the builder's 0x1000 alignment at most.
-pub(crate) fn sample_bytes(s: &h1sounds::ConvertedSound) -> u64 {
-    s.ranges
-        .iter()
-        .flat_map(|r| &r.permutations)
-        .flat_map(|p| &p.chunks)
-        .map(|c| (c.len() as u64).next_multiple_of(0x1000))
-        .sum()
-}
-
+/// Halo 1 names with the level's other sounds.
 fn install_named_sounds(
     h1: &H1Map,
     set: &mut TagSet,
@@ -2139,36 +1986,33 @@ fn install_named_sounds(
                 .map(|(_, n)| n.clone()),
         );
     for n in wanted {
-        if !names.contains(&n) && h1.find(snd, &n).is_some() {
-            names.push(n);
+        if let Some(tag) = h1.find(snd, &n)
+            && !names.contains(&tag.name)
+        {
+            names.push(tag.name.clone());
         }
     }
     let all = names.len();
-    let mut take = all.min(max);
-    let mut converted = Vec::new();
-    for n in names.iter().take(take) {
-        let tag = h1.find(snd, n).expect("found above");
-        let s = h1sounds::Sound::read(h1, tag).map_err(|e| invalid(format!("{n}: {e}")))?;
-        let cs =
-            h1sounds::convert_sound(&s, h1.bytes()).map_err(|e| invalid(format!("{n}: {e}")))?;
-        converted.push((n.clone(), cs));
-    }
-    while take > 0 {
-        match on_trial(set, |trial| {
-            h1sounds::install_sounds(trial, converted[..take].to_vec())
-        }) {
-            Ok(ids) => {
-                let out = converted[..take]
-                    .iter()
-                    .map(|(n, _)| n.clone())
-                    .zip(ids)
-                    .collect();
-                return Ok((out, all - take));
-            }
-            Err(_) => take /= 2,
+    let take = all.min(max);
+    let mut ids = HashMap::new();
+    let mut needed = Vec::new();
+    for name in names.into_iter().take(take) {
+        if let Some(id) = set.find(FourCC(*b"snd!"), &name)
+            && matches!(set.tag(id).map(|t| &t.payload), Some(TagPayload::Built(_)))
+        {
+            ids.insert(name.to_ascii_lowercase(), id);
+        } else {
+            needed.push(name);
         }
     }
-    Ok((HashMap::new(), all))
+    let installed = h1sounds::convert::install_source_sounds(h1, set, needed)
+        .map_err(|e| invalid(format!("script sounds: {e}")))?;
+    ids.extend(
+        installed
+            .into_iter()
+            .map(|(n, id)| (n.to_ascii_lowercase(), id)),
+    );
+    Ok((ids, all - take))
 }
 
 /// The scenario's simulation table (`+0x3d8`, a datum each): the object,
@@ -2201,34 +2045,4 @@ pub fn write_simulation_table(set: &mut TagSet) -> usize {
         put_block(root, SIMULATION_TABLE, 4, list);
     }
     n
-}
-
-/// Bounds the clusters' background sounds' samples to `budget` bytes: the
-/// palette's entries in order while they fit; the rest keep their palette
-/// entry and their tracks (so the clusters' indices and the tag's shape
-/// stand) but no sounds: each track's and detail's sound is a null
-/// reference. Returns the silenced ones' names.
-pub fn bound_ambience(a: &mut h1convert::ambience::Ambience, budget: u64) -> Vec<String> {
-    if budget == u64::MAX {
-        return Vec::new();
-    }
-    let mut counted: Vec<String> = Vec::new();
-    let mut bytes = 0u64;
-    let mut silenced = Vec::new();
-    for (entry, l) in &mut a.backgrounds {
-        let new: u64 = l
-            .sounds
-            .iter()
-            .filter(|(n, _)| !counted.contains(n))
-            .map(|(_, s)| sample_bytes(s))
-            .sum();
-        if bytes + new <= budget {
-            bytes += new;
-            counted.extend(l.sounds.iter().map(|(n, _)| n.clone()));
-            continue;
-        }
-        silenced.push(format!("{entry} ({})", l.name));
-        l.sounds.clear();
-    }
-    silenced
 }

@@ -441,10 +441,9 @@ over every `vehi` in the converted set.
 **Navpoints** take Halo 2's `default` (0): Halo 1's navpoint types
 (`default_red`, ...) are not mapped to Halo 2's. **Tags** (looping sounds,
 effects, damage, animation graphs) resolve by the Halo 1 tag's name among
-the converted tags of the Halo 2 group. `lsnd` converts with
-`h1sounds::looping` (`read_looping`, `install_looping`; the multiplayer
-converter uses it for background sounds), but `h1campaign` doesn't call it
-yet, so looping sounds stay `none`.
+the converted tags of the Halo 2 group. **Built.** The campaign installs every source `lsnd`
+before script compilation and retains it by name through the final map
+build. [Loop conversion and disc audit](sounds.md#campaign-loops-and-cache-slots-built).
 
 **AI.** Most `ai` hooks left were squads `h1ai` dropped for having no
 starting locations. Retail Halo 2 keeps such squads (06b: 28 of 170;

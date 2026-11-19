@@ -759,6 +759,8 @@ points! { ALL;
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
     /// per-frame update `0x18c060`), not inside `SOUND_UPDATE`'s window.
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
+    /// Per-type file bound called by the cache header validator (0x1228b8).
+    CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";
     /// The map cache copy machine: one state step per call (submit a
     /// 1 MiB read or write job, take its result, checksum, publish), AL
     /// returned and ignored by its callers. They step it only while the

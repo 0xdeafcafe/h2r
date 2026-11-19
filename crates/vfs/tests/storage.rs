@@ -44,6 +44,25 @@ fn linked(config: Config) -> Vfs {
 }
 
 #[test]
+fn enlarged_campaign_slots_reserve_space_on_each_utility_volume() {
+    let temp = TempDir::new();
+    let mut config = Config::new(&temp.0, 0x4D530064);
+    config.extra_cache_bytes = 2 * (32 << 20);
+    let mut vfs = Vfs::with_storage(config).unwrap();
+    for (partition, mib) in [(1, 5120u64), (2, 500), (3, 814), (4, 814), (5, 814)] {
+        let path = format!(r"\Device\Harddisk0\Partition{partition}");
+        let root = vfs.open(&path, OpenOptions::default()).unwrap().handle;
+        let info = vfs.query_volume_information(root).unwrap();
+        let bytes = info.total_allocation_units
+            * u64::from(info.bytes_per_sector)
+            * u64::from(info.sectors_per_allocation_unit);
+        assert_eq!(bytes, mib << 20, "{path}");
+        vfs.close(root).unwrap();
+    }
+    assert_eq!(vfs.extra_disk_bytes(), 3 * (64 << 20));
+}
+
+#[test]
 fn with_storage_creates_no_links() {
     let temp = TempDir::new();
     let mut vfs = Vfs::with_storage(Config::new(&temp.0, 0x4D530064)).unwrap();
