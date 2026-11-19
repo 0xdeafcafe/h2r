@@ -829,25 +829,108 @@ How the game lights an object's layer-3 pass (Code, `h2 disasm`;
 - **The transform.** `0x0004d830` uploads a single-node object's matrix
   (record `+0x1c`) as three registers at hardware `c[50]`.
 - **The port.** `object_lighting::vector_input` and `scalar_input` give
-  every lighting input but vector 40 and scalar 37 (a value of the object
-  whose handle is the lighting's `+0`, walked up its parents by
-  `0x00033670`); `tests/object_lighting_differential.rs` checks them bit
-  for bit (NaN for NaN) against the lifted `0x00033980` and `0x000336f0`
-  on seeded states. The hook copies each drawn object's `0x78` lighting
+  every lighting input. Vector 40 (all three components) and scalar 37
+  are `object_lighting::root_value` (`0x00033670`): the object whose
+  handle is the lighting's `+0` (`0x000badc0`, mask -1: index below the
+  array's count, salt non-zero and equal), walked up its parents
+  (`+0x14`) while its byte `+0xaa` is set, the elements read straight
+  from `[0x004e0300] + 0x44` at a stride of 12; the root's `+0x2b0`
+  clamped to 0..1, or 0 when a handle does not resolve. Both read
+  `[[0x00485a58]]` unchecked, so without a lighting they are not given.
+  The value is taken with the lighting's words at hook time.
+  `tests/object_lighting_differential.rs` checks every input bit for bit
+  (NaN for NaN) against the lifted `0x00033980` and `0x000336f0` on
+  seeded states, 40 and 37 over a seeded object array of parents,
+  salts and empty elements. The hook copies each drawn object's `0x78` lighting
   bytes and the inputs' defaults into its `ObjectFrame`
   (`objects::object_lighting`: body `+0xcc`, the record still its own),
   so the pass has the frame's values whatever the cache does next.
-- **The refusal.** The native pass does not apply them yet: its program
-  is ours, not the game's `lightmap_dynamic`/`sh_dynamic`, and what each
-  register means (ambient, a light's colour or direction) is the vertex
-  programs' business, not read. So a material whose layer-3 pass reads
-  any lighting input in any implementation
-  (`look::object_lighting_input`) is refused at load and keeps its D3D
-  draws: never drawn unlit. Expect most lit objects back on D3D until the
-  next step, which runs the object passes through their own vertex
-  programs (as the world's go through `program`) with `c[18 + i]` filled
-  from these inputs (`ResolvedImplementation::vector_bindings`) and the
-  node matrices where the programs read them.
+- **The refusal.** The native models pass does not apply them: its
+  program is ours, not the game's `lightmap_dynamic`/`sh_dynamic`. So a
+  material whose layer-3 pass reads any lighting input in any
+  implementation is refused at load and keeps its D3D draws: never drawn
+  unlit (`object_program::lighting_refusal`, which names an input the
+  object path cannot give, or says the program draw is not wired yet).
+
+### Object programs
+
+An object material whose layer-3 pass reads the object's lighting is
+drawn with the game's own vertex program and pixel shader
+(`native_render::object_program`, `object_program_gpu`), each piece with
+synthetic tests:
+
+- **The vertex block.** What the game's upload would hold for one drawn
+  object: `c[0..18]` the view's; `c[18 + i]` the implementation's
+  constants with every engine binding that reads the lighting put in from
+  the port (`object_vertex_uniforms`: the vector inputs through
+  `ResolvedImplementation::vector_bindings`, the scalar ones through the
+  new `scalar_bindings`, both keeping only what later bindings leave);
+  `c[50..]` the node rows; `c[170..173]` the decompression.
+  `inputs_supported` refuses an implementation that reads any other
+  per-draw input (time, the camera, object functions) or puts a lighting
+  input into a combiner constant (that would need a per-object pixel
+  block).
+- **The node rows** (`node_rows`, Code): a record with a matrix at
+  `+0x1c` uploads it transposed, without its scale, as three registers at
+  hardware `c[50]` (`0x0004d830`). Otherwise `0x0004d8e0` reads the
+  record's `+8` node block handle (-1: nothing is uploaded, so the object
+  is refused): the block at `0x00487b1c + (handle & 0x0fffffff)` holds per
+  part (`+0xc & 0xf`) a first matrix and a count at `+4 + 4·part`, and the
+  matrices at `+0x44 + 0x30·n`, twelve floats in register order. A model
+  record (`+0xc` bits 29..31 = 1) whose section names a node
+  (`0x0004cb80`: the `mode`'s sections, stride `0x5c`, the i16 at
+  `+0x2c`) uploads one matrix (the part's first when it has one, else
+  that node's); anything else uploads the part's whole palette
+  (`0x000152a0`), `c[50 + 3·k]` for matrix `k`, which the skinned program
+  indexes with `a0.x`. A palette that would run past `c[170]` is refused.
+- **The decompression** (`decompression_rows`, `0x0001cdd0` from the
+  section setup `0x0004d7c0`): `c[170]` half the position bounds' extent
+  (w 1), `c[171]` their centre (w 0), `c[172]` the texture coordinate's
+  scale and offset; the identity where the section's flag is clear.
+- **The program** (`object_look`, `compile_object`): the implementation's
+  look with its engine constants allowed, translated as the world's are;
+  every constant read directly must be one of the above, and a read
+  relative to `a0.x` must start in the node rows.
+
+- **The vertex streams** (`object_streams`, Code). The draw sets its
+  streams through `0x0001caa0`: the section's `vrtx` classification
+  (`0x0001cb20`: the geometry classification at section `+0x18`, 0..2 as
+  they are, 3 the influences byte `+0x14` plus 2 when the tag has that
+  many, else 0), its program, and the streams (`0x0001c8c0`): the
+  section's vertex buffer descriptors in order, each stream's format the
+  record of its type in the table at `0x0043f408` (`0x15` bytes a type:
+  the type, then up to ten (semantic, format) pairs; semantic `0xfe` skips
+  bytes, any other negative one ends it). The classification lists per
+  register `v<i>` the semantic it reads; the declaration puts each
+  attribute in the register reading its semantic. The format codes are
+  the Xbox vertex types in order (float 1..4, packed bytes 1..4, shorts
+  1..4, normalised shorts 1..4, normalised packed 11:11:10, `D3DCOLOR`).
+  The table is read from guest memory when the map is first seen, never
+  copied; a section's streams are expanded once per declaration to
+  float4s, so the programs see the values the hardware's fetch gives.
+- **The implementation** (`object_implementation`, Code `0x0004cbf0`,
+  `0x0004cd1b`..`0x0004cd41`): 2 when the template's level (taken as the
+  first, S) draws layer 15 (bit 15 of its layer mask), else 1 when the
+  lighting's byte `+0x76` is `0xff`, else 0. Without a lighting the build
+  keeps what `0x00015d70` chose (not traced): such an object stays on D3D.
+  A material is drawn only when every implementation it may draw (0 and 1,
+  or 2) compiles for every section it is in and its stage bitmaps decode
+  (linear textures refused, as the world programs do); otherwise it stays
+  on D3D whole, with the reason logged.
+- **The node rows at the hook** (`objects::attach_node_rows`). The
+  observer copies, for each record a drawn object's items name, the rows
+  that record's draw would upload, one set per mode section (two records
+  of a section that would upload different rows refuse the object). Under
+  the pipelined render this reads the render's snapshot, as the rest of
+  the observer does (below): the node blocks at `0x00487b1c..` are guest
+  RAM, so they are frame `k`'s. An object of a definition with lit parts
+  is drawn only with its lighting (and the root value inputs 40 and 37
+  read) and every record's rows; else all of it stays on D3D.
+- **The draw** (`LitObjects::encode`). After the models pass, one render
+  pass over the same targets: per drawn (object, lit part) its vertex
+  block (`object_vertex_uniforms` over the view's `c[0..18]`) and pixel
+  block in one buffer at dynamic offsets, as the lights do; the viewport
+  is the whole target, as the programs' own fix-up expects.
 
 ### Pipelined render
 
@@ -1762,11 +1845,38 @@ its own thread, and render-timing does not matter (the call runs).
    with a composite over stale 7 and 8; the plan matches the game's
    control flow bit for bit, so this takes a port that is wrong). A call
    the host cannot plan (a copy after the blur, a target it does not
-   know) is not armed. Tests: d3d `swallow` (exactly the plan's quads
-   dropped and nothing after, the pass placed after the last; a missing
-   or extra quad, another draw or another shape ends it; an unfinished
-   swallow; through the render thread), boot
-   `native_post_glue::tests`, feature `native_post`.
+   know) is not armed.
+
+   Nothing is dropped unless the glow will be drawn. The glow and the
+   A/B's capture are colour-only external passes
+   (`ExternalPass::colour_only`): the composite binds no depth, so the
+   device issues them with none and the GPU backend gives them a scratch
+   depth (`Backend::external_pass` with the colour as its own depth).
+   The device refuses to arm a drop, dropping nothing, when the pass
+   could not be issued into the targets bound at the entry (no external
+   passes in the backend, no colour target, an unreadable header) or is
+   not colour-only (`Stats::swallow_refusals`). Every pass not issued is
+   counted by reason (`Stats::external_refusals`, `ExternalRefusal`)
+   and each reason logged once (`d3d: an external pass was dropped:
+   ...`). The host then observes its first call with a probe that checks
+   on the GPU's thread that the glow would draw into the target it gets
+   (`native_render::glow::check`: the target can be sampled, is the
+   plan's size, every block compiles); only then are quads dropped. A
+   probe or glow refused keeps every later call on the D3D path (logged).
+   The first A/B on 03a ran headless (no `H2_BOOT_GFX`, so no GPU
+   backend): every pass was dropped (`Unsupported`) after its quads
+   were, and no capture could be made; both are now refused up front and
+   logged. A backend that takes the pass on the render thread and then
+   refuses it there (a multisampled or non-drawable target) is not seen
+   in time: the probe's pass is never encoded, so nothing is dropped.
+
+   Tests: d3d `swallow` (exactly the plan's quads dropped and nothing
+   after, the pass issued colour-only after the last; a missing or extra
+   quad, another draw or another shape ends it; an unfinished swallow;
+   through the render thread; a backend that takes no passes or a pass
+   that needs depth drops nothing; each refusal counted), boot
+   `native_post_glue::tests` (nothing dropped before the probe; every
+   pass colour-only), feature `native_post`.
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
@@ -1840,12 +1950,18 @@ its own thread, and render-timing does not matter (the call runs).
    captured with the D3D path and the native one. `H2_POST_AB=<dir>`
    (`native_post_glue::Ab`) captures the view's colour where the glow
    lands (after the composite; before the screen effects, the fade and
-   the HUD) for the calls numbered `H2_POST_AB_AT` (default 600) and on,
-   `H2_POST_AB_COUNT` of them (default 1), into
+   the HUD) from each call `H2_POST_AB_AT` names (default 600; a list
+   `601,1500,2700`, or a start and a stride `600+500` for ten windows
+   spread over the run, intro and gameplay), `H2_POST_AB_COUNT` calls
+   each (default 1), into
    `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
    under the render scale. With the switch off the hook is placed for it
    and observes the same quads, dropping none, so the D3D side is
-   captured at the same draw. Compare:
+   captured at the same draw. It needs the GPU backend: a headless run
+   writes nothing (logged); set `H2_BOOT_GFX=<dir>
+   H2_BOOT_GFX_EVERY=never`. With the switch on the first call is the
+   probe's (a D3D-side capture if it falls in the window), so start the
+   window after it. Compare:
    - the two captures per pixel, within a small tolerance for filtering
      (max and mean error and the count over it);
    - `swallow_mismatches` 0 and `swallowed_draws` the quads planned on
@@ -1854,7 +1970,58 @@ its own thread, and render-timing does not matter (the call runs).
      d3d records them: equal (the game's code left the same states);
    - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
-   function values (`0x00134fc0`) read at the call.
+   function values (`0x00134fc0`) read at the call. Traced (Code,
+   `h2 disasm`); nothing built yet.
+   - **The loop** (`0x00013a0d..0x00013b72`): the window `0x004b9dd0`
+     as four floats twice (the corners), then per entry of the scenario
+     block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes): skipped when
+     its tag datum `+0x14` is -1 or both function indices `+0x20`/`+0x22`
+     are -1; otherwise each index not -1 is evaluated by `0x00134fc0`
+     (ECX the index; the scenario's function block `[0x004e6740]`,
+     `0x20` bytes each, through the tag function evaluator `0x0013b390`)
+     into two floats, and with either non-zero
+     `0x0002d140(values, 2, 2, corners)` runs with EAX the datum (`ret
+     0x10`).
+   - **`0x0002d140`** copies the four value words to `0x004c19b0..bc`
+     and returns at once for a datum of -1, an empty window, or a target
+     override `[0x004858b8]` set. The datum is an `egor` tag; its shader
+     reference (`+0x44`, a template through `0x00137bd0` when its group is
+     `MTRP` or `3trp`) gives the implementation count. Then per entry of
+     its pass block (`+0x88` count, `+0x8c` address, `0xac` bytes):
+     - the pass's implementation index (`+0x08`, -1 the loop index) and
+       one of four bytes `+0x0c..0x0f` chosen by which of the two values
+       are zero (-1: skipped);
+     - its target by `+0x60` (the jump table at `0x0002db68`: the view
+       at full size, or a half or quarter of the window, `0x0001ddd0`);
+     - `0x00016610(shader, 15, index, byte, ...)`, the shader's layer-15
+       pass (a template pass, as the world's and the transparents'), then
+       the quad pushed by hand: `0x417fc` (`SET_BEGIN_END`, 6) and per
+       vertex up to four `SET_VERTEX_DATA4F` texture coordinates (the
+       kinds at `+0x50`, jump table `0x0002db78`: from the corners, the
+       window over its size, or scaled by `[0x0045dbbc]`/`[0x0045dc20]`)
+       and the position (`0x101a00`, z and w `[0x0045dd40]`), S: a strip of
+       `2 x 2` vertices for the call's `(2, 2)`; `0x003fb480` ends it;
+     - then per entry of its convolution block (`+0xa4` count, `+0xa8`
+       address, `0x5c` bytes): a size from the target's (`0x0001dd60`)
+       times `+0x58`, at least 64 and its area capped at `0x12c00` by a
+       square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first)
+       or `0x1b`, and with flag bit 2 `0x00021360` (not traced) else the
+       blur `0x000211a0` (ported: `engine::glow::blur`), its result in
+       `[0x00485a78 + 4 i]`.
+     - At the end the targets 1, `0x19`, `0x19` and `0x1b` are set back,
+       `[0x004670bc]` set, the draw state reset (`0x00016b10`) and
+       `0x00485a78`/`7c` cleared.
+   - **What the native side needs.** The draws can be swallowed as the
+     glow's are (the hand-pushed strip is an inline `Begin(6)` of four
+     vertices; the blurs are `0x00034a90` quads). Drawing them natively
+     needs, in order: (a) the plan: which entries draw (the function
+     values, `0x00134fc0` over `0x0013b390`, a port with its own
+     differential test), and per pass the implementation, target and
+     texture coordinates (pure, from the tag); (b) the layer-15 template
+     pass through `program::translate_pass` (the world's and lights'
+     path) with the engine inputs the screen-effect pass reads; (c)
+     `0x00021360` traced and ported beside `blur`; (d) targets `0x19` to
+     `0x1b` as stand-ins like 7 and 8. Each is a slice; (a) first.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

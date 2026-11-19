@@ -98,6 +98,56 @@ pub(crate) fn leased_to(s: &State, session: &str, author: &Author, xuid: Xuid) -
         .is_some_and(|r| r.host == *host && r.bots.iter().any(|b| b.xuid == xuid))
 }
 
+/// Whether a host's new session `to` may carry the roster of its previous
+/// session `from` (`RosterRequest::carry_from`, docs/game/bots.md §9.5):
+/// `old` is `from` as the server has it and `roster` its latest roster.
+/// Halo 2 hands its lobby to a new session as a game starts and ends
+/// (deletes the old, advertises a new); the bots go with it, so they keep
+/// their accounts. So `from` must be `host`'s own session, ended (deleted
+/// or expired) no more than [`bots::CARRY_WINDOW_S`] before `now`, with a
+/// roster `host` made. Otherwise why not.
+pub fn may_carry(
+    old: Option<&live_proto::session::Session>,
+    roster: Option<&Rostered>,
+    host: Xuid,
+    from: &str,
+    to: &str,
+    now: i64,
+) -> Result<(), String> {
+    if from == to {
+        return Err("a session cannot carry its own roster".into());
+    }
+    let old = old
+        .filter(|v| v.host_xuid == host)
+        .ok_or("no earlier session of yours by that id")?;
+    if old.state == "open" {
+        return Err("the earlier session is still open".into());
+    }
+    if now - old.last_activity > bots::CARRY_WINDOW_S {
+        return Err(format!(
+            "the earlier session ended more than {} s ago",
+            bots::CARRY_WINDOW_S
+        ));
+    }
+    if !roster.is_some_and(|r| r.host == host) {
+        return Err("the earlier session has no roster of yours".into());
+    }
+    Ok(())
+}
+
+/// The roster `to` carries from `from` ([`may_carry`]).
+fn carried<'a>(
+    s: &'a State,
+    host: Xuid,
+    from: &str,
+    to: &str,
+    now: i64,
+) -> Result<&'a Rostered, String> {
+    let roster = s.bots.roster_at(from, u64::MAX);
+    may_carry(s.sessions.get(from), roster, host, from, to, now)?;
+    Ok(roster.expect("checked"))
+}
+
 pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     let b = &e.body;
     match b.kind.as_str() {
@@ -359,15 +409,35 @@ impl Live {
         {
             return Err(invalid("playlist must be [A-Za-z0-9_-]{1,64}"));
         }
-        let (count, picked, mean) = {
+        let (count, picked, mean, kept) = {
             let s = self.model.read();
+            // A handoff: the earlier session's bots first, as they were.
+            let kept: Vec<(Issued, u8, f32)> = match &req.carry_from {
+                Some(from) => {
+                    let r = carried(&s, host, from, &req.session_id, crate::app::now())
+                        .map_err(|e| invalid(format!("carry_from: {e}")))?;
+                    r.bots
+                        .iter()
+                        .filter_map(|b| Some((s.bots.bot(b.xuid)?.clone(), b.level, b.skill)))
+                        .collect()
+                }
+                None => Vec::new(),
+            };
             let session = s
                 .sessions
                 .get(&req.session_id)
                 .filter(|v| v.host_xuid == host)
                 .ok_or_else(|| not_found("no session of yours by that id"))?;
             let humans: Vec<Xuid> = std::iter::once(host)
-                .chain(session.players.keys().copied())
+                // The session's players include the bots the host
+                // reported (§9.5): they are not humans.
+                .chain(
+                    session
+                        .players
+                        .keys()
+                        .copied()
+                        .filter(|x| s.bots.bot(*x).is_none()),
+                )
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect();
@@ -376,37 +446,56 @@ impl Live {
             if count == 0 {
                 return Err(invalid("the session has no room for bots"));
             }
-            match &req.playlist {
-                Some(p) => {
-                    let levels: u32 = humans
-                        .iter()
-                        .map(|x| u32::from(s.ranks.standing(*x, p).level))
-                        .sum();
-                    let mean = (levels / humans.len() as u32) as u8;
-                    let picked = s
-                        .ranks
-                        .nearest(p, mean, count, s.bots.persistent.iter().copied());
-                    let picked: Vec<(Issued, u8)> = picked
-                        .into_iter()
-                        .filter_map(|x| {
-                            Some((s.bots.bot(x)?.clone(), s.ranks.standing(x, p).level))
-                        })
-                        .collect();
-                    (count, picked, Some(mean))
-                }
-                None => (count, Vec::new(), None),
+            let kept: Vec<(Issued, u8, f32)> = kept.into_iter().take(count).collect();
+            if kept.len() == count {
+                (count, Vec::new(), None, kept)
+            } else {
+                let need = count - kept.len();
+                let (picked, mean) = match &req.playlist {
+                    Some(p) => {
+                        let levels: u32 = humans
+                            .iter()
+                            .map(|x| u32::from(s.ranks.standing(*x, p).level))
+                            .sum();
+                        let mean = (levels / humans.len() as u32) as u8;
+                        let picked = s.ranks.nearest(
+                            p,
+                            mean,
+                            need,
+                            s.bots
+                                .persistent
+                                .iter()
+                                .copied()
+                                .filter(|x| !kept.iter().any(|(b, _, _)| b.xuid == *x)),
+                        );
+                        let picked: Vec<(Issued, u8)> = picked
+                            .into_iter()
+                            .filter_map(|x| {
+                                Some((s.bots.bot(x)?.clone(), s.ranks.standing(x, p).level))
+                            })
+                            .collect();
+                        (picked, Some(mean))
+                    }
+                    None => (Vec::new(), None),
+                };
+                (count, picked, mean, kept)
             }
         };
-        let made = self.issue(count - picked.len(), false).await?;
+        let made = self.issue(count - kept.len() - picked.len(), false).await?;
         let mean_level = mean.unwrap_or(live_proto::rank::MIN_LEVEL);
         let skill_at = |level: u8| match (&req.playlist, req.skill) {
             (Some(_), _) => live_proto::rank::bot_skill(level),
             (None, Some(k)) => k,
             (None, None) => bots::NORMAL,
         };
-        let entries: Vec<(Issued, u8)> = picked
+        let entries: Vec<(Issued, u8, f32)> = kept
             .into_iter()
-            .chain(made.into_iter().map(|b| (b, mean_level)))
+            .chain(
+                picked
+                    .into_iter()
+                    .chain(made.into_iter().map(|b| (b, mean_level)))
+                    .map(|(b, level)| (b, level, skill_at(level))),
+            )
             .collect();
         let rostered = Rostered {
             session_id: req.session_id.clone(),
@@ -414,12 +503,12 @@ impl Live {
             playlist: req.playlist.clone(),
             bots: entries
                 .iter()
-                .map(|(b, level)| RosteredBot {
+                .map(|(b, level, skill)| RosteredBot {
                     xuid: b.xuid,
                     persistent: b.persistent,
                     level: *level,
                     team: None,
-                    skill: skill_at(*level),
+                    skill: *skill,
                 })
                 .collect(),
         };
@@ -428,7 +517,7 @@ impl Live {
             bots: entries
                 .iter()
                 .zip(&rostered.bots)
-                .map(|((b, level), r)| RosterBot {
+                .map(|((b, level, _), r)| RosterBot {
                     xuid: b.xuid,
                     gamertag: b.gamertag.clone(),
                     persistent: b.persistent,

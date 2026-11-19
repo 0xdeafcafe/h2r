@@ -175,6 +175,11 @@ pub struct ResolvedImplementation {
     /// another value of those inputs can be put in without resolving
     /// again.
     pub vector_bindings: Vec<VectorBinding>,
+    /// Where its engine scalar inputs landed (modes 0 to 3), the same way:
+    /// `source` a scalar input; a vertex target's `components` the one
+    /// component it writes, a pixel target's `mask` its lanes (the
+    /// constant's transform not kept: enough to tell what reads it).
+    pub scalar_bindings: Vec<VectorBinding>,
     /// Hardware vertex constants (`c[18 + i]`, `0x00018eab`).
     pub vertex_constants: Vec<Register>,
     /// Vertex attribute defaults `v[i]` (`SET_VERTEX_DATA4F_M`, `0x00018e3b`).
@@ -585,6 +590,8 @@ impl ShaderLibrary {
         // Every engine binding's target in order, with the vector input it
         // copies (mode 4), for `vector_bindings`.
         let mut engine_writes: Vec<(VectorTarget, Option<u8>)> = Vec::new();
+        // The same targets with the scalar input each copies (modes 0..3).
+        let mut scalar_writes: Vec<(VectorTarget, Option<u8>)> = Vec::new();
 
         // 0x00019be0: engine-driven vertex constants (after instance vectors).
         for e in &spas.externals[imp.external_vertex_constants.indices()] {
@@ -604,14 +611,13 @@ impl ShaderLibrary {
             )?;
             written[bank][reg] = 0xf;
             origin[bank][reg] = Origin::Engine;
-            engine_writes.push((
-                VectorTarget::Vertex {
-                    bank: bank as u8,
-                    reg: reg as u8,
-                    components: engine_mode_components(mode),
-                },
-                (mode == 4).then_some(e.bytes[3]),
-            ));
+            let target = VectorTarget::Vertex {
+                bank: bank as u8,
+                reg: reg as u8,
+                components: engine_mode_components(mode),
+            };
+            engine_writes.push((target, (mode == 4).then_some(e.bytes[3])));
+            scalar_writes.push((target, (mode <= 3).then_some(e.bytes[3])));
         }
 
         // 0x00019ca0: engine-driven pixel constants.
@@ -643,15 +649,14 @@ impl ShaderLibrary {
                 inputs,
             )?;
             if let Some((c1, slot)) = at {
-                engine_writes.push((
-                    VectorTarget::Pixel {
-                        c1,
-                        slot,
-                        mask: CHANNEL_MASKS[mode],
-                        half,
-                    },
-                    (mode == 4).then_some(e.bytes[3]),
-                ));
+                let target = VectorTarget::Pixel {
+                    c1,
+                    slot,
+                    mask: CHANNEL_MASKS[mode],
+                    half,
+                };
+                engine_writes.push((target, (mode == 4).then_some(e.bytes[3])));
+                scalar_writes.push((target, (mode <= 3).then_some(e.bytes[3])));
             }
         }
 
@@ -703,6 +708,7 @@ impl ShaderLibrary {
             per_draw_inputs: per_draw_inputs(spas, imp),
             input_reads: input_reads(spas, imp),
             vector_bindings: vector_bindings(&engine_writes),
+            scalar_bindings: vector_bindings(&scalar_writes),
             vertex_constants: regs(1),
             vertex_defaults: regs(0),
             animated,

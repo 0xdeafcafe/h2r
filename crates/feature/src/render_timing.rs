@@ -669,6 +669,16 @@ const CURRENT_LAYER: u32 = 0x0046_7130;
 /// How many call sites the log lists.
 pub const TOP_SITES: usize = 15;
 
+/// [`TOP_SITES`], or `H2_RENDER_TIMING_SITES=<n>` (every one of the scene
+/// passes' 98 with 98: a site out of the top, such as
+/// `render_screen_effects`' `-> 0x00013870`).
+fn top_sites_listed() -> usize {
+    static N: OnceLock<usize> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("H2_RENDER_TIMING_SITES").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(TOP_SITES)
+    })
+}
+
 impl RenderTiming {
     /// Reads the frame stats' scope clocks and logs once a second.
     pub fn new() -> Self {
@@ -881,7 +891,7 @@ fn log(s: &mut State, every: Option<u64>) {
     s.last_log_ns = now;
     let w = std::mem::take(&mut s.window);
     eprintln!("render-timing: {}", w.line());
-    for l in w.top_sites(TOP_SITES) {
+    for l in w.top_sites(top_sites_listed()) {
         eprintln!("render-timing:   {l}");
     }
     for l in w.layer_lines() {

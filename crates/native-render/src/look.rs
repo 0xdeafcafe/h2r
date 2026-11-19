@@ -312,6 +312,28 @@ pub fn vertex_program(meta: &Metadata, address: u32, index: u32) -> Option<Vec<u
     Some(meta.bytes(at, size as usize).ok()?.to_vec())
 }
 
+/// The classification count of the `vrtx` tag at `address`.
+pub fn classification_count(meta: &Metadata, address: u32) -> Option<u32> {
+    Some(u32::from_le_bytes(meta.bytes(address + 4, 4).ok()?.try_into().ok()?))
+}
+
+/// The input semantics of classification `index` of the `vrtx` tag at
+/// `address`: register `v<i>` reads semantic `[i]` (classification `+4`
+/// the count, `+8` the u16 list; `0x0001c3b0`).
+pub fn vertex_semantics(meta: &Metadata, address: u32, index: u32) -> Option<Vec<u16>> {
+    let word = |a: u32| -> Option<u32> { Some(u32::from_le_bytes(meta.bytes(a, 4).ok()?.try_into().ok()?)) };
+    if index >= word(address + 4)? {
+        return None;
+    }
+    let entry = word(address + 8)? + index * CLASSIFICATION;
+    let (count, at) = (word(entry + 4)?, word(entry + 8)?);
+    if count > 16 {
+        return None;
+    }
+    let bytes = meta.bytes(at, 2 * count as usize).ok()?;
+    Some(bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect())
+}
+
 /// [`vertex_program`] of a `vrtx` tag in `map`, world-space classification.
 pub fn world_program<R: Read + Seek>(map: &mut Map<R>, meta: &Metadata, vrtx: TagId) -> Option<Vec<u8>> {
     let address = map.tag(vrtx).ok()?.location?.address;
@@ -356,6 +378,7 @@ mod tests {
             per_draw_inputs: false,
             input_reads: Default::default(),
             vector_bindings: Vec::new(),
+            scalar_bindings: Vec::new(),
             vertex_constants: vec![Register { index: 19, value: [10.0, 10.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),

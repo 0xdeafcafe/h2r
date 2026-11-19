@@ -129,6 +129,7 @@ pub fn compile_pass(
         vertex_constants: &look.vertex_constants,
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
+        provided_inputs: INPUT_MASK,
     })?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
@@ -353,6 +354,9 @@ pub(crate) struct PassParts<'a> {
     pub vertex_constants: &'a [Register],
     pub vertex_defaults: &'a [Register],
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    /// The `v` registers the vertex buffer supplies (bit `n`: `v<n>`);
+    /// [`INPUT_MASK`] for a world vertex.
+    pub provided_inputs: u16,
 }
 
 /// A translated pass.
@@ -363,7 +367,7 @@ pub(crate) struct Translated {
     pub signed: [[bool; 4]; 4],
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
-    /// `v<n>` read from the vertex stream (within [`INPUT_MASK`]).
+    /// `v<n>` read from the vertex stream (within `provided_inputs`).
     pub inputs: u16,
 }
 
@@ -371,11 +375,11 @@ pub(crate) struct Translated {
 /// with the instance's constants; or why the pass stays on the D3D path.
 pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
-    let unsupplied = program.inputs_read() & !INPUT_MASK & !defaults_mask(p.vertex_defaults);
+    let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
     if unsupplied != 0 {
         return Err(format!("vertex program reads registers we do not supply ({unsupplied:#06x})"));
     }
-    let vs = vsh::translate(&program, &VertexOptions { provided_inputs: INPUT_MASK, ..Default::default() })
+    let vs = vsh::translate(&program, &VertexOptions { provided_inputs: p.provided_inputs, ..Default::default() })
         .map_err(|e| format!("vertex program: {e:?}"))?;
     let def = PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
     let samplers: [Option<StageStates>; 4] = std::array::from_fn(|n| p.stage_states.get(n).copied());
@@ -436,7 +440,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
         // Compared with the alpha rounded to 1/255 (`xps.alpha_ref.x`).
         pixel.alpha_ref = [f32::from(reference), 0.0, 0.0, 0.0];
     }
-    let inputs = program.inputs_read() & INPUT_MASK;
+    let inputs = program.inputs_read() & p.provided_inputs;
     Ok(Translated { wgsl, samplers, dims: ps.textures, signed, vertex, pixel, inputs })
 }
 

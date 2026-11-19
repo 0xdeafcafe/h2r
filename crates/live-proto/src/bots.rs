@@ -107,7 +107,29 @@ pub struct RosterRequest {
     /// A team game: the server may set teams.
     #[serde(default)]
     pub teams: bool,
+    /// The host's previous session (16 hex digits), when the game handed
+    /// its lobby to this one (Halo 2 deletes the lobby's session and
+    /// advertises a new one as a game starts and ends): the server rosters
+    /// the bots of that session's roster again, so they keep their
+    /// accounts and names ([`CARRY_WINDOW_S`], docs/game/bots.md §9.5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub carry_from: Option<String>,
 }
+
+/// The first two bytes of every phantom bot's machine id (the host's
+/// `bots::phantom::MACHINE_PREFIX`): `C1` has the multicast bit set, so no
+/// console's Ethernet address starts with it. A remote player on such a
+/// machine is a phantom bot, whichever one.
+pub const PHANTOM_MACHINE_PREFIX: [u8; 2] = [0xc1, 0xa4];
+
+/// Whether `machine` is a phantom bot's.
+pub fn is_phantom_machine(machine: [u8; 6]) -> bool {
+    machine[..2] == PHANTOM_MACHINE_PREFIX
+}
+
+/// How long after the host's previous session ended (its last activity:
+/// the delete) a new session may carry its roster.
+pub const CARRY_WINDOW_S: i64 = 120;
 
 /// The roster: the bots one session runs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -348,8 +370,23 @@ mod tests {
                 playlist: None,
                 count: 4,
                 skill: None,
-                teams: false
+                teams: false,
+                carry_from: None,
             }
+        );
+        let r: RosterRequest = serde_json::from_str(
+            r#"{"session_id": "0123456789abcdef", "count": 4, "carry_from": "fedcba9876543210"}"#,
+        )
+        .unwrap();
+        assert_eq!(r.carry_from.as_deref(), Some("fedcba9876543210"));
+        assert!(
+            !serde_json::to_string(&RosterRequest {
+                carry_from: None,
+                ..r
+            })
+            .unwrap()
+            .contains("carry_from"),
+            "absent when not carrying"
         );
     }
 }
