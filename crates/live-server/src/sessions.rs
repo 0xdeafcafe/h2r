@@ -178,9 +178,13 @@ impl Live {
             if matches!(b.kind.as_str(), session::JOINED | session::LEFT) {
                 let p: session::Player = serde_json::from_value(b.data.clone())
                     .map_err(|_| invalid("invalid player"))?;
-                if !self.model.read().accounts.contains_key(&p.xuid)
-                    || p.slot.as_ref().is_some_and(|s| s.len() > 64)
-                {
+                let known = {
+                    let m = self.model.read();
+                    m.accounts.contains_key(&p.xuid)
+                        || crate::bots::leased_to(&m, id, &author, p.xuid)
+                        || (b.kind == session::LEFT && item.players.contains_key(&p.xuid))
+                };
+                if !known || p.slot.as_ref().is_some_and(|s| s.len() > 64) {
                     return Err(invalid("unknown player or invalid slot"));
                 }
             }

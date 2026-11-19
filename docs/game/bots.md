@@ -624,7 +624,12 @@ player with a team) or, as a phantom peer, the map states. Signing the
 bots in as guests is still what an Xbox does, and the only off-retail
 state a bot was in; whether it was the cause is the game run's question.
 For that, a Start press (A or Start from a controller with a profile, on
-`PREGAME_LOBBY_INPUT`) while bots are in logs, before the next
+`PREGAME_LOBBY_INPUT`; or A on the lobby's Start Game row, which the
+list's row handler takes before the screen sees it: `LOBBY_ROW_PRESS`,
+`0x250fb3`, registered at `0x24fb40`, `ecx` the screen, stack 0 the event
+record whose `+4` is the controller, stack 1 a pointer to the row word,
+0 for Start Game, which calls `0x19a2ce` at `0x251051`; `ret 8`) while
+bots are in logs, before the next
 `SOUND_UPDATE`, the game's own start state (a guest call to
 `LOBBY_START_STATE`) with the check that holds it and each bot slot:
 `bots: start state 8, blocked by the party leader check: ...; port 1 0x30
@@ -692,6 +697,7 @@ player, and the game does the rest.
 
 | Offset | Field |
 |---|---|
+| `+0x40` | the host peer: this console's own index (`+0x72d8`) when it hosts |
 | `+0x4c` | membership update number |
 | `+0x54` | peer count |
 | `+0x58` | peers, 16 × `0x10c` (filled by `0x5fbd0`) |
@@ -699,7 +705,8 @@ player, and the game does the rest.
 | `+0x1120` | players, 16 × `0x13c` (added by `0x600f0`) |
 | `+0x4980` | must be 4 for the player diff |
 | `+0x4990` | most peers |
-| `+0x72d8` | the local peer (skipped for views) |
+| `+0x4dac` | protocol: 0 local, 1 synchronous, 2 distributed (Live, System Link) |
+| `+0x72d8` | the local peer: this console's index (skipped for views) |
 | `+0x72dc` | peer channels, 16 × `0x14` (`0x5f900`) |
 | `+0x741c` | state: 5 in the lobby **and in a running game**; 6 to 8 [guess] leaving, host migration and disbanding |
 | `+0x7618` | membership change counter |
@@ -744,6 +751,45 @@ when the state is 5 to 8; otherwise it frees every simulation view and
 drops the simulation's network state (`0x6b040`). 6 is set after the
 leave message `0xd` (`0x61450`), 7 by `0x614a0` and 8 at `0x61646`. So
 "in a game" is state 5 with a game loaded, never 6 to 8.
+
+**Hosting the game** (traced 2026-11-19, `h2 disasm`). The run
+20261119-005001 had its phantoms wait because the simulation was in mode
+4, not 5. The game start (`0x6ec80`, `SESSION_GAME_START`, EDX the
+session; reached from the in-game life-cycle state's enter, `0x6eb90` →
+`0x6ec10` → `0x6ec80` on the squad session `[0x527364]`) picks the mode
+from the protocol at `S+0x4dac` and whether this console hosts, `is_host
+= [S+0x72d8] == [S+0x40]` (`0x6ee60..0x6ee71`): protocol 0 gives mode 1,
+1 gives 2 + is_host, 2 gives 4 + is_host (`0x6eeba..0x6eecd`). The mode
+goes to the options `+4`, the game globals `+0xc` and the simulation
+globals `[0x4cf77c]+8` (`0x67efd`). The mode names at `0x468c64`: none,
+local, synchronous client, synchronous server, distributed client,
+distributed server. So mode 4 is the distributed client: the session's
+host peer was not this console's peer. **Confirmed**: the formula and the
+fields. `+0x40` is the host peer and `+0x72d8` the local one (the earlier
+notes had them the other way round): a client's join (`0x61050`, from
+`0x5a07d`) puts the host's address in peer 0 and its own XNADDR
+(`0x4cf793`) in peer 1, then sets `+0x40` 0 and `+0x72d8` 1 and state 1;
+the host's create (`0x59d92`, `0x59d95`) sets both 0; entering state 5 as
+the host (`0x61390`) copies `+0x72d8` to `+0x40` (`0x6141a`); `0x58d20`
+(states 5 to 8) is the "this console hosts" test. Other writers of `+0x40`:
+`0x5e507` (handing the session to a sending peer, then state 3 through
+`0x612c0`), `0x5d2dc` (a client's membership update) and `0x5ff7d`
+(removal). **Inferred, not proven**: why a lone host's session had
+`+0x40` ≠ `+0x72d8` in that run. With one peer and state 5 the session
+can only be this console's, so the bots make it so: just before
+`0x6ec80`, with phantoms planned, protocol 2, state 5 to 8, this
+console's peer below the peer count and no other real console in the
+session (phantom peers are not consoles), `+0x40` is set to `+0x72d8`
+(`bots::phantom::session::game_start`), and the game starts as the
+distributed server. Each start logs what it read and what it did:
+`bots: game start: session state 5, protocol 2, peer count 1 (0 other
+consoles), host peer 1, this console's peer 0: simulation mode 4`, then
+either `bots: game start: phantoms planned and no other console in the
+session: this console hosts it (host peer 1 -> 0), so the game starts as
+the distributed server (mode 5)` or `bots: game start: session as it is
+(why)`. The next run's line shows which field was off. A phantom that
+still waits names the mode and both peers: `(mode 4, the server's is 5;
+session host peer 0, this console's peer 0, peer count 1)`.
 
 **Recipe on the host, as built** (`bots::phantom::session`): the writes
 the game's own functions make, done from the game thread before each
@@ -800,8 +846,9 @@ each k is is not traced. So a phantom does not jump, crouch or melee yet.
   peers.
 - What the lobby's ready check (`0x5f970`) reads from a peer's properties
   (phantoms leave the session when the game ends, so they are not in the
-  lobby yet), what `0x62e30` and the veto object at `[S+0x78a8]` refuse,
-  and whether `+0x72d8` is the host or the local peer.
+  lobby yet), and what `0x62e30` and the veto object at `[S+0x78a8]`
+  refuse. (`+0x72d8` is the local peer, `+0x40` the host: see "Hosting the
+  game".)
 - Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
   phantom wears the host's until then.
 
@@ -1200,6 +1247,23 @@ answer, or with none (refused, System Link, offline), local bots are the
 human's guests on Live and phantoms are host-made, as before. Local bots
 keep the page's skill; only phantoms take the roster's.
 
+**The session's players.** Retail Halo 2 fills no slot counts in its
+advertisement (`XOnlineMatchSessionCreate`/`Update`, `0x8fcc0`/`0x8fe20`,
+slots at ad `+0x3c..+0x48`, filled by a virtual call): run 20261119-005001
+showed 0 filled with six players in the game. So the host says who plays.
+Every second (`clankers::frame`) while a roster is in force, the driver
+hands the HLE the bot accounts in the game (`Driver::session_bots`: the
+local bots' accounts and the rostered phantoms the game made players for);
+`Hle::set_session_players` tells each session the console hosts of them
+and of its signed-in users, as `PlayerJoined` and `PlayerLeft` on
+`session-<id>` for only what changed (`sessions::players_diff`; zero and
+host-made xuids never). One more call after the roster ends sends the
+bots' leaves. The server takes a `PlayerJoined` for a human account, or
+for a bot of the session's latest roster when its host posts it
+(`bots::leased_to`), and a `PlayerLeft` for anyone in the session, so a
+replaced roster's bots can leave but not join again. The worker shares
+the code (`live-worker` `rostered_bots_read_as_bot_accounts`).
+
 **Web.** A bot account has a player page: the identity strip with a BOT
 mark, its service record and game history, no friend, message or other
 social actions, never online. The page finds it in the event log
@@ -1228,7 +1292,9 @@ sbmm-ranked's.
    pages), filter them there if the user prefers.
 
 **Tests:** `cargo test -p live-server --test bots
-a_rostered_bot_is_an_account`, `-p live-worker
+a_rostered_bot_is_an_account` and
+`a_host_reports_the_bots_it_leased_as_its_sessions_players`, `-p live-hle
+--lib players_tests`, `-p live-worker
 rostered_bots_read_as_bot_accounts`, `-p live-hle --test server
 a_leased_bot_account`, `-p bots guest` (the bot-account record and
 writes, guest numbers left free, moving from guest to account, leaving),
@@ -1752,6 +1818,23 @@ list for the user to play (§11).
      id and not by order, a leaving player back to pending, failed kept;
      a phantom perceiving itself by machine id; the documented roster
      parsing and §9.1's checks; local xuids never an account's.
+   - **Built (6c, after run 20261119-005001):** three of five bots in the
+     game, the phantoms waiting on simulation mode 4.
+     - `SESSION_GAME_START` (`0x6ec80`): with phantoms planned and no
+       other console in the session, the session's host peer is made this
+       console's before the game picks its mode, so a lone Live host runs
+       the distributed server (§5.1, "Hosting the game"). Each start logs
+       `bots: game start: ...` with the fields it read.
+     - `LOBBY_ROW_PRESS` (`0x250fb3`): A on the lobby's Start Game row
+       logs the start state (§4.2), as a Start press does.
+     - The session's players (§9.5): the host reports its bot accounts
+       as `PlayerJoined`, which the server takes for its leased bots.
+     - Tests: `cargo test -p bots --lib phantom::session` (the start
+       facts, the host fix and when it stays away, the hook's lines),
+       `-p bots --lib lobby` (the Start Game row press), `-p boot --lib
+       clankers` (the session's bot accounts), `-p live-hle --lib
+       players_tests`, `-p live-server --test bots
+       a_host_reports_the_bots_it_leased`, `-p cli bots_verdict`.
 7. **Clankers page (Game Setup).** Built: `boot::clankers`.
    - **Settings** `clankers.*`, kept in the profile store
      (`setting_defs::ALL`):
@@ -2339,7 +2422,7 @@ failure:
 | 8 | Start Game: start state ready | `bots: start state 9` (or 10, the countdown) |
 | 9 | Gameplay on a map | `session.status` phase `gameplay`, not campaign; with `--map`, on that map |
 | 10 | Phantoms joined | `bots: phantom G joins (peer K)` for each phantom, and no phantom failure |
-| 11 | The Live session holds 1 + N players | the session's filled slots reach 1 + N |
+| 11 | The Live session holds 1 + N players | the session's filled slots, or the players the host reported joining (§9.5), reach 1 + N |
 | 12 | The game record has the bots | at least N players with `bot: true` on the server's game record |
 
 A failed check says what is missing and why, as far as the log does: for
@@ -2365,7 +2448,9 @@ non-zero on a failure).
   Game Setup's Change Map, so the game plays the lobby's default map; a
   `--map` other than that fails step 9, saying which map was played.
 - The phantoms join when the game starts, not in the lobby (§5.1); step 11
-  counts the most filled slots the server saw over the whole run.
+  counts the most filled slots, and the most joined players, the server
+  saw over the whole run. Retail Halo 2 fills no slots (0 in run
+  20261119-005001), so on a Live run the joined players are what counts.
 - `h2 play` builds the game into `--out` when `--out` has none, or has one
   from another image. Run it with the same `H2_OPT` as that build, or the
   window recompiles first. The timeout starts once the game is up, so a

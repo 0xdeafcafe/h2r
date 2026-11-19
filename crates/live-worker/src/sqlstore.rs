@@ -905,6 +905,44 @@ mod tests {
         let items = list["items"].as_array().unwrap();
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(items[0]["gamertag"], "Host");
+        // The host reports the bot it leased as one of its session's
+        // players, as on the native server (live-server tests/bots.rs).
+        let joined = live_proto::sign::EventBody::at_unix(
+            &key,
+            &author,
+            &live_proto::session::stream(session_id),
+            live_proto::session::JOINED,
+            serde_json::json!({ "xuid": bot["xuid"] }),
+            now(),
+        );
+        let r = live_server::http::router(live.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/v1/sessions/{session_id}/events"))
+                    .header("content-type", "application/jose")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(lxm::SESSIONS_WRITE)),
+                    )
+                    .body(Body::from(live_proto::sign::sign_batch(&key, &[joined])))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 201);
+        let (_, s) = call(
+            "GET",
+            format!("/v1/sessions/{session_id}"),
+            None,
+            String::new(),
+        )
+        .await;
+        assert_eq!(
+            s["session"]["players"].as_object().map_or(0, |p| p.len()),
+            1,
+            "{s}"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

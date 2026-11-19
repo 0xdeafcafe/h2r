@@ -85,6 +85,19 @@ impl Bots {
     }
 }
 
+/// Whether `xuid` is a bot of `session`'s latest roster and `author` made
+/// that roster: a bot the host leased for its session (§9.5), which the
+/// host may report as one of the session's players (`PlayerJoined` on
+/// `session-<id>`, docs/game/bots.md stage 6c "the session's players").
+pub(crate) fn leased_to(s: &State, session: &str, author: &Author, xuid: Xuid) -> bool {
+    let Author::Account { xuid: host, .. } = author else {
+        return false;
+    };
+    s.bots
+        .roster_at(session, u64::MAX)
+        .is_some_and(|r| r.host == *host && r.bots.iter().any(|b| b.xuid == xuid))
+}
+
 pub(crate) fn project(s: &mut State, e: &RecordedEvent) {
     let b = &e.body;
     match b.kind.as_str() {

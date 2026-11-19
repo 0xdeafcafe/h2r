@@ -156,6 +156,21 @@ pub(crate) struct Sessions {
     said_find: Option<(String, std::time::Instant)>,
     /// The last OptiMatch search line said and when.
     said_search: Option<(String, std::time::Instant)>,
+    /// The players each hosted session was told of ([`Sessions::set_players`]).
+    reported: BTreeMap<[u8; 8], BTreeSet<live_proto::Xuid>>,
+}
+/// What a hosted session must be told to hold `want` when it was told of
+/// `had`: (joined, left). Zero and host-made bot xuids are never reported:
+/// the server knows neither.
+pub(crate) fn players_diff(
+    had: &BTreeSet<live_proto::Xuid>,
+    want: &BTreeSet<live_proto::Xuid>,
+) -> (Vec<live_proto::Xuid>, Vec<live_proto::Xuid>) {
+    let real = |x: &&live_proto::Xuid| x.0 != 0 && !live_proto::bots::is_local_xuid(**x);
+    (
+        want.difference(had).filter(real).copied().collect(),
+        had.difference(want).filter(real).copied().collect(),
+    )
 }
 /// The host's multiplayer skulls as of now (None for none), read with guest
 /// memory held: it must take no lock that guest memory may come after.
@@ -282,6 +297,48 @@ impl Sessions {
                 }
             }
             record.session.variant_ext = Some(ext.clone());
+        }
+    }
+    /// The host's game holds `bots` beside its signed-in users (boot, from
+    /// the bot driver while a roster is in force): each hosted session is
+    /// told of its players with `PlayerJoined` and `PlayerLeft`, so the
+    /// Live session counts them (docs/game/bots.md section 9.5).
+    pub fn set_players(
+        &mut self,
+        bots: &[live_proto::Xuid],
+        service: Option<&Service>,
+        connection: Option<&Session>,
+    ) {
+        let records = &self.records;
+        self.reported.retain(|id, _| records.contains_key(id));
+        self.background.retain(|p| p.take().is_none());
+        let (Some(service), Some(connection)) = (service, connection) else {
+            return;
+        };
+        for (id, record) in &self.records {
+            let want: BTreeSet<live_proto::Xuid> = record
+                .session
+                .host_users
+                .iter()
+                .map(|u| live_proto::Xuid(*u))
+                .chain(bots.iter().copied())
+                .filter(|x| x.0 != 0 && !live_proto::bots::is_local_xuid(*x))
+                .collect();
+            let had = self.reported.entry(*id).or_default();
+            let (joined, left) = players_diff(had, &want);
+            if joined.is_empty() && left.is_empty() {
+                continue;
+            }
+            let request = MatchRequest::Players {
+                id: live_proto::sign::hex(id),
+                joined,
+                left,
+            };
+            match service.match_request(connection, request) {
+                Ok(p) => self.background.push(p),
+                Err(_) => continue,
+            }
+            *had = want;
         }
     }
     /// The host armed (Some) or left (None) a co-op campaign on its co-op
@@ -1353,5 +1410,42 @@ mod say_tests {
         assert!(say_once_per(&mut last, "b", window));
         assert!(say_once_per(&mut last, "a", window));
         assert!(say_once_per(&mut last, "a", std::time::Duration::ZERO));
+    }
+}
+
+#[cfg(test)]
+mod players_tests {
+    use super::players_diff;
+    use live_proto::Xuid;
+    use std::collections::BTreeSet;
+
+    fn set(x: &[u64]) -> BTreeSet<Xuid> {
+        x.iter().map(|x| Xuid(*x)).collect()
+    }
+
+    #[test]
+    fn a_session_is_told_only_of_the_players_that_changed() {
+        let host = 0x0009_0000_0000_0001;
+        let bot = 0x000b_0000_0000_0002;
+        let other = 0x000b_0000_0000_0003;
+        assert_eq!(
+            players_diff(&set(&[]), &set(&[host, bot])),
+            (vec![Xuid(host), Xuid(bot)], vec![])
+        );
+        assert_eq!(
+            players_diff(&set(&[host, bot]), &set(&[host, bot])),
+            (vec![], vec![])
+        );
+        assert_eq!(
+            players_diff(&set(&[host, bot]), &set(&[host, other])),
+            (vec![Xuid(other)], vec![Xuid(bot)])
+        );
+    }
+
+    #[test]
+    fn zero_and_host_made_bots_are_never_reported() {
+        let local = live_proto::bots::local_xuid(4).0;
+        assert_eq!(players_diff(&set(&[]), &set(&[0, local])), (vec![], vec![]));
+        assert_eq!(players_diff(&set(&[0, local]), &set(&[])), (vec![], vec![]));
     }
 }

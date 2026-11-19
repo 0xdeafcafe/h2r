@@ -331,6 +331,9 @@ pub trait Rosters: Send + Sync {
         request: live_proto::bots::RosterRequest,
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String>;
+    /// The bot accounts in the hosted game now ([`Driver::session_bots`]):
+    /// the hosted session is told of them as players. Never waits.
+    fn players(&self, _bots: Vec<live_proto::Xuid>) {}
 }
 
 impl Rosters for live_hle::Hle {
@@ -349,6 +352,9 @@ impl Rosters for live_hle::Hle {
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String> {
         self.roster_bots(request, done)
+    }
+    fn players(&self, bots: Vec<live_proto::Xuid>) {
+        self.set_session_players(bots)
     }
 }
 
@@ -471,6 +477,24 @@ pub struct Driver {
     wants_roster: AtomicBool,
     /// Itself, for a roster's answer to reach it ([`drive`] sets it).
     me: std::sync::Weak<Driver>,
+    /// The hosted session was last told of some bots
+    /// ([`Driver::report_players`]).
+    reported: AtomicBool,
+}
+
+/// The bot accounts among `own`: local bots with one, and rostered
+/// phantoms whose players the game made (`joined`).
+fn session_bots_of(own: &[Own], joined: impl Fn(PhantomHandle) -> bool) -> Vec<live_proto::Xuid> {
+    own.iter()
+        .filter(|o| {
+            o.xuid != 0
+                && match o.seat {
+                    Seat::Port(..) => true,
+                    Seat::Phantom(_, h) => o.rostered && joined(h),
+                }
+        })
+        .map(|o| live_proto::Xuid(o.xuid))
+        .collect()
 }
 
 impl Driver {
@@ -486,6 +510,7 @@ impl Driver {
             last: Mutex::new(None),
             wants_roster: AtomicBool::new(false),
             me: std::sync::Weak::new(),
+            reported: AtomicBool::new(false),
         }
     }
 
@@ -667,6 +692,40 @@ impl Driver {
             ports,
             accounts,
         })
+    }
+
+    /// The bot accounts in the hosted game while a server roster is in
+    /// force: the local bots' accounts, and the rostered phantoms the game
+    /// made players for. Empty with no roster in force. The hosted Live
+    /// session is told of them as players (§9.5), so it counts every
+    /// player the game has.
+    pub fn session_bots(&self) -> Vec<live_proto::Xuid> {
+        if self.roster_in_force().is_none() {
+            return Vec::new();
+        }
+        let joined: Vec<PhantomHandle> = self
+            .phantoms
+            .iter()
+            .flat_map(|ph| ph.list())
+            .filter(|p| p.state == bots::phantom::State::Joined)
+            .map(|p| p.handle)
+            .collect();
+        let own = self.own.lock().unwrap_or_else(|e| e.into_inner());
+        session_bots_of(&own, |h| joined.contains(&h))
+    }
+
+    /// Tells the hosted session its players ([`Driver::session_bots`]),
+    /// while a roster is in force and once more after, so the bots it
+    /// was told of leave it.
+    fn report_players(&self) {
+        let Some(rosters) = &self.rosters else {
+            return;
+        };
+        let bots = self.session_bots();
+        let had = self.reported.swap(!bots.is_empty(), Ordering::Relaxed);
+        if had || !bots.is_empty() {
+            rosters.players(bots);
+        }
     }
 
     /// The session of the server roster in force: the one asked for this
@@ -939,6 +998,7 @@ pub fn frame(n: u64) {
         for line in d.refresh() {
             eprintln!("clankers: {line}");
         }
+        d.report_players();
     }
 }
 

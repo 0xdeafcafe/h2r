@@ -199,6 +199,14 @@ pub(crate) enum MatchRequest {
         optimatch: Option<live_proto::optimatch::Query>,
     },
     Find(String),
+    /// The hosted session's players changed: `PlayerJoined` and
+    /// `PlayerLeft` on `session-<id>`, one signed batch each, so a refused
+    /// one (a bot of a replaced roster) holds back no other.
+    Players {
+        id: String,
+        joined: Vec<Xuid>,
+        left: Vec<Xuid>,
+    },
 }
 #[derive(Clone)]
 pub(crate) enum SocialRequest {
@@ -947,6 +955,25 @@ impl Worker {
             }
             MatchRequest::Delete(id) => {
                 self.match_event(user, &id, session::DELETED, json!({"reason":"closed"}))?;
+                Vec::new()
+            }
+            MatchRequest::Players { id, joined, left } => {
+                let events = left
+                    .iter()
+                    .map(|x| (session::LEFT, x))
+                    .chain(joined.iter().map(|x| (session::JOINED, x)));
+                let mut last = Ok(());
+                for (kind, xuid) in events {
+                    if let Err(e) = self.match_event(user, &id, kind, json!({ "xuid": xuid })) {
+                        let why = match e {
+                            Error::Status(n) => format!("status {n}"),
+                            _ => "no answer".to_owned(),
+                        };
+                        eprintln!("live: session {id}: {kind} for {xuid} refused ({why})");
+                        last = Err(e);
+                    }
+                }
+                last?;
                 Vec::new()
             }
             MatchRequest::Find(id) => match self.fetch_match(user, &id) {

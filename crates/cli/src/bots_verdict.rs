@@ -241,10 +241,14 @@ pub fn session_line(id: &str, public: u64, private: u64, joined: usize) -> Strin
     )
 }
 
-fn read_session(text: &str) -> Option<u64> {
+/// A session line's (filled, joined).
+fn read_session(text: &str) -> Option<(u64, u64)> {
     let rest = text.strip_prefix("bots-test: session ")?;
     let (_, rest) = rest.split_once(": ")?;
-    rest.split(' ').next()?.parse().ok()
+    let filled = rest.split(' ').next()?.parse().ok()?;
+    let (_, joined) = rest.rsplit_once("), ")?;
+    let joined = joined.strip_suffix(" joined")?.parse().ok()?;
+    Some((filled, joined))
 }
 
 /// `bots-test: game ID on MAP: P players, B bots (A with an account)`.
@@ -715,18 +719,24 @@ pub fn verdict(log: &str) -> Option<Verdict> {
         )
     });
 
-    // 11. The session's player count reached the host and every bot.
-    let most = l.texts.iter().filter_map(|t| read_session(t)).max();
+    // 11. The session's player count reached the host and every bot:
+    // the slots the game filled in its advertisement, or the players the
+    // host reported joining (docs/game/bots.md §9.5), whichever is more.
+    let counts: Vec<(u64, u64)> = l.texts.iter().filter_map(|t| read_session(t)).collect();
+    let filled = counts.iter().map(|c| c.0).max();
+    let joined = counts.iter().map(|c| c.1).max();
     let need = 1 + plan.count as u64;
+    let pass = filled.max(joined).is_some_and(|m| m >= need);
     checks.push(check(
         "the Live session holds 1 + count players",
-        most.is_some_and(|m| m >= need),
-        match most {
-            Some(m) if m >= need => format!("{m} filled (needs {need})"),
-            Some(m) => format!(
-                "at most {m} filled of the {need} wanted: the session never counted every bot"
+        pass,
+        match (filled, joined) {
+            (Some(f), Some(j)) if pass => format!("{f} filled, {j} joined (needs {need})"),
+            (Some(f), Some(j)) => format!(
+                "at most {f} filled and {j} joined of the {need} wanted: the session never \
+                 counted every bot"
             ),
-            None => "the Live server never listed a session for the host".into(),
+            _ => "the Live server never listed a session for the host".into(),
         },
         l.last(2, |t| t.starts_with("bots-test: session ")),
     ));

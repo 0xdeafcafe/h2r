@@ -271,6 +271,7 @@ struct FakeLive {
     session: Mutex<Option<String>>,
     playlist: Mutex<Option<String>>,
     asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
+    players: Mutex<Vec<Vec<Xuid>>>,
 }
 
 impl Rosters for FakeLive {
@@ -283,6 +284,9 @@ impl Rosters for FakeLive {
     fn ask(&self, request: RosterRequest, done: Done) -> Result<(), String> {
         self.asked.lock().unwrap().push((request, Some(done)));
         Ok(())
+    }
+    fn players(&self, bots: Vec<Xuid>) {
+        self.players.lock().unwrap().push(bots);
     }
 }
 
@@ -440,6 +444,43 @@ fn with_live_every_bot_is_a_server_bot_account_locals_first() {
     let bots = d.bots_in_force().unwrap();
     assert_eq!(bots.machines, vec![]);
     assert_eq!(bots.accounts.len(), 2);
+}
+
+#[test]
+fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
+    const SESSION: &str = "0123456789abcdef";
+    let (s, live, ph, d) = rostered_driver(Some(SESSION));
+    on(&s, 5, 2);
+    d.report_players();
+    assert!(
+        live.players.lock().unwrap().is_empty(),
+        "no roster in force: nothing said"
+    );
+    assert_eq!(d.session_bots(), vec![]);
+    live.answer(0, Ok(roster(SESSION, 5, 0.67)));
+    let x = |i: u64| Xuid(SERVER_XUID_MARK | (0x100 * 5 + i));
+    // The phantoms' players are not made yet: only the local bots.
+    assert_eq!(d.session_bots(), vec![x(1), x(2), x(3)]);
+    d.report_players();
+    assert_eq!(*live.players.lock().unwrap(), vec![vec![x(1), x(2), x(3)]]);
+    // Once the game made them, the phantoms too.
+    let own = d.own.lock().unwrap();
+    let all: Vec<PhantomHandle> = ph.list().iter().map(|p| p.handle).collect();
+    assert_eq!(
+        session_bots_of(&own, |h| all.contains(&h)),
+        vec![x(1), x(2), x(3), x(4), x(5)]
+    );
+    assert_eq!(
+        session_bots_of(&own, |h| h == all[1]),
+        vec![x(1), x(2), x(3), x(5)]
+    );
+    drop(own);
+    // Clankers off: told once that none are left, then nothing.
+    s.set(ENABLED.key, Value::Bool(false)).unwrap();
+    d.report_players();
+    d.report_players();
+    assert_eq!(live.players.lock().unwrap().len(), 2);
+    assert_eq!(live.players.lock().unwrap()[1], vec![]);
 }
 
 #[test]

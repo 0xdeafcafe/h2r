@@ -632,3 +632,109 @@ async fn a_rostered_bot_is_an_account_that_never_signs_in() {
         r.status
     );
 }
+
+fn session_event(u: &User, id: &str, kind: &str, data: Value) -> live_proto::sign::EventBody {
+    live_proto::sign::EventBody::at_unix(
+        &u.key,
+        &u.author,
+        &live_proto::session::stream(id),
+        kind,
+        data,
+        now(),
+    )
+}
+
+async fn session_batch(
+    h: &Harness,
+    u: &User,
+    id: &str,
+    bodies: &[live_proto::sign::EventBody],
+) -> Resp {
+    h.call(
+        Method::POST,
+        &format!("/v1/sessions/{id}/events"),
+        &[
+            h.bearer(u, lxm::SESSIONS_WRITE),
+            ("content-type", "application/jose".into()),
+        ],
+        Body::from(live_proto::sign::sign_batch(&u.key, bodies)),
+    )
+    .await
+}
+
+async fn session_players(h: &Harness, id: &str) -> usize {
+    h.get(&format!("/v1/sessions/{id}")).await.json()["session"]["players"]
+        .as_object()
+        .map_or(0, |p| p.len())
+}
+
+/// The run 20261119-005001: "0 filled (public 0, private 0), 0 joined".
+/// The host reports its session's players (`PlayerJoined` on
+/// `session-<id>`): itself and the bots it leased for that session, which
+/// are bot accounts, not accounts.
+#[tokio::test]
+async fn a_host_reports_the_bots_it_leased_as_its_sessions_players() {
+    use live_proto::session::{JOINED, LEFT};
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let session = host(&h, &a).await;
+    let r = roster(&h, &a, json!({"session_id": session, "count": 3})).await;
+    let joined = |x: Xuid| session_event(&a, &session, JOINED, json!({ "xuid": x }));
+    let mut bodies = vec![joined(a.xuid)];
+    bodies.extend(r.bots.iter().map(|b| joined(b.xuid)));
+    let resp = session_batch(&h, &a, &session, &bodies).await;
+    assert_eq!(
+        resp.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&resp.body)
+    );
+    assert_eq!(
+        session_players(&h, &session).await,
+        4,
+        "the host and 3 bots"
+    );
+
+    // One bot goes (a smaller count).
+    let left = session_event(&a, &session, LEFT, json!({ "xuid": r.bots[2].xuid }));
+    assert_eq!(
+        session_batch(&h, &a, &session, &[left]).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(session_players(&h, &session).await, 3);
+
+    // A later roster replaces the earlier: its bots join, and a bot of the
+    // old one still in the session may leave.
+    let again = roster(&h, &a, json!({"session_id": session, "count": 1})).await;
+    let resp = session_batch(&h, &a, &session, &[joined(again.bots[0].xuid)]).await;
+    assert_eq!(resp.status, StatusCode::CREATED);
+    let left = session_event(&a, &session, LEFT, json!({ "xuid": r.bots[0].xuid }));
+    assert_eq!(
+        session_batch(&h, &a, &session, &[left]).await.status,
+        StatusCode::CREATED
+    );
+    // But the old roster's bots no longer join.
+    assert_eq!(
+        session_batch(&h, &a, &session, &[joined(r.bots[2].xuid)])
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Another host's bots are not this session's.
+    let b = h.create("Other").await;
+    let other = host(&h, &b).await;
+    let theirs = roster(&h, &b, json!({"session_id": other, "count": 1})).await;
+    assert_eq!(
+        session_batch(&h, &a, &session, &[joined(theirs.bots[0].xuid)])
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    // Nor may the other host report this session's bots in its own.
+    let mine = session_event(&b, &other, JOINED, json!({ "xuid": again.bots[0].xuid }));
+    assert_eq!(
+        session_batch(&h, &b, &other, &[mine]).await.status,
+        StatusCode::BAD_REQUEST
+    );
+}

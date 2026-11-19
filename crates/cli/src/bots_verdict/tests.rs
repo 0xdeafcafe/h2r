@@ -128,7 +128,7 @@ fn a_whole_run_passes() {
     assert!(r.contains("Rusty Lugnut (000b000000000001)"), "{r}");
     assert!(r.contains("port 1 in the players screen"), "{r}");
     assert!(r.contains("2 joined: Oil Slick, Tin Can"), "{r}");
-    assert!(r.contains("6 filled (needs 6)"), "{r}");
+    assert!(r.contains("6 filled, 0 joined (needs 6)"), "{r}");
     assert!(r.contains("on lockout"), "{r}");
 }
 
@@ -318,6 +318,40 @@ fn three_or_fewer_need_no_phantoms() {
 }
 
 #[test]
+fn players_the_host_reported_joining_count_for_the_session() {
+    // Retail Halo 2 fills no slots (20261119-005001: 0 filled): the
+    // players the host reported joining count instead.
+    let lines: Vec<&str> = whole_run()
+        .into_iter()
+        .map(|l| match l {
+            "bots-test: session s-1: 4 filled (public 4, private 0), 0 joined" => {
+                "bots-test: session s-1: 0 filled (public 0, private 0), 4 joined"
+            }
+            "bots-test: session s-1: 6 filled (public 6, private 0), 0 joined" => {
+                "bots-test: session s-1: 0 filled (public 0, private 0), 6 joined"
+            }
+            l => l,
+        })
+        .collect();
+    let v = run(&plan(5), &lines);
+    assert!(v.passed(), "{}", v.render());
+    assert_eq!(v.checks[10].detail, "0 filled, 6 joined (needs 6)");
+    let lines: Vec<&str> = lines
+        .into_iter()
+        .filter(|l| !l.contains("6 joined"))
+        .collect();
+    let v = run(&plan(5), &lines);
+    assert_eq!(v.first_failure().unwrap().0, 11);
+    assert!(
+        v.checks[10]
+            .detail
+            .starts_with("at most 0 filled and 4 joined of the 6"),
+        "{}",
+        v.checks[10].detail
+    );
+}
+
+#[test]
 fn the_session_count_and_the_record_must_reach_the_count() {
     let lines = without(&whole_run(), |l| {
         l.contains("6 filled") || l.starts_with("bots-test: game")
@@ -326,7 +360,8 @@ fn the_session_count_and_the_record_must_reach_the_count() {
     let (n, c) = v.first_failure().unwrap();
     assert_eq!(n, 11);
     assert!(
-        c.detail.starts_with("at most 4 filled of the 6"),
+        c.detail
+            .starts_with("at most 4 filled and 0 joined of the 6"),
         "{}",
         c.detail
     );
@@ -400,7 +435,8 @@ fn the_line_readers() {
         read_status(&status_line("gameplay", "multiplayer", "lockout")),
         Some(("gameplay", "multiplayer", "lockout"))
     );
-    assert_eq!(read_session(&session_line("s-1", 3, 1, 0)), Some(4));
+    assert_eq!(read_session(&session_line("s-1", 3, 1, 0)), Some((4, 0)));
+    assert_eq!(read_session(&session_line("s-1", 0, 0, 6)), Some((0, 6)));
     assert_eq!(read_game(&game_line("g", "lockout", 6, 5, 4)), Some((5, 4)));
 }
 
