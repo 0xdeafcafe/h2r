@@ -545,3 +545,40 @@ fn an_optimatch_lobby_advertising_is_not_hosting() {
             .any(|s| s.contains("in the Live custom game lobby"))
     );
 }
+
+/// Run 20261119-013507: with the local bots joining in the lobby, not on
+/// the players' screen, the Live menu's list mask is `0x1` (the one
+/// signed-in player's), as the main menu's. It is learnt as the screen
+/// that settles after A on the players' screen, and driven to Custom Game.
+const SOLO_LIVE_ROW_0: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe2780000]; slot 0: no window)";
+const SOLO_LIVE_ROW_1: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe2790001]; slot 0: no window)";
+const SOLO_LIVE_ROW_2: &str = "ui: screen none (slot 4: window 5 active 0x82539a80 pending 0x0 list [0x1/0xe27a0002]; slot 0: no window)";
+
+#[test]
+fn the_live_menu_alone_is_learnt_after_the_players_screen() {
+    let mut d = to_live_menu();
+    d.line(6100, SOLO_LIVE_ROW_0);
+    assert!(d.live_menu() && !d.at_main());
+    assert_eq!(
+        presses(&mut d, 6200, 7600),
+        ["down toward Custom Game (row 2, from 0)"]
+    );
+    d.line(7700, SOLO_LIVE_ROW_1);
+    assert_eq!(
+        presses(&mut d, 7800, 9200),
+        ["down toward Custom Game (row 2, from 1)"]
+    );
+    d.line(9300, SOLO_LIVE_ROW_2);
+    assert_eq!(presses(&mut d, 9400, 10_800), ["a Custom Game"]);
+    // The lobby on the same address, in Custom Game's lobby mode, is not
+    // the Live menu.
+    d.line(11_000, "coop-live: lobby mode 2");
+    d.line(11_100, LOBBY);
+    assert!(!d.live_menu());
+}
+
+#[test]
+fn the_main_menu_alone_is_not_the_live_menu() {
+    let d = at_main();
+    assert!(d.at_main() && !d.live_menu());
+}

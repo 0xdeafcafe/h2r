@@ -44,8 +44,10 @@
 //!   opens the picker first. Another dialog on the way gets A; a players'
 //!   screen in another mode is backed out of and corrected; Live asking
 //!   for a 6-digit code stops the drive;
-//! * the Live menu: a window 5 `none` screen with list mask `0xf` (the
-//!   main menu's is `0x1`), under the main menu's lobby mode still; the
+//! * the Live menu: a window 5 `none` screen with list mask `0xf` when
+//!   four local players are signed in, else the screen that settles first
+//!   after A on the players' screen (the mask is the signed-in players',
+//!   `0x1` alone, as the main menu's), under the main menu's lobby mode still; the
 //!   main menu is told by its screen address too, learnt when the game
 //!   sets lobby mode -1 (run 20261119-003044 took the Live menu for the
 //!   main menu and went into OptiMatch). One press at a time from the row
@@ -159,6 +161,16 @@ pub struct Driver {
     /// The main menu's lobby mode came; its screen is the next window 5
     /// line's.
     learn_main: bool,
+    /// The Xbox Live menu's screen (its window 5 active address), learnt
+    /// from the first settled window 5 screen after A on the players'
+    /// screen in Xbox Live mode. Its list mask is the signed-in local
+    /// players' (`0xf` with three local bots signed in there, `0x1` alone),
+    /// so the mask alone can't tell it from the main menu (run
+    /// 20261119-013507).
+    live_screen: Option<u32>,
+    /// A on the players' screen for Xbox Live went; the next settled
+    /// window 5 screen is the Live menu's.
+    learn_live: bool,
     /// The top dialog the bots' join gate last named (`dialog 0x14
     /// (window 3, ...)`); `None` for `dialog none`.
     dialog_id: Option<u32>,
@@ -307,6 +319,8 @@ impl Driver {
             active: None,
             main_screen: None,
             learn_main: false,
+            live_screen: None,
+            learn_live: false,
             dialog_id: None,
             picks: 0,
             picker_downs: 0,
@@ -354,10 +368,21 @@ impl Driver {
             self.list_mask = none.and_then(|n| n.mask);
             self.active = none.and_then(|n| n.active);
             self.mode = mode;
+            if self.learn_live
+                && let Some(n) = none
+                && n.window == 5
+                && n.pending.is_none_or(|p| p == 0)
+                && let Some(a) = n.active
+                && Some(a) != self.main_screen
+            {
+                self.live_screen = Some(a);
+                self.learn_live = false;
+            }
             if self.learn_main
                 && let Some(n) = none
                 && n.window == 5
                 && n.mask != Some(LIVE_MENU_MASK)
+                && (n.active.is_none() || n.active != self.live_screen)
             {
                 // The main menu on screen, or on its way in (pending).
                 self.main_screen = match n.pending.filter(|p| *p != 0) {
@@ -560,7 +585,12 @@ impl Driver {
         self.screen == Some(LIVE_MENU)
             || (self.screen.is_none()
                 && self.window == Some(5)
-                && self.list_mask == Some(LIVE_MENU_MASK))
+                && (self.list_mask == Some(LIVE_MENU_MASK)
+                    || (self.live_screen.is_some()
+                        && self.active == self.live_screen
+                        // The lobby reuses the address; the Live menu
+                        // sits under the main menu's lobby mode.
+                        && self.lobby_mode.is_none_or(|m| m == MAIN_MENU_MODE))))
     }
 
     /// On the main menu: screen 9, or the window 5 `none` screen the game
@@ -632,10 +662,13 @@ impl Driver {
                 press("down", "to Xbox Live"),
                 press("a", "Xbox Live"),
             ],
-            (false, Some(MODE_LIVE) | None) => vec![press(
-                "a",
-                "the players' screen for Xbox Live: on to the Live menu",
-            )],
+            (false, Some(MODE_LIVE) | None) => {
+                self.learn_live = true;
+                vec![press(
+                    "a",
+                    "the players' screen for Xbox Live: on to the Live menu",
+                )]
+            }
             (false, Some(MODE_SPLIT)) => vec![
                 press("b", "that was Split Screen"),
                 press("up", "to Xbox Live"),
