@@ -201,7 +201,8 @@ impl d3d::ExternalPass for Pass {
             [0.; 2]
         };
         let count = if f.kernel != 0 && f.radius > 0. {
-            ((i32::from(f.passes as i16) + 1) * 2).max(1) as usize
+            // The pass loop compares the low signed word at H1 0x6c4dd.
+            (f.passes as i16).wrapping_add(1).wrapping_mul(2).max(0) as usize
         } else {
             1
         };

@@ -660,7 +660,7 @@ fn cutscenes_convert_and_read_back() {
 
         let opts = h1campaign::Options {
             scripts: Some(&s),
-            sounds: 1000,
+            sounds: usize::MAX,
             donors: Some(&donors),
             ..Default::default()
         };
@@ -675,7 +675,7 @@ fn cutscenes_convert_and_read_back() {
                         cutscene_data: false,
                         ..h1campaign::Options {
                             scripts: Some(&s),
-                            sounds: 1000,
+                            sounds: usize::MAX,
                             donors: Some(&donors),
                             ..Default::default()
                         }
@@ -694,7 +694,7 @@ fn cutscenes_convert_and_read_back() {
                 cutscene_data: false,
                 ..h1campaign::Options {
                     scripts: Some(&s),
-                    sounds: 1000,
+                    sounds: usize::MAX,
                     donors: Some(&donors),
                     cutscenes: Some(Cutscenes::Play),
                     ..Default::default()

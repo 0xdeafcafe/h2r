@@ -85,7 +85,11 @@ fn model_by_checksum(h1: &H1Map, checksum: u32) -> Option<&h1map::Tag> {
 /// (`animation_graph` atoms and [`ANIMATION_NAME`] tokens) that `set` does
 /// not hold as a `jmad` of that name yet, and maps the animation names.
 pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Graphs> {
-    install_graph_hooks(h1, set, c.hooks.iter())
+    let graphs = install_graph_hooks(h1, set, c.hooks.iter())?;
+    if !graphs.dropped.is_empty() {
+        return Err(invalid(format!("cinematic animation graphs: {}", graphs.dropped.join(", "))));
+    }
+    Ok(graphs)
 }
 
 /// Install graphs needed by AI even when cinematic graphs are omitted.
