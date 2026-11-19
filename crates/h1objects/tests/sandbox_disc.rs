@@ -517,6 +517,11 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 } else {
                     bitmap.rsplit_once("_alpha_").map_or(bitmap.clone(), |(s, _)| s.to_owned())
                 };
+                // A later zoom level draws a copy starting at its sprite.
+                let bitmap = match bitmap.rsplit_once("_seq") {
+                    Some((s, k)) if k.contains("_sprite") => s.to_owned(),
+                    _ => bitmap,
+                };
                 assert!(h1_bitmaps.contains(&bitmap), "{name}: {bitmap} is Halo 1's");
                 // Colour 0 draws nothing in Halo 1 (h1hud::static_alpha).
                 assert!(!bitmap.ends_with("hud_ammo_alphas"), "{name}: a colour-0 static");

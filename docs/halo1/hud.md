@@ -6,8 +6,10 @@ crosshairs and the ammunition and battery counts) are converted; Halo 1's
 HUD is the default on Halo 1 maps. The converter records each HUD pair
 and the boot swaps them on the player's choice (`halo1.hud`, "The
 switch" below). The weapon HUDs' overlays shown always (the ammunition
-type icon) are converted since v80; the HUD globals (`hudg`) and
-overlays shown on a condition are not. Played at v60 on Blood Gulch (the shield over the
+type icon) are converted since v80, and the warnings Halo 2's HUD state
+can show ("Reload", "No ammo", "Battery depleted") and the sniper
+rifle's zoom-level readout ("2x", "10x") since v83; the HUD
+globals (`hudg`) are not. No overlay on the disc is shown on a condition. Played at v60 on Blood Gulch (the shield over the
 health bar and the grenade count's digits below its indicator, both
 fixed in v66); the weapon counts have not been seen running. Labels as in [health.md](health.md): **E**
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
@@ -145,6 +147,9 @@ Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 | aim crosshair overlay (type 0) | centred (E `0x000dad9e`: the crosshairs' header anchor is 4), Halo 2's battle rifle reticle's state flags |
 | aim overlay with flag bit 2 (scope lines) | the same, with the scope masks' state flags (`+0x08` bit `0x40`, zoomed only) |
 | overlay of an overlay element, shown always (`+0x4a` bit `0x10`) | static, as a static element ("Overlay elements" below) |
+| warning crosshair "Reload" (type 3) | centred, shown on Halo 2's word C `0x10` with threshold `+0x19` the weapon's loaded threshold plus one, hidden on `0x20` with `+0x1a` 1 ("Warnings" below) |
+| warning crosshairs "No ammo" (8) and "Battery depleted" (18) | centred, shown on word C `0x80` (nothing to fire) |
+| zoom-level readout (type 1) with flag bit 2 | a widget per zoom level, each on a copy of the bitmap starting at the level's sprite, with Halo 2's sniper rifle "5x" and "10x" states ("Zoom level" below) |
 
 Halo 1's meter fills to `multiplier * value + offset` of 255 (E
 `0x000e20a0`); on the disc that is the fraction the Halo 2 input gives (V:
@@ -154,9 +159,10 @@ battery, 4 and 5 the second trigger's.
 
 Left out, each named in the weapon's report: split-screen-only entries
 (screen type 2), meters on rounds in reserve or the second trigger (no
-Halo 2 input for them is established), warning crosshairs (types 3 and
-up: reload, overheat, no ammunition, no grenades; V: `hud_reticle_warnings`),
-the zoom-level readout (type 1, its sprite chosen by the zoom level),
+Halo 2 input for them is established), the warnings Halo 2's state has
+no bit for ("Low ammo", "Low battery", "No grenades", a reload under way:
+`Skip::Warning`, "Warnings" below), a zoom-level readout without flag
+bit 2 (none on Blood Gulch),
 aim overlays shown only unzoomed (bit 6), statics of colour 0 (below),
 numbers on other states (the sniper rifle's zoom readouts, states 6 and
 7, with fraction digits), numbers shown in magazines, and overlays shown
@@ -187,9 +193,108 @@ split screen; one overlay each, `hud_ammo_type_icons` sequence 0 at
 draws an overlay shown always as a static (`h1hud::weapon_widget`,
 `h1_weapon_overlay`): the icon right of the count. Flashing is not
 carried (as for statics), nor overlays shown only on a condition
-(`Skip::OverlayCondition`: no Halo 2 state flags for "empty" or
-"reloading" are established) or animated (`Skip::Animated`; none on
-Blood Gulch).
+(`Skip::OverlayCondition`) or animated (`Skip::Animated`). Neither kind
+is on the disc (V: `no_overlay_on_the_disc_is_shown_on_a_condition`,
+every `wphi` of every map: the three overlays above are all its overlay
+elements). Should one appear, "below the threshold" and "empty" have
+Halo 2 states ("Warnings" below) and "reloading" has none.
+
+### Warnings
+
+Halo 1's warning crosshairs (types 2 and up, `h1hud::crosshair_type`)
+are crosshairs on `hud_reticle_warnings`, a sheet of words; each type is
+active on its own test of the weapon state (E `0x000da70a`, the table at
+`0x000daa18`), against the low thresholds of the weapon's own `wphi`
+(`+0x14` rounds in reserve, `+0x16` loaded, `+0x18` heat, `+0x1a`
+battery; the test reads the `wphi` it was called with, `0x000da67b`, not
+the child the warning sits in). On the disc (V, every `wphi` of every
+map):
+
+| Type | Active when (E) | Sprite (V) | Where | Converted |
+|---|---|---|---|---|
+| 3 | rounds in reserve, loaded at or below `+0x16` (`0x000da7ab`) | "Reload", sequence 1 | `master rounds` | yes |
+| 6 | battery below 1, remaining percent at or below `+0x1a` (`0x000da814`) | "Low battery", 0 | plasma pistol, plasma rifle | no |
+| 7 | a reload under way (state `+0x0c`, `0x000da7a1`) | arrows, 9 | Banshee and Scorpion guns | no |
+| 8 | nothing loaded, nothing in reserve (`0x000da874`) | "No ammo", 2 | `master rounds` (`empty`: "No weapon", 6) | yes |
+| 9 | no grenades, the throw pressed (`0x000da889`) | "No grenades", 5 | `master` | no |
+| 10 | nothing in reserve, loaded and at or below `+0x16` (`0x000da8e7`) | "Low ammo", 7 | `master rounds` | no |
+| 18 | battery spent (age 1.0), the trigger held (`0x000da855`) | "Battery depleted", 10 | `master plasma` | yes |
+
+Types 4 (heat) and 5 (low reserve) are on no `wphi`. Halo 1 shows a
+warning for its flash time once it turns active (`0x000db052`: overlay
+`+0x2c`, 3 s on the disc's) as three flashes of the flash colour `+0x28`
+(`0x002896ff`, over a colour of 0; `0x000e04b0`), and again while the
+trigger or throw is held for 8, 9 and 18.
+
+Halo 2 shows a widget on its state words (`0x0013ac87`). Word C is the
+weapon's (`h1hud::weapon_word_c`; built at `0x0013a050` from the weapon
+HUD state `0x0013afa9` fills from the weapon object, `0x00100520`):
+`0x01`/`0x02`/`0x04` which of the unit's weapons, `0x10` rounds loaded
+below the widget's threshold `+0x19`, `0x20` rounds in reserve below
+`+0x1a` (both set by the gate, `0x0013aca8`, `0x0013acbd`), `0x40`
+overheated (the weapon's `+0x16c` bit 1, set at `0x000fe324` when the heat
+reaches the definition's `+0x154`), `0x80` nothing to fire (a magazine
+with nothing loaded and nothing in reserve, or the battery spent,
+`0x0013a22b`..`0x0013a257`; V: every retail `*_out` widget shows on it),
+`0x100`..`0x400` lock-on (V: the rocket launcher's). `0x08` is the
+threshold `+0x18` against the battery's age, a fraction, so it is set
+for any threshold of 1 or more until the battery is spent: no "low
+battery". Nothing says a reload is under way (the first magazine's state
+`[ws+0x21]` feeds only Halo 2's own low-ammunition message, `0x0013ab3e`).
+No retail widget uses `0x10` or `0x20` (V: every `nhdt` on the disc);
+the gate sets them all the same. Proven live (2026-11-19, a converted
+Blood Gulch, before this conversion: the assault rifle's crosshair
+widget's state words set in the running game with `edit.set`, the
+magazine with `sim.state.set`, frames of the final pass): shown on
+`0x10` with `+0x19` 11 at 5 rounds loaded and 180 in reserve, hidden at
+60 loaded, hidden again at 5 loaded with `0x20` in the hide word,
+`+0x1a` 1 and nothing in reserve; shown on `0x80` with nothing loaded
+and nothing in reserve, hidden at 5 loaded.
+
+So (`h1hud::weapon_widget`, the widget a centred crosshair as the aim
+crosshair is, through the plain HUD shader):
+
+- **Reload** (`h1hud::reload_state`): shown on `0x10` with `+0x19` the
+  weapon's loaded threshold plus one (Halo 1's "at or below"), hidden on
+  `0x20` with `+0x1a` 1 (nothing in reserve). On Blood Gulch: assault
+  rifle 11, pistol 5, shotgun 3, rocket launcher 2, sniper rifle 2,
+  needler 9.
+- **No ammo** and **Battery depleted** (`h1hud::EMPTY_STATE`): shown on
+  `0x80`.
+- Both hide where the aim crosshair hides (word B `0x11`, word C `0x04`,
+  `AIM_STATE`).
+- **Low ammo** needs "nothing in reserve" and "loaded at or below" at
+  once: one show word meeting is enough to show, and no hide bit says
+  "loaded above", so it is left out (`Skip::Warning`), as are low
+  battery, a reload under way and no grenades (no state bit).
+
+D: shown while the condition holds, not for 3 s after it starts and not
+flashing (a widget has no timer; the plain shader does not flash). The
+flash colour's alpha is 0 (additive in Halo 1), so the sprite draws at
+its own alpha, as an aim crosshair's.
+
+### Zoom level
+
+Halo 1 draws the zoom-level readout (crosshair type 1) as one overlay
+whose sprite the zoom level picks. The type's value is the unit's zoom
+level plus 2 (E `0x000da775`; the level from `0x000f8c80`, 1 unzoomed),
+kept less one (`0x000da9e5`). An overlay with flag bit 2 draws only while
+that is above 0 (`0x000dae69`) and takes sprite value less one
+(`0x000daf55`..`0x000daf60`): sprite 0 at zoom level 0, sprite 1 at
+level 1. V: the sniper rifle's is `ui\hud\bitmaps\sniper\hud_reticles_scope`
+sequence 1, two sprites, "2x" then "10x".
+
+A Halo 2 widget draws its sequence's first sprite, and Halo 2's state
+words tell the zoom levels apart (word A `0x40` unzoomed, `0x80` level 0,
+`0x100` level 1; E `0x0013a0df`..`0x0013a127`, the unit's `+0x3c`). So
+the converter writes one widget per level, up to two and up to the
+sequence's sprites (`h1hud::zoom_widget`): level 0 on the bitmap itself,
+level 1 on a copy whose sequence starts at sprite 1
+(`<bitmap>_seq<s>_sprite<k>`). The states are Halo 2's own sniper rifle
+"5x" and "10x" (V: `ui\hud\sniper_rifle`): show word A `0x90`, hide
+`0x140`; show `0x110`, hide `0xc0`; both shown on word C `0x01` and
+hidden on `0x04` (`ZOOM_LEVEL_STATES`). Placed as Halo 1 places the
+level's sprite. Inferred, not yet seen in a game run.
 
 ### The sniper rifle's angle ticks
 
@@ -447,11 +552,57 @@ unchanged, and the copy shows exactly Halo 1's texels (checked for the
 unit meters of every map and Blood Gulch's weapon meters). Weapon meters
 get the same copy.
 
-## Not converted yet
+## The HUD globals (`hudg`): not converted
 
-- **HUD globals** (`hudg`), weapon overlays shown only on a condition
-  (empty, reloading, below the threshold), warning crosshairs, the
-  sniper rifle's zoom readouts (numbers on states 6 and 7 with fraction
+Halo 2's `hudg` is Halo 1's with Halo 2's additions at the end: from
+`+0x3f8` on (strings, the HUD sounds `+0x428`/`+0x430`, more blocks) it
+is Halo 2's own; before that every field of Halo 1's is there in Halo
+1's order, a 16-byte Halo 1 reference becoming an 8-byte one (so the
+offsets drift by 8 per reference). Compared on the discs (V: Blood
+Gulch's `ui\hud\default` against ascension's, lockout's, 01a's and
+`shared`'s, which are alike), byte for byte:
+
+| Halo 1 | Halo 2 | What | Same? |
+|---|---|---|---|
+| `+0x00..+0x48` | `+0x00..+0x48` | message placement | same |
+| `+0x48`, `+0x58` (fonts) | `+0x48`, `+0x50` (`bitm`, null) | | Halo 2's differ |
+| `+0x68..+0x94` | `+0x58..+0x84` | message timing | same but `+0x90` 1.35 / `+0x80` 1.1 |
+| `+0x94`, `+0xa4`, `+0xb4`, `+0xc4` | `+0x84`, `+0x8c`, `+0x94`, `+0x9c` | item and icon messages: strings, icons, their list | Halo 2's own assets |
+| `+0xd0..+0xf0` | `+0xa4..+0xc4` | text colours, flash (E Halo 2 reads `+0xa4`, `+0xa8`, `+0xb6`: `0x0024d1a2`..) | same |
+| `+0x100..+0x150` | `+0xcc..+0x11c` | (E Halo 2 reads `+0xe8`, `+0xea`: `0x0024c8ca`) | same |
+| `+0x150`, `+0x160` | `+0x118`, `+0x120` | the waypoint arrow: bitmap and arrow list (10 in Halo 1, 15 in Halo 2; E Halo 2 `0x0024dacb`) | Halo 2's own assets |
+| `+0x16c..+0x2c0` | `+0x12c..+0x280` | | same |
+| `+0x2c0` (`wphi`, the unarmed HUD, E Halo 1 reads `+0x2cc`) | `+0x288` (null, not read) | | |
+| `+0x2d0` | `+0x290` | motion sensor range (E Halo 1 `0x000da21a`, Halo 2 `0x001a26e2`) | **20.0 / 8.0** |
+| `+0x2d4` | `+0x294` | motion sensor movement threshold (E Halo 1 `0x000d97b5`: speed squared; Halo 2 `0x001a1deb`: speed, and only for objects that are not units) | **0.0002 / 0.03** |
+| `+0x2d8..+0x338` | `+0x298..+0x2f8` | sensor scale 32 and the rest | same |
+| `+0x338` | `+0x2f8` | damage indicator bitmap | Halo 2's own asset |
+| `+0x348..+0x3c8` | `+0x300..+0x380` | damage indicator colours and timing | same |
+| `+0x3d8`, `+0x3e0` (`snd!`, E Halo 1 `0x000e294b`) | `+0x388`, `+0x390` (E Halo 2 `0x0012b7bc`) | | same; the sound is null in both |
+
+So Halo 1's colours, multiplayer and damage settings are already Halo
+2's numbers, and the one sound both read is null on both discs: there is
+nothing of them to carry. What differs is the motion sensor's range and
+movement threshold, one message time, and the assets (the waypoint
+arrow's bitmap and arrows, the message icons, the damage arrows).
+
+Not converted, for two reasons:
+
+- `hudg` is one tag for the whole game (Halo 2 keeps it at `[0x00510c94]`,
+  E `0x00191764`: `matg +0x110` interface element `+0x30`), not a HUD's,
+  while the HUD style is the player's choice at run time ("The switch").
+  Halo 1's values belong behind the switch, written at game activation as
+  the sensor centre is (`boot::hud_swap`), not into the map.
+- The range alone is not Halo 1's sensor: Halo 1 draws a blip at
+  `distance * scale / range` pixels (`+0x2d8` 32 over `+0x2d0` 20,
+  `0x000da209`), Halo 2 at `(distance / range + 1) * 32` in a 64-wide
+  grid (`0x001a27d0`) that its draw (`0x001a28ac`..`0x001a2917`) then
+  scales to the screen, a factor not read yet. Halo 1's range belongs in
+  Halo 2's `+0x290` only once that factor is known, scaled by it.
+
+- **HUD globals** (`hudg`), the warnings with no Halo 2 state ("Low
+  ammo", "Low battery", "No grenades", the vehicles' reload arrows) and
+  Halo 1's warning timing and flash, the sniper rifle's zoom readouts (numbers on states 6 and 7 with fraction
   digits; no Halo 2 input for distance or elevation to the target) and
   the split-screen numbers (rounds loaded, the reserve in magazines).
 - **Motion sensor sweep**: Halo 1 draws a sweep around its sensor
@@ -468,6 +619,20 @@ get the same copy.
   crosshairs centred with their state flags, skipped entries;
   anchors, registration, the widget bytes (inputs, shader, state, no special type or effects,
   sequences, offsets, registration), the `nhdt` holding only its widgets.
+- `cargo test -p h1objects --lib h1hud`: also the warnings (Reload,
+  No ammo, Battery depleted as widgets with their gate states, the rest
+  refused), and the gate model (`gate`, after `0x0013ac87`) against the
+  retail shotgun's widgets and the warning states; the zoom-level
+  readout as a widget per level with Halo 2's sniper states.
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test hud_layout_disc
+  -- --ignored warnings_convert_where_halo2_has_a_state
+  no_overlay_on_the_disc_is_shown_on_a_condition
+  the_zoom_level_readout_is_a_widget_per_level`: Blood Gulch's
+  warnings (each weapon's Reload threshold, No ammo on the six ballistic
+  weapons, Battery depleted on the two plasma ones, placed as Halo 1's)
+  and every overlay of every map shown always; the sniper rifle's
+  zoom readout on `hud_reticles_scope` sequence 1 as two widgets, each
+  placed as Halo 1 places its sprite.
 - `cargo test -p boot --lib hud`: the swap both ways on bipeds and
   weapons, other HUDs left alone, refused targets, the campaign tables.
 - `H1_ISO=... cargo test -p h1objects --test hud_disc -- --ignored`: every
@@ -513,7 +678,14 @@ percentage on the plasma weapons) in Halo 2's font inside the panel,
 right-aligned where Halo 1's last digit is, without Halo 1's leading
 zeros, and its crosshair centred (the sniper's scope lines only
 zoomed), Halo 1's grenade indicator right of the ammunition counter with
-its count in Halo 2's font inside it, not below it. Nothing of
+its count in Halo 2's font inside it, not below it. Halo 1's "Reload"
+below left of the crosshair once the magazine is at or below the
+weapon's threshold (assault rifle 10 rounds) with rounds in reserve, gone
+after reloading or with nothing in reserve; "No ammo" there with nothing
+at all, "Battery depleted" on a spent plasma weapon (shown as long as
+the condition holds, not flashing for 3 s as Halo 1's do). Zoomed with
+the sniper rifle: "2x" at the first zoom, "10x" at the second, neither
+unzoomed. Nothing of
 `hud_ammo_alphas` under the ammunition panel (colour 0: Halo 1 does not
 draw it; v66's first cut did); the panel itself slightly translucent, as
 Halo 1's (alpha `0xdc`). With the shield
