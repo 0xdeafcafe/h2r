@@ -407,14 +407,15 @@ fn material(o: &mut Opened, shader: TagId) -> Option<tags::material::Material> {
 }
 
 /// Why an opaque material stays on D3D for its lighting: its layer-3
-/// pass reads the object's lighting, which the native pass does not apply
-/// yet (`look::object_lighting_input`), or it does not resolve, so that
-/// cannot be ruled out. Never drawn unlit.
+/// pass reads the object's lighting, which the native models pass does
+/// not apply (`object_program::lighting_refusal` names an input the
+/// object path cannot give, or says the program draw is not wired yet),
+/// or it does not resolve, so that cannot be ruled out. Never drawn unlit.
 fn lighting_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     let Some(m) = material(o, shader) else {
         return Some("the material does not resolve".into());
     };
-    look::object_lighting_input(&m).map(|input| format!("reads lighting input {input:?}"))
+    native_render::object_program::lighting_refusal(&m)
 }
 
 /// A transparent material the models' pass can stand in for: one layer-15

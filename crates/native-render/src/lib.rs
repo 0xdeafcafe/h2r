@@ -43,6 +43,8 @@ pub mod model_gpu;
 #[cfg(feature = "gpu")]
 pub mod model_load;
 pub mod object_lighting;
+#[cfg(feature = "gpu")]
+pub mod object_program;
 pub mod objects;
 pub mod post;
 pub mod skip;

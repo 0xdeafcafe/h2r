@@ -453,6 +453,7 @@ mod tests {
             per_draw_inputs: true,
             input_reads: InputReads { scalars: 0, vectors: 1 << 5, ints: 1 << 4 },
             vector_bindings: Vec::new(),
+            scalar_bindings: Vec::new(),
             vertex_constants: vec![Register { index: 18, value: [1.0, 1.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
