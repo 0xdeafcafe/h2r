@@ -1409,7 +1409,10 @@ starts from the definition default, then:
   every barrel took the counterpart's firing effects, so the assault
   rifle fired with the SMG's sound (its counterpart, `TEMPLATES`) and a
   weapon with no counterpart (the vehicle guns) had none and fired
-  silent; magazines had no reloading effect. V
+  silent; magazines had no reloading effect. Live (converter version
+  83, Blood Gulch, `h2 agent edit get`): each of the eight converted
+  hand weapons' `block_e4` elements was datum for datum a retail
+  weapon's, and the three converted vehicle guns had none. V
   (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` only at
   `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
   map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
@@ -1419,7 +1422,8 @@ starts from the definition default, then:
   words, no field), the root's ready, overheated, detonation and
   light effects and the pickup and zoom sounds (Halo 2 offsets not
   established), the shot counts (`+0` of both elements; Halo 2's word
-  stays the role's), and the sounds Halo 1's first-person animations
+  stays the role's: live on converted Blood Gulch every retail element,
+  33 weapons' worth, holds i16 1, 1, so the role word is that), and the sounds Halo 1's first-person animations
   name (`antr` sound references; the reload and ready sounds of most
   weapons, not converted, docs/halo1/models.md). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
