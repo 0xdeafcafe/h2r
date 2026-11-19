@@ -76,9 +76,9 @@ fn weapon_huds_read() {
             let Some(hud) = h1objects::h1::reference(&m, b, 0x480) else {
                 continue;
             };
-            let (entries, skipped) = h1hud::weapon_entries(&m, hud)
+            let entries = h1hud::weapon_entries(&m, hud)
                 .unwrap_or_else(|e| panic!("{name} {}: {e}", w.name));
-            eprintln!("{name} {} -> {} ({skipped} numbers and overlays)", w.name, m.tag(hud).unwrap().name);
+            eprintln!("{name} {} -> {}", w.name, m.tag(hud).unwrap().name);
             for x in &entries {
                 let bt = x.bitmap.map(|b| m.tag(b).unwrap().clone());
                 let drawn = match &bt {
