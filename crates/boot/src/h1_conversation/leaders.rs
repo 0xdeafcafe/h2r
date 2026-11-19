@@ -95,8 +95,8 @@ fn wave_size(
     }
     let scenario = m.u32(points::SCENARIO.base)?;
     let row = m.u32(scenario + 0x164)? + u32::from(squad) * 0x74;
-    let easy = i32::from(m.i16(row + 0x2c)?);
-    let hard = i32::from(m.i16(row + 0x2e)?);
+    let easy = i32::from(read_i16(m, row + 0x2c)?);
+    let hard = i32::from(read_i16(m, row + 0x2e)?);
     let game = m.u32(points::GAME_GLOBALS.base)?;
     let count = match m.u16(game + 0x132)? {
         0 | 1 => easy,
@@ -151,7 +151,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
         "choose the squad leader voice",
         move |call| {
             let (thread, esp, requested) = (call.ctx.thread_id, call.cpu.esp, call.cpu.eax as i16);
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             let wave = (|| {
                 let Some(r) = voices::Registry::read(m)? else {
                     return Ok::<_, MemFault>(None);
@@ -215,7 +215,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
         "select the source unit's voice bank",
         move |call| {
             let (thread, esp, start) = (call.ctx.thread_id, call.cpu.esp, call.cpu.ecx as u16);
-            let m = &*call.ctx.runtime().memory();
+            let m: &dyn GuestMemory = &*call.ctx.runtime().memory();
             let Some(r) = voices::Registry::read(m).map_err(guest_fault)? else {
                 return Ok(Flow::Continue);
             };
@@ -256,7 +256,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
             let Some(Birth { voice, .. }) = birth.filter(|birth| birth.voice != 0) else {
                 return Ok(());
             };
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             (|| {
                 let Some(r) = voices::Registry::read(m)? else {
                     return Ok::<_, MemFault>(());
@@ -288,7 +288,7 @@ pub(super) fn install(b: &mut Builder, pending: u32) {
         "assign the new unit's voice",
         move |call| {
             let (thread, esp) = (call.ctx.thread_id, call.cpu.esp);
-            let m = &mut *call.ctx.runtime().memory();
+            let m: &mut dyn GuestMemory = &mut *call.ctx.runtime().memory();
             (|| {
                 let Some(r) = voices::Registry::read(m)? else {
                     return Ok::<_, MemFault>(());

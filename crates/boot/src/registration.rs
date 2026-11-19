@@ -175,10 +175,12 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         .context("installing our skulls")?;
     features
         .add(&crate::h1_particle_physics::H1ParticlePhysics)
-        .context("installing Halo 1 attachment particle physics")?;
+        .map_err(|e| anyhow::anyhow!("installing Halo 1 attachment particle physics: {e}"))?;
     features
         .add(&crate::h1_conversation::Conversations)
-        .context("installing converted conversation playback and casting")?;
+        .map_err(|e| {
+            anyhow::anyhow!("installing converted conversation playback and casting: {e}")
+        })?;
     features
         .add(&crate::h1_command_atoms::CommandAtoms)
         .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
@@ -204,7 +206,8 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
-    crate::h1_hud_text::install(features).context("installing Halo 1 HUD text")?;
+    crate::h1_hud_text::install(features)
+        .map_err(|e| anyhow::anyhow!("installing Halo 1 HUD text: {e}"))?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' aim cone and
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.

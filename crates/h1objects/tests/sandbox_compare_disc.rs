@@ -14,7 +14,7 @@ use h1convert::convert::{Sandbox, structure_mopp};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::sandbox::Objects;
-use map::{FourCC, Map};
+use map::{FourCC, Map, TagId};
 
 fn bloodgulch() -> H1Map {
     let path = std::env::var("H1_ISO").expect("set H1_ISO");

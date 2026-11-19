@@ -141,7 +141,8 @@ fn numeric_countdown_reads_the_duration_and_start_flag_after_the_extra_argument(
         .put_u32(ARGUMENTS + 4, 3_723_123)
         .put_u32(ARGUMENTS + 8, 1);
     let state = Arc::new(State::default());
-    let f = |cx| -> EntryFuture { Box::pin(evaluate(cx, slot, Arc::clone(&state))) };
+    let shared = Arc::clone(&state);
+    let f = move |cx| -> EntryFuture { Box::pin(evaluate(cx, slot, Arc::clone(&shared))) };
     let result = testing::run(&f, g, regs(), |call, _| Regs {
         eax: if call.target == EVALUATE_ARGUMENTS { ARGUMENTS } else { 0 },
         ..Regs::default()

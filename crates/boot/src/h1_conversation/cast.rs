@@ -52,11 +52,11 @@ impl Unit {
             next = m.u32(ancestor + OBJECT_PARENT)?;
         }
         let cluster = datum(m, points::OBJECTS.base, root)?
-            .map_or(Ok(-1), |header| m.i16(header + HEADER_CLUSTER))?;
+            .map_or(Ok(-1), |header| read_i16(m, header + HEADER_CLUSTER))?;
         Ok(Some(Self {
             handle,
             parent,
-            team: m.i16(body + UNIT_TEAM)?,
+            team: read_i16(m, body + UNIT_TEAM)?,
             pos: m.vec3(origin + OBJECT_ORIGIN)?,
             cluster,
             forward: m.vec3(body + UNIT_AIM)?,
@@ -432,7 +432,7 @@ pub(super) fn operate(
                 && voices::Registry::read(m)?.is_some_and(|r| r.state == c)
                 && let Some(voice) = global(m, b, SHORT)?
             {
-                let voice = m.i16(voice)?;
+                let voice = read_i16(m, voice)?;
                 if voice >= 0 {
                     let table = voices::Table::Globals(c);
                     let leader = table.get(m, unit)?.leader;

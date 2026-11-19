@@ -123,7 +123,7 @@ pub(super) fn register(b: &mut Builder) {
                     && timer(&*mem)
                         .ok()
                         .flatten()
-                        .is_some_and(|timer| mem.write(out, &timer.text()).is_ok())
+                        .is_some_and(|timer| mem.write_bytes(out, &timer.text(), 1).is_ok())
             };
             if supplied {
                 c.cpu.eax = 1;
@@ -144,7 +144,7 @@ pub(super) fn register(b: &mut Builder) {
                     .is_some_and(|timer| timer.warning)
             {
                 let rgb = [1.0f32, 0.25, 0.25].map(f32::to_le_bytes).concat();
-                let _ = mem.write(primary + 4, &rgb);
+                let _ = mem.write_bytes(primary + 4, &rgb, 1);
             }
             Ok(Flow::Continue)
         })

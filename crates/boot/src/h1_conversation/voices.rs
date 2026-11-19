@@ -250,7 +250,7 @@ pub(super) fn bind(
         } else {
             let index = m.u32(counter)?;
             m.set_u32(counter, index.wrapping_add(1))?;
-            m.i16(entries + (index % count) * 2)?
+            read_i16(m, entries + (index % count) * 2)?
         }
     };
     table.put(

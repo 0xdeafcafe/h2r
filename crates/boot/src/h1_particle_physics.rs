@@ -407,7 +407,8 @@ fn effect_population(
             continue;
         };
         let mut live = 0;
-        for_particles(m, DatumHandle(m.u32(emitter + 4)?), |_, _, _| {
+        let first = DatumHandle(m.u32(emitter + 4)?);
+        for_particles(m, first, |_, _, _| {
             live += 1;
             Ok(())
         })?;

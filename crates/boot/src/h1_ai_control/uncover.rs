@@ -5,11 +5,11 @@ use engine::{
     DatumHandle,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},
-    view::{Record, objects},
+    view::objects,
 };
 use feature::{Builder, Flow, points};
 
-use super::{NONE, actors, playfight, preference, uncover_limits, uncover_targetless};
+use super::{actors, playfight, preference, uncover_limits, uncover_targetless};
 
 const UNCOVER: u16 = 35;
 const OBEY: u16 = 4;

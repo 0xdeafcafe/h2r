@@ -124,7 +124,7 @@ pub(super) fn register(b: &mut Builder) {
                     .ok()
                     .flatten()
                     .is_some_and(|(row, sprite)| {
-                        mem.write(row + 0x1c, &sprite.metrics).is_ok()
+                        mem.write(row + 0x1c, sprite.metrics).is_ok()
                             && mem.set_u32(row + 0x10, 4).is_ok()
                     })
             };
@@ -161,8 +161,9 @@ pub(super) fn register(b: &mut Builder) {
                         .flatten()
                         .is_some_and(|(_, sprite)| {
                             let result = mem.u32(sp + 4).and_then(|output| {
-                                let bytes = mem.bytes(sprite.pixels, sprite.len)?;
-                                mem.write(output, &bytes)
+                                let mut bytes = vec![0; sprite.len];
+                                mem.read_bytes(sprite.pixels, &mut bytes, 1)?;
+                                mem.write_bytes(output, &bytes, 1)
                             });
                             result.is_ok()
                         })

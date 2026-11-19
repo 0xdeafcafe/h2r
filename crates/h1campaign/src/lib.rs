@@ -340,7 +340,7 @@ pub enum Lean {
 
 impl Lean {
     /// The steps in order.
-    pub const LADDER: [Lean; 6] = [
+    pub const LADDER: [Lean; 5] = [
         Lean::Everything,
         Lean::SeatTable,
         Lean::ObjectTextures,

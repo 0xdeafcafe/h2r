@@ -7,7 +7,7 @@ use engine::{
     datum::DatumArray,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},
-    view::{Record, objects},
+    view::objects,
 };
 use feature::points;
 use hs::h1_ai_slots::ManeuverEdge;
@@ -291,10 +291,12 @@ pub(super) async fn maneuver(cx: &Cx, encoded: u32) -> Result<(), EntryError> {
         let Some(routes) = enabled_routes(m, &encoded, count)? else {
             return Ok(Vec::new());
         };
-        Ok(all(m)?
-            .into_iter()
-            .filter_map(|actor| routes.get(&actor.squad).map(|&to| (actor, to)))
-            .collect::<Vec<_>>())
+        Ok::<_, MemFault>(
+            all(m)?
+                .into_iter()
+                .filter_map(|actor| routes.get(&actor.squad).map(|&to| (actor, to)))
+                .collect::<Vec<_>>(),
+        )
     })?;
     for (actor, to) in moves {
         move_actor(cx, actor, to).await?;

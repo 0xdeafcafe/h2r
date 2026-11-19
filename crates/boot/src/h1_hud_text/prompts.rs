@@ -223,7 +223,7 @@ fn show(mem: &mut dyn GuestMemory, user: u32, text: &[u8]) -> Result<(), MemFaul
 }
 
 pub(super) fn register(b: &mut Builder) {
-    let candidates = Arc::new(Mutex::new([None; PLAYER_LIMIT]));
+    let candidates: Arc<Mutex<Candidates>> = Arc::new(Mutex::new([None; PLAYER_LIMIT]));
     let scan = Arc::clone(&candidates);
     b.raw()
         .before(

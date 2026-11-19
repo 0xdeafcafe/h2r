@@ -312,14 +312,15 @@ pub(crate) fn install(registry: &mut feature::Registry) -> Result<(), BuildError
                         if mem.u32(sp).ok() == Some(FROM_SUBSTITUTE) {
                             SAVED.with(|saved| {
                                 if let Some(saved) = saved.borrow_mut().take() {
-                                    let _ = mem.write(saved.address, &saved.original);
+                                    let _ = mem.write_bytes(saved.address, &saved.original, 1);
                                 }
                             });
                             let text = DRAW_TEXT.get();
                             if text != 0 {
-                                let _ = mem.write(
+                                let _ = mem.write_bytes(
                                     sp + 4,
                                     &[text, TEXT_CAPACITY as u32].map(u32::to_le_bytes).concat(),
+                                    1,
                                 );
                             }
                         }

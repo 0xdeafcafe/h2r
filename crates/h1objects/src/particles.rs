@@ -804,8 +804,6 @@ pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleTyp
     let Some(tb) = h1map::Block::read(b, 0x5c) else {
         return Ok(out);
     };
-    let mut out = Vec::new();
-    let Some(tb) = h1map::Block::read(b, 0x5c) else { return Ok(out) };
     for t in map.block(tb, H1_PCTL_TYPE)?.chunks_exact(H1_PCTL_TYPE) {
         let initial_birth = birth(t, 0x54, 0x5c, [0.0; 3])?;
         let mut emitter_states = Vec::new();
@@ -1020,6 +1018,13 @@ pub(crate) struct AttachmentParticle {
 #[cfg(test)]
 mod attachment_tests {
     use super::*;
+
+    fn block_of<'r>(r: &'r Record, path: &str) -> &'r [Record] {
+        match r.at(path) {
+            Some(Val::Block(b)) => b,
+            _ => &[],
+        }
+    }
 
     #[test]
     fn attached_particle_effect_uses_burst_and_emitter_states() {

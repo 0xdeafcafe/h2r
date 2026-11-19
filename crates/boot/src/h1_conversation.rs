@@ -65,6 +65,11 @@ impl feature::Feature for Conversations {
     }
 }
 
+/// A signed 16-bit read (`GuestMemory` has only the unsigned one).
+fn read_i16(m: &dyn GuestMemory, addr: u32) -> Result<i16, MemFault> {
+    m.u16(addr).map(|v| v as i16)
+}
+
 fn global(m: &dyn GuestMemory, index: u32, ty: u16) -> Result<Option<u32>, MemFault> {
     if index >= GLOBAL_CAPACITY {
         return Ok(None);

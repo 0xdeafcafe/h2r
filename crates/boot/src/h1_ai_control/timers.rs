@@ -7,7 +7,7 @@ use engine::{
     DatumHandle,
     entry::Cx,
     memory::{GuestMemory, MemFault},
-    view::{Record, objects},
+    view::objects,
 };
 use hs::h1_ai_slots::timers::{
     self, BLOCKS, HEADER, REVEAL_PLAYERS, SQUADS, TIME_UNITS_PER_SECOND, UPDATE_TIME,
