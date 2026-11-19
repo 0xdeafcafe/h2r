@@ -20,6 +20,8 @@
 pub mod camera;
 pub mod cull;
 #[cfg(feature = "gpu")]
+pub mod glow;
+#[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod instances;
 #[cfg(feature = "gpu")]

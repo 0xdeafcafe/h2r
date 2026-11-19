@@ -1424,14 +1424,57 @@ its D3D passes.
    combiner blocks, and the blur's steps with the device calls stubbed).
    The host (`boot::native_post_glue::refusal`) refuses every call that
    draws, logging each reason once. Next, in order:
-   1. Trace `0x00034420` and `0x0001c590` (the quad's vertices and
-      vertex shader: how the spread moves the taps), `0x0001dd60` (the
-      target sizes) and the formats of targets 7 and 8.
-   2. The native glow in `native-render`: a copy of the view's colour,
-      the down-sample with `pass_a` into a target 7 stand-in, the blur
-      steps with `blur_combiner` ping-ponging between the 7 and 8
-      stand-ins, the composite with `pass_b` and the blend of
-      `0x000222d0`'s states over the view's colour.
+   1. **The quad, traced** (Code). `0x0001c590` loads the vertex shader
+      the rasterizer globals name for screen quads
+      (`[[0x00485a80] + 0x5c] + 0x64`, entry 0; `LoadVertexShaderProgram`
+      when Halo's cache at `0x0051f0f0` holds another), which passes
+      every input through: `oPos = v0`, `oT0..oT3 = v1..v4`,
+      `oD0 = v5`, `oD1 = v6`. So positions are the target's pixels.
+      `0x00034420` (EAX 0: rectangle, callback `0x00034100`, 0, the tap
+      record) runs the draw-state reset `0x00016b10` again, sets the
+      four stages' dirty bits and zeroes their `D3DTSS_ALPHAKILL` words,
+      commits the textures (`0x0001cf50`: `SetTexture` for each stage
+      whose `0x0051f3d8` word differs from `0x0051f3c8`'s, which it
+      updates), the vertex input (`0x0001c710`) and the deferred state
+      (`0x00400fa0`), then emits one `D3DPT_QUADLIST` with corners
+      `(0, 0)`, `(0, 1)`, `(1, 1)`, `(1, 0)`, attributes 15 down to 0 from
+      the callback as inline `SET_VERTEX_DATA4F`. The callback: attribute
+      0 is the rectangle's lerp (`0x000350e0`, z and w from the near and
+      far at `0x00485ad4`); attribute `k + 1`, for `k` below the tap
+      count, the same lerp moved by the spread times a sign
+      (`[0x0045dbbc]` with `k & 1` in x and `k & 2` in y,
+      `[0x0045dbc4]` otherwise) and scaled by the stage's bound size
+      over the target's. With the quad draw's tenth argument clear (all
+      three passes) the rectangle is Halo's window (`0x004b9dd0`: top,
+      left, bottom, right shorts), and the eleventh clear means no
+      window offset, so a fragment's base coordinate is its own pixel
+      and each tap reads the source in texels. The down-sample's four
+      taps at spread 0.5 land half way between texel centres: a 4 by 4
+      box. `0x0001dd60` reads Halo's target table (`0x004b4b58`, stride
+      `0x98`: width `+0x80`, height `+0x84`, surface `+0x88`, a hiding
+      byte `+0x95`; targets 0, 3 and `0x18` default to 640 by 480).
+      Targets 7 and 8 are made by `0x0001df20` at 160 by 120,
+      `D3DFMT_LIN_A8R8G8B8` (`0x0001d6f0`'s linear format `0x12`), one
+      level. `0x00014f60` binds a target to a stage: its size into
+      `0x00485af4`/`0x00485b04` and its texture into `0x0051f3d8`
+      (through the jump table at `0x00015114` by the target's kind).
+   2. **The native glow** (built, unused): `native_render::glow`.
+      `read_frame` reads the window, the tap signs and the sizes;
+      `Plan::quad` gives each quad its corners and per-stage offsets and
+      scales; `VERTEX` is the screen shader for them; `program` compiles
+      a block through `shaders::psh` with its stages linear (`tex_scale`
+      one over the guest size) and fog off; `GpuGlow::encode` draws a
+      plan's quads in order into stand-ins for targets 7 and 8
+      (`Rgba8Unorm`, the guest size times the copy's scale) and the
+      view's colour, sampling it directly (gfx's colour surfaces are
+      `TEXTURE_BINDING`), the composite with the blend of
+      `0x000222d0`'s states (`Blend`: source `ONE` or
+      `INVDESTCOLOR` by the sixth argument, destination `ONE` unless
+      the seventh's byte is set, alpha alike). S: the down-sample and
+      blur draw with blending off, and the D3D path's pixel centres
+      match a quad whose corners are the window's (the frame A/B shows
+      both). Tests: `glow::tests` (the taps of the down-sample and the
+      composite, the blend, a block's module, the frame's words).
    3. The leftovers, side by side as the prologue's: the texture-stage
       words and dirty bits (including `0x000214f0` writing back the dirty
       word it read before its binds), the block (`pass_b`'s), the quad
