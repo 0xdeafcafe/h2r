@@ -436,7 +436,7 @@ fn open_tracks_the_network_squad_when_create_replaces_the_menu_squad() {
     let mut memory = menu();
     let offline = 0x8500_0000;
     memory.map(offline, 0x7900).put_u32(lobby::SESSION, offline);
-    let test = |cx: Cx| -> EntryFuture {
+    let test = move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let mut machine = Machine::default();
             let open = Command::Open(config());
