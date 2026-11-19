@@ -23,7 +23,8 @@ use crate::object_program::{
 };
 use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
-use crate::objects::ObjectFrame;
+use crate::object_state::{DrawState, EntryStates, resolve};
+use crate::objects::{ItemKey, ObjectFrame};
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
@@ -45,13 +46,15 @@ pub struct LitProgramInput {
     pub images: [Option<Image>; 4],
 }
 
-/// One lit part of a model: its mode section (the key the frame's node
-/// rows and implementations are found by), the section's decompression,
-/// the material's shader values, the index range in its buffers, and per
-/// implementation index the program and buffer it draws with.
+/// One lit part of a model: its mode section and its index among the
+/// section's parts (what a render record's key names, `objects::ItemKey`),
+/// the section's decompression, the material's shader values, the index
+/// range in its buffers, and per implementation index the program and
+/// buffer it draws with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LitPart {
     pub section: u16,
+    pub part: u8,
     pub decompression: [Row; 3],
     /// Its material's shader tag datum (diagnostics).
     pub shader_tag: u32,
@@ -101,7 +104,7 @@ struct LitProgram {
     /// texture accumulation target, whose level is the pass's (made per
     /// encode, [`texture_group`]).
     textures: Option<wgpu::BindGroup>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, wgpu::PrimitiveState), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, DrawState), wgpu::RenderPipeline>,
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -159,17 +162,25 @@ pub struct LitObjects {
     /// The vector normalization cube, as the lights load it (engine
     /// texture 1).
     normalization: Option<wgpu::TextureView>,
-    /// The device's cull at the pass, for programs that inherit it
-    /// ([`Self::set_inherited_cull`]).
-    inherited_cull: Option<crate::program::Cull>,
 }
 
-/// One part's draw this view.
-struct Draw {
-    model: u32,
-    program: usize,
-    buffer: usize,
-    indices: Range<u32>,
+/// One accepted item's draw, resolved at the hook ([`LitObjects::plan`]):
+/// the part and implementation its record picked, the program and buffer
+/// they draw with, the part's indices, its vertex and pixel blocks with
+/// every per-object constant in (the view's put in at the encode), the
+/// state resolved field by field, and whether it samples the texture
+/// accumulation level.
+#[derive(Clone, Debug)]
+pub struct PlannedDraw {
+    pub part: usize,
+    pub implementation: usize,
+    pub program: usize,
+    pub buffer: usize,
+    pub indices: Range<u32>,
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
+    pub state: DrawState,
+    pub texaccum: bool,
 }
 
 impl LitBufferInput {
@@ -240,27 +251,9 @@ pub fn attributes(registers: &[u8], formats: &[Attribute]) -> Vec<wgpu::VertexAt
         .collect()
 }
 
-/// The parts of `frame` drawn with `parts`, as (part index, implementation
-/// index, node rows): each with the implementation its section's records
-/// draw (copied at the hook); a part whose implementation, program or rows
-/// are missing is left out (the hook checks that none is for a drawn
-/// object).
-pub fn frame_parts<'a>(frame: &'a ObjectFrame, parts: &[LitPart]) -> Vec<(usize, usize, &'a [Row])> {
-    parts
-        .iter()
-        .enumerate()
-        .filter_map(|(i, p)| {
-            let imp = frame.implementations.iter().find(|(s, _)| *s == p.section)?.1;
-            p.implementations.get(imp)?.as_ref()?;
-            let rows = &frame.node_rows.iter().find(|(s, _)| *s == p.section)?.1;
-            Some((i, imp, rows.as_slice()))
-        })
-        .collect()
-}
-
 impl LitObjects {
     pub fn new(device: &wgpu::Device) -> Self {
-        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None, inherited_cull: None }
+        Self { uniforms_layout: uniforms_layout(device), models: HashMap::new(), normalization: None }
     }
 
     /// Uploads the normalization cube the programs' normalization stages
@@ -360,123 +353,70 @@ impl LitObjects {
         Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new() })
     }
 
-    /// The cull the device holds at the layer-3 call (`None`: not known),
-    /// which the programs whose implementation does not set `CULLMODE`
-    /// draw with from the next encode, as the D3D path's draws of them do.
-    pub fn set_inherited_cull(&mut self, cull: Option<crate::program::Cull>) {
-        self.inherited_cull = cull;
-    }
-
-    /// The primitive and depth write and compare `pass` draws with: its
-    /// state, with the inherited cull where it takes it.
-    fn pipeline_state(&self, pass: &ObjectPass) -> (wgpu::PrimitiveState, (bool, wgpu::CompareFunction)) {
-        let cull = if pass.program.inherits_cull { self.inherited_cull } else { None };
-        crate::program::pipeline_state(pass.program.state.as_ref(), cull)
-    }
-
     /// Whether model `index` has lit parts.
     pub fn has(&self, index: u32) -> bool {
         self.models.contains_key(&index)
     }
 
-    /// Per lit part of model `index`, one line saying how `frame` draws it
-    /// with `view` and `texaccum` (as [`Self::encode`] would): its section
-    /// and shader, the implementation its records pick and that program's
-    /// states, the texture accumulation stages with the constants and
-    /// scale they get, or why it is not drawn (diagnostics: the objects'
-    /// probe).
-    pub fn describe_parts(&self, index: u32, frame: &ObjectFrame, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Vec<String> {
-        let Some(m) = self.models.get(&index) else { return vec!["no lit model".into()] };
-        let drawn: HashMap<usize, (usize, &[Row])> = frame_parts(frame, &m.parts).into_iter().map(|(i, imp, rows)| (i, (imp, rows))).collect();
-        let defaults = frame.defaults.unwrap_or_default();
-        let mut out = Vec::new();
-        for (i, part) in m.parts.iter().enumerate() {
-            let head = format!(
-                "part {i} section {} shader {:#010x} indices {:?} implementations {:?}",
-                part.section,
-                part.shader_tag,
-                part.indices,
-                part.implementations.iter().map(Option::is_some).collect::<Vec<_>>()
-            );
-            let Some(&(imp, rows)) = drawn.get(&i) else {
-                out.push(format!("{head}: not drawn (no record of its section, or its records' implementation is not one it has)"));
-                continue;
-            };
-            let Some((program, _)) = part.implementations[imp] else { continue };
-            let pass = &m.programs[program].pass;
-            let state = pass.program.state.as_ref().map(|s| {
-                format!(
-                    "depth {:?} write {} blend {} alpha test {:?} cull {:?} writes {:?}",
-                    s.depth_compare,
-                    s.depth_write,
-                    s.blend.is_some(),
-                    s.alpha_test,
-                    s.primitive.cull_mode,
-                    s.color_writes
-                )
-            });
-            let samples = pass.texaccum.contains(&true);
-            if samples && texaccum.is_none() {
-                out.push(format!("{head}: implementation {imp}, state {state:?}: not drawn (it samples the texture accumulation target and the pass has no level)"));
-                continue;
-            }
-            let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
-            let base = frame_vertex(&pass.program.vertex, view);
-            let mut vertex = match object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) {
-                Ok(v) => v,
-                Err(e) => {
-                    out.push(format!("{head}: implementation {imp}: not drawn (vertex inputs: {e})"));
-                    continue;
-                }
-            };
-            if let Err(e) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) {
-                out.push(format!("{head}: implementation {imp}: not drawn (pixel inputs: {e})"));
-                continue;
-            }
-            let mut texaccum_text = String::new();
-            if samples && let Some(t) = texaccum {
-                texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
-                let rows: Vec<_> = pass
-                    .implementation
-                    .dimension_bindings
-                    .iter()
-                    .map(|c| {
-                        let row = if c.bank == 1 { vertex.constants.get(18 + usize::from(c.reg)) } else { vertex.defaults.get(usize::from(c.reg)) };
-                        (c.bank, c.reg, c.mode, c.stage, row.copied())
-                    })
-                    .collect();
-                texaccum_text = format!(
-                    "; texture accumulation stages {:?} level {:?} guest texels, size constants (bank, reg, mode, stage, row) {rows:?}",
-                    pass.texaccum, t.guest_size
-                );
-            }
-            out.push(format!("{head}: drawn with implementation {imp}, rows {}, state {state:?}{texaccum_text}", rows.len()));
-        }
-        out
+    /// The draw of the item `key` (the part and implementation its record
+    /// picked) of `frame` in model `index`, its record's node rows `rows`,
+    /// over the render state the device held at the layer-3 call
+    /// (`entry`): every per-object constant put in and every state field
+    /// resolved ([`crate::object_state::resolve`]), only the view's own
+    /// left for the encode ([`Self::encode`]: the view's constants and
+    /// clip, and the texture accumulation level's size). An error says why
+    /// the item keeps its D3D draw.
+    pub fn plan(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
+        let m = self.models.get(&index).ok_or("its model is not uploaded")?;
+        plan_part(&m.parts, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
     }
 
-    /// What part `part` of model `index` draws with for `frame` in `view`
-    /// (as [`Self::encode`] puts it in), to compare with the D3D path's draw
-    /// of it (`d3d::uniform_compare`); or why it is not drawn.
-    pub fn part_uniforms(&self, index: u32, frame: &ObjectFrame, part: usize, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
-        let m = self.models.get(&index).ok_or("no lit model")?;
-        let p = m.parts.get(part).ok_or_else(|| format!("no part {part} (of {})", m.parts.len()))?;
-        let (i, imp, rows) = frame_parts(frame, &m.parts)
-            .into_iter()
-            .find(|(i, _, _)| *i == part)
-            .ok_or("not drawn: no record of its section, or its records' implementation is not one it has")?;
-        debug_assert_eq!(i, part);
-        let (program, _) = p.implementations[imp].ok_or("no program for its implementation")?;
-        let pass = &m.programs[program].pass;
-        let defaults = frame.defaults.unwrap_or_default();
-        let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
-        let mut vertex = object_vertex_uniforms(&frame_vertex(&pass.program.vertex, view), &pass.implementation, &inputs, rows, p.decompression)?;
-        let mut pixel = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs)?;
-        if let Some(t) = texaccum {
+    /// The blocks `d` (of model `index`) is issued with in `view`, and the
+    /// texture accumulation level's size when it samples one: what
+    /// [`Self::encode`] uploads. `None` when the model is gone or `d`
+    /// samples the level and there is none.
+    fn issued(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Option<(VertexUniforms, PixelUniforms)> {
+        let pass = &self.models.get(&index)?.programs.get(d.program)?.pass;
+        if d.texaccum && texaccum.is_none() {
+            return None;
+        }
+        let mut vertex = frame_vertex(&d.vertex, view);
+        vertex.w_clamp = d.state.w_clamp;
+        let mut pixel = frame_pixel(&d.pixel, view);
+        if let Some(t) = texaccum.filter(|_| d.texaccum) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
             texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
         }
-        let (primitive, depth) = self.pipeline_state(pass);
+        Some((vertex, pixel))
+    }
+
+    /// One line on how `d` (of model `index`) draws (diagnostics: the
+    /// objects' probe).
+    pub fn describe(&self, index: u32, d: &PlannedDraw) -> String {
+        let section = self.models.get(&index).and_then(|m| m.parts.get(d.part)).map(|p| (p.section, p.part, p.shader_tag));
+        format!(
+            "part {} (section, part, shader) {section:x?} implementation {} indices {:?}: depth {:?} write {} cull {:?} front {:?} writes {:?} alpha test {:?} clamp {}{}",
+            d.part,
+            d.implementation,
+            d.indices,
+            d.state.depth_compare,
+            d.state.depth_write,
+            d.state.primitive.cull_mode,
+            d.state.primitive.front_face,
+            d.state.color_writes,
+            d.state.alpha_test,
+            d.state.w_clamp,
+            if d.texaccum { "; samples the texture accumulation level" } else { "" },
+        )
+    }
+
+    /// What `d` (of model `index`) is issued with in `view` (as
+    /// [`Self::encode`] puts it in), to compare with the D3D path's draw
+    /// of it (`d3d::uniform_compare`).
+    pub fn part_uniforms(&self, index: u32, d: &PlannedDraw, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Result<PartUniforms, String> {
+        let m = self.models.get(&index).ok_or("no lit model")?;
+        let pass = &m.programs.get(d.program).ok_or("no program")?.pass;
+        let (vertex, pixel) = self.issued(index, d, view, texaccum).ok_or("it samples the texture accumulation level and there is none")?;
         let textures = std::array::from_fn(|n| {
             if pass.texaccum[n] {
                 Some(format!("the texture accumulation level ({:?} guest texels)", texaccum.map(|t| t.guest_size)))
@@ -490,7 +430,7 @@ impl LitObjects {
             }
         });
         Ok(PartUniforms {
-            implementation: imp,
+            implementation: d.implementation,
             words: pass.words.clone(),
             vertex,
             pixel,
@@ -499,8 +439,8 @@ impl LitObjects {
             pixel_options: pass.program.pixel_options,
             samplers: std::array::from_fn(|n| pass.program.dims[n].and(pass.program.samplers[n].as_ref()).and_then(crate::program::sampler_key)),
             textures,
-            primitive,
-            depth,
+            primitive: d.state.primitive,
+            depth: (d.state.depth_write, d.state.depth_compare),
         })
     }
 
@@ -513,12 +453,14 @@ impl LitObjects {
         s
     }
 
-    /// Draws the lit parts of `objects` (each with its model index) into
-    /// `color` and `depth` (both loaded and kept), the viewport the whole
-    /// target as the programs expect. A part whose program samples the
-    /// texture accumulation target is drawn only with `texaccum`, its
-    /// stages' coordinates in that level's guest texels. Returns the parts
-    /// drawn.
+    /// Issues `draws` (each with its model index, planned at the hook,
+    /// [`Self::plan`]) in their order into `color` and `depth` (both
+    /// loaded and kept), the viewport the whole target as the programs
+    /// expect. A draw sampling the texture accumulation target takes
+    /// `texaccum`, its stages' coordinates in that level's guest texels.
+    /// Returns the draws issued: fewer only when a model is gone or a
+    /// draw samples the level and there is none, which the caller counts
+    /// (the hook has already given up those items' D3D draws).
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
@@ -531,50 +473,28 @@ impl LitObjects {
         depth_format: wgpu::TextureFormat,
         target_size: (u32, u32),
         view: &ViewInputs,
-        objects: &[(u32, &ObjectFrame)],
+        draws: &[(u32, PlannedDraw)],
         texaccum: Option<Texaccum<'_>>,
     ) -> usize {
-        let mut draws = Vec::new();
-        let mut blocks: Vec<(VertexUniforms, PixelUniforms)> = Vec::new();
-        for &(model, frame) in objects {
-            let Some(m) = self.models.get(&model) else { continue };
-            let defaults = frame.defaults.unwrap_or_default();
-            for (i, imp, rows) in frame_parts(frame, &m.parts) {
-                let part = &m.parts[i];
-                let Some((program, buffer)) = part.implementations[imp] else { continue };
-                let pass = &m.programs[program].pass;
-                let samples_texaccum = pass.texaccum.contains(&true);
-                if samples_texaccum && texaccum.is_none() {
-                    continue;
-                }
-                let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
-                let base = frame_vertex(&pass.program.vertex, view);
-                let Ok(mut vertex) = object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) else { continue };
-                if let Some(t) = texaccum {
-                    texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
-                }
-                let Ok(mut pixel) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) else { continue };
-                if let Some(t) = texaccum {
-                    texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
-                }
-                blocks.push((vertex, pixel));
-                draws.push(Draw { model, program, buffer, indices: part.indices.clone() });
+        let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::new();
+        for d in draws {
+            if let Some(blocks) = self.issued(d.0, &d.1, view, texaccum) {
+                issued.push((d, blocks));
             }
         }
-        if draws.is_empty() {
+        if issued.is_empty() {
             return 0;
         }
-        for d in &draws {
-            let (primitive, _) = self.pipeline_state(&self.models[&d.model].programs[d.program].pass);
-            let m = self.models.get_mut(&d.model).expect("drawn model");
+        for (planned, _) in &issued {
+            let (model, d) = (planned.0, &planned.1);
+            let m = self.models.get_mut(&model).expect("checked in issued");
             let registers = m.buffers[d.buffer].registers.clone();
             let formats = m.buffers[d.buffer].formats.clone();
             let p = &mut m.programs[d.program];
-            let key = (color_format, depth_format, registers.clone(), formats.clone(), primitive);
+            let key = (color_format, depth_format, registers.clone(), formats.clone(), d.state);
             if p.pipelines.contains_key(&key) {
                 continue;
             }
-            let state = p.pass.program.state.expect("an object pass has its state");
             let attrs = attributes(&registers, &formats);
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
@@ -589,11 +509,11 @@ impl LitObjects {
                         attributes: &attrs,
                     })],
                 },
-                primitive,
+                primitive: d.state.primitive,
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth_format,
-                    depth_write_enabled: Some(state.depth_write),
-                    depth_compare: Some(state.depth_compare),
+                    depth_write_enabled: Some(d.state.depth_write),
+                    depth_compare: Some(d.state.depth_compare),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
@@ -604,8 +524,9 @@ impl LitObjects {
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: color_format,
-                        blend: state.blend,
-                        write_mask: state.color_writes,
+                        // Refused when it blends (`object_state::resolve`).
+                        blend: None,
+                        write_mask: d.state.color_writes,
                     })],
                 }),
                 multiview_mask: None,
@@ -614,9 +535,9 @@ impl LitObjects {
             p.pipelines.insert(key, pipeline);
         }
         let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
-        let (offsets, size) = run_layout(draws.len(), align);
+        let (offsets, size) = run_layout(issued.len(), align);
         let mut bytes = vec![0u8; size as usize];
-        for ((vertex, pixel), o) in blocks.iter().zip(&offsets) {
+        for ((_, (vertex, pixel)), o) in issued.iter().zip(&offsets) {
             let (v, p) = (o[0] as usize, o[1] as usize);
             let vertex = vertex.to_bytes();
             bytes[v..v + vertex.len()].copy_from_slice(&vertex);
@@ -647,12 +568,13 @@ impl LitObjects {
         // with this pass's level.
         let mut groups: HashMap<(u32, usize), wgpu::BindGroup> = HashMap::new();
         if let Some(t) = texaccum {
-            for d in &draws {
-                let p = &self.models[&d.model].programs[d.program];
-                if p.textures.is_none() && !groups.contains_key(&(d.model, d.program)) {
+            for (planned, _) in &issued {
+                let (model, d) = (planned.0, &planned.1);
+                let p = &self.models[&model].programs[d.program];
+                if p.textures.is_none() && !groups.contains_key(&(model, d.program)) {
                     let extra: Vec<(usize, &wgpu::TextureView)> =
                         (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, t.view)).collect();
-                    groups.insert((d.model, d.program), texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers));
+                    groups.insert((model, d.program), texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers));
                 }
             }
         }
@@ -676,12 +598,13 @@ impl LitObjects {
         });
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
         let mut drawn = 0;
-        for (d, o) in draws.iter().zip(&offsets) {
-            let m = &self.models[&d.model];
+        for ((planned, _), o) in issued.iter().zip(&offsets) {
+            let (model, d) = (planned.0, &planned.1);
+            let m = &self.models[&model];
             let b = &m.buffers[d.buffer];
             let p = &m.programs[d.program];
-            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), self.pipeline_state(&p.pass).0)) else { continue };
-            let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(d.model, d.program))) else { continue };
+            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state)) else { continue };
+            let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, o);
             pass.set_bind_group(1, textures, &[]);
@@ -693,6 +616,52 @@ impl LitObjects {
         }
         drawn
     }
+}
+
+/// [`LitObjects::plan`] over a model's `parts` and its programs' passes
+/// (`pass_of`): exactly the part the item's key names (section and part),
+/// with exactly the implementation its record picked, its item's shader
+/// the part's; then its per-object blocks and its state.
+pub fn plan_part<'a>(
+    parts: &[LitPart],
+    pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame,
+    key: &ItemKey,
+    rows: &[Row],
+    entry: &EntryStates,
+) -> Result<PlannedDraw, String> {
+    let part = parts
+        .iter()
+        .position(|p| p.section == key.section && p.part == key.part)
+        .ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
+    let p = &parts[part];
+    if p.shader_tag as u16 != key.shader as u16 {
+        return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
+    }
+    let (program, buffer) = p
+        .implementations
+        .get(key.implementation)
+        .copied()
+        .flatten()
+        .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
+    let pass = pass_of(program).ok_or("its program is missing")?;
+    let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
+    let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
+    let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
+    let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
+    let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
+    let state = resolve(&pass.implementation.render_states, entry, compiled)?;
+    Ok(PlannedDraw {
+        part,
+        implementation: key.implementation,
+        program,
+        buffer,
+        indices: p.indices.clone(),
+        vertex,
+        pixel,
+        state,
+        texaccum: pass.texaccum.contains(&true),
+    })
 }
 
 /// The engine's textures the lit build may bind: whether the vector
@@ -765,7 +734,9 @@ pub struct LitSection<'a> {
     pub decompression: [Row; 3],
     pub streams: Vec<Option<(u8, StreamData<'a>)>>,
     pub vertex_count: usize,
-    pub parts: Vec<(u16, Vec<[u16; 3]>)>,
+    /// Its drawn opaque parts: index among the section's parts (a record
+    /// key's bits 0..3), material and triangles.
+    pub parts: Vec<(u8, u16, Vec<[u16; 3]>)>,
 }
 
 /// A material the lit build takes: resolved, and its shader values.
@@ -815,18 +786,19 @@ pub fn lit_model(
     let mut out = LitBuild { implementations: u8::MAX, ..LitBuild::default() };
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
-    // Per section, its lit parts' triangles in one list: (material, range).
-    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, Range<u32>)>)> = HashMap::new();
+    // Per section, its lit parts' triangles in one list: (material, part,
+    // range), one per part (a record draws one part).
+    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, u8, Range<u32>)>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
         let mut ranges = Vec::new();
-        for (material, triangles) in &s.parts {
+        for (part, material, triangles) in &s.parts {
             if !materials.contains_key(material) {
                 continue;
             }
             let start = list.len() as u32;
             list.extend(triangles.iter().flatten().map(|&i| u32::from(i)));
-            ranges.push((*material, start..list.len() as u32));
+            ranges.push((*material, *part, start..list.len() as u32));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -841,15 +813,22 @@ pub fn lit_model(
                 continue;
             }
         };
-        // The material's parts: (section, index range).
-        let parts: Vec<(&LitSection<'_>, Range<u32>)> = sections
+        // The material's parts: (section, part, index range).
+        let parts: Vec<(&LitSection<'_>, u8, Range<u32>)> = sections
             .iter()
-            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1.clone())))
+            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1, r.2.clone())))
             .collect();
         if parts.is_empty() {
             continue;
         }
-        let mut per: Vec<[Option<(LitProgramInput, usize)>; IMPLEMENTATIONS]> = (0..parts.len()).map(|_| Default::default()).collect();
+        // Compiled once per section: its parts share the programs.
+        let mut secs: Vec<&LitSection<'_>> = Vec::new();
+        for (s, _, _) in &parts {
+            if !secs.iter().any(|x| x.index == s.index) {
+                secs.push(s);
+            }
+        }
+        let mut per: Vec<[Option<(LitProgramInput, usize)>; IMPLEMENTATIONS]> = (0..secs.len()).map(|_| Default::default()).collect();
         let mut mask = 0u8;
         let mut reasons = Vec::new();
         for imp in pass.implementations.iter().filter(|i| i.index < IMPLEMENTATIONS) {
@@ -861,7 +840,7 @@ pub fn lit_model(
             let mut compile = || -> Result<Vec<(LitProgramInput, usize)>, String> {
                 let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
                 let mut got = Vec::new();
-                for (s, _) in &parts {
+                for s in &secs {
                     let mut streams = s
                         .streams
                         .iter()
@@ -937,15 +916,22 @@ pub fn lit_model(
             out.refused.push((m, why));
             continue;
         }
-        for ((s, indices), slots) in parts.into_iter().zip(per) {
+        let mut by_section: Vec<[Option<(usize, usize)>; IMPLEMENTATIONS]> = Vec::with_capacity(secs.len());
+        for slots in per {
             let mut implementations = [None; IMPLEMENTATIONS];
             for (n, slot) in slots.into_iter().enumerate() {
                 let Some((program, buffer)) = slot else { continue };
                 out.input.programs.push(program);
                 implementations[n] = Some((out.input.programs.len() - 1, buffer));
             }
+            by_section.push(implementations);
+        }
+        for (s, part, indices) in parts {
+            let k = secs.iter().position(|x| x.index == s.index).expect("listed above");
+            let implementations = by_section[k];
             out.input.parts.push(LitPart {
                 section: s.index,
+                part,
                 decompression: s.decompression,
                 shader_tag: lit.material.shader.0,
                 shader: lit.shader,
@@ -1013,7 +999,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(0, vec![[0, 1, 2]])],
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1061,7 +1047,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(0, vec![[0, 1, 2]])],
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1135,7 +1121,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(5, vec![[2, 1, 0]]), (0, vec![[0, 1, 2]]), (3, vec![[0, 2, 1]]), (1, vec![[1, 2, 0]])],
+            parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
         };
         // An opaque pass: no blending, depth written (both must be set).
         let opaque = |index: usize| {
@@ -1179,10 +1165,10 @@ mod tests {
         assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 1, 2, 0], "material 5 is not lit here");
         assert_eq!(input.parts.len(), 2);
         let p = &input.parts[0];
-        assert_eq!((p.section, p.indices.clone()), (4, 0..3));
+        assert_eq!((p.section, p.part, p.indices.clone()), (4, 1, 0..3));
         assert_eq!(p.implementations, [Some((0, 0)), Some((1, 0)), None, None, None]);
         let p = &input.parts[1];
-        assert_eq!(p.indices, 3..6);
+        assert_eq!((p.part, p.indices.clone()), (2, 3..6));
         assert_eq!(p.implementations, [Some((2, 0)), None, None, None, None]);
         assert!(input.programs.iter().all(|p| p.pass.program.inputs == 0b111));
         assert_eq!(asked[0], (map::TagId(0xe000_0002), 0, 0));
@@ -1214,41 +1200,115 @@ mod tests {
         }
     }
 
-    fn part(section: u16, implementations: [Option<(usize, usize)>; IMPLEMENTATIONS]) -> LitPart {
+    fn part(section: u16, part: u8, implementations: [Option<(usize, usize)>; IMPLEMENTATIONS]) -> LitPart {
         LitPart {
             section,
+            part,
             decompression: [[0.0; 4]; 3],
-            shader_tag: 0,
+            shader_tag: 0xe5da_0465,
             shader: ShaderValues::default(),
-            indices: 0..3,
+            indices: u32::from(part) * 3..u32::from(part) * 3 + 3,
             implementations,
         }
     }
 
-    #[test]
-    fn an_object_draws_each_part_with_the_implementation_its_records_pick() {
-        let words = [0u32; 30];
-        let mut f = ObjectFrame {
+    /// An opaque implementation `index` of the lit fixture, setting depth
+    /// Equal with no writes and leaving the rest (cull, winding, colour
+    /// writes) to the device.
+    fn equal_pass(index: usize) -> ObjectPass {
+        use crate::object_program::tests::{lit, rigid_program};
+        let mut imp = lit();
+        imp.index = index;
+        imp.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 0),
+            state(RenderStateType::ZWriteEnable, 0),
+            state(RenderStateType::ZFunc, gfx::state::CompareFunc::Equal.xbox_value()),
+        ];
+        object_pass(map::TagId(0xe000_0001), &imp, &rigid_program(), crate::program::INPUT_MASK, [shaders::vsh::InputFetch::Float; 16], true)
+            .unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// The device at the layer-3 call: W-buffered, LessEqual written,
+    /// `CULL_CW`, nothing else on.
+    fn entry() -> EntryStates {
+        use gfx::state::{CompareFunc, CullMode, DepthBufferMode, FillMode, FrontFace};
+        EntryStates::read(|t| {
+            Some(match t {
+                RenderStateType::ZEnable => DepthBufferMode::W.xbox_value(),
+                RenderStateType::ZFunc => CompareFunc::LessEqual.xbox_value(),
+                RenderStateType::ZWriteEnable => 1,
+                RenderStateType::ColorWriteEnable => 0x0101_0101,
+                RenderStateType::CullMode => CullMode::Cw.xbox_value(),
+                RenderStateType::FrontFace => FrontFace::Cw.xbox_value(),
+                RenderStateType::FillMode | RenderStateType::BackFillMode => FillMode::Solid.xbox_value(),
+                _ => 0,
+            })
+        })
+    }
+
+    fn frame() -> ObjectFrame {
+        ObjectFrame {
             handle: 1,
             definition: 2,
             nodes: Vec::new(),
             sphere: ([0.0; 3], 1.0),
-            lighting: Some(Lighting { words, root: Some(0) }),
-            defaults: None,
-            node_rows: vec![(4, vec![[1.0; 4]; 3]), (7, vec![[1.0; 4]; 3])],
-            implementations: vec![(4, 1)],
-        };
+            lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
+            defaults: Some(Default::default()),
+        }
+    }
+
+    fn key(section: u16, part: u8, implementation: usize) -> ItemKey {
+        ItemKey { record: 9, shader: 0xe5da_0465, section, part, implementation }
+    }
+
+    #[test]
+    fn an_item_draws_exactly_the_part_and_implementation_its_record_picked() {
+        let passes = [equal_pass(0), equal_pass(1), equal_pass(2)];
+        let pass_of = |i: usize| passes.get(i);
+        // Section 4: part 0 with implementations 0 and 1, part 1 with 2;
+        // section 7: part 0 with 0.
         let parts = [
-            part(4, [Some((0, 0)), Some((1, 0)), None, None, None]),
-            part(4, [None, None, Some((2, 1)), None, None]),
-            part(7, [Some((0, 0)), Some((1, 0)), None, None, None]),
+            part(4, 0, [Some((0, 0)), Some((1, 0)), None, None, None]),
+            part(4, 1, [None, None, Some((2, 1)), None, None]),
+            part(7, 0, [Some((0, 2)), None, None, None, None]),
         ];
-        let picked: Vec<(usize, usize)> = frame_parts(&f, &parts).iter().map(|&(i, imp, _)| (i, imp)).collect();
-        assert_eq!(picked, vec![(0, 1)], "part 1 has no implementation 1; section 7 no implementation copied");
-        f.implementations = vec![(4, 2), (7, 0)];
-        let picked: Vec<(usize, usize)> = frame_parts(&f, &parts).iter().map(|&(i, imp, _)| (i, imp)).collect();
-        assert_eq!(picked, vec![(1, 2), (2, 0)]);
-        f.node_rows.truncate(1);
-        assert_eq!(frame_parts(&f, &parts).len(), 1, "section 7 has no rows");
+        let rows = [[1.0f32; 4]; 3];
+        let f = frame();
+        let d = plan_part(&parts, &pass_of, &f, &key(4, 1, 2), &rows, &entry()).unwrap();
+        assert_eq!((d.part, d.implementation, d.program, d.buffer, d.indices.clone()), (1, 2, 2, 1, 3..6), "part 1 only, not its section's part 0");
+        assert_eq!(d.vertex.constants[50], [1.0; 4], "its record's rows");
+        let d = plan_part(&parts, &pass_of, &f, &key(4, 0, 1), &rows, &entry()).unwrap();
+        assert_eq!((d.part, d.program), (0, 1));
+        let refused = |k: ItemKey| plan_part(&parts, &pass_of, &f, &k, &rows, &entry()).unwrap_err();
+        assert!(refused(key(4, 0, 2)).contains("no implementation 2"));
+        assert!(refused(key(4, 2, 0)).contains("not a native part"));
+        assert!(refused(key(5, 0, 0)).contains("not a native part"));
+        assert!(refused(ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }).contains("shader"));
+    }
+
+    #[test]
+    fn an_items_draw_resolves_every_per_object_input_and_state_field_or_is_refused() {
+        let passes = [equal_pass(0)];
+        let pass_of = |i: usize| passes.get(i);
+        let parts = [part(4, 0, [Some((0, 0)), None, None, None, None])];
+        let rows = [[1.0f32; 4]; 3];
+        let d = plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &entry()).unwrap();
+        assert_eq!((d.state.depth_compare, d.state.depth_write), (wgpu::CompareFunction::Equal, false), "its own");
+        assert!(d.state.primitive.cull_mode.is_some(), "the device's cull, not none");
+        // Lighting the implementation reads, absent: refused, not drawn
+        // with zeros.
+        let dark = ObjectFrame { lighting: None, ..frame() };
+        assert!(plan_part(&parts, &pass_of, &dark, &key(4, 0, 0), &rows, &entry()).unwrap_err().contains("lighting"));
+        let no_defaults = ObjectFrame { defaults: None, ..frame() };
+        assert!(plan_part(&parts, &pass_of, &no_defaults, &key(4, 0, 0), &rows, &entry()).unwrap_err().contains("defaults"));
+        // A state field the device's array does not give.
+        let mut unread = entry();
+        unread.0.retain(|(t, _)| *t != RenderStateType::FrontFace);
+        assert!(plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &unread).unwrap_err().contains("FrontFace"));
+        // The stencil on at the layer-3 call.
+        let mut stencil = entry();
+        stencil.0.retain(|(t, _)| *t != RenderStateType::StencilEnable);
+        stencil.0.push((RenderStateType::StencilEnable, 1));
+        assert!(plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &stencil).unwrap_err().contains("stencil"));
     }
 }

@@ -826,7 +826,7 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 /// `0x0011c1b0` and `0x00137d40` index the block with it
 /// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
 /// or unread.
-fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
+pub(crate) fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
     let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
     u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
 }
