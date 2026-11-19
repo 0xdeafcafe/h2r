@@ -60,6 +60,7 @@ pub mod map_slots;
 pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
+pub mod native_decals_glue;
 pub mod native_gels_glue;
 mod native_gels_load;
 pub mod native_lights_glue;
