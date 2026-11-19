@@ -23,6 +23,29 @@ pub struct WorldVertex {
     pub tangent: [f32; 3],
     /// The lightmap's signed lighting vector (stream `30`), zero without one.
     pub lighting: [f32; 3],
+    /// `normal`, `binormal`, `tangent` and `lighting` as the stream words
+    /// the D3D path binds (`NORMPACKED3`, [`pack_normpacked3`]): the
+    /// material programs read `v2..v5` from these and decode them in the
+    /// shader as the D3D translation does (`crate::program::INPUTS`).
+    pub packed: [u32; 4],
+}
+
+/// `v` as a `NORMPACKED3` word (signed 11:11:10, x in the low bits): each
+/// component times 1023, 1023 and 511, rounded and clamped. For a value
+/// decoded from such a word (`tags::geometry::unpack_normpacked3`) this is
+/// the word again, but for the field `-1024` (or `-512`), which comes back
+/// as `-1023` (`-511`): both decode to `-1`, on the CPU and in the shader.
+pub fn pack_normpacked3(v: [f32; 3]) -> u32 {
+    let field = |x: f32, max: f32, bits: u32| -> u32 {
+        let s = (x * max).round().clamp(-max, max) as i32;
+        (s as u32) & ((1 << bits) - 1)
+    };
+    field(v[0], 1023.0, 11) | field(v[1], 1023.0, 11) << 11 | field(v[2], 511.0, 10) << 22
+}
+
+/// The four packed words of a vertex's frame and lighting vector.
+fn pack_frame(normal: [f32; 3], binormal: [f32; 3], tangent: [f32; 3], lighting: [f32; 3]) -> [u32; 4] {
+    [normal, binormal, tangent, lighting].map(pack_normpacked3)
 }
 
 /// Axis-aligned bounds in world space.
@@ -316,15 +339,23 @@ impl WorldBuilder {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
             let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
             let own = |v: &Vec<[f32; 3]>| v.get(i).copied().unwrap_or([0.0; 3]);
+            let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
             self.program_vertices.push(WorldVertex {
                 position: section.positions[i],
                 uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
                 lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
                 normal,
-                binormal: own(&section.binormals),
-                tangent: own(&section.tangents),
-                lighting: own(&section.lighting),
+                binormal,
+                tangent,
+                lighting,
+                packed: pack_frame(normal, binormal, tangent, lighting),
             });
+            let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
+                place.normal(normal),
+                turn(&section.binormals),
+                turn(&section.tangents),
+                turn(&section.lighting),
+            );
             self.vertices.push(WorldVertex {
                 // Unplaced geometry (a cluster) keeps its positions' bits:
                 // the D3D path feeds them to the same program, and the
@@ -337,13 +368,16 @@ impl WorldBuilder {
                 },
                 uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
                 lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
-                normal: place.normal(normal),
-                binormal: turn(&section.binormals),
-                tangent: turn(&section.tangents),
+                normal: placed_normal,
+                binormal: placed_binormal,
+                tangent: placed_tangent,
                 // S: in the section's own space like the tangent frame, so
                 // it turns with the placement (the game's program dots the
                 // two together).
-                lighting: turn(&section.lighting),
+                lighting: placed_lighting,
+                // Read by nothing that draws the placed copy (the lights
+                // read the floats, `crate::program::FLOAT_INPUTS`).
+                packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
             });
         }
         for (index, part) in section.parts.iter().enumerate() {
@@ -650,6 +684,29 @@ mod tests {
         assert_eq!(w.program_vertices[1], w.vertices[1], "a cluster's copies agree");
         assert_eq!(w.rows(7).map(|r| r[1][3]), Some(8.0));
         assert_eq!(w.rows(0), None);
+        // The programs' words: the section's own frame and lighting vector.
+        let v = w.program_vertices[5];
+        assert_eq!(v.packed[0], pack_normpacked3([1.0, 0.0, 0.0]));
+        assert_eq!(v.packed[3], pack_normpacked3([0.25, -0.5, 1.0]));
+    }
+
+    /// The words a vertex program reads `v2..v5` from (the round trip
+    /// through the decode is `load::tests`).
+    #[test]
+    fn a_frame_packs_into_normpacked3_words() {
+        assert_eq!(pack_normpacked3([1.0, -1.0, 0.5]), 0x3ff | 0x401 << 11 | 256 << 22);
+        assert_eq!(pack_normpacked3([3.0 / 1023.0, -2.0 / 1023.0, -1.0 / 511.0]), 3 | 0x7fe << 11 | 0x3ff << 22);
+        // Out of range and the default normal.
+        assert_eq!(pack_normpacked3([2.0, -2.0, 0.0]), 0x3ff | 0x401 << 11);
+        assert_eq!(pack_normpacked3([0.0, 0.0, 1.0]), 0x1ff << 22);
+        let b = {
+            let mut b = WorldBuilder::new();
+            let mut s = quad(0, false, true);
+            s.normals.clear();
+            b.add_section(Owner::Cluster(0), &s, &Placement::IDENTITY, None);
+            b.finish()
+        };
+        assert_eq!(b.program_vertices[0].packed, [0x1ff << 22, 0, 0, 0], "no normals: +z; nothing else: zero");
     }
 
     #[test]

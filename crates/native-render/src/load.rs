@@ -416,4 +416,24 @@ mod tests {
         let w = 10 | (0x7ff - 2) << 11 | 100 << 22;
         assert_eq!(program_lighting_vector(w), [10.0 / 1023.0, -3.0 / 1023.0, 100.0 / 511.0]);
     }
+
+    /// The world vertex's packed words (`world::pack_normpacked3`, what
+    /// the material programs decode `v2..v5` from): a value decoded from a
+    /// `NORMPACKED3` word packs back to it, but the smallest fields, which
+    /// come back as the next ones up and decode to -1 as they do.
+    #[test]
+    fn a_decoded_frame_packs_back_to_its_word() {
+        use crate::world::pack_normpacked3;
+        use tags::geometry::unpack_normpacked3;
+        for x in [-1023i32, -511, -1, 0, 1, 2, 500, 1023] {
+            for z in [-511i32, -3, 0, 7, 511] {
+                let word = (x as u32 & 0x7ff) | ((-x) as u32 & 0x7ff) << 11 | (z as u32 & 0x3ff) << 22;
+                assert_eq!(pack_normpacked3(unpack_normpacked3(word)), word, "x {x} z {z}");
+            }
+        }
+        let min = 0x400 | 0x400 << 11 | 0x200 << 22;
+        let packed = pack_normpacked3(unpack_normpacked3(min));
+        assert_eq!(packed, 0x401 | 0x401 << 11 | 0x201 << 22);
+        assert_eq!(unpack_normpacked3(packed), [-1.0; 3]);
+    }
 }

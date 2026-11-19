@@ -304,6 +304,7 @@ pub fn compile_object_stages(
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
         provided_inputs,
+        input_fetch: [shaders::vsh::InputFetch::Float; 16],
         w_buffer: true,
     })?;
     let mut vertex = t.vertex;

@@ -451,6 +451,7 @@ pub fn compile_screen(look: &ScreenLook, microcode: &[u8]) -> Result<ScreenProgr
         vertex_defaults: &defaults,
         alpha_test: look.state.alpha_test,
         provided_inputs: STRIP_INPUTS,
+        input_fetch: [shaders::vsh::InputFetch::Float; 16],
         w_buffer: false,
     })?;
     Ok(ScreenProgram {
