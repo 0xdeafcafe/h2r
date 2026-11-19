@@ -17,6 +17,7 @@ pub(super) struct Teleporter {
 #[derive(Clone, Copy)]
 enum LiftKind {
     Vertical,
+    Shaft,
     Elevator,
     CyclotronElevator,
     Launcher,
@@ -76,7 +77,23 @@ fn lift_kind(path: &str) -> Option<LiftKind> {
         Some(LiftKind::Launcher)
     } else if path.contains("elevator") {
         Some(LiftKind::Elevator)
-    } else if path == "grav_colossus"
+    } else if matches!(
+        path.as_str(),
+        "col_power_lift_high"
+            | "col_power_lift_low"
+            | "hvac_lift"
+            | "hvac_lift_short"
+            | "foun_hvac_lift_short"
+            | "steam_lift"
+            | "lockout_lift_tube"
+            | "cov_power_lift"
+            | "midpillar_lift"
+            | "grav_column_gemini"
+    ) {
+        Some(LiftKind::Shaft)
+    } else if path == "backwash_lift"
+        || path == "warlock_lift"
+        || path == "grav_colossus"
         || path.contains("gravity_lift")
         || path.contains("grav_lift")
         || path.contains("gravlift")
@@ -95,7 +112,9 @@ impl Placements {
         let teleporters = flags(view).map_err(|e| e.to_string())?;
         let root = view.bytes();
         let mut lifts = Vec::new();
-        for (at, stride, palette_at) in [(0x50, 0x5c, 0x58), (0xa8, 0x48, 0xb0)] {
+        for (at, stride, palette_at) in
+            [(0x50, 0x5c, 0x58), (0xa8, 0x48, 0xb0), (0x328, 0x4c, 0x330)]
+        {
             let palette = view
                 .block(root, palette_at, 0x28)
                 .map_err(|e| e.to_string())?;
@@ -148,7 +167,17 @@ impl Placements {
                 .iter()
                 .filter(|r| !r.sender && r.channel == f.channel)
             {
-                let Some((to, b)) = snap(r.position) else {
+                // Some receivers are in the air above the ground (Containment).
+                // Require a clear fall, and never widen the sender's trigger.
+                let receiver = snap(r.position).or_else(|| {
+                    let (to, b) = data.nav.nearest(r.position, 0.8, 0.0, 3.5)?;
+                    let head = |p: V3| [p[0], p[1], p[2] + STANDING];
+                    (standing_clear(&data.walls, b)
+                        && data.walls.clear(head(r.position), head(b))
+                        && data.walls.clear(r.position, [b[0], b[1], b[2] + 0.05]))
+                    .then_some((to, b))
+                });
+                let Some((to, b)) = receiver else {
                     continue;
                 };
                 edges.push(Edge {
@@ -182,6 +211,7 @@ fn lift_link(data: &MapData, lift: &Lift) -> Option<Edge> {
     // has to be walkable and the predicted ride must clear the BSP.
     let (reach, min_rise, max_rise, min_forward) = match lift.kind {
         LiftKind::Launcher | LiftKind::PowerBoost => (24.0, 0.75, 14.0, 3.0),
+        LiftKind::Shaft => (5.0, 2.0, 12.0, 0.0),
         LiftKind::Vertical => (4.5, 0.75, 6.0, 0.0),
         LiftKind::Elevator => (3.0, 0.75, 12.0, 0.0),
         // The retail shaft has trim only 1.3 above its base. Require a
@@ -226,10 +256,23 @@ fn lift_link(data: &MapData, lift: &Lift) -> Option<Edge> {
                 [lift.position[0], lift.position[1], b[2] + 0.25]
             };
             let feet = |p: V3| [p[0], p[1], p[2] + 0.05];
-            if !data.walls.clear(feet(a), feet(crown))
-                || !data.walls.clear(feet(crown), feet(b))
-                || !data.walls.clear(raised(a), raised(crown))
-                || !data.walls.clear(raised(crown), raised(b))
+            let ride_clear = |c| {
+                data.walls.clear(feet(a), feet(c))
+                    && data.walls.clear(feet(c), feet(b))
+                    && data.walls.clear(raised(a), raised(c))
+                    && data.walls.clear(raised(c), raised(b))
+            };
+            // The follower steers toward the deck in flight. A shaft mouth
+            // can clear laterally before the deck overhang is reached.
+            if !ride_clear(crown)
+                && !(matches!(lift.kind, LiftKind::Shaft)
+                    && [0.25, 0.5, 0.75].into_iter().any(|t| {
+                        ride_clear([
+                            crown[0] + t * (b[0] - crown[0]),
+                            crown[1] + t * (b[1] - crown[1]),
+                            crown[2],
+                        ])
+                    }))
             {
                 return None;
             }

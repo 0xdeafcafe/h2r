@@ -196,6 +196,8 @@ pub enum Doing {
     Support(Vec3),
     /// Going to a sighted powerup or a supply expected back soon.
     Supply(Vec3),
+    /// Walk to this position, then watch the lane it covers.
+    Vantage(crate::places::Vantage),
     /// Holding aim on the last sighting before following it.
     HoldAngle(Vec3),
     /// Going for the weapon at this point (section 3.6).
@@ -230,6 +232,7 @@ struct Track {
 pub struct Mind {
     pub skill: Skill,
     pub decisions: Decisions,
+    pub experience: crate::experience::Experience,
     pub doing: Doing,
     rng: Rng,
     tick: Option<u32>,
@@ -238,6 +241,8 @@ pub struct Mind {
     target: Option<(u32, u32)>,
     tracks: std::collections::HashMap<u32, Track>,
     last_seen: Option<(u32, Vec3, u32)>,
+    /// An uncertain search area from hearing or a public kill announcement.
+    search: Option<(Vec3, u32)>,
     hand: Hand,
     feet: Feet,
     buttons: Buttons,
@@ -347,6 +352,7 @@ impl Mind {
         Mind {
             skill,
             decisions: Decisions::for_skill(seed, skill),
+            experience: Default::default(),
             doing: Doing::Idle,
             rng: Rng::new(seed),
             tick: None,
@@ -354,6 +360,7 @@ impl Mind {
             target: None,
             tracks: Default::default(),
             last_seen: None,
+            search: None,
             hand: Hand::new(seed),
             feet: Feet::new(seed),
             buttons: Buttons::new(seed),
@@ -421,7 +428,9 @@ impl Mind {
         self.tracks.clear();
         self.last_seen = None;
         self.last_threat = None;
+        self.search = None;
         self.decisions.died(tick);
+        self.experience.new_life();
         self.goal = None;
         self.evasion = Evasion::default();
         self.fidget.reset();
@@ -497,6 +506,24 @@ impl Mind {
         let style = Style::with_behavior(self.skill, behavior);
         // The target (crate::decisions): the team's split, trades and
         // threats weigh tactics' nearest-and-in-front choice.
+        // Count an actual visit once. Only an observed placement and the
+        // bot's own feet can establish a successful or empty trip.
+        let checked = match self.doing {
+            Doing::Supply(goal) | Doing::Rearm(goal) => map.and_then(|m| {
+                let items = p.observations.supplies.as_deref()?;
+                let pad = m
+                    .places
+                    .pads
+                    .iter()
+                    .filter(|s| len(sub(s.at, goal)) <= 1.5)
+                    .min_by(|a, b| len(sub(a.at, goal)).total_cmp(&len(sub(b.at, goal))))?;
+                (len(sub(pad.at, me.position)) <= 2.
+                    && crate::perceive::in_view(me, pad.at, 0.2, map))
+                .then(|| (pad.at, items.iter().any(|s| s.site == pad.site)))
+            }),
+            _ => None,
+        };
+        self.experience.visit(me.position, checked);
         let (goal, intent) = self.decide(p, me, &seen, map);
         let chosen = intent
             .chosen
@@ -504,6 +531,7 @@ impl Mind {
         self.target = chosen.map(|(o, ready)| (o.id, ready));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
+            self.search = None;
             self.roam.saw(o.position, p.tick);
             self.last_threat = Some(p.tick);
         }
@@ -583,7 +611,7 @@ impl Mind {
             self.last_pad = pad;
             return pad;
         }
-        self.choose_activity(p, me, goal, &intent, calm);
+        self.choose_activity(p, me, goal, &intent, calm, map);
         // A vehicle to take or board (bots.md, Vehicles): boarding in a
         // fight too, taking only when calm; never carrying.
         if let Some(id) =
@@ -905,6 +933,17 @@ impl Mind {
                     }
                 }
             }
+            Doing::Vantage(v) => {
+                if len(sub(me.position, v.at)) < 0.8 {
+                    look = Some(up(v.watches, CHEST));
+                    self.follower = None;
+                } else {
+                    walk = self.go(me.position, v.at, p.tick, map, &mut pad, &bodies);
+                    if walk.is_none() || self.gave_up {
+                        self.stuck.blacklist(v.at, p.tick);
+                    }
+                }
+            }
             Doing::Support(at) | Doing::Supply(at) => {
                 walk = self.go(me.position, at, p.tick, map, &mut pad, &bodies);
                 if walk.is_none() && len(sub(me.position, at)) > 1.0 {
@@ -1166,6 +1205,15 @@ impl Mind {
                 self.hand
                     .sound(eye, p.tick, map, sounds)
                     .map(|yaw| {
+                        // A bearing gives a search direction, never a target or range.
+                        self.search = Some((
+                            [
+                                me.position[0] + 6.0 * yaw.cos(),
+                                me.position[1] + 6.0 * yaw.sin(),
+                                me.position[2],
+                            ],
+                            p.tick,
+                        ));
                         let base = travel.map_or(facing.0, |w| w.face[1].atan2(w.face[0]));
                         let limit = if travel.is_some() { 0.9 } else { 1.5 };
                         (base + wrap(yaw - base).clamp(-limit, limit), 0.0)
@@ -1233,6 +1281,11 @@ impl Mind {
             self.feet.stop();
             self.buttons.release();
             self.fidget.reset();
+        }
+        if pad.right_trigger > 0.
+            && let Doing::Fight(target) = self.doing
+        {
+            self.experience.fired(me.position, target, p.tick);
         }
         self.last_pad = pad;
         pad

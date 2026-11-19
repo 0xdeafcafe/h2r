@@ -692,7 +692,10 @@ dependencies = [
  "input",
  "map",
  "pathfind",
+ "serde",
+ "serde_json",
  "tags",
+ "xiso",
 ]
 
 [[package]]

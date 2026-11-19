@@ -197,6 +197,7 @@ pub fn doing_name(d: &bots::mind::Doing) -> &'static str {
         Doing::Roam => "roam",
         Doing::Support(_) => "support",
         Doing::Supply(_) => "supply",
+        Doing::Vantage(_) => "vantage",
         Doing::Rearm(_) => "rearm",
         Doing::Recover(_) => "recover",
         Doing::Carry(_) => "carry",
@@ -897,6 +898,12 @@ mod tests {
         }
         assert_eq!(doing_name(&bots::mind::Doing::Fight(3)), "fight");
         assert_eq!(doing_name(&bots::mind::Doing::Keep), "keep");
+        let vantage = bots::places::Vantage {
+            at: [0., 0., 2.],
+            watches: [10., 0., 0.],
+            score: 0.75,
+        };
+        assert_eq!(doing_name(&bots::mind::Doing::Vantage(vantage)), "vantage");
         for d in sim::metrics::OBJECTIVE_DOINGS {
             assert!(["carry", "keep", "play"].contains(&d));
         }

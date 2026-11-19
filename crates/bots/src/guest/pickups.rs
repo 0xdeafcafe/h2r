@@ -104,6 +104,7 @@ pub(super) fn take(
         return Ok(None);
     }
     Ok(Some(Take {
+        at: placement.at,
         site,
         object: object.raw(),
         unit: unit.raw(),
