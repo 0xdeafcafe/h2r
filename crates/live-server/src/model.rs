@@ -418,7 +418,7 @@ impl Model {
                 kills: VecDeque::new(),
                 last_tick: None,
                 ended: None,
-                recording: crate::replay_archive::Recording { position: e.position, ..Default::default() },
+                recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
                 last_activity: at,
             };
             s.games_by_position.insert(e.position, id.clone());
@@ -429,6 +429,7 @@ impl Model {
             return;
         };
         let Some(g) = s.games.get_mut(id) else { return };
+        g.recording.observe(e);
         g.last_activity = g.last_activity.max(at);
         match b.kind.as_str() {
             game::PLAYER_JOINED => {
@@ -471,15 +472,11 @@ impl Model {
                 }
             }
             game::GAME_FRAME => {
-                g.recording.position = e.position;
-                g.recording.legacy_frames += 1;
                 if let Some(tick) = b.data.get("tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(tick);
                 }
             }
             live_proto::chunk::FRAME_CHUNK => {
-                g.recording.position = e.position;
-                g.recording.chunks += 1;
                 if let Some(tick) = b.data.get("to_tick").and_then(|t| t.as_u64()) {
                     g.last_tick = Some(g.last_tick.map_or(tick, |t| t.max(tick)));
                 }
@@ -492,7 +489,6 @@ impl Model {
                 if !d.players.is_empty() {
                     g.scoreboard = d.players.clone();
                 }
-                g.recording.position = e.position;
                 g.ended = Some((d, b.at.clone()));
             }
             _ => {}

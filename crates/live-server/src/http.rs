@@ -345,6 +345,8 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         )
         .route("/v1/admin/replay-archives", get(crate::replay_archive::inventory))
         .route("/v1/admin/replay-archives/{id}", get(crate::replay_archive::detail))
+        .route("/v1/admin/replay-archives/{id}/step", post(crate::replay_archive::run_step))
+        .route("/v1/admin/replay-archives/{id}/rollback", post(crate::replay_archive::rollback))
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
@@ -361,6 +363,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/archive/{index}/{number}", get(crate::replay_archive::segment))
         .route("/v1/games/{id}/chunks", get(game_chunks))
         .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
@@ -1179,10 +1182,15 @@ async fn game_chunks(
     State(live): Shared,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Params(query): Params<HashMap<String,String>>,
 ) -> ApiResult<Response> {
     let viewer = live.read_viewer(bearer(&headers))?;
     let id = game_id(&id)?;
     live.check_game_shows(id, viewer)?;
+    if query.get("format").is_some_and(|f| f == "archive")
+        && let Some(response) = crate::replay_archive::index(&live,id) {
+        return Ok(response);
+    }
     let items = live.frame_chunks(id).await?;
     let ended = live.game(id)?.end_reason.is_some();
     Ok(json(

@@ -619,7 +619,7 @@ impl Live {
         self.stored_chunk(id, meta).await
     }
 
-    async fn stored_chunk(&self, id: &str, meta: &ChunkMeta) -> Result<Bytes, ApiError> {
+    pub(crate) async fn stored_chunk(&self, id: &str, meta: &ChunkMeta) -> Result<Bytes, ApiError> {
         let from_tick = meta.from_tick;
         let mut bytes = None;
         if let Some(b) = self.blobs() {
