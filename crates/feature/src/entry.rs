@@ -60,6 +60,9 @@ fn regs(cpu: &CpuAbi) -> Regs {
 }
 
 fn fault(e: EntryError, at: u32) -> GuestFault {
+    if let EntryError::IsolatedCall(message) = &e {
+        eprintln!("guest entry {at:#x}: {message}");
+    }
     match e {
         EntryError::Fault(m) => GuestFault {
             addr: m.addr,
@@ -67,7 +70,7 @@ fn fault(e: EntryError, at: u32) -> GuestFault {
             access: if m.write { Access::Write } else { Access::Read },
             reason: FaultReason::Unmapped,
         },
-        EntryError::Stalled => GuestFault {
+        EntryError::Stalled | EntryError::IsolatedCall(_) => GuestFault {
             addr: at,
             len: 0,
             access: Access::Execute,

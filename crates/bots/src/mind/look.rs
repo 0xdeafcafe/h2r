@@ -8,7 +8,8 @@ use crate::sound::ShotSound;
 
 /// Nominal radians per second at full stick for the bots' sensitivity-3
 /// profile. The curve is a tuning model for that profile.
-pub(crate) const TURN_RATE: f32 = 3.0;
+#[cfg(test)]
+const TURN_RATE: f32 = 3.0;
 const DEADZONE: f32 = 0.13;
 const LOW_GAIN: f32 = 0.55;
 const HIGH_GAIN: f32 = 1.0 - LOW_GAIN;

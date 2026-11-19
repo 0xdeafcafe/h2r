@@ -731,10 +731,8 @@ impl feature::Feature for Bots {
         );
 
         let phantoms = self.phantoms.clone();
-        let aim_workspace = b.guest_alloc(
-            bots::phantom::AIM_WORK_BYTES,
-            runtime::guest::Permissions::RW,
-        )?;
+        let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
+        let input = Arc::new(std::sync::Mutex::new(None));
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
             "phantoms: sample the pad for this simulation tick",
@@ -745,8 +743,17 @@ impl feature::Feature for Bots {
                     return Ok(Flow::Continue);
                 }
                 let phantoms = phantoms.clone();
+                let input = Arc::clone(&input);
+                let cpu = *c.cpu;
                 c.answer_async(move |cx| {
-                    Box::pin(async move { phantoms.slot_action(cx, slot, aim_workspace).await })
+                    Box::pin(async move {
+                        phantoms.slot_action(cx, slot, |sample| {
+                            let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
+                            guard.get_or_insert_with(|| retail_input::Builder::new(&rt, workspace))
+                                .action(&rt, cpu, sample)
+                                .map_err(|e| engine::entry::EntryError::IsolatedCall(format!("phantom player {}: {e:#}", sample.player.index())))
+                        }).await
+                    })
                 })
             },
         );
@@ -1677,3 +1684,5 @@ mod tests {
         );
     }
 }
+
+mod retail_input;

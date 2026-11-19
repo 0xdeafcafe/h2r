@@ -133,9 +133,8 @@ What this means for bots:
 - A **local-slot bot** feeds the pad. Steps 1 to 3 then run for it as for a
   human, so nothing else is needed.
 - A **phantom bot** supplies its brain's pad when the host gathers the
-  remote slot for simulation. It uses the Default layout, keeps button
-  history per phantom and writes the same action format as the local
-  builder. See §5.1, “The action from a pad”, for the fields and timing.
+  remote slot for simulation. After uplink delivery the same retail reader, layout mapper and action
+  builder run against a private local-user view of that seat. See §5.1, “The action from a pad”, for the fields and timing.
 
 ### 2.3 Views (traced)
 
@@ -2182,29 +2181,26 @@ always supplied the empty block from `0x14d040`. Both strengths were
 zero, so the barrel's target check at `0x1a6a8b..0x1a6aa5` skipped
 shot magnetism even when the reticle was close enough for a local player.
 
-At gather the phantom now runs the local weapon parameter and target search
-routines (`0x1a50a0`, `0x1a5370`) using its own controlled unit, team,
-zoom, unit camera origin (`0x1557c0`) and action direction after uplink
-delivery. The game checks the weapon's cone, range and visibility.
-A selected object, its model target index, its controlling player if any,
-and the two weapon strengths go into `+0x34/+0x38/+0x3c` and
-`+0x50/+0x54` before validation. Losing the target clears the block on
-the next gather. The local stick slowdown and follow are still part of
-local input processing. Phantom thumb motion uses the curve below.
+Both seats use the retail XInput reader `0x124c00`, profile/layout routines
+`0x190c34` and `0x217c40`, and the full player action builder `0x186ab0`.
+The builder indexes the user's 0x94-byte control history by player +0x28.
+It calls `0x185be0` for look response (including acceleration, slowdown
+and follow) and `0x1a4900` for weapon parameters and target search
+(`0x1a50a0`, `0x1a5370`). It writes yaw/pitch at +4/+8, trigger flags
+at +0 and the selected target and strengths at +0x34..+0x57. The host
+validates the returned record at `0x14d0a0`.
 
-Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
-the unit's aim vector at `+0x168`. For the Default layout, the Xbox
-reader removes 9,000 counts on each signed axis (`0x124dfe..0x124ea5`).
-The input and control passes expand the diagonal (`0x217dab`, `0x185ee3`).
-The control pass interpolates the map's look-function samples
-(player-control `+0x74/+0x78`, `0x185b30`). The profile sets separate
-yaw and pitch base speeds. Sensitivity 3 gives 120°/s yaw and 60°/s
-pitch before sustained-stick acceleration (`0x190c87..0x190ca6`,
-`0x18602d..0x1860e3`). Each phantom tracks both acceleration timers
-across accepted or rejected gathers and clears them with its input stream.
-The left stick supplies forward and strafe at `+0xc/+0x10`.
-Default stick layout writes left Y and negated left X at `0x21838a..0x218399`,
-which `0x185e81..0x185ea9` passes to the action builder.
+The retail tables have four entries. At remote gather, a second executor
+uses a copy-on-write snapshot of the host world. In that view local user
+and controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`,
+and the player's +0x24/+0x28 all refer to the phantom. Its virtual XInput
+handle supplies the arrived pad to `0x409b6c`. The seat brings its own
+raw input, button and control history between ticks. Retail binds the unit
+at `0x1872d0`; `0x1557c0` supplies the unit or vehicle camera origin for
+the observer at `0x4e9c8c`. Only the validated action crosses back to the
+host. A repeated gather in one tick reuses that action. Local bots keep
+their normal retail controller polling. A phantom samples once per game
+tick and advances the button clock by elapsed simulation milliseconds.
 
 **Open, for a run**:
 
@@ -4596,7 +4592,7 @@ list for the user to play (§11).
    - Small right-stick fidgets happen when an actor is standing idle
      and on signed-in local pads in a network pregame lobby or while
      awaiting a unit. They send zero left stick, triggers and buttons.
-     The phantom action adapter applies the turn curve and translates the
+     The retail action builder applies the turn curve and translates the
      hand's button timing as described in §5.1.
    - Seeing a live grenade and getting clear of it is `bots::incoming`
      (named `grenade` on the lane; renamed at the merge so it does not
