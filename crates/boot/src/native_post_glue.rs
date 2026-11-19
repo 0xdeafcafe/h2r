@@ -33,8 +33,8 @@
 //! convolutions through the glow machinery (the latter's grids made by
 //! `engine::screen_grid`), a last pass into target 1, and stand-ins for
 //! targets `0x19` to `0x1b`. The layer-15 template pass is missing only for a
-//! pass whose program did not load with the world
-//! (`native_post_load`), that samples an engine texture the native pass
+//! pass whose program did not load with the map (`native_post_load`,
+//! run by this glue at the first call on a map: [`EffectsSlot`]), that samples an engine texture the native pass
 //! does not supply ([`pass_drawable`]), or in a call that reads target 1
 //! before drawing it ([`call_ordered`]); it draws through
 //! `native_render::screen_gpu`, into the bound target or a stand-in for
@@ -61,6 +61,7 @@
 //! the same quads, dropping none, so both sides are captured at the same
 //! draw.
 
+use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -72,7 +73,7 @@ use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
 use feature::native_post::{Fp, Host, ScreenEffect};
 use gfx::vertex::PrimitiveType;
-use map::TagId;
+use map::{Map, ResourceFile, TagId};
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
@@ -83,7 +84,7 @@ use native_render::screen_look::ScreenStage;
 
 use crate::native_lights_glue::DeviceMemory;
 use crate::native_post_load::ScreenEffects;
-use crate::native_world_glue::{Load, State};
+use crate::native_world_glue::{locate, region};
 
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -962,8 +963,9 @@ static NO_GPU_LOGGED: AtomicBool = AtomicBool::new(false);
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     gpu: Arc<Mutex<GpuGlow>>,
-    /// The world, for its screen effects.
-    state: State,
+    /// The current map's screen effects, loaded here whatever the native
+    /// world does ([`EffectsSlot`]).
+    effects: Arc<Mutex<EffectsSlot>>,
     /// The screen passes on the GPU, with the address of the effects they
     /// were made for.
     screens: Arc<Mutex<(usize, ScreenSet)>>,
@@ -1042,7 +1044,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return false;
             }
         };
-        let effects = self.screen_effects();
+        let effects = self.screen_effects(&*mem);
         let egor = TagId(call.datum);
         let ordered = call_ordered(effects.as_deref(), egor, &effect);
         let frame = quad_frame(&*mem, fp);
@@ -1089,13 +1091,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    /// The loaded world's screen effects (`None` before it loads, or with
-    /// the switch off at load).
-    fn screen_effects(&self) -> Option<Arc<ScreenEffects>> {
-        match &self.state.lock().unwrap_or_else(|e| e.into_inner()).1 {
-            Load::Ready(r) => r.screen_effects.clone(),
-            Load::Idle | Load::Loading | Load::Failed => None,
-        }
+    /// The loaded map's screen effects: `None` until they load, the first
+    /// call on a map starting their load ([`spawn_load`]).
+    fn screen_effects(&self, mem: &dyn GuestMemory) -> Option<Arc<ScreenEffects>> {
+        map_effects(&self.effects, mem, &mut |name| spawn_load(name, Arc::clone(&self.effects)))
     }
 
     /// The device's swallow mismatches went up to `mismatches`: the last
@@ -1142,13 +1141,96 @@ fn arm(native: bool, proved: bool) -> (bool, Pass) {
     }
 }
 
-/// Installs the host over `device`, the screen effects read from the
-/// world `state` loads.
-pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
+/// The screen effects of the map the game has loaded, which the post
+/// glue loads itself: the hook runs with the native post on, whether or
+/// not the native world (whose load used to carry them) is.
+#[derive(Default)]
+pub struct EffectsSlot {
+    map: Option<String>,
+    effects: Option<Arc<ScreenEffects>>,
+}
+
+impl EffectsSlot {
+    /// Map `name`'s effects once loaded, and whether a load of them must
+    /// start now: at the first ask on a map, which forgets the last
+    /// map's.
+    pub fn ask(&mut self, name: &str) -> (Option<Arc<ScreenEffects>>, bool) {
+        if self.map.as_deref() == Some(name) {
+            return (self.effects.clone(), false);
+        }
+        self.map = Some(name.to_string());
+        self.effects = None;
+        (None, true)
+    }
+
+    /// The load of map `name` finished: kept while it is still the map;
+    /// whether it was.
+    pub fn loaded(&mut self, name: &str, effects: ScreenEffects) -> bool {
+        if self.map.as_deref() != Some(name) {
+            return false;
+        }
+        self.effects = Some(Arc::new(effects));
+        true
+    }
+}
+
+/// The screen effects of the map `mem` has loaded (its cache header's
+/// name) as `slot` holds them, `load` started at the first ask on a map.
+/// Nothing but the map's name is read: the native world plays no part.
+pub fn map_effects(
+    slot: &Mutex<EffectsSlot>,
+    mem: &dyn GuestMemory,
+    load: &mut dyn FnMut(String),
+) -> Option<Arc<ScreenEffects>> {
+    let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty())?;
+    let (effects, start) = slot.lock().unwrap_or_else(|e| e.into_inner()).ask(&name);
+    if start {
+        load(name);
+    }
+    effects
+}
+
+/// Loads map `name`'s screen effects on a thread of their own into
+/// `slot`; a map that does not load keeps every effect on D3D.
+fn spawn_load(name: String, slot: Arc<Mutex<EffectsSlot>>) {
+    let spawned = std::thread::Builder::new().name("native-post load".into()).spawn(move || match load_effects(&name) {
+        Ok(e) => {
+            slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, e);
+        }
+        Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
+    });
+    if let Err(e) = spawned {
+        eprintln!("native-post: {e}: the screen effects did not load; every screen effect keeps its D3D draws");
+    }
+}
+
+/// Map `name` opened as the native world opens it (its file through the
+/// locator, the shared maps as resources), and its egors loaded
+/// (`native_post_load::load`).
+fn load_effects(name: &str) -> Result<ScreenEffects, native_render::load::Error> {
+    let file = locate(name).ok_or("the map's file is not found")?;
+    let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
+    let mut files = assets::ResourceFiles::new();
+    files.set(ResourceFile::Local, region(&file))?;
+    for (which, short) in [
+        (ResourceFile::MainMenu, "mainmenu"),
+        (ResourceFile::Shared, "shared"),
+        (ResourceFile::SinglePlayerShared, "single_player_shared"),
+    ] {
+        if let Some(f) = locate(short) {
+            files.set(which, region(&f))?;
+        }
+    }
+    Ok(crate::native_post_load::load(&mut map, &mut files))
+}
+
+/// Installs the host over `device`. It loads each map's screen effects
+/// itself ([`EffectsSlot`]).
+pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     feature::native_post::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
-        state,
+        effects: Arc::new(Mutex::new(EffectsSlot::default())),
         screens: Arc::new(Mutex::new((0, ScreenSet::new()))),
         calls: AtomicU64::new(0),
         mismatches: AtomicU64::new(0),
@@ -1412,6 +1494,35 @@ mod tests {
         let p = screen_effect::Pass { size: Some((320, 240)), ..pass(2, vec![]) };
         assert_eq!(wide_source(&m, &p, 1), Some((320, 240)));
         assert_eq!(wide_source(&m, &p, 0), Some((640, 480)));
+    }
+
+    /// The screen effects load with the native post alone: the first call
+    /// on a map starts their load from its name (no native world), later
+    /// calls wait for it, and a new map forgets the last one's.
+    #[test]
+    fn the_screen_effects_load_per_map_without_the_world() {
+        use engine::memory::FlatMemory;
+        let named = |name: &str| {
+            let mut m = FlatMemory::new(crate::health::CACHE_MAP_NAME, 0x40);
+            m.write(crate::health::CACHE_MAP_NAME, name.as_bytes()).unwrap();
+            m
+        };
+        let slot = Mutex::new(EffectsSlot::default());
+        let mut started = Vec::new();
+        let mainmenu = named("mainmenu");
+        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_none(), "loading");
+        assert_eq!(started, vec!["mainmenu".to_string()], "started by the post itself");
+        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_none());
+        assert_eq!(started.len(), 1, "one load per map");
+        assert!(slot.lock().unwrap().loaded("mainmenu", ScreenEffects::default()));
+        assert!(map_effects(&slot, &mainmenu, &mut |n| started.push(n)).is_some(), "loaded");
+        let other = named("01a_tutorial");
+        assert!(map_effects(&slot, &other, &mut |n| started.push(n)).is_none());
+        assert_eq!(started.last().map(String::as_str), Some("01a_tutorial"));
+        assert!(!slot.lock().unwrap().loaded("mainmenu", ScreenEffects::default()), "a late load of the last map is dropped");
+        assert!(map_effects(&slot, &other, &mut |n| started.push(n)).is_none());
+        assert!(map_effects(&slot, &named(""), &mut |n| started.push(n)).is_none(), "no map loaded");
+        assert_eq!(started.len(), 2);
     }
 
     #[test]
