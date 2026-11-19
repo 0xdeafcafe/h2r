@@ -5204,7 +5204,7 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    the run uses clang's full build and never the Cranelift fast tier; it
    first waits while a background clang build of `--out` is still writing
    `clang-build.log`. The run's data starts with the `[graphics]` table of
-   `--settings-from`'s `settings.toml` (by default `$TMPDIR/h2boot-data`,
+   `--settings-from`'s `settings.toml` (by default `~/Library/Application Support/h2recomp/data`,
    the data root `h2 play` uses), so the window renders with the user's
    own video settings.
 3. Presses through the menus over the game's agent socket

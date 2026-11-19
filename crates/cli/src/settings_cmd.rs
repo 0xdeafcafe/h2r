@@ -16,7 +16,7 @@ const USAGE: &str = "usage:
   h2 settings [--data DIR] set KEY VALUE   (or KEY=VALUE)
 
 Our settings (not the game's own), saved in <data>/settings.toml; --data
-defaults to $TMPDIR/h2boot-data, as for `h2 play`. `list` shows each value
+defaults to the data root, as for `h2 play`. `list` shows each value
 in effect for an `h2 play` started from this shell and where it comes from:
 flag, environment, settings file or default. --all adds advanced and
 diagnostic settings. `set` validates and writes the file, keeping every
@@ -45,7 +45,7 @@ fn find(key: &str) -> Result<&'static Def> {
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
-    let mut data = std::env::temp_dir().join("h2boot-data");
+    let mut data = content::store::default_data_root();
     let mut rest = Vec::new();
     let mut it = args.into_iter();
     while let Some(a) = it.next() {

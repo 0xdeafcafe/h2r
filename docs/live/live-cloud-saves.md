@@ -25,7 +25,7 @@ U: is
     <the game's payload files>
 ```
 
-`<data>` is `h2 play --data` (default `$TMPDIR/h2boot-data`). The VFS
+`<data>` is `h2 play --data` (default `~/Library/Application Support/h2recomp/data`). The VFS
 keeps its logical metadata (attributes, NT times) in a separate tree,
 `<data>/metadata`, so U: holds only the game's bytes. A container's
 directory is named by the hash of its save name, so the same save has the

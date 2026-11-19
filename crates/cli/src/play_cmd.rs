@@ -32,7 +32,8 @@ const USAGE: &str = "usage:
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
---data default to $TMPDIR/h2boot and $TMPDIR/h2boot-data, as for `h2 run`.
+--data default to $TMPDIR/h2boot and ~/Library/Application Support/h2recomp/data
+($H2_DATA if set; saves live there), as for `h2 run`.
 --tier (or H2_TIER) as for `h2 run`: by default clang's module when current,
 else the Cranelift fast tier (built in seconds) with clang's build started in
 the background for the next start. --slices is unlimited by default.
@@ -1048,10 +1049,6 @@ mod tests {
     /// data root; the variants crate checks its side against the same path.
     #[test]
     fn the_default_data_root_is_shared() {
-        assert_eq!(
-            content::store::default_data_root(),
-            std::env::temp_dir().join("h2boot-data")
-        );
         assert_eq!(
             variants_save_root(),
             content::store::default_data_root().join("disk/Partition1/UDATA/4D530064")

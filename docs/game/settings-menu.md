@@ -240,7 +240,7 @@ owns it. The guest thread never sees it.
 A host-side file, not the guest profile.
 
 - Path: `settings.toml` in the data root the run uses (`h2 play --data`,
-  default `$TMPDIR/h2boot-data`; `vfs::Config::for_title` would give
+  default `~/Library/Application Support/h2recomp/data`; `vfs::Config::for_title` would give
   `~/Library/Application Support/h2recomp`, [storage.md](../runtime/storage.md)). It is
   not under `disk/`, which is the guest's. Every setting below is written
   there by one writer, `settings::Store` (below), keeping other keys.

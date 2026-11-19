@@ -241,7 +241,7 @@ section 3.6).
 
 Options:
 
-- `--data DIR` sets the data root. The default is `$TMPDIR/h2boot-data`,
+- `--data DIR` sets the data root. The default is `~/Library/Application Support/h2recomp/data`,
   the same as `h2 play` and `h2 run`.
 - `--disc` picks the Halo 2 disc (ISO or XBE) used to choose the update. The
   default is `$H2_DISC`, then the first `.iso` in `disc/`.

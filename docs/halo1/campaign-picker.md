@@ -416,7 +416,7 @@ starts and chains levels from records it was never shipped with.
 1. Install the test campaign: copy `FIXTURE` from
    `crates/content/src/campaign_list.rs` to
    `<data>/campaigns/test/campaign.toml` (the data root `h2 play` uses,
-   `$TMPDIR/h2boot-data` by default).
+   `~/Library/Application Support/h2recomp/data` by default).
 2. `h2 play`. The console says `campaigns: test is campaign 2 with 3
    levels (map ids 0x1001..=0x1003)`.
 3. Sign in with a profile, choose **Campaign** in the main menu and go
