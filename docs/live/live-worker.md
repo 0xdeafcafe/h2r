@@ -161,10 +161,31 @@ checks, in order:
   a replay from a position, a token-authed reader, a bad token closed with
   4401, and a plain GET refused with 400;
 - with `WAKE=S`, a hibernation wake with a socket open;
-- game ingest, to JSON and packed readers;
+- game ingest to JSON and packed readers, then game close, alarm-driven archive publication and reads of both stored segments;
 - R2: a multipart content upload, a cloud save and a 2 MiB title file;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
+
+## Finished replay archive smoke
+
+The local workerd smoke used Worker build `3719470d` and harness `b4b49436`.
+It ingested frames at ticks 30 and 960 to force two independent segments.
+A WebSocket reader observed publication. The harness fetched each segment
+over HTTP with Brotli content encoding and checked every decoded field against
+the original H2CK response. Admin verification checked the retained originals
+and both index hashes. Repeating the final verification cursor returned the
+same receipt.
+
+| Operation on the two-frame recording | Local elapsed time |
+|---|---:|
+| Signed game close, HTTP round trip | 16.5 ms |
+| Start of close to publication observed on the stream | 622.7 ms |
+| HTTP fetch and decode of each archived segment | 13.8 ms each |
+| Verify both segments and retry the final cursor | 106.8 ms |
+
+These are wall times from a single local run with Durable Object storage and
+emulated R2. The full-match size and browser CPU measurements use the seeded
+multiplayer and campaign recordings. [Telemetry measurements](../engine/live-telemetry.md#finished-replay-archives)
 
 ## Slice 2 results
 
