@@ -758,5 +758,24 @@ attachments name a contrail (236 attachments) names the converted one.
   as Halo 2 materials (the global material table will not know them).
 - That the player stops at a converted crate (BSP physics slots, version
   18), and that Havok bodies (grenades, vehicles) bounce off scenery.
+  **Not so on converted Blood Gulch** (converter version 83, game run
+  2026-11-19): the player walked straight through `boulder` (placement at
+  (37.93, -88.69, 0.09); the path passed 0.23 from its centre, its
+  collision box half 0.67 by 0.60) with no Havok contact but the level's.
+  The boulder's `coll` has its BSP physics slot, and the engine had
+  written the slot's vtables at load (`0x00456194` at `+0`, `0x00455540`
+  at `+0x40`, `0x00455f58` at `+0x50`), yet `havok.bodies` lists no
+  body owned by any of Blood Gulch's 50 scenery placements (only the two
+  fixed bodies with no owner), and a10 holds none either. So the slots
+  alone do not put converted scenery in the Havok world. Retail
+  Coagulation, Blood Gulch's base, gives every scenery with collision a
+  `phmo` (6 of 6, V: `h2 object coagulation ...`; the trees' rigid bodies
+  on node 0 or -1), which is the form to build (as devices do, from Halo
+  1's collision cells, `Converter::built_physics`), once a retail
+  scenery `phmo`'s body words (motion, flags) are read off the base.
+  Which object code adds a slots-only scenery's shapes to the world is
+  not found (the slot shapes are built by `0x00246c60` from the `coll`
+  post-process `0x002122b0`; no reader of slot `+0x40` or `+0x50` was
+  found in a sweep of `0x70`-stride loops).
 - Template seats, turrets (Halo 2's warthog gunner is a separate turret
   vehicle) and animation names against the converted `jmad`.
