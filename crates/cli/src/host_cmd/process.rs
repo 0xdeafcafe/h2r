@@ -12,6 +12,7 @@ use anyhow::{Context, Result, ensure};
 use live_proto::hosts::{HostLease, Transport};
 
 use super::live::Live;
+use super::sim_run;
 use super::supervisor::Options;
 
 static STOPPING: AtomicBool = AtomicBool::new(false);
@@ -50,29 +51,60 @@ impl Game {
         disc: &Path,
         address: SocketAddrV4,
     ) -> Result<Self> {
+        Self::spawn_with(opts, live, lease, |cmd, data, socket| {
+            cmd.arg("serve")
+                .arg(disc)
+                .args([
+                    "--system-link",
+                    "--host-light",
+                    "--no-halo1",
+                    "--no-mappack",
+                ])
+                .arg("--out")
+                .arg(&opts.out)
+                .arg("--data")
+                .arg(data)
+                .arg("--socket")
+                .arg(socket)
+                .env("H2_HOST_LOBBY", "1")
+                .env("H2_XNET_ADDR", address.to_string());
+            if !lease.bots.is_empty() {
+                cmd.arg("--host-bots");
+            }
+            if lease.transport == Transport::Tunnel {
+                cmd.env("H2_TUNNEL_LISTEN", opts.tunnel_listen.to_string());
+            } else {
+                cmd.env_remove("H2_TUNNEL_LISTEN");
+            }
+            Ok(())
+        })
+    }
+
+    pub fn spawn_sim(
+        opts: &Options,
+        live: &Live<'_>,
+        lease: &HostLease,
+        disc: &Path,
+    ) -> Result<Self> {
+        Self::spawn_with(opts, live, lease, |cmd, data, socket| {
+            sim_run::configure(cmd, lease, disc, &opts.out, data, socket)
+        })
+    }
+
+    fn spawn_with(
+        opts: &Options,
+        live: &Live<'_>,
+        lease: &HostLease,
+        configure: impl FnOnce(&mut Command, &Path, &Path) -> Result<()>,
+    ) -> Result<Self> {
         let scratch = Scratch::new()?;
         let socket = scratch.0.join("a.sock");
         let scratch_data = scratch.0.join("data");
         let data = opts.data.as_deref().unwrap_or(&scratch_data);
-
         let mut cmd = Command::new(std::env::current_exe()?);
-        cmd.arg("serve")
-            .arg(disc)
-            .args([
-                "--system-link",
-                "--host-light",
-                "--no-halo1",
-                "--no-mappack",
-            ])
-            .arg("--out")
-            .arg(&opts.out)
-            .arg("--data")
-            .arg(data)
-            .arg("--socket")
-            .arg(&socket)
-            .stdin(Stdio::null())
-            .env("H2_HOST_LOBBY", "1")
-            .env("H2_XNET_ADDR", address.to_string())
+        cmd.stdin(Stdio::null())
+            .env_remove(agent_proto::ENV)
+            .env_remove("H2_HOST_LEASE_JSON")
             .env("H2_LEASE", &lease.id)
             .env("H2_HOST_LIVE_URL", live.base())
             .env("H2_HOST_TOKEN", &opts.token)
@@ -85,18 +117,11 @@ impl Game {
             .env_remove("H2_BOOT_INPUT")
             .env_remove("H2_INPUT_REPLAY")
             .env_remove("H2_BOTS");
-        if !lease.bots.is_empty() {
-            cmd.arg("--host-bots");
-        }
-        if lease.transport == Transport::Tunnel {
-            cmd.env("H2_TUNNEL_LISTEN", opts.tunnel_listen.to_string());
-        } else {
-            cmd.env_remove("H2_TUNNEL_LISTEN");
-        }
+        configure(&mut cmd, data, &socket)?;
         #[cfg(target_os = "linux")]
         stop_on_parent_death(&mut cmd);
 
-        let child = cmd.spawn().context("starting light game host")?;
+        let child = cmd.spawn().context("starting dedicated game child")?;
         Ok(Self {
             child,
             _scratch: scratch,
@@ -105,7 +130,7 @@ impl Game {
     }
 
     pub fn exited(&mut self) -> Result<Option<ExitStatus>> {
-        self.child.try_wait().context("checking light game host")
+        self.child.try_wait().context("checking dedicated game child")
     }
 
     pub fn connect(&self, timeout: Duration) -> std::io::Result<Client> {

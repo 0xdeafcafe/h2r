@@ -18,6 +18,7 @@ use super::USAGE;
 use super::lifecycle::{Action, Lifecycle, Observation, exit_code};
 use super::live::Live;
 use super::process::{self, Game, stopping};
+use super::sim_run;
 
 const BOOT_BUDGET: Duration = Duration::from_secs(60);
 const BOOT_POLL: Duration = Duration::from_millis(200);
@@ -154,14 +155,16 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
 
     let mut lifecycle = Lifecycle::new(lease.idle_timeout_s, lease.max_match_s, lease.roster.len());
     let mut game = None;
-    let outcome = drive(&opts, &live, &lease, &mut game, &mut lifecycle);
+    let simulation = sim_run::assigned(&lease.assignment_id, &lease.bots);
+    let outcome = drive(&opts, &live, &lease, simulation, &mut game, &mut lifecycle);
     let (reason, error) = match outcome {
         Ok(reason) => (reason, None),
         Err(error) if stopping() => (EndReason::Stopped, Some(error)),
         Err(error) => (EndReason::Crashed, Some(error)),
     };
     let reported = live.ended(&reason, lifecycle.players_peak);
-    if let Some(game) = game.as_ref()
+    if !simulation
+        && let Some(game) = game.as_ref()
         && let Ok(mut agent) = game.connect(AGENT_TIMEOUT)
         && let Err(error) = agent.call(CLOSE, json!({}))
     {
@@ -197,6 +200,7 @@ fn drive(
     opts: &Options,
     live: &Live<'_>,
     lease: &HostLease,
+    simulation: bool,
     game: &mut Option<Game>,
     lifecycle: &mut Lifecycle,
 ) -> Result<EndReason> {
@@ -204,10 +208,6 @@ fn drive(
         return Ok(EndReason::Stopped);
     }
     let bind = process::bind_address(opts.base_port)?;
-    let public = match lease.transport {
-        Transport::Udp => process::public_address(opts.base_port)?,
-        Transport::Tunnel => None,
-    };
     let disc = host_data::provision(&opts.data_url, &opts.data_sha, &opts.cache).map_err(|e| {
         let detail = format!("{e:#}").replace(&opts.data_url, "<host data URL>");
         anyhow::anyhow!("provisioning verified host data: {detail}")
@@ -216,6 +216,18 @@ fn drive(
         return Ok(EndReason::Stopped);
     }
 
+    if simulation {
+        let players = u8::try_from(lease.bots.len()).context("invalid leased sim bot count")?;
+        let endpoint = live.endpoint(lease.transport.clone(), bind, None, None);
+        live.register(&endpoint)?;
+        let game = game.insert(Game::spawn_sim(opts, live, lease, &disc)?);
+        return sim_run::wait(game, live, players, &mut lifecycle.players_peak);
+    }
+
+    let public = match lease.transport {
+        Transport::Udp => process::public_address(opts.base_port)?,
+        Transport::Tunnel => None,
+    };
     let game = game.insert(Game::spawn(opts, live, lease, &disc, bind)?);
     let deadline = Instant::now() + BOOT_BUDGET;
     let Some(mut agent) = wait_for_menu(game, deadline)? else {

@@ -9,6 +9,8 @@ mod live;
 #[cfg(unix)]
 mod process;
 #[cfg(unix)]
+mod sim_run;
+#[cfg(unix)]
 mod supervisor;
 
 const USAGE: &str = "usage:

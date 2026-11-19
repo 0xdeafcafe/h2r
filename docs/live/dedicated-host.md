@@ -139,6 +139,15 @@ state reports `Crashed` and returns 1. The child has up to 60 seconds
 after spawn to reach the lobby. The provider also enforces its boot
 deadline from the original lease request.
 
+Bot-only leases with a `sim-<run_id>` assignment use the existing
+unpaced simulator in a dedicated child process. The supervisor registers
+the lease and starts the child with the verified disc and prebuilt clang
+module. The child fetches its match from `GET /v1/hosts/{lease}/sim` and uses
+the lease bearer to upload the recording and report through Live's
+private sim routes. The supervisor observes gameplay through `match.status`.
+A successful child exit reports `MatchOver` to the host API. A failed child
+exit reports `Crashed`.
+
 ### Compare against ordinary headless serve
 
 Use the image, profile and port setup from the [Mac spike](#mac-system-link-spike).
