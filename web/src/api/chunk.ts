@@ -8,8 +8,9 @@
 // The chunk carries packed records as they are: a new packed frame version
 // needs no change here, only in the frame decoder (pack.ts).
 
-import type { Frame } from "./types";
-import { FrameDecoder, PackError } from "./pack";
+import { decodeArchive } from "./archive";
+import type { Frame, MachinePosition } from "./types";
+import { FrameDecoder, PackError, markMachineBaseline } from "./pack";
 
 /** A chunk's content type (`GET /v1/games/{id}/chunks/{tick}`). */
 export const CHUNK_TYPE = "application/x-h2-chunk";
@@ -25,6 +26,7 @@ export interface ChunkMeta {
   bytes: number;
   sha256: string;
   codec: "stored" | "deflate";
+  repeatedStart?: boolean;
   raw_bytes: number;
   /** The packed frame versions inside. */
   versions: number[];
@@ -35,12 +37,30 @@ export interface ChunkMeta {
   shots?: number;
 }
 
+export interface ArchiveSegment {
+  codec: "archive";
+  game: string;
+  index: string;
+  ordinal: number;
+  from_tick: number;
+  to_tick: number;
+  rawFrom: bigint;
+  frames: number;
+  bytes: number;
+  sha256: string;
+  keyframes: number[];
+  machine_entry?: MachinePosition[];
+}
+
+export type RecordingChunk = ChunkMeta | ArchiveSegment;
+
 /** `GET /v1/games/{id}/chunks`. */
 export interface ChunkIndex {
   game_id: string;
   chunk_ticks: number;
   ended: boolean;
-  items: ChunkMeta[];
+  items: RecordingChunk[];
+  archive_sha256?: string;
 }
 
 export interface ChunkHeader {
@@ -117,7 +137,7 @@ export async function decodeChunk(bytes: Uint8Array, inflate: Inflate = inflateR
 
 /** The chunk holding `tick` (the last that starts at or before it), or
  *  null before the first: what a seek fetches. `index` is oldest first. */
-export function chunkAt(index: readonly ChunkMeta[], tick: number): ChunkMeta | null {
+export function chunkAt(index: readonly RecordingChunk[], tick: number): RecordingChunk | null {
   let lo = 0, hi = index.length;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
@@ -128,24 +148,85 @@ export function chunkAt(index: readonly ChunkMeta[], tick: number): ChunkMeta | 
 }
 
 /** The chunks with a frame in `from..=to` (either end open). */
-export function chunksIn(index: readonly ChunkMeta[], from?: number, to?: number): ChunkMeta[] {
+export function chunksIn(index: readonly RecordingChunk[], from?: number, to?: number): RecordingChunk[] {
   return index.filter((c) => (from === undefined || c.to_tick >= from) && (to === undefined || c.from_tick <= to));
 }
 
 /** Reads the index body; null when it is not one. */
 export function chunkIndex(body: unknown): ChunkIndex | null {
-  const o = body as Partial<ChunkIndex> | null;
+  const o = body as (Partial<ChunkIndex> & {source_order?: boolean}) | null;
   if (!o || typeof o !== "object" || !Array.isArray(o.items)) return null;
+  if (typeof o.archive_sha256 === "string") {
+    const index = o.archive_sha256;
+    if (!/^[a-f0-9]{64}$/.test(index) || typeof o.game_id !== "string" || !o.ended) throw new PackError("invalid archive index");
+    const game = o.game_id;
+    let previousRaw: bigint | undefined, last = 0;
+    const tick = (v: unknown) => {
+      if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
+      if (typeof v === "string" && /^[0-9]{1,20}$/.test(v)) {
+        const n = BigInt(v);
+        if (n <= 0xffffffffffffffffn) return n;
+      }
+      throw new PackError("invalid archive tick");
+    };
+    const items = o.items.map((s, ordinal): ArchiveSegment => {
+      const lo = tick(s.from_tick), hi = tick(s.to_tick);
+      if (hi < lo || hi - lo >= 900n || !Number.isInteger(s.frames) || s.frames < 1 || s.frames > 900 ||
+          !/^[a-f0-9]{64}$/.test(s.sha256) || !("keyframes" in s) || !Array.isArray(s.keyframes) ||
+          !s.keyframes.every((i: number) => Number.isInteger(i) && i >= 0 && i < s.frames)) throw new PackError("invalid archive segment index");
+      const from = previousRaw === undefined ? (lo <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(lo) : 0)
+        : last + (lo <= previousRaw ? 2 : Number(lo - previousRaw));
+      last = from + Number(hi - lo);
+      if (!Number.isSafeInteger(last)) throw new PackError("archive playback duration exceeds clock range");
+      previousRaw = hi;
+      const seed = s.machine_entry;
+      if (seed !== undefined && (!Array.isArray(seed) || seed.length > 65536 ||
+          !seed.every((m, i) => m && Number.isInteger(m.i) && m.i >= 0 && m.i <= 65535 &&
+            Number.isInteger(m.p) && m.p >= 0 && m.p <= 255 && (!i || m.i > seed[i-1]!.i)))) {
+        throw new PackError("invalid archive machine entry state");
+      }
+      return {codec:"archive", game, index, ordinal, from_tick:from, to_tick:last, rawFrom:lo,
+        machine_entry:seed,
+        bytes:s.bytes, frames:s.frames, sha256:s.sha256, keyframes:s.keyframes};
+    });
+    return {game_id:game, chunk_ticks:900, ended:true, archive_sha256:index, items};
+  }
   const items = o.items.filter((c): c is ChunkMeta => typeof c?.from_tick === "number" && typeof c?.to_tick === "number");
-  items.sort((a, b) => a.from_tick - b.from_tick);
+  if (!o.source_order) items.sort((a, b) => a.from_tick - b.from_tick);
+  const starts = new Map<number, ChunkMeta>();
+  for (const c of items) {
+    const previous = starts.get(c.from_tick);
+    if (previous) previous.repeatedStart = c.repeatedStart = true;
+    starts.set(c.from_tick, c);
+  }
   return { game_id: String(o.game_id ?? ""), chunk_ticks: Number(o.chunk_ticks ?? 300), ended: o.ended === true, items };
 }
 
 /** Fetches and decodes `chunks`, at most `parallel` at a time, and returns
  *  their frames in order. `fetchChunk` gets a chunk's bytes. */
+export async function recordingFrames(bytes: Uint8Array, meta: RecordingChunk, inflate: Inflate = inflateRaw): Promise<Frame[]> {
+  if (meta.codec !== "archive") return decodeChunk(bytes, inflate);
+  const frames = decodeArchive(bytes);
+  if (frames.length !== meta.frames || BigInt(frames[0]!.tick) !== meta.rawFrom) throw new PackError("archive frame count or first tick differs");
+  let last = -1;
+  const output = frames.map((f): Frame => {
+    const tick = meta.from_tick + Number(BigInt(f.tick) - meta.rawFrom);
+    if (f.game_id !== meta.game || !Number.isSafeInteger(tick) || tick <= last || tick > meta.to_tick)
+      throw new PackError("archive game or tick differs from index");
+    last = tick;
+    // Replay sampling only uses cut presence. Keep exact source integers in decodeArchive.
+    f.tick = tick;
+    if (typeof f.cut === "bigint") f.cut = Number(f.cut);
+    return f as Frame;
+  });
+  if (last !== meta.to_tick) throw new PackError("archive last tick differs from index");
+  for (const i of meta.keyframes) markMachineBaseline(output[i]!);
+  return output;
+}
+
 export async function chunkFrames(
-  chunks: readonly ChunkMeta[],
-  fetchChunk: (c: ChunkMeta) => Promise<Uint8Array>,
+  chunks: readonly RecordingChunk[],
+  fetchChunk: (c: RecordingChunk) => Promise<Uint8Array>,
   parallel = 6,
   inflate: Inflate = inflateRaw,
 ): Promise<Frame[]> {
@@ -154,7 +235,8 @@ export async function chunkFrames(
   const worker = async () => {
     while (next < chunks.length) {
       const i = next++;
-      out[i] = await decodeChunk(await fetchChunk(chunks[i]!), inflate);
+      const meta = chunks[i]!;
+      out[i] = await recordingFrames(await fetchChunk(meta), meta, inflate);
     }
   };
   await Promise.all(Array.from({ length: Math.min(parallel, chunks.length) }, worker));

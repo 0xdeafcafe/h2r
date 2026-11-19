@@ -94,7 +94,7 @@ test("requests a signed stream scoped to the selected game and its log", () => {
   const client = api(targetFor("http://127.0.0.1:8074"));
   const scoped = new URL(client.streamUrl(123, true, "sim-demo"));
   expect(Object.fromEntries(scoped.searchParams)).toEqual({
-    from: "123", auth: "1", exclude: "GameFrame", frames: "packed",
+    from: "123", auth: "1", exclude: "GameFrame", frames: "packed", frame_version: "8",
     games: "sim-demo", stream: "game-sim-demo",
   });
   expect(new URL(client.streamUrl(123, true)).searchParams.has("games")).toBe(false);

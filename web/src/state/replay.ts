@@ -2,7 +2,8 @@
 // steps and killcams the viewer offers.
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { recordedFrame } from "../api/pack";
+import { chunkAt, type ArchiveSegment } from "../api/chunk";
+import { isMachineBaseline, markMachineBaseline, recordedFrame } from "../api/pack";
 import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
@@ -98,7 +99,7 @@ export class ReplayTimeline {
   /** `frames` as fetched (log order, oldest first) and the game's events.
    *  The events' own `GameFrame`s, when they cover the fetched frames, are
    *  read instead: their log positions place the other events among them. */
-  constructor(frames: Frame[], events: WireEvent[]) {
+  constructor(frames: Frame[], events: WireEvent[], archive?: readonly ArchiveSegment[]) {
     const sorted = [...events].sort((a, b) => a.position - b.position);
     const clock = new GameClock();
     const ticks = new Map<WireEvent, number>();
@@ -114,7 +115,32 @@ export class ReplayTimeline {
       this.travel.push(f, tick, clock.cuts.at(-1) === tick);
       this.frames.push(retick(f, tick));
     };
-    if (logged.size && logged.size >= frames.length) {
+    if (archive?.length) {
+      const start = frames[0];
+      const segment = start && chunkAt(archive, start.tick);
+      if (segment?.codec === "archive" && segment.machine_entry?.length) {
+        this.travel.addPositions(segment.from_tick, segment.machine_entry);
+      }
+      // Archive frame ticks are on the playback clock already. Use the full
+      // index to place events across runs even when only one segment is loaded.
+      let previousEnd: bigint | undefined;
+      for (const m of archive) {
+        const lo = Number(m.rawFrom), hi = lo + (m.to_tick - m.from_tick);
+        const run = clock.runs.at(-1);
+        if (run && previousEnd !== undefined && m.rawFrom > previousEnd) run.hi = hi;
+        else {
+          if (run) clock.cuts.push(m.from_tick);
+          clock.runs.push({lo, hi, offset:m.from_tick - lo});
+        }
+        previousEnd = m.rawFrom + BigInt(m.to_tick - m.from_tick);
+      }
+      const cuts = new Set(clock.cuts);
+      for (const f of frames) if (isFrame(f)) {
+        this.travel.push(f, f.tick, cuts.has(f.tick));
+        this.frames.push(retick(f, f.tick));
+      }
+      clock.place(sorted, ticks);
+    } else if (logged.size && logged.size >= frames.length) {
       for (const ev of sorted) {
         const f = logged.get(ev);
         if (f) {
@@ -171,15 +197,15 @@ export class ReplayTimeline {
     }
     this.kills.sort((a, b) => a.tick - b.tick || a.position - b.position);
     this.scores.sort((a, b) => a.tick - b.tick);
-    this.startTick = this.frames.length ? this.frames[0]!.tick : 0;
-    this.endTick = Math.max(endTick, this.startTick);
+    this.startTick = archive?.[0]?.from_tick ?? this.frames[0]?.tick ?? 0;
+    this.endTick = Math.max(endTick, this.startTick, archive?.at(-1)?.to_tick ?? 0);
     this.cinematics = [];
     let open: number | null = null;
     for (const f of this.frames) {
       if (f.cinematic === true) open ??= f.tick;
       else if (open !== null) { this.cinematics.push({ from: open, to: f.tick }); open = null; }
     }
-    if (open !== null) this.cinematics.push({ from: open, to: this.endTick });
+    if (open !== null) this.cinematics.push({ from: open, to: archive ? this.frames.at(-1)!.tick : this.endTick });
   }
 
   /** The cutscene playing at `tick` (from <= tick < to), or null. A game
@@ -392,7 +418,7 @@ export class GameClock {
    *  were read) into the frames' runs: in log order they move on to a later
    *  run when they step back, to the first that spans them. Into `ticks`. */
   place(sorted: readonly WireEvent[], ticks: Map<WireEvent, number>): void {
-    if (this.runs.length < 2) return;
+    if (!this.runs.length || (this.runs.length === 1 && !this.runs[0]!.offset)) return;
     let at = 0, high = -Infinity;
     for (const ev of sorted) {
       const raw = eventTick(ev);
@@ -419,7 +445,9 @@ function isFrame(f: Frame | null | undefined): f is Frame {
 /** `f` at game tick `tick`, without players it had nowhere to put. */
 function retick(f: Frame, tick: number): Frame {
   const g = withoutUnplaced(f);
-  return tick === g.tick ? g : { ...g, tick };
+  const adjusted = tick === g.tick ? g : { ...g, tick };
+  if (adjusted !== f && isMachineBaseline(f)) markMachineBaseline(adjusted);
+  return adjusted;
 }
 
 /** A kill's, score's or end's tick, else null. */

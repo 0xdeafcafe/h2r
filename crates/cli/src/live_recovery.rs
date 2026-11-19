@@ -208,7 +208,7 @@ pub(crate) enum Signer {
 }
 
 impl Signer {
-    fn from_args(args: &mut Args, client: &Client) -> Result<Self> {
+    pub(crate) fn from_args(args: &mut Args, client: &Client) -> Result<Self> {
         let data = args.take("--data")?;
         let as_tag = args.take("--as")?;
         match (data, as_tag) {
@@ -224,7 +224,7 @@ impl Signer {
         }
     }
 
-    fn token(&self, client: &Client, method: &str) -> Result<String> {
+    pub(crate) fn token(&self, client: &Client, method: &str) -> Result<String> {
         Ok(match self {
             Signer::Operator(me) => issue_token(&me.key, &me.author(), &me.id, method, now()),
             Signer::Admin(a) => issue_token(

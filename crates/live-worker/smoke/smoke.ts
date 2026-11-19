@@ -44,9 +44,12 @@
 //
 // --seed N: then grows the log by 2N events (friend requests, declined),
 // paced under the write rate, so a restarted hub has a log to replay. --cold-only: steps 1, 2 and 6.
+import { decodeArchive } from "../../../web/src/api/archive";
+import { FrameDecoder, records } from "../../../web/src/api/pack";
+import { decodeChunk } from "../../../web/src/api/chunk";
+import { canonicalJson } from "../../../web/src/state/verify";
 import { createAccount, importSeed, signCompact, type LocalAccount } from "../../../web/src/state/account";
 import { eventBody, postEvent, TYP_EVENT } from "../../../web/src/state/sign";
-import { canonicalJson } from "../../../web/src/state/verify";
 import { issueToken, randomId } from "../../../web/src/admin/token";
 
 const args = process.argv.slice(2);
@@ -131,13 +134,14 @@ type Msg = {
 function subscribe(query: string, path = "/v1/stream") {
   const ws = new WebSocket(`${base.replace(/^http/, "ws")}${path}${query}`);
   const got: Msg[] = [];
-  let binary = 0;
+  ws.binaryType = "arraybuffer";
+  const binary: Uint8Array[] = [];
   const waiters: (() => void)[] = [];
   let closed: { code: number; reason: string } | null = null;
   const poke = () => waiters.splice(0).forEach((w) => w());
   ws.onmessage = (m) => {
     if (typeof m.data === "string") got.push(JSON.parse(m.data));
-    else binary++;
+    else binary.push(new Uint8Array(m.data as ArrayBuffer));
     poke();
   };
   ws.onclose = (c) => {
@@ -177,7 +181,7 @@ function subscribe(query: string, path = "/v1/stream") {
   // The first binary message (packed frames), within `ms`.
   const untilBinary = async (ms = 5000) => {
     const end = Date.now() + ms;
-    while (binary === 0) {
+    while (!binary.length) {
       if (closed) throw new Error(`closed ${closed.code} ${closed.reason}`);
       const left = end - Date.now();
       if (left <= 0) throw new Error("no binary message in time");
@@ -186,16 +190,23 @@ function subscribe(query: string, path = "/v1/stream") {
         setTimeout(ok, left);
       });
     }
+    return binary.shift()!;
   };
   return { ws, got, opened, until, close, untilBinary };
 }
 
-// The live socket, let in and caught up before the append.
+// Each authenticated socket needs its own single-use read token.
+async function signIn(socket: ReturnType<typeof subscribe>, who: LocalAccount) {
+  await socket.opened;
+  socket.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(who, aud, "read") }));
+}
+
+// Friend events are visible to the participants and their friends.
 const t5s = performance.now();
-const live = subscribe("");
+const live = subscribe("?auth=1");
 let caughtUp: Msg | undefined;
 try {
-  await live.opened;
+  await signIn(live, a!);
   caughtUp = await live.until((m) => m.kind === "caught_up");
 } catch (e) {
   fail("stream-subscribe", e);
@@ -212,7 +223,15 @@ try {
 } catch (e) {
   fail("append", e);
 }
-const log = await (await fetch(`${api}/events?stream=account-${a!.xuid}&limit=100`)).json();
+const eventsUrl = `${api}/events?stream=account-${a!.xuid}&from=${position! - 1}&limit=100`;
+const publicLog = await timed(eventsUrl);
+if (!publicLog.r.ok || JSON.parse(publicLog.body).items.some((e: {position: number}) => e.position === position))
+  fail("anonymous-private-event", publicLog.r.status);
+const participantLog = await timed(eventsUrl + "&auth=1", {
+  headers: {authorization: `Bearer ${await issueToken(a!, aud, "read")}`},
+});
+if (!participantLog.r.ok) fail("append-read", `${participantLog.r.status} ${participantLog.body}`);
+const log = JSON.parse(participantLog.body);
 const found = (log.items ?? []).some((e: { type: string; position: number }) => e.type === "FriendRequested" && e.position === position);
 if (!found) fail("append", `position ${position} is not in the stream`);
 out.append = { ms: +(performance.now() - t5).toFixed(1), position };
@@ -231,9 +250,9 @@ live.ws.close();
 
 // 6. Replay from just before the event: it, then caught_up.
 const t6 = performance.now();
-const replay = subscribe(`?from=${position! - 1}&stream=account-${a!.xuid}`);
+const replay = subscribe(`?auth=1&from=${position! - 1}&stream=account-${a!.xuid}`);
 try {
-  await replay.opened;
+  await signIn(replay, a!);
   const done = await replay.until((m) => m.kind === "caught_up");
   const events = replay.got.filter((m) => m.kind === "event").map((m) => m.event!.position);
   if (events.length !== 1 || events[0] !== position) throw new Error(`replayed ${JSON.stringify(events)}`);
@@ -247,9 +266,7 @@ replay.ws.close();
 // A reader that signs in first (?auth=1), and one with a bad token.
 const authed = subscribe("?auth=1");
 try {
-  await authed.opened;
-  // A fresh token: each one is good for a single use.
-  authed.ws.send(JSON.stringify({ kind: "auth", token: await issueToken(a!, aud, "read") }));
+  await signIn(authed, a!);
   await authed.until((m) => m.kind === "caught_up");
 } catch (e) {
   fail("stream-auth", e);
@@ -273,9 +290,9 @@ await warmTimes();
 
 // 8. A hibernation wake.
 if (wakeWait > 0) {
-  const sleeper = subscribe("");
+  const sleeper = subscribe("?auth=1");
   try {
-    await sleeper.opened;
+    await signIn(sleeper, a!);
     await sleeper.until((m) => m.kind === "caught_up");
   } catch (e) {
     fail("wake-subscribe", e);
@@ -305,6 +322,7 @@ if (wakeWait > 0) {
   await postEvent(api, aud, a!, { stream: `account-${a!.xuid}`, type: "FriendRequested", data: { from: a!.xuid, to: b!.xuid } });
 }
 
+let archiveGame = "";
 // 9. Game ingest.
 {
   const t9 = performance.now();
@@ -323,13 +341,27 @@ if (wakeWait > 0) {
   });
   if (started.r.status !== 201) fail("ingest-start-game", `${started.r.status} ${started.body}`);
   const gameId: string = JSON.parse(started.body).game_id;
-  const json = subscribe(`?games=${gameId}&exclude=GameFrame`);
+  const json = subscribe(`?stream=game-${gameId}&games=${gameId}&exclude=GameFrame`);
   const packed = subscribe(`?games=${gameId}&frames=packed`);
+  const causal = subscribe(`?games=${gameId}&frames=packed&frame_version=8`);
   const game = subscribe("", "/v1/ingest");
   try {
-    await Promise.all([json.opened, packed.opened, game.opened]);
+    await Promise.all([json.opened, packed.opened, causal.opened, game.opened]);
     await json.until((m) => m.kind === "caught_up");
     await packed.until((m) => m.kind === "caught_up");
+    await causal.until((m) => m.kind === "caught_up");
+    const legacyDecoder = new FrameDecoder(), causalDecoder = new FrameDecoder();
+    const checkSubscribers = async (tick: number, key: boolean) => {
+      const read = async (socket: typeof packed, version: number, decoder: FrameDecoder) => {
+        const rs = records(await socket.untilBinary());
+        if (rs.length !== 1 || (rs[0]![0]! & 15) !== version) throw new Error("wrong subscriber version");
+        const d = decoder.decode(rs[0]!);
+        if (d.keyframe !== key || d.frame.tick !== tick) throw new Error("wrong subscriber frame");
+        return d.frame;
+      };
+      const [old, current] = await Promise.all([read(packed, 7, legacyDecoder), read(causal, 8, causalDecoder)]);
+      if (canonicalJson(old) !== canonicalJson(current)) throw new Error("v7/v8 subscriber frames differ");
+    };
     game.ws.send(JSON.stringify({ kind: "auth", token: await writeToken() }));
     const frame = (tick: number) => JSON.stringify({
       kind: "frame",
@@ -337,7 +369,12 @@ if (wakeWait > 0) {
     });
     game.ws.send(frame(30));
     await json.until((m) => m.kind === "frame" && m.frame?.tick === 30);
-    await packed.untilBinary();
+    await checkSubscribers(30, true);
+    // Two disjoint source chunks force two alarm steps and a durable cursor.
+    await Bun.sleep(80);
+    game.ws.send(frame(960));
+    await json.until((m) => m.kind === "frame" && m.frame?.tick === 960);
+    await checkSubscribers(960, false);
     // Every reply on the ingest socket is a refusal.
     const refused = game.got.filter((m) => m.kind === "error");
     if (refused.length) throw new Error(`refused: ${JSON.stringify(refused)}`);
@@ -354,7 +391,39 @@ if (wakeWait > 0) {
     fail("ingest-wrong-method", e);
   }
   out.ingest = { game: gameId, start_subscribe_and_frame_ms: +(performance.now() - t9).toFixed(1) };
-  for (const s of [json, packed, game]) s.ws.close();
+  try {
+    const end = eventBody(a!, {stream:"game-" + gameId, type:"GameEnded", data:{tick:960,reason:"finished"}}, Date.now());
+    const key = await importSeed(a!.key, a!.x);
+    const compact = await signCompact(key.privateKey, {alg:"EdDSA", kid:key.publicJwk.kid, typ:TYP_EVENT}, canonicalJson([end]));
+    const closeAt = performance.now();
+    const closed = await timed(api + "/games/" + gameId + "/events", {
+      method:"POST", headers:{authorization:`Bearer ${await writeToken()}`, "content-type":"application/jose"}, body:compact,
+    });
+    if (closed.r.status !== 201) fail("archive-close", closed.body);
+    await json.until(m => m.kind === "event" && m.event?.type === "ReplayArchivePublished", 30_000);
+    const publishedAt = performance.now();
+    const url = api + "/games/" + gameId;
+    const index = await (await fetch(url + "/chunks?format=archive")).json();
+    if (index.items?.length !== 2 || !/^[0-9a-f]{64}$/.test(index.archive_sha256)) fail("archive-index", JSON.stringify(index));
+    const readMs: number[] = [];
+    for (const [i, tick] of [30, 960].entries()) {
+      const raw = await fetch(url + "/chunks/" + tick);
+      const readAt = performance.now();
+      const segment = await fetch(url + "/archive/" + index.archive_sha256 + "/" + i);
+      if (!raw.ok || !segment.ok || segment.headers.get("content-encoding") !== "br" ||
+          !segment.headers.get("cache-control")?.includes("immutable")) fail("archive-headers", segment.status);
+      const archived = decodeArchive(new Uint8Array(await segment.arrayBuffer()));
+      readMs.push(+(performance.now() - readAt).toFixed(1));
+      const source = await decodeChunk(new Uint8Array(await raw.arrayBuffer()));
+      if (archived.length !== 1 || archived[0]?.tick !== tick || canonicalJson(archived) !== canonicalJson(source))
+        fail("archive-r2-parity", "source and archive differ at tick " + tick);
+    }
+    archiveGame = gameId;
+    out.archive = {segments:index.items.length, archive_sha256:index.archive_sha256,
+      close_ms:closed.ms, close_to_publication_ms:+(publishedAt - closeAt).toFixed(1),
+      segment_fetch_and_decode_ms:readMs};
+  } catch (e) { fail("archive-alarm", e); }
+  for (const s of [json, packed, causal, game]) s.ws.close();
 }
 
 async function simRun(admin: LocalAccount, other: LocalAccount) {
@@ -515,6 +584,22 @@ async function simRun(admin: LocalAccount, other: LocalAccount) {
   // A title file, as an admin.
   if (adminTag) {
     const admin = await createAccount(api, base, aud, adminTag);
+    const uri = api + "/admin/replay-archives/" + archiveGame;
+    const info = await (await fetch(uri, {headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.read")}`}})).json();
+    const verify = async (cursor: string | null) => {
+      const r = await timed(uri + "/step", {method:"POST",
+        headers:{authorization:`Bearer ${await issueToken(admin, aud, "admin.write")}`, "content-type":"application/json"},
+        body:JSON.stringify({mode:"verify",source_position:info.source_position,cursor})});
+      if (!r.r.ok) fail("archive-verify", r.body);
+      return JSON.parse(r.body);
+    };
+    const verifyAt = performance.now();
+    const first = await verify(null);
+    const last = await verify(first.next);
+    if (first.done || !first.next || !last.done || last.totals.frames !== 2 || last.totals.segments !== 2 ||
+        last.archive_sha256 !== info.archive_sha256 || last.backup_sha256 !== info.backup_sha256 ||
+        canonicalJson(await verify(first.next)) !== canonicalJson(last)) fail("archive-retry", JSON.stringify(last));
+    r2.verified_archive = { ...last.totals, verify_with_retry_ms:+(performance.now() - verifyAt).toFixed(1) };
     const file = random(2 * 1024 * 1024);
     const url = `${api}/titles/4d530064/files/smoke.bin`;
     t = performance.now();
@@ -538,9 +623,9 @@ async function simRun(admin: LocalAccount, other: LocalAccount) {
 
 // 11. A busy stream.
 if (busy > 0) {
-  const readers = Array.from({ length: busy }, () => subscribe(""));
+  const readers = Array.from({ length: busy }, () => subscribe("?auth=1"));
   try {
-    await Promise.all(readers.map((r) => r.opened));
+    await Promise.all(readers.map((r) => signIn(r, a!)));
     await Promise.all(readers.map((r) => r.until((m) => m.kind === "caught_up", 15000)));
   } catch (e) {
     fail("busy-subscribe", e);

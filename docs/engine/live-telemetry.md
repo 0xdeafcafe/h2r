@@ -12,8 +12,10 @@ starts with its own keyframe. Transfer sizes are response-body bytes.
 |---|---:|---:|---:|
 | Live bytes/player/s | 272.09 | 254.71 | **145.25** |
 | Live bytes/frame | 290.23 | 271.69 | **154.93** |
-| Encode µs/frame | 15.72 | 17.09 | 17.20 |
-| Encode µs/simulation tick | 7.86 | 8.54 | 8.60 |
+| Encode µs/frame, original run | 15.72 | 17.09 | 17.20 |
+| Encode µs/simulation tick, original run | 7.86 | 8.54 | 8.60 |
+| Encode µs/frame, mean of five paired runs | — | 28.4 | 28.2 |
+| Encode µs/simulation tick, paired mean | — | 14.2 | 14.1 |
 | Replay JSON bytes | 68,037,538 | 88,675,937 | 90,082,165 |
 | Replay JSON gzip bytes | 11,773,243 | 13,052,003 | 13,517,251 |
 | Replay binary chunk bytes | 2,405,346 | 2,110,374 | **1,322,664** |
@@ -35,6 +37,12 @@ the 12-tick regression scenes match. Encode time
 covers packing each sampled frame. The per-tick figure spreads this cost
 over all 30 ticks per second. Neither figure includes game-state sampling,
 storage compression, HTTP or rendering.
+
+Five further paired release runs used separately built v6 and v7 binaries,
+checked against their distinct wire byte counts in every run. The per-pair
+v7/v6 CPU ratios ranged from 0.754 to 1.300, with a median of 0.893.
+The nearly equal means support comparable encoding cost on this scene.
+Shared-machine load varied enough to rule out a reliable speed-up estimate.
 
 Run the ignored release test `bench_match_wire` in `live-telemetry` with
 `TELEMETRY_BENCH_OUT` set to an output directory. From `web/`, run
@@ -111,3 +119,82 @@ and web field definitions, keyframe coverage and a versioned fixture.
 The wire grammar, storage routes and compatibility rules are in the
 [telemetry reference](../live/live-telemetry.md#packed-frames) and
 [frame chunk API](../live/live-api.md#frame-chunks).
+
+## Finished replay archives
+
+The server flushes a newly ended game's live recording before queuing it for
+archival. The native timer and the Worker Durable Object alarm each process
+one independent segment per turn. A segment spans up to 900 game ticks,
+900 frames, 8 MiB of source-frame JSON, or 32 original H2CK blobs. A cut
+or rewind starts a new segment. The blob count bounds R2 reads and backup
+writes even when every tick was recorded as a separate object.
+
+Each segment stores the original decoded fields losslessly in transposed
+columns. Integer predictors retain exact residuals. Off-grid historical
+floats can use their binary64 bits. Each segment gets its own Brotli stream,
+so an HTTP reader can start at any segment. The server reads each immutable
+blob back, checks its SHA-256, verifies the decoded frames, and backs up
+original objects and signed index rows before publishing the final pointer.
+The migration receipt reports compressed payload and immutable index-node
+bytes separately. Both count toward the archive's storage cost.
+
+The table uses the deployment partition. Campaign hits the 8 MiB source
+limit after 284 frames, with 166 frames in the second segment. The index
+column counts the actual immutable node representation for source log
+position 64. A different number of digits in that position changes each
+node’s length by the same number of bytes. Backup copies, HTTP headers and
+signed event-log storage are excluded from the playback totals.
+
+| Recording | Deflated v7 bytes | H2AR segment bytes | Index bytes | Total archive bytes | Fraction of v7 | B/player-minute |
+|---|---:|---:|---:|---:|---:|---:|
+| Multiplayer, 16 players, 10 min | 1,322,664 | 317,041 | 4,275 | **321,316** | **24.29%** | 2,008.23 |
+| Campaign, 1 player, 30 s | 173,708 | 42,987 | 361 | **43,348** | **24.95%** | 86,696 |
+
+One multiplayer segment contains 450 frames. The viewer can play it before
+the game event log or any of the other 19 segments arrives. Browser-side
+decode used Bun 1.4.2 and preloaded response bytes. Five timed runs
+alternated the H2AR and JSON readers after warmup. H2AR timings include
+Brotli inflation and reconstruction. JSON timings include UTF-8 decoding
+and parsing of the same frames grouped into the same segments. The byte
+totals for that JSON differ slightly from the ten-second chunks above
+because there are fewer array boundaries.
+
+| Recording | JSON bytes | First H2AR segment bytes | First decode ms, JSON / H2AR | Full decode ms, JSON / H2AR |
+|---|---:|---:|---:|---:|
+| Multiplayer | 90,082,125 | 15,556 | 13.51 / 24.28 | 290.77 / 587.94 |
+| Campaign | 13,259,743 | 24,423 | 29.24 / 46.90 | 48.28 / 70.26 |
+
+Full archive reconstruction took longer than JSON parsing on these scenes.
+An indexed seek pays the first-segment cost for its chosen segment, and
+immutable reads transfer the stored Brotli bytes directly. Native
+compression in the earlier quality-10 multiplayer run took 124–223 ms
+per segment. Source buffering, compression and exact verification happen
+after the match. Run `bun bench/archive-transfer.ts <H2_ARCHIVE_DUMP>` in
+`web/` to reproduce the browser measurements. The benchmark checks every
+decoded field against the Rust dump and enforces the quarter-size budget
+including immutable index nodes.
+
+The local Worker smoke exercised game close, automatic publication, R2
+reads and admin verification with a two-frame recording. Closing the game
+and observing publication took 622.7 ms. Fetching and decoding each of its
+two segments took 13.8 ms. [Worker smoke measurements](../live/live-worker.md#finished-replay-archive-smoke)
+
+The following compressor comparison used identical inflated H2AR bodies from
+revision `65b71186`. Each segment was independently compressed. These are
+payload bytes, measured before the production source-byte partition was
+applied to campaign.
+
+| Compressor | Multiplayer, 10 min | Campaign, 30 s |
+|---|---:|---:|
+| Bytewise rANS, order 0 | 657,871 | 94,217 |
+| Bytewise rANS, order 1 | 636,820 | 82,646 |
+| Zstandard, level 10 | 376,672 | 46,235 |
+| Zstandard, level 19 | 349,303 | 43,084 |
+| Brotli, quality 10 | 317,000 | 40,727 |
+
+Brotli quality 11 reduced multiplayer to 307,392 bytes and took over four
+times the native compression time. The archive writer uses quality 10.
+
+Historical archives are built explicitly. The operator guide covers local
+and production dry runs, retained originals, verification and rollback.
+[Replay migration](../live/replay-migration.md)

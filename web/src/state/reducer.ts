@@ -54,6 +54,7 @@ export interface GamePlayerState extends GamePlayer {
 }
 
 export interface GameState {
+  archiveRevision?: number;
   game_id: GameId;
   console: string | null;
   /** Who started the game: `acct:<xuid>@<server>`, when the server said. */
@@ -336,6 +337,12 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g = gameFor(s, ev);
       const d = ev.data as { tick?: number };
       if (g && typeof d?.tick === "number" && d.tick > g.last_tick) g.last_tick = d.tick;
+      break;
+    }
+    case "ReplayArchivePublished":
+    case "ReplayArchiveRolledBack": {
+      const g = gameFor(s, ev);
+      if (g) g.archiveRevision = ev.position;
       break;
     }
     case "FrameChunk": {

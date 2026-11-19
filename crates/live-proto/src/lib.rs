@@ -6,6 +6,7 @@
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
 pub mod arbitration;
+pub mod archive;
 pub mod audit;
 pub mod bans;
 pub mod bots;
@@ -419,6 +420,9 @@ pub struct Health {
 /// `GET /.well-known/h2live.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Discovery {
+    /// Additional packed ingest versions this server accepts beyond the v7 baseline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingest_frame_versions: Vec<u8>,
     pub id: String,
     pub api: String,
     pub keys: Vec<sign::Jwk>,

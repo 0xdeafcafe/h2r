@@ -45,6 +45,7 @@ struct Record {
 pub struct GameBatch {
     pub game_id: String,
     pub sid: u64,
+    pub version: u8,
     records: Vec<Record>,
     /// The records' sequence numbers follow one another.
     contiguous: bool,
@@ -76,6 +77,16 @@ impl Pending {
         live_proto::pack::push_record(&mut self.bytes, packed);
     }
 
+    pub(crate) fn replay(&self, sid: u64, follow: &mut Follow, out: &mut Vec<u8>) {
+        for (i, r) in self.records.iter().enumerate() {
+            if follow.follows(sid, r.seq, r.keyframe) {
+                let end = self.records.get(i + 1).map_or(self.bytes.len(), |n| n.at);
+                out.extend_from_slice(&self.bytes[r.at..end]);
+                follow.sent.insert(sid, r.seq);
+            }
+        }
+    }
+
     /// The batch, if there were frames, leaving this empty.
     pub(crate) fn take(&mut self, game_id: &str, sid: u64) -> Option<GameBatch> {
         if self.records.is_empty() {
@@ -86,6 +97,7 @@ impl Pending {
         Some(GameBatch {
             game_id: game_id.to_owned(),
             sid,
+            version: 7,
             records,
             contiguous,
             bytes: std::mem::take(&mut self.bytes).into(),
@@ -93,8 +105,18 @@ impl Pending {
     }
 }
 
+/// Actual socket demand. The Worker pump subscribes to the hub even when
+/// every connected socket is JSON, so broadcast receiver counts cannot
+/// select encoders. Counts are by game and negotiated version.
+#[derive(Default)]
+struct Demand {
+    global: [usize; 2],
+    games: HashMap<String, [usize; 2]>,
+}
+
 /// Where ticks and games' batches are published.
 pub struct Hub {
+    demand: Mutex<Demand>,
     all: broadcast::Sender<Arc<Tick>>,
     games: Mutex<HashMap<String, broadcast::Sender<Arc<GameBatch>>>>,
 }
@@ -102,6 +124,7 @@ pub struct Hub {
 impl Default for Hub {
     fn default() -> Self {
         Hub {
+            demand: Default::default(),
             all: broadcast::channel(BACKLOG).0,
             games: Mutex::default(),
         }
@@ -109,6 +132,33 @@ impl Default for Hub {
 }
 
 impl Hub {
+    pub(crate) fn reader(&self, games: &[String], v8: bool, joining: bool) {
+        let mut demand = self.demand.lock().unwrap();
+        let change = |counts: &mut [usize; 2]| {
+            let n = &mut counts[usize::from(v8)];
+            if joining { *n += 1 } else { *n -= 1 }
+        };
+        if games.is_empty() {
+            change(&mut demand.global);
+        } else {
+            for g in games {
+                let counts = demand.games.entry(g.clone()).or_default();
+                change(counts);
+                if *counts == [0, 0] {
+                    demand.games.remove(g);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn versions(&self, id: &str) -> [bool; 2] {
+        let demand = self.demand.lock().unwrap();
+        let game = demand.games.get(id).copied().unwrap_or_default();
+        std::array::from_fn(|i| {
+            game[i] > 0 || (demand.global[i] > 0 && !crate::sim_runs::is_sim_id(id))
+        })
+    }
+
     pub fn subscribe_all(&self) -> broadcast::Receiver<Arc<Tick>> {
         self.all.subscribe()
     }

@@ -527,3 +527,9 @@ pub fn campaign(frames: usize) -> Vec<Frame> {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "samples_floor.rs"]
+mod floor;
+#[cfg(test)]
+pub(crate) use floor::bench_floor_cadence;

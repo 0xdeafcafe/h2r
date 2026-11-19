@@ -343,6 +343,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )
+        .route("/v1/admin/replay-archives", get(crate::replay_archive::inventory))
+        .route("/v1/admin/replay-archives/{id}", get(crate::replay_archive::detail))
+        .route("/v1/admin/replay-archives/{id}/step", post(crate::replay_archive::run_step))
+        .route("/v1/admin/replay-archives/{id}/rollback", post(crate::replay_archive::rollback))
         .route(
             "/v1/admin/sim-runs",
             get(crate::sim_runs::list).post(crate::sim_runs::start),
@@ -369,6 +373,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/archive/{index}/{number}", get(crate::replay_archive::segment))
         .route("/v1/games/{id}/chunks", get(game_chunks))
         .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
@@ -1193,17 +1198,23 @@ async fn game_chunks(
     State(live): Shared,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Params(query): Params<HashMap<String,String>>,
 ) -> ApiResult<Response> {
     let viewer = live.read_viewer(bearer(&headers))?;
     let id = game_id(&id)?;
     live.check_game_shows(id, viewer)?;
-    let items = live.frame_chunks(id).await?;
+    let source_order = query.get("format").is_some_and(|f| f == "archive");
+    if source_order && let Some(response) = crate::replay_archive::index(&live, id) {
+        return Ok(response);
+    }
+    let items = if source_order { live.source_chunks(id).await? } else { live.frame_chunks(id).await? };
     let ended = live.game(id)?.end_reason.is_some();
     Ok(json(
         StatusCode::OK,
         &serde_json::json!({
             "game_id": id,
             "chunk_ticks": live_proto::chunk::CHUNK_TICKS,
+            "source_order": source_order,
             "ended": ended,
             "items": items,
         }),
@@ -1231,7 +1242,7 @@ async fn game_chunk(
         Some("json") => true,
         Some(_) => return Err(invalid("format must be packed or json")),
     };
-    let bytes = live.frame_chunk(id, tick).await?;
+    let bytes = live.frame_chunk_named(id, tick, query.get("sha256").map(String::as_str)).await?;
     // The query keeps the representations distinct for URL-keyed edge caches.
     let mut resp = if as_json {
         let frames = live_proto::chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?;

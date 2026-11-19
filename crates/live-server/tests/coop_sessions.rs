@@ -532,6 +532,9 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
             }),
         )
         .await;
+    h.live.ingest_frame(&live_proto::Author::parse(&a.author).unwrap(), live_proto::game::Frame {
+        game_id: game.clone(), tick: 2, ..Default::default()
+    }).await.unwrap();
     let end = h.batch(
         &a,
         &game,
@@ -570,6 +573,10 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(axum::serve(listener, h.app.clone()).into_future());
+    h.live.sweep().await;
+    let archive_index = format!("/v1/games/{game}/chunks?format=archive");
+    let root = read(Some(&a), archive_index.clone()).await.json();
+    let archive_segment = format!("/v1/games/{game}/archive/{}/0", root["archive_sha256"].as_str().unwrap());
     let game_stream = format!("game-{game}");
     let session_stream = format!("session-{sid}");
     let mut out = Vec::new();
@@ -586,6 +593,14 @@ async fn coop_seen_by(visibility: session::Visibility) -> [(&'static str, Seen);
         // Chunks follow the game's visibility as its frames do.
         let chunks = read(u, format!("/v1/games/{game}/chunks")).await.status;
         assert_eq!(chunks, frames, "{name}");
+        assert_eq!(read(u, archive_index.clone()).await.status, detail, "{name} archive index");
+        let segment = read(u, archive_segment.clone()).await;
+        assert_eq!(segment.status, detail, "{name} immutable segment");
+        if u.is_some() || segment.status == StatusCode::NOT_FOUND {
+            assert_eq!(segment.headers["cache-control"], "private, no-store", "{name}");
+        } else {
+            assert!(segment.headers["cache-control"].to_str().unwrap().contains("immutable"));
+        }
         let log = log_streams(&h, u).await;
         let (stream, caught_up) = stream_streams(addr, &h, u).await;
         // Hidden events or not, the reader catches up to the head.

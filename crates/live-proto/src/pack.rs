@@ -27,10 +27,13 @@ use crate::game::{
     ObjectKind, STANCES,
 };
 
-/// Latest encoder version. V7 adds finer grids, sparse vector residuals,
+/// Default standalone and historical writer version. V7 adds finer grids, sparse vector residuals,
 /// repeated edit masks and change-only positions relative to dead reckoning.
 /// V6 introduced vehicle velocity, projectiles and loose items.
 pub const VERSION: u64 = V7;
+/// Highest negotiated live format. Standalone records and default writers use v7.
+pub const LIVE_VERSION: u8 = 8;
+mod v8;
 // Keep historical decoding tied to the wire version when the writer advances.
 const V7: u64 = 7;
 /// V4 was the last ordinary frame format without a cinematic bit.
@@ -252,6 +255,10 @@ const DIR_MAX: f64 = ((1u32 << DIR_BITS) - 2) as f64;
 
 /// A direction as two octahedral components (`0..=4094`, 2047 is zero).
 pub fn oct(v: [f64; 3]) -> Result<[u32; 2]> {
+    oct_grid(v, DIR_MAX)
+}
+
+fn oct_grid(v: [f64; 3], max: f64) -> Result<[u32; 2]> {
     let l1 = v[0].abs() + v[1].abs() + v[2].abs();
     if !l1.is_finite() || l1 < 1e-12 {
         return Err(PackError::Value("direction must be finite and non-zero"));
@@ -262,7 +269,7 @@ pub fn oct(v: [f64; 3]) -> Result<[u32; 2]> {
         x = (1.0 - ay) * sign(x);
         y = (1.0 - ax) * sign(y);
     }
-    let q = |c: f64| ((c.clamp(-1.0, 1.0) + 1.0) * 0.5 * DIR_MAX).round() as u32;
+    let q = |c: f64| ((c.clamp(-1.0, 1.0) + 1.0) * 0.5 * max).round() as u32;
     Ok([q(x), q(y)])
 }
 
@@ -284,15 +291,24 @@ fn unoct_grid(q: [u32; 2], max: f64) -> [f64; 3] {
     [x / len, y / len, z / len]
 }
 
+#[inline]
+fn position_scale() -> f64 {
+    #[cfg(test)]
+    if floor::COARSE_POSITION.get() {
+        return 256.0;
+    }
+    POS_SCALE
+}
+
 fn qpos(v: [f64; 3]) -> Result<[i64; 3]> {
     if !v.iter().all(|c| c.is_finite() && c.abs() < MAX_COORD) {
         return Err(PackError::Value("position must be finite"));
     }
-    Ok(v.map(|c| (c * POS_SCALE).round() as i64))
+    Ok(v.map(|c| (c * position_scale()).round() as i64))
 }
 
 fn dpos(q: [i64; 3]) -> [f64; 3] {
-    q.map(|c| c as f64 / POS_SCALE)
+    q.map(|c| c as f64 / position_scale())
 }
 
 fn qyaw(yaw: f64) -> Result<u64> {
@@ -333,6 +349,10 @@ fn dvel(q: [i64; 3]) -> [f64; 3] {
 
 /// An object id: a datum (8 hex digits), a player (`p<index>`) or text.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    any(test, feature = "live-floor-bench"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 enum Id {
     Datum(u32),
     Player(u32),
@@ -369,6 +389,10 @@ impl Id {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    any(test, feature = "live-floor-bench"),
+    derive(serde::Serialize, serde::Deserialize)
+)]
 enum Val {
     None,
     Bool(bool),
@@ -772,6 +796,23 @@ fn shots(n: Option<u32>) -> Val {
         .map_or(Val::None, |n| Val::Int(u64::from(n)))
 }
 
+#[inline]
+fn unit_aim_max() -> i32 {
+    #[cfg(test)]
+    if floor::COARSE_AIM.get() {
+        return 4094;
+    }
+    DIR_MAX as i32
+}
+
+fn unit_aim(v: [f64; 3]) -> Result<Val> {
+    #[cfg(test)]
+    if floor::COARSE_AIM.get() {
+        return oct_grid(v, 4094.0).map(Val::Dir);
+    }
+    oct(v).map(Val::Dir)
+}
+
 fn player_vals(p: &FramePlayer) -> Result<Entity> {
     Ok(vec![
         Val::Int(u64::from(p.index)),
@@ -780,7 +821,7 @@ fn player_vals(p: &FramePlayer) -> Result<Entity> {
         Val::Int(qyaw(p.yaw)?),
         opt(p.vehicle.as_deref(), id)?,
         opt(p.species.as_deref(), string)?,
-        opt(p.aim, |a| oct(a).map(Val::Dir))?,
+        opt(p.aim, unit_aim)?,
         opt(p.weapon.as_deref(), string)?,
         shots(p.shots),
         opt(p.stance.as_deref(), |s| {
@@ -850,7 +891,7 @@ fn actor_vals(a: &FrameActor) -> Result<Entity> {
         string(&a.species)?,
         Val::Pos(qpos(a.pos)?),
         Val::Int(qyaw(a.yaw)?),
-        opt(a.aim, |v| oct(v).map(Val::Dir))?,
+        opt(a.aim, unit_aim)?,
         opt(a.weapon.as_deref(), string)?,
         shots(a.shots),
         opt(a.team.as_deref(), string)?,
@@ -966,6 +1007,15 @@ fn as_dir(v: &Val) -> Result<[f64; 3]> {
         _ => Err(PackError::Bad("expected a direction")),
     }
 }
+fn as_unit_aim(v: &Val) -> Result<Option<[f64; 3]>> {
+    #[cfg(test)]
+    if floor::COARSE_AIM.get()
+        && let Val::Dir(q) = v
+    {
+        return Ok(Some(unoct_grid(*q, 4094.0)));
+    }
+    as_opt_dir(v)
+}
 fn as_opt_dir(v: &Val) -> Result<Option<[f64; 3]>> {
     match v {
         Val::None => Ok(None),
@@ -1054,7 +1104,7 @@ fn player_of(e: &Entity) -> Result<FramePlayer> {
         yaw: dyaw(as_int(&e[3])?),
         vehicle: as_opt_id(&e[4])?,
         species: as_opt_str(&e[5])?,
-        aim: as_opt_dir(&e[6])?,
+        aim: as_unit_aim(&e[6])?,
         weapon: as_opt_str(&e[7])?,
         shots: as_opt_int(&e[8])?.map(|n| n as u32),
         stance: as_enum(&e[9], &STANCES)?,
@@ -1135,7 +1185,7 @@ fn actor_of(e: &Entity) -> Result<FrameActor> {
         species: as_str(&e[1])?,
         pos: as_pos(&e[2])?,
         yaw: dyaw(as_int(&e[3])?),
-        aim: as_opt_dir(&e[4])?,
+        aim: as_unit_aim(&e[4])?,
         weapon: as_opt_str(&e[5])?,
         shots: as_opt_int(&e[6])?.map(|n| n as u32),
         team: as_opt_str(&e[7])?,
@@ -1218,6 +1268,7 @@ fn object_of(e: &Entity) -> Result<FrameObject> {
 
 /// A frame as entity lists: players, vehicles, actors, machines, objects,
 /// projectiles, items (the [`LISTS`] order) and hits.
+#[derive(Default)]
 struct Lists {
     lists: [Vec<Entity>; LIST_COUNT],
     hits: Vec<Entity>,
@@ -1406,6 +1457,11 @@ fn write_angle_component(w: &mut BitWriter, value: u32, base: Option<u32>, wrap:
             return;
         }
     }
+    #[cfg(test)]
+    if floor::SHORT_AXIS.get() {
+        w.bits(u64::from(value), 12);
+        return;
+    }
     w.bits(u64::from(value), 14);
 }
 
@@ -1423,6 +1479,10 @@ fn read_angle_component(r: &mut BitReader, base: Option<u32>, wrap: bool) -> Res
         } else {
             u32::try_from(v).map_err(|_| PackError::Bad("direction out of range"))
         };
+    }
+    #[cfg(test)]
+    if floor::SHORT_AXIS.get() {
+        return Ok(r.bits(12)? as u32);
     }
     Ok(r.bits(14)? as u32)
 }
@@ -1660,15 +1720,39 @@ fn read_field(
 }
 
 fn write_entity(w: &mut BitWriter, schema: &[Field], e: &Entity, t: &Table) {
-    for (field, v) in schema.iter().zip(e) {
+    for (i, (field, v)) in schema.iter().zip(e).enumerate() {
+        #[cfg(test)]
+        floor::before_field(schema, i);
+        #[cfg(test)]
+        floor::absolute(i, v);
         write_field(w, *field, v, None, t, 0);
+        #[cfg(test)]
+        floor::field(w, i);
+        let _ = i;
     }
+}
+
+fn read_schema_field(
+    r: &mut BitReader,
+    schema: &[Field],
+    i: usize,
+    prev: Option<&Val>,
+    strings: &[String],
+    ticks: u64,
+) -> Result<Val> {
+    #[cfg(test)]
+    floor::before_field(schema, i);
+    let result = read_field(r, schema[i], prev, strings, ticks);
+    #[cfg(test)]
+    floor::SHORT_AXIS.set(false);
+    result
 }
 
 fn read_entity(r: &mut BitReader, schema: &[Field], strings: &[String]) -> Result<Entity> {
     schema
         .iter()
-        .map(|field| read_field(r, *field, None, strings, 0))
+        .enumerate()
+        .map(|(i, _)| read_schema_field(r, schema, i, None, strings, 0))
         .collect()
 }
 
@@ -1682,6 +1766,8 @@ fn read_count(r: &mut BitReader, max: usize) -> Result<usize> {
 
 fn write_full(w: &mut BitWriter, schema: &[Field], list: &[Entity], t: &Table) {
     w.eg(list.len() as u64, 2);
+    #[cfg(test)]
+    floor::charge(w, "edit/count");
     for e in list {
         write_entity(w, schema, e, t);
     }
@@ -1702,6 +1788,8 @@ fn read_full(
 /// on exact equality; off-body impacts keep their full position.
 fn write_hits(w: &mut BitWriter, hits: &[Entity], players: &[Entity], table: &Table) {
     w.eg(hits.len() as u64, 2);
+    #[cfg(test)]
+    floor::charge(w, "edit/count");
     for hit in hits {
         for (i, field) in HIT.iter().enumerate() {
             if i == 3 && !players.is_empty() {
@@ -1709,10 +1797,19 @@ fn write_hits(w: &mut BitWriter, hits: &[Entity], players: &[Entity], table: &Ta
                 w.bit(index.is_some());
                 if let Some(index) = index {
                     w.bits(index as u64, 4);
+                    #[cfg(test)]
+                    {
+                        floor::absolute(i, &Val::Int(index as u64));
+                        floor::field(w, i);
+                    }
                     continue;
                 }
             }
+            #[cfg(test)]
+            floor::absolute(i, &hit[i]);
             write_field(w, *field, &hit[i], None, table, 0);
+            #[cfg(test)]
+            floor::field(w, i);
         }
     }
 }
@@ -1780,7 +1877,9 @@ fn advance_position(p: &mut Val, a: [i64; 3], b: [i64; 3], ticks: u64) {
         return;
     };
     for i in 0..3 {
-        let step = a[i].saturating_add(b[i]).saturating_mul(4 * ticks as i64);
+        let step = a[i]
+            .saturating_add(b[i])
+            .saturating_mul((position_scale() as i64 / 256) * ticks as i64);
         p[i] = p[i].saturating_add(step.saturating_add(15 * step.signum()) / 30);
     }
 }
@@ -1808,7 +1907,7 @@ impl StreamState {
                     ));
                     if let (Some(a), Some(b)) = (older.aim, now.aim) {
                         e[aim] = Val::Dir(std::array::from_fn(|i| {
-                            (2 * (b[i] as i32) - a[i] as i32).clamp(0, DIR_MAX as i32) as u32
+                            (2 * (b[i] as i32) - a[i] as i32).clamp(0, unit_aim_max()) as u32
                         }));
                     }
                     if let (Some(a), Some(b)) = (older.velocity, now.velocity) {
@@ -1960,6 +2059,11 @@ fn write_delta(
     w.eg(list.len() as u64, 2);
     let mut cursor = 0usize;
     let matched = |i: usize| if same_order { Some(i) } else { reordered[i] };
+    #[cfg(test)]
+    {
+        floor::charge(w, "edit/count");
+        floor::matched(schema, list, prev, matched, ticks);
+    }
     let mut last_mask = 0u32;
     let mut i = 0;
     while i < list.len() {
@@ -1973,6 +2077,8 @@ fn write_delta(
         if run > 0 {
             w.bits(0, 2);
             w.eg(run as u64 - 1, 2);
+            #[cfg(test)]
+            floor::charge(w, "edit/count");
             i += run;
             cursor += run;
             continue;
@@ -1993,6 +2099,8 @@ fn write_delta(
                     .zip(before)
                     .enumerate()
                     .fold(0u32, |mask, (i, (v, p))| mask | (u32::from(v != p) << i));
+                #[cfg(test)]
+                floor::charge(w, "edit/count");
                 if let Some(layout) = layout {
                     layout.write(w, mask ^ last_mask);
                 } else {
@@ -2005,17 +2113,25 @@ fn write_delta(
                         }
                     }
                 }
+                #[cfg(test)]
+                floor::charge(w, "mask");
                 last_mask = mask;
                 let mut changed = mask;
                 while changed != 0 {
                     let i = changed.trailing_zeros() as usize;
+                    #[cfg(test)]
+                    floor::before_field(schema, i);
                     write_field(w, schema[i], &entity[i], Some(&before[i]), t, ticks);
+                    #[cfg(test)]
+                    floor::field(w, i);
                     changed &= changed - 1;
                 }
                 cursor = j + 1;
             }
             None => {
                 w.bits(0b010, 3);
+                #[cfg(test)]
+                floor::charge(w, "edit/count");
                 write_entity(w, schema, &list[i], t);
             }
         }
@@ -2125,7 +2241,9 @@ fn read_delta(
                     (Some((pi, _)), Some(_)) if idx == pi => {
                         error = Some([r.seg(PREDICT_K)?, r.seg(PREDICT_K)?, r.seg(PREDICT_K)?]);
                     }
-                    _ => e[idx] = read_field(r, schema[idx], Some(&before[idx]), strings, dt)?,
+                    _ => {
+                        e[idx] = read_schema_field(r, schema, idx, Some(&before[idx]), strings, dt)?
+                    }
                 }
             }
             if let (Some((pi, vi)), Some(a), Some(err)) = (motion, base, error) {
@@ -2174,6 +2292,7 @@ pub struct Encoder {
     since_key: u64,
     next_seq: u64,
     state: Option<(StreamState, Table)>,
+    causal: Option<Box<v8::Writer>>,
 }
 
 impl Encoder {
@@ -2185,7 +2304,19 @@ impl Encoder {
             since_key: 0,
             next_seq: 0,
             state: None,
+            causal: None,
         }
+    }
+
+    /// Select the version agreed for this connection. New subscribers start at a key.
+    pub fn with_version(sid: u64, keyframe_every: u64, version: u8) -> Result<Self> {
+        let mut writer = Self::new(sid, keyframe_every);
+        match version {
+            7 => {}
+            LIVE_VERSION => writer.causal = Some(Box::default()),
+            v => return Err(PackError::Version(u64::from(v))),
+        }
+        Ok(writer)
     }
 
     pub fn sid(&self) -> u64 {
@@ -2200,10 +2331,12 @@ impl Encoder {
     /// The next frame is a keyframe.
     pub fn force_keyframe(&mut self) {
         self.state = None;
+        self.since_key = self.keyframe_every;
     }
 
     /// One packed frame; `Ok((bytes, keyframe))`. A frame that cannot be
-    /// packed leaves the stream as it was.
+    /// packed consumes no sequence number. V8 recovers partial projection work
+    /// with an independent key on the next successful write.
     pub fn encode(&mut self, frame: &Frame) -> Result<(Vec<u8>, bool)> {
         self.encode_with_machine_baseline(frame, None)
     }
@@ -2215,7 +2348,6 @@ impl Encoder {
         frame: &Frame,
         baseline: Option<&BTreeMap<u16, MachinePosition>>,
     ) -> Result<(Vec<u8>, bool)> {
-        let lists = Lists::of(frame)?;
         let positions = &frame.machine_positions;
         if positions.len() > MAX_MACHINE_POSITIONS
             || positions.last().is_some_and(|m| m.i > i16::MAX as u16)
@@ -2226,6 +2358,34 @@ impl Encoder {
         if frame.game_id.len() > MAX_STRING {
             return Err(PackError::Value("game id too long"));
         }
+        if let Some(writer) = self.causal.as_mut() {
+            if self.next_seq == u64::MAX
+                || frame.tick >= 1 << 44
+                || frame.cut.is_some_and(|v| v >= 1 << 44)
+            {
+                return Err(PackError::Value("v8 tick or sequence out of range"));
+            }
+            let result = writer.encode(
+                frame,
+                self.sid,
+                self.next_seq,
+                self.since_key >= self.keyframe_every,
+                baseline,
+            );
+            match &result {
+                Ok((_, key)) => {
+                    self.since_key = if *key { 1 } else { self.since_key + 1 };
+                    self.next_seq += 1;
+                }
+                // A partial projection or model update cannot become a delta base.
+                Err(_) => {
+                    self.causal = Some(Box::default());
+                    self.since_key = self.keyframe_every;
+                }
+            }
+            return result;
+        }
+        let lists = Lists::of(frame)?;
         let mut new_strings: Vec<&str> = Vec::new();
         let version = VERSION;
         let key = match &self.state {
@@ -2270,6 +2430,8 @@ impl Encoder {
         };
         let seq = self.next_seq;
         let mut w = BitWriter::new();
+        #[cfg(test)]
+        floor::start(key);
         w.bits(version, 4);
         w.bit(key);
         w.eg(self.sid, 0);
@@ -2298,6 +2460,8 @@ impl Encoder {
             w.eg(c, 16);
         }
         w.bit(frame.cinematic);
+        #[cfg(test)]
+        floor::charge(&w, "header");
         w.eg(new_strings.len() as u64, 1);
         for s in &new_strings {
             write_str_literal(&mut w, s);
@@ -2306,13 +2470,19 @@ impl Encoder {
                 .insert((*s).to_owned(), state.strings.len() as u64);
             state.strings.push((*s).to_owned());
         }
+        #[cfg(test)]
+        floor::charge(&w, "strings");
         if !key {
             state.advance(dt);
         }
         for (n, (schema, _)) in LISTS.iter().enumerate() {
             if n == 3 {
+                #[cfg(test)]
+                floor::set_list(LIST_COUNT);
                 write_hits(&mut w, &lists.hits, &lists.lists[0], &table);
             }
+            #[cfg(test)]
+            floor::set_list(n);
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
@@ -2341,6 +2511,12 @@ impl Encoder {
         } else {
             write_machine_positions(&mut w, frame.machine_positions.iter());
         }
+        #[cfg(test)]
+        {
+            floor::set_list(LIST_COUNT + 1);
+            floor::charge(&w, "machine travel");
+            floor::end(&w);
+        }
         Ok((w.finish(), key))
     }
 }
@@ -2360,6 +2536,7 @@ pub struct Decoded {
 #[derive(Default)]
 pub struct Decoder {
     streams: HashMap<u64, StreamState>,
+    causal: HashMap<u64, v8::Stream>,
 }
 
 /// Most streams one decoder follows.
@@ -2373,9 +2550,13 @@ impl Decoder {
     /// Forgets a stream (its game ended).
     pub fn forget(&mut self, sid: u64) {
         self.streams.remove(&sid);
+        self.causal.remove(&sid);
     }
 
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Decoded> {
+        if bytes.first().is_some_and(|b| b & 15 == LIVE_VERSION) {
+            return v8::decode(self, bytes);
+        }
         let mut r = BitReader::new(bytes);
         let version = r.bits(4)?;
         r.version = version;
@@ -2471,7 +2652,9 @@ impl Decoder {
         if version == V7 {
             frame.machine_positions = read_machine_positions(&mut r)?;
         }
-        if !self.streams.contains_key(&sid) && self.streams.len() >= MAX_STREAMS {
+        self.causal.remove(&sid);
+        if !self.streams.contains_key(&sid) && self.streams.len() + self.causal.len() >= MAX_STREAMS
+        {
             return Err(PackError::Bad("too many streams"));
         }
         self.streams.insert(sid, state);
@@ -2616,3 +2799,14 @@ pub fn records(mut bytes: &[u8]) -> impl Iterator<Item = Result<&[u8]>> {
 #[cfg(test)]
 #[path = "pack_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "pack_floor.rs"]
+pub(crate) mod floor;
+
+// Integration benches link the regular library: the v7 control has no
+// cfg(test) bit-accounting or alternate-grid hooks.
+#[cfg(feature = "live-floor-bench")]
+#[doc(hidden)]
+#[path = "pack_speed.rs"]
+pub mod speed;

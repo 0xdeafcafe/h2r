@@ -327,10 +327,12 @@ A chunk is stored when a frame lands in the next window, and when the game
 ends (its `GameEnded`, or the idle sweep ending it as `lost`); there is no
 timer. A server that stops mid-window loses at most that window.
 
-Each chunk is an immutable blob in the private blob store,
-`frames/<game id>/<first tick>` (R2 on the Worker, the data directory
-natively; the event store's blobs on a server with neither), and a
-server-signed `FrameChunk` event in the game's stream is its index entry:
+The private blob store uses `frames/<game id>/<first tick>-<sha256>` for
+new chunks and reads older chunks under `frames/<game id>/<first tick>`.
+The digest keeps both originals when a checkpoint rewind repeats a chunk
+start. Readers can pass the signed index entry’s `sha256` as a query parameter to disambiguate a repeated first tick. The Worker uses R2 and the native server uses its data directory.
+With neither configured, the event store holds the bytes. A server-signed
+`FrameChunk` event in the game's stream records its index entry.
 
 ```json
 { "from_tick": 9000, "to_tick": 9298, "frames": 150, "bytes": 38211,
@@ -1449,14 +1451,19 @@ readers allowed to see it ([Co-op games](#co-op-games)). On a public server
 the token's expiry closes only explicitly scoped [sim streams](#clanker-training).
 Without `auth`, a public stream is anonymous and leaves those events out.
 
-`?frames=packed` sends frames as binary messages instead: each a container
-of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one
-stream per game, batched up to 100 ms (the server batches every game's
-frames once a tick and shares the batch among readers). A reader that joins
-or falls behind first gets each game's frames since its last keyframe. Each
-stream's frames come in order, each once: never a frame older than one
-already sent, nor a delta without its base. Events and `caught_up` stay
-JSON text messages.
+Legacy subscribers request `?frames=packed` for v7. The viewer requests
+`?frames=packed&frame_version=8` and recognizes the version in each binary
+record, including v7 from older servers. Both homes batch each game's
+length-prefixed records for up to 100 ms. Readers of the same version
+share its encoder and batches. Events and `caught_up` use JSON text.
+
+A new v8 stream starts with an independent key. A reader joining an
+existing stream receives the key and all subsequent records through the
+latest published frame. That suffix restores the adaptive model used by
+the next delta. A v8 key interval spans at most 150 samples. The server
+also uses this history to catch up a slow reader and suppresses records
+that it has already sent. A hibernated Worker socket retains its requested
+version across wake-up.
 
 **`GET /v1/ingest`** for the game. The first message is
 `{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
@@ -1720,3 +1727,49 @@ game. Nobody writes these through `/v1/events`.
 An id that is not 16 lowercase hex digits, or another call name, is a
 404.
 
+
+### Finished replay archives
+
+`GET /v1/games/{id}/chunks?format=archive` returns the ordinary frame chunk
+index until a verified archive is published. Its published response includes
+`archive_sha256` and an ordered `items` array. Each entry identifies the
+segment’s first and last source ticks, frame count, compressed byte count,
+SHA-256 and zero-based offsets of original v7 keyframes. Ticks beyond the
+JSON safe-integer range use decimal strings. Array order is recording order,
+including repeated or rewound source ticks.
+
+`GET /v1/games/{id}/archive/{archive_sha256}/{ordinal}` serves the stored
+segment with `Content-Type: application/x-h2-replay` and
+`Content-Encoding: br`. The browser receives an independently decodable
+H2AR body. Fetch the segment containing the playhead first. Both routes
+apply the game’s normal visibility check. Anonymous segment reads of public
+games are immutable. Authenticated responses are private. New live viewers
+continue to consume the v7 stream. The game stream’s `ReplayArchivePublished`
+event signals that the finished recording can switch to the archive.
+
+The original chunk index remains available without the format parameter.
+Historical game inventory, dry run, verification, backup and rollback use
+the separate admin API. [Replay migration](replay-migration.md)
+
+#### Admin archive operations
+
+| Method and path | Token scope | Result |
+|---|---|---|
+| `GET /v1/admin/replay-archives?limit=32&cursor=…` | `admin.read` | Inventory page with `items`, `next` and log `position`. The limit is 1–100. |
+| `GET /v1/admin/replay-archives/{id}` | `admin.read` | Current state, sealed source position, original chunk and legacy frame counts, cumulative totals and both committed hashes. |
+| `POST /v1/admin/replay-archives/{id}/step` | `admin.write` | Process one segment of a sealed game. |
+| `POST /v1/admin/replay-archives/{id}/rollback` | `admin.write` | Check both supplied hashes and return the updated inventory record with HTTP 200 and state `rolled_back`. |
+
+A step body contains `mode` (`dry_run`, `apply` or `verify`), the inventory’s
+`source_position`, and the preceding receipt’s opaque `next` value as
+`cursor`. Omit the cursor on the first request. Dry runs write no objects
+or events. Apply can resume durable progress. Verify checks each published
+segment, immutable index node and original backup against the retained
+source. The final receipt includes `done: true`, the archive and backup
+SHA-256 values, and cumulative totals for `frames`, `segments`,
+`source_bytes`, `archive_bytes` and `index_bytes`. Rollback takes both
+`archive_sha256` and `backup_sha256` from that receipt.
+
+An incorrect revision or pointer returns 409. A broken recording fails the
+affected game, while a storage-service failure returns 503. A retry with
+the same cursor returns the same cumulative counts.

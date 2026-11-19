@@ -5,7 +5,7 @@ import type { SimDetail, SimFilter, SimRun } from "../admin/simRuns";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
 import { decodeKeyframes } from "./pack";
-import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type ChunkMeta } from "./chunk";
+import { CHUNK_TYPE, chunkFrames, chunkIndex, chunksIn, type ChunkIndex, type RecordingChunk } from "./chunk";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -129,9 +129,9 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
       ? fetch(withAuthMark(url), { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } })
       : fetch(url, init);
   };
-  async function chunks(id: string, s?: AbortSignal): Promise<ChunkIndex | null> {
+  async function chunks(id: string, s?: AbortSignal, revision?: number): Promise<ChunkIndex | null> {
     try {
-      return chunkIndex(await getJson<unknown>(u("/games/" + encodeURIComponent(id) + "/chunks"), s, await who()));
+      return chunkIndex(await getJson<unknown>(u("/games/" + encodeURIComponent(id) + "/chunks", { format: "archive", revision }), s, await who()));
     } catch (e) {
       // A server before chunks answers 404 for the route, as a missing
       // game does: read both as no chunks and let `/frames` say which.
@@ -139,8 +139,11 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
       throw e;
     }
   }
-  async function chunk(id: string, c: ChunkMeta, s?: AbortSignal): Promise<Uint8Array> {
-    const r = await reading(u("/games/" + encodeURIComponent(id) + "/chunks/" + c.from_tick), { signal: s, headers: { accept: CHUNK_TYPE } });
+  async function chunk(id: string, c: RecordingChunk, s?: AbortSignal): Promise<Uint8Array> {
+    const path = c.codec === "archive" ? "/archive/" + c.index + "/" + c.ordinal : "/chunks/" + c.from_tick;
+    const accept = c.codec === "archive" ? "application/x-h2-replay" : CHUNK_TYPE;
+    const query = c.codec !== "archive" && c.repeatedStart ? {sha256:c.sha256} : undefined;
+    const r = await reading(u("/games/" + encodeURIComponent(id) + path, query), { signal: s, headers: { accept } });
     if (!r.ok) throw new ApiError(r.status, "http_" + r.status, `frame chunk ${c.from_tick}: ${r.statusText}`);
     return new Uint8Array(await r.arrayBuffer());
   }
@@ -168,8 +171,8 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
      *  (docs/live/live-api.md, "Frame chunks"), or, for a game recorded
      *  before them (its index is empty, or the server has none), its
      *  recorded keyframes from `/frames`, following cursors. */
-    frames: async (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal): Promise<Frame[]> => {
-      const index = await chunks(id, s);
+    frames: async (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal, knownIndex?: ChunkIndex | null): Promise<Frame[]> => {
+      const index = knownIndex === undefined ? await chunks(id, s) : knownIndex;
       if (index && index.items.length) {
         const frames = await chunkFrames(chunksIn(index.items, from_tick, to_tick), (c) => chunk(id, c, s));
         return frames.filter((f) => (from_tick === undefined || f.tick >= from_tick) && (to_tick === undefined || f.tick <= to_tick));
@@ -262,7 +265,7 @@ export function api(t: ServerTarget, reader: Reader = async () => null) {
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
     /** `auth`: the first message will be a `read` token (`?auth=1`). */
     streamUrl: (from: number | null, auth = false, game?: string) => u("/stream", {
-      from: from ?? 0, exclude: "GameFrame", frames: "packed", auth: auth ? 1 : undefined,
+      from: from ?? 0, exclude: "GameFrame", frames: "packed", frame_version: 8, auth: auth ? 1 : undefined,
       games: game, stream: game ? "game-" + game : undefined,
     }),
     /** The reader's token now, for a stream's auth message. */

@@ -641,6 +641,39 @@ stream sends only the ones that changed.
 
 ## Packed frames
 
+### Version 8 implementation plan
+
+Negotiate v8 on live connections. A sender and reader that have only agreed
+to packed v7 continue using v7. Both native and Worker ingest, replay and
+archive processing dispatch by the stored version nibble. The viewer uses
+the same dispatch for live and replay records.
+
+Keep the length-prefixed container, v7 field grids and a complete key every
+150 samples. Each v8 key embeds an independently decodable v7 key with its
+machine baseline. Between keys, send one forward byte-range-coded packet per
+sample using causal field predictions, grouped unchanged fields and adaptive
+symbol frequencies. The envelope carries version, key flag, stream id and
+sequence; deltas also carry the tick increment. A discontinuity requires a
+fresh key. A subscriber joins at a complete key and reads each subsequent
+record in order. The key seeds the field history and dictionary and resets the
+probability tables, so there is no separate probability-model snapshot.
+
+An upgraded server advertises `ingest_frame_versions: [8]` in discovery.
+The game reads discovery on each new connection and selects v8 only when
+listed. The packed subscriber opts in with `frames=packed&frame_version=8`.
+Standalone signed frame pages and the v7 writer keep their existing encoding.
+
+After the usual ULEB record length, the first byte is
+`8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
+A ULEB sequence follows. A key carries one bare v7 key of stream 0,
+sequence 0. A delta carries ULEB tick increment and one terminated range
+payload. Each stream maintains independent prediction and probability
+state. A successful key supersedes earlier versions for that stream ID.
+
+Verify every reconstructed field, mixed versions, cuts and joining mid-stream.
+Compare framed production encoders in alternating pairs on the same 9,000
+samples before enabling v8 by default.
+
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 (frame chunks, [live-api.md](live-api.md#frame-chunks); before them
@@ -880,6 +913,22 @@ through the legacy frame page.
 Deploy the web reader first, then the server and Worker, then reinstall the
 game sender. Existing senders work with the updated readers. Clients that
 consume JSON can keep using the JSON representations.
+
+### Finished recordings
+
+The viewer requests the archive-capable chunk index when a match ends.
+Until publication it uses the original recording. Publication switches the
+reader to independently decodable H2AR segments and keeps the current
+playhead, speed and pause state. The index maps source ticks across checkpoint
+rewinds, so a time link can fetch its target segment directly. The viewer
+loads a neighbour near a segment edge to interpolate through it and releases
+distant segments after a seek.
+
+Local servers run the offline codec on the blocking pool. The Worker runs
+one bounded segment on its single-threaded Durable Object per alarm or admin
+step. The raw originals and their signed index remain available after
+publication and rollback. [Archive format, limits and measurements](../engine/live-telemetry.md#finished-replay-archives)
+and [migration procedure](replay-migration.md).
 
 ## Telemetry cost
 

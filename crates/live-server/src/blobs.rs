@@ -47,6 +47,7 @@ pub const PREFIXES: &[&str] = &[
     "storage/",
     "art/",
     FRAMES_PREFIX,
+    "backup/frames-pre-v7/",
     crate::sim_runs::REPORT_PREFIX,
 ];
 

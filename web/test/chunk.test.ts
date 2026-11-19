@@ -88,6 +88,12 @@ describe("frame chunks", () => {
     expect(chunksIn(index).length).toBe(3);
   });
 
+  test("an archive-aware raw index preserves recording order and identifies repeated chunk starts", () => {
+    const index = chunkIndex({source_order:true, items:[meta(40,42),meta(340,344),meta(40,46)]})!;
+    expect(index.items.map(c => c.from_tick)).toEqual([40,340,40]);
+    expect(index.items.map(c => c.codec !== "archive" && !!c.repeatedStart)).toEqual([true,false,true]);
+  });
+
   test("the index is read oldest first, and junk is not an index", () => {
     const got = chunkIndex({ game_id: "g", chunk_ticks: 300, ended: true, items: [meta(300, 400), meta(0, 10), { nope: 1 }] });
     expect(got!.items.map((c) => c.from_tick)).toEqual([0, 300]);

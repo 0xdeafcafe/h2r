@@ -335,13 +335,14 @@ impl ServerSink {
         }
         let (mut socket, _) = connect_bounded(&socket_url).map_err(Failure::Transport)?;
         set_timeouts(socket.get_mut()).map_err(Failure::Transport)?;
+        let frames = ingest_frames(&discovery, self.keyframe_every());
         self.discovery = Some(discovery);
         let now = Instant::now();
         self.connection = Some(Connection {
             socket,
             last_auth: now,
             opened: now,
-            frames: pack::Encoder::new(0, self.keyframe_every()),
+            frames,
         });
         self.authenticate()
     }
@@ -419,11 +420,10 @@ impl ServerSink {
     /// A refused frame that did not decode (the server lost its decoder,
     /// as after a hibernation wake): the next frame is a keyframe.
     fn frame_refused(&mut self, message: &str) {
-        let every = self.keyframe_every();
         if message.starts_with("frame:")
             && let Some(connection) = &mut self.connection
         {
-            connection.frames = pack::Encoder::new(0, every);
+            connection.frames.force_keyframe();
         }
     }
 
@@ -526,7 +526,11 @@ impl ServerSink {
     fn deliver_start(&mut self) -> Result<(), Failure> {
         if self.sim.as_ref().is_some_and(|sim| sim.deferred.is_some()) {
             if self.discovery.is_none() {
-                self.discovery = Some(self.discover().map_err(Failure::Transport)?);
+                let discovery = self.discover().map_err(Failure::Transport)?;
+                if let Some(deferred) = self.sim.as_mut().and_then(|sim| sim.deferred.as_mut()) {
+                    deferred.encoder = ingest_frames(&discovery, SIM_KEYFRAME_EVERY);
+                }
+                self.discovery = Some(discovery);
             }
         } else {
             self.connect()?;
@@ -1014,7 +1018,8 @@ impl Sink for ServerSink {
             let mut frame = frame;
             frame.game_id.clone_from(&sim.game_id);
             frame.cut = frame.cut.or(self.machine_cut);
-            let message = frame_message(&mut deferred.encoder, frame, Some(&self.machine_positions))?;
+            let message =
+                frame_message(&mut deferred.encoder, frame, Some(&self.machine_positions))?;
             let size = message.len();
             if size > MAX_INGEST_MESSAGE {
                 return Err("a deferred sim frame exceeds the ingest message limit".into());
@@ -1086,6 +1091,18 @@ fn frame_message(
             let text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
             Ok(Message::Text(text.into()))
         }
+    }
+}
+
+fn ingest_frames(discovery: &Discovery, every: u64) -> pack::Encoder {
+    if discovery
+        .ingest_frame_versions
+        .contains(&pack::LIVE_VERSION)
+    {
+        pack::Encoder::with_version(0, every, pack::LIVE_VERSION)
+            .expect("local live encoder version")
+    } else {
+        pack::Encoder::new(0, every)
     }
 }
 
@@ -1377,5 +1394,30 @@ mod tests {
             resolve_api("http://localhost:8074/base", "https://live.test/v1"),
             "https://live.test/v1"
         );
+    }
+}
+
+#[cfg(test)]
+mod version_negotiation {
+    use super::*;
+
+    #[test]
+    fn ingest_selects_only_advertised_v8_and_resets_on_a_key() {
+        let mut doc = serde_json::json!({"id":"local","api":"/v1","keys":[],"software":"test","federation":false});
+        for (advertised, want) in [(None, 7), (Some(vec![9]), 7), (Some(vec![7, 8]), 8)] {
+            if let Some(v) = advertised {
+                doc["ingest_frame_versions"] = serde_json::json!(v);
+            }
+            let discovery: Discovery = serde_json::from_value(doc.clone()).unwrap();
+            let mut enc = ingest_frames(&discovery, 150);
+            let frame = Frame::default();
+            let (record, key) = enc.encode(&frame).unwrap();
+            assert!(key);
+            assert_eq!(record[0] & 15, want);
+            enc.force_keyframe();
+            let (record, key) = enc.encode(&frame).unwrap();
+            assert!(key);
+            assert_eq!(pack::Decoder::new().decode(&record).unwrap().seq, 1);
+        }
     }
 }

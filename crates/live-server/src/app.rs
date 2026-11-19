@@ -165,6 +165,7 @@ pub struct Live {
     /// Packed frames, batched a tick at a time for packed readers.
     pub(crate) packed: crate::packed::Hub,
     pub(crate) ingest: crate::games::IngestState,
+    pub(crate) archive_work: tokio::sync::Mutex<()>,
     jtis: ReplayGuard,
     writes: RateLimiter,
     creates: RateLimiter,
@@ -530,6 +531,7 @@ impl Live {
             frames: broadcast::channel(256).0,
             packed: Default::default(),
             ingest: Default::default(),
+            archive_work: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
@@ -1073,6 +1075,7 @@ impl Live {
 
     pub fn discovery(&self) -> Discovery {
         Discovery {
+            ingest_frame_versions: vec![live_proto::pack::LIVE_VERSION],
             id: self.identity.id.clone(),
             api: "/v1".into(),
             keys: vec![self.identity.key.public().jwk()],

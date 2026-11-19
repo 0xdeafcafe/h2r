@@ -90,6 +90,7 @@ pub struct Game {
     pub kills: VecDeque<KillRecord>,
     pub last_tick: Option<u64>,
     pub ended: Option<(GameEnded, String)>,
+    pub(crate) recording: crate::replay_archive::Recording,
     /// Unix seconds of the last event or frame; idle games are ended.
     pub last_activity: i64,
     /// A Live co-op campaign game's session, recorded when it starts: a
@@ -266,10 +267,15 @@ impl State {
 
     /// Games newest first, optionally only live or ended ones.
     pub fn games_newest(&self) -> impl Iterator<Item = &Game> {
+        self.games_before(None)
+    }
+
+    pub(crate) fn games_before(&self, before: Option<u64>) -> impl Iterator<Item = &Game> {
+        use std::ops::Bound::{Excluded, Unbounded};
         self.games_by_position
-            .values()
+            .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
-            .filter_map(|id| self.games.get(id))
+            .filter_map(|(_, id)| self.games.get(id))
     }
 
     pub fn active_key_count(&self, xuid: Xuid) -> usize {
@@ -444,6 +450,7 @@ impl Model {
                 kills: VecDeque::new(),
                 last_tick: None,
                 ended: None,
+                recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
                 last_activity: at,
             };
             s.games_by_position.insert(e.position, id.clone());
@@ -454,6 +461,7 @@ impl Model {
             return;
         };
         let Some(g) = s.games.get_mut(id) else { return };
+        g.recording.observe(e);
         g.last_activity = g.last_activity.max(at);
         match b.kind.as_str() {
             crate::sim_runs::REPORT_STORED if g.started.game.sim.is_some() => {

@@ -68,6 +68,7 @@ pub mod recovery;
 pub mod signins;
 pub mod relay;
 pub mod reports;
+mod replay_archive;
 pub mod rt;
 mod sessions;
 mod sim_runs;
