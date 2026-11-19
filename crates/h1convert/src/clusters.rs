@@ -338,8 +338,8 @@ pub struct Visibility {
     pub portals: Vec<Portal>,
     /// Per cluster: the portals on its boundary.
     pub clusters: Vec<Vec<u16>>,
-    /// Per cluster: the sky it shows, an index into the scenario's skies
-    /// ([`cluster_skies`]). Empty: every cluster shows sky 0.
+    /// Per cluster: the sky it shows, an index into the scenario's skies,
+    /// -1 none ([`cluster_skies`]). Empty: every cluster shows sky 0.
     pub skies: Vec<i8>,
 }
 
@@ -429,8 +429,17 @@ pub const H1_CLUSTER_SKY: usize = 0x00;
 /// sky of the clusters it sees. So a cluster keeps Halo 1's sky, and one
 /// with none (an interior) takes the sky of the nearest cluster through
 /// portals that has one: from inside, a window still shows the sky
-/// outside. Clusters no sky reaches, and structures with no clusters,
-/// show sky 0.
+/// outside. A cluster no sky reaches shows none (-1, written `0xff`), as
+/// in Halo 1: `0x0014b360` reads -1 as sky 0 only when the scenario's
+/// `+0x12` has bit 1, which converted scenarios leave clear. A structure
+/// with no clusters shows sky 0.
+///
+/// a10's first BSP (`a10a`, the cryo bay) has 33 clusters and no sky in
+/// any, nor any portal to one: Halo 1 draws no sky there. Until converter
+/// version 81 every cluster showed sky 0 (`sky\space\space`), and it drew
+/// as a flat grey slab over two thirds of the view at the start of the
+/// level. Proven live: `+0x6e` of the camera's cluster set to `0xff` and
+/// the bay drew whole, the sky's draw gone from the frame.
 pub fn cluster_skies(bsp: &StructureBsp, portals: &[Portal], clusters: usize) -> Result<Vec<i8>> {
     let own: Vec<i8> = bsp
         .space
@@ -443,9 +452,13 @@ pub fn cluster_skies(bsp: &StructureBsp, portals: &[Portal], clusters: usize) ->
 
 /// [`cluster_skies`] over `own` (Halo 1's, -1 none): breadth first from
 /// every cluster with a sky, so each cluster without one takes its
-/// nearest's (fewest portals; on a tie, the one
-/// the search meets first).
+/// nearest's (fewest portals; on a tie, the one the search meets first).
+/// Clusters no sky reaches stay -1; with no Halo 1 clusters at all
+/// (`own` empty) every cluster shows sky 0.
 pub fn spread_skies(mut own: Vec<i8>, portals: &[Portal], clusters: usize) -> Vec<i8> {
+    if own.is_empty() {
+        return vec![0; clusters];
+    }
     own.resize(clusters, -1);
     let mut next: Vec<Vec<usize>> = vec![Vec::new(); clusters];
     for p in portals {
@@ -465,7 +478,7 @@ pub fn spread_skies(mut own: Vec<i8>, portals: &[Portal], clusters: usize) -> Ve
             }
         }
     }
-    own.into_iter().map(|s| s.max(0)).collect()
+    own
 }
 
 /// Each Halo 1 cluster that names no sky (`+0x00`, i16 `-1`): Halo 1 fogs

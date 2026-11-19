@@ -324,6 +324,52 @@ fn halo1_clusters_name_their_sky() {
     }
 }
 
+/// The sky each converted cluster shows (`clusters::cluster_skies`, cluster
+/// `+0x6e`) on a10: the cryo bay (`a10a`) has no cluster with a Halo 1 sky
+/// and no portal to one, so none shows a sky (-1, `0xff`), as Halo 1 draws
+/// none there; sky 0 there drew as the grey slab over the start of the
+/// level. `a10b` has clusters with a sky (its windows on space), so every
+/// cluster those reach keeps one. Every cluster of every a10 structure
+/// shows a sky its Halo 1 cluster names or reaches through portals, or none.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn a10_clusters_no_sky_reaches_show_none() {
+    let h1 = level("a10");
+    let mut seen = Vec::new();
+    for bsp in h1.structure_bsps().unwrap() {
+        let s = h1.structure_bsp(&bsp).unwrap();
+        let col = s.collision_bsps().unwrap().remove(0);
+        let n = h1convert::clusters::cluster_count(&s).unwrap();
+        let v = h1convert::clusters::portals(&s, n, col.planes.len()).unwrap();
+        let own: Vec<i16> = s
+            .space
+            .block_at(s.root, 0x134, 0x68)
+            .unwrap()
+            .iter()
+            .map(|c| i16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        println!("a10 {}: Halo 1 {own:?} -> converted {:?}", bsp.name, v.skies);
+        assert_eq!(v.skies.len(), n);
+        for (c, &sky) in v.skies.iter().enumerate() {
+            if own[c] >= 0 {
+                assert_eq!(i16::from(sky), own[c], "{} cluster {c} keeps its sky", bsp.name);
+            }
+        }
+        if own.iter().all(|&o| o < 0) {
+            assert!(
+                v.skies.iter().all(|&k| k == -1),
+                "{}: no cluster has a sky, so none shows one",
+                bsp.name
+            );
+        }
+        seen.push((bsp.name.clone(), v.skies.clone()));
+    }
+    let (_, a10a) = seen.iter().find(|(n, _)| n.ends_with("a10a")).expect("a10a");
+    assert!(a10a.iter().all(|&s| s == -1), "the cryo bay shows no sky");
+    let (_, a10b) = seen.iter().find(|(n, _)| n.ends_with("a10b")).expect("a10b");
+    assert!(a10b.iter().any(|&s| s >= 0), "a10b's windows show space");
+}
+
 /// What Blood Gulch's and a10's skies convert to: the model scale, each
 /// material's Halo 1 shader and the recipe it draws with.
 #[test]
