@@ -252,10 +252,11 @@ fresh history.
 ### 3.2 Navigation
 
 Every map gets a nav mesh, built offline from the BSP collision by our own
-tool and cached by map checksum. It is not committed, because it is derived
-from the disc. The tool is `crates/pathfind`'s generator
-(`pathfind::generate::generate`): today it emits H2 pathfinding sectors from
-collision for converted maps. Bots need its sector graph, not the tag.
+tool and cached by map fingerprint. `bots::autonav::build_map` reads the
+scenario and builds one `<map>.<bsp>.bots` per BSP. `bots::cache::build`
+starts with the sectors from `pathfind::generate::generate`. The bot
+generator adds its links and collision probes to those sectors. Generator
+version 2 regenerates earlier caches.
 
 The mesh holds:
 
@@ -265,12 +266,20 @@ The mesh holds:
   - **drop**: a ledge to a lower surface within the fall-damage limit;
   - **jump**: a gap or ledge reachable at the biped's jump arc, checked by
     sweeping the arc against collision;
-  - **crouch-jump**: as jump, a little higher;
-  - **teleporter**: from the scenario's teleporter netgame flags;
-  - **lift**: man cannons and gravity lifts, from scenery and device
-    positions;
-  - **vehicle**: not built. Vehicles follow the bipeds' mesh for now
-    (§3.9).
+  - **crouch-jump**: a separate takeoff and landing for ledges reachable
+    with the smaller capsule. The follower presses A, detects the rise,
+    then holds crouch two simulation ticks after takeoff until it reaches
+    the landing.
+  - **teleporter**: directed links from each sender to all of its
+    channel's receivers on this BSP. The bot walks into the trigger,
+    keeps its approach direction briefly and resumes at the receiver.
+    An unexpected receiver or a timeout causes a replan.
+  - **lift**: directed links from a placed gravity lift, launcher or
+    elevator to a BSP landing. The bot steps on, lets the lift pick it
+    up, then steers toward the landing. On a moving platform it waits
+    until the platform is level with the exit before stepping off.
+  - **vehicle**: the ground-vehicle planner filters the walk graph by
+    chassis clearance and checks each steering span (§3.9).
 
 Paths come from A\* over the sector graph, smoothed with a funnel pass and
 followed by steering:
@@ -281,6 +290,24 @@ followed by steering:
 
 A move becomes a left-stick vector relative to the bot's facing. A bot
 never warps.
+
+**Traversal evidence and estimates.**
+
+| Input | Evidence |
+|---|---|
+| Teleporter flag position, type and channel | `scnr+0x118`, stride `0x20`, position `+0`, types `7` and `8` at `+0x10`, identifier `+0x14`. See `scenario-edit/src/layout.rs`, `h1convert/src/apply.rs` and the retail checks in `h1convert/tests/h2_scenario.rs`. |
+| Scenery and machine placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `scenario-edit/src/layout.rs`. |
+| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto elevated playable BSP geometry. |
+| Jump and standing clearance | Retail multiplayer Chief has standing height 0.725 and crouch height 0.5. See [superbounce.md](superbounce.md) and its traces of `0x000df66e`, `0x000dd8e0` and `0x000e2a06`. The sampled arc, shoulder offsets, and takeoff timing are **[guess]**. |
+
+The generator checks headroom at walk-sector centres and portals. The
+steering layer checks the standing capsule ahead on the floor, including
+within a single polygon and when strafing. A jump samples the swept arc
+at the centre and both shoulders for roof and body clearance. Teleporter
+cost includes walking to the sender and walking from the receiver. Lift
+cost includes the ride, with a higher allowance for the elevator. On
+graphs with these links the search uses a zero distance heuristic so a
+shortcut remains admissible even when its entrance is away from the goal.
 
 **Getting unstuck** (`crates/bots/src/stuck.rs`, built). A pure state
 machine, run every tick the bot is walking somewhere (chase, roam, going
@@ -1021,33 +1048,17 @@ is a yes or no:
 8. **Never.** It does none of these carrying the flag or the ball, with
    its shields down, or with a second enemy close by.
 
-### 3.9 Vehicles (built: first slice)
+### 3.9 Vehicles
 
 The user, after playing the Clankers: "clankers also don't seem to
 interact with vehicles, try and board, go and take, lock on with
-rockets." The first slice (`crates/bots/src/vehicle.rs` and
-`vehicle/`, glued into the mind by `crates/bots/src/mind/ride.rs`):
+rockets." The vehicle code lives in `crates/bots/src/vehicle.rs`, `vehicle/` and
+`mind/ride.rs`. The bot sees each seat and its rider. It can enter a free
+vehicle, board a slow enemy, pilot a Banshee, drive ground vehicles and
+man a turret. A rocket launcher holds its lock on a vehicle before firing.
 
-1. **Rocket lock-on.** A rocket launcher at an enemy in a vehicle is held
-   on the vehicle's middle until it locks, then fired.
-2. **Perception.** Every vehicle, its seats, who sits in each (by player
-   and team), and the bot's own seat.
-3. **Go and take.** A calm bot walks to a free Ghost, Warthog or Scorpion
-   near it, stands beside the driver's seat and holds X; or mans the gun
-   of a teammate's Warthog.
-4. **Drive.** A driver follows the nav mesh to where it is going,
-   steering by the camera as a player does, shoots with the vehicle's
-   guns, runs infantry over, backs up when stuck, and gets out when the
-   vehicle is about to blow up, flipped, stuck for good, or where it was
-   going needs feet. A gunner or passenger shoots, and gets out when
-   nobody drives.
-5. **Board.** An enemy vehicle close and slow is boarded (X by it).
-
-**Fields.** No new disassembly was done for this slice (the lane ran no
-disassembler). Every field below comes from an earlier trace, except the
-two marked "not traced", which come from Halo 2's tag definitions and
-need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
-`vehi` tag's metadata, `S` one of its seat definitions.
+**Fields.** `O` is an object's body, `U` a unit's, `V` a `vehi` tag's
+metadata and `S` one of its seat definitions.
 
 | Field | Where | Type | Confidence | From |
 |---|---|---|---|---|
@@ -1057,8 +1068,14 @@ need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
 | wrecked | `O+0x10a` bit 2 | `u16` | confirmed | `0xd6800` (`guest::BODY_DEPLETED`) |
 | the unit's seat | `U+0x1fc` | `i16`, -1 none | confirmed | live-telemetry `layout::UNIT_SEAT`: the enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores -1 (`0xea995`) |
 | seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
-| seat flags | `S+0` | `u32` | position confirmed (the field before the label); **bits not traced** | bit 2 driver, bit 3 gunner, from Halo 2's tag definition (the seat flags' order: invisible, locked, driver, gunner, ...). With no seat flagged driver, the first seat that is not a gunner's is taken for the driver's (`vehicle::read::roles`) |
-| vehicle type | `V+0x1f0` | `u16` | position confirmed; **names not traced** | objects.md: the vehicle code compares it with 5 and 6 (`0xef545`). The order (tank, jeep, boat, plane, scout, fighter, turret) is Halo 2's tag definition's; 5 the Banshee's flying and 6 the turret fit the two compares |
+| seat flags | `S+0` | `u32` | traced and disc-checked | Driver bit 2, gunner bit 3, boarding bit 11, forbids players bit 16. See `h1objects::rebuild` and `h1objects/tests/vehicle_rebuild_disc.rs` (`0x000cc810`, `0x000c8c87`, `0x000c92c0`). The first unflagged passenger is used as fallback driver **[guess]**. |
+| boarding target seat | `S+0x3e` | `i16` | traced | `0x000c92c0`, `h1objects::rebuild::SEAT_BOARDING` |
+| entry marker and admission limits | `S+0xc`, `+0x98`, `+0x9c`, `+0xa0`, `+0xa4` | string ID, four `f32`s | traced and disc-checked | `0x000c6fb0` resolves the marker, with the object's origin for an empty ID. `0x000c9040` checks eye-to-marker radius, marker facing, look cone and distance to the vehicle. See `h1objects/tests/vehicle_ground_disc.rs`. |
+| render-model reference and marker data | `V+0x38` → `hlmt+4` → `mode` | tag datums | traced and disc-checked | `defs/obje.txt` and `defs/hlmt.txt`. In `defs/mode.txt`, `mode+0x58` is the `0xc`-byte group block (ID `+0`, markers at `+4`); the `0x24`-byte marker holds variant indices at `+0/+1`, a node at `+2`, translation `+4` and quaternion `+0x10`. |
+| live marker transform | `O+0x114/+0x116` | block size and signed relative offset | traced | [native-renderer.md](../graphics/native-renderer.md#research-points-code-unless-marked-h2-disasm). Stride `0x34`; matrix scale `+0`, forward `+4`, left `+0x10`, up `+0x1c`, position `+0x28`. |
+| chassis dimensions | `mode+0x14` compression block | position bounds | disc-checked | `defs/mode.txt`; each record begins with six floats giving xyz min/max. The planner uses lateral extent and vertical span, with margin and class fallbacks **[guess]**. |
+| vehicle type | `V+0x1f0` | `u16` | traced and disc-checked | `0xef545` compares it with 5 and 6. `h1objects::rebuild::H1_VEHICLE_TYPE` and its disc test compare the classes by vehicle (tank 0, jeep 1, scout 4, fighter 5, turret 6). |
+| fighter secondary weapon | `V+0x1c0`, `weap+0x2c8/+0x2d0` | weapon references, trigger and barrel blocks | traced and disc-checked | `defs/unit.txt` and `bots::arms`. The retail Ascension Banshee weapon has two triggers and barrels. Barrel 1's projectile is `banshee_bomb`. The tag establishes availability in the weapon definition. The game decides whether the variant will fire it. |
 | the gun mounted on a Warthog | a vehicle object whose parent is the Warthog; its gunner's parent is the gun | | confirmed | live-telemetry.md (`parent` on a frame vehicle); `live-telemetry` `vehicle_mount` |
 | a rocket launcher | `weap` zoom levels `+0x1fe` 1, and the blast role (§3.6) | | checked on Zanzibar's tags (zoom) | §3.6's handling table: the rocket launcher is the only blast weapon with a zoom level |
 
@@ -1098,20 +1115,24 @@ fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
 a bot with it waits a second at a vehicle and then fires: slower, not
 wrong.
 
-**Which vehicles.** By class (`vehicle::Class::spec`, data):
+**Which vehicles.** By class (`vehicle::Class::spec`).
 
-| Class (`V+0x1f0`) | Taken | Driver shoots | Where to stand to get in (forward, left of its origin) |
-|---|---|---|---|
-| jeep (Warthog) | driver; its gun as a teammate's gunner | no | driver (0, 0.8); gun (-1.2, 0) |
-| scout (Ghost, Spectre, Wraith) | driver | yes | (-0.2, 0.7) |
-| tank (Scorpion) | driver | yes | (0, 1.4) |
-| fighter (Banshee), boat, plane, a turret on its own | no (the Banshee is later) | | |
+| Class | Seat taken | Controller behavior |
+|---|---|---|
+| Jeep (Warthog) | Driver | Ground routing |
+| Scout (Ghost, Spectre, Wraith) | Driver | Ground routing and primary fire |
+| Tank (Scorpion) | Driver | Ground routing and primary fire |
+| Fighter (Banshee) | Driver | Altitude control, attack runs, boost, evasive rolls and landing |
+| Turret | Gunner, standalone or on a teammate's vehicle | Track and fire into the contested area, dismount if flanked |
+| Boat or plane | None | |
 
-The points are guesses at the seats' sides: the game picks the seat whose
-entry point is nearest, and the seats' entry markers and radius (`S+0x98`,
-by the field order) are not read yet. A side that does not take is tried
-from the other side (mirrored); a Warthog's driver on the right gets the
-passenger's seat, which is still a ride.
+The bot looks up the chosen seat's entry markers in the actual vehicle's
+render model and places them using the live node matrices. Scorpion and
+Wraith driver seats can offer two positions. It searches for a stand point
+on the floor within the tag's radius and facing limits, looks at the marker
+and holds X while in range of the seat. The stand-point offsets and the
+0.6 world-unit eye height used in this check are **[guess]**. A retry
+uses a closer point covered by the same entry data.
 
 **Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
 (no enemy in view for 1.5 s), not carrying, not going for a weapon, and
@@ -1126,13 +1147,16 @@ the skill's range that:
   of the bot's distance): they have it;
 - it has not given up on, or got out of, in the last 10 s.
 
-With the skill's gunner option, a teammate's Warthog with a free gun
-counts too, 4 units worse than a free vehicle. It walks the nav mesh to
-the point beside the seat, then stands and holds X (the action button,
-Default layout) for 40 ticks; then the other side for 40; then gives up
-on it for 10 s. Getting in is read back from `U+0x1fc` and the parent:
-from then on the mind is in the vehicle. It also gives up after 12 s, or
-when the seat is taken or an enemy gets in.
+The bot walks to a valid entry point and tries X (action, Default layout)
+for up to 40 ticks. It retries closer, then shuns the vehicle for 10 s.
+It confirms entry using `U+0x1fc` and the parent. It abandons the attempt
+after 12 s, when the seat is taken, or when an enemy gets in.
+
+**Turrets.** A standalone turret or a free gun on a nearby teammate's
+vehicle is worth taking when it has a clear line to recent enemy contact
+or the objective the bot is defending or hunting. On the gun, an enemy
+within 1.8, or within 5 and off the firing line on the same floor, can
+make the bot dismount **[guess]**.
 
 | | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
@@ -1145,9 +1169,9 @@ when the seat is taken or an enemy gets in.
 **Board** (`vehicle::plan::board`). An enemy (in free-for-all, anyone)
 driving a vehicle (not a Banshee) on the bot's level (within 1 in height),
 within the skill's boarding range, slower than its boarding speed: in a
-fight or not, the bot runs straight at the driver's side and holds X
-within 1.2 of the vehicle's middle. It lets go when the vehicle speeds off
-or after 3 s. Speeds come from the vehicles' positions tick to tick
+fight or not, the bot approaches an authored boarding marker targeting
+the occupied driver's seat and holds X when it meets the admission checks.
+It lets go when the vehicle speeds off or after 3 s. Speeds come from the vehicles' positions tick to tick
 (`vehicle::Memory`), not from `O+0x88`, whose units are not checked.
 
 **Drive** (`vehicle::drive`, `Mind::ride`). Halo 2 steers a Ghost or a
@@ -1156,10 +1180,11 @@ the player looks. The driver:
 
 - goes to the objective's point, else the enemy it fights, else where an
   enemy was last seen, else a roaming goal (§3.2);
-- plans a route on the nav mesh (the bipeds' mesh: there is no vehicle
-  mesh yet) and drives at a carrot, the furthest of the next route points
-  within 4 (a point is passed within 1.5, or when the next one is
-  nearer);
+- plans over walk edges whose portals fit the vehicle and routes through
+  their clear spans. Centre and wheel-line probes check floor, overhead
+  room and walls before steering, cutting a corner, reversing or trying
+  to splatter someone. With an objective on an unreachable road it
+  dismounts to finish on foot;
 - looks at the carrot (or the enemy it fights) and pushes the stick that
   way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
   radians or more;
@@ -1169,6 +1194,23 @@ the player looks. The driver:
   Scorpion's; not a Warthog driver's);
 - under throttle and slower than 0.4 a second for 1.5 s, backs up for 1 s;
   the third time within 15 s it is stuck for good.
+
+**Fly** (`vehicle::flight`). The Banshee aims and climbs toward a cruise
+height, uses hull-width collision probes and pitches into a visible
+target for a strafe run. It breaks off at close range, boosts away, and
+uses a lateral evasive roll when damaged and high enough. It requests a
+fuel rod bomb on an aligned downward run when the fighter tag has a
+secondary trigger and barrel. It descends for an objective dismount or
+a damaged vehicle. Cruise height, collision envelope, combat ranges,
+cooldowns and landing tolerances are **[guess]**.
+
+The Default Xbox pad uses left trigger for boost (also recorded in
+`input::touch_layout::DRIVER`) and right trigger for primary fire.
+The original manual describes the Banshee's secondary fuel rod weapon
+and its ability to roll and loop. A with the left stick for the roll,
+and B for the bomb, are **[guess]** in the phantom action path pending a
+game run. The phantom lane already maps these pad buttons and triggers
+to actions (§5.1). [Original Xbox manual](https://halo.wiki.gallery/images/7/76/H2_Human_Manual.pdf)
 
 A gunner aims and shoots (the gun's trigger held in the skill's bursts); a
 passenger shoots its own gun as on foot. With nothing to shoot they look
@@ -1185,12 +1227,9 @@ for 10 s, so it does not get straight back in.
 (Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
 Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
 
-**Open** (§12): the seat flag bits and the type's names (the two "not
-traced" rows); the lock time and whether it needs a zoom; the entry
-points (the seats' markers and `S+0x98`); entry and exit on each seat
-in a run (the X tests are traced in §5.1); a vehicle nav mesh (wider
-clearance, no jumps); the Banshee; driving tactics beyond "at the enemy" (circling, keeping
-range for a gunner); and a Warthog driver waiting for its gunner.
+**Open** (§12): local and phantom observations of each seat's entry and
+exit, the lock time and zoom requirement, and measured lift and flight
+behavior. A Warthog driver waiting for its gunner remains open.
 
 ## 4. Way in 1: local slots
 
@@ -3248,9 +3287,9 @@ list for the user to play (§11).
      - a drop goes one way only; a jump links both ways only if each way
        qualifies.
 
-     Not yet: teleporters, lifts and crouch-jumps (later, with objectives);
-     headroom (a ceiling over a floor is walked under as if it were not
-     there).
+     The builder adds scenario teleporter and lift links, sweeps
+     standing and crouched jump arcs, and checks standing headroom
+     (§3.2).
    - **Paths**: A\* over the polygons, then the funnel (simple stupid
      funnel) over the edges' portals, with a drop or jump as a forced
      corner. `nav::Follower` steers along the waypoints: it moves on 0.3
@@ -4545,14 +4584,10 @@ list for the user to play (§11).
         pins have): today only the default lineup's clanker playlists,
         kept where a published file has the same playlist id at the same
         index.
-9. **Vehicles.** First slice built (§3.9): rocket lock-on, the vehicles'
-   perception, going to take a free Ghost, Warthog or Scorpion (or a
-   teammate's Warthog gun), driving along the bipeds' nav mesh, shooting
-   from a seat, splattering, getting out, boarding. Tests:
-   `vehicle::` (the planners, and the reader on synthetic memory) and
-   `mind::ride::` (the mind end to end). Next: a game run (§11.4), the
-   untraced fields (§12), a vehicle nav graph, the Banshee, and driving
-   tactics.
+9. **Vehicles.** Built (§3.9): seat entry and boarding from live tag
+   markers, rocket lock-on, chassis clearance for ground routes, Banshee
+   flight and turret take/leave decisions. Fixtures live under
+   `vehicle::` and `mind::ride::`. The game-run checklist is in §11.4.
 
 ## 10.1 Library surface (for the agent API)
 
@@ -4883,6 +4918,35 @@ or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
    the gun's bit 3; `+0x1f0` reads 1 for the Warthog, 4 for the Ghost, 5
    for the Banshee.
 
+### 11.5 Traversal and sandbox movement in play (checklist)
+
+1. On Coagulation or Beaver Creek, put a goal closer through a
+   teleporter and watch a bot enter the sender, arrive and resume walking
+   on the correct floor. Repeat with the chosen receiver blocked or on a
+   map with two receivers on one channel.
+2. On Ascension and Colossus, start below the lift exit. Check that the
+   bot enters the launch area, steers after pickup and walks off at the
+   upper landing. On Cyclotron, repeat for the moving elevator and check
+   the bot stays aboard while it rises.
+3. On a low-ledge route, check that A starts the jump, crouch follows
+   takeoff and the bot reaches its landing. On a low-roof route, check
+   that the bot turns away from the standing-height obstruction.
+4. On Ascension, watch a bot enter the Banshee, climb, make a strafing
+   run and boost out. Damage it above the ground and check the evasive
+   roll. Check secondary fire with a variant that enables the fuel rod
+   bomb. Check the bot descends before exiting for an objective.
+5. On Zanzibar or Headlong, watch a bot take a standalone gun covering
+   the fight, then dismount when approached from the side. Repeat with a
+   teammate driving a Warthog using a gauss or chaingun turret.
+6. On Coagulation or Headlong, approach a Scorpion or Wraith from either
+   side and a Warthog from beside the driver door. Compare the bot's X
+   press to the actual seat marker in each case. In a Ghost or Warthog,
+   choose a goal with a pedestrian shortcut and a wide detour. Check
+   the bot follows the wide route and clears the turns.
+7. Repeat traversal jumps, Banshee button actions and vehicle entry and
+   exit in both local slots and Clankermatch. Inspect playback through
+   `h2 agent` and the existing `sim.*` and world methods (§10.1).
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -4905,13 +4969,11 @@ Still open:
 - For objectives, the traced fields and their writers are in §3.7. The
   outstanding checks are pickup behavior, rotated one-bomb rounds, hill
   transitions and capture volumes in play (§11.2).
-- For vehicles (§3.9): the seat flags' bits (`S+0`: driver 2, gunner 3
-  assumed) and the type's values (`V+0x1f0`), from the enter-vehicle
-  routine `0xea1f0` and its caller (which seat a player near a vehicle
-  gets, and how the entry point is picked: the seats' entry markers and
-  `S+0x98`); the rocket launcher's lock (the weapon or projectile fields
-  that time it, and whether a zoom is needed); whether entering is a hold
-  of X and leaving a press; and the units of `O+0x88` (velocity).
+- For vehicles (§3.9): the rocket launcher's lock time and zoom
+  requirement, the units of `O+0x88` (velocity), the Banshee's secondary
+  fire and roll in phantom play, and whether tag dimensions need a
+  larger margin on tight turns. For lifts (§3.2), measure the launch
+  trajectory and ride time on the retail maps.
 - For weapons (§3.6), trace plasma heat and check the phase of the live
   countdown at the host input callback (§11.3). Compare the event tick
   with a witnessed disappearance under both local and phantom controls.
