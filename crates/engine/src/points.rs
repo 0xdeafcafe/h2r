@@ -283,6 +283,10 @@ points! { ALL;
     RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
+    /// One dynamic decal callback: `0x00163cd0` calls it in stored list order
+    /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
+    /// `ret 8`; the only native decal replacement point.
+    DECAL_RENDER @ 0x0004_4040: [fn(list: stack 0, unused: stack 1) ret 8]; "docs/graphics/native-decals-research.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
     /// with `RENDER_LIGHT_PASSES` (`render_scene_passes` calls it after
     /// layer 7).

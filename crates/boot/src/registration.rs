@@ -343,6 +343,13 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    // Dynamic decals in their seven observed pass positions
+    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // docs/graphics/native-decals-research.md). Only a fully resolved callback
+    // is replaced; all others keep their D3D draws.
+    features
+        .add(&feature::native_decals::NativeDecals)
+        .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
     // The dynamic lights on the native GPU renderer
     // (H2_FEATURES=impl.render.native_lights=on, off by default;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
