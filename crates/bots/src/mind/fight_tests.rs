@@ -308,15 +308,17 @@ fn the_movement_is_told_the_range_and_when_to_take_cover() {
 
 #[test]
 fn a_due_powerup_stays_the_destination_during_a_fight() {
-    use crate::decisions::supplies::{Clock, Powerup, Supply};
+    use crate::decisions::supplies::{Powerup, Supply};
     let site = [6.0, 0.0, 0.0];
     let item = Supply {
         site: 0,
         object: 23,
         spawn: site,
         at: site,
+        disabled: false,
+        role: crate::arms::Role::Unknown,
         on_disturbance: true,
-        respawn: Some(900),
+        respawn: Some(30),
         powerup: Some(Powerup::Camo),
     };
     let me = bot(Some(holding(Trigger::Automatic, rounds(36, 108))));
@@ -329,7 +331,7 @@ fn a_due_powerup_stays_the_destination_during_a_fight() {
     m.step(&p, None);
     p.tick = 1;
     p.observations.supplies = Some(vec![]);
-    p.observations.placement_clocks = vec![Clock::Due(30)];
+    p.observations.service_rate = Some(30);
     let foe = enemy(2, [13.0, 3.0, 0.0]);
     p.others.push(foe);
     let (_, intent) = m.decide(&p, me, &p.others, None);

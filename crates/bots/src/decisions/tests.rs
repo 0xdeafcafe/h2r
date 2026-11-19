@@ -111,7 +111,11 @@ fn a_call_moves_the_receiver_without_giving_it_a_shot_or_live_enemy_position() {
     p.teams = true;
     let mut dead = p.clone();
     dead.others.retain(|s| s.id != 2);
-    assert!(board.listen(&dead).is_empty(), "target died");
+    assert_eq!(
+        board.listen(&dead).len(),
+        1,
+        "losing sight cannot retract a call"
+    );
     board.advance(12);
     board.forget_deaths(&[Kill {
         seq: 5,
@@ -220,6 +224,7 @@ fn a_two_on_one_backs_off_then_regroups_when_sight_breaks() {
 
 fn cue(id: u32, aim: Vec3, shield: f32, empty_magazine: bool) -> Contact {
     Contact {
+        weapon: None,
         id,
         aim,
         shield: Some(shield),
@@ -353,7 +358,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         victim: 4,
         betrayal: false,
     };
-    m.hear_deaths(&p, &[death]);
+    m.hear_deaths(&p, &[death], None);
     m.step(
         &Perception {
             me: None,
@@ -415,6 +420,7 @@ fn own_death_changes_the_carriers_corridor_until_the_zone_cools() {
         .steer(start, 21)
         .dir;
     let map = MapData {
+        places: Default::default(),
         nav,
         walls: Walls::default(),
     };
@@ -436,6 +442,7 @@ fn a_ball_holder_finds_and_holds_a_screened_position() {
         [-8.0, 6.0, 3.0],
     ];
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-10.0, -10.0, 20.0)], vec![]),
         walls: Walls::from_polygons([&wall[..]]),
     };
@@ -645,6 +652,7 @@ fn an_attacker_keeps_progressing_when_a_close_enemy_baits_it_away_from_the_flag(
 #[test]
 fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
     let map = MapData {
+        places: Default::default(),
         nav: NavMesh::new(vec![square(-20.0, -20.0, 40.0)], vec![]),
         walls: Walls::default(),
     };
@@ -664,6 +672,7 @@ fn a_roaming_bot_prefers_the_sighting_away_from_its_last_death() {
             attacker: Some(1),
             betrayal: false,
         }],
+        Some(&map),
     );
     let pad = m.step(&p, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
@@ -724,6 +733,7 @@ fn temperament_deaths_streaks_composure_and_clock_decay() {
         m.hear_deaths(
             &p,
             &[temperament_death(10, 1, 0), temperament_death(10, 2, 0)],
+            None,
         );
         assert_eq!(m.decisions.mood().streak, 2);
         assert!(m.decisions.mood().confidence > 0.0);
@@ -737,7 +747,7 @@ fn temperament_deaths_streaks_composure_and_clock_decay() {
     };
     for m in [&mut easy, &mut legendary] {
         let before = m.decisions.mood().confidence;
-        m.hear_deaths(&p, &[allied_betrayal]);
+        m.hear_deaths(&p, &[allied_betrayal], None);
         m.step(&p, None);
         let mood = m.decisions.mood();
         assert_eq!(mood.streak, 0);
@@ -794,8 +804,8 @@ fn temperament_favored_duel_and_two_crouch_presses_raise_tilt() {
     p.tick += 1;
     p.me = None;
     let k = temperament_death(p.tick, 0, 1);
-    duel.hear_deaths(&p, &[k]);
-    ordinary.hear_deaths(&p, &[k]);
+    duel.hear_deaths(&p, &[k], None);
+    ordinary.hear_deaths(&p, &[k], None);
     assert!(duel.decisions.mood().tilt > ordinary.decisions.mood().tilt);
     assert_eq!(duel.decisions.mood().revenge_target, Some(1));
 
@@ -808,9 +818,9 @@ fn temperament_favored_duel_and_two_crouch_presses_raise_tilt() {
             [1.0, 0.0, 0.0]
         };
         p.observations.contacts[0].crouching = matches!(tick, 12 | 14 | 15 | 17);
-        duel.hear_deaths(&p, &[]);
+        duel.hear_deaths(&p, &[], None);
         p.observations.contacts[0].crouching = false;
-        no_taunt.hear_deaths(&p, &[]);
+        no_taunt.hear_deaths(&p, &[], None);
         if tick < 17 {
             assert_eq!(duel.decisions.mood().tilt, no_taunt.decisions.mood().tilt);
         }
@@ -819,7 +829,7 @@ fn temperament_favored_duel_and_two_crouch_presses_raise_tilt() {
     p.tick += 1;
     let before = duel.decisions.mood().tilt;
     p.observations.contacts[0].crouching = true;
-    duel.hear_deaths(&p, &[temperament_death(p.tick, 1, 2)]);
+    duel.hear_deaths(&p, &[temperament_death(p.tick, 1, 2)], None);
     assert!(
         duel.decisions.mood().tilt < before,
         "the taunt only counts once"
@@ -851,7 +861,7 @@ fn temperament_confidence_presses_tilt_pursues_and_fear_regroups() {
         dead.tick = tick;
         let death = temperament_death(tick, 0, 2);
         for bot in [&mut vengeful, &mut fearful] {
-            bot.hear_deaths(&dead, &[death]);
+            bot.hear_deaths(&dead, &[death], None);
             bot.step(&dead, None);
         }
     }
@@ -861,6 +871,7 @@ fn temperament_confidence_presses_tilt_pursues_and_fear_regroups() {
             temperament_death(p.tick, 1, 0),
             temperament_death(p.tick, 2, 0),
         ],
+        None,
     );
     let mut both = p.clone();
     both.others.push(ps[1]);

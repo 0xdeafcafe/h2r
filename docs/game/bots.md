@@ -237,9 +237,9 @@ the nav mesh comes from. A bot sees an enemy only when all three hold:
 - the enemy is inside the bot's view cone;
 - a reaction delay has passed (§3.4).
 
-The bot knows nothing it could not see or hear: a gunshot, a radar blip or a
-teammate's callout. The radar uses the game's own rule: an enemy that
-moves, and is not crouched, inside the radar range.
+The host gives each bot its own view, teammate HUD markers, audible shots,
+radio calls and public match information. Motion-tracker blips would be
+another legitimate input once a reader for the game's displayed blips exists.
 
 Each brain keeps a short, tick-stamped history of world samples, vehicle
 sight, nearby grenades, sound, deaths and teammate callouts. It thinks
@@ -256,7 +256,7 @@ tool and cached by map fingerprint. `bots::autonav::build_map` reads the
 scenario and builds one `<map>.<bsp>.bots` per BSP. `bots::cache::build`
 starts with the sectors from `pathfind::generate::generate`. The bot
 generator adds its links and collision probes to those sectors. Generator
-version 2 regenerates earlier caches.
+version 5 regenerates earlier caches and includes tactical places.
 
 The mesh holds:
 
@@ -296,7 +296,7 @@ never warps.
 | Input | Evidence |
 |---|---|
 | Teleporter flag position, type and channel | `scnr+0x118`, stride `0x20`, position `+0`, types `7` and `8` at `+0x10`, identifier `+0x14`. See `scenario-edit/src/layout.rs`, `h1convert/src/apply.rs` and the retail checks in `h1convert/tests/h2_scenario.rs`. |
-| Scenery and machine placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `scenario-edit/src/layout.rs`. |
+| Scenery, machine and crate placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `scenario-edit/src/layout.rs`. Crates use the placement at `+0x328` (stride `0x4c`) and palette at `+0x330`. |
 | Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto elevated playable BSP geometry. |
 | Jump and standing clearance | Retail multiplayer Chief has standing height 0.725 and crouch height 0.5. See [superbounce.md](superbounce.md) and its traces of `0x000df66e`, `0x000dd8e0` and `0x000e2a06`. The sampled arc, shoulder offsets, and takeoff timing are **[guess]**. |
 
@@ -305,9 +305,160 @@ steering layer checks the standing capsule ahead on the floor, including
 within a single polygon and when strafing. A jump samples the swept arc
 at the centre and both shoulders for roof and body clearance. Teleporter
 cost includes walking to the sender and walking from the receiver. Lift
-cost includes the ride, with a higher allowance for the elevator. On
+cost includes boarding and travel time plus a 25% allowance for exposure during the ride. On
 graphs with these links the search uses a zero distance heuristic so a
 shortcut remains admissible even when its entrance is away from the goal.
+At six ticks per walking unit, the teleporter transit allowance is six
+ticks. A lift budgets eight ticks to board plus 2.7 ticks per unit of
+travel. A platform elevator budgets 24 ticks to board plus 4.8 ticks per
+unit. The exposure allowance applies to travel. All rates are estimates.
+
+#### Traversal audit by map
+
+Counts are **directed edges**. The source scan used the retail Xbox disc,
+the nine installed Multiplayer Map Pack scenarios and thirteen installed
+H1 conversions. It read scenario flags and automatic scenery, machine and
+crate placements. An independent offline probe checked endpoints against
+fingerprint-matched cached BSP triangles and walk polygons. The counts
+below are the expected output of the new Rust generator. The ignored
+`bots/tests/map_corpus.rs` test rebuilds all 34 from source and checks
+those expectations. A landing that clears the BSP still needs a ride in
+the game to establish which deck the engine actually reaches.
+
+| Retail H2 scenario | Teleporter | Lift | Placement or remaining gap |
+|---|---:|---:|---|
+| ascension | 1 | 1 | One-way channel and angled `power_boost`. |
+| beavercreek | 2 | 0 | Reciprocal channels. |
+| burial_mounds | 0 | 0 | No matching placement. |
+| coagulation | 2 | 0 | Two outbound base channels. |
+| colossus | 0 | 5 | Four `grav_colossus` machines and the high power-lift crate. |
+| cyclotron (Ivory Tower) | 0 | 4 | Central elevator and three HVAC lifts. |
+| foundation | 0 | 4 | Four short HVAC lifts. |
+| headlong | 1 | 2 | One-way channel and two steam lifts. |
+| lockout | 0 | 1 | Tube with an overhanging exit. Check the landing deck. |
+| midship | 0 | 5 | Two Covenant power lifts and three midpillar placements. Check which bodies the midpillars actually move. |
+| waterworks | 2 | 0 | Two outbound channels. The crusher is a dynamic hazard. |
+| zanzibar | 0 | 0 | The wheel and gates move. Their changing surfaces have no timed edges. |
+
+| Map Pack scenario | Teleporter | Lift | Placement or remaining gap |
+|---|---:|---:|---|
+| containment | 2 | 0 | Both receivers are about 3.0 units above their landing. Gate state is dynamic. |
+| warlock | 4 | 4 | Reciprocal channels and four lift crates. Check the exit height on all four. |
+| deltatap (Sanctuary) | 0 | 0 | No matching placement. |
+| turf | 0 | 0 | No matching placement. |
+| backwash | 0 | 4 | Four central lift machines. |
+| dune (Relic) | 2 | 0 | Reciprocal channels. The static graph can suggest the switch-controlled portal while it is disabled. A failed ride triggers recovery. |
+| elongation | 0 | 0 | Conveyor surfaces have no timed ride edges. |
+| gemini | 4 | 0 | No clear ascent found for the two named gravity columns. The effect and upper crate provide no verified player ride. |
+| triplicate (Terminal) | 0 | 0 | Train and crossing gates are dynamic hazards. |
+
+The later Blastacular maps Tombstone (`highplains`) and Desolation
+(`derelict`) were absent from the available assets. Their link counts are
+unverified. See [Title updates and maps](../runtime/title-updates.md).
+
+| Converted H1 scenario | Teleporter | Lift |
+|---|---:|---:|
+| h1_beavercreek | 2 | 0 |
+| h1_bloodgulch | 2 | 0 |
+| h1_boardingaction | 8 | 0 |
+| h1_carousel | 4 | 0 |
+| h1_chillout | 3 | 0 |
+| h1_damnation | 2 | 0 |
+| h1_hangemhigh | 0 | 0 |
+| h1_longest | 0 | 0 |
+| h1_prisoner | 0 | 0 |
+| h1_putput (Chiron TL-34) | 30 | 0 |
+| h1_ratrace | 4 | 0 |
+| h1_sidewinder | 4 | 0 |
+| h1_wizard | 4 | 0 |
+
+The converter writes type 7 senders and type 8 receivers. Matching their
+channel preserves Blood Gulch's two one-way base exits and Sidewinder's
+mixed layout. On Sidewinder, channels 2 and 3 have opposite endpoints.
+The scan found no automatically placed machines or lift-family objects
+on the thirteen conversions. Sidewinder has blast-door collision scenery.
+Whether any converted scenery moves under a script requires a game run.
+
+The jump probe found ledges above standing-jump reach with a clear
+crouched arc on Lockout (0.40 units), H2 Beaver Creek (0.36), H1 Blood
+Gulch (0.57) and H1 Sidewinder (0.40). These are candidates for the
+existing crouch-jump follower. Check takeoff, ceiling clearance and
+landing with a player-sized biped. There is no separate ladder action.
+
+#### Belief and map knowledge
+
+**What can reach a decision.** The local and phantom pads both pass host
+candidates through `perceive::observe` before combat, movement, radio or
+memory. The paired-world harness in `perceive::honesty` runs seeded brains
+with separate radios, comparing projected inputs, controller output,
+chosen activity, kit and outgoing enemy call. One fixture puts a hidden
+enemy and power weapon behind a base wall on an H1-shaped valley. A
+second pair starts at the production guest reader, changing a hidden
+biped's state in the synthetic object table before either brain runs.
+
+| Host input audited | Information the bot receives |
+|---|---|
+| Living unit table, aim and weapon slots | Enemies must pass view cone and BSP sight. Teammate positions act as HUD markers. Aim and the visible held weapon require sight on either team. Exact opponent shields, reserves and magazine counts are unavailable. Body avoidance, weapon seeking and group decisions use the filtered list. |
+| Ground objects and placement records | A visible weapon supplies its model. Its remaining ammo becomes known when held. Occupied power sites require sight. A successful scan establishes emptiness only at a known pad the bot can inspect. A failed scan supplies no observation. |
+| Vehicles and seats | A visible hull or the bot's own ride supplies the model, pose and seat layout. Identifying a rider on another vehicle also requires sight of that player. Remote vehicle health uses a neutral estimate. The bot can read its own ride's health. |
+| Objective globals | Game mode, objective geometry, bases and the active hill are public. A loose objective or enemy carrier requires sight. Friendly carriers can be followed by their teammate marker. |
+| Shots, projectiles and death log | Audible shots give a direction for a look or search. A grenade dodge requires a close, visible projectile. The kill feed supplies identities. A fresh visible body or the bot's own death can supply a position. |
+| Scoreboard, radio and map tags | Scores and team membership are public. Radio distributes dated observations on completed ticks. Static placement periods and player starts describe the map. No variant countdown or actual enemy spawn selection feeds the planner. |
+
+A visible power item has probability 1 and a visibly empty pad has
+probability 0 for this tick. Away from the pad, an empty observation
+gradually loses weight. Estimate the return using a witnessed period,
+then a placement override, then the item collection default, with a
+60-second prior if all are unknown. Only a continuously watched pickup
+and return of a new object can teach a period. Last seeing the item
+elsewhere in someone's hands or hearing a teammate call the pad empty
+also changes the estimate. A carried model is attributable only when it
+matches one known pad. A recognizable object in either hand is specific
+to its placement. Indirect reports always retain uncertainty and retain
+the original observation tick through perception and radio delays.
+Distance, recent danger, the strength of the nearby position and past
+visits all affect whether a trip is worthwhile.
+
+`h1convert` writes the H1 spawn time to the H2 scenario equipment record
+at `+0x0e` in seconds. The converted Blood Gulch has explicit 120-second
+sniper and 90-second rocket placements. Every inspected Sidewinder
+placement has zero there. Its rocket collection supplies 120 seconds,
+and its sniper collection also has zero. Before inspection the cache gives
+the bot its 60-second prior. Once it inspects the placement, the traced
+engine default of 30 seconds and the public variant setting refine that estimate.
+These values describe the bot's expectation.
+
+The cache stores common lanes, sightlines, vantage positions, player
+starts and power pads alongside the mesh and BSP walls. Up to sixteen
+sample origins estimate which sectors lie on many shortest paths. A
+vantage scores sightlines to those lanes, elevation over them, nearby
+solid cover and distinct exits. Spatial sampling and successive spacing
+passes distribute candidates across the map. A replay of the scorer on
+older fingerprint-matched geometry selected 32 positions each on Blood
+Gulch and Sidewinder, spanning about 115 × 134 and 99 × 102 world units
+in plan respectively. The corpus test checks coverage after regeneration.
+
+A calm sniper or precision gunner can seek a position and face the lane
+it covers. A bot ahead on the scoreboard can hold a nearby vantage.
+Patience extends the wait at a projected return, and a favorite weapon can
+tip the choice between two nearby pads. A patient long-range gunner or one
+carrying its favorite rifle gives a stronger sightline more weight.
+Skill and tuned awareness affect how many places and pad locations it
+recognizes, how far it will go, and how accurately it estimates arrival.
+A once-visible enemy can be chased at its last observed position. When an
+idle bot hears a gunshot, it can turn toward the coarse bearing after a
+5–8 tick reaction delay, then walk a short distance in that direction.
+The sound gives it neither a combat target nor a reason to fire. A kill
+announcement retires the old sighting and may prompt a look toward a
+plausible out-of-view map start. Search confidence expires on the existing
+enemy-memory clock.
+
+Per-bot experience records verified supply visits and confirmed kills
+from a recent firing position in coarse map regions. A versioned serde
+snapshot can be restored to another brain. A future Live profile adapter
+can store it under the persistent ranked bot's account and map revision
+on the local server and worker. Within this lane the brain owns it in
+memory. It survives match resets for that brain's lifetime.
 
 **Getting unstuck** (`crates/bots/src/stuck.rs`, built). A pure state
 machine, run every tick the bot is walking somewhere (chase, roam, going
@@ -424,7 +575,7 @@ These are the inputs to that design.
 | fight | a visible enemy; my health; my weapon against theirs at that range |
 | chase | an enemy seen recently, its last known position |
 | hold angle | a patient bot keeps aiming at its last sighting for a moment |
-| pick up weapon or powerup | how much better it is than what I hold; distance; the respawn timer |
+| pick up weapon or powerup | improvement over the held gun, distance, estimated availability and position strength |
 | seek health | shields down, no enemy in view (cover, then a wait for recharge) |
 | play the objective | gametype; my role (carrier, escort, defend, attack); team state |
 | flee | outgunned, low health, a grenade nearby |
@@ -511,9 +662,10 @@ Each match pad still passes through the controller's stick slew, button
 timing and thumb coordination limits before reaching a local port or the
 phantom's delayed uplink.
 
-The map decision layer can read `Personality::wait_weight()` for patience
+The map decision layer uses `Personality::wait_weight()` for patience
 near a predicted spawn and `Personality::weapon_interest(role)` to value a
-favorite weapon there. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
+favorite weapon there. A patient sniper with a favorite rifle will also travel
+farther for a firing position that overlooks a stronger lane. See [the agent bot view](../runtime/agent-api.md#sim-simulated-players-and-direct-state)
 for the live traits and mood.
 
 ### 3.4 Aim
@@ -773,11 +925,12 @@ Only a bot watching that pad can use the event to date its removal.
 The salted object must match and the event tick must fall between its
 last sighting on the pad and the first empty scan. If the observer is
 unavailable, **[guess]** the first empty scan dates the pickup (up to 30
-ticks late). After a gap in sight the bot leaves the time unknown. A witnessed countdown
-takes precedence over a previously measured period and the nominal tag
-interval. If a witnessed removal qualifies to start an idle clock, the
-first service can be projected from the interval; another idle service
-cancels that estimate. The travel policy budgets 12 ticks per world unit
+ticks late). After a gap in sight the bot leaves the time unknown.
+For a witnessed disturbance or consumed power-up, the bot estimates the
+next eligible service from the event tick, placement index, tick rate
+and learned or public interval. The host's live countdown remains available
+as an offline trace. The bot cannot tell if the engine postpones the spawn.
+The travel policy budgets 12 ticks per world unit
 plus a 20-tick lead at Legendary, scaled down at lower skills. Bots fight from a due pad,
 and yield to objective or retreat orders. Rockets, both sniper-class
 rifles and the live sword qualify by their handling. A visible hand
@@ -3334,13 +3487,13 @@ list for the user to play (§11).
    - **Walls** (`los::Walls`): every collision surface as triangles on a
      2 m grid, for line of sight (stage 3).
    - **The file.** `<data>/bots/<map>.<bsp>.bots`: magic `H2BT`, format
-     version 2, the **stamp** (the generator version
+     version 3, the **stamp** (the generator version
      `cache::GENERATOR` and the source map's fingerprint), then the mesh
-     and the walls. The data comes from the disc, so it stays on this
+     and the walls and tactical places. The data comes from the disc, so it stays on this
      machine and out of git. When the loaded map's name (`0x547898`)
      changes, the glue loads `<map>.0.bots` on a thread of its own. Until
-     then, or with no file, the bots walk straight at their goal and see
-     through walls, as in stage 1.
+     the data is ready, the bots can walk toward known goals. Host visual
+     contacts require a loaded BSP.
    - **Built for you** (`bots::autonav`, `boot::bots_nav_auto`). At boot a
      worker thread (named `bots-nav`, at utility QoS on Apple systems)
      looks at every map the game can load, as the VFS serves it: the
@@ -4575,21 +4728,14 @@ list for the user to play (§11).
    opportunity for three seconds. In free-for-all, a visible pair aiming
    at each other presents an opening to a third player.
 
-   A nearby numerical disadvantage prompts withdrawal. With enough shield,
-   bots close on opponents with low shield or an empty magazine with
-   reserve rounds. The latter is a reload opportunity inferred from the
-   held weapon. Weapon minimum ranges still apply. CTF and Assault
-   carriers try routes away from recent sightings. Deaths of the bot and
-   its teammates mark dangerous routes for up to 20 seconds across
-   respawns. If the only route crosses danger, the bot can still score.
+   A visible numerical disadvantage prompts withdrawal. Weapon minimum
+   ranges still apply. CTF and Assault carriers try routes away from
+   recent sightings. The bot's own death and visible teammate deaths can
+   mark a dangerous approach for up to 20 seconds across respawns.
 
-   The host fills `brain::Observations` in `guest::perceive_as` with the
-   player slot and team, aim, shield and held magazine cue. The ground
-   scan supplies placed power weapons, overshield and camouflage. Supplies use
-   the live placement countdown after a witnessed pickup (§3.6). A
-   continuously observed cycle can teach the period if that clock is unavailable. Kill identity and body position come from the
-   existing `emote::KillLog`. A map load or a match tick rewind clears the
-   radio, learned supplies and danger memory. The coordinator's unit-test
+   See §3.2 for the host perception boundary and supply beliefs, and §3.6
+   for the pickup observers. Map loads and tick rewinds clear the radio,
+   supply observations and danger memory. The coordinator's unit-test
    filters are `decisions`, `objective::tests`, `arms::tests::decisions_`,
    `guest::tests::decisions_` and `mind` under `cargo test -p bots --lib`.
    The in-game checks are in §11.3.
@@ -4901,7 +5047,8 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    normal reaction delay.
 2. **Odds and openings.** Isolate one bot against two nearby opponents.
    Watch it back off, then regroup when sight breaks. Try a one-on-one
-   with a depleted shield or an empty magazine. In free-for-all, fight
+   with a depleted shield or an empty magazine hidden from the bot. Changing
+   those values alone should produce the same decision. In free-for-all, fight
    another player in sight of a third bot and watch for it to close.
 3. **CTF.** Drop the home flag while a teammate is carrying the enemy
    flag. Check the return, then the escort and home guard assignments.
@@ -4917,14 +5064,20 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    to it.
 6. **Supplies.** Let a calm bot see you take a sniper rifle, rockets,
    overshield or camouflage. Watch it return near the next spawn. Repeat
-   with the pickup hidden. An unseen disappearance should start no clock.
-   Include the energy sword. Contest a pad as its countdown expires and
-   watch the bot fight from pickup range, then take the respawn. Repeat
-   with half, double and disabled respawn intervals. Compare the displayed
-   spawn with arrival on the placement's service tick. Swap the sniper to
-   the other hand, drop it and let another player take it. Check that a
-   visible handover changes target priority and a new life clears it.
+   with the pickup hidden. An unseen disappearance cannot date a return.
+   Contest a due pad with a sword or rockets and check the bot can fight
+   from pickup range. Try half, double and disabled respawns. Compare its
+   arrival with the actual service tick. Hand a sniper to another player
+   in view and check the bot recognizes the new wielder. Repeat with a
+   hidden handover and check that the old sighting decays.
    Repeat on Easy with the same roster to compare the timing.
+7. **Outdoor map knowledge.** On H1 Blood Gulch and Sidewinder, give a
+   Clanker a sniper and watch which lane it faces. Repeat from the other
+   base, with a lead and with a visible opponent. Verify both flanks are
+   reachable, a lead can produce a hold, and combat interrupts it.
+   Let it inspect an empty sniper pad and turn away. Swap the hidden
+   respawn state while preserving all cues, then expose the pad and
+   look for a change only when the bot can inspect it.
 
 ### 11.4 Vehicles in play (checklist)
 
@@ -4982,6 +5135,14 @@ or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
 7. Repeat traversal jumps, Banshee button actions and vehicle entry and
    exit in both local slots and Clankermatch. Inspect playback through
    `h2 agent` and the existing `sim.*` and world methods (§10.1).
+8. On H1 Blood Gulch verify both outbound portals from their bases. On
+   Sidewinder exercise both directions between the paired pads and each
+   outbound-only pad. Try a crouch-jump route above standing reach on
+   both maps. Check whether Sidewinder's blast-door scenery moves.
+9. On Containment watch both high receivers through free fall. Check
+   the actual player exit on all four Warlock lifts, the Lockout tube and
+   Midship's midpillars. Try Gemini's columns with a player. On Relic
+   compare traversal before and after activation of the portal switch.
 
 ## 12. Next tracing (offline)
 
@@ -5010,9 +5171,9 @@ Still open:
   fire and roll in phantom play, and whether tag dimensions need a
   larger margin on tight turns. For lifts (§3.2), measure the launch
   trajectory and ride time on the retail maps.
-- For weapons (§3.6), trace plasma heat and check the phase of the live
-  countdown at the host input callback (§11.3). Compare the event tick
-  with a witnessed disappearance under both local and phantom controls.
+- For weapons (§3.6), trace plasma heat and compare the predicted service
+  phase with a witnessed pickup and actual return on local and phantom
+  pads, including alternate H1 sandboxes and multiplayer variants.
 
 ## 13. Testing (`h2 bots test`)
 

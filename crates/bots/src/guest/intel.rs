@@ -30,7 +30,7 @@ pub(crate) fn equipment(m: &dyn GuestMemory, object: DatumHandle, addr: u32) -> 
         3 => Powerup::Camo,
         _ => return Ok(None),
     };
-    supply(m, object, body, Some(kind))
+    supply(m, object, body, Some(kind), crate::arms::Role::Unknown)
 }
 
 /// Correlate an object's signed placement index with the nearby scenario pad.
@@ -39,7 +39,7 @@ pub(super) struct Placement {
     pub site: u8,
     rec: u32,
     spawn: crate::brain::Vec3,
-    at: crate::brain::Vec3,
+    pub(super) at: crate::brain::Vec3,
 }
 
 impl Placement {
@@ -82,6 +82,7 @@ pub(crate) fn supply(
     object: DatumHandle,
     body: objects::Body,
     powerup: Option<Powerup>,
+    role: crate::arms::Role,
 ) -> R<Option<Supply>> {
     let Some(p) = Placement::read(m, body)? else {
         return Ok(None);
@@ -133,26 +134,82 @@ pub(crate) fn supply(
             _ => {}
         }
     }
-    let rate = m
-        .u32(points::GAME_TIME.base)
-        .ok()
-        .filter(|&time| time != 0)
-        .and_then(|time| m.u16(time + 2).ok())
-        .filter(|&r| r != 0)
-        .unwrap_or(30);
+    let rate = service_rate(m).unwrap_or(30);
     Ok(Some(Supply {
         site,
         object: object.raw(),
         spawn,
         at,
         respawn: (period > 0).then(|| (period as u32).saturating_mul(u32::from(rate))),
+        disabled: period < 0,
+        role,
         on_disturbance: m.u16(rec + 0x12)? == 0,
         powerup,
     }))
 }
 
+pub(super) fn held_model(m: &dyn GuestMemory, unit: u32) -> R<Option<u32>> {
+    let slot = u32::from(m.u8(unit + crate::arms::UNIT_WEAPON_INDEX)?);
+    if slot >= crate::arms::UNIT_WEAPON_SLOTS {
+        return Ok(None);
+    }
+    let Some(id) = DatumHandle::from_raw(m.u32(unit + crate::arms::UNIT_WEAPONS + 4 * slot)?)
+    else {
+        return Ok(None);
+    };
+    let Some((objects::WEAPON, body)) = objects::get(m, id)? else {
+        return Ok(None);
+    };
+    Ok(body.definition(m)?.map(|d| d.raw()))
+}
+
+/// Scoreboard rows, shared layout with live-telemetry::memory::team_scores.
+pub(super) fn ahead(m: &dyn GuestMemory, me: u32, teams: bool, roster: &[(u32, i16)]) -> R<bool> {
+    let engine = m.u32(crate::objective::GAME_ENGINE)?;
+    if engine == 0 || m.u32(engine + 0x304)? == 0 {
+        return Ok(false);
+    }
+    let row = |id, team| {
+        if teams {
+            (0..8)
+                .contains(&team)
+                .then(|| engine + 0x4c8 + u32::from(team as u16) * 0x12)
+        } else {
+            (id < 16).then(|| engine + 0x308 + id * 0x1c)
+        }
+    };
+    let Some(&(_, team)) = roster.iter().find(|&&(id, _)| id == me) else {
+        return Ok(false);
+    };
+    let Some(ours) = row(me, team) else {
+        return Ok(false);
+    };
+    let score = m.u16(ours)? as i16;
+    let mut contested = false;
+    for &(id, t) in roster {
+        if let Some(theirs) = row(id, t)
+            && theirs != ours
+        {
+            if m.u16(theirs)? as i16 >= score {
+                return Ok(false);
+            }
+            contested = true;
+        }
+    }
+    Ok(contested)
+}
+
+pub(super) fn service_rate(m: &dyn GuestMemory) -> Option<u16> {
+    m.u32(points::GAME_TIME.base)
+        .ok()
+        .filter(|&time| time != 0)
+        .and_then(|time| m.u16(time + 2).ok())
+        .filter(|&r| r != 0)
+}
+
 /// One placement is serviced per second at tick % rate == index % rate.
 /// The decrement that reaches zero calls the spawner in that same update.
+#[cfg(test)]
 pub(super) fn clocks(m: &dyn GuestMemory, tick: u32) -> R<Vec<crate::decisions::supplies::Clock>> {
     use crate::decisions::supplies::Clock;
     let e = m.u32(points::GAME_ENGINE.base)?;

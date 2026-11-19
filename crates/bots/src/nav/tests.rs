@@ -490,10 +490,46 @@ fn generator_output_is_pinned() {
     }
     s.extend_from_slice(&(d.walls.tris.len() as u64).to_le_bytes());
     d.walls.tris.iter().flatten().for_each(|v| mm(v, &mut s));
+    // The floor scene pins collision generation. Add a short ride competing
+    // with a walk and a junction with a clear sightline to a distant lane.
+    let polys: Vec<_> = [0., 3.25, 20.]
+        .map(|x| floor_quad(x - 1., -1., 0., 2., 2.))
+        .into();
+    let links = [
+        (0, 1, Kind::Walk),
+        (0, 1, Kind::Lift),
+        (1, 0, Kind::Walk),
+        (0, 2, Kind::Walk),
+        (2, 0, Kind::Walk),
+    ];
+    let edges = links
+        .into_iter()
+        .map(|(from, to, kind)| Edge {
+            from,
+            to,
+            kind,
+            a: polys[from as usize].center,
+            b: polys[to as usize].center,
+        })
+        .collect();
+    let junction = NavMesh::new(polys, edges);
+    let route = junction.corridor(0, 1).unwrap();
+    assert_eq!(route.len(), 1);
+    s.push(junction.edges[route[0] as usize].kind as u8);
+    let places = crate::places::Places::build(&junction, &crate::los::Walls::default(), &[]);
+    s.extend([places.lanes.len() as u8, places.vantages.len() as u8]);
+    for lane in &places.lanes {
+        mm(lane, &mut s);
+    }
+    for v in &places.vantages {
+        mm(&v.at, &mut s);
+        mm(&v.watches, &mut s);
+        s.extend_from_slice(&((v.score * 1000.).round() as i64).to_le_bytes());
+    }
     let got = (crate::cache::GENERATOR, crate::autonav::fingerprint(&s));
     assert_eq!(
         got,
-        (3, 0x96880c12653c7760),
+        (5, 0x8603e7037fa1cfc0),
         "the nav output changed: bump cache::GENERATOR and record the new pair"
     );
 }
@@ -600,6 +636,35 @@ fn floor_quad(x: f32, y: f32, z: f32, w: f32, h: f32) -> Poly {
         [x + w, y + h, z],
         [x, y + h, z],
     ])
+}
+
+#[test]
+fn walking_beats_a_short_exposed_lift() {
+    let polys = vec![
+        floor_quad(0., 0., 0., 1., 1.),
+        floor_quad(2.8, 0., 0., 1., 1.),
+    ];
+    let a = polys[0].center;
+    let b = polys[1].center;
+    // The ride alone plus boarding takes less time than walking. Exposure
+    // makes the 2.8-unit walk preferable. Both edges share the same ends.
+    let ride = Edge {
+        from: 0,
+        to: 1,
+        a,
+        b,
+        kind: Kind::Lift,
+    };
+    let walk = Edge {
+        kind: Kind::Walk,
+        ..ride
+    };
+    assert_eq!(
+        NavMesh::new(polys, vec![ride, walk])
+            .corridor(0, 1)
+            .unwrap(),
+        [1]
+    );
 }
 
 #[test]
@@ -743,6 +808,7 @@ fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
     let end = [8.0, 2.0, 0.0];
     assert_eq!(nav.corridor(0, 2).unwrap(), [0, 1]);
     let m = crate::cache::MapData {
+        places: Default::default(),
         nav,
         walls: Walls::default(),
     };

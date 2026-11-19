@@ -823,23 +823,6 @@ fn the_unit_reads_its_left_hand_and_grenade_type() {
 }
 
 #[test]
-fn decisions_read_only_the_held_magazines_reload_window() {
-    let mut w = world();
-    let mag = BODIES + 0x400 + WEAPON_MAGAZINES;
-    assert!(!held_empty_magazine(&w.g, w.unit).unwrap());
-    w.g.put_u16(mag + MAGAZINE_LOADED, 0);
-    assert!(held_empty_magazine(&w.g, w.unit).unwrap());
-    w.g.put_u16(mag + MAGAZINE_RESERVE, 0);
-    assert!(!held_empty_magazine(&w.g, w.unit).unwrap(), "entirely dry");
-    w.g.put_u16(mag + MAGAZINE_RESERVE, 10)
-        .put_u8(w.unit + UNIT_WEAPON_INDEX, 2);
-    assert!(
-        !held_empty_magazine(&w.g, w.unit).unwrap(),
-        "other gun holstered"
-    );
-}
-
-#[test]
 fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
     use crate::decisions::supplies::Supply;
     const SCENARIO: u32 = 0x006a_0000;
@@ -873,19 +856,23 @@ fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
         .put_u32(TAG_ENTRIES + 0x38, COLLECTION)
         .put_u16(COLLECTION + 8, 31);
     let gun = Supply {
+        role: Role::Sniper,
         site: 0,
         object: DatumHandle::new(0xb003, 3).raw(),
         spawn: [29.5, 0.0, 0.0],
         at: [30.0, 0.0, 0.0],
+        disabled: false,
         on_disturbance: true,
         respawn: Some(13 * 30),
         powerup: None,
     };
     let eq = Supply {
+        role: Role::Unknown,
         site: 1,
         object: DatumHandle::new(0xb004, 4).raw(),
         spawn: [40.0, 0.0, 0.0],
         at: [40.0, 0.0, 0.0],
+        disabled: false,
         on_disturbance: true,
         respawn: Some(31 * 30),
         powerup: Some(crate::decisions::supplies::Powerup::Overshield),

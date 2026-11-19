@@ -110,6 +110,7 @@ impl Decisions {
         self.mood.hear(p, id, kills, self.personality);
         let mut changed = false;
         for k in kills {
+            self.map.timers.forget_holder(k.victim);
             if self
                 .trade
                 .is_some_and(|(killer, _, since)| k.victim == killer && k.tick >= since)
@@ -149,6 +150,31 @@ impl Decisions {
         }
         self.last_shield = Some(me.shield);
         self.map.observe(p, me, map);
+    }
+
+    pub(crate) fn hear_supplies(&mut self, calls: &[radio::SupplyCall], tick: u32) {
+        for c in calls {
+            self.map.timers.hear(c.item, c.present, c.tick, tick);
+        }
+    }
+
+    pub(crate) fn supply_reports(&mut self, p: &Perception) -> Vec<radio::SupplyCall> {
+        let Some((sender, team)) = p.observations.player.filter(|_| p.teams && p.me.is_some())
+        else {
+            return vec![];
+        };
+        self.map
+            .timers
+            .reports(p.tick)
+            .into_iter()
+            .map(|(item, present)| radio::SupplyCall {
+                sender,
+                team,
+                item,
+                present,
+                tick: p.tick,
+            })
+            .collect()
     }
 
     pub(crate) fn disengaging(&self, tick: u32) -> bool {
