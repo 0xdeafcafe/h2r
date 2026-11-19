@@ -2,8 +2,8 @@
 // steps and killcams the viewer offers.
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import type { ArchiveSegment } from "../api/chunk";
-import { recordedFrame } from "../api/pack";
+import { chunkAt, type ArchiveSegment } from "../api/chunk";
+import { isMachineBaseline, markMachineBaseline, recordedFrame } from "../api/pack";
 import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
@@ -116,16 +116,23 @@ export class ReplayTimeline {
       this.frames.push(retick(f, tick));
     };
     if (archive?.length) {
+      const start = frames[0];
+      const segment = start && chunkAt(archive, start.tick);
+      if (segment?.codec === "archive" && segment.machine_entry?.length) {
+        this.travel.addPositions(segment.from_tick, segment.machine_entry);
+      }
       // Archive frame ticks are on the playback clock already. Use the full
       // index to place events across runs even when only one segment is loaded.
+      let previousEnd: bigint | undefined;
       for (const m of archive) {
         const lo = Number(m.rawFrom), hi = lo + (m.to_tick - m.from_tick);
         const run = clock.runs.at(-1);
-        if (run && lo > run.hi) run.hi = hi;
+        if (run && previousEnd !== undefined && m.rawFrom > previousEnd) run.hi = hi;
         else {
           if (run) clock.cuts.push(m.from_tick);
           clock.runs.push({lo, hi, offset:m.from_tick - lo});
         }
+        previousEnd = m.rawFrom + BigInt(m.to_tick - m.from_tick);
       }
       const cuts = new Set(clock.cuts);
       for (const f of frames) if (isFrame(f)) {
@@ -438,7 +445,9 @@ function isFrame(f: Frame | null | undefined): f is Frame {
 /** `f` at game tick `tick`, without players it had nowhere to put. */
 function retick(f: Frame, tick: number): Frame {
   const g = withoutUnplaced(f);
-  return tick === g.tick ? g : { ...g, tick };
+  const adjusted = tick === g.tick ? g : { ...g, tick };
+  if (adjusted !== f && isMachineBaseline(f)) markMachineBaseline(adjusted);
+  return adjusted;
 }
 
 /** A kill's, score's or end's tick, else null. */

@@ -218,3 +218,30 @@ fn shared_browser_fixture_preserves_every_source_field() {
         .unwrap();
     verify(&source, bytes).unwrap();
 }
+
+#[test]
+fn mixed_v7_machine_fixture_survives_independent_archive_segments() {
+    let read =
+        |suffix| fs::read(fixtures().join(format!("v7-machine-positions.{suffix}"))).unwrap();
+    let expected: Vec<Frame> = serde_json::from_slice(&read("json")).unwrap();
+    let bytes = read("bin");
+    let mut decoder = pack::Decoder::new();
+    let records: Vec<_> = pack::records(&bytes)
+        .map(|r| decoder.decode(r.unwrap()).unwrap())
+        .collect();
+    let baselines: Vec<_> = records
+        .iter()
+        .filter(|r| r.machine_baseline)
+        .map(|r| r.frame.tick)
+        .collect();
+    assert_eq!(baselines, [10, 16, 20]);
+    let source: Vec<_> = records.into_iter().map(|r| r.frame).collect();
+    assert_eq!(source, expected);
+    // The second segment opens on a sparse update between source keyframes.
+    // The third opens on the cut. Each must reproduce the source's exact rows.
+    for (lo, hi) in [(0, 2), (2, 5), (5, 8)] {
+        let segment = encode(&source[lo..hi]).unwrap();
+        verify(&expected[lo..hi], &segment).unwrap();
+        assert_eq!(decode(&segment).unwrap(), expected[lo..hi]);
+    }
+}

@@ -9,8 +9,8 @@
 // needs no change here, only in the frame decoder (pack.ts).
 
 import { decodeArchive } from "./archive";
-import type { Frame } from "./types";
-import { FrameDecoder, PackError } from "./pack";
+import type { Frame, MachinePosition } from "./types";
+import { FrameDecoder, PackError, markMachineBaseline } from "./pack";
 
 /** A chunk's content type (`GET /v1/games/{id}/chunks/{tick}`). */
 export const CHUNK_TYPE = "application/x-h2-chunk";
@@ -49,6 +49,7 @@ export interface ArchiveSegment {
   bytes: number;
   sha256: string;
   keyframes: number[];
+  machine_entry?: MachinePosition[];
 }
 
 export type RecordingChunk = ChunkMeta | ArchiveSegment;
@@ -178,7 +179,14 @@ export function chunkIndex(body: unknown): ChunkIndex | null {
       last = from + Number(hi - lo);
       if (!Number.isSafeInteger(last)) throw new PackError("archive playback duration exceeds clock range");
       previousRaw = hi;
+      const seed = s.machine_entry;
+      if (seed !== undefined && (!Array.isArray(seed) || seed.length > 65536 ||
+          !seed.every((m, i) => m && Number.isInteger(m.i) && m.i >= 0 && m.i <= 65535 &&
+            Number.isInteger(m.p) && m.p >= 0 && m.p <= 255 && (!i || m.i > seed[i-1]!.i)))) {
+        throw new PackError("invalid archive machine entry state");
+      }
       return {codec:"archive", game, index, ordinal, from_tick:from, to_tick:last, rawFrom:lo,
+        machine_entry:seed,
         bytes:s.bytes, frames:s.frames, sha256:s.sha256, keyframes:s.keyframes};
     });
     return {game_id:game, chunk_ticks:900, ended:true, archive_sha256:index, items};
@@ -212,6 +220,7 @@ export async function recordingFrames(bytes: Uint8Array, meta: RecordingChunk, i
     return f as Frame;
   });
   if (last !== meta.to_tick) throw new PackError("archive last tick differs from index");
+  for (const i of meta.keyframes) markMachineBaseline(output[i]!);
   return output;
 }
 

@@ -101,8 +101,13 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
         step(json!({"mode":"apply"})).await.status,
         StatusCode::CONFLICT
     );
-    let frames = [0, 2, 901].map(|tick| game::Frame {
+    let frames = [0, 2, 901, 903].map(|tick| game::Frame {
         tick,
+        machine_positions: match tick {
+            0 => vec![game::MachinePosition { i: 3, p: 0 }],
+            2 => vec![game::MachinePosition { i: 7, p: 192 }],
+            _ => vec![],
+        },
         game_id: id.clone(),
         players: vec![game::FramePlayer {
             alive: true,
@@ -111,15 +116,16 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
         }],
         ..Default::default()
     });
-    let packed = pack::encode_keyframe(&frames[2]).unwrap();
+    let packed = pack::encode_keyframe(&frames[3]).unwrap();
     let data = [
         (game::GAME_FRAME, serde_json::to_value(&frames[0]).unwrap()),
         (game::GAME_FRAME, serde_json::to_value(&frames[1]).unwrap()),
+        (game::GAME_FRAME, serde_json::to_value(&frames[2]).unwrap()),
         (
             game::GAME_FRAME,
-            json!({"tick":901,"packed":pack::to_base64(&packed)}),
+            json!({"tick":903,"packed":pack::to_base64(&packed)}),
         ),
-        (game::GAME_ENDED, json!({"tick":901,"reason":"finished"})),
+        (game::GAME_ENDED, json!({"tick":903,"reason":"finished"})),
     ];
     let events = data
         .into_iter()
@@ -173,7 +179,7 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
     let end = step(next.clone()).await.json();
     assert_eq!(end["done"], true);
     assert_eq!(end["state"], "published");
-    assert_eq!(end["totals"]["frames"], 3);
+    assert_eq!(end["totals"]["frames"], 4);
     assert_eq!(end["totals"], dry_end["totals"]);
     assert_eq!(step(next).await.json()["totals"], end["totals"]);
     let index = h.get(&public).await.json();
@@ -182,6 +188,11 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
     let node = h.live.store().blob(digest).await.unwrap().unwrap();
     let fields: serde_json::Value = serde_json::from_slice(&node).unwrap();
     assert_eq!(fields[0], "H2AR1");
+    let entry = json!([{"i":3,"p":0},{"i":7,"p":192}]);
+    assert!(index["items"][0].get("machine_entry").is_none());
+    assert_eq!(index["items"][1]["machine_entry"], entry);
+    assert_eq!(index["items"][1]["keyframes"], json!([1]));
+    assert_eq!(fields[4][6], entry);
     let previous = fields[3].as_str().unwrap();
     let first_node = h.live.store().blob(previous).await.unwrap().unwrap();
     assert_eq!(end["totals"]["index_bytes"], first_node.len() + node.len());
@@ -203,7 +214,11 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
     assert_eq!(authenticated.headers["cache-control"], "private, no-store");
     live_proto::archive::verify(&frames[..2], &first.body).unwrap();
     let second = h.get(&format!("/v1/games/{id}/archive/{digest}/1")).await;
-    live_proto::archive::verify(&[pack::decode_keyframe(&packed).unwrap()], &second.body).unwrap();
+    live_proto::archive::verify(
+        &[frames[2].clone(), pack::decode_keyframe(&packed).unwrap()],
+        &second.body,
+    )
+    .unwrap();
     let v = step(json!({"mode":"verify"})).await.json();
     assert_eq!(
         step(json!({"mode":"verify","cursor":v["next"]}))
