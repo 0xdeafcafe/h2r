@@ -21,10 +21,9 @@
 //!   corners, EAX the coordinate rectangle, stack the bitmap datum, its
 //!   index and the shader). Observed only.
 //!
-//! `H2_NATIVE_HUD_COMPARE` ([`compare_spec`]): the host keeps the
-//! device's account of the first batches' and HUD quads' draws and pairs
-//! each planned quad with the D3D draw it should be (or, answered, with
-//! none), printing one line per window.
+//! `H2_NATIVE_HUD_COMPARE` ([`compare_spec`]): the host queues the first
+//! quads' corners and pairs each with the draw the D3D path resolves for
+//! it, through a draw admission on the device that claims nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -68,8 +67,8 @@ pub trait Host: Send + Sync {
 }
 
 /// `H2_NATIVE_HUD_COMPARE` (docs/graphics/native-renderer.md, stage 5):
-/// `N` pairs the first `N` windows (a batch of screen quads, or a run of
-/// HUD quads) with the device's draws; empty, [`COMPARE_WINDOWS`].
+/// `N` pairs the first `N` quads (screen or HUD) with the draws the
+/// device resolves for them; empty, [`COMPARE_WINDOWS`].
 pub fn compare_spec() -> Option<u64> {
     static SPEC: OnceLock<Option<u64>> = OnceLock::new();
     *SPEC.get_or_init(|| {
@@ -84,8 +83,8 @@ pub fn compare_spec() -> Option<u64> {
     })
 }
 
-/// Windows compared when `H2_NATIVE_HUD_COMPARE` names no count.
-pub const COMPARE_WINDOWS: u64 = 16;
+/// Quads compared when `H2_NATIVE_HUD_COMPARE` names no count.
+pub const COMPARE_WINDOWS: u64 = 512;
 
 /// `H2_NATIVE_HUD_COMPARE`'s value: empty is [`COMPARE_WINDOWS`], else a
 /// count above 0.

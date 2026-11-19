@@ -56,13 +56,8 @@ pub const BLEND_EQUATION: u32 = 0x0045_06b8;
 pub const BLEND_OFF: u16 = 10;
 /// Modes the tables hold (the next table starts 12 words on).
 pub const BLEND_MODES: u16 = 12;
-/// The push buffer's put pointer: `[[PUSH]]` is where the next word goes.
-pub const PUSH: u32 = 0x0040_7488;
 /// The HUD's bitmap for the shader draw: its datum and its index.
 pub const HUD_BITMAP: u32 = 0x004e_6978;
-/// Where `0x0022a664`'s `D3DDevice_End` returns to: a traced draw from
-/// that entry with this return address is a HUD quad's.
-pub const HUD_QUAD_END_RET: u32 = 0x0022_a854;
 
 /// Reads a short of a word-addressed reader: `addr` even.
 fn short(mem: &dyn GuestRead, addr: u32) -> Option<i16> {
@@ -400,11 +395,6 @@ pub fn read_quad(mem: &dyn GuestRead, at: u32) -> Option<[Vertex; 4]> {
     Some(out)
 }
 
-/// Where the next push-buffer word goes (`[[PUSH]]`).
-pub fn push_put(mem: &dyn GuestRead) -> Option<u32> {
-    mem.read_u32(mem.read_u32(PUSH)?)
-}
-
 /// One call of `0x0022a664` (Code, `0x0022a664..0x0022a858`): ECX the
 /// four corners `(x, y)`, EAX the coordinate rectangle, stack `(bitmap
 /// datum, bitmap index, shader)`.
@@ -467,127 +457,103 @@ pub fn a4r4g4b4_to_rgba(
     Some(out)
 }
 
-/// What the plan says a hooked call draws, in the order the game asked.
+/// What a hooked call draws, as the compare expects to meet it among
+/// the D3D path's resolved draws (`DrawAdmission`, which sees each one
+/// in issue order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Planned {
-    /// A screen quad, its words pushed from `put` on; `native`: the hook
-    /// answered in its place, so the D3D path must draw nothing there.
-    Screen { put: u32, native: bool },
-    /// A HUD shader quad (`0x0022a664`): one draw through `D3DDevice_End`.
+pub enum Kind {
+    /// A screen quad (`0x000363a0`): a pushed four-vertex fan.
+    Screen,
+    /// A HUD shader quad (`0x0022a664`): a fan through `D3DDevice_End`.
     Hud,
 }
 
-/// A draw the D3D path recorded, as the pairing needs it
-/// (`d3d::TracedDraw`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Seen {
-    /// Pushed (the push-buffer address of its `End`), or through an
-    /// entry (`None`).
-    pub push: Option<u32>,
-    /// The entry's return address, for a draw through an entry.
-    pub ret: Option<u32>,
-    /// `Debug` of its primitive.
-    pub primitive: String,
-    pub vertices: usize,
-    pub inline: usize,
-    pub target: u32,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Expect {
+    pub kind: Kind,
+    /// The positions the call pushes, corner by corner.
+    pub corners: [[f32; 2]; 4],
 }
 
-impl Seen {
-    fn is_quad(&self) -> bool {
-        self.primitive == "TriangleFan" && self.vertices == 4 && self.inline == 0
-    }
+/// Whether two quads' corners are the same positions (the guest's floats
+/// go into the draw unchanged, so equal bits; a little slack for a
+/// stream that stores them narrower).
+pub fn same_corners(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> bool {
+    a.iter()
+        .zip(b)
+        .all(|(p, q)| (p[0] - q[0]).abs() <= 1e-3 && (p[1] - q[1]).abs() <= 1e-3)
 }
 
-/// How a window's plan paired with the draws.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Expectations waiting for their draws, at most this many (older ones
+/// are counted lost: their draws never came, or came unmatched).
+pub const EXPECT_CAP: usize = 256;
+
+/// The compare's account: expectations in call order, met by draws in
+/// issue order.
+#[derive(Debug, Default)]
 pub struct Pairing {
-    /// Screen quads planned for D3D and drawn there as one fan of four.
-    pub screen_paired: usize,
-    /// Screen quads answered natively and absent from the D3D path.
-    pub screen_native: usize,
-    pub hud_paired: usize,
-    /// Lines for what did not pair, the first few.
-    pub mismatches: Vec<String>,
-    /// Planned quads whose draw was not seen in the window (not drained
-    /// yet when it was taken).
-    pub unseen: usize,
+    expected: std::collections::VecDeque<Expect>,
+    /// Paired, by [`Kind`] (screen, HUD).
+    pub paired: [u64; 2],
+    /// Four-vertex fans that matched no waiting expectation's corners.
+    pub other: u64,
+    /// Expectations passed over: a later one paired first, or the queue
+    /// was full.
+    pub lost: [u64; 2],
 }
 
-/// Lines a pairing keeps.
-pub const MISMATCH_LINES: usize = 8;
-
-/// Pairs `planned` with `seen`. A screen quad's draws are those whose
-/// `End` lies from its `put` up to the next screen quad's (`end` after the
-/// last); a HUD quad's is the next draw through `D3DDevice_End` returning
-/// to [`HUD_QUAD_END_RET`].
-pub fn pair(planned: &[Planned], seen: &[Seen], end: Option<u32>) -> Pairing {
-    fn miss(out: &mut Pairing, line: String) {
-        if out.mismatches.len() < MISMATCH_LINES {
-            out.mismatches.push(line);
-        }
+fn slot(kind: Kind) -> usize {
+    match kind {
+        Kind::Screen => 0,
+        Kind::Hud => 1,
     }
-    let mut out = Pairing::default();
-    let puts: Vec<u32> = planned
-        .iter()
-        .filter_map(|p| match p {
-            Planned::Screen { put, .. } => Some(*put),
-            Planned::Hud => None,
-        })
-        .collect();
-    let mut screen = 0;
-    let mut huds = seen
-        .iter()
-        .filter(|s| s.push.is_none() && s.ret == Some(HUD_QUAD_END_RET));
-    for (i, p) in planned.iter().enumerate() {
-        match *p {
-            Planned::Screen { put, native } => {
-                let next = puts.get(screen + 1).copied().or(end);
-                screen += 1;
-                let mine: Vec<&Seen> = seen
-                    .iter()
-                    .filter(|s| {
-                        s.push
-                            .is_some_and(|e| e >= put && next.is_none_or(|n| e < n))
-                    })
-                    .collect();
-                match (native, mine.as_slice()) {
-                    (true, []) => out.screen_native += 1,
-                    (false, []) => out.unseen += 1,
-                    (false, [d]) if d.is_quad() => out.screen_paired += 1,
-                    (_, ds) => miss(
-                        &mut out,
-                        format!(
-                            "#{i} screen quad at {put:#010x}{}: {}",
-                            if native { " (native)" } else { "" },
-                            ds.iter()
-                                .map(|&d| describe(d))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ),
-                    ),
-                }
-            }
-            Planned::Hud => match huds.next() {
-                None => out.unseen += 1,
-                Some(d) if d.is_quad() => out.hud_paired += 1,
-                Some(d) => miss(&mut out, format!("#{i} HUD quad: {}", describe(d))),
-            },
-        }
-    }
-    out
 }
 
-fn describe(d: &Seen) -> String {
-    let inline = if d.inline > 0 {
-        format!(", an inline array of {} words", d.inline)
-    } else {
-        String::new()
-    };
-    format!(
-        "{} x{}{inline} into {:#010x}",
-        d.primitive, d.vertices, d.target
-    )
+impl Pairing {
+    pub fn expect(&mut self, e: Expect) {
+        if self.expected.len() >= EXPECT_CAP
+            && let Some(old) = self.expected.pop_front()
+        {
+            self.lost[slot(old.kind)] += 1;
+        }
+        self.expected.push_back(e);
+    }
+
+    pub fn waiting(&self) -> usize {
+        self.expected.len()
+    }
+
+    /// A four-vertex fan with `corners`: the first waiting expectation it
+    /// matches is paired (those before it are lost), returned.
+    pub fn draw(&mut self, corners: &[[f32; 2]; 4]) -> Option<Expect> {
+        let Some(i) = self
+            .expected
+            .iter()
+            .position(|e| same_corners(&e.corners, corners))
+        else {
+            self.other += 1;
+            return None;
+        };
+        for e in self.expected.drain(..i) {
+            self.lost[slot(e.kind)] += 1;
+        }
+        let e = self.expected.pop_front()?;
+        self.paired[slot(e.kind)] += 1;
+        Some(e)
+    }
+
+    /// One line of totals.
+    pub fn line(&self) -> String {
+        format!(
+            "{} screen quads and {} HUD quads paired with their D3D draws; {} screen and {} HUD lost; {} other fans; {} waiting",
+            self.paired[0],
+            self.paired[1],
+            self.lost[0],
+            self.lost[1],
+            self.other,
+            self.expected.len()
+        )
+    }
 }
 
 #[cfg(test)]
@@ -785,79 +751,59 @@ mod tests {
         );
     }
 
-    fn pushed(end: u32) -> Seen {
-        Seen {
-            push: Some(end),
-            ret: None,
-            primitive: "TriangleFan".into(),
-            vertices: 4,
-            inline: 0,
-            target: 1,
+    fn quad(x: f32) -> [[f32; 2]; 4] {
+        [[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0]]
+    }
+
+    #[test]
+    fn draws_pair_with_their_expectations_in_order() {
+        let mut p = Pairing::default();
+        p.expect(Expect {
+            kind: Kind::Screen,
+            corners: quad(0.0),
+        });
+        p.expect(Expect {
+            kind: Kind::Hud,
+            corners: quad(10.0),
+        });
+        p.expect(Expect {
+            kind: Kind::Screen,
+            corners: quad(20.0),
+        });
+        assert_eq!(p.draw(&quad(5.0)), None, "a fan of another caller");
+        assert_eq!(p.draw(&quad(0.0)).map(|e| e.kind), Some(Kind::Screen));
+        // The HUD quad's draw never came: passed over by the next.
+        assert_eq!(p.draw(&quad(20.0)).map(|e| e.kind), Some(Kind::Screen));
+        assert_eq!(
+            (p.paired, p.lost, p.other, p.waiting()),
+            ([2, 0], [0, 1], 1, 0)
+        );
+        assert!(
+            p.line()
+                .starts_with("2 screen quads and 0 HUD quads paired"),
+            "{}",
+            p.line()
+        );
+    }
+
+    #[test]
+    fn a_full_queue_loses_its_oldest() {
+        let mut p = Pairing::default();
+        for i in 0..=EXPECT_CAP {
+            p.expect(Expect {
+                kind: Kind::Hud,
+                corners: quad(i as f32),
+            });
         }
+        assert_eq!((p.lost, p.waiting()), ([0, 1], EXPECT_CAP));
+        assert!(p.draw(&quad(0.0)).is_none(), "the lost one");
     }
 
     #[test]
-    fn screen_quads_pair_with_the_draw_whose_end_follows_their_put() {
-        let planned = [
-            Planned::Screen {
-                put: 0x100,
-                native: false,
-            },
-            Planned::Screen {
-                put: 0x180,
-                native: false,
-            },
-            Planned::Screen {
-                put: 0x200,
-                native: true,
-            },
-        ];
-        let seen = [pushed(0x170), pushed(0x1f0)];
-        let p = pair(&planned, &seen, Some(0x280));
-        assert_eq!(
-            (p.screen_paired, p.screen_native, p.unseen),
-            (2, 1, 0),
-            "{p:?}"
-        );
-        assert!(p.mismatches.is_empty());
-        // A draw where a native quad was: it was not answered after all.
-        let p = pair(
-            &planned,
-            &[pushed(0x170), pushed(0x1f0), pushed(0x240)],
-            Some(0x280),
-        );
-        assert_eq!(p.screen_native, 0);
-        assert_eq!(p.mismatches.len(), 1, "{p:?}");
-        // Two draws in one quad's range, and one not drained.
-        let p = pair(&planned[..2], &[pushed(0x150), pushed(0x170)], Some(0x200));
-        assert_eq!(
-            (p.screen_paired, p.unseen, p.mismatches.len()),
-            (0, 1, 1),
-            "{p:?}"
-        );
-    }
-
-    #[test]
-    fn a_hud_quad_pairs_with_the_next_end_from_its_return() {
-        let hud = |ret: u32, vertices: usize| Seen {
-            push: None,
-            ret: Some(ret),
-            primitive: "TriangleFan".into(),
-            vertices,
-            inline: 0,
-            target: 1,
-        };
-        let planned = [Planned::Hud, Planned::Hud, Planned::Hud];
-        let seen = [
-            hud(0x0002_0000, 4),
-            hud(HUD_QUAD_END_RET, 4),
-            hud(HUD_QUAD_END_RET, 3),
-        ];
-        let p = pair(&planned, &seen, None);
-        assert_eq!(
-            (p.hud_paired, p.unseen, p.mismatches.len()),
-            (1, 1, 1),
-            "{p:?}"
-        );
+    fn corners_match_within_a_thousandth() {
+        let mut q = quad(3.0);
+        assert!(same_corners(&quad(3.0), &q));
+        q[2][1] += 0.01;
+        assert!(!same_corners(&quad(3.0), &q));
     }
 }

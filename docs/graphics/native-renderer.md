@@ -2259,25 +2259,34 @@ refuses, logged once per reason (`hud::Refused`), every batch that is
 not one stage over the glyph cache with the text's second block. No
 quad is answered yet: every draw stays on D3D.
 
-`H2_NATIVE_HUD_COMPARE=N` (empty: 16) pairs the plan with the D3D path
-for the first `N` windows (a batch, or one HUD quad). The device traces
-from the window's first hook; two hook calls after the window closes
-the trace is taken and paired (`hud::pair`): each screen quad with the
-one pushed four-vertex fan whose `End` lies between its push-buffer put
-(`[[0x00407488]]` at the hook) and the next quad's (the batch's end
-after the last), each HUD quad with the next draw through
-`D3DDevice_End` returning to `0x0022a854`. One line per window:
-`native-hud: compare #<n> <batch or HUD quad>: <k> screen quads paired,
-<a> answered and absent, <h> HUD quads paired, <u> not drained, no
-mismatch` (or the first mismatches). A window is not compared while
-another diagnostic traces the device (`H2_POST_TRACE`).
+`H2_NATIVE_HUD_COMPARE=N` (empty: 512) pairs the plan with the D3D
+path for the first `N` quads, over the handoff's seam: the hooks queue
+each quad's corners as the call pushes them (`hud::Expect`), and a
+`d3d::DrawAdmission` the host adds to the device reads the position of
+every resolved four-vertex fan, in issue order, and pairs it with the
+first waiting quad of the same corners (`hud::Pairing`; quads passed
+over are lost). It claims no draw. It prints, for the first screen quad
+and the first HUD quad, what D3D resolved (entry, colour target, stage
+0's texture, blend) beside the batch's plan, and every 64 pairings one
+line: `native-hud: compare: <s> screen quads and <h> HUD quads paired
+with their D3D draws; <ls> screen and <lh> HUD lost; <o> other fans; <w>
+waiting`. Every quad paired and none lost is the pass mark.
 
 **Next.** (1) The A/B of the compare on 03a and the main menu: every
-text quad paired, none unseen. (2) Answer the text quads: the glyph
-cache mirrored as an RGBA texture (`hud::a4r4g4b4_to_rgba`, re-read when
-its texels change), the batch's combiner from the PSDEF at `0x00484f68`
-through the stage 3 compiler, its blend, address and filter, one
-external pass per run of answered quads (as the transparents' runs).
+text quad paired, none unseen. (2) Answer the text quads: skip
+each quad at its hook (`ret 4`: its guest commit and push go too), and
+at the batch's end reserve one replacement for the whole batch with
+`Device::prepare_external_pass` (it drains what came before, so the run
+lands in order) and commit it; the glyph cache mirrored as an RGBA
+texture (`hud::a4r4g4b4_to_rgba`, re-read when its texels change), the
+batch's combiner from the PSDEF at `0x00484f68` through the stage 3
+compiler, its blend, address and filter. A quad is only skipped once
+the batch is known to reserve (a refused reservation would lose the
+skipped quads), so the admission check comes first: target bound,
+external passes supported. A `DrawAdmission` per glyph would replace
+each draw packet one for one and save nothing; it fits the HUD shader
+quads, one resolved draw each, whose snapshot carries the shader's
+program, combiner and resident stage views.
 S to verify first: that the batch's vertex program takes `oPos` from
 the begin's first block as `hud::ScreenTransform` does, and the
 coordinates times the record's `+0x40`/`+0x44`. (3) The HUD shader
