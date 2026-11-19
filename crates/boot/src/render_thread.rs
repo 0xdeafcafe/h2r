@@ -95,8 +95,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("h1-recordings", "UNIT_APPLY_CONTROL", "applies recorded input through a guest continuation"),
     ("h1-scope-zoom", "GAME_ACTIVATE", AFTER),
     ("h1-scope-zoom", "SCREEN_EFFECT", AFTER),
-    ("h1-hud-text", "SHADER_DRAW_BEGIN", AFTER),
-    ("h1-script-builtins", "SHADER_DRAW_BEGIN", AFTER),
     ("h1-script-builtins", "GAME_ACTIVATE", AFTER),
     ("h1-script-builtins", "GAME_TICK", AFTER),
     ("h1-script-builtins", "GAME_UPDATE_FRAME", "runs extra game ticks through the guest simulation"),
