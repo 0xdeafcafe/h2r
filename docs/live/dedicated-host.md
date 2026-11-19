@@ -65,6 +65,71 @@ Rates checked November 19, 2026. The figures assume one running instance per occ
 
 **Sizing is provisional.** The two-bot result supplied for this design, 2.8× unpaced at 30 ticks/s, gives 84 ticks/s or **11.9 ms/tick**. If CPU-bound, that uses about 36% of one comparable serial core when paced. If 10–20% of that work scales linearly with player count, sixteen seats cost 11.9 × (1 + 7f) with f = 0.10–0.20, or **20–29 ms/tick** (about **0.61–0.86 of a comparable core**), before network replication. At about 26% scalable work the 33.3 ms budget is already exhausted. Remote humans replace bot thinking with real replication and acknowledgement work. The sim design budgets roughly **1 GB/process** including guest RAM, module and caches. Sixteen-player CPU and peak RSS are unmeasured. Trial one sustained core and 2 GiB, then two cores and 4 GiB. Extra cores can handle other threads. One slow simulation thread can still miss its deadline. [Sim cost model and report](../runtime/sim.md#10-expected-speed-up) · [Report fields](../../crates/sim/src/metrics.rs)
 
+## Cost and budget
+
+Live estimates the cost of each dedicated match from the server-signed
+`hosts` stream. The lease identifies the provider, region and class.
+The estimate starts at `HostBooting`, or at the first `HostReady` or
+`HostPlaying` if booting was unrecorded. A requested lease accrues no cost
+until there is evidence of runtime. While the host is running, Live uses
+elapsed time and the largest player count reported so far. On
+`HostEnded`, it uses the reported `ran_ms` ending at the event timestamp,
+and the largest player count across all reports.
+
+| Provider | Small (1 vCPU, 2 GiB) | Large (2 vCPU, 4 GiB) | Metered egress |
+|---|---|---|---|
+| Local | $0 | $0 | $0 |
+| Cloudflare Containers | $0.000020/vCPU-s + $0.0000025/GiB-s | Same rates, twice the class resources | $0.025/GB |
+| Fly Machines | Performance-1x, 2 GB, about $0.046/h | Performance-2x, 4 GB, about $0.092/h | Compute only in the estimate |
+
+Cloudflare bills active containers in 10 ms increments. Live rounds up
+the cumulative runtime to that increment for CPU and memory. It assumes
+full use of the class's vCPUs and uses the class's GiB of memory.
+Fly uses the class's hourly rate divided by 3,600 and multiplies it by
+runtime in seconds. The estimate uses the class sizes shown here.
+Actual Cloudflare instance sizes, active CPU usage, regions and
+included allowances affect the invoice. Disk, IPs, Workers, Durable
+Objects and Fly network charges are outside this estimate.
+[Cloudflare pricing](https://developers.cloudflare.com/containers/platform/pricing/) ·
+[Fly pricing](https://docs.fly.io/about/pricing)
+
+Estimated egress is peak players × runtime in minutes ×
+0.0005 GB per player-minute. This assumes peak occupancy for the whole
+runtime. Only Cloudflare's cost calculation prices those bytes. The
+optional `LIVE_HOST_PRICES` JSON object can override any of these defaults.
+Omitted fields keep their defaults. Rates must be finite and non-negative.
+
+```json
+{
+  "egress_gb_per_player_minute": 0.0005,
+  "cloudflare": {
+    "usd_per_vcpu_second": 0.00002,
+    "usd_per_gib_second": 0.0000025,
+    "usd_per_egress_gb": 0.025
+  },
+  "fly": {
+    "small_usd_per_second": 0.000012777777777777778,
+    "large_usd_per_second": 0.000025555555555555555
+  }
+}
+```
+
+The budget guard adds spend accrued since midnight UTC on the first of the
+month, including running hosts and only the current month's share of a
+lease that crosses midnight at the month boundary. It refuses new dedicated
+requests once estimated spend reaches `LIVE_HOST_BUDGET_USD_MONTH`, which
+defaults to $5.00. Matchmaking then falls back to a peer host. A limit of
+zero prevents new dedicated requests. Existing hosts continue to accrue
+spend until they end.
+
+For 10 minutes of total runtime, including any boot and lobby time,
+the defaults give these estimates in USD.
+
+| Match | Estimated egress | Cloudflare Containers | Fly Machines |
+|---|---:|---:|---:|
+| 2 players, Small | 0.010 GB | $0.01500 compute + $0.00025 egress = **$0.01525** | $0.046 ÷ 6 = **$0.00767** |
+| 16 players, Large | 0.080 GB | $0.03000 compute + $0.00200 egress = **$0.03200** | $0.092 ÷ 6 = **$0.01533** |
+
 ## Light host
 
 Run `h2 serve --system-link --host-light` with the existing prebuilt image.

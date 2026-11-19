@@ -46,6 +46,7 @@ pub mod filestore;
 pub mod games;
 pub mod guard;
 pub mod hold;
+pub mod host_costs; // dh-cost
 pub mod http;
 #[cfg(feature = "native")]
 pub mod httpstore;
