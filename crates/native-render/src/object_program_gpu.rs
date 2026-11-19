@@ -15,7 +15,7 @@ use shaders::vsh::VertexUniforms;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::{Image, texture};
-use crate::light_gpu::{LayeredImage, layered_texture, run_layout, uniforms_layout};
+use crate::light_gpu::{StaticLightTexture, run_layout, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
@@ -258,9 +258,9 @@ impl LitObjects {
 
     /// Uploads the normalization cube the programs' normalization stages
     /// sample, once.
-    pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &LayeredImage) {
+    pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &StaticLightTexture) {
         if self.normalization.is_none() {
-            self.normalization = Some(layered_texture(device, queue, image, "native object normalization"));
+            self.normalization = Some(image.view(device, queue));
         }
     }
 
