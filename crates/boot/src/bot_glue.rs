@@ -82,10 +82,13 @@
 //!
 //! **Leaving.** A bot taken off ([`bots::local::Local::remove`]) keeps an
 //! idle pad. Before `SOUND_UPDATE`, once no game runs, the hook answers
-//! for the frame: it signs the leaving bots out of their slots with the
-//! game's `PROFILE_SIGN_OUT`, then runs the frame itself; a leaving bot
-//! whose slot is empty is unplugged ([`bots::local::leave_step`]). A game
-//! never sees a bot's pad go.
+//! for the frame: it signs the leaving bots' slots out with the game's
+//! `SLOT_SIGN_OUT` (off Xbox Live, the local user freed, the profile out:
+//! the profile UI's own sign-out), then runs the frame itself; the lobby's
+//! session drops a player whose local user went (`0x65770`, status 0). A
+//! leaving bot whose slot holds no profile and no Live is unplugged
+//! ([`bots::local::leave_step`], [`bots::guest::slot_held`]). A game never
+//! sees a bot's pad go.
 //!
 //! With no bots every hook returns at once. The bots stay signed in until
 //! they are taken off; going back to the players screen finds them joined,
@@ -970,7 +973,7 @@ impl feature::Feature for Bots {
                             let mem = rt.memory();
                             let in_game = guest::in_game(&*mem);
                             local::leave_step(in_game, &leaving, |p| {
-                                guest::signed_in(&*mem, u32::from(p)).unwrap_or(false)
+                                guest::slot_held(&*mem, u32::from(p)).unwrap_or(false)
                             })
                         };
                         for h in step.unplug {

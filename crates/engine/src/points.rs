@@ -703,6 +703,18 @@ points! { ALL;
     /// `+0x1f8` to -1. Does nothing when the flag is clear. Callers
     /// `0x190d76`, `0x24b7c8`.
     PROFILE_SIGN_OUT @ 0x0018_fc08: [fn(slot: eax) ret 0]; "docs/game/bots.md";
+    /// Signs local player slot EAX out altogether, as the profile UI's
+    /// sign-out (`0x24b807`) and a failed host logon's (`0x190186`, at
+    /// `0x1901e7`) do: leaves Xbox Live (`0x190da5`: clears the `0x20` flag
+    /// and the account record at `+0x470`), frees the slot's local user
+    /// (`+4`, `0x64690` zeroes its `0xd0`-byte entry at `0x4cd904`), signs
+    /// the profile out (`PROFILE_SIGN_OUT`), then zeroes the flags, the
+    /// player id at `+8` and the name at `+0xc1c` and sets `+4` and `+0x14`
+    /// to -1. With its local user gone the squad session's local-player
+    /// pass (`0x65770`, status 0) takes the slot's player out of the
+    /// session. Callers `0x18f5c6`, `0x1901e7`, `0x1906be`, `0x24b807`,
+    /// `0x24ba16`, `0x24ba5a`.
+    SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// The sound frame service, once a frame after the render: among
     /// other things, one listener per mapped local user (`0x125c93`).
     SOUND_UPDATE @ 0x0012_5b40: [fn() ret 0]; "docs/engine/engine-map.md";
