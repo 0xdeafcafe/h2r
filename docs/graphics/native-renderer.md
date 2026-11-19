@@ -86,7 +86,15 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   game's own aspect rule (`0x0002fb70`). Read once per view, at the layer-3
   hook (below), so it is the camera the game's own draws would use.
 - **Cull.** Frustum planes from the view-projection, tested against each
-  draw's world bounds on the CPU (a few thousand AABBs: microseconds). The
+  draw's world bounds on the CPU (a few thousand AABBs: microseconds).
+  With material programs only the four sides and the eye's plane
+  (`Frustum::sides`): the programs clip as the D3D path does, and the
+  render camera's `near`/`far` are not that range (03a's distant
+  buildings in the intro cinematic, and a far girder in play, lay past
+  the camera's `far` and were left out natively while their items were
+  skipped: holes showing what was behind). A placement's placed copy is
+  unscaled, as the game draws it (`load`), so its bounds are where it
+  draws. The
   result is written as `instance_count` 0 or 1 into the indirect buffer
   (one 20-byte slot per draw), which is the only per-frame upload besides
   one uniform block. A compute shader can take this over unchanged (same
@@ -150,11 +158,42 @@ is render state only; the simulation never reads it, and co-op lockstep
 hashes nothing of it. The native renderer itself never writes guest
 memory.
 
-The structure draw also sets stencil mode 1 in layers 1 and 3
-(`0x0004d720` -> `0x00015370`), and mode 2 for sections with flag `0x4000`
-([e3-lighting.md](e3-lighting.md)). What reads those marks is not traced;
-the native pass writes the same stencil value as a first approximation
-(S), and the A/B shows whether anything depends on it.
+The structure draw also switches the stencil around an item in layers 1
+and 3 (`0x0004d0b0`; modes by `0x00015370`'s table at `0x00015658`):
+
+- before the item (`0x0004d640`): either flag byte `0x00485a75`,
+  `0x00485a76` set, mode 0 (stencil off); else, the render record's `+0`
+  bit 14, mode 2 (`ALWAYS`, reference `0xff`, `REPLACE` on pass, masks
+  `0xff`). Bit 14 is the item's visibility flag `0x200` moved up
+  (`0x001332f0`), the same for clusters and placements;
+- after it (`0x0004d720`), on either condition, mode 1 (the same with
+  reference 0).
+
+An item with neither draws with the stencil as the layer found it.
+
+The feature reads how layer 3's items switch it before asking the host
+(`skip::stencil_plan`: the flags, the marked BSP sections by cluster or
+placement, whether any item switches; unreadable, the D3D path draws the
+view, `native_world::stencil_views`). The native pass draws its parts
+before the layer's items and clears their items, so their switches do
+not run; the glue (`native_world_glue::pass_stencil`) makes that exact:
+
+- no item switches: every part draws with the stencil the device holds
+  when asked (`Device::stencil_state`, translated as the D3D path's
+  pipeline translates it, `gpu::PassStencil`);
+- some item switches: an item leaves mode 1, so the layer must start in
+  mode 1 (`PassStencil::is_structure_mode`) for the items left to D3D to
+  draw as they would; else the D3D path draws the view (counted in the
+  log). Then with a flag every part draws with the stencil off (mode 0),
+  and otherwise a marked section's parts draw with reference `0xff`
+  (mode 2, its own run in the batch, `PassStencil::reference_of`), the
+  rest with mode 1.
+
+Each part writes what its own item would where it is drawn (`ALWAYS`,
+`REPLACE` on pass): which part is last at a pixel is the depth test's,
+as on the D3D path (S: coplanar ties may differ). What reads the marks
+later is not traced. The transparents and objects still draw without the
+stencil (S).
 
 ### Where the native pass goes, and depth
 
@@ -183,6 +222,46 @@ one without writes it. Equal-depth passes the D3D path still draws over
 the world (layers 7 and 8 in stage 1) only line up when the native clip
 position equals the translated vertex program's bit for bit; stage 1b
 removes that dependency by drawing those layers natively too.
+
+That dependency is not only layers 7 and 8: on 03a every world template
+has, after layer 3, shadow application (11), the lights (12, 13) and
+planar fog (16), all `ZFUNC` equal (`0x202`) without depth writes
+(`h2 shader`). The 2026-11-19 A/B (the walls right, the palette fixed)
+lost them where native depth was not the D3D path's: decals and signs,
+a doorway's light, the fire's light on the rocks as speckle. What the
+native pass must match, per part:
+
+- **Clusters**: classification 0 of the pass's vertex program, `v0`
+  the section's position. The world keeps a cluster's position bits as
+  decoded (`WorldBuilder::add_section`, no identity arithmetic: `0 + -0`
+  is `+0`, `x + 0·inf` is NaN), and the program, view constants
+  (`c[0..18]` at the issue) and W depth (`floor(w)/16777215` for D24,
+  `xps_w_depth`) are the D3D path's.
+- **Instanced placements**: the structure draw takes the rigid
+  classification for them (render record `+0` bits 3 and 12, set by the
+  placement caller `0x001336d3` of `0x0002cbf0`; the cluster caller
+  `0x00133504` sets neither), whose program decompresses `v0` with
+  `c[170..171]` and places it with `c[50..52]`; `0x0004d830` uploads
+  those rows from the matrix at render record `+0x1c`, which for a
+  placement is the placement's tag element (`[sbsp+0x144] + 0x58·i`):
+  forward, left and up by column and the position, copied bit for bit,
+  the scale at `+0` not applied. The native pass does the same: the
+  load reads each placement's rows from its tag element
+  (`world::model_rows`, `World::rows`), the material's pass is compiled
+  with classification 1 as well (`look::rigid_program`,
+  `program::compile_rigid`, which requires that it read `c[50..52]`;
+  `program::rigid_fit`), and each placement's parts draw with it from
+  the definition's vertices as their streams hold them
+  (`World::program_vertices`), the placement's uniforms at its slot's
+  dynamic offset in one buffer per material (`program::rigid_vertex`,
+  the frame's view then the rows). Within a batch the draws sort by
+  owner, so the clusters draw as one run and each placement as another.
+  `tests/model_rows_differential.rs` runs the lifted `0x0004d830` on
+  seeded placements and checks the floats it hands the constant upload
+  `0x003f7330` (at `c[50]`, twelve) equal the port's, bit for bit. A
+  material without a rigid program (or whose placements lack a stream
+  it reads) keeps its placements on the D3D path, by reason in the
+  load's log; the lights take only materials with none left there.
 
 ### Match the look
 
@@ -373,8 +452,11 @@ surfaces only (the D3D ones are the game's own):
   anisotropic; mip chains);
 - **cut-out foliage or grates filled in or missing**: the pass's alpha
   test (03a's alpha-tested world passes pass below 255);
-- **stencil-driven effects** after layer 3 (the structure draw sets
-  stencil in layer 3, the native pass does not; S).
+- **stencil-driven effects** after layer 3: the native pass writes the
+  device's stencil as the layer starts and mode 2's mark on marked
+  sections, and leaves views to D3D where an item switches the stencil
+  and the layer does not start in mode 1 (S: what reads the marks is not
+  traced).
 
 ### Next: matching the look
 
@@ -416,8 +498,8 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[10]`, `c[11]` | the viewport scale and offset (`oPos` fix-up) | per view | the device's values |
 | `c[12..17]` | six registers in one block | `0x00025c70` | the device's values |
 | `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
-| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
-| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; for a placement (rigid program) its rows per draw, `world::model_rows` |
+| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP (record `+4` is `-1`), so the default upload (`0x0001cf29`, scale 1, offset 0) | `c[170]` all 1, `c[171]` 0, `c[172]` `(1, 1, 0, 0)`: BSP vertices are uncompressed |
 
 Where `v5` and `v6` come from depends on the render record
 (`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
@@ -598,8 +680,7 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
    - Colour: the D3D path and the native pass both sample `Rgba8Unorm`
      (or compressed unorm) textures and write the game's own target, with
      no sRGB view on either side, so there is no gamma step to match.
-   - Left (S): the stencil the structure draw sets in layer 3; the
-     inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
+   - Left (S): the inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
      not resident starts lower (a smaller image, the same coordinates).
 
    Of 03a's scenario shaders with a layer 3, about a third sample the
@@ -852,15 +933,58 @@ synthetic tests:
   The table is read from guest memory when the map is first seen, never
   copied; a section's streams are expanded once per declaration to
   float4s, so the programs see the values the hardware's fetch gives.
-- **The implementation** (`object_implementation`, Code `0x0004cbf0`,
-  `0x0004cd1b`..`0x0004cd41`): 2 when the template's level (taken as the
-  first, S) draws layer 15 (bit 15 of its layer mask), else 1 when the
-  lighting's byte `+0x76` is `0xff`, else 0. Without a lighting the build
-  keeps what `0x00015d70` chose (not traced): such an object stays on D3D.
-  A material is drawn only when every implementation it may draw (0 and 1,
-  or 2) compiles for every section it is in and its stage bitmaps decode
-  (linear textures refused, as the world programs do); otherwise it stays
-  on D3D whole, with the reason logged.
+- **The implementation** (`record_implementation`, Code `0x0004cbf0`).
+  The build of one record's draw switches on its third argument, the
+  draw (the jump table at `0x0004d054`, indexed by the bytes at
+  `0x0004d068` from draw 3). At draw 3, layer 3, it takes the record's
+  `+0` bits 29..31 (`0x0004cc70`, the table at `0x0004d07c`: 0..4 as they
+  are, 5..7 give 3), overriding what `0x00015d70` chose. The lighting's
+  `+0x76` and the template's layer-15 bit (byte `+3` of its level's
+  layer mask) pick the implementation only at draw 18
+  (`0x0004cc9f`..`0x0004cd46`), not at layer 3. The hook copies each
+  section's implementation with its rows. Per material each implementation
+  of its layer-3 pass that compiles for every section it is in, with its
+  stage bitmaps decoded (linear textures refused, as the world programs
+  do), is drawn; one that does not is left out with its reason, and a
+  material with none stays on D3D whole. An object whose records pick an
+  implementation some lit part of its definition lacks stays on D3D.
+- **The normalization cube.** A stage sampling engine texture 1 is bound
+  to the vector normalization cube the lights load
+  (`native_lights_glue::light_textures`, the globals' rasterizer data),
+  sampled as a cube without a bias, as the lights sample it.
+- **The lightmap stage** (`object_program::OBJECT_LIGHTMAP`, Code). An
+  object's draw binds no lightmap page. The draw (`0x0004d0b0`, draw 3)
+  sets the current page `[0x00485a60]` to -1 for every record with a
+  model datum at `+4` (`0x0004d2c4`..`0x0004d2de`, `0x0004d362`, then
+  `0x0004d420`); only records without one (the BSP's instanced geometry,
+  `0x0004d367`) get a cluster's page and palette through `0x00015c90`.
+  With the page at -1 the stage setup (`0x00018c43`..`0x00018c4c`, then
+  `0x00018d1f`) binds the globals' rasterizer data element's bitmap at
+  `+0x64` (`[[0x00485a80] + 0x64]`) and no palette. The coordinates the
+  draw adds for it come from the BSP: for a record whose implementation
+  is not 2 or 3 and whose `+0xc` bits 18..28 are not `0x7ff`, the BSP's
+  `+0x64` element (stride 12) at that index holds per section a u16 that
+  `0x0004dc60` turns into the vertex offset of a stream of type `0x2e` in
+  the BSP geometry block its `+2` names (`+0x44`, stride `0x38`); the
+  streams step (`0x0001c8c0`, `0x0001ca25`) adds it with its own type's
+  format. The host loads that bitmap as stage 3 decodes it and takes it
+  only when it is uniform (every texel of every level the same): then it
+  samples the same wherever the coordinates fall, and the lit build feeds
+  the stream as zeros instead of reading the BSP. A bitmap that is not
+  uniform keeps implementation 0 on D3D, with the reason; reading the
+  BSP's stream per object section is what that would need.
+- **Combiner constants** (`object_pixel_uniforms`). A lighting vector
+  bound to a pixel combiner constant is packed per object as `0x00019ca0`
+  packs an engine value (`pack_engine_colour`: alpha 0, `(x + 1) / 2`
+  first where the binding halves it, each channel rounded to 8 bits) into
+  the byte lanes the binding keeps, the rest as compiled. A lighting
+  scalar goes through its binding's transform first
+  (`tags::material::engine_scalar`, the one `0x00019ca0` applies: the
+  complement, or a cosine or sine wave over one period clamped to 0..1),
+  which the binding now keeps.
+- **Which implementations a map draws.** The observer counts live layer-3
+  object items by their record's implementation and logs the counts once
+  per map, after 600 views.
 - **The node rows at the hook** (`objects::attach_node_rows`). The
   observer copies, for each record a drawn object's items name, the rows
   that record's draw would upload, one set per mode section (two records

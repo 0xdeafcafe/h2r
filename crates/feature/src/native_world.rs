@@ -12,9 +12,12 @@
 //!   layers after 3 on the scene list, 5 and up, come next in the same
 //!   view, so the bits are back before anything reads them again), each
 //!   only if the item still holds the mask it left ([`restore_pending`]);
-//! - then, when the current layer is 3: read the render camera and the
-//!   active BSP, ask the [`Host`] (boot's glue: the GPU world and the D3D
-//!   device) for the native pass, and when it accepts, clear layer 3's bit
+//! - then, when the current layer is 3: read how its items switch the
+//!   stencil ([`native_render::skip::stencil_plan`]: the native pass
+//!   draws a marked section's parts with the reference the game's mode 2
+//!   writes), the render camera and the active BSP, ask the [`Host`]
+//!   (boot's glue: the GPU world and the D3D device) for the native pass,
+//!   and when it accepts, clear layer 3's bit
 //!   on the BSP items whose part it draws, by cluster or placement and
 //!   part index, with the part's shader ([`native_render::skip::clear_parts`]):
 //!   the layer then builds no entry for them. A shader shared with a part
@@ -37,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::skip::{self, Cleared, LIGHTMAP_LAYER};
+use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
 use native_render::world::Owner;
 
 use crate::{BuildError, Builder, Feature, Manifest};
@@ -79,10 +82,11 @@ pub type PartSet = HashMap<(Owner, u8), u16>;
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
     /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `camera`
-    /// the view's render camera. Asks for the native pass when a world for
-    /// `bsp` is ready and the device can draw it; returns the parts it
-    /// draws, or `None` to leave the world to the D3D path.
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>>;
+    /// the view's render camera, `stencil` how the layer's items switch
+    /// the stencil. Asks for the native pass when a world for `bsp` is
+    /// ready and the device can draw it; returns the parts it draws, or
+    /// `None` to leave the world to the D3D path.
+    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Arc<PartSet>>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -103,6 +107,7 @@ pub struct Pending {
 static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
+static STENCIL: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -116,6 +121,12 @@ pub fn counts() -> (u64, u64, u64) {
         DRAWN.load(Ordering::Relaxed),
         ITEMS.load(Ordering::Relaxed),
     )
+}
+
+/// Layer-3 views left to the D3D path because the items' stencil switches
+/// do not read.
+pub fn stencil_views() -> u64 {
+    STENCIL.load(Ordering::Relaxed)
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -145,10 +156,19 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
+    // How the layer's items switch the stencil (0x0004d640/0x0004d720):
+    // unreadable, the D3D path draws the view.
+    let Some(stencil) = skip::stencil_plan(&m, LIGHTMAP_LAYER) else {
+        let n = STENCIL.fetch_add(1, Ordering::Relaxed);
+        if n % 1800 == 0 {
+            eprintln!("native-world: {} layer-3 views left to the D3D path: the items' stencil switches do not read", n + 1);
+        }
+        return;
+    };
     let (Some(camera), Some(bsp)) = (RenderCamera::read(&m, RENDER_CAMERA), m.read_u32(ACTIVE_BSP)) else {
         return;
     };
-    let Some(parts) = host.ask(&*m.0, bsp, &camera) else {
+    let Some(parts) = host.ask(&*m.0, bsp, &camera, &stencil) else {
         return;
     };
     let cleared = skip::clear_parts(&mut m, LIGHTMAP_LAYER, &|owner, part, shader| {

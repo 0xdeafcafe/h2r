@@ -370,6 +370,7 @@ mod tests {
             lighting: None,
             defaults: None,
             node_rows: Vec::new(),
+            implementations: Vec::new(),
         }
     }
 

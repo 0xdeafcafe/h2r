@@ -65,6 +65,21 @@ impl Frustum {
         }
     }
 
+    /// [`Frustum::from_view_projection`] without its near and far planes:
+    /// the four sides, and in front of the eye (`w >= 0`) twice. For a
+    /// pass whose clipping is the game's own (its programs' depth, the
+    /// D3D path's W clip range): the render camera's `near` and `far` are
+    /// not the range the game's projection clips to (a cinematic's far
+    /// geometry lies past the camera's `far`), so culling by them leaves
+    /// out parts the D3D path draws.
+    pub fn sides(m: &Mat4) -> Self {
+        let mut f = Self::from_view_projection(m);
+        let eye = [m[0][3], m[1][3], m[2][3], m[3][3]];
+        f.planes[4] = eye;
+        f.planes[5] = eye;
+        f
+    }
+
     /// Whether any of the box may be inside: false only when the box is
     /// wholly outside one plane (conservative near the corners).
     pub fn may_see(&self, b: &Aabb) -> bool {
@@ -134,6 +149,12 @@ mod tests {
         assert!(!f.may_see(&cube([10.0, -13.0, 0.0], 1.0)), "right of it");
         assert!(!f.may_see(&cube([10.0, 0.0, 12.0], 1.0)), "above");
         assert!(!f.may_see(&cube([200.0, 0.0, 0.0], 1.0)), "past far");
+        let s = Frustum::sides(&camera().view_projection());
+        assert!(s.may_see(&cube([200.0, 0.0, 0.0], 1.0)), "past far: the sides alone keep it");
+        assert!(s.may_see(&cube([0.01, -0.001, -0.001], 0.002)), "nearer than near");
+        assert!(!s.may_see(&cube([-10.0, 0.0, 0.0], 1.0)), "behind");
+        assert!(!s.may_see(&cube([10.0, 12.0, 0.0], 1.0)), "left of the view");
+        assert!(!s.may_see(&cube([10.0, 0.0, 12.0], 1.0)), "above");
     }
 
     #[test]

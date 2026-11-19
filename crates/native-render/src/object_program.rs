@@ -11,16 +11,21 @@
 //!   from [`crate::object_lighting`] ([`object_vertex_uniforms`]);
 //! - `c[50..]`, the object's node rows as the draw uploads them for the
 //!   render record ([`node_rows`], [`crate::object_nodes`]);
-//! - `c[170..173]`, the model's decompression ([`decompression_rows`]).
+//! - `c[170..173]`, the model's decompression ([`decompression_rows`]);
 //!
-//! The implementation an object draws is the build's (`0x0004cbf0`,
-//! [`object_implementation`]); its vertex streams are the game's
-//! declaration ([`crate::object_streams`]).
+//! and its pixel block with the combiner constants that read the lighting
+//! packed per object ([`object_pixel_uniforms`]). The implementation a
+//! record draws is the build's (`0x0004cbf0`, [`record_implementation`]);
+//! its vertex streams are the game's declaration
+//! ([`crate::object_streams`]).
 
+use shaders::psh::PixelUniforms;
 use shaders::vsh::{self, VertexUniforms};
-use tags::material::{Origin, ResolvedImplementation, VectorTarget};
+use tags::material::{Origin, ResolvedImplementation, VectorTarget, pack_engine_colour};
 
-pub use crate::object_nodes::{Compression, MAX_PALETTE, POSITION_DECOMPRESSION, Row, decompression_rows, node_rows};
+pub use crate::object_nodes::{
+    Compression, IMPLEMENTATIONS, MAX_PALETTE, POSITION_DECOMPRESSION, Row, decompression_rows, node_rows, record_implementation,
+};
 use crate::look::{PassLook, Refusal, implementation_look};
 use crate::object_lighting::{
     Defaults, LIGHTING_SCALARS, LIGHTING_VECTORS, Lighting, ShaderValues, scalar_input, vector_input,
@@ -34,9 +39,9 @@ const SHADER_INTS: u32 = 1 << 4 | 1 << 5;
 
 /// Whether every engine input `imp` reads is one the object path gives:
 /// the object's lighting ([`crate::object_lighting`]) or the shader's
-/// own. And that the lighting lands only in vertex registers: a combiner
-/// constant computed from it would need a per-object pixel block. The
-/// first input that is not, as the reason the object stays on D3D.
+/// own. Lighting inputs may land in combiner constants too (packed per
+/// object, [`object_pixel_uniforms`]). The first input that is not given,
+/// as the reason the object stays on D3D.
 pub fn inputs_supported(imp: &ResolvedImplementation) -> Result<(), String> {
     let r = imp.input_reads;
     let v = r.vectors & !LIGHTING_VECTORS;
@@ -51,39 +56,7 @@ pub fn inputs_supported(imp: &ResolvedImplementation) -> Result<(), String> {
     if i != 0 {
         return Err(format!("reads integer input {}", i.trailing_zeros()));
     }
-    let lit = |b: &&tags::material::VectorBinding, mask: u64| b.source < 64 && mask & (1u64 << b.source) != 0;
-    let pixel = |b: &&tags::material::VectorBinding| matches!(b.target, VectorTarget::Pixel { .. });
-    if let Some(b) = imp.vector_bindings.iter().filter(pixel).find(|b| lit(b, LIGHTING_VECTORS)) {
-        return Err(format!("a combiner constant reads lighting vector {}", b.source));
-    }
-    if let Some(b) = imp.scalar_bindings.iter().filter(pixel).find(|b| lit(b, LIGHTING_SCALARS)) {
-        return Err(format!("a combiner constant reads lighting scalar {}", b.source));
-    }
     Ok(())
-}
-
-/// The implementation of an object's layer-3 pass the build
-/// (`0x0004cbf0`, `0x0004cd1b`..`0x0004cd41`) picks: 2 when the
-/// template's level of detail draws layer 15 (`layer_15`: bit 15 of its
-/// layer mask, the sign of the byte at the level's `+3`; the level is the
-/// build's argument, taken as 0 here, S), else 1 when the lighting's byte
-/// `+0x76` is `0xff`, else 0. Without a lighting the build keeps what
-/// `0x00015d70` chose, not traced: `None`.
-pub fn object_implementation(lighting: Option<&Lighting>, layer_15: bool) -> Option<usize> {
-    let l = lighting?;
-    Some(if layer_15 {
-        2
-    } else if l.implementation_byte() == 0xff {
-        1
-    } else {
-        0
-    })
-}
-
-/// The implementations an object with this material may draw: 0 and 1, or
-/// 2 alone when the level draws layer 15 ([`object_implementation`]).
-pub fn implementations_drawn(layer_15: bool) -> &'static [usize] {
-    if layer_15 { &[2] } else { &[0, 1] }
 }
 
 /// The one layer-3 pass (first level of detail) of an object material, or
@@ -132,34 +105,48 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
 pub struct ObjectPass {
     pub program: MaterialProgram,
     pub implementation: ResolvedImplementation,
+    /// The stages that sample the vector normalization cube (empty in
+    /// `program.stages`; the host binds the cube).
+    pub normalization: [bool; 4],
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
-/// supplying `provided` (bit `n`: `v<n>`), or says why not.
-pub fn object_pass(pass: map::TagId, imp: &ResolvedImplementation, microcode: &[u8], provided: u16) -> Result<ObjectPass, String> {
+/// supplying `provided` (bit `n`: `v<n>`), or says why not. `lightmap`:
+/// whether a stage may sample the lightmap (the host binds what an
+/// object's draw binds there, [`OBJECT_LIGHTMAP`]).
+pub fn object_pass(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    lightmap: bool,
+) -> Result<ObjectPass, String> {
     let state = object_pass_state(imp)?;
-    let look = object_look(pass, imp)?;
-    if look.textures.contains(&crate::look::Stage::Lightmap) {
-        return Err("a stage samples the lightmap".into());
+    let (look, normalization) = object_look_stages(pass, imp)?;
+    if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
+        return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let mut program = compile_object(&look, microcode, state.alpha_test, provided)?;
+    let mut program = compile_object_stages(&look, normalization, microcode, state.alpha_test, provided)?;
     program.state = Some(state);
-    Ok(ObjectPass { program, implementation: imp.clone() })
+    Ok(ObjectPass { program, implementation: imp.clone(), normalization })
 }
 
 /// Why objects with `material` stay on D3D for their lighting, or `None`
 /// when no implementation of its layer-3 passes (first level of detail)
-/// reads it, or every one reads only what the object path gives (then the
-/// program path draws it, when it compiles). Never drawn unlit.
+/// reads it, or one reads only what the object path gives (the program
+/// path then draws the implementations that compile, and an object whose
+/// records draw another stays on D3D). Never drawn unlit.
 pub fn lighting_refusal(material: &tags::material::Material) -> Option<String> {
     crate::look::object_lighting_input(material)?;
     let layers = material.layers.iter().filter(|l| l.lod == 0 && l.layer == crate::look::LIGHTMAP_LAYER);
+    let mut reasons = Vec::new();
     for imp in layers.flat_map(|l| &l.passes).flat_map(|p| &p.implementations) {
-        if let Err(e) = inputs_supported(imp) {
-            return Some(format!("implementation {}: {e}", imp.index));
+        match inputs_supported(imp) {
+            Ok(()) => return None,
+            Err(e) => reasons.push(format!("implementation {}: {e}", imp.index)),
         }
     }
-    None
+    Some(reasons.join("; "))
 }
 
 /// `pass`'s implementation `imp` as an object draws it, or why not: what
@@ -167,14 +154,53 @@ pub fn lighting_refusal(material: &tags::material::Material) -> Option<String> {
 /// allowed when [`inputs_supported`] (they are put in per object by
 /// [`object_vertex_uniforms`]; the look holds their resolved values).
 pub fn object_look(pass: map::TagId, imp: &ResolvedImplementation) -> Result<PassLook, String> {
+    object_look_stages(pass, imp).map(|(look, _)| look)
+}
+
+/// What an object's layer-3 draw binds where a pass samples the lightmap
+/// (Code). The draw (`0x0004d0b0`, draw 3) leaves the current lightmap
+/// page `[0x00485a60]` at -1 for any record with a model datum at `+4`
+/// (`0x0004d2c4`..`0x0004d2de` and `0x0004d362`, then `0x0004d420`): it
+/// binds a cluster's page and palette (`0x00015c90`) only for records
+/// without one (the BSP's instanced geometry, `0x0004d367`). With the page
+/// at -1 the stage setup (`0x00018c43`..`0x00018c4c`, then `0x00018d1f`)
+/// binds the globals' rasterizer data element's bitmap at `+0x64`
+/// (`[[0x00485a80] + 0x64]`, the datum of the reference at `+0x60`), and
+/// no palette. The coordinates the draw adds (`0x0004dc60`: a stream of
+/// type `0x2e` from the BSP's `+0x64` element, offset per section) then
+/// read that bitmap, so a uniform one is the same wherever they fall.
+pub const OBJECT_LIGHTMAP: u32 = 0x64;
+
+/// The stream type of the lightmap coordinates the draw adds
+/// (`0x0004dc60`).
+pub const LIGHTMAP_STREAM: u8 = 0x2e;
+
+/// The engine texture the game binds at a stage for the vector
+/// normalization cube (the globals' rasterizer data, as the lights'
+/// [`crate::light_look::LightStage::Normalization`]).
+pub const NORMALIZATION_TEXTURE: u8 = 1;
+
+/// [`object_look`] with the stages that sample the vector normalization
+/// cube (engine texture 1, bound by the host, sampled as a cube without a
+/// bias as the lights do); in the look those stages are empty.
+pub fn object_look_stages(pass: map::TagId, imp: &ResolvedImplementation) -> Result<(PassLook, [bool; 4]), String> {
     inputs_supported(imp)?;
     let mut instance = imp.clone();
     for r in instance.vertex_constants.iter_mut().chain(instance.vertex_defaults.iter_mut()) {
         r.origin = Origin::Instance;
     }
+    let mut normalization = [false; 4];
+    for (n, t) in instance.textures.iter_mut().enumerate() {
+        if let Some(t) = t
+            && t.source == tags::material::TextureSource::Engine(NORMALIZATION_TEXTURE)
+        {
+            t.source = tags::material::TextureSource::None;
+            normalization[n] = true;
+        }
+    }
     let mut look = implementation_look(pass, &instance).map_err(|r: Refusal| format!("{r:?}"))?;
     look.per_draw_inputs = false;
-    Ok(look)
+    Ok((look, normalization))
 }
 
 /// Whether an object pass sets constant `c` (hardware numbering) for
@@ -197,6 +223,18 @@ pub fn compile_object(
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
 ) -> Result<MaterialProgram, String> {
+    compile_object_stages(look, [false; 4], microcode, alpha_test, provided_inputs)
+}
+
+/// [`compile_object`] with the stages that sample the normalization cube
+/// ([`object_look_stages`]).
+pub fn compile_object_stages(
+    look: &PassLook,
+    normalization: [bool; 4],
+    microcode: &[u8],
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    provided_inputs: u16,
+) -> Result<MaterialProgram, String> {
     let program = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     for i in &program.instructions {
         for s in i.sources() {
@@ -214,7 +252,13 @@ pub fn compile_object(
     let t = translate_pass(&PassParts {
         microcode,
         pixel_shader: &look.pixel_shader,
-        dims: look.textures.map(|s| (s != crate::look::Stage::Empty).then_some(shaders::psh::TextureDim::D2)),
+        dims: std::array::from_fn(|n| {
+            if normalization[n] {
+                Some(shaders::psh::TextureDim::Cube)
+            } else {
+                (look.textures[n] != crate::look::Stage::Empty).then_some(shaders::psh::TextureDim::D2)
+            }
+        }),
         biased: look.textures.map(|s| matches!(s, crate::look::Stage::Bitmap { .. })),
         stage_states: &look.stage_states,
         vertex_constants: &look.vertex_constants,
@@ -234,6 +278,7 @@ pub fn compile_object(
         pixel: t.pixel,
         inputs: t.inputs,
         state: None,
+        rigid: None,
     })
 }
 
@@ -295,6 +340,49 @@ pub fn object_vertex_uniforms(
     u.constants[MODEL_ROWS..MODEL_ROWS + nodes.len()].copy_from_slice(nodes);
     u.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression);
     Ok(u)
+}
+
+/// The pixel block an object's draw of `imp` reads: `base` (the compiled
+/// pass's, the view's parts put in) with each combiner constant that reads
+/// a lighting input packed for this object as `0x00019ca0` packs it
+/// (`tags::material::pack_engine_colour`: a vector with alpha 0, a scalar
+/// through its binding's transform, `tags::material::engine_scalar`, in
+/// its one channel; halved first when the binding says so) into the byte
+/// lanes the binding keeps. An error names an input the port cannot give
+/// for this object.
+pub fn object_pixel_uniforms(base: &PixelUniforms, imp: &ResolvedImplementation, inputs: &ObjectInputs<'_>) -> Result<PixelUniforms, String> {
+    let mut u = base.clone();
+    for b in &imp.vector_bindings {
+        let VectorTarget::Pixel { c1, slot, mask, half, .. } = b.target else { continue };
+        if b.source >= 64 || LIGHTING_VECTORS & (1u64 << b.source) == 0 {
+            continue;
+        }
+        let v = vector_input(u32::from(b.source), inputs.lighting, inputs.defaults, inputs.shader)
+            .ok_or_else(|| format!("lighting vector {} is not given for this object", b.source))?;
+        let packed = pack_engine_colour([f32::from_bits(v[0]), f32::from_bits(v[1]), f32::from_bits(v[2]), 0.0], half);
+        put_packed(&mut u, c1, slot, mask, packed);
+    }
+    for b in &imp.scalar_bindings {
+        let VectorTarget::Pixel { c1, slot, mask, half, transform } = b.target else { continue };
+        if b.source >= 64 || LIGHTING_SCALARS & (1u64 << b.source) == 0 {
+            continue;
+        }
+        let s = scalar_input(u32::from(b.source), inputs.lighting)
+            .ok_or_else(|| format!("lighting scalar {} is not given for this object", b.source))?;
+        // The scalar lands in the one channel of its mode; the binding's
+        // mask is that channel.
+        let x = tags::material::engine_scalar(f32::from_bits(s), usize::from(transform));
+        put_packed(&mut u, c1, slot, mask, pack_engine_colour([x; 4], half));
+    }
+    Ok(u)
+}
+
+/// `packed`'s lanes in `mask` into combiner constant `slot` of C1 or C0.
+fn put_packed(u: &mut PixelUniforms, c1: bool, slot: u8, mask: u32, packed: u32) {
+    let bank = if c1 { &mut u.c1 } else { &mut u.c0 };
+    if let Some(c) = bank.get_mut(usize::from(slot)) {
+        *c = shaders::psh::argb((crate::light_look::repack(*c) & !mask) | (packed & mask));
+    }
 }
 
 #[cfg(test)]
@@ -363,10 +451,14 @@ pub(crate) mod tests {
         assert!(inputs_supported(&camera).unwrap_err().starts_with("reads vector input 5"));
         let mut pixel = lit();
         pixel.vector_bindings.push(VectorBinding {
-            source: 3,
-            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false },
+            source: 15,
+            target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 },
         });
-        assert_eq!(inputs_supported(&pixel).unwrap_err(), "a combiner constant reads lighting vector 3");
+        pixel.scalar_bindings.push(VectorBinding {
+            source: 23,
+            target: VectorTarget::Pixel { c1: false, slot: 1, mask: 0xff00_0000, half: false, transform: 1 },
+        });
+        assert_eq!(inputs_supported(&pixel), Ok(()), "lighting inputs in combiner constants are packed per object");
     }
 
     #[test]
@@ -398,6 +490,52 @@ pub(crate) mod tests {
         let stale = Lighting { root: None, ..l };
         let e = object_vertex_uniforms(&p.vertex, &imp, &ObjectInputs { lighting: Some(&stale), ..inputs }, &nodes, decompression);
         assert_eq!(e.unwrap_err(), "lighting vector 40 is not given for this object");
+    }
+
+    #[test]
+    fn an_objects_pixel_block_packs_its_lighting_as_the_games_upload_does() {
+        // Vector 15 (+0x30) = (0.5, 0.25, 0.125).
+        let mut words = [0u32; 30];
+        for (i, v) in [0.5f32, 0.25, 0.125].iter().enumerate() {
+            words[12 + i] = v.to_bits();
+        }
+        let l = Lighting { words, root: Some(0) };
+        let d = Defaults::default();
+        let inputs = ObjectInputs { lighting: Some(&l), defaults: &d, shader: ShaderValues::default() };
+        let mut imp = lit();
+        imp.vector_bindings = vec![
+            // c0[0] RGB, its alpha the instance's.
+            VectorBinding { source: 15, target: VectorTarget::Pixel { c1: false, slot: 0, mask: 0x00ff_ffff, half: false, transform: 0 } },
+            // c1[1] green only, halved: (x + 1) / 2.
+            VectorBinding { source: 15, target: VectorTarget::Pixel { c1: true, slot: 1, mask: 0x0000_ff00, half: true, transform: 0 } },
+        ];
+        imp.scalar_bindings = vec![
+            // Scalar 23 (the luminance of vector 15) complemented into
+            // c0[2]'s alpha, and through the cosine wave into c1[3]'s blue.
+            VectorBinding { source: 23, target: VectorTarget::Pixel { c1: false, slot: 2, mask: 0xff00_0000, half: false, transform: 1 } },
+            VectorBinding { source: 23, target: VectorTarget::Pixel { c1: true, slot: 3, mask: 0x0000_00ff, half: false, transform: 2 } },
+        ];
+        let mut base = PixelUniforms::default();
+        base.c0[0] = shaders::psh::argb(0x8011_2233);
+        base.c1[1] = shaders::psh::argb(0x1122_3344);
+        base.c0[2] = shaders::psh::argb(0x0055_6677);
+        base.c1[3] = shaders::psh::argb(0x9988_7766);
+        let u = object_pixel_uniforms(&base, &imp, &inputs).unwrap();
+        // The game's ARGB: round(255 x) per channel; 0.5 -> 0x80,
+        // 0.25 -> 0x40, 0.125 -> 0x20; halved, 0.25 -> 0.625 -> 0x9f.
+        assert_eq!(u.c0[0], shaders::psh::argb(0x8080_4020));
+        assert_eq!(u.c1[1], shaders::psh::argb(0x1122_9f44));
+        // Scalar 23 = luminance 0.299·0.5 + 0.587·0.25 + 0.114·0.125 =
+        // 0.3105; 1 - 0.3105 -> 175.8 of 255, 0xb0; (cos(2π·0.3105) + 1) / 2
+        // -> 80.2 of 255, 0x50.
+        let luma = (0.125f32 * 0.114 + 0.25 * 0.587 + 0.5 * 0.299).clamp(0.0, 1.0);
+        assert_eq!(scalar_input(23, Some(&l)), Some(luma.to_bits()), "the scalar the test assumes");
+        assert_eq!(u.c0[2], shaders::psh::argb(0xb055_6677));
+        assert_eq!(u.c1[3], shaders::psh::argb(0x9988_7750));
+        assert_eq!(u.c0[1], base.c0[1], "the rest as compiled");
+        assert_eq!(u.c0[3..], base.c0[3..]);
+        let none = ObjectInputs { lighting: None, ..inputs };
+        assert!(object_pixel_uniforms(&base, &imp, &none).is_ok(), "vector 15 falls back on the default without a lighting");
     }
 
     /// Shaped like a `lightmap_dynamic` object program: decompress the

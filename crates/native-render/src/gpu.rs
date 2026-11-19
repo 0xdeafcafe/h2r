@@ -14,7 +14,7 @@ use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
 use crate::transparent_gpu::TransparentSet;
-use crate::world::{LightmapKey, Owner, World, WorldVertex};
+use crate::world::{LightmapKey, Owner, World, WorldDraw, WorldVertex};
 
 /// An RGBA8 image (linear rows, no padding) with its smaller levels.
 #[derive(Clone, Debug, PartialEq)]
@@ -103,9 +103,78 @@ pub struct PassViewport {
     pub height: f32,
 }
 
+/// The stencil test and write the layer's draws take on the D3D path, as
+/// the device holds them when the native pass is asked for, and the
+/// sections the game draws in its mode 2 (`skip::StencilPlan::marked`):
+/// the same state with reference [`PassStencil::MARK`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct PassStencil {
+    pub state: wgpu::StencilState,
+    pub reference: u32,
+    /// Sorted.
+    pub marked: Vec<Owner>,
+}
+
+impl PassStencil {
+    /// The reference mode 2 writes (`0x00015411`: `0xff` but in mode 1).
+    pub const MARK: u32 = 0xff;
+
+    /// Whether `s` is the structure draw's mode 1 (`0x0001539d`: enabled,
+    /// `ALWAYS`, reference 0, masks `0xff`, `KEEP` on fail and depth fail,
+    /// `REPLACE` on pass): what every item leaves after a switch, so
+    /// leaving out a switching item's switches changes nothing for the
+    /// items after it, and its mode 2 is this state with [`Self::MARK`].
+    pub fn is_structure_mode(s: &gfx::state::StencilState) -> bool {
+        use gfx::state::{CompareFunc, StencilOp};
+        s.enable
+            && s.func == CompareFunc::Always
+            && s.reference == 0
+            && s.read_mask == 0xff
+            && s.write_mask == 0xff
+            && s.fail == StencilOp::Keep
+            && s.depth_fail == StencilOp::Keep
+            && s.pass == StencilOp::Replace
+    }
+
+    /// The reference `owner`'s parts draw with.
+    pub fn reference_of(&self, owner: Owner) -> u32 {
+        if self.marked.binary_search(&owner).is_ok() { Self::MARK } else { self.reference }
+    }
+
+    /// The device's stencil state as the D3D path's pipeline takes it
+    /// (`gfx::translate::depth_stencil_state`): off without a stencil
+    /// aspect in `depth`.
+    pub fn from_device(s: &gfx::state::StencilState, depth: wgpu::TextureFormat) -> Self {
+        if !s.enable || !depth.has_stencil_aspect() {
+            return Self::default();
+        }
+        use gfx::translate::{compare_function, stencil_operation};
+        let face = wgpu::StencilFaceState {
+            compare: compare_function(s.func),
+            fail_op: stencil_operation(s.fail),
+            depth_fail_op: stencil_operation(s.depth_fail),
+            pass_op: stencil_operation(s.pass),
+        };
+        Self {
+            state: wgpu::StencilState {
+                front: face,
+                back: face,
+                read_mask: u32::from(s.read_mask),
+                write_mask: u32::from(s.write_mask),
+            },
+            reference: u32::from(s.reference),
+            marked: Vec::new(),
+        }
+    }
+}
+
 pub struct GpuWorld {
     world: World,
+    /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
+    stencil: PassStencil,
     vertices: wgpu::Buffer,
+    /// [`World::program_vertices`]: what the material programs read.
+    program_vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     indirect: wgpu::Buffer,
     slots: Vec<IndirectSlot>,
@@ -204,6 +273,15 @@ impl GpuWorld {
             slots.clone()
         };
         let vertices = init("native world vertices", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
+        let program_vertices = if world.program_vertices.len() == world.vertices.len() && !world.program_vertices.is_empty() {
+            init(
+                "native world program vertices",
+                bytemuck::cast_slice(&world.program_vertices),
+                wgpu::BufferUsages::VERTEX,
+            )
+        } else {
+            vertices.clone()
+        };
         let indices = init("native world indices", bytemuck::cast_slice(&idx), wgpu::BufferUsages::INDEX);
         let indirect = init(
             "native world indirect",
@@ -328,7 +406,9 @@ impl GpuWorld {
         slots.shrink_to_fit();
         Self {
             world,
+            stencil: PassStencil::default(),
             vertices,
+            program_vertices,
             indices,
             indirect,
             slots,
@@ -482,6 +562,12 @@ impl GpuWorld {
         )
     }
 
+    /// The stencil the material programs draw with from the next pass
+    /// ([`PassStencil::from_device`]).
+    pub fn set_stencil(&mut self, stencil: PassStencil) {
+        self.stencil = stencil;
+    }
+
     /// Draws `programs`' materials with their own programs from now on.
     pub fn set_programs(&mut self, programs: ProgramSet) {
         self.programs = Some(programs);
@@ -562,7 +648,15 @@ impl GpuWorld {
     /// slots' instance counts.
     pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
-        let stats = cull(&self.world, &Frustum::from_view_projection(&view_proj), &mut self.slots);
+        // The material programs clip as the D3D path does: cull by the
+        // sides and the eye only (`Frustum::sides`). Stage 1 draws with
+        // the render camera's own range.
+        let frustum = if self.programs.is_some() {
+            Frustum::sides(&view_proj)
+        } else {
+            Frustum::from_view_projection(&view_proj)
+        };
+        let stats = cull(&self.world, &frustum, &mut self.slots);
         let u = FrameUniform {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
@@ -592,7 +686,7 @@ impl GpuWorld {
     ) {
         self.pipeline(device, color_format, depth_format);
         if let Some(p) = &mut self.programs {
-            p.pipelines(device, color_format, depth_format);
+            p.pipelines(device, color_format, depth_format, &self.stencil.state);
         }
         let pipeline = &self.pipelines[&(color_format, depth_format)];
         let has_stencil = depth_format.has_stencil_aspect();
@@ -625,34 +719,76 @@ impl GpuWorld {
         if self.slots.is_empty() {
             return;
         }
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         // Which pipeline is bound: None before the first batch, Some(false)
         // stage 1's, Some(true) a material program's (its groups are set
-        // per batch).
+        // per run).
         let mut own: Option<bool> = None;
+        let mut unbound = 0u64;
         for (i, (b, group)) in self.world.batches.iter().zip(&self.batch_groups).enumerate() {
-            let program = self
-                .programs
-                .as_ref()
-                .and_then(|p| p.batch(i, b.material, color_format, depth_format));
-            if let Some((program, uniforms, textures)) = program {
+            let programs = self.programs.as_ref();
+            let program = programs.and_then(|p| p.batch(i, b.material, color_format, depth_format, &self.stencil.state));
+            if let (Some(p), Some((program, uniforms, textures))) = (programs, program) {
                 if own != Some(true) {
                     pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+                    pass.set_vertex_buffer(0, self.program_vertices.slice(..));
                 }
                 own = Some(true);
-                pass.set_pipeline(program);
-                pass.set_bind_group(0, uniforms, &[]);
-                pass.set_bind_group(1, textures, &[]);
+                // A batch's draws sort by owner: its clusters first, then
+                // each placement's parts together. The clusters draw with
+                // the world program; a placement's with the rigid one, its
+                // rows at its slot's offset, as the structure draw uploads
+                // them before each of its draws (`0x0004d830`). A section
+                // the game draws in stencil mode 2 is a run of its own, with
+                // that reference.
+                let first = b.first_draw as usize;
+                let draws = &self.world.draws[first..first + b.draw_count as usize];
+                let mut k = 0;
+                while k < draws.len() {
+                    let owner = draws[k].owner;
+                    let reference = self.stencil.reference_of(owner);
+                    let same = |d: &WorldDraw| match owner {
+                        Owner::Cluster(_) => {
+                            matches!(d.owner, Owner::Cluster(_)) && self.stencil.reference_of(d.owner) == reference
+                        }
+                        Owner::Instance(_) => d.owner == owner,
+                    };
+                    let end = k + draws[k..].iter().take_while(|d| same(d)).count();
+                    match owner {
+                        Owner::Cluster(_) => {
+                            pass.set_pipeline(program);
+                            pass.set_bind_group(0, uniforms, &[]);
+                        }
+                        Owner::Instance(n) => {
+                            let Some((rigid, slots, offset)) = p.rigid(b.material, n, color_format, depth_format, &self.stencil.state) else {
+                                // The loader keeps a placement's parts only
+                                // with a rigid program and its rows.
+                                unbound += 1;
+                                k = end;
+                                continue;
+                            };
+                            pass.set_pipeline(rigid);
+                            pass.set_bind_group(0, slots, &[offset]);
+                        }
+                    }
+                    pass.set_bind_group(1, textures, &[]);
+                    if has_stencil {
+                        pass.set_stencil_reference(reference);
+                    }
+                    pass.multi_draw_indexed_indirect(&self.indirect, (first + k) as u64 * SLOT_SIZE, (end - k) as u32);
+                    k = end;
+                }
+                continue;
             } else if self.programs.is_some() {
                 // With material programs, stage 1's look is never drawn:
                 // the loader keeps only materials whose program uploads,
                 // so this is a batch it could not bind (counted, left out).
-                self.unbound_batches += 1;
+                unbound += 1;
                 continue;
             } else {
                 if own != Some(false) {
                     pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
+                    pass.set_vertex_buffer(0, self.vertices.slice(..));
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(0, &self.frame_group, &[]);
                 }
@@ -661,12 +797,59 @@ impl GpuWorld {
             }
             pass.multi_draw_indexed_indirect(&self.indirect, u64::from(b.first_draw) * SLOT_SIZE, b.draw_count);
         }
+        drop(pass);
+        self.unbound_batches += unbound;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Image;
+    use super::{Image, PassStencil};
+
+    #[test]
+    fn the_pass_takes_the_devices_stencil_as_the_d3d_path_does() {
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        // The structure draw's mode 1: ALWAYS, reference 0, REPLACE.
+        let mode1 = StencilState {
+            enable: true,
+            func: CompareFunc::Always,
+            reference: 0,
+            read_mask: 0xff,
+            write_mask: 0xff,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Replace,
+        };
+        let s = PassStencil::from_device(&mode1, wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(s.marked.is_empty());
+        assert_eq!(s.state.front.compare, wgpu::CompareFunction::Always);
+        assert_eq!(s.state.front.pass_op, wgpu::StencilOperation::Replace);
+        assert_eq!(s.state.back, s.state.front);
+        assert_eq!((s.state.write_mask, s.reference), (0xff, 0));
+        let other = gfx::translate::depth_stencil_state(
+            &gfx::state::RenderState { stencil: mode1, ..Default::default() },
+            Some(wgpu::TextureFormat::Depth24PlusStencil8),
+            wgpu::PrimitiveTopology::TriangleList,
+        )
+        .unwrap();
+        assert_eq!(s.state, other.stencil, "what the D3D path's pipeline takes");
+        assert_eq!(PassStencil::from_device(&mode1, wgpu::TextureFormat::Depth32Float), PassStencil::default());
+        let off = StencilState { enable: false, ..mode1 };
+        assert_eq!(PassStencil::from_device(&off, wgpu::TextureFormat::Depth24PlusStencil8), PassStencil::default());
+        // Mode 1 is what a switching item leaves; anything else is not.
+        assert!(PassStencil::is_structure_mode(&mode1));
+        assert!(!PassStencil::is_structure_mode(&off));
+        assert!(!PassStencil::is_structure_mode(&StencilState { reference: 0xff, ..mode1 }));
+        assert!(!PassStencil::is_structure_mode(&StencilState { write_mask: 0x0f, ..mode1 }));
+        assert!(!PassStencil::is_structure_mode(&StencilState { depth_fail: StencilOp::Replace, ..mode1 }));
+        // A marked section draws with mode 2's reference, the rest with
+        // the device's.
+        use crate::world::Owner;
+        let s = PassStencil { marked: vec![Owner::Cluster(3), Owner::Instance(1)], ..s };
+        assert_eq!(s.reference_of(Owner::Cluster(3)), 0xff);
+        assert_eq!(s.reference_of(Owner::Instance(1)), 0xff);
+        assert_eq!(s.reference_of(Owner::Cluster(1)), 0);
+    }
 
     fn level(w: u32, h: u32) -> (u32, u32, Vec<u8>) {
         (w, h, vec![0; (w * h * 4) as usize])

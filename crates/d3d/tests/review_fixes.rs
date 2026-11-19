@@ -389,6 +389,42 @@ fn a_stage_palette_reads_back_its_entries() {
     assert_eq!(d.stage_palette(&m, 4), None);
 }
 
+#[test]
+fn a_render_state_reads_back_as_set() {
+    let (mut d, mut m) = rec();
+    let slot = d3d::state::slot::STENCILENABLE;
+    d.set_render_state(&mut m, slot, 1).unwrap();
+    assert_eq!(d.render_state(&m, slot), Some(1));
+    d.set_render_state(&mut m, slot, 0).unwrap();
+    assert_eq!(d.render_state(&m, slot), Some(0));
+    assert_eq!(d.render_state(&m, 100_000), None, "past the slots");
+    // The stencil state as a draw takes it: the structure draw's mode 1
+    // (`ALWAYS`, reference 0, `REPLACE` on pass, masks 0xff).
+    use gfx::state::RenderStateType as R;
+    let table = gfx::xdk::RenderStateTable::default();
+    let guest = |t: R| table.canonical_to_guest(t.index()).unwrap();
+    for (t, v) in [
+        (R::StencilEnable, 1),
+        (R::StencilFunc, 0x207),
+        (R::StencilRef, 0),
+        (R::StencilMask, 0xff),
+        (R::StencilWriteMask, 0xff),
+        (R::StencilFail, 0x1e00),
+        (R::StencilZFail, 0x1e00),
+        (R::StencilPass, 0x1e01),
+    ] {
+        d.set_render_state(&mut m, guest(t), v).unwrap();
+    }
+    let s = d.stencil_state(&m).unwrap();
+    assert!(s.enable);
+    assert_eq!(s.func, gfx::state::CompareFunc::Always);
+    assert_eq!((s.reference, s.read_mask, s.write_mask), (0, 0xff, 0xff));
+    assert_eq!(s.pass, gfx::state::StencilOp::Replace);
+    assert_eq!(s.depth_fail, gfx::state::StencilOp::Keep);
+    d.set_render_state(&mut m, guest(R::StencilPass), 0x1234).unwrap();
+    assert_eq!(d.stencil_state(&m), None, "not a stencil op");
+}
+
 /// `COLORSIGN` is part of the texture cache identity too: signed channels
 /// are stored biased, so one texture read signed and unsigned is two host
 /// textures, and the draw still carries the stage's sign bits.

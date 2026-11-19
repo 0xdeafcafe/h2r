@@ -22,6 +22,15 @@
 //!   each); set, an instanced-geometry placement (`+0xc` bits 18..28, the
 //!   placements at `+0x144`, `0x58` each); then the argument's low byte
 //!   is the index into that section's parts (`[section+4] + 0x48·part`).
+//! - The geometry draw `0x0004d0b0` switches the stencil around an item in
+//!   layers 1 and 3: before it (`0x0004d640`), with either flag byte
+//!   `0x00485a75`, `0x00485a76` set, mode 0 (stencil off); else, when the
+//!   render record's `+0` has bit 14, mode 2 (`ALWAYS`, reference `0xff`,
+//!   `REPLACE` on pass); after it (`0x0004d720`), on either condition,
+//!   mode 1 (the same with reference 0). Modes by `0x00015370`'s table at
+//!   `0x00015658`. Bit 14 is the item's visibility flag `0x200` moved up
+//!   (`0x001332f0`). An item with neither leaves the stencil as the layer
+//!   found it. [`stencil_plan`] says which do.
 
 use crate::camera::{GuestRead, GuestWrite};
 use crate::world::Owner;
@@ -37,6 +46,15 @@ pub const ITEM_SIZE: u32 = 0x18;
 pub const LIGHTMAP_LAYER: u32 = 3;
 /// Items walked at most (the list's capacity is far below).
 const MAX_ITEMS: u32 = 1 << 16;
+/// The geometry draw (an item's `+4`) that switches the stencil.
+pub const GEOMETRY_DRAW: u32 = 0x0004_d0b0;
+/// The render record's `+0` bit that marks an item's pixels in the
+/// stencil (mode 2).
+pub const STENCIL_MARK: u32 = 1 << 14;
+/// The word holding the two flag bytes `0x00485a75` and `0x00485a76` (its
+/// bytes 1 and 2): either set, layers 1 and 3 draw their items with the
+/// stencil off.
+pub const STENCIL_OFF_FLAGS: u32 = 0x0048_5a74;
 
 /// Items whose layer bit was cleared, to set back after the layer draw.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -145,6 +163,70 @@ fn clear_items(
     Some(out)
 }
 
+/// How `layer`'s draw switches the stencil around its items (the module
+/// notes), for a native pass standing in for some of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StencilPlan {
+    /// Either flag byte set: every item draws with the stencil off (mode
+    /// 0) and leaves mode 1.
+    pub off: bool,
+    /// The BSP sections (clusters, placements) whose items' records have
+    /// [`STENCIL_MARK`]: they draw in mode 2 (reference `0xff`) and leave
+    /// mode 1. Ascending.
+    pub marked: Vec<Owner>,
+    /// Whether any item switches the stencil (`off`, or any marked item,
+    /// an object's too): the items after one draw in mode 1 whatever the
+    /// layer started with.
+    pub switches: bool,
+}
+
+/// [`StencilPlan`] of `layer`'s current list: only layers 1 and 3 switch;
+/// an item counts when it is in the layer and drawn by the geometry draw
+/// (built by it, or drawn by it). `None` when something it reads does
+/// not.
+pub fn stencil_plan(mem: &dyn GuestRead, layer: u32) -> Option<StencilPlan> {
+    let mut plan = StencilPlan::default();
+    if layer != 1 && layer != 3 {
+        return Some(plan);
+    }
+    if mem.read_u32(STENCIL_OFF_FLAGS)? & 0x00ff_ff00 != 0 {
+        plan.off = true;
+        plan.switches = true;
+        return Some(plan);
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return Some(plan);
+    }
+    let count = mem.read_u32(list + 4)?;
+    let first = mem.read_u32(list + 0xc)?;
+    let items = mem.read_u32(list + 0x14)?;
+    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+        let item = items + ITEM_SIZE * i;
+        if mem.read_u32(item + 0x10)? & (1 << layer) == 0 {
+            continue;
+        }
+        if mem.read_u32(item)? != GEOMETRY_BUILD && mem.read_u32(item + 4)? != GEOMETRY_DRAW {
+            continue;
+        }
+        let record = (mem.read_u32(item + 0xc)? as i32 >> 8) as u16 as i16;
+        if record < 0 {
+            continue;
+        }
+        let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+        if mem.read_u32(base)? & STENCIL_MARK == 0 {
+            continue;
+        }
+        plan.switches = true;
+        if mem.read_u32(base + 4)? == u32::MAX {
+            plan.marked.push(structure_part(mem, item)?.0);
+        }
+    }
+    plan.marked.sort_unstable();
+    plan.marked.dedup();
+    Some(plan)
+}
+
 /// Sets the bits [`clear_structure`] cleared back.
 pub fn restore(mem: &mut dyn GuestWrite, cleared: &Cleared) {
     let bit = 1u32 << cleared.layer;
@@ -191,6 +273,46 @@ mod tests {
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m
+    }
+
+    #[test]
+    fn a_marked_record_or_a_flag_switches_the_stencil_in_layers_1_and_3() {
+        let mut m = scene();
+        m.w(STENCIL_OFF_FLAGS, 0x1200_0011);
+        for record in [2, 5, 7] {
+            m.w(RENDER_RECORDS + 0x20 * record, 0x1008 | 0x8000);
+            m.w(RENDER_RECORDS + 0x20 * record + 0xc, 4 << 18 | 3 << 9);
+        }
+        let none = Some(StencilPlan::default());
+        assert_eq!(stencil_plan(&m, 3), none, "no mark, no flag (the bytes around them do not count)");
+        assert_eq!(stencil_plan(&m, 5), none, "another layer");
+        // Record 7's item is in layer 1 only: its mark counts there. Its
+        // `+0` bit 12 is set: placement 4.
+        m.w(RENDER_RECORDS + 0x20 * 7, STENCIL_MARK | 1 << 12);
+        assert_eq!(stencil_plan(&m, 3), none);
+        let plan = stencil_plan(&m, 1).unwrap();
+        assert_eq!((plan.off, plan.switches, plan.marked), (false, true, vec![Owner::Instance(4)]));
+        // Record 2 (cluster 3), drawn by two items in layer 3.
+        m.w(RENDER_RECORDS + 0x20 * 2, STENCIL_MARK);
+        let plan = stencil_plan(&m, 3).unwrap();
+        assert_eq!((plan.switches, plan.marked), (true, vec![Owner::Cluster(3)]), "once");
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        // An object's item (record 5) in layer 3 switches it too, but is
+        // not a BSP section.
+        m.w(RENDER_RECORDS + 0x20 * 5, STENCIL_MARK | 1);
+        let plan = stencil_plan(&m, 3).unwrap();
+        assert_eq!((plan.switches, plan.marked), (true, vec![]));
+        m.w(RENDER_RECORDS + 0x20 * 5, 0);
+        assert_eq!(stencil_plan(&m, 3), none);
+        for flag in [0x0000_0100, 0x0001_0000] {
+            m.w(STENCIL_OFF_FLAGS, flag);
+            let plan = stencil_plan(&m, 3).unwrap();
+            assert!(plan.off && plan.switches, "flag {flag:#x}");
+        }
+        // Unreadable: the caller cannot say.
+        let mut m = scene();
+        m.w(STENCIL_OFF_FLAGS, 0);
+        assert_eq!(stencil_plan(&m, 3), None, "the records' first words are not there");
     }
 
     fn mask(m: &Mem, i: u32) -> u32 {

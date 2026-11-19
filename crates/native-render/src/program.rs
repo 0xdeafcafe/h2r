@@ -15,7 +15,7 @@ use tags::shader::StageStates;
 use crate::gpu::{Image, texture};
 use crate::look::{PassLook, Stage, WorldPass};
 use crate::pass_state::PassState;
-use crate::world::{LightmapKey, World, WorldVertex};
+use crate::world::{LightmapKey, ModelRows, Owner, World, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
 /// (`d3d::VIEW_CONSTANTS`).
@@ -29,6 +29,14 @@ pub const TEXCOORD_DECOMPRESSION: usize = 172;
 /// The model rows the structure draw uploads for a placement
 /// (`0x0004d830`, hardware numbering).
 pub const MODEL_ROWS: usize = 50;
+
+/// The position decompression a rigid program reads (`v0 · c[170] +
+/// c[171]`): scale then offset, the identity for the BSP (`0x0001cdd0`
+/// with no compression flags: `c[170]` all `1.0`, `c[171]` zero; uploaded
+/// at `c[0xaa]` when the last upload was another, so the registers hold
+/// it whenever a structure item draws; the render record's `+4` is `-1`
+/// for clusters and placements, which takes that path at `0x0004d7c6`).
+pub const POSITION_DECOMPRESSION: usize = 170;
 
 /// The vertex registers a [`WorldVertex`] supplies, with the field each
 /// comes from: `v0` position, `v1` texture coordinate, `v2..v4` the tangent
@@ -71,6 +79,24 @@ pub struct MaterialProgram {
     /// draws with the opaque world's (depth test `LessEqual` and write, no
     /// blend, no cull).
     pub state: Option<PassState>,
+    /// The pass with its vertex program's rigid classification, which
+    /// draws the material's instanced placements ([`compile_rigid`]);
+    /// `None` leaves them to the D3D path.
+    pub rigid: Option<RigidProgram>,
+}
+
+/// A world pass linked with its vertex program's rigid classification
+/// (the same pixel shader, stages and pixel uniforms): what the D3D path
+/// draws an instanced placement with, each placement's model rows in
+/// `c[50..52]` per draw ([`rigid_vertex`]).
+#[derive(Clone, Debug)]
+pub struct RigidProgram {
+    /// The linked module (`vs_main`, `fs_main`).
+    pub wgsl: String,
+    /// The vertex uniforms but for the view's constants and the rows.
+    pub vertex: VertexUniforms,
+    /// The vertex registers the rigid program reads.
+    pub inputs: u16,
 }
 
 /// Translates `look`'s pass with its vertex program `microcode` (the
@@ -115,6 +141,7 @@ pub fn compile_pass(
         pixel: t.pixel,
         inputs: t.inputs,
         state: None,
+        rigid: None,
     })
 }
 
@@ -143,6 +170,52 @@ pub fn compile_world(pass: &WorldPass, microcode: &[u8]) -> Result<MaterialProgr
     Ok(p)
 }
 
+/// `pass` with its vertex program's rigid classification `microcode`
+/// ([`crate::look::rigid_program`]), for the material's instanced
+/// placements, or why they stay on the D3D path. As [`compile_world`]
+/// (whose checks `pass` has passed), and the program must read the model
+/// rows `c[50..52]`: the D3D path places a placement's vertices with them
+/// on the GPU, and the native pass uploads the same rows per placement.
+pub fn compile_rigid(pass: &WorldPass, microcode: &[u8]) -> Result<RigidProgram, String> {
+    let program = vsh::Program::parse(microcode).map_err(|e| format!("rigid vertex program: {e:?}"))?;
+    let read = constants_read(&program)?;
+    if !(MODEL_ROWS..MODEL_ROWS + 3).all(|c| read.contains(&(c as u8))) {
+        return Err("the rigid vertex program does not read the model rows c[50..52]".into());
+    }
+    let set = set_constants(&pass.look.vertex_constants);
+    if let Some(c) = read.into_iter().find(|&c| !set(c)) {
+        return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
+    }
+    let p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+    Ok(RigidProgram { wgsl: p.wgsl, vertex: p.vertex, inputs: p.inputs })
+}
+
+/// Whether every instanced-placement part of `material` in `world` can be
+/// drawn with `rigid`: each supplies the registers it reads, and its
+/// placement's rows were read at load ([`World::rows`]).
+pub fn rigid_fit(world: &World, material: u16, rigid: &RigidProgram) -> Result<(), String> {
+    for d in world.draws.iter().filter(|d| d.material == material) {
+        let Owner::Instance(i) = d.owner else { continue };
+        let missing = rigid.inputs & !d.inputs;
+        if missing != 0 {
+            return Err(format!("a placement's part has no v{}", missing.trailing_zeros()));
+        }
+        if world.rows(i).is_none() {
+            return Err("a placement's rows did not read".into());
+        }
+    }
+    Ok(())
+}
+
+/// The rigid program's vertex uniforms for one placement in one frame:
+/// [`frame_vertex`], then the placement's rows in `c[50..52]` as the
+/// structure draw uploads them before the draw (`0x0004d830`).
+pub fn rigid_vertex(base: &VertexUniforms, view: &ViewInputs, rows: &ModelRows) -> VertexUniforms {
+    let mut u = frame_vertex(base, view);
+    u.constants[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(rows);
+    u
+}
+
 /// Whether the native world sets constant `c` (hardware numbering) for a
 /// pass with instance constants `instance`.
 fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
@@ -150,6 +223,7 @@ fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
         let c = usize::from(c);
         c < VIEW_CONSTANTS
             || (MODEL_ROWS..MODEL_ROWS + 3).contains(&c)
+            || (POSITION_DECOMPRESSION..POSITION_DECOMPRESSION + 2).contains(&c)
             || c == TEXCOORD_DECOMPRESSION
             || instance.iter().any(|r| usize::from(r.index) == c && r.written != 0)
     }
@@ -346,6 +420,8 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
     let wgsl = shaders::link(&vs, &ps).map_err(|e| e.to_string())?;
     let mut vertex = VertexUniforms::default();
     vertex.constants[TEXCOORD_DECOMPRESSION] = [1.0, 1.0, 0.0, 0.0];
+    vertex.constants[POSITION_DECOMPRESSION] = [1.0; 4];
+    vertex.constants[POSITION_DECOMPRESSION + 1] = [0.0; 4];
     // The vertices are already placed: the model rows are the identity
     // (clusters never upload them; a program that reads them gets these).
     vertex.constants[MODEL_ROWS..MODEL_ROWS + 3]
@@ -551,12 +627,17 @@ pub(crate) struct Gpu {
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
     pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    /// The world's pipelines, by target formats and the stencil state the
+    /// layer draws with ([`ProgramSet::pipelines`]).
+    world_pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState), wgpu::RenderPipeline>,
 }
 
 /// The materials drawn with their own programs, and each batch's texture
 /// group (its lightmap page bound where the pass samples the lightmap).
 pub struct ProgramSet {
     materials: HashMap<u16, Gpu>,
+    /// The materials whose placements draw with their rigid programs.
+    rigid: HashMap<u16, Rigid>,
     /// Per batch of the world: the texture group, when the batch's
     /// material has a program.
     batch_groups: Vec<Option<wgpu::BindGroup>>,
@@ -665,6 +746,7 @@ impl Gpu {
             samplers,
             stage_views,
             pipelines: HashMap::new(),
+            world_pipelines: HashMap::new(),
         })
     }
 
@@ -715,55 +797,180 @@ impl Gpu {
         depth: wgpu::TextureFormat,
         state: Option<&PassState>,
     ) {
-        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
-            .iter()
-            .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
-            .collect();
         let (module, layout) = (&self.module, &self.layout);
-        let primitive = state.map_or(
-            wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            |s| s.primitive,
-        );
-        let (depth_write, depth_compare) =
-            state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
-        let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
-        self.pipelines.entry((color, depth)).or_insert_with(|| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("native world program"),
-                layout: Some(layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<WorldVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &attributes,
-                    })],
-                },
-                primitive,
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: depth,
-                    depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(depth_compare),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: color, blend, write_mask })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+        self.pipelines
+            .entry((color, depth))
+            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, wgpu::StencilState::default()));
+    }
+}
+
+/// A program's pipeline over the world vertex ([`INPUTS`]): the world's
+/// opaque state without `state`, a pass's own with it; `stencil` the
+/// stencil test and write.
+fn render_pipeline(
+    device: &wgpu::Device,
+    module: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    color: wgpu::TextureFormat,
+    depth: wgpu::TextureFormat,
+    state: Option<&PassState>,
+    stencil: wgpu::StencilState,
+) -> wgpu::RenderPipeline {
+    let attributes: Vec<wgpu::VertexAttribute> = INPUTS
+        .iter()
+        .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
+        .collect();
+    let primitive = state.map_or(
+        wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        |s| s.primitive,
+    );
+    let (depth_write, depth_compare) =
+        state.map_or((true, wgpu::CompareFunction::LessEqual), |s| (s.depth_write, s.depth_compare));
+    let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| (s.blend, s.color_writes));
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("native world program"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<WorldVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attributes,
+            })],
+        },
+        primitive,
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth,
+            depth_write_enabled: Some(depth_write),
+            depth_compare: Some(depth_compare),
+            stencil,
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format: color, blend, write_mask })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// A material's rigid program on the GPU ([`RigidProgram`]): one vertex
+/// uniform buffer with a slot per placement the material draws, bound at
+/// that slot's dynamic offset for the placement's draws, with the
+/// material's pixel uniforms and texture groups.
+pub(crate) struct Rigid {
+    program: RigidProgram,
+    module: wgpu::ShaderModule,
+    layout: wgpu::PipelineLayout,
+    buffer: wgpu::Buffer,
+    uniforms: wgpu::BindGroup,
+    /// Bytes between slots (the device's offset alignment).
+    stride: u64,
+    /// Per slot, ascending: the placement and its rows.
+    slots: Vec<(u32, ModelRows)>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState), wgpu::RenderPipeline>,
+}
+
+/// The placements `material`'s draws in `world` name, ascending, each with
+/// its rows; `None` when one has none.
+pub fn rigid_slots(world: &World, material: u16) -> Option<Vec<(u32, ModelRows)>> {
+    let mut slots: Vec<(u32, ModelRows)> = Vec::new();
+    for d in world.draws.iter().filter(|d| d.material == material) {
+        let Owner::Instance(i) = d.owner else { continue };
+        if slots.last().is_some_and(|s| s.0 == i) {
+            continue;
+        }
+        slots.push((i, *world.rows(i)?));
+    }
+    slots.sort_by_key(|s| s.0);
+    slots.dedup_by_key(|s| s.0);
+    Some(slots)
+}
+
+/// [`rigid_vertex`] of every slot, `stride` bytes apart: the slot buffer's
+/// contents for one frame.
+pub fn rigid_slot_bytes(base: &VertexUniforms, view: &ViewInputs, slots: &[(u32, ModelRows)], stride: usize) -> Vec<u8> {
+    let mut out = vec![0u8; stride * slots.len().saturating_sub(1) + VertexUniforms::SIZE];
+    for (n, (_, rows)) in slots.iter().enumerate() {
+        rigid_vertex(base, view, rows).write_bytes(&mut out[n * stride..n * stride + VertexUniforms::SIZE]);
+    }
+    out
+}
+
+impl Rigid {
+    /// Uploads `gpu`'s rigid program for `material`'s placements in
+    /// `world`; `None` without one, or with no placement to draw.
+    fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
+        let program = gpu.program.rigid.clone()?;
+        let slots = rigid_slots(world, material)?;
+        if slots.is_empty() {
+            return None;
+        }
+        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment.max(1));
+        let size = VertexUniforms::SIZE as u64;
+        let stride = size.div_ceil(align) * align;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native world rigid program"),
+            source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
         });
+        let mut vertex = uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT);
+        if let wgpu::BindingType::Buffer { has_dynamic_offset, min_binding_size, .. } = &mut vertex.ty {
+            *has_dynamic_offset = true;
+            *min_binding_size = wgpu::BufferSize::new(size);
+        }
+        let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native world rigid uniforms"),
+            entries: &[vertex, uniform_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT)],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native world rigid program"),
+            bind_group_layouts: &[Some(&uniforms_layout), Some(&gpu.textures_layout)],
+            immediate_size: 0,
+        });
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native world rigid vertex"),
+            size: stride * (slots.len() as u64 - 1) + size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native world rigid uniforms"),
+            layout: &uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size),
+                    }),
+                },
+                wgpu::BindGroupEntry { binding: 1, resource: gpu.pixel_buffer.as_entire_binding() },
+            ],
+        });
+        Some(Self { program, module, layout, buffer, uniforms, stride, slots, pipelines: HashMap::new() })
+    }
+
+    /// The frame's view and rows in every slot.
+    fn prepare(&self, queue: &wgpu::Queue, view: &ViewInputs) {
+        let bytes = rigid_slot_bytes(&self.program.vertex, view, &self.slots, self.stride as usize);
+        queue.write_buffer(&self.buffer, 0, &bytes);
+    }
+
+    /// The dynamic offset of `instance`'s slot.
+    fn offset(&self, instance: u32) -> Option<u32> {
+        let n = self.slots.binary_search_by_key(&instance, |s| s.0).ok()?;
+        u32::try_from(n as u64 * self.stride).ok()
     }
 }
 
@@ -780,8 +987,12 @@ impl ProgramSet {
         lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
         let mut materials = HashMap::new();
+        let mut rigid = HashMap::new();
         for (material, program) in programs {
             if let Some(g) = Gpu::new(device, queue, program, stage_image) {
+                if let Some(r) = Rigid::new(device, &g, world, material) {
+                    rigid.insert(material, r);
+                }
                 materials.insert(material, g);
             }
         }
@@ -801,7 +1012,7 @@ impl ProgramSet {
                 g.textures(device, page.as_ref())
             })
             .collect();
-        Self { materials, batch_groups }
+        Self { materials, rigid, batch_groups }
     }
 
     /// How many materials draw with their own programs.
@@ -818,24 +1029,57 @@ impl ProgramSet {
         for g in self.materials.values() {
             g.prepare(queue, view);
         }
+        for r in self.rigid.values() {
+            r.prepare(queue, view);
+        }
     }
 
-    /// Makes the pipelines for these target formats (before the pass).
-    pub fn pipelines(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
+    /// Makes the pipelines for these target formats and the stencil state
+    /// the layer draws with (before the pass).
+    pub fn pipelines(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
+    ) {
         for g in self.materials.values_mut() {
             let state = g.program.state;
-            g.pipeline(device, color, depth, state.as_ref());
+            let (module, layout) = (&g.module, &g.layout);
+            g.world_pipelines
+                .entry((color, depth, stencil.clone()))
+                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), stencil.clone()));
+        }
+        for (m, r) in &mut self.rigid {
+            let state = self.materials.get(m).and_then(|g| g.program.state);
+            let (module, layout) = (&r.module, &r.layout);
+            r.pipelines
+                .entry((color, depth, stencil.clone()))
+                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), stencil.clone()));
         }
     }
 
     /// Batch `index`'s pipeline and groups, when its material has a
-    /// program and the pipelines for these formats are made.
+    /// program and the pipelines for these formats and stencil state are
+    /// made.
     pub fn batch(
-        &self, index: usize, material: u16, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        &self, index: usize, material: u16, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, &wgpu::BindGroup)> {
         let g = self.materials.get(&material)?;
         let textures = self.batch_groups.get(index)?.as_ref()?;
-        Some((g.pipelines.get(&(color, depth))?, &g.uniforms, textures))
+        Some((g.world_pipelines.get(&(color, depth, stencil.clone()))?, &g.uniforms, textures))
+    }
+
+    /// The rigid pipeline, uniforms and dynamic offset placement
+    /// `instance`'s draws of `material` take, when it has a rigid program
+    /// and a slot for the placement, and the pipelines for these formats
+    /// are made (its texture group is the batch's, [`ProgramSet::batch`]).
+    pub fn rigid(
+        &self, material: u16, instance: u32, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
+    ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, u32)> {
+        let r = self.rigid.get(&material)?;
+        Some((r.pipelines.get(&(color, depth, stencil.clone()))?, &r.uniforms, r.offset(instance)?))
+    }
+
+    /// How many materials draw their placements with rigid programs.
+    pub fn rigid_len(&self) -> usize {
+        self.rigid.len()
     }
 }
 
@@ -1134,7 +1378,7 @@ mod tests {
             ])
         };
         let pass = world_pass(final_look(false));
-        for c in [0, 7, 17, 19, 50, 52, 172] {
+        for c in [0, 7, 17, 19, 50, 52, 170, 171, 172] {
             assert!(compile_world(&pass, &reads(c)).is_ok(), "c[{c}] is set");
         }
         for c in [18, 21, 24, 31, 53, 174] {
@@ -1143,6 +1387,103 @@ mod tests {
         }
         let relative = program(&[Inst::mac(MacOp::Mov, Some(O::c_rel(10)), None, None).to_out(false, OutReg::Pos, 0xf)]);
         assert!(compile_world(&pass, &relative).unwrap_err().contains("relative"));
+    }
+
+    /// The rigid classification's shape: `r10 = v0 · c[170] + c[171]`,
+    /// `dph r0.xyz, r10, c[50..52]` (the placement's rows), then
+    /// `dph oPos, r0, c[0..3]`, `mov oT0, v1`; `rows: false` places with
+    /// `c[53..55]` instead.
+    fn rigid_program(rows: bool) -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let model = if rows { MODEL_ROWS as u8 } else { MODEL_ROWS as u8 + 3 };
+        // One constant per instruction: the scale, then the offset.
+        let mut code = vec![
+            Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(170)), None).to_temp(10, 0xf),
+            Inst::mac(MacOp::Add, Some(O::r(10)), None, Some(O::c(171))).to_temp(10, 0xf),
+        ];
+        for k in 0..3u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(10)), Some(O::c(model + k)), None).to_temp(0, 8 >> k));
+        }
+        for k in 0..4u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(false, OutReg::Pos, 8 >> k));
+        }
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf));
+        program(&code)
+    }
+
+    #[test]
+    fn a_rigid_program_draws_a_placement_with_its_rows() {
+        let pass = world_pass(final_look(false));
+        let r = compile_rigid(&pass, &rigid_program(true)).expect("compiles");
+        shaders::validate(&r.wgsl).expect("valid WGSL");
+        assert_eq!(r.inputs, 0b11, "v0, v1");
+        assert_eq!(r.vertex.constants[POSITION_DECOMPRESSION], [1.0; 4], "the BSP's decompression is the identity");
+        assert_eq!(r.vertex.constants[POSITION_DECOMPRESSION + 1], [0.0; 4]);
+        assert_eq!(r.vertex.constants[19], [2.0, 3.0, 0.0, 0.0], "the instance's constants");
+        assert_eq!(
+            compile_rigid(&pass, &rigid_program(false)).unwrap_err(),
+            "the rigid vertex program does not read the model rows c[50..52]"
+        );
+        assert_eq!(
+            compile_rigid(&pass, &plain_program()).unwrap_err(),
+            "the rigid vertex program does not read the model rows c[50..52]",
+            "the world classification places nothing"
+        );
+        // Per placement and frame: the view's constants, then its rows,
+        // bit for bit (a NaN payload and a negative zero too).
+        let rows = [
+            [1.0, -0.0, f32::from_bits(0x7fc0_0001), 10.0],
+            [0.0, 1.0, 0.0, f32::INFINITY],
+            [0.0, 0.0, 1.0, -3.5],
+        ];
+        let mut constants = [[0.0; 4]; VIEW_CONSTANTS];
+        constants[3] = [5.0, 6.0, 7.0, 8.0];
+        let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0 };
+        let u = rigid_vertex(&r.vertex, &view, &rows);
+        assert_eq!(u.constants[3], [5.0, 6.0, 7.0, 8.0]);
+        assert_eq!(u.z_max, 16_777_215.0);
+        let bits = |rows: &[[f32; 4]]| rows.iter().map(|r| r.map(f32::to_bits)).collect::<Vec<_>>();
+        assert_eq!(bits(&u.constants[MODEL_ROWS..MODEL_ROWS + 3]), bits(&rows[..]));
+        // The slot buffer: one placement's uniforms per stride.
+        let other = [[2.0; 4]; 3];
+        let stride = 0x1000;
+        let bytes = rigid_slot_bytes(&r.vertex, &view, &[(4, rows), (9, other)], stride);
+        assert_eq!(bytes.len(), stride + VertexUniforms::SIZE);
+        assert_eq!(&bytes[..VertexUniforms::SIZE], &u.to_bytes()[..]);
+        assert_eq!(&bytes[stride..], &rigid_vertex(&r.vertex, &view, &other).to_bytes()[..]);
+    }
+
+    #[test]
+    fn a_rigid_program_fits_only_placements_with_their_rows_and_streams() {
+        use crate::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
+        let section = |material, uvs: bool| SectionInput {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            uvs: if uvs { vec![[0.0; 2]; 3] } else { Vec::new() },
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2]] }],
+            ..Default::default()
+        };
+        let rows = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &section(1, false), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(5), &section(1, true), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(2), &section(1, true), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(6), &section(2, false), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(7), &section(3, true), &Placement::IDENTITY, None);
+        b.place_rows(5, rows);
+        b.place_rows(2, [[3.0; 4]; 3]);
+        b.place_rows(6, rows);
+        let world = b.finish();
+        let r = compile_rigid(&world_pass(final_look(false)), &rigid_program(true)).unwrap();
+        assert_eq!(rigid_fit(&world, 1, &r), Ok(()), "a cluster without the stream is not the rigid program's");
+        assert_eq!(rigid_fit(&world, 2, &r), Err("a placement's part has no v1".to_string()));
+        assert_eq!(rigid_fit(&world, 3, &r), Err("a placement's rows did not read".to_string()));
+        let slots = rigid_slots(&world, 1).unwrap();
+        assert_eq!(slots.iter().map(|s| s.0).collect::<Vec<_>>(), vec![2, 5], "by placement, the cluster has none");
+        assert_eq!(slots[0].1, [[3.0; 4]; 3]);
+        assert_eq!(rigid_slots(&world, 3), None);
+        assert_eq!(rigid_slots(&world, 9), Some(Vec::new()));
     }
 
     #[test]

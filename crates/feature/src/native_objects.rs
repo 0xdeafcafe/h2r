@@ -56,16 +56,20 @@ pub const SWITCH: &str = "impl.render.native_objects";
 /// What the host draws natively right now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeSet {
+    /// The map the set is for (the per-map counts start again at another).
+    pub map: String,
     /// Object definitions by tag index (the low word of the body's `+0`
     /// datum), each with its model's node count.
     pub definitions: HashMap<u16, usize>,
     /// Shaders by tag index (the low word of an item's `+8`): the
     /// materials the pass draws; the rest keep their D3D draws.
     pub shaders: HashSet<u16>,
-    /// Definitions with parts drawn through their own programs: an object
-    /// of one is drawn only with its lighting (and the root value inputs
-    /// 40 and 37 read) and its records' node rows copied.
-    pub lit: HashSet<u16>,
+    /// Definitions with parts drawn through their own programs, each with
+    /// the implementations (bit `n`) every such part has: an object of one
+    /// is drawn only with its lighting (and the root value inputs 40 and 37
+    /// read), its records' node rows copied, and each record's
+    /// implementation among those.
+    pub lit: HashMap<u16, u8>,
 }
 
 impl NativeSet {
@@ -77,23 +81,27 @@ impl NativeSet {
         self.definitions.get(&(definition as u16)).copied()
     }
 
-    /// Whether `definition` draws parts through their own programs.
-    pub fn lit(&self, definition: u32) -> bool {
-        self.lit.contains(&(definition as u16))
+    /// The implementations `definition`'s parts drawn through their own
+    /// programs have (bit `n`), when it has such parts.
+    pub fn lit(&self, definition: u32) -> Option<u8> {
+        self.lit.get(&(definition as u16)).copied()
     }
 }
 
 /// Whether frame `f` (of a definition `set` draws) has what its draw
 /// needs, after copying its node rows when it is lit: a lit object needs
-/// its lighting with the root value, and every record's rows.
+/// its lighting with the root value, every record's rows, and every
+/// record's implementation one its lit parts have.
 pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &mut ObjectFrame) -> bool {
     if set.node_count(f.definition) != Some(f.nodes.len()) {
         return false;
     }
-    if !set.lit(f.definition) {
+    let Some(implementations) = set.lit(f.definition) else {
         return true;
-    }
-    f.lighting.is_some_and(|l| l.root.is_some()) && objects::attach_node_rows(m, f, cleared).is_ok()
+    };
+    f.lighting.is_some_and(|l| l.root.is_some())
+        && objects::attach_node_rows(m, f, cleared).is_ok()
+        && f.implementations.iter().all(|&(_, i)| i < 8 && implementations & (1 << i) != 0)
 }
 
 /// What draws the objects: boot's glue over the GPU models and the device.
@@ -189,6 +197,32 @@ static LAYER3: AtomicU64 = AtomicU64::new(0);
 static WANTED: AtomicU64 = AtomicU64::new(0);
 /// The walks' counts, summed.
 static WALKS: Mutex<Option<WalkStats>> = Mutex::new(None);
+
+/// Per map: live object items by the layer-3 implementation their records
+/// pick, the views counted, and whether they were logged.
+static IMPLEMENTATION_COUNTS: Mutex<Option<(String, [u64; native_render::object_nodes::IMPLEMENTATIONS], u64, bool)>> = Mutex::new(None);
+
+/// Views counted before a map's implementation counts are logged, once.
+const IMPLEMENTATION_VIEWS: u64 = 600;
+
+/// Adds one walk's implementation counts for `map`, starting again at a
+/// new map; logs them once per map, after [`IMPLEMENTATION_VIEWS`] views.
+fn count_implementations(map: &str, w: &WalkStats) {
+    let mut c = IMPLEMENTATION_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    if c.as_ref().is_none_or(|c| c.0 != map) {
+        *c = Some((map.to_owned(), [0; native_render::object_nodes::IMPLEMENTATIONS], 0, false));
+    }
+    let Some((_, counts, views, logged)) = c.as_mut() else { return };
+    for (t, n) in counts.iter_mut().zip(w.implementations) {
+        *t += u64::from(n);
+    }
+    *views += 1;
+    if !*logged && *views >= IMPLEMENTATION_VIEWS {
+        *logged = true;
+        let each: Vec<String> = counts.iter().enumerate().map(|(i, n)| format!("{i}: {n}")).collect();
+        eprintln!("native-objects: {map}: layer-3 object items by the implementation their record picks (+0 bits 29..31), over {views} views: {}", each.join(", "));
+    }
+}
 /// Distinct wrong callers printed so far (at most four).
 static CALLERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -224,6 +258,9 @@ fn add_walk(w: &WalkStats) {
     t.live += w.live;
     t.accepted += w.accepted;
     t.write_failed += w.write_failed;
+    for (a, n) in t.implementations.iter_mut().zip(w.implementations) {
+        *a += n;
+    }
     for &(b, n) in &w.other_builds {
         match t.other_builds.iter().position(|(x, _)| *x == b) {
             Some(i) => t.other_builds[i].1 += n,
@@ -333,6 +370,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     };
     add_walk(&cleared.walk);
+    count_implementations(&set.map, &cleared.walk);
     if cleared.items.is_empty() {
         let w = walk_text(&cleared.walk);
         if cleared.walk.live == 0 {

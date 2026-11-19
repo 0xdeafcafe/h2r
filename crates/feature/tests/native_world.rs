@@ -13,7 +13,7 @@ use feature::native_world::{self, Host, NativeWorld, PartSet};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
+use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS, STENCIL_MARK, STENCIL_OFF_FLAGS, StencilPlan};
 use native_render::world::Owner;
 
 #[test]
@@ -91,13 +91,13 @@ const ITEMS: u32 = 0x0060_0000;
 const BSP: u32 = 0x0080_0000;
 
 struct Stub {
-    asked: Mutex<Vec<(u32, RenderCamera)>>,
+    asked: Mutex<Vec<(u32, RenderCamera, StencilPlan)>>,
     parts: Arc<PartSet>,
 }
 
 impl Host for Stub {
-    fn ask(&self, _mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>> {
-        self.asked.lock().unwrap().push((bsp, *camera));
+    fn ask(&self, _mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Arc<PartSet>> {
+        self.asked.lock().unwrap().push((bsp, *camera, stencil.clone()));
         Some(Arc::clone(&self.parts))
     }
 }
@@ -194,4 +194,33 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
+
+    // The host is told how the items switch the stencil: none here.
+    assert_eq!(stub.asked.lock().unwrap().last().unwrap().2, StencilPlan::default());
+    // A marked section (record 1, cluster 0) and a marked object (record
+    // 3): both switch, the section is named.
+    let mut m = guest();
+    m.set_u32(RENDER_RECORDS + 0x20, STENCIL_MARK).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 3, STENCIL_MARK).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010], "still drawn natively");
+    let plan = stub.asked.lock().unwrap().last().unwrap().2.clone();
+    assert_eq!((plan.off, plan.switches, plan.marked), (false, true, vec![Owner::Cluster(0)]));
+    native_world::restore_pending(&mut m);
+    // The stencil-off flag.
+    let mut m = guest();
+    m.set_u32(STENCIL_OFF_FLAGS, 0x0000_0100).unwrap();
+    native_world::before_layer(&mut m);
+    assert!(stub.asked.lock().unwrap().last().unwrap().2.off);
+    native_world::restore_pending(&mut m);
+    // Unreadable switches (the list runs past the memory): the D3D path
+    // draws the view, the host not asked.
+    let asked = stub.asked.lock().unwrap().len();
+    let left = native_world::stencil_views();
+    let mut m = guest();
+    m.set_u32(LIST + 4, 0x1000).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked);
+    assert_eq!(native_world::stencil_views(), left + 1);
 }

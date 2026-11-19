@@ -23,6 +23,13 @@
 //!   - Anything else (`0x000152a0`): the part's matrices, `count · 12`
 //!     dwords from its first, at `c[50 + 3·k]`: the skinned palette the
 //!     program indexes with `a0.x`.
+//! - The implementation (`0x0004cbf0`, the build of one record's draw;
+//!   its third argument the draw, `edi`, through the jump table at
+//!   `0x0004d054` indexed by the bytes at `0x0004d068`): at draw 3 (layer
+//!   3) it is the record's `+0` bits 29..31 (`0x0004cc70`, the table at
+//!   `0x0004d07c`: 0..4 as they are, 5..7 give 3), whatever `0x00015d70`
+//!   chose before. The lighting's `+0x76` and the template's layer-15 bit
+//!   pick it only for draw 18 (`0x0004cc9f`..`0x0004cd46`), not layer 3.
 //! - `0x0001cdd0` (from the section setup `0x0004d7c0`): twelve dwords at
 //!   hardware `c[170]` (`ECX` 0xaa): the position scale and offset (half
 //!   the bounds' extent, w 1; their centre, w 0) and the texture
@@ -38,6 +45,19 @@ pub const MODEL_ROWS: usize = 50;
 pub const NODE_BLOCKS: u32 = 0x0048_7b1c;
 /// A render record's node block handle.
 pub const RECORD_NODES: u32 = 0x8;
+/// The record's word whose bits 29..31 pick the layer-3 implementation.
+pub const RECORD_IMPLEMENTATION: u32 = 0x0;
+/// Implementations a layer-3 draw may pick ([`record_implementation`]).
+pub const IMPLEMENTATIONS: usize = 5;
+
+/// The implementation of its layer-3 pass a record draws, from its word
+/// `+0` (`0x0004cc70`): bits 29..31, 5..7 taken as 3.
+pub fn record_implementation(word: u32) -> usize {
+    match word >> 29 {
+        n @ 0..=4 => n as usize,
+        _ => 3,
+    }
+}
 /// A render record's key: bits 0..3 the part, 9..17 the section, 29..31
 /// the type.
 pub const RECORD_KEY: u32 = 0xc;
@@ -204,6 +224,12 @@ pub(crate) mod tests {
         m.w(RECORD + RECORD_NODES, nodes);
         m.w(RECORD + RECORD_KEY, key);
         m.w(RECORD + RECORD_MODEL, model);
+    }
+
+    #[test]
+    fn a_records_top_bits_pick_its_layer3_implementation() {
+        let got: Vec<usize> = (0..8u32).map(|t| record_implementation(t << 29 | 0x1234)).collect();
+        assert_eq!(got, vec![0, 1, 2, 3, 4, 3, 3, 3]);
     }
 
     #[test]

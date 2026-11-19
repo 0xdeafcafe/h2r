@@ -379,7 +379,7 @@ pub fn colour_uniforms(p: &LightProgram, colour_a: [f32; 3], colour_b: [f32; 3])
                     }
                 }
             }
-            VectorTarget::Pixel { c1, slot, mask, half } => {
+            VectorTarget::Pixel { c1, slot, mask, half, .. } => {
                 let bank = if c1 { &mut pixel.c1 } else { &mut pixel.c0 };
                 let Some(c) = bank.get_mut(usize::from(slot)) else { continue };
                 let packed = pack_engine_colour([colour[0], colour[1], colour[2], 0.0], half);
@@ -391,7 +391,7 @@ pub fn colour_uniforms(p: &LightProgram, colour_a: [f32; 3], colour_b: [f32; 3])
 }
 
 /// `shaders::psh::argb` undone (its values are multiples of 1/255).
-fn repack(c: [f32; 4]) -> u32 {
+pub(crate) fn repack(c: [f32; 4]) -> u32 {
     let ch = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
     ch(c[3]) << 24 | ch(c[0]) << 16 | ch(c[1]) << 8 | ch(c[2])
 }
@@ -702,8 +702,8 @@ mod tests {
         p.colours = vec![
             VectorBinding { source: 5, target: VectorTarget::Vertex { bank: 1, reg: 2, components: 0b0011 } },
             VectorBinding { source: 6, target: VectorTarget::Vertex { bank: 0, reg: 10, components: 0b0111 } },
-            VectorBinding { source: 6, target: VectorTarget::Pixel { c1: false, slot: 2, mask: 0x00ff_ff00, half: false } },
-            VectorBinding { source: 5, target: VectorTarget::Pixel { c1: true, slot: 8, mask: 0x00ff_ffff, half: true } },
+            VectorBinding { source: 6, target: VectorTarget::Pixel { c1: false, slot: 2, mask: 0x00ff_ff00, half: false, transform: 0 } },
+            VectorBinding { source: 5, target: VectorTarget::Pixel { c1: true, slot: 8, mask: 0x00ff_ffff, half: true, transform: 0 } },
             VectorBinding { source: 7, target: VectorTarget::Vertex { bank: 1, reg: 3, components: 0b0111 } },
         ];
         let (v, px) = colour_uniforms(&p, [0.5, 0.25, 1.0], [1.0, 0.0, 0.5]);
