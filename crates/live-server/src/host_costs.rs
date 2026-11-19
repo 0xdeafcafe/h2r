@@ -258,6 +258,11 @@ impl HostCosts {
             .sum()
     }
 
+    /// The configured monthly spending limit in USD.
+    pub fn budget_usd_month(&self) -> f64 {
+        self.budget_usd_month
+    }
+
     /// The guard trips as soon as estimated spending reaches the limit.
     pub fn over_budget(&self, now_ms: i64) -> bool {
         self.month_to_date(now_ms) >= self.budget_usd_month
@@ -581,6 +586,7 @@ mod tests {
             None,
         )
         .unwrap();
+        assert_eq!(costs.budget_usd_month(), 5.0);
         costs.fold(&request("ended", ProviderKind::Fly, HostClass::Small, FEB));
         costs.fold(&end("ended", 2_000, 2, FEB + 2_000));
         costs.fold(&request("running", ProviderKind::Fly, HostClass::Small, FEB + 2_000));
@@ -600,6 +606,7 @@ mod tests {
             Some(" 0.0017 "),
         )
         .unwrap();
+        assert_eq!(costs.budget_usd_month(), 0.0017);
         costs.fold(&request("match", ProviderKind::Cloudflare, HostClass::Small, FEB));
         costs.fold(&end("match", 60_000, 3, FEB + MINUTE));
         let cost = costs.lease_cost("match", FEB + MINUTE).unwrap();
