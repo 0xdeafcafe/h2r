@@ -115,7 +115,7 @@ const MAX_PROPERTIES: u32 = 64;
 /// `0x00318c22` refuses a point past 250.
 const MAX_POINTS: u32 = 256;
 
-fn bad(addr: u32) -> MemFault {
+pub(crate) fn bad(addr: u32) -> MemFault {
     MemFault {
         addr,
         len: 4,
@@ -123,8 +123,21 @@ fn bad(addr: u32) -> MemFault {
     }
 }
 
+/// Check the entire range before computing individual field/element addresses.
+pub(crate) fn span(base: u32, size: u32) -> Result<(), MemFault> {
+    if size != 0 && (base == 0 || base.checked_add(size - 1).is_none()) {
+        return Err(bad(base));
+    }
+    Ok(())
+}
+
 /// A Havok array's pointer and count at `at`, the count checked.
-fn array(m: &dyn GuestMemory, at: u32, cap: u32) -> Result<(u32, u32), MemFault> {
+pub(crate) fn array(
+    m: &dyn GuestMemory,
+    at: u32,
+    cap: u32,
+) -> Result<(u32, u32), MemFault> {
+    span(at, 8)?;
     let ptr = m.u32(at)?;
     let count = m.u32(at + 4)?;
     if count > cap || (count > 0 && ptr == 0) {
@@ -147,13 +160,18 @@ fn world(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
 }
 
 /// The islands, each with its state: active, inactive, then fixed.
-fn islands(m: &dyn GuestMemory, w: u32) -> Result<Vec<(u32, IslandState)>, MemFault> {
+pub(crate) fn islands(
+    m: &dyn GuestMemory,
+    w: u32,
+) -> Result<Vec<(u32, IslandState)>, MemFault> {
+    span(w, layout::WORLD_FIXED_ISLAND + 4)?;
     let mut out = Vec::new();
     for (at, state) in [
         (layout::WORLD_ACTIVE_ISLANDS, IslandState::Active),
         (layout::WORLD_INACTIVE_ISLANDS, IslandState::Inactive),
     ] {
         let (ptr, count) = array(m, w + at, MAX_ISLANDS)?;
+        span(ptr, 4 * count)?;
         for i in 0..count {
             let island = m.u32(ptr + 4 * i)?;
             if island != 0 {
@@ -171,7 +189,9 @@ fn islands(m: &dyn GuestMemory, w: u32) -> Result<Vec<(u32, IslandState)>, MemFa
 /// The object an entity belongs to: its physics component property
 /// (`0x001c3f30`), the component's object handle (`0x001c3fa4`).
 pub fn entity_object(m: &dyn GuestMemory, entity: u32) -> Result<Option<u32>, MemFault> {
+    span(entity, layout::ENTITY_PROPERTIES + 8)?;
     let (ptr, count) = array(m, entity + layout::ENTITY_PROPERTIES, MAX_PROPERTIES)?;
+    span(ptr, 8 * count)?;
     let mut component = None;
     for i in 0..count {
         if m.u32(ptr + 8 * i)? == layout::PROPERTY_PHYSICS_COMPONENT {
@@ -186,9 +206,11 @@ pub fn entity_object(m: &dyn GuestMemory, entity: u32) -> Result<Option<u32>, Me
     if components == 0 {
         return Ok(None);
     }
+    span(components, layout::DATUM_DATA + 4)?;
     let data = m.u32(components + layout::DATUM_DATA)?;
-    let component = data.wrapping_add((index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE);
-    let object = m.u32(component + layout::COMPONENT_OBJECT)?;
+    let offset = (index & 0xffff) * layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_OBJECT;
+    span(data, offset + 4)?;
+    let object = m.u32(data + offset)?;
     Ok((object != u32::MAX).then_some(object))
 }
 
