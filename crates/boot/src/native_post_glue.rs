@@ -772,6 +772,19 @@ impl Proofs {
 /// The egor of the last screen swallow armed (its datum), what a
 /// mismatch after it is charged to.
 static LAST_SCREEN: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Whether the last screen swallow armed dropped its strips.
+static LAST_SCREEN_DROP: AtomicBool = AtomicBool::new(false);
+/// The egors whose probe ended early, said once each.
+static PROBE_MISMATCH_LOGGED: Egors = Egors::new();
+
+/// A screen swallow for `egor` ended early (`dropped`: it dropped its
+/// strips). A probe dropped nothing, so only that call is lost to the
+/// proof: it stays unproved and its next call probes again. A drop lost
+/// that frame's strips: the egor keeps the D3D path from then. Whether
+/// it fell back (first time).
+fn screen_mismatch(egor: TagId, dropped: bool) -> bool {
+    dropped && fall_back(egor)
+}
 
 /// Whether `egor` was proved with `plan`.
 fn proved(egor: TagId, plan: &SwallowPlan) -> bool {
@@ -1265,6 +1278,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let effects = self.screen_effects(&*mem);
         let egor = TagId(call.datum);
         let ordered = call_ordered(effects.as_deref(), egor, &effect);
+        if effects.is_none() {
+            // The first call on a map starts their load: nothing is
+            // missing yet, they are not in.
+            self.note(|| "hook: the map's screen effects are still loading".into());
+            return false;
+        }
         let frame = quad_frame(&*mem, fp);
         let mut m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p), frame.is_some());
         if !templates_draw(&*mem, &effect) {
@@ -1326,6 +1345,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// unfinished (the device counts it a mismatch), that one is charged
     /// for it here, not the new one.
     fn arm(&self, mem: &mut dyn GuestMemory, swallow: d3d::Swallow, kind: u8, egor: TagId) -> bool {
+        let dropping = swallow.drop;
         let Ok(mut d) = self.device.lock() else { return false };
         let before = d.stats().swallow_mismatches;
         let armed = d.swallow(&mut DeviceMemory(mem), swallow).unwrap_or(false);
@@ -1339,6 +1359,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             LAST_SWALLOW.store(kind, Ordering::Relaxed);
             if kind == SCREEN_ARMED {
                 LAST_SCREEN.store(egor.0, Ordering::Relaxed);
+                LAST_SCREEN_DROP.store(dropping, Ordering::Relaxed);
             }
         }
         armed
@@ -1346,7 +1367,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
     /// The device's swallow mismatches went up to `mismatches` (`why`,
     /// the device's account of the last): the last swallow armed ended
-    /// early, so its hook's later calls keep the D3D path.
+    /// early. The glow's later calls keep the D3D path; a screen effect's
+    /// do only when it had dropped strips ([`screen_mismatch`]).
     fn note_mismatches(&self, mismatches: u64, why: Option<String>) {
         if mismatches <= self.mismatches.swap(mismatches, Ordering::Relaxed) {
             return;
@@ -1354,9 +1376,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let why = why.unwrap_or_default();
         if LAST_SWALLOW.load(Ordering::Relaxed) == SCREEN_ARMED {
             let egor = TagId(LAST_SCREEN.load(Ordering::Relaxed));
-            if fall_back(egor) {
+            let dropped = LAST_SCREEN_DROP.load(Ordering::Relaxed);
+            if screen_mismatch(egor, dropped) {
                 eprintln!(
                     "native-post: the screen effect {:#010x} drew a strip its plan did not have ({why}); that call fell back to D3D, and its later calls keep it",
+                    egor.0
+                );
+            } else if !dropped && PROBE_MISMATCH_LOGGED.insert(egor) {
+                eprintln!(
+                    "native-post: the screen effect {:#010x}'s probe met a strip its plan did not have ({why}); nothing was dropped, its next call probes again (logged once)",
                     egor.0
                 );
             }
@@ -2081,5 +2109,18 @@ mod tests {
         assert!(template_line(args, 0x0002_d4bc, Ok(false)).ends_with("; the port says it skips"));
         assert!(template_line(args, 0x0002_d4bc, Err("Data".into())).ends_with("; the port fails: Data"));
         assert_eq!(post_feature::return_line("0x00016610", 0x1234_5600), "0x00016610 returned, AL 0");
+    }
+
+    /// A probe that meets a strip its plan lacks dropped nothing: the
+    /// egor is not proved and its next call probes again. A drop that
+    /// does keeps the egor on D3D from then.
+    #[test]
+    fn only_a_dropping_swallow_that_ends_early_falls_back() {
+        let (probed, dropped) = (TagId(0xe0ff_0021), TagId(0xe0ff_0022));
+        assert!(!screen_mismatch(probed, false));
+        assert!(!fell_back(probed) && !proved(probed, &(vec![SLOT_BOUND], vec![(PrimitiveType::TriangleStrip, 4)])), "probes again");
+        assert!(screen_mismatch(dropped, true));
+        assert!(fell_back(dropped));
+        assert!(!screen_mismatch(dropped, true), "said once");
     }
 }

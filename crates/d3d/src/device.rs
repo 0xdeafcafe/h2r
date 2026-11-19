@@ -1928,7 +1928,9 @@ impl<B: Backend> Device<B> {
     }
 
     /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next
-    /// inline draws, one per entry of [`Swallow::targets`], are the pass's.
+    /// immediate-mode draws, one per entry of [`Swallow::targets`], are the
+    /// pass's: pushed `Begin`/`End`s and those through the
+    /// `D3DDevice_End` entry alike (other entries' draws are not).
     /// What is queued drains first, as before any entry, so only draws
     /// pushed after this call count. Each must be the next one planned:
     /// an inline `Begin`/`End` of [`Swallow::primitive`] with
@@ -2360,24 +2362,8 @@ impl<B: Backend> Device<B> {
                     }
                     match self.immediate.apply(c.at, m, w)? {
                         Some(Effect::Draw(d)) => {
-                            let armed = self.swallowing.is_some();
-                            let fate = self.swallow_fate(&d);
-                            if self.trace.is_some() {
-                                let name = match fate {
-                                    Fate::Dropped => "dropped",
-                                    Fate::Observed => "observed",
-                                    Fate::Drawn if armed => "mismatch",
-                                    Fate::Drawn => "drawn",
-                                };
-                                let (p, v, i) = (d.primitive, d.vertices.len(), d.inline.len());
-                                self.trace_draw("inline Begin/End", p, v, i, Some(c.at), Some(name));
-                            }
-                            if fate != Fate::Dropped {
+                            if self.swallow_immediate(mem, "inline Begin/End", d, Some(c.at))? {
                                 self.stats.inline_draws += 1;
-                                self.immediate_draw(mem, "inline Begin/End", d)?;
-                            }
-                            if fate != Fate::Drawn {
-                                self.swallow_advance(mem);
                             }
                         }
                         Some(Effect::None) => {}
@@ -4486,7 +4472,8 @@ impl<B: Backend> Device<B> {
     }
 
     fn submit(&mut self, mem: &mut dyn GuestMemory, mut parts: DrawParts) -> Result<(), D3dError> {
-        if self.trace.is_some() && parts.entry != "inline Begin/End" {
+        // Immediate draws are traced with their fate (swallow_immediate).
+        if self.trace.is_some() && !matches!(parts.entry, "inline Begin/End" | "D3DDevice_End") {
             let (e, p, v) = (parts.entry, parts.primitive, parts.vertex_count as usize);
             self.trace_draw(e, p, v, 0, None, None);
         }
@@ -4974,7 +4961,41 @@ impl<B: Backend> Device<B> {
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         let d = self.immediate.end(0)?;
-        self.immediate_draw(mem, E, d)
+        self.swallow_immediate(mem, E, d, None).map(|_| ())
+    }
+
+    /// An immediate-mode draw, pushed (`push` the address of its `End`) or
+    /// through the `D3DDevice_End` entry (`0x0002d140` draws its strips
+    /// so), under the armed swallow ([`Device::swallow`]): drawn unless
+    /// the pass drops it, then the swallow advanced if it was the pass's.
+    /// Whether it was drawn.
+    fn swallow_immediate(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        d: ImmediateDraw,
+        push: Option<u32>,
+    ) -> Result<bool, D3dError> {
+        let armed = self.swallowing.is_some();
+        let fate = self.swallow_fate(&d);
+        if self.trace.is_some() {
+            let name = match fate {
+                Fate::Dropped => "dropped",
+                Fate::Observed => "observed",
+                Fate::Drawn if armed => "mismatch",
+                Fate::Drawn => "drawn",
+            };
+            let (p, v, i) = (d.primitive, d.vertices.len(), d.inline.len());
+            self.trace_draw(entry, p, v, i, push, Some(name));
+        }
+        let drawn = fate != Fate::Dropped;
+        if drawn {
+            self.immediate_draw(mem, entry, d)?;
+        }
+        if fate != Fate::Drawn {
+            self.swallow_advance(mem);
+        }
+        Ok(drawn)
     }
 
     /// Turns an assembled immediate-mode primitive into a draw, against the
