@@ -2018,10 +2018,10 @@ mod tests {
                 "hook: armed true",
             ]
         );
-        let call = ScreenEffect { datum: 0xe438_0218, values: 0x0050_0000, columns: 2, rows: 2, corners: 0x0050_0010 };
+        let call = ScreenEffect { datum: EGOR.0, values: 0x0050_0000, columns: 2, rows: 2, corners: 0x0050_0010 };
         assert_eq!(
             effect_line(call, 0x0001_3b57),
-            "0x0002d140(egor 0xe4380218, values 0x00500000, columns 2, rows 2, corners 0x00500010) from 0x00013b57"
+            "0x0002d140(egor 0xe0000001, values 0x00500000, columns 2, rows 2, corners 0x00500010) from 0x00013b57"
         );
         let args = [0x0012_3450, 15, 0, u32::MAX, 1, 0];
         assert_eq!(
@@ -2039,11 +2039,11 @@ mod tests {
     fn each_egor_gets_its_own_traces() {
         let mut t = Traces::new();
         assert_eq!(t.end(), None, "none running");
-        assert_eq!(t.start(0xe438_0218, 2), Some(1));
+        assert_eq!(t.start(EGOR.0, 2), Some(1));
         assert_eq!(t.end(), Some(1));
         assert_eq!(t.end(), None, "ended once");
-        assert_eq!(t.start(0xe438_0218, 2), Some(2));
-        assert_eq!(t.start(0xe438_0218, 2), None, "its two");
+        assert_eq!(t.start(EGOR.0, 2), Some(2));
+        assert_eq!(t.start(EGOR.0, 2), None, "its two");
         assert_eq!(t.end(), Some(2));
         assert_eq!(t.start(0xe0ff_0001, 2), Some(3), "another egor's first");
     }
