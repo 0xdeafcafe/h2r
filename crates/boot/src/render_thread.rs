@@ -60,11 +60,6 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "DECAL_RENDER",
         "off by default; the decal scope opens at the callback and closes at its return",
     ),
-    (
-        "occlusion",
-        "SCENE_TRANSPARENTS",
-        "shares the chain with the native transparents' return observer when enabled",
-    ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
     (
@@ -231,7 +226,8 @@ mod tests {
     /// The ones the render path meets in a default run (the locale lookups,
     /// Blind, the native world's and objects' layer draw) are context-only,
     /// and so are the native transparents' geometry handler and the native
-    /// lights' passes.
+    /// lights' passes. The native post's colour pass and screen effect are
+    /// not: their return hooks commit or replay the held draws.
     #[test]
     fn every_feature_hook_runs_on_the_render_thread_or_says_why_not() {
         let mut unlisted = Vec::new();
@@ -288,8 +284,6 @@ mod tests {
             "RENDER_LIGHT_PASSES",
             "LIGHT_GEOMETRY_DRAW",
             "RENDER_DYNAMIC_LIGHTS",
-            "COLOUR_PASS",
-            "SCREEN_EFFECT",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }
