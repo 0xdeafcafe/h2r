@@ -337,6 +337,9 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         vertex_defaults: &look.vertex_defaults,
         alpha_test: look.state.alpha_test,
         provided_inputs: crate::program::INPUT_MASK,
+        // The lights read the placed copy's floats
+        // (`crate::program::FLOAT_INPUTS`).
+        input_fetch: [shaders::vsh::InputFetch::Float; 16],
     })?;
     Ok(LightProgram {
         wgsl: t.wgsl,

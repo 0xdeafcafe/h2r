@@ -11,7 +11,7 @@ use shaders::vsh::VertexUniforms;
 
 use crate::gpu::{Image, texture};
 use crate::light_look::{FRAME_DWORDS, LightProgram, LightStage, colour_uniforms, light_vertex};
-use crate::program::{INPUTS, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
+use crate::program::{FLOAT_INPUTS, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 use crate::world::WorldVertex;
 
 /// The texture shapes a light stage binds.
@@ -284,7 +284,7 @@ impl LightGpu {
     /// Makes the pipeline for these target formats, with the pass's own
     /// blend, depth and cull state.
     pub fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> &wgpu::RenderPipeline {
-        let attributes: Vec<wgpu::VertexAttribute> = INPUTS
+        let attributes: Vec<wgpu::VertexAttribute> = FLOAT_INPUTS
             .iter()
             .map(|&(location, offset, format)| wgpu::VertexAttribute { format, offset, shader_location: location })
             .collect();

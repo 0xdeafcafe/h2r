@@ -203,6 +203,7 @@ pub fn compile_object(
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
         provided_inputs,
+        input_fetch: [shaders::vsh::InputFetch::Float; 16],
     })?;
     let mut vertex = t.vertex;
     vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression_rows(&Compression::default()));

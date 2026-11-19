@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use shaders::psh::{self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim};
-use shaders::vsh::{self, VertexOptions, VertexUniforms};
+use shaders::vsh::{self, InputFetch, VertexOptions, VertexUniforms};
 use tags::material::Register;
 use tags::shader::StageStates;
 
@@ -38,12 +38,42 @@ pub const MODEL_ROWS: usize = 50;
 /// for clusters and placements, which takes that path at `0x0004d7c6`).
 pub const POSITION_DECOMPRESSION: usize = 170;
 
-/// The vertex registers a [`WorldVertex`] supplies, with the field each
-/// comes from: `v0` position, `v1` texture coordinate, `v2..v4` the tangent
-/// frame (normal, binormal, tangent: the program dots the lighting vector
-/// with `v4`, `v3`, `v2` into tangent space), `v5` the lighting vector,
-/// `v6` the lightmap coordinate.
+/// The vertex registers a [`WorldVertex`] supplies to a material program,
+/// with the field each comes from: `v0` position, `v1` texture coordinate,
+/// `v2..v4` the tangent frame (normal, binormal, tangent: the program dots
+/// the lighting vector with `v4`, `v3`, `v2` into tangent space), `v5` the
+/// lighting vector, `v6` the lightmap coordinate. `v2..v5` are the packed
+/// words ([`WorldVertex::packed`]), decoded in the shader
+/// ([`WORLD_FETCH`]): the D3D path binds the streams' `NORMPACKED3` words
+/// and its translation decodes them so (`xvs_normpacked3`), where the
+/// native programs had floats decoded on the CPU (the 2026-11-19 uniform
+/// compare: the same constants and inputs, another fetch).
 pub const INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
+    (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
+    (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),
+    (2, std::mem::offset_of!(WorldVertex, packed) as u64, wgpu::VertexFormat::Uint32),
+    (3, std::mem::offset_of!(WorldVertex, packed) as u64 + 4, wgpu::VertexFormat::Uint32),
+    (4, std::mem::offset_of!(WorldVertex, packed) as u64 + 8, wgpu::VertexFormat::Uint32),
+    (5, std::mem::offset_of!(WorldVertex, packed) as u64 + 12, wgpu::VertexFormat::Uint32),
+    (6, std::mem::offset_of!(WorldVertex, lightmap_uv) as u64, wgpu::VertexFormat::Float32x2),
+];
+
+/// How a material program's `v` registers arrive ([`INPUTS`]): `v2..v5`
+/// as packed words decoded in the shader, the rest as floats.
+pub const WORLD_FETCH: [InputFetch; 16] = {
+    let mut f = [InputFetch::Float; 16];
+    f[2] = InputFetch::NormPacked3;
+    f[3] = InputFetch::NormPacked3;
+    f[4] = InputFetch::NormPacked3;
+    f[5] = InputFetch::NormPacked3;
+    f
+};
+
+/// [`INPUTS`] with the frame and lighting vector as floats (the
+/// [`WorldVertex`] fields): what the native lights read, from the placed
+/// copy of the world (`crate::light_gpu`; their programs translate with
+/// float fetch).
+pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
     (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),
     (2, std::mem::offset_of!(WorldVertex, normal) as u64, wgpu::VertexFormat::Float32x3),
@@ -138,6 +168,7 @@ pub fn compile_pass(
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
         provided_inputs: INPUT_MASK,
+        input_fetch: WORLD_FETCH,
     })?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
@@ -371,6 +402,9 @@ pub(crate) struct PassParts<'a> {
     /// The `v` registers the vertex buffer supplies (bit `n`: `v<n>`);
     /// [`INPUT_MASK`] for a world vertex.
     pub provided_inputs: u16,
+    /// How each supplied register arrives ([`WORLD_FETCH`] for a material
+    /// program's world vertex).
+    pub input_fetch: [InputFetch; 16],
 }
 
 /// A translated pass.
@@ -395,7 +429,7 @@ pub(crate) fn translate_pass(p: &PassParts<'_>) -> Result<Translated, String> {
     if unsupplied != 0 {
         return Err(format!("vertex program reads registers we do not supply ({unsupplied:#06x})"));
     }
-    let vs = vsh::translate(&program, &VertexOptions { provided_inputs: p.provided_inputs, ..Default::default() })
+    let vs = vsh::translate(&program, &VertexOptions { provided_inputs: p.provided_inputs, input_fetch: p.input_fetch, ..Default::default() })
         .map_err(|e| format!("vertex program: {e:?}"))?;
     let def = PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
     let samplers: [Option<StageStates>; 4] = std::array::from_fn(|n| p.stage_states.get(n).copied());
@@ -1134,7 +1168,7 @@ impl ProgramSet {
                         program.dims[n].and(program.samplers[n].as_ref()).and_then(sampler_key)
                     }),
                     // As `translate_pass` translates it.
-                    options: VertexOptions { provided_inputs: INPUT_MASK, ..Default::default() },
+                    options: VertexOptions { provided_inputs: INPUT_MASK, input_fetch: WORLD_FETCH, ..Default::default() },
                     def: program.def.clone(),
                     pixel_options: program.pixel_options,
                 })
@@ -1173,7 +1207,16 @@ mod tests {
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
         assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
-        assert_eq!(INPUTS[5].1, 64, "v5 is the lighting vector, the last field");
+        assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
+        assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
+        // The packed registers are words, decoded in the shader.
+        for (n, (reg, _, format)) in INPUTS.iter().enumerate() {
+            let packed = (2..=5).contains(reg);
+            assert_eq!(*format == wgpu::VertexFormat::Uint32, packed, "v{n}");
+            assert_eq!(WORLD_FETCH[n] == InputFetch::NormPacked3, packed, "v{n}");
+        }
+        assert_eq!(FLOAT_INPUTS.iter().map(|i| i.0).collect::<Vec<_>>(), regs);
+        assert_eq!(std::mem::size_of::<WorldVertex>(), 92);
     }
 
     #[test]
@@ -1498,6 +1541,46 @@ mod tests {
         }
         code.push(Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf));
         program(&code)
+    }
+
+    /// The native module is the D3D path's for the same draw, text for
+    /// text: `d3d::nv2a`'s `translate` decodes the words as `Normal`, with
+    /// the layout's fetch (the world's frame and lighting vector bound as
+    /// `NORMPACKED3` words, the uniform compare's 03a draws), and links the
+    /// pixel shader from the same definition and options. So the position
+    /// math (and any fused multiply-add the compiler makes of it) is the
+    /// same code on both paths.
+    #[test]
+    fn a_world_program_s_module_is_the_d3d_path_s() {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg, ProgramKind};
+        let mut code = vec![
+            Inst::mac(MacOp::Mul, Some(O::v(0)), Some(O::c(170)), None).to_temp(10, 0xf),
+            Inst::mac(MacOp::Add, Some(O::r(10)), None, Some(O::c(171))).to_temp(10, 0xf),
+        ];
+        for k in 0..3u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(10)), Some(O::c(MODEL_ROWS as u8 + k)), None).to_temp(0, 8 >> k));
+        }
+        for k in 0..4u8 {
+            code.push(Inst::mac(MacOp::Dph, Some(O::r(0)), Some(O::c(k)), None).to_out(false, OutReg::Pos, 8 >> k));
+        }
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf));
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(2)), None, None).to_out(false, OutReg::T(1), 0xf));
+        code.push(Inst::mac(MacOp::Mov, Some(O::v(5)), None, None).to_out(false, OutReg::T(2), 0xf));
+        let microcode = program(&code);
+        let pass = world_pass(final_look(false));
+        let p = compile_pass(&pass.look, &microcode, pass.state.alpha_test).expect("compiles");
+        let words: Vec<u32> = microcode[4..].chunks_exact(4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+        let d3d = |fetch: [InputFetch; 16]| {
+            let program = vsh::Program::from_words(ProgramKind::Normal, &words).unwrap();
+            let options = VertexOptions { provided_inputs: INPUT_MASK, flat_shading: false, input_fetch: fetch };
+            let vs = vsh::translate(&program, &options).unwrap();
+            shaders::link(&vs, &psh::translate(&p.def, &p.pixel_options)).unwrap()
+        };
+        assert_eq!(p.wgsl, d3d(WORLD_FETCH));
+        assert!(p.wgsl.contains("xvs_normpacked3"), "v2 and v5 decoded in the shader");
+        assert_ne!(p.wgsl, d3d([InputFetch::Float; 16]), "floats were another module");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
     }
 
     #[test]

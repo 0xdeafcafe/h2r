@@ -129,8 +129,19 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   midpoint decode (`(2 s + 1) / (2^bits - 1)`, [lighting.md](../formats/lighting.md)),
   up to half a step higher in each component. It now takes the GPU's
   decode (`load::program_lighting_vector`), which matches the D3D path
-  but did not remove the speckle (mean 0.204 to 0.203): its cause is
-  still open. For the placements' edges,
+  but did not remove the speckle (mean 0.204 to 0.203). The extended
+  compare found where the two still differed: the D3D path binds the
+  frame and lighting vector (`v2..v5`) as their `NORMPACKED3` words and
+  its translation decodes them in the shader (`xvs_normpacked3`), where
+  the native programs read floats decoded on the CPU, so the two modules
+  were different code. A world vertex now carries the four words too
+  (`WorldVertex::packed`, `world::pack_normpacked3`, which gives back the
+  stream's word for any value decoded from one) and the material
+  programs fetch and decode them as the D3D path does
+  (`program::INPUTS`, `WORLD_FETCH`): a world program's module is then
+  the D3D path's for the same draw, text for text
+  (`a_world_program_s_module_is_the_d3d_path_s`), position math included.
+  The lights still read the placed copy's floats (`FLOAT_INPUTS`). For the placements' edges,
   `H2_NATIVE_WORLD_DUMP=282[:107]` (with `H2_NATIVE_WORLD_OWNERS=clusters`,
   so that the D3D path draws the placement) prints, once per loaded
   world, the uniforms the native rigid draw of that placement and
@@ -581,7 +592,7 @@ per-pixel `tex_detail` program it reads:
 | `v0` | world position | section positions |
 | `v1` | texture coordinate | section texcoords |
 | `v2`, `v3`, `v4` | the tangent frame (normal, binormal, tangent) | section tangent-frame stream |
-| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream, decoded as the GPU reads it (`NORMPACKED3`, not the CPU's midpoint decode) |
+| `v5` | the lightmap bucket's signed lighting vector (stream `30`, [lighting.md](../formats/lighting.md)) | bucket stream's words, decoded in the shader as the D3D path does (`NORMPACKED3`, not the CPU's midpoint decode) |
 | `v6` | lightmap coordinate | bucket stream `1f` |
 
 and these constants (hardware numbering, D3D register + 96):
