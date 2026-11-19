@@ -140,12 +140,12 @@ fn converted_indices(source: &H1Ai, plan: &Plan) -> Vec<Vec<Option<u16>>> {
                 .squads
                 .iter()
                 .map(|squad| {
-                    let name: String = squad_name(encounter, squad).chars().take(31).collect();
-                    let mut matches = plan.ai.squads.iter().enumerate().filter(|(_, q)| {
-                        q.initial_zone == ei as i16 && q.name.eq_ignore_ascii_case(&name)
+                    let name = squad_name(encounter, squad);
+                    let mut matches = plan.ai.squads.iter().enumerate().filter(|(i, q)| {
+                        q.initial_zone == ei as i16 && plan.squad_names[*i].eq_ignore_ascii_case(&name)
                     });
                     let (i, _) = matches.next()?;
-                    // Colliding truncated names cannot identify the original squad.
+                    // Ambiguous source names cannot identify the original squad.
                     matches.next().is_none().then_some(i as u16)
                 })
                 .collect()

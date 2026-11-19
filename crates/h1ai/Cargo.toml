@@ -8,11 +8,11 @@ license.workspace = true
 [dependencies]
 h1map = { path = "../h1map" }
 map.workspace = true
+pathfind = { path = "../pathfind" }
 tags.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 # The converted collision BSP the firing positions are checked against.
 h1convert = { path = "../h1convert" }
-pathfind = { path = "../pathfind" }
 xiso.workspace = true

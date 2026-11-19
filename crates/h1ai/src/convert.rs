@@ -70,17 +70,22 @@ pub mod grenade {
     pub const COVENANT: u16 = 2;
 }
 
-/// A retail Halo 2 character chosen for a Halo 1 actor variant.
+/// A Halo 2 character chosen for a Halo 1 actor variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CharacterChoice {
     /// The Halo 1 actor variant (`actv`) path.
     pub h1_variant: String,
     /// The Halo 1 actor type.
     pub h1_type: ActorType,
-    /// The retail Halo 2 `char` path.
-    pub h2_character: &'static str,
+    /// The installed Halo 2 `char` path.
+    pub h2_character: String,
     /// Grenades the squad carries.
     pub grenade: u16,
+}
+
+/// Actor types for which campaign conversion builds a per-variant character.
+pub fn rebuilds_character(kind: ActorType) -> bool {
+    matches!(kind.0, 8 | 13)
 }
 
 /// The stopgap character table: the nearest retail Halo 2 `char` for a
@@ -145,6 +150,9 @@ pub struct Plan {
     /// The AI data; [`ScenarioAi::character_palette`] is empty until
     /// [`Plan::blocks`] resolves [`Self::characters`].
     pub ai: ScenarioAi,
+    /// Full script names in emitted index order, before the wire format truncates them.
+    pub squad_names: Vec<String>,
+    pub group_names: Vec<String>,
     /// Character palette: the choice for each entry.
     pub characters: Vec<CharacterChoice>,
     /// Command lists, for the scripts lane.
@@ -169,6 +177,8 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
     let mut conversation_leaders = Vec::new();
+    let mut squad_names = Vec::new();
+    let mut group_names = Vec::new();
 
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
@@ -178,13 +188,18 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             let v = src.actor_palette[i].as_ref()?;
             let kind = src.actor_of(i).map(|a| a.kind).unwrap_or(ActorType(14));
             let (path, grenade) = character_for(kind, &v.name);
+            let path = if rebuilds_character(kind) {
+                v.name.as_str()
+            } else {
+                path
+            };
             if let Some(k) = characters.iter().position(|c| c.h2_character == path) {
                 return Some(k);
             }
             characters.push(CharacterChoice {
                 h1_variant: v.name.clone(),
                 h1_type: kind,
-                h2_character: path,
+                h2_character: path.to_owned(),
                 grenade,
             });
             Some(characters.len() - 1)
@@ -213,10 +228,18 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             .map(|(a, f)| h2::FiringPosition {
                 position: f.position,
                 reference_frame: -1,
-                flags: opts.firing_position_flags,
+                flags: if e.flags & 0x20 == 0 {
+                    opts.firing_position_flags
+                } else {
+                    0
+                },
                 area: *a as i16,
-                cluster: -1,
-                surface: f.surface,
+                cluster: f.cluster,
+                surface: if e.flags & 0x20 == 0 {
+                    f.surface
+                } else {
+                    u32::MAX
+                },
                 normal: [0.0, std::f32::consts::FRAC_PI_2],
             })
             .collect();
@@ -259,10 +282,15 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         ai.zones.push(h2::Zone {
             name: name31(&e.name),
             flags: opts.zone_flags,
-            manual_bsp: e.manual_bsp.max(0),
+            manual_bsp: if e.bsp >= 0 {
+                e.bsp
+            } else {
+                e.manual_bsp.max(0)
+            },
             firing_positions,
             areas,
         });
+        group_names.push(e.name.clone());
         ai.squad_groups.push(h2::SquadGroup {
             name: name31(&e.name),
             parent: -1,
@@ -278,6 +306,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             if !opts.platoon_groups.contains(&token) {
                 continue;
             }
+            group_names.push(format!("{}/{}", e.name, p.name));
             ai.squad_groups.push(h2::SquadGroup {
                 name: name31(&format!("{}/{}", e.name, p.name)),
                 parent: encounter_group,
@@ -287,7 +316,9 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         }
 
         for s in &e.squads {
-            let name = name31(&format!("{}/{}", e.name, s.name));
+            let full_name = format!("{}/{}", e.name, s.name);
+            let name = name31(&full_name);
+            squad_names.push(full_name);
             // A Halo 1 squad with nowhere to start never spawns, but
             // scripts still name it (migration targets, counts). It is kept
             // with no starting locations and no actors, as retail Halo 2
@@ -308,7 +339,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             let mut set: Vec<AreaRef> = letters
                 .iter()
                 .enumerate()
-                .filter(|&(_, &g)| s.attacking() & (1 << g) != 0)
+                .filter(|&(_, &g)| g < 32 && s.attacking() & (1 << g) != 0)
                 .map(|(a, _)| AreaRef {
                     kind: opts.area_kind,
                     zone: zone_index,
@@ -324,10 +355,8 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     })
                     .collect();
             }
-            // An empty squad has no actors to order: no order (room).
-            let order = if unplaced {
-                -1
-            } else {
+            // Migrating actors take the destination squad's order.
+            let order = {
                 ai.orders.push(h2::Order {
                     name: name.clone(),
                     style: opts.order_style,
@@ -445,6 +474,8 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         characters,
         command_scripts,
         conversation_leaders,
+        squad_names,
+        group_names,
         notes,
     }
 }
@@ -555,7 +586,7 @@ impl Plan {
             .characters
             .iter()
             .map(|c| {
-                let id = resolve(c.h2_character)
+                let id = resolve(&c.h2_character)
                     .ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character)))?;
                 let mut e = Block::zeroed(8);
                 e.tag_ref(0, id);

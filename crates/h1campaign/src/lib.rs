@@ -32,8 +32,10 @@ pub mod h2assets;
 pub mod manifest;
 pub mod profiles;
 pub mod recordings;
+mod roster;
 pub mod scenario;
 pub mod scratch;
+mod squad_roster;
 pub mod structure;
 
 use std::io::{Read, Seek};
@@ -370,8 +372,6 @@ pub enum Lean {
     /// Everything.
     #[default]
     Everything,
-    /// The empty squads kept only because the scripts name them.
-    EmptySquads,
     /// The seat-mapping table.
     SeatTable,
     /// Halo 1's textures on object models (`h1objects`' shader copies and
@@ -390,9 +390,8 @@ pub enum Lean {
 
 impl Lean {
     /// The steps in order.
-    pub const LADDER: [Lean; 7] = [
+    pub const LADDER: [Lean; 6] = [
         Lean::Everything,
-        Lean::EmptySquads,
         Lean::SeatTable,
         Lean::ObjectTextures,
         Lean::Music,
@@ -631,7 +630,7 @@ fn convert_with<R: Read + Seek>(
     };
     report.bsps.extend(prepared.reports.iter().cloned());
     let bsps = &prepared.bsps;
-    let objects_base = if opts.objects {
+    let objects_base = if opts.objects || opts.ai {
         let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;
         if lean.leaves_out(Lean::ObjectTextures) {
@@ -710,6 +709,7 @@ fn convert_with<R: Read + Seek>(
             &mut set,
             &scnr,
             &slots,
+            bsps,
             &sounds,
             objects_base.as_ref(),
             opts,

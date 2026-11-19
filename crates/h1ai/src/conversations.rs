@@ -144,9 +144,9 @@ pub struct LeaderSquad {
 impl SpeakerScopes {
     pub fn from_plan(plan: &crate::convert::Plan) -> Self {
         let mut by_group = BTreeMap::<i16, Vec<_>>::new();
-        for squad in &plan.ai.squads {
+        for (index, squad) in plan.ai.squads.iter().enumerate() {
             // An empty squad can receive actors through ai_attach/ai_migrate.
-            by_group.entry(squad.parent).or_default().push(squad);
+            by_group.entry(squad.parent).or_default().push((index, squad));
         }
         let mut result = BTreeMap::<u16, Vec<String>>::new();
         let actor_type =
@@ -154,7 +154,7 @@ impl SpeakerScopes {
         for (group, squads) in by_group {
             let kinds: Vec<Vec<u16>> = squads
                 .iter()
-                .map(|squad| {
+                .map(|(_, squad)| {
                     let mut types: Vec<_> = std::iter::once(squad.character)
                         .chain(squad.starting_locations.iter().map(|l| l.character))
                         .filter_map(actor_type)
@@ -171,12 +171,12 @@ impl SpeakerScopes {
             // A parent group also selects every actor in its child platoons.
             // Only collapse a homogeneous set of direct members into a leaf.
             let leaf = !plan.ai.squad_groups.iter().any(|child| child.parent == group);
-            if let Some((&kind, group)) = common.filter(|_| leaf).zip(plan.ai.squad_groups.get(group as usize)) {
-                result.entry(kind).or_default().push(group.name.clone());
+            if let Some((&kind, group)) = common.filter(|_| leaf).zip(plan.group_names.get(group as usize)) {
+                result.entry(kind).or_default().push(group.clone());
             } else {
-                for (squad, types) in squads.into_iter().zip(kinds) {
+                for ((index, _), types) in squads.into_iter().zip(kinds) {
                     for kind in types {
-                        result.entry(kind).or_default().push(squad.name.clone());
+                        result.entry(kind).or_default().push(plan.squad_names[index].clone());
                     }
                 }
             }

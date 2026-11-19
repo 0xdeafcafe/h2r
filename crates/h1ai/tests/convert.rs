@@ -108,6 +108,7 @@ fn invented() -> H1Ai {
             team: 3,
             search_behavior: 0,
             manual_bsp: -1,
+            bsp: 0,
             respawn_delay: [0.0; 2],
             squads: vec![
                 // Attacks from group C only.
@@ -160,7 +161,11 @@ fn encounters_become_groups_zones_squads_and_orders() {
     let plan = convert(&src, &Options::default());
     let ai = &plan.ai;
     // Two palette entries name one character.
-    let chars: Vec<_> = plan.characters.iter().map(|c| c.h2_character).collect();
+    let chars: Vec<_> = plan
+        .characters
+        .iter()
+        .map(|c| c.h2_character.as_str())
+        .collect();
     assert_eq!(
         chars,
         [
@@ -183,7 +188,7 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert!(
         z.firing_positions
             .iter()
-            .all(|f| f.surface == 7 && f.cluster == -1)
+            .all(|f| f.surface == 7 && f.cluster == 0)
     );
 
     // The squad with no starting locations is kept, empty, with a note:
@@ -194,7 +199,7 @@ fn encounters_become_groups_zones_squads_and_orders() {
     assert_eq!(empty.name, "first/empty");
     assert!(empty.starting_locations.is_empty());
     assert_eq!((empty.normal_count, empty.insane_count), (0, 0));
-    assert_eq!(empty.initial_order, -1);
+    assert_eq!(ai.orders[empty.initial_order as usize].name, empty.name);
     let elites = &ai.squads[0];
     assert_eq!(elites.name, "first/elites");
     assert_eq!((elites.parent, elites.initial_zone, elites.team), (0, 0, 3));
@@ -269,6 +274,9 @@ fn long_names_are_cut_to_31_characters() {
     let plan = convert(&src, &Options::default());
     assert_eq!(plan.ai.zones[0].name.len(), 31);
     assert_eq!(plan.ai.squads[0].name.len(), 31);
+    assert_ne!(plan.squad_names[0], plan.squad_names[1]);
+    assert_eq!(plan.ai.squads[0].name, plan.ai.squads[1].name);
+    assert_eq!(plan.group_names[0], src.encounters[0].name);
     let (back, _) = build_and_read(&plan);
     assert_eq!(back.squads[0].name, plan.ai.squads[0].name);
 }
@@ -488,4 +496,22 @@ fn encounter_migration_chooses_a_destination_for_each_character() {
             platoon: None
         }
     );
+}
+
+#[test]
+fn airborne_encounters_keep_authored_altitude_and_use_no_sector() {
+    let mut src = invented();
+    let e = &mut src.encounters[0];
+    e.bsp = 3;
+    e.flags |= 0x20;
+    e.firing_positions[0].position[2] = 127.0;
+    let (ai, _) = build_and_read(&convert(&src, &Options::default()));
+    let z = &ai.zones[0];
+    assert_eq!(z.manual_bsp, 3);
+    assert!(
+        z.firing_positions
+            .iter()
+            .all(|p| p.surface == u32::MAX && p.flags == 0)
+    );
+    assert!(z.firing_positions.iter().any(|p| p.position[2] == 127.0));
 }
