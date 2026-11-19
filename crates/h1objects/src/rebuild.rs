@@ -917,9 +917,40 @@ fn gear_spans(e: &StructDef) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// The members a role is taken over: the indices of `counts` (each
+/// member's friction and hover points together) nearest `points` (the
+/// Halo 1 vehicle's powered mass points), every index on a tie.
+///
+/// A role is a majority word by word, and a word on which no majority
+/// agrees is left zero. Over vehicles of one type that are tuned apart
+/// that zeroes their driving: the base's three hover vehicles (the
+/// ghost's three hover points, the spectre's four, the wraith's six)
+/// agree on few of their driving words, so through converter version 83
+/// the converted ghost held zero in 16 root words the retail ghost fills
+/// (`vehi +0x1d0`..`+0x1dc`, `+0x1f4` 5.0 and `+0x1f8` 2.5 among them)
+/// and zero at `+0x8`, `+0x10` and `+0x14` of its hover points (the
+/// retail ghost's 3.75 or 1.85, 0.5 or 0.45, and 1.0), and did not move
+/// under its driver (converted Blood Gulch, 2026-11-19). Halo 1's ghost
+/// has three powered points, so it takes the ghost alone.
+pub fn nearest_members(counts: &[usize], points: usize) -> Vec<usize> {
+    let Some(best) = counts.iter().map(|c| c.abs_diff(points)).min() else {
+        return Vec::new();
+    };
+    (0..counts.len())
+        .filter(|&i| counts[i].abs_diff(points) == best)
+        .collect()
+}
+
 /// [`VehicleRole`] over the base map's vehicles whose `vehicle_type` is
-/// `vehicle_type`; `None` when the base has none of the type.
-pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Option<VehicleRole>> {
+/// `vehicle_type`; `None` when the base has none of the type. With
+/// `points` (the Halo 1 vehicle's powered mass points), over only the
+/// members whose friction and hover points are nearest that count
+/// ([`nearest_members`]); `None` takes every member of the type.
+pub fn vehicle_role(
+    base: &crate::base::Base,
+    vehicle_type: u16,
+    points: Option<usize>,
+) -> Result<Option<VehicleRole>> {
     let d = def(b"vehi")?;
     let ty = field_offset(d, "vehicle_type")? as usize;
     let flags_at = field_offset(d, "vehicle_flags")? as usize;
@@ -934,6 +965,19 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
     }
     if members.is_empty() {
         return Ok(None);
+    }
+    if let Some(points) = points {
+        let counts: Vec<usize> = members
+            .iter()
+            .map(|(_, bytes)| member_points(bytes, d))
+            .collect::<Result<_>>()?;
+        let keep = nearest_members(&counts, points);
+        members = members
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, m)| m)
+            .collect();
     }
     let words = role_over(base, d, &members)?;
     let mut sspans = Vec::new();
@@ -1030,6 +1074,17 @@ pub fn vehicle_role(base: &crate::base::Base, vehicle_type: u16) -> Result<Optio
         hover: all_elements(base, &members, hat, hdef)?,
         gears,
     }))
+}
+
+/// A base vehicle's friction and hover points together ([`VEHI_FRICTION`],
+/// [`VEHI_HOVER`] element counts), from its root.
+fn member_points(root: &[u8], d: &StructDef) -> Result<usize> {
+    let mut n = 0;
+    for block in [VEHI_FRICTION, VEHI_HOVER] {
+        let at = field_offset(d, block)? as usize;
+        n += crate::base::u32_at(root, at) as usize;
+    }
+    Ok(n)
 }
 
 fn field_offset(d: &StructDef, name: &str) -> Result<u32> {

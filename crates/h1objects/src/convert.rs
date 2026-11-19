@@ -814,8 +814,9 @@ pub struct Converter<'a> {
     /// Weapon, equipment, projectile and damage role words, per group
     /// ([`crate::arsenal::role`]).
     item_roles: HashMap<[u8; 4], crate::arsenal::Role>,
-    /// Vehicle role words, per vehicle type ([`Self::vehicle_role`]).
-    vehicle_roles: HashMap<u16, Option<crate::rebuild::VehicleRole>>,
+    /// Vehicle role words, per vehicle type and powered point count
+    /// ([`Self::vehicle_role`]).
+    vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
     /// Converted sounds and looping sounds by Halo 1 tag, as indices
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
     sound_index: HashMap<u32, Option<usize>>,
@@ -2179,7 +2180,16 @@ impl<'a> Converter<'a> {
         };
         let vehicle_type = word(crate::rebuild::H1_VEHICLE_TYPE) as u16;
         let flags = word(crate::rebuild::H1_VEHICLE_FLAGS);
-        let role = self.vehicle_role(vehicle_type)?;
+        // Halo 1's powered mass points, with the model they sit on.
+        let powered = match u.object.model {
+            Some(m) => {
+                let (model, _) =
+                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+                self.powered_points(&u.object, &model)?
+            }
+            None => Vec::new(),
+        };
+        let role = self.vehicle_role(vehicle_type, powered.len())?;
         let mut rep = Self::report(
             tag,
             &match &role {
@@ -2238,20 +2248,14 @@ impl<'a> Converter<'a> {
                     .push(format!("seat {}: camera track not converted ({e})", seat.label)),
             }
         }
-        let points: Vec<crate::rebuild::Point> = match u.object.model {
-            Some(m) => {
-                let (model, _) =
-                    h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
-                let points = self.powered_points(&u.object, &model)?;
-                let spheres = role
-                    .as_ref()
-                    .map(crate::rebuild::role_spheres)
-                    .unwrap_or_default();
-                let at: Vec<[f32; 3]> = points.iter().map(|p| p.object).collect();
-                let order = sphere_order(&at, &spheres);
-                order.into_iter().map(|i| points[i].point.clone()).collect()
-            }
-            None => Vec::new(),
+        let points: Vec<crate::rebuild::Point> = {
+            let spheres = role
+                .as_ref()
+                .map(crate::rebuild::role_spheres)
+                .unwrap_or_default();
+            let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
+            let order = sphere_order(&at, &spheres);
+            order.into_iter().map(|i| powered[i].point.clone()).collect()
         };
         // The unit's weapons: Halo 1's, converted where they convert.
         let mut weapons = Vec::new();
@@ -2340,19 +2344,24 @@ impl<'a> Converter<'a> {
         Ok(id)
     }
 
-    /// The vehicle type's role over the base's vehicles
-    /// ([`crate::rebuild::vehicle_role`]), computed once per type. The
-    /// turret type keeps the disc-wide turret tables
-    /// ([`crate::rebuild::TURRET_ROLE`]): `None`.
-    pub fn vehicle_role(&mut self, vehicle_type: u16) -> Result<Option<crate::rebuild::VehicleRole>> {
+    /// The vehicle type's role over the base's vehicles of that type
+    /// whose friction and hover points are nearest `points`, Halo 1's
+    /// powered mass points ([`crate::rebuild::vehicle_role`]), computed
+    /// once per type and count. The turret type keeps the disc-wide
+    /// turret tables ([`crate::rebuild::TURRET_ROLE`]): `None`.
+    pub fn vehicle_role(
+        &mut self,
+        vehicle_type: u16,
+        points: usize,
+    ) -> Result<Option<crate::rebuild::VehicleRole>> {
         if u32::from(vehicle_type) == crate::rebuild::ROLE_VEHICLE_TYPE {
             return Ok(None);
         }
-        if let Some(w) = self.vehicle_roles.get(&vehicle_type) {
+        if let Some(w) = self.vehicle_roles.get(&(vehicle_type, points)) {
             return Ok(w.clone());
         }
-        let w = crate::rebuild::vehicle_role(self.base, vehicle_type)?;
-        self.vehicle_roles.insert(vehicle_type, w.clone());
+        let w = crate::rebuild::vehicle_role(self.base, vehicle_type, Some(points))?;
+        self.vehicle_roles.insert((vehicle_type, points), w.clone());
         Ok(w)
     }
 

@@ -196,7 +196,9 @@ fn control_follows_vehicle_type() {
                 };
                 assert_eq!(*c, want, "{base_name} {name} (type {k})");
             }
-            let role = h1objects::rebuild::vehicle_role(&base, *k).unwrap().unwrap();
+            let role = h1objects::rebuild::vehicle_role(&base, *k, None)
+                .unwrap()
+                .unwrap();
             assert_eq!(role.control, if *k == 0 { 2 } else { 0 }, "{base_name} type {k}");
         }
     }
@@ -388,7 +390,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 assert_eq!(phys.len(), 1, "{name}: every retail vehicle has one");
 
                 // The type's role, where the base has the type.
-                let role = c.vehicle_role(h1_type).unwrap();
+                let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
                 if let Some(role) = &role {
                     for (p, w) in &role.words.root {
                         assert_eq!(
@@ -872,4 +874,111 @@ fn every_seat_passes_the_engines_boarding_rule() {
     println!("{seats_checked} seats, {} failures", failures.len());
     assert!(seats_checked > 100, "{seats_checked} seats");
     assert!(failures.is_empty(), "{} seats fail the boarding rule", failures.len());
+}
+
+/// Halo 1's powered mass points as the converter counts them
+/// (`Converter::powered_points`): one per distinct name; none without a
+/// model or physics.
+fn h1_powered(h1: &H1Map, u: &h1::Unit) -> usize {
+    let (Some(_), Some(p)) = (u.object.model, u.object.physics) else {
+        return 0;
+    };
+    let phys = h1::Physics::read(h1, h1.tag(p).unwrap()).unwrap();
+    phys.mass_points
+        .iter()
+        .filter(|m| m.powered_mass_point >= 0)
+        .map(|m| h1objects::coll::sid_name(&m.name))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+/// Coagulation holds three hover vehicles (the ghost, spectre and
+/// wraith) that disagree on most driving words, and a role over all three
+/// left those words zero: the converted Blood Gulch ghost held no top
+/// speed and no hover strength, and did not move under its driver
+/// (`h1objects::rebuild::nearest_members`). Halo 1's ghost has three
+/// powered points, so its role is the retail ghost alone (three hover
+/// points), and the converted ghost carries every nonzero root word of it
+/// and nonzero strength, height and damping (`+0x8`, `+0x10`, `+0x14`) on
+/// each hover point.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn ghost_takes_the_retail_ghosts_role() {
+    let mut base_map = h2_map("coagulation");
+    let base = Base::read(&mut base_map).unwrap();
+    let h1 = h1_level("bloodgulch").unwrap();
+    let t = h1
+        .tags()
+        .iter()
+        .find(|t| t.name == "vehicles\\ghost\\ghost_mp" && t.group.0.to_be_bytes() == *b"vehi")
+        .unwrap();
+    let u = h1::Unit::read(&h1, t).unwrap();
+    assert_eq!(h1_powered(&h1, &u), 3, "Halo 1 ghost's powered points");
+    let d = def(b"vehi");
+    let (ty, hover) = (
+        offset(d, "vehicle_type", 0) as usize,
+        offset(d, VEHI_HOVER, 0) as usize,
+    );
+    let mut hovers = Vec::new();
+    for x in base.tags.iter().filter(|x| x.1 == FourCC(*b"vehi")) {
+        let r = base.root(x.0).unwrap();
+        if u16::from_le_bytes([r[ty], r[ty + 1]]) == 4 {
+            hovers.push((x.2.clone(), u32_at(&r, hover)));
+        }
+    }
+    println!("coagulation's hover vehicles (hover points): {hovers:?}");
+    assert!(hovers.len() > 1, "{hovers:?}");
+
+    let all = h1objects::rebuild::vehicle_role(&base, 4, None)
+        .unwrap()
+        .unwrap();
+    let mut c = Converter::new(&h1, &base);
+    let role = c.vehicle_role(4, 3).unwrap().unwrap();
+    assert_eq!(
+        role.words.members,
+        vec!["objects\\vehicles\\ghost\\ghost".to_string()]
+    );
+    let ghost = base
+        .root(
+            base.find(b"vehi", "objects\\vehicles\\ghost\\ghost")
+                .unwrap(),
+        )
+        .unwrap();
+    for (p, w) in &role.words.root {
+        assert_eq!(u32_at(&ghost, offset(d, p, 0) as usize), *w, "role {p}");
+    }
+    let lost: Vec<_> = role
+        .words
+        .root
+        .iter()
+        .filter(|(p, _)| !all.words.root.iter().any(|(q, _)| q == p))
+        .collect();
+    println!(
+        "{} ghost words a role over every hover vehicle leaves zero: {lost:x?}",
+        lost.len()
+    );
+    assert!(lost.iter().any(|(p, _)| p == "unknown_1f4"), "{lost:?}");
+
+    let id = c.object(t).unwrap();
+    let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
+    for (p, w) in &role.words.root {
+        assert_eq!(
+            r.at(p),
+            Some(&Val::Bytes(w.to_le_bytes().to_vec())),
+            "ghost_mp {p}"
+        );
+    }
+    let Some(Val::Block(points)) = r.at(VEHI_HOVER) else {
+        panic!()
+    };
+    assert_eq!(points.len(), 3, "hover points");
+    for (k, p) in points.iter().enumerate() {
+        for f in ["unknown_8", "unknown_10", "unknown_14"] {
+            assert!(
+                matches!(p.get(f), Some(Val::Bytes(b)) if b.iter().any(|x| *x != 0)),
+                "hover point {k} {f}: {:?}",
+                p.get(f)
+            );
+        }
+    }
 }

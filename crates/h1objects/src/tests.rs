@@ -2235,3 +2235,18 @@ fn role_spheres_read_the_physics_elements_multisphere() {
     );
     assert!(role_spheres(&VehicleRole::default()).is_empty());
 }
+
+/// A vehicle's role is taken over the base vehicles of its type whose
+/// friction and hover points are nearest Halo 1's powered points: the
+/// ghost's three against Coagulation's ghost (3), spectre (4) and wraith
+/// (6) is the ghost alone; a tie keeps every member it ties.
+#[test]
+fn vehicle_role_takes_the_members_nearest_halo_1s_points() {
+    use crate::rebuild::nearest_members;
+    assert_eq!(nearest_members(&[3, 4, 6], 3), vec![0]);
+    assert_eq!(nearest_members(&[3, 4, 6], 5), vec![1, 2]);
+    assert_eq!(nearest_members(&[3, 4, 6], 9), vec![2]);
+    assert_eq!(nearest_members(&[0, 0], 0), vec![0, 1]);
+    assert_eq!(nearest_members(&[4], 8), vec![0]);
+    assert!(nearest_members(&[], 3).is_empty());
+}

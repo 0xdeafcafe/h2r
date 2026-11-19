@@ -657,6 +657,29 @@ Halo ring were already built this way.
   the warthog, tank the scorpion, hover the ghost and wraith, flier the
   banshee, dropship the pelican and phantom. The turret type keeps the
   disc-wide turret tables, as does a type the base has none of.
+  **Since converter version 84 the role is taken over only the members
+  whose friction and hover points together are nearest the Halo 1
+  vehicle's powered mass points** (`rebuild::nearest_members`; every
+  member on a tie). A majority over vehicles tuned apart leaves zero
+  wherever no word has half the votes: Coagulation's hover type is the
+  ghost (3 hover points), the spectre (4) and the wraith (6), which
+  agree on few driving words, so through version 83 the converted Blood
+  Gulch ghost held zero in 16 root words the retail ghost fills
+  (`+0x1d0`..`+0x1dc`, `+0x1f4` 5.0, `+0x1f8` 2.5, `+0x204`, `+0x208`,
+  `+0x218`, `+0x22c`, `+0x230`, `+0x238`, `+0x254`, `+0x2d8`, `+0x2dc`, `+0x2e4`; V, read
+  live from the converted map against the base's three) and zero at
+  `+0x8`, `+0x10` and `+0x14` of each hover point (the retail ghost's
+  3.75 on its back point and 1.85 on its front pair, 0.5 and 0.45, 1.0),
+  and did not move under its driver (user report, converted Blood Gulch,
+  2026-11-19). Halo 1's ghost has three powered points, so its role is
+  the retail ghost alone (`tests/vehicle_rebuild_disc.rs`,
+  `ghost_takes_the_retail_ghosts_role`). Every hover point takes the
+  majority over the ghost's three, the front pair's words: which Halo 1
+  point is the retail back point is not decided (pairing them needs the
+  retail markers' positions), so the back point's larger strength is
+  not carried. The driver seat now takes the ghost driver's words, bit
+  15 of its flags (`0x801c` on the retail ghost driver; the mixed role
+  left `0x1c`) included; what bit 15 does is not established.
 - **References**: the unit's weapons are Halo 1's converted weapons
   where they convert (no Halo 1 vehicle weapon converts yet, each listed
   in the report). Since version 50 the attachments are Halo 1's looping
