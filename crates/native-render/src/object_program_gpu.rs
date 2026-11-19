@@ -19,7 +19,7 @@ use crate::light_gpu::{run_layout, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
-    ObjectInputs, ObjectPass, Row, implementations_drawn, object_implementation, object_layer3, object_pass, object_vertex_uniforms,
+    IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
 };
 use crate::object_streams::{Element, StreamData, StreamFormats, declaration, expand, registers};
 use crate::objects::ObjectFrame;
@@ -41,17 +41,16 @@ pub struct LitProgramInput {
 }
 
 /// One lit part of a model: its mode section (the key the frame's node
-/// rows are found by), the section's decompression, the material's shader
-/// values and level flag, the index range in its buffers, and per
-/// implementation index (0..3) the program and buffer it draws with.
+/// rows and implementations are found by), the section's decompression,
+/// the material's shader values, the index range in its buffers, and per
+/// implementation index the program and buffer it draws with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LitPart {
     pub section: u16,
     pub decompression: [Row; 3],
     pub shader: ShaderValues,
-    pub layer_15: bool,
     pub indices: Range<u32>,
-    pub implementations: [Option<(usize, usize)>; 3],
+    pub implementations: [Option<(usize, usize)>; IMPLEMENTATIONS],
 }
 
 /// A model's lit parts, ready to upload: programs and buffers indexed by
@@ -117,14 +116,16 @@ pub fn attributes(registers: &[u8]) -> Vec<wgpu::VertexAttribute> {
 }
 
 /// The parts of `frame` drawn with `parts`, as (part index, implementation
-/// index, node rows); a part whose implementation, program or rows are
-/// missing is left out (the hook checks that none is for a drawn object).
+/// index, node rows): each with the implementation its section's records
+/// draw (copied at the hook); a part whose implementation, program or rows
+/// are missing is left out (the hook checks that none is for a drawn
+/// object).
 pub fn frame_parts<'a>(frame: &'a ObjectFrame, parts: &[LitPart]) -> Vec<(usize, usize, &'a [Row])> {
     parts
         .iter()
         .enumerate()
         .filter_map(|(i, p)| {
-            let imp = object_implementation(frame.lighting.as_ref(), p.layer_15)?;
+            let imp = frame.implementations.iter().find(|(s, _)| *s == p.section)?.1;
             p.implementations.get(imp)?.as_ref()?;
             let rows = &frame.node_rows.iter().find(|(s, _)| *s == p.section)?.1;
             Some((i, imp, rows.as_slice()))
@@ -254,7 +255,8 @@ impl LitObjects {
                 let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
                 let base = frame_vertex(&pass.program.vertex, view);
                 let Ok(vertex) = object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) else { continue };
-                blocks.push((vertex, frame_pixel(&pass.program.pixel, view)));
+                let Ok(pixel) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) else { continue };
+                blocks.push((vertex, pixel));
                 draws.push(Draw { model, program, buffer, indices: part.indices.clone() });
             }
         }
@@ -397,12 +399,21 @@ pub struct LitSection<'a> {
     pub parts: Vec<(u16, Vec<[u16; 3]>)>,
 }
 
-/// A material the lit build takes: resolved, its shader values, and
-/// whether its template's first level draws layer 15.
+/// A material the lit build takes: resolved, and its shader values.
 pub struct LitMaterial {
     pub material: tags::material::Material,
     pub shader: ShaderValues,
-    pub layer_15: bool,
+}
+
+/// What [`lit_model`] built: the input to upload, the materials taken,
+/// those refused with the reason, and the implementations (bit `n`) every
+/// taken material has (an object whose records draw another stays on D3D).
+#[derive(Default)]
+pub struct LitBuild {
+    pub input: LitModelInput,
+    pub taken: Vec<u16>,
+    pub refused: Vec<(u16, String)>,
+    pub implementations: u8,
 }
 
 /// What a `vrtx` gives a section: its program for the section's
@@ -413,36 +424,35 @@ pub type VertexSource<'s> = dyn FnMut(map::TagId, u16, u8) -> Result<(Vec<u8>, V
 pub type StageSource<'s> = dyn FnMut(usize, map::TagId, u32) -> Option<Image> + 's;
 
 /// Builds the lit parts of `sections` for `materials` (model-local
-/// material -> what it draws with): per material, every implementation it
-/// may draw ([`implementations_drawn`]) compiled for every section it is
-/// in, through the declaration the game would build there. A material
-/// with any one missing is left out whole, with the reason; one in no
-/// drawn section is neither taken nor refused; the rest are the input to
-/// upload and the materials taken.
+/// material -> what it draws with): per material, each implementation of
+/// its layer-3 pass (the record picks one, `0x0004cc70`) compiled for
+/// every section it is in, through the declaration the game would build
+/// there; an implementation that fails anywhere is left out. A material
+/// none of whose implementations compiles is refused, with the reasons;
+/// one in no drawn section is neither taken nor refused. When the taken
+/// materials share no implementation, they are all refused.
 pub fn lit_model(
     sections: &[LitSection<'_>],
     materials: &HashMap<u16, LitMaterial>,
     formats: &StreamFormats,
     vertex: &mut VertexSource<'_>,
     image: &mut StageSource<'_>,
-) -> (LitModelInput, Vec<u16>, Vec<(u16, String)>) {
-    let mut out = LitModelInput::default();
-    let mut taken = Vec::new();
-    let mut refused = Vec::new();
+) -> LitBuild {
+    let mut out = LitBuild { implementations: u8::MAX, ..LitBuild::default() };
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
     // Per section, its lit parts' triangles in one list: (material, range).
-    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, usize, Range<u32>)>)> = HashMap::new();
+    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, Range<u32>)>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
         let mut ranges = Vec::new();
-        for (k, (material, triangles)) in s.parts.iter().enumerate() {
+        for (material, triangles) in &s.parts {
             if !materials.contains_key(material) {
                 continue;
             }
             let start = list.len() as u32;
             list.extend(triangles.iter().flatten().map(|&i| u32::from(i)));
-            ranges.push((*material, k, start..list.len() as u32));
+            ranges.push((*material, start..list.len() as u32));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -450,98 +460,111 @@ pub fn lit_model(
     ids.sort_unstable();
     for m in ids {
         let lit = &materials[&m];
-        // Buffers made for a material refused later stay unused.
-        let mut built = || -> Result<Vec<(u16, Range<u32>, [Option<(LitProgramInput, usize)>; 3])>, String> {
-            let pass = object_layer3(&lit.material)?;
-            // Every implementation the material may draw, whether or not
-            // a drawn section has it.
-            for &n in implementations_drawn(lit.layer_15) {
-                if !pass.implementations.iter().any(|i| i.index == n) {
-                    return Err(format!("no implementation {n}"));
-                }
-            }
-            let mut parts = Vec::new();
-            for s in sections {
-                let streams = s
-                    .streams
-                    .iter()
-                    .map(|t| t.map_or(Ok(Vec::new()), |(kind, _)| formats.elements(kind)))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let (_, ranges) = &lists[&s.index];
-                for (_, _, range) in ranges.iter().filter(|r| r.0 == m) {
-                    let mut per: [Option<(LitProgramInput, usize)>; 3] = Default::default();
-                    for &n in implementations_drawn(lit.layer_15) {
-                        let imp = pass
-                            .implementations
-                            .iter()
-                            .find(|i| i.index == n)
-                            .ok_or_else(|| format!("no implementation {n}"))?;
-                        let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
-                        let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
-                        let decl = declaration(&semantics, &streams);
-                        let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl))
-                            .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
-                        let key = (s.index, decl);
-                        let buffer = match buffers.get(&key) {
-                            Some(&b) => b,
-                            None => {
-                                let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
-                                let vertices = expand(&key.1, &data, s.vertex_count).map_err(|e| format!("section {}: {e}", s.index))?;
-                                out.buffers.push(LitBufferInput {
-                                    registers: key.1.iter().map(|e| e.register).collect(),
-                                    vertices,
-                                    indices: lists[&s.index].0.clone(),
-                                });
-                                buffers.insert(key, out.buffers.len() - 1);
-                                out.buffers.len() - 1
-                            }
-                        };
-                        let mut images: [Option<Image>; 4] = Default::default();
-                        for (k, d) in compiled.program.dims.iter().enumerate() {
-                            if d.is_none() {
-                                continue;
-                            }
-                            let Stage::Bitmap { bitmap, image: i } = compiled.program.stages[k] else {
-                                return Err(format!("implementation {n} stage {k} samples no bitmap"));
-                            };
-                            images[k] = Some(image(k, bitmap, i).ok_or_else(|| format!("implementation {n} stage {k}'s bitmap does not decode"))?);
-                        }
-                        per[n] = Some((LitProgramInput { pass: compiled, images }, buffer));
-                    }
-                    parts.push((s.index, range.clone(), per));
-                }
-            }
-            Ok(parts)
-        };
-        let parts = match built() {
-            // Not in a drawn section: nothing to draw, nothing taken.
-            Ok(p) if p.is_empty() => continue,
+        let pass = match object_layer3(&lit.material) {
             Ok(p) => p,
             Err(e) => {
-                refused.push((m, e));
+                out.refused.push((m, e));
                 continue;
             }
         };
-        for (section, indices, per) in parts {
-            let s = sections.iter().find(|s| s.index == section).expect("built from it");
-            let mut implementations = [None; 3];
-            for (n, slot) in per.into_iter().enumerate() {
-                let Some((program, buffer)) = slot else { continue };
-                out.programs.push(program);
-                implementations[n] = Some((out.programs.len() - 1, buffer));
+        // The material's parts: (section, index range).
+        let parts: Vec<(&LitSection<'_>, Range<u32>)> = sections
+            .iter()
+            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1.clone())))
+            .collect();
+        if parts.is_empty() {
+            continue;
+        }
+        let mut per: Vec<[Option<(LitProgramInput, usize)>; IMPLEMENTATIONS]> = (0..parts.len()).map(|_| Default::default()).collect();
+        let mut mask = 0u8;
+        let mut reasons = Vec::new();
+        for imp in pass.implementations.iter().filter(|i| i.index < IMPLEMENTATIONS) {
+            let n = imp.index;
+            // Buffers made for an implementation that fails later stay
+            // unused.
+            let mut compile = || -> Result<Vec<(LitProgramInput, usize)>, String> {
+                let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
+                let mut got = Vec::new();
+                for (s, _) in &parts {
+                    let streams = s
+                        .streams
+                        .iter()
+                        .map(|t| t.map_or(Ok(Vec::new()), |(kind, _)| formats.elements(kind)))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
+                    let decl = declaration(&semantics, &streams);
+                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl))
+                        .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
+                    let key = (s.index, decl);
+                    let buffer = match buffers.get(&key) {
+                        Some(&b) => b,
+                        None => {
+                            let data: Vec<Option<StreamData<'_>>> = s.streams.iter().map(|t| t.map(|(_, d)| d)).collect();
+                            let vertices = expand(&key.1, &data, s.vertex_count).map_err(|e| format!("section {}: {e}", s.index))?;
+                            out.input.buffers.push(LitBufferInput {
+                                registers: key.1.iter().map(|e| e.register).collect(),
+                                vertices,
+                                indices: lists[&s.index].0.clone(),
+                            });
+                            buffers.insert(key, out.input.buffers.len() - 1);
+                            out.input.buffers.len() - 1
+                        }
+                    };
+                    let mut images: [Option<Image>; 4] = Default::default();
+                    for (k, d) in compiled.program.dims.iter().enumerate() {
+                        if d.is_none() {
+                            continue;
+                        }
+                        let Stage::Bitmap { bitmap, image: i } = compiled.program.stages[k] else {
+                            return Err(format!("implementation {n} stage {k} samples no bitmap"));
+                        };
+                        images[k] = Some(image(k, bitmap, i).ok_or_else(|| format!("implementation {n} stage {k}'s bitmap does not decode"))?);
+                    }
+                    got.push((LitProgramInput { pass: compiled, images }, buffer));
+                }
+                Ok(got)
+            };
+            match compile() {
+                Ok(got) => {
+                    mask |= 1 << n;
+                    for (slot, x) in per.iter_mut().zip(got) {
+                        slot[n] = Some(x);
+                    }
+                }
+                Err(e) => reasons.push(e),
             }
-            out.parts.push(LitPart {
-                section,
+        }
+        if mask == 0 {
+            let why = if reasons.is_empty() { "no implementation".to_string() } else { reasons.join("; ") };
+            out.refused.push((m, why));
+            continue;
+        }
+        for ((s, indices), slots) in parts.into_iter().zip(per) {
+            let mut implementations = [None; IMPLEMENTATIONS];
+            for (n, slot) in slots.into_iter().enumerate() {
+                let Some((program, buffer)) = slot else { continue };
+                out.input.programs.push(program);
+                implementations[n] = Some((out.input.programs.len() - 1, buffer));
+            }
+            out.input.parts.push(LitPart {
+                section: s.index,
                 decompression: s.decompression,
                 shader: lit.shader,
-                layer_15: lit.layer_15,
                 indices,
                 implementations,
             });
         }
-        taken.push(m);
+        out.taken.push(m);
+        out.implementations &= mask;
     }
-    (out, taken, refused)
+    if out.taken.is_empty() {
+        out.implementations = 0;
+    } else if out.implementations == 0 {
+        let taken = std::mem::take(&mut out.taken);
+        out.refused.extend(taken.into_iter().map(|m| (m, "the model's lit materials share no implementation".to_string())));
+        out.input = LitModelInput::default();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -602,41 +625,55 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(5, vec![[2, 1, 0]]), (0, vec![[0, 1, 2]])],
+            parts: vec![(5, vec![[2, 1, 0]]), (0, vec![[0, 1, 2]]), (3, vec![[0, 2, 1]]), (1, vec![[1, 2, 0]])],
         };
         // An opaque pass: no blending, depth written (both must be set).
-        let opaque = || {
+        let opaque = |index: usize| {
             let mut imp = lit();
+            imp.index = index;
             imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
             imp
         };
-        let mut one = opaque();
-        one.index = 1;
+        // One reading the time (scalar 2): never compiled.
+        let timed = |index: usize| {
+            let mut imp = opaque(index);
+            imp.input_reads.scalars |= 1 << 2;
+            imp
+        };
+        let lit_material = |imps| LitMaterial { material: material(imps), shader: ShaderValues::default() };
         let mut materials = HashMap::new();
-        materials.insert(0, LitMaterial { material: material(vec![opaque(), one.clone()]), shader: ShaderValues::default(), layer_15: false });
-        materials.insert(1, LitMaterial { material: material(vec![opaque()]), shader: ShaderValues::default(), layer_15: true });
+        materials.insert(0, lit_material(vec![opaque(0), opaque(1)]));
+        materials.insert(1, lit_material(vec![timed(0)]));
         // In no section: neither taken nor refused.
-        materials.insert(2, LitMaterial { material: material(vec![opaque(), one]), shader: ShaderValues::default(), layer_15: false });
+        materials.insert(2, lit_material(vec![opaque(0), opaque(1)]));
+        // Implementation 1 does not compile: 0 alone.
+        materials.insert(3, lit_material(vec![opaque(0), timed(1)]));
         let mut asked = Vec::new();
         let mut vertex = |vs: map::TagId, geometry: u16, influences: u8| {
             asked.push((vs, geometry, influences));
             Ok::<_, String>((rigid_program(), vec![0u16, 3, 2]))
         };
         let mut image = |_: usize, _: map::TagId, _: u32| -> Option<Image> { None };
-        let (input, taken, refused) = lit_model(&[section], &materials, &formats(), &mut vertex, &mut image);
-        assert_eq!(taken, vec![0], "refused: {refused:?}");
-        assert_eq!(refused, vec![(1, "no implementation 2".to_string())], "a layer-15 level draws implementation 2");
-        assert_eq!(input.programs.len(), 2);
+        let LitBuild { input, taken, refused, implementations } = lit_model(&[section], &materials, &formats(), &mut vertex, &mut image);
+        assert_eq!(taken, vec![0, 3], "refused: {refused:?}");
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].0, 1);
+        assert!(refused[0].1.contains("reads scalar input 2"), "{}", refused[0].1);
+        assert_eq!(implementations, 0b01, "material 3 has implementation 0 alone");
+        assert_eq!(input.programs.len(), 3);
         assert_eq!(input.buffers.len(), 1, "both implementations read v0..v2 the same way");
         let b = &input.buffers[0];
         assert_eq!(b.registers, vec![0, 1, 2]);
         assert_eq!(b.vertices[3], [1.0, 0.0, 0.0, 1.0], "vertex 1's position");
         assert_eq!(b.vertices[4], [0.5, 0.5, 0.0, 1.0]);
-        assert_eq!(b.indices, vec![0, 1, 2], "material 5 is not lit here");
-        assert_eq!(input.parts.len(), 1);
+        assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 1, 2, 0], "material 5 is not lit here");
+        assert_eq!(input.parts.len(), 2);
         let p = &input.parts[0];
         assert_eq!((p.section, p.indices.clone()), (4, 0..3));
-        assert_eq!(p.implementations, [Some((0, 0)), Some((1, 0)), None]);
+        assert_eq!(p.implementations, [Some((0, 0)), Some((1, 0)), None, None, None]);
+        let p = &input.parts[1];
+        assert_eq!(p.indices, 3..6);
+        assert_eq!(p.implementations, [Some((2, 0)), None, None, None, None]);
         assert!(input.programs.iter().all(|p| p.pass.program.inputs == 0b111));
         assert_eq!(asked[0], (map::TagId(0xe000_0002), 0, 0));
     }
@@ -649,20 +686,19 @@ mod tests {
         assert!(a.iter().all(|x| x.format == wgpu::VertexFormat::Float32x4));
     }
 
-    fn part(section: u16, layer_15: bool, implementations: [Option<(usize, usize)>; 3]) -> LitPart {
+    fn part(section: u16, implementations: [Option<(usize, usize)>; IMPLEMENTATIONS]) -> LitPart {
         LitPart {
             section,
             decompression: [[0.0; 4]; 3],
             shader: ShaderValues::default(),
-            layer_15,
             indices: 0..3,
             implementations,
         }
     }
 
     #[test]
-    fn an_object_draws_each_part_with_the_implementation_its_lighting_picks() {
-        let mut words = [0u32; 30];
+    fn an_object_draws_each_part_with_the_implementation_its_records_pick() {
+        let words = [0u32; 30];
         let mut f = ObjectFrame {
             handle: 1,
             definition: 2,
@@ -670,21 +706,20 @@ mod tests {
             sphere: ([0.0; 3], 1.0),
             lighting: Some(Lighting { words, root: Some(0) }),
             defaults: None,
-            node_rows: vec![(4, vec![[1.0; 4]; 3])],
+            node_rows: vec![(4, vec![[1.0; 4]; 3]), (7, vec![[1.0; 4]; 3])],
+            implementations: vec![(4, 1)],
         };
         let parts = [
-            part(4, false, [Some((0, 0)), Some((1, 0)), None]),
-            part(4, true, [None, None, Some((2, 1))]),
-            part(7, false, [Some((0, 0)), Some((1, 0)), None]),
+            part(4, [Some((0, 0)), Some((1, 0)), None, None, None]),
+            part(4, [None, None, Some((2, 1)), None, None]),
+            part(7, [Some((0, 0)), Some((1, 0)), None, None, None]),
         ];
         let picked: Vec<(usize, usize)> = frame_parts(&f, &parts).iter().map(|&(i, imp, _)| (i, imp)).collect();
-        assert_eq!(picked, vec![(0, 0), (1, 2)], "section 7 has no rows");
-        // +0x76 = 0xff: implementation 1.
-        words[0x74 / 4] = 0x00ff_0000;
-        f.lighting = Some(Lighting { words, root: Some(0) });
-        let picked: Vec<usize> = frame_parts(&f, &parts).iter().map(|&(_, imp, _)| imp).collect();
-        assert_eq!(picked, vec![1, 2]);
-        f.lighting = None;
-        assert!(frame_parts(&f, &parts).is_empty(), "no lighting: the build's choice is not known");
+        assert_eq!(picked, vec![(0, 1)], "part 1 has no implementation 1; section 7 no implementation copied");
+        f.implementations = vec![(4, 2), (7, 0)];
+        let picked: Vec<(usize, usize)> = frame_parts(&f, &parts).iter().map(|&(i, imp, _)| (i, imp)).collect();
+        assert_eq!(picked, vec![(1, 2), (2, 0)]);
+        f.node_rows.truncate(1);
+        assert_eq!(frame_parts(&f, &parts).len(), 1, "section 7 has no rows");
     }
 }

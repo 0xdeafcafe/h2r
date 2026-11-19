@@ -44,7 +44,7 @@
 use crate::camera::{GuestRead, GuestWrite};
 use crate::model::{NODE_MATRIX_SIZE, NodeMatrix};
 use crate::object_lighting::{Defaults, Lighting};
-use crate::object_nodes::{RECORD_KEY, Row, node_rows};
+use crate::object_nodes::{RECORD_IMPLEMENTATION, RECORD_KEY, Row, node_rows, record_implementation};
 use crate::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE, RENDER_RECORDS};
 
 pub const OBJECTS: u32 = 0x004e_0300;
@@ -180,6 +180,10 @@ pub struct ObjectFrame {
     /// uploads at `c[50..]` ([`crate::object_nodes::node_rows`]), copied
     /// at the hook ([`attach_node_rows`]). Empty until then.
     pub node_rows: Vec<(u16, Vec<Row>)>,
+    /// Per mode section the implementation of its layer-3 pass its
+    /// records draw ([`crate::object_nodes::record_implementation`]),
+    /// copied with the rows.
+    pub implementations: Vec<(u16, usize)>,
 }
 
 /// The lighting of the live object `handle` whose body is `body`: `+0x44`
@@ -243,25 +247,34 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
         lighting,
         defaults: Defaults::read(mem),
         node_rows: Vec::new(),
+        implementations: Vec::new(),
     })
 }
 
 /// Copies into `frame` the node rows of every record its cleared items
 /// draw (`cleared.records[i]` for the items whose owner is the frame's),
-/// one per mode section (the key's bits 9..17). An error names the first
-/// record whose rows do not read or whose draw would upload none: the
-/// object is then left to D3D, since a program would read another draw's
-/// rows.
+/// one per mode section (the key's bits 9..17), and the implementation
+/// each section's records draw. An error names the first record whose
+/// rows or implementation do not read, whose draw would upload no rows,
+/// or whose section's records disagree: the object is then left to D3D,
+/// since a program would read another draw's rows.
 pub fn attach_node_rows(mem: &dyn GuestRead, frame: &mut ObjectFrame, cleared: &ClearedObjects) -> Result<(), String> {
     for (&record, _) in cleared.records.iter().zip(&cleared.owners).filter(|(_, o)| **o == frame.handle) {
         let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
         let key = mem.read_u32(at + RECORD_KEY).ok_or("a record's key does not read")?;
         let section = ((key >> 9) & 0x1ff) as u16;
         let rows = node_rows(mem, at).map_err(|e| format!("record {record}: {e}"))?;
+        let word = mem.read_u32(at + RECORD_IMPLEMENTATION).ok_or_else(|| format!("record {record}'s implementation does not read"))?;
+        let implementation = record_implementation(word);
         match frame.node_rows.iter().find(|(s, _)| *s == section) {
             Some((_, r)) if *r != rows => return Err(format!("section {section}'s records upload different rows")),
             Some(_) => {}
             None => frame.node_rows.push((section, rows)),
+        }
+        match frame.implementations.iter().find(|(s, _)| *s == section) {
+            Some((_, i)) if *i != implementation => return Err(format!("section {section}'s records draw different implementations")),
+            Some(_) => {}
+            None => frame.implementations.push((section, implementation)),
         }
     }
     Ok(())
@@ -845,6 +858,7 @@ mod node_row_tests {
             m.w(record_at(r) + RECORD_KEY, section << 9);
             m.w(record_at(r) + RECORD_MATRIX, MATRIX);
             m.w(record_at(r) + RECORD_NODES, u32::MAX);
+            m.w(record_at(r) + RECORD_IMPLEMENTATION, 2 << 29 | 0x55);
         }
         let cleared = ClearedObjects {
             layer: 3,
@@ -858,6 +872,12 @@ mod node_row_tests {
         attach_node_rows(&m, &mut f, &cleared).unwrap();
         let rows = vec![[1.0, 4.0, 7.0, 10.0], [2.0, 5.0, 8.0, 11.0], [3.0, 6.0, 9.0, 12.0]];
         assert_eq!(f.node_rows, vec![(5, rows)], "one entry for section 5, none of B's");
+        assert_eq!(f.implementations, vec![(5, 2)]);
+        // Two records of section 5 drawing different implementations.
+        m.w(record_at(3) + RECORD_IMPLEMENTATION, 1 << 29);
+        let mut f = read_object(&m, a).unwrap();
+        assert!(attach_node_rows(&m, &mut f, &cleared).unwrap_err().contains("different implementations"));
+        m.w(record_at(3) + RECORD_IMPLEMENTATION, 2 << 29);
         // Record 3 uploads nothing (no matrix, no node block): A is not drawn.
         m.w(record_at(3) + RECORD_MATRIX, 0);
         let mut f = read_object(&m, a).unwrap();
