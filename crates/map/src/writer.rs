@@ -155,8 +155,9 @@ impl<R: Read + Seek> MapEditor<'_, R> {
             .map
             .metadata_space()
             .ok_or(Error::Invalid("map has no metadata region"))?;
-        let region_end =
-            u64::from(h.index_offset) + u64::from(h.index_size) + u64::from(h.tag_data_size);
+        let region_end = u64::from(h.index_offset)
+            + u64::from(h.index_size)
+            + u64::from(self.map.metadata_size());
         if region_end != u64::from(h.file_size)
             || self.map.storage_length() != u64::from(h.file_size)
         {
@@ -198,7 +199,11 @@ impl<R: Read + Seek> MapEditor<'_, R> {
         let a = METADATA_GROWTH_ALIGN as usize;
         let growth = n.div_ceil(a).checked_mul(a).ok_or(Error::Limit)?;
         let growth = u32::try_from(growth).map_err(|_| Error::Limit)?;
-        let data = h.tag_data_size.checked_add(growth).ok_or(Error::Limit)?;
+        let data = self
+            .map
+            .metadata_size()
+            .checked_add(growth)
+            .ok_or(Error::Limit)?;
         let total = h.meta_size.checked_add(growth).ok_or(Error::Limit)?;
         let file = h.file_size.checked_add(growth).ok_or(Error::Limit)?;
         if growth != 0 && total > max_metadata_size(h.cache_type)? {

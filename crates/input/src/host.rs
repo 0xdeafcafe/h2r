@@ -51,6 +51,46 @@ pub enum HostButton {
     DpadRight,
 }
 
+impl HostButton {
+    /// Every button, in declaration order.
+    pub const ALL: [HostButton; 14] = [
+        HostButton::South,
+        HostButton::East,
+        HostButton::West,
+        HostButton::North,
+        HostButton::LeftBumper,
+        HostButton::RightBumper,
+        HostButton::Back,
+        HostButton::Start,
+        HostButton::LeftStick,
+        HostButton::RightStick,
+        HostButton::DpadUp,
+        HostButton::DpadDown,
+        HostButton::DpadLeft,
+        HostButton::DpadRight,
+    ];
+
+    /// A short name for reports (`h2 agent hostpads`).
+    pub fn name(self) -> &'static str {
+        match self {
+            HostButton::South => "south",
+            HostButton::East => "east",
+            HostButton::West => "west",
+            HostButton::North => "north",
+            HostButton::LeftBumper => "left_bumper",
+            HostButton::RightBumper => "right_bumper",
+            HostButton::Back => "back",
+            HostButton::Start => "start",
+            HostButton::LeftStick => "left_stick",
+            HostButton::RightStick => "right_stick",
+            HostButton::DpadUp => "dpad_up",
+            HostButton::DpadDown => "dpad_down",
+            HostButton::DpadLeft => "dpad_left",
+            HostButton::DpadRight => "dpad_right",
+        }
+    }
+}
+
 /// Set of [`HostButton`]s.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HostButtons(u16);

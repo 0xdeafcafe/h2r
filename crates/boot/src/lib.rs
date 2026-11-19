@@ -1244,15 +1244,18 @@ pub fn run_hosted_with_live(
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
     if let Some(audio) = &ds {
-        audio.mixer()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_distance_reverb(features.switches().distance_reverb());
+        let mixer = audio.mixer();
+        let mut mixer = mixer.lock().unwrap_or_else(|e| e.into_inner());
+        mixer.set_hrtf(features.switches().audio_hrtf());
+        mixer.set_distance_reverb(features.switches().distance_reverb());
     }
     if let Some(input) = host.input.as_mut() {
         // Local bots' pads (docs/game/bots.md): after the host's own.
         input.add_backend(Box::new(bots::local::global().backend()));
     }
+    // `input.host` (`h2 agent hostpads`) reads the manager's report after
+    // the manager moves into XAPI.
+    let host_pads = host.input.as_ref().map(input::InputManager::host_report);
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (
@@ -1358,6 +1361,7 @@ pub fn run_hosted_with_live(
     if let Some(a) = &agent {
         debug_menu_glue::install(
             host.debug_menu.as_ref(),
+            host_pads,
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),

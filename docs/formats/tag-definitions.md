@@ -1511,9 +1511,15 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): melee damage, effects and sounds (Halo 1's `effe` and
-  most `snd!` are not converted), the barrels' firing effects. A
-  projectile takes no `jpt!` from Halo 2. The HUD (`+0x2b0`) is Halo 1's
+  `TEMPLATES` row; references only): effects and sounds, the barrels'
+  firing effects. A projectile takes no `jpt!` from Halo 2. Since
+  converter v86 the slots named by the retail tags they hold
+  (`arsenal::WEAPON_OVERHEATED`, `WEAPON_MELEE_DAMAGE`,
+  `WEAPON_MELEE_RESPONSE`, `PROJECTILE_DETONATION_STARTED`,
+  `PROJECTILE_AIRBORNE_DETONATION`, `PROJECTILE_DETONATION`,
+  `PROJECTILE_SUPER_DETONATION`, `PROJECTILE_FLYBY_SOUND`) and the
+  material effects take Halo 1's converted tags, or none
+  ([../halo1/role-audit.md](../halo1/role-audit.md)). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

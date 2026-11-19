@@ -19,6 +19,8 @@
 //!   over raw HID as pads of their own, the right trackpad aiming through
 //!   [`look`] (the mouse-look path), and the trackpad actuators as rumble
 //!   and a speaker (`docs/input/steam-controller.md`).
+//! * [`report`]: the host pads as backends and the gate see them
+//!   (`h2 agent hostpads`).
 //! * [`touchpad`]: swipes, clicks and two-finger taps on a PlayStation
 //!   touchpad, and [`device::PadGate`], which lets the debug menu see pads
 //!   first and hide them from the game (`docs/runtime/debug-menu.md`).
@@ -36,6 +38,7 @@ pub mod host;
 pub mod layouts;
 pub mod look;
 pub mod pad_hid;
+pub mod report;
 pub mod steam;
 pub mod steam_pad;
 pub mod touch;

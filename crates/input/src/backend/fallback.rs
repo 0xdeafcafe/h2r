@@ -5,6 +5,7 @@ use crate::HostBackend;
 use crate::backend::keyboard::KeyboardMouse;
 use crate::gamepad::{Gamepad, Rumble};
 use crate::host::{ConvertConfig, HostPad, HostPadId, HostPadState};
+use crate::report::DeviceInfo;
 
 /// One persistent virtual pad plus the remaining physical controllers.
 /// The virtual pad accepts feedback even with no motors attached. With the
@@ -119,10 +120,15 @@ impl HostBackend for KeyboardFallback {
         }
         self.keyboard_activity = activity;
         self.previous_pad = gamepad;
+        let mut state = HostPadState::from_gamepad(merge(gamepad, keyboard));
+        // The merge goes through the guest's pad, which has no touchpad, so
+        // carry the primary pad's across: the debug menu's gate opens on
+        // its click and reads its swipes (docs/runtime/debug-menu.md).
+        state.touchpad = primary.as_ref().and_then(|p| p.state.touchpad);
         let mut out = vec![HostPad {
             id: HostPadId(0),
             name: "Player one (pad + keyboard/mouse)".into(),
-            state: HostPadState::from_gamepad(merge(gamepad, keyboard)),
+            state,
             physical: false,
             supports_rumble: true,
         }];
@@ -165,6 +171,12 @@ impl HostBackend for KeyboardFallback {
         {
             backend.set_rumble(*host, rumble);
         }
+    }
+
+    fn devices(&self) -> Vec<DeviceInfo> {
+        self.physical
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.devices())
     }
 }
 
@@ -408,5 +420,74 @@ mod tests {
         keyboard.key_down("Space");
         both.poll();
         assert_eq!(active.get(), Some(DeviceKind::Xbox));
+    }
+
+    /// Player one is rebuilt from the guest's pad, which has no touchpad;
+    /// the primary pad's touchpad must survive it, or the debug menu never
+    /// sees a DualShock 4's or DualSense's click.
+    #[test]
+    fn player_one_keeps_the_primary_pads_touchpad() {
+        use crate::host::Touchpad;
+        struct Physical(Vec<Option<Touchpad>>);
+        impl HostBackend for Physical {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn poll(&mut self) -> Vec<HostPad> {
+                (0..self.0.len())
+                    .map(|i| HostPad {
+                        id: HostPadId(i as u64 + 10),
+                        name: format!("pad{i}"),
+                        state: HostPadState {
+                            touchpad: self.0[i],
+                            ..Default::default()
+                        },
+                        physical: true,
+                        supports_rumble: false,
+                    })
+                    .collect()
+            }
+        }
+        let click = Touchpad {
+            click: true,
+            primary: Some((0.1, 0.2)),
+            secondary: None,
+        };
+        let second = Touchpad {
+            primary: Some((-0.5, 0.5)),
+            ..Default::default()
+        };
+        let mut both = KeyboardFallback::new(
+            KeyboardMouse::new(Bindings::default()),
+            Some(Box::new(Physical(vec![Some(click), Some(second)]))),
+            Default::default(),
+        );
+        let pads = both.poll();
+        assert_eq!(pads.len(), 2);
+        assert_eq!(pads[0].id, HostPadId(0), "player one");
+        assert_eq!(
+            pads[0].state.touchpad,
+            Some(click),
+            "the primary's touchpad"
+        );
+        assert_eq!(
+            pads[1].state.touchpad,
+            Some(second),
+            "the others keep theirs"
+        );
+        // A primary without one: none on player one either.
+        let mut plain = KeyboardFallback::new(
+            KeyboardMouse::new(Bindings::default()),
+            Some(Box::new(Physical(vec![None]))),
+            Default::default(),
+        );
+        assert_eq!(plain.poll()[0].state.touchpad, None);
+        // No pad at all: the keyboard alone has none.
+        let mut alone = KeyboardFallback::new(
+            KeyboardMouse::new(Bindings::default()),
+            None,
+            Default::default(),
+        );
+        assert_eq!(alone.poll()[0].state.touchpad, None);
     }
 }

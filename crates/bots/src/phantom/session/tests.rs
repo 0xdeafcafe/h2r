@@ -55,6 +55,7 @@ fn hosted() -> FakeGuest {
     g.map(points::GAME_TIME.base & !0xfff, 0x1000)
         .put_u32(points::GAME_TIME.base, TIME)
         .map(TIME, 0x10)
+        .put_f32(TIME + 4, 1.0 / 30.0)
         .put_u32(TIME + guest::GAME_TIME_TICK, 100);
     // Players: the host at 0; room for phantoms.
     g.map(points::PLAYERS.base & !0xfff, 0x1000)
@@ -99,9 +100,17 @@ fn game_makes(g: &mut FakeGuest, index: u32, mac: [u8; 6], aim: [f32; 3]) {
     for k in 0..3 {
         g.put_f32(body + guest::UNIT_AIM + 4 * k, aim[k as usize]);
     }
-    g.put_u8(body + UNIT_WEAPON, 1);
+    g.put_u8(body + UNIT_WEAPON, 1)
+        .put_u8(body + 0x213, 0xff)
+        .put_u16(body + 0x214, 0x1234)
+        .put_u8(body + 0x216, 1)
+        .put_u8(body + 0x217, 0xff)
+        .put_u8(body + 0x23d, 0xff)
+        .put_u8(body + 0x241, 0xff);
     let slot = SIM + SIM_SLOTS + index * SLOT_SIZE;
-    g.put_u32(slot, index).put(slot + SLOT_MAC, &mac);
+    g.put_u32(slot, index)
+        .put_u32(slot + 8, 4)
+        .put(slot + SLOT_MAC, &mac);
     g.put_u32(slot + SLOT_STAMP, u32::MAX);
 }
 
@@ -356,6 +365,7 @@ fn an_action_passes_the_validators_ranges() {
         trigger: 1.5,
         trigger2: -1.0,
         weapon: 1,
+        ..Default::default()
     };
     let b = a.bytes();
     let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
@@ -367,13 +377,15 @@ fn an_action_passes_the_validators_ranges() {
     assert_eq!((f(0xc), f(0x10), f(0x14), f(0x18)), (1.0, -1.0, 1.0, 0.0));
     assert_eq!((b[0x20], b[0x21]), (1, 0xff), "the weapon, no second");
     assert_eq!(&b[0x22..0x26], &[0xff; 4], "grenade and +0x24 none");
-    assert!(b[0x26..].iter().all(|&x| x == 0), "no target, no aim block");
+    assert_eq!(&b[0x26..0x2c], &[0; 6]);
+    assert_eq!(&b[0x2c..0x40], &[0xff; 20], "empty object handles");
+    assert!(b[0x40..].iter().all(|&v| v == 0));
     assert_eq!(Action { weapon: 9, ..a }.bytes()[0x20], 0xff);
 }
 
 #[test]
 fn the_pad_turns_from_the_current_facing() {
-    let still = action_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
+    let still = motion_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
     assert!((still.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     assert_eq!(still.pitch, 0.0);
     let pad = HostPadState {
@@ -383,7 +395,7 @@ fn the_pad_turns_from_the_current_facing() {
         left_trigger: 0.25,
         ..Default::default()
     };
-    let a = action_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
+    let a = motion_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
     assert!(
         (a.yaw + TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
         "+x turns right (yaw down), as the brain steers"
@@ -736,6 +748,7 @@ mod books {
         assert_eq!(ph.player(h), Some(1));
         assert_eq!(ph.list()[0].state, State::Joined);
         let slot = slot_of(&g, mac).unwrap().unwrap();
+        g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
         assert_eq!(g.u32(slot + SLOT_ACTION + 0x14).unwrap(), 1.0f32.to_bits());
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2, "made once");
@@ -1114,6 +1127,7 @@ mod lobby {
         ph.tick(&mut g, 4).unwrap();
         assert_eq!(ph.player(h), Some(1));
         let slot = slot_of(&g, mac).unwrap().unwrap();
+        g = buttons::gather(&ph, g, slot);
         assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
 
         // The game ends, back in the lobby: still in the session, no
@@ -1340,6 +1354,49 @@ mod lobby {
         ph.add(who(1, "A"), None, idle()).unwrap();
         assert!(ph.tick(&mut g, 0).unwrap().is_empty());
         assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+    }
+
+    /// A Clankermatch's phantoms in the party's lobby (a pregame lobby
+    /// this console hosts, life cycle 2, before the search): they wait,
+    /// and join only once the search hosts the match (type 6). The user's
+    /// run on f5d3010c showed bots in the party.
+    #[test]
+    fn a_clankermatchs_phantoms_never_join_the_party() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let h = ph.add(who(1, "Widget Rotor"), None, idle()).unwrap();
+        // The party's lobby: [`lobby`]'s session, type 2.
+        let mut g = lobby();
+        let log = ph.tick(&mut g, 0).unwrap();
+        assert_eq!(
+            log,
+            vec![format!(
+                "bots: phantom Widget Rotor waits: not a lobby it can join ({})",
+                crate::phantom::NOT_THE_MATCH
+            )]
+        );
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1, "nothing written");
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty(), "said once");
+        // The search hosted the match: it joins the target session.
+        let mut g = matchmaking();
+        let log = ph.tick(&mut g, 2).unwrap();
+        assert_eq!(
+            log,
+            vec!["bots: phantom Widget Rotor joins (peer 1, in the pregame lobby)".to_owned()]
+        );
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), Some(1));
+        assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1, "never the party's");
+        // The game over, back to the party (type 2, the squad session
+        // the game's again): its peer leaves whatever session it is in.
+        g.put_u32(l::SESSION_TYPE, 2)
+            .put_u32(points::SQUAD_SESSION.base, S);
+        ph.tick(&mut g, 3).unwrap();
+        assert_eq!(find_peer(&g, S, machine_id(h)).unwrap(), None);
+        assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 1);
+        // Not a Clankermatch's: the same party lobby takes it.
+        ph.set_match_only(false);
+        let log = ph.tick(&mut g, 4).unwrap();
+        assert!(log.iter().any(|l| l.contains("joins (peer 1")), "{log:?}");
     }
 
     /// The matchmade game (life cycle 8) runs in the target session: the
@@ -1695,3 +1752,5 @@ mod in_game {
         assert_eq!(n[0], MARK as u16);
     }
 }
+
+mod buttons;

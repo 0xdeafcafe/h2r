@@ -300,19 +300,19 @@ fn the_clankermatch_plans_come_from_the_built_in_lineup() {
         (s.title.as_str(), s.hopper, s.row, s.min, s.max, s.teams),
         ("Clanker Slayer", 8, 0, 2, 8, 0)
     );
-    assert_eq!((s.bots, s.local, s.phantoms()), (7, 3, 4));
+    assert_eq!((s.bots, s.local, s.phantoms()), (7, 0, 7), "phantoms only");
     let t = cm_plan(CmPlaylist::Teams, "Tester").unwrap();
     assert_eq!(
         (t.title.as_str(), t.hopper, t.row, t.max, t.teams),
         ("Clanker Teams", 9, 1, 8, 2)
     );
-    assert_eq!((t.bots, t.local, t.phantoms()), (7, 3, 4));
+    assert_eq!((t.bots, t.local, t.phantoms()), (7, 0, 7));
     let d = cm_plan(CmPlaylist::Doubles, "Tester").unwrap();
     assert_eq!(
         (d.title.as_str(), d.hopper, d.row, d.max, d.teams),
         ("Clanker Doubles", 10, 2, 4, 2)
     );
-    assert_eq!((d.bots, d.local, d.phantoms()), (3, 1, 2));
+    assert_eq!((d.bots, d.local, d.phantoms()), (3, 0, 3));
     for p in [&s, &t, &d] {
         assert!((2..=p.max).contains(&p.min), "{p:?}");
         // The plan line reads back.

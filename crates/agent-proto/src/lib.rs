@@ -18,6 +18,7 @@ pub mod havok;
 pub mod hot;
 mod load;
 mod pad;
+pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;
@@ -133,6 +134,10 @@ pub mod method {
     pub const INPUT_REPLAY: &str = "input.replay";
     /// End the recording (writing it) or the replay.
     pub const INPUT_STOP: &str = "input.stop";
+    /// The host's controllers as their backends and the debug menu's gate
+    /// see them: profile class, touchpad, buttons, and whether the menu is
+    /// open (`h2 agent hostpads`).
+    pub const INPUT_HOST: &str = "input.host";
     /// Start the in-process sampling profiler (`{"hz": 1000}`).
     pub const SAMPLE_START: &str = "profile.sample.start";
     /// Stop it and write the samples (`{"inline": true}` returns them too).

@@ -41,19 +41,20 @@ import { ZoneFollower, bspNumber, isBackdrop, isCinematic, layerNode, type ZoneP
 import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
+import { loadPlasma, type LevelPlasma } from "./plasma3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
 import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
-import { ScenarioObjects } from "./scenario3d";
+import { ScenarioObjects, isVehicle, objectOf } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
-import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
+import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
 export type ViewMode = "orbit" | "top" | "follow" | "eyes";
@@ -360,8 +361,8 @@ export class ViewerScene {
       const gltf = await loading;
       if (this.disposed || gen !== this.mapGen) return false;
       // Textured primitives' class materials, for the flat look.
-      const flats = await loadFlats(gltf);
-      if (this.disposed) return false;
+      const [flats, plasma] = await Promise.all([loadFlats(gltf), loadPlasma(gltf)]);
+      if (this.disposed || gen !== this.mapGen) return false;
       const pairs: TexturePair[] = [];
       const root = gltf.scene;
       // Whatever the glb's nodes are called (`structure`, several `bsp_<n>`,
@@ -370,16 +371,25 @@ export class ViewerScene {
       // nor a zone only a cutscene uses.
       const assetExtras = (gltf.asset as { extras?: unknown } | undefined)?.extras;
       const box = new THREE.Box3();
-      // Machines share the level's class materials in the glb: they get
-      // copies of their own, which the see-through leaves alone.
+      // Machines and placed objects share the level's class materials in
+      // the glb: they get copies of their own, so the level's culling
+      // doesn't reach them; vehicle placements another set, which the
+      // see-through leaves alone (takesSeeThrough).
       const machineMats = new Map<THREE.Material, THREE.Material>();
-      const own = (m: THREE.Material) => {
-        let c = machineMats.get(m);
-        if (!c) { c = m.clone(); machineMats.set(m, c); }
-        return c;
-      };
-      const walk = (o: THREE.Object3D, names: string[], aside = false) => {
+      const vehicleMats = new Map<THREE.Material, THREE.Material>();
+      const walk = (o: THREE.Object3D, names: string[], aside = false, vehicle = false) => {
         const path = o.name ? [...names, o.name] : names;
+        // A scenario placement's extras say what it is.
+        if (!vehicle && names.length && /^scenario(_\d+)?$/i.test(names[names.length - 1]!)) {
+          const info = objectOf(o.userData);
+          vehicle = info !== null && isVehicle(info);
+        }
+        const pool = vehicle ? vehicleMats : machineMats;
+        const own = (m: THREE.Material) => {
+          let c = pool.get(m);
+          if (!c) { c = m.clone(); pool.set(m, c); }
+          return c;
+        };
         // (Placed objects don't frame the camera either: some stand far out.)
         aside ||= isBackdrop(o.name) || o.name === "scenario" || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
         const role = meshRole(path);
@@ -391,6 +401,13 @@ export class ViewerScene {
           return;
         }
         if (mesh.isMesh) {
+          // Plasma is already dressed and shared across its instances.
+          if (!Array.isArray(mesh.material) && plasma.has(mesh.material)) {
+            used.add(mesh.material);
+            mesh.castShadow = mesh.receiveShadow = false;
+            this.cutaway(mesh.material);
+            return;
+          }
           if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           for (const m of mats) { used.add(m); if (dressWater(m, this.look.water)) wet = true; }
@@ -408,13 +425,13 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway(m, role === "level");
+            this.cutaway(m, takesSeeThrough(role, vehicle));
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
           if (!aside) box.expandByObject(mesh);
         }
-        for (const c of o.children) walk(c, path, aside);
+        for (const c of o.children) walk(c, path, aside, vehicle);
       };
       const used = new Set<THREE.Material>();
       let wet = false;
@@ -425,7 +442,7 @@ export class ViewerScene {
       this.clearMap();
       // Zones, far scenery, decals and effects, wherever in the tree the glb
       // keeps them, and the level's sky.
-      this.look.adopt(root, assetExtras, url);
+      this.look.adopt(root, assetExtras, url, plasma);
       this.look.wet = wet;
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
@@ -447,7 +464,7 @@ export class ViewerScene {
       this.setBounds({ min: [box.min.x, -box.max.z, box.min.y], max: [box.max.x, -box.min.z, box.max.y] }, true);
       this.showFeatures();
       this.frameCamera(true);
-      this.streamPictures(pending, used, gen);
+      this.streamPictures(pending, used, gen, plasma);
       return true;
     } catch {
       return false;
@@ -455,9 +472,10 @@ export class ViewerScene {
   }
 
   /** Fetches the map's pictures and puts each on its surfaces as it comes. */
-  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number) {
-    this.mapTextures = [];
-    for (const p of pending) this.mapTextures.push(...texturesSharing(p.texture, used));
+  private streamPictures(pending: ReturnType<typeof deferTextures>, used: ReadonlySet<THREE.Material>, gen: number, plasma: LevelPlasma) {
+    const textures = new Set(plasma.textures);
+    for (const p of pending) for (const t of texturesSharing(p.texture, used)) textures.add(t);
+    this.mapTextures = [...textures];
     // Floors and walls seen at a glancing angle stay sharp: the GPU's most
     // anisotropic filtering (mipmaps are made when each picture arrives).
     const aniso = mapAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
@@ -465,6 +483,7 @@ export class ViewerScene {
     this.texturesReady = streamTextures(pending, (p, picture) => {
       for (const t of texturesSharing(p.texture, used)) { t.image = picture; t.needsUpdate = true; }
       this.textures.refresh();
+      plasma.refresh();
       this.dirty = true;
     }, { concurrency: PICTURES_AT_ONCE, stopped: () => this.disposed || gen !== this.mapGen }).then(() => { if (gen === this.mapGen) mark("h2-viewer:textured"); });
   }
@@ -582,7 +601,7 @@ export class ViewerScene {
   }
 
   /** The height cut on a material, and the see-through unless `see` is
-   *  false (machines: they are always drawn whole). */
+   *  false (vehicle placements: they are always drawn whole). */
   private cutaway(m: THREE.Material, see = true) {
     if (this.patched.has(m)) return;
     this.patched.add(m);
@@ -878,6 +897,7 @@ export class ViewerScene {
     const sources: FloorSource[] = [];
     const v = new THREE.Vector3(), m = new THREE.Matrix4();
     const add = (mesh: THREE.Mesh, world: THREE.Matrix4) => {
+      if (!Array.isArray(mesh.material) && this.look.isPlasma(mesh.material)) return;
       const pos = mesh.geometry.getAttribute("position");
       if (!pos) return;
       const out = new Float32Array(pos.count * 3);

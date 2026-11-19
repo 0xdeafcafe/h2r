@@ -125,7 +125,11 @@ child first, as Halo 1 draws it: E `0x000dbded`; V: the assault rifle's
 `<wphi name>_h1_weapon_hud`. The rebuilt weapon (`convert_arsenal`) names
 it at `weap +0x2b0`; the Halo 2 counterpart's `nhdt` becomes the Halo 2
 side of the weapon's HUD pair. `weapon_hud` is the function to call for
-any other builder of a `weap`.
+any other builder of a `weap`. A chain with no element at all (V: the
+multiplayer maps' flamethrower, `flame thrower` → `master fuel`) draws
+nothing in Halo 1 and becomes an `nhdt` with no widget (since converter
+v87; before, it was refused and the flamethrower kept the shotgun's
+Halo 2 HUD). A chain whose elements all fail to convert is refused.
 
 Halo 1's `wphi` layout, from its draw (E, Halo 1's XBE, `0x000db5d0`..,
 `ebx` the `wphi`): child `+0x00`, anchor `+0x3c`, static elements `+0x60`

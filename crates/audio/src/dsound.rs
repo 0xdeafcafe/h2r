@@ -414,6 +414,7 @@ pub struct MixIn {
     pub(crate) params: VoiceParams,
     pub(crate) playing: bool,
     pub(crate) fx_state: FxState,
+    pub(crate) hrtf: Option<crate::hrtf::Hrtf>,
 }
 
 impl MixIn {
@@ -423,6 +424,7 @@ impl MixIn {
             params: VoiceParams::with_frequency(0),
             playing: false,
             fx_state: FxState::default(),
+            hrtf: None,
         }
     }
 
@@ -434,6 +436,9 @@ impl MixIn {
     pub fn play(&mut self) {
         if !self.playing {
             self.fx_state.reset();
+            if let Some(hrtf) = &mut self.hrtf {
+                hrtf.reset();
+            }
         }
         self.playing = true;
     }
@@ -875,9 +880,9 @@ pub const PAN_WIDTH: f32 = 0.8;
 ///
 /// The Xbox ran HRTF and crosstalk cancellation for 3D voices on the MCPX
 /// DSP. That is not emulated; [`spatial`](Self::spatial) is a simple,
-/// documented stand-in. Not modelled: HRTF elevation and front/back colouring,
-/// and the SDK's `DS3D_DEFERRED` commit semantics (every change is
-/// immediate). Occlusion, obstruction and reverb sends are per-voice
+/// documented stand-in. The mixer also offers opt-in binaural filtering for
+/// positioned mix-ins. The SDK's `DS3D_DEFERRED` changes apply immediately.
+/// Occlusion, obstruction and reverb sends are per-voice
 /// ([`crate::fx::I3dl2Source`]) and per-mixer ([`crate::reverb`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listener {
@@ -939,6 +944,20 @@ impl Listener {
             return default;
         };
         (right, front.cross(right), front)
+    }
+
+    /// Unit source direction in the listener's right, up and front axes.
+    pub(crate) fn head_direction(&self, src: &Source3d) -> Option<[f32; 3]> {
+        let relative = match src.mode {
+            Mode3d::Normal => src.position.sub(self.position),
+            Mode3d::HeadRelative => src.position,
+            Mode3d::Disabled => return None,
+        };
+        let Some(direction) = relative.unit() else {
+            return Some([0.0, 0.0, 1.0]);
+        };
+        let (right, up, front) = self.axes();
+        Some([right, up, front].map(|axis| direction.dot(axis).clamp(-1.0, 1.0)))
     }
 
     /// The panning and attenuation a source gets. The model, in full:

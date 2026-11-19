@@ -25,6 +25,7 @@ use crate::dsound::{
     mb_to_gain,
 };
 use crate::fx::{DEFAULT_HF_REFERENCE_HZ, FxState, filter_path, headroom_gain};
+use crate::hrtf::Hrtf;
 use crate::reverb::{I3dl2Listener, Reverb};
 use crate::route::{self, Dest};
 
@@ -56,6 +57,7 @@ pub struct VoiceLevels {
 pub struct Mixer {
     pub(crate) sample_rate: u32,
     pub(crate) master_mb: i32,
+    pub(crate) hrtf: bool,
     pub(crate) listener: Listener,
     pub(crate) distance_reverb: bool,
     pub(crate) buffers: BTreeMap<BufferId, SoundBuffer>,
@@ -111,6 +113,7 @@ impl Mixer {
         Self {
             sample_rate,
             master_mb: 0,
+            hrtf: false,
             listener: Listener::default(),
             distance_reverb: false,
             buffers: BTreeMap::new(),
@@ -170,9 +173,25 @@ impl Mixer {
     /// seamlessly at the new rate.
     pub fn set_sample_rate(&mut self, sample_rate: u32) {
         assert!(sample_rate > 0);
+        if self.hrtf && self.sample_rate != sample_rate {
+            for mix in self.mix_ins.values_mut() {
+                mix.hrtf = Some(Hrtf::new(sample_rate));
+            }
+        }
         self.sample_rate = sample_rate;
         if let Some(r) = &self.reverb {
             self.reverb = Some(Reverb::new(sample_rate, *r.params()));
+        }
+    }
+
+    /// Enables headphone binaural filtering for positioned mix-ins. Call
+    /// from the control side, where the per-mix-in delay lines can allocate.
+    pub fn set_hrtf(&mut self, enabled: bool) {
+        if self.hrtf != enabled {
+            self.hrtf = enabled;
+            for mix in self.mix_ins.values_mut() {
+                mix.hrtf = enabled.then(|| Hrtf::new(self.sample_rate));
+            }
         }
     }
 
@@ -277,8 +296,9 @@ impl Mixer {
         id
     }
 
-    pub fn add_mix_in(&mut self, mix_in: MixIn) -> MixInId {
+    pub fn add_mix_in(&mut self, mut mix_in: MixIn) -> MixInId {
         let id = MixInId(self.take_id());
+        mix_in.hrtf = self.hrtf.then(|| Hrtf::new(self.sample_rate));
         self.mix_ins.insert(id, mix_in);
         id
     }
@@ -437,6 +457,7 @@ impl Mixer {
                     &scratch[..produced * 2],
                     &mut b.fx_state,
                     out,
+                    None,
                 );
             }
         }
@@ -494,6 +515,7 @@ impl Mixer {
                     &scratch[..produced * 2],
                     &mut s.fx_state,
                     out,
+                    None,
                 ) {
                     self.health.unrouted_frames += produced as u64;
                 }
@@ -523,7 +545,15 @@ impl Mixer {
                 frames,
                 reverb_in: reverb_live.then_some(&mut rin),
             };
-            route_voice(&mut cx, &params, 1, &scratch, &mut mix.fx_state, out);
+            route_voice(
+                &mut cx,
+                &params,
+                1,
+                &scratch,
+                &mut mix.fx_state,
+                out,
+                mix.hrtf.as_mut(),
+            );
         }
         if let (Some(r), true) = (self.reverb.as_mut(), reverb_live) {
             scratch.fill(0.0);
@@ -672,6 +702,7 @@ fn route_voice(
     src: &[f32],
     fx: &mut FxState,
     out: &mut [f32],
+    hrtf: Option<&mut Hrtf>,
 ) -> bool {
     let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
@@ -711,17 +742,35 @@ fn route_voice(
     } else {
         src
     };
+    let binaural = hrtf.and_then(|hrtf| {
+        let direction = p.spatial.as_ref().and_then(|s| listener.head_direction(s));
+        if let Some(direction) = direction {
+            Some((hrtf, direction))
+        } else {
+            hrtf.reset();
+            None
+        }
+    });
     let hr = headroom_gain(p.fx.headroom_mb);
     let Some(bins) = &p.mix_bins else {
         // A plain DirectSound voice: volume and pan, then the 3D panning.
         let s = spatial.unwrap_or(Spatial::DRY);
         let (l, r) = p.gains();
-        add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
-        add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
+        if let Some((hrtf, direction)) = binaural {
+            let gains = [
+                l * s.gain * master * direct * hr,
+                r * s.gain * master * direct * hr,
+            ];
+            hrtf.mix(dsrc, out, direction, [gains; 2]);
+        } else {
+            add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
+            add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
+        }
         return true;
     };
     let volume = mb_to_gain(p.volume_mb);
     let mut reached = false;
+    let mut crosstalk_gains = [[0.0; 2]; 2]; // front and back, each left and right
     for (i, &(bin, mb)) in bins.iter().enumerate() {
         let dest = route::dest(bin);
         reached |= match dest {
@@ -744,6 +793,13 @@ fn route_voice(
                 add(out, dsrc, ch, 1, g * right * master * direct);
             }
             Dest::Crosstalk { left, front } => {
+                if binaural.is_some()
+                    && let Some(s) = spatial
+                {
+                    let pair = &mut crosstalk_gains[if front { 0 } else { 1 }];
+                    pair[if left { 0 } else { 1 }] += g * s.gain * master * direct;
+                    continue;
+                }
                 let w = match spatial {
                     Some(s) => {
                         s.gain
@@ -788,6 +844,9 @@ fn route_voice(
             }
             Dest::Dropped => {}
         }
+    }
+    if let Some((hrtf, direction)) = binaural {
+        hrtf.mix(dsrc, out, direction, crosstalk_gains);
     }
     reached
 }
@@ -1474,14 +1533,15 @@ mod tests {
 
     #[test]
     fn positioned_mix_in_distance_changes_wet_balance_and_direct_brightness_only_when_enabled() {
-        let measure = |enabled, distance| {
+        let measure = |enabled, hrtf, position| {
             let mut m = Mixer::new(48_000);
             m.set_distance_reverb(enabled);
+            m.set_hrtf(hrtf);
             m.set_reverb(Some(env_params()));
             let mut bus = MixIn::new(17);
             bus.set_mix_bins(Some(vec![(6, 0), (10, -600)]));
             bus.set_source_3d(Some(Source3d {
-                position: Vec3::new(0.0, 0.0, distance),
+                position,
                 min_distance: f32::MAX,
                 max_distance: f32::MAX,
                 rolloff_factor: 0.0,
@@ -1508,16 +1568,29 @@ mod tests {
                 .enumerate()
                 .map(|(i, x)| if i % 2 == 0 { x } else { -x })
                 .sum();
-            (energy(early), energy(tail), (hf / dc).abs())
+            (energy(early), energy(tail), (hf / dc).abs(), m.reverb_in)
         };
-        let far = 30.0;
-        let near = measure(false, 0.0);
+        let origin = Vec3::default();
+        let far = Vec3::new(0.0, 0.0, 30.0);
+        let near = measure(false, false, origin);
         assert!(near.0 > 0.0 && near.1 > 0.0);
-        assert_eq!(measure(false, far), near);
-        assert_eq!(measure(true, 0.0), near);
-        let distant = measure(true, far);
+        assert_eq!(measure(false, false, far), near);
+        assert_eq!(measure(true, false, origin), near);
+        let distant = measure(true, false, far);
         assert!(distant.1 > near.1 && distant.0 / distant.1 < near.0 / near.1);
         assert!(distant.2 < 0.5 * near.2);
+
+        // Turn the emitter to the left to engage the binaural ear filters.
+        // Distance darkens the direct impulse in headphones too. Bin 10
+        // receives the same samples with either ear renderer.
+        let left = Vec3::new(-30.0, 0.0, 0.0);
+        let pan = measure(true, false, left);
+        let headphones = measure(true, true, left);
+        let headphones_no_distance = measure(false, true, left);
+        assert_ne!(pan.0, headphones.0);
+        assert!(headphones.2 < 0.5 * headphones_no_distance.2);
+        assert!(headphones.1 > headphones_no_distance.1);
+        assert_eq!(pan.3, headphones.3);
     }
 
     #[test]

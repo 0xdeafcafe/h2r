@@ -51,6 +51,19 @@ describe("interpolation", () => {
 });
 
 describe("FrameBuffer", () => {
+  test("only watched games retain the longer playback history", () => {
+    const b = new FrameBuffer(2);
+    const release = b.keepPlaybackHistory();
+    const releaseSecond = b.keepPlaybackHistory();
+    for (let i = 0; i < 451; i++) b.push(f(i, []), i * 1000 / 30);
+    expect(b.frames.map((frame) => frame.tick).slice(0, 2)).toEqual([1, 2]);
+    expect(b.frames).toHaveLength(450);
+    release();
+    expect(b.frames).toHaveLength(450);
+    releaseSecond();
+    expect(b.frames.map((frame) => frame.tick)).toEqual([449, 450]);
+  });
+
   test("renders behind the newest frame so 15 Hz looks smooth", () => {
     const b = new FrameBuffer(48, 4);
     // 15 Hz: 2 ticks per frame, ~66.7 ms apart.
