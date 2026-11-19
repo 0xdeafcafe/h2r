@@ -154,7 +154,7 @@ fn segment_boundaries_follow_source_order_and_memory_budget() {
     assert!(!starts_segment(
         &open,
         MAX_SOURCE_BYTES - 80,
-        &frame(68),
+        &frame(69),
         80
     ));
     assert!(starts_segment(&open, MAX_SOURCE_BYTES - 80, &frame(69), 81));
