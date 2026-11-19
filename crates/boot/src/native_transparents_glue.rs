@@ -24,10 +24,13 @@ pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::Share
     }
     if let Ok(mut device) = device.lock() {
         let mut cache = Cache::default();
-        device.set_indexed_geometry(Box::new(move |mem, esp, draw| {
-            let (map, entry) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
-            cache.geometry(map, entry, draw)
-        }));
+        device.set_scoped_indexed_geometry(
+            native_transparents::in_indexed_handler,
+            Box::new(move |mem, esp, draw| {
+                let (map, entry) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
+                cache.geometry(map, entry, draw)
+            }),
+        );
     }
 }
 

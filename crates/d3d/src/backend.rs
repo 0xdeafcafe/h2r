@@ -295,6 +295,10 @@ pub trait ExternalPass: Send {
     /// The per-copy reservation checks their range count before commit.
     fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
+    /// An indexed admission can retain its original, immutable D3D packet for
+    /// ordered fallback on the worker. Guest-mask reservations leave this empty.
+    fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
+
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
     fn items(&self, ranges: usize) -> usize { ranges }
@@ -573,6 +577,18 @@ pub enum ExternalCommands {
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
+
+/// A resolved world draw whose guest-visible writes agree with its D3D fallback.
+/// The worker chooses one complete recording or replays the original in this queue slot.
+pub struct QueuedWorldDraw<S> {
+    pub surfaces: ExternalSurfaces<S>,
+    pub request: ExternalPassRequest,
+    pub plan: ExternalPlan,
+    pub pass: SharedReplacement,
+    pub fallback: std::sync::Arc<ResolvedDraw>,
+    /// None on native commit, otherwise the result of the fallback draw.
+    pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
+}
 
 /// Available only at an ordered draw boundary, after D3D resolved the draw.
 pub struct DrawSnapshot<'a> {
@@ -1174,6 +1190,13 @@ pub trait Backend: Send {
         if let Some(why) = failure { return refuse(why); }
         Ok(Some(recordings))
     }
+
+    /// Try to enqueue an independently resolved world draw with its exact fallback.
+    /// True guarantees the same Drawn outcome and attachment writes for either route.
+    fn queue_world_draw(
+        &mut self, _candidate: QueuedWorldDraw<Self::Surface>,
+        _textures: [Option<&Self::Texture>; 4],
+    ) -> bool { false }
 
     /// Splice an already validated recording into submission order. A backend
     /// implementing prepare must also implement commit. Commit cannot refuse.

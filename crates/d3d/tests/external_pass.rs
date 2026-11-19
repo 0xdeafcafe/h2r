@@ -445,6 +445,52 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 }
 
 #[test]
+fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
+    struct Retained(Arc<d3d::ResolvedDraw>);
+
+    impl ExternalPass for Retained {
+        fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+            Some(self.0.clone())
+        }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+    }
+
+    #[derive(Default)]
+    struct Admission(Mutex<Option<Arc<d3d::ResolvedDraw>>>);
+    impl d3d::DrawAdmission for Admission {
+        fn admit(&self, s: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
+            let draw = Arc::new(s.draw.clone());
+            *self.0.lock().unwrap() = Some(draw.clone());
+            Some((plan(1), Box::new(Retained(draw))))
+        }
+    }
+
+    // The recording backend accepts draws, but cannot supply GPU attachments.
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    let (mut d, mut m) = create(ThreadedBackend::new(backend).unwrap(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
+    bind_quad(&mut d, &mut m);
+    let probe = Arc::new(Admission::default());
+    d.add_draw_admission(probe.clone());
+    m.write(MISC, &[2, 0, 1, 0, 0, 0]).unwrap();
+    let waits = d.backend.waits().reads;
+    d.draw_indexed_vertices(&mut m, TRIANGLESTRIP, 3, MISC).unwrap();
+    assert_eq!(d.backend.waits().reads, waits);
+    let replay = d.backend.with_inner(|b| {
+        let draws = b.draws();
+        assert_eq!(draws.len(), 1);
+        draws[0].clone()
+    }).unwrap();
+    assert_eq!(probe.0.lock().unwrap().as_deref(), Some(&replay));
+    assert_eq!(d.stats().external_passes, 0);
+    assert_eq!(d.stats().external_passes_dropped, 1);
+}
+
+#[test]
 fn scoped_acceptance_reports_commit_and_replaces_only_the_first_draw() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create(b, UploadPolicy::Always);

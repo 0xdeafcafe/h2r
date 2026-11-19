@@ -1147,10 +1147,15 @@ impl GpuWorld {
         let mut own: Option<bool> = None;
         let mut unbound = 0u64;
         let mut recorded = 0;
-        let issue = |pass: &mut wgpu::RenderPass<'_>, first: usize, end: usize| {
+        let mut bound_program = None;
+        let mut pending_indices = None;
+        let issue = |pass: &mut wgpu::RenderPass<'_>, pending: &mut Option<std::ops::Range<u32>>, first: usize, end: usize| {
             if selected {
                 for d in &self.world.draws[first..end] {
-                    pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, 0..1);
+                    let next = d.first_index..d.first_index + d.index_count;
+                    if let Some(previous) = append_triangles(pending, next) {
+                        pass.draw_indexed(previous, 0, 0..1);
+                    }
                 }
             } else {
                 pass.multi_draw_indexed_indirect(&self.indirect, first as u64 * SLOT_SIZE, (end - first) as u32);
@@ -1187,33 +1192,46 @@ impl GpuWorld {
                         Owner::Instance(_) => d.owner == owner,
                     };
                     let end = k + draws[k..].iter().take_while(|d| same(d)).count();
-                    match owner {
-                        Owner::Cluster(_) => {
-                            let Some((program, uniforms)) = p.cluster(b.material, color_format, depth_format, &self.stencil.state) else {
-                                unbound += 1;
-                                k = end;
-                                continue;
-                            };
-                            pass.set_pipeline(program);
-                            pass.set_bind_group(0, uniforms, &[]);
+                    let instance = match owner {
+                        Owner::Cluster(_) => None,
+                        Owner::Instance(n) => Some(n),
+                    };
+                    // Formats and pipeline state are fixed for the pass. The
+                    // actual texture group also covers per-page lightmap bindings.
+                    let binding = (b.material, textures, instance, reference);
+                    if bound_program != Some(binding) {
+                        if let Some(previous) = pending_indices.take() {
+                            pass.draw_indexed(previous, 0, 0..1);
                         }
-                        Owner::Instance(n) => {
-                            let Some((rigid, slots, offset)) = p.rigid(b.material, n, color_format, depth_format, &self.stencil.state) else {
-                                // The loader keeps a placement's parts only
-                                // with a rigid program and its rows.
-                                unbound += 1;
-                                k = end;
-                                continue;
-                            };
-                            pass.set_pipeline(rigid);
-                            pass.set_bind_group(0, slots, &[offset]);
+                        match owner {
+                            Owner::Cluster(_) => {
+                                let Some((program, uniforms)) = p.cluster(b.material, color_format, depth_format, &self.stencil.state) else {
+                                    unbound += 1;
+                                    k = end;
+                                    continue;
+                                };
+                                pass.set_pipeline(program);
+                                pass.set_bind_group(0, uniforms, &[]);
+                            }
+                            Owner::Instance(n) => {
+                                let Some((rigid, slots, offset)) = p.rigid(b.material, n, color_format, depth_format, &self.stencil.state) else {
+                                    // The loader keeps a placement's parts only
+                                    // with a rigid program and its rows.
+                                    unbound += 1;
+                                    k = end;
+                                    continue;
+                                };
+                                pass.set_pipeline(rigid);
+                                pass.set_bind_group(0, slots, &[offset]);
+                            }
                         }
+                        pass.set_bind_group(1, textures, &[]);
+                        if has_stencil {
+                            pass.set_stencil_reference(reference);
+                        }
+                        bound_program = Some(binding);
                     }
-                    pass.set_bind_group(1, textures, &[]);
-                    if has_stencil {
-                        pass.set_stencil_reference(reference);
-                    }
-                    issue(&mut pass, first + k, first + end);
+                    issue(&mut pass, &mut pending_indices, first + k, first + end);
                     recorded += end - k;
                     k = end;
                 }
@@ -1226,10 +1244,16 @@ impl GpuWorld {
                     pass.set_bind_group(0, &self.frame_group, &[]);
                 }
                 own = Some(false);
+                if let Some(previous) = pending_indices.take() {
+                    pass.draw_indexed(previous, 0, 0..1);
+                }
                 pass.set_bind_group(1, &self.batch_groups[i], &[]);
             }
-            issue(&mut pass, first, last);
+            issue(&mut pass, &mut pending_indices, first, last);
             recorded += last - first;
+        }
+        if let Some(previous) = pending_indices {
+            pass.draw_indexed(previous, 0, 0..1);
         }
         drop(pass);
         self.unbound_batches += unbound;
@@ -1237,9 +1261,34 @@ impl GpuWorld {
     }
 }
 
+/// Join adjacent complete triangle lists only while their render state is bound.
+fn append_triangles(
+    pending: &mut Option<std::ops::Range<u32>>, next: std::ops::Range<u32>,
+) -> Option<std::ops::Range<u32>> {
+    if let Some(previous) = pending
+        && previous.end == next.start && (previous.end - previous.start).is_multiple_of(3)
+    {
+        previous.end = next.end;
+        return None;
+    }
+    pending.replace(next)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Blocks, Image, PassStencil, block_bytes};
+    use super::{Blocks, Image, PassStencil, append_triangles, block_bytes};
+
+    #[test]
+    fn consecutive_triangles_merge_without_losing_repeated_or_disjoint_draws() {
+        let mut pending = None;
+        assert_eq!(append_triangles(&mut pending, 6..9), None);
+        assert_eq!(append_triangles(&mut pending, 9..15), None);
+        assert_eq!(append_triangles(&mut pending, 9..15), Some(6..15));
+        assert_eq!(append_triangles(&mut pending, 18..20), Some(9..15));
+        // An incomplete primitive at a draw boundary must remain incomplete.
+        assert_eq!(append_triangles(&mut pending, 20..23), Some(18..20));
+        assert_eq!(pending, Some(20..23));
+    }
 
     #[test]
     fn selection_preserves_guest_order_and_repeats_but_updates_each_destination_once() {

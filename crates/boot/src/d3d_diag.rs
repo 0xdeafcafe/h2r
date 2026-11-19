@@ -746,6 +746,31 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.prepare_external(surfaces, request, textures.map(|t| t.map(|t| &t.inner)), plan, copy, pass)
     }
 
+    fn queue_world_draw(
+        &mut self, mut candidate: d3d::backend::QueuedWorldDraw<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        let draw = &candidate.fallback;
+        // The screenshot hook needs the shadow-frame tally before present. Other
+        // draw totals can be updated when the worker actually issues the fallback.
+        if draw.texture_info.iter().flatten().any(|t| t.format.is_depth())
+            || self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
+            || crate::native_world_layers_glue::comparing() || crate::native_residual_glue::observing_draw()
+        {
+            return false;
+        }
+        let stats = Arc::clone(&self.stats);
+        let (target, info) = (draw.target, draw.texture_info);
+        let finished = candidate.finished;
+        candidate.finished = Box::new(move |fallback| {
+            if let Some(r) = fallback {
+                stats.lock().unwrap().add(r, &target, &info);
+            }
+            finished(fallback);
+        });
+        self.inner.queue_world_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
+    }
+
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
         self.inner.commit_external(recording);
     }

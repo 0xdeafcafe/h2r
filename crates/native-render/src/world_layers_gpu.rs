@@ -94,7 +94,7 @@ impl DeviceCache {
 
 /// One unmodified indexed range from the standard geometry emitter.
 pub struct IndexedPass {
-    draw: ResolvedDraw,
+    draw: Arc<ResolvedDraw>,
     cache: Arc<Cache>,
     frame: u64,
     fetch: FetchMode,
@@ -134,7 +134,7 @@ impl IndexedPass {
             return None;
         }
         Some(Self {
-            draw: draw.clone(),
+            draw: Arc::new(draw.clone()),
             cache,
             frame,
             fetch: FetchMode::from_env(),
@@ -349,6 +349,10 @@ impl IndexedPass {
 
 impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
+
+    fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+        Some(Arc::clone(&self.draw))
+    }
 
     fn sampled(&self) -> Vec<u32> {
         self.texaccum.iter().map(|target| target.texture).collect()

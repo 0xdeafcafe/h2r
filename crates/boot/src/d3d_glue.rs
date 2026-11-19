@@ -971,6 +971,13 @@ impl d3d::backend::Backend for Headless {
         self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
     }
 
+    fn queue_world_draw(
+        &mut self, candidate: d3d::backend::QueuedWorldDraw<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        self.0.queue_world_draw(candidate, textures)
+    }
+
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
         self.0.commit_external(recording);
     }
