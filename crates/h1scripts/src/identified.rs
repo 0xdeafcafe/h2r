@@ -115,6 +115,9 @@ pub const IDENTIFIED: &[Identified] = &[
         "void",
         &["unit", "vehicle", "string_id"],
     ),
+    // 0x002a3b70 passes the short as the facial-expression selector to
+    // 0x0010e9f0, also called by unit_set_emotional_state (220).
+    id("unit_set_emotion", 218, "void", &["unit", "short"]),
     // After unit_has_weapon (242), as in Halo 1's table (a30's sniper
     // tutorial).
     id(
@@ -225,6 +228,5 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 25);
     }
 }

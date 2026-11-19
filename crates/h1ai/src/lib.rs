@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod bytes;
+pub mod conversations;
 pub mod convert;
 pub mod h1;
 pub mod h2;

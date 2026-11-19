@@ -1203,6 +1203,12 @@ pub fn write(
                     groups: &groups,
                 },
                 &initial,
+                &ai_src.conversations,
+                &if opts.ai {
+                    h1ai::conversations::SpeakerScopes::from_plan(&plan)
+                } else {
+                    Default::default()
+                },
                 opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
@@ -1780,6 +1786,8 @@ fn install_scripts(
     root: &mut Block,
     targets: &Targets,
     initial: &[String],
+    conversations: &[h1ai::conversations::Conversation],
+    speaker_scopes: &h1ai::conversations::SpeakerScopes,
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
@@ -1788,7 +1796,7 @@ fn install_scripts(
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
 ) -> Result<ScriptReport> {
-    use h1scripts::compile::{Missing, compile_with};
+    use h1scripts::compile::{Missing, compile_with_conversations};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
     let refs: Vec<String> = t
         .references
@@ -1824,7 +1832,7 @@ fn install_scripts(
             })
             .is_some()
     };
-    let mut c = compile_with(
+    let mut c = compile_with_conversations(
         &t,
         &s.catalog,
         &s.table,
@@ -1833,6 +1841,8 @@ fn install_scripts(
         cutscenes,
         &resolves,
         &refs,
+        conversations,
+        speaker_scopes,
     )
     .map_err(|e| invalid(format!("scripts: {e}")))?;
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)

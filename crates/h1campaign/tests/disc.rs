@@ -780,6 +780,28 @@ fn a30_converts_onto_its_base_and_reads_back() {
         let r = done.report.scenario.scripts.as_ref().unwrap();
         assert_eq!(hs_s.scripts().len(), r.scripts);
         assert_eq!(hs_s.nodes().len(), r.nodes);
+        if opts.sounds >= 1000 {
+            let placed: std::collections::HashSet<&str> = hs_s
+                .references()
+                .iter()
+                .filter(|r| r.group() == FourCC(*b"snd!"))
+                .filter_map(|r| m.tag(r.id()).ok()?.name.as_deref())
+                .collect();
+            let scenes = h1ai::conversations::read(&h1).unwrap();
+            for scene in &scenes {
+                for path in scene
+                    .lines
+                    .iter()
+                    .flat_map(|line| line.sounds.iter().flatten())
+                {
+                    assert!(
+                        placed.contains(path.as_str()),
+                        "{}: missing converted sound {path}",
+                        scene.name
+                    );
+                }
+            }
+        }
         // Halo 1's initially created encounters: a startup script places
         // their squad groups, each argument resolved to a group.
         if opts.ai && !r.initial.is_empty() {

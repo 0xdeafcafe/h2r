@@ -880,15 +880,14 @@ mod level_and_seats {
 
 /// `(script static boolean cinematic_skip_start true)`, two dormant
 /// scripts `tutorial_setup` and `fast_setup`, and `(script startup main
-/// (begin (cinematic_skip_start) (wake tutorial_setup)
-/// (ai_conversation_status squad_a)))`, compiled with `cutscenes`.
+/// (begin (cinematic_skip_start) (wake tutorial_setup)))`, compiled with
+/// `cutscenes`.
 fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     const SCRIPT: u16 = 10;
     let c = Catalog::new(
         vec![
             f("begin", PASS, 0x2000, &[]),
             f("wake", VOID, ORDINARY, &[SCRIPT]),
-            f("ai_conversation_status", SHORT, ORDINARY, &[AI]),
             f("print", VOID, ORDINARY, &[STRING]),
         ],
         h1_types(),
@@ -912,7 +911,7 @@ fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     let guard = b.call(0, BOOL, "begin", &[yes]);
     let dormant = |b: &mut Builder, s: &str| {
         let text = b.atom(STRING, STRING, s, 0);
-        let p = b.call(3, VOID, "print", &[text]);
+        let p = b.call(2, VOID, "print", &[text]);
         b.call(0, VOID, "begin", &[p])
     };
     let tutorial = dormant(&mut b, "t");
@@ -920,9 +919,7 @@ fn cutscene_level(cutscenes: crate::compile::Cutscenes) -> hs::Scenario {
     let skip = b.call_with(0, 0, BOOL, 10, "cinematic_skip_start", &[]);
     let target = b.atom(SCRIPT, SCRIPT, "tutorial_setup", 1);
     let wake = b.call(1, VOID, "wake", &[target]);
-    let squad = b.atom(AI, AI, "squad_a", 0);
-    let status = b.call(2, SHORT, "ai_conversation_status", &[squad]);
-    let main = b.call(0, VOID, "begin", &[skip, wake, status]);
+    let main = b.call(0, VOID, "begin", &[skip, wake]);
     let scripts = vec![
         ("cinematic_skip_start", 3, BOOL, guard),
         ("tutorial_setup", 1, VOID, tutorial),
@@ -985,12 +982,6 @@ fn skipped_cutscenes_take_halo1_s_skip_path() {
     assert!(body[0].atom() && body[0].opcode() == BOOL && body[0].data() == 0);
     assert_eq!(s.string(body[0].string_offset()).unwrap(), "false");
     assert_eq!(wake_arg(&s, &body[1]), (2, "fast_setup".into()));
-    // Either way the stubbed conversation status reads as finished.
-    for s in [cutscene_level(Cutscenes::Play), s] {
-        let status = main_body(&s)[2];
-        assert!(status.atom());
-        assert_eq!((status.opcode(), status.data()), (SHORT, 5));
-    }
 }
 
 /// `(script startup main (begin (object_teleport obj f_known)
@@ -1239,6 +1230,7 @@ fn ai_status_comparisons_compare_combat_status_once() {
     assert!(out.nodes.len() < 80, "{}", out.nodes.len());
 }
 
+mod conversations;
 mod cutscenes;
 
 /// `(script startup main (begin (unit_open tube_placed) (unit_open

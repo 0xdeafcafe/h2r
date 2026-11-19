@@ -398,12 +398,6 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 .collect(),
         });
     }
-    if !src.conversations.is_empty() {
-        notes.push(format!(
-            "{} conversations not converted",
-            src.conversations.len()
-        ));
-    }
     Plan {
         ai,
         characters,

@@ -29,7 +29,7 @@ use h1scripts::compile::Cutscenes;
 /// dialogue length is written, and no call left stubbed in a cinematic
 /// holds it (`cutscenes_convert_and_read_back` lists them: HUD and
 /// screen effects, `object_beautify`, `object_pvs_activate`,
-/// `unit_set_emotion`, `unit_set_seat`, command lists).
+/// `unit_set_seat` and command lists).
 pub const LEVELS: &[(&str, Cutscenes, &str)] = &[
     (
         "a10",

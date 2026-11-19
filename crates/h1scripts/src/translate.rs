@@ -18,6 +18,7 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("game_save_totally_unsafe", "game_save_immediate"),
     ("ai_attach", "ai_attach_units"),
     ("ai_exit_vehicle", "ai_vehicle_exit"),
+    ("ai_dialogue_triggers", "ai_dialogue_enable"),
     ("object_pvs_set_object", "pvs_set_object"),
     ("object_pvs_clear", "pvs_clear"),
     // Halo 2 has no living fraction its scripts call; its strength is the

@@ -84,8 +84,8 @@ jump, targeted jump, script, animate, recording, action, vocalize,
 targeting, initiative, wait, loop, die, move immediate, look random, look
 player, look object, set radius, teleport. Conversation (`74`): name, flags
 `u16` `20`, trigger distance `24`, run-to-player distance `28`,
-participants `50` (`54`, encounter name `char[32]` at `24`), lines `5c`
-(`7c`, participant `i16` at `02`).
+participants `50` (`54`), lines `5c` (`7c`). The layout that feeds the
+generated dialogue is below.
 
 **Stale indices (V):** fields an atom type doesn't read keep old values
 (a `look` atom's points, a `pause`'s animation), so only the fields an atom
@@ -171,7 +171,7 @@ decoded on all 15 campaign levels with `check_indices` clean).
 | `168` | zones | `38` |
 | `170` | mission scenes (not read) | |
 | `178` | character palette: a `char` reference each | `8` |
-| `1a0` | AI conversations (not read) | |
+| `1a0` | Legacy conversation field, unused by the converted scripts | |
 | `1d8` | scripting data, one element: point sets at `00` | `80` |
 | `240` | orders | `7c` |
 
@@ -280,12 +280,51 @@ them into a map with `map::build::TagSet` and reads them back through
 | squad with no starting locations | kept, empty: no starting locations and counts 0, with a note. It can never spawn, but scripts name it (on a30 these are mostly the attack/defend/retreat squads Halo 1 maneuvers actors into). Retail Halo 2 has such squads too (06b: 28 of 170, `squad_flag_bits`). Until 2026-11-17 they were left out and their script names stayed `none`. The converter keeps only those the scripts name, and only while the level stays under the engine's squad cap (335, `h1campaign::scenario::MAX_SQUADS`, campaign.md §9): a50 (309 placed + 75 named empty) and b40 (283 + 67) leave them out, and their names resolve to a sibling squad: the encounter's first converted squad (`<encounter>/...`), or its squad group if it has none. Not the group first: Halo 2's `ai_migrate` (function 308, evaluator `0x002a54a0`) returns without moving anyone when the destination has either top bit set (`test ecx,0C0000000h` at `0x002a54cc`), so a squad group destination is a no-op, and `ai_attach_units` (287, through `0x002730c0` to `0x00273040`) reads the value's low 16 bits as a squad index (bounded by `scnr+0x160` at `0x0027305e`), so a group would name an unrelated squad |
 | actor variant | a retail character ([`character_for`]): one palette entry per distinct character |
 | command list | a point set of its name (points `p0`..), an order stub of its name, and a `CommandScript` (atoms by name, with their points) for the scripts lane |
-| conversations, platoons, move positions, respawn | not converted (noted) |
+| conversations | **Built** as Halo 2 scripts with converted `snd!` references (below) |
+| platoons, move positions, respawn | not converted (noted) |
 
 Values Halo 1 has no counterpart for come from the census (`Options`):
 firing position flags `0x42`, zone flags 1, area type 0, order style `-1`.
 Grenades by species: covenant plasma for elites and grunts, fragmentation
 for marines and crew, none otherwise.
+
+### Conversations
+
+**Built.** `h1ai::conversations` reads retail participants and all six sound
+references on every line. `h1scripts` builds the worker and state into the
+scenario's regular Halo 2 script tables. `h1campaign` installs the referenced
+Halo 1 sounds with the other script sounds and resolves their datums.
+
+| Element | Offsets used | Evidence from Halo 1 Xbox |
+|---|---|---|
+| Participant | Flags `02`, selection `04`, actor type `06`, use and assign object name `08`/`0a`, six voice selectors `18`, encounter token `24` and compiled AI selector `44` | `0x00143c00` selects a role, `0x001440f3` compares voice selectors, and `0x0014476c` installs the chosen unit under the assigned object name |
+| Line | Flags `00`, speaker `02`, addressee kind/index `04`/`06`, post-line pause in seconds `0c`, six `snd!` references starting `1c` | `0x001425a0` takes the cast's voice slot, resolves the sound and converts the pause to ticks. `0x00144abd` waits for advance on flag `0x08` |
+| Conversation | Delay flag `0x40` and trigger distance `24` | `0x00144466` tests the distance, and `0x00144b7a` retries at 30-tick intervals |
+
+Selection 1 is a radio role with no cast member (`0x00143c4e`).
+Selections 6 and 7 use a cast member's voice and send it through the radio
+channel (`0x001426a3`, `0x00144992`). Other roles use their named unit or
+search the live object list of a
+converted encounter. Roles without an authored encounter search converted
+squads matching their actor type. Selection 2 checks the player's vehicle
+as in `0x00143f9b`. A cast uses distinct live units and makes an assigned
+name available to subsequent script expressions. The worker keeps the cast
+through the scene and uses any recorded profile from a previous named role
+to pick its alternate voice. Fresh casts use the first authored profile
+because the Halo 2 unit has its own dialogue profile.
+
+Halo 2 plays each line with `sound_impulse_start` (597,
+`0x002a9e00`). The worker waits on `sound_impulse_language_time` (602,
+`0x002a9fe0`), then applies the source pause and any wait-for-advance flag.
+A stop cancels the current impulse with builtin 603 (`0x002aa020`) and
+invalidates the worker's current request. See [scripts.md](scripts.md) for
+the script-visible states.
+
+The scripted adaptation leaves movement and gaze with Halo 2's current AI
+orders. Halo 1's run-to-player movement, line addressee facing and
+situation-specific cast preferences still need an engine equivalent. The
+stock impulse API identifies playback by sound tag, so simultaneous uses
+of one sound share a playback query and stop handle.
 
 ### Characters (the stopgap)
 
@@ -376,7 +415,8 @@ out in `0xfe618`.
   load with their units, weapons and animations.
 - That orders with no endings, and order stubs with no areas, are harmless.
 - Halo 1 behaviour carried by the dropped data: platoons, move positions,
-  respawning, maneuvers into the empty squads, conversations.
+  respawning and maneuvers into the empty squads.
+- Conversation audibility, speaker positioning and transitions in play.
 
 ## Open questions
 
