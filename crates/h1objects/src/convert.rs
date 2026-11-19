@@ -849,6 +849,9 @@ pub struct Converter<'a> {
     /// Effects whose particles are being converted (a particle's own
     /// effects that lead back to one are left out).
     effects_open: Vec<u32>,
+    /// Objects being converted ([`Self::object`]), so one whose effects
+    /// lead back to it is refused instead of recursed into.
+    objects_open: Vec<u32>,
     /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
     /// state and its type's initial count ([`Self::effect_particle_systems`]).
     pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
@@ -888,6 +891,7 @@ impl<'a> Converter<'a> {
             particle_role: None,
             emitter_role: None,
             effects_open: Vec::new(),
+            objects_open: Vec::new(),
             pctl_done: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
@@ -1363,15 +1367,26 @@ impl<'a> Converter<'a> {
         if let Some(id) = self.done.get(&tag.id.0) {
             return Ok(*id);
         }
-        let id = match &tag.group.0.to_be_bytes() {
-            b"weap" => self.weapon(tag)?,
-            b"proj" => self.projectile(tag, template)?,
-            b"eqip" => self.equipment(tag)?,
-            b"bipd" | b"vehi" => self.unit(tag)?,
-            b"scen" => self.scenery(tag)?,
-            b"mach" | b"ctrl" | b"lifi" => self.device(tag)?,
-            _ => return Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
+        // An object whose conversion reaches itself (a projectile whose
+        // detonation effect creates it) is refused there, not recursed into.
+        if self.objects_open.contains(&tag.id.0) {
+            return Err(Error::Invalid(format!(
+                "{}: converting it needs itself",
+                tag.name
+            )));
+        }
+        self.objects_open.push(tag.id.0);
+        let got = match &tag.group.0.to_be_bytes() {
+            b"weap" => self.weapon(tag),
+            b"proj" => self.projectile(tag, template),
+            b"eqip" => self.equipment(tag),
+            b"bipd" | b"vehi" => self.unit(tag),
+            b"scen" => self.scenery(tag),
+            b"mach" | b"ctrl" | b"lifi" => self.device(tag),
+            _ => Err(Error::WrongGroup(tag.group.to_string(), *b"obje")),
         };
+        self.objects_open.pop();
+        let id = got?;
         self.done.insert(tag.id.0, id);
         Ok(id)
     }

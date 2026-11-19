@@ -1,12 +1,13 @@
 # Role audit: Halo 2 values in converted Halo 1 tags
 
-Status (2026-11-19, converter v85): the audit tool and its
-classification are written; **not run yet**. The tables under "Results"
-fill in from the first run (`ROLE_AUDIT_OUT`, below), and anything the
-rules do not cover fails the test until it is classified. No converter
-output changed, and no leak is fixed yet: every bug found so far sits in a
-Halo 2 field that is still unnamed, so it has to be named first (see
-"What the bugs need").
+Status (2026-11-19, converter v86): first run on Blood Gulch (on
+Coagulation; v85, before the fixes below): 526 tags, 2,341 role values
+noted, 3,169 leaks over 426 (group, field, kind) rows; 24 rows were
+unclassified and are now in the rule lists. Since v86 the weapons'
+overheated effect and melee damage, the projectiles' detonation effects
+and flyby sound, and the items' and projectiles' material effects are
+Halo 1's (below, "Fixed"). The v86 run, and every other multiplayer map
+(`H1_MAPS=all`), are not run yet.
 
 ## Why
 
@@ -79,59 +80,94 @@ ROLE_AUDIT_OUT=/tmp/role-audit.md ... # the tables below, regenerated
 
 ## Classification
 
-### Allowed (a)
+`ALLOWED` and `KNOWN` in `tests/role_audit_disc.rs` are the source;
+this is them by group, with the evidence. "V" names come from the
+retail tags the counterparts hold in the slot (Coagulation).
 
-| Group | Field | What | Why there is no Halo 1 source |
+### Allowed (a): Halo 1 has no equivalent
+
+| Group | Field | What | Why |
 |---|---|---|---|
-| `hlmt` | `block_60` (damage info) | copied, references | Halo 2's damage and shield model wins ([campaign.md](campaign.md) decision 2, [health.md](health.md)) |
-| `hlmt` | `shad_ref_94`, `shad_ref_f0` | `shad` references | the active camouflage and overshield shaders: Halo 1 draws those from its globals, not per model |
-| `prt3` | the static particle encoding (`input_mask`, `vertex_shader`, `quad`, `uv_window`, the unit constants) | values | Halo 2's particle shader inputs; Halo 1's particle values go on the emitter ([../formats/effects.md](../formats/effects.md)) |
-| `prt3` | `shader_template` | `stem` reference | Halo 2's shader system; the stem is picked by Halo 1's blend mode (`particles::particle_stem`) |
-| `deca` | `unknown_18` (scale), `max_overlapping` | values | no Halo 1 decal field (`rebuild::DecalRole`) |
+| any | words that are half of an unnamed reference holding none (a group word such as `jpt!`, `foot`, `effe`, or `-1`) | `none-word` | no value: weapon `+0x148`, `+0x174` .. `+0x198`, `+0x244` .. `+0x250`, magazines `+0x3c` .. `+0x50`, barrels `+0x94`, `+0x98`, item `+0xf4` .. `+0x120` |
+| `hlmt` | `block_60` (damage info) and its shaders and effects | copied, references | Halo 2's damage and shield model wins ([campaign.md](campaign.md) decision 2) |
+| `hlmt` | `shad_ref_94` (active camouflage) | `shad` | Halo 1 draws camouflage from its globals |
+| `prt3` | `input_mask`, `vertex_shader`, `quad`, `uv_window`; the unit `color`, `alpha`, `size`, `rotation` constants; `shader_template`, `postprocess[].template` | values, copied, `stem` | Halo 2's particle shader inputs; Halo 1's values go on the emitter, which multiplies the constants |
+| `shad` | templates, default and rasterizer bitmaps | `stem`, `bitm` | Halo 2's shader system; Halo 1's bitmaps fill the slots it has |
+| `nhdt` | widget shaders; the Halo 2 HUD of the pair's bitmaps | `shad`, `bitm` | Halo 1's HUD has no shaders; the Halo 2 HUD is Halo 2's by design ([hud.md](hud.md)) |
+| `bipd` | `unit.ref_16c`, `unit.ref_174` | `jpt!` | boarding melee and its response (V: `masterchief_boarding_melee`): Halo 1 has no boarding |
+| `proj` | `unknown_178`, `unknown_e4` | values | Halo 1's own values (`PROJECTILE_WORDS`, the detonation noise), equal to the role's |
+| `deca` | `unknown_18` (scale), `max_overlapping` | values | no Halo 1 decal field |
 
 ### Owned by other lanes (not touched here)
 
 | Group | Field | What | Lane |
 |---|---|---|---|
-| `weap` | `barrels[].block_e4[]` | firing effects and their sounds | h1-weap-snd |
-| `weap` | any `snd!`, `lsnd` reference | ready, pickup and zoom sounds | h1-weap-snd |
-| `eqip` | any `snd!` reference | the item pickup sound | h1-weap-snd |
-| `bipd` | `unit.obje.functions`, `unit.obje.change_colors` | copied with the change colours | h1-bipd-colour |
-| `vehi` | `block_1c8[]` (seats), `block_2e8[]` (hover), `block_2f0[]` (friction), `block_268[]` (gears), `block_2f8[]` (physics) | values (the driver seat bit, the Ghost's words) | h1-veh-phys |
-| `vehi` | the root and `unit.` words | values | h1-veh-phys |
+| `weap` | `barrels[].block_e4[]` | firing effects, dry-fire sounds, trigger damage | h1-weap-snd |
+| `weap` | `ref_140` (ready effect, V `needler\ready`), `ref_264` (pickup sound), `ref_26c`, `ref_274` (zoom in, out) | `effe`, `snd!` | h1-weap-snd |
+| `eqip` | `snd_ref_134` (pickup sound) | `snd!` | h1-weap-snd |
+| `bipd` | `unit.obje.functions` | copied | h1-bipd-colour |
+| `bipd` | `unit.obje.attachments` (shield-down effect, flashlight lights) | `effe`, `ligh` | a bug, after h1-bipd-colour: Halo 1's attachments name the functions that lane owns |
+| `vehi` | seats, hover and friction points, gears, physics, root and unit words | values | h1-veh-phys |
 
-Sky (sky-depth) and the teleporter and plasma shaders (h1-shader2) are
-built outside these builders and are not audited here.
+### Fixed (v86)
 
-### Bugs (b): Halo 1 has the equivalent
-
-| Group | Field | What leaks | Halo 1 source | Status |
+| Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
-| `jpt!` | every root word past `damage_lower_bound` / `damage_upper_bound` | the majority of the base's damage effects | `jpt!` radius (from, to), cutoff scale, flags, category, instantaneous acceleration, camera shaking and rumble | not fixed: Halo 2's `jpt!` is unnamed past the damage bounds (`crates/tags/src/defs/jpt_.txt`); name the fields by Halo 1 / Halo 2 pairs, as the bounds were, then translate |
-| `weap` | the `jpt!` references (melee damage, melee response) | the counterpart's (the SMG's on Blood Gulch) | `weap` melee damage and melee response | not fixed: convert with `Converter::damage` once the slot is named |
-| `weap` | the `effe` references outside the barrels | the counterpart's | `weap` overheated, detonation, light power on and off effects (the ready effect is h1-weap-snd's) | not fixed: Halo 1 `effe` converts (`Converter::effect`); the unnamed Halo 2 slots (`item` `ref_10c`, `ref_124`; `weap` `ref_140`, `ref_16c`, `ref_1bc` .. `ref_1f4`, `ref_264` .. `ref_274`, `ref_2f0` .. `ref_300`) need pairing |
-| `proj` | the `effe` references | the counterpart's | `proj` detonation started, detonation, super detonation and attached effects | not fixed: pair `ref_e8` .. `ref_15c` with Halo 1's, then convert |
-| `proj` | the `snd!` reference | the counterpart's flyby sound | `proj` flyby sound | not fixed: pair the slot, then `Converter::sound` |
-| `deca` | `layer` | the base's majority layer | `deca` layer (Halo 1's own enumeration) | not fixed: Halo 2's layer values need naming to map Halo 1's |
+| `weap` | `ref_16c` overheated effect | the plasma weapons' `overheated` | `weap +0x374`, converted (`Converter::effect`) | V: the slot holds `overheated` on both plasma weapons |
+| `weap` | `ref_1bc` melee damage, `ref_1c4` melee response | `smash_melee`/`strike_melee` and responses | `weap +0x394`, `+0x3a4`, converted (`Converter::damage`) | V: 8 of 8 weapons |
+| `proj` | `ref_e8` detonation started | the plasma grenade's `detonation_start` | `proj +0x1f4` | V: the one projectile with it |
+| `proj` | `ref_f0`, `ref_f8` (airborne) detonation | `airborne_detonation`, `detonation`, `standard_detonation` | `proj +0x1ac`, Halo 1's one detonation effect, in both | V: 3 of 3 grenades and needle |
+| `proj` | `ref_110` super detonation | the needle's `super_detonation` | `proj +0x18c` | V |
+| `proj` | `ref_138` flyby sound | `bullet_flyby_*` | `proj +0x204`, converted (`Converter::sound`) | V: 8 bullets |
+| `weap`, `eqip`, `proj` | `foot_ref_54` material effects | the counterpart's (`effects\materials\objects\weapons\*`) | the first `foot` Halo 1's root names (`Converter::h1_foot`); the counterpart's stays where it names none | as units since v48 (`unit_foot`) |
+
+A slot Halo 1 leaves empty, or whose tag does not convert (noted in the
+object's report), is now empty: Halo 1's content, not a retail stand-in.
+These slots are named in `arsenal` (`WEAPON_OVERHEATED`,
+`PROJECTILE_FLYBY_SOUND`, ...) rather than in the definitions, so the
+lanes editing the same files keep their names. Proven by unit test
+(`halo1_slots_replace_the_counterparts_references`) and, once run, by the
+audit's v86 output; not seen in a game.
+
+An object whose conversion reaches itself (a projectile whose detonation
+effect creates it) is now refused at that point instead of recursed into
+(`Converter::objects_open`); the effect part is left out and reported.
+
+### Bugs (b) not fixed
+
+| Group | Field | What leaks | Halo 1 source | What it needs |
+|---|---|---|---|---|
+| `eqip` | `item.ref_124` (effe), `item.ref_10c` (jpt!) | the grenades' `airborne_detonation`, `equipment_detonation`, `*_equipment_explosion` | the item's detonation effect (the explosion when a lying grenade is shot) | `h1::Equipment` does not read the item's detonation fields yet: read them (offsets by pairs), then as `proj` |
+| `bipd` | `unit.block_e8[].ref_0` | `camera\biped_follow_camera` | the unit's camera track | read the unit's camera tracks; convert as the seats' (`Converter::camera_track`) |
+| `bipd` | `unit.effe_ref_c4` | the Chief's `flashlight` effect | the unit's integrated light toggle | read it, then `Converter::effect` |
+| `weap` | the detonation effect | none on Coagulation's weapons | `weap +0x384` | no retail weapon holds one, so its slot is not named yet |
+| `deca` | `layer` | the base's majority (5) | the decal's layer (its own enumeration) | Halo 2's layer values named |
+
+**Missing, not leaking.** `jpt!` leaks one word (`+0xa0`, 1.0): the base's
+damage effects agree on almost nothing, so a converted damage effect is
+Halo 1's bounds over **zeros**. Halo 1's radius, cutoff scale,
+acceleration, camera shake and rumble are not translated and not taken
+from anywhere either; the audit cannot see a field left at its default.
+Naming Halo 2's `jpt!` fields by pairs is the next step there.
 
 ### Unidentified: Halo 2 spans not named yet
 
-Each is the role's word in an unknown span. Until the span is named,
-whether Halo 1 has its equivalent is open; the suspects are where Halo 1
-holds something of the same kind.
+The role's words in unknown spans. Whether Halo 1 has their equivalent
+is open until each is named; the suspects are listed.
 
-| Group | Fields | Suspects in Halo 1 |
-|---|---|---|
-| any | the object header's words (`object.`, `item.obje.`, `unit.obje.`) | `obje` flags (does not cast shadow, transparent self-occlusion, not a pathfinding obstacle), acceleration scale, render bounding radius |
-| `weap` | root, magazine and barrel words past `arsenal::WEAPON_WORDS`, `BARREL_WORDS` and the magazine fields | ready time, zoom levels and magnification range, autoaim, movement penalty, weapon and trigger flags |
-| `proj` | words past `arsenal::PROJECTILE_WORDS` | projectile flags, detonation timer start, guided angular velocity |
-| `eqip` | item and equipment words | item flags, pickup text index |
-| `bipd` | words past `rebuild::BIPED_WORDS` | unit speeds, jump velocity, seat acceleration, unit and biped flags |
-| `hlmt` | scenery models' words | `mod2` LOD cutoff distances |
-| `scen` | words past the object header | none: Halo 1's `scen` holds nothing past its `obje` (likely (a)) |
-| `garb` | item words | none past the item header (likely (a)) |
-| `ligh` | words and `brightness` | the light's intensity and falloff function |
-| `effe` | particle-system and emitter words (`unknown_c` .. `unknown_16`, `fade`, `lod`, `unknown_9c`, `unknown_b0`, `unknown_b4`) | particle fade times |
+| Group | Fields | Values | Suspects in Halo 1 |
+|---|---|---|---|
+| every object | `+0x6c` .. `+0x8c` of the header | 1, 2.5, 4.5, 0.2, 1.25, 2.5 (7 on the biped), 10, 0.2, 1.25 on every object of every group | none: Halo 1's `obje` has one acceleration scale; likely (a) |
+| `bipd` | header `+0x14` .. `+0x1c`; `unit +0xbc`, `+0xc0`, `+0x1b0`, `+0x1b4`; root `+0x1ec` .. `+0x2c8`; the character shapes' (`block_284`, `block_28c`) words | speeds and angles (1.2, 8.49, 3.08, 0.6, 7, 12, cos 45 and 50 degrees, ...) | Halo 1's unit and biped speeds, jump velocity, stationary turning, ground angles; `rebuild::BIPED_WORDS` carries some |
+| `bipd` | `ref_25c` | `blood_aoe_human_masterchief` | none: likely (a) |
+| `weap` | root `+0x1b0` .. `+0x1b8`, `+0x27c`, `+0x2d8`, `+0x2dc`; barrels `+0x50`, `+0x54`, `+0x68`, `+0xc4` .. `+0xe0` (1000) | | ready time, zoom, autoaim, movement penalty, flags |
+| `weap` | `ref_1cc` .. `ref_1ec` | further `strike`/`smash` melee damage | Halo 1 has one melee damage and response (now in `ref_1bc`, `ref_1c4`); likely (a) |
+| `proj` | `+0x194` (1.0); `ref_140` (the rocket's `rocket_detonation` only) | | projectile flags |
+| `eqip`, `weap`, `proj` | `foot_ref_54` where Halo 1's root names no `foot` | | whether Halo 1's object has material effects at all |
+| `jpt!` | `+0xa0` (1.0) | | see "Missing, not leaking" |
+| `ligh` | `+0x8`, `+0xc`, `+0x14`, `+0x80` .. `+0x8c`, `brightness` | | the light's intensity and falloff |
+| `effe` | particle-system `fade`, `lod`, emitter `+0xb0`, `+0xb4` | | particle fade times |
+| `scen` | header words only | | none past the header |
 
 ## What the audit does not see
 
@@ -155,5 +191,10 @@ holds something of the same kind.
 
 ## Results
 
-Not run yet. The first run's tables (`ROLE_AUDIT_OUT`) go here, with the
-unclassified rows it prints moved into `ALLOWED` or `KNOWN`.
+First run, Blood Gulch on Coagulation, converter v85 (the tables
+`ROLE_AUDIT_OUT` wrote; values abridged): 526 tags; leaks by group:
+`vehi` 195 rows (all h1-veh-phys's), `weap` 76, `bipd` 71, `proj` 19,
+`eqip` 19, `scen` 9, `prt3` 8, `ligh` 7, `hlmt` 7, `shad` 4, `effe` 4,
+`deca` 3, `nhdt` 3, `jpt!` 1. Each row is classified above. The rows the
+v86 fixes remove are under "Fixed"; the run after them, and the other
+twelve multiplayer maps, are still to do (`H1_MAPS=all`).

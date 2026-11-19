@@ -44,32 +44,92 @@ use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 
 /// Leaks allowed: Halo 1 has no equivalent. (group, path, what, why).
 /// `*` matches anything and a path ending in `*` matches by prefix;
-/// element indices are `[]`. `what` is `value`, `copied`, or the
-/// referenced tag's group. Checked before [`KNOWN`].
+/// element indices are `[]`. `what` is `value`, `copied`, `none-word`,
+/// or the referenced tag's group. Checked before [`KNOWN`].
 const ALLOWED: &[Rule] = &[
+    (
+        "*",
+        "*",
+        "none-word",
+        "(a) half of a reference the definition does not name, holding none (a group word or -1): no value to take from anywhere",
+    ),
     (
         "hlmt",
         "block_60*",
         "*",
-        "(a) damage info (vitality, shields, their effects): Halo 2's damage model wins (campaign.md decision 2; health.md)",
+        "(a) damage info (vitality, shields, their shaders and effects): Halo 2's damage model wins (campaign.md decision 2; health.md)",
     ),
     (
         "hlmt",
         "shad_ref_*",
         "shad",
-        "(a) the active camouflage and overshield shaders: Halo 1 draws them from its globals, not per model",
+        "(a) the active camouflage shader: Halo 1 draws camouflage from its globals, not per model",
     ),
     (
         "prt3",
         "*",
         "value",
-        "(a) the static particle encoding (input mask, vertex shader, quad, UV window, unit constants): Halo 2's particle shader inputs; Halo 1's values go on the emitter",
+        "(a) the static particle encoding (input mask, vertex shader, quad, UV window): Halo 2's particle shader inputs",
     ),
     (
         "prt3",
-        "shader_template",
+        "*",
+        "copied",
+        "(a) the unit colour, alpha, size and rotation constants: Halo 1's values go on the emitter, which multiplies them (particles::particle)",
+    ),
+    (
+        "prt3",
+        "*",
         "stem",
         "(a) the particle shader template: Halo 2's shader system, picked by Halo 1's blend mode (particles::particle_stem)",
+    ),
+    (
+        "shad",
+        "*",
+        "stem",
+        "(a) Halo 2 shader templates: Halo 2's shader system; Halo 1's bitmaps go in their slots (h1convert::textures)",
+    ),
+    (
+        "shad",
+        "*",
+        "bitm",
+        "(a) Halo 2's default bitmaps in the template slots Halo 1's shader has nothing for (rasterizer and default_bitmaps)",
+    ),
+    (
+        "nhdt",
+        "*",
+        "shad",
+        "(a) Halo 2's HUD shaders draw the widgets: Halo 1's HUD has no shaders (hud.md)",
+    ),
+    (
+        "nhdt",
+        "bitmap_widgets[].bitmap",
+        "bitm",
+        "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
+    ),
+    (
+        "bipd",
+        "unit.ref_16c",
+        "jpt!",
+        "(a) boarding melee (V: masterchief_boarding_melee): Halo 1 has no boarding",
+    ),
+    (
+        "bipd",
+        "unit.ref_174",
+        "jpt!",
+        "(a) boarding melee response (V: masterchief_boarding_melee_response): Halo 1 has no boarding",
+    ),
+    (
+        "proj",
+        "unknown_178",
+        "value",
+        "(a) Halo 1's own value: arsenal::PROJECTILE_WORDS writes it after the role (water damage range, to), equal to the role's",
+    ),
+    (
+        "proj",
+        "unknown_e4",
+        "value",
+        "(a) Halo 1's detonation noise in the low half (arsenal::projectile), equal to the role's word",
     ),
     (
         "deca",
@@ -99,25 +159,25 @@ const KNOWN: &[Rule] = &[
         "weap",
         "barrels[].block_e4[]*",
         "*",
-        "owned by h1-weap-snd: firing effects and sounds (Halo 1 trigger firing effects)",
+        "owned by h1-weap-snd: firing effects, their sounds and trigger damage (Halo 1 trigger firing effects)",
     ),
     (
         "weap",
         "*",
         "snd!",
-        "owned by h1-weap-snd: ready, pickup and zoom sounds",
+        "owned by h1-weap-snd: pickup (ref_264) and zoom (ref_26c, ref_274) sounds",
     ),
     (
         "weap",
-        "*",
-        "lsnd",
-        "owned by h1-weap-snd: looping weapon sounds",
+        "ref_140",
+        "effe",
+        "owned by h1-weap-snd: the ready effect (V: needler ready); Halo 1's weap +0x33c",
     ),
     (
         "eqip",
         "*",
         "snd!",
-        "owned by h1-weap-snd: the item pickup sound (the field items share with weapons)",
+        "owned by h1-weap-snd: the item pickup sound (Halo 1's eqip +0x310)",
     ),
     (
         "bipd",
@@ -127,9 +187,9 @@ const KNOWN: &[Rule] = &[
     ),
     (
         "bipd",
-        "unit.obje.change_colors*",
+        "unit.obje.attachments*",
         "*",
-        "owned by h1-bipd-colour: change colours",
+        "bug, after h1-bipd-colour: Halo 1's attachments (Converter::halo1_attachments, as projectiles) name the object's functions, which are that lane's",
     ),
     (
         "vehi",
@@ -161,26 +221,36 @@ const KNOWN: &[Rule] = &[
         "value",
         "owned by h1-veh-phys: the physics element (Halo 1's phys mass, density, gravity)",
     ),
-    // The object header of every group: Halo 1's obje has flags (does
-    // not cast shadow, transparent self-occlusion, not a pathfinding
-    // obstacle), acceleration scale and render bounding radius.
+    // The object header of every group.
     (
         "*",
         "object.*",
         "value",
-        "unidentified: object header words; suspects Halo 1 obje flags, acceleration scale, render bounding radius",
+        "unidentified: object header words; +0x6c..+0x8c are the same nine floats on every object of every group (likely (a): Halo 1's obje has one acceleration scale)",
     ),
     (
         "*",
         "item.obje.*",
         "value",
-        "unidentified: object header words; suspects Halo 1 obje flags, acceleration scale, render bounding radius",
+        "unidentified: object header words; +0x6c..+0x8c are the same nine floats on every object of every group (likely (a): Halo 1's obje has one acceleration scale)",
     ),
     (
         "*",
         "unit.obje.*",
         "value",
-        "unidentified: object header words; suspects Halo 1 obje flags, acceleration scale, render bounding radius",
+        "unidentified: object header words; +0x6c..+0x8c as every object's, +0x14..+0x1c the biped's",
+    ),
+    (
+        "*",
+        "item.obje.foot_ref_54",
+        "foot",
+        "unidentified: kept where Halo 1's root names no material effects (Converter::h1_foot takes Halo 1's when it does)",
+    ),
+    (
+        "*",
+        "object.foot_ref_54",
+        "foot",
+        "unidentified: kept where Halo 1's root names no material effects (Converter::h1_foot takes Halo 1's when it does)",
     ),
     (
         "vehi",
@@ -188,25 +258,78 @@ const KNOWN: &[Rule] = &[
         "value",
         "owned by h1-veh-phys: the vehicle type's root and unit words (driving, steering, speeds; the Ghost's zeroed words)",
     ),
-    // Bugs here, not fixed: the Halo 2 fields are unnamed, so each needs
-    // naming by pairs before it can be translated.
+    // Bugs not fixed here.
+    (
+        "bipd",
+        "unit.block_e8[].ref_0",
+        "trak",
+        "bug: Halo 1's unit camera track (biped_follow_camera here): convert it as the seats' (Converter::camera_track) once the unit's block is read",
+    ),
+    (
+        "bipd",
+        "unit.effe_ref_c4",
+        "effe",
+        "bug: the flashlight toggle effect (V: masterchief flashlight); Halo 1's unit integrated light toggle effect, not read yet",
+    ),
+    (
+        "bipd",
+        "ref_25c",
+        "effe",
+        "unidentified: a biped area-of-effect blood effect (V: blood_aoe_human_masterchief); no Halo 1 suspect: likely (a)",
+    ),
+    (
+        "eqip",
+        "item.ref_10c",
+        "jpt!",
+        "bug: the grenade's explosion damage when shot (V: *_equipment_explosion); Halo 1's item detonation effect carries it: read the item's detonation fields",
+    ),
+    (
+        "eqip",
+        "item.ref_124",
+        "effe",
+        "bug: the grenade's detonation effect when shot (V: airborne_detonation, equipment_detonation); Halo 1's item detonation effect: read it",
+    ),
+    (
+        "weap",
+        "ref_1cc",
+        "jpt!",
+        "unidentified: a further Halo 2 melee slot (strike_melee); Halo 1 has one melee damage, in ref_1bc",
+    ),
+    (
+        "weap",
+        "ref_1d4",
+        "jpt!",
+        "unidentified: a further Halo 2 melee slot (strike_melee_response); Halo 1 has one melee response, in ref_1c4",
+    ),
+    (
+        "weap",
+        "ref_1dc",
+        "jpt!",
+        "unidentified: a further Halo 2 melee slot (smash/strike_melee); Halo 1 has one melee damage, in ref_1bc",
+    ),
+    (
+        "weap",
+        "ref_1e4",
+        "jpt!",
+        "unidentified: a further Halo 2 melee slot (smash_melee and its response); Halo 1 has one melee damage, in ref_1bc",
+    ),
+    (
+        "weap",
+        "ref_1ec",
+        "jpt!",
+        "unidentified: a further Halo 2 melee slot (smash_melee_response); Halo 1 has one melee response, in ref_1c4",
+    ),
+    (
+        "proj",
+        "ref_140",
+        "effe",
+        "unidentified: the rocket's rocket_detonation only; Halo 1's one detonation effect is in ref_f0 and ref_f8",
+    ),
     (
         "jpt!",
         "*",
         "value",
-        "bug: Halo 1's jpt! radius, cutoff scale, flags, category, instantaneous acceleration, camera shake and rumble; Halo 2's jpt! past the damage bounds is unnamed: name by pairs, then translate",
-    ),
-    (
-        "weap",
-        "*",
-        "jpt!",
-        "bug: Halo 1's weapon names its melee damage and melee response jpt!; convert them (Converter::damage) into the slot once it is named",
-    ),
-    (
-        "weap",
-        "*",
-        "effe",
-        "bug: Halo 1's weapon names overheated, detonation and light power on/off effects (the ready effect is h1-weap-snd's); Halo 1 effe converts (Converter::effect): pair the slots",
+        "unidentified: jpt! +0xa0 (1.0 on 16); Halo 2's jpt! is unnamed past the damage bounds",
     ),
     (
         "weap",
@@ -217,38 +340,20 @@ const KNOWN: &[Rule] = &[
     (
         "proj",
         "*",
-        "effe",
-        "bug: Halo 1's projectile names detonation started, detonation, super detonation and attached effects; Halo 1 effe converts: pair proj ref_e8..ref_15c",
-    ),
-    (
-        "proj",
-        "*",
-        "snd!",
-        "bug: Halo 1's projectile flyby sound: pair the slot, convert it (Converter::sound)",
-    ),
-    (
-        "proj",
-        "*",
         "value",
-        "unidentified: projectile words past PROJECTILE_WORDS; suspects Halo 1's projectile flags, detonation timer start, guided angular velocity",
+        "unidentified: projectile words past PROJECTILE_WORDS; suspects Halo 1's projectile flags",
     ),
     (
         "eqip",
         "*",
         "value",
-        "unidentified: equipment and item words; suspects Halo 1's item flags, pickup text index, detonation and collision fields",
+        "unidentified: equipment and item words; suspects Halo 1's item flags",
     ),
     (
         "bipd",
         "*",
         "value",
         "unidentified: biped and unit words past BIPED_WORDS; suspects Halo 1's unit speeds, jump velocity, seat acceleration, unit and biped flags",
-    ),
-    (
-        "hlmt",
-        "*",
-        "value",
-        "unidentified: scenery models' words; suspects Halo 1 mod2's LOD cutoff distances",
     ),
     (
         "scen",
@@ -261,12 +366,6 @@ const KNOWN: &[Rule] = &[
         "*",
         "value",
         "unidentified: light words and brightness; suspects Halo 1's light intensity and its falloff function",
-    ),
-    (
-        "garb",
-        "*",
-        "value",
-        "unidentified: garbage item words (Halo 1's garb is an item header and padding: likely (a))",
     ),
     (
         "effe",
@@ -435,6 +534,17 @@ fn empty(v: &Val) -> bool {
     }
 }
 
+/// Whether a 4-byte role value is half of a reference holding none, in a
+/// span the definition does not name as one: a tag group's word (V: the
+/// `jpt!`, `foot`, `effe` words, each before a `0xffffffff`) or `-1`.
+fn none_word(b: &[u8]) -> bool {
+    let Ok(w) = <[u8; 4]>::try_from(b) else {
+        return false;
+    };
+    let w = u32::from_le_bytes(w);
+    w == u32::MAX || Defs::builtin().group(FourCC(w.to_be_bytes())).is_some()
+}
+
 fn shown(v: &Val) -> String {
     let s = match v {
         Val::Bytes(b) if b.len() == 4 => {
@@ -561,8 +671,9 @@ fn audit(map: &str, base: &Base, snap: &Snapshot) -> Vec<Leak> {
                 {
                     continue; // Halo 1's value replaced it.
                 }
-                let what = match f.value {
+                let what = match &f.value {
                     Val::Block(_) | Val::Struct(_) => "copied",
+                    Val::Bytes(b) if none_word(b) => "none-word",
                     _ => "value",
                 };
                 out.push(leak(&f.path, what.to_owned(), shown(&f.value)));

@@ -272,6 +272,59 @@ fn refs(r: &mut Record, list: &Halo2Refs) -> Result<()> {
     Ok(())
 }
 
+/// The counterpart's references, then Halo 1's over them: a slot Halo 1
+/// fills ([`Halo1Refs`]) holds Halo 1's converted tag, or none where
+/// Halo 1 names none.
+pub(crate) fn all_refs(r: &mut Record, halo2: &Halo2Refs, halo1: &Halo1Refs) -> Result<()> {
+    refs(r, halo2)?;
+    refs(r, halo1)
+}
+
+/// References a slot takes from Halo 1, written over the counterpart's
+/// ([`Halo2Refs`]): (path, group, converted tag or [`TagId::NULL`] where
+/// Halo 1 names none or it did not convert).
+pub type Halo1Refs = Vec<(String, FourCC, TagId)>;
+
+/// Halo 1 references in slots named by the retail tags they hold. V
+/// (`tests/role_audit_disc.rs`, Blood Gulch on Coagulation, the
+/// counterparts' references by slot):
+///
+/// - `weap +0x16c`: the plasma pistol's and plasma rifle's `overheated`
+///   effects; Halo 1's `weap +0x374` overheated effect;
+/// - `weap +0x1bc`: `smash_melee` or `strike_melee` on 8 of 8 weapons,
+///   `+0x1c4` their `_melee_response` on 8 of 8; Halo 1's `weap +0x394`
+///   melee damage and `+0x3a4` melee response. The five slots after
+///   (`+0x1cc` .. `+0x1ec`, more `strike`/`smash` damage) are Halo 2
+///   melee kinds Halo 1 has no counterpart for;
+/// - `proj +0xe8`: the plasma grenade's `detonation_start`; Halo 1's
+///   `proj +0x1f4` detonation started;
+/// - `proj +0xf0`: `airborne_detonation` on all 3 that have one, `+0xf8`
+///   the detonation (`detonation`, `standard_detonation`, the frag's
+///   `airborne_detonation`): Halo 1 has one detonation effect
+///   (`proj +0x1ac`), which takes both;
+/// - `proj +0x110`: the needle's `super_detonation`; Halo 1's
+///   `proj +0x18c` super detonation;
+/// - `proj +0x138`: `bullet_flyby_*` on 8 bullets; Halo 1's `proj +0x204`
+///   flyby sound.
+pub const WEAPON_OVERHEATED: &str = "ref_16c";
+pub const WEAPON_MELEE_DAMAGE: &str = "ref_1bc";
+pub const WEAPON_MELEE_RESPONSE: &str = "ref_1c4";
+pub const PROJECTILE_DETONATION_STARTED: &str = "ref_e8";
+pub const PROJECTILE_AIRBORNE_DETONATION: &str = "ref_f0";
+pub const PROJECTILE_DETONATION: &str = "ref_f8";
+pub const PROJECTILE_SUPER_DETONATION: &str = "ref_110";
+pub const PROJECTILE_FLYBY_SOUND: &str = "ref_138";
+
+/// `obje +0x54`, the material effects (`foot`), under each group's
+/// object header.
+pub const ITEM_FOOT: &str = "item.obje.foot_ref_54";
+pub const PROJECTILE_FOOT: &str = "object.foot_ref_54";
+
+/// One Halo 1 slot: `path` of `group` takes `id`, or none.
+pub fn halo1_ref(path: &str, group: &[u8; 4], id: Option<TagId>) -> (String, FourCC, TagId) {
+    (path.to_owned(), FourCC(*group), id.unwrap_or(TagId::NULL))
+}
+
 fn header(
     r: &mut Record,
     path: &str,
@@ -310,6 +363,9 @@ pub struct WeaponParts {
     /// effects, sounds), per barrel its references, and per barrel its
     /// firing effects' references.
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]: overheated
+    /// effect, melee damage and response, material effects).
+    pub halo1: Halo1Refs,
     pub barrel_halo2: Vec<Halo2Refs>,
     pub firing_effects: Vec<Vec<Halo2Refs>>,
     /// The weapon class and type a unit's graph holds it by
@@ -489,7 +545,7 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     let d = def(b"weap")?;
     let mut r = defs::default_record(d);
     words(&mut r, "", &role.root)?;
-    refs(&mut r, &parts.halo2)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
     if let Some((class, kind)) = &parts.animation {
         set(&mut r, WEAPON_CLASS, Val::text(class))?;
@@ -660,6 +716,9 @@ pub struct ProjectileParts {
     /// The Halo 2 counterpart's references (effects, sounds) for the
     /// slots Halo 1 has nothing converted for.
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]: detonation
+    /// effects, flyby sound, material effects).
+    pub halo1: Halo1Refs,
     /// The material responses ([`responses`]).
     pub responses: Vec<(&'static str, i16, Response)>,
 }
@@ -674,7 +733,7 @@ pub fn projectile(
     let d = def(b"proj")?;
     let mut r = defs::default_record(d);
     words(&mut r, "", &role.root)?;
-    refs(&mut r, &parts.halo2)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "object", PROJECTILE_TYPE, &p.object, parts.hlmt)?;
     for (path, at, per_tick) in PROJECTILE_WORDS {
         let w = if *per_tick {
@@ -933,6 +992,9 @@ pub struct EquipmentParts {
     pub hlmt: Option<TagId>,
     pub predicted: Vec<Predicted>,
     pub halo2: Halo2Refs,
+    /// Halo 1's converted tags over those ([`Halo1Refs`]: material
+    /// effects).
+    pub halo1: Halo1Refs,
 }
 
 /// The `eqip` root from Halo 1's equipment. A health pack needs a positive
@@ -941,7 +1003,7 @@ pub fn equipment(e: &h1::Equipment, parts: &EquipmentParts, role: &Role) -> Resu
     let d = def(b"eqip")?;
     let mut r = defs::default_record(d);
     words(&mut r, "", &role.root)?;
-    refs(&mut r, &parts.halo2)?;
+    all_refs(&mut r, &parts.halo2, &parts.halo1)?;
     header(&mut r, "item.obje", EQUIPMENT_TYPE, &e.object, parts.hlmt)?;
     rebuild::predicted_resources(b"eqip", &mut r, "item.obje", &parts.predicted)?;
     set(&mut r, "powerup_type", Val::Int(e.powerup_type.into()))?;

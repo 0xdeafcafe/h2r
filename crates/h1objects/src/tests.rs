@@ -2253,3 +2253,32 @@ fn a_rebuilt_seat_s_gunner_is_halo_1_s_alone() {
     // Other role bits above Halo 1's pass through.
     assert_eq!(seat_flags(0, 1 << 20), 1 << 20);
 }
+
+/// A slot Halo 1 fills (`arsenal::Halo1Refs`) holds Halo 1's converted
+/// tag, or none where Halo 1 names none, over the counterpart's; the
+/// counterpart's other slots stay.
+#[test]
+fn halo1_slots_replace_the_counterparts_references() {
+    use crate::arsenal::{self, PROJECTILE_DETONATION, PROJECTILE_FLYBY_SOUND};
+    use tags::defs::{self, Defs, Target, Val};
+    let d = Defs::builtin().group(FourCC(*b"proj")).unwrap();
+    let mut r = defs::default_record(d);
+    let retail = TagId(0xe123_0045);
+    let halo2 = vec![
+        (PROJECTILE_FLYBY_SOUND.to_owned(), FourCC(*b"snd!"), retail),
+        (PROJECTILE_DETONATION.to_owned(), FourCC(*b"effe"), retail),
+        ("ref_140".to_owned(), FourCC(*b"effe"), retail),
+    ];
+    let halo1 = vec![
+        arsenal::halo1_ref(PROJECTILE_FLYBY_SOUND, b"snd!", None),
+        arsenal::halo1_ref(PROJECTILE_DETONATION, b"effe", Some(local(3))),
+    ];
+    arsenal::all_refs(&mut r, &halo2, &halo1).unwrap();
+    let target = |p: &str| match r.at(p) {
+        Some(Val::Ref { target, .. }) => target.clone(),
+        v => panic!("{p}: {v:?}"),
+    };
+    assert_eq!(target(PROJECTILE_FLYBY_SOUND), Target::Null);
+    assert_eq!(target(PROJECTILE_DETONATION), Target::Id(local(3)));
+    assert_eq!(target("ref_140"), Target::Id(retail));
+}
