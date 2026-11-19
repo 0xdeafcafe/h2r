@@ -29,7 +29,7 @@ fn rejected(options: &[&str], message: &str) {
 
 #[test]
 fn unknown_architecture_fails_before_parsing_the_image() {
-    rejected(&["--arch", "mips"], "expected host, all, arm64, x86_64, tvos, ios or windows");
+    rejected(&["--arch", "mips"], "expected host, all, arm64, x86_64, tvos, ios, windows or x86_64-linux");
 }
 
 #[test]
@@ -188,6 +188,64 @@ fn tiny_image() -> Vec<u8> {
     image[0x1000..0x1006].copy_from_slice(&[0xb8, 1, 0, 0, 0, 0xc3]);
     put(&mut image, 0x1100, 0x8000005f);
     image
+}
+
+/// On a Mac, setting the sysroot opts into the actual cross-link. On Linux
+/// also open the result with the production loader and install both bridges.
+#[test]
+fn linux_build_checks_and_loads_the_selected_module() {
+    use emit::compile::Arch;
+
+    let linux = Arch::X86_64Linux;
+    let sandbox = Sandbox::new("linux-build");
+    let xbe = tiny_image();
+    let path = sandbox.0.join("image.xbe");
+    std::fs::write(&path, &xbe).unwrap();
+    let out = sandbox.0.join("out");
+    let build = || {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_h2"));
+        cmd.arg("build").arg(&path).args(["--arch", "x86_64-linux", "--tier", "clang", "--out"]).arg(&out)
+            .env("H2_EMIT_TARGET", "invalid-if-used")
+            .env("H2_BOOT_CACHE", "off")
+            .env_remove("H2_OBJ_CACHE");
+        cmd
+    };
+    let stale = build().arg("--check").output().unwrap();
+    assert_eq!(stale.status.code(), Some(3), "{}", String::from_utf8_lossy(&stale.stderr));
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("libh2game.so is out of date"));
+    if Arch::host() != linux {
+        let fast = build().args(["--tier", "fast", "--check"]).output().unwrap();
+        assert!(String::from_utf8_lossy(&fast.stderr).contains("the fast tier builds for this host only"));
+        if std::env::var_os("H2_LINUX_SYSROOT").is_none_or(|p| p.is_empty()) {
+            eprintln!("Skipping Linux cross-link without H2_LINUX_SYSROOT");
+            return;
+        }
+    }
+
+    let built = build().output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let path = out.join(linux.module_file_name());
+    let elf = std::fs::read(&path).unwrap();
+    assert_eq!(&elf[..6], b"\x7fELF\x02\x01", "ELF64 little endian");
+    assert_eq!(&elf[16..20], &[3, 0, 62, 0], "ET_DYN, EM_X86_64");
+    let check = build().arg("--check").output().unwrap();
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stderr));
+    assert!(boot::dylib_current_for(&xbe, &path, linux));
+    assert!(!boot::dylib_current_for(&xbe, &path, Arch::X86_64));
+    if Arch::host() == linux {
+        // SAFETY: h2 built this synthetic module and both bridges for this process's ABI.
+        unsafe {
+            let lib = emit::host::open_library(&path).unwrap();
+            assert_eq!(boot::install_bridge(&lib, &boot::shim::bridge()).unwrap(), 3);
+            let install_x87 = lib.get::<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)>(b"h2x87bridge_install").unwrap();
+            let helpers = emit::host::x87_helpers();
+            install_x87(helpers.as_ptr(), helpers.len() as u32);
+            let version = lib.get::<unsafe extern "C" fn() -> u32>(b"h2gen_module_abi_version").unwrap();
+            assert_eq!(version(), emit::host::ABI_VERSION);
+            assert!(lib.get::<*const ()>(b"h2gen_module").is_ok());
+            assert!(lib.get::<*const ()>(b"h2fn_00011000").is_err(), "private handler");
+        }
+    }
 }
 
 #[test]

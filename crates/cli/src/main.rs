@@ -96,7 +96,7 @@ mod web_build;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
-  build <disc>            lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
+  build <disc> [--arch TARGET]  lift, emit and compile the whole XBE (docs/runtime/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/runtime/app.md)
   server-map strip|verify ORIGINAL.map SERVER.map
@@ -211,7 +211,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           the default), mnemonic counts, one function's IR, or
                           interpret from the entry to the first kernel call
   emit [--out <dir>] [--abi-header <h2abi.h>] [--no-build] [--run-entry]
-       [--arch host|all|arm64|x86_64] [--jobs N] [--no-emit-cache]
+       [--arch host|all|arm64|x86_64|tvos|ios|windows|x86_64-linux] [--jobs N] [--no-emit-cache]
        [--allow-repo-output] [--passes <spec>]
                           generate C and build the host static lib (default out:
                           $TMPDIR/h2gen); --arch all builds both architectures;
@@ -435,7 +435,7 @@ fn main() -> Result<()> {
             "--arch" => {
                 lift_opts.arch = Some(
                     args.next()
-                        .context("--arch needs host, all, arm64 or x86_64")?,
+                        .context("--arch needs a target")?,
                 )
             }
             "--jobs" => {
@@ -1133,7 +1133,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     }
     if opts.run_entry {
         let b = host.context("no host build")?;
-        let dylib = out.join("libh2gen-host.dylib");
+        let dylib = out.join("libh2gen-host").with_extension(std::env::consts::DLL_EXTENSION);
         let t = Instant::now();
         emit::compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &dylib)?;
         println!("host bridge + link: {:.3}s", t.elapsed().as_secs_f64());

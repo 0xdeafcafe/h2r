@@ -13,7 +13,7 @@ fn optional_callbacks_preserve_memory_tracking_and_reject_short_tables() {
     let path = dir.join("bridge.dylib");
     let probe = r#"
 #include "h2gen.h"
-uint32_t boot_memory_probe(ExecCtxOpaque *ctx, uint32_t addr) {
+H2_EXPORT uint32_t boot_memory_probe(ExecCtxOpaque *ctx, uint32_t addr) {
     H2FastAccess *f = h2abi_v1_fast_acquire(ctx);
     const uint32_t value = 0x12345678u;
     uint32_t result = h2_mem_write(f, ctx, 0x1000u, addr, 4u, 1u, (const uint8_t *)&value);
@@ -107,7 +107,7 @@ fn a_module_from_before_the_exit_call_still_installs_and_settles() {
         format!(
             r#"
 #include "h2gen.h"
-uint32_t boot_exit_probe(ExecCtxOpaque *ctx, uint32_t addr, uint64_t n) {{
+H2_EXPORT uint32_t boot_exit_probe(ExecCtxOpaque *ctx, uint32_t addr, uint64_t n) {{
     H2FastAccess *f = h2abi_v1_fast_acquire(ctx);
     const uint32_t value = 0x12345678u;
     uint32_t result = 0;
