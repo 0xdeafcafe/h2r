@@ -155,11 +155,11 @@ fn finish(spans: &[Span], out: &mut Vec<u8>) {
     out.splice(at..at, state.to_le_bytes());
 }
 
-struct Tape<'a, E> {
+struct Tape<'a, E, const SPARSE: bool> {
     engine: E,
     t: &'a mut Tables,
 }
-impl<E: Engine> Tape<'_, E> {
+impl<E: Engine, const SPARSE: bool> Tape<'_, E, SPARSE> {
     #[inline]
     fn uniform(&mut self, bits: u32, want: u64) -> u64 {
         let shift = 12 - bits;
@@ -172,8 +172,9 @@ impl<E: Engine> Tape<'_, E> {
         u64::from(sym)
     }
 }
-impl<E: Engine> Symbols for Tape<'_, E> {
+impl<E: Engine, const SPARSE: bool> Symbols for Tape<'_, E, SPARSE> {
     const WRITING: bool = E::WRITE;
+    const SPARSE: bool = SPARSE;
     #[inline]
     fn bit(&mut self, ctx: usize, want: bool) -> bool {
         let p = self.t.binary[ctx];
@@ -239,12 +240,13 @@ impl<E: Engine> Symbols for Tape<'_, E> {
 }
 
 #[derive(Default)]
-pub(super) struct Ans {
+pub(super) struct Ans<const CACHE: bool, const SPARSE: bool> {
+    projection: projection::Projection,
     pub(super) h: History,
     tables: Tables,
     spans: Vec<Span>,
 }
-impl Ans {
+impl<const CACHE: bool, const SPARSE: bool> Ans<CACHE, SPARSE> {
     pub(super) fn encode(&mut self, f: &Frame, key: bool) -> Vec<u8> {
         let seq = self.h.seq;
         if key {
@@ -252,13 +254,20 @@ impl Ans {
             self.tables = Tables::default();
         }
         let dt = f.tick - self.h.tick;
-        let src = Lists::of(f).unwrap();
+        let raw;
+        let (src, held) = if CACHE {
+            self.projection.get(f).unwrap()
+        } else {
+            raw = Lists::of(f).unwrap();
+            (&raw, 0)
+        };
+        self.h.held_lists = if key { 0 } else { held };
         self.spans.clear();
-        let mut r = Tape {
+        let mut r = Tape::<_, SPARSE> {
             engine: Writer(&mut self.spans),
             t: &mut self.tables,
         };
-        self.h.write_frame(&mut r, f, &src, dt);
+        self.h.write_frame(&mut r, f, src, dt);
         self.h.tick = f.tick;
         self.h.seq = seq + 1;
         let mut payload = Vec::new();
@@ -282,7 +291,7 @@ impl Ans {
             assert_eq!(self.h.seq, seq);
         }
         let dt = number(&mut body);
-        let mut r = Tape {
+        let mut r = Tape::<_, SPARSE> {
             engine: Reader::new(body),
             t: &mut self.tables,
         };

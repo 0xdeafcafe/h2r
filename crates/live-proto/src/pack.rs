@@ -1260,6 +1260,7 @@ fn object_of(e: &Entity) -> Result<FrameObject> {
 
 /// A frame as entity lists: players, vehicles, actors, machines, objects,
 /// projectiles, items (the [`LISTS`] order) and hits.
+#[derive(Default)]
 struct Lists {
     lists: [Vec<Entity>; LIST_COUNT],
     hits: Vec<Entity>,

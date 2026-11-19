@@ -37,6 +37,10 @@ type Header = (String, Option<u32>, Option<u64>, bool);
 struct History {
     rows: [Vec<Vec<FieldHistory>>; LISTS_WITH_HITS],
     lengths: [usize; LISTS_WITH_HITS],
+    #[serde(default)]
+    cold: [Vec<Entity>; LISTS_WITH_HITS],
+    #[serde(skip)]
+    held_lists: u8,
     strings: Vec<Val>,
     #[serde(skip)]
     ids: HashMap<Val, usize>,
@@ -77,6 +81,7 @@ fn number(input: &mut &[u8]) -> u64 {
 }
 trait Symbols {
     const WRITING: bool;
+    const SPARSE: bool = false;
     fn bit(&mut self, ctx: usize, want: bool) -> bool;
     fn uint(&mut self, ctx: usize, want: u64) -> u64;
     fn signed(&mut self, ctx: usize, want: i64) -> i64 {
@@ -222,6 +227,14 @@ impl History {
             LISTS[list]
         };
         let base = list * CHANNELS * WIDTH;
+        let static_list = T::SPARSE && matches!(list, 3 | 4 | 6);
+        if static_list && r.bit(base + 23 * WIDTH + 40, self.held_lists & (1 << list) != 0) {
+            return if T::WRITING {
+                Vec::new()
+            } else {
+                self.cold[list].clone()
+            };
+        }
         let want = src.map_or(0, <[Entity]>::len) as i64;
         let n = (self.lengths[list] as i64
             + r.signed(base + 23 * WIDTH, want - self.lengths[list] as i64))
@@ -233,6 +246,32 @@ impl History {
         let velocity = schema.iter().position(|f| matches!(f.kind, Kind::Vel));
         let is_unit = list == 0 || list == 2;
         let aim = if list == 0 { 6 } else { 4 };
+        // A single decision covers all slowly changing fields in this row.
+        // The ordinary field grammar handles every exception and list replacement.
+        let full_mask = (1u32 << schema.len()) - 1;
+        let hot_mask = if !T::SPARSE {
+            full_mask
+        } else {
+            match list {
+                0 => {
+                    (1 << 2)
+                        | (1 << 3)
+                        | (1 << 6)
+                        | (1 << 8)
+                        | (1 << 13)
+                        | (1 << 14)
+                        | (1 << 16)
+                        | (1 << 20)
+                }
+                1 => (1 << 2) | (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8),
+                _ => full_mask,
+            }
+        };
+        let grouped = hot_mask != full_mask;
+        let cache = &mut self.cold[list];
+        if grouped {
+            cache.resize_with(n, Vec::new);
+        }
         refs.first_aim = None;
         let mut out = Vec::with_capacity(if T::WRITING { 0 } else { n });
         for (i, hist) in rows.iter_mut().enumerate() {
@@ -243,7 +282,33 @@ impl History {
                 travel: travel_base(velocity.map(|vi| &hist[vi]), dt, is_unit),
                 hit: list == HIT_LIST,
             };
-            for (j, field) in schema.iter().enumerate() {
+            let held = grouped
+                && r.bit(
+                    base + 23 * WIDTH + 41,
+                    source.is_some_and(|s| {
+                        let prior = &cache[i];
+                        if prior.is_empty() {
+                            return false;
+                        }
+                        let mut bits = full_mask ^ hot_mask;
+                        while bits != 0 {
+                            let j = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            if s[j] != prior[j] {
+                                return false;
+                            }
+                        }
+                        true
+                    }),
+                );
+            if !T::WRITING && held {
+                e.clone_from(&cache[i]);
+            }
+            let mut mask = if held { hot_mask } else { full_mask };
+            while mask != 0 {
+                let j = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let field = &schema[j];
                 if is_unit && j == aim {
                     ctx.direction = direction_base(refs.first_aim, source.unwrap_or(&e).get(3));
                 } else {
@@ -262,10 +327,17 @@ impl History {
                     &mut self.ids,
                 );
                 if !T::WRITING {
-                    e.push(value);
+                    if held {
+                        e[j] = value;
+                    } else {
+                        e.push(value);
+                    }
                 }
             }
             let actual = source.unwrap_or(&e);
+            if grouped && !held {
+                cache[i].clone_from(actual);
+            }
             if list == 0 {
                 refs.positions.push(actual[2].clone());
             }
@@ -278,6 +350,9 @@ impl History {
             if !T::WRITING {
                 out.push(e);
             }
+        }
+        if static_list {
+            src.unwrap_or(&out).clone_into(cache);
         }
         out
     }

@@ -6,6 +6,8 @@ use std::{
 
 #[path = "ans.rs"]
 mod ans;
+#[path = "projection.rs"]
+mod projection;
 
 trait Codec: Default {
     fn send(&mut self, f: &Frame, key: bool) -> Vec<u8>;
@@ -32,7 +34,9 @@ macro_rules! codec {
     };
 }
 codec!(Connection);
-codec!(ans::Ans);
+codec!(ans::Ans<false,false>);
+codec!(ans::Ans<true,false>);
+codec!(ans::Ans<true,true>);
 fn check<C: Codec>(frames: &[Frame]) {
     let mut tx = C::default();
     let mut rx = C::default();
@@ -55,7 +59,9 @@ pub fn verify() {
         crate::samples::campaign(200),
     ] {
         check::<Connection>(&scene);
-        check::<ans::Ans>(&scene);
+        check::<ans::Ans<false, false>>(&scene);
+        check::<ans::Ans<true, false>>(&scene);
+        check::<ans::Ans<true, true>>(&scene);
     }
 }
 fn timed<T>(d: &mut Duration, f: impl FnOnce() -> T) -> T {
@@ -120,7 +126,9 @@ pub fn compare() {
     println!("10 s keys; 9,000 complete framed packets. CPU microseconds per 16-player frame.");
     println!("variant                   bytes       B/p/s  candidate    v7-prod   ratio    join_B");
     measure::<Connection>(&frames, "binary arithmetic");
-    measure::<ans::Ans>(&frames, "symbol rANS");
+    measure::<ans::Ans<false, false>>(&frames, "symbol rANS");
+    measure::<ans::Ans<true, false>>(&frames, "rANS + projection cache");
+    measure::<ans::Ans<true, true>>(&frames, "rANS + sparse groups");
 }
 
 #[derive(Clone, Copy)]
