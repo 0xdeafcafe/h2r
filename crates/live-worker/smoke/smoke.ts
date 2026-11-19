@@ -695,7 +695,11 @@ if (busy > 0) {
 
   type Relay = { ws: WebSocket; text: any[]; got: number; closed: { code: number; reason: string } | null; onBinary?: (d: ArrayBuffer) => void };
   const relay = async (who: typeof a) => {
-    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/sessions/${sessionId}/relay`);
+    // The upgrade carries the relay token (docs/live/live-api.md, "Co-op relay").
+    const token = await issueToken(who!, aud, "sessions.relay");
+    const ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/sessions/${sessionId}/relay`, {
+      headers: { authorization: `Bearer ${token}` },
+    } as any);
     ws.binaryType = "arraybuffer";
     const r: Relay = { ws, text: [], got: 0, closed: null };
     ws.onmessage = (m) => {
@@ -710,7 +714,6 @@ if (busy > 0) {
       ws.onopen = () => ok();
       ws.onerror = (e) => no(e);
     });
-    ws.send(JSON.stringify({ kind: "auth", token: await issueToken(who!, aud, "sessions.relay") }));
     return r;
   };
   const waitFor = async (what: () => boolean, ms: number, why: string) => {
@@ -730,10 +733,10 @@ if (busy > 0) {
     fail("relay-join", e);
   }
   const joinMs = +(performance.now() - t12).toFixed(1);
-  const stranger = await relay(await createAccount(api, base, aud, tag()));
+  // A stranger's upgrade is refused (HTTP 403), so the socket never opens.
   try {
-    await waitFor(() => stranger.closed !== null, 5000, "the stranger was not closed");
-    if (stranger.closed!.code !== 4403) throw new Error(`closed with ${JSON.stringify(stranger.closed)}`);
+    const opened = await relay(await createAccount(api, base, aud, tag())).then(() => true, () => false);
+    if (opened) throw new Error("the stranger's relay opened");
   } catch (e) {
     fail("relay-stranger", e);
   }

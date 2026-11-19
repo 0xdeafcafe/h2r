@@ -128,7 +128,7 @@ async fn advance(
                     continue;
                 };
                 if !cx.read(|m| guest::signed_in(m, port))? {
-                    let block = guest::bot_block(&[0; guest::BLOCK_LEN], &bot.name, port);
+                    let block = guest::bot_block(&[0; guest::BLOCK_LEN], &bot.name);
                     cx.write(|m| m.write(buffer, &block))?;
                     cx.call(GuestCall::new(points::PROFILE_SIGN_IN.base).args([
                         port,

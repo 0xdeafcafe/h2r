@@ -186,11 +186,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // signed in on the players screen, their views and listeners hidden.
     // `H2_BOTS` adds brains at boot; idle with none.
     let mut bots_on = false;
-    if i.xapi {
+    if i.bots {
         crate::clanker_card::install(features, i.live.clone())
             .context("installing Clanker player options")?;
-    }
-    if i.bots {
         bot_glue::add_from_env();
         bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
