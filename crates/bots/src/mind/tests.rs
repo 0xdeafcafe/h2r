@@ -1240,12 +1240,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
         assert_eq!(glitch_doing(d), ok, "{d:?}");
     }
     // A show-off under way stops when the bot turns to something else.
-    let hop = || {
-        Stunt::Hop(Run::new(
-            plan(Trick::CrouchJump, Skill::Legendary, &mut || 0.5),
-            0,
-        ))
-    };
+    let hop = || Stunt::Hop(Run::new(plan(Trick::CrouchJump), 0));
     let mut m = Mind::new(Skill::Legendary, 4);
     m.glitches = Glitches::Lots;
     look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);

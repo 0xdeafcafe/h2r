@@ -241,6 +241,14 @@ The bot knows nothing it could not see or hear: a gunshot, a radar blip or a
 teammate's callout. The radar uses the game's own rule: an enemy that
 moves, and is not crouched, inside the radar range.
 
+Each brain keeps a short, tick-stamped history of world samples, vehicle
+sight, nearby grenades, sound, deaths and teammate callouts. It thinks
+from the newest sample at least `perception_ticks` old. A repeated poll
+in the same tick reuses the previous pad. Local slots sample through the
+host's ordinary input path. If the host skips a sample, the brain can use
+an older observation. The first live sample after a respawn starts a
+fresh history.
+
 ### 3.2 Navigation
 
 Every map gets a nav mesh, built offline from the BSP collision by our own
@@ -441,6 +449,10 @@ on a stick.
 | Part | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
 | fresh reaction (ticks from first sight) | 10–18 | 7–13 | 5–9 | 5–8 |
+| perception delay (ticks) | 3 | 3 | 2 | 2 |
+| motor/controller delay (ticks) | 2 | 2 | 2 | 1 |
+| continuous delay (ms at 30 Hz) | 167 | 167 | 133 | 100 |
+| button-edge timing σ (ms) | 8 | 6 | 4.5 | 3 |
 | tracking error (std. dev. of the angle) | large | medium | small | very small |
 | lead (fraction of the needed lead) | 0.3 | 0.6 | 0.85 | 1.0 |
 | flick overshoot | large | some | little | little |
@@ -448,9 +460,19 @@ on a stick.
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
 | weapon choice by range | no | partly | yes | yes |
 
-Each encounter samples a reaction delay around the skill's normal pace.
-Already-alert reactions trend sooner with a five-tick floor (167 ms).
-A brief occlusion keeps the reaction clock and clears the velocity sample.
+The continuous delay covers seeing a rendered change and getting a new
+controller report into the game. Easy and Normal share a five-tick budget
+at 30 Hz. Their hesitation and timing precision differ. Heroic sees the
+change one tick sooner, and Legendary also returns a report one tick
+sooner. These are tuning defaults for playtesting.
+
+The first-sight reaction remains the time to notice and commit to a new
+target after its first visible sample reaches the brain. The five-tick
+floor (167 ms) applies to that reaction. The first input arrives after the
+perception delay, one reaction wait and the motor delay, with up to a
+tick of scatter on a button edge. Later decisions on the same target use
+the same continuous pipeline. A brief occlusion keeps the reaction
+clock and clears the velocity sample.
 
 The right thumb takes several ticks to cross the stick well. Large flicks
 carry a little past the target before settling. Small correlated errors and
@@ -458,6 +480,28 @@ the occasional larger misread vary by skill. Fast crossings leave more
 tracking lag than slow ones. The local virtual pad uses the game's stick
 response, look acceleration and aim assist at sensitivity 3. Phantom
 actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
+
+At the controller boundary, each stick stays within its unit circle and
+can travel at most 0.45 stick radii per tick. A full reversal takes at
+least five reports. The model uses a standard two-thumb grip. The right
+thumb can press one of A/B/X/Y/Black/White while the right stick is
+centred, or use the stick or its click. It can switch between those jobs
+once per tick (33 ms) by default. A short press can be missed while the
+stick returns to centre. The left thumb can move its stick and click it.
+The index fingers can use the triggers during a face-button press.
+
+Button and trigger transitions draw independent, centred Gaussian timing
+errors using a per-bot seed. An error of, for example, 6 ms has a 6/33.3
+chance to shift the report by a tick in the direction of the error.
+Reports slip by at most one tick. At zero motor delay an early edge can
+only land on the current tick. Two edges on the same boundary can erase a
+short tap. Sticks use the nominal motor delay. The same seed, samples and
+tuning reproduce the same input.
+
+`bots::tuning::Tuning` exposes `perception_ticks`, `motor_ticks`,
+`button_sigma_ms`, `stick_step`, `thumb_switch_ticks`, `phantom_ping_ms`
+and `phantom_jitter_ms`. The sim accepts these in bot tuning files
+([sim.md](../runtime/sim.md#bot-parameters-from-a-file)).
 
 Lead comes from the target's velocity and the weapon's projectile speed,
 read from the tag at load; hitscan needs no lead. A grenade's throw is
@@ -763,7 +807,7 @@ Taunts path: store, `clankers::Want::read`, the driver's shared
 `AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
 phantoms alike.
 
-**The tricks.** Presses at 30 ticks a second, as Legendary does them:
+**The tricks.** Nominal requested presses at 30 ticks a second:
 
 | Trick | Presses (tick: button) | When | Source |
 |---|---|---|---|
@@ -781,12 +825,33 @@ the battle rifle's burst (`BURST`) are not traced. They are starting
 points to tune in a game run. The battle rifle is told from the tag: once
 per pull, one zoom level, a magazine of 30 or more.
 
-**Skill.** Each press after the first is late by up to 0 ticks
-(Legendary), 1 (Heroic), 2 (Normal) or 1 to 3 (Easy). Late presses miss
-windows the way a player's do: Easy's sword fly often lands its X outside
-the two-tick window and is an ordinary switch. Skill also scales how
-often it tries: Easy 40% of the setting's chance, Normal 70%, Heroic 90%,
-Legendary all of it.
+**Skill.** Tricks request the same sequence at every skill. The pad
+pipeline scatters its edges (§3.4), so a miss is an ordinary melee,
+switch, reload, shot or jump. The trigger's charge and release in the
+noob combo and short pulls on other weapons go through the same pipeline.
+Skill also scales how often it tries. Easy takes 40% of the setting's
+chance, Normal 70%, Heroic 90% and Legendary all of it.
+
+These are timing-window pass rates from 4,000 seeded controller-model
+trials per skill and technique, with the right stick at rest. The
+criterion is that the delivered presses arrive in order and within a
+tick of each nominal gap, keeping required holds such as X at R for BXR.
+A melee cancel or second BR pull can't precede its nominal opening. The
+sword fly needs X one or two ticks after Y. The plasma overcharge row
+checks the nominal 24-tick hold. These rates measure pad timing. Whether
+the retail engine accepts an attempt depends on the weapon, target,
+movement and host behavior. Super-bounce landings need a physics run.
+
+| Delivered sequence | Easy | Normal | Heroic | Legendary |
+|---|---:|---:|---:|---:|
+| BXR | 80.5% | 85.7% | 89.3% | 93.4% |
+| BYYR | 66.4% | 74.8% | 80.5% | 87.2% |
+| BXB | 79.7% | 85.3% | 89.0% | 93.2% |
+| Double shot | 80.4% | 85.6% | 89.2% | 93.4% |
+| Quad shot | 49.7% | 61.5% | 69.8% | 80.3% |
+| Sword fly | 56.6% | 65.1% | 73.0% | 81.2% |
+| Crouch jump | 98.0% | 99.0% | 99.5% | 99.8% |
+| Plasma overcharge hold | 84.6% | 87.7% | 90.6% | 93.7% |
 
 **How often.** A fight trick is rolled for at most once a second while
 one fits: 15% a roll on Some, 60% on Lots (times the skill's share), and
@@ -844,18 +909,11 @@ a reload glitch from any range, but only off host". Clankers play on the
 host. Whether the cancels work for a host-side player is the first thing
 to check.
 
-**Tests** (`cargo test -p bots glitches`, and
-`cargo test -p boot clankers`): each trick's presses and timing at
-Legendary; lateness within each skill's slop and never out of order;
-sword flying clean at Legendary and Heroic and often missed on Easy; the
-gate (Off never, never carrying, losing or before reacting, the trick
-that fits each moment); the combo scheduler playing B, X, R in order,
-often on Lots, less on Some, never on Off; the show-off clock (Off never,
-Lots 25 to 80 in ten calm minutes, never when not calm); the bounce run
-(walks on, standing jump, drift, a launch ends it, plain and caught
-landings retry until the tries run out); a roaming mind crouch jumping on
-Lots and never on Off; the setting off by default and reaching the
-driver.
+**Tests.** `cargo test -p bots glitches` checks the requested timing,
+the openings and setting, the show-off clock and super-bounce state
+machine. `cargo test -p bots human_input -- --nocapture` checks the
+delivered timing, delay, seeded replay and controller limits.
+`cargo test -p boot clankers` covers the setting and driver.
 
 **Game run (checklist).** For the user. Use one Clanker against you on
 Legendary with Glitches on Lots. The agent API reads what happened:
@@ -1077,8 +1135,9 @@ inserted controller and opens it with `XInputOpen`, and every
 - The agent tap's `input.pad` still merges over the bot's pad. Tests and
   scripts can use that to steer a bot.
 
-The brain writes one `Gamepad` per bot into shared state each tick. The
-backend's `poll` hands it back.
+The brain gives the local backend a pad report after its motor delay.
+The backend's `poll` hands it to the host's regular controller input path
+without an additional network delay.
 
 ### 4.2 Signing a bot in (traced)
 
@@ -1992,6 +2051,17 @@ which `0x185e81..0x185ea9` passes to the action builder.
   count, now honoured.
 - Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
   phantom wears the host's until then.
+
+**Phantom ping.** Each phantom has a seeded 40–80 ms round-trip ping by
+default. The host samples its pad at 30 Hz and queues the report for
+one-way delivery after half that ping plus uniform jitter of up to ±4 ms.
+Arrival is rounded up to the next simulation sample, normally one or two
+ticks later. The host builds and stamps the action record at arrival
+using the current weapon and facing. While it waits, it holds the latest
+arrived pad. Several packets arriving together can collapse to the newest
+report. A new unit or a break in the stream clears the queue.
+`phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
+`phantom_jitter_ms` sets the one-way jitter bound.
 
 ### 5.2 Why phantoms are needed
 
