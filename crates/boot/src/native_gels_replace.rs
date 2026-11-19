@@ -219,7 +219,7 @@ impl Replacement {
         let mut dims = [None; 4];
         for (n, info) in draw.texture_info.iter().enumerate() {
             if let Some(info) = info {
-                if info.kind != gfx::TextureKind::D2
+                if info.kind != gfx::texture::TextureKind::D2
                     || info.width == 0
                     || info.height == 0
                     || info.format.is_depth()

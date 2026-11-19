@@ -83,7 +83,10 @@ The switch remains off pending integration evidence.
 ## Interface for the lights lane
 
 `boot::native_gels_glue::install(device) -> Arc<Outputs>` installs the
-host and admission. Retain that owner when installing the light graph
+host. Admission is registered once, lazily, only when the enabled feature
+first reaches replacement mode after its ordered boundary. Disabled and
+compare-only calls do not add a gels admission or cause extra draw
+snapshots/palette reads. Retain that owner when installing the light graph
 (the current world installer discards only the extra returned Arc).
 `Binding` is re-exported from `native_gels_glue`.
 
