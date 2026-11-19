@@ -343,6 +343,16 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )
+        .route(
+            "/v1/admin/sim-runs",
+            get(crate::sim_runs::list).post(crate::sim_runs::start),
+        )
+        .route("/v1/admin/sim-runs/{id}", get(crate::sim_runs::detail))
+        .route(
+            "/v1/admin/sim-runs/{id}/report",
+            axum::routing::put(crate::sim_runs::upload)
+                .layer(DefaultBodyLimit::max(crate::sim_runs::MAX_REPORT)),
+        )
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
@@ -1066,7 +1076,11 @@ async fn start_game(
     body: Result<Bytes, BytesRejection>,
 ) -> ApiResult<Response> {
     let bytes = body_bytes(body)?;
-    let new = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    let new: live_proto::game::NewGame =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    if new.sim.is_some() {
+        return Err(invalid("simulation games start at /v1/admin/sim-runs"));
+    }
     let created = live.start_game(bearer(&headers), new).await?;
     Ok(json(StatusCode::CREATED, &created))
 }

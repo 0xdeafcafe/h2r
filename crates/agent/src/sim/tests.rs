@@ -363,6 +363,7 @@ fn local_players_come_from_the_bots_and_take_scripted_pads() {
     assert_eq!(r["player"], "player.1");
     let l = h.ok(&mut game, method::PLAYER_LIST, Value::Null);
     assert_eq!(l["players"][0]["source"], "script");
+    assert!(l["players"][0].get("brain").is_none());
     let r = h.ok(&mut game, method::PLAYER_REMOVE, json!({"id": "sim.1"}));
     assert_eq!(r["removed"], json!(["sim.1"]));
     assert_eq!(h.bots.log().removed, [Bot::Local { port: 1 }]);
@@ -505,6 +506,55 @@ fn session_methods_lists_them() {
     for name in method::ALL {
         assert!(m.as_array().unwrap().contains(&json!(name)), "{name}");
     }
+}
+
+#[test]
+fn temperament_sim_player_list_and_view_expose_current_brain_state() {
+    use agent_proto::sim::{BotBrain, ClankerView, PlayerKind};
+
+    let (h, mut game) = (Harness::new(), game());
+    let brain: BotBrain = serde_json::from_value(json!({
+        "skill": "legendary",
+        "personality": {
+            "aggression": 0.7, "caution": 0.6, "teamwork": 0.75, "objective_focus": 0.8,
+            "composure": 0.9, "patience": 0.8, "showboating": 0.25, "weapon_loyalty": 0.55,
+            "chattiness": 0.5, "favorite_weapon": "blade"
+        },
+        "mood": {"confidence": 0.125, "tilt": 0.375, "fear": 0.25, "streak": 2,
+                 "revenge_target": "player.0"}
+    }))
+    .unwrap();
+    {
+        let mut log = h.bots.log();
+        log.brains.insert(Bot::Local { port: 1 }, brain.clone());
+        log.clankers.push(ClankerView {
+            name: "Local Clanker".into(),
+            kind: PlayerKind::Local,
+            port: Some(1),
+            player: None,
+            brain: brain.clone(),
+        });
+    }
+    let added = h.ok(
+        &mut game,
+        method::PLAYER_ADD,
+        json!({"kind": "local", "source": "brain"}),
+    );
+    assert_eq!(added["brain"], serde_json::to_value(&brain).unwrap());
+    let mut updated = brain;
+    updated.mood.tilt = 0.625;
+    {
+        let mut log = h.bots.log();
+        log.brains.insert(Bot::Local { port: 1 }, updated.clone());
+        log.clankers[0].brain = updated.clone();
+    }
+    let updated = serde_json::to_value(updated).unwrap();
+    let listed = h.ok(&mut game, method::PLAYER_LIST, Value::Null);
+    assert_eq!(listed["players"][0]["brain"], updated);
+    assert_eq!(listed["clankers"][0]["brain"], updated);
+    assert_eq!(listed["clankers"][0]["player"], "player.1");
+    let view = h.ok(&mut game, method::VIEW, json!({"roots": ["sim"]}));
+    assert_eq!(view["sim"]["1"]["brain"], updated);
 }
 
 /// The tags `sim.give` and `sim.spawn` find.

@@ -32,6 +32,11 @@ pub const LUNGE_LIMITS: (f32, f32) = (1.0, 3.0);
 /// A gun's fire range reaches this far past its band's far end.
 pub const FIRE_PAST_BAND: f32 = 1.6;
 
+/// A favorite can win a close pickup decision or justify a short detour.
+pub(crate) fn pickup_bias(personality: Option<crate::decisions::Personality>, role: Role) -> f32 {
+    6.0 * personality.map_or(0.0, |p| p.weapon_interest(role))
+}
+
 /// What `p` is good at. The role's band ([`Role::band`]) and fire range
 /// ([`Role::fire_range`]), refined by the tag's aim assist reach
 /// (`cone_range`, `pull_range`; `weap +0x20c`, `+0x214`) where Bungie set

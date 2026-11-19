@@ -200,7 +200,8 @@ function Side(props: { game: GameState; scores: GameState; kills: Kill[]; at?: s
   );
 }
 
-function GameView(props: { game: GameState }) {
+/** The shared live and recorded game viewer, also embedded in Uplink. */
+export function GameView(props: { game: GameState; embedded?: boolean }) {
   const [search] = useSearchParams<{ t?: string | string[] }>();
   const [hover, setHover] = createSignal<number | null>(null);
   const roster = createMemo(() => rosterFor(props.game));
@@ -252,7 +253,7 @@ function GameView(props: { game: GameState }) {
 
   return (
     <>
-      <PageTitle />
+      <Show when={!props.embedded}><PageTitle /></Show>
       <GameViewer
         game={props.game}
         title={viewerTitle(props.game)}
@@ -269,14 +270,16 @@ function GameView(props: { game: GameState }) {
       >
         <Legend game={props.game} />
       </GameViewer>
-      <Side
-        game={props.game}
-        scores={snapshot()}
-        kills={kills()}
-        at={isLive() || !timeline()?.frames.length ? undefined : `at ${clock((tick() - timeline()!.startTick) / TICKS_PER_SECOND)}`}
-        onHover={setHover}
-      />
-      <Overview game={props.game} />
+      <Show when={!props.embedded}>
+        <Side
+          game={props.game}
+          scores={snapshot()}
+          kills={kills()}
+          at={isLive() || !timeline()?.frames.length ? undefined : `at ${clock((tick() - timeline()!.startTick) / TICKS_PER_SECOND)}`}
+          onHover={setHover}
+        />
+        <Overview game={props.game} />
+      </Show>
     </>
   );
 }

@@ -82,6 +82,10 @@ impl SimHandle {
         self.lock().bots = bots;
     }
 
+    pub(crate) fn writable_session(&self, ctx: &mut GameCtx<'_>) -> Result<SessionView, RpcError> {
+        self.lock().host_write(ctx)
+    }
+
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
         self.lock().probe = Some(probe);
@@ -152,27 +156,6 @@ fn sim_number(id: &str) -> Option<u32> {
     id.strip_prefix("sim.")?.parse().ok()
 }
 
-/// Reads guest memory through the reader.
-fn with_guest<T>(
-    ctx: &mut GameCtx<'_>,
-    f: impl FnOnce(&mut dyn GuestMemory) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
-    let mut f = Some(f);
-    let mut out = None;
-    let ran = ctx.reader.with_guest(&mut |m| {
-        if let Some(f) = f.take() {
-            out = Some(f(m));
-        }
-    });
-    match out {
-        Some(r) if ran => r,
-        _ => Err(RpcError::new(
-            code::UNAVAILABLE,
-            "no guest memory here (the game isn't running)",
-        )),
-    }
-}
-
 impl Sim {
     fn session(&mut self, ctx: &mut GameCtx<'_>) -> SessionView {
         let Some(probe) = self.probe.as_mut() else {
@@ -200,12 +183,7 @@ impl Sim {
         match e.bot {
             Bot::Local { port } => {
                 let port = self.bots.placed_port(port)?;
-                objects
-                    .iter()
-                    .filter(|o| o.kind == Kind::Player)
-                    .find(|o| o.local_user.map(u32::from) == Some(port))
-                    .and_then(|o| ObjectId::parse(&o.id))
-                    .map(|id| id.key)
+                local_player(port, objects)
             }
             Bot::Phantom { handle } => self.bots.phantom_player(handle),
         }
@@ -226,6 +204,7 @@ impl Sim {
             },
             identity: e.identity.clone(),
             player: self.game_player(e, objects).map(|i| format!("player.{i}")),
+            brain: self.bots.brain_view(e.bot),
         }
     }
 
@@ -267,7 +246,7 @@ impl Sim {
                     ));
                 }
                 let bots = &self.bots;
-                if let Ok(Some(why)) = with_guest(ctx, |m| Ok(bots.local_refusal(&*m))) {
+                if let Ok(Some(why)) = ctx.with_guest(|m| Ok(bots.local_refusal(&*m))) {
                     return Err(RpcError::new(code::UNAVAILABLE, why));
                 }
                 let port = self
@@ -357,7 +336,13 @@ impl Sim {
 
     fn player_list(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
         let objects = ctx.reader.objects().unwrap_or_default();
-        Ok(json!({ "players": self.players_json(&objects) }))
+        let mut clankers = self.bots.clankers();
+        for bot in &mut clankers {
+            if let Some(port) = bot.port {
+                bot.player = local_player(port, &objects).map(|i| format!("player.{i}"));
+            }
+        }
+        Ok(json!({ "players": self.players_json(&objects), "clankers": clankers }))
     }
 
     fn player_pad(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
@@ -428,18 +413,18 @@ impl Sim {
         let index = self.target(&p.player, ctx)?;
         let facing = p.facing_vector().map_err(invalid)?;
         if p.pos.is_none() && facing.is_none() {
-            let wrote = with_guest(ctx, |m| state::apply(m, index, &p))?;
+            let wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
             return Ok(
                 json!({ "player": format!("player.{index}"), "wrote": wrote, "session": session }),
             );
         }
         // A teleport: the game's own, at the next tick (calls).
         let q = self.calls()?;
-        let handle = with_guest(ctx, |m| {
+        let handle = ctx.with_guest(|m| {
             state::unit_handle(m, index)?;
             state::player_handle(m, index)
         })?;
-        let mut wrote = with_guest(ctx, |m| state::apply(m, index, &p))?;
+        let mut wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
         let ticket = calls::lock(&q)
             .submit(Call::Teleport {
                 player: handle,
@@ -526,7 +511,7 @@ impl Sim {
                 p.weapon, tag.group
             )));
         }
-        let unit = with_guest(ctx, |m| state::unit_handle(m, index))?;
+        let unit = ctx.with_guest(|m| state::unit_handle(m, index))?;
         let mode = if p.keep {
             calls::addr::MODE_ADD
         } else {
@@ -548,9 +533,9 @@ impl Sim {
                     let object = made["object"].as_str().unwrap_or_default().to_owned();
                     let datum = u32::from_str_radix(&object, 16).unwrap_or(u32::MAX);
                     if let Some(a) = ammo {
-                        with_guest(ctx, |m| state::set_magazine(m, datum, a))?;
+                        ctx.with_guest(|m| state::set_magazine(m, datum, a))?;
                     }
-                    let held = with_guest(ctx, |m| Ok(state::held_object(m, index)))?;
+                    let held = ctx.with_guest(|m| Ok(state::held_object(m, index)))?;
                     Ok(json!({
                         "player": format!("player.{index}"),
                         "weapon": tag.json(),
@@ -680,7 +665,9 @@ impl Sim {
                     continue;
                 };
                 let mut v = serde_json::to_value(o).expect("serialises");
-                let vit = with_guest(ctx, |m| state::vitals(m, id.key)).unwrap_or_default();
+                let vit = ctx
+                    .with_guest(|m| state::vitals(m, id.key))
+                    .unwrap_or_default();
                 if let Some(obj) = v.as_object_mut() {
                     obj.extend(vit);
                 }
@@ -722,6 +709,14 @@ impl Sim {
         }
         Ok(Value::Object(out))
     }
+}
+
+fn local_player(port: u32, objects: &[Object]) -> Option<u32> {
+    objects
+        .iter()
+        .find(|o| o.kind == Kind::Player && o.local_user.map(u32::from) == Some(port))
+        .and_then(|o| ObjectId::parse(&o.id))
+        .map(|id| id.key)
 }
 
 #[cfg(test)]

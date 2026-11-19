@@ -15,8 +15,10 @@
 //! closing the socket at auth [`MAX_AUTH_REFUSALS`] times in a row.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -60,6 +62,41 @@ const NONCE_USED: &str = "nonce already used";
 const GAME_OVER: &str = "the game has ended";
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+const SIM_FRAME_BATCH_DELAY: Duration = Duration::from_millis(100);
+const SIM_KEYFRAME_EVERY: u64 = 30;
+const MAX_DEFERRED_BYTES: usize = 32 * 1024 * 1024;
+const SIM_SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+struct SimCapture {
+    game_id: String,
+    deferred: Option<Deferred>,
+    pending: Vec<u8>,
+    since: Instant,
+}
+
+struct Deferred {
+    lock: PathBuf,
+    encoder: pack::Encoder,
+    items: Vec<DeferredItem>,
+    size: usize,
+}
+
+enum DeferredItem {
+    Event(GameEvent),
+    Frame(Message),
+}
+
+impl Deferred {
+    fn push(&mut self, item: DeferredItem, size: usize) -> Result<(), String> {
+        self.size += size + std::mem::size_of::<DeferredItem>();
+        if self.size > MAX_DEFERRED_BYTES {
+            return Err("queued sim recording exceeds 32 MiB".into());
+        }
+        self.items.push(item);
+        Ok(())
+    }
+}
 
 /// The sink's clocks; tests shorten them.
 #[derive(Debug, Clone, Copy)]
@@ -159,6 +196,7 @@ pub struct ServerSink {
     fatal: Option<String>,
     dropped_events: u64,
     dropped_frames: u64,
+    sim: Option<SimCapture>,
 }
 
 impl ServerSink {
@@ -190,7 +228,23 @@ impl ServerSink {
             fatal: None,
             dropped_events: 0,
             dropped_frames: 0,
+            sim: None,
         })
+    }
+
+    pub fn with_sim(mut self, sim: &game::SimGame, deferred_lock: Option<PathBuf>) -> Self {
+        self.sim = Some(SimCapture {
+            game_id: game::sim_game_id(&sim.run_id),
+            deferred: deferred_lock.map(|lock| Deferred {
+                lock,
+                encoder: pack::Encoder::new(0, SIM_KEYFRAME_EVERY),
+                items: Vec::new(),
+                size: 0,
+            }),
+            pending: Vec::new(),
+            since: Instant::now(),
+        });
+        self
     }
 
     #[cfg(test)]
@@ -280,7 +334,7 @@ impl ServerSink {
             socket,
             last_auth: now,
             opened: now,
-            frames: pack::Encoder::new(0, FRAME_KEYFRAME_EVERY),
+            frames: pack::Encoder::new(0, self.keyframe_every()),
         });
         self.authenticate()
     }
@@ -358,10 +412,11 @@ impl ServerSink {
     /// A refused frame that did not decode (the server lost its decoder,
     /// as after a hibernation wake): the next frame is a keyframe.
     fn frame_refused(&mut self, message: &str) {
+        let every = self.keyframe_every();
         if message.starts_with("frame:")
             && let Some(connection) = &mut self.connection
         {
-            connection.frames = pack::Encoder::new(0, FRAME_KEYFRAME_EVERY);
+            connection.frames = pack::Encoder::new(0, every);
         }
     }
 
@@ -380,6 +435,7 @@ impl ServerSink {
                 ),
             ));
         }
+        self.send_pending_sim_frames()?;
         self.drain()?;
         self.refresh_auth()?;
         self.write(Message::Text(text.to_owned().into()))?;
@@ -461,12 +517,28 @@ impl ServerSink {
     /// after the server made the game, the retry makes a second one; the
     /// first gets no writes and the server ends it as `lost` once idle.
     fn deliver_start(&mut self) -> Result<(), Failure> {
-        self.connect()?;
+        if self.sim.as_ref().is_some_and(|sim| sim.deferred.is_some()) {
+            if self.discovery.is_none() {
+                self.discovery = Some(self.discover().map_err(Failure::Transport)?);
+            }
+        } else {
+            self.connect()?;
+        }
         let Some(Item::Start { local, game }) = self.outbox.front() else {
             unreachable!()
         };
         let api = resolve_api(&self.base_url, &self.discovery().api);
-        let url = format!("{}/games", api.trim_end_matches('/'));
+        let path = if game.sim.is_some() {
+            "admin/sim-runs"
+        } else {
+            "games"
+        };
+        let url = format!("{}/{path}", api.trim_end_matches('/'));
+        if !live_proto::bearer_allowed(&url) {
+            return Err(Failure::Fatal(
+                "telemetry API credentials require HTTPS or loopback HTTP".into(),
+            ));
+        }
         let token = self.token();
         let result = Self::agent()
             .post(&url)
@@ -479,6 +551,13 @@ impl ServerSink {
                 let created = response
                     .into_json::<GameCreated>()
                     .map_err(|e| Failure::Transport(format!("create telemetry game JSON: {e}")))?;
+                if let Some(sim) = &self.sim
+                    && created.game_id != sim.game_id
+                {
+                    return Err(Failure::Fatal(
+                        "Live returned an unexpected simulation game id".into(),
+                    ));
+                }
                 self.games.insert(local, created.game_id);
                 self.outbox.pop_front();
                 self.reached();
@@ -496,6 +575,9 @@ impl ServerSink {
                     (401, _) => Err(Failure::Auth(message)),
                     (429, _) | (500.., _) => Err(Failure::Transport(format!(
                         "create telemetry game: {message}"
+                    ))),
+                    _ if self.sim.is_some() => Err(Failure::Fatal(format!(
+                        "Live refused the simulation: {message}"
                     ))),
                     _ => {
                         eprintln!("live telemetry: the server refused a game: {message}");
@@ -684,6 +766,9 @@ impl ServerSink {
     }
 
     fn disconnect(&mut self) {
+        if let Some(sim) = &mut self.sim {
+            sim.pending.clear();
+        }
         if let Some(mut connection) = self.connection.take() {
             let _ = connection.socket.close(None);
             let _ = connection.socket.flush();
@@ -700,10 +785,143 @@ impl ServerSink {
             self.dropped_frames += 1;
             return Ok(());
         }
+        if self.sim.is_some() {
+            return self.queue_sim_frame(message);
+        }
         self.write(message)?;
         // Replies are optional for frames. Drain what is already there,
         // but never wait on the guest's behalf.
         self.drain()
+    }
+
+    fn keyframe_every(&self) -> u64 {
+        if self.sim.is_some() {
+            SIM_KEYFRAME_EVERY
+        } else {
+            FRAME_KEYFRAME_EVERY
+        }
+    }
+
+    /// The usual packed stream, with multiple records per WebSocket
+    /// message and no read timeout paid per frame at unpaced sim speeds.
+    fn queue_sim_frame(&mut self, message: Message) -> Result<(), Failure> {
+        let Message::Binary(bytes) = message else {
+            self.send_pending_sim_frames()?;
+            return self.write(message);
+        };
+        let sim = self.sim.as_ref().expect("sim capture");
+        if sim.pending.len() + bytes.len() > MAX_INGEST_MESSAGE
+            || sim.since.elapsed() >= SIM_FRAME_BATCH_DELAY
+        {
+            self.send_pending_sim_frames()?;
+        }
+        let sim = self.sim.as_mut().expect("sim capture");
+        if sim.pending.is_empty() {
+            sim.since = Instant::now();
+        }
+        sim.pending.extend_from_slice(&bytes);
+        Ok(())
+    }
+
+    fn send_pending_sim_frames(&mut self) -> Result<(), Failure> {
+        if let Some(sim) = &mut self.sim
+            && !sim.pending.is_empty()
+        {
+            let bytes = std::mem::take(&mut sim.pending);
+            self.refresh_auth()?;
+            self.write(Message::Binary(bytes.into()))?;
+        }
+        Ok(())
+    }
+
+    fn settle_sim_events(&mut self) -> Result<(), String> {
+        let until = Instant::now() + SIM_SETTLE_TIMEOUT;
+        while !self.outbox.is_empty() {
+            self.deliver()?;
+            if self.outbox.is_empty() {
+                break;
+            }
+            if Instant::now() >= until {
+                return Err("Live did not acknowledge simulation telemetry".into());
+            }
+            if let Some(delay) = self
+                .retry_at
+                .and_then(|t| t.checked_duration_since(Instant::now()))
+            {
+                std::thread::sleep(delay.min(Duration::from_secs(2)));
+            }
+        }
+        Ok(())
+    }
+
+    fn upload_sim_report(&mut self, report: serde_json::Value) -> Result<(), String> {
+        self.settle_sim_events()?;
+        let capture = self.sim.as_mut().ok_or("no sim capture")?;
+        let id = capture.game_id.clone();
+        if self.games.get(&id) != Some(&id) {
+            return Err(
+                "Live did not create the simulation game (check the selected account's admin role)"
+                    .into(),
+            );
+        }
+        let mut guard = None;
+        if let Some(deferred) = capture.deferred.take() {
+            let lock = OpenOptions::new()
+                .read(true)
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&deferred.lock)
+                .map_err(|e| format!("open deferred sim upload lock: {e}"))?;
+            lock.lock()
+                .map_err(|e| format!("lock deferred sim upload: {e}"))?;
+            guard = Some(lock);
+            self.connect()
+                .map_err(|e| format!("connect deferred sim upload: {e:?}"))?;
+            for item in deferred.items {
+                match item {
+                    DeferredItem::Event(event) => {
+                        self.enqueue(Item::Event(event));
+                        self.settle_sim_events()?;
+                    }
+                    DeferredItem::Frame(message) => {
+                        self.queue_sim_frame(message)
+                            .map_err(|e| format!("deferred sim frame: {e:?}"))?;
+                    }
+                }
+            }
+        }
+        self.send_pending_sim_frames()
+            .map_err(|e| format!("final sim frames: {e:?}"))?;
+        self.settle_sim_events()?;
+        let api = resolve_api(&self.base_url, &self.discovery().api);
+        let url = format!("{}/admin/sim-runs/{id}/report", api.trim_end_matches('/'));
+        if !live_proto::bearer_allowed(&url) {
+            return Err("sim report credentials require HTTPS or loopback HTTP".into());
+        }
+        let mut result = Ok(());
+        for delay in [0, 1, 2] {
+            if delay != 0 {
+                std::thread::sleep(Duration::from_secs(delay));
+            }
+            let token = self.token();
+            let response = Self::agent()
+                .put(&url)
+                .set("Authorization", &format!("Bearer {token}"))
+                .send_json(&report);
+            match response {
+                Ok(_) => {
+                    eprintln!("sim: Live recording {id}");
+                    return Ok(());
+                }
+                Err(e @ ureq::Error::Status(status, _)) if status < 500 && status != 429 => {
+                    return Err(format!("uploading sim report: {e}"));
+                }
+                Err(e) => result = Err(format!("uploading sim report: {e}")),
+            }
+        }
+        drop(guard);
+        result
     }
 }
 
@@ -743,6 +961,9 @@ impl Sink for ServerSink {
             });
             // Now, so the frames that follow have a server game to go to.
             self.deliver()
+        } else if let Some(deferred) = self.sim.as_mut().and_then(|sim| sim.deferred.as_mut()) {
+            let size = event.kind.len() + event.game_id.len() + event.data.to_string().len();
+            deferred.push(DeferredItem::Event(event), size)
         } else {
             self.enqueue(Item::Event(event));
             Ok(())
@@ -754,6 +975,18 @@ impl Sink for ServerSink {
     fn frame(&mut self, frame: Frame) -> Result<(), String> {
         if let Some(error) = &self.fatal {
             return Err(error.clone());
+        }
+        if let Some(sim) = &mut self.sim
+            && let Some(deferred) = &mut sim.deferred
+        {
+            let mut frame = frame;
+            frame.game_id.clone_from(&sim.game_id);
+            let message = frame_message(&mut deferred.encoder, frame)?;
+            let size = message.len();
+            if size > MAX_INGEST_MESSAGE {
+                return Err("a deferred sim frame exceeds the ingest message limit".into());
+            }
+            return deferred.push(DeferredItem::Frame(message), size);
         }
         let Some(server_id) = self.games.get(&frame.game_id).cloned() else {
             self.dropped_frames += 1;
@@ -774,6 +1007,10 @@ impl Sink for ServerSink {
 
     fn flush(&mut self) -> Result<(), String> {
         self.deliver()
+    }
+
+    fn finish_sim(&mut self, report: serde_json::Value) -> Result<(), String> {
+        self.upload_sim_report(report)
     }
 }
 

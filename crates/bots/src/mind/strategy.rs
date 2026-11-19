@@ -81,7 +81,8 @@ impl Mind {
         if let Some(at) = support.filter(|at| !self.stuck.blocked(*at, p.tick)) {
             return Doing::Support(at);
         }
-        if self.decisions.disengaging(p.tick)
+        let behavior = self.decisions.behavior();
+        if (self.decisions.disengaging(p.tick) || behavior.fear() > 0.28)
             && let Some(at) = last
         {
             return Doing::Recover(at);
@@ -91,6 +92,12 @@ impl Mind {
             && let Some(at) = self.decisions.map.due(me, p.tick, self.skill, &self.stuck)
         {
             return Doing::Supply(at);
+        }
+        if let Some((id, at, tick)) = self.last_seen
+            && !behavior.wants_revenge(id)
+            && p.tick.wrapping_sub(tick) < behavior.hold_ticks()
+        {
+            return Doing::HoldAngle(at);
         }
         last.map_or(Doing::Roam, Doing::Chase)
     }

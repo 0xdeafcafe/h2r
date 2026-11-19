@@ -25,7 +25,8 @@
 //! * [`havok`] answers `havok.bodies` and `havok.contacts`: the Havok
 //!   world's rigid bodies and contact points ([`Agent::add_game_method`]).
 //! * [`raw`] answers `world.raw`: an object's body, physics component,
-//!   Havok entity, motion and shape as raw bytes, for before/after diffs.
+//!   Havok entity, motion and shape as raw bytes. `world.poke` writes
+//!   bounded byte ranges within those parts.
 //! * [`sim`] answers `sim.*`: simulated players (through the bots),
 //!   host writes to player state, the game's own teleport, give and spawn
 //!   (`sim::calls`, whose feature makes the calls at the next tick and
