@@ -483,6 +483,7 @@ impl BetweenShots {
 
 /// `h2 run`'s settings for a headless `GfxBackend`.
 fn configure_gfx(mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    crate::native_shadows_glue::configure(&mut backend);
     // Merged render passes are the default, with the fast rule
     // (alpha-tested draws merged too; a few edge pixels can differ
     // from one render pass per draw). H2_GFX_MERGE_PASSES=exact

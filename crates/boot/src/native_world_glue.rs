@@ -259,6 +259,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_lights_glue::install(device, state);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install(device);
+    crate::native_shadows_glue::install(device);
 }
 
 /// The world's GPU side, uploaded from its CPU side by the first pass that

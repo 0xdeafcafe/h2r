@@ -61,6 +61,7 @@ pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_lights_glue;
+pub mod native_shadows_glue;
 pub mod native_objects_glue;
 pub mod native_post_glue;
 pub mod native_post_load;
