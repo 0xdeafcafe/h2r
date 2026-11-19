@@ -43,12 +43,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_objects::{Host, NativeSet};
+use feature::native_objects::{Host, ItemMasks, NativeSet, SetPart};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
-use native_render::gpu::{DepthRule, Image, PassViewport};
+use native_render::gpu::Image;
 use native_render::light_gpu::LayeredImage;
-use native_render::instances::ObjectInput;
 use native_render::load;
 use native_render::model::Model;
 use native_render::model_gpu::GpuModels;
@@ -56,9 +55,10 @@ use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, Texaccum, lit_model, uniform};
+use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
+use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
-use native_render::objects::ObjectFrame;
+use native_render::objects::{ItemDraw, ObjectFrame};
 use native_render::pass_state::PassState;
 use native_render::program::ViewInputs;
 
@@ -73,8 +73,6 @@ struct CpuModel {
     transparents: Vec<(u16, Image, PassState)>,
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
-    /// The implementations (bit `n`) every lit part has.
-    lit_implementations: u8,
     /// The normalization cube the lit parts' programs may sample.
     normalization: Option<Arc<LayeredImage>>,
 }
@@ -115,9 +113,6 @@ pub(crate) struct Models {
     /// through, at their stages ([`StageDecoder::used`]): the models draw
     /// only while those stay bound.
     palettes: Mutex<StagePalettes>,
-    /// Definitions whose lit parts sample the texture accumulation target:
-    /// a view drawing one asks the device for that level.
-    texaccum: Mutex<HashSet<u16>>,
 }
 
 impl Models {
@@ -154,7 +149,6 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             mut base_maps,
             transparents,
             lit,
-            lit_implementations: _,
             normalization,
         } = cpu;
         let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
@@ -177,12 +171,31 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
     guard
 }
 
+/// What one load of models belongs to: the map's name, the active BSP's
+/// address and its index (as the world's key them). A view under another
+/// key starts a new load (new [`Models`], a new worker); nothing queued
+/// or published for one reaches another.
+type MapKey = (String, u32, u16);
+
 struct MapState {
-    name: String,
+    key: MapKey,
+    /// This load's number, from [`GENERATIONS`]: the set carries it, and
+    /// `Host::draw` refuses a view planned against another.
+    generation: u64,
     models: Arc<Models>,
     set: Arc<NativeSet>,
     tried: HashSet<u16>,
     worker: Option<mpsc::Sender<u32>>,
+}
+
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The device at the layer-3 call: the render states the items' draws
+/// inherit ([`EntryStates`]) and whether its draws are W-buffered.
+#[derive(Clone, Debug)]
+struct LayerEntry {
+    states: EntryStates,
+    w_buffered: bool,
 }
 
 /// The host: the device and the current map's models.
@@ -191,13 +204,31 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: Arc<Mutex<Option<MapState>>>,
 }
 
+/// The key of the load guest memory `mem` holds now, `None` without a map
+/// name or an active BSP.
+fn map_key(mem: &dyn GuestMemory) -> Option<MapKey> {
+    let name = crate::health::loaded_map_name(mem).ok()?;
+    if name.is_empty() {
+        return None;
+    }
+    let bsp = mem.u32(feature::native_world::ACTIVE_BSP).ok()?;
+    let index = crate::native_world_glue::active_bsp_index(mem)?;
+    Some((name, bsp, index))
+}
+
+/// Whether a worker loading for `models` may publish to `current`: only
+/// to the load it was started for, whatever its map's name.
+fn publishes_to(current: &MapState, models: &Arc<Models>) -> bool {
+    Arc::ptr_eq(&current.models, models)
+}
+
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
-        let name = crate::health::loaded_map_name(mem).ok()?;
-        if name.is_empty() {
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
-        let current = |st: &Option<MapState>| st.as_ref().map(|s| s.name.as_str()) == Some(name.as_str());
+        let key = map_key(mem)?;
+        let current = |st: &Option<MapState>| st.as_ref().map(|s| &s.key) == Some(&key);
         let loaded = current(&*self.state.lock().unwrap_or_else(|e| e.into_inner()));
         if !loaded {
             // The palettes bound now, for palettized base maps (P8, P8
@@ -210,11 +241,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let formats = StreamFormats::read(&Ro(mem));
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current(&*st) {
+                let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let models = Arc::new(Models::default());
-                let worker = spawn_worker(name.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
-                let set = NativeSet { map: name.clone(), ..NativeSet::default() };
+                let worker = spawn_worker(key.0.clone(), Arc::clone(&models), Arc::clone(&self.state), palettes, formats);
+                let set = NativeSet { map: key.0.clone(), generation, ..NativeSet::default() };
                 *st = Some(MapState {
-                    name,
+                    key: key.clone(),
+                    generation,
                     models,
                     set: Arc::new(set),
                     tried: HashSet::new(),
@@ -253,60 +286,141 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn draw(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, objects: Vec<ObjectFrame>,
-        masks: &native_render::skip::MaskPlan, ranges: usize) -> bool {
-        let Some(models) = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map(|s| Arc::clone(&s.models))
-        else {
-            return false;
+    fn draw(
+        &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
+    ) -> Option<native_render::objects::ClearedObjects> {
+        use timeline::native::{Metric, Stage, Timer};
+        let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+        let models = {
+            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(&st.as_ref().filter(|s| s.generation == generation)?.models)
         };
-        let Ok(mut d) = self.device.lock() else {
-            return false;
+        let mut device = self.device.lock().ok()?;
+        // native() drained before the feature walked the guest list. Resolve the
+        // implementation's inherited fields on the device that will reserve it.
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let read = crate::native_world_glue::ReadMemory(mem);
+        let entry = LayerEntry {
+            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
+            w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
         };
-        if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).unwrap_or(false) {
-            return false;
-        }
-        let cull = if inherit_cull() {
-            d.cull_state(&crate::native_world_glue::ReadMemory(mem)).map(crate::native_world_glue::inherited_cull)
-        } else { None };
-        // An object whose lit parts sample the texture accumulation target
-        // reads the level the D3D path drew in layer 1, in place: without
-        // that the D3D path draws the view's objects.
-        let texaccum = {
-            let t = models.texaccum.lock().unwrap_or_else(|e| e.into_inner());
-            objects.iter().any(|o| t.contains(&(o.definition as u16)))
-        };
-        if texaccum && !d.samples_levels_in_place() {
-            return false;
-        }
+        let plan = plan_view(&models, &objects, &items, &entry, device.samples_levels_in_place());
+        let ranges = plan.draws.len();
+        let refused = (items.len() - ranges) as u64;
+        Stage::Objects.count(Metric::Examined, refused);
+        Stage::Objects.count(Metric::RefusedInputs, refused);
+        let pending = !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
+        if ranges == 0 && plan.compare.is_none() && !pending { return None; }
+        let mut drawn = vec![false; items.len()];
+        for &i in &plan.drawn { drawn[i] = true; }
         let pass = Box::new(ObjectsPass {
-            models,
-            camera: *camera,
-            objects,
-            view: None,
-            texaccum,
-            w_clip: None,
-            cull,
+            models: Arc::clone(&models), camera: *camera, objects, draws: plan.draws, owners: plan.owners,
+            refused: plan.refused, compare: plan.compare, view: None, w_clip: None,
         });
         if ranges == 0 {
-            // A comparison-only view keeps every guest item.
-            d.request_external_pass(pass);
-            return true;
+            // Upload new models or arm a comparison; every guest item stays live.
+            device.request_external_pass(pass);
+            return None;
         }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Objects, view, ranges, slots: Vec::new() };
-        let Ok(Some(reservation)) = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-            else { return false };
-        if !masks.apply(&mut feature::native_world::Mem(mem)) {
-            timeline::native::Stage::Objects.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-            return false;
+        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
+        drop(planning);
+        let ready = device.prepare_external_bound(
+            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
+        ).ok()??;
+        // Pin the current load through the mask change and commit. The worker
+        // may publish another definition, but a replaced load cannot win here.
+        let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !st.as_ref().is_some_and(|s| s.generation == generation && Arc::ptr_eq(&s.models, &models)) {
+            Stage::Objects.count(Metric::RefusedInputs, ranges as u64);
+            return None;
         }
-        reservation.commit();
-        true
+        let Some(cleared) = masks.apply(mem, &drawn) else {
+            Stage::Objects.count(Metric::RefusedMasks, ranges as u64);
+            return None;
+        };
+        ready.commit();
+        Some(cleared)
+    }
+}
+
+/// One view's plan ([`plan_view`]).
+#[derive(Default)]
+struct ViewPlan {
+    /// The items drawn (their places in the items handed in).
+    drawn: Vec<usize>,
+    /// Their draws, in the list's order, each with its model index, and
+    /// the object each belongs to.
+    draws: Vec<(u32, PlannedDraw)>,
+    owners: Vec<usize>,
+    /// The items refused, with their object and why (the probe's).
+    refused: Vec<(usize, String)>,
+    /// The comparison's part, planned: model, draw and label.
+    compare: Option<(u32, PlannedDraw, String)>,
+}
+
+/// Plans each of `items` against the uploaded models: drawn only when its
+/// model is on the GPU, its part and implementation are native, every
+/// per-object constant and every state field resolves
+/// (`LitObjects::plan`), the device draws W-buffered, and, for a part
+/// sampling the texture accumulation target, the device samples levels in
+/// place (`levels`). A shadow item is planned for the comparison only.
+fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry: &LayerEntry, levels: bool) -> ViewPlan {
+    let mut plan = ViewPlan::default();
+    // Locked in `upload_pending`'s order: the index, then the lit parts.
+    let index = models.index.lock().unwrap_or_else(|e| e.into_inner());
+    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let compared = compare();
+    for (k, item) in items.iter().enumerate() {
+        let o = &objects[item.object];
+        let planned = (|| -> Result<(u32, PlannedDraw), String> {
+            if !entry.w_buffered {
+                return Err("the device's draws are not W-buffered (SET_CONTROL0 without z-perspective)".into());
+            }
+            let model = *index.get(&(o.definition as u16)).ok_or("its model is not uploaded")?;
+            let lit = lit.as_ref().ok_or("no model is uploaded")?;
+            let d = lit.plan(model, o, &item.key, &item.rows, &entry.states)?;
+            if d.texaccum && !levels {
+                return Err("it samples the texture accumulation target and the device does not sample levels in place".into());
+            }
+            Ok((model, d))
+        })();
+        match planned {
+            Ok((model, d)) if item.shadow => {
+                if plan.compare.is_none() && compared.is_some_and(|c| c.definition == o.definition as u16 && c.part.picks(d.part, item.key.shader)) {
+                    let label = format!("object {:#010x} definition {:#010x} part {} record {}", o.handle, o.definition, d.part, item.key.record);
+                    plan.compare = Some((model, d, label));
+                }
+            }
+            Ok((model, d)) => {
+                plan.drawn.push(k);
+                plan.draws.push((model, d));
+                plan.owners.push(item.object);
+            }
+            Err(why) => {
+                if item.shadow && compared.is_some() {
+                    eprintln!("native-objects compare: definition {:#010x} record {}: {why}", o.definition, item.key.record);
+                }
+                count_refusal(&why);
+                plan.refused.push((item.object, format!("record {} (section {} part {} implementation {}): {why}", item.key.record, item.key.section, item.key.part, item.key.implementation)));
+            }
+        }
+    }
+    plan
+}
+
+/// Items the plan gave back to the D3D path, and the first of each reason
+/// (logged once).
+static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REASONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn count_refusal(why: &str) {
+    REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut seen = REASONS.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(HashSet::new);
+    if seen.len() < 64 && seen.insert(why.to_owned()) {
+        eprintln!("native-objects: an item keeps its D3D draw: {why} (each reason logged once)");
     }
 }
 
@@ -364,17 +478,12 @@ fn spawn_worker(
                 // the palettes its base maps went through.
                 models.palettes.lock().unwrap_or_else(|e| e.into_inner()).clone_from(opened.decoder.used());
                 match result {
-                    Ok((cpu, shaders, transparents)) => {
+                    Ok((cpu, transparents)) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
                         let see_through = cpu.model.transparents.len();
                         let lit = cpu.lit.parts.len();
-                        let lit_implementations = cpu.lit_implementations;
-                        let texaccum = cpu.lit.samples_texaccum();
-                        let lit_sections: HashSet<u16> = cpu.lit.parts.iter().map(|p| p.section).collect();
-                        if texaccum {
-                            models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
-                        }
+                        let parts = set_parts(&cpu.lit);
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
                         if !transparents.shaders.is_empty() {
                             models
@@ -383,20 +492,15 @@ fn spawn_worker(
                                 .unwrap_or_else(|e| e.into_inner())
                                 .insert(def as u16, transparents);
                         }
-                        // Published after the model is queued: a pass that
-                        // sees the definition finds the model.
+                        // Published after the model is queued, and only to
+                        // the load this worker serves (its `Models`): a
+                        // worker of an earlier load of the same map (A, B,
+                        // A again) publishes nothing.
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(s) = st.as_mut().filter(|s| s.name == name) else { return };
+                        let Some(s) = st.as_mut().filter(|s| publishes_to(s, &models)) else { return };
                         let mut set = (*s.set).clone();
                         set.definitions.insert(def as u16, nodes);
-                        set.shaders.extend(shaders.into_iter().map(|s| (def as u16, s)));
-                        if lit > 0 {
-                            set.lit.insert(def as u16, lit_implementations);
-                        }
-                        if texaccum {
-                            set.texaccum.insert(def as u16);
-                        }
-                        set.sections.extend(lit_sections.iter().map(|&s| (def as u16, s)));
+                        set.parts.extend(parts.into_iter().map(|((section, part), p)| ((def as u16, section, part), p)));
                         if compare().is_some_and(|c| c.definition == def as u16) {
                             set.shadowed.insert(def as u16);
                         }
@@ -557,7 +661,7 @@ fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassSta
 /// Loads definition `def`'s model with its base maps; the shader indices
 /// it draws, and its transparent parts the native pass takes. Materials
 /// without a base map leave the model.
-fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTransparents), load::Error> {
+fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, ObjectTransparents), load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
     // Every opaque material through its own programs, or left to D3D: the
@@ -565,7 +669,6 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
     // game's shading nor, for an animated object, the pose its records'
     // rows give: the scarab of 03a's intro).
     let base_maps = HashMap::new();
-    let mut shaders = Vec::new();
     let mut unlit = Vec::new();
     let mut lit_materials = HashMap::new();
     for m in loaded.model.materials() {
@@ -593,15 +696,14 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             table.shaders.entry(shader.0 as u16).or_default().push(m);
         }
     }
-    let (lit, lit_implementations) = if lit_materials.is_empty() {
-        (LitModelInput::default(), 0)
+    let lit = if lit_materials.is_empty() {
+        LitModelInput::default()
     } else {
-        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials);
+        let LitBuild { input, refused, .. } = lit_parts(o, &loaded, &lit_materials);
         for (m, why) in refused {
             unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
         }
-        shaders.extend(taken.iter().map(|&m| loaded.shaders[usize::from(m)].0 as u16));
-        (input, implementations)
+        input
     };
     let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
     let model = keep_materials(loaded.model, &base_maps, &kept);
@@ -619,9 +721,7 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             transparents,
             normalization: if lit.is_empty() { None } else { o.normalization.clone().flatten() },
             lit,
-            lit_implementations,
         },
-        shaders,
         table,
     ))
 }
@@ -681,8 +781,9 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
             parts: g
                 .parts
                 .iter()
-                .filter(|p| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
-                .map(|p| (p.material, g.part_triangles(p)))
+                .enumerate()
+                .filter(|(_, p)| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
+                .map(|(k, p)| (k as u8, p.material, g.part_triangles(p)))
                 .collect(),
         });
     }
@@ -783,6 +884,26 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
     Ok((code, semantics))
 }
 
+/// The native set's entries of a model's lit parts, by (section, part):
+/// the part's shader (tag index), its implementations, and those whose
+/// program samples the texture accumulation target.
+fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
+    lit.parts
+        .iter()
+        .map(|p| {
+            let mut e = SetPart { shader: p.shader_tag as u16, ..SetPart::default() };
+            for (n, slot) in p.implementations.iter().enumerate() {
+                let Some((program, _)) = slot else { continue };
+                e.implementations |= 1 << n;
+                if lit.programs.get(*program).is_some_and(|x| x.pass.texaccum.contains(&true)) {
+                    e.texaccum |= 1 << n;
+                }
+            }
+            ((p.section, p.part), e)
+        })
+        .collect()
+}
+
 /// The model without the draws of materials left to the D3D path (opaque
 /// ones without a base map, transparent ones not taken).
 fn keep_materials(mut model: Model, native: &HashMap<u16, Image>, transparent: &HashSet<u16>) -> Model {
@@ -791,39 +912,27 @@ fn keep_materials(mut model: Model, native: &HashMap<u16, Image>, transparent: &
     model
 }
 
-/// One view's objects.
+/// One view's objects: the draws planned at the hook, in the list's order.
 struct ObjectsPass {
     models: Arc<Models>,
     camera: RenderCamera,
+    /// The frames handed with the items (the probe's spheres).
     objects: Vec<ObjectFrame>,
+    /// The planned draws with their model index, and each one's object.
+    draws: Vec<(u32, PlannedDraw)>,
+    owners: Vec<usize>,
+    /// The items left to D3D, with their object and why (the probe's).
+    refused: Vec<(usize, String)>,
+    /// The comparison's part, armed at the encode (with the view).
+    compare: Option<(u32, PlannedDraw, String)>,
     /// The view's constants, for the lit parts' programs.
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    /// Whether a drawn object's lit parts sample the texture accumulation
-    /// target ([`native_render::object_program::TEXACCUM_HEADER`]).
-    texaccum: bool,
     /// The device's W-buffer clip at the pass (`d3d::DepthClip`), as the
-    /// world's: the range and clamp the D3D path draws the layer with.
-    /// Without it the programs clipped w at 0, not at the view's near
-    /// (03a: 256 depth units), and drew the part of an object nearer
-    /// than that, which the D3D path culls.
+    /// world's: the range the D3D path draws the layer with (the clamp is
+    /// each draw's, `object_state`). Without it the programs clipped w at
+    /// 0, not at the view's near (03a: 256 depth units), and drew the part
+    /// of an object nearer than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
-    /// The device's cull at the layer-3 call (`None`: not read, or
-    /// `H2_NATIVE_OBJECTS_INHERIT_CULL=0`): the lit parts whose
-    /// implementation does not set `CULLMODE` draw with it, as the D3D
-    /// path draws them (`LitObjects::set_inherited_cull`). Without it they
-    /// culled nothing.
-    cull: Option<native_render::program::Cull>,
-}
-
-/// Whether the lit parts that do not set `CULLMODE` take the device's
-/// cull: unless `H2_NATIVE_OBJECTS_INHERIT_CULL=0`.
-fn inherit_cull() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| parse_inherit(std::env::var("H2_NATIVE_OBJECTS_INHERIT_CULL").ok().as_deref()))
-}
-
-fn parse_inherit(v: Option<&str>) -> bool {
-    !matches!(v.map(str::trim), Some("0" | "none" | "off" | "false"))
 }
 
 impl d3d::ExternalPass for ObjectsPass {
@@ -836,146 +945,74 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 
     fn sampled(&self) -> Vec<u32> {
-        if self.texaccum { vec![native_render::object_program::TEXACCUM_HEADER] } else { Vec::new() }
+        if self.draws.iter().any(|(_, d)| d.texaccum) || self.compare.as_ref().is_some_and(|c| c.1.texaccum) {
+            vec![native_render::object_program::TEXACCUM_HEADER]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
+            depth_stencil: self.draws.iter().any(|(_, d)| d.state.depth_write),
+        }
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
         if self.view.is_none() { return Err("object view constants unavailable"); }
-        if self.texaccum && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
+        if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
             return Err("object texture accumulation unavailable");
         }
-        let gpu = upload_pending(&self.models, t);
-        let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
-        if self.objects.iter().all(|o| {
-            index.get(&(o.definition as u16)).and_then(|&i| gpu.as_ref()?.model(i)).is_some()
-        }) { Ok(()) } else { Err("object model unavailable") }
+        drop(upload_pending(&self.models, t));
+        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        if lit.as_ref().is_some_and(|l| self.draws.iter().all(|(model, d)| l.has(*model) && !d.indices.is_empty())) {
+            Ok(())
+        } else {
+            Err("planned object geometry unavailable")
+        }
     }
 
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: true }
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+        // Comparison-only views can still upload models for the following view.
+        drop(upload_pending(&self.models, &t));
+        self.record_ranges(t);
     }
 
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
-
-    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
-        let mut guard = upload_pending(&self.models, &t);
-        let Some(gpu) = guard.as_mut() else { return 0 };
-        let index = self.models.index.lock().unwrap_or_else(|e| e.into_inner());
-        let inputs: Vec<ObjectInput<'_>> = self
-            .objects
-            .iter()
-            .filter_map(|o| {
-                Some(ObjectInput {
-                    model: *index.get(&(o.definition as u16))?,
-                    nodes: &o.nodes,
-                    sphere: o.sphere,
-                })
-            })
-            .collect();
-        if inputs.len() != self.objects.len() { return 0; }
-        let full_scale = t.z_scale;
-        let device = t.device;
-        gpu.prepare(
-            device,
-            &mut t.encoder_uploads(),
-            &self.camera,
-            DepthRule {
-                full_scale,
-                floor: true,
-            },
-            &inputs,
-        );
-        let [x, y, width, height] = t.viewport;
-        let base_draws = gpu.encode(
-            t.device,
-            &mut *t.encoder,
-            t.color,
-            t.color_format,
-            t.depth,
-            t.depth_format,
-            PassViewport { x, y, width, height },
-        );
-        // The lit parts, through the game's programs (the viewport the
-        // whole target, as they expect).
-        let Some(constants) = self.view else { return base_draws };
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let Some(constants) = self.view else { return 0 };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(lit) = lit.as_mut() else { return base_draws };
-        lit.set_inherited_cull(self.cull);
-        let compared = compare();
-        let objects: Vec<(u32, &ObjectFrame)> = self
-            .objects
-            .iter()
-            .filter_map(|o| {
-                let i = *index.get(&(o.definition as u16))?;
-                lit.has(i).then_some((i, o))
-            })
-            .collect();
-        // The compared definition's objects are left to D3D (their items
-        // kept): armed against, not drawn.
-        let (shadowed, objects): (Vec<(u32, &ObjectFrame)>, Vec<(u32, &ObjectFrame)>) =
-            objects.into_iter().partition(|(_, o)| compared.is_some_and(|c| c.definition == o.definition as u16));
-        let probing = probe_at().is_some() && probe_due();
+        let Some(lit) = lit.as_mut() else { return 0 };
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        let view = self.view_inputs(constants, &t);
+        if let Some((model, d, label)) = &self.compare {
+            arm_compare(lit, *model, d, label, &view, texaccum);
+        }
         if let Some(at) = probe_at()
-            && probing
+            && probe_due()
         {
             let vp = self.camera.view_projection();
             let size = (t.guest_size.0 as f32, t.guest_size.1 as f32);
-            let texaccum = self.models.texaccum.lock().unwrap_or_else(|e| e.into_inner());
-            let mut hits = 0;
-            for o in &self.objects {
-                let Some(cover) = sphere_covers(&vp, o.sphere, size, at) else { continue };
-                hits += 1;
-                let model = index.get(&(o.definition as u16)).copied();
-                eprintln!(
-                    "native-objects probe at {at:?}: definition {:#010x} handle {:#010x} sphere {:?} (centre {:.1} px off, radius {:.1} px, w {:.2}); its records draw (section, implementation) {:?}, its native parts come from sections {:?}{}{}",
-                    o.definition,
-                    o.handle,
-                    o.sphere,
-                    cover.0,
-                    cover.1,
-                    cover.2,
-                    o.implementations,
-                    model.map(|m| lit.sections(m)).unwrap_or_default(),
-                    if model.is_some_and(|m| lit.has(m)) { "" } else { "; no lit model (not drawn by the programs)" },
-                    if texaccum.contains(&(o.definition as u16)) { "; samples the texture accumulation target" } else { "" },
-                );
+            for (k, o) in self.objects.iter().enumerate() {
+                if sphere_covers(&vp, o.sphere, size, at).is_none() {
+                    continue;
+                }
+                for ((model, d), _) in self.draws.iter().zip(&self.owners).filter(|(_, owner)| **owner == k) {
+                    eprintln!("native-objects probe at {at:?}: definition {:#010x} handle {:#010x}: drawn: {}", o.definition, o.handle, lit.describe(*model, d));
+                }
+                for (_, why) in self.refused.iter().filter(|(owner, _)| *owner == k) {
+                    eprintln!("native-objects probe at {at:?}: definition {:#010x} handle {:#010x}: left to D3D: {why}", o.definition, o.handle);
+                }
             }
             eprintln!(
-                "native-objects probe at {at:?}: {hits} of {} objects' spheres cover it; texture accumulation level {:?} (guest {:?}, copy {:?})",
-                self.objects.len(),
+                "native-objects probe at {at:?}: texture accumulation level {:?} (guest {:?}, copy {:?})",
                 t.sampled.first().map(|l| l.as_ref().map(|l| l.size)),
                 t.guest_size,
                 t.size
             );
         }
-        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
-        if let (Some(c), Some(&(model, o))) = (compared, shadowed.first()) {
-            arm_compare(c, lit, model, o, &self.view_inputs(constants, &t), texaccum);
-        }
-        if objects.is_empty() {
-            return base_draws;
-        }
-        if self.texaccum && texaccum.is_none() && TEXACCUM_MISSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-            eprintln!(
-                "native-objects: the texture accumulation target was bound at the hook but the device gave no level for it; parts sampling it go undrawn this view (logged once, counted)"
-            );
-        }
-        let view = self.view_inputs(constants, &t);
-        if let Some(at) = probe_at()
-            && probing
-        {
-            let vp = self.camera.view_projection();
-            let size = (t.guest_size.0 as f32, t.guest_size.1 as f32);
-            for &(model, o) in &objects {
-                if sphere_covers(&vp, o.sphere, size, at).is_none() {
-                    continue;
-                }
-                for line in lit.describe_parts(model, o, &view, texaccum) {
-                    eprintln!("native-objects probe at {at:?}: definition {:#010x} handle {:#010x}: {line}", o.definition, o.handle);
-                }
-            }
-        }
-        base_draws + lit.encode(
+        if self.draws.is_empty() { return 0; }
+        lit.encode(
             t.device,
             t.queue,
             &mut *t.encoder,
@@ -985,7 +1022,7 @@ impl d3d::ExternalPass for ObjectsPass {
             t.depth_format,
             t.size,
             &view,
-            &objects,
+            &self.draws,
             texaccum,
         )
     }
@@ -1022,18 +1059,39 @@ impl ObjectsPass {
 
 /// `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`: one lit part
 /// compared with the D3D path's draw of it (`d3d::uniform_compare`, as
-/// the world's `H2_NATIVE_WORLD_DUMP`). The definition's objects keep
-/// their D3D draws (`NativeSet::shadowed`); on the pass after `after`
-/// (default 0) that holds one, its first object's part is armed with what
-/// the pass would draw it with, and the D3D draws with the same node rows
-/// are compared (the part's own program field by field; the object's
-/// other draws, its other layers among them, named with their cull and
-/// depth).
+/// the world's `H2_NATIVE_WORLD_DUMP`). The definition's items keep their
+/// D3D draws (`NativeSet::shadowed`) and are planned as the pass would
+/// draw them; on the pass after `after` (default 0) that plans its part
+/// `part` (an index into the model's lit parts, one per section and
+/// geometry part; or, written `0x...`, the first item whose shader is that
+/// tag, e.g. `0xe92207ad:0xe5da0465:30` for 03a's rebar), that draw is
+/// armed, and
+/// the D3D draws with the same node rows are compared (the part's own
+/// program field by field; the object's other draws, its other layers
+/// among them, named with their cull and depth).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Compare {
     definition: u16,
-    part: usize,
+    part: Part,
     after: u32,
+}
+
+/// Which of the compared definition's parts ([`Compare`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Part {
+    /// An index into the model's lit parts.
+    Index(usize),
+    /// The first item whose shader has this tag index.
+    Shader(u16),
+}
+
+impl Part {
+    fn picks(self, part: usize, shader: u32) -> bool {
+        match self {
+            Part::Index(i) => i == part,
+            Part::Shader(s) => s == shader as u16,
+        }
+    }
 }
 
 fn compare() -> Option<Compare> {
@@ -1050,29 +1108,34 @@ fn compare() -> Option<Compare> {
 fn parse_compare(v: &str) -> Option<Compare> {
     let mut it = v.trim().split(':');
     let definition = *parse_definitions(it.next()?).first()?;
-    let part = it.next().map_or(Some(0), |p| p.trim().parse().ok())?;
+    let part = match it.next().map(str::trim) {
+        None => Part::Index(0),
+        Some(p) => match p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+            Some(hex) => Part::Shader(u32::from_str_radix(hex, 16).ok()? as u16),
+            None => Part::Index(p.parse().ok()?),
+        },
+    };
     let after = it.next().map_or(Some(0), |a| a.trim().parse().ok())?;
     Some(Compare { definition, part, after })
 }
 
-/// Arms the comparison once, on the pass after `c.after` holding one of
-/// its objects (`o`, model `model`).
-fn arm_compare(c: Compare, lit: &LitObjects, model: u32, o: &ObjectFrame, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) {
+/// Arms the comparison once, on the pass after the comparison's `after`
+/// that planned its part: `d` of model `model`, named `label`.
+fn arm_compare(lit: &LitObjects, model: u32, d: &PlannedDraw, label: &str, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) {
     static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let Some(c) = compare() else { return };
     if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) != c.after {
         return;
     }
-    let label = format!("object {:#010x} definition {:#010x} part {}", o.handle, o.definition, c.part);
-    match lit.part_uniforms(model, o, c.part, view, texaccum) {
+    let label = label.to_owned();
+    match lit.part_uniforms(model, d, view, texaccum) {
         Ok(u) => {
             eprintln!(
-                "native-objects compare {label}: implementation {}, {} program words, rows c[50..] {:?}, decompression c[170..173] {:?}, depth {:?}, primitive {:?}, textures {:?}",
-                u.implementation,
+                "native-objects compare {label}: {}; {} program words, rows c[50..] {:?}, decompression c[170..173] {:?}, textures {:?}",
+                lit.describe(model, d),
                 u.words.len(),
                 &u.vertex.constants[50..53],
                 &u.vertex.constants[170..173],
-                u.depth,
-                u.primitive,
                 u.textures
             );
             d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
@@ -1160,12 +1223,6 @@ fn sphere_covers(view_proj: &native_render::camera::Mat4, sphere: ([f32; 3], f32
     (distance <= radius).then_some((distance, radius, centre[3]))
 }
 
-/// Views whose texture accumulation level the device did not give though
-/// a drawn object's parts sample it (bound at the hook,
-/// `object_nodes::texaccum_bound`, yet no level over it after the drain):
-/// those parts go undrawn. Counted, and logged once.
-static TEXACCUM_MISSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// The texture accumulation level the pass was given, with its size in
 /// guest texels (this copy's texels over the colour's scale).
 fn texaccum_level(sampled: &[Option<d3d::SampledLevel>], guest_size: (u32, u32), size: (u32, u32)) -> Option<Texaccum<'_>> {
@@ -1205,18 +1262,16 @@ mod tests {
             models: Arc::new(Models::default()),
             camera,
             objects: Vec::new(),
+            draws: Vec::new(),
+            owners: Vec::new(),
+            refused: Vec::new(),
+            compare: None,
             view: None,
-            texaccum: false,
             w_clip: None,
-            cull: None,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
         assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
-        // The device's cull is inherited unless turned off.
-        assert!(parse_inherit(None));
-        assert!(parse_inherit(Some("1")));
-        assert!(!parse_inherit(Some("0")));
-        assert!(!parse_inherit(Some(" none ")));
+        assert!(pass.sampled().is_empty(), "no draw samples the texture accumulation level");
         let constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
         let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
         let u = native_render::program::frame_vertex(&Default::default(), &view);
@@ -1225,9 +1280,12 @@ mod tests {
 
     #[test]
     fn a_comparison_names_a_definition_a_part_and_a_pass() {
-        assert_eq!(parse_compare("0xe92207ad:2:30"), Some(Compare { definition: 0x07ad, part: 2, after: 30 }));
-        assert_eq!(parse_compare("e92207ad"), Some(Compare { definition: 0x07ad, part: 0, after: 0 }));
+        assert_eq!(parse_compare("0xe92207ad:2:30"), Some(Compare { definition: 0x07ad, part: Part::Index(2), after: 30 }));
+        assert_eq!(parse_compare("e92207ad"), Some(Compare { definition: 0x07ad, part: Part::Index(0), after: 0 }));
+        assert_eq!(parse_compare("0xe92207ad:0xe5da0465:30"), Some(Compare { definition: 0x07ad, part: Part::Shader(0x0465), after: 30 }));
         assert_eq!(parse_compare("0xe92207ad:x"), None);
+        assert!(Part::Shader(0x0465).picks(7, 0xe5da_0465));
+        assert!(!Part::Index(2).picks(7, 0xe5da_0465));
     }
 
     #[test]
@@ -1306,5 +1364,94 @@ mod tests {
         assert_eq!(first_stage([first].into_iter(), detail), Some(0));
         assert_eq!(first_stage([lightmap_only].into_iter(), base), None);
         assert_eq!(first_stage(std::iter::empty(), base), None);
+    }
+
+    fn map_state(name: &str, generation: u64, models: &Arc<Models>) -> MapState {
+        MapState {
+            key: (name.to_owned(), 0x800e_6010, 0),
+            generation,
+            models: Arc::clone(models),
+            set: Arc::new(NativeSet { map: name.to_owned(), generation, ..NativeSet::default() }),
+            tried: HashSet::new(),
+            worker: None,
+        }
+    }
+
+    /// A worker publishes only to the load it was started for: after A,
+    /// B and A again, the first A's worker (still finishing) finds a load
+    /// of the same name but other models, and publishes nothing there.
+    #[test]
+    fn a_worker_publishes_only_to_its_own_load() {
+        let first = Arc::new(Models::default());
+        let again = Arc::new(Models::default());
+        assert!(publishes_to(&map_state("03a_oldmombasa", 1, &first), &first));
+        assert!(!publishes_to(&map_state("03a_oldmombasa", 3, &again), &first), "the same name, another load");
+        assert!(publishes_to(&map_state("03a_oldmombasa", 3, &again), &again));
+    }
+
+    fn frame(definition: u32) -> ObjectFrame {
+        ObjectFrame {
+            handle: 0x8001_0001,
+            definition,
+            nodes: Vec::new(),
+            sphere: ([0.0; 3], 1.0),
+            lighting: None,
+            defaults: None,
+        }
+    }
+
+    fn item(object: usize, record: u16, shadow: bool) -> ItemDraw {
+        ItemDraw {
+            index: object,
+            object,
+            key: native_render::objects::ItemKey { record, shader: 0xe000_0010, section: 0, part: 0, implementation: 0 },
+            rows: vec![[0.0; 4]; 3],
+            shadow,
+        }
+    }
+
+    /// Every item the plan cannot resolve is refused, with why, before the
+    /// hook returns: a model not uploaded yet, or a device not
+    /// W-buffered. Nothing is drawn then, and a shadow item never is.
+    #[test]
+    fn an_item_whose_draw_does_not_resolve_is_refused_at_the_hook() {
+        let models = Models::default();
+        let objects = vec![frame(0xe000_0100)];
+        let entry = LayerEntry { states: EntryStates::default(), w_buffered: true };
+        let plan = plan_view(&models, &objects, &[item(0, 1, false), item(0, 2, true)], &entry, true);
+        assert!(plan.drawn.is_empty() && plan.draws.is_empty() && plan.compare.is_none());
+        assert_eq!(plan.refused.len(), 2);
+        assert!(plan.refused[0].1.contains("record 1") && plan.refused[0].1.contains("not uploaded"), "{:?}", plan.refused);
+        models.index.lock().unwrap().insert(0x0100, 7);
+        let plan = plan_view(&models, &objects, &[item(0, 1, false)], &entry, true);
+        assert!(plan.refused[0].1.contains("no model is uploaded"), "{:?}", plan.refused);
+        let z = LayerEntry { w_buffered: false, ..entry };
+        let plan = plan_view(&models, &objects, &[item(0, 1, false)], &z, true);
+        assert!(plan.refused[0].1.contains("W-buffered"), "{:?}", plan.refused);
+    }
+
+    /// The set is keyed by what a record names: (section, part), each
+    /// with its shader, its implementations and those sampling the
+    /// texture accumulation target.
+    #[test]
+    fn a_models_lit_parts_enter_the_set_by_section_and_part() {
+        use native_render::object_program_gpu::LitPart;
+        let part = |section, part, implementations| LitPart {
+            section,
+            part,
+            decompression: [[0.0; 4]; 3],
+            shader_tag: 0xe5da_0465,
+            shader: Default::default(),
+            indices: 0..3,
+            implementations,
+        };
+        let lit = LitModelInput {
+            parts: vec![part(2, 0, [Some((0, 0)), None, Some((1, 0)), None, None]), part(2, 3, [None, Some((2, 0)), None, None, None])],
+            ..LitModelInput::default()
+        };
+        let parts: HashMap<(u16, u8), SetPart> = set_parts(&lit).into_iter().collect();
+        assert_eq!(parts[&(2, 0)], SetPart { shader: 0x0465, implementations: 0b101, texaccum: 0 });
+        assert_eq!(parts[&(2, 3)].implementations, 0b010);
+        assert_eq!(parts.len(), 2);
     }
 }

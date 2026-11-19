@@ -217,6 +217,23 @@ The client gets the **stack of open screens**, not pixels:
 Two layers. The **map** is static and comes from the tags. The **world** is
 what is alive now.
 
+**Audio routing** (`h2 agent audio.voices`, no parameters). Available with
+DirectSound. The result has `distance_reverb` (host enhancement enabled),
+`reverb_active` (audible environment configured), and `voices`. Each
+playing buffer, queued unpaused stream and playing mix-in has a mixer
+`id`, `kind`, `volume_mb` and `distance_units` (listener-relative
+world units, null for an unpositioned voice). Match a stream's output
+`bin` to a mix-in's `input_bin` to find the positioned emitter.
+
+`direct_gain` and `room_gain` are linear low-frequency gains including
+voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
+additional loss at `reference_hz`. Each ordered entry in `bins` has
+its raw `bin`, `volume_mb` and its linear `gain` including that pair's
+volume and path gain. These are routing settings before spatial panning,
+master gain and the reverb return. A disabled environment or unconnected
+bus can have a configured send gain and deliver silence. Plain stereo
+routing has `bins: null`.
+
 **Map** (`world.map`). One call gives the shape of the level as a summary:
 
 ```json

@@ -1251,6 +1251,13 @@ impl<B: Backend> Device<B> {
         self.last_stop.as_ref()
     }
 
+    /// How many frames the game has swapped so far ([`Device::swap`]'s
+    /// count): a draw recorded now is shown by swap `swap_count() + 1`,
+    /// the number `H2_*` frame shots (`frame-NNNNN.png`) take.
+    pub fn swap_count(&self) -> u32 {
+        self.swap_count
+    }
+
     /// Present parameters of the created device.
     pub fn present_parameters(&self) -> Option<&PresentParameters> {
         self.params.as_ref()
