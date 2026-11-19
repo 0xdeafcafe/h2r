@@ -138,7 +138,7 @@ merged, built and tested together, then played.
 
 | Gap | Branch | Notes |
 |---|---|---|
-| a30 fails to convert at v95: a converted `ctrl` (b30's holo control) keeps a pointer-like word at `+0xb0` the fresh build can't move | `a30convert` | Found 2026-11-19; a30 can't run until it's fixed |
+| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
 | Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |
 | AI command lists (`ai_command_list*`) | `commandlists` | Halo 2 uses command scripts instead |
 | AI conversations (`ai_conversation*`, `ai_dialogue_triggers`, `unit_set_emotion`) | `conversations` | |
@@ -752,6 +752,15 @@ version-4 event streams and unit control data as recorded; that
 list checksums are Halo 1's on both); every identified builtin's
 behaviour (they are found by position and signature, E only for the
 recordings); the dialogue sleeps lining up with the converted sounds.
+
+**Built, device change-colour relocation.** The holo control a30 borrows
+from b30 failed fresh conversion because its `+0xb0` pointed to the
+change-colour array at `obje +0xac`, which the retail relocation schema
+omitted for `ctrl` and `mach`. The schema now uses the shared object
+definition for that array. Every campaign level's controls, machines and
+light fixtures (built as machines) use the same device builder and layout.
+`a30_converts_fresh_with_the_holo_control` exercises the full fresh build
+and checks the control palette reference and all four colour slots.
 
 **Proof.** `H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test
 --release -p h1campaign --test disc -- --ignored --nocapture`.

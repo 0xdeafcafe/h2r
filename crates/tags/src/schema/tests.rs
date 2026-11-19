@@ -138,6 +138,46 @@ fn checked_in_schema_parses() {
 }
 
 #[test]
+fn device_change_color_pointers_are_relocatable() {
+    let schema = Schema::builtin();
+    let mut inferred = schema.clone();
+    for group in [FourCC(*b"ctrl"), FourCC(*b"mach")] {
+        inferred.groups.get_mut(&group).unwrap().fields.remove(&0xac);
+
+        // Reproduce the address word that fresh a30 rejected, followed
+        // through four color slots and the first slot's child arrays.
+        let layout = &schema.groups[&group];
+        let colors: u32 = 0x80cf_e5f8;
+        let address = colors - layout.size;
+        let permutations = colors + 4 * 0x10;
+        let functions = permutations + 0x20;
+        let mut bytes = vec![0; (functions + 0x28 - address) as usize];
+        for (at, count, target) in [
+            (0xac, 4u32, colors),
+            (layout.size, 1, permutations),
+            (layout.size + 8, 1, functions),
+        ] {
+            let at = at as usize;
+            bytes[at..at + 4].copy_from_slice(&count.to_le_bytes());
+            bytes[at + 4..at + 8].copy_from_slice(&target.to_le_bytes());
+        }
+        let mem = Memory::from_regions(vec![(address, bytes)], vec![]);
+        let walked = walk(layout, address, &mem).unwrap();
+        assert_eq!(
+            walked.pointers,
+            [
+                (0xac, 4, colors),
+                (layout.size, 1, permutations),
+                (layout.size + 8, 1, functions),
+            ],
+            "{group}"
+        );
+    }
+    super::infer::apply_device_change_colors(&mut inferred);
+    assert_eq!(&inferred, schema);
+}
+
+#[test]
 fn tags_move_and_read_back_the_same() {
     let (mut map, ids) = invented(6, false);
     let schema = Schema {
