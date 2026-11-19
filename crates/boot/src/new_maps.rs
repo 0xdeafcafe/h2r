@@ -15,6 +15,7 @@ use content::{
     manifest::LANGUAGES,
     map_list::{self, BaseEntry, Entry},
 };
+use vfs::Backend;
 
 pub const HALO2_TITLE: u32 = 0x4D53_0064;
 /// Which package a directory holds: `source`, `map_id`, `map`.
@@ -295,12 +296,12 @@ pub fn install(data_root: &Path, disc: &mut dyn Disc) -> Result<Report> {
                             report
                                 .notices
                                 .push(format!("{}: preview: {e}", p.dir_name()));
-                            fallback().unwrap_or_else(|| map_list::generated_card(p.id))
+                            fallback().unwrap_or_else(|| map_list::generated_card(&p.id))
                         }
                     }
                 } else {
                     fallback().unwrap_or_else(|| {
-                        let mut pixels = map_list::generated_card(p.id);
+                        let mut pixels = map_list::generated_card(&p.id);
                         if let Some(Some(frame)) = &frame {
                             map_list::with_frame(&mut pixels, frame);
                         }

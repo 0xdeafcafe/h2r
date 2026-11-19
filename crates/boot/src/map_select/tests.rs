@@ -437,6 +437,46 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
     }
 }
 
+#[test]
+fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
+    use agent::sim::calls;
+    use engine::points::GAME_TICK;
+
+    use crate::{coop_probe, skulls_custom};
+
+    let mut registry = feature::Registry::new(feature::Switches::defaults());
+    registry.add(&calls::CallsFeature(calls::shared())).unwrap();
+    let store = Arc::new(settings::Store::defaults(crate::setting_defs::ALL));
+    let skulls = skulls_custom::Custom::new(store, None, None, false);
+    registry
+        .add(&skulls_custom::SkullsCustom(Arc::new(skulls)))
+        .unwrap();
+    registry
+        .add(&MapSelect {
+            sel: Arc::new(Selection::new(sample())),
+            flow: Arc::default(),
+            slots: Arc::default(),
+            live: None,
+        })
+        .unwrap();
+    let coop = coop_probe::Probe::armed(coop_probe::Arm::session(), std::path::PathBuf::new());
+    registry.add(&coop).unwrap();
+
+    let plan = registry
+        .build(&feature::Base)
+        .unwrap_or_else(|errors| panic!("{errors:?}"));
+    let before = &plan.chains[&GAME_TICK.base].before;
+    assert_eq!(
+        before.iter().map(|hook| hook.feature).collect::<Vec<_>>(),
+        [
+            calls::FEATURE,
+            skulls_custom::FEATURE,
+            FEATURE,
+            coop_probe::LIVE_ID,
+        ]
+    );
+}
+
 // ---- the retail Select Map in two modes ----
 
 #[test]
