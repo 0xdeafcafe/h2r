@@ -91,15 +91,25 @@ impl Base {
             .map(|t| (t.1, t.2.as_str()))
     }
 
-    /// A tag's root (its group's root size).
+    /// A tag's root (its group's root size: the object layouts' for the
+    /// object groups and `hlmt`, else the group's definition's, as for
+    /// `mode` and `phmo`).
     pub fn root(&self, id: TagId) -> Result<Vec<u8>> {
         let t = self
             .tags
             .iter()
             .find(|t| t.0 == id)
             .ok_or_else(|| Error::NoTemplate(format!("{id:?}")))?;
-        let def = GroupDef::find(t.1).ok_or_else(|| Error::NoTemplate(t.1.to_string()))?;
-        Ok(self.meta.slice(t.3, def.root_size.into())?.to_vec())
+        let size = match GroupDef::find(t.1) {
+            Some(def) => def.root_size,
+            None => {
+                tags::defs::Defs::builtin()
+                    .group(t.1)
+                    .ok_or_else(|| Error::NoTemplate(t.1.to_string()))?
+                    .size
+            }
+        };
+        Ok(self.meta.slice(t.3, size.into())?.to_vec())
     }
 
     /// A tag's first `len` bytes, for groups with no root size here.

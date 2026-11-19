@@ -434,8 +434,9 @@ physics"). Retail writes the slots exactly for the `coll`s of scenery
 with no `phmo` (V, every map on the disc: a Delta Halo statue, trees;
 not weapons, equipment, devices, bipeds or crates). So:
 
-- a scenery object (every converted one: none gets a `phmo`)
-  gets its `coll` with one slot per BSP: the box of the BSP's vertices at
+- a scenery object with no `phmo` (through version 84 every converted
+  one; since 85 only those whose Halo 1 collision has no solid cell or
+  whose base has no scenery `phmo`) gets its `coll` with one slot per BSP: the box of the BSP's vertices at
   `+0x10`/`+0x20`, the `coll`'s own datum at `+0x30`, and MOPP code from
   `crates/mopp` over the BSP's surfaces, keyed `0..n` (`coll::bsp_mopp`),
   at `+0x64`;
@@ -454,8 +455,18 @@ bound even at the last lean step. With sharing b40 converts at lean 1
 `tags::collision::Collision::read` decodes against the whole metadata
 when a block is out of the tag's range (`Collision::decode_at`).
 
-No `phmo` is built: Halo 2's own static scenery (the statue the scenery
-template is) has none, and blocks through these slots.
+Through version 84 no scenery `phmo` was built: Halo 2's own static
+scenery (the statue the scenery template is) has none and blocks through
+these slots. But the player walked through converted Blood Gulch's
+boulders with their slots in place, so since version 85 scenery with
+solid Halo 1 collision gets a built `phmo` and no slots
+([tag-definitions.md](../formats/tag-definitions.md), "Scenery from
+definitions"). Vehicles likewise meet bipeds through their `phmo`: the
+converted scorpion's treads, in its `coll` but left out of its `phmo`
+through version 85, were walked through; since 86 a vehicle's wheels and
+treads are in its body above the hull's lowest point where its retail
+role's physics models have wheel shapes (the scorpion's treads; not the
+warthog's tires; tag-definitions.md, `convert::held_wheels`).
 
 **`hlmt` region bytes.** Each `hlmt` region (`0x10`) says which `coll`
 region it uses (`i8` at `+4`) and which physics region (`+5`); each
@@ -758,5 +769,24 @@ attachments name a contrail (236 attachments) names the converted one.
   as Halo 2 materials (the global material table will not know them).
 - That the player stops at a converted crate (BSP physics slots, version
   18), and that Havok bodies (grenades, vehicles) bounce off scenery.
+  **Not so on converted Blood Gulch** (converter version 83, game run
+  2026-11-19): the player walked straight through `boulder` (placement at
+  (37.93, -88.69, 0.09); the path passed 0.23 from its centre, its
+  collision box half 0.67 by 0.60) with no Havok contact but the level's.
+  The boulder's `coll` has its BSP physics slot, and the engine had
+  written the slot's vtables at load (`0x00456194` at `+0`, `0x00455540`
+  at `+0x40`, `0x00455f58` at `+0x50`), yet `havok.bodies` lists no
+  body owned by any of Blood Gulch's 50 scenery placements (only the two
+  fixed bodies with no owner), and a10 holds none either. So the slots
+  alone do not put converted scenery in the Havok world. Retail
+  Coagulation, Blood Gulch's base, gives every scenery with collision a
+  `phmo` (6 of 6, V: `h2 object coagulation ...`; the trees' rigid bodies
+  on node 0 or -1). Since converter version 85 scenery with solid Halo 1
+  collision gets one, built as devices' are, with the base's scenery
+  body words (tag-definitions.md, "Scenery from definitions", Physics).
+  Which object code adds a slots-only scenery's shapes to the world is
+  not found (the slot shapes are built by `0x00246c60` from the `coll`
+  post-process `0x002122b0`; no reader of slot `+0x40` or `+0x50` was
+  found in a sweep of `0x70`-stride loops).
 - Template seats, turrets (Halo 2's warthog gunner is a separate turret
   vehicle) and animation names against the converted `jmad`.
