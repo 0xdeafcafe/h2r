@@ -2291,11 +2291,27 @@ loaded, drawn with each material's own translated layer-16 pass.
   sources: the bitmaps, and the engine textures with what each is
   (the scene copy, the render targets by index) — the scene-copy and
   reflection enumeration.
-- **Layers 18/19 (camouflage) and 21 (hologram)** are census-only:
-  their caller is not established in the lifted ports (the scene
-  passes draw them from nowhere the ports name), and their passes'
-  state does not resolve yet. The runtime census's layer-draw caller
-  address is the evidence the next slice needs.
+- **Layers 18/19 (camouflage) and 21 (hologram)**, census-only. What
+  the repo establishes (Code, the lifted ports; the disc census,
+  e3-lighting.md "Pass taxonomy"; `engine::render::Role`): the two
+  camo layers are named ActiveCamo and ActiveCamoModulate (111 and 30
+  passes on the disc's 30 maps) and the hologram's 6; all three draw
+  through the same scene-list layer draw (`DRAWN_LAYERS` holds their
+  bits) — but **no lifted port names their caller**: the scene passes
+  (`0x0002bcd0`) begin and draw layers 1, 3, 5, 8, 20, 7, 2, 16, 6
+  and 15 only, the first-person render (`0x0003fdf0`) 1, 3, 8, 20 and
+  7, and the light passes 10 to 14. The caller is therefore some
+  function no port covers — most plausibly in the object-render chain
+  the camo wraps (`0x00133790`'s; the camo fades with the parent's
+  `+0x2b0`, e3-lighting's table), an S until the census names it. The
+  runtime census prints the layer draw's return address for exactly
+  that (`[esp]`, one line per layer per view); the load-side census
+  enumerates their materials' stage sources the same way. Until a
+  level with camo or a hologram has been censused, drawing them is
+  refused outright: nothing about their wrapper (whether, like water,
+  a setup and a teardown bracket the layer, or whether the draw is
+  per-object) or their passes' state is established, so there is
+  nothing to admit against the handoff's contract.
 
 ## Stage 5: post and HUD (design)
 

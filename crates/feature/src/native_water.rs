@@ -267,7 +267,10 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 }
 
 /// The census of the current layer, when it is one of the named ones.
-fn census_at(mem: &dyn GuestMemory) {
+/// `ret` is the layer draw's return address (`[esp]` at entry): for the
+/// layers whose caller no lifted port names (18, 19 and 21) it is the
+/// evidence the next slice needs.
+fn census_at(mem: &dyn GuestMemory, ret: u32) {
     let layer = match mem.u32(CURRENT_LAYER) {
         Ok(l) => l,
         Err(_) => return,
@@ -312,7 +315,7 @@ fn census_at(mem: &dyn GuestMemory) {
     }
     LINES.fetch_add(1, Ordering::Relaxed);
     eprintln!(
-        "native-water: layer {layer}, view {n}: {} items ({} caller kinds, {} shaders){gate}\n  native-water:   shaders:{shaders}{callers}",
+        "native-water: layer {layer}, view {n} (layer draw returns to {ret:#010x}): {} items ({} caller kinds, {} shaders){gate}\n  native-water:   shaders:{shaders}{callers}",
         t.items,
         t.callers.len(),
         t.shaders.len()
@@ -324,7 +327,7 @@ fn census_at(mem: &dyn GuestMemory) {
 /// layer draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    census_at(mem);
+    census_at(mem, ret);
     let mut m = crate::native_fog::Mem(mem);
     if m.read_u32(CURRENT_LAYER) != Some(WATER_LAYER) {
         return;
