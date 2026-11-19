@@ -4,19 +4,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State, rejection::BytesRejection};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, Path, Query, State, rejection::BytesRejection};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use live_proto::game::{self, GameDetail, GameSummary, PlayerScore, SimGame};
-use live_proto::{ErrorCode, Page, lxm};
+use live_proto::hosts::{EndReason, HostClass, HostLease, HostState, ProviderKind, Transport};
+use live_proto::sign::Jws;
+use live_proto::{Author, ErrorCode, Page, lxm};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::app::{ApiError, Live, conflict, forbidden, invalid, not_found, now};
-use crate::blobs::Meta;
+use crate::app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, unauthorized};
+use crate::blobs::{BlobError, Meta, Seen};
 use crate::http::{bearer, json};
+use crate::identity::ServerIdentity;
 use crate::model::Game;
 
 pub(crate) const RECORDING_LIMITED: &str = "SimRecordingLimited";
@@ -265,23 +270,7 @@ pub(crate) async fn detail(
         lookup(&state.games, &id)?.0.clone()
     };
     let sim = game.started.game.sim.as_ref().expect("looked up a sim");
-    let report = if let Some(index) = &game.sim_report {
-        let blobs = live
-            .blobs()
-            .ok_or_else(|| blob_error("no private blob store"))?;
-        let bytes = blobs
-            .private
-            .get(&report_key(&id, &index.sha256))
-            .await
-            .map_err(blob_error)?
-            .ok_or_else(|| blob_error("missing report"))?;
-        if live_proto::sign::hex(&Sha256::digest(&bytes)) != index.sha256 {
-            return Err(blob_error("report hash did not match"));
-        }
-        Some(serde_json::from_slice(&bytes).map_err(blob_error)?)
-    } else {
-        None
-    };
+    let report = read_report(&live, &id, game.sim_report.as_ref()).await?;
     Ok(json(
         StatusCode::OK,
         &Detail {
@@ -289,6 +278,400 @@ pub(crate) async fn detail(
             game: live.game(&id)?,
             report,
         },
+    ))
+}
+
+async fn read_report(
+    live: &Live,
+    id: &str,
+    index: Option<&StoredReport>,
+) -> Result<Option<Value>, ApiError> {
+    let Some(index) = index else {
+        return Ok(None);
+    };
+    let blobs = live
+        .blobs()
+        .ok_or_else(|| blob_error("no private blob store"))?;
+    let bytes = blobs
+        .private
+        .get(&report_key(id, &index.sha256))
+        .await
+        .map_err(blob_error)?
+        .ok_or_else(|| blob_error("missing report"))?;
+    if live_proto::sign::hex(&Sha256::digest(&bytes)) != index.sha256 {
+        return Err(blob_error("report hash did not match"));
+    }
+    Ok(Some(serde_json::from_slice(&bytes).map_err(blob_error)?))
+}
+
+pub(crate) fn host_routes() -> Router<Arc<Live>> {
+    Router::new()
+        .route("/v1/admin/sim-runs/batches/{batch_id}", post(open_host_batch))
+        .route(
+            "/v1/admin/sim-runs/{id}/hosts",
+            get(poll_host).post(request_host),
+        )
+        .route("/v1/hosts/{lease}/sim", get(host_match))
+        .layer(DefaultBodyLimit::max(MAX_METADATA))
+}
+
+const HOST_BATCH_TOKEN: &str = "h2live-sim-host-batch";
+const HOST_BATCH_TTL_S: i64 = 24 * 60 * 60;
+// Keep the lease limit aligned with sim::batch::max_match_s. The sim
+// process's own clock starts after data provisioning.
+const DEFAULT_MAX_MATCH_S: u32 = 1800;
+const MAX_MATCH_S: u64 = 7200;
+const STARTUP_AND_UPLOAD_S: u64 = 60;
+
+/// A single-use admin token opens a batch. Only these sim routes accept
+/// the resulting grant, which can start and poll runs for one batch.
+#[derive(Deserialize, Serialize)]
+struct HostBatchGrant {
+    aud: String,
+    author: String,
+    batch_id: String,
+    provider: ProviderKind,
+    expires_at: i64,
+}
+
+impl HostBatchGrant {
+    fn verify(raw: &str, identity: &ServerIdentity, at: i64) -> Result<Self, ApiError> {
+        let bad = |_| unauthorized("invalid simulation batch token");
+        let jws = Jws::parse(raw).map_err(bad)?;
+        let grant: Self = serde_json::from_value(jws.json_payload(HOST_BATCH_TOKEN).map_err(bad)?)
+            .map_err(|_| unauthorized("invalid simulation batch token"))?;
+        jws.verify(identity.key.public()).map_err(bad)?;
+        if grant.aud != identity.id || grant.expires_at <= at {
+            return Err(unauthorized("invalid or expired simulation batch token"));
+        }
+        Ok(grant)
+    }
+
+    fn authenticate(live: &Live, headers: &HeaderMap) -> Result<Self, ApiError> {
+        let raw = bearer(headers).ok_or_else(|| unauthorized("simulation batch token required"))?;
+        let grant = Self::verify(raw, &live.identity, now())?;
+        let author = Author::parse(&grant.author)
+            .ok_or_else(|| unauthorized("invalid simulation batch token author"))?;
+        crate::admin::require_admin(live, &author)?;
+        Ok(grant)
+    }
+}
+
+async fn open_host_batch(
+    State(live): State<Arc<Live>>,
+    Path(batch_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let author = live.authenticate(bearer(&headers), lxm::GAMES_WRITE)?;
+    crate::admin::require_admin(&live, &author)?;
+    if !game::valid_id(&batch_id) {
+        return Err(invalid("invalid simulation batch id"));
+    }
+    let provider = cloud_provider(&live)?;
+    let max_parallel = live.max_hosts();
+    if max_parallel == 0 {
+        return Err(ApiError::new(
+            ErrorCode::Unavailable,
+            "dedicated hosts are disabled",
+        ));
+    }
+    host_match_store(&live)?;
+    let grant = HostBatchGrant {
+        aud: live.identity.id.clone(),
+        author: author.to_string(),
+        batch_id,
+        provider,
+        expires_at: now() + HOST_BATCH_TTL_S,
+    };
+    let token = live.identity.key.sign_json(HOST_BATCH_TOKEN, &grant);
+    Ok(private_json(
+        StatusCode::CREATED,
+        &serde_json::json!({
+            "token": token,
+            "provider": grant.provider,
+            "max_parallel": max_parallel,
+        }),
+    ))
+}
+
+fn cloud_provider(live: &Live) -> Result<ProviderKind, ApiError> {
+    live.host_provider_kind()
+        .filter(|kind| matches!(kind, ProviderKind::Cloudflare | ProviderKind::Fly))
+        .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "no cloud host provider configured"))
+}
+
+fn private_json<T: Serialize>(status: StatusCode, body: &T) -> Response {
+    let mut reply = json(status, body);
+    reply
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    reply
+}
+
+#[derive(Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostMatch {
+    batch_id: String,
+    #[serde(rename = "match")]
+    matched: Value,
+}
+
+#[derive(Deserialize)]
+struct MatchFields {
+    map: String,
+    game_type: Option<String>,
+    pace: Option<String>,
+    max_wall_s: Option<u64>,
+    #[serde(rename = "bot")]
+    bots: Vec<MatchBot>,
+}
+
+#[derive(Deserialize)]
+struct MatchBot {
+    name: Option<String>,
+    params: Option<Value>,
+    #[serde(default)]
+    kind: SeatKind,
+}
+
+#[derive(Default, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum SeatKind {
+    #[default]
+    Local,
+    Phantom,
+}
+
+impl HostMatch {
+    fn lease(&self, assignment_id: String, provider: ProviderKind) -> Result<HostLease, ApiError> {
+        let m = MatchFields::deserialize(&self.matched)
+            .map_err(|err| invalid(format!("simulation match file: {err}")))?;
+        if !game::valid_id(&m.map) {
+            return Err(invalid("invalid simulation map name"));
+        }
+        if m.pace.as_deref().is_some_and(|pace| pace != "unpaced") {
+            return Err(invalid("dedicated simulations must be unpaced"));
+        }
+        let locals = m.bots.iter().filter(|bot| bot.kind == SeatKind::Local).count();
+        if !(1..=4).contains(&locals) || m.bots.len() > game::MAX_PLAYERS {
+            return Err(invalid(
+                "a simulation needs 1 to 4 local bots and at most 16 seats",
+            ));
+        }
+        if m.bots.iter().any(|bot| bot.params.is_some()) {
+            return Err(invalid("simulation matches must inline all bot tuning"));
+        }
+        let bots: Vec<_> = m
+            .bots
+            .into_iter()
+            .enumerate()
+            .map(|(seat, bot)| {
+                bot.name
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| format!("Clanker {seat}"))
+            })
+            .collect();
+        if bots.iter().any(|name| name.chars().count() > 32) {
+            return Err(invalid("simulation bot names are at most 32 characters"));
+        }
+        let max_match_s = m.max_wall_s.map_or(DEFAULT_MAX_MATCH_S, |wall| {
+            wall.saturating_add(STARTUP_AND_UPLOAD_S).min(MAX_MATCH_S) as u32
+        });
+        let transport = match provider {
+            ProviderKind::Cloudflare => Transport::Tunnel,
+            ProviderKind::Fly => Transport::Udp,
+            ProviderKind::Local => return Err(invalid("simulation hosts require a cloud provider")),
+        };
+        Ok(HostLease {
+            id: String::new(),
+            assignment_id,
+            provider,
+            region: None,
+            class: if bots.len() <= 4 {
+                HostClass::Small
+            } else {
+                HostClass::Large
+            },
+            map: m.map,
+            map_id: None,
+            variant: m.game_type,
+            hopper: None,
+            max_players: bots.len() as u8,
+            roster: vec![],
+            bots,
+            transport,
+            // The host's roster contains only bots. Let the hard deadline
+            // bound its lifetime even when the player-idle count is zero.
+            idle_timeout_s: max_match_s,
+            max_match_s,
+            created_ms: 0,
+        })
+    }
+}
+
+fn host_match_key(game_id: &str) -> String {
+    format!("{REPORT_PREFIX}{game_id}/host-match.json")
+}
+
+fn checked_sim_game_id(run_id: &str) -> Result<String, ApiError> {
+    if run_id.len() > 60 || !game::valid_id(run_id) {
+        return Err(invalid("invalid simulation run id"));
+    }
+    Ok(game::sim_game_id(run_id))
+}
+
+fn host_match_store(live: &Live) -> Result<&crate::blobs::BlobStore, ApiError> {
+    live.blobs()
+        .map(|blobs| &blobs.private)
+        .ok_or_else(|| blob_error("no private blob store"))
+}
+
+async fn read_host_match(live: &Live, game_id: &str) -> Result<Option<HostMatch>, ApiError> {
+    host_match_store(live)?
+        .get(&host_match_key(game_id))
+        .await
+        .map_err(blob_error)?
+        .map(|bytes| serde_json::from_slice(&bytes).map_err(blob_error))
+        .transpose()
+}
+
+async fn reserve_host_match(live: &Live, game_id: &str, spec: &HostMatch) -> Result<(), ApiError> {
+    {
+        // Also serializes creates on blob stores without conditional puts.
+        // Release before calling the provider so the host can start writing.
+        let _guard = live.sim_writes.lock().await;
+        if let Some(old) = read_host_match(live, game_id).await? {
+            return same_host_match(spec, old);
+        }
+        if live.model.read().games.contains_key(game_id) {
+            return Err(conflict("that simulation run id is already in use"));
+        }
+        let private = host_match_store(live)?;
+        let meta = Meta {
+            content_type: Some("application/json".into()),
+            ..Default::default()
+        };
+        let bytes = Bytes::from(serde_json::to_vec(spec).expect("serializes"));
+        match private
+            .put_if(&host_match_key(game_id), bytes, &Seen::default(), &meta)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(BlobError::Changed(_)) => {}
+            Err(err) => return Err(blob_error(err)),
+        }
+    }
+    let old = read_host_match(live, game_id)
+        .await?
+        .ok_or_else(|| conflict("simulation match reservation changed"))?;
+    same_host_match(spec, old)
+}
+
+fn same_host_match(requested: &HostMatch, old: HostMatch) -> Result<(), ApiError> {
+    if *requested != old {
+        return Err(conflict(
+            "that simulation run id already reserves a different match",
+        ));
+    }
+    Ok(())
+}
+
+async fn request_host(
+    State(live): State<Arc<Live>>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Result<Response, ApiError> {
+    let grant = HostBatchGrant::authenticate(&live, &headers)?;
+    let game_id = checked_sim_game_id(&run_id)?;
+    let bytes = body.map_err(|err| match err.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => too_large("simulation match files are limited to 16 KiB"),
+        _ => invalid(err.body_text()),
+    })?;
+    let spec: HostMatch =
+        serde_json::from_slice(&bytes).map_err(|err| invalid(format!("simulation match: {err}")))?;
+    if spec.batch_id != grant.batch_id {
+        return Err(forbidden("simulation batch token does not cover this match"));
+    }
+    if cloud_provider(&live)? != grant.provider {
+        return Err(conflict("the cloud host provider changed during this batch"));
+    }
+    let lease = spec.lease(game_id.clone(), grant.provider)?;
+    reserve_host_match(&live, &game_id, &spec).await?;
+    if let Some(host) = live.host_for_assignment(&game_id) {
+        // A repeat submission gets the original lease even after it ended.
+        return Ok(private_json(StatusCode::OK, &host.lease));
+    }
+    let lease = live.request_host(lease).await?;
+    Ok(private_json(StatusCode::CREATED, &lease))
+}
+
+#[derive(Serialize)]
+struct HostRunStatus {
+    state: HostState,
+    reason: Option<EndReason>,
+    report: Option<Value>,
+}
+
+async fn poll_host(
+    State(live): State<Arc<Live>>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let grant = HostBatchGrant::authenticate(&live, &headers)?;
+    let game_id = checked_sim_game_id(&run_id)?;
+    let spec = read_host_match(&live, &game_id)
+        .await?
+        .filter(|spec| spec.batch_id == grant.batch_id)
+        .ok_or_else(|| not_found("no such simulation host run"))?;
+    let host = live
+        .host_for_assignment(&game_id)
+        .ok_or_else(|| not_found("no host lease for this simulation run"))?;
+    let index = {
+        let model = live.model.read();
+        model.games.get(&game_id).and_then(|game| {
+            let sim = game.started.game.sim.as_ref()?;
+            if sim.batch_id.as_ref() == Some(&spec.batch_id) {
+                game.sim_report.clone()
+            } else {
+                None
+            }
+        })
+    };
+    let report = read_report(&live, &game_id, index.as_ref()).await?;
+    Ok(private_json(
+        StatusCode::OK,
+        &HostRunStatus {
+            state: host.state,
+            reason: host.reason,
+            report,
+        },
+    ))
+}
+
+async fn host_match(
+    State(live): State<Arc<Live>>,
+    Path(lease_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let verified = live.verify_host_token(bearer(&headers), crate::host_identity::HOST_REGISTER)?;
+    if verified != lease_id {
+        return Err(forbidden("host token does not cover this lease"));
+    }
+    let host = live
+        .host_view(&lease_id)
+        .ok_or_else(|| not_found("no such host lease"))?;
+    let game_id = &host.lease.assignment_id;
+    let run_id = game_id
+        .strip_prefix("sim-")
+        .filter(|run_id| !host.lease.bots.is_empty() && game::valid_id(run_id) && run_id.len() <= 60)
+        .ok_or_else(|| not_found("no simulation assigned to this lease"))?;
+    let spec = read_host_match(&live, game_id)
+        .await?
+        .ok_or_else(|| not_found("no match file for this lease"))?;
+    Ok(private_json(
+        StatusCode::OK,
+        &serde_json::json!({ "run_id": run_id, "batch_id": spec.batch_id, "match": spec.matched }),
     ))
 }
 
@@ -390,4 +773,107 @@ pub(crate) async fn upload(
     let stored = live.store().append(vec![event], &[]).await?;
     live.wait_applied(stored[0].position).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn simulation_batch_grant_requires_the_live_signature_and_audience() {
+        let at = 1_800_000_000;
+        let mut identity = ServerIdentity {
+            id: "this-live".into(),
+            key: live_proto::sign::KeyPair::generate(),
+        };
+        let grant = HostBatchGrant {
+            author: identity.author(),
+            aud: identity.id.clone(),
+            provider: ProviderKind::Cloudflare,
+            batch_id: "batch-7".into(),
+            expires_at: at + 60,
+        };
+        let raw = identity.key.sign_json(HOST_BATCH_TOKEN, &grant);
+        let checked = HostBatchGrant::verify(&raw, &identity, at).unwrap();
+        assert_eq!(checked.batch_id, grant.batch_id);
+        assert_eq!(checked.provider, ProviderKind::Cloudflare);
+        assert!(HostBatchGrant::verify(&raw, &identity, grant.expires_at).is_err());
+
+        let unrelated = live_proto::sign::KeyPair::generate().sign_json(HOST_BATCH_TOKEN, &grant);
+        assert!(HostBatchGrant::verify(&unrelated, &identity, at).is_err());
+        identity.id = "other-live".into();
+        assert!(HostBatchGrant::verify(&raw, &identity, at).is_err());
+    }
+
+    fn spec(matched: Value) -> HostMatch {
+        HostMatch {
+            batch_id: "batch-7".into(),
+            matched,
+        }
+    }
+
+    #[test]
+    fn simulation_host_lease_uses_the_bot_only_roster_and_exact_run_id() {
+        let spec = spec(serde_json::json!({
+            "map": "lockout",
+            "game_type": "slayer",
+            "max_wall_s": 300,
+            "bot": [
+                { "name": "A", "tuning": { "reaction": 4 } },
+                {},
+                { "name": "C" },
+                { "name": "D" },
+                { "kind": "phantom", "name": "E" }
+            ]
+        }));
+        let id = checked_sim_game_id("run-42").unwrap();
+        let lease = spec.lease(id, ProviderKind::Cloudflare).unwrap();
+        assert_eq!(lease.assignment_id, "sim-run-42");
+        assert_eq!(lease.map, "lockout");
+        assert_eq!(lease.variant.as_deref(), Some("slayer"));
+        assert_eq!(lease.bots, ["A", "Clanker 1", "C", "D", "E"]);
+        assert!(lease.roster.is_empty());
+        assert_eq!(lease.max_players, 5);
+        assert_eq!(lease.class, HostClass::Large);
+        assert_eq!(lease.transport, Transport::Tunnel);
+        assert_eq!(lease.max_match_s, 360);
+        assert_eq!(lease.idle_timeout_s, lease.max_match_s);
+        assert!(checked_sim_game_id("../run-42").is_err());
+        assert!(checked_sim_game_id(&"x".repeat(61)).is_err());
+    }
+
+    #[test]
+    fn simulation_host_refuses_pacing_and_remote_tuning_files() {
+        for matched in [
+            serde_json::json!({"map": "lockout", "pace": "realtime", "bot": [{}]}),
+            serde_json::json!({"map": "lockout", "bot": [{"params": "local.toml"}]}),
+            serde_json::json!({"map": "lockout", "bot": [{"kind": "phantom"}]}),
+        ] {
+            assert!(spec(matched).lease("sim-run-42".into(), ProviderKind::Fly).is_err());
+        }
+        let spec = spec(serde_json::json!({"map": "lockout", "bot": [{}]}));
+        let lease = spec.lease("sim-run-42".into(), ProviderKind::Fly).unwrap();
+        assert_eq!(lease.transport, Transport::Udp);
+        assert_eq!(lease.class, HostClass::Small);
+        assert_eq!(lease.max_match_s, DEFAULT_MAX_MATCH_S);
+        assert!(spec.lease("sim-run-42".into(), ProviderKind::Local).is_err());
+    }
+
+    #[test]
+    fn simulation_run_id_retries_require_the_same_batch_and_match() {
+        let matched = serde_json::json!({"map": "lockout", "bot": [{}]});
+        let submitted = spec(matched.clone());
+        assert!(same_host_match(&submitted, spec(matched.clone())).is_ok());
+        assert!(same_host_match(
+            &submitted,
+            HostMatch {
+                batch_id: "different-batch".into(),
+                matched,
+            },
+        ).is_err());
+        assert!(same_host_match(
+            &submitted,
+            spec(serde_json::json!({"map": "turf", "bot": [{}]})),
+        ).is_err());
+    }
 }
