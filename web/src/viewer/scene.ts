@@ -42,7 +42,7 @@ import { dressWater } from "./water3d";
 import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
-import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
+import { machineMatrix, machineNode, placeDevice, placeMachine, type MachineNode } from "./machines3d";
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
 import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
@@ -439,10 +439,11 @@ export class ViewerScene {
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
       this.frameObjects.reset();
-      // The level's machines: each child of `machines` can be moved by the frames.
+      // Machine roots and their optional device clips are both driven by the frames.
+      const deviceClips = new Map(gltf.animations.map((clip) => [clip.name, clip]));
       root.traverse((o) => {
         if (o.name !== "machines") return;
-        for (const c of o.children) if (c.name && !this.machineNodes.has(c.name)) this.machineNodes.set(c.name, machineNode(c));
+        for (const c of o.children) if (c.name && !this.machineNodes.has(c.name)) this.machineNodes.set(c.name, machineNode(c, deviceClips));
       });
       this.features = parseFeatures(assetExtras);
       this.map = root;
@@ -691,8 +692,9 @@ export class ViewerScene {
     this.scenarioObjects.clear();
     this.scene.remove(this.map);
     this.map.traverse((o) => {
-      const mesh = o as THREE.Mesh;
+      const mesh = o as THREE.SkinnedMesh;
       if (!mesh.isMesh) return;
+      if (mesh.isSkinnedMesh) mesh.skeleton.dispose();
       mesh.geometry.dispose();
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
@@ -1559,6 +1561,9 @@ export class ViewerScene {
     const still = this.opts.reducedMotion;
 
     this.updateMachines(frame.machines ?? [], dt, snap);
+    for (const node of this.machineNodes.values()) {
+      if (placeDevice(node, frame.machinePositions)) this.dirty = true;
+    }
     this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret

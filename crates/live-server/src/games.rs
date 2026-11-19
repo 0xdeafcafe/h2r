@@ -131,6 +131,7 @@ struct FrameClock {
     /// Every machine's latest state, by id: a chunk's first frame carries
     /// them all, so a reader that starts there has every door.
     machines: BTreeMap<String, game::FrameMachine>,
+    machine_positions: BTreeMap<u16, game::MachinePosition>,
     /// The sent frames being cut into chunks for the recording.
     chunks: ChunkWriter,
     /// The game's packed live stream.
@@ -147,6 +148,7 @@ impl FrameClock {
             last_sent: now - FRAME_INTERVAL,
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
+            machine_positions: BTreeMap::new(),
             chunks: ChunkWriter::default(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
@@ -156,15 +158,21 @@ impl FrameClock {
 
     /// Packs a sent frame into the game's stream and keeps it for readers
     /// that join before the next keyframe.
-    fn publish(&mut self, frame: Frame) -> Arc<LiveFrame> {
+    fn publish(&mut self, mut frame: Frame) -> Arc<LiveFrame> {
         let seq = self.pack.next_seq();
-        let (packed, keyframe) = match self.pack.encode(&frame) {
+        let (packed, keyframe) = match self
+            .pack
+            .encode_with_machine_baseline(&frame, Some(&self.machine_positions))
+        {
             Ok((bytes, key)) => (Some(bytes), key),
             Err(e) => {
                 eprintln!("live: frame of {} does not pack: {e}", frame.game_id);
                 (None, false)
             }
         };
+        if keyframe && !frame.cinematic {
+            frame.machine_positions = self.machine_positions.values().copied().collect();
+        }
         let live = Arc::new(LiveFrame {
             frame,
             sid: self.pack.sid(),
@@ -192,12 +200,30 @@ impl FrameClock {
                 self.machines.insert(m.id.clone(), m.clone());
             }
         }
+        if frame.cut.is_some() {
+            self.machine_positions.clear();
+        }
+        frame.machine_positions.retain(|m| {
+            if self.machine_positions.get(&m.i) == Some(m) {
+                return false;
+            }
+            if self.machine_positions.len() < game::MAX_MACHINE_POSITIONS
+                || self.machine_positions.contains_key(&m.i)
+            {
+                self.machine_positions.insert(m.i, *m);
+                return true;
+            }
+            false
+        });
         if now.duration_since(self.last_sent) < FRAME_INTERVAL {
             self.unsent.add(frame);
             return false;
         }
         self.last_sent = now;
         frame.absorb(std::mem::take(&mut self.unsent));
+        if frame.cinematic {
+            frame.machine_positions.clear();
+        }
         true
     }
 
@@ -207,6 +233,9 @@ impl FrameClock {
         if self.chunks.starts_chunk(frame) {
             let mut first = frame.clone();
             first.machines = self.machines.values().cloned().collect();
+            if !first.cinematic {
+                first.machine_positions = self.machine_positions.values().copied().collect();
+            }
             self.chunks.push(&first)
         } else {
             self.chunks.push(frame)
@@ -1167,6 +1196,87 @@ mod tests {
             .collect();
         // Device positions travel in 1023 steps: 0 and 1 are exact.
         assert_eq!(machines, [("a", Some(1.0)), ("b", Some(0.0))]);
+    }
+
+    #[test]
+    fn machine_positions_survive_throttling_keyframes_chunks_and_cuts() {
+        use game::MachinePosition;
+
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start, 0);
+        clock.pack = pack::Encoder::new(0, 3);
+        let mut decoder = pack::Decoder::new();
+        let device = |i, p| MachinePosition { i, p };
+        let send = |clock: &mut FrameClock, tick, ms, positions: &[MachinePosition], cut| {
+            let mut f = frame(0, 0);
+            f.tick = tick;
+            f.cut = cut;
+            f.machine_positions.extend_from_slice(positions);
+            if !clock.admit(&mut f, start + Duration::from_millis(ms)) {
+                return None;
+            }
+            let _ = clock.record(&f);
+            Some(clock.publish(f))
+        };
+        let mut decode = |f: Arc<LiveFrame>| decoder.decode(f.packed.as_ref().unwrap()).unwrap();
+
+        let first = send(&mut clock, 10, 0, &[device(0, 0), device(1, 20)], None).unwrap();
+        assert_eq!(
+            decode(first).frame.machine_positions,
+            [device(0, 0), device(1, 20)]
+        );
+        assert!(send(&mut clock, 12, 30, &[device(0, 128), device(1, 50)], None).is_none());
+        let next = send(&mut clock, 14, 70, &[device(0, 255)], None).unwrap();
+        assert_eq!(
+            decode(next).frame.machine_positions,
+            [device(0, 255), device(1, 50)]
+        );
+        let quiet = send(&mut clock, 16, 140, &[device(0, 255)], None).unwrap();
+        assert!(decode(quiet).frame.machine_positions.is_empty());
+
+        let key = send(&mut clock, chunk::CHUNK_TICKS + 2, 210, &[], None).unwrap();
+        let from_key = pack::Decoder::new()
+            .decode(key.packed.as_ref().unwrap())
+            .unwrap();
+        assert!(from_key.keyframe);
+        assert_eq!(
+            from_key.frame.machine_positions,
+            [device(0, 255), device(1, 50)]
+        );
+        let chunk = clock.chunks.finish().unwrap();
+        assert_eq!(
+            chunk::frames(&chunk.bytes).unwrap()[0].machine_positions,
+            from_key.frame.machine_positions
+        );
+
+        let cut_tick = chunk::CHUNK_TICKS + 4;
+        assert!(send(&mut clock, cut_tick, 240, &[device(0, 10)], Some(4)).is_none());
+        let after_cut = send(&mut clock, cut_tick + 2, 280, &[], None).unwrap();
+        assert_eq!(after_cut.frame.cut, Some(4));
+        assert_eq!(after_cut.frame.machine_positions, [device(0, 10)]);
+    }
+
+    #[test]
+    fn machine_positions_baseline_keeps_more_devices_than_world_poses() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start, 0);
+        let mut f = frame(0, 0);
+        f.machine_positions = (0..195)
+            .map(|i| game::MachinePosition { i, p: 127 })
+            .collect();
+        let expected = f.machine_positions.clone();
+        assert!(clock.admit(&mut f, start));
+        assert_eq!(clock.machine_positions.len(), 195);
+        let live = clock.publish(f);
+        let mut decoder = pack::Decoder::new();
+        assert_eq!(
+            decoder
+                .decode(live.packed.as_ref().unwrap())
+                .unwrap()
+                .frame
+                .machine_positions,
+            expected
+        );
     }
 
     #[test]

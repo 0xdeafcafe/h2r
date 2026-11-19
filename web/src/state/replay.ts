@@ -4,7 +4,7 @@
 
 import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
 import { recordedFrame } from "../api/pack";
-import { cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
+import { MachinePositionHistory, cinematicAt, sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, withoutUnplaced, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -80,6 +80,7 @@ export interface ScoreSnapshot {
 
 export class ReplayTimeline {
   readonly frames: Frame[];
+  private readonly travel = new MachinePositionHistory();
   readonly kills: ReplayKill[];
   readonly scores: ScoreSnapshot[];
   readonly startTick: number;
@@ -123,6 +124,7 @@ export class ReplayTimeline {
       clock.place(sorted, ticks);
     }
     this.cuts = clock.cuts;
+    for (const frame of this.frames) this.travel.push(frame);
     const tickOf = (ev: WireEvent, raw: number) => ticks.get(ev) ?? raw;
 
     this.kills = [];
@@ -315,6 +317,10 @@ export class ReplayTimeline {
   }
 
   /** Machines at `tick`. */
+  sampleMachinePositions(tick: number) {
+    return this.travel.sample(this.frames, this.clamp(tick));
+  }
+
   sampleMachines(tick: number): SampledMachine[] {
     return sampleMachines(this.frames, this.clamp(tick));
   }

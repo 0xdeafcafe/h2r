@@ -282,6 +282,7 @@ fn frame(game_id: &str, n: u64) -> Frame {
         bsp: Some(0),
         machines,
         objects,
+        ..Frame::default()
     }
 }
 

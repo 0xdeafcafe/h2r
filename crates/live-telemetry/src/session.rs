@@ -4,7 +4,7 @@ use live_proto::game::{
     Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle,
     GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS,
     MAX_FRAME_SEAT, MAX_FRAME_SHIELD, MAX_FRAME_SHOTS, MAX_FRAME_SPEED, MAX_FRAME_VEHICLES,
-    ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
+    MAX_MACHINE_POSITIONS, MachinePosition, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
@@ -109,6 +109,7 @@ struct Match {
     /// Each machine as last sent, by datum: frames send only those that
     /// moved.
     machines_sent: BTreeMap<u32, MachineState>,
+    machine_positions_sent: BTreeMap<u16, u8>,
     /// Damage reports since the last frame (newest [`MAX_FRAME_HITS`]).
     hits: Vec<HitRecord>,
     /// The scenario's placements, for frame `objects`.
@@ -349,6 +350,8 @@ impl Session {
             }
             current.tick = info.tick;
             current.cut = Some(info.tick);
+            current.machines_sent.clear();
+            current.machine_positions_sent.clear();
             current.last_score_tick = info.tick;
             current.shots.clear();
             current.actor_shots.clear();
@@ -451,6 +454,7 @@ impl Session {
             actor_shots: BTreeMap::new(),
             units: BTreeMap::new(),
             machines_sent: BTreeMap::new(),
+            machine_positions_sent: BTreeMap::new(),
             hits: Vec::new(),
             placements: Placements::default(),
             found: Vec::new(),
@@ -768,6 +772,8 @@ impl Session {
                 MAX_FRAME_ACTORS.saturating_sub(actors.len()),
             );
             let machines = frame_machines(snapshot, &mut current.machines_sent, tags);
+            let machine_positions =
+                frame_machine_positions(snapshot, &mut current.machine_positions_sent);
             let objects = frame_objects(&current.placements, &snapshot.placed, &mut current.found);
             current.sent_tick = current.sent_tick.max(clock);
             self.output.push(Output::Frame(Frame {
@@ -783,6 +789,7 @@ impl Session {
                 hits: frame_hits,
                 bsp: snapshot.bsp,
                 machines,
+                machine_positions,
                 objects,
                 cut: current.cut.take(),
                 cinematic: false,
@@ -1220,6 +1227,32 @@ fn frame_vehicles(
         .collect()
 }
 
+/// A device sample only changes when its quantized value does.
+fn frame_machine_positions(
+    snapshot: &Snapshot,
+    sent: &mut BTreeMap<u16, u8>,
+) -> Vec<MachinePosition> {
+    let mut changed = Vec::new();
+    for m in &snapshot.machines {
+        let Some((i, position)) = m.placement.zip(m.position) else {
+            continue;
+        };
+        let p = (position * f64::from(u8::MAX)).round() as u8;
+        if sent.get(&i) == Some(&p) {
+            continue;
+        }
+        if changed.len() == MAX_MACHINE_POSITIONS {
+            break;
+        }
+        let at = changed.binary_search_by_key(&i, |m: &MachinePosition| m.i);
+        if let Err(at) = at {
+            changed.insert(at, MachinePosition { i, p });
+            sent.insert(i, p);
+        }
+    }
+    changed
+}
+
 /// The machines that moved since they were last sent (all of them the
 /// first time), capped; remembers what it sends.
 fn frame_machines(
@@ -1231,15 +1264,7 @@ fn frame_machines(
     let near = |a: &[f64; 3], b: &[f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < EPSILON);
     let moved = |m: &MachineState| match sent.get(&m.datum) {
         None => true,
-        Some(s) => {
-            !near(&s.pos, &m.pos)
-                || !near(&s.forward, &m.forward)
-                || !near(&s.up, &m.up)
-                || match (s.position, m.position) {
-                    (Some(a), Some(b)) => (a - b).abs() >= EPSILON,
-                    (a, b) => a.is_some() != b.is_some(),
-                }
-        }
+        Some(s) => !near(&s.pos, &m.pos) || !near(&s.forward, &m.forward) || !near(&s.up, &m.up),
     };
     let changed: Vec<MachineState> = snapshot
         .machines
@@ -1273,7 +1298,7 @@ fn frame_machines(
                 pos: m.pos,
                 forward: m.forward,
                 up: m.up,
-                position: m.position,
+                position: None,
             };
             sent.insert(m.datum, m);
             frame
@@ -3340,13 +3365,15 @@ mod tests {
         assert_eq!(
             machines,
             [
-                (Some("scarab_7"), "scarab", Some(0.0)),
+                (Some("scarab_7"), "scarab", None),
                 (Some("scarab_8"), "scarab", None)
             ],
             "all of them in the first frame"
         );
 
-        // Next frame: only the machine that moved, no old hits.
+        assert_eq!(frame.machine_positions, [MachinePosition { i: 7, p: 0 }]);
+
+        // The device animates without moving its object origin.
         state.tick = 4;
         state.hits.clear();
         state.machines = vec![
@@ -3356,11 +3383,38 @@ mod tests {
         session.sample(&state);
         let frame = frames(&mut session).remove(0);
         assert!(frame.hits.is_empty());
-        assert_eq!(frame.machines.len(), 1);
-        assert_eq!(frame.machines[0].position, Some(0.5));
+        assert!(frame.machines.is_empty());
+        assert_eq!(frame.machine_positions, [MachinePosition { i: 7, p: 128 }]);
+
         state.tick = 6;
+        state.machines[0].position = Some(0.501);
         session.sample(&state);
-        assert!(frames(&mut session)[0].machines.is_empty(), "nothing moved");
+        let frame = frames(&mut session).remove(0);
+        assert!(frame.machines.is_empty());
+        assert!(frame.machine_positions.is_empty(), "same quantized value");
+
+        state.tick = 8;
+        state.machines[1].pos[2] = 3.0;
+        state.machines[1].forward = [0.0, 1.0, 0.0];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(frame.machines.len(), 1);
+        assert_eq!(frame.machines[0].pos, [2.0, 2.0, 3.0]);
+        assert_eq!(frame.machines[0].forward, [0.0, 1.0, 0.0]);
+        assert!(frame.machine_positions.is_empty());
+    }
+
+    #[test]
+    fn machine_positions_capture_keeps_more_devices_than_world_poses() {
+        let mut state = snapshot(2, vec![]);
+        state.machines = (0..195)
+            .map(|slot| machine(slot, [0.0; 3], Some(0.5)))
+            .collect();
+        let mut sent = BTreeMap::new();
+        let positions = frame_machine_positions(&state, &mut sent);
+        assert_eq!(positions.len(), 195);
+        assert_eq!(positions[194], MachinePosition { i: 194, p: 128 });
+        assert!(frame_machine_positions(&state, &mut sent).is_empty());
     }
 
     #[test]

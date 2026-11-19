@@ -136,7 +136,7 @@ layers keep their pictures).
   model in model space (same axes conversion), shared by every placement
   of that machine and named after the first, and the child has a
   `matrix`: the placement's rotation, uniform scale and position in glTF
-  axes. These are the only nodes with a transform. The child's `extras`
+  axes. The child's `extras`
   repeat the placement in game coordinates as telemetry frames give a
   moving machine: `pos`, unit `forward` and `up`, and `scale`. The node
   names are stable so a frame's world pose can move the matching node.

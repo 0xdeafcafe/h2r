@@ -148,6 +148,47 @@ fn several_streams_decode_side_by_side() {
     }
 }
 
+#[test]
+fn machine_position_trailer_leaves_the_existing_frame_bytes_intact() {
+    let base = odd_frame();
+    let old = encode_keyframe(&base).unwrap();
+    let with = Frame {
+        machine_positions: vec![
+            crate::game::MachinePosition { i: 7, p: 0 },
+            crate::game::MachinePosition { i: 0x1234, p: 255 },
+        ],
+        ..base
+    };
+    let bytes = encode_keyframe(&with).unwrap();
+    assert_eq!(&bytes[..old.len()], old.as_slice());
+    assert_eq!(&bytes[old.len()..], &[b'M', 2, 7, 0, 0, 0x34, 0x12, 255]);
+    assert_eq!(decode_keyframe(&bytes).unwrap(), quantize(&with).unwrap());
+    assert!(decode_keyframe(&old).unwrap().machine_positions.is_empty());
+    assert!(decode_keyframe(&bytes[..bytes.len() - 1]).is_err());
+}
+
+#[test]
+fn machine_position_trailer_fits_a_full_map_of_devices() {
+    let mut frame = Frame {
+        game_id: "g".into(),
+        machine_positions: (0..255)
+            .map(|i| crate::game::MachinePosition { i, p: i as u8 })
+            .collect(),
+        ..Frame::default()
+    };
+    assert!(validate_frame(&frame).is_ok());
+    let packed = encode_keyframe(&frame).unwrap();
+    assert_eq!(
+        decode_keyframe(&packed).unwrap().machine_positions,
+        frame.machine_positions
+    );
+    frame
+        .machine_positions
+        .push(crate::game::MachinePosition { i: 255, p: 255 });
+    assert!(encode_keyframe(&frame).is_err());
+    assert!(validate_frame(&frame).is_err());
+}
+
 /// A frame with every optional field, odd ids and empty lists.
 fn odd_frame() -> Frame {
     Frame {

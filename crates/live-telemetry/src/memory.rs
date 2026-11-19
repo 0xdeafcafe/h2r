@@ -704,6 +704,18 @@ pub fn animation(guest: &Guest, body: u32) -> ReadResult<Option<Animation>> {
     }))
 }
 
+/// Normalized travel for a machine with an active position animation.
+fn machine_position(guest: &Guest, body: u32) -> ReadResult<Option<f64>> {
+    let channel = body + layout::DEVICE_POSITION_CHANNEL;
+    let graph = guest.u32(channel + layout::CHANNEL_GRAPH)?;
+    let index = guest.u16(channel + layout::CHANNEL_ANIMATION + 2)? as i16;
+    if graph == u32::MAX || index < 0 {
+        return Ok(None);
+    }
+    let position = f64::from(guest.f32(body + layout::DEVICE_POSITION)?);
+    Ok((0.0..=1.0).contains(&position).then_some(position))
+}
+
 /// Every live AI-controlled biped: object type biped, an actor datum at
 /// `+0x12c`, no player at `+0x13c`, and not body-depleted.
 pub fn actors(guest: &Guest) -> ReadResult<Vec<ActorState>> {
@@ -830,11 +842,7 @@ fn scan(guest: &Guest, buffers: &mut ScanBuffers, out: &mut World) -> ReadResult
                     .u16(body + layout::BODY_PLACEMENT_INDEX)
                     .ok()
                     .filter(|p| (*p as i16) >= 0);
-                let position = guest
-                    .f32(body + layout::DEVICE_POSITION)
-                    .ok()
-                    .map(f64::from)
-                    .filter(|p| (0.0..=1.0).contains(p));
+                let position = placement.and_then(|_| machine_position(guest, body).ok().flatten());
                 out.machines.push(MachineState {
                     datum,
                     definition,
@@ -1403,9 +1411,10 @@ pub(crate) mod fixture {
         guest
             .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
             .unwrap();
-        guest
-            .set_f32(body + super::layout::DEVICE_POSITION, position)
-            .unwrap();
+        guest.set_u32(body + 0x18c, 0xe100_0010).unwrap();
+        guest.set_u16(body + 0x190, u16::MAX).unwrap();
+        guest.set_u16(body + 0x192, 2).unwrap();
+        guest.set_f32(body + 0x140, position).unwrap();
     }
 
     /// An object of `object_type` at `slot` from placement `placement`
@@ -2067,7 +2076,14 @@ mod tests {
             )
             .unwrap();
         fixture::put_machine(&mut guest, 4, 7, 0.25);
-        fixture::put_machine(&mut guest, 5, -1, 3.0);
+        fixture::put_machine(&mut guest, 5, 8, 3.0);
+        fixture::put_machine(&mut guest, 6, -1, 0.5);
+        fixture::put_machine(&mut guest, 7, 9, 0.5);
+        fixture::put_machine(&mut guest, 8, 10, 0.5);
+        guest.set_u32(fixture::body(7) + 0x18c, u32::MAX).unwrap();
+        guest.set_u16(fixture::body(8) + 0x192, u16::MAX).unwrap();
+        // Machine power is separate from its position.
+        guest.set_f32(fixture::body(4) + 0x134, 0.75).unwrap();
         let world = world(&guest).unwrap();
         assert_eq!(world.actors.len(), 1);
         let occupied: Vec<_> = world
@@ -2083,11 +2099,14 @@ mod tests {
             ]
         );
         assert_eq!(world.vehicles[0].pos, [10.0, 20.0, 30.0]);
-        assert_eq!(world.machines.len(), 2);
+        assert_eq!(world.machines.len(), 5);
         assert_eq!(world.machines[0].placement, Some(7));
         assert_eq!(world.machines[0].position, Some(0.25));
-        assert_eq!(world.machines[1].placement, None, "not placed");
-        assert_eq!(world.machines[1].position, None, "not a 0..1 position");
+        assert_eq!(world.machines[1].position, None, "out of range");
+        assert_eq!(world.machines[2].placement, None, "not placed");
+        assert_eq!(world.machines[2].position, None);
+        assert_eq!(world.machines[3].position, None, "no graph");
+        assert_eq!(world.machines[4].position, None, "no position animation");
         assert_eq!(world.machines[0].up, [0.0, 0.0, 1.0]);
     }
 

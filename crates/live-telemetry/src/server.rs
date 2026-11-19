@@ -14,13 +14,13 @@
 //! Only the account being refused stops the sink: a ban, or the server
 //! closing the socket at auth [`MAX_AUTH_REFUSALS`] times in a row.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use live_proto::game::{self, Frame, GameCreated, NewGame};
+use live_proto::game::{self, Frame, GameCreated, MachinePosition, NewGame};
 use live_proto::pack;
 use live_proto::sign::{EventBody, KeyPair, MAX_EVENT_SKEW_S, issue_token, sign_batch};
 use live_proto::{ClientMessage, Discovery, ErrorBody, ErrorCode, IngestReply, lxm};
@@ -145,6 +145,10 @@ pub struct ServerSink {
     discovery: Option<Discovery>,
     /// Local game ids to the server's.
     games: HashMap<String, String>,
+    /// Travel survives frame drops and is sent again on the next keyframe.
+    machine_game: String,
+    machine_positions: BTreeMap<u16, MachinePosition>,
+    machine_cut: Option<u64>,
     /// Local games the server would not create: their events are dropped.
     refused: HashSet<String>,
     outbox: VecDeque<Item>,
@@ -180,6 +184,9 @@ impl ServerSink {
             connection: None,
             discovery: None,
             games: HashMap::new(),
+            machine_game: String::new(),
+            machine_positions: BTreeMap::new(),
+            machine_cut: None,
             refused: HashSet::new(),
             outbox: VecDeque::new(),
             timing,
@@ -694,16 +701,21 @@ impl ServerSink {
         self.connect()?;
         frame.game_id = server_id;
         self.refresh_auth()?;
-        let message = frame_message(&mut self.connection.as_mut().unwrap().frames, frame)
+        frame.cut = frame.cut.or(self.machine_cut);
+        let frames = &mut self.connection.as_mut().unwrap().frames;
+        let message = frame_message(frames, frame, Some(&self.machine_positions))
             .map_err(Failure::Transport)?;
         if message.len() > MAX_INGEST_MESSAGE {
+            frames.force_keyframe();
             self.dropped_frames += 1;
             return Ok(());
         }
         self.write(message)?;
         // Replies are optional for frames. Drain what is already there,
         // but never wait on the guest's behalf.
-        self.drain()
+        self.drain()?;
+        self.machine_cut = None;
+        Ok(())
     }
 }
 
@@ -755,6 +767,22 @@ impl Sink for ServerSink {
         if let Some(error) = &self.fatal {
             return Err(error.clone());
         }
+        if self.machine_game != frame.game_id {
+            self.machine_game.clone_from(&frame.game_id);
+            self.machine_positions.clear();
+            self.machine_cut = None;
+        }
+        if frame.cut.is_some() {
+            self.machine_positions.clear();
+            self.machine_cut = frame.cut;
+        }
+        for m in &frame.machine_positions {
+            if self.machine_positions.len() < game::MAX_MACHINE_POSITIONS
+                || self.machine_positions.contains_key(&m.i)
+            {
+                self.machine_positions.insert(m.i, *m);
+            }
+        }
         let Some(server_id) = self.games.get(&frame.game_id).cloned() else {
             self.dropped_frames += 1;
             return Ok(());
@@ -796,8 +824,12 @@ impl Drop for ServerSink {
 /// A frame as an ingest message: one packed record in a binary message, or
 /// (a frame the format cannot carry, which leaves the stream as it was)
 /// the JSON `Frame` message; the server takes both.
-fn frame_message(frames: &mut pack::Encoder, frame: Frame) -> Result<Message, String> {
-    match frames.encode(&frame) {
+fn frame_message(
+    frames: &mut pack::Encoder,
+    frame: Frame,
+    baseline: Option<&BTreeMap<u16, MachinePosition>>,
+) -> Result<Message, String> {
+    match frames.encode_with_machine_baseline(&frame, baseline) {
         Ok((record, _)) => {
             let mut bytes = Vec::with_capacity(record.len() + 3);
             pack::push_record(&mut bytes, &record);
@@ -1035,7 +1067,8 @@ mod tests {
         let mut decoder = pack::Decoder::new();
         let sample = live_proto::samples::multiplayer(4);
         for (n, frame) in sample.iter().enumerate() {
-            let Message::Binary(bytes) = frame_message(&mut frames, frame.clone()).unwrap() else {
+            let Message::Binary(bytes) = frame_message(&mut frames, frame.clone(), None).unwrap()
+            else {
                 panic!("frame {n} not packed");
             };
             assert!(bytes.len() < MAX_INGEST_MESSAGE);
@@ -1050,10 +1083,11 @@ mod tests {
         let mut odd = sample[0].clone();
         odd.players[0].pos[0] = f64::NAN;
         assert!(matches!(
-            frame_message(&mut frames, odd).unwrap(),
+            frame_message(&mut frames, odd, None).unwrap(),
             Message::Text(_)
         ));
-        let Message::Binary(bytes) = frame_message(&mut frames, sample[3].clone()).unwrap() else {
+        let Message::Binary(bytes) = frame_message(&mut frames, sample[3].clone(), None).unwrap()
+        else {
             panic!("not packed");
         };
         let record = pack::records(&bytes).next().unwrap().unwrap();

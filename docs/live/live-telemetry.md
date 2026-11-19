@@ -125,12 +125,19 @@ machines"):
   The attacker is the report's owner player (`p<index>`), else its owner
   object. The hook is optional: without that entry frames carry no hits.
 - `bsp`: the game globals' active structure BSP (`G+0x02`).
-- `machines`: every machine (object type 7) whose position, forward, up or
-  device position changed by 0.001 or more since it was last sent; all of
-  them in the game's first frame. `node` is the `mach` stem and the
-  object's scenario placement index (`+0x1a`), matching map.glb's
-  `machines` children, which are named after the scenario's machine block
-  index.
+- `machines`: machine objects (type 7) whose world position, forward or
+  up changed by 0.001 or more since last sent. The first sample includes
+  the pose. `node` is the `mach` stem and scenario placement index, which
+  identify a placed machine in map.glb. The viewer applies the pose to
+  the whole machine, including free movers.
+- `machine_positions`: placed machines with a valid position animation
+  channel. The object body holds the scenario index at `+0x1a`, normalized
+  travel at `+0x140`, and the channel at `+0x18c` (see
+  [live-gamestate.md](live-gamestate.md#unit-stance-actions-damage-and-machines)).
+  The sender rounds travel to 0..255 and sends each index once at first
+  sight, then on changes to that byte. This works independently of the
+  object's root pose and tag name. The viewer samples the device animation
+  with those values. Earlier recordings keep their world-pose playback.
 
 Game starts say their `kind`: `campaign` for campaign mode, with
 `difficulty` from the active options' `+0x12a` word (0 easy to 3
@@ -643,7 +650,7 @@ without padding.
 | stance | `u(3)` | `stand`, `crouch`, `airborne`, `vehicle`, `dead` |
 | actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
 | grenade | `u(1)` | `frag`, `plasma` |
-| device position | `u(10)` | 0..1 in 1023 steps |
+| legacy device position | `u(10)` | 0..1 in 1023 steps |
 | velocity | three `seg(8)`; in a delta three `seg(4)`, the difference from the previous quantised value | 1/64 unit a second |
 | fire | `eg(1)` | a tick mask, bit k a shot k ticks before the frame's tick (0 is not sent) |
 | body | `u(6)` | 0..1 in 63 steps |
@@ -703,8 +710,23 @@ change in its quantised value, so jitter below the quantum costs nothing.
 | vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied) |
 | actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
 | hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
-| machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
+| machine | opt node string, **id**, kind string, pos, forward, up, opt legacy device position |
 | object | **kind**, **index**, gone `u(1)`, opt pos, opt forward, opt up |
+
+An optional machine-position trailer follows the frame body, starting on
+the next byte boundary. Its bytes are `0x4d`, a count (at most 255), then
+one little-endian `u16` scenario placement index and one `u8` position
+per entry, in index order. Each entry is absolute. The trailer is absent
+when the list is empty. The body and its version are unchanged, including
+the legacy 10-bit field in the `machines` list.
+
+The ingest sink retains the latest travel for its current game so a packed
+keyframe can restore it after a reconnect or Worker wake. The server
+carries travel from throttled frames into the next delivered frame. Live
+keyframes and recorded chunk starts repeat the known values so a reader
+can start there. Checkpoint cuts reset the travel baseline. The reader
+holds each position until its next update and interpolates over the
+interval between adjacent delivered frames.
 
 ### Streams, keyframes and gaps
 
@@ -1020,10 +1042,10 @@ relying on live output, check in this order:
     type order (unverified); body and shield amounts
     as vitality fractions (likely); a grenade's or vehicle's weapon falls
     back to the damage effect's stem.
-12. Machines: object type 7 is a machine and the scarab is one (its `mach`
-    tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
-    device position `+0x140` moving 0 to 1 as doors open and elevators
-    travel (likely); the active BSP switching between campaign zones.
+12. Machines: in-game comparison of travel and viewer poses for a door,
+    a lift and a looping device. Check a replay seek after a long idle
+    period and a campaign checkpoint cut. A FakeGuest test covers the
+    traced offsets and rejects inactive channels and out-of-range travel.
 13. Scenario objects: crates knocked about in campaign show as moved in the
     3D viewer and settle where they stop; a weapon picked up off the floor
     and a multiplayer spawn's weapon after a pickup go gone and come back

@@ -391,7 +391,7 @@ export function withoutUnplaced(f: Frame): Frame {
 }
 
 /** Index of the last frame with tick <= `tick` in a tick-sorted array, or -1. */
-export function findFrame(frames: readonly Frame[], tick: number): number {
+export function findFrame(frames: readonly { tick: number }[], tick: number): number {
   let lo = 0, hi = frames.length - 1, ans = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
@@ -672,6 +672,79 @@ export function sampleMachines(frames: readonly Frame[], tick: number): SampledM
   return out;
 }
 
+/** The animation endpoints at the render tick. A looping rig can blend
+ *  across the seam using the same endpoints. */
+export interface SampledMachinePosition {
+  from: number;
+  to: number;
+  mix: number;
+}
+
+export const MAX_MACHINE_POSITIONS = 255;
+
+interface TravelSample {
+  tick: number;
+  position: number;
+}
+
+/** Only the received changes are stored. An unchanged device holds its
+ *  position through quiet frames, including when a replay seeks there. */
+export class MachinePositionHistory {
+  private readonly positions = new Map<number, TravelSample[]>();
+  private readonly cuts: { tick: number }[] = [];
+
+  push(frame: Frame): void {
+    if (frame.cut != null) this.cuts.push({ tick: frame.tick });
+    if (!Array.isArray(frame.machine_positions)) return;
+    const cut = this.cuts.at(-1)?.tick ?? -Infinity;
+    for (let n = 0; n < Math.min(frame.machine_positions.length, MAX_MACHINE_POSITIONS); n++) {
+      const m = frame.machine_positions[n];
+      if (!m || !Number.isInteger(m.i) || m.i < 0 || m.i > 0x7fff ||
+          !Number.isInteger(m.p) || m.p < 0 || m.p > 255) continue;
+      let samples = this.positions.get(m.i);
+      if (!samples) { samples = []; this.positions.set(m.i, samples); }
+      const position = m.p / 255;
+      const last = samples.at(-1);
+      if (last?.tick === frame.tick) last.position = position;
+      else if (!last || last.tick < cut || last.position !== position) samples.push({ tick: frame.tick, position });
+    }
+  }
+
+  /** Live only: keep the last word before the buffer's first frame. */
+  prune(tick: number): void {
+    const cutAt = findFrame(this.cuts, tick);
+    const cut = this.cuts[cutAt]?.tick ?? -Infinity;
+    if (cutAt > 0) this.cuts.splice(0, cutAt);
+    for (const [i, samples] of this.positions) {
+      const last = findFrame(samples, tick);
+      if (last > 0) samples.splice(0, last);
+      if (samples[0]!.tick < cut) samples.shift();
+      if (!samples.length) this.positions.delete(i);
+    }
+  }
+
+  sample(frames: readonly Frame[], tick: number): ReadonlyMap<number, SampledMachinePosition> | undefined {
+    if (!this.positions.size) return;
+    const at = findFrame(frames, tick);
+    if (at < 0 || frames[at]!.cinematic) return;
+    const cut = this.cuts[findFrame(this.cuts, tick)]?.tick ?? -Infinity;
+    const before = frames[at]!.tick;
+    const next = frames[at + 1];
+    const blend = next && next.cut == null && !next.cinematic && next.tick > before;
+    const mix = blend ? (tick - before) / (next.tick - before) : 0;
+    const out = new Map<number, SampledMachinePosition>();
+    for (const [i, samples] of this.positions) {
+      const index = findFrame(samples, tick);
+      const a = samples[index];
+      if (!a || a.tick < cut) continue;
+      const b = samples[index + 1];
+      const follows = blend && b?.tick === next.tick;
+      out.set(i, { from: a.position, to: follows ? b.position : a.position, mix: follows ? mix : 0 });
+    }
+    return out.size ? out : undefined;
+  }
+}
+
 /** Most scenario objects a frame is read for. */
 export const MAX_OBJECTS = 2048;
 
@@ -742,6 +815,7 @@ export class FrameBuffer {
 
   /** Every machine heard of, as last sent. */
   private machines = new Map<string, SampledMachine>();
+  private travel = new MachinePositionHistory();
 
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
 
@@ -757,16 +831,21 @@ export class FrameBuffer {
         // The game restarted its tick counter: start over.
         this.frames = [];
         this.machines.clear();
+        this.travel = new MachinePositionHistory();
         this.offset = null;
       } else return;
     }
     this.frames.push(frame);
+    this.travel.push(frame);
     // Machines are only sent when they move: keep the last word on each.
     for (const raw of (frame.machines ?? []).slice(0, MAX_MACHINES)) {
       const m = fromFrameMachine(raw);
       if (m && (this.machines.has(m.id) || this.machines.size < MAX_MACHINES)) this.machines.set(m.id, m);
     }
-    if (this.frames.length > this.capacity) this.frames.splice(0, this.frames.length - this.capacity);
+    if (this.frames.length > this.capacity) {
+      this.frames.splice(0, this.frames.length - this.capacity);
+      this.travel.prune(this.frames[0]?.tick ?? frame.tick);
+    }
     for (const p of frame.players) {
       const [x, y, z] = p.pos;
       const b = this.bounds;
@@ -818,6 +897,10 @@ export class FrameBuffer {
     const out = new Map(this.machines);
     for (const m of sampleMachines(this.frames, this.renderTick(now))) out.set(m.id, m);
     return [...out.values()];
+  }
+
+  sampleMachinePositions(now: number): ReadonlyMap<number, SampledMachinePosition> | undefined {
+    return this.travel.sample(this.frames, this.renderTick(now));
   }
 
   /** Scenario objects out of place at the render tick (null before the

@@ -6,7 +6,7 @@
 // The golden vectors in test/fixtures/pack, written by the Rust encoder,
 // prove the two agree.
 
-import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "./types";
+import type { Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, MachinePosition } from "./types";
 
 /** The version written now. Version 4 adds units' animation; version 3
  *  added units' velocity, fire ticks, vitality, seat and action ticks, hits'
@@ -28,6 +28,7 @@ const SHIELD_SCALE = 32;
 const ANIM_SCALE = 16;
 const DEVICE_BITS = 10;
 const DEVICE_MAX = 2 ** DEVICE_BITS - 1;
+const MACHINE_POSITIONS_TRAILER = 0x4d;
 const MAX_STRING = 255;
 const MAX_STRINGS = 4096;
 const MAX_NEW_STRINGS = 1024;
@@ -75,6 +76,12 @@ export class BitReader {
       this.pos += take;
     }
     return v;
+  }
+
+  /** Bytes after the bit-packed frame, past its padding. */
+  trailer(): Uint8Array | undefined {
+    const offset = Math.ceil(this.pos / 8);
+    if (offset < this.bytes.length) return this.bytes.subarray(offset);
   }
 
   bit(): boolean {
@@ -494,12 +501,29 @@ export class FrameDecoder {
     if (hitList.length) frame.hits = hitList;
     if (state.bsp !== null) frame.bsp = state.bsp;
     if (machines.length) frame.machines = machines;
+    const positions = readMachinePositions(r.trailer());
+    if (positions) frame.machine_positions = positions;
     if (objects.length) frame.objects = objects;
     if (cut !== null) frame.cut = cut;
     if (cinematic) frame.cinematic = true;
     this.streams.set(sid, state);
     return { sid, seq, keyframe, frame };
   }
+}
+
+/** An optional trailer with one u16 placement index and u8 travel per sample. */
+function readMachinePositions(bytes?: Uint8Array): MachinePosition[] | undefined {
+  if (bytes?.[0] !== MACHINE_POSITIONS_TRAILER) return;
+  const count = bytes[1];
+  if (count === undefined || bytes.length !== 2 + count * 3) {
+    throw new PackError("bad machine positions trailer");
+  }
+  const positions: MachinePosition[] = [];
+  for (let at = 2; at < bytes.length; at += 3) {
+    const i = bytes[at]! | (bytes[at + 1]! << 8);
+    positions.push({ i, p: bytes[at + 2]! });
+  }
+  return positions;
 }
 
 /** The records of a container (LEB128 length, then the bytes). */

@@ -16,13 +16,14 @@
 //! `web/test/fixtures/pack` (written by this module's tests) prove both
 //! sides agree.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::{PI, TAU};
 
 use crate::game::{
     ACTIONS, Frame, FrameActor, FrameAnim, FrameHit, FrameMachine, FrameObject, FramePlayer,
     FrameVehicle, GRENADES, MAX_ANIM_FRAME, MAX_FRAME_ACTIONS, MAX_FRAME_ACTORS, MAX_FRAME_HITS,
-    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
+    MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_VEHICLES, MAX_MACHINE_POSITIONS, MAX_PLAYERS,
+    ObjectKind, STANCES,
 };
 
 /// The packed format's version, the first four bits of every frame. Version
@@ -56,6 +57,9 @@ pub const SHIELD_SCALE: f64 = 32.0;
 pub const ANIM_SCALE: f64 = 16.0;
 /// Machine device positions (0..1) in 10 bits.
 pub const DEVICE_BITS: u32 = 10;
+
+/// An optional, byte-aligned trailer after the legacy frame body.
+const MACHINE_POSITIONS_TRAILER: u8 = b'M';
 /// Most strings a stream's table holds before the encoder starts over with
 /// a keyframe.
 pub const MAX_STRINGS: usize = 4096;
@@ -1137,6 +1141,7 @@ fn frame_of(
             .map(|b| u32::try_from(b).map_err(|_| PackError::Bad("bsp out of range")))
             .transpose()?,
         machines: map(&lists[3], machine_of)?,
+        machine_positions: Vec::new(),
         objects: map(&lists[4], object_of)?,
         cut,
         cinematic,
@@ -1147,7 +1152,7 @@ fn frame_of(
 /// quantised as the packed format carries it.
 pub fn quantize(frame: &Frame) -> Result<Frame> {
     let lists = Lists::of(frame)?;
-    frame_of(
+    let mut quantized = frame_of(
         &frame.game_id,
         frame.tick,
         frame.bsp.map(u64::from),
@@ -1155,7 +1160,11 @@ pub fn quantize(frame: &Frame) -> Result<Frame> {
         frame.cinematic,
         &lists.lists,
         &lists.hits,
-    )
+    )?;
+    quantized
+        .machine_positions
+        .clone_from(&frame.machine_positions);
+    Ok(quantized)
 }
 
 // ------------------------------------------------------------- coding
@@ -1577,7 +1586,22 @@ impl Encoder {
     /// One packed frame; `Ok((bytes, keyframe))`. A frame that cannot be
     /// packed leaves the stream as it was.
     pub fn encode(&mut self, frame: &Frame) -> Result<(Vec<u8>, bool)> {
+        self.encode_with_machine_baseline(frame, None)
+    }
+
+    /// On a keyframe, repeat the current positions for readers joining or
+    /// recovering their stream. The caller's baseline includes this frame.
+    pub fn encode_with_machine_baseline(
+        &mut self,
+        frame: &Frame,
+        baseline: Option<&BTreeMap<u16, crate::game::MachinePosition>>,
+    ) -> Result<(Vec<u8>, bool)> {
         let lists = Lists::of(frame)?;
+        if frame.machine_positions.len() > MAX_MACHINE_POSITIONS
+            || baseline.is_some_and(|b| b.len() > MAX_MACHINE_POSITIONS)
+        {
+            return Err(PackError::Value("too many machine positions"));
+        }
         if frame.game_id.len() > MAX_STRING {
             return Err(PackError::Value("game id too long"));
         }
@@ -1680,7 +1704,13 @@ impl Encoder {
         self.state = Some((state, table));
         self.next_seq += 1;
         self.since_key = if key { 1 } else { self.since_key + 1 };
-        Ok((w.finish(), key))
+        let mut bytes = w.finish();
+        if let Some(baseline) = baseline.filter(|_| key && !frame.cinematic) {
+            write_machine_positions(&mut bytes, baseline.values());
+        } else {
+            write_machine_positions(&mut bytes, frame.machine_positions.iter());
+        }
+        Ok((bytes, key))
     }
 }
 
@@ -1777,7 +1807,7 @@ impl Decoder {
                 read_delta(&mut r, fields, *max, &mut prev.lists[n], &state.strings)?
             };
         }
-        let frame = frame_of(
+        let mut frame = frame_of(
             &state.game_id,
             state.tick,
             state.bsp,
@@ -1786,6 +1816,7 @@ impl Decoder {
             &state.lists,
             &hits,
         )?;
+        frame.machine_positions = read_machine_positions(&bytes[r.pos.div_ceil(8)..])?;
         if !self.streams.contains_key(&sid) && self.streams.len() >= MAX_STREAMS {
             return Err(PackError::Bad("too many streams"));
         }
@@ -1797,6 +1828,40 @@ impl Decoder {
             frame,
         })
     }
+}
+
+fn write_machine_positions<'a>(
+    bytes: &mut Vec<u8>,
+    positions: impl ExactSizeIterator<Item = &'a crate::game::MachinePosition>,
+) {
+    let count = positions.len();
+    if count == 0 {
+        return;
+    }
+    bytes.extend([MACHINE_POSITIONS_TRAILER, count as u8]);
+    for m in positions {
+        bytes.extend(m.i.to_le_bytes());
+        bytes.push(m.p);
+    }
+}
+
+fn read_machine_positions(bytes: &[u8]) -> Result<Vec<crate::game::MachinePosition>> {
+    let [MACHINE_POSITIONS_TRAILER, rest @ ..] = bytes else {
+        return Ok(Vec::new());
+    };
+    let Some((&count, records)) = rest.split_first() else {
+        return Err(PackError::Short);
+    };
+    if records.len() != usize::from(count) * 3 {
+        return Err(PackError::Bad("bad machine positions trailer"));
+    }
+    Ok(records
+        .chunks_exact(3)
+        .map(|r| crate::game::MachinePosition {
+            i: u16::from_le_bytes([r[0], r[1]]),
+            p: r[2],
+        })
+        .collect())
 }
 
 /// A frame packed on its own (a keyframe of stream 0): a recorded frame.

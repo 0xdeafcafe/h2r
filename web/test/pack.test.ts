@@ -19,6 +19,18 @@ describe("packed frames", () => {
     });
   }
 
+  test("decodes a standalone three-byte machine position after the original frame", () => {
+    const base = records(load("odd").bin)[0]!;
+    const bytes = new Uint8Array(base.length + 8);
+    bytes.set(base);
+    bytes.set([0x4d, 2, 7, 0, 0, 0x34, 0x12, 255], base.length);
+    expect(decodeKeyframe(bytes)).toEqual({
+      ...decodeKeyframe(base),
+      machine_positions: [{ i: 7, p: 0 }, { i: 0x1234, p: 255 }],
+    });
+    expect(() => decodeKeyframe(bytes.subarray(0, -1))).toThrow("bad machine positions trailer");
+  });
+
   test("a turret keeps its parent and aim; version 1 vehicles have neither", () => {
     const turret = load("multiplayer").json[0].vehicles.find((v: { kind: string }) => v.kind === "chaingun");
     expect(turret.parent).toBe("90040004");
