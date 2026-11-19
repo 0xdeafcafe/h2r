@@ -516,6 +516,87 @@ impl ListLayout {
     }
 }
 
+/// Top-left offsets from the list's animated anchor, in UI units.
+#[derive(Clone, Copy)]
+pub(crate) struct ScrollArrows {
+    pub up: [i16; 2],
+    pub down: [i16; 2],
+}
+
+/// The two calls to UI_QUAD_TO_SCREEN in the stock list draw (0x24bda2).
+const SCROLL_UP_RETURN: u32 = 0x0024_beeb;
+const SCROLL_DOWN_RETURN: u32 = 0x0024_bfed;
+
+fn place_scroll_arrow(
+    m: &mut dyn GuestMemory,
+    cpu: &runtime::CpuAbi,
+    arrows_for: impl FnOnce(u32) -> Option<ScrollArrows>,
+) -> Result<(), MemFault> {
+    let up = match m.u32(cpu.esp)? {
+        SCROLL_UP_RETURN => true,
+        SCROLL_DOWN_RETURN => false,
+        _ => return Ok(()),
+    };
+    // The caller saved the list at EBP-0xc and its animated rectangle at
+    // EBP-0x24. List layout stores the anchor at the left and upper edges
+    // (rectangle words 1 and 2, respectively).
+    let list = m.u32(cpu.ebp.wrapping_sub(0xc))?;
+    let Some(arrows) = arrows_for(m.u32(list)?) else {
+        return Ok(());
+    };
+    let [dx, dy] = if up { arrows.up } else { arrows.down };
+    let word = |offset| m.u16(cpu.ebp.wrapping_sub(offset)).map(|v| f32::from(v as i16));
+    // Keep the viewport adjustment the drawer made for split screen
+    // (0x2363d4 writes X at EBP-8 and Y at EBP-4).
+    let x = word(0x22)? + f32::from(dx) + word(8)?;
+    let y = word(0x20)? + f32::from(dy) + word(4)?;
+    let quad = cpu.esi;
+    let read = |offset| m.u32(quad.wrapping_add(offset)).map(f32::from_bits);
+    // The transform's float quad is left, right, top, bottom.
+    let width = read(4)? - read(0)?;
+    let height = read(8)? - read(12)?;
+    let mut bytes = [0; 16];
+    for (dst, value) in bytes.chunks_exact_mut(4).zip([x, x + width, y, y - height]) {
+        dst.copy_from_slice(&value.to_le_bytes());
+    }
+    m.write(quad, &bytes)
+}
+
+pub(crate) struct ScrollArrowLayout;
+
+impl feature::Feature for ScrollArrowLayout {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new("list-scroll-arrows", "Position scroll arrows on moved lists")
+            .doc("docs/formats/ui.md")
+    }
+
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        b.raw().before(&points::UI_QUAD_TO_SCREEN, "place scroll arrows", |c| {
+            let mut mem = c.ctx.runtime().memory();
+            place_scroll_arrow(&mut *mem, c.cpu, |vtable| {
+                LAYOUTS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .find(|layout| layout.list_vtable == vtable)
+                    .and_then(|layout| layout.scroll_arrows)
+            })
+            .map_err(|m| runtime::GuestFault {
+                addr: m.addr,
+                len: m.len as usize,
+                access: if m.write {
+                    runtime::guest::Access::Write
+                } else {
+                    runtime::guest::Access::Read
+                },
+                reason: runtime::guest::FaultReason::Unmapped,
+            })?;
+            Ok(feature::Flow::Continue)
+        });
+        Ok(())
+    }
+}
+
 /// Our classes' extra item widgets: by list vtable, how many each list
 /// needs, the pool they come from, and which list holds which slot.
 struct ExtraItems {
@@ -639,8 +720,15 @@ pub fn copy_tag(
     Ok(Some(at))
 }
 
-/// The classes with a layout: their screen vtable, table page and layout.
-static LAYOUTS: Mutex<Vec<(u32, u32, ListLayout)>> = Mutex::new(Vec::new());
+/// The screen vtable is also the base of the class's table page.
+struct RegisteredLayout {
+    screen_vtable: u32,
+    list_vtable: u32,
+    list: ListLayout,
+    scroll_arrows: Option<ScrollArrows>,
+}
+
+static LAYOUTS: Mutex<Vec<RegisteredLayout>> = Mutex::new(Vec::new());
 
 /// Whether `vtable` is the screen vtable of a class with a layout.
 pub fn has_layout(vtable: u32) -> bool {
@@ -649,7 +737,7 @@ pub fn has_layout(vtable: u32) -> bool {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .any(|(v, _, _)| *v == vtable)
+            .any(|layout| layout.screen_vtable == vtable)
 }
 
 /// What the screen-tag function returns for `screen`, given that it found
@@ -669,22 +757,22 @@ pub fn served_tag(
     if retail == 0 {
         return Ok(None);
     }
-    let Some((tables, layout)) = LAYOUTS
+    let Some(layout) = LAYOUTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .iter()
-        .find(|(v, _, _)| *v == vtable)
-        .map(|(_, t, l)| (*t, *l))
+        .find(|layout| layout.screen_vtable == vtable)
+        .map(|layout| layout.list)
     else {
         return Ok(None);
     };
-    let at = tables + TAG_COPY;
-    if m.u32(tables + TAG_SOURCE)? == retail {
+    let at = vtable + TAG_COPY;
+    if m.u32(vtable + TAG_SOURCE)? == retail {
         return Ok(Some(at));
     }
     let made = copy_tag(m, retail, at, &layout)?;
     if made.is_some() {
-        m.set_u32(tables + TAG_SOURCE, retail)?;
+        m.set_u32(vtable + TAG_SOURCE, retail)?;
     }
     Ok(made)
 }
@@ -1034,6 +1122,7 @@ pub struct ListClass {
     picture: Option<PictureSpec>,
     frame: Option<PictureSpec>,
     layout: Option<ListLayout>,
+    scroll_arrows: Option<ScrollArrows>,
     action: Option<Action>,
     buttons: Option<Buttons>,
     sideways: bool,
@@ -1061,6 +1150,7 @@ impl ListClass {
             picture: None,
             frame: None,
             layout: None,
+            scroll_arrows: None,
             action: None,
             buttons: None,
             sideways: false,
@@ -1110,6 +1200,12 @@ impl ListClass {
     /// description shows one.
     pub fn frame(mut self, spec: PictureSpec) -> Self {
         self.frame = Some(spec);
+        self
+    }
+    /// Place the stock scroll arrows at these offsets. The list skin
+    /// still supplies their bitmaps and the engine decides when to show them.
+    pub(crate) fn scroll_arrows(mut self, arrows: ScrollArrows) -> Self {
+        self.scroll_arrows = Some(arrows);
         self
     }
     /// With art and texts of its own that belong to no row: retail
@@ -2094,10 +2190,17 @@ impl feature::Feature for ListClass {
             }
             None => self.layout,
         };
+        {
+            let mut layouts = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
+            layouts.retain(|layout| layout.screen_vtable != e.screen_vtable);
+            layouts.extend(layout.map(|list| RegisteredLayout {
+                screen_vtable: e.screen_vtable,
+                list_vtable: e.list_vtable,
+                list,
+                scroll_arrows: self.scroll_arrows,
+            }));
+        }
         if let Some(layout) = layout {
-            let mut v = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
-            v.retain(|(vt, _, _)| *vt != tables);
-            v.push((tables, tables, layout));
             let extra = layout.extra_items();
             if extra > 0 {
                 let size = (EXTRA_SCREENS * extra * crate::speaker_row::ITEM_SIZE + 0xfff) & !0xfff;
@@ -2240,6 +2343,59 @@ mod tests {
         }
         g.map(TABLES, 0x1000).map(STACK - 0x800, 0x1000);
         g
+    }
+
+    #[test]
+    fn scroll_arrows_clear_the_level_select_bracket() {
+        use crate::skulls_menu::{FRAME, FRAME_SIZE, LIST_LAYOUT, PICTURE_BOX, SCROLL_ARROWS};
+
+        let mut g = guest();
+        let frame = STACK + 0x80;
+        let quad = frame - 0x34;
+        let vt = entries().list_vtable;
+        let [anchor_x, anchor_y] = LIST_LAYOUT.anchor;
+        g.put_u32(TABLES, vt)
+            .put_u32(frame - 0xc, TABLES)
+            .put_u16(frame - 0x22, anchor_x as u16)
+            .put_u16(frame - 0x20, anchor_y as u16);
+        let cpu = runtime::CpuAbi {
+            esp: STACK,
+            ebp: frame,
+            esi: quad,
+            ..Default::default()
+        };
+        let frame_right = f32::from(FRAME.at[0]) + f32::from(FRAME_SIZE[0]);
+        let picture_left = f32::from(PICTURE_BOX[1]);
+        let read_quad = |g: &FakeGuest| {
+            [0, 4, 8, 12].map(|offset| f32::from_bits(g.u32(quad + offset).unwrap()))
+        };
+        let arrows_for = |vtable| (vtable == vt).then_some(SCROLL_ARROWS);
+        for (return_pc, top, expected) in [
+            (SCROLL_UP_RETURN, 154.0_f32, [9.0, 36.0, 176.0, 159.0]),
+            (SCROLL_DOWN_RETURN, 86.0, [9.0, 36.0, -142.0, -159.0]),
+        ] {
+            g.put_u32(STACK, return_pc);
+            let stock = [-245.0_f32, -218.0, top, top - 17.0];
+            for (offset, value) in [0, 4, 8, 12].into_iter().zip(stock) {
+                g.put_u32(quad + offset, value.to_bits());
+            }
+            g.put_u32(TABLES, CONTROLS_LIST_VTABLE.base);
+            place_scroll_arrow(&mut g, &cpu, arrows_for).unwrap();
+            assert_eq!(read_quad(&g), stock, "a different list class");
+            g.put_u32(TABLES, vt);
+            place_scroll_arrow(&mut g, &cpu, arrows_for).unwrap();
+            let placed = read_quad(&g);
+            assert_eq!(placed, expected);
+            assert!(frame_right < placed[0] && placed[1] < picture_left);
+        }
+
+        g.put_u16(frame - 8, 20).put_u16(frame - 4, (-16i16) as u16);
+        place_scroll_arrow(&mut g, &cpu, arrows_for).unwrap();
+        assert_eq!(read_quad(&g), [29.0, 56.0, -158.0, -175.0]);
+
+        g.put_u32(STACK, 0x1234).put_u16(frame - 8, 0);
+        place_scroll_arrow(&mut g, &cpu, arrows_for).unwrap();
+        assert_eq!(read_quad(&g), [29.0, 56.0, -158.0, -175.0], "another draw");
     }
 
     /// What the Controls constructor leaves: vtables, the press record, and
@@ -3603,7 +3759,12 @@ mod tests {
         g.map(OURS, 4).map(THEIRS, 4);
         g.put_u32(OURS, TABLES)
             .put_u32(THEIRS, CONTROLS_SCREEN_VTABLE.base);
-        LAYOUTS.lock().unwrap().push((TABLES, TABLES, LAYOUT));
+        LAYOUTS.lock().unwrap().push(RegisteredLayout {
+            screen_vtable: TABLES,
+            list_vtable: entries().list_vtable,
+            list: LAYOUT,
+            scroll_arrows: None,
+        });
         assert!(has_layout(TABLES));
         assert_eq!(served_tag(&mut g, THEIRS, retail), Ok(None));
         assert_eq!(served_tag(&mut g, OURS, 0), Ok(None), "no retail tag");
@@ -3614,7 +3775,10 @@ mod tests {
         g.put_u32(at, 0x77);
         assert_eq!(served_tag(&mut g, OURS, retail), Ok(Some(at)));
         assert_eq!(g.u32(at), Ok(0x77));
-        LAYOUTS.lock().unwrap().retain(|(v, _, _)| *v != TABLES);
+        LAYOUTS
+            .lock()
+            .unwrap()
+            .retain(|layout| layout.screen_vtable != TABLES);
     }
 
     /// Slot 10 of a class with an action: Start runs it and is handled;

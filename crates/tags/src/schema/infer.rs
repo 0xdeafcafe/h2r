@@ -317,7 +317,22 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
     apply_engine_refs(&mut schema);
     pair_raw_sizes(&mut schema, maps);
     apply_engine_strides(&mut schema);
+    apply_device_change_colors(&mut schema);
     schema
+}
+
+/// Retail `ctrl` and `mach` leave `obje +0xac` empty, so inference misses
+/// the change-color block that rebuilt Halo 1 devices can fill. Use the
+/// shared object definition, including both child blocks.
+pub(super) fn apply_device_change_colors(schema: &mut Schema) {
+    let obje = crate::defs::Defs::builtin().structs["obje"]
+        .schema_fields()
+        .expect("object definition has a relocation layout");
+    for group in [FourCC(*b"ctrl"), FourCC(*b"mach")] {
+        if let Some(root) = schema.groups.get_mut(&group) {
+            root.fields.insert(0xac, obje.fields[&0xac].clone());
+        }
+    }
 }
 
 /// Words the engine reads as data that inference takes for raw-resource

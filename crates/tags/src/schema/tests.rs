@@ -138,6 +138,46 @@ fn checked_in_schema_parses() {
 }
 
 #[test]
+fn device_change_color_pointers_are_relocatable() {
+    let schema = Schema::builtin();
+    let mut inferred = schema.clone();
+    for group in [FourCC(*b"ctrl"), FourCC(*b"mach")] {
+        inferred.groups.get_mut(&group).unwrap().fields.remove(&0xac);
+
+        // Reproduce the address word that fresh a30 rejected, followed
+        // through four color slots and the first slot's child arrays.
+        let layout = &schema.groups[&group];
+        let colors: u32 = 0x80cf_e5f8;
+        let address = colors - layout.size;
+        let permutations = colors + 4 * 0x10;
+        let functions = permutations + 0x20;
+        let mut bytes = vec![0; (functions + 0x28 - address) as usize];
+        for (at, count, target) in [
+            (0xac, 4u32, colors),
+            (layout.size, 1, permutations),
+            (layout.size + 8, 1, functions),
+        ] {
+            let at = at as usize;
+            bytes[at..at + 4].copy_from_slice(&count.to_le_bytes());
+            bytes[at + 4..at + 8].copy_from_slice(&target.to_le_bytes());
+        }
+        let mem = Memory::from_regions(vec![(address, bytes)], vec![]);
+        let walked = walk(layout, address, &mem).unwrap();
+        assert_eq!(
+            walked.pointers,
+            [
+                (0xac, 4, colors),
+                (layout.size, 1, permutations),
+                (layout.size + 8, 1, functions),
+            ],
+            "{group}"
+        );
+    }
+    super::infer::apply_device_change_colors(&mut inferred);
+    assert_eq!(&inferred, schema);
+}
+
+#[test]
 fn tags_move_and_read_back_the_same() {
     let (mut map, ids) = invented(6, false);
     let schema = Schema {
@@ -426,6 +466,77 @@ fn a_whole_map_unpins_with_its_raw_copied_and_reads_back_the_same() {
         }
         assert_eq!(x, y, "same tree, same datums and strings");
     }
+}
+
+#[test]
+fn matg_locales_use_descriptor_lengths_across_a_large_raw_gap() {
+    use crate::localization::{Language, Localization};
+    use crate::repo::{Body, MapSource, SharedFiles};
+
+    let matg = FourCC(*b"matg");
+    let scnr = FourCC(*b"scnr");
+    let mut src = TagSet::new(CacheType::Campaign, "locale", "levels\\locale");
+    src.add_group(matg, None, None);
+    src.add_group(scnr, None, None);
+    let index = src.add_raw(vec![0, 0, 0, 1, 0, 0, 0, 0], 0x200);
+    let blob = src.add_raw(b"x\0".to_vec(), 0x200);
+    let mut globals = Block::zeroed(0x284);
+    globals
+        .put_u32(0x190, 1)
+        .put_u32(0x194, 2)
+        .raw(0x198, RawRef::Local(index))
+        .raw(0x19c, RawRef::Local(blob));
+    src.globals = src
+        .add_tag(matg, "globals", TagPayload::Built(globals))
+        .unwrap();
+    src.scenario = src
+        .add_tag(
+            scnr,
+            "levels\\locale",
+            TagPayload::Built(Block::zeroed(0x3e0)),
+        )
+        .unwrap();
+    let (_, layout) = src.build().unwrap();
+    let globals_id = src.globals;
+    let TagPayload::Built(globals) = &mut src.tag_mut(globals_id).unwrap().payload else {
+        unreachable!();
+    };
+    // Retail uses a nonzero file offset even when both lengths are zero.
+    // The next recognized boundary would make that a read over 64 MiB.
+    globals
+        .put_u32(0x278, layout.index_offset)
+        .put_u32(0x27c, layout.index_offset);
+    let bytes = src.build().unwrap().0;
+    let mut map = Map::from_reader(Cursor::new(&bytes[..])).unwrap();
+    let schema = Schema::builtin();
+    let mut dst = TagSet::from_map(&mut map).unwrap();
+    let mut u = transplant::Unpinner::new(schema, &mut map).unwrap();
+    u.add_starts([layout.index_offset + (80 << 20)]);
+    assert_eq!(
+        u.unpin(&mut map, &[globals_id], &mut dst).unwrap().unwrap(),
+        1
+    );
+    assert_eq!(u.raw, (2, 10));
+    assert_eq!(
+        dst.raw.iter().map(|r| r.bytes.len()).collect::<Vec<_>>(),
+        [8, 2, 0]
+    );
+    let mut rebuilt = Map::from_reader(Cursor::new(dst.build().unwrap().0)).unwrap();
+    let locales = Localization::read(&mut rebuilt).unwrap();
+    assert_eq!(locales.table(Language::English).bytes(0), Some(&b"x"[..]));
+    assert_eq!(locales.descriptors[8].count, 0);
+    assert_eq!(locales.descriptors[8].data_size, 0);
+
+    // The dense-index build reads the same exact extents via MapSource.
+    let mut shared = SharedFiles::default();
+    let mut source = MapSource::new(schema, map, &mut shared).unwrap();
+    let Body::Tree(globals) = source.extract(globals_id).unwrap().unwrap().body else {
+        panic!("globals should extract as a tree");
+    };
+    assert_eq!(
+        globals.raws.iter().map(|r| r.len).collect::<Vec<_>>(),
+        [8, 2, 0]
+    );
 }
 
 #[test]

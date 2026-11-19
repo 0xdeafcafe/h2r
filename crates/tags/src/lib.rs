@@ -85,6 +85,13 @@ mod pathfinding_tests;
 pub enum Error {
     #[error(transparent)]
     Map(#[from] map::Error),
+    #[error("reading raw at {offset:#x}, {size:#x} bytes: {source}")]
+    RawRead {
+        offset: u32,
+        size: u64,
+        #[source]
+        source: map::Error,
+    },
     #[error("record is {actual} bytes, expected exactly {expected}")]
     RecordSize { actual: usize, expected: usize },
     #[error("invalid tag: {0}")]

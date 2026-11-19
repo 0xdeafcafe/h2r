@@ -17,7 +17,8 @@
 //! Raw resources are read from the map or the shared cache their pointer
 //! names. A resource's length is its paired size field when the schema has
 //! one (with two known pairs the inference misses: a bitmap's first level of
-//! detail, a sound chunk), otherwise up to the next raw start of that file.
+//! detail, a sound chunk). Locale rows and text use their descriptors.
+//! Otherwise the next raw start of the file gives the length.
 use super::store::PutReport;
 use super::{
     Body, Error, LooseTag, Node, Origin, RawRes, Region, Result, TagKey, TagSource, Tree, Value,
@@ -646,7 +647,18 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
         v: u32,
         path: &[u32],
     ) -> std::result::Result<u32, WalkError> {
-        let p = map::RawPointer::decode(v).expect("not null");
+        let locale_len = (self.group == FourCC(*b"matg") && path.is_empty())
+            .then(|| crate::localization::matg_locale_raw_len(elem, o))
+            .flatten();
+        let p = if locale_len.is_some() {
+            // Locale offsets are in this map's file, without a selector.
+            map::RawPointer {
+                file: ResourceFile::Local,
+                offset: v,
+            }
+        } else {
+            map::RawPointer::decode(v).expect("not null")
+        };
         let mut size = s.fields.iter().find_map(|(&k, f)| {
             matches!(f, Field::RawSize(of) if *of == o).then(|| u32_at(elem, k as usize))
         });
@@ -665,9 +677,10 @@ impl<'a, 's, R: Read + Seek> Walker<'a, 's, R> {
             .filter(|x| *x >> 30 == v >> 30)
             .map(|x| x & 0x3fff_ffff)
             .collect();
-        let len = match shared_slot(p.file) {
-            None => self.src.map.extent(p.offset, size, exact, &siblings),
-            Some(i) => match self.src.shared.files[i].as_ref() {
+        let len = match (locale_len, shared_slot(p.file)) {
+            (Some(n), _) => u32::try_from(n).map_err(|_| Error::Map(map::Error::Limit))?,
+            (None, None) => self.src.map.extent(p.offset, size, exact, &siblings),
+            (None, Some(i)) => match self.src.shared.files[i].as_ref() {
                 Some(f) => f.extent(p.offset, size, exact, &siblings),
                 None if self.src.shared.unread_ok => {
                     // No cache to read: the pointer alone (length as
