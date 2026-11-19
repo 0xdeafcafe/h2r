@@ -852,9 +852,18 @@ fn a_class_that_borrows_a_slot_finds_it_by_name() {
     g.units = vec![h1::UnitSlots {
         label: "stand".into(),
         classes: vec![
-            h1::ClassSlots { label: "rifle".into(), slots: vec![-1, 0], types: vec![] },
-            h1::ClassSlots { label: "pistol".into(), slots: vec![1, 0], types: vec![] },
+            h1::ClassSlots {
+                label: "rifle".into(),
+                slots: vec![-1, 0],
+                ..Default::default()
+            },
+            h1::ClassSlots {
+                label: "pistol".into(),
+                slots: vec![1, 0],
+                ..Default::default()
+            },
         ],
+        ..Default::default()
     }];
     let (out, _) = jmad::convert_graph(&g, None).unwrap();
     let (bytes, ids) = build(vec![(out, "invented\\graph")]);
@@ -1643,4 +1652,371 @@ fn a_converted_model_carries_the_engine_s_marker_names() {
         [("left_hand", 0), ("primary_trigger", 1)]
     );
     assert!(crate::mode::marker_aliases(&["left_hand", "head"]).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Vehicle graphs
+// ---------------------------------------------------------------------------
+
+/// The warthog's steering screen and its `fixed` class's aiming screen, as
+/// Halo 1 holds them (35 degrees a frame, one frame each way; 90 degrees a
+/// yaw frame, two each way, 15 and 35 degrees a pitch frame, one each way).
+fn steering_screen() -> h1::AimScreen {
+    h1::AimScreen {
+        right_yaw_per_frame: 0.6109,
+        left_yaw_per_frame: 0.6109,
+        right_frames: 1,
+        left_frames: 1,
+        ..Default::default()
+    }
+}
+fn aiming_screen() -> h1::AimScreen {
+    h1::AimScreen {
+        right_yaw_per_frame: std::f32::consts::FRAC_PI_2,
+        left_yaw_per_frame: std::f32::consts::FRAC_PI_2,
+        right_frames: 2,
+        left_frames: 2,
+        down_pitch_per_frame: 0.2618,
+        up_pitch_per_frame: 0.6109,
+        down_frames: 1,
+        up_frames: 1,
+    }
+}
+
+/// The synthetic graph's header with Halo 1's vehicle tables added as the
+/// warthog lays them out: a `stand` unit (acc slot 2 naming animation 4)
+/// whose `fixed` class (aiming screen, slot 25 naming animation 2) lists
+/// the type `cg`; a vehicles element (steering screen, slot 0 naming
+/// animation 0, two suspension elements naming animation 1 and mass
+/// points 1 and 0); an object overlay naming animation 3 by function 3.
+fn vehicle_image() -> (Image, u32) {
+    let (mut img, at) = synthetic_graph();
+    let o = (at - BASE) as usize;
+    let mut h = img.0[o..o + h1::ANTR_HEADER].to_vec();
+    let slots = |img: &mut Image, s: &[i16]| {
+        img.alloc(&s.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>())
+    };
+    // Type `cg`, no slots.
+    let mut ty = vec![0u8; 0x3c];
+    name(&mut ty, 0, "cg");
+    let ty = img.alloc(&ty);
+    let mut class_slots = vec![-1i16; 32];
+    class_slots[25] = 2;
+    let cs = slots(&mut img, &class_slots);
+    let mut class = vec![0u8; 0xbc];
+    name(&mut class, 0, "fixed");
+    name(&mut class, 0x40, "gun");
+    class[0x60..0x78].copy_from_slice(&aiming_screen().bytes());
+    block(&mut class, 0x98, 32, cs);
+    block(&mut class, 0xb0, 1, ty);
+    let class = img.alloc(&class);
+    let us = slots(&mut img, &[-1, -1, 4]);
+    let mut unit = vec![0u8; 0x64];
+    name(&mut unit, 0, "stand");
+    block(&mut unit, 0x40, 3, us);
+    block(&mut unit, 0x58, 1, class);
+    let unit = img.alloc(&unit);
+    block(&mut h, 0x0c, 1, unit);
+    let vs = slots(&mut img, &[0, -1, -1, -1, -1, -1]);
+    let mut susp = vec![0u8; 2 * 0x14];
+    put16(&mut susp, 0, 1);
+    put16(&mut susp, 2, 1);
+    putf(&mut susp, 4, &[-0.31445, -0.13452]);
+    put16(&mut susp, 0x14, 0);
+    put16(&mut susp, 0x16, 1);
+    putf(&mut susp, 0x18, &[-0.3, -0.1]);
+    let susp = img.alloc(&susp);
+    let mut v = vec![0u8; 0x74];
+    v[0..0x18].copy_from_slice(&steering_screen().bytes());
+    block(&mut v, 0x5c, 6, vs);
+    block(&mut v, 0x68, 2, susp);
+    let v = img.alloc(&v);
+    block(&mut h, 0x24, 1, v);
+    let mut obj = vec![0u8; 0x14];
+    put16(&mut obj, 0, 3);
+    put16(&mut obj, 2, 3);
+    let obj = img.alloc(&obj);
+    block(&mut h, 0x00, 1, obj);
+    let at = img.alloc(&h);
+    (img, at)
+}
+
+/// Halo 1's vehicle tables read as laid out: the vehicles element's
+/// steering screen, slots and suspension, the object overlays, and each
+/// unit's and class's screen and slots.
+#[test]
+fn reads_a_vehicle_graph_s_tables() {
+    let (img, at) = vehicle_image();
+    let g = h1::Graph::read(&img, at).unwrap();
+    let v = g.vehicle.as_ref().expect("vehicles element");
+    assert_eq!(v.screen, steering_screen());
+    assert_eq!(v.slots, [0, -1, -1, -1, -1, -1]);
+    assert_eq!(
+        v.suspension[0],
+        h1::Suspension {
+            mass_point: 1,
+            animation: 1,
+            full_extension_ground_depth: -0.31445,
+            full_compression_ground_depth: -0.13452,
+        }
+    );
+    assert_eq!(v.suspension.len(), 2);
+    assert_eq!(
+        g.objects,
+        [h1::ObjectOverlay {
+            animation: 3,
+            function: 3,
+            controls: 0
+        }]
+    );
+    let u = &g.units[0];
+    assert_eq!(
+        (u.label.as_str(), &u.slots[..]),
+        ("stand", &[-1, -1, 4][..])
+    );
+    assert!(!u.screen.is_set());
+    let c = &u.classes[0];
+    assert_eq!(c.label, "fixed");
+    assert_eq!(c.screen, aiming_screen());
+    assert_eq!(c.slots[25], 2);
+    assert_eq!(c.types, [("cg".to_owned(), vec![])]);
+    assert_eq!(
+        h1::weapon_types(&img, at).unwrap(),
+        [("cg".to_owned(), "fixed".to_owned())]
+    );
+    // A graph without the tables has none.
+    let (img, at) = synthetic_graph();
+    let g = h1::Graph::read(&img, at).unwrap();
+    assert!(g.vehicle.is_none() && g.objects.is_empty());
+}
+
+/// The vehicle graph with six animations named as the warthog's: 0
+/// `vehicle steering`, 1 `suspension left back`, 2 `stand fixed
+/// aim-still`, 3 `firing`, 4 `stand acc-front-back` (overlays), 5 `stand
+/// opening` (base).
+fn vehicle_graph() -> h1::Graph {
+    let (img, at) = vehicle_image();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    let base = g.animations[0].clone();
+    let overlay = g.animations[1].clone();
+    g.animations = [
+        "vehicle steering",
+        "suspension left back",
+        "stand fixed aim-still",
+        "firing",
+        "stand acc-front-back",
+    ]
+    .iter()
+    .map(|n| h1::Animation {
+        name: (*n).into(),
+        ..overlay.clone()
+    })
+    .chain([h1::Animation {
+        name: "stand opening".into(),
+        ..base
+    }])
+    .collect();
+    g
+}
+
+/// A converted graph read back raw: `w(address)` and string names.
+struct Raw32 {
+    b: Vec<u8>,
+    base: u32,
+    strings: Vec<Option<String>>,
+    map: Vec<u8>,
+}
+impl Raw32 {
+    fn new(out: Converted) -> Self {
+        let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+        let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+        let base = map.tag(ids[0]).unwrap().location.unwrap().address;
+        let b = map.read_tag_bytes(ids[0]).unwrap();
+        let strings = map.strings().to_vec();
+        Self {
+            b,
+            base,
+            strings,
+            map: bytes,
+        }
+    }
+    fn w(&self, a: u32) -> u32 {
+        u32::from_le_bytes(self.b[(a - self.base) as usize..][..4].try_into().unwrap())
+    }
+    fn f(&self, a: u32) -> f32 {
+        f32::from_bits(self.w(a))
+    }
+    fn name(&self, sid: u32) -> String {
+        if sid == 0 {
+            return String::new();
+        }
+        self.strings[(sid & 0xff_ffff) as usize].clone().unwrap()
+    }
+    /// The elements of the block at `a`: (name at +0, address).
+    fn level(&self, a: u32, stride: u32) -> Vec<(String, u32)> {
+        (0..self.w(a))
+            .map(|i| {
+                let e = self.w(a + 4) + i * stride;
+                (self.name(self.w(e)), e)
+            })
+            .collect()
+    }
+    /// A type's actions (`+4`) or overlays (`+0xc`): (name, animation).
+    fn entries(&self, at: u32) -> Vec<(String, i16)> {
+        let mut e: Vec<_> = self
+            .level(at, 8)
+            .into_iter()
+            .map(|(n, a)| (n, (self.w(a + 4) >> 16) as i16))
+            .collect();
+        e.sort();
+        e
+    }
+    /// The type at mode, class, type names.
+    fn ty(&self, path: [&str; 3]) -> Option<u32> {
+        let m = self
+            .level(self.base + 0x34, 0x14)
+            .into_iter()
+            .find(|m| m.0 == path[0])?;
+        let c = self
+            .level(m.1 + 4, 0x14)
+            .into_iter()
+            .find(|c| c.0 == path[1])?;
+        Some(
+            self.level(c.1 + 4, 0x34)
+                .into_iter()
+                .find(|t| t.0 == path[2])?
+                .1,
+        )
+    }
+}
+
+/// A converted vehicle graph is laid out as Halo 2's vehicle graphs are
+/// (V: the retail warthog, ghost, chaingun and scorpion graphs): the
+/// steering slot an overlay `steering` of `any`, the aim overlay
+/// `aim_still_up` and the acceleration overlay among their types'
+/// overlays, only base animations among the actions; the steering and
+/// aiming screens as blend screens on those two animations, which are
+/// written with the blend-screen codec; the suspension element whose
+/// mass point has a marker in the suspension block, naming the marker,
+/// with Halo 1's depths negated; the object overlay naming
+/// `barrel_spin`; the weapon pairs. No `vehicle`, `suspension` or
+/// `firing` mode is left.
+#[test]
+fn a_vehicle_graph_takes_halo_2s_vehicle_layout() {
+    let g = vehicle_graph();
+    let opts = jmad::GraphOptions {
+        mass_point_markers: vec![None, Some("tire_back_left".into())],
+    };
+    let (out, report) = jmad::convert_graph_with(&g, None, &opts).unwrap();
+    assert_eq!(report.suspension_without_marker, ["suspension left back"]);
+    assert_eq!(report.names[2].1, "combat:fixed:aim_still_up");
+    let r = Raw32::new(out.clone());
+    let modes: Vec<String> = r
+        .level(r.base + 0x34, 0x14)
+        .into_iter()
+        .map(|m| m.0)
+        .collect();
+    let mut sorted = modes.clone();
+    sorted.sort();
+    assert_eq!(sorted, ["any", "combat"]);
+    let any = r.ty(["any", "any", "any"]).unwrap();
+    assert!(r.entries(any + 4).is_empty());
+    assert_eq!(r.entries(any + 0xc), [("steering".to_owned(), 0)]);
+    let combat = r.ty(["combat", "any", "any"]).unwrap();
+    assert_eq!(r.entries(combat + 4), [("opening".to_owned(), 5)]);
+    assert_eq!(r.entries(combat + 0xc), [("acc_front_back".to_owned(), 4)]);
+    let fixed = r.ty(["combat", "fixed", "any"]).unwrap();
+    assert!(r.entries(fixed + 4).is_empty());
+    assert_eq!(r.entries(fixed + 0xc), [("aim_still_up".to_owned(), 2)]);
+
+    // Blend screens: steering, then aiming, each Halo 1's 24 bytes.
+    let screens = r.level(r.base + 0x24, 0x1c);
+    assert_eq!(
+        screens.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(),
+        ["steering", "aiming"]
+    );
+    for ((_, a), want) in screens.iter().zip([steering_screen(), aiming_screen()]) {
+        let at = (a + 4 - r.base) as usize;
+        assert_eq!(r.b[at..at + 0x18], want.bytes());
+    }
+    let anims = r.w(r.base + 0x30);
+    let screen_of = |i: u32| r.b[(anims + i * 0x6c + 0x12 - r.base) as usize] as i8;
+    assert_eq!(
+        (0..6).map(screen_of).collect::<Vec<_>>(),
+        [0, -1, 1, -1, -1, -1]
+    );
+    // Their data is codec 8, the others' codec 3 (the stream's first
+    // byte; the data resource is the graph's one, `+0xac`).
+    let res_ptr = r.w(r.base + 0xb0);
+    let raw = RawPointer::decode(r.w(res_ptr + 8)).unwrap();
+    let codec = |i: u32| {
+        let off = r.w(anims + i * 0x6c + 0x28);
+        r.map[raw.offset as usize + off as usize]
+    };
+    assert_eq!((0..5).map(codec).collect::<Vec<_>>(), [8, 3, 8, 3, 3]);
+
+    // Suspension: the one element whose mass point has a marker.
+    let susp = r.level(r.base + 0x3c, 0x28);
+    assert_eq!(susp.len(), 1);
+    let a = susp[0].1;
+    assert_eq!(susp[0].0, "suspension:left_back");
+    assert_eq!(r.w(a + 4), 1 << 16 | 0xffff);
+    assert_eq!(r.name(r.w(a + 8)), "tire_back_left");
+    assert_eq!(r.f(a + 0xc), 0.0);
+    // The kept element is Halo 1's first (mass point 1, the one with a
+    // marker; depths -0.31445 and -0.13452), negated; the second (mass
+    // point 0, -0.3 and -0.1) has no marker and is dropped.
+    assert_eq!((r.f(a + 0x10), r.f(a + 0x14)), (0.31445, 0.13452));
+    assert_eq!(r.w(a + 0x18), 0);
+    assert_eq!(
+        (r.f(a + 0x1c), r.f(a + 0x20), r.f(a + 0x24)),
+        (0.0, 0.31445, 0.13452)
+    );
+
+    // The object overlay.
+    let objects = r.level(r.base + 0x44, 0x14);
+    assert_eq!(objects.len(), 1);
+    let a = objects[0].1;
+    assert_eq!(objects[0].0, "firing");
+    assert_eq!(r.w(a + 4), 3 << 16 | 0xffff);
+    assert_eq!(r.w(a + 8), 0);
+    assert_eq!(r.name(r.w(a + 0xc)), "barrel_spin");
+
+    // Weapon pairs.
+    let mut pairs: Vec<(String, String)> = (0..r.w(r.base + 0x54))
+        .map(|i| {
+            let e = r.w(r.base + 0x58) + 8 * i;
+            (r.name(r.w(e)), r.name(r.w(e + 4)))
+        })
+        .collect();
+    pairs.sort();
+    assert_eq!(
+        pairs,
+        [
+            ("any".to_owned(), "any".to_owned()),
+            ("cg".to_owned(), "fixed".to_owned())
+        ]
+    );
+
+    // Every animation still decodes to Halo 1's frames, the codec 8 ones
+    // exactly up to float rounding.
+    let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+    for (name, e) in check_graph(&g, &[], bytes, ids[0]) {
+        assert!(e[0] < 2e-4 && e[1] == 0.0 && e[2] == 0.0, "{name}: {e:?}");
+    }
+}
+
+/// A graph without Halo 1's vehicle tables converts as before: no blend
+/// screens, suspension, object overlays or weapon pairs, and its aim
+/// animation keeps its name.
+#[test]
+fn a_graph_without_vehicle_tables_is_unchanged() {
+    let (img, at) = synthetic_graph();
+    let g = h1::Graph::read(&img, at).unwrap();
+    let (out, report) = jmad::convert_graph(&g, None).unwrap();
+    assert_eq!(report.names[1].1, "combat:rifle:aim_still");
+    let r = Raw32::new(out);
+    for at in [0x24, 0x3c, 0x44, 0x54] {
+        assert_eq!(r.w(r.base + at), 0, "+{at:#x}");
+    }
 }

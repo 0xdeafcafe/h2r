@@ -448,6 +448,9 @@ pub(crate) fn publish(
     doc.category = category.or(extras.category);
     doc.source_url = source_url.or(extras.source_url);
     doc.credit = extras.credit;
+    // The Mods page's checklist, game types and version (an older server
+    // refuses a document with them: publish those once it is updated).
+    crate::live_mod_import::PageExtras::read(dir)?.apply(&mut doc);
     doc.validate_extras().map_err(|e| anyhow::anyhow!(e))?;
     let me = pick_account(client, accounts, as_tag)?;
     let key = me.key_pair()?;

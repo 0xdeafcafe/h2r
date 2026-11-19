@@ -298,8 +298,12 @@ impl KitScreen {
     /// game's own dialogs are. `opener` is what the preview draws under
     /// it. The list is the base's own unless [`KitScreen::layout`] moves
     /// it; [`DialogBase::Large`] is the one the game maps have too. Values
-    /// go as the base's list skin has room for them
-    /// ([`DialogBase::style`]).
+    /// go as the base's list skin shows them ([`DialogBase::style`]), and
+    /// the focused row's description goes in the base's help line
+    /// ([`DialogBase::help`]) unless [`KitScreen::description`] names
+    /// another block. A page on [`DialogBase::QuickOptions`] is that
+    /// dialog inside as well as out: its list, skin, value column, help
+    /// line, header and footer.
     pub fn dialog(mut self, base: DialogBase, opener: Opener) -> Self {
         self.dialog = Some((base, opener));
         self.style = base.style();
@@ -309,6 +313,12 @@ impl KitScreen {
     pub fn description(mut self, block: TextBlock) -> Self {
         self.description = Some(block);
         self
+    }
+    /// Where the focused row's description goes: the screen's own block,
+    /// else its dialog base's help line.
+    fn description_block(&self) -> Option<TextBlock> {
+        self.description
+            .or_else(|| self.dialog.and_then(|(base, _)| base.help()))
     }
     pub fn prompts(mut self, prompts: &[Prompt]) -> Self {
         self.prompts = prompts.to_vec();
@@ -498,7 +508,7 @@ impl KitScreen {
                 .action(self.action())
                 .sideways()
                 .on_free(self.on_free());
-        if let Some(b) = self.description {
+        if let Some(b) = self.description_block() {
             c = c.description(b);
         }
         if let Some(l) = self.layout {
@@ -531,7 +541,7 @@ impl Rows for KitScreen {
         let i = row as usize;
         let (label, value) = r.spec().cells(self.style);
         let mut v = vec![(LABEL_SLOT, self.texts.set(Self::label_slot(i), &label))];
-        if self.style == ValueStyle::Column {
+        if self.style.has_column() {
             let value = value.unwrap_or_default();
             v.push((VALUE_SLOT, self.texts.set(Self::label_slot(i) + 1, &value)));
         }
@@ -604,7 +614,7 @@ impl Describe for KitScreen {
         s.list = ListPlace::from(self.layout);
         s.style = self.style;
         s.rows = self.rows.iter().map(Row::spec).collect();
-        s.description = self.description.map(spec::DescriptionBlock::from);
+        s.description = self.description_block().map(spec::DescriptionBlock::from);
         s.prompts = self.prompts.clone();
         s.inputs = vec![
             Input::Up,
@@ -747,7 +757,7 @@ mod tests {
     #[test]
     fn a_dialog_screen_is_its_rows_in_its_bases_list() {
         for (base, skin, anchor, style) in [
-            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Column),
+            (DialogBase::QuickOptions, 2, [-254, 87], ValueStyle::Setting),
             (DialogBase::Large, 0, [-235, 30], ValueStyle::Inline),
         ] {
             let k = Arc::new(crate::ui_kit::screens::dialog_example(
@@ -762,6 +772,12 @@ mod tests {
             assert!(d.body.is_empty(), "rows, no message");
             assert_eq!(d.opener, Opener::MAIN_MENU);
             assert_eq!(s.style, style, "{base:?}");
+            // The description in the base's help line: Quick Options' own.
+            assert_eq!(
+                s.description,
+                base.help().map(spec::DescriptionBlock::from),
+                "{base:?}"
+            );
             assert_eq!(
                 s.list,
                 ListPlace::Moved {

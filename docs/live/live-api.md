@@ -1001,14 +1001,22 @@ server with no data directory stores nothing (503).
 
 A package is published as an event the author signs with their own key,
 like the account's other events: stream `package-<map_id>`, type
-`MapPublished`, data `{manifest, image?, category?, source_url?, credit?}`. `manifest` is the package
+`MapPublished`, data `{manifest, image?, features?, gametypes?, version?, category?, source_url?, credit?}`. `manifest` is the package
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
 `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
-outside the `MapId` like the manifest's name (400 when malformed).
+outside the `MapId` like the manifest's name (400 when malformed). So are
+the in-game Mods page's (docs/game/maps.md §5, "A mod's page"):
+`features` (what the mod changes, each once, of `vehicles`, `weapons`,
+`objects`, `textures`, `shaders`, `scripts`, `geometry`, `ai`;
+`h2 live maps import` derives them), `gametypes` (each once, of `slayer`,
+`ctf`, `assault`, `oddball`, `koth`, `juggernaut`, `territories`; none:
+any) and `version` (one line, at most 24 characters); each optional and
+left out when empty. A server from before them refuses a document that
+has them (the document allows no unknown keys): update the server first.
 `credit` is who made the mod when the publisher did not: `{authors: [..],
 release?, released?, source_url?, notes?}`, `authors` the original
 creators as the release credits them (at most 12, each 1 to 64 characters
@@ -1028,8 +1036,8 @@ and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
 {map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
-size, image?, geometry?, published_at, position, downloads, credit?,
-category?, source_url?, credits?}`: `size` is the layers' bytes (what a player
+size, image?, features?, gametypes?, version?, geometry?, published_at,
+position, downloads, credit?, category?, source_url?, credits?}`: `size` is the layers' bytes (what a player
 without them downloads), `image` the preview's hash, `geometry` the
 manifest's `[result] geometry` (set when the mod changed the map's
 geometry), `position` the `MapPublished` event's log position, `downloads`

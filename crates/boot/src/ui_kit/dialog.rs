@@ -60,13 +60,23 @@ impl DialogBase {
             DialogBase::QuickOptions => QUICK_OPTIONS_SCREEN_ID,
         }
     }
-    /// Where a row's value goes: in a column on Quick Options' settings
-    /// skin (a label and a value text per row), after the label on the
+    /// Where a row's value goes: alone in the value column of Quick
+    /// Options' settings skin (`setting_lists`: a label and a value text
+    /// per row, `Score to Win  50`, no arrows), after the label on the
     /// large dialog's one-text skin.
     pub fn style(self) -> crate::ui_kit::spec::ValueStyle {
         match self {
             DialogBase::Large => crate::ui_kit::spec::ValueStyle::Inline,
-            DialogBase::QuickOptions => crate::ui_kit::spec::ValueStyle::Column,
+            DialogBase::QuickOptions => crate::ui_kit::spec::ValueStyle::Setting,
+        }
+    }
+    /// Where a dialog of rows on this base says what the focused row does:
+    /// Quick Options' own help line ([`QUICK_HELP_TEXT`]); the large dialog
+    /// has none.
+    pub fn help(self) -> Option<crate::list_class::TextBlock> {
+        match self {
+            DialogBase::Large => None,
+            DialogBase::QuickOptions => Some(QUICK_HELP_TEXT),
         }
     }
     /// The base pane's bitmaps (by block index) that are the retail
@@ -186,6 +196,35 @@ pub const LAYOUT1_FOOTER: Rect = rect(-178, -200, -198, 259);
 /// `quick_options`' help line, above its list: where a settings dialog's
 /// description goes.
 pub const QUICK_HELP: Rect = rect(143, -224, 123, 270);
+/// The help line's text block as `quick_options` has it (pane 0's text
+/// block 0, string `quick_options_help`: one line, "Temporarily change
+/// settings for this game variant."): left-justified, font 1, the pale
+/// blue, the pane's animation (31), so it comes and goes with the panel.
+/// A settings dialog of ours shows the focused row's description in it
+/// ([`DialogBase::help`]); `ui_kit::screens::tests::preview_and_check_against_the_disc`
+/// holds it to the disc's block.
+pub const QUICK_HELP_TEXT: crate::list_class::TextBlock = crate::list_class::TextBlock {
+    rect: [
+        QUICK_HELP.top,
+        QUICK_HELP.left,
+        QUICK_HELP.bottom,
+        QUICK_HELP.right,
+    ],
+    font: 1,
+    colour: [0.388235, 0.580392, 0.756863],
+    animation: QUICK_ANIMATION,
+};
+/// `quick_options`' pane, list and text animation slots (1-based, as its
+/// tag stores them): the pane and its texts 31, its list 32.
+pub const QUICK_ANIMATION: u16 = 31;
+/// Quick Options' list: `setting_lists` (skin 2), eleven rows from
+/// (-254, 87), each item 26 high; a label (left, the pale blue) and a
+/// value (from x 256, a paler blue) in font 4.
+pub const QUICK_LIST: ListAt = ListAt {
+    anchor: [-254, 87],
+    skin: 2,
+};
+pub const QUICK_LIST_ROWS: usize = 11;
 
 /// The text column's edges: the header layout's title rectangle's.
 pub const LEFT: i16 = -243;
@@ -230,10 +269,7 @@ impl DialogGeometry {
                     size,
                     depth,
                 };
-                let list = ListAt {
-                    anchor: [-254, 87],
-                    skin: 2,
-                };
+                let list = QUICK_LIST;
                 DialogGeometry {
                     screen_id: QUICK_OPTIONS_SCREEN_ID,
                     header: LAYOUT1_HEADER,
@@ -244,8 +280,8 @@ impl DialogGeometry {
                     // ([`DialogBase::content_bitmaps`]).
                     panel: vec![art(2, [-270, 200], [1024, 512], 1)],
                     list,
-                    list_items: 11,
-                    rows: Geometry::fallback(Self::list_place(list, 11)),
+                    list_items: QUICK_LIST_ROWS,
+                    rows: Geometry::fallback(Self::list_place(list, QUICK_LIST_ROWS)),
                     ..large
                 }
             }
@@ -714,10 +750,9 @@ mod tests {
     /// description in the help line; the checks pass it.
     #[test]
     fn a_rows_dialog_draws_its_rows_in_the_bases_list() {
-        use crate::ui_kit::spec::ValueStyle;
         let mut s = ScreenSpec::new("t", "Bots");
         s.prompts = vec![Prompt::new(&[Glyph::B], "Back")];
-        s.style = ValueStyle::Column;
+        s.style = DialogBase::QuickOptions.style();
         s.focus = 1;
         s.rows = vec![
             RowSpec::value("Count", &["1", "4"], 1),
@@ -747,6 +782,9 @@ mod tests {
             v.widget("row.0.value").unwrap().rect[1] > a.rect[1],
             "the value in its column"
         );
+        // The value alone, as Quick Options shows its own: no arrows.
+        assert_eq!(v.widget("row.1.value").unwrap().text(), Some("Normal"));
+        assert_eq!(v.widget("row.1.label").unwrap().text(), Some("Difficulty"));
         assert_eq!(placement(&v, &Synthetic), vec![]);
         let issues = check(&v, &SyntheticSource, &Rules::for_spec(&s)).issues;
         assert!(

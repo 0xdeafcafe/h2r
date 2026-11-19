@@ -457,6 +457,11 @@ points! { ALL;
     /// Select Map list's constructor (`0x2c9928`, list handler in ESI)
     /// calls it at `0x2c9980` and copies every element into its own list.
     MP_LEVEL_ARRAY @ 0x0019_c6a0: [fn() -> eax ret 0]; "docs/game/map-select.md";
+    /// Refreshes the UI level lists (no direct caller: the function table at
+    /// `0x43ca94`, at each map load): the arrays cleared, the content
+    /// packages' `patch.lvl` (`0x19c120`, main menu only), the level select's
+    /// list (`0x19c6d0`), then the multiplayer array (`0x19c7e0`).
+    MP_LEVEL_REFRESH @ 0x0019_c190: [fn() ret 0]; "docs/game/map-select.md";
     /// A multiplayer list slot's name in the current language (stdcall:
     /// `slot + 0xc + 0x40 * language`). The Select Map row text calls it at
     /// `0x2c9afc`.

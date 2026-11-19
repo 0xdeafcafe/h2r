@@ -216,6 +216,51 @@ pub struct Credited {
     pub by: Option<crate::Xuid>,
 }
 
+/// What a package changes, for the in-game Mods page's checklist
+/// (docs/game/maps.md §5, "A mod's page"). `h2 live maps import` derives
+/// them from the patched map against its base (`crate`-external:
+/// `cli::live_mod_features`); a `mod.toml` may add any. Display data:
+/// not part of the `MapId`. In the order the page lists them.
+pub const FEATURES: [&str; 8] = [
+    "vehicles", "weapons", "objects", "textures", "shaders", "scripts", "geometry", "ai",
+];
+/// The game types a package says it is made for (`mod.toml`
+/// `gametypes`); none said: any.
+pub const GAMETYPES: [&str; 7] = [
+    "slayer",
+    "ctf",
+    "assault",
+    "oddball",
+    "koth",
+    "juggernaut",
+    "territories",
+];
+/// The longest `version` kept.
+pub const MAX_VERSION: usize = 24;
+
+/// Whether `list` is ids of `known`, each once.
+fn known_ids(list: &[String], known: &[&str]) -> Result<(), String> {
+    for (i, f) in list.iter().enumerate() {
+        if !known.contains(&f.as_str()) {
+            return Err(format!("{f:?} is not one of {}", known.join(", ")));
+        }
+        if list[..i].contains(f) {
+            return Err(format!("{f:?} is listed twice"));
+        }
+    }
+    Ok(())
+}
+
+/// `list` in `known`'s order, unknown and repeated ids dropped: how a
+/// derived list and a hand-written one are merged.
+pub fn in_order<S: AsRef<str>>(list: &[S], known: &[&str]) -> Vec<String> {
+    known
+        .iter()
+        .filter(|k| list.iter().any(|f| f.as_ref().trim() == **k))
+        .map(|k| (*k).to_string())
+        .collect()
+}
+
 /// The stream a blob's events are on.
 pub fn content_stream(sha256: &Sha256) -> String {
     format!("content-{sha256}")
@@ -269,6 +314,17 @@ pub struct MapDocument {
     pub manifest: Manifest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<Sha256>,
+    /// What the mod changes ([`FEATURES`], in that order), for the in-game
+    /// checklist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    /// The game types it is made for ([`GAMETYPES`]); empty: any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gametypes: Vec<String>,
+    /// The mod's own version, as its author numbers it (`1.2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
     /// One of [`CATEGORIES`], for the repository's filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
@@ -289,6 +345,9 @@ impl MapDocument {
         Self {
             manifest,
             image,
+            features: Vec::new(),
+            gametypes: Vec::new(),
+            version: None,
             category: None,
             source_url: None,
             credit: None,
@@ -312,6 +371,17 @@ impl MapDocument {
     /// The extras' checks (the manifest has its own): a known category, a
     /// short `http`/`https` source URL with no spaces or controls.
     pub fn validate_extras(&self) -> Result<(), String> {
+        known_ids(&self.features, &FEATURES).map_err(|e| format!("features: {e}"))?;
+        known_ids(&self.gametypes, &GAMETYPES).map_err(|e| format!("gametypes: {e}"))?;
+        if let Some(v) = &self.version
+            && (v.trim().is_empty()
+                || v.chars().count() > MAX_VERSION
+                || v.chars().any(char::is_control))
+        {
+            return Err(format!(
+                "version must be 1 to {MAX_VERSION} characters on one line"
+            ));
+        }
         if let Some(c) = &self.category
             && !CATEGORIES.contains(&c.as_str())
         {
@@ -474,6 +544,15 @@ pub struct MapSummary {
     /// The preview image's SHA-256 (served at `/v1/maps/{id}/image`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<Sha256>,
+    /// [`MapDocument::features`], [`MapDocument::gametypes`] and
+    /// [`MapDocument::version`] as published.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gametypes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
     /// `[result] geometry`: set when the mod says its geometry changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<Sha256>,
@@ -667,6 +746,47 @@ mod tests {
         }
         doc.source_url = Some(format!("https://{}", "a".repeat(MAX_SOURCE_URL)));
         assert!(doc.validate_extras().is_err());
+    }
+
+    #[test]
+    fn a_documents_features_gametypes_and_version_are_checked() {
+        let h = Sha256([3; 32]);
+        let mut doc = MapDocument::new(Manifest::retail("lockout", h), None);
+        let v = serde_json::to_value(&doc).unwrap();
+        assert!(v.get("features").is_none() && v.get("gametypes").is_none());
+        assert!(v.get("version").is_none(), "an older server reads it");
+        doc.features = vec!["vehicles".into(), "scripts".into()];
+        doc.gametypes = vec!["ctf".into()];
+        doc.version = Some("1.2".into());
+        assert!(doc.validate_extras().is_ok());
+        let v = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["features"], json!(["vehicles", "scripts"]));
+        assert_eq!(serde_json::from_value::<MapDocument>(v).unwrap(), doc);
+        for (features, gametypes, version, why) in [
+            (vec!["cheats"], vec![], None, "an unknown feature"),
+            (vec!["ai", "ai"], vec![], None, "a repeated feature"),
+            (vec![], vec!["infection"], None, "an unknown game type"),
+            (vec![], vec![], Some(" "), "a blank version"),
+            (vec![], vec![], Some("1\n2"), "a two-line version"),
+        ] {
+            let mut d = doc.clone();
+            d.features = features.into_iter().map(Into::into).collect();
+            d.gametypes = gametypes.into_iter().map(Into::into).collect();
+            d.version = version.map(Into::into);
+            assert!(d.validate_extras().is_err(), "{why}");
+        }
+        let mut d = doc.clone();
+        d.version = Some("v".repeat(MAX_VERSION + 1));
+        assert!(d.validate_extras().is_err(), "a long version");
+    }
+
+    #[test]
+    fn lists_merge_in_the_known_order() {
+        assert_eq!(
+            in_order(&["scripts", " vehicles", "cheats", "vehicles"], &FEATURES),
+            ["vehicles", "scripts"]
+        );
+        assert!(in_order::<&str>(&[], &FEATURES).is_empty());
     }
 
     #[test]

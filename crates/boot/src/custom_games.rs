@@ -162,6 +162,10 @@ pub const CLANKERMATCH_TEXT: &str = "Clankermatch";
 pub const CLANKERMATCH_HELP_ID: u32 = ID_BASE + 0x3a;
 pub const CLANKERMATCH_HELP: &str =
     "Matchmaking against bots. Pick a playlist; your console hosts.";
+/// The lobby's "Switch To: Clankermatch" row (`crate::clankermatch`'s
+/// switch row, under retail's "Switch To: Matchmaking").
+pub const SWITCH_CLANKERMATCH_TEXT_ID: u32 = ID_BASE + 0x3b;
+pub const SWITCH_CLANKERMATCH_TEXT: &str = "Switch To: Clankermatch";
 
 /// The screen, its list handler's vtable and its retail item widgets.
 pub const SCREEN_ID: i16 = 0xba;
@@ -520,6 +524,7 @@ pub fn strings() -> Vec<(u32, &'static str)> {
         (COOP_HELP_ID, COOP_HELP),
         (CLANKERMATCH_TEXT_ID, CLANKERMATCH_TEXT),
         (CLANKERMATCH_HELP_ID, CLANKERMATCH_HELP),
+        (SWITCH_CLANKERMATCH_TEXT_ID, SWITCH_CLANKERMATCH_TEXT),
         (MODS_HELP_ID, MODS_HELP),
         (MAPPACK_TITLE_ID, MAPPACK_TITLE),
         (MAPPACK_MESSAGE_ID, MAPPACK_MESSAGE),

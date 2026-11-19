@@ -30,6 +30,9 @@
 //! base_map = "lockout"            # else --base
 //! category = "weapons"            # live_proto::maps::CATEGORIES
 //! image = "preview.png"           # beside mod.toml, PNG or JPEG
+//! features = ["ai"]               # live_proto::maps::FEATURES, added to the derived ones
+//! gametypes = ["ctf", "slayer"]   # live_proto::maps::GAMETYPES; none: any
+//! version = "1.2"
 //! ```
 //!
 //! The credit is who made the mod, never the account that publishes it:
@@ -38,8 +41,11 @@
 //! that know only that.
 //!
 //! The package directory gets `manifest.toml`, the layer, the image and a
-//! `mod.toml` with the repository's extras (`category`, `source_url` and
-//! the credit), which `h2 live maps publish DIR` reads.
+//! `mod.toml` with the repository's extras (`category`, `source_url`,
+//! `features`, `gametypes`, `version` and the credit), which `h2 live maps
+//! publish DIR` reads. `features` is what the mod changes as read off the
+//! patched map against its base (`crate::live_mod_features`), with the
+//! sidecar's own added.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -80,6 +86,15 @@ pub struct ModInfo {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// What the mod changes (`live_proto::maps::FEATURES`): in a sidecar,
+    /// added to what import reads off the map; in a package, all of it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+    /// The game types it is made for (`live_proto::maps::GAMETYPES`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gametypes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 impl ModInfo {
@@ -447,6 +462,9 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
             .clone()
             .or_else(|| ModInfo::text(&info.category)),
         base_map: Some(base),
+        features: page_features(&info, &base_bytes, &target),
+        gametypes: info.gametypes.clone(),
+        version: ModInfo::text(&info.version),
         ..ModInfo::default()
     }
     .with_credit(credit.as_ref());
@@ -454,6 +472,7 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
     doc.category = extras.category.clone();
     doc.source_url = extras.source_url.clone();
     doc.credit = credit;
+    PageExtras::of(&extras).apply(&mut doc);
     doc.validate_extras()
         .map_err(|e| anyhow!("{}: {e}", info_path.display()))?;
 
@@ -488,6 +507,68 @@ pub fn extras_in(dir: &Path) -> Result<Extras> {
         source_url: ModInfo::text(&info.source_url),
         credit: info.credit(),
     })
+}
+
+/// The Mods page's extras a package's `mod.toml` names (docs/game/maps.md
+/// §5, "A mod's page"), for `publish`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageExtras {
+    pub features: Vec<String>,
+    pub gametypes: Vec<String>,
+    pub version: Option<String>,
+}
+
+impl PageExtras {
+    fn of(info: &ModInfo) -> Self {
+        PageExtras {
+            features: info.features.clone(),
+            gametypes: info.gametypes.clone(),
+            version: ModInfo::text(&info.version),
+        }
+    }
+
+    /// Read from `dir/mod.toml` (none there: none).
+    pub fn read(dir: &Path) -> Result<Self> {
+        Ok(Self::of(
+            &ModInfo::read(&dir.join(MOD_FILE))?.unwrap_or_default(),
+        ))
+    }
+
+    /// Onto the document `publish` signs.
+    pub fn apply(self, doc: &mut live_proto::maps::MapDocument) {
+        doc.features = self.features;
+        doc.gametypes = self.gametypes;
+        doc.version = self.version;
+    }
+}
+
+/// What the mod changes: read off `target` against `base`
+/// (`crate::live_mod_features`), with the sidecar's own added, in the
+/// checklist's order. A map the reader can't read keeps the sidecar's
+/// alone (said on stderr): the import itself does not fail on it.
+fn page_features(info: &ModInfo, base: &[u8], target: &[u8]) -> Vec<String> {
+    use live_proto::maps::{FEATURES, in_order};
+    let mut all = match crate::live_mod_features::derive(base, target) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "import: what the mod changes could not be read ({e:#}); only mod.toml's features are listed"
+            );
+            Vec::new()
+        }
+    };
+    all.extend(info.features.iter().cloned());
+    // An unknown id of the sidecar's is refused by validate_extras, not
+    // dropped here.
+    let unknown: Vec<String> = info
+        .features
+        .iter()
+        .filter(|f| !FEATURES.contains(&f.as_str()))
+        .cloned()
+        .collect();
+    let mut out = in_order(&all, &FEATURES);
+    out.extend(unknown);
+    out
 }
 
 #[cfg(test)]

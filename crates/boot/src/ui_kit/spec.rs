@@ -30,8 +30,20 @@ pub enum RowKind {
 pub enum ValueStyle {
     /// In the label: `Mythic: < On >` (a one-text skin, the level select's).
     Inline,
-    /// In the skin's value text (the Controls skin's second column).
+    /// In the skin's value text (the Controls skin's second column):
+    /// `< On >`.
     Column,
+    /// In the skin's value text, the value alone (`On`), as the game's own
+    /// settings dialog shows it: Quick Options' rows on its
+    /// `setting_lists` skin (docs/game/ui-builder.md "The Dialog kind").
+    Setting,
+}
+
+impl ValueStyle {
+    /// Whether the value goes in the skin's second text.
+    pub fn has_column(self) -> bool {
+        matches!(self, ValueStyle::Column | ValueStyle::Setting)
+    }
 }
 
 /// What a press on the row does, as far as a static reader can tell.
@@ -130,13 +142,22 @@ impl RowSpec {
             }
         }
     }
+    /// The value alone, as a settings dialog shows it: `On` for a value
+    /// row, the text for the others, `None` for an action.
+    pub fn plain_value(&self) -> Option<String> {
+        match &self.kind {
+            RowKind::Value { values, current } => values.get(*current).cloned(),
+            _ => self.shown_value(),
+        }
+    }
     /// The texts the row's item draws: the label text, and the value text
-    /// for a [`ValueStyle::Column`] skin.
+    /// for a skin with a value column ([`ValueStyle::has_column`]).
     pub fn cells(&self, style: ValueStyle) -> (String, Option<String>) {
         match (style, self.shown_value()) {
             (ValueStyle::Inline, Some(v)) => (format!("{}: {v}", self.label), None),
             (ValueStyle::Inline, None) => (self.label.clone(), None),
             (ValueStyle::Column, v) => (self.label.clone(), v),
+            (ValueStyle::Setting, _) => (self.label.clone(), self.plain_value()),
         }
     }
     /// Every value the row can show, laid out as `cells` would (for the
@@ -556,7 +577,13 @@ pub fn check(spec: &ScreenSpec, room: &Room<'_>) -> Vec<Finding> {
 pub fn check_fallback(spec: &ScreenSpec) -> Vec<Finding> {
     let w = fallback::width;
     let room = Room {
-        visible: fallback::VISIBLE,
+        // A moved list shows what it says it does (a dialog's list shows
+        // every row), as the disc check's geometry does; else the
+        // Controls list's five.
+        visible: match spec.list {
+            ListPlace::Moved { visible, .. } if visible > 0 => spec.list.shown(),
+            _ => fallback::VISIBLE,
+        },
         label: fallback::LABEL,
         value: Some(fallback::LABEL),
         row_width: &w,
@@ -604,6 +631,61 @@ mod tests {
         );
         s.scrolls = true;
         assert_eq!(check(&s, &room(&w)), vec![]);
+    }
+
+    /// Without the disc, a moved list that shows every row (a dialog's)
+    /// needs no scroll; the Controls list still shows five.
+    #[test]
+    fn the_fallback_check_takes_a_moved_lists_own_rows() {
+        let mut s = ScreenSpec::new("t", "T");
+        s.rows = (0..7)
+            .map(|i| RowSpec::action(&format!("Row {i}")).press(Press::Act))
+            .collect();
+        let rows = |f: &[Finding]| f.iter().any(|f| matches!(f, Finding::Rows { .. }));
+        assert!(rows(&check_fallback(&s)), "the Controls list's five");
+        s.list = ListPlace::Moved {
+            skin: 2,
+            anchor: [-254, 87],
+            bitmaps_left_of: i16::MIN,
+            visible: 7,
+        };
+        assert!(!rows(&check_fallback(&s)), "a list of seven");
+    }
+
+    /// A settings dialog's row: the name, and the value alone in the
+    /// value column; the Controls column keeps its arrows, inline puts
+    /// them in the label.
+    #[test]
+    fn a_setting_row_shows_its_value_alone() {
+        let r = RowSpec::value("Difficulty", &["Easy", "Normal"], 1);
+        let cells = |s| r.cells(s);
+        assert_eq!(
+            cells(ValueStyle::Setting),
+            ("Difficulty".into(), Some("Normal".into()))
+        );
+        assert_eq!(
+            cells(ValueStyle::Column),
+            ("Difficulty".into(), Some("< Normal >".into()))
+        );
+        assert_eq!(
+            cells(ValueStyle::Inline),
+            ("Difficulty: < Normal >".into(), None)
+        );
+        assert!(ValueStyle::Setting.has_column() && !ValueStyle::Inline.has_column());
+        assert_eq!(
+            RowSpec::info("Status", "Ready").cells(ValueStyle::Setting),
+            ("Status".into(), Some("Ready".into()))
+        );
+        assert_eq!(
+            RowSpec::action("Start").cells(ValueStyle::Setting),
+            ("Start".into(), None)
+        );
+        let every: Vec<_> = r
+            .every_cells(ValueStyle::Setting)
+            .into_iter()
+            .filter_map(|(_, v)| v)
+            .collect();
+        assert_eq!(every, ["Easy", "Normal"]);
     }
 
     /// The longest of every value is measured, not only the current one:

@@ -4,9 +4,8 @@
 
 import GametypeIcon from "../components/GametypeIcon";
 import { SkullBadges } from "../components/SkullIcon";
-import { gameMapTitle, packageLookup } from "../state/maps";
+import { gameMapTitle, geometryChanged } from "../state/maps";
 import { isHalo1Map } from "../state/gameart";
-import { geometryChoice } from "../lib/maps";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
@@ -117,12 +116,12 @@ export function MapThumb(props: { game: GameState; class?: string; large?: boole
   const preview = () => { const p = picture(); return p && p !== brokenPic() ? p : null; };
   // Only a `top` thumbnail asks for the map's views (a views.json per map),
   // and not for a mod whose geometry isn't the base map's.
-  const sameGeometry = () => geometryChoice(packageLookup(props.game.map_id)) === "base";
+  const sameGeometry = () => !geometryChanged(props.game);
   // The header of a finished game shows the map's own picture (as the
   // game's Select Map screen does) when there is one; the top view is for
   // a live game's blips, or a map with no picture.
   const wantTop = () => sameGeometry() && (props.game.status === "live" || !preview());
-  const geometry = props.top ? geometryFor(() => (wantTop() ? props.game.map : undefined)) : () => null;
+  const geometry = props.top ? geometryFor(() => (wantTop() ? props.game.map : undefined), () => props.game.map_id) : () => null;
   const [broken, setBroken] = createSignal(false);
   createEffect(on(() => props.game.map, () => setBroken(false), { defer: true }));
   const top = () => (broken() ? null : topView(geometry()?.views));

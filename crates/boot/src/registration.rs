@@ -82,7 +82,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
     layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
-    map_select::install(features).context("installing the map select")?;
+    map_select::install(rt, features).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1
@@ -90,7 +90,7 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     if let Some(store) = i.settings.as_ref() {
         h1_options::install_switches(store);
         let screen = Arc::new(h1_options::OptionsScreen { store: Arc::clone(store) });
-        let class = h1_options_row::class(screen, skulls_menu::DESCRIPTION_TEXT, skulls_menu::LIST_LAYOUT);
+        let class = h1_options_row::class(screen);
         if let Err(e) = features.add(&class) {
             eprintln!("h1 options: {e}");
         }

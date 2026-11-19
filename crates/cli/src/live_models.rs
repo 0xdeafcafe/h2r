@@ -586,8 +586,33 @@ pub fn material_look(
     material_look_roles(name, template, roles)
 }
 
-/// [`material_look`] with each bitmap's role already decided.
+/// What a model's materials are read for: an object's (a biped, weapon or
+/// vehicle) or a sky's. They differ in one rule: an object's see-through
+/// surfaces are glass whose base map is the object's own skin, so they get
+/// a glass tint instead; a sky's see-through layers (the dome, clouds,
+/// rings, moons, every `transparent\sky_*` and `*_alpha_clouds` template)
+/// are their pictures, blended by the pictures' alpha.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Surfaces {
+    #[default]
+    Object,
+    Sky,
+}
+
+/// [`material_look`] with each bitmap's role already decided (an object's).
+#[cfg(test)]
 pub fn material_look_roles(
+    name: &str,
+    template: &str,
+    bitmaps: Vec<(BitmapRole, Option<Image>)>,
+) -> (Material, Option<Image>) {
+    material_look_for(Surfaces::Object, name, template, bitmaps)
+}
+
+/// A surface's look (as `material_look` says) with each bitmap's role
+/// already decided, for an object's or a sky's materials ([`Surfaces`]).
+pub fn material_look_for(
+    surfaces: Surfaces,
     name: &str,
     template: &str,
     bitmaps: Vec<(BitmapRole, Option<Image>)>,
@@ -621,8 +646,10 @@ pub fn material_look_roles(
         .filter(|_| shiny)
         .map(|b| specular_map(b, if stem.contains("env") { 0.6 } else { 0.35 }));
     // Glass: the base map is the vehicle's own skin, not what the glass
-    // looks like; a tinted, smooth see-through surface reads better.
-    if blend == Blend::Alpha && transparent {
+    // looks like; a tinted, smooth see-through surface reads better. Not
+    // a sky's layers: their pictures are the sky (every sky was a dark
+    // glass tint before, so the viewer showed none).
+    if blend == Blend::Alpha && transparent && surfaces == Surfaces::Object {
         base = None;
     }
     // An overlay decal (painted letters, stencils) whose picture has no
@@ -2554,6 +2581,24 @@ pub fn bitmap_role(name: &str) -> BitmapRole {
     BitmapRole::Diffuse
 }
 
+/// Which of a sky shader's bitmaps (by tag name, in the shader's order) is
+/// its picture when none reads as a base map ([`bitmap_role`]): the first
+/// that is not the engine's own (`default_bitmaps`, `rasterizer`), a
+/// change-colour map, a bump map or a cube map (a moon whose one picture
+/// is named `..._illum` draws it).
+pub fn sky_picture<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<usize> {
+    names.into_iter().position(|n| {
+        let lower = n.to_ascii_lowercase();
+        let last = last_component(&lower);
+        let engine = ["default_bitmaps", "rasterizer", "cube", "reflection_maps"];
+        !lower.split('\\').any(|c| engine.contains(&c))
+            && !["bump", "cube", "reflection", "normal"]
+                .iter()
+                .any(|w| last.contains(w))
+            && bitmap_role(n) != BitmapRole::ChangeColour
+    })
+}
+
 /// The first image of a bitmap tag, decoded to RGBA.
 pub(crate) fn decode_bitmap(
     map: &mut MapReader,
@@ -2690,6 +2735,17 @@ pub(crate) fn read_source(
     mode: TagId,
     budget: usize,
 ) -> Result<Source> {
+    read_source_for(map, files, mode, budget, Surfaces::Object)
+}
+
+/// [`read_source`] with the materials read as `surfaces` says.
+pub(crate) fn read_source_for(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    mode: TagId,
+    budget: usize,
+    surfaces: Surfaces,
+) -> Result<Source> {
     let geo = RenderModelGeometry::read(map, mode, &mut Res(files))
         .context("reading the render model")?;
     let bones: Vec<Bone> = geo
@@ -2732,11 +2788,13 @@ pub(crate) fn read_source(
             None
         };
         let mut found: Vec<(BitmapRole, Option<Image>)> = Vec::new();
+        let mut named: Vec<(TagId, String)> = Vec::new();
         let overlay = opaque && last_component(&template).contains("overlay");
         for id in bitmaps {
             let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
                 continue;
             };
+            named.push((id, bname.clone()));
             let role = match (base, bitmap_role(&bname)) {
                 (Some(b), _) if b.bitmap == id => BitmapRole::Diffuse,
                 (Some(_), BitmapRole::Diffuse) => BitmapRole::Other,
@@ -2752,12 +2810,23 @@ pub(crate) fn read_source(
             };
             found.push((role, image));
         }
+        // A sky layer whose bitmaps' names all read as something else
+        // (`..._fade`, `..._detail`) still draws its first own picture.
+        if surfaces == Surfaces::Sky
+            && !found
+                .iter()
+                .any(|(r, i)| *r == BitmapRole::Diffuse && i.is_some())
+            && let Some(k) = sky_picture(named.iter().map(|(_, n)| n.as_str()))
+            && let Ok(image) = decode_bitmap(map, files, named[k].0)
+        {
+            found.push((BitmapRole::Diffuse, Some(image)));
+        }
         let picture = found
             .iter()
             .find(|(r, i)| *r == BitmapRole::Diffuse && i.is_some())
             .and_then(|(_, i)| i.clone())
             .filter(|_| overlay);
-        let (mut material, cc) = material_look_roles(&name, &template, found);
+        let (mut material, cc) = material_look_for(surfaces, &name, &template, found);
         // An overlay decal blends as its pass says: the vehicles' all double
         // what is under them, mid-grey leaving it as it is.
         if let Some(picture) = picture {

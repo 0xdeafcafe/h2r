@@ -540,4 +540,44 @@ async fn the_credit_is_the_mods_makers_not_the_publishers() {
     drop(h);
     let _ = std::fs::remove_dir_all(&store_dir);
     let _ = std::fs::remove_dir_all(&data_dir);
+/// The Mods page's checklist data (docs/game/maps.md §5, "A mod's page"):
+/// features, game types and version are checked at publish and listed,
+/// in the list and on the map's own answer; a document without them
+/// lists none.
+#[tokio::test]
+async fn features_game_types_and_version_are_checked_and_listed() {
+    let h = repo(Arc::new(MemoryStore::new()), policy()).await;
+    let a = h.create("Modder").await;
+    let m = Mod::new("features", "lockout", "Lockout Hogs");
+    let patch = m.patch();
+    let r = h
+        .call(
+            Method::PUT,
+            &format!("/v1/content/{}", Sha256::of(&patch)),
+            &[h.bearer(&a, lxm::CONTENT_WRITE)],
+            Body::from(patch),
+        )
+        .await;
+    assert!(r.status.is_success(), "{}", r.error());
+    let mut doc = m.doc();
+    doc.features = vec!["vehicles".into(), "cheats".into()];
+    let r = put_map(&h, &a, &doc).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+    doc.features = vec!["vehicles".into(), "scripts".into()];
+    doc.gametypes = vec!["ctf".into(), "slayer".into()];
+    doc.version = Some("1.2".into());
+    let r = put_map(&h, &a, &doc).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["features"], serde_json::json!(["vehicles", "scripts"]));
+    assert_eq!(item["gametypes"], serde_json::json!(["ctf", "slayer"]));
+    assert_eq!(item["version"], "1.2");
+    let id = MapId::of(&doc.manifest);
+    let one = h.get(&format!("/v1/maps/{id}")).await.json();
+    assert_eq!(one["map"]["features"], item["features"]);
+
+    publish(&h, &a, &Mod::new("plain", "lockout", "Lockout Plain")).await;
+    let plain = &list(&h, "").await["items"][0];
+    assert_eq!(plain["name"], "Lockout Plain");
+    assert!(plain.get("features").is_none() && plain.get("version").is_none());
 }

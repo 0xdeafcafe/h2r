@@ -387,6 +387,58 @@ impl MapGate {
             .ok_or(Refusal::Unpublished(id))
     }
 
+    /// Removes the package for map `id` that a download put here (the Mods
+    /// screen's Remove, docs/game/maps.md §5 "A mod's page"): only a
+    /// `live-<id>` directory of the maps directory, never a package the
+    /// player put there by hand. `active.toml`'s choice of it for its map
+    /// goes too, so the vfs serves the next package (or the disc's map);
+    /// [`on_installed`](Self::on_installed) is told, so the boot rescans.
+    /// Returns the directory removed.
+    pub fn remove(&self, id: &MapId) -> Result<PathBuf, String> {
+        let lib = Library::open(&self.maps_dir);
+        let pkg = lib
+            .packages()
+            .iter()
+            .find(|p| p.id == *id)
+            .ok_or_else(|| format!("map {id} is not installed"))?;
+        let dir = pkg.dir.clone();
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if !name.starts_with(DIR_PREFIX) || dir.parent() != Some(self.maps_dir.as_path()) {
+            return Err(format!(
+                "{} was not downloaded from Live; remove it by hand",
+                dir.display()
+            ));
+        }
+        let path = self.maps_dir.join(content::ACTIVE_FILE);
+        if let Some(mut table) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| t.parse::<toml::Table>().ok())
+        {
+            let gone: Vec<String> = table
+                .iter()
+                .filter(|(_, v)| v.as_str() == Some(name.as_str()))
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in &gone {
+                table.remove(k);
+            }
+            if !gone.is_empty() {
+                write_atomic(
+                    &path,
+                    toml::to_string(&table).unwrap_or_default().as_bytes(),
+                )
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+        }
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        self.installed(&dir);
+        Ok(dir)
+    }
+
     /// Carry out what [`check`](Self::check) found: fetch, verify, write,
     /// activate (for `id`'s map), tell [`on_installed`](Self::on_installed).
     fn fetch(
@@ -637,6 +689,9 @@ mod tests {
                     }],
                     size,
                     image: None,
+                    features: vec![],
+                    gametypes: vec![],
+                    version: None,
                     geometry: None,
                     published_at: "2026-11-16T00:00:00Z".into(),
                     position: 1,
@@ -1097,5 +1152,40 @@ mod tests {
         assert_eq!(disc.disc_hash("LOCKOUT"), Some(Sha256::of(b"daeh invented")), "cached");
         assert_eq!(disc.disc_hash("midship"), None);
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_downloaded_mod_is_removed_with_its_choice_and_nothing_else() {
+        let maps = dir("remove");
+        let patch = b"PATCH invented to be removed";
+        let m = modded(patch);
+        let id = MapId::of(&m);
+        let s = server_with(&m, patch);
+        let g = gate(&maps, true);
+        let dir = g.install(&s, id, &mut |_, _| {}).unwrap();
+        let told: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let sink = Arc::clone(&told);
+        g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
+        assert_eq!(g.remove(&id).unwrap(), dir);
+        assert!(!dir.exists());
+        assert_eq!(g.package_of(&id), None);
+        let active = std::fs::read_to_string(maps.join("active.toml")).unwrap();
+        assert!(!active.contains("live-"), "{active}");
+        assert_eq!(*told.lock().unwrap(), [dir], "the boot rescans");
+        assert!(g.remove(&id).unwrap_err().contains("not installed"));
+        // A package put here by hand is never removed.
+        let own = maps.join("my-lockout");
+        std::fs::create_dir_all(&own).unwrap();
+        let by_hand = b"PATCH invented by hand";
+        std::fs::write(own.join("patches.ips"), by_hand).unwrap();
+        let mut hand = m.clone();
+        hand.patches[0].file = "patches.ips".into();
+        hand.patches[0].sha256 = Sha256::of(by_hand);
+        std::fs::write(own.join(MANIFEST_FILE), hand.to_toml()).unwrap();
+        let hand_id = MapId::of(&hand);
+        assert_eq!(g.package_of(&hand_id), Some(own.clone()));
+        assert!(g.remove(&hand_id).unwrap_err().contains("by hand"));
+        assert!(own.exists());
+        std::fs::remove_dir_all(&maps).unwrap();
     }
 }
