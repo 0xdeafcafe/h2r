@@ -6,9 +6,14 @@ import {
   motdError,
   parseImportEntry,
   toEditable,
+  type HoppersPatch,
   type HopperView,
   type MotdDoc,
+  type PatchHopper,
 } from "../src/admin/validate";
+
+/** The first hopper of a patch that is not a clear. */
+const full = (p: HoppersPatch): PatchHopper => p.hoppers[0] as PatchHopper;
 import { importSeed } from "../src/state/account";
 import type { LocalAccount } from "../src/state/account";
 import { b64urlDecode, canonicalJson, parseJws } from "../src/state/verify";
@@ -169,11 +174,11 @@ describe("the hopper PUT body", () => {
     edited[1]!.name = "Rumble Pit";
     const patch = buildPatch(original, edited);
     expect(patch.hoppers.length).toBe(1);
-    expect(patch.hoppers[0]!.index).toBe(1);
-    expect(patch.hoppers[0]!.name).toBe("Rumble Pit");
-    expect(patch.hoppers[0]!.record_count).toBe(1);
+    expect(full(patch).index).toBe(1);
+    expect(full(patch).name).toBe("Rumble Pit");
+    expect(full(patch).record_count).toBe(1);
     // Records that stayed in place carry no `from`.
-    expect(patch.hoppers[0]!.records[0]!.from).toBeUndefined();
+    expect(full(patch).records[0]!.from).toBeUndefined();
   });
 
   test("reorders and copies say where their bytes come from", () => {
@@ -186,9 +191,9 @@ describe("the hopper PUT body", () => {
     edited[0]!.records.push({ ...original[0]!.records[0]!, string: "a copy of one", src: 0 });
     const patch = buildPatch(original, edited);
     expect(patch.hoppers.length).toBe(1);
-    const records = patch.hoppers[0]!.records;
+    const records = full(patch).records;
     expect(records.length).toBe(3);
-    expect(patch.hoppers[0]!.record_count).toBe(3);
+    expect(full(patch).record_count).toBe(3);
     expect(records[0]!).toMatchObject({ id: 2, string: "two, first now", from: 1 });
     expect(records[1]!).toMatchObject({ id: 1, from: 0 });
     expect(records[2]!).toMatchObject({ id: 1, string: "a copy of one", from: 0 });
@@ -201,8 +206,8 @@ describe("the hopper PUT body", () => {
     const edited = toEditable(doc());
     edited[0]!.records = [edited[0]!.records[0]!];
     const patch = buildPatch(original, edited);
-    expect(patch.hoppers[0]!.record_count).toBe(1);
-    expect(patch.hoppers[0]!.records.length).toBe(1);
+    expect(full(patch).record_count).toBe(1);
+    expect(full(patch).records.length).toBe(1);
   });
 });
 

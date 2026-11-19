@@ -53,10 +53,17 @@ again, and so a screen can be seen and checked before anyone runs the game.
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
    page does. `.description(TextBlock)` adds the focused row's description.
    `.dialog(DialogBase::QuickOptions, opener)` makes the screen a dialog of its
-   rows over whatever opened it, on the lobby's Quick Options art (or
-   `DialogBase::Large`, the one the game maps have); see docs/game/ui-builder.md
-   "The Dialog kind". The prompts go in the footer (below). `.scrolls()` says more rows than the list shows is
-   meant.
+   rows over whatever opened it, Quick Options inside and out: its panel and
+   header, its own list (`setting_lists`, eleven rows from (-254, 87)), each
+   row's name left and its value alone in the value column
+   (`ValueStyle::Setting`: `Count  4`, no arrows), and the focused row's
+   description in its one-line help line (`dialog::QUICK_HELP_TEXT`, 52
+   units at most) unless `.description` names another block. A settings
+   page that should look like the game's own (Clankers, Halo 1 Options)
+   is this and nothing more: no `.layout`, no `.description`. Or
+   `DialogBase::Large`, the one the game maps have; see
+   docs/game/ui-builder.md "The Dialog kind". The prompts go in the footer
+   (below). `.scrolls()` says more rows than the list shows is meant.
    **Choice rows.** A row of many choices over a setting is a
    `ui_kit::choice::ChoiceRow`, the sibling of the Halo 1 options'
    two-choice `OptionRow`. It names a settings `Def`, a label and a
@@ -70,9 +77,8 @@ again, and so a screen can be seen and checked before anyone runs the game.
    ```rust
    static COUNT: ChoiceRow = ChoiceRow::new(&BOTS_COUNT, "Count", "How many bots join.");
    static LEVEL: ChoiceRow = ChoiceRow::new(&BOTS_LEVEL, "Difficulty", "How well they play.");
-   let page = KitScreen::new("bots", "bots", ids::family("bots"), "Clankers")
-       .layout(skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-       .description(skulls_menu::DESCRIPTION_TEXT)
+   let page = KitScreen::new("bots", "bots", ids::family("bots"), "CLANKERS")
+       .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
        .row(COUNT.row(Arc::clone(&store)))
        .row(LEVEL.row(store))
        .prompts(&[
@@ -166,10 +172,15 @@ going back to the screen underneath, and nothing left on screen after it
 closes.
 
 The mod repository's two screens (`boot::mods_screen`, docs/game/maps.md
-§5 "Mod downloads (in game)") are list-class screens whose rows come from
-the server, like the co-op friends list: their texts live in the
-`mod texts` id family, written when they change; a row's count is fixed
-when the screen opens.
+§5 "Mod downloads (in game)" and "A mod's page") are list-class screens
+whose rows come from the server, like the co-op friends list, on the level
+select's layout as the campaign picker is (list, bracket, picture,
+description). Their texts live in the `mod texts` id family (256-byte
+slots: a line and a description per row), written when they change; a
+row's count is fixed when the screen opens. Their descriptions are set
+again when a download moves on (`Rows::live_text`'s redraw), and X is
+their action (`ListClass::action_buttons(&[X_BUTTON])`; the list's reads
+the focused row with `list_class::focused_row`).
 
 The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
 logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).

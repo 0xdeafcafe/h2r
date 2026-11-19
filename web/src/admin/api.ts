@@ -9,10 +9,15 @@ import { live } from "../state/live";
 import { issueToken } from "./token";
 import { parsePins } from "./catalog";
 import { CONTENT_MODERATE } from "./content";
-import type { HoppersPatch, HopperView, MotdDoc } from "./validate";
+import type { BuiltinVariant, HoppersPatch, HopperView, MotdDoc, PlaylistTemplate, RetailMap } from "./validate";
 
 export interface HoppersReply {
   hoppers: HopperView[];
+  /** What the builder can pick without the owner's catalog (older servers
+   *  send none). */
+  variants?: BuiltinVariant[];
+  templates?: PlaylistTemplate[];
+  maps?: RetailMap[];
   position?: number;
 }
 

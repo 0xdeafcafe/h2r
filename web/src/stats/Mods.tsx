@@ -11,7 +11,7 @@ import { mapTitle } from "../state/gameart";
 import { seedPackages } from "../state/maps";
 import { formatBytes, lookupFromResponse, parseMapSummaries, type MapDetail, type MapSummary } from "../lib/maps";
 import {
-  DOWNLOAD_NOTE, MOD_CATEGORIES, MOD_SORTS, baseOptions, categoryLabel, creditBeyondAuthor, cursorCurrent, cursorNext, cursorPage,
+  DOWNLOAD_NOTE, MOD_CATEGORIES, MOD_SORTS, baseOptions, categoryLabel, modMakers, releasedText, cursorCurrent, cursorNext, cursorPage,
   cursorPrev, cursorStart, downloadsText, type CursorStack, modHref, modListParams, modMissingText, modQueryFromSearch, modQueryKey, modSearchParams,
   modsHref, shortSha, type ModQuery,
 } from "../lib/mods";
@@ -169,8 +169,8 @@ function ModRow(props: { m: MapSummary; query: ModQuery }) {
           <A href={modsHref({ ...props.query, category: m().category as ModQuery["category"] })} class="s-mod-tag">{categoryLabel(m().category)}</A>
         </div>
         <p class="s-mod-by">
-          by <A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A>
-          <Show when={creditBeyondAuthor(m())}>{(c) => <span class="s-dim">, made by {c()}</span>}</Show>
+          by <Show when={modMakers(m())} fallback={<span class="s-dim">unknown author</span>}>{(c) => <b>{c()}</b>}</Show>
+          <span class="s-dim"> · uploaded by <A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A></span>
         </p>
         <Show when={m().description}><p class="s-mod-desc">{m().description}</p></Show>
         <ul class="s-mod-meta">
@@ -248,7 +248,8 @@ function ModDetail(props: { m: MapDetail; missing: string[] }) {
       setBusy(false);
     }
   }
-  const credit = () => creditBeyondAuthor(m());
+  const makers = () => modMakers(m());
+  const credits = () => m().credits;
   return (
     <>
       <Title class="s-title--cap" back={["see all mods", statsPath("/mods")]}>{m().name}</Title>
@@ -259,22 +260,26 @@ function ModDetail(props: { m: MapDetail; missing: string[] }) {
         <div class="s-mod-top">
           <div class="s-mod-about">
             <p class="s-mod-by s-mod-by--big">
-              by <A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A>
-              <Show when={credit()}>{(c) => <>, made by <b>{c()}</b></>}</Show>
+              by <Show when={makers()} fallback={<span class="s-dim">unknown author</span>}>{(c) => <b>{c()}</b>}</Show>
             </p>
+            <p class="s-dim">Uploaded by <A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A></p>
             <Show when={m().description} fallback={<p class="s-dim s-mod-desc-full">No description.</p>}>
               <p class="s-mod-desc-full">{m().description}</p>
             </Show>
             <Show when={m().source_url}>
               {(u) => <p class="s-mod-source">From <a href={u()} target="_blank" rel="noopener noreferrer nofollow">{new URL(u()).host}</a></p>}
             </Show>
+            <Show when={credits()?.notes}>{(n) => <p class="s-dim s-mod-credit-notes">{n()}</p>}</Show>
           </div>
           <dl class="s-facts s-mod-facts">
             <div><dt>Category</dt><dd><A href={modsHref({ sort: "new", category: m().category as ModQuery["category"] })}>{categoryLabel(m().category)}</A></dd></div>
             <div><dt>Download</dt><dd>{formatBytes(m().size)}</dd></div>
             <div><dt>Downloads</dt><dd>{num(m().downloads)}</dd></div>
             <div><dt>Published</dt><dd title={longDate(m().published_at)}>{dotDate(m().published_at)}</dd></div>
-            <Show when={credit()}><div><dt>Original author</dt><dd>{credit()}</dd></div></Show>
+            <Show when={makers()}>{(c) => <div><dt>{(credits()?.authors.length ?? 0) > 1 ? "Authors" : "Author"}</dt><dd>{c()}</dd></div>}</Show>
+            <Show when={credits()?.release}>{(r) => <div><dt>Released as</dt><dd>{r()}</dd></div>}</Show>
+            <Show when={credits()?.released}>{(d) => <div><dt>Released</dt><dd>{releasedText(d())}</dd></div>}</Show>
+            <div><dt>Uploaded by</dt><dd><A href={playerHref(m().author.gamertag)}>{m().author.gamertag}</A></dd></div>
             <Show when={m().geometry}><div><dt>Geometry</dt><dd>changed</dd></div></Show>
           </dl>
         </div>

@@ -1,14 +1,12 @@
 //! Structure BSP geometry from a scenario, shared by the `bsp` and
 //! `shadowlab` binaries. Reads the user's own disc; nothing is copied.
-use crate::disc::{Disc, DiscResources};
+use crate::disc::{Disc, DiscResources, MapBytes};
 use anyhow::{Context, Result};
 use map::{Map, TagId};
-use std::fs::File;
-use std::io::BufReader;
 use tags::geometry::{Section, TagView};
 use tags::structure::StructureRender;
 
-pub type MapReader = Map<BufReader<File>>;
+pub type MapReader = Map<MapBytes>;
 
 /// (bsp, lightmap) pairs from the scenario's BSP block (+0x210, stride 0x44).
 pub fn scenario_bsps(map: &mut MapReader) -> Result<Vec<(TagId, Option<TagId>)>> {

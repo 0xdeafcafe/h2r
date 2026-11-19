@@ -455,6 +455,50 @@ row's value goes in the skin's value column on Quick Options and after
 the label on the large dialog (`DialogBase::style`). The disc test holds
 `DialogGeometry::fallback_for` to the disc for both.
 
+**Quick Options inside** (read off `mainmenu.map`'s `quick_options` tag
+and its strings, 2026-11-19). The Clankers and Halo 1 Options pages had
+Quick Options' look as the target but were still built on the Controls
+tag with the skulls page's inside: the level select's one-text list
+(skin 0, 22 high, at (-215, 130), five rows and a scroll), values in the
+label (`Count: < 4 >`) and the five-line description pane on the right.
+Quick Options itself is:
+
+| Part | `quick_options` (screen 222, flags `0x10`: header layout 1) |
+|---|---|
+| Header | "QUICK OPTIONS" (its `header` string), layout 1's rectangle `[190 -253 170 30]`, font 2 |
+| Pane | animation 31; bitmaps `null`, `mp_games2` at (-267, 166) (the game type's picture, drawn by code), `fs_dialog` at (-270, 200) |
+| Text 1 | `quick_options_variant_name` (the variant's name, filled by code), white, font 1, `[163 -224 143 0]` |
+| Text 0 | `quick_options_help`, "Temporarily change settings for this game variant." (51 characters, one line), font 1, pale blue (0.388, 0.580, 0.757), left, `[143 -224 123 270]`, animation 31 |
+| List | skin 2 (`ui\list_skins\setting_lists\setting_lists`), 11 rows from (-254, 87), flags 1, animation 32 |
+| Skin 2 | label text font 4, pale blue, `[23 10 0 255]`; value text font 4, paler blue (0.561, 0.694, 0.812), `[23 256 0 500]`; bar `settings_list_bkd` and focus `hilite` at (-12, -4); items 26 high |
+| Footer | layout 1's second rectangle `[-178 -200 -198 259]` |
+
+No value is drawn with arrows: the executable has no `< %s >` format
+(neither byte nor wide), the skin has no arrow art, and the only
+`left_arrow`/`right_arrow` strings in the menu belong to the virtual
+keyboard. A settings row there is its name and its value, `Score to Win
+Round  50`.
+
+So a page on `DialogBase::QuickOptions` now takes all of it:
+`write_base_tag` copies Quick Options' root (header layout 1), pane
+(animation 31), `fs_dialog` and list block (skin, anchor, flags,
+animation); the rows show `ValueStyle::Setting` (the value alone in the
+value column); and the focused row's description goes in a text block
+equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
+tag's text block 0 by the disc test), which `KitScreen::dialog` and the
+Halo 1 class use unless told otherwise. A description is one line there,
+52 units at most (retail's is 51). The variant-name line and the game
+type picture are retail's content and stay out. The pages' titles are
+in capitals, as Quick Options' header is.
+
+The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
+holds both pages to that (dialog base, list place, value style, help
+block, one-line helps, capital title, footer) and draws each beside the
+kit's Quick Options sample (`kit.dialog`): every panel, title, row bar,
+label, value, help-line and legend widget the sample has is at the same
+rectangle, with the same art or font and justification. The disc test
+repeats that drawing on the disc's geometry.
+
 **Preview.** `DialogSpec` carries `base` and `rows` (and a `body`, empty
 for a rows-only dialog). `dialog_view` draws the base's panel and header
 and the rows through `view_of` at the base's list, over the opener.
@@ -488,14 +532,20 @@ game-ui-fixes lane builds those on the in-game Controller Settings
 ### The Dialog kind's game run
 
 With a dialog screen on `QuickOptions` opened from the lobby (Clankers
-or Halo 1 options, once switched):
+or Halo 1 Options, both on it since 2026-11-19; they open on the Game
+Setup dialog's own window and slot, as before, not the dialogs' window):
 
 1. stderr: `<name>: a dialog on screen 222's tag (copy at ...)`. If it
    says `no dialog screen 222 in this interface`, the lobby's interface
    doesn't have Quick Options loaded; try `Large`.
 2. On screen: `fs_dialog` over the lobby, the header at the top left,
    the rows as Quick Options' (label left, value right) from (-254, 87),
-   no game type picture. Compare with `kit.dialog` in the sheet.
+   no game type picture. Compare with `kit.dialog` in the sheet, and with
+   the lobby's own Quick Options side by side: the same row bars and
+   focus highlight, the same two blues, the value alone ("Normal", not
+   "< Normal >"), the focused row's description in the one line where
+   Quick Options says "Temporarily change settings...", the legend in the
+   same footer place.
 3. The d-pad moves and changes rows; the lobby beneath doesn't move.
 4. B closes the dialog (stderr shows no close by slot), and the lobby
    takes input again at once. Open it again: it opens the same way.

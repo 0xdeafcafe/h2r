@@ -100,6 +100,31 @@ impl Opener {
         ],
         focus: 1,
     };
+    /// A custom game lobby's Game Setup dialog (`squad_settings_dialog`,
+    /// screen 23) on the Halo 1 Options row, its rows as a lobby on a
+    /// converted Halo 1 map lists them: what our settings dialogs (Halo 1
+    /// Options, Clanker Options) open over, as Quick Options does. Its
+    /// texts are retail's (`crate::h1_options_row`, `crate::clankers`).
+    pub const GAME_SETUP: Opener = Opener {
+        name: "game-setup",
+        tag: r"ui\screens\game_shell\pregame_lobby\squad_settings_dialog",
+        pane: 0,
+        rows: &[
+            "Change Map...",
+            "Change Rules...",
+            "Quick Options...",
+            "Halo 1 Options...",
+            "Clanker Options...",
+            "Switch To: Co-Op Game",
+            "Switch To: Matchmaking",
+        ],
+        focus: 3,
+    };
+    /// [`Opener::GAME_SETUP`] on the Clanker Options row.
+    pub const GAME_SETUP_CLANKERS: Opener = Opener {
+        focus: 4,
+        ..Opener::GAME_SETUP
+    };
     /// The Xbox Live menu (screen `0xba`) on Quickmatch, its rows as the
     /// list hooks show them (docs/live/live-custom-games.md "Rows").
     pub const XBOX_LIVE_MENU: Opener = Opener {

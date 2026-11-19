@@ -38,12 +38,26 @@ export interface MapSummary {
   position: number;
   /** Distinct signed-in accounts that fetched the manifest; 0 when absent. */
   downloads: number;
-  /** The mod's original author, as the manifest names it. */
+  /** Who made the mod (the original author or authors) on one line: never
+   *  the publishing account, which is `author`. */
   credit?: string;
+  /** The whole credit: authors, the original release and its date, where
+   *  it came from, notes. Set by the publisher or corrected by an admin. */
+  credits?: MapCredit;
   /** One of lib/mods.ts MOD_CATEGORIES, as the server sends it. */
   category?: string;
   /** Where the mod came from; kept only when it is http or https. */
   source_url?: string;
+}
+
+/** Who made a mod and where it came from (`credits` on a package). */
+export interface MapCredit {
+  authors: string[];
+  release?: string;
+  /** "2005", "2005-03" or "2005-03-14". */
+  released?: string;
+  source_url?: string;
+  notes?: string;
 }
 
 /** `GET /v1/maps/{map_id}`'s `map`. */
@@ -103,8 +117,25 @@ export function parseMapSummary(raw: unknown): MapDetail | null {
   if (credit) out.credit = credit;
   if (category) out.category = category.toLowerCase();
   if (source) out.source_url = source;
+  const credits = parseMapCredit(r.credits);
+  if (credits) out.credits = credits;
   if (obj(r.manifest)) out.manifest = r.manifest as Record<string, unknown>;
   return out;
+}
+
+/** A package's `credits`, read leniently: blank authors dropped, an unsafe
+ *  source URL dropped; null when nothing is left. */
+export function parseMapCredit(raw: unknown): MapCredit | null {
+  const r = obj(raw);
+  if (!r) return null;
+  const authors = (Array.isArray(r.authors) ? r.authors : []).map(text).filter((a): a is string => a !== null);
+  const out: MapCredit = { authors };
+  const release = text(r.release), released = text(r.released), source = safeSourceUrl(r.source_url), notes = text(r.notes);
+  if (release) out.release = release;
+  if (released) out.released = released;
+  if (source) out.source_url = source;
+  if (notes) out.notes = notes;
+  return authors.length || release || released || source || notes ? out : null;
 }
 
 /** A list response's items, dropping any that can't be read. */
