@@ -8,8 +8,18 @@ use std::io::{BufReader, Cursor};
 
 use h1campaign::recordings::{self, Game};
 
-const LEVELS: [&str; 10] = [
-    "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
+// Owner's Xbox campaign disc: (level, recording rows, initial + type-4 flag words).
+const LEVELS: [(&str, usize, usize); 10] = [
+    ("a10", 99, 206),
+    ("a30", 63, 309),
+    ("a50", 34, 120),
+    ("b30", 34, 182),
+    ("b40", 24, 107),
+    ("c10", 51, 389),
+    ("c20", 1, 4),
+    ("c40", 12, 30),
+    ("d20", 20, 61),
+    ("d40", 11, 30),
 ];
 
 fn disc(var: &str, name: &str) -> String {
@@ -120,11 +130,15 @@ fn every_converted_recording_walks_in_halo_2() {
     let mut kinds = BTreeMap::<u8, usize>::new();
     let mut flags = BTreeMap::<u16, usize>::new();
     let mut weapons = BTreeMap::<i16, usize>::new();
-    for level in LEVELS {
+    for (level, expected_recordings, expected_flag_words) in LEVELS {
         let h1 = h1_level(&mut iso, level);
         let original = h1campaign::cutscenes::read_recordings(&h1).unwrap();
+        assert_eq!(original.len(), expected_recordings, "{level} source rows");
         let mut recs = original.clone();
-        let report = recordings::for_halo2(&mut recs).unwrap();
+        let report = recordings::for_halo2(&mut recs).unwrap_or_else(|e| panic!("{level}: {e}"));
+        assert_eq!(report.converted, expected_recordings, "{level} encoded rows");
+        let mut flag_words = 0;
+        let mut flagged_recordings = 0;
         for (r, o) in recs.iter().zip(&original) {
             total += 1;
             let cv = r.control_version;
@@ -132,18 +146,28 @@ fn every_converted_recording_walks_in_halo_2() {
             if recordings::walk(Game::Halo2, cv, &o.stream).is_err() {
                 raw_bad += 1;
             }
+            let initial_flags = u16::from_le_bytes([o.stream[2], o.stream[3]]);
+            *flags.entry(initial_flags).or_default() += 1;
+            let mut used_flags = initial_flags;
+            flag_words += 1;
             for e in &w1.events {
                 *kinds.entry(e.kind).or_default() += 1;
                 let p = &o.stream[e.at + e.head_len..e.at + e.size()];
                 match e.kind {
-                    4 => *flags.entry(u16::from_le_bytes([p[0], p[1]])).or_default() += 1,
+                    4 => {
+                        let word = u16::from_le_bytes([p[0], p[1]]);
+                        *flags.entry(word).or_default() += 1;
+                        used_flags |= word;
+                        flag_words += 1;
+                    }
                     5 => *weapons.entry(i16::from_le_bytes([p[0], p[1]])).or_default() += 1,
                     _ => {}
                 }
             }
-            *flags
-                .entry(u16::from_le_bytes([o.stream[2], o.stream[3]]))
-                .or_default() += 1;
+            // H1 control bits 2, 3, 14 and 15 are absent from retail recordings.
+            if used_flags & 0xc00c != 0 {
+                flagged_recordings += 1;
+            }
             *weapons
                 .entry(i16::from_le_bytes([o.stream[4], o.stream[5]]))
                 .or_default() += 1;
@@ -201,8 +225,10 @@ fn every_converted_recording_walks_in_halo_2() {
                 recordings::mode(o.stream[0])
             );
         }
+        assert_eq!(flag_words, expected_flag_words, "{level} source flag words");
+        assert_eq!(flagged_recordings, 0, "{level} recordings using mask 0xc00c");
         println!(
-            "{level}: {} recordings converted, {} timed mode changes",
+            "{level}: {} recordings converted, {} timed mode changes, {flag_words} source flag words, {flagged_recordings} recordings using mask 0xc00c",
             report.converted, report.animation_events
         );
     }
