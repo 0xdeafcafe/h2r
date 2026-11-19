@@ -1216,6 +1216,7 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .collect();
     install_write_barrier(rt, &device, &entries)?;
     crate::native_world_layers_glue::install(rt, &device);
+    crate::native_residual_glue::install(rt, &device, &r.implemented);
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();

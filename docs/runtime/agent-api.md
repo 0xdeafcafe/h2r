@@ -991,6 +991,14 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
+- **Residual render census.** With
+  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
+  `render.stats` includes `counters.residual`. It lists completed
+  present numbers and, for each view kind, the invocation count and
+  distinct Direct3D entry and return-PC pairs, with ordinary backend
+  draw attempts. Use the stage counters
+  in the same reply to identify submitted native draws. See the
+  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`

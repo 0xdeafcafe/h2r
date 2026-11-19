@@ -67,6 +67,7 @@ pub mod native_objects_glue;
 pub mod native_particles_glue;
 pub mod native_post_glue;
 pub mod native_post_load;
+mod native_residual_glue;
 pub mod native_transparents_glue;
 pub mod native_world_glue;
 mod native_world_layers_glue;

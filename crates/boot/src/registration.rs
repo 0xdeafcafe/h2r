@@ -337,6 +337,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_world_layers::NativeWorldLayers)
         .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+    features
+        .add(&feature::native_residual::NativeResidual)
+        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
     // The sorted transparents' geometry on the native GPU renderer
     // (H2_FEATURES=impl.render.native_transparents=on, off by default;
     // docs/graphics/native-renderer.md, stage 3): a context-only skip on

@@ -64,7 +64,9 @@ use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 mod display;
 mod fragments;
 mod mirror;
+mod native_residual;
 mod raster;
+use native_residual::{EntryKind, Residual};
 mod snap;
 mod visibility;
 
@@ -947,6 +949,7 @@ pub struct Device<B: Backend> {
     pending_external: Vec<Box<dyn crate::backend::ExternalPass>>,
     admissions: Vec<Arc<dyn crate::DrawAdmission>>,
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
+    residual: Residual,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing>,
     /// How the last swallow that ended early ended
@@ -1192,6 +1195,7 @@ impl<B: Backend> Device<B> {
             pending_external: Vec::new(),
             admissions: Vec::new(),
             scoped_admission: None,
+            residual: Residual::default(),
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -3766,7 +3770,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_SetRenderTarget";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Bind)?;
         let target = if target == 0 {
             self.render_target
         } else {
@@ -3822,7 +3826,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_SetRenderTarget (same size, 0x3f7b30)";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Bind)?;
         if target == 0 {
             return Err(D3dError::invalid(E, "null render target"));
         }
@@ -3854,11 +3858,17 @@ impl<B: Backend> Device<B> {
         // new one is acquired before the old one is stamped and released.
         // Staged, so a release that stops leaves every count and the
         // binding as they were.
+        let move_refs = !self.residual.enabled
+            || [target, z_stencil, self.render_target, self.depth_stencil]
+                .into_iter()
+                .any(|header| self.title_surface(header));
         let mut refs = Staged::default();
-        self.acquire_surface(&mut refs, mem, target)?;
-        self.release_surface(&mut refs, mem, entry, self.render_target)?;
-        self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
-        self.acquire_surface(&mut refs, mem, z_stencil)?;
+        if move_refs {
+            self.acquire_surface(&mut refs, mem, target)?;
+            self.release_surface(&mut refs, mem, entry, self.render_target)?;
+            self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
+            self.acquire_surface(&mut refs, mem, z_stencil)?;
+        }
         if target != self.render_target {
             self.leave_target(mem)?;
         }
@@ -3876,8 +3886,10 @@ impl<B: Backend> Device<B> {
                 self.write_back(mem, old, WritebackCause::DepthBinding)?;
             }
         }
-        let destroys = refs.commit(mem)?;
-        self.destroy_resources(mem, destroys)?;
+        if move_refs {
+            let destroys = refs.commit(mem)?;
+            self.destroy_resources(mem, destroys)?;
+        }
         self.render_target = target;
         self.depth_stencil = z_stencil;
         let dev = self.cfg.layout.device;
