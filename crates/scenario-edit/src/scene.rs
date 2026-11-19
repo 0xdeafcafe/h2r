@@ -98,6 +98,143 @@ pub fn template_clamps(template: &str) -> bool {
     stem.contains("clamped")
 }
 
+/// What one implementation of a material binds per texture stage: the
+/// bitmap, and the scale of the texture coordinates it is sampled at.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StageBinding {
+    pub bitmap: Option<TagId>,
+    /// `c[18 + stage]`.xy when the material writes both: the texture
+    /// vertex shaders scale stage `n`'s coordinates by that constant (the
+    /// template's base map at 1, a detail map at 16 or 40, a bump map at
+    /// its own scale, as `h2 shader` shows the passes).
+    pub scale: Option<[f32; 2]>,
+}
+
+/// Every implementation of a resolved material, in layer and pass order,
+/// as [`StageBinding`]s.
+pub fn stage_bindings(material: &tags::material::Material) -> Vec<[StageBinding; 4]> {
+    use tags::material::TextureSource;
+    let mut out = Vec::new();
+    for layer in &material.layers {
+        for pass in &layer.passes {
+            for imp in &pass.implementations {
+                let stages: [StageBinding; 4] = std::array::from_fn(|k| {
+                    let bitmap = match imp.textures[k].map(|t| t.source) {
+                        Some(TextureSource::Bitmap { bitmap, .. }) if bitmap != TagId::NULL => {
+                            Some(bitmap)
+                        }
+                        _ => None,
+                    };
+                    let scale = imp
+                        .vertex_constants
+                        .iter()
+                        .find(|r| usize::from(r.index) == k && r.written & 3 == 3)
+                        .map(|r| [r.value[0], r.value[1]])
+                        .filter(|s| s.iter().all(|v| v.is_finite() && *v != 0.0));
+                    StageBinding { bitmap, scale }
+                });
+                out.push(stages);
+            }
+        }
+    }
+    out
+}
+
+/// How a shader's base map is drawn with its detail maps.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetailPlan {
+    pub base_scale: [f32; 2],
+    /// Detail bitmaps in stage order, each with its scale; at most
+    /// [`MAX_DETAILS`].
+    pub details: Vec<(TagId, [f32; 2])>,
+}
+
+impl Default for DetailPlan {
+    fn default() -> Self {
+        Self {
+            base_scale: [1.0, 1.0],
+            details: Vec::new(),
+        }
+    }
+}
+
+/// The first implementation that samples `base`: the base map's scale
+/// there, and the other bitmaps it samples that are detail maps
+/// (`is_detail`), each at its stage's scale. The templates multiply
+/// those into the base map doubled (`t0 * t1 x2`, and again for a second
+/// detail map in the `two_detail` ones). No implementation sampling
+/// `base`: the base map alone.
+pub fn detail_plan(
+    implementations: &[[StageBinding; 4]],
+    base: TagId,
+    is_detail: impl Fn(TagId) -> bool,
+) -> DetailPlan {
+    let Some((stages, at)) = implementations.iter().find_map(|stages| {
+        let at = stages.iter().position(|s| s.bitmap == Some(base))?;
+        Some((stages, at))
+    }) else {
+        return DetailPlan::default();
+    };
+    let one = [1.0, 1.0];
+    DetailPlan {
+        base_scale: stages[at].scale.unwrap_or(one),
+        details: stages
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| *k != at)
+            .filter_map(|(_, s)| Some((s.bitmap?, s.scale.unwrap_or(one))))
+            .filter(|(b, _)| *b != base && is_detail(*b))
+            .take(MAX_DETAILS)
+            .collect(),
+    }
+}
+
+/// The [`Look`] of a base map (`texture`) drawn by `plan`: its scale, and
+/// each detail map that decodes (`texture_of`) in order.
+pub fn look_of(
+    texture: Option<usize>,
+    plan: &DetailPlan,
+    mut texture_of: impl FnMut(TagId) -> Option<usize>,
+) -> Look {
+    let mut look = Look::plain(texture);
+    if texture.is_none() {
+        return look;
+    }
+    look.scale = plan.base_scale;
+    let layers = plan.details.iter().filter_map(|&(bitmap, scale)| {
+        Some(Layer {
+            texture: texture_of(bitmap)?,
+            scale,
+        })
+    });
+    for (slot, layer) in look.details.iter_mut().zip(layers) {
+        *slot = Some(layer);
+    }
+    look
+}
+
+/// Whether a bitmap reads as a detail map by its tag name: in a
+/// `detail_maps` folder or named `detail`, and not a bump, normal,
+/// reflection or engine default map.
+pub fn is_detail_map(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let last = lower.rsplit('\\').next().unwrap_or(&lower);
+    let folders: Vec<&str> = lower.split('\\').collect();
+    let excluded = ["default_bitmaps", "rasterizer", "reflection_maps"];
+    let not = [
+        "bump",
+        "_bmp",
+        "normal",
+        "reflection",
+        "cube",
+        "illum",
+        "mask",
+    ];
+    (folders.contains(&"detail_maps") || last.contains("detail"))
+        && !folders.iter().any(|f| excluded.contains(f))
+        && !not.iter().any(|w| last.contains(w))
+}
+
 /// What a shader's bitmap is for, from the words of its tag name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BitmapRole {
@@ -299,17 +436,67 @@ impl Image {
     }
 }
 
-/// Triangles sharing one texture and blend.
+/// The most detail maps a [`Look`] multiplies in (the `two_detail`
+/// templates use two).
+pub const MAX_DETAILS: usize = 2;
+
+/// A detail map of a [`Look`]: a texture and the scale of the part's
+/// texture coordinates it is sampled at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layer {
+    /// Index into [`Scene::textures`].
+    pub texture: usize,
+    pub scale: [f32; 2],
+}
+
+/// How a shader draws, as the viewport reproduces it: its base map at a
+/// scale of the texture coordinates, times each detail map at its own
+/// scale, doubled (the game's `t0 * t1 x2` combiners, in gamma space).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Look {
+    /// Index into [`Scene::textures`]; `None` draws untextured grey.
+    pub texture: Option<usize>,
+    pub scale: [f32; 2],
+    pub details: [Option<Layer>; MAX_DETAILS],
+}
+
+impl Look {
+    /// A base map alone, unscaled (or no texture).
+    pub const fn plain(texture: Option<usize>) -> Self {
+        Self {
+            texture,
+            scale: [1.0, 1.0],
+            details: [None; MAX_DETAILS],
+        }
+    }
+}
+
+/// Triangles sharing one look and blend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Batch {
     /// Index into [`Scene::textures`]; `None` draws untextured grey.
     pub texture: Option<usize>,
+    /// The scale the base map is sampled at ([`Look::scale`]).
+    pub scale: [f32; 2],
+    /// Detail maps multiplied in ([`Look::details`]).
+    pub details: [Option<Layer>; MAX_DETAILS],
     /// The lightmap page lighting it, an index into [`Scene::textures`];
     /// `None` is lit by the sun.
     pub lightmap: Option<usize>,
     pub blend: Blend,
     pub vertices: Vec<SceneVertex>,
     pub indices: Vec<u32>,
+}
+
+impl Batch {
+    /// The look it draws with.
+    pub fn look(&self) -> Look {
+        Look {
+            texture: self.texture,
+            scale: self.scale,
+            details: self.details,
+        }
+    }
 }
 
 /// Batches in one space (the world, or one model's).
@@ -338,17 +525,31 @@ impl Mesh {
         blend: Blend,
         part: &WorldPart,
     ) {
+        self.push_look(&Look::plain(texture), lightmap, blend, part);
+    }
+
+    /// [`Self::push`] with a whole [`Look`] (base map, its scale and
+    /// detail maps), merged into the batch with the same look.
+    pub fn push_look(
+        &mut self,
+        look: &Look,
+        lightmap: Option<usize>,
+        blend: Blend,
+        part: &WorldPart,
+    ) {
         // Lightmap coordinates are only meaningful with the part's own page.
         let lightmap = lightmap.filter(|_| part.lightmap_uvs.len() == part.positions.len());
         let i = match self
             .batches
             .iter()
-            .position(|b| b.texture == texture && b.lightmap == lightmap && b.blend == blend)
+            .position(|b| b.look() == *look && b.lightmap == lightmap && b.blend == blend)
         {
             Some(i) => i,
             None => {
                 self.batches.push(Batch {
-                    texture,
+                    texture: look.texture,
+                    scale: look.scale,
+                    details: look.details,
                     lightmap,
                     blend,
                     vertices: Vec::new(),
@@ -575,11 +776,13 @@ pub struct SceneBuilder<'a, R> {
     raw: &'a mut dyn RawSource,
     files: ResourceFiles,
     scene: Scene,
-    /// Shader → (texture, blend).
-    looks: HashMap<TagId, (Option<usize>, Blend)>,
-    /// Bitmap → texture.
-    /// (bitmap, cut out, clamped) -> texture.
+    /// Shader → (look, blend).
+    looks: HashMap<TagId, (Look, Blend)>,
+    /// (bitmap, cut out, clamped) → texture.
     bitmaps: HashMap<(TagId, bool, bool), Option<usize>>,
+    /// The map's shader library, read the first time a shader's detail
+    /// maps are asked for (`None` inside when it does not read).
+    library: Option<Option<tags::material::ShaderLibrary>>,
 }
 
 impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
@@ -591,6 +794,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
             scene: Scene::default(),
             looks: HashMap::new(),
             bitmaps: HashMap::new(),
+            library: None,
         }
     }
 
@@ -600,7 +804,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
         let mut pages: HashMap<geometry::LightmapRef, Option<usize>> = HashMap::new();
         let mut bitmaps: HashMap<TagId, Option<Box<tags::Bitmap>>> = HashMap::new();
         for part in parts {
-            let (texture, mut blend) = self.look(part.shader);
+            let (look, mut blend) = self.look(part.shader);
             if part.transparent {
                 blend = Blend::Translucent;
             }
@@ -625,7 +829,7 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                     Some(self.scene.textures.len() - 1)
                 })
             });
-            self.scene.world.push(texture, lightmap, blend, part);
+            self.scene.world.push_look(&look, lightmap, blend, part);
         }
     }
 
@@ -794,11 +998,11 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 if moved {
                     place_part(&mut out, &at);
                 }
-                let (texture, mut blend) = self.look(out.shader);
+                let (look, mut blend) = self.look(out.shader);
                 if out.transparent {
                     blend = Blend::Translucent;
                 }
-                mesh.push(texture, None, blend, &out);
+                mesh.push_look(&look, None, blend, &out);
             }
         }
         for a in &model.attached {
@@ -821,9 +1025,9 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
     }
 
     /// A shader's base map and blend, read the first time it is asked for.
-    fn look(&mut self, shader: TagId) -> (Option<usize>, Blend) {
+    fn look(&mut self, shader: TagId) -> (Look, Blend) {
         if shader == TagId::NULL {
-            return (None, Blend::Opaque);
+            return (Look::plain(None), Blend::Opaque);
         }
         if let Some(l) = self.looks.get(&shader) {
             return *l;
@@ -841,15 +1045,41 @@ impl<'a, R: Read + Seek> SceneBuilder<'a, R> {
                 });
                 let clamp = template_clamps(&template);
                 let texture = base.and_then(|b| self.texture(b, blend == Blend::Mask, clamp));
-                (texture, blend)
+                let look = match (base, texture) {
+                    (Some(base), Some(_)) => {
+                        let plan = self.detail_plan(shader, base);
+                        look_of(texture, &plan, |b| self.texture(b, false, false))
+                    }
+                    _ => Look::plain(texture),
+                };
+                (look, blend)
             }
-            Err(_) => (None, Blend::Opaque),
+            Err(_) => (Look::plain(None), Blend::Opaque),
         };
-        if look.0.is_some() {
+        if look.0.texture.is_some() {
             self.scene.stats.textured += 1;
         }
         self.looks.insert(shader, look);
         look
+    }
+
+    /// The scales and detail maps of a shader's base map `base`, from its
+    /// resolved material ([`detail_plan`]); the base map alone when the
+    /// material does not resolve.
+    fn detail_plan(&mut self, shader: TagId, base: TagId) -> DetailPlan {
+        let library = self
+            .library
+            .get_or_insert_with(|| tags::material::ShaderLibrary::read(&mut *self.map).ok());
+        let Some(material) = library.as_mut().and_then(|l| l.material(shader, None).ok()) else {
+            return DetailPlan::default();
+        };
+        let map = &*self.map;
+        detail_plan(&stage_bindings(&material), base, |id| {
+            map.tag(id)
+                .ok()
+                .and_then(|t| t.name.as_deref())
+                .is_some_and(is_detail_map)
+        })
     }
 
     fn texture(&mut self, bitmap: TagId, cutout: bool, clamp: bool) -> Option<usize> {
@@ -1767,5 +1997,104 @@ mod tests {
         assert_eq!(shader_bitmaps(&mut map, own).unwrap(), want);
         assert_eq!(shader_bitmaps(&mut map, shared).unwrap(), want);
         assert!(shader_bitmaps(&mut map, template).is_err(), "not a shader");
+    }
+
+    /// An invented material in the shape of a lightmapped `tex_bump`
+    /// pass: stage 0 the base map at 1, stage 1 a detail map at 40, stage
+    /// 2 a bump map (a detail-folder name, but a bump) at 10, stage 3 the
+    /// lightmap; an earlier implementation does not sample the base.
+    #[test]
+    fn a_shaders_detail_map_and_scales_reach_its_batch() {
+        let (base, detail, bump, other) = (TagId(0x10), TagId(0x11), TagId(0x12), TagId(0x13));
+        let stage = |bitmap: Option<TagId>, s: Option<f32>| StageBinding {
+            bitmap,
+            scale: s.map(|s| [s, s]),
+        };
+        let imps = [
+            [
+                stage(Some(other), Some(3.0)),
+                stage(None, None),
+                stage(None, None),
+                stage(None, None),
+            ],
+            [
+                stage(Some(base), Some(1.0)),
+                stage(Some(detail), Some(40.0)),
+                stage(Some(bump), Some(10.0)),
+                stage(None, None),
+            ],
+        ];
+        let names = |id: TagId| match id.0 {
+            0x10 => "invented\\bitmaps\\terrain",
+            0x11 => "invented\\bitmaps\\detail_sand",
+            0x12 => "invented\\bitmaps\\detail_maps\\rock_bump",
+            _ => "invented\\bitmaps\\other",
+        };
+        let plan = detail_plan(&imps, base, |id| is_detail_map(names(id)));
+        assert_eq!(
+            plan,
+            DetailPlan {
+                base_scale: [1.0, 1.0],
+                details: vec![(detail, [40.0, 40.0])],
+            }
+        );
+        // Scene textures: the base map is 0, the detail map 1.
+        let look = look_of(Some(0), &plan, |b| (b == detail).then_some(1));
+        assert_eq!(
+            look,
+            Look {
+                texture: Some(0),
+                scale: [1.0, 1.0],
+                details: [
+                    Some(Layer {
+                        texture: 1,
+                        scale: [40.0, 40.0]
+                    }),
+                    None
+                ],
+            }
+        );
+        let mut mesh = Mesh::default();
+        mesh.push_look(&look, None, Blend::Opaque, &quad(false));
+        mesh.push(Some(0), None, Blend::Opaque, &quad(false));
+        assert_eq!(mesh.batches.len(), 2, "the plain base map is another batch");
+        let b = &mesh.batches[0];
+        assert_eq!((b.texture, b.scale), (Some(0), [1.0, 1.0]));
+        assert_eq!(b.details, look.details);
+        assert_eq!(mesh.batches[1].details, [None; MAX_DETAILS]);
+
+        // A base map scaled itself, two detail maps (the `two_detail`
+        // form), and a stage with no scale written (1).
+        let imps = [[
+            stage(Some(base), Some(2.0)),
+            stage(Some(detail), Some(16.0)),
+            stage(Some(other), None),
+            stage(None, None),
+        ]];
+        let plan = detail_plan(&imps, base, |id| id == detail || id == other);
+        assert_eq!(plan.base_scale, [2.0, 2.0]);
+        assert_eq!(plan.details, [(detail, [16.0, 16.0]), (other, [1.0, 1.0])]);
+        // No implementation samples the base map: alone, unscaled.
+        assert_eq!(detail_plan(&imps, bump, |_| true), DetailPlan::default());
+        // No base texture: no details either.
+        assert_eq!(look_of(None, &plan, |_| Some(5)), Look::plain(None));
+    }
+
+    #[test]
+    fn detail_maps_are_told_by_name() {
+        for d in [
+            "scenarios\\bitmaps\\multi\\a\\detail_sandstone_a",
+            "scenarios\\bitmaps\\detail_maps\\nature\\rock\\sandstone",
+        ] {
+            assert!(is_detail_map(d), "{d}");
+        }
+        for n in [
+            "scenarios\\bitmaps\\detail_maps\\nature\\rock\\rock_cave1_bump",
+            "shaders\\default_bitmaps\\bitmaps\\default_detail",
+            "scenarios\\bitmaps\\multi\\a\\terrain",
+            "scenarios\\bitmaps\\reflection_maps\\noise",
+        ] {
+            assert!(!is_detail_map(n), "{n}");
+        }
     }
 }

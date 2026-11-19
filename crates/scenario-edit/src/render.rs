@@ -138,12 +138,18 @@ struct V { @builtin(position) clip: vec4<f32>, @location(0) n: vec3<f32>, @locat
 /// Textured meshes: placed per instance, lit by one sun and the sky.
 const SCENE_SHADER: &str = r#"
 struct U { view_proj: mat4x4<f32>, eye: vec4<f32> };
-struct P { lift: f32, lit: f32, pad0: f32, pad1: f32 };
+struct P {
+    lift: f32, lit: f32, details: f32, pad0: f32,
+    base_scale: vec2<f32>, detail0_scale: vec2<f32>, detail1_scale: vec2<f32>, pad1: vec2<f32>,
+};
 @group(0) @binding(0) var<uniform> u: U;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var lm: texture_2d<f32>;
 @group(1) @binding(3) var<uniform> p: P;
+@group(1) @binding(4) var detail0: texture_2d<f32>;
+@group(1) @binding(5) var detail1: texture_2d<f32>;
+@group(1) @binding(6) var detail_samp: sampler;
 struct V {
     @builtin(position) clip: vec4<f32>,
     @location(0) n: vec3<f32>,
@@ -190,24 +196,39 @@ fn lit(v: V, albedo: vec3<f32>) -> vec3<f32> {
     let c = roll(albedo * light * v.tint.rgb);
     return mix(c, vec3<f32>(1.0, 0.78, 0.25), v.tint.a);
 }
+// A detail map multiplied in doubled, as the game's `t0 * t1 x2` does in
+// gamma space, on linear samples.
+fn times_detail(c: vec3<f32>, d: vec3<f32>) -> vec3<f32> {
+    let g = vec3<f32>(1.0 / 2.2);
+    return c * pow(2.0 * pow(max(d, vec3<f32>(0.0)), g), vec3<f32>(2.2));
+}
+// The base map at its scale, times the batch's detail maps at theirs.
+fn albedo(v: V) -> vec4<f32> {
+    var c = textureSample(tex, samp, v.uv * p.base_scale);
+    let d0 = textureSample(detail0, detail_samp, v.uv * p.detail0_scale).rgb;
+    let d1 = textureSample(detail1, detail_samp, v.uv * p.detail1_scale).rgb;
+    if (p.details > 0.5) { c = vec4<f32>(times_detail(c.rgb, d0), c.a); }
+    if (p.details > 1.5) { c = vec4<f32>(times_detail(c.rgb, d1), c.a); }
+    return c;
+}
 @fragment fn fs_opaque(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(lit(v, textureSample(tex, samp, v.uv).rgb), 1.0);
+    return vec4<f32>(lit(v, albedo(v).rgb), 1.0);
 }
 @fragment fn fs_mask(v: V) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, v.uv);
+    let c = albedo(v);
     if (c.a < 0.5) { discard; }
     return vec4<f32>(lit(v, c.rgb), 1.0);
 }
 @fragment fn fs_translucent(v: V) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, v.uv);
+    let c = albedo(v);
     return vec4<f32>(c.rgb * (0.6 + 0.4 * v.tint.rgb), 0.3);
 }
 // The sky: its base maps as they are, unlit (the sky is its own light).
 @fragment fn fs_sky(v: V) -> @location(0) vec4<f32> {
-    return vec4<f32>(textureSample(tex, samp, v.uv).rgb, 1.0);
+    return vec4<f32>(albedo(v).rgb, 1.0);
 }
 @fragment fn fs_sky_blend(v: V) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, v.uv);
+    return albedo(v);
 }
 "#;
 
@@ -350,7 +371,13 @@ struct GpuMesh {
 struct BatchParams {
     lift: f32,
     lit: f32,
-    pad: [f32; 2],
+    /// How many detail maps multiply the base map (0..=2).
+    details: f32,
+    pad: f32,
+    /// Texture-coordinate scales: the base map's, then each detail map's.
+    base_scale: [f32; 2],
+    detail_scales: [[f32; 2]; 2],
+    pad1: [f32; 2],
 }
 
 /// A [`Scene`] uploaded: the world and the models, each batch bound to its
@@ -381,13 +408,28 @@ impl MeshContext<'_> {
     fn bind(&self, b: &crate::scene::Batch) -> wgpu::BindGroup {
         let base = b.texture.and_then(|t| self.views.get(t));
         let lightmap = b.lightmap.and_then(|t| self.views.get(t));
+        // Detail maps in order; a missing one ends the list.
+        let details: Vec<(&wgpu::TextureView, [f32; 2])> = b
+            .details
+            .iter()
+            .map_while(|d| d.and_then(|d| Some((self.views.get(d.texture)?, d.scale))))
+            .collect();
+        let detail = |k: usize| details.get(k).map_or(self.white, |d| d.0);
         let params = BatchParams {
             lift: b
                 .texture
                 .and_then(|t| self.lifts.get(t).copied())
                 .unwrap_or(1.0),
             lit: if lightmap.is_some() { 1.0 } else { 0.0 },
-            pad: [0.0; 2],
+            details: if base.is_some() {
+                details.len() as f32
+            } else {
+                0.0
+            },
+            pad: 0.0,
+            base_scale: b.scale,
+            detail_scales: std::array::from_fn(|k| details.get(k).map_or([1.0; 2], |d| d.1)),
+            pad1: [0.0; 2],
         };
         let buffer = self
             .device
@@ -421,6 +463,19 @@ impl MeshContext<'_> {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(detail(0)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(detail(1)),
+                },
+                // Detail maps always repeat, whatever the base map does.
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(self.sampler),
                 },
             ],
         })
@@ -642,6 +697,32 @@ impl Viewport {
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],

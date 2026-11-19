@@ -1984,6 +1984,11 @@ fn sky_box(half: f32) -> crate::scene::Mesh {
 
 /// [`sky_box`] with every vertex at texture coordinates `uv`.
 fn sky_box_at(half: f32, uv: [f32; 2]) -> crate::scene::Mesh {
+    sky_box_look(half, uv, &crate::scene::Look::plain(Some(0)))
+}
+
+/// [`sky_box_at`] drawn with `look`.
+fn sky_box_look(half: f32, uv: [f32; 2], look: &crate::scene::Look) -> crate::scene::Mesh {
     let mut part = geometry::WorldPart::default();
     for z in [-half, half] {
         for y in [-half, half] {
@@ -2007,7 +2012,7 @@ fn sky_box_at(half: f32, uv: [f32; 2]) -> crate::scene::Mesh {
         part.tris.push([a, c, d]);
     }
     let mut mesh = crate::scene::Mesh::default();
-    mesh.push(Some(0), None, crate::scene::Blend::Opaque, &part);
+    mesh.push_look(look, None, crate::scene::Blend::Opaque, &part);
     mesh
 }
 
@@ -2095,6 +2100,70 @@ fn a_clamped_sky_texture_is_not_repeated() {
     vp.render(&device, &queue, &cam, size);
     let px = center_pixel(&device, &queue, &vp, size);
     assert!(px[2] > 180 && px[0] < 60, "clamped: {px:?}");
+}
+
+/// A batch's detail map is multiplied into its base map doubled, at its
+/// own scale: on a mid-grey base, a white detail texel brightens to near
+/// white and a black one darkens to black. The sky box's coordinates
+/// (`u` 0.25) sit on the centre of the detail map's left (white) texel;
+/// at scale 3 (`u` 0.75) on its right (black) one.
+#[test]
+fn a_detail_map_multiplies_the_base_map_at_its_scale() {
+    use crate::scene::{Image, Layer, Look, MAX_DETAILS, Scene, SceneSky};
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+    else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+    let size = [64u32, 64];
+    let grey = Image {
+        width: 1,
+        height: 1,
+        rgba: vec![128, 128, 128, 255],
+    };
+    let white_black = Image {
+        width: 2,
+        height: 1,
+        rgba: [[255u8, 255, 255, 255], [0, 0, 0, 255]].concat(),
+    };
+    let cam = Camera {
+        distance: 40.0,
+        ..Camera::default()
+    };
+    let draw = |details: [Option<Layer>; MAX_DETAILS]| {
+        let look = Look {
+            details,
+            ..Look::plain(Some(0))
+        };
+        let scene = Scene {
+            textures: vec![grey.clone(), white_black.clone()],
+            lifts: vec![1.0; 2],
+            sky: Some(SceneSky {
+                name: "test_sky".into(),
+                mesh: sky_box_look(5.0, [0.25, 0.5], &look),
+            }),
+            ..Scene::default()
+        };
+        let mut vp = crate::render::Viewport::new(&device);
+        vp.set_scene(&device, &queue, &scene);
+        vp.render(&device, &queue, &cam, size);
+        center_pixel(&device, &queue, &vp, size)
+    };
+    let layer = |s: f32| {
+        Some(Layer {
+            texture: 1,
+            scale: [s, s],
+        })
+    };
+    let plain = draw([None; MAX_DETAILS]);
+    assert!((100..=156).contains(&plain[0]), "base alone: {plain:?}");
+    let white = draw([layer(1.0), None]);
+    assert!(white[0] > 230, "times white x2: {white:?}");
+    let black = draw([layer(3.0), None]);
+    assert!(black[0] < 20, "times black at scale 3: {black:?}");
 }
 
 #[test]
