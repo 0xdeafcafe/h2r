@@ -540,3 +540,94 @@ fn ammo_type_icons_are_drawn_always() {
     eprintln!("ammo type icons: {icons:?}");
     assert!(icons.len() >= 6, "{icons:?}");
 }
+
+/// Blood Gulch's warning crosshairs (docs/halo1/hud.md, "Warnings"):
+/// every weapon inheriting `master rounds` gets Halo 1's "Reload" (shown
+/// on rounds loaded below its own `wphi`'s threshold plus one, with rounds
+/// in reserve) and "No ammo", the two plasma weapons "Battery depleted";
+/// "Low ammo", "Low battery", "No grenades" and the Scorpion's reload
+/// arrows have no Halo 2 state and stay out. Every converted one draws a
+/// sprite of `hud_reticle_warnings`, centred as Halo 1 places it.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn warnings_convert_where_halo2_has_a_state() {
+    use h1hud::{Skip, WeaponEntryKind, crosshair_type as ct};
+    let m = h1("bloodgulch");
+    let mut reload = std::collections::BTreeMap::new();
+    let (mut empty, mut skipped) = (Vec::new(), std::collections::BTreeSet::new());
+    for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
+        let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
+            continue;
+        };
+        for e in h1hud::weapon_entries(&m, hud).unwrap() {
+            let WeaponEntryKind::Warning(t, _, _) = e.kind else { continue };
+            match h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)) {
+                Ok(w) => {
+                    let b = m.tag(e.bitmap.unwrap()).unwrap();
+                    assert!(b.name.ends_with("hud_reticle_warnings"), "{}: {}", wt.name, b.name);
+                    let bm = Bitmap::read(&m, b).unwrap();
+                    let size = h1hud::sprite_size(&bm, e.sequence).unwrap();
+                    assert_eq!(h1hud::halo2_rect(&w, size), h1hud::halo1_rect(e.anchor, e.offset, size));
+                    assert_eq!(w.anchor, Anchor::Centre);
+                    let short = wt.name.rsplit('\\').next().unwrap().to_owned();
+                    if t == ct::RELOAD {
+                        assert_eq!((e.sequence, w.state[18]), (1, 1), "{}", wt.name);
+                        reload.insert(short, w.state[17]);
+                    } else {
+                        assert_eq!(w.state, h1hud::EMPTY_STATE);
+                        empty.push((short, t, e.sequence));
+                    }
+                }
+                Err(Skip::Warning(t)) => {
+                    skipped.insert(t);
+                }
+                Err(why) => panic!("{} warning {t}: {why:?}", wt.name),
+            }
+        }
+    }
+    eprintln!("reload thresholds {reload:?}; empty {empty:?}; skipped {skipped:?}");
+    let want: std::collections::BTreeMap<_, _> = [
+        ("assault rifle", 11),
+        ("pistol", 5),
+        ("shotgun", 3),
+        ("rocket launcher", 2),
+        ("sniper rifle", 2),
+        ("needler", 9),
+    ]
+    .into_iter()
+    .map(|(n, t)| (n.to_owned(), t))
+    .collect();
+    assert_eq!(reload, want);
+    assert_eq!(empty.iter().filter(|e| e.1 == ct::NO_AMMO && e.2 == 2).count(), 6, "{empty:?}");
+    assert_eq!(empty.iter().filter(|e| e.1 == ct::BATTERY_DEPLETED && e.2 == 10).count(), 2, "{empty:?}");
+    assert_eq!(empty.len(), 8, "{empty:?}");
+    let want: std::collections::BTreeSet<_> =
+        [ct::LOW_BATTERY, ct::RELOADING, ct::NO_GRENADES, ct::LOW_AMMO].into_iter().collect();
+    assert_eq!(skipped, want);
+}
+
+/// Every overlay element on the disc is shown always (mask `0x10`): Halo 1
+/// has none shown only empty, reloading or below a threshold, so there is
+/// nothing of that kind to convert (docs/halo1/hud.md).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn no_overlay_on_the_disc_is_shown_on_a_condition() {
+    use h1hud::{WeaponEntryKind, overlay_shown};
+    let path = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(path).unwrap())).unwrap();
+    let maps: Vec<_> = h1map::disc::maps(&iso.entries().unwrap());
+    let mut overlays = 0;
+    for e in &maps {
+        let m = H1Map::from_reader(Cursor::new(iso.read(e).unwrap())).unwrap();
+        for t in m.tags().iter().filter(|t| t.group == Group::new(b"wphi")) {
+            for x in h1hud::weapon_entries(&m, t.id).unwrap() {
+                if let WeaponEntryKind::Overlay(_, shown, _, _) = x.kind {
+                    assert_eq!(shown, overlay_shown::ALWAYS, "{}", t.name);
+                    overlays += 1;
+                }
+            }
+        }
+    }
+    eprintln!("{overlays} overlays on {} maps, all shown always", maps.len());
+    assert!(overlays >= 3 && maps.len() >= 10);
+}
