@@ -1546,6 +1546,10 @@ pub struct VehicleSpec<'a> {
 /// type's role words ([`VehicleRole`]; the turret tables when there is
 /// none). Everything else is the definition default.
 pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
+    vehicle_with_tuning(v, None)
+}
+
+pub(crate) fn vehicle_with_tuning(v: &VehicleSpec, flight: Option<[f32; 11]>) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
     match v.role {
@@ -1570,6 +1574,26 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             let mut p = defs::default_record(phys_def);
             role(&mut p, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
             set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
+        }
+    }
+    if let Some(flight) = flight {
+        for (field, value) in [
+            "unknown_1f4",
+            "unknown_1f8",
+            "unknown_1fc",
+            "unknown_200",
+            "unknown_204",
+            "unknown_208",
+            "unknown_210",
+            "unknown_22c",
+            "unknown_230",
+            "unknown_234",
+            "unknown_238",
+        ]
+        .into_iter()
+        .zip(flight)
+        {
+            set(&mut r, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
         }
     }
     // Every retail vehicle has exactly one physics element.
@@ -1882,6 +1906,46 @@ pub fn device(dev: &h1::Device, hlmt: Option<TagId>, predicted: &[Predicted]) ->
 /// `+0x1e` 0xff; the inertia of a solid sphere (2/5 m r^2, 400 for its
 /// 1000 kg and radius 1); the material's `+8` 0xffff.
 pub fn sphere_physics(radius: f32, centre: [f32; 3], mass: f32, material: &str) -> Result<Block> {
+    let i = 0.4 * mass * radius * radius;
+    compound_sphere_physics(
+        &[SphereSpec {
+            centre,
+            radius,
+            mass,
+        }],
+        mass,
+        MassProperties {
+            centre,
+            inertia: [[i, 0.0, 0.0], [0.0, i, 0.0], [0.0, 0.0, i]],
+        },
+        material,
+    )
+}
+
+/// One source sphere attached to an object-space rigid body.
+pub(crate) struct SphereSpec {
+    pub centre: [f32; 3],
+    pub radius: f32,
+    pub mass: f32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct MassProperties {
+    pub centre: [f32; 3],
+    pub inertia: [[f32; 3]; 3],
+}
+
+pub(crate) fn compound_sphere_physics(
+    spheres: &[SphereSpec],
+    mass: f32,
+    properties: MassProperties,
+    material: &str,
+) -> Result<Block> {
+    if spheres.is_empty() {
+        return Err(Error::Invalid(
+            "a sphere body has no positive-radius source mass points".into(),
+        ));
+    }
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
@@ -1890,23 +1954,51 @@ pub fn sphere_physics(radius: f32, centre: [f32; 3], mass: f32, material: &str) 
     set(&mut r, "unknown_8", f(1.0))?;
     set(&mut r, "unknown_c", f(1.0))?;
 
+    let extent = |axis: usize, sign: f32| {
+        spheres
+            .iter()
+            .map(|s| sign * s.centre[axis] + s.radius)
+            .fold(f32::NEG_INFINITY, f32::max)
+    };
+    let (centre, radius) = if let [sphere] = spheres {
+        (sphere.centre, sphere.radius)
+    } else {
+        let centre = std::array::from_fn(|axis| 0.5 * (extent(axis, 1.0) - extent(axis, -1.0)));
+        let radius = spheres
+            .iter()
+            .map(|s| {
+                let distance_squared: f32 = s
+                    .centre
+                    .iter()
+                    .zip(centre)
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum();
+                distance_squared.sqrt() + s.radius
+            })
+            .fold(0.0, f32::max);
+        (centre, radius)
+    };
     let rb_def = d.child("rigid_bodies").expect("phmo rigid bodies");
     let mut rb = defs::default_record(rb_def);
     set(&mut rb, "node", Val::Int(-1))?;
     set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
     set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
-    set(&mut rb, "unknown_18", u16_hi(1))?;
-    set(&mut rb, "unknown_1c", u16_hi(4))?;
+    let (motion, class) = if spheres.len() == 1 { (1, 4) } else { (2, 6) };
+    set(&mut rb, "unknown_18", u16_hi(motion))?;
+    set(&mut rb, "unknown_1c", u16_hi(class))?;
     set(&mut rb, "unknown_20", f(1.0))?;
     set(&mut rb, "unknown_28", f(0.05))?;
-    set(&mut rb, "shape_type", Val::Int(0))?;
+    let shape = if spheres.len() == 1 { 0 } else { 0xe };
+    set(&mut rb, "shape_type", Val::Int(shape))?;
     set(&mut rb, "shape_index", Val::Int(0))?;
     set(&mut rb, "mass", Val::Float(mass))?;
-    set(&mut rb, "center_of_mass", Val::floats(&centre))?;
-    let i = 0.4 * mass * radius * radius;
-    set(&mut rb, "inertia_tensor_x", Val::floats(&[i, 0.0, 0.0]))?;
-    set(&mut rb, "inertia_tensor_y", Val::floats(&[0.0, i, 0.0]))?;
-    set(&mut rb, "inertia_tensor_z", Val::floats(&[0.0, 0.0, i]))?;
+    set(&mut rb, "center_of_mass", Val::floats(&properties.centre))?;
+    for (field, row) in ["inertia_tensor_x", "inertia_tensor_y", "inertia_tensor_z"]
+        .into_iter()
+        .zip(properties.inertia)
+    {
+        set(&mut rb, field, Val::floats(&row))?;
+    }
     set(&mut r, "rigid_bodies", Val::Block(vec![rb]))?;
 
     let mat_def = d.child("materials").expect("phmo materials");
@@ -1917,24 +2009,70 @@ pub fn sphere_physics(radius: f32, centre: [f32; 3], mass: f32, material: &str) 
     set(&mut r, "materials", Val::Block(vec![m]))?;
 
     let sphere_def = d.child("spheres").expect("phmo spheres");
-    let mut s = defs::default_record(sphere_def);
-    let volume = 4.0 / 3.0 * std::f32::consts::PI * radius * radius * radius;
-    set(&mut s, "header.name", Val::text("sphere"))?;
-    set(&mut s, "header.material", Val::Int(0))?;
-    set(&mut s, "header.unknown_6", Val::Bytes(vec![0x25, 0]))?;
-    set(&mut s, "header.unknown_8", f(1.0))?;
-    set(&mut s, "header.unknown_c", f(1.0))?;
-    set(&mut s, "header.unknown_10", f(0.99))?;
-    set(&mut s, "header.unknown_14", f(volume))?;
-    set(&mut s, "header.unknown_18", f(mass))?;
-    set(&mut s, "header.unknown_1c", Val::Bytes(vec![0, 0, 0xff, 0]))?;
-    set(&mut s, "reference_count", Val::Int(0x80))?;
-    set(&mut s, "radius", Val::Float(radius))?;
-    set(&mut s, "rotation_x", Val::floats(&[1.0, 0.0, 0.0]))?;
-    set(&mut s, "rotation_y", Val::floats(&[0.0, 1.0, 0.0]))?;
-    set(&mut s, "rotation_z", Val::floats(&[0.0, 0.0, 1.0]))?;
-    set(&mut s, "translation", Val::floats(&centre))?;
-    set(&mut r, "spheres", Val::Block(vec![s]))?;
+    let mut records = Vec::with_capacity(spheres.len());
+    for &SphereSpec {
+        centre,
+        radius,
+        mass,
+    } in spheres
+    {
+        let mut s = defs::default_record(sphere_def);
+        let volume = 4.0 / 3.0 * std::f32::consts::PI * radius * radius * radius;
+        set(&mut s, "header.name", Val::text("sphere"))?;
+        set(&mut s, "header.material", Val::Int(0))?;
+        set(&mut s, "header.unknown_6", Val::Bytes(vec![0x25, 0]))?;
+        set(&mut s, "header.unknown_8", f(1.0))?;
+        set(&mut s, "header.unknown_c", f(1.0))?;
+        set(&mut s, "header.unknown_10", f(0.99))?;
+        set(&mut s, "header.unknown_14", f(volume))?;
+        set(&mut s, "header.unknown_18", f(mass))?;
+        set(&mut s, "header.unknown_1c", Val::Bytes(vec![0, 0, 0xff, 0]))?;
+        set(&mut s, "reference_count", Val::Int(0x80))?;
+        set(&mut s, "radius", Val::Float(radius))?;
+        set(&mut s, "rotation_x", Val::floats(&[1.0, 0.0, 0.0]))?;
+        set(&mut s, "rotation_y", Val::floats(&[0.0, 1.0, 0.0]))?;
+        set(&mut s, "rotation_z", Val::floats(&[0.0, 0.0, 1.0]))?;
+        set(&mut s, "translation", Val::floats(&centre))?;
+        records.push(s);
+    }
+    set(&mut r, "spheres", Val::Block(records))?;
+
+    if spheres.len() > 1 {
+        let list_def = d.child("lists").expect("phmo lists");
+        let mut list = defs::default_record(list_def);
+        set(&mut list, "unknown_4", Val::Bytes(vec![0, 0, 0x80, 0]))?;
+        set(&mut list, "child_count", Val::Int(spheres.len() as i64))?;
+        for i in 0..4 {
+            set(&mut list, &format!("inline_child_type_{i}"), Val::Int(0))?;
+            let index = if spheres.len() <= 4 && i < spheres.len() {
+                i
+            } else {
+                0xffff
+            };
+            set(
+                &mut list,
+                &format!("inline_child_index_{i}"),
+                Val::Int(index as i64),
+            )?;
+        }
+        set(
+            &mut list,
+            "child_capacity",
+            Val::Int(0x8000_0000 | spheres.len().max(4) as i64),
+        )?;
+        if spheres.len() > 4 {
+            let child_def = d.child("list_children").expect("phmo list children");
+            let mut children = Vec::with_capacity(spheres.len());
+            for i in 0..spheres.len() {
+                let mut child = defs::default_record(child_def);
+                set(&mut child, "shape_type", Val::Int(0))?;
+                set(&mut child, "shape_index", Val::Int(i as i64))?;
+                children.push(child);
+            }
+            set(&mut r, "list_children", Val::Block(children))?;
+        }
+        set(&mut r, "lists", Val::Block(vec![list]))?;
+    }
 
     let region_def = d.child("regions").expect("phmo regions");
     let perm_def = d.child("regions.permutations").expect("phmo permutations");
@@ -2166,6 +2304,18 @@ pub fn physics_model_sized(
     joints: &[crate::ragdoll::Constraint],
     classes: &[(f32, u16)],
 ) -> Result<Block> {
+    physics_model_with_mass(bodies, nodes, words, joints, classes, None)
+}
+
+pub(crate) fn physics_model_with_mass(
+    bodies: &[Body],
+    nodes: &[PhysNode],
+    words: BodyWords,
+    joints: &[crate::ragdoll::Constraint],
+    classes: &[(f32, u16)],
+    source: Option<MassProperties>,
+) -> Result<Block> {
+    debug_assert!(source.is_none() || bodies.len() == 1);
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
     let f = |v: f32| Val::Bytes(v.to_le_bytes().to_vec());
@@ -2305,6 +2455,7 @@ pub fn physics_model_sized(
             (0xe, lists.len() - 1)
         };
         let (mass, com, inertia) = crate::physics::mass_properties(&body.pieces, density);
+        let (com, inertia) = source.map_or((com, inertia), |s| (s.centre, s.inertia));
         let all: Vec<[f32; 3]> = body
             .pieces
             .iter()

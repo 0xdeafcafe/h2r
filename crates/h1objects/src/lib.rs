@@ -51,6 +51,7 @@ pub mod ragdoll;
 pub mod rebuild;
 pub mod refs;
 pub mod sandbox;
+pub mod scripted_props;
 pub mod verify;
 
 pub use convert::Options;

@@ -270,6 +270,49 @@ definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
 
+### Native pickups and scripted props
+
+**Built** in `h1objects::convert_powerups`. Halo 1's overshield,
+active camouflage and health pack build fresh `eqip` and model chains.
+The source provides the bounding sphere, pickup time, model, collision,
+pickup sound and effect references. The paired retail `eqip` tags on
+`shared` and `single_player_shared` establish the item sort word and
+powerup fields (V). Overshield is type 2 and 60 seconds, camouflage type 3
+and 45 seconds, and health type 5 with a positive time. Halo 2's pickup
+routine reads those fields at `0x00151eff` and `0x00151f3e`, dispatches
+shield at `0x00151f4b`, health at `0x00151f6a` and camouflage at
+`0x00151f85` (E). The multiplayer conversion rebuilds the collections in
+both settings ([multiplayer.md](multiplayer.md#what-isnt-placed-and-why)).
+
+**Built** in `h1objects::scripted_props` and the campaign placement
+writer. b30's seven boxes are dynamic `bloc` instances with the Halo 1
+storage crate's model and collision. Halo 1's vehicle tag references a
+`phys` for the mass and leaves the object's radius at zero. The rebuilt
+crate takes its bounds from its model and its shape and inertia from
+the collision hull. Halo 2's `crate_space` on 05a establishes a
+dynamic `bloc` with one object-space body (V). a10's Halo ring is a
+`scen`, as in Halo 2's 00a. The ring and boxes keep their scenario names,
+transforms and script-controlled creation.
+
+**Built** for a10's seated props and aircraft. The cryotube and chairs
+keep their source stationary vehicle type 6 and seats. a10's scripts call
+`unit_enter_vehicle` or `vehicle_load_magic` on them (V).
+Their collision bodies follow the model's nodes, including the cryotube
+door. The fighter-bomber is a type 3 aircraft for `recording_play`. Its
+`phys` has eighteen mass point spheres, which form one native compound
+body. Halo 1 supplies mass, center of mass and inertia.
+
+**Built** for the lifepods. The flying pods use Halo 1's type 5, model,
+collision, seats and flight rates. Where Halo 1 supplies `phys` (the
+plain pod and a30 entry pod), the collision-derived rigid body keeps its
+mass, center of mass and inertia tensor. The axis limits and accelerations
+feed the native vehicle functions at `0x000f32f5` and `0x000f3562` (E).
+The docked pod keeps its stationary body and source lights. a30's entry pod
+attaches its own `lifeboat` loop, including the source track samples,
+through `h1sounds::looping`. The plain and docked tags carry no engine
+loop (V). Offline checks are in `vehicle_rebuild_disc` and
+`h1campaign/tests/disc.rs`.
+
 **Where a vehicle meets the ground (converter version 63).** Three
 things the engine reads at a vehicle's base, proved in
 `h1objects/tests/vehicle_ground_disc.rs`:
@@ -410,9 +453,8 @@ functions; on a lifepod they hummed the pelican's engine at every
 placement, all level (a10 at converter version 14: "repeated
 wurrrring"). A lifepod gets its own copy of the attachments without the
 `lsnd` elements (its lights and thruster effects stay the template's)
-and a report line per sound dropped. Halo 1's own looping sounds are not
-converted, so lifepods are quiet. Other craft keep their template's
-sounds: those are the same vehicle's.
+and a report line per sound dropped. At that point lifepods were quiet.
+Other craft kept their template's sounds.
 
 Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
 (5 placements, the intro pods) is named in `recording_play` (5),
@@ -421,9 +463,8 @@ Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
 calls; a10's `lifepod_docked` and `lifepod` in `objects_attach`,
 `custom_animation`, `unit_open`/`unit_close` and teleports; b30's and
 a30's plain `lifepod` palette entries have no placement. No call drives
-one with a player. So the template is a flying unit with passenger
-seats that a recording can fly: the pelican, on 05a; the model and
-animations stay Halo 1's.
+one with a player. The earlier converter used 05a's Pelican template
+for its passenger seats and compatibility with recordings.
 
 **Model chain.** `hlmt` = the template's `hlmt` root with: render model
 -> converted `mode` (`h1models`, no shaders yet), collision -> converted

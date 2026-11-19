@@ -50,7 +50,7 @@ impl Converter<'_> {
     /// Halo 1's material effects: the first `foot` the Halo 1 root `b`
     /// names, converted ([`Converter::foot`]); `None` when it names none
     /// or it does not convert (noted).
-    fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
+    pub(super) fn h1_foot(&mut self, b: &[u8], rep: &mut ObjectReport) -> Result<Option<TagId>> {
         let foot = h1map::Group::new(b"foot");
         let Some(t) = crate::refs::scan(self.h1, b)
             .into_iter()
@@ -485,6 +485,9 @@ impl Converter<'_> {
 
     pub(super) fn equipment(&mut self, tag: &Tag) -> Result<TagId> {
         let e = Equipment::read(self.h1, tag)?;
+        if h1convert::sandbox::native_powerup(e.powerup_type) {
+            return self.powerup(tag, &e);
+        }
         let d = Defs::builtin().group(FourCC(*b"eqip")).expect("eqip");
         let cp = self.counterpart(b"eqip", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);

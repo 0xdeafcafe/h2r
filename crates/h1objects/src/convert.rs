@@ -25,11 +25,15 @@ use map::{FourCC, TagId};
 use crate::base::Base;
 use crate::coll::{convert_collision, put_sid};
 use crate::h1::{self, Unit};
-use crate::health_hud;
+use crate::{health_hud, scripted_props};
 use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_scripted_props.rs"]
+mod scripted_props_conv;
+#[path = "convert_powerups.rs"]
+mod powerups_conv;
 #[path = "convert_particles.rs"]
 mod particles_conv;
 #[path = "convert_flares.rs"]
@@ -385,6 +389,11 @@ pub enum PhysicsKind {
     /// ([`held_wheels`]; the role's [`crate::rebuild::VehicleRole::wheel_shapes`]),
     /// else left out.
     Vehicle { wheels: bool },
+    /// A scripted flyer, built from its collision or its own mass
+    /// points, and with the source inertia tensor when it has one.
+    ScriptedFlyer,
+    /// A rigid crate that falls under gravity.
+    Crate,
     /// One body per collision node, riding that node.
     Device,
     /// As a device, with a biped's rigid body words
@@ -1419,6 +1428,9 @@ impl<'a> Converter<'a> {
             b"weap" => self.weapon(tag),
             b"proj" => self.projectile(tag, template),
             b"eqip" => self.equipment(tag),
+            b"vehi" if scripted_props::replacement_group(&tag.name).is_some() => {
+                self.scripted_prop(tag)
+            }
             b"bipd" | b"vehi" => self.unit(tag),
             b"scen" => self.scenery(tag),
             b"mach" | b"ctrl" | b"lifi" => self.device(tag),
@@ -2645,6 +2657,7 @@ impl<'a> Converter<'a> {
             }
             None => Vec::new(),
         };
+        let scripted = scripted_props::ScriptedVehicle::of(&tag.name);
         let role = self.vehicle_role(vehicle_type, powered.len())?;
         let mut rep = Self::report(
             tag,
@@ -2660,13 +2673,18 @@ impl<'a> Converter<'a> {
         );
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
-        self.object_physics(
-            &mut rep,
-            hlmt,
-            &u.object,
-            &tag.name,
-            PhysicsKind::Vehicle { wheels },
-        )?;
+        let kind = match scripted {
+            Some(scripted_props::ScriptedVehicle::Seat) => PhysicsKind::Device,
+            Some(scripted_props::ScriptedVehicle::Flyer) => PhysicsKind::ScriptedFlyer,
+            None => PhysicsKind::Vehicle { wheels },
+        };
+        let has_physics = self.object_physics(&mut rep, hlmt, &u.object, &tag.name, kind)?;
+        if scripted.is_some() && !has_physics {
+            return Err(Error::Invalid(format!(
+                "{}: no source physics to build",
+                tag.name
+            )));
+        }
         let predicted = self.predicted(hlmt);
         let (markers, bounds) = match u.object.model {
             Some(m) => {
@@ -2762,7 +2780,7 @@ impl<'a> Converter<'a> {
         let functions: Vec<_> = converted.into_iter().flatten().collect();
         rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
         let (root, roles) = crate::provenance::capture(|| {
-            crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+            crate::rebuild::vehicle_with_tuning(&crate::rebuild::VehicleSpec {
                 attachments: &attachments,
                 functions: &functions,
                 creation_effect,
@@ -2777,7 +2795,7 @@ impl<'a> Converter<'a> {
                 weapons: &weapons,
                 role: role.as_ref(),
                 points: &points,
-            })
+            }, scripted.and_then(|kind| kind.flight_tuning(b)))
         });
         let root = self.unit_foot(*b"vehi", root?, u, &mut rep)?;
         rep.no_home.push(format!(
@@ -3194,9 +3212,9 @@ impl<'a> Converter<'a> {
         obj: &h1::Object,
         name: &str,
         kind: PhysicsKind,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(h) = hlmt.filter(|h| h.0 & 0xffff_0000 == LOCAL) else {
-            return Ok(());
+            return Ok(false);
         };
         let k = h.0 as usize & 0xffff;
         let at = h2::HLMT_PHYSICS_MODEL as u32;
@@ -3209,7 +3227,7 @@ impl<'a> Converter<'a> {
             }
         };
         if has {
-            return Ok(());
+            return Ok(true);
         }
         let (phmo, how) = match self.built_physics(obj, kind)? {
             Some((block, how)) => (block, how),
@@ -3222,7 +3240,7 @@ impl<'a> Converter<'a> {
                     ),
                 )
             }
-            None => return Ok(()),
+            None => return Ok(false),
         };
         let phmo = self.tree.push(
             name,
@@ -3252,7 +3270,7 @@ impl<'a> Converter<'a> {
             crate::rebuild::set_model_materials(root, &all);
         }
         rep.physics = Some(how);
-        Ok(())
+        Ok(true)
     }
 
     /// A physics model from Halo 1's collision: each collision node's
@@ -3269,12 +3287,30 @@ impl<'a> Converter<'a> {
         kind: PhysicsKind,
     ) -> Result<Option<(Block, String)>> {
         use crate::physics::{self, Transform};
-        let (Some(c), Some(m)) = (obj.collision, obj.model) else {
+        let Some(m) = obj.model else {
             return Ok(None);
         };
-        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
+        let source = if kind == PhysicsKind::ScriptedFlyer {
+            obj.physics
+                .map(|p| self.h1_tag(p))
+                .transpose()?
+                .map(|t| scripted_props::mass_properties(self.h1, t))
+                .transpose()?
+        } else {
+            None
+        };
         let (model, _) =
             h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?;
+        let Some(c) = obj.collision else {
+            return match source {
+                Some((physics, mass)) => Ok(Some((
+                    scripted_props::mass_point_physics(&model, &physics, &mass)?,
+                    "built from Halo 1's phys: one body with source mass point spheres".into(),
+                ))),
+                None => Ok(None),
+            };
+        };
+        let coll = h1::Collision::read(self.h1, self.h1_tag(c)?)?;
         let world = h1models::mode::world_transforms(
             &model
                 .nodes
@@ -3313,10 +3349,14 @@ impl<'a> Converter<'a> {
         let volume: f32 = parts.iter().flat_map(|p| &p.1).map(|h| h.volume).sum();
         let mut wheels_note = String::new();
         let bodies = match kind {
-            PhysicsKind::Vehicle { wheels: hold } => {
-                let phys = match obj.physics {
-                    Some(p) => Some(h1::Physics::read(self.h1, self.h1_tag(p)?)?),
-                    None => None,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer | PhysicsKind::Crate => {
+                let hold = matches!(kind, PhysicsKind::Vehicle { wheels: true });
+                let phys = match &source {
+                    Some((physics, _)) => Some(physics.clone()),
+                    None => obj
+                        .physics
+                        .map(|p| h1::Physics::read(self.h1, self.h1_tag(p)?))
+                        .transpose()?,
                 };
                 // Wheels and treads are held above the hull's lowest
                 // point where the role's physics models have them (the
@@ -3324,10 +3364,13 @@ impl<'a> Converter<'a> {
                 // Halo 2 holds a vehicle up on its friction points
                 // (springs at the wheel markers) and its body rides clear
                 // of the ground (`held_wheels`).
-                let wheels = phys
-                    .as_ref()
-                    .map(|p| wheel_nodes(p, &model.nodes))
-                    .unwrap_or_default();
+                let wheels = if matches!(kind, PhysicsKind::Vehicle { .. }) {
+                    phys.as_ref()
+                        .map(|p| wheel_nodes(p, &model.nodes))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let place = |node: i16| {
                     let (r, t) = world
                         .get(node as usize)
@@ -3425,7 +3468,10 @@ impl<'a> Converter<'a> {
         let words = match kind {
             PhysicsKind::Biped => crate::rebuild::BIPED_BODY,
             PhysicsKind::Scenery(w) => w,
-            PhysicsKind::Vehicle { .. } | PhysicsKind::Device => crate::rebuild::DEVICE_BODY,
+            PhysicsKind::Crate => scripted_props::CRATE_BODY,
+            PhysicsKind::Vehicle { .. } | PhysicsKind::ScriptedFlyer | PhysicsKind::Device => {
+                crate::rebuild::DEVICE_BODY
+            }
         };
         let joints = if kind == PhysicsKind::Biped {
             biped_ragdoll(&model.nodes, &bodies)
@@ -3439,15 +3485,26 @@ impl<'a> Converter<'a> {
         };
         // Scenery bodies take their own size class (`+0x1e`) by their size,
         // as the base's (crate::rebuild::size_class).
-        if matches!(kind, PhysicsKind::Scenery(_)) && self.size_classes.is_none() {
+        if matches!(kind, PhysicsKind::Scenery(_) | PhysicsKind::Crate)
+            && self.size_classes.is_none()
+        {
             self.size_classes = Some(crate::rebuild::size_classes(self.base)?);
         }
         let classes: &[(f32, u16)] = match kind {
-            PhysicsKind::Scenery(_) => self.size_classes.as_deref().unwrap_or(&[]),
+            PhysicsKind::Scenery(_) | PhysicsKind::Crate => {
+                self.size_classes.as_deref().unwrap_or(&[])
+            }
             _ => &[],
         };
         Ok(Some((
-            crate::rebuild::physics_model_sized(&bodies, &nodes, words, &joints, classes)?,
+            crate::rebuild::physics_model_with_mass(
+                &bodies,
+                &nodes,
+                words,
+                &joints,
+                classes,
+                source.map(|(_, mass)| mass),
+            )?,
             how,
         )))
     }

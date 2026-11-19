@@ -318,6 +318,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
     let d = def(b"vehi");
     let mut lines = Vec::new();
     let mut count = 0;
+    let mut reclassified = 0;
     let mut templated = 0;
     for (base_name, levels) in sets {
         let mut base_map = h2_map(base_name);
@@ -339,8 +340,14 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 let b = h1.tag_data(t).unwrap();
                 let u = h1::Unit::read(&h1, t).unwrap();
                 let mut c = Converter::new(&h1, &base);
-                                let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
+                let id = c.object(t).unwrap_or_else(|e| panic!("{name}: {e}"));
                 let got = local(&c.tree, id).expect("vehi in the tree");
+                if let Some(group) = h1objects::scripted_props::replacement_group(&t.name) {
+                    assert_eq!(got.group, FourCC(group), "{name}");
+                    read_back(got, &name);
+                    reclassified += 1;
+                    continue;
+                }
                 assert_eq!(got.group, FourCC(*b"vehi"));
                 let r = read_back(got, &name);
 
@@ -404,7 +411,27 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 // The type's role, where the base has the type.
                 let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
                 if let Some(role) = &role {
+                    let scripted_flyer =
+                        t.name.contains("lifepod") || t.name.contains("fighterbomber");
                     for (p, w) in &role.words.root {
+                        if scripted_flyer
+                            && matches!(
+                                p.as_str(),
+                                "unknown_1f4"
+                                    | "unknown_1f8"
+                                    | "unknown_1fc"
+                                    | "unknown_200"
+                                    | "unknown_204"
+                                    | "unknown_208"
+                                    | "unknown_210"
+                                    | "unknown_22c"
+                                    | "unknown_230"
+                                    | "unknown_234"
+                                    | "unknown_238"
+                            )
+                        {
+                            continue;
+                        }
                         assert_eq!(
                             r.at(p),
                             Some(&Val::Bytes(w.to_le_bytes().to_vec())),
@@ -465,10 +492,15 @@ fn every_vehicle_rebuilds_from_its_definition() {
     for l in &lines {
         println!("{l}");
     }
-    println!("{count} vehicles rebuilt, {templated} with a template row compared");
+    println!(
+        "{count} vehicles rebuilt, {reclassified} rebuilt as other kinds, {templated} with a template row compared"
+    );
     if only.is_none() {
         // 23 distinct campaign vehicles, 3 on each multiplayer base.
-        assert!(count >= 29, "every vehicle of the discs: {count}");
+        assert!(
+            count + reclassified >= 29,
+            "every Halo 1 vehicle tag on the discs"
+        );
     }
 }
 
@@ -1411,6 +1443,82 @@ fn every_powered_point_rides_the_root_node() {
                 mass.position
             );
             println!("ghost_mp hover[{k}] {marker}: node 0, at {at:?}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn scripted_flyers_keep_their_source_physics_and_lifeboat_loop() {
+    let base = Base::read(&mut h2_map("05a_deltaapproach")).unwrap();
+    for (level, name, ty, spheres, sounds) in [
+        (
+            "a10",
+            "vehicles\\fighterbomber\\fighterbomber",
+            3,
+            18,
+            false,
+        ),
+        ("a10", "vehicles\\lifepod\\lifepod", 5, 0, false),
+        ("a30", "vehicles\\lifepod_entry\\lifepod_entry", 5, 0, true),
+    ] {
+        let h1 = h1_level(level).unwrap();
+        let tag = h1.find(h1map::Group::new(b"vehi"), name).unwrap();
+        let unit = h1::Unit::read(&h1, tag).unwrap();
+        let mut c = Converter::new(&h1, &base);
+        let id = c.object(tag).unwrap();
+        let object = read_back(local(&c.tree, id).unwrap(), name);
+        assert_eq!(object.at("vehicle_type"), Some(&Val::Enum(ty)));
+        let speed = f32_at(h1.tag_data(tag).unwrap(), 0x2f8) * 30.0;
+        assert_eq!(
+            object.at("unknown_1f4"),
+            Some(&Val::Bytes(speed.to_le_bytes().to_vec()))
+        );
+        let model = reference(&object, "unit.obje.model").unwrap();
+        let hlmt = read_back(local(&c.tree, model).unwrap(), name);
+        let physics = reference(&hlmt, "physics_model").unwrap();
+        let phmo = read_back(local(&c.tree, physics).unwrap(), name);
+        let src_phys = h1.tag(unit.object.physics.unwrap()).unwrap();
+        let src = h1::Physics::read(&h1, src_phys).unwrap();
+        assert_eq!(phmo.at("mass"), Some(&Val::Float(src.mass)));
+        assert_eq!(
+            phmo.at("rigid_bodies[0].center_of_mass"),
+            Some(&Val::floats(&src.center_of_mass))
+        );
+        let Some(Val::Block(shapes)) = phmo.at("spheres") else {
+            panic!()
+        };
+        assert_eq!(shapes.len(), spheres);
+        let Some(Val::Block(seats)) = object.at(VEHI_SEATS) else {
+            panic!()
+        };
+        assert_eq!(seats.len(), unit.seats.len());
+        if sounds {
+            let path = "sound\\sfx\\vehicles\\lifeboat";
+            let (k, lp) = c
+                .tree
+                .loops
+                .iter()
+                .enumerate()
+                .find(|(_, l)| l.name == path)
+                .unwrap();
+            let Some(Val::Block(attachments)) = object.at("unit.obje.attachments") else {
+                panic!()
+            };
+            assert!(
+                attachments
+                    .iter()
+                    .any(|a| reference(a, "type") == Some(h1objects::convert::looping(k)))
+            );
+            assert!(lp.notes.is_empty(), "{:?}", lp.notes);
+            assert!(
+                lp.tracks
+                    .iter()
+                    .flat_map(|t| t.sounds.iter().flatten())
+                    .any(|sound| { lp.sounds.iter().any(|(path, _)| path == sound) })
+            );
+        } else {
+            assert!(c.tree.loops.is_empty(), "{name}: only Halo 1's attachments");
         }
     }
 }

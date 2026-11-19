@@ -16,17 +16,14 @@ struct item 0x12c
   0xe8 string string_e8
   0xec string string_ec
   0xf0 string string_f0
-  0xf4 unknown 0x4
-  0xf8 unknown 0x4
-  0xfc unknown 0x4
-  0x100 unknown 0x4
+  0xf4 tagref ref_f4 groups=foot -- V: material effects in the item layer
+  0xfc tagref ref_fc -- V: sound reference (tags::object)
   0x104 block block_104 0x8 align 4
     0x0 tagref ref_0
   0x10c tagref ref_10c
   0x114 unknown 0x4
   0x118 unknown 0x4
-  0x11c unknown 0x4
-  0x120 unknown 0x4
+  0x11c tagref ref_11c -- V: an effect reference (tags::object)
   0x124 tagref ref_124
 group weap 0x31c
   0x0 struct item item -- the item layer

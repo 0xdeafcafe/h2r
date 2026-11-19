@@ -28,6 +28,7 @@
 //! returned as is), and the vehicle and powerup types keep the item when
 //! the variant leaves the map's default (E `0x0015a4d0`, `0x0015a5b0`).
 
+use std::collections::HashSet;
 use std::io::{Read, Seek};
 
 use h1map::H1Map;
@@ -35,9 +36,9 @@ use map::build::{Block, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use scenario_edit::{BlockKind, Scenario, Value};
 
-use super::{COLLECTION_ENTRY, COLLECTION_ROOT, Prepared, Sandbox, prepare};
+use super::{COLLECTION_ENTRY, COLLECTION_ROOT, Prepared, Sandbox, prepare, prepare_plan};
 use crate::apply::{NETGAME_ITEM, apply};
-use crate::placements::{Plan, plan_map};
+use crate::placements::{Plan, plan_map, plan_map_except};
 use crate::sandbox::{H2Item, h2_equivalent, netgame_type};
 use crate::{Error, Result};
 
@@ -134,44 +135,26 @@ pub struct Halo1Spawn {
     pub facing: f32,
     /// Respawn seconds, 0 for the collection's.
     pub respawn: u16,
+    /// Scenario game-type filter and team for an item spawn.
+    filter: Option<([h1map::scenario::GameType; 4], u16)>,
 }
 
 impl Halo1Spawn {
     /// Whether it spawns a vehicle (a `vehc`) rather than an item (`itmc`).
     pub fn is_vehicle(&self) -> bool {
-        self.items.first().is_some_and(|i| &i.group == b"vehi")
+        // Only source netgame equipment has a game-type filter.
+        self.filter.is_none()
     }
 }
 
 /// Every item and vehicle spawn of a Halo 1 map, as Halo 1 objects.
 pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
     let mp = h1.multiplayer()?;
-    let mut out = Vec::new();
-    for e in &mp.equipment {
-        let ic = h1.item_collection(e.item.id)?;
-        let mut items = Vec::new();
-        for p in ic.permutations {
-            let t = h1.tag(p.item.id)?;
-            items.push(Halo1Item {
-                group: t
-                    .group
-                    .to_string()
-                    .as_bytes()
-                    .try_into()
-                    .unwrap_or(*b"weap"),
-                name: t.name.clone(),
-                weight: p.weight,
-            });
-        }
-        out.push(Halo1Spawn {
-            collection: h1.tag(e.item.id)?.name.clone(),
-            items,
-            collection_respawn: ic.spawn_time,
-            position: e.position,
-            facing: e.facing,
-            respawn: e.spawn_time,
-        });
-    }
+    let mut out = mp
+        .equipment
+        .iter()
+        .map(|e| item_spawn(h1, e))
+        .collect::<Result<Vec<_>>>()?;
     for v in &mp.vehicles {
         let name = mp
             .vehicle_palette
@@ -191,9 +174,32 @@ pub fn plan_objects(h1: &H1Map) -> Result<Vec<Halo1Spawn>> {
             position: [x, y, z + vehicle_depth(h1, &name)],
             facing: v.rotation[0],
             respawn: 0,
+            filter: None,
         });
     }
     Ok(out)
+}
+
+fn item_spawn(h1: &H1Map, e: &h1map::scenario::NetgameEquipment) -> Result<Halo1Spawn> {
+    let ic = h1.item_collection(e.item.id)?;
+    let mut items = Vec::with_capacity(ic.permutations.len());
+    for p in ic.permutations {
+        let t = h1.tag(p.item.id)?;
+        items.push(Halo1Item {
+            group: t.group.0.to_be_bytes(),
+            name: t.name.clone(),
+            weight: p.weight,
+        });
+    }
+    Ok(Halo1Spawn {
+        collection: h1.tag(e.item.id)?.name.clone(),
+        items,
+        collection_respawn: ic.spawn_time,
+        position: e.position,
+        facing: e.facing,
+        respawn: e.spawn_time,
+        filter: Some((e.game_types, e.team)),
+    })
 }
 
 /// How far the Halo 1 vehicle `name`'s render model reaches below its
@@ -243,7 +249,28 @@ impl Halo1Collection {
     /// The collection's root: the entries block at `+0` (`0x10` each:
     /// weight `+0`, the object's reference `+4`, variant `+0xc` none) and
     /// the respawn time at `+8`. `object` gives each entry's datum.
-    pub fn root(&self, object: impl Fn(usize) -> TagId) -> Block {
+    pub fn root(
+        &self,
+        object: impl Fn(usize) -> TagId,
+    ) -> std::result::Result<Block, tags::defs::DefError> {
+        if self.group == *b"itmc" {
+            use tags::defs::{self, Defs, Val};
+
+            let d = Defs::builtin().group(FourCC(self.group)).expect("itmc");
+            let entry = d.child("entries").expect("itmc entries");
+            let mut choices = Vec::with_capacity(self.entries.len());
+            for &(id, weight) in &self.entries {
+                let mut r = defs::default_record(entry);
+                r.set("weight", Val::Float(weight))?;
+                // The map builder resolves the object group's FourCC.
+                r.set("object", Val::tag(FourCC([0; 4]), object(id)))?;
+                choices.push(r);
+            }
+            let mut r = defs::default_record(d);
+            r.set("entries", Val::Block(choices))?;
+            r.set("respawn_time", Val::Int(i64::from(self.respawn as i16)))?;
+            return defs::to_built(d, &r, &mut |_| None);
+        }
         let mut entries = Block::zeroed(COLLECTION_ENTRY * self.entries.len());
         for (k, (i, w)) in self.entries.iter().enumerate() {
             let at = k * COLLECTION_ENTRY;
@@ -252,7 +279,7 @@ impl Halo1Collection {
         let mut root = Block::zeroed(COLLECTION_ROOT);
         root.put_u16(8, self.respawn)
             .block(0, self.entries.len() as u32, entries);
-        root
+        Ok(root)
     }
 }
 
@@ -266,6 +293,99 @@ pub fn halo1_netgame_type(group: [u8; 4], name: &str) -> u8 {
         Some(item) => netgame_type(item),
         None => 0,
     }
+}
+
+fn collect_spawns(
+    source: Vec<Halo1Spawn>,
+    objects: &mut dyn Halo1Objects,
+    unresolved: &mut Vec<String>,
+) -> (Vec<Halo1Collection>, Vec<(Halo1Spawn, usize, u8)>) {
+    // Each Halo 1 collection some spawn uses, built once, and the spawns
+    // naming it (collection index, netgame type).
+    let mut collections: Vec<Halo1Collection> = Vec::new();
+    // Each collection's netgame type: its first converted item's class
+    // (weapons, grenades, powerups, a vehicle's).
+    let mut spawns: Vec<(Halo1Spawn, usize, u8)> = Vec::new();
+    let mut kinds = Vec::new();
+    for sp in source {
+        let group = if sp.is_vehicle() { *b"vehc" } else { *b"itmc" };
+        let c = match collections
+            .iter()
+            .position(|c| c.group == group && c.name == sp.collection)
+        {
+            Some(c) => c,
+            None => {
+                let mut entries = Vec::new();
+                let mut why = Vec::new();
+                let mut kind = None;
+                for it in &sp.items {
+                    match objects.object(it.group, &it.name) {
+                        Ok(k) => {
+                            entries.push((k, it.weight));
+                            kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
+                        }
+                        Err(w) => why.push(format!("{}: {w}", it.name)),
+                    }
+                }
+                if entries.is_empty() {
+                    unresolved.push(format!(
+                        "{} at {:?}: {}",
+                        sp.collection,
+                        sp.position,
+                        why.join("; ")
+                    ));
+                    continue;
+                }
+                for w in why {
+                    applied
+                        .unresolved
+                        .push(format!("{} leaves out {w}", sp.collection));
+                }
+                collections.push(Halo1Collection {
+                    group,
+                    name: sp.collection.clone(),
+                    entries,
+                    respawn: sp.collection_respawn,
+                });
+                kinds.push(kind.unwrap_or(0));
+                collections.len() - 1
+            }
+        };
+        spawns.push((sp, c, kinds[c]));
+    }
+    (collections, spawns)
+}
+
+fn write_spawn(
+    scenario: &mut Scenario,
+    mut entry: Vec<u8>,
+    sp: &Halo1Spawn,
+    group: [u8; 4],
+    id: TagId,
+    kind: u8,
+) -> Result<()> {
+    let e = BlockKind::NetgameEquipment;
+    if kind == 9 {
+        if let Some((types, team)) = sp.filter {
+            // The four 16-bit game-type filters and the team are in the
+            // same slots as on the source netgame equipment. Type 12 is
+            // "all games" on both games' retail powerup placements.
+            for (i, ty) in types.iter().enumerate() {
+                entry[4 + 2 * i..6 + 2 * i].copy_from_slice(&ty.0.to_le_bytes());
+            }
+            entry[0xc..0xe].copy_from_slice(&team.to_le_bytes());
+        }
+    }
+    // The scenario editor can write the placement fields. The reference
+    // names a collection the builder will add after the converted objects.
+    entry[NETGAME_ITEM..NETGAME_ITEM + 4].copy_from_slice(&FourCC(group).as_u32().to_le_bytes());
+    entry[NETGAME_ITEM + 4..NETGAME_ITEM + 8].copy_from_slice(&id.0.to_le_bytes());
+    let i = scenario.add(e, entry)?;
+    scenario.set(e, i, "position", Value::Vec3(sp.position))?;
+    scenario.set(e, i, "orientation", Value::Vec3([sp.facing, 0.0, 0.0]))?;
+    scenario.set(e, i, "respawn time", Value::Int(sp.respawn.into()))?;
+    scenario.set(e, i, "type", Value::Int(kind.into()))?;
+    Ok(())
 }
 
 /// [`prepare`] for the Halo 1 sandbox: the Halo 2 preparation (structure,
@@ -300,60 +420,8 @@ pub fn prepare_halo1<R: Read + Seek>(
     };
     let mut applied = apply(&mut s, &spawns_only, &tags, &mut vec![])?;
     let first = base.index_slots() as usize;
-    let e = BlockKind::NetgameEquipment;
-    // Each Halo 1 collection some spawn uses, built once, and the spawns
-    // naming it (collection index, netgame type).
-    let mut collections: Vec<Halo1Collection> = Vec::new();
-    // Each collection's netgame type: its first converted item's class
-    // (weapons, grenades, powerups, a vehicle's).
-    let mut kinds: Vec<u8> = Vec::new();
-    let mut spawns: Vec<(Halo1Spawn, usize)> = Vec::new();
-    for sp in plan_objects(h1)? {
-        let group = if sp.is_vehicle() { *b"vehc" } else { *b"itmc" };
-        let c = match collections
-            .iter()
-            .position(|c| c.group == group && c.name == sp.collection)
-        {
-            Some(c) => c,
-            None => {
-                let mut entries = Vec::new();
-                let mut why = Vec::new();
-                let mut kind = None;
-                for it in &sp.items {
-                    match objects.object(it.group, &it.name) {
-                        Ok(k) => {
-                            entries.push((k, it.weight));
-                            kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
-                        }
-                        Err(w) => why.push(format!("{}: {w}", it.name)),
-                    }
-                }
-                if entries.is_empty() {
-                    applied.unresolved.push(format!(
-                        "{} at {:?}: {}",
-                        sp.collection,
-                        sp.position,
-                        why.join("; ")
-                    ));
-                    continue;
-                }
-                for w in why {
-                    applied
-                        .unresolved
-                        .push(format!("{} leaves out {w}", sp.collection));
-                }
-                collections.push(Halo1Collection {
-                    group,
-                    name: sp.collection.clone(),
-                    entries,
-                    respawn: sp.collection_respawn,
-                });
-                kinds.push(kind.unwrap_or(0));
-                collections.len() - 1
-            }
-        };
-        spawns.push((sp, c));
-    }
+    let (mut collections, spawns) =
+        collect_spawns(plan_objects(h1)?, objects, &mut applied.unresolved);
     // The player: Halo 1's multiplayer biped, converted like the objects.
     let player = player_biped_name(h1);
     let player_biped = match &player {
@@ -416,21 +484,15 @@ pub fn prepare_halo1<R: Read + Seek>(
     let objects_out = objects.take();
     // The collections follow the objects.
     let after = first + objects_out.count;
-    for (sp, c) in &spawns {
-        let i = s.add(e, template.clone())?;
-        s.set(e, i, "position", Value::Vec3(sp.position))?;
-        s.set(e, i, "orientation", Value::Vec3([sp.facing, 0.0, 0.0]))?;
-        s.set(e, i, "respawn time", Value::Int(sp.respawn.into()))?;
-        s.set(e, i, "type", Value::Int(kinds[*c].into()))?;
-        // The tag is added when the map is built: the editor checks
-        // references against the base's tags, so the bytes go in directly.
-        let mut entry = s.block(e).entry(i).expect("added").to_vec();
-        s.unadd(e, &entry)?;
-        let id = added_datum(after + c);
-        entry[NETGAME_ITEM..NETGAME_ITEM + 4]
-            .copy_from_slice(&FourCC(collections[*c].group).as_u32().to_le_bytes());
-        entry[NETGAME_ITEM + 4..NETGAME_ITEM + 8].copy_from_slice(&id.0.to_le_bytes());
-        s.add(e, entry)?;
+    for (sp, c, kind) in &spawns {
+        write_spawn(
+            &mut s,
+            template.clone(),
+            sp,
+            collections[*c].group,
+            added_datum(after + c),
+            *kind,
+        )?;
         applied.counts[2] += 1;
         if sp.is_vehicle() {
             applied.vehicles += 1;
@@ -711,7 +773,9 @@ fn with_collections(
             for c in &collections {
                 let g = FourCC(c.group);
                 set.add_group(g, None, None);
-                let root = c.root(|k| added_datum(first + k));
+                let root = c
+                    .root(|k| added_datum(first + k))
+                    .map_err(|e| e.to_string())?;
                 ids.push(
                     set.add_tag(g, &c.name, TagPayload::Built(root))
                         .map_err(|e| e.to_string())?,
@@ -837,19 +901,62 @@ pub fn plan_scenery(
     Ok(out)
 }
 
-/// [`prepare`] for the Halo 2 sandbox with Halo 1's scenery: its `scen`
-/// tags converted through `objects` and added after the vehicle
-/// collections the placements build.
+/// Prepares the Halo 2 sandbox, retaining Halo 1's scenery and native
+/// pickups. A collection with a retained pickup keeps its original
+/// weighted choices, placement and respawn, even if the base has a
+/// similar collection of its own.
 pub fn prepare_halo2<R: Read + Seek>(
     h1: &H1Map,
     source_sha256: content::Sha256,
     base: &mut Map<R>,
     objects: &mut dyn Halo1Objects,
 ) -> Result<Prepared> {
-    let mut p = prepare(h1, source_sha256, base, Sandbox::Halo2)?;
+    let mut powerups = Vec::new();
+    let mut retained = HashSet::new();
+    let mut checked = HashSet::new();
+    for e in &h1.multiplayer()?.equipment {
+        if checked.insert(e.item.id) {
+            for item in h1.item_collection(e.item.id)?.permutations {
+                let t = h1.tag(item.item.id)?;
+                if t.group == h1map::Group::new(b"eqip") {
+                    let b = h1.tag_data(t)?;
+                    if b.get(0x308..0x30a).is_some_and(|b| {
+                        crate::sandbox::native_powerup(i16::from_le_bytes([b[0], b[1]]))
+                    }) {
+                        retained.insert(e.item.id);
+                        break;
+                    }
+                }
+            }
+        }
+        if retained.contains(&e.item.id) {
+            powerups.push(item_spawn(h1, e)?);
+        }
+    }
+    let plan = plan_map_except(h1, &retained)?;
+    let mut p = prepare_plan(h1, source_sha256, base, plan)?;
     let first = base.index_slots() as usize + p.applied.collections.len();
     let scenery = plan_scenery(h1, objects, first, &mut p.applied.unresolved)?;
-    p.objects = Some(objects.take());
+    let (collections, spawns) = collect_spawns(powerups, objects, &mut p.applied.unresolved);
+    let converted = objects.take();
+    let after = first + converted.count;
+    for (sp, c, _) in spawns {
+        // Beaver Creek's overshield and Zanzibar's camouflage both
+        // use flags 0 and the native powerup type 9.
+        let entry = p
+            .scenario
+            .new_entry(BlockKind::NetgameEquipment, None, None)?;
+        write_spawn(
+            &mut p.scenario,
+            entry,
+            &sp,
+            *b"itmc",
+            added_datum(after + c),
+            9,
+        )?;
+        p.applied.counts[2] += 1;
+    }
+    p.objects = Some(with_collections(converted, first, collections));
     p.objects_first = first;
     p.scenery = Some(scenery);
     Ok(p)
@@ -916,7 +1023,7 @@ mod tests {
             entries: vec![(3, 0.25), (7, 0.75)],
             respawn: 45,
         };
-        let root = c.root(|k| added_datum(100 + k));
+        let root = c.root(|k| added_datum(100 + k)).unwrap();
         assert_eq!(root.bytes.len(), COLLECTION_ROOT);
         assert_eq!(u16::from_le_bytes([root.bytes[8], root.bytes[9]]), 45);
         let [f] = root.fixups.as_slice() else {

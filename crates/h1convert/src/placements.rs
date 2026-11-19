@@ -116,6 +116,10 @@ pub fn h2_flags(kind: FlagKind) -> &'static [H2Flag] {
 /// Plans the Halo 2 sandbox placements of `mp`; `item_name` gives the tag
 /// path of every item an item collection may spawn (see [`plan_map`]).
 pub fn plan(mp: &Multiplayer, item_names: impl Fn(usize) -> Vec<String>) -> Plan {
+    plan_selected(mp, |i| Some(item_names(i)))
+}
+
+fn plan_selected(mp: &Multiplayer, item_names: impl Fn(usize) -> Option<Vec<String>>) -> Plan {
     let mut out = Plan {
         spawns: mp
             .starting_locations
@@ -146,7 +150,7 @@ pub fn plan(mp: &Multiplayer, item_names: impl Fn(usize) -> Vec<String>) -> Plan
     for (i, e) in mp.equipment.iter().enumerate() {
         // An item collection with several items is rare on multiplayer maps;
         // the first one that maps to something is used.
-        let names = item_names(i);
+        let Some(names) = item_names(i) else { continue };
         let item = names
             .iter()
             .filter_map(|n| h2_equivalent(n))
@@ -170,17 +174,28 @@ pub fn plan(mp: &Multiplayer, item_names: impl Fn(usize) -> Vec<String>) -> Plan
 /// [`plan`] for a map: item collections resolved through the map's tags,
 /// vehicles through the vehicle palette.
 pub fn plan_map(m: &H1Map) -> Result<Plan> {
+    plan_map_except(m, &std::collections::HashSet::new())
+}
+
+pub(crate) fn plan_map_except(
+    m: &H1Map,
+    converted: &std::collections::HashSet<h1map::TagId>,
+) -> Result<Plan> {
     let mp = m.multiplayer()?;
     let mut names = Vec::with_capacity(mp.equipment.len());
     for e in &mp.equipment {
+        if converted.contains(&e.item.id) {
+            names.push(None);
+            continue;
+        }
         let ic = m.item_collection(e.item.id)?;
         let mut n = Vec::new();
         for p in ic.permutations {
             n.push(m.tag(p.item.id)?.name.clone());
         }
-        names.push(n);
+        names.push(Some(n));
     }
-    let mut out = plan(&mp, |i| names[i].clone());
+    let mut out = plan_selected(&mp, |i| names[i].clone());
     for v in &mp.vehicles {
         let name = mp
             .vehicle_palette

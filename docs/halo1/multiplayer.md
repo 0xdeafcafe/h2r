@@ -5,8 +5,8 @@ game by the owner (2026-11-17). Each section says what is
 **Built** (with its proof) and what is design only. This applies the rules
 of [campaign.md](campaign.md) to multiplayer: Halo 2's engine runs
 everything (physics, AI, rendering, game types); Halo 1's health bar and
-health packs are the one thing kept from Halo 1; Halo 1's assets are the
-default, with a setting to use Halo 2's.
+Both settings retain Halo 1's health packs, overshields and active
+camouflage. Halo 1's assets are the default.
 
 Like every import, this reads the user's own disc (`disc/halo1.iso`). No
 map bytes, tag dumps or extracted assets are in the repository. Tests use
@@ -109,10 +109,10 @@ item is found in the base map by the words in its tag name.
 | Shotgun | Shotgun | |
 | Flamethrower | Shotgun | Close-range role; Halo 2 has none |
 | Frag grenade, plasma grenade | Same | |
-| Overshield, active camouflage | Same (`powerup_super_shield`, `powerup_invisibility`) | Dropped with a report when the base has no collection for it (Beaver Creek and Coagulation have no camouflage collection) |
+| Overshield, active camouflage | **Built** from Halo 1 | Native Halo 2 powerup types and rebuilt item collections |
 | Warthog, Ghost, Scorpion, Banshee | Same | A collection is built when the base lacks one ([Vehicles](#vehicles)) |
 | Rocket warthog | Gauss warthog | The user's decision |
-| Health pack | Dropped | Halo 2 has no health |
+| Health pack | **Built** from Halo 1 | The engine has a native health pickup (type 5) |
 | Ammo pickups | Dropped | Halo 2 has no ammo pickups |
 | Double speed, full-spectrum vision | Dropped | Unused on Xbox maps |
 
@@ -192,7 +192,7 @@ grow go to the end of the metadata. **Proof:** a synthetic test on the
 editor's fixture reads every written field back, and
 `the_plan_applies_to_a_retail_base` writes beavercreek's plan into the
 Halo 2 disc's `beavercreek` (70 spawns, 88 flags, 28 items, 56 base
-placements removed; the 3 camouflage spawns are reported, the base has
+placements removed; the 3 camouflage spawns were reported by the base-only conversion, the base has
 none) and reads the scenario back.
 
 The names of Halo 2's netgame flag kind values (`H2Flag::raw`) are
@@ -950,16 +950,24 @@ slots the collections used before, is no longer called.)
 
 ## What isn't placed, and why
 
-Every placement the Halo 2 sandbox leaves out is one of these (the Halo 1
-sandbox leaves out race flags only), and `h2 h1 convert` lists each with
-its position (`not placed: ...`):
+`h2 h1 convert` reports race flags and the Halo 2 sandbox's omitted ammo
+pickups with their positions.
 
-| Left out | Why |
-|---|---|
-| Race flags (`RaceTrack`, `RaceVehicle`) | Halo 2 has no race game type |
-| Health packs | The base has no health pickup; the Halo 1 sandbox places Halo 1's |
-| Active camouflage | The base has no collection for it (`invisibility`; Beaver Creek and Coagulation have none). A built `itmc` would do, as for vehicles |
-| Overshield | The base has no collection for it (`super_shield`; Coagulation has none) |
+**Built in both sandboxes.** Halo 1's overshield, camouflage and health
+pack collections are rebuilt from `itmc`. The spawn points, facing,
+weights, game-type filters and respawn times come from Halo 1. Blood
+Gulch's shield-invisibility collection can still roll either item.
+Beaver Creek's `powerup_super_shield` and Zanzibar's
+`powerup_invisibility` establish the Halo 2 layout (V). Each uses a
+type 9 netgame equipment placement and a collection referencing an
+`eqip`. The game reads those references at `0x0015ab12` and selects
+by weight at `0x0019f1a0` (E). The normal import uses
+`prepare_halo1` or `prepare_halo2`, both supplied with the object
+converter. The direct base-only `prepare` reports missing collections.
+
+The ignored test `bloodgulch_native_powerups_spawn_in_both_sandboxes`
+reads both discs and checks all four placements and their rebuilt item
+and collection data in the fresh maps.
 
 All 13 multiplayer maps on the Halo 1 disc convert
 (`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
@@ -1173,7 +1181,7 @@ and reads every netgame equipment spawn of the built map back: 43 of 43
 added, whose entries name added objects of the collection's kind, each
 with a render model (`tags::object::Context`). 68 tags are added:
 8 weapons with their projectiles, camouflage, overshield, the health pack
-(on the overshield template), both grenades, warthog, ghost and scorpion,
+(each rebuilt from its Halo 1 equipment), both grenades, warthog, ghost and scorpion,
 and the cyborg (`characters\cyborg_mp\cyborg_mp`, on `masterchief_mp`):
 73 in all.
 
@@ -1566,7 +1574,8 @@ weapon the converted player biped's graph holds in mode `combat`.
 `antr` and effects, converted per [campaign.md](campaign.md) §2, with
 Halo 2's physics. The health subsystem of campaign.md §6 is shared with
 the campaign: no body regeneration, health packs refill on pickup, a
-health meter under the shield meter, on for Halo 1 maps in this variant.
+health meter under the shield meter, on for Halo 1 maps. Health packs
+are placed in both asset settings.
 Hooks (docs/halo1/health.md): the game start sets the model from the map's
 name; the converted cyborg's HUD (`nhdt`) has a widget on the body
 (input 17), built by `h1objects::health_hud`. A health pack

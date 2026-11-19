@@ -354,10 +354,18 @@ pub fn prepare<R: Read + Seek>(
     if sandbox == Sandbox::Halo1 {
         return Err(Error::Halo1Sandbox);
     }
+    prepare_plan(h1, source_sha256, base, placements::plan_map(h1)?)
+}
+
+fn prepare_plan<R: Read + Seek>(
+    h1: &H1Map,
+    source_sha256: Sha256,
+    base: &mut Map<R>,
+    mut plan: placements::Plan,
+) -> Result<Prepared> {
     let h1_name = h1.header().name.clone();
     let display_name = known(&h1_name).map_or_else(|| h1_name.clone(), |(d, _)| d.to_owned());
 
-    let mut plan = placements::plan_map(h1)?;
     // Halo 1's vehicle spots hold the origin on the floor; the base's
     // vehicles are raised by how far each reaches below its origin.
     if let Ok(ctx) = tags::object::Context::read(base) {
@@ -524,7 +532,7 @@ pub fn prepare<R: Read + Seek>(
     Ok(Prepared {
         h1_name,
         display_name,
-        sandbox,
+        sandbox: Sandbox::Halo2,
         source_sha256,
         applied,
         dropped: plan.dropped,
