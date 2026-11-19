@@ -48,6 +48,21 @@ impl Aabb {
     pub fn is_empty(&self) -> bool {
         (0..3).any(|k| self.min[k] > self.max[k])
     }
+
+    /// Whether the box and the sphere (`centre`, `radius`) share a point;
+    /// an empty box meets nothing.
+    pub fn meets_sphere(&self, centre: [f32; 3], radius: f32) -> bool {
+        if self.is_empty() || !(radius >= 0.0) {
+            return false;
+        }
+        let d2: f32 = (0..3)
+            .map(|k| {
+                let d = (self.min[k] - centre[k]).max(0.0).max(centre[k] - self.max[k]);
+                d * d
+            })
+            .sum();
+        d2 <= radius * radius
+    }
 }
 
 /// What a draw belongs to in the BSP.
@@ -377,6 +392,19 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_box_meets_a_sphere_that_reaches_it() {
+        let b = Aabb { min: [0.0; 3], max: [1.0; 3] };
+        assert!(b.meets_sphere([0.5; 3], 0.1), "inside");
+        assert!(b.meets_sphere([2.0, 0.5, 0.5], 1.0), "touching a face");
+        assert!(!b.meets_sphere([2.0, 0.5, 0.5], 0.99));
+        assert!(b.meets_sphere([2.0, 2.0, 0.5], 1.5), "past an edge");
+        assert!(!b.meets_sphere([2.0, 2.0, 2.0], 1.7), "corner at sqrt(3)");
+        assert!(b.meets_sphere([2.0, 2.0, 2.0], 1.733));
+        assert!(!Aabb::EMPTY.meets_sphere([0.0; 3], 1e9));
+        assert!(!b.meets_sphere([0.5; 3], f32::NAN));
+    }
 
     /// A unit quad in the xy plane: two triangles, one part.
     fn quad(material: u16, transparent: bool, lit: bool) -> SectionInput {

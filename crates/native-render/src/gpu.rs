@@ -10,6 +10,8 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::light_gpu::{LightDraw, LightSet};
+use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
 use crate::transparent_gpu::TransparentSet;
 use crate::world::{LightmapKey, Owner, World, WorldVertex};
@@ -120,6 +122,8 @@ pub struct GpuWorld {
     /// The transparent materials the sorted transparents' runs draw
     /// ([`crate::transparent_gpu`]).
     transparents: Option<TransparentSet>,
+    /// The light passes (stage 4), once a light needs them.
+    lights: Option<LightSet>,
 }
 
 const SHADER: &str = include_str!("world.wgsl");
@@ -334,6 +338,7 @@ impl GpuWorld {
             pipelines: HashMap::new(),
             programs: None,
             transparents: None,
+            lights: None,
         }
     }
 
@@ -415,6 +420,56 @@ impl GpuWorld {
             }
         }
         drawn
+    }
+
+    /// Draws lights with `set` from now on.
+    pub fn set_lights(&mut self, set: LightSet) {
+        self.lights = Some(set);
+    }
+
+    /// The light passes, when the engine's light textures are uploaded.
+    pub fn lights(&self) -> Option<&LightSet> {
+        self.lights.as_ref()
+    }
+
+    /// Records one run of lights' draws over the world's parts (each
+    /// draw's index ranges, which `boot` picks from the parts whose bounds
+    /// meet the light's sphere), added into the target over the depth
+    /// (loaded and kept), in order. Nothing without [`Self::set_lights`].
+    /// Returns how many ranges were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_lights(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        draws: &[LightDraw<'_>],
+        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        gel_image: &mut dyn FnMut(u32) -> Option<Image>,
+    ) -> usize {
+        let Some(set) = self.lights.as_mut() else { return 0 };
+        set.encode(
+            device,
+            queue,
+            encoder,
+            &self.vertices,
+            &self.indices,
+            color,
+            color_format,
+            depth,
+            depth_format,
+            target_size,
+            view,
+            draws,
+            stage_image,
+            gel_image,
+        )
     }
 
     /// Draws `programs`' materials with their own programs from now on.

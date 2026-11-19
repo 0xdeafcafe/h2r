@@ -247,8 +247,21 @@ impl LightGpu {
     /// One light's uniforms for this frame: the view's constants, then the
     /// light's frame constants (`c[31]`..`c[39]`).
     pub fn uniforms(&self, device: &wgpu::Device, queue: &wgpu::Queue, view: &ViewInputs, frame: &[u32; FRAME_DWORDS]) -> wgpu::BindGroup {
-        let vertex = light_vertex(&frame_vertex(&self.program.vertex, view), frame);
-        let pixel = frame_pixel(&self.program.pixel, view);
+        self.uniforms_of(device, queue, &self.program, view, frame)
+    }
+
+    /// [`Self::uniforms`] with the constants of `program`, the same pass
+    /// resolved with another light's inputs ([`light_gpu_key`] equal).
+    pub fn uniforms_of(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        program: &LightProgram,
+        view: &ViewInputs,
+        frame: &[u32; FRAME_DWORDS],
+    ) -> wgpu::BindGroup {
+        let vertex = light_vertex(&frame_vertex(&program.vertex, view), frame);
+        let pixel = frame_pixel(&program.pixel, view);
         let buffer = |label, bytes: &[u8]| {
             let b = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -340,6 +353,201 @@ impl LightGpu {
         pass.set_blend_constant(self.program.state.blend_constant);
         pass.draw_indexed(indices, 0, 0..1);
         true
+    }
+}
+
+/// What makes two compiled light passes one GPU pass (module, layouts,
+/// samplers, stage textures, pipeline state): lights whose inputs differ
+/// only in constants share it, each with its own uniforms.
+pub fn light_gpu_key(p: &LightProgram) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.wgsl.hash(&mut h);
+    format!("{:?}", (&p.stages, &p.samplers, &p.dims, &p.signed, &p.state)).hash(&mut h);
+    h.finish()
+}
+
+fn same_gpu_pass(a: &LightProgram, b: &LightProgram) -> bool {
+    a.wgsl == b.wgsl
+        && format!("{:?}", (&a.stages, &a.samplers, &a.dims, &a.signed, &a.state))
+            == format!("{:?}", (&b.stages, &b.samplers, &b.dims, &b.signed, &b.state))
+}
+
+/// One light's draw of one lit pass: the pass resolved with the light's
+/// inputs, its GPU key ([`light_gpu_key`]), the light's frame constants
+/// and gel, and the world's index ranges it covers.
+pub struct LightDraw<'a> {
+    pub program: &'a LightProgram,
+    pub key: u64,
+    pub frame: &'a [u32; FRAME_DWORDS],
+    /// The gel's `bitm` datum (image 0), for a pass that samples it.
+    pub gel: Option<u32>,
+    pub ranges: Vec<std::ops::Range<u32>>,
+}
+
+/// The world's light passes on the GPU: the engine's light textures, the
+/// gels by datum and the passes by key, made as lights first need them.
+/// `None` entries remember what did not upload.
+#[derive(Default)]
+pub struct LightSet {
+    pub textures: LightTextures,
+    gels: HashMap<u32, Option<wgpu::TextureView>>,
+    passes: HashMap<u64, Option<LightGpu>>,
+}
+
+/// A light draw made ready before the render pass: its pass's key, its
+/// groups and ranges.
+struct Prepared {
+    key: u64,
+    uniforms: wgpu::BindGroup,
+    textures: wgpu::BindGroup,
+    ranges: Vec<std::ops::Range<u32>>,
+}
+
+impl LightSet {
+    /// Uploads the engine's light textures (`None`: missing; passes that
+    /// sample one are not drawn).
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, normalization: Option<&LayeredImage>, attenuation: Option<&LayeredImage>) -> Self {
+        Self {
+            textures: LightTextures {
+                normalization: normalization.map(|i| layered_texture(device, queue, i, "native light normalization")),
+                attenuation: attenuation.map(|i| layered_texture(device, queue, i, "native light attenuation")),
+            },
+            gels: HashMap::new(),
+            passes: HashMap::new(),
+        }
+    }
+
+    /// How many passes are on the GPU.
+    pub fn len(&self) -> usize {
+        self.passes.values().filter(|p| p.is_some()).count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn gel(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, datum: u32, image: &mut dyn FnMut(u32) -> Option<Image>) -> Option<wgpu::TextureView> {
+        self.gels
+            .entry(datum)
+            .or_insert_with(|| image(datum).map(|i| texture(device, queue, &i, "native light gel")))
+            .clone()
+    }
+
+    /// The draws' groups, their passes made (with pipelines for these
+    /// formats) as needed; a draw whose pass, stage image, engine texture
+    /// or gel is missing is left out.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        view: &ViewInputs,
+        draws: &[LightDraw<'_>],
+        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        gel_image: &mut dyn FnMut(u32) -> Option<Image>,
+    ) -> Vec<Prepared> {
+        let mut out = Vec::new();
+        for d in draws {
+            if d.ranges.is_empty() {
+                continue;
+            }
+            let gel = match d.gel {
+                Some(g) if d.program.stages.contains(&LightStage::Gel) => self.gel(device, queue, g, &mut *gel_image),
+                _ => None,
+            };
+            let stale = self.passes.get(&d.key).is_some_and(|p| p.as_ref().is_some_and(|p| !same_gpu_pass(&p.program, d.program)));
+            if stale || !self.passes.contains_key(&d.key) {
+                let p = LightGpu::new(device, queue, d.program.clone(), &mut *stage_image);
+                self.passes.insert(d.key, p);
+            }
+            let Some(Some(pass)) = self.passes.get_mut(&d.key) else { continue };
+            pass.pipeline(device, color, depth);
+            let Some(textures) = pass.textures(device, &self.textures, gel.as_ref()) else { continue };
+            let uniforms = pass.uniforms_of(device, queue, d.program, view, d.frame);
+            out.push(Prepared {
+                key: d.key,
+                uniforms,
+                textures,
+                ranges: d.ranges.clone(),
+            });
+        }
+        out
+    }
+
+    /// Records `draws` into `pass` (the world's vertex and index buffers
+    /// bound), after [`Self::prepare`]. Returns how many ranges were drawn.
+    fn record(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &[Prepared], color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> usize {
+        let mut drawn = 0;
+        for p in prepared {
+            let Some(Some(gpu)) = self.passes.get(&p.key) else { continue };
+            for r in &p.ranges {
+                if gpu.draw(pass, &p.uniforms, &p.textures, r.clone(), color, depth) {
+                    drawn += 1;
+                }
+            }
+        }
+        drawn
+    }
+
+    /// [`Self::prepare`] then [`Self::record`] in one render pass over
+    /// `color` and `depth` (both loaded and kept), the viewport the whole
+    /// target as the programs expect.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        vertices: &wgpu::Buffer,
+        indices: &wgpu::Buffer,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        draws: &[LightDraw<'_>],
+        stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
+        gel_image: &mut dyn FnMut(u32) -> Option<Image>,
+    ) -> usize {
+        let prepared = self.prepare(device, queue, color_format, depth_format, view, draws, stage_image, gel_image);
+        if prepared.is_empty() {
+            return 0;
+        }
+        let has_stencil = depth_format.has_stencil_aspect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native lights"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_vertex_buffer(0, vertices.slice(..));
+        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        self.record(&mut pass, &prepared, color_format, depth_format)
     }
 }
 

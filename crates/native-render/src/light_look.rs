@@ -509,6 +509,21 @@ mod tests {
     }
 
     #[test]
+    fn lights_differing_only_in_constants_share_a_gpu_pass() {
+        use crate::light_gpu::light_gpu_key;
+        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
+        let look = light_look(&m, DIFFUSE_LAYER, 1).unwrap();
+        let p = compile_light(&look, &light_program()).expect("compiles");
+        let mut brighter = p.clone();
+        brighter.vertex.constants[18] = [2.0; 4];
+        assert_eq!(light_gpu_key(&p), light_gpu_key(&brighter), "constants are uniforms");
+        let mut gel = look.clone();
+        gel.textures[3] = LightStage::Gel;
+        let q = compile_light(&gel, &light_program()).expect("compiles");
+        assert_ne!(light_gpu_key(&p), light_gpu_key(&q), "another stage texture");
+    }
+
+    #[test]
     fn the_light_frame_fills_c31_to_c39() {
         let mut frame = [0u32; FRAME_DWORDS];
         for (i, w) in frame.iter_mut().enumerate() {
