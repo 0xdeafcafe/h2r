@@ -68,6 +68,76 @@ pub fn red_into_alpha(
     Ok((out_img, out))
 }
 
+/// The image `img` (its stored pixels `px`) as DXT5 whose alpha is its
+/// own brightest channel, `max(r, g, b)`, times `gain` (saturated at 1):
+/// Halo 1's plasma `sotr` adds its picture's colour times the band, and
+/// Halo 2's `plasma_alpha` shapes and dims only through its mask's alpha
+/// (`h1convert::shad::plasma_shader`). Every level of the chain is
+/// written; the colours are the image's (as [`red_into_alpha`] keeps
+/// them). 2D images only. Deterministic.
+pub fn brightest_into_alpha(img: &Image, px: &[u8], gain: f32) -> Result<(Image, Vec<u8>)> {
+    if img.kind != ImageKind::D2 {
+        return Err(Error::Unsupported(format!(
+            "a brightness mask of type {:?}",
+            img.kind
+        )));
+    }
+    let colours = decode_image(img, px)?;
+    let mut out_img = img.clone();
+    out_img.format = PixelFormat::Dxt5;
+    out_img.flags =
+        (img.flags & !(FLAG_PALETTIZED | FLAG_SWIZZLED | FLAG_LINEAR)) | FLAG_COMPRESSED;
+    out_img.depth = 1;
+    let layout = texture_desc(&out_img)?.layout()?;
+    let mut out = vec![0u8; layout.total_size];
+    for l in &layout.levels {
+        let src = colours
+            .iter()
+            .find(|v| v.face == 0 && v.level == l.level)
+            .ok_or_else(|| Error::Invalid(format!("the image has no level {}", l.level)))?;
+        let alpha: Vec<u8> = src
+            .rgba
+            .chunks_exact(4)
+            .map(|t| brightest(t[0], t[1], t[2], gain))
+            .collect();
+        let blocks = encode_dxt5(src.width, src.height, &src.rgba, &alpha);
+        let n = blocks.len().min(l.size);
+        out[l.offset..l.offset + n].copy_from_slice(&blocks[..n]);
+    }
+    out_img.pixel_size = out.len() as u32;
+    Ok((out_img, out))
+}
+
+/// `gain × max(r, g, b)`, rounded, saturated at 255.
+pub fn brightest(r: u8, g: u8, b: u8, gain: f32) -> u8 {
+    (f32::from(r.max(g).max(b)) * gain)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+/// The single-image Halo 1 bitmap `tag` with [`brightest_into_alpha`]'s
+/// alpha, converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+pub fn convert_brightest(
+    map: &h1map::H1Map,
+    tag: &h1map::Tag,
+    gain: f32,
+) -> Result<h1models::Converted> {
+    let bm = h1map::bitmap::Bitmap::read(map, tag)?;
+    if bm.images.len() != 1 {
+        return Err(Error::Unsupported(format!(
+            "a brightness mask of {} images",
+            bm.images.len()
+        )));
+    }
+    let (img, px) = brightest_into_alpha(&bm.images[0], bm.pixels(map, 0)?, gain)?;
+    let mut baked = bm.clone();
+    baked.images[0] = img;
+    baked.encoding = INTERPOLATED_ALPHA;
+    let mut px = Some(px);
+    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
+    Ok(conv)
+}
+
 /// A Halo 2 change-colour map from one channel of a Halo 1 model
 /// shader's multipurpose map: DXT5 of `mask`'s size and mip chain, whose
 /// channel `to` (0 red .. 3 alpha) is `mask`'s channel `from` and every

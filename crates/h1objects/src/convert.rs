@@ -836,6 +836,9 @@ pub struct Converter<'a> {
     /// Base maps with a reflection mask as their alpha
     /// ([`Self::masked_bitmap`]), by (base, mask) tag.
     masked_bitmaps: HashMap<(u32, u32), Option<TagId>>,
+    /// Plasma pictures with their brightness as alpha
+    /// ([`Self::brightest_bitmap`]), by (bitmap tag, gain bits).
+    brightest_bitmaps: HashMap<(u32, u32), Option<TagId>>,
     /// Change-colour maps ([`Self::change_colour_bitmap`]), by
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
@@ -902,6 +905,7 @@ impl<'a> Converter<'a> {
             sprite_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
             masked_bitmaps: HashMap::new(),
+            brightest_bitmaps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
@@ -2065,6 +2069,12 @@ impl<'a> Converter<'a> {
     /// drew near black without it (the sniper rifle in first person,
     /// converter version 76).
     ///
+    /// An additive `schi` whose maps multiply together (Blood Gulch's
+    /// teleporter cone, the pelican's thrusters) takes this path onto
+    /// `two_add_clouds`, scrolling and faded by the view angle
+    /// (`h1convert::shad::multiply_chain`, converter version 90; the cone
+    /// drew its first grey dust map alone before).
+    ///
     /// A `soso` with a change colour (`h1convert::shad::soso_change_colour`)
     /// takes this path onto `tex_bump_env_four_change_color`, its
     /// multipurpose map's blue baked into the channel of the Halo 2 slot
@@ -2122,13 +2132,18 @@ impl<'a> Converter<'a> {
             .flatten();
         let mut maps = HashMap::new();
         for (role, m) in &chosen.maps {
-            let id = match (role, mask) {
-                (h1convert::shad::Role::Base, Some(mask)) => {
+            let id = match (role, mask, chosen.extras.brightest_mask) {
+                (h1convert::shad::Role::Base, Some(mask), _) => {
                     self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
                 }
+                // A plasma's picture with its brightness as alpha
+                // (converter version 90, `shad::plasma_shader`).
+                (h1convert::shad::Role::Mask, _, Some(gain)) => self
+                    .brightest_bitmap(m.bitmap, gain)
+                    .or_else(|| self.bitmap(m.bitmap)),
                 // The multipurpose map's blue in the slot's channel; no
                 // change-colour map, no tint (the layout's default).
-                (h1convert::shad::Role::ChangeColour, _) => match change_colour {
+                (h1convert::shad::Role::ChangeColour, _, _) => match change_colour {
                     Some((slot, _)) => self.change_colour_bitmap(m.bitmap, slot),
                     None => None,
                 },
@@ -2182,6 +2197,26 @@ impl<'a> Converter<'a> {
         }
         let out = self.bake_mask(base, mask);
         self.masked_bitmaps.insert(key, out);
+        out
+    }
+
+    /// The Halo 1 bitmap `id` with `gain` times its brightest channel as
+    /// alpha, DXT5 (`h1bitmaps::mask::convert_brightest`),
+    /// `<name>_brightness_<gain × 1000>`, built once per pair. `None` when
+    /// it does not read or decode, or has more than one image.
+    fn brightest_bitmap(&mut self, id: h1map::TagId, gain: f32) -> Option<TagId> {
+        let key = (id.0, gain.to_bits());
+        if let Some(t) = self.brightest_bitmaps.get(&key) {
+            return *t;
+        }
+        let tag = self.h1.tag(id).ok()?.clone();
+        let out = h1bitmaps::mask::convert_brightest(self.h1, &tag, gain)
+            .ok()
+            .map(|conv| {
+                let name = h1convert::shad::brightness_mask_name(&tag.name, gain);
+                self.tree.push(&name, conv)
+            });
+        self.brightest_bitmaps.insert(key, out);
         out
     }
 

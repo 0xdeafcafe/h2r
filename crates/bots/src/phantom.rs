@@ -22,7 +22,7 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::view::players;
 
 use crate::guest;
-use crate::local::{Frame, PadSource};
+use crate::local::PadSource;
 
 /// Who a phantom is (docs/game/bots.md, section 9.1): the server's account
 /// and how the lobby shows it.
@@ -116,8 +116,9 @@ struct Phantom {
     source: Box<dyn PadSource>,
     /// Its peer is in the host's session.
     made: bool,
-    /// The tick of its last action.
-    last_tick: Option<u32>,
+    buttons: action::ButtonState,
+    /// Frame-indexed sources advance once per simulation sample, across respawns.
+    samples: u64,
     /// Why it waits for hosting, as last logged ([`waiting_line`]).
     waiting: Option<String>,
 }
@@ -151,6 +152,7 @@ pub fn lobby_wanted(v: Option<&str>) -> bool {
 #[derive(Default)]
 struct Books {
     list: Vec<Phantom>,
+    hosting_game: bool,
     next: u32,
     /// Machine ids of removed phantoms whose peers are still in the
     /// session, for the game thread to take out.
@@ -217,7 +219,8 @@ impl Phantoms {
             },
             source,
             made: false,
-            last_tick: None,
+            buttons: Default::default(),
+            samples: 0,
             waiting: None,
         });
         Ok(handle)
@@ -345,11 +348,11 @@ impl Phantoms {
     /// multiplayer game it hosts runs, pending phantoms get a peer, its
     /// properties and a session player, as a real peer joining does: in
     /// the lobby they show in its roster and the game takes them in when
-    /// it starts. Each joined phantom's source is asked for its pad in a
-    /// game, written as its action. Removed phantoms' peers come out. When
+    /// it starts. The simulation samples each joined phantom's pad when it
+    /// gathers actions (`slot_action`). Removed phantoms' peers come out. When
     /// this console hosts no session any more, every phantom's peer comes
     /// out and the phantom waits for the next. Returns lines for the log.
-    pub fn tick(&self, m: &mut dyn GuestMemory, frame: u64) -> Result<Vec<String>, MemFault> {
+    pub fn tick(&self, m: &mut dyn GuestMemory, _frame: u64) -> Result<Vec<String>, MemFault> {
         let mut log = Vec::new();
         // A starting game waits for no phantom (§5.1, "Phantoms in the
         // game"), whichever way they came in.
@@ -378,6 +381,12 @@ impl Phantoms {
             (_, Ok(s)) => Some(Phase::Lobby(*s)),
             _ => None,
         };
+        b.hosting_game = matches!(phase, Some(Phase::Game(_)));
+        if !b.hosting_game {
+            for p in &mut b.list {
+                p.buttons = Default::default();
+            }
+        }
         let live = session::live_session(&*m);
 
         // Out: removed phantoms, and all of them once this console hosts
@@ -390,7 +399,6 @@ impl Phantoms {
                 if p.made {
                     out.push(p.info.machine);
                     p.made = false;
-                    p.last_tick = None;
                 }
             }
         }
@@ -457,7 +465,7 @@ impl Phantoms {
                 }
                 None => {
                     p.made = false;
-                    p.last_tick = None;
+                    p.buttons = Default::default();
                     log.push(format!(
                         "bots: phantom {} is no longer in the session: it joins again",
                         p.info.identity.gamertag
@@ -552,58 +560,8 @@ impl Phantoms {
         }
         drop(b);
         self.refresh_where(&*m, true)?;
-        if in_lobby {
-            return Ok(log);
-        }
-
-        // Actions.
-        let tick = guest::game_tick(&*m);
-        let mut b = self.lock();
-        for p in &mut b.list {
-            if !p.made || p.info.state != State::Joined {
-                continue;
-            }
-            let mac = p.info.machine;
-            let Some(slot) = session::slot_of(&*m, mac)? else {
-                continue;
-            };
-            let Some(addr) = player_addr(&*m, mac)? else {
-                continue;
-            };
-            let Some((aim, weapon)) = session::facing(&*m, addr)? else {
-                continue;
-            };
-            let f = Frame {
-                frame,
-                tick,
-                port: 4,
-                machine: Some(mac),
-                guest: &*m,
-                joining: false,
-            };
-            let pad = p.source.pad(&f);
-            let ticks = match (tick, p.last_tick) {
-                (Some(t), Some(l)) => t.saturating_sub(l).clamp(1, 30),
-                _ => 1,
-            };
-            p.last_tick = tick;
-            let a = session::action_from_pad(&pad, aim, weapon, ticks as f32 / 30.0);
-            session::write_action(m, slot, &a)?;
-        }
         Ok(log)
     }
-}
-
-fn player_addr(m: &dyn GuestMemory, mac: [u8; 6]) -> Result<Option<u32>, MemFault> {
-    let Some(array) = players::array(m)? else {
-        return Ok(None);
-    };
-    for (_, p) in array.live(m, 16)? {
-        if p.listed(m)? && guest::player_machine(m, p.addr)? == mac {
-            return Ok(Some(p.addr));
-        }
-    }
-    Ok(None)
 }
 
 /// Every listed player's machine id and datum index.
@@ -659,6 +617,7 @@ pub fn player(handle: PhantomHandle) -> Option<u32> {
     global().player(handle)
 }
 
+mod action;
 pub mod session;
 
 #[cfg(test)]
