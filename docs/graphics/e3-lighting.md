@@ -389,7 +389,7 @@ equal to position plus forward) and refuses anything else.
 render target 10, cleared to colour `0xffffff`, when per-light flag bit 4 is
 set and bit 5 clear, and otherwise target 9, cleared to depth 1.0. Since
 `0x00031170` clears bit 4, the per-light path always takes target 9. `0x00048ee0` builds the light's shadow
-projection (stores `0x28` dwords at `0x004c9798`) before the layer draws.
+projection (stores `0x24` dwords at `0x004c9798`, uploaded to vertex constants `c[40]`..`c[48]`) before the layer draws.
 Shadow apply (11) samples it with `ShadowFunc` `GREATER`. The render target
 table is at `0x004b4b58`, stride `0x98`; target 9 is S as the 512x512 depth
 level and the other as the 128x128 target d3d.md reports.

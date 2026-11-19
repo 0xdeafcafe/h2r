@@ -693,11 +693,35 @@ fn living_unit(m: &dyn GuestMemory, p: &players::Player) -> R<Option<([f32; 3], 
     Ok(Some((body.position(m)?, m.vec3(body.addr + UNIT_AIM)?)))
 }
 
-/// The game's tick count (30 a second) while a game is loaded: `None` in
-/// the menus, where the game-time record is not allocated.
+/// The game's tick count (30 a second) while a game is loaded, the main
+/// menu's included: `mainmenu.map` runs as a game of its own (options
+/// mode [`MODE_MAIN_MENU`]) with a game-time record that ticks. `None`
+/// only while no game is loaded at all. For "a game runs", see
+/// [`in_game`].
 pub fn game_tick(m: &dyn GuestMemory) -> Option<u32> {
     let time = m.u32(points::GAME_TIME.base).ok().filter(|&t| t != 0)?;
     m.u32(time + GAME_TIME_TICK).ok()
+}
+
+/// The game options' mode for the main menu's game (1 campaign, 2
+/// multiplayer, 3 the main menu; as Live telemetry names them).
+pub const MODE_MAIN_MENU: u32 = 3;
+
+/// The loaded game's options mode (`[GAME_GLOBALS] + 8`), if readable.
+pub fn game_mode(m: &dyn GuestMemory) -> Option<u32> {
+    let g = m.u32(points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    m.u32(g + OPTIONS).ok()
+}
+
+/// Whether a campaign or multiplayer game runs: a game tick ([`game_tick`])
+/// in a game that is not the main menu's. The `h2 bots test` run of
+/// 2026-11-18 read a tick on every menu screen (`mode main_menu`), so
+/// "a tick" alone kept the bots from ever signing in: the players
+/// screen's gate said `signs in` and nothing signed in, and the pregame
+/// lobby was never the lobby. A mode that cannot be read, with a tick,
+/// counts as a game (the safe side for writes).
+pub fn in_game(m: &dyn GuestMemory) -> bool {
+    game_tick(m).is_some() && game_mode(m) != Some(MODE_MAIN_MENU)
 }
 
 /// Which player a bot is.

@@ -226,6 +226,35 @@ fn there_is_no_game_tick_in_the_menus() {
 }
 
 #[test]
+fn the_main_menu_ticks_but_is_not_a_game() {
+    // The h2 bots test run: `mode main_menu` with a game tick on every
+    // menu screen.
+    const TIME: u32 = 0x0068_0000;
+    const GLOBALS: u32 = 0x0069_0000;
+    let mut g = FakeGuest::new();
+    assert!(!in_game(&g), "nothing loaded");
+    g.map(points::GAME_TIME.base & !0xfff, 0x1000)
+        .map(TIME, 0x10)
+        .put_u32(points::GAME_TIME.base, TIME)
+        .put_u32(TIME + GAME_TIME_TICK, 42);
+    g.map(points::GAME_GLOBALS.base & !0xfff, 0x1000)
+        .map(GLOBALS, 0x400)
+        .put_u32(points::GAME_GLOBALS.base, GLOBALS)
+        .put_u32(GLOBALS + OPTIONS, MODE_MAIN_MENU);
+    assert_eq!(game_tick(&g), Some(42));
+    assert_eq!(game_mode(&g), Some(MODE_MAIN_MENU));
+    assert!(!in_game(&g), "the main menu's game");
+    g.put_u32(GLOBALS + OPTIONS, MODE_MULTIPLAYER);
+    assert!(in_game(&g), "a multiplayer game");
+    g.put_u32(GLOBALS + OPTIONS, 1);
+    assert!(in_game(&g), "a campaign");
+    g.put_u32(points::GAME_GLOBALS.base, 0);
+    assert!(in_game(&g), "a tick and no options read: a game");
+    g.put_u32(points::GAME_TIME.base, 0);
+    assert!(!in_game(&g), "no tick");
+}
+
+#[test]
 fn outside_a_multiplayer_game_the_bot_sees_nothing() {
     let mut g = three();
     g.put_u32(GAME + OPTIONS, 1); // campaign

@@ -22,6 +22,8 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::SCENE_TRANSPARENTS,
         &points::TRANSPARENT_GEOMETRY,
         &points::OBJECT_RENDER_SETUP,
+        &points::RENDER_DYNAMIC_LIGHTS,
+        &points::RENDER_LIGHT_PASSES,
     ] {
         assert!(
             analysis.functions.contains_key(&p.base),

@@ -513,7 +513,17 @@ impl Driver {
         log: &mut Vec<String>,
     ) -> Option<Vec<RosterSeat>> {
         let rosters = self.rosters.as_ref()?;
-        let session = rosters.session()?;
+        let Some(session) = rosters.session() else {
+            // Said so a run shows why no roster was asked for: the game
+            // hosts no Xbox Live session (not signed in to Live, Split
+            // Screen, System Link). A Live session hosted later asks
+            // (`refresh`, every 30 frames).
+            log.push(
+                "no roster yet: this console hosts no Xbox Live session (host-made bots until it does)"
+                    .into(),
+            );
+            return None;
+        };
         let asked = Asked {
             playlist: rosters.playlist(),
             session,

@@ -1,0 +1,439 @@
+//! Stage 4: a lit material's layer-12 (diffuse) and layer-13 (specular)
+//! pass as the game draws it for one light (docs/graphics/native-renderer.md,
+//! "Stage 4", "Implementations" and "Engine constants").
+//!
+//! The engine picks the implementation per light (`engine::light_passes`:
+//! `diffuse`, `specular`) and resolves the pass with the light's engine
+//! inputs, which the light's constants supply ([`LightInputs`],
+//! [`engine_inputs`]). [`light_look`] takes a material resolved with those
+//! inputs (`tags::material::ShaderLibrary::material`) and returns what the
+//! native pass draws, or why the light keeps its D3D passes.
+
+use map::TagId;
+use tags::material::{EngineInputs, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Register, TextureSource};
+use tags::shader::{PSDEF_SIZE, StageStates};
+
+use shaders::psh::{PixelUniforms, TextureDim};
+use shaders::vsh::VertexUniforms;
+
+use crate::pass_state::{PassState, StateRefusal, pass_state};
+use crate::program::{PassParts, translate_pass};
+
+pub const DIFFUSE_LAYER: usize = 12;
+pub const SPECULAR_LAYER: usize = 13;
+
+/// The engine inputs a light supplies (Code, `0x0001b2c0`'s sources).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightInputs {
+    /// Vector 5 (`0x00033a0b`): the frame's words 24..26, colour A scaled
+    /// and clamped (`engine::light_constants::LightGlobals::colour_a_input`).
+    pub colour_a: [f32; 3],
+    /// Vector 6 (`0x00033a25`): the frame's words 28..30, colour B.
+    pub colour_b: [f32; 3],
+    /// Integers 0 and 1 (`0x00034067`): the colour scale mode
+    /// `[0x00485a2c]`.
+    pub mode: i32,
+    /// Integer 2 (`0x0003406f`): the definition's word `+0x8a`, signed.
+    pub definition_8a: i16,
+    /// Integer 3 (`0x0003407f`): the definition's word `+0x80`, signed.
+    pub definition_80: i16,
+    /// The definition's first dword: integer 7 (`0x000340cc`) is its bit 1
+    /// clear.
+    pub definition_flags: u32,
+    /// Falloff word 0 (`[0x00485a30]`): scalar 16 (`0x000336fb`) is it
+    /// when below 1, else 1.
+    pub falloff_0: f32,
+}
+
+/// The inputs [`engine_inputs`] fills, beyond the instance's own.
+pub const LIGHT_SCALARS: u64 = 1 << 16;
+pub const LIGHT_VECTORS: u64 = 1 << 5 | 1 << 6;
+/// Integer 6 (`0x0003409f`) is not here: it tests a bit of an argument not
+/// traced yet.
+pub const LIGHT_INTS: u32 = 0b1111 | 1 << 7;
+
+/// The instance's inputs (`EngineInputs::for_shader`) with the light's.
+pub fn engine_inputs(instance: &EngineInputs, l: &LightInputs) -> EngineInputs {
+    let mut e = instance.clone();
+    e.vectors[5] = l.colour_a;
+    e.vectors[6] = l.colour_b;
+    e.ints[0] = l.mode;
+    e.ints[1] = l.mode;
+    e.ints[2] = i32::from(l.definition_8a);
+    e.ints[3] = i32::from(l.definition_80);
+    e.ints[7] = i32::from(l.definition_flags & 2 == 0);
+    // `comiss one, falloff; jbe` keeps 1: NaN and 1 or more give 1.
+    e.scalars[16] = if 1.0 > l.falloff_0 { l.falloff_0 } else { 1.0 };
+    e
+}
+
+/// What a light pass's texture stage samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LightStage {
+    Empty,
+    /// An instance bitmap's image.
+    Bitmap { bitmap: TagId, image: u32 },
+    /// Engine texture 1: the globals' vector normalization cube map (S).
+    Normalization,
+    /// Engine texture 9: the distance attenuation volume (S).
+    Attenuation,
+    /// Engine texture 10: the light's gel (or its shader's render target
+    /// 13).
+    Gel,
+}
+
+/// One implementation of a lit material's pass for one light.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LightLook {
+    pub layer: usize,
+    /// The `spas` tag.
+    pub pass: TagId,
+    pub implementation: usize,
+    /// The `vrtx` tag.
+    pub vertex_shader: TagId,
+    pub textures: [LightStage; 4],
+    pub stage_states: Vec<StageStates>,
+    pub pixel_shader: [u8; PSDEF_SIZE],
+    /// Vertex constants `c[18 + i]`, the engine-driven ones computed from
+    /// the inputs the material was resolved with.
+    pub vertex_constants: Vec<Register>,
+    pub vertex_defaults: Vec<Register>,
+    pub state: PassState,
+}
+
+/// Why a light's pass stays on the D3D path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightRefusal {
+    /// The template draws nothing in the layer at the first level of
+    /// detail (the engine builds no entry either: draw nothing).
+    NoLayer,
+    /// More than one pass in the layer.
+    Passes(usize),
+    /// The chosen implementation is not in the pass.
+    NoImplementation(usize),
+    NoVertexShader,
+    /// Something in the pass is animated.
+    Animated,
+    /// It reads engine inputs nobody supplies here.
+    Reads(InputReads),
+    /// A stage samples another engine texture (13 and 8, the shadow maps,
+    /// among them).
+    EngineTexture(u8),
+    UnsetSlot(u8),
+    DefaultTexture,
+    Lightmap,
+    /// Its render states do not fit the native pass.
+    State(StateRefusal),
+    /// It reads engine-driven render or stage states.
+    EngineStates,
+}
+
+/// Implementation `implementation` of `material`'s pass in `layer` (12 or
+/// 13, first level of detail), `material` resolved with the light's
+/// [`engine_inputs`].
+pub fn light_look(material: &Material, layer: usize, implementation: usize) -> Result<LightLook, LightRefusal> {
+    let l = material
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == layer)
+        .filter(|l| !l.passes.is_empty())
+        .ok_or(LightRefusal::NoLayer)?;
+    let [pass] = l.passes.as_slice() else {
+        return Err(LightRefusal::Passes(l.passes.len()));
+    };
+    let imp = pass
+        .implementations
+        .iter()
+        .find(|i| i.index == implementation)
+        .ok_or(LightRefusal::NoImplementation(implementation))?;
+    let vertex_shader = imp.vertex_shader.ok_or(LightRefusal::NoVertexShader)?;
+    if !imp.animated.is_empty() {
+        return Err(LightRefusal::Animated);
+    }
+    let r = imp.input_reads;
+    let unsupplied = InputReads {
+        scalars: r.scalars & !(LIGHT_SCALARS | INSTANCE_SCALARS),
+        vectors: r.vectors & !LIGHT_VECTORS,
+        ints: r.ints & !(LIGHT_INTS | INSTANCE_INTS),
+    };
+    if unsupplied != InputReads::default() {
+        return Err(LightRefusal::Reads(unsupplied));
+    }
+    if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
+        return Err(LightRefusal::EngineStates);
+    }
+    let mut textures = [LightStage::Empty; 4];
+    for (stage, t) in textures.iter_mut().zip(&imp.textures) {
+        *stage = match t.map(|t| t.source) {
+            None | Some(TextureSource::None) => LightStage::Empty,
+            Some(TextureSource::Bitmap { bitmap, image, .. }) => LightStage::Bitmap { bitmap, image },
+            Some(TextureSource::Engine(1)) => LightStage::Normalization,
+            Some(TextureSource::Engine(9)) => LightStage::Attenuation,
+            Some(TextureSource::Engine(10)) => LightStage::Gel,
+            Some(TextureSource::Engine(id)) => return Err(LightRefusal::EngineTexture(id)),
+            Some(TextureSource::UnsetSlot(s)) => return Err(LightRefusal::UnsetSlot(s)),
+            Some(TextureSource::Default) => return Err(LightRefusal::DefaultTexture),
+            Some(TextureSource::Lightmap) => return Err(LightRefusal::Lightmap),
+        };
+    }
+    let state = pass_state(&imp.render_states).map_err(LightRefusal::State)?;
+    Ok(LightLook {
+        layer,
+        pass: pass.pass,
+        implementation,
+        vertex_shader,
+        textures,
+        stage_states: imp.stage_states.clone(),
+        pixel_shader: imp.pixel_shader,
+        vertex_constants: imp.vertex_constants.clone(),
+        vertex_defaults: imp.vertex_defaults.clone(),
+        state,
+    })
+}
+
+/// The light's frame block and the five words after it, as `0x0003a550`
+/// uploads them (`engine::light_constants::LightGlobals::frame_constants`):
+/// `c[31]`..`c[39]`, hardware numbering.
+pub const FRAME_REGISTER: usize = 31;
+pub const FRAME_DWORDS: usize = 36;
+
+/// A light pass translated ([`compile_light`]).
+#[derive(Clone, Debug)]
+pub struct LightProgram {
+    /// The linked module (`vs_main`, `fs_main`).
+    pub wgsl: String,
+    pub stages: [LightStage; 4],
+    pub samplers: [Option<StageStates>; 4],
+    /// The texture each stage's fetch expects (`None`: not sampled).
+    pub dims: [Option<TextureDim>; 4],
+    /// Per stage, the channels read as signed (only instance bitmaps,
+    /// stored biased).
+    pub signed: [[bool; 4]; 4],
+    /// The vertex uniforms but for the view's constants and the light's
+    /// frame ([`light_vertex`]).
+    pub vertex: VertexUniforms,
+    pub pixel: PixelUniforms,
+    pub state: PassState,
+}
+
+/// The texture a light stage binds: instance bitmaps and the gel as 2D
+/// (S: the lit passes' instance bitmaps are 2D), the normalization map as
+/// a cube, the attenuation map as a volume (`project3d` on 03a).
+pub fn stage_dim(stage: LightStage) -> Option<TextureDim> {
+    match stage {
+        LightStage::Empty => None,
+        LightStage::Bitmap { .. } | LightStage::Gel => Some(TextureDim::D2),
+        LightStage::Normalization => Some(TextureDim::Cube),
+        LightStage::Attenuation => Some(TextureDim::D3),
+    }
+}
+
+/// Translates `look` with its vertex program `microcode` (the world-space
+/// classification), or says why the light keeps its D3D passes.
+pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram, String> {
+    let t = translate_pass(&PassParts {
+        microcode,
+        pixel_shader: &look.pixel_shader,
+        dims: look.textures.map(stage_dim),
+        biased: look.textures.map(|s| matches!(s, LightStage::Bitmap { .. })),
+        stage_states: &look.stage_states,
+        vertex_constants: &look.vertex_constants,
+        vertex_defaults: &look.vertex_defaults,
+        alpha_test: look.state.alpha_test,
+    })?;
+    Ok(LightProgram {
+        wgsl: t.wgsl,
+        stages: look.textures,
+        samplers: t.samplers,
+        dims: t.dims,
+        signed: t.signed,
+        vertex: t.vertex,
+        pixel: t.pixel,
+        state: look.state,
+    })
+}
+
+/// `base` with one light's frame constants (their bits as floats).
+pub fn light_vertex(base: &VertexUniforms, frame: &[u32; FRAME_DWORDS]) -> VertexUniforms {
+    let mut u = base.clone();
+    for (reg, words) in u.constants[FRAME_REGISTER..FRAME_REGISTER + FRAME_DWORDS / 4]
+        .iter_mut()
+        .zip(frame.chunks_exact(4))
+    {
+        *reg = std::array::from_fn(|k| f32::from_bits(words[k]));
+    }
+    u
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tags::material::{Origin, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture};
+
+    fn texture(source: TextureSource) -> Option<StageTexture> {
+        Some(StageTexture { source, size: None, stage_size: None })
+    }
+
+    /// 03a's `lightaccum_frustum_no_specular_gel_tex` shape: base, the
+    /// normalization cube, bump, gel; additive, no depth write.
+    fn implementation(index: usize, stage_3: TextureSource) -> ResolvedImplementation {
+        use gfx::state::{BlendFactor, RenderStateType as R};
+        use tags::shader::RenderStateValue;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
+        let render_states = vec![
+            RenderStateValue { state: slot(R::AlphaBlendEnable), value: 1 },
+            RenderStateValue { state: slot(R::SrcBlend), value: BlendFactor::One.xbox_value() },
+            RenderStateValue { state: slot(R::DestBlend), value: BlendFactor::One.xbox_value() },
+            RenderStateValue { state: slot(R::ZWriteEnable), value: 0 },
+        ];
+        ResolvedImplementation {
+            index,
+            vertex_shader: Some(TagId(0xe000_0010 + index as u32)),
+            textures: [
+                texture(TextureSource::Bitmap { bitmap: TagId(0xe000_0001), image: 0, lod_offset: 0.0 }),
+                texture(TextureSource::Engine(1)),
+                texture(TextureSource::Bitmap { bitmap: TagId(0xe000_0002), image: 0, lod_offset: 0.0 }),
+                texture(stage_3),
+            ],
+            stage_states: Vec::new(),
+            render_states,
+            restore_states: Vec::new(),
+            pixel_shader: [7; PSDEF_SIZE],
+            variant: false,
+            c0_written: 0,
+            c1_written: 0,
+            pixel_constants_from_engine: true,
+            per_draw_inputs: true,
+            input_reads: InputReads { scalars: 0, vectors: 1 << 5, ints: 1 << 4 },
+            vertex_constants: vec![Register { index: 18, value: [1.0, 1.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
+            vertex_defaults: Vec::new(),
+            animated: Vec::new(),
+            engine_render_states: Vec::new(),
+            engine_stage_states: Vec::new(),
+        }
+    }
+
+    fn material(layer: usize, imps: Vec<ResolvedImplementation>) -> Material {
+        Material {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: imps }],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_light_fills_its_inputs_over_the_instance() {
+        let mut instance = EngineInputs::default();
+        instance.ints[4] = 1;
+        instance.scalars[21] = 0.3;
+        let l = LightInputs {
+            colour_a: [0.5, 0.25, 1.0],
+            colour_b: [0.0, 0.1, 0.2],
+            mode: 2,
+            definition_8a: -1,
+            definition_80: 3,
+            definition_flags: 2,
+            falloff_0: 0.75,
+        };
+        let e = engine_inputs(&instance, &l);
+        assert_eq!((e.ints[4], e.scalars[21]), (1, 0.3), "the instance's kept");
+        assert_eq!((e.vectors[5], e.vectors[6]), (l.colour_a, l.colour_b));
+        assert_eq!(&e.ints[..4], &[2, 2, -1, 3]);
+        assert_eq!(e.ints[7], 0, "definition bit 1 set");
+        assert_eq!(e.scalars[16], 0.75);
+        let e = engine_inputs(&instance, &LightInputs { falloff_0: 4.0, definition_flags: 0, ..l });
+        assert_eq!((e.scalars[16], e.ints[7]), (1.0, 1));
+        assert_eq!(engine_inputs(&instance, &LightInputs { falloff_0: f32::NAN, ..l }).scalars[16], 1.0);
+    }
+
+    #[test]
+    fn a_gel_implementation_is_drawn_with_the_engine_stages_named() {
+        let m = material(DIFFUSE_LAYER, vec![implementation(2, TextureSource::None), implementation(3, TextureSource::Engine(10))]);
+        let look = light_look(&m, DIFFUSE_LAYER, 3).expect("fits");
+        assert_eq!(look.implementation, 3);
+        assert_eq!(look.pass, TagId(0xe000_0200));
+        assert_eq!(look.textures[1], LightStage::Normalization);
+        assert_eq!(look.textures[3], LightStage::Gel);
+        assert!(look.state.blend.is_some() && !look.state.depth_write, "additive, no depth write");
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 2).unwrap().textures[3], LightStage::Empty);
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 4).unwrap_err(), LightRefusal::NoImplementation(4));
+        assert_eq!(light_look(&m, SPECULAR_LAYER, 0).unwrap_err(), LightRefusal::NoLayer);
+    }
+
+    #[test]
+    fn shadow_maps_and_unsupplied_inputs_keep_the_d3d_pass() {
+        let m = material(DIFFUSE_LAYER, vec![implementation(0, TextureSource::Engine(13))]);
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 0).unwrap_err(), LightRefusal::EngineTexture(13));
+        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
+        assert_eq!(light_look(&m, DIFFUSE_LAYER, 1).unwrap().textures[3], LightStage::Attenuation);
+
+        let mut imp = implementation(1, TextureSource::Engine(9));
+        imp.input_reads = InputReads { scalars: 1 << 16 | 1 << 23, vectors: 1 << 6 | 1 << 35, ints: 1 << 6 | 1 << 5 };
+        let e = light_look(&material(DIFFUSE_LAYER, vec![imp]), DIFFUSE_LAYER, 1).unwrap_err();
+        assert_eq!(e, LightRefusal::Reads(InputReads { scalars: 1 << 23, vectors: 1 << 35, ints: 1 << 6 }));
+    }
+
+    /// `dp4 oPos, v0, c[0..3]; mov oT0, v1; mov oT1, v5; mov oT3, v1`.
+    fn light_program() -> Vec<u8> {
+        use shaders::vsh::encode::{Inst, Operand as O, program};
+        use shaders::vsh::{MacOp, OutReg};
+        let row = |c, mask| Inst::mac(MacOp::Dp4, Some(O::v(0)), Some(O::c(c)), None).to_out(false, OutReg::Pos, mask);
+        program(&[
+            row(0, 8),
+            row(1, 4),
+            row(2, 2),
+            row(3, 1),
+            Inst::mac(MacOp::Mov, Some(O::v(1)), None, None).to_out(false, OutReg::T(0), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::v(5)), None, None).to_out(false, OutReg::T(1), 0xf),
+            Inst::mac(MacOp::Mov, Some(O::c(31)), None, None).to_out(false, OutReg::T(3), 0xf),
+        ])
+    }
+
+    #[test]
+    fn a_sphere_light_pass_binds_a_cube_and_a_volume() {
+        use shaders::psh::bits::{TEX_CUBEMAP, TEX_NONE, TEX_PROJECT2D, TEX_PROJECT3D, texture_modes};
+        let def = shaders::PixelShaderDef {
+            texture_modes: texture_modes([TEX_PROJECT2D, TEX_CUBEMAP, TEX_NONE, TEX_PROJECT3D]),
+            ..Default::default()
+        };
+        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
+        let look = LightLook { pixel_shader: def.to_bytes(), ..light_look(&m, DIFFUSE_LAYER, 1).unwrap() };
+        let p = compile_light(&look, &light_program()).expect("compiles");
+        shaders::validate(&p.wgsl).expect("valid WGSL");
+        assert_eq!(p.dims, [Some(TextureDim::D2), Some(TextureDim::Cube), None, Some(TextureDim::D3)]);
+        assert!(p.wgsl.contains("texture_cube<f32>") && p.wgsl.contains("texture_3d<f32>"));
+        assert_eq!(p.vertex.constants[18], [1.0, 1.0, 0.0, 0.0], "instance constants");
+        assert!(p.state.blend.is_some());
+
+        // The gel is 2D: the projective fetch follows the bound texture,
+        // as D3D's texture-mode adjust does.
+        let mut gel = look.clone();
+        gel.textures[3] = LightStage::Gel;
+        let p = compile_light(&gel, &light_program()).expect("compiles");
+        assert_eq!(p.dims[3], Some(TextureDim::D2));
+    }
+
+    #[test]
+    fn the_light_frame_fills_c31_to_c39() {
+        let mut frame = [0u32; FRAME_DWORDS];
+        for (i, w) in frame.iter_mut().enumerate() {
+            *w = (i as f32).to_bits();
+        }
+        let base = VertexUniforms::default();
+        let u = light_vertex(&base, &frame);
+        assert_eq!(u.constants[31], [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(u.constants[39], [32.0, 33.0, 34.0, 35.0]);
+        assert_eq!(u.constants[30], base.constants[30]);
+        assert_eq!(u.constants[40], base.constants[40]);
+    }
+}

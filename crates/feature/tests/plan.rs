@@ -434,7 +434,7 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         "0x00031170 RENDER_LIGHT_PASSES: observe_before [render-timing:light_passes] -> original -> observe_after [render-timing:light_passes]",
         "0x00223240 RENDER_FRAME: observe_before [render-timing:frame] -> original -> observe_after [render-timing:frame]",
         "0x002234e0 RENDER_GAME_VIEWS: observe_before [render-timing:game_views] -> original -> observe_after [render-timing:game_views]",
-        "0x00031c80 SCENE_CALL_00031c80: observe_before [render-timing:scene call] -> original",
+        "0x00031c80 RENDER_DYNAMIC_LIGHTS: observe_before [render-timing:scene call] -> original",
         "0x0001a170 RENDER_STATES: observe_before [render-timing:shader call] -> original",
         // A scene callee that is also a stage: the call site first.
         "0x00044550 LAYER_DRAW: observe_before [render-timing:scene call, render-timing:layer_draw] -> original -> observe_after [render-timing:layer_draw]",

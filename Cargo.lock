@@ -1889,6 +1889,8 @@ dependencies = [
  "lift",
  "paste",
  "runtime",
+ "simd",
+ "x87",
  "xbe",
 ]
 

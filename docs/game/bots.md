@@ -2023,6 +2023,63 @@ list for the user to play (§11).
      5. System Link (not on Live): the same, with no `on Xbox Live` line;
         the bots show in the lobby at once. Split Screen: the bots still
         join on the players screen (`screen players`).
+   **Built: fixes from the first `h2 bots test` run** (2026-11-18,
+   `20261118-232735`, Tester, count 5). What the run was: the drive never
+   reached the Xbox Live menu (`bots-drive: stuck: no Xbox Live menu
+   after 4 tries`; the game logged `mods: no list: not signed in to Live`
+   throughout), and the game that was played was **Split Screen**: the
+   players screen read `0x1e … mode 1`, whose A makes a local squad
+   session (`0x199df9(1, 0)` → `0x591e0` → `0x59890(0, 0, 0)`) and sets
+   lobby mode 2 (`0x199a03(2)`, the custom game mode every kind of
+   custom game uses). `live: playing as Tester` is only the Live HLE's
+   account, not a game sign-in.
+   - **No bot signed in, and the lobby was never the lobby: "in a game"
+     was true in the menus.** The glue took "a game runs" from a game
+     tick alone, and the main menu is a game too: `mainmenu.map` goes
+     through `GAME_ACTIVATE` and its game-time record ticks (the run's
+     status read `mode main_menu` with a tick on every menu screen;
+     options mode 3). So `to_sign_in` returned nothing on the players
+     screen though every gate said `signs in`, and `screen` never named
+     the lobby (it is the lobby only out of a game). Now
+     `guest::in_game` is a tick in a game whose options mode
+     (`[0x4e6948] + 8`) is not 3; every "no game runs" in `bot_glue`
+     uses it (sign-in, Xbox Live, leaving).
+   - **The tries were made only on frames that are multiples of 30**
+     (`frame % 30 == 0` in `SOUND_UPDATE`, with `frame` counted in
+     `RENDER_FRAME`). The two hooks do not run once each per frame, so a
+     run could miss every multiple. `bot_glue::Every` makes the first
+     call due and then the first one 30 or more frames after the last.
+   - **Logging.** With a gate open and no one signed in, once per reason:
+     `bots: the join gate is open, but no one signs in: a game runs` (or
+     `no human profile to copy …`). The lobby's facts, once per change:
+     `bots: lobby facts: lobby true, networking true, session type N,
+     session state N: a pregame lobby`. No roster asked:
+     `clankers: no roster yet: this console hosts no Xbox Live session
+     (host-made bots until it does)`.
+   - **No roster: as designed.** The roster is asked for the session the
+     Live HLE hosts (`Hle::hosted_session`), made only when the game
+     itself hosts on Xbox Live; this game never signed in. A Live session
+     hosted later asks (`Driver::refresh`, every 30 frames).
+   - **Phantoms: not in Split Screen.** A local squad session (session
+     `+0x18` 0) gets protocol 0 (`0x64060`), so the game's simulation
+     mode is 1 (`0x6ec80`, live-coop.md §1.1) and there are no peers to
+     be. A hosted System Link or Live custom game is distributed whatever
+     its peer count (protocol 2 for every shipped engine, `0x161c90`), so
+     the host is mode 5 there with one console. Phantoms now say so in
+     Split Screen (`waits: … (a local game (simulation mode 1, Split
+     Screen): phantoms join System Link and Xbox Live games only)`).
+     Making Split Screen distributed is not done: it would change every
+     Split Screen game's simulation for the sake of phantoms.
+   - Tests: `-p bots --lib guest` (`in_game`: the main menu ticks but is
+     not a game; multiplayer and campaign are; a tick with no options is;
+     no tick is not), `-p bots --lib lobby` (the facts line), `-p bots
+     --lib phantom` (the Split Screen reason), `-p boot --lib bot_glue`
+     (`Every`, the skip reasons), `-p boot --lib clankers` (the no-roster
+     line).
+   - **Next run:** the harness has to reach the Xbox Live menu and host a
+     Custom Game there (its drive stuck at the main menu's Xbox Live row);
+     on a Split Screen run expect the three local bots to sign in on the
+     players screen and no phantom to join.
 8. **Clankermatch.**
    - The Live menu row, the playlist filter, the fake search and the lobby
      fill.

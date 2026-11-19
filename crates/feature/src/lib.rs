@@ -20,6 +20,7 @@ pub mod entry;
 pub mod install;
 pub mod leaves;
 pub mod locale;
+pub mod native_lights;
 pub mod native_objects;
 pub mod native_transparents;
 pub mod native_world;

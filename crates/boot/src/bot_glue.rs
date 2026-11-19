@@ -224,6 +224,51 @@ pub fn gate_line(
 /// human profile yet, is not made every frame).
 pub const SIGN_IN_EVERY: u64 = 30;
 
+/// A try made at most every [`SIGN_IN_EVERY`] render frames, from a hook
+/// that may not run on every render frame. `frame % 30 == 0` was the test
+/// before: `SOUND_UPDATE` does not run once per `RENDER_FRAME`, so on a
+/// run whose sound updates never fell on a multiple of 30 nothing was ever
+/// tried. Now the first call is due, then the first one 30 frames or more
+/// after the last that was.
+#[derive(Debug)]
+pub struct Every(AtomicU64);
+
+impl Default for Every {
+    fn default() -> Self {
+        Every(AtomicU64::new(u64::MAX))
+    }
+}
+
+impl Every {
+    /// Whether a try is due at render frame `frame`; a due one counts as
+    /// made.
+    pub fn due(&self, frame: u64) -> bool {
+        let last = self.0.load(Ordering::Relaxed);
+        if last == u64::MAX || frame < last || frame - last >= SIGN_IN_EVERY {
+            self.0.store(frame, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Why the glue signs no one in although a joining bot's gate is open
+/// (`open`), or `None`: a game runs (`in_game`, [`bots::guest::in_game`]),
+/// or no port without a bot has a profile to copy (`human`). Logged once
+/// per change.
+pub fn sign_in_skip(open: bool, human: bool, in_game: bool) -> Option<&'static str> {
+    if !open {
+        None
+    } else if in_game {
+        Some("a game runs")
+    } else if !human {
+        Some("no human profile to copy (no port without a bot has a profile)")
+    } else {
+        None
+    }
+}
+
 /// The ports whose bot the glue signs in now: each joining bot's port
 /// (`joining`, a mask) whose [`join_gate`] is open, while no game runs
 /// (`in_game`) and a human has a profile to copy (`human`).
@@ -367,6 +412,13 @@ pub struct Bots {
     offline_ids: Arc<Mutex<[Option<[u8; guest::ID_LEN]>; 4]>>,
     /// A Start press in the lobby waits for its start-state line.
     pressed: Arc<AtomicBool>,
+    /// The last lobby facts line said.
+    lobby_said: Arc<Mutex<String>>,
+    /// When the Xbox Live and the sign-in tries were last made.
+    live_every: Arc<Every>,
+    sign_in_every: Arc<Every>,
+    /// The last "signs no one in" reason said ([`sign_in_skip`]).
+    skipped: Arc<Mutex<Option<&'static str>>>,
 }
 
 impl Bots {
@@ -388,6 +440,10 @@ impl Bots {
             live: Arc::default(),
             offline_ids: Arc::default(),
             pressed: Arc::default(),
+            lobby_said: Arc::default(),
+            live_every: Arc::default(),
+            sign_in_every: Arc::default(),
+            skipped: Arc::default(),
         }
     }
 }
@@ -474,6 +530,7 @@ impl feature::Feature for Bots {
             self.dir.clone(),
             Arc::clone(&self.gates),
         );
+        let lobby_said = Arc::clone(&self.lobby_said);
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -506,11 +563,21 @@ impl feature::Feature for Bots {
                 let dialog = crate::ui_watch::dialog(&*mem);
                 let joining = local.joining_mask();
                 let g: &runtime::Guest = &mem;
+                let facts = bots::lobby::facts(g).ok();
                 let on = screen(
                     top,
-                    bots::lobby::in_pregame(g),
-                    guest::game_tick(g).is_some(),
+                    facts.as_ref().is_some_and(bots::lobby::pregame),
+                    guest::in_game(g),
                 );
+                // What the lobby read gave, once per change.
+                if let Some(f) = &facts {
+                    let line = bots::lobby::pregame_line(f);
+                    let mut said = lock(&lobby_said);
+                    if *said != line {
+                        eprintln!("{line}");
+                        *said = line;
+                    }
+                }
                 let mut open = [false; 4];
                 {
                     let mut said = lock(&gates);
@@ -580,6 +647,11 @@ impl feature::Feature for Bots {
             Arc::clone(&self.pressed),
             Arc::clone(&self.offline_ids),
         );
+        let (live_every, sign_in_every, skipped) = (
+            Arc::clone(&self.live_every),
+            Arc::clone(&self.sign_in_every),
+            Arc::clone(&self.skipped),
+        );
         b.raw().before(
             &points::SOUND_UPDATE,
             "sign bots in and leaving bots out; hide bot listeners",
@@ -606,11 +678,11 @@ impl feature::Feature for Bots {
                 // Bots with a profile go on Xbox Live as their bot accounts
                 // (or, with none yet, as the human's guests).
                 let joined = local.joining_mask();
-                if joined != 0 && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0 {
+                if joined != 0 && live_every.due(frame.load(Ordering::Relaxed)) {
                     let mut mem = rt.memory();
                     let bots = local.port_mask();
                     let host_live = guest::live_host(&*mem, bots).ok().flatten().is_some();
-                    let in_game = guest::game_tick(&*mem).is_some();
+                    let in_game = guest::in_game(&*mem);
                     let account = |p: u8| local.account_on(u32::from(p));
                     let mut ports = to_go_live(
                         joined,
@@ -687,28 +759,33 @@ impl feature::Feature for Bots {
                 let joining = local.joining_mask();
                 if joining != 0
                     && !busy.load(Ordering::Relaxed)
-                    && frame.load(Ordering::Relaxed) % SIGN_IN_EVERY == 0
+                    && sign_in_every.due(frame.load(Ordering::Relaxed))
                 {
                     let bots = local.port_mask();
-                    let (ports, screen) = {
+                    let (ports, screen, skip) = {
                         let mem = rt.memory();
-                        let in_game = guest::game_tick(&*mem).is_some();
+                        let in_game = guest::in_game(&*mem);
                         let on = screen(
                             crate::ui_watch::read(&*mem).top,
                             bots::lobby::in_pregame(&*mem),
                             in_game,
                         );
+                        let dialog = crate::ui_watch::dialog(&*mem);
+                        let signed = |p: u8| guest::signed_in(&*mem, u32::from(p)).ok();
                         let human = guest::human_port(&*mem, bots).ok().flatten().is_some();
-                        let ports = to_sign_in(
-                            on,
-                            crate::ui_watch::dialog(&*mem),
-                            joining,
-                            |p| guest::signed_in(&*mem, u32::from(p)).ok(),
-                            human,
-                            in_game,
-                        );
-                        (ports, on)
+                        let open = (0..4u8)
+                            .any(|p| joining & 1 << p != 0 && join_gate(on, dialog, signed(p)));
+                        let ports = to_sign_in(on, dialog, joining, signed, human, in_game);
+                        (ports, on, sign_in_skip(open, human, in_game))
                     };
+                    let mut said = lock(&skipped);
+                    if *said != skip {
+                        if let Some(why) = skip {
+                            eprintln!("bots: the join gate is open, but no one signs in: {why}");
+                        }
+                        *said = skip;
+                    }
+                    drop(said);
                     if !ports.is_empty() {
                         let joins: Vec<(u32, String)> = ports
                             .iter()
@@ -737,7 +814,7 @@ impl feature::Feature for Bots {
                     if !leaving.is_empty() {
                         let step = {
                             let mem = rt.memory();
-                            let in_game = guest::game_tick(&*mem).is_some();
+                            let in_game = guest::in_game(&*mem);
                             local::leave_step(in_game, &leaving, |p| {
                                 guest::signed_in(&*mem, u32::from(p)).unwrap_or(false)
                             })
@@ -1019,6 +1096,40 @@ mod tests {
         assert!(
             to_sign_in(lobby, None, 0b1110, empty, false, false).is_empty(),
             "no human profile to copy"
+        );
+    }
+
+    #[test]
+    fn a_try_is_due_at_once_then_every_30_frames_whatever_frames_the_hook_sees() {
+        // The h2 bots test run: SOUND_UPDATE never fell on a multiple of
+        // 30, so `frame % 30 == 0` never tried.
+        let e = Every::default();
+        assert!(e.due(7), "the first call");
+        assert!(!e.due(8));
+        assert!(!e.due(36));
+        assert!(e.due(37), "30 frames on");
+        assert!(!e.due(65));
+        assert!(e.due(101), "a hook that skipped frames");
+        assert!(e.due(3), "the counter went back: due");
+        let odd = Every::default();
+        let tried = (0..200u64)
+            .map(|f| 2 * f + 1)
+            .filter(|&f| odd.due(f))
+            .count();
+        assert!(
+            tried >= 13,
+            "odd frames only: still about every 30 ({tried})"
+        );
+    }
+
+    #[test]
+    fn a_gate_open_with_no_sign_in_says_why() {
+        assert_eq!(sign_in_skip(false, false, true), None, "no gate open");
+        assert_eq!(sign_in_skip(true, true, false), None, "it signs in");
+        assert_eq!(sign_in_skip(true, true, true), Some("a game runs"));
+        assert_eq!(
+            sign_in_skip(true, false, false),
+            Some("no human profile to copy (no port without a bot has a profile)")
         );
     }
 
