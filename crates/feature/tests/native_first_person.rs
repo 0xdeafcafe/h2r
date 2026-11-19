@@ -116,9 +116,9 @@ fn lighting(handle: u32) -> u32 {
     CACHE_DATA + CACHE_RECORD_SIZE * ((handle & 0xffff) + 5) + CACHE_LIGHTING
 }
 
-fn native_part(definition: u32, shader: u16) -> ((u16, u16, u8), SetPart) {
+fn native_part(definition: u32, part: u8, shader: u16) -> ((u16, u16, u8), SetPart) {
     (
-        (definition as u16, 0, 0),
+        (definition as u16, 0, part),
         SetPart {
             shader,
             implementations: 1,
@@ -165,7 +165,11 @@ fn guest() -> (FlatMemory, u32, u32) {
         });
         m.set_u32(at + RECORD_MODEL, model).unwrap();
         m.set_u32(at + RECORD_LIGHTING, light).unwrap();
-        m.set_u32(at + RECORD_KEY, 0x2000_0000).unwrap();
+        m.set_u32(
+            at + RECORD_KEY,
+            0x2000_0000 | if record == 2 { 1 } else { 0 },
+        )
+        .unwrap();
         m.set_u32(at + RECORD_IMPLEMENTATION, 0).unwrap();
         m.set_u32(at + RECORD_MATRIX, MATRIX).unwrap();
     }
@@ -197,7 +201,7 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         set.definitions.insert(DEF_A as u16, 2);
         set.definitions.insert(DEF_B as u16, 1);
         set.parts
-            .extend([native_part(DEF_A, 0x10), native_part(DEF_B, 0x10)]);
+            .extend([native_part(DEF_A, 0, 0x10), native_part(DEF_B, 0, 0x10)]);
         set.shadowed.insert(DEF_B as u16);
     }
     native_first_person::set_host(stub.clone());
@@ -267,7 +271,7 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         .lock()
         .unwrap()
         .parts
-        .insert(native_part(DEF_A, 0x11).0, native_part(DEF_A, 0x11).1);
+        .insert(native_part(DEF_A, 1, 0x11).0, native_part(DEF_A, 1, 0x11).1);
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(
         masks(&m),
@@ -284,13 +288,25 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
     assert_eq!(refused, 1);
 
     native_first_person::restore_pending(&mut m);
-    m.set_u32(ITEMS + 3 * 0x18, 0x0004_b5d0).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 3 + RECORD_LIGHTING, 0)
+        .unwrap();
     let offers = stub.offered.lock().unwrap().len();
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(
         masks(&m),
         vec![0b0100, 0b1010, 0b1010, 0b1010],
         "an item whose owner cannot be established leaves the whole call on D3D"
+    );
+    assert_eq!(stub.offered.lock().unwrap().len(), offers);
+
+    m.set_u32(RENDER_RECORDS + 0x20 * 3 + RECORD_LIGHTING, lighting(b))
+        .unwrap();
+    m.set_u32(ITEMS + 3 * 0x18, 0x0004_b5d0).unwrap();
+    native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
+    assert_eq!(
+        masks(&m),
+        vec![0b0100, 0b1010, 0b1010, 0b1010],
+        "a non-geometry item also refuses the call"
     );
     assert_eq!(stub.offered.lock().unwrap().len(), offers);
 
@@ -303,7 +319,7 @@ fn first_person_plans_items_and_restores_exactly_the_unplanned_ones() {
         .lock()
         .unwrap()
         .parts
-        .insert(native_part(DEF_B, 0x11).0, native_part(DEF_B, 0x11).1);
+        .insert(native_part(DEF_B, 1, 0x11).0, native_part(DEF_B, 1, 0x11).1);
     native_first_person::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(masks(&m), vec![0b0010, 0b0010, 0b0010, 0b1010]);
     let offered = stub.offered.lock().unwrap();

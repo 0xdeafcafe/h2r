@@ -3,7 +3,7 @@
 //! guest draw is surrendered. The two model calls remain separate external
 //! passes in guest order; their light and transparent neighbours stay on D3D.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
@@ -284,6 +284,7 @@ fn plan_view(
                 out.draws.push((model, draw));
             }
             Err(why) => {
+                count_refusal(&why);
                 if item.shadow && compared.is_some() {
                     eprintln!(
                         "native-first-person compare: mode {model:#010x} record {}: {why}",
@@ -294,6 +295,20 @@ fn plan_view(
         }
     }
     out
+}
+
+static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static REASONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+fn count_refusal(why: &str) {
+    REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut reasons = REASONS.lock().unwrap_or_else(|e| e.into_inner());
+    let reasons = reasons.get_or_insert_with(HashSet::new);
+    if reasons.len() < 64 && reasons.insert(why.to_owned()) {
+        eprintln!(
+            "native-first-person: an item keeps its D3D draw: {why} (each reason logged once)"
+        );
+    }
 }
 
 /// One first-person call's preplanned draws.
