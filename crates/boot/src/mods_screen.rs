@@ -112,25 +112,8 @@ const _: () = assert!(PACK_DESCRIPTIONS + MAX_PACK_ROWS as u32 <= TEXTS.len);
 /// Rows the list (and a pack's list) shows at most.
 pub const MAX_ROWS: usize = LIMIT as usize;
 const MAX_PACK_ROWS: usize = MAX_ROWS + 1;
-/// A line of a pack's summary holds this many characters (the level
-/// select's description text is 221 units wide, about 32 of conduit-12),
-/// and the pack's own words twice that less a margin for the wrap, so the
-/// summary is five lines at most.
-pub const SUMMARY_CHARS: usize = 32;
-pub const PACK_ABOUT_CHARS: usize = 50;
 /// Rows a map's page has: its action.
 pub const MAX_PAGE_ROWS: usize = 1;
-/// A row's line is cut to this many characters with "..." (the level
-/// select skin's one text, 190 units of conduit-12).
-pub const LINE_CHARS: usize = 28;
-/// A mod's description on its page is cut to this many characters (the
-/// body holds four lines of about 40).
-pub const ABOUT_CHARS: usize = 140;
-/// The page's status line (what A does now) holds this many characters.
-pub const STATUS_CHARS: usize = 40;
-/// A fact row's label and value together (the table column is 154 units,
-/// about 20 characters of conduit-12), less a space between them.
-pub const FACT_CHARS: usize = 20;
 
 /// Where the list and installs come from: the HLE and the map gate in a
 /// boot, a fake in tests.
@@ -268,7 +251,7 @@ pub fn gametype_title(id: &str) -> &'static str {
 /// [`page_layout::FACT_ROWS`]: the base map, who made it (and who shared
 /// it, when that is someone else), size, downloads, date and version (when
 /// the server has them), game types, which disc the base is on, and that
-/// players who join get it. Each row fits [`FACT_CHARS`].
+/// players who join get it. Each value fits its own table cell.
 pub fn facts(e: &ModEntry) -> Vec<(&'static str, String)> {
     let mut v = vec![("Map", mods::base_title(&e.base)), ("By", made_by(e))];
     if uploader_apart(e) {
@@ -284,19 +267,19 @@ pub fn facts(e: &ModEntry) -> Vec<(&'static str, String)> {
     if let Some(version) = &e.version {
         v.push(("Version", version.clone()));
     }
-    v.push(("For", gametypes_text(&e.gametypes)));
+    v.push(("Modes", gametypes_text(&e.gametypes)));
     let disc = if content::map_pack::is_map(&e.base) {
         "Map Pack"
     } else {
         "Your disc"
     };
     v.push(("From", disc.to_string()));
-    v.push(("Joins", "Get it too".to_string()));
+    v.push(("Joiners", "Auto-install".to_string()));
     v.truncate(page_layout::FACT_ROWS);
     v.into_iter()
         .map(|(label, value)| {
-            let room = FACT_CHARS.saturating_sub(label.chars().count() + 1);
-            (label, cut(&value, room))
+            let room = i32::from(page_layout::TABLE_RIGHT - page_layout::VALUE_LEFT);
+            (label, text_fit::line(&value, room))
         })
         .collect()
 }
@@ -330,7 +313,7 @@ pub fn panel_texts(e: &ModEntry) -> Vec<String> {
         t[page_layout::fact_label(k)] = label.to_string();
         t[page_layout::fact_value(k)] = value;
     }
-    t[page_layout::CHECK_HEADING] = "What It Changes".into();
+    t[page_layout::CHECK_HEADING] = "Changes".into();
     for (i, line) in checklist(e)
         .into_iter()
         .take(2 * page_layout::CHECK_ROWS)
@@ -803,10 +786,12 @@ impl Repo {
         Some(match top {
             Top::Map(e) => Self::map_description(&g, &e),
             Top::Pack(_, maps) => {
-                let action = if maps.iter().all(|e| Self::is_here(&g, &e.id)) {
-                    "All installed: A opens it".into()
-                } else {
-                    "A opens it, X downloads all".into()
+                let action = match Self::pack_status(&g, &maps).as_str() {
+                    "Installed" => "Change Map > Mods".into(),
+                    "Failed" => "Download failed".into(),
+                    "New" => "New maps".into(),
+                    s if s.starts_with("Downloading") => s.into(),
+                    _ => "Open pack to browse".into(),
                 };
                 Self::pack_summary(&g, &maps, action)
             }
@@ -827,7 +812,7 @@ impl Repo {
             None => mods::size_text(e.size),
         });
         lines.push(if e.features.is_empty() {
-            "What it changes isn't listed".into()
+            "Changes not listed".into()
         } else {
             let names: Vec<String> = e
                 .features
@@ -845,7 +830,7 @@ impl Repo {
                 _ => "Available to download".into(),
             },
         });
-        lines.join("\n")
+        lines.iter().map(|l| text_fit::line(l, text_fit::SUMMARY)).collect::<Vec<_>>().join("\n")
     }
 
     /// A pack's summary: how many maps and by whom, what it is (the
@@ -859,10 +844,7 @@ impl Repo {
             }
         }
         let about = match maps.iter().find_map(|e| e.pack_description.as_deref()) {
-            Some(d) => cut(
-                &d.split_whitespace().collect::<Vec<_>>().join(" "),
-                PACK_ABOUT_CHARS,
-            ),
+            Some(d) => text_fit::paragraph(d, text_fit::SUMMARY, 2),
             None => {
                 let mut bases: Vec<String> = Vec::new();
                 for b in maps.iter().map(|e| mods::base_title(&e.base)) {
@@ -870,19 +852,19 @@ impl Repo {
                         bases.push(b);
                     }
                 }
-                cut(&format!("On {}", bases.join(", ")), SUMMARY_CHARS)
+                text_fit::line(&format!("On {}", bases.join(", ")), text_fit::SUMMARY)
             }
         };
         let here = maps.iter().filter(|e| Self::is_here(g, &e.id)).count();
         let size = maps.iter().fold(0u64, |sum, e| sum.saturating_add(e.size));
         [
-            cut(
+            text_fit::line(
                 &format!("{} maps, by {}", maps.len(), makers.join(", ")),
-                SUMMARY_CHARS,
+                text_fit::SUMMARY,
             ),
             about,
-            format!("{} in all, {here} installed", mods::size_text(size)),
-            action,
+            text_fit::line(&format!("{here}/{} installed, {}", maps.len(), mods::size_text(size)), text_fit::SUMMARY),
+            text_fit::line(&action, text_fit::SUMMARY),
         ]
         .join("\n")
     }
@@ -924,7 +906,7 @@ impl Repo {
             g.selected = Some(e.id);
             g.removing = None;
         }
-        self.texts.set(DETAIL_TITLE, &cut(&e.name, 40));
+        self.texts.set(DETAIL_TITLE, &text_fit::line(&e.name, text_fit::TITLE));
         self.footer(DETAIL, Some(0));
         self.set_panel();
         self.touch();
@@ -934,7 +916,7 @@ impl Repo {
     /// Opens pack `name`'s list.
     fn open_pack(&self, name: &str) -> Chosen {
         self.lock().pack = Some(name.to_string());
-        self.texts.set(PACK_TITLE, &cut(name, 40));
+        self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
         self.touch();
         Chosen::Open(PACK)
     }
@@ -1042,9 +1024,9 @@ impl Repo {
             let g = self.lock();
             let left = maps.iter().filter(|e| !Self::is_here(&g, &e.id)).count();
             let action = match Self::pack_status(&g, &maps).as_str() {
-                "Installed" => "Every map is installed".into(),
-                s if s.starts_with("Downloading") => format!("{s}. You can leave."),
-                _ => format!("A or X downloads all {left}"),
+                "Installed" => "Change Map > Mods".into(),
+                s if s.starts_with("Downloading") => s.to_string(),
+                _ => format!("{left} to download"),
             };
             return Some(Self::pack_summary(&g, &maps, action));
         }
@@ -1102,12 +1084,12 @@ impl Repo {
     pub fn detail_line(&self, row: i16) -> Option<String> {
         let e = self.selected().filter(|_| row == 0)?;
         let g = self.lock();
-        Some(cut(&self.action_text(&g, &e), LINE_CHARS))
+        Some(text_fit::line(&self.action_text(&g, &e), text_fit::ROW))
     }
 
     /// The page's status line, the row's description: what A or X does
     /// now, or how the download is going, in one line
-    /// ([`STATUS_CHARS`]).
+    /// on the lobby panel.
     pub fn detail_description(&self, row: i16) -> Option<String> {
         let e = self.selected().filter(|_| row == 0)?;
         let g = self.lock();
@@ -1123,7 +1105,7 @@ impl Repo {
             _ if Self::is_here(&g, &e.id) => "Installed. Change Map > Mods.".into(),
             _ => format!("A or X downloads it: {}.", mods::size_text(e.size)),
         };
-        Some(cut(&line, STATUS_CHARS))
+        Some(text_fit::line(&line, i32::from(page_layout::STATUS.rect[3] - page_layout::STATUS.rect[1])))
     }
 
     /// The page's panel texts into their slots, for the selected map: the
@@ -1380,10 +1362,10 @@ impl Repo {
             g.pictures = None;
         }
         if let Some(entry) = self.selected() {
-            self.texts.set(DETAIL_TITLE, &cut(&entry.name, 40));
+            self.texts.set(DETAIL_TITLE, &text_fit::line(&entry.name, text_fit::TITLE));
         }
         if let Some(name) = &pack {
-            self.texts.set(PACK_TITLE, &cut(name, 40));
+            self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
         }
         self.set_panel();
         self.texts.rewrite_all();
@@ -1403,19 +1385,17 @@ pub fn gametypes_text(ids: &[String]) -> String {
         .join(", ")
 }
 
-/// The mod's own words on its page: its description, on one paragraph
-/// and cut to the body's four lines ([`ABOUT_CHARS`]).
+/// The description fits above the action hint, including for an unbroken word.
 pub fn about(e: &ModEntry) -> String {
-    let words: Vec<&str> = e
-        .description
-        .as_deref()
-        .unwrap_or("")
-        .split_whitespace()
-        .collect();
-    if words.is_empty() {
-        return format!("No description. Built on {}.", mods::base_title(&e.base));
-    }
-    cut(&words.join(" "), ABOUT_CHARS)
+    let fallback;
+    let words = match e.description.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(d) => d,
+        None => {
+            fallback = format!("No description. Built on {}.", mods::base_title(&e.base));
+            &fallback
+        }
+    };
+    text_fit::paragraph(words, i32::from(page_layout::BODY.rect[3] - page_layout::BODY.rect[1]), 3)
 }
 
 /// A list row's state as the mark after its name (`font::mod_marks`, drawn
@@ -1439,13 +1419,13 @@ pub fn mark(status: &str) -> Option<String> {
 }
 
 /// A row's line: `name`, then its state's [`mark`] two spaces after it,
-/// the name cut so both fit in [`LINE_CHARS`].
+/// reserving space for the mark before fitting the published name.
 pub fn marked_line(name: &str, status: &str) -> String {
     match mark(status) {
-        None => cut(name, LINE_CHARS),
+        None => text_fit::line(name, text_fit::ROW),
         Some(m) => {
-            let room = LINE_CHARS.saturating_sub(m.chars().count() + 2);
-            format!("{}  {m}", cut(name, room))
+            let room = text_fit::ROW - text_fit::width(&m) - text_fit::width("  ");
+            format!("{}  {m}", text_fit::line(name, room))
         }
     }
 }
@@ -1496,16 +1476,6 @@ fn percent(done: u64, total: u64) -> String {
         (u128::from(done) * 100 / u128::from(total)).min(100)
     };
     format!("Downloading {p}%")
-}
-
-/// `s` cut to `max` characters, with "..." when cut.
-pub fn cut(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(3)).collect();
-    out.push_str("...");
-    out
 }
 
 impl Repo {
@@ -2017,6 +1987,7 @@ pub fn install(
 
 pub mod page_layout;
 pub mod spec;
+mod text_fit;
 
 #[cfg(test)]
 mod tests;
