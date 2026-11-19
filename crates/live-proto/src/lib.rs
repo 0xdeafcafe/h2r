@@ -13,6 +13,7 @@ pub mod bots;
 pub mod chunk;
 pub mod game;
 pub mod hopper;
+pub mod hosts; // dh-lease
 pub mod jcs;
 pub mod mailbox;
 pub mod map_details;

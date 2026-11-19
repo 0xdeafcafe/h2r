@@ -1041,6 +1041,40 @@ map's (from the operator's retail list) nor pinned on the session's
 server never saw is fine in a custom game: retail maps and local edits have
 ids too.
 
+## Dedicated hosts
+
+A `HostLease` reserves a process for one match. Its `id` is `hl-` plus
+16 random bytes in unpadded base64url. The `assignment_id` is the
+matchmaking assignment ID, `sim-<id>` or `custom-<id>`. The lease records
+the `provider` (`local`, `cloudflare` or `fly`), `region`, `class` (`small`
+for 1 vCPU and 2 GiB, `large` for 2 vCPUs and 4 GiB), `map`, `map_id`,
+`variant`, `hopper`, `max_players` (1–16), `roster` (XUIDs), `bots`
+(seat names), `transport` (`udp` or `tunnel`) and `created_ms` (Unix
+milliseconds). `idle_timeout_s` defaults to 120 and `max_match_s` to 1800.
+
+A `HostEndpoint` contains `transport`, `udp` (address and base port),
+`tunnel_url`, `xnaddr` (hex of the advertised XNADDR) and `session_id`.
+UDP uses base through base+6. Host states are `requested`, `booting`,
+`joinable`, `playing`, `ended` and `failed`.
+
+The server signs these lifecycle events on stream `hosts`.
+
+| type | data |
+|---|---|
+| `HostRequested` | `{lease}` (the full `HostLease`) |
+| `HostBooting` | `{lease_id, provider_ref}` (the provider's container, machine or process ID) |
+| `HostReady` | `{lease_id, endpoint, boot_ms}` (a `HostEndpoint` and milliseconds to readiness) |
+| `HostPlaying` | `{lease_id, players}` (player count) |
+| `HostEnded` | `{lease_id, reason, ran_ms, players_peak}` |
+
+End reasons are `match_over`, `empty`, `idle`, `max_duration`, `stopped`,
+`boot_timeout`, `crashed` and `budget`. `ran_ms` is elapsed milliseconds.
+
+The matchmaking assignment includes `host_lease` when an ad hoc dedicated
+host serves it. A queue reply with `state: "join"` includes `session_id`
+and `frames_from_host`. When true, the dedicated host supplies telemetry
+frames for the match. Older replies that omit the flag read as false.
+
 ## Custom maps
 
 Custom and modded maps are shared as content: the layers (file patches,
