@@ -114,7 +114,8 @@ impl HostProvider for CloudflareProvider {
             ));
         }
         let start = Start {
-            env: HostEnv::new(lease, boot),
+            env: HostEnv::new(lease, boot)
+                .map_err(|e| HostError::new(format!("could not encode host lease: {e}")))?,
             class: lease.class.clone(),
             deadline_ms: lease
                 .created_ms

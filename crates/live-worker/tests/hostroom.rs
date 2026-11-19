@@ -24,7 +24,7 @@ fn tunnel_matches_one_lease_segment_and_no_control_routes() {
 }
 
 #[test]
-fn boot_env_preserves_the_signed_url_and_passes_only_host_credentials() {
+fn boot_env_preserves_the_complete_lease_and_signed_url() {
     let boot = HostBoot {
         live_url: "https://live.example".into(),
         token: "lease-scoped-token".into(),
@@ -34,18 +34,22 @@ fn boot_env_preserves_the_signed_url_and_passes_only_host_credentials() {
     // Include the round trip through the provider's internal start request.
     let mut lease = cloud_lease();
     assert!(
-        serde_json::to_value(HostEnv::new(&lease, &boot))
+        serde_json::to_value(HostEnv::new(&lease, &boot).unwrap())
             .unwrap()
             .get("H2_REGION")
             .is_none()
     );
     lease.region = Some("enam".into());
+    lease.variant = Some(r#"Team "Slayer""#.into());
+    lease.bots = vec!["Clanker".into()];
     let env: HostEnv =
-        serde_json::from_value(serde_json::to_value(HostEnv::new(&lease, &boot)).unwrap()).unwrap();
+        serde_json::from_value(serde_json::to_value(HostEnv::new(&lease, &boot).unwrap()).unwrap())
+            .unwrap();
     assert_eq!(
         serde_json::to_value(env).unwrap(),
         json!({
             "H2_LEASE": lease.id,
+            "H2_HOST_LEASE_JSON": serde_json::to_string(&lease).unwrap(),
             "H2_LIVE": boot.live_url,
             "H2_TOKEN": boot.token,
             "H2_DATA_URL": boot.data_url,

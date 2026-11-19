@@ -413,7 +413,8 @@ When Live grants a Cloudflare lease, the hub calls the room named by the
 lease ID. Its private `start` request launches the image entrypoint, which
 configures the module and cache and executes `/opt/h2/h2 host run`. The
 host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
-and SHA-256. It fetches the private bundle and registers with Live over
+and SHA-256. `H2_HOST_LEASE_JSON` carries the complete lease so the
+supervisor can check its ID and configure the map and lobby before registration. It fetches the private bundle and registers with Live over
 outbound HTTPS. The room keeps the boot credentials out of Durable Object
 storage. Registration opens the match for joins.
 [Lease and boot contracts](dedicated-host-build.md)
@@ -430,6 +431,8 @@ meet the default scheduling policy's 3 GiB per vCPU minimum.
 | Worker setting | Purpose |
 |---|---|
 | `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
+| `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
+| `LIVE_HOST_BUDGET_USD_MONTH` | Monthly host budget in USD. Live checks the month-to-date cost before granting a lease. |
 | `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
 | `LIVE_HOST_DATA_URL` | Set as an environment-specific Worker secret containing a signed download URL for the owner's private bundle. Renew before the URL expires. |
 | `LIVE_HOST_DATA_SHA256` | SHA-256 of that bundle. Update alongside its signed URL. |

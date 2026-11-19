@@ -64,6 +64,7 @@ pub(crate) fn admit(lease: &HostLease, state: &HostState, xuid: Xuid) -> Result<
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(crate) struct HostEnv {
     pub(crate) h2_lease: String,
+    h2_host_lease_json: String,
     h2_live: String,
     h2_token: String,
     h2_data_url: String,
@@ -75,9 +76,10 @@ pub(crate) struct HostEnv {
 }
 
 impl HostEnv {
-    pub(crate) fn new(lease: &HostLease, boot: &HostBoot) -> Self {
-        Self {
+    pub(crate) fn new(lease: &HostLease, boot: &HostBoot) -> serde_json::Result<Self> {
+        Ok(Self {
             h2_lease: lease.id.clone(),
+            h2_host_lease_json: serde_json::to_string(lease)?,
             h2_live: boot.live_url.clone(),
             h2_token: boot.token.clone(),
             h2_data_url: boot.data_url.clone(),
@@ -87,6 +89,6 @@ impl HostEnv {
             // agent is private even inside the container network.
             h2_agent: "tcp://127.0.0.1:14720".into(),
             h2_tunnel_listen: format!("0.0.0.0:{TUNNEL_PORT}"),
-        }
+        })
     }
 }
