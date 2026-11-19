@@ -34,8 +34,9 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn accepts(&self, _mem: &dyn GuestMemory, light: &Light) -> bool {
-        light.definition == WHOLE
+    type Plan = Light;
+    fn prepare(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Light> {
+        (light.definition == WHOLE).then_some(*light)
     }
     fn open(&self, _camera: &RenderCamera, run: Arc<Run>) -> bool {
         self.runs.lock().unwrap().push(run);
@@ -47,8 +48,8 @@ impl Host for Stub {
     fn target(&self) -> Option<[u32; 8]> {
         Some([0x0080_0000, 0x0080_2000, 0, 0, 640, 480, 0, 1f32.to_bits()])
     }
-    fn split(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Arc<HashSet<u16>>> {
-        (light.definition == SPLIT).then(|| Arc::new([NATIVE_SHADER as u16].into_iter().collect()))
+    fn split(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<(Light, Arc<HashSet<u16>>)> {
+        (light.definition == SPLIT).then(|| (*light, Arc::new([NATIVE_SHADER as u16].into_iter().collect())))
     }
 }
 

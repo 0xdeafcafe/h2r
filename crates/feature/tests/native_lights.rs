@@ -97,8 +97,9 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn accepts(&self, _mem: &dyn GuestMemory, light: &Light) -> bool {
-        light.definition == 0xe000_0010
+    type Plan = Light;
+    fn prepare(&self, _mem: &dyn GuestMemory, light: &Light) -> Option<Light> {
+        (light.definition == 0xe000_0010).then_some(*light)
     }
     fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool {
         assert_eq!(camera.far, 1024.0);
