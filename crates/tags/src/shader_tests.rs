@@ -804,12 +804,56 @@ fn engine_vertex_constants_override_instance_vectors() {
     let c = c20(&m, 0);
     assert_eq!(c.value, [9.0, 10.0, 11.0, 8.0]);
     assert_eq!(c.origin, Origin::Engine);
+    // Where vector 7 landed, so a caller can put another value there.
+    assert_eq!(
+        m.layers[0].passes[0].implementations[0].vector_bindings,
+        vec![VectorBinding {
+            source: 7,
+            target: VectorTarget::Vertex {
+                bank: 1,
+                reg: 2,
+                components: 0b0111
+            }
+        }]
+    );
     // Without the engine binding the instance value stands.
     let imp0 = target(&f, spas_pp(&f));
     w16(&mut f.arena.b, imp0 + 0x124, 0);
-    let c = c20(&library(&f).material(SHAD_ID, Some(e)).unwrap(), 0);
+    let m = library(&f).material(SHAD_ID, Some(e)).unwrap();
+    let c = c20(&m, 0);
     assert_eq!(c.value, [5.0, 6.0, 7.0, 8.0]);
     assert_eq!(c.origin, Origin::Instance);
+    assert!(m.layers[0].passes[0].implementations[0].vector_bindings.is_empty());
+}
+
+#[test]
+fn a_vector_binding_keeps_only_what_later_bindings_leave() {
+    let v = |reg, components| VectorTarget::Vertex { bank: 1, reg, components };
+    let p = |slot, mask| VectorTarget::Pixel { c1: false, slot, mask, half: false };
+    let got = vector_bindings(&[
+        (v(2, 0b0111), Some(5)),
+        (v(2, 0b0001), None),
+        (v(3, 0b0111), Some(6)),
+        (p(1, 0x00ff_ffff), Some(5)),
+        (p(1, 0x0000_00ff), None),
+        (p(8, 0x00ff_ffff), Some(6)),
+        (p(8, 0x00ff_ffff), Some(5)),
+        (v(4, 0b0111), Some(6)),
+        (v(4, 0b0111), None),
+    ]);
+    assert_eq!(
+        got,
+        vec![
+            VectorBinding { source: 5, target: v(2, 0b0110) },
+            VectorBinding { source: 6, target: v(3, 0b0111) },
+            VectorBinding { source: 5, target: p(1, 0x00ff_ff00) },
+            VectorBinding { source: 5, target: p(8, 0x00ff_ffff) },
+        ],
+        "overwritten lanes and wholly overwritten bindings dropped"
+    );
+    assert_eq!(pack_engine_colour([1.0, 0.5, 0.0, 0.0], false), 0x00ff_8000);
+    assert_eq!(pack_engine_colour([1.0, 0.0, -1.0, 0.0], true), 0x80ff_8000);
+    assert_eq!(pack_engine_colour([2.0, -1.0, 0.25, 1.0], false), 0xffff_0040);
 }
 
 #[test]

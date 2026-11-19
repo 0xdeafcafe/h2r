@@ -251,6 +251,7 @@ mod tests {
             pixel_constants_from_engine: false,
             per_draw_inputs: false,
             input_reads: Default::default(),
+            vector_bindings: Vec::new(),
             vertex_constants: vec![Register { index: 19, value: [10.0, 10.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
