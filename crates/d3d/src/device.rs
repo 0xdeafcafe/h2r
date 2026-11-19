@@ -699,9 +699,13 @@ pub struct Swallow {
     /// draw finds, the same for each of its draws and distinct from every
     /// other slot's.
     pub targets: Vec<u8>,
-    /// Every draw's primitive and vertex count.
+    /// Every draw's primitive and vertex count, but those in `shapes`.
     pub primitive: PrimitiveType,
     pub vertices: usize,
+    /// Per draw, in order, its own primitive and vertex count (draw `i`
+    /// takes `shapes[i]` while `i` is below its length): a pass of mixed
+    /// draws.
+    pub shapes: Vec<(PrimitiveType, usize)>,
     /// Drop the draws; `false` draws them and only places `pass` (a
     /// capture of what the game drew).
     pub drop: bool,
@@ -715,6 +719,7 @@ struct Swallowing {
     headers: Vec<Option<u32>>,
     primitive: PrimitiveType,
     vertices: usize,
+    shapes: Vec<(PrimitiveType, usize)>,
     drop: bool,
     /// `Stats::draws` when the next planned draw comes: no other draw in
     /// between.
@@ -1931,6 +1936,7 @@ impl<B: Backend> Device<B> {
             headers,
             primitive: s.primitive,
             vertices: s.vertices,
+            shapes: s.shapes,
             drop: s.drop,
             draws: self.stats.draws,
             pass: Some(s.pass),
@@ -1952,9 +1958,10 @@ impl<B: Backend> Device<B> {
             Some(h) => h == target,
             None => target != 0 && !s.headers.contains(&Some(target)),
         };
+        let (primitive, vertices) = s.shapes.get(s.next).copied().unwrap_or((s.primitive, s.vertices));
         let fits = d.inline.is_empty()
-            && d.primitive == s.primitive
-            && d.vertices.len() == s.vertices
+            && d.primitive == primitive
+            && d.vertices.len() == vertices
             && self.stats.draws == s.draws
             && into;
         if !fits {
@@ -2012,19 +2019,29 @@ impl<B: Backend> Device<B> {
             return Err(ExternalRefusal::NoDepth);
         }
         let d = self.header_desc(mem, self.render_target).map_err(|_| ExternalRefusal::Header)?;
-        let dev = mem.read_u32(self.cfg.layout.p_device).map_err(|_| ExternalRefusal::Header)?;
-        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).map_err(|_| ExternalRefusal::Header)?);
+        let z_scale = self.guest_z_scale(mem).ok_or(ExternalRefusal::Header)?;
         let v = self.viewport;
         Ok(crate::backend::ExternalPassRequest {
             rect: (v.x, v.y, v.width, v.height),
             surface_size: (d.width, d.height),
-            z_scale: if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 },
+            z_scale,
         })
+    }
+
+    /// The device's depth full scale (`+0x948`), the D24 one when it is
+    /// not a positive finite number; `None` when it does not read.
+    fn guest_z_scale(&self, mem: &dyn GuestMemory) -> Option<f32> {
+        let dev = mem.read_u32(self.cfg.layout.p_device).ok()?;
+        let z_scale = f32::from_bits(mem.read_u32(dev + field::Z_SCALE).ok()?);
+        Some(if z_scale.is_finite() && z_scale > 0.0 { z_scale } else { 16_777_215.0 })
     }
 
     fn issue_external_pass(&mut self, mem: &mut dyn GuestMemory, mut pass: Box<dyn crate::backend::ExternalPass>) {
         let constants: [[f32; 4]; crate::backend::VIEW_CONSTANTS] = std::array::from_fn(|r| self.constant(r));
         pass.view_constants(&constants);
+        if let Some(z_max) = self.guest_z_scale(mem) {
+            pass.depth_clip(self.depth_clip(mem, z_max));
+        }
         let colour_only = pass.colour_only();
         let issued = match self.external_ready(mem, colour_only) {
             Err(why) => Err(why),
@@ -2045,6 +2062,21 @@ impl<B: Backend> Device<B> {
         match issued {
             Ok(()) => self.stats.external_passes += 1,
             Err(why) => self.refuse_external(why),
+        }
+    }
+
+    /// The W-buffer's clip a W-buffered vertex-program draw recorded now
+    /// takes, for an external pass standing in for such draws: the pushed
+    /// clip range as the D3D path reads it (`nv2a::w_clip_range`, the whole
+    /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
+    /// guest's render-state array (unreadable: no clamp).
+    pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
+        let slot = RenderStateTable::default().canonical_to_guest(crate::nv2a::RS_DEPTHCLIPCONTROL);
+        let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
+        crate::backend::DepthClip {
+            range: crate::nv2a::w_clip_range(&self.hw, z_max),
+            clamp: crate::nv2a::clamps_depth(control),
+            w_buffered: self.hw.control0.map(|c| c & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
 

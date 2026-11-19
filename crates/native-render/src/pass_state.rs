@@ -70,7 +70,10 @@ pub fn pass_state(states: &[RenderStateValue]) -> Result<PassState, StateRefusal
     if rs.blend_enable && !has(RenderStateType::DestBlend) {
         return Err(StateRefusal::Unset("DESTBLEND"));
     }
-    if !has(RenderStateType::ZWriteEnable) {
+    // A pass that turns the depth buffer off (`ZENABLE` 0, the screen
+    // effects') neither tests nor writes it, whatever ZWRITEENABLE holds.
+    let depth_off = has(RenderStateType::ZEnable) && rs.depth_mode == DepthBufferMode::Disabled;
+    if !has(RenderStateType::ZWriteEnable) && !depth_off {
         return Err(StateRefusal::Unset("ZWRITEENABLE"));
     }
     if rs.fog_enable {
@@ -189,6 +192,14 @@ mod tests {
             s.push(extra);
             pass_state(&s)
         };
+        // A screen effect's: the depth buffer off, its write never set.
+        let screen = pass_state(&[v(RenderStateType::AlphaBlendEnable, 0), v(RenderStateType::ZEnable, 0)]).unwrap();
+        assert_eq!((screen.depth_write, screen.depth_compare), (false, wgpu::CompareFunction::Always));
+        assert_eq!(
+            pass_state(&[v(RenderStateType::AlphaBlendEnable, 0), v(RenderStateType::ZEnable, 1)]),
+            Err(StateRefusal::Unset("ZWRITEENABLE")),
+            "the depth buffer on"
+        );
         assert_eq!(with(v(RenderStateType::FogEnable, 1)), Err(StateRefusal::Fog));
         assert_eq!(with(v(RenderStateType::StencilEnable, 1)), Err(StateRefusal::Stencil));
         let bad = v(RenderStateType::SrcBlend, 0x1234);

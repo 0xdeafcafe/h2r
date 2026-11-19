@@ -182,6 +182,42 @@ fn passes_asked_before_one_drain_are_all_issued_in_order() {
     assert_eq!(order.lock().unwrap().len(), 2, "issued once");
 }
 
+/// Keeps the depth clip it is given.
+struct Clip(Arc<Mutex<Option<d3d::DepthClip>>>);
+
+impl ExternalPass for Clip {
+    fn encode(&mut self, _t: ExternalTarget<'_>) {}
+    fn depth_clip(&mut self, clip: d3d::DepthClip) {
+        *self.0.lock().unwrap() = Some(clip);
+    }
+}
+
+/// The pass gets the W-buffer clip a W-buffered draw issued then would
+/// take: nothing pushed, the whole range; `D3DRS_DEPTHCLIPCONTROL` with
+/// `D3DDCC_DEPTHCLAMP` (bits 7:4 = 1) in the guest's array, clamped.
+#[test]
+fn the_pass_gets_the_depth_clip_at_issue() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let issue = |d: &mut Device<RecordingBackend>, m: &mut SparseMemory| {
+        let got = Arc::default();
+        d.request_external_pass(Box::new(Clip(Arc::clone(&got))));
+        d.drain_until_callback(m).unwrap();
+        let clip: Option<d3d::DepthClip> = *got.lock().unwrap();
+        clip.expect("given at issue, with or without a backend that draws it")
+    };
+    let first = issue(&mut d, &mut m);
+    let full = d3d::DepthClip { range: [0.0, 16_777_215.0], clamp: false, w_buffered: first.w_buffered };
+    assert_eq!(first, full, "nothing pushed: [0, z_max] of D24S8");
+    assert_eq!(first.w_buffered, d.hw().control0.map(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0));
+    let slot = gfx::xdk::RenderStateTable::default()
+        .canonical_to_guest(d3d::nv2a::RS_DEPTHCLIPCONTROL)
+        .expect("a guest slot");
+    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(slot), 0x10).unwrap();
+    assert_eq!(issue(&mut d, &mut m), d3d::DepthClip { clamp: true, ..full });
+    assert!(!d3d::nv2a::clamps_depth(0x01) && d3d::nv2a::clamps_depth(0x11));
+}
+
 #[test]
 fn a_backend_that_cannot_drops_it() {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);

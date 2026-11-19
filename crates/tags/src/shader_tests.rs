@@ -987,3 +987,40 @@ fn input_reads_unions_masks_bindings_and_selectors() {
     assert_eq!(r.vectors, 1 << 40 | 1 << 5 | 1 << 6);
     assert_eq!(r.ints, 1 << 4 | 1 << 6);
 }
+
+/// `0x00019be0`'s word: register, bank, mode and stage, the input in
+/// byte 3; a mode writes its components only.
+#[test]
+fn an_engine_vertex_constant_is_its_word() {
+    // copy_texaccum_to_fb's c[18 + 1]: bank 1, mode 15 ([0, h, 0, 0]), stage 1.
+    let w: u16 = 1 | 1 << 4 | 15 << 5 | 1 << 13;
+    let c = EngineVertexConstant::of(ExternalBinding { bytes: [w as u8, (w >> 8) as u8, 0, 0] });
+    assert_eq!(c, EngineVertexConstant { bank: 1, reg: 1, mode: 15, stage: 1, source: 0 });
+    assert!(c.reads_size());
+    assert_eq!(c.components(), 0b1111);
+    let mut row = [7.0; 4];
+    c.eval(&mut row, (320.0, 240.0), &EngineInputs::default()).unwrap();
+    assert_eq!(row, [0.0, 240.0, 0.0, 0.0]);
+    // Mode 3 from scalar 41: w only.
+    let s = EngineVertexConstant::of(ExternalBinding { bytes: [3 << 5, 0, 0, 41] });
+    assert_eq!((s.mode, s.source, s.reads_size()), (3, 41, false));
+    let mut e = EngineInputs::default();
+    e.scalars[41] = 0.5;
+    let mut row = [7.0; 4];
+    s.eval(&mut row, (0.0, 0.0), &e).unwrap();
+    assert_eq!(row, [7.0, 7.0, 7.0, 0.5]);
+    let spas = PassPostprocess {
+        implementations: Vec::new(),
+        textures: Vec::new(),
+        render_states: Vec::new(),
+        stage_states: Vec::new(),
+        fragments: Vec::new(),
+        variants: Vec::new(),
+        stages: Vec::new(),
+        externals: vec![ExternalBinding { bytes: [0, 0, 3, 41] }, ExternalBinding { bytes: [3 << 5, 0, 0, 41] }],
+    };
+    let mut v = vec![0u8; IMPLEMENTATION];
+    w16(&mut v, 0x124, range(1, 1));
+    let imp = Implementation::decode(&v).unwrap();
+    assert_eq!(engine_vertex_constants(&spas, &imp), vec![s], "the vertex range only");
+}

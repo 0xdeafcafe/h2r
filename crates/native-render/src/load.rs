@@ -189,12 +189,16 @@ pub fn load_world<R: Read + Seek>(
             }
             None => def,
         };
-        if !inst.is_rigid() || inst.scale <= 0.0 {
+        if !inst.is_rigid() {
             failed += 1;
             continue;
         }
+        // Unscaled: the game draws a placement with its rows alone
+        // (`0x0004d830` does not apply the scale at `+0`), so the placed
+        // copy (bounds, culling, the lights and transparents) is where the
+        // D3D path draws it.
         let place = Placement {
-            scale: inst.scale,
+            scale: 1.0,
             basis: inst.basis,
             position: inst.position,
         };

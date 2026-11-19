@@ -271,6 +271,7 @@ pub fn compile_object_stages(
         vertex_defaults: &look.vertex_defaults,
         alpha_test,
         provided_inputs,
+        w_buffer: true,
     })?;
     let mut vertex = t.vertex;
     vertex.constants[POSITION_DECOMPRESSION..=TEXCOORD_DECOMPRESSION].copy_from_slice(&decompression_rows(&Compression::default()));

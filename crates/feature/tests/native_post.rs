@@ -8,7 +8,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_post::{self, Fp, Host, NativePost};
+use feature::native_post::{self, Fp, Host, NativePost, ScreenEffect};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 
@@ -48,11 +48,17 @@ const ESP: u32 = 0x0060_0000;
 struct Stub {
     arm: Mutex<bool>,
     seen: Mutex<Vec<([u32; 7], Fp, bool)>>,
+    effects: Mutex<Vec<(ScreenEffect, Fp)>>,
 }
 
 impl Host for Stub {
     fn colour_pass(&self, _mem: &mut dyn GuestMemory, args: [u32; 7], fp: Fp, native: bool) -> bool {
         self.seen.lock().unwrap().push((args, fp, native));
+        *self.arm.lock().unwrap()
+    }
+
+    fn screen_effect(&self, _mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> bool {
+        self.effects.lock().unwrap().push((call, fp));
         *self.arm.lock().unwrap()
     }
 }
@@ -83,7 +89,38 @@ fn the_host_gets_the_calls_words() {
     assert!(!native_post::on_colour_pass(&mut m, 0x0001_0000, fp, true));
     assert_eq!(stub.seen.lock().unwrap().len(), asked);
 
+    // A screen effect: EAX the datum, then the four words.
+    m.set_u32(ESP, 0x0001_3b0c).unwrap();
+    for (i, w) in [0x0060_1000u32, 2, 2, 0x0060_2000].iter().enumerate() {
+        m.set_u32(ESP + 4 + 4 * i as u32, *w).unwrap();
+    }
+    assert!(native_post::on_screen_effect(&mut m, 0xe001_0002, ESP, fp));
+    let want = ScreenEffect {
+        datum: 0xe001_0002,
+        values: 0x0060_1000,
+        columns: 2,
+        rows: 2,
+        corners: 0x0060_2000,
+    };
+    assert_eq!(stub.effects.lock().unwrap().last().copied(), Some((want, fp)));
+    assert!(!native_post::on_screen_effect(&mut m, 0, 0x0001_0000, fp), "an unreadable stack");
+
     let after = native_post::counts();
     assert!(after.calls >= before.calls + 4);
     assert!(after.armed > before.armed);
+    assert!(after.effects >= before.effects + 2);
+    assert!(after.effects_armed > before.effects_armed);
+}
+
+#[test]
+fn the_screen_effect_hook_is_the_switchs_only() {
+    let on = placed("impl.render.native_post=on").expect("placed");
+    assert!(on.text().contains("native_post_screen_effect"));
+    let chain = on
+        .chains
+        .values()
+        .find(|c| c.point.name == "SCREEN_EFFECT")
+        .expect("placed at SCREEN_EFFECT");
+    assert!(!chain.needs_shadow(), "nothing after the body");
+    assert!(chain.render_thread().is_ok());
 }

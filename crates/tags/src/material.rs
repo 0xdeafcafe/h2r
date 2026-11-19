@@ -596,11 +596,9 @@ impl ShaderLibrary {
 
         // 0x00019be0: engine-driven vertex constants (after instance vectors).
         for e in &spas.externals[imp.external_vertex_constants.indices()] {
-            let w = e.word();
-            let reg = usize::from(w & 0xf);
-            let bank = usize::from((w >> 4) & 1);
-            let mode = usize::from((w >> 5) & 0x1f);
-            let stage = (w >> 13) as usize;
+            let c = EngineVertexConstant::of(*e);
+            let (reg, bank, mode, stage) =
+                (usize::from(c.reg), usize::from(c.bank), usize::from(c.mode), usize::from(c.stage));
             let dims = stage_dims(&textures, stage);
             eval_engine(
                 &mut banks[bank][reg],
@@ -1013,6 +1011,58 @@ pub(crate) fn vector_bindings(writes: &[(VectorTarget, Option<u8>)]) -> Vec<Vect
         }
     }
     out
+}
+
+/// One engine-driven vertex constant (`0x00019be0`, an entry of an
+/// implementation's `+0x124` range): the word's low 4 bits the register,
+/// bit 4 the bank (1 the constant `c[18 + reg]`, 0 the default
+/// `v[reg]`), bits 5..9 the mode (0..3 a scalar into one component, 4 a
+/// vector, 5..20 the size of stage `stage - 1`'s texture, stage 0 a size
+/// of 1 by 1), bits 13..15 the stage; byte 3 the input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EngineVertexConstant {
+    pub bank: u8,
+    pub reg: u8,
+    pub mode: u8,
+    pub stage: u8,
+    pub source: u8,
+}
+
+impl EngineVertexConstant {
+    pub fn of(e: ExternalBinding) -> Self {
+        let w = e.word();
+        Self {
+            bank: ((w >> 4) & 1) as u8,
+            reg: (w & 0xf) as u8,
+            mode: ((w >> 5) & 0x1f) as u8,
+            stage: (w >> 13) as u8,
+            source: e.bytes[3],
+        }
+    }
+
+    /// Whether it reads a stage's size (modes 5..20).
+    pub fn reads_size(self) -> bool {
+        (5..=20).contains(&self.mode)
+    }
+
+    /// The components it writes (bit 0 = x).
+    pub fn components(self) -> u8 {
+        engine_mode_components(usize::from(self.mode))
+    }
+
+    /// Its value written into `row` as `0x00019be0` writes it (only the
+    /// mode's components): `size` the stage's texture's (width, height),
+    /// read by modes 5..20, `inputs` read by modes 0..4.
+    pub fn eval(self, row: &mut [f32; 4], size: (f32, f32), inputs: &EngineInputs) -> Result<()> {
+        eval_engine(row, usize::from(self.mode), 0, usize::from(self.source), size, inputs)
+    }
+}
+
+/// `imp`'s engine-driven vertex constants in the order `0x00019be0`
+/// applies them.
+pub fn engine_vertex_constants(spas: &PassPostprocess, imp: &Implementation) -> Vec<EngineVertexConstant> {
+    let r = imp.external_vertex_constants;
+    spas.externals.get(r.indices()).unwrap_or(&[]).iter().map(|&e| EngineVertexConstant::of(e)).collect()
 }
 
 fn stage_dims(textures: &[Option<StageTexture>; 4], stage: usize) -> (f32, f32) {

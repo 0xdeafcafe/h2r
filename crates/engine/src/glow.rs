@@ -356,6 +356,106 @@ pub fn blur(mem: &dyn GuestMemory, a: &BlurArgs, mxcsr: u32) -> Result<Blur, Err
     })
 }
 
+/// `0x00021360`'s image constants: the scale's factor, and the second
+/// and third offsets' (the step factor is [`constant::SPREAD`]).
+pub mod wide_constant {
+    pub const SCALE: u32 = 0x0045_e4e0;
+    pub const SECOND: u32 = 0x0045_e1f4;
+    pub const THIRD: u32 = 0x0045_e4dc;
+}
+
+/// The arguments of `0x00021360` (`ret 0x20`), a screen effect's
+/// convolution with flag bit 2 (`engine::screen_effect`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WideArgs {
+    /// EAX: the target convolved.
+    pub source: u32,
+    /// ECX: the draws (none at 0 or below).
+    pub taps: i32,
+    /// XMM0: the first draw's scale (f32 bits), before
+    /// [`wide_constant::SCALE`].
+    pub scale: u32,
+    /// Stack words 0 and 1, passed through to each draw (`0x00034d90`'s
+    /// sixth and seventh).
+    pub words: [u32; 2],
+    /// Stack words 2 and 3: the buffer drawn into first, the other
+    /// (-1: the source).
+    pub dest: u32,
+    pub other: u32,
+    /// Stack word 4: where the result is copied unless -1 or the result.
+    pub last: u32,
+}
+
+/// One draw of `0x00021360`: `source` bound to stages 0..3 (`0x00014f60`),
+/// `0x00034d90` into `dest` (EAX) with EDI pointing at `offsets` (f32
+/// bits: `s`, `s * SECOND`, `s * THIRD`, `0 - s`) and the stack words
+/// `0xa`, `0x01010101`, 0, 0, 1.0, the two [`WideArgs::words`],
+/// `0x00021360`'s stack word 6 (0 from `0x0002d140`), 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WideDraw {
+    pub source: u32,
+    pub dest: u32,
+    pub offsets: [u32; 4],
+}
+
+/// What `0x00021360` draws after its combiner, and the target it returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wide {
+    pub draws: Vec<WideDraw>,
+    /// As [`Blur::result`].
+    pub result: u32,
+    pub copy: Option<(u32, u32)>,
+}
+
+/// The most draws [`wide`] takes (the original's count is an integer, so
+/// it ends, but past this it is not a screen effect worth drawing).
+pub const MAX_WIDE_TAPS: i32 = 64;
+
+/// `0x00021360` after its combiner (`0x0002139e`..`0x000214e2`; with its
+/// sixth argument's low byte set it first calls `0x00020f30`, XMM0 0 and
+/// XMM3 its eighth, as [`blur`]'s caller does). Per draw `s` is the last
+/// one's times [`constant::SPREAD`], starting at `scale *
+/// wide_constant::SCALE`; the buffers ping-pong as the blur's.
+/// [`Error::Unbounded`] past [`MAX_WIDE_TAPS`].
+pub fn wide(mem: &dyn GuestMemory, a: &WideArgs, mxcsr: u32) -> Result<Wide, Error> {
+    let mut sse = Sse { mxcsr };
+    if a.taps > MAX_WIDE_TAPS {
+        return Err(Error::Unbounded);
+    }
+    let mut s = sse.mul(a.scale, mem.u32(wide_constant::SCALE)?)?;
+    let mut current = a.source;
+    let (mut dest, mut other) = (a.dest, if a.other == u32::MAX { a.source } else { a.other });
+    let mut draws = Vec::new();
+    if a.taps > 0 {
+        let second = mem.u32(wide_constant::SECOND)?;
+        let third = mem.u32(wide_constant::THIRD)?;
+        let factor = mem.u32(constant::SPREAD)?;
+        for _ in 0..a.taps {
+            let offsets = [s, sse.mul(s, second)?, sse.mul(s, third)?, sse.sub(0, s)?];
+            draws.push(WideDraw {
+                source: current,
+                dest,
+                offsets,
+            });
+            current = dest;
+            (dest, other) = (other, current);
+            s = sse.mul(s, factor)?;
+        }
+    }
+    if a.last != u32::MAX && a.last != current {
+        return Ok(Wide {
+            draws,
+            result: a.last,
+            copy: Some((current, a.last)),
+        });
+    }
+    Ok(Wide {
+        draws,
+        result: current,
+        copy: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,5 +492,47 @@ mod tests {
         assert_eq!(draws(f32::INFINITY), Err(Error::Unbounded), "the original never returns");
         assert_eq!(draws(f32::NAN), Ok(0));
         assert_eq!(draws(0.0), Ok(0));
+    }
+
+    fn taps(n: i32, other: u32, last: u32) -> WideArgs {
+        WideArgs {
+            source: 1,
+            taps: n,
+            scale: 2.0f32.to_bits(),
+            words: [5, 6],
+            dest: 0x19,
+            other,
+            last,
+        }
+    }
+
+    #[test]
+    fn the_wide_convolution_ping_pongs_with_a_growing_scale() {
+        // Constants chosen here: 2 the spread factor, 0.5 the scale's
+        // factor, 2 and 3 the second and third offsets'.
+        let mut m = FlatMemory::new(0x0045_d000, 0x2000);
+        m.set_u32(constant::SPREAD, 2.0f32.to_bits()).unwrap();
+        m.set_u32(wide_constant::SCALE, 0.5f32.to_bits()).unwrap();
+        m.set_u32(wide_constant::SECOND, 2.0f32.to_bits()).unwrap();
+        m.set_u32(wide_constant::THIRD, 3.0f32.to_bits()).unwrap();
+        let f = |v: f32| v.to_bits();
+        let w = wide(&m, &taps(3, 0x1a, u32::MAX), 0x1f80).unwrap();
+        assert_eq!(
+            w.draws,
+            vec![
+                WideDraw { source: 1, dest: 0x19, offsets: [f(1.0), f(2.0), f(3.0), f(-1.0)] },
+                WideDraw { source: 0x19, dest: 0x1a, offsets: [f(2.0), f(4.0), f(6.0), f(-2.0)] },
+                WideDraw { source: 0x1a, dest: 0x19, offsets: [f(4.0), f(8.0), f(12.0), f(-4.0)] },
+            ],
+            "each draw's scale the last's times the spread factor"
+        );
+        assert_eq!((w.result, w.copy), (0x19, None));
+        let w = wide(&m, &taps(2, u32::MAX, 0x1b), 0x1f80).unwrap();
+        assert_eq!(w.draws[1].dest, 1, "without another buffer, back into the source");
+        assert_eq!((w.result, w.copy), (0x1b, Some((1, 0x1b))));
+        let w = wide(&m, &taps(0, 0x1a, u32::MAX), 0x1f80).unwrap();
+        assert_eq!((w.draws.len(), w.result), (0, 1), "no taps: the source");
+        assert_eq!(wide(&m, &taps(-3, 0x1a, 1), 0x1f80).unwrap().copy, None, "the source is the last");
+        assert_eq!(wide(&m, &taps(MAX_WIDE_TAPS + 1, 0x1a, u32::MAX), 0x1f80), Err(Error::Unbounded));
     }
 }
