@@ -1882,6 +1882,28 @@ its own thread, and render-timing does not matter (the call runs).
 - **`0x0002df00`**, once it is traced; until then a call with `late`
   set keeps its D3D passes.
 
+### Stage 5 status
+
+With `impl.render.native_post` off (the default) everything here draws
+on D3D, and the host only observes. With it on, a call is armed only
+once nothing in it is missing (`native_post_glue::Missing`, counted and
+logged once per reason). It is then probed before any of its draws are
+dropped, and it falls back on its own: the glow alone, and each screen
+effect per egor.
+
+| Effect kind | With the switch on | Why, or what refuses it |
+|---|---|---|
+| Colour pass glow (`0x000214f0`) | Armed after its probe | Refused when its plan fails (a blur past `MAX_BLUR_STEPS`, a target it cannot read). A refused draw or a swallow mismatch keeps every later glow on D3D. |
+| Screen effect, passes into the bound target, nothing convolved (`desaturate`'s shape) | Armed after its probe | `TemplatePass` when a pass's program did not load, or a stage binds an engine texture that is not supplied (`screen_gpu::supplied`). |
+| Pass into target 1, read by a later pass | Armed | `PassTarget` when the pass into target 1 is the call's last, or has no size. `TemplatePass` when target 1 is read before the call drew it (`call_ordered`). |
+| Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
+| Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
+| Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
+| Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
+| A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
+| `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
+| Layer 17, the fade `0x00040890`, the UI and HUD | D3D | Not started (steps 6 to 8). |
+
 ### Order of work
 
 1. **The hook and its order** (built: `feature::native_post`,
