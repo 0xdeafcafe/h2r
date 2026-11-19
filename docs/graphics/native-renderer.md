@@ -2912,3 +2912,61 @@ effect per egor.
 - Which 03a templates have a layer-1 texaccum pass that layer 3 samples
   in screen space; those need the texaccum target bound to the native
   pass, or stage 1b.
+
+## Residual render callers
+
+The runtime census is selected with
+`H2_NATIVE_RESIDUAL_PROBE=2000,3000,4000`. The agent's `render.stats`
+returns the completed presents in `counters.residual.frames`. For each
+view kind it gives the invocation count and distinct `(entry, return_pc)`
+pairs. `ViewSetup` covers the game-view prefix before the scene's first
+argument is available. `Alternate` is the separate `0x0002c790` view.
+`Scene(n)` uses the actual scene-pass argument. `OutsideView` includes
+the frame tail and frames that never enter a game view. The counts are
+at runtime D3D entries, before native draw admission. Pair them with
+the native suppression counters and `render.frame` to distinguish
+original entry work from draw packets that still reach the D3D renderer.
+A D3D continuation that re-enters counts twice. Inline push-buffer
+methods and unhooked XDK helpers are tracked through their containing
+entries or the static call sites below.
+
+### Retail call-site inventory
+
+These are counts of reachable sites from the retail image, with
+conditional sites included once. The number of runtime invocations
+depends on visibility, state caches, materials and which stage
+admissions succeed. All-stage runtime counts are pending integration.
+
+| View path | Reachable residual sites | Notes |
+|---|---|---|
+| Scene kind 1 | 5 direct target selections in the base sequence, 1 direct layer-1 clear, 1 late layer-2 overlay, 1 sky call, 1 visibility issuance call and 1 visibility result reader | Layer begins can select and clear targets too. Sky has an independent model path. Flare tests issue once per eligible flare and poll the three-frame set. |
+| Scene kind 2 | The same 5 base target and 1 layer-1 clear sites, and 1 late layer-2 overlay | This path exits after the first transparent site. Sky and the late visibility pair are on the other path. |
+| Scene kinds 0, 3, 4, 6, 7 | 4 general layer begins before the late sequence, including 1 layer-2 overlay site, plus the late sky and visibility sites | Layers 1, 3, 5 and 2 use the general begin. The main scene's five explicit target selections are outside this branch. |
+| Scene kind 5 | 1 common scene-exit site | The scene leaves after its early setup. The common exit may restore target 0 and depth clip. |
+| Alternate view | 1 view setup at `0x0002c863`, 1 UI call at `0x0002c884`, 1 view finish at `0x0002c889` | This is the alternate view record's separate path. Its target and UI draw stream depends on the view. |
+| Outside game views | 1 fallback-view call at `0x0022326a`, 2 frame-finish calls after the view loop, 1 present call at `0x00223296` | Load screens, video and menu composition, the final blit and display resource handling are outside the normal scene admission. |
+
+The five base target sites are `0x0002bde2`, `0x0002be83`,
+`0x0002bf0e`, `0x0002bf7f` and `0x0002bfe3`. The direct clear is
+`0x0002be01`; the clear helper calls `D3DDevice_Clear` at
+`0x00014bb2`. Target changes converge on `0x0001cd30`, which calls
+the same-size D3D bind at `0x0001cd63` or the viewport-resetting bind at
+`0x0001cd6c`. The scene also reaches layer, light, camera and post targets
+through their own wrappers. The scene exit `0x00013630` can restore a
+target at `0x0001366b`.
+
+The flare writer `0x00020bb0` polls an older result at `0x00020cbb`,
+begins the count with inline NV2A methods, draws its callback and ends the
+test at `0x00020d0f`. The late reader `0x00020770` polls the two-frame
+slot at `0x00020840`. The native GPU counter must preserve sample counts,
+readiness and timestamps for both callers. That report is separate from
+the optional previous-frame depth grid used for object culling.
+
+The all-stage capture should cover Old Mombasa's cinematic and gameplay,
+a main menu, a movie and an alternate view. Turn on the integrated
+world/object layers, transparents, decals, particles, lights, gels,
+shadows, first person, water/fog/camouflage, post and HUD switches.
+Compare with the residual switch off and on. The census still lists
+unsupported materials, exceptional handlers, clears, target changes,
+query reports, menu/video and final display traffic, and any shader or
+geometry setup retained by a stage that replaces only resolved draws.

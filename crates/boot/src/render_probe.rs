@@ -52,8 +52,13 @@ fn pipeline() -> Option<Value> {
 /// The frame-stats window's per-frame means of the render counters
 /// (`profile.counters` has the rest).
 fn counters() -> Option<Value> {
-    let i = timeline::phase::window_summary()?;
-    Some(json!({ "line": i.short_line() }))
+    let line = timeline::phase::window_summary().map(|i| i.short_line());
+    let residual = crate::native_residual_glue::census();
+    match (line, residual) {
+        (None, None) => None,
+        (Some(line), None) => Some(json!({ "line": line })),
+        (line, Some(residual)) => Some(json!({ "line": line, "residual": residual })),
+    }
 }
 
 pub fn sources() -> agent::render::RenderSources {

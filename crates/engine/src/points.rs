@@ -281,6 +281,10 @@ points! { ALL;
     /// `render_game_view`: one game view (camera, render state, scene
     /// passes, UI composition).
     RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
+    /// The alternate view path selected by the render view record.
+    RENDER_ALTERNATE_VIEW @ 0x0002_c790: [opaque]; "docs/graphics/render-loop.md";
+    /// End-of-frame rendering after the view loop, before the final blit.
+    RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// `render_dynamic_lights`: the visible lights, each gathered and drawn
