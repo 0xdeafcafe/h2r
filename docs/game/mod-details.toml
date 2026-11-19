@@ -1,0 +1,1046 @@
+# Published mods' details for h2 live (live.forbes.red), as of 2026-11-19:
+# a better description per package, its screenshots and where they came from,
+# the map pack it came out in, and each pack's own info.
+#
+# Apply with an admin account (images are uploaded as content by --as):
+#
+#   h2 live maps details --file docs/game/mod-details.toml \
+#     --images "$TMPDIR/mod-images" --contents "$TMPDIR/mod-contents" --as afr --dry-run
+#
+# then the same without --dry-run. Images are not in git: [[mod.image]] and
+# [[pack.image]] name files in IMAGES/<slug>/ and IMAGES/pack-<id>/, which
+# image_url says where they were downloaded from. Reports come from
+# `h2 live maps analyze --map-id ID --out CONTENTS/<slug>.toml`.
+#
+# Keys read (crates/cli/src/live_maps_details.rs): [[pack]] id, name, description,
+# authors, released, source_url, [[pack.image]]; [[mod]] map_id, name, slug, pack,
+# description, features, [[mod.image]] file, caption, source_url, credit, licence.
+# original_description, description_sources and image_url are for the reader.
+# Image licences are unknown unless stated: each is credited to who made it and
+# linked to where it was posted. Descriptions are our own words over the sources
+# listed; "undocumented" means nothing more was found.
+#
+# Researched 2026-11-19: release posts and readmes (archive.org copies of
+# halomods.com, assassin4hire.com, theppfnoobs.com, se7ensins.com), Connor
+# Tumbleson's Phantom Mappack posts, and YouTube videos clearly of the map.
+
+[[pack]]
+id = "phantom-mappack"
+name = "Phantom Mappack"
+description = '''
+The iBotModz community's collection of custom Halo 2 maps, compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker) and released in two volumes from January 2010. Each map is credited to its own author; iBotPeaches compiled the pack and its custom main menu. The maps were first shared as Serenity patches; these packages are the pre-built maps from the archived pack.'''
+authors = ["iBotPeaches"]
+released = "2010-01-08"
+source_url = "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"
+
+[[pack]]
+id = "ai-revision"
+name = "Halo 2 Remapped AI Revision"
+description = '''
+A pack of multiplayer maps with AI added (Flood, Covenant and Marines fighting in multiplayer levels), released on halomods.com in June 2007. Zone 117 compiled it and made its main menu; Detox wrote the auto-patcher. On the original Xbox the AI only ran when the pack was launched through the Xored launcher with the Yelo trainer.'''
+authors = ["Zone 117", "Detox"]
+released = "2007-06-16"
+source_url = "https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177"
+
+[[pack]]
+id = "ownage-modz"
+name = "Ownage Modz"
+description = '''
+Synch's set of PPF patches for the Multiplayer Map Pack maps (Backwash, Containment, Elongation, Gemini, Relic, Sanctuary, Terminal, Turf, Warlock), dated 1 January 2006 in its readme and shared on assassin4hire.com.'''
+authors = ["Synch"]
+released = "2006-01-01"
+source_url = "https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"
+
+[[pack]]
+id = "ppfnoobs-map-package"
+name = "The PPF Noobs Map Package"
+description = '''
+The PPF Noobs' PPF patches for the twelve original Halo 2 multiplayer maps, released in autumn 2006 on theppfnoobs.com (site run by l PPF l NeoN, l PPF l H3MP and l PPF l JXModz). Fun and cheat-style changes for playing with friends: weapon and vehicle swaps, auto-aim and the like.'''
+authors = ["The PPF Noobs"]
+released = "2006-10"
+source_url = "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"
+
+[[pack]]
+id = "ppfnoobs-old-map-pack-v2"
+name = "The PPF Noobs Old Map Package v2"
+description = '''
+l PPF l NeoN's 2007 package of the original Halo 2 maps for playing on Xbox Live: 360 auto-aim, infinite ammo and rapid fire on every weapon, wall walking, most invisible walls removed, teleporters on some maps, Banshee bombs and a Carbine spawn for the host. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo.'''
+authors = ["l PPF l NeoN"]
+released = "2007"
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+
+[[pack.image]]
+file = "01-mainmenu-lobby.jpg"
+caption = "The pack's main menu skin: a pregame lobby with PPF Noobs custom game text."
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+image_url = "http://www.theppfnoobs.com/mainmenu/Mainmenu-4.jpg"
+credit = "l PPF l NeoN / The PPF Noobs"
+licence = "unknown; credited to the original poster"
+
+[[pack.image]]
+file = "02-mainmenu-logo.jpg"
+caption = "The pack's main menu with the WWW.THEPPFNOOBS.COM logo."
+source_url = "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"
+image_url = "http://www.theppfnoobs.com/mainmenu/Mainmenu-3.jpg"
+credit = "l PPF l NeoN / The PPF Noobs"
+licence = "unknown; credited to the original poster"
+
+[[pack]]
+id = "group-bocked"
+name = "Group Bocked PPFs"
+description = '''
+Early Halo 2 weapon and vehicle mods from Group Bocked, a modding group founded in 2004 by norulezapply and hosted on halomods.com: new guns made from existing tags (the Gravity Rifle, Fusion Coil Gun, Coconut Gun, a nuke launcher), Wraith grenades, a beefed-up Warthog and dual wielding anything. Released as PPF patches through 2005.'''
+authors = ["Group Bocked"]
+released = "2005"
+source_url = "https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"
+
+[[pack]]
+id = "doorm4n-legacy"
+name = "DoorM4n's Legacy Map-Pack"
+description = '''
+DoorM4n's custom Halo 2 maps from 2011 to 2014 (first posted on Remnantmods), compiled as the Legacy Map-Pack v1.1 in June 2019 with a custom main menu. Whole modded maps: new layouts on retail geometry, ported vehicles and heavy scenery work.'''
+authors = ["DoorM4n"]
+released = "2019-06-02"
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+
+[[pack]]
+id = "hockey-fans"
+name = "Hockey Fans (Old Maps) Map Pack"
+description = '''
+A pack of the twelve original Halo 2 multiplayer maps, modified, from the Se7ensins Halo 2 modded map pack repository. It has no readme and nobody is credited; what each map changes is read off the maps themselves.'''
+authors = []
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+
+[[pack]]
+id = "justcallmesteves"
+name = "Justcallmesteves Mappack"
+description = '''
+A cheat-style pack of the original Halo 2 multiplayer maps from the Se7ensins repository's cheating map packs. Its readme only says how to launch it ("Feel free to modify as you wish. I got lazy."); what each map changes is read off the maps themselves.'''
+authors = []
+source_url = "https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"
+
+[[mod]]
+map_id = "87b89ba841c37fd0ac71ee6ff19dc542d170478962cf7def6ab3d849e4c9553d"
+name = "Skyline (Real Time Shadows)"
+slug = "doorm4n-skylinerts"
+pack = "doorm4n-legacy"
+description = '''
+The Real Time Shadows (RTS) variant of DoorM4n's Skyline, a custom rooftop map built on the Ivory Tower (Cyclotron) geometry. The difference from plain Skyline is lighting: the spotlights cast real-time shadows, which looks better but is buggier and lags more. DoorM4n himself recommends the original for combat and says he included RTS only because he had debated making it. It ships in DoorM4n's Legacy Map-Pack v1.1 (compiled 2019-06-02); the original release was posted on Remnantmods on 2014-07-30.'''
+original_description = '''
+Readme: "With the Skyline (Real Time Shadows aka RTS) patch, the map has real lighting coming from the spotlights. RTS is buggy at times, but it adds a much more real environment... I prefer the original."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://www.remnantmods.com/forums/viewforum.php?f=11"]
+
+[[mod]]
+map_id = "cb7de68f008b8e133ca4a93bf5599785563f2008f89963c6b02eeef07d30271a"
+name = "Skyline"
+slug = "doorm4n-skyline"
+pack = "doorm4n-legacy"
+description = '''
+Skyline is DoorM4n's custom rooftop combat map built on the Ivory Tower (Cyclotron) geometry, with a Wasp ported from Halo CE that you can fly over the rooftops. The readme calls this version best for SLC and multiplayer combat, and notes an added banshee barrier that stops players flying out through the BSP. Known problems are falling off the Wasp mid-flight, CTF probably not working and poor team spawning; Territories, Oddball and King of the Hill should work. DoorM4n released it on Remnantmods in July 2014, and it is in his Legacy Map-Pack v1.1.'''
+original_description = '''
+Readme: "Skyline (original) is best for SLC and multiplayer combat... CTF gametypes may not work. Territories, oddball, and King of Hill should work."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://www.remnantmods.com/forums/viewforum.php?f=11"]
+
+[[mod]]
+map_id = "9d7c803dec1364ad281b55ee0afc37e67f83c1d53dc630aa32344deb492b7cd7"
+name = "Lego"
+slug = "doorm4n-lego"
+pack = "doorm4n-legacy"
+description = '''
+Lego is a custom map by DoorM4n from his Legacy Map-Pack v1.1; the Se7ensins repository lists it as Lego Halo. It is a whole map the same size as retail Lockout and the map data shows changed vehicles, weapons and textures, but no readme or release post describing it has been found. Beyond the name, what it contains is undocumented.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "fc9a5c7785e1f776307eb23474bd7fad3a2101ee4a3ad3b93c23b13796d12855"
+name = "Jurassic Ravine"
+slug = "doorm4n-jurrasic"
+pack = "doorm4n-legacy"
+description = '''
+Jurassic Ravine is an ambience mod for Beaver Creek: DoorM4n filled the map with over 50 palm trees, 100+ shrubs and a giant canopy, and added jungle and temple sounds to give it a prehistoric feel. It is not a new layout, just a new look and a more tactical Slayer match as players push through the undergrowth. The one known bug is lag from the volume of spawned scenery. This is the whole-map version from his Legacy Map-Pack; the standalone patch was posted on Remnantmods on 2014-08-02, crediting the Remnantmods team for the item-spawning technique.'''
+original_description = '''
+Readme: "Jurassic Ravine, an ambiance mod for beavercreek... spawning over 50 palm trees, 100+ shrubs, and the giant canopy... Minor Bugs: Some gameplay lag from all of the items spawned."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://www.remnantmods.com/forums/viewforum.php?f=11"]
+
+[[mod]]
+map_id = "487d0eb003d7f3975eb5d20108d53d45195e9a872837403ff5235d7b10bb0ec1"
+name = "PPF Noobs Old Map Package v2: cyclotron"
+slug = "ppfnoobs-oldv2-cyclotron"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Cyclotron from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists no teleporter for this map.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "8d7e9855f457ff298541dd00e9d7ce5fec91b6608a9645c0ff2a3dd46a93069c"
+name = "PPF Noobs Old Map Package v2: colossus"
+slug = "ppfnoobs-oldv2-colossus"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Colossus from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists a teleporter for this map: Colossus: three, one by the overshield, one on top of the map in the right-side corner and one in the death pit.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "549bdbf75dfde0682b47c87c91b0065c2a56628461be13b14324723d9388b252"
+name = "PPF Noobs Old Map Package v2: coagulation"
+slug = "ppfnoobs-oldv2-coagulation"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Coagulation from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists a teleporter for this map: Coagulation: outside the map on the peak.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "1d637f56660aa4466ebe7074eaa13e945165005e243b374edf9cb20fc842fccc"
+name = "PPF Noobs Old Map Package v2: burial_mounds"
+slug = "ppfnoobs-oldv2-burial_mounds"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Burial Mounds from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists no teleporter for this map.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "b00080fd25e08c3c51662dead95a1d36bac7410ce4b39fb0982e91e39e535961"
+name = "PPF Noobs Old Map Package v2: beavercreek"
+slug = "ppfnoobs-oldv2-beavercreek"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Beavercreek from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists a teleporter for this map: Beaver Creek: outside the map by the blue base against the invisible wall.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "dc4b45915d9fd249040046ff273eb94391804e13ab783d786f363532089e9960"
+name = "PPF Noobs Old Map Package v2: ascension"
+slug = "ppfnoobs-oldv2-ascension"
+pack = "ppfnoobs-old-map-pack-v2"
+description = '''
+A Live-style cheat/fun version of retail Ascension from The PPF Noobs Old Map Package v2 by l PPF l NeoN (released 2007), covering the original Halo 2 maps. The pack gives every map 360 auto-aim, infinite ammo and rapid fire on all weapons, wall walking, most invisible walls removed, Banshee bombs for the host, a Carbine-only spawn for the host and unique spawn points, with Plasma Pistol and rockets made more fun. The maps are not reskinned; the pack's main menu patch adds the PPF Noobs logo. The readme lists no teleporter for this map.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN! ... 360 Auto Aim, Inf Ammo/Rapid Fire (All Weapons), Wall Walking, Invisible Walls Removed On Most Maps, Teleportals..., You Spawn With Carbian... These maps are for xbl. They are for killing but have a little fun on them."'''
+description_sources = ["https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html", "https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/"]
+
+[[mod]]
+map_id = "bb2ba95c32fbb58f488a2fe1b806a46bad11c7878f6d3a791ed62875a874afc6"
+name = "Wake_Island"
+slug = "pm2-wake"
+pack = "phantom-mappack"
+description = '''
+Wake_Island is a Phantom Mappack v2 map built on Waterworks, retextured into a rainy, pine-covered island with the Waterworks base structure on the shore; Connor Tumbleson wrote that he could only tell it was Waterworks after patching it. The Phantom release list credits Darkshallfall, though Connor's 2021 photo post labelled it Ace Mods. Beyond the look, what else changed is undocumented.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/", "https://connortumbleson.com/2021/06/28/halo-2-mod-photography/"]
+
+[[mod.image]]
+file = "01-panorama.jpg"
+caption = "Stitched panorama of Wake Island: a rainy pine-covered island with the Waterworks base structure in the foreground."
+source_url = "https://connortumbleson.com/2021/06/28/halo-2-mod-photography/"
+image_url = "https://connortumbleson.com/content/images/2021/06/wakey-small.png"
+credit = "Connor Tumbleson (iBotPeaches)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "ae79bc7464af0a40dae5ff239c47c2f05fdb6375d17355cb43595f8885ba0a06"
+name = "Perch"
+slug = "pm2-perch"
+pack = "phantom-mappack"
+description = '''
+Perch is a Phantom Mappack v2 map by CaptPoopFace, built on Foundation. The map data shows changed weapons, objects, textures, shaders and geometry, but no release post describing it has been found, so the gameplay is undocumented. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/", "https://connortumbleson.com/2016/05/06/phantom-mappack-project/"]
+
+[[mod]]
+map_id = "4fbde238a97c11202817e213eeb9cfc053dbd5717385e25068bee25cb14efa3f"
+name = "justcallmesteves: waterworks"
+slug = "justcallmesteves-waterworks"
+pack = "justcallmesteves"
+description = '''
+A modified retail Waterworks from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, objects, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "f8f2337389592193738d9f29e825031251ec59fa94d0e93d2464d6863f390a8e"
+name = "justcallmesteves: midship"
+slug = "justcallmesteves-midship"
+pack = "justcallmesteves"
+description = '''
+A modified retail Midship from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, objects, textures, scripts, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "11cf7a606d630efd25bf0aeef2d03a4324225c6e4b4fbfaa35313f1798676704"
+name = "justcallmesteves: lockout"
+slug = "justcallmesteves-lockout"
+pack = "justcallmesteves"
+description = '''
+A modified retail Lockout from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "c940f9fe52039d9474629bdd624894c8c0fef42cb64f548947c9de7ddefc0c4e"
+name = "justcallmesteves: headlong"
+slug = "justcallmesteves-headlong"
+pack = "justcallmesteves"
+description = '''
+A modified retail Headlong from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, scripts, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "ea8e78f775e2076f69dda7a0393a00ab12ca13649c7434c5aec16a42e00a54b3"
+name = "justcallmesteves: foundation"
+slug = "justcallmesteves-foundation"
+pack = "justcallmesteves"
+description = '''
+A modified retail Foundation from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, scripts, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "2fbb614b9af2bf0219659a0998c7df2718043780e895ee3ff8b15d9ace62be0a"
+name = "justcallmesteves: cyclotron"
+slug = "justcallmesteves-cyclotron"
+pack = "justcallmesteves"
+description = '''
+A modified retail Cyclotron from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "1d8004e6f8562c195b11562e770a1d086236a71f30a484eee520eb4fad5757ef"
+name = "justcallmesteves: colossus"
+slug = "justcallmesteves-colossus"
+pack = "justcallmesteves"
+description = '''
+A modified retail Colossus from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "98153366062980b76a0e7212a35bcb4dc70d697af564f317a4cf80551cdb9b49"
+name = "justcallmesteves: coagulation"
+slug = "justcallmesteves-coagulation"
+pack = "justcallmesteves"
+description = '''
+A modified retail Coagulation from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "94602e981b11933a7099b8e14d83acfba73ff5d81f77695163a64eebb6ee3baf"
+name = "justcallmesteves: burial_mounds"
+slug = "justcallmesteves-burial_mounds"
+pack = "justcallmesteves"
+description = '''
+A modified retail Burial Mounds from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "6b7181510443ac395e911090aaa8016ad0fa4111c9c4d7d3505866e9bb37e5d3"
+name = "justcallmesteves: beavercreek"
+slug = "justcallmesteves-beavercreek"
+pack = "justcallmesteves"
+description = '''
+A modified retail Beavercreek from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, textures, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "f0e0aa83bcc6c4649e1cf966eb167699857f00e5db32e947495c2f0aa03c9497"
+name = "justcallmesteves: ascension"
+slug = "justcallmesteves-ascension"
+pack = "justcallmesteves"
+description = '''
+A modified retail Ascension from the Justcallmesteves Mappack, a 379 MB cheating-style pack of the original Halo 2 maps. The pack's author is unknown and its readme only says to rename one of the xbe files to default.xbe, with 'feel free to modify as you wish. I got lazy'. The map differs from retail in: vehicles, weapons, objects, textures, scripts, geometry. A pack called JustCallMeSteves Map Pack (Old Maps) was also listed on theppfnoobs.com in early 2007, which is probably the same pack but unconfirmed. Exact per-map changes are undocumented.'''
+original_description = '''
+Pack readme: "Rename one of the xbe's to default.xbe... Feel free to modify as you wish. I got lazy."'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "7b343e5e5cb705758f70d78a63a5c7f5213325c7ddedede6e9250f9dbfd27a2a"
+name = "Hockey Fans (Old Maps): zanzibar"
+slug = "hockeyfans-zanzibar"
+pack = "hockey-fans"
+description = '''
+A modified retail Zanzibar from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "6a11cf5ad579c0f020e6c598f94ba6768e9b763f399d0c6bdbd17d125f99343e"
+name = "Hockey Fans (Old Maps): waterworks"
+slug = "hockeyfans-waterworks"
+pack = "hockey-fans"
+description = '''
+A modified retail Waterworks from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "0539c8370acf635003265c3f89cc3539c209af34d73ac4c71e1737ab1afecaf9"
+name = "Hockey Fans (Old Maps): midship"
+slug = "hockeyfans-midship"
+pack = "hockey-fans"
+description = '''
+A modified retail Midship from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "7a6ec77eee9facb2c6d53cb9a797ff6030136705b23c78d923c6f7ef96c0c54d"
+name = "Hockey Fans (Old Maps): lockout"
+slug = "hockeyfans-lockout"
+pack = "hockey-fans"
+description = '''
+A modified retail Lockout from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "e260565ca6ec225223d3f1c43445ff144c37555f55f8b1066b654e25d74ddad6"
+name = "Hockey Fans (Old Maps): headlong"
+slug = "hockeyfans-headlong"
+pack = "hockey-fans"
+description = '''
+A modified retail Headlong from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "1773de2df33e29ca807f3985aad266286dfb32cd88ab0bbc63e8841b5b4e90d4"
+name = "Hockey Fans (Old Maps): foundation"
+slug = "hockeyfans-foundation"
+pack = "hockey-fans"
+description = '''
+A modified retail Foundation from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "bab5a3138f419802764b1c6273a2858db2db762dc537337be0914f4fa5e74457"
+name = "Hockey Fans (Old Maps): cyclotron"
+slug = "hockeyfans-cyclotron"
+pack = "hockey-fans"
+description = '''
+A modified retail Cyclotron from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "26ebd8f79a51634858b6dff3689dd51df3f58c07c8b759cda193bba45fe1a373"
+name = "Hockey Fans (Old Maps): colossus"
+slug = "hockeyfans-colossus"
+pack = "hockey-fans"
+description = '''
+A modified retail Colossus from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "5527fb7f5b3b82a7a405d958155a4f48f1ecff6de47d48aba49b50fae57d3731"
+name = "Hockey Fans (Old Maps): coagulation"
+slug = "hockeyfans-coagulation"
+pack = "hockey-fans"
+description = '''
+A modified retail Coagulation from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "b21b8e1bbc7fd6b2793420f5d7856cc92742462cba4198c1e0b8f14290b0d048"
+name = "Hockey Fans (Old Maps): burial_mounds"
+slug = "hockeyfans-burial_mounds"
+pack = "hockey-fans"
+description = '''
+A modified retail Burial Mounds from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "9af4d5813fb37c7f48bdc6f5e0accf6f8215cd831dee9ed2137691ba1ed2aba4"
+name = "Hockey Fans (Old Maps): beavercreek"
+slug = "hockeyfans-beavercreek"
+pack = "hockey-fans"
+description = '''
+A modified retail Beavercreek from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "ce75de97ec465e2a5f27b670432ca1cd785899acc0947a95ec65953d2397a020"
+name = "Hockey Fans (Old Maps): ascension"
+slug = "hockeyfans-ascension"
+pack = "hockey-fans"
+description = '''
+A modified retail Ascension from the Hockey Fans (Old Maps) map pack, a 378 MB collection of the original Halo 2 maps that circulated in the Se7ensins cheating mappack repository. The pack has no readme and no known author, so what each map does is undocumented; the map data differs from retail in: vehicles, weapons, textures, geometry.'''
+description_sources = ["https://www.se7ensins.com/forums/threads/xbox-halo-2-modded-map-pack-repository-active-2026.1754281/"]
+
+[[mod]]
+map_id = "eb81955720abd5bca3a3e17cdd7046db8ed2540808d8ada930208dc72f13fda7"
+name = "Zanzibar Squads"
+slug = "air-zanzibar-squads"
+pack = "ai-revision"
+description = '''
+Zanzibar Squads is a Halo 2 Remapped AI Revision map by MilyardoX2 that adds squads of AI to Zanzibar, so you play the usual modes alongside AI bots. Specifics are undocumented; the map's scenario is named zanzibar_squads. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/", "https://ibotmodz.net/topic/147-halo-2-ai-revision-mappack/"]
+
+[[mod]]
+map_id = "5acdecdfbbfb69c69c4b1ca4b275134c5077766fd1603132c116bd6f3d5765b0"
+name = "Zombiebar"
+slug = "zombiebar"
+pack = "ai-revision"
+description = '''
+Zombiebar is a Halo 2 Remapped AI Revision map by Badsmiley that is, by name, a zombie take on Zanzibar with AI; no description survives. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/"]
+
+[[mod]]
+map_id = "9143891a7eb36edf3862e91a2d8a19a74e520fcc0432535c4c967540bf827329"
+name = "Canyon (Relic)"
+slug = "canyon-relic"
+description = '''
+Canyon was uploaded to assassin4hire.com on 2006-03-29 as a DotHalo PPF patch of Relic (dune.map), about 7 MB uncompressed, so it changes a lot. The upload had no description or credited author and commenters at the time could not tell which map it was for, with guesses ranging from Coagulation to an old map. Its patch data opens like Cool Dune Mash Pit Mod, so the two may share an author, but that is unproven. What it does is undocumented.'''
+original_description = '''
+assassin4hire details page: title "Canyon", no description; commenters: "what map is this for".'''
+description_sources = ["https://web.archive.org/web/2006/http://www.assassin4hire.com/upload/details.php?file=247"]
+
+[[mod]]
+map_id = "cf0df3b82a7720c0b15eb05afdc0060f1dac35d5a5268310f1c9aa8f9c744fb5"
+name = "Q*bert"
+slug = "qbert"
+pack = "phantom-mappack"
+description = '''
+Q*bert is a Q*bert-themed map by CaptPoopface on Containment, listed as qBert v3 in the Phantom Mappack v1 release list. No readme or description is known, so the gameplay is undocumented. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/", "https://connortumbleson.com/2016/05/06/phantom-mappack-project/"]
+
+[[mod]]
+map_id = "ae915ea40fe543f5d73ea8bda5e71e7319b43892f59f3b94c2433538d49fbb02"
+name = "Ownage Modz Warlock"
+slug = "ownage-modz-warlock"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Warlock is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Warlock and adds superspeed, superjump, 360 auto-aim on the BR, a fully automatic dual-wieldable BR with 10,000 rounds, and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "f280a812110d399c00fcd2f1dd3f282104d0c0073c1ccfe0509232590e608301"
+name = "Ownage Modz Turf"
+slug = "ownage-modz-turf"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Turf is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Turf and adds superspeed, superjump, 360 auto-aim on the BR, human sniper and rocket launcher, a full-auto dual-wieldable BR, a full-auto sniper and a full-auto rocket launcher (10,000 rounds each, for Team Rockets), and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "9ec3f6bf806387f3e8e12c6c85c687830deb8ba27a114a6facd8a3988aea524c"
+name = "Ownage Modz Terminal"
+slug = "ownage-modz-terminal"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Terminal is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Terminal (Triplicate) and adds superspeed, superjump, 360 auto-aim on the BR and human sniper, a full-auto dual-wieldable BR, a full-auto sniper for Team Snipers, and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "3a8ea3fa157f8ea18ede3195cb76208e53da7f8aab5da1adc71b22ef1139db8a"
+name = "Ownage Modz Sanctuary"
+slug = "ownage-modz-sanctuary"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Sanctuary is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Sanctuary (Delta Tap) and adds superspeed, superjump, 360 auto-aim on the BR and human sniper, a full-auto dual-wieldable BR, a full-auto sniper for Team Snipers, and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "a95d34425c5b287c4f2e91e48358a82907d09a9a19be4f4fd8e62ad99db3f560"
+name = "Ownage Modz Relic"
+slug = "ownage-modz-relic"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Relic is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Relic (Dune) and adds superspeed, superjump, 360 auto-aim on the BR and human sniper, a full-auto dual-wieldable BR, a full-auto sniper for Team Snipers, and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "4baf4bd72d8ade0644f53fa04e19304b186171a8610dab4c2c8a893750569a7c"
+name = "Ownage Modz Gemini"
+slug = "ownage-modz-gemini"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Gemini is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Gemini and adds superspeed, superjump, 360 auto-aim on the BR and beam rifle, a full-auto dual-wieldable BR that replaces the magnum in Team Duals, a full-auto low-heat beam rifle, and dual-wieldable bomb, ball and flag (made specifically for Team Duals). The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "a6b5b6a499537d7ac094b2ffaa1cc92fdcdcdc7999438f280748b167e61a6e76"
+name = "Ownage Modz Elongation"
+slug = "ownage-modz-elongation"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Elongation is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Elongation and adds superspeed, superjump, 360 auto-aim on the BR, sniper and rocket launcher, a full-auto dual-wieldable BR, a full-auto sniper (Team Snipers) and rocket launcher (Team Rockets), and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "b73d0525e499cc50cd7f0154ead762c509a73afa4c4eb78f376b8546197fc306"
+name = "Ownage Modz Containment"
+slug = "ownage-modz-containment"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Containment is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Containment and adds superspeed, superjump, 360 auto-aim on the BR and human sniper, a full-auto dual-wieldable BR, a full-auto sniper, and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "b7f0869ee200cd1e46e2f9a3e090ddebbb2bf78d670b0d33628d7607aa4bf46b"
+name = "Ownage Modz Backwash"
+slug = "ownage-modz-backwash"
+pack = "ownage-modz"
+description = '''
+Ownage Modz Backwash is one of nine Live matchmaking cheat patches in Ownage Modz by Synch (1 Jan 2006), made for the Multiplayer Map Pack maps; this one patches Backwash and adds superspeed, superjump, 360 auto-aim on the BR, sniper and rocket launcher, a full-auto dual-wieldable BR, a full-auto sniper (Team Snipers) and rocket launcher (Team Rockets), and dual-wieldable bomb, ball and flag. The readme is blunt that these are not 'fun' mods: using them in matchmaking will get you banned within hours, and the patched map must be re-signed with CMR to load. The pack was posted on assassin4hire.com.'''
+original_description = '''
+Read Me: "Ownage Modz By Synch - 1/1/06. These mods are made specifically for Halo 2 Matchmaking on Xbox Live, they are not FUN mods."'''
+description_sources = ["https://web.archive.org/web/2007/http://www.assassin4hire.com/upload/uploads/upload-1136181867-Ownage%20Modz.rar"]
+
+[[mod]]
+map_id = "28e4e22a1b06ad30263b4ab7320776ca61dc823155668c2e8a2b46969bab716e"
+name = "Nightwinder 2"
+slug = "nightwinder-2"
+description = '''
+Nightwinder 2 by MrMurder brings the snowy, atmospheric Halo 1 Nightwinder look to Halo 2 on top of Containment: new weather, a darker lightmap, extra working containment gates and scenery, six teleporter pairs, new weapon models and skins, and a rebalanced sandbox. Connor Tumbleson called it polished and excellent to play with friends. It was first posted on halomods.com on 2007-03-18, re-uploaded to Remnantmods as an updated version, and included in the Phantom Mappack. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+original_description = '''
+Connor Tumbleson: "This was Nightwinder 2 by MrMurder. This modification had new models for weapons, new skins and an entire new balanced sandbox of weapons."'''
+description_sources = ["https://connortumbleson.com/2016/05/06/phantom-mappack-project/", "https://archive.org/details/nightwinder2", "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"]
+
+[[mod.image]]
+file = "01-blog.jpg"
+caption = "Snowy, overcast Nightwinder 2 scene with an energy bridge under a stormy sky (Nightwinder 2 watermark)."
+source_url = "https://connortumbleson.com/2016/05/06/phantom-mappack-project/"
+image_url = "https://connortumbleson.com/content/images/2016/05/nightwinder-2.jpg"
+credit = "Connor Tumbleson (iBotPeaches)"
+licence = "unknown; credited to the original poster"
+
+[[mod.image]]
+file = "02-youtube-iNubcSezNOQ.jpg"
+caption = "Frame from the Nightwinder 2 trailer: first-person combat with energy blasts."
+source_url = "https://www.youtube.com/watch?v=iNubcSezNOQ"
+image_url = "https://img.youtube.com/vi/iNubcSezNOQ/hqdefault.jpg"
+credit = "Toxiic Gravity (YouTube, re-upload of the trailer)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "1cc3c9daa089ca2a115deb240b2479abddcb5cef9b6fa0c0dbf77954d9a46816"
+name = "Night Ops"
+slug = "night-ops"
+pack = "ai-revision"
+description = '''
+Night Ops is a Halo 2 Remapped AI Revision map by T Beezie built on Containment; a gameplay video shows a green night-vision-style filter over Team Slayer with AI on the field. No written description survives, so the AI setup is otherwise undocumented. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/", "https://www.youtube.com/watch?v=8XaIOGLYoeo"]
+
+[[mod.image]]
+file = "01-youtube-8XaIOGLYoeo.jpg"
+caption = "Green night-vision-style view of Team Slayer on Night Ops, with armoured figures ahead."
+source_url = "https://www.youtube.com/watch?v=8XaIOGLYoeo"
+image_url = "https://img.youtube.com/vi/8XaIOGLYoeo/hqdefault.jpg"
+credit = "badtothebone714 (YouTube)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "bc42b3d5502821f766d6cbc5269f012bd3bba04b2dc953d26f3ff1b71a9c9970"
+name = "Foundry"
+slug = "foundry"
+pack = "phantom-mappack"
+description = '''
+Foundry is a Phantom Mappack map by DarkShallFall built on Gemini. Its name suggests a take on Halo 3's Foundry, but no readme or post describing it was found, so its contents are undocumented. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"]
+
+[[mod]]
+map_id = "ae58d622bc293c026baa1df91ef4d9c6f859670444262b6ce0fd8f803fded6aa"
+name = "Cool Dune Mash Pit Mod"
+slug = "cool-dune-mash-pit-mod"
+description = '''
+Cool Dune Mash Pit Mod was uploaded to assassin4hire.com in March 2006 as a DotHalo PPF for Relic (dune.map), about 8 MB, so a large change. The description is a weapon-swap list: BR becomes a full-auto sniper with 360 auto-aim; uncharged plasma pistol becomes a flying turret that looks like a Wraith, charged one makes a warthog fly for you; magnum becomes a frag grenade; plasma rifle a sticky; frag a fuel rod; sticky a Wraith shot; carbine a very strong weapon; SMG a rocket; and rocket a sniper tower base. The uploader is unknown and the post's wording confused its own commenters.'''
+original_description = '''
+assassin4hire (17/03/2006): "br= sniper 360 aa+fa ... smg=rocket / rocket=sniper tower base / and more try it"'''
+description_sources = ["https://web.archive.org/web/20060721074109/http://www.assassin4hire.com:80/upload/details.php?file=233"]
+
+[[mod]]
+map_id = "5b5b00e376a1c3349943f718743c167d39c8e3b5862b9a6b6fb09f717d6bc67a"
+name = "DKong"
+slug = "kong-extreme"
+pack = "phantom-mappack"
+description = '''
+Donkey Kong Extreme is a Containment map by killershard and A G1mp, released on Se7ensins on 2007-06-29: a six-level obstacle course where you climb each level to a flag that teleports you to the next. It uses Warthog and Ghost jumps, exploding barrels, falling cores and plasma grenades, rockets, wraith shots and moving bridges, ending in an area with a plasma pistol, sniper and rockets. Extras are a Mario-themed Warthog, a golden sand skin, a switch that disables spawners for 40 seconds, a secret modders' area and Mario tunes in the hog. It was included in Phantom Mappack v1 as DKong and was SLC compatible.'''
+original_description = '''
+Release post: "This map consists of 6 Levels, at the top of each level the player must walk into the flag, of which teleports them to the next corresponding level."'''
+description_sources = ["https://web.archive.org/web/20200921160926/https://www.se7ensins.com/forums/threads/donkey-kong-extreme-edition.21701/", "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"]
+
+[[mod]]
+map_id = "b952d4c4cbc93db324da8aca574ffc4099a29e98241e6cf68f197596d36bf032"
+name = "Blockfort"
+slug = "blockfort"
+pack = "phantom-mappack"
+description = '''
+Blockfort is a block-built fort map on Gemini by halo0001, listed as BlockFortFinal in the Phantom Mappack release. No readme or description is known, so the gameplay is undocumented. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"]
+
+[[mod]]
+map_id = "0677b8a345fef361ec2360fbba6fa8d26e8f9f4fd9758b97ccf4b486c34ad1bd"
+name = "BioDrop"
+slug = "biodrop"
+description = '''
+BioDrop by DarkShallFall, built on Terminal (Triplicate), is a showcase of heavy particle, object and HUD editing; Connor Tumbleson called it a masterpiece of what careful work and good tools could do. It first appeared on Remnantmods on 2008-05-26 and was reposted on iBotModz and included in the Phantom Mappack. The screenshot shows dual-wielded weapons firing into a burst of purple particles in a dark room.'''
+original_description = '''
+Connor Tumbleson: "Biodrop by Darkshallfall took particle editing, object editing and HUD manipulation to the next level."'''
+description_sources = ["https://connortumbleson.com/2016/05/06/phantom-mappack-project/", "https://ibotmodz.net/forum/topic/3528-darkshallfall-biodrop/"]
+
+[[mod.image]]
+file = "01-blog.png"
+caption = "First-person view of dual-wielded weapons firing into a burst of purple particles in a dark room, on the BioDrop map."
+source_url = "https://connortumbleson.com/2016/05/06/phantom-mappack-project/"
+image_url = "https://connortumbleson.com/content/images/2016/05/biodrop.png"
+credit = "Connor Tumbleson (iBotPeaches)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "2104834e598da98c85ce1b5901d4a6cb069518fef1674e624d923aa44d5b9698"
+name = "AI War"
+slug = "ai-war"
+pack = "ai-revision"
+description = '''
+AI War by T Beezie is a large AI battle on a reworked Containment: marines against Covenant with vehicles and dropships, with players joining in on Team Slayer. It is one of the 17 maps in Halo 2 Remapped AI Revision. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/", "https://www.youtube.com/watch?v=3Co-UOYx5bc"]
+
+[[mod.image]]
+file = "01-youtube-3Co-UOYx5bc.jpg"
+caption = "Camera-phone footage of Team Slayer on AI War, with a vehicle and AI in the distance."
+source_url = "https://www.youtube.com/watch?v=3Co-UOYx5bc"
+image_url = "https://img.youtube.com/vi/3Co-UOYx5bc/hqdefault.jpg"
+credit = "allleeex11 (YouTube)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "c1712f25a6326f35f653caf31d5edee7281c6d4fe4f8c0e3e9fc06a83fc373c0"
+name = "Zombies In The Mist"
+slug = "zombies-in-the-mist"
+pack = "ai-revision"
+description = '''
+Zombies In The Mist is a Halo 2 Remapped AI Revision map by MilyardoX2 on Cyclotron; by name a zombie-style AI map in the fog, though no description survives. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/"]
+
+[[mod]]
+map_id = "fbf1fb71c6dc07d264eea2431e55fecc35031e49d4f331414aa6d37682a2d820"
+name = "They Rose From The Snow"
+slug = "they-rose-from-the-snow"
+pack = "ai-revision"
+description = '''
+They Rose From The Snow is a Halo 2 Remapped AI Revision map by Uncutshadow on Burial Mounds; by name an AI survival-style map in snow, though no description survives. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/"]
+
+[[mod]]
+map_id = "0a92534d3782053a834a59d7e2f208ee99c398c8b7c93da27223295aaa573496"
+name = "Soccer Mounds"
+slug = "soccer-mounds"
+pack = "phantom-mappack"
+description = '''
+Soccer Mounds by Freakazoid turns Burial Mounds into a soccer field: Warthogs act as players and a giant ball is the thing to push into the goals. Connor Tumbleson named it a classic and the example of how far Halo 2 mods went. It was also in Killtrocity Mappack v2, and the Phantom Mappack included it. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+original_description = '''
+Connor Tumbleson: "This was the ever classic and replayed Soccer Mounds by Freakazoid... introducing a soccer field into the game."'''
+description_sources = ["https://connortumbleson.com/2016/05/06/phantom-mappack-project/", "https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/"]
+
+[[mod.image]]
+file = "01-blog.jpg"
+caption = "Warthogs and a giant soccer ball on the grass-textured field built inside the Burial Mounds structure."
+source_url = "https://connortumbleson.com/2016/05/06/phantom-mappack-project/"
+image_url = "https://connortumbleson.com/content/images/2016/05/soccer-mounds.jpg"
+credit = "Connor Tumbleson (iBotPeaches)"
+licence = "unknown; credited to the original poster"
+
+[[mod.image]]
+file = "02-youtube-LVwpsjsvNkI.jpg"
+caption = "Warthog driving into the ball under a large Covenant eye banner; thumbnail of a Fubonis video of the same map in the Killtrocity 2 pack."
+source_url = "https://www.youtube.com/watch?v=LVwpsjsvNkI"
+image_url = "https://img.youtube.com/vi/LVwpsjsvNkI/hqdefault.jpg"
+credit = "Fubonis (YouTube)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "0271d484d74d9b8e3e5098ca5cb87fc35f65ea19c408775f48caec8171255489"
+name = "PPF Noobs Zanzibar"
+slug = "ppfnoobs-map-package-zanzibar"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Zanzibar is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Zanzibar: in the water at the corner of the building. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "9a77ec4a87bc2760f6de69eeff2cfb3f34a3f4c91705910d5344b9cb15e68ef3"
+name = "PPF Noobs Waterworks"
+slug = "ppfnoobs-map-package-waterworks"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Waterworks is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Waterworks: in the death pit corner. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "209ae689b24477213411fabf447fe84e3449b66a8391dbf8173e5c13381e6e20"
+name = "PPF Noobs Midship"
+slug = "ppfnoobs-map-package-midship"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Midship is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. The pack lists no teleporter for this map. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "b80425cc4d7c7d7b36deb3c77cf8b310c666675d6f83b7a5d4610cf6fb5f6a19"
+name = "PPF Noobs Lockout"
+slug = "ppfnoobs-map-package-lockout"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Lockout is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. The pack lists no teleporter for this map. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "63d3bf5cc31b090cfc89117866b7d2c060ba34ff6cd0056bed0702326324f0ee"
+name = "PPF Noobs Headlong"
+slug = "ppfnoobs-map-package-headlong"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Headlong is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Headlong: in the water in the corner. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "63c93168c0fe1cbc08ed15d6aca5577b2d7cfacf7d0f786f36054536aa7d8d4c"
+name = "PPF Noobs Foundation"
+slug = "ppfnoobs-map-package-foundation"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Foundation is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Foundation: three, at the bottom of room 4, in the corner of the secret room and at the sword. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "d5d3dec2cc40b0ac79a995c030cc000a6a24fb7bb3b44e4134173c7cc3cd305f"
+name = "PPF Noobs Cyclotron"
+slug = "ppfnoobs-map-package-cyclotron"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Cyclotron is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. The pack lists no teleporter for this map. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "2e65996fb876e440745dd02f4e4338c8de185d80c20d1f17b08795d7e478b8fc"
+name = "PPF Noobs Colossus"
+slug = "ppfnoobs-map-package-colossus"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Colossus is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Colossus: three, one by the overshield, one on top of the map in the right-side corner and one in the death pit. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "07e0a116b6b913e68e5c9a971c3b8b585c1098d14deb20757a198abd4fc3024b"
+name = "PPF Noobs Coagulation"
+slug = "ppfnoobs-map-package-coagulation"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Coagulation is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Coagulation: outside the map on the peak. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "52f29a06df9087fb3a5ca0210b024c1960c142a1e1842e493773d117ab611f8c"
+name = "PPF Noobs Burial_Mounds"
+slug = "ppfnoobs-map-package-burial_mounds"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Burial Mounds is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. The pack lists no teleporter for this map. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "2efbc117753d55dc93b78fa2d0d99b0c71c2ee360b738dbbdaaf748f1afc7a70"
+name = "PPF Noobs Beavercreek"
+slug = "ppfnoobs-map-package-beavercreek"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Beavercreek is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. Teleporter note from the pack: Beaver Creek: outside the map by the blue base against the invisible wall. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "f6cee559f5c337155f0b1201df1cbc6f5b0bf1eaf818ffe70315a18def23e658"
+name = "PPF Noobs Ascension"
+slug = "ppfnoobs-map-package-ascension"
+pack = "ppfnoobs-map-package"
+description = '''
+PPF Noobs Ascension is a Live-era cheat/fun patch from The PPF Noobs Map Package (October 2006) by l PPF l NeoN. The package gives every map 360 auto-aim, infinite ammo and rapid fire, wall walking, most invisible walls removed, teleporters, Banshee bombs for the host, a Carbine spawn for the host and unique spawn points; the maps are not reskinned. The pack lists no teleporter for this map. The PPF Noobs group listed it on its site in late 2006 and early 2007.'''
+original_description = '''
+Readme: "These mods were made by l PPF l NeoN!" The Map Package (Oct 2006) gives 360 auto aim, infinite ammo/rapid fire, wall walking, most invisible walls removed, teleportals, host-only banshee bombs, a host carbine spawn and unique spawn points.'''
+description_sources = ["https://web.archive.org/web/20070112055613/http://www.theppfnoobs.com/", "https://web.archive.org/web/20070212045131/http://theppfnoobs.com:80/modz.html"]
+
+[[mod]]
+map_id = "b6e74c842a981a904a0001f14c92753ac550681f8055ec50d6a16c7f6ada0599"
+name = "Marines vs Teh Flood"
+slug = "marines-vs-teh-flood"
+pack = "ai-revision"
+description = '''
+Marines vs Teh Flood is a Halo 2 Remapped AI Revision map by T Beezie on Lockout: marines and Flood as AI opponents. Specifics are otherwise undocumented. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/"]
+
+[[mod]]
+map_id = "5982c604386af8441a75082238a05ad257ffe61d69c7c23f18b1803a10a52251"
+name = "Lockout Paintball"
+slug = "lockout-paintball"
+pack = "phantom-mappack"
+description = '''
+Lockout Paintball by Barringer is a paintball-style mod of Lockout, from Phantom Mappack v2; a gameplay video shows Slayer on the map. No readme is known, so the exact changes are undocumented. Phantom Mappack is the iBotModz-community pack compiled by iBotPeaches (Connor Tumbleson, posting as BrainHacker): 90 community maps split into v1 and v2 of 45 each, with a custom main menu and an auto-patcher, finished in January 2010 and announced on Se7enSins on 2010-03-31. It was distributed as Serenity patches; the map here is the pre-built version from the archived pack.'''
+description_sources = ["https://web.archive.org/web/20120126045314/http://www.se7ensins.com/forums/threads/phantom-map-pack-v1-and-v2.185536/", "https://www.youtube.com/watch?v=HbSHUtpBPlE"]
+
+[[mod.image]]
+file = "01-youtube-HbSHUtpBPlE.jpg"
+caption = "Slayer gameplay on Lockout Paintball (Phantom V2), thumbnail of a Gary UK video."
+source_url = "https://www.youtube.com/watch?v=HbSHUtpBPlE"
+image_url = "https://img.youtube.com/vi/HbSHUtpBPlE/hqdefault.jpg"
+credit = "Gary UK (YouTube)"
+licence = "unknown; credited to the original poster"
+
+[[mod]]
+map_id = "d2db6aa378d9f4458b3550854134af055df2d3ebe8c9dfc4dc7fbf2fe15ad5d7"
+name = "The Landfill"
+slug = "the-landfill"
+pack = "group-bocked"
+description = '''
+The Landfill (also called The Secret Level) is a 2005 patch by NRA, hosted with the Group Bocked patches on halomods.com. It patches the UK PAL mainmenu.map to add a secret level reachable from the main menu. The patch has no block check, so it applies blindly; confirm it against your own disc's map.'''
+original_description = '''
+Group Bocked PPFs page: "The Landfill AKA The Secret Level. Map: Mainmenu (UK PAL). Effect: Adds a secret level."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "5f6dec41d52f22f43cb4599be1caa099d44fcc432d3980e0783d19249ab6cd1f"
+name = "Coconut Gun"
+slug = "coconut-gun"
+pack = "group-bocked"
+description = '''
+Coconut Gun is a 2005 Group Bocked weapon mod for Zanzibar by norulezapply, in which the SMG shoots coconuts. It is one of the earliest Halo 2 Xbox mods, hosted on halomods.com. The patch has no block check.'''
+original_description = "Group Bocked PPFs page: \"Coconut gun. Map: Zanzibar. Effect: SMG shoots coconuts.\""
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "a2418598339e10d5521279534de1f9f327ca9aa925c15b79a056106e736f40f1"
+name = "Wraith Grenade"
+slug = "wraith-grenade"
+pack = "group-bocked"
+description = '''
+Wraith Grenades is a 2005 Group Bocked mod for Zanzibar that modifies the plasma grenade so it behaves like Wraith mortar rounds, described only as rather fun. Its header says PAL zanzibar.map and there is no block check, so verify it against your disc.'''
+original_description = '''
+Group Bocked PPFs page: "Wraith Grenades. Map: Zanzibar. Effect: Modified plasma grenades. Rather fun."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "636e0fc119c286e57563b63e39e54f558bee1d4361161cf80c92644ba6558c88"
+name = "Heavy Weapons"
+slug = "heavy-weapons"
+pack = "group-bocked"
+description = '''
+Heavy Weapons is a 2005 Group Bocked mod for Zanzibar that modifies most weapons to be much more powerful. No per-weapon list was posted. The header says PAL zanzibar.map and there is no block check.'''
+original_description = '''
+Group Bocked PPFs page: "Heavy Weapons. Map: Zanzibar. Effect: Modifies most of the weapons to make them powerful."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "1f57d72caea4e1338e8b3f41831c0ada43341f1117155fd023f66807480c0509"
+name = "Gravity Rifle (Coagulation)"
+slug = "gravity-rifle-coagulation"
+pack = "group-bocked"
+description = '''
+Gravity Rifle (Not Skinned) is a 2005 Group Bocked mod for Coagulation that turns the sniper rifle into a gravity rifle ('No More Brains, No More Mess'); the weapon keeps the sniper's look, hence not skinned. The patch has no block check and no region noted.'''
+original_description = '''
+Group Bocked PPFs page: "Gravity Rifle (Not Skinned). Map: Coagulation. Effect: Changes the sniper rifle into a gravity rifle."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "073a09bb4b9196f52bb4f2f02d4fe8909fe9ce70e90c00dc28f43dbe0b996ad5"
+name = "Fusion Coil Gun"
+slug = "fusion-coil-gun"
+pack = "group-bocked"
+description = '''
+Fusion Coil Gun is a 2005 Group Bocked mod for Zanzibar in which the SMG shoots fusion cores, billed as guaranteed fun. The header says PAL zanzibar.map and there is no block check.'''
+original_description = '''
+Group Bocked PPFs page: "Fusion Coil Gun. Map: Zanzibar. Effect: SMG shoots fusion cores. Garunteed fun!"'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "82eb43d1de89f325886d60e57e25fd0588cd457bcc1f7730a52456967d3c4f4e"
+name = "Dual Wield Anything"
+slug = "dual-wield-anything"
+pack = "group-bocked"
+description = '''
+Dual Wield Anything is an April 2005 Group Bocked mod for Zanzibar that lets you dual wield any weapon. The header says PAL zanzibar.map and there is no block check, so apply it carefully.'''
+original_description = '''
+Group Bocked PPFs page: "Duel Weild Anything. Map: Zanzibar. Effect: Gives you the ability to duel weild anything!"'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "3f364c8dcd06df54cef6ca3b29d40ee7b677c9eb35d4df2107290ae95ca97408"
+name = "Nuke Launcher (Coagulation)"
+slug = "nuke-launcher-coagulation"
+pack = "group-bocked"
+description = '''
+Nuke for Coagulation is a Group Bocked mod released on 2005-02-06 that turns the rocket launcher into a 'fun little toy': press fire and hope you can get out of the way in time. Region not stated and there is no block check.'''
+original_description = '''
+Group Bocked PPFs page: "Nuke for Coagulation. Changes the rocket launcher into a fun little toy. Press fire and pray you can get out of the way in time."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "6400dd1317e1dac4d2d478c86ee20d17273f9490ab962e12be120016ec79cc29"
+name = "Beasthog"
+slug = "beasthog"
+pack = "group-bocked"
+description = '''
+Beasthog Version 1 is a February 2005 Group Bocked mod for Zanzibar that turns the Warthog into a Beasthog with five seats, a hidden surprise in the gunner seat and a Covenant turret that fires Wraith mortars. The header says PAL zanzibar.map and there is no block check.'''
+original_description = '''
+Group Bocked PPFs page: "Beasthog Version 1. Turns the hog into a beasthog with 5 seats (plus an extra suprise in the gunner seat), covie turret that fires wraith mortars."'''
+description_sources = ["https://web.archive.org/web/2005/http://www.halomods.com/bocked/index.php?id=ppfs"]
+
+[[mod]]
+map_id = "53ec1d86b819ef8ba41966ef983c918bff7e1d0c79068f8828f49d0cb9ac1b68"
+name = "Beezie Bot Canyon"
+slug = "beezie-bot-canyon"
+pack = "ai-revision"
+description = '''
+Beezie Bot Canyon is a Halo 2 Remapped AI Revision map by T Beezie built on Coagulation, a canyon-style AI bot map; no description survives, so details are undocumented. Halo 2 Remapped AI Revision is the 17-map pack Zone 117 released on 2007-06-16 (halomods.com and Se7enSins). Every map is a multiplayer map with AI added, so you can play CTF, Team Slayer or Territories alongside AI bots; the pack requires launching through the Xored trainer launcher with Yelo, which enables AI, and its auto-patcher was written by Detox.'''
+description_sources = ["https://web.archive.org/web/20090208202552/http://www.halomods.com/forums/viewtopic.php?t=61177", "https://www.se7ensins.com/forums/threads/halo-2-remapped-ai-revision.20413/"]

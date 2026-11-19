@@ -112,10 +112,20 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "the Game Setup list's row, a UI event on the game thread",
     ),
     (
+        "game-setup-help",
+        "SQUAD_SETTINGS_UPDATE",
+        "the Game Setup screen's per-frame update (picture and description), UI on the game thread",
+    ),
+    (
         "clankermatch",
         "*",
         "the OptiMatch playlist list's rows and press, and the Live menu's Quickmatch press: \
          UI events on the game thread",
+    ),
+    (
+        "clankermatch-switch",
+        "*",
+        "the Game Setup list's Switch To: Clankermatch row, a UI event on the game thread",
     ),
     (
         "live-menu-cursor",
@@ -128,6 +138,18 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("bots", "RENDER_FRAME", AFTER),
     ("bots", "SOUND_UPDATE", AFTER),
     ("bots", "SOUND_LISTENERS_UPDATE", AFTER),
+    ("bots", "SOUND_OWNER_USER", AFTER),
+    ("bots", "GAME_ACTIVATE", AFTER),
+    (
+        "bots",
+        "WEAPON_FIRE",
+        "a shot in the simulation, on the game thread; the bots hear it",
+    ),
+    (
+        "bots",
+        "MACHINE_IN_GAME",
+        "the simulation's per-tick player update, on the game thread; phantoms' machines answer in the game",
+    ),
     (
         "bots",
         "PLAYER_KILLED",

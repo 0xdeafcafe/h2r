@@ -138,6 +138,57 @@ pub fn convert_brightest(
     Ok(conv)
 }
 
+/// A Halo 2 change-colour map from one channel of a Halo 1 model
+/// shader's multipurpose map: DXT5 of `mask`'s size and mip chain, whose
+/// channel `to` (0 red .. 3 alpha) is `mask`'s channel `from` and every
+/// other channel 0. Halo 2's change-colour stems tint by each channel of
+/// this map in turn (red the object's change colour 0, green 1, blue 2,
+/// alpha 3; `h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR`), so a
+/// channel left 0 tints nothing. 2D images only; deterministic.
+pub fn channel_into(
+    mask: &Image,
+    mask_px: &[u8],
+    from: usize,
+    to: usize,
+) -> Result<(Image, Vec<u8>)> {
+    if mask.kind != ImageKind::D2 || from > 3 || to > 3 {
+        return Err(Error::Unsupported(format!(
+            "a change-colour mask of type {:?}, channel {from} into {to}",
+            mask.kind
+        )));
+    }
+    let levels = decode_image(mask, mask_px)?;
+    let mut out_img = mask.clone();
+    out_img.format = PixelFormat::Dxt5;
+    out_img.flags =
+        (mask.flags & !(FLAG_PALETTIZED | FLAG_SWIZZLED | FLAG_LINEAR)) | FLAG_COMPRESSED;
+    out_img.depth = 1;
+    let layout = texture_desc(&out_img)?.layout()?;
+    let mut out = vec![0u8; layout.total_size];
+    for l in &layout.levels {
+        let src = levels
+            .iter()
+            .find(|v| v.face == 0 && v.level == l.level)
+            .ok_or_else(|| Error::Invalid(format!("the mask has no level {}", l.level)))?;
+        let n = (src.width * src.height) as usize;
+        let mut rgba = vec![0u8; n * 4];
+        let mut alpha = vec![0u8; n];
+        for t in 0..n {
+            let v = src.rgba[t * 4 + from];
+            if to == 3 {
+                alpha[t] = v;
+            } else {
+                rgba[t * 4 + to] = v;
+            }
+        }
+        let blocks = encode_dxt5(src.width, src.height, &rgba, &alpha);
+        let n = blocks.len().min(l.size);
+        out[l.offset..l.offset + n].copy_from_slice(&blocks[..n]);
+    }
+    out_img.pixel_size = out.len() as u32;
+    Ok((out_img, out))
+}
+
 /// The red channel of `masks` (face 0) at `w` x `h`, row-major.
 fn mask_red(masks: &[Level], w: u32, h: u32) -> Result<Vec<u8>> {
     let face0 = || masks.iter().filter(|m| m.face == 0);

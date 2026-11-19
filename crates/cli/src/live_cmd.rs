@@ -131,7 +131,9 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           PNGs and a manifest.json; --out defaults to
                           game-art/ in the server directory; Halo 1 maps
                           converted under DATA are drawn too (--halo1
-                          converts what is missing first)
+                          converts what is missing first), and so are the
+                          mods installed there (DATA/maps), each from its
+                          patched map, keyed by its MapId
   assets check [--out DIR]
                           exit 0 when DIR holds art from this h2's extractor,
                           1 when it is missing or from an older one (then

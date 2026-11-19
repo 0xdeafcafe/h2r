@@ -27,8 +27,8 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
-    RenderStats, SnapRecord,
+    DepthRecord, DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord,
+    PassRecord, RenderStats, SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,9 @@ pub mod method {
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
-    /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row"}`.
+    /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row",
+    /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows
+    /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_SCREEN: &str = "ui.screen";
     /// Record the next whole frame's passes, draws and targets, or read
     /// the last one recorded ([`crate::FrameParams`]).

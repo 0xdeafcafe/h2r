@@ -184,6 +184,12 @@ pub trait Rows: Send + Sync {
     fn line(&self, _row: i16) -> Option<String> {
         None
     }
+    /// The string id of the class's panel text `i` ([`ListClass::panel`]):
+    /// set when the screen opens and again whenever the description is;
+    /// `None` leaves it empty.
+    fn panel_text(&self, _i: usize) -> Option<u32> {
+        None
+    }
 }
 
 /// See [`Rows::live_text`].
@@ -731,17 +737,46 @@ impl TextBlock {
     }
 }
 
+/// A text of a class's own that belongs to no row (a page's body, a
+/// table's label or value, a checklist column; [`ListClass::panel`]): a
+/// text block definition like [`TextBlock`]'s, right-justified or not and
+/// with the retail block's render depth bias, its string set by
+/// [`Rows::panel_text`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PanelText {
+    pub block: TextBlock,
+    /// Right-justified (flags bit 1), else left (bit 0).
+    pub right: bool,
+    /// The block's render depth bias (`+0x28`).
+    pub bias: i16,
+}
+
+impl PanelText {
+    /// The block's bytes, as [`TextBlock::bytes`] with its justification
+    /// and bias.
+    pub fn bytes(&self) -> [u8; TEXT_BLOCK_SIZE as usize] {
+        let mut b = self.block.bytes();
+        let flags: u32 = if self.right { 2 } else { 1 };
+        b[0..4].copy_from_slice(&flags.to_le_bytes());
+        b[0x28..0x2a].copy_from_slice(&self.bias.to_le_bytes());
+        b
+    }
+}
+
 /// The description widget of each open screen of a class and the row it
 /// shows, so row text sets it only when the focus moved.
 #[derive(Default)]
 pub struct Shown(Mutex<Vec<ShownEntry>>);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ShownEntry {
     screen: u32,
     widget: u32,
     picture: Option<u32>,
     row: Option<i16>,
+    /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
+    /// one that could not be made).
+    panel: Vec<u32>,
 }
 
 /// Screens remembered at once; a screen is set up again before it draws, so
@@ -761,6 +796,7 @@ impl Shown {
             widget,
             picture: None,
             row: None,
+            panel: Vec::new(),
         });
         if v.len() > SHOWN_KEPT {
             v.remove(0);
@@ -772,6 +808,20 @@ impl Shown {
         if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
             e.picture = Some(widget);
         }
+    }
+    /// Screen `screen`'s panel text widgets are `widgets`.
+    pub fn set_panel(&self, screen: u32, widgets: Vec<u32>) {
+        if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
+            e.panel = widgets;
+        }
+    }
+    /// Screen `screen`'s panel text widgets.
+    pub fn panel(&self, screen: u32) -> Vec<u32> {
+        self.lock()
+            .iter()
+            .find(|e| e.screen == screen)
+            .map(|e| e.panel.clone())
+            .unwrap_or_default()
     }
     /// Screen `screen`'s picture widget.
     pub fn picture(&self, screen: u32) -> Option<u32> {
@@ -810,6 +860,15 @@ const FRAME_BLOCK: u32 = PICTURE_BLOCK + BITMAP_BLOCK_SIZE;
 /// Where [`push`] builds its request (0x20 bytes), at the end of the page.
 const PUSH_BLOCK: u32 = 0x1000 - 0x20;
 const _: () = assert!(PUSH_BLOCK >= FRAME_BLOCK + BITMAP_BLOCK_SIZE);
+/// Where a class's panel art blocks go ([`ListClass::panel`]), then its
+/// text blocks: past the tag copy, before the push request.
+const PANEL_BLOCKS: u32 = 0x400;
+const _: () = assert!(PANEL_BLOCKS >= TAG_COPY + TAG_COPY_SIZE);
+/// Panel art and texts a class has at most.
+pub const MAX_PANEL_ART: usize = 4;
+pub const MAX_PANEL_TEXTS: usize = 40;
+const PANEL_TEXT_BLOCKS: u32 = PANEL_BLOCKS + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
+const _: () = assert!(PANEL_TEXT_BLOCKS + MAX_PANEL_TEXTS as u32 * TEXT_BLOCK_SIZE <= PUSH_BLOCK);
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -825,6 +884,19 @@ pub struct Description {
     /// at `frame_at` ([`ListClass::frame`]).
     pub frame: Option<PictureSpec>,
     pub frame_at: u32,
+    /// The class's panel ([`ListClass::panel`]): its art, its texts, the
+    /// rows that name the texts' strings, and where their blocks go.
+    pub panel: Panel,
+    pub panel_at: u32,
+    pub rows: Option<Arc<dyn Rows>>,
+}
+
+/// A class's own art and texts that belong to no row ([`ListClass::panel`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Panel {
+    /// Retail bitmap blocks, made widgets before the texts (backings).
+    pub art: Vec<PictureSpec>,
+    pub texts: Vec<PanelText>,
 }
 
 /// A screen of the `ui` model.
@@ -937,6 +1009,7 @@ pub struct ListClass {
     lines: bool,
     loader: Arc<AtomicU32>,
     dialog: Option<crate::ui_kit::dialog::DialogBase>,
+    panel: Panel,
 }
 
 impl ListClass {
@@ -963,6 +1036,7 @@ impl ListClass {
             lines: false,
             loader: Arc::new(AtomicU32::new(0)),
             dialog: None,
+            panel: Panel::default(),
         }
     }
     /// Opened in a game too (the pause menu's Video and Voice): there its
@@ -1003,6 +1077,27 @@ impl ListClass {
     pub fn frame(mut self, spec: PictureSpec) -> Self {
         self.frame = Some(spec);
         self
+    }
+    /// With art and texts of its own that belong to no row: retail
+    /// backings (made before the texts) and text blocks whose strings
+    /// [`Rows::panel_text`] names, set when the screen opens and again
+    /// with the description (a mod's page: docs/game/maps.md "A mod's
+    /// page"). Only a class with a description shows them. At most
+    /// [`MAX_PANEL_ART`] and [`MAX_PANEL_TEXTS`].
+    pub fn panel(mut self, panel: Panel) -> Self {
+        assert!(
+            panel.art.len() <= MAX_PANEL_ART && panel.texts.len() <= MAX_PANEL_TEXTS,
+            "{}: a panel of {} art and {} texts",
+            self.id,
+            panel.art.len(),
+            panel.texts.len()
+        );
+        self.panel = panel;
+        self
+    }
+    /// The class's panel.
+    pub fn panel_of(&self) -> &Panel {
+        &self.panel
     }
     /// With its list placed and skinned by `layout` ([`ListLayout`]).
     pub fn layout(mut self, layout: ListLayout) -> Self {
@@ -1274,6 +1369,13 @@ pub fn player_mask(m: &dyn GuestMemory, chain: u32) -> Result<Option<u32>, MemFa
 /// Opens our screen `screen` for the player of `chain` (`0x149f1e(mask,
 /// loader)`). Says why when it cannot.
 pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
+    // The value picker is `low_level_settings` in the main menu and the
+    // large dialog in a game (`crate::ui_kit::picker`).
+    let screen = if screen == crate::ui_kit::picker::NAME && cx.read(ingame).unwrap_or(false) {
+        crate::ui_kit::picker::GAME_NAME
+    } else {
+        screen
+    };
     let Some(loader) = loader_of(screen) else {
         eprintln!("ui: {screen} is not a screen of ours (or its class is off); not opened");
         return Ok(());
@@ -1384,6 +1486,7 @@ pub async fn row_text(
         let moved = shown.focus(screen, focused);
         let widget = moved.or_else(|| live.redraw.then(|| shown.widget(screen)).flatten());
         if let Some(widget) = widget {
+            set_panel_texts(&cx, screen, &shown, rows.as_ref()).await?;
             if let Some(id) = focused.and_then(|r| rows.description(r)) {
                 cx.call(
                     GuestCall::new(points::TEXT_SET.base)
@@ -1554,6 +1657,17 @@ pub async fn event_with(
     Ok(Ret::new(r.eax, 4))
 }
 
+/// The focused row of our screen `screen`, as the sideways steps read it
+/// (`LIST_FOCUSED_ROW` on its list): for an [`Action`] that acts on the
+/// focused row (the Mods list's X, `crate::mods_screen`).
+pub async fn focused_row(cx: &Cx, screen: u32) -> Result<Option<i16>, EntryError> {
+    let focused = cx
+        .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(screen.wrapping_add(ui::LIST)))
+        .await?
+        .eax;
+    Ok((focused != u32::MAX).then(|| DatumHandle(focused).index() as i16))
+}
+
 /// Screen slot 0 of a class told of frees: the Controls destructor
 /// (`original`), then `on_free` with the screen. Thiscall, flags, `ret 4`.
 pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, EntryError> {
@@ -1666,9 +1780,74 @@ pub async fn setup_pane_footer(
             if let Some(spec) = d.frame {
                 add_picture(&cx, screen, &spec, d.frame_at, None, name).await?;
             }
+            add_panel(&cx, screen, &d, name).await?;
         }
     }
     Ok(Ret::new(r.eax, 4))
+}
+
+/// The class's panel ([`ListClass::panel`]): its art as bitmap widgets
+/// (backings first), then each text block a text widget with its string
+/// set ([`Rows::panel_text`], the rows' texts written first).
+async fn add_panel(cx: &Cx, screen: u32, d: &Description, name: &str) -> Result<(), EntryError> {
+    if d.panel.art.is_empty() && d.panel.texts.is_empty() {
+        return Ok(());
+    }
+    for (i, spec) in d.panel.art.iter().enumerate() {
+        let at = d.panel_at + i as u32 * BITMAP_BLOCK_SIZE;
+        add_picture(cx, screen, spec, at, None, name).await?;
+    }
+    if let Some(rows) = &d.rows {
+        cx.write(|m| rows.write_texts(m))?;
+    }
+    let texts_at = d.panel_at + MAX_PANEL_ART as u32 * BITMAP_BLOCK_SIZE;
+    let mut widgets = Vec::with_capacity(d.panel.texts.len());
+    for (i, t) in d.panel.texts.iter().enumerate() {
+        let at = texts_at + i as u32 * TEXT_BLOCK_SIZE;
+        cx.write(|m| m.write(at, &t.bytes()))?;
+        let widget = cx
+            .call(
+                GuestCall::new(points::PANE_TEXT_ADD.base)
+                    .ebx(screen)
+                    .args([0, at]),
+            )
+            .await?
+            .eax;
+        if widget == 0 {
+            once(
+                &PICTURE_MISSING,
+                &format!("{name}: no panel text {i} (no memory for the widget)"),
+            );
+        }
+        widgets.push(widget);
+    }
+    d.shown.set_panel(screen, widgets);
+    if let Some(rows) = &d.rows {
+        set_panel_texts(cx, screen, &d.shown, rows.as_ref()).await?;
+    }
+    Ok(())
+}
+
+/// Sets each panel text widget of `screen` to its string.
+async fn set_panel_texts(
+    cx: &Cx,
+    screen: u32,
+    shown: &Shown,
+    rows: &dyn Rows,
+) -> Result<(), EntryError> {
+    for (i, widget) in shown.panel(screen).into_iter().enumerate() {
+        let Some(id) = rows.panel_text(i).filter(|_| widget != 0) else {
+            continue;
+        };
+        cx.call(
+            GuestCall::new(points::TEXT_SET.base)
+                .edi(widget)
+                .esi(screen)
+                .args([id]),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Said once per run: the picture could not be made (the line says why).
@@ -1814,6 +1993,9 @@ impl feature::Feature for ListClass {
                 picture_at: tables + PICTURE_BLOCK,
                 frame: self.frame,
                 frame_at: tables + FRAME_BLOCK,
+                panel: self.panel.clone(),
+                panel_at: tables + PANEL_BLOCKS,
+                rows: Some(Arc::clone(&rows)),
             });
         let footer = self.footer;
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
@@ -2622,6 +2804,9 @@ mod tests {
             picture_at: 0,
             frame: None,
             frame_at: 0,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2912,6 +3097,9 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: None,
             frame_at: TABLES + FRAME_BLOCK,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -2967,6 +3155,9 @@ mod tests {
             picture_at: TABLES + PICTURE_BLOCK,
             frame: Some(frame),
             frame_at: TABLES + FRAME_BLOCK,
+            panel: Panel::default(),
+            panel_at: 0,
+            rows: None,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };

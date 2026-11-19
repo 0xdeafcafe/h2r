@@ -7,8 +7,12 @@
 //! `h2 settings` lists them.
 //!
 //! **The page** is a kit screen ([`page`]) of seven choice rows
-//! ([`crate::ui_kit::choice::ChoiceRow`]), laid out as the Halo 1 Options
-//! page is.
+//! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
+//! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
+//! Options page is: Quick Options' panel, header and list (its
+//! `setting_lists` skin, label left and the value alone in the value
+//! column), the focused row's description in its one-line help line, and
+//! the legend in its footer (docs/game/ui-builder.md "The Dialog kind").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -43,10 +47,11 @@ use crate::h1_options_row::{self as h1row, CHANGE_MAP};
 use crate::list_class::{self, Rows};
 use crate::telemetry;
 use crate::ui_kit::choice::ChoiceRow;
+use crate::ui_kit::dialog::DialogBase;
 use crate::ui_kit::ids::{self, Family};
 use crate::ui_kit::input::{Glyph, Prompt};
 use crate::ui_kit::screen::{KitScreen, KitTexts};
-use crate::ui_kit::spec::ValueStyle;
+use crate::ui_kit::view::Opener;
 
 /// The page's feature (`features.clankers`) and screen name.
 pub const FEATURE: &str = "clankers";
@@ -92,7 +97,8 @@ const fn choice(value: i64, name: &'static str, label: &'static str) -> Choice {
 pub static ENABLED: Def = def(
     "clankers.enabled",
     "Clankers",
-    "Bots join custom games: up to 3 on this machine's free controller ports \
+    "Bots join custom games: the first 3 on this machine's free controller \
+     ports, the rest as players of their own; all show in the pregame lobby \
      (docs/game/bots.md).",
     Kind::Bool,
     Value::Bool(false),
@@ -100,7 +106,8 @@ pub static ENABLED: Def = def(
 pub static COUNT: Def = def(
     "clankers.count",
     "Count",
-    "How many bots join. Up to 3 play for now, one per free controller port.",
+    "How many bots join, up to 15: the first 3 on free controller ports, the \
+     rest as players of their own.",
     Kind::Int {
         valid: 1..=15,
         steps: &[],
@@ -179,13 +186,13 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(
         &ENABLED,
         "Clankers",
-        "Bots join this game, on the free controller ports.",
+        "Bots join this game and show in the lobby.",
     ),
-    ChoiceRow::new(&COUNT, "Count", "How many bots join. Up to 3 play for now."),
+    ChoiceRow::new(&COUNT, "Count", "How many bots join, up to 15."),
     ChoiceRow::new(
         &DIFFICULTY,
         "Difficulty",
-        "How well they play. Mixed gives each a difficulty around Normal.",
+        "How well they play. Mixed varies it around Normal.",
     ),
     ChoiceRow::new(&TEAM, "Teams", "Which team they join in a team game."),
     ChoiceRow::new(
@@ -201,22 +208,29 @@ static ROWS: [ChoiceRow; 7] = [
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
 ];
 
-/// The Game Setup row's text; the page's title stays "Clankers".
+/// The Game Setup row's text; the page's title stays [`TITLE`].
 pub const ROW_LABEL: &str = "Clanker Options...";
+/// What the Game Setup row does, in Game Setup's description while it has
+/// the focus, as retail's rows have theirs (`crate::game_setup_help`).
+pub const ROW_HELP: &str =
+    "Add bots to this game: how many, how well they play, and which team they join.";
+/// The page's title, in capitals as Quick Options' header ("QUICK
+/// OPTIONS") is.
+pub const TITLE: &str = "CLANKERS";
 
-/// The Clankers page over `store`.
+/// The Clankers page over `store`: a dialog of its rows on Quick Options
+/// (its seven rows fit the eleven its list shows).
 pub fn page(store: Arc<Store>) -> KitScreen {
-    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, "Clankers")
+    let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
-        .layout(crate::skulls_menu::LIST_LAYOUT, ValueStyle::Inline)
-        .description(crate::skulls_menu::DESCRIPTION_TEXT)
-        // Seven rows in a list that shows five.
-        .scrolls();
+        .row_help(ROW_HELP)
+        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
     s.prompts(&[
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
+        Prompt::new(&[Glyph::A], "Select"),
         Prompt::new(&[Glyph::B], "Back"),
     ])
 }
@@ -409,6 +423,9 @@ struct Fill {
     bots: usize,
     /// The playlist's teams (0 free for all).
     teams: u32,
+    /// How many of the bots may be local bots ([`max_local`]); the rest
+    /// are phantoms.
+    local: usize,
     schedule: Vec<std::time::Duration>,
     started: std::time::Instant,
     /// How many are in now.
@@ -426,6 +443,23 @@ struct Fill {
 /// (a few seconds, §9.5), short enough that leaving ends it.
 const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How many of a Clankermatch's `bots` go on this console's free
+/// controller ports (docs/game/bots.md §8.4): local bots sign in to the
+/// lobby as session players, so the lobby reaches the playlist's fewest
+/// players and the game starts it (phantoms now join the lobby too, §5.1;
+/// with `H2_PHANTOM_LOBBY=0` they join only the game, and the local bots
+/// alone carry the start). A console's players are one party, on one team in a team game, so
+/// a team playlist takes no more than fill the human's team (a team of
+/// `players / teams`); free for all takes up to the three free ports.
+pub fn max_local(bots: usize, players: u32, teams: u32) -> usize {
+    let party = if teams > 1 {
+        (players / teams).saturating_sub(1) as usize
+    } else {
+        3
+    };
+    bots.min(party).min(3)
+}
+
 /// What the driver seats: the page's bots, or a Clankermatch's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Seating {
@@ -433,8 +467,12 @@ struct Seating {
     count: usize,
     /// Of those, how many are in now.
     seated: usize,
-    /// Phantoms only (a Clankermatch: local bots would join the party).
-    phantoms_only: bool,
+    /// A Clankermatch: nobody is seated before its roster comes (or is
+    /// refused), and no more than `local` of the seated are local bots.
+    fill: bool,
+    /// The most local bots: the page's count, or a Clankermatch's
+    /// [`max_local`].
+    local: usize,
     /// The teams to balance the phantoms over (0: none).
     teams: u32,
     /// The roster's skill: the page's difficulty's, or none for a
@@ -451,7 +489,8 @@ impl Seating {
             Some(f) => Seating {
                 count: f.bots,
                 seated: f.seated.min(f.bots),
-                phantoms_only: true,
+                fill: true,
+                local: f.local.min(f.seated),
                 teams: f.teams,
                 skill: None,
                 host_team: f.host_team.filter(|t| u32::from(*t) < f.teams).unwrap_or(0),
@@ -459,7 +498,8 @@ impl Seating {
             None => Seating {
                 count: want.count,
                 seated: want.count,
-                phantoms_only: false,
+                fill: false,
+                local: want.count,
                 teams: 0,
                 skill: request_skill(want.difficulty),
                 host_team: 0,
@@ -963,17 +1003,23 @@ impl Driver {
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         self.taunts.store(want.taunts, Ordering::Relaxed);
-        // A Clankermatch's bots are all phantoms: local bots would sign in
-        // as the human's party.
-        if seating.phantoms_only {
-            while let Some(i) = own.iter().rposition(|o| matches!(o.seat, Seat::Port(..))) {
-                let o = own.remove(i);
-                self.take_off(o.seat, &mut log);
-            }
-        }
-        // Fewer: the last added go first.
+        // Fewer: the last added go first. A Clankermatch's local bots are
+        // its first, so they are the last to go.
         while own.len() > seating.seated {
             let o = own.pop().expect("more than wanted");
+            self.take_off(o.seat, &mut log);
+        }
+        let port_count = |own: &[Own]| {
+            own.iter()
+                .filter(|o| matches!(o.seat, Seat::Port(..)))
+                .count()
+        };
+        while port_count(&own) > seating.local {
+            let i = own
+                .iter()
+                .rposition(|o| matches!(o.seat, Seat::Port(..)))
+                .expect("a local bot");
+            let o = own.remove(i);
             self.take_off(o.seat, &mut log);
         }
         for o in own.iter().filter(|o| !o.rostered) {
@@ -982,36 +1028,6 @@ impl Driver {
                 Ordering::Relaxed,
             );
         }
-        // More local bots: on the lowest ports no bot asked for.
-        while !seating.phantoms_only && own.len() < want.count {
-            let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
-            let Some(port) = (1..=3u8).find(|p| !taken.contains(p)) else {
-                break;
-            };
-            let k = skill(want.difficulty, port);
-            let (src, s) = self.clanker(k, 0xc1a4 ^ u64::from(port), bots::emote::DEFAULT_TAUNT);
-            let name = format!("Clanker {port}");
-            match self.local.add(port, &name, Box::new(src)) {
-                Ok(h) => {
-                    log.push(format!("{name} on ({k:?})"));
-                    own.push(Own {
-                        seat: Seat::Port(port, h),
-                        skill: s,
-                        xuid: 0,
-                        rostered: false,
-                    });
-                }
-                Err(e) => {
-                    log.push(format!("{name}: {e}"));
-                    break;
-                }
-            }
-        }
-        let ports = own
-            .iter()
-            .filter(|o| matches!(o.seat, Seat::Port(..)))
-            .count();
-        let mut wanted = seating.seated.saturating_sub(ports);
         self.wants_roster
             .store(seating.count > 0, Ordering::Relaxed);
         // With Live, every bot is a server bot account: the local bots take
@@ -1023,29 +1039,77 @@ impl Driver {
         }
         .map(Vec::into_iter);
         // A Clankermatch waits for its roster rather than seat host-made
-        // bots that the roster would replace; refused, it takes them.
-        if seating.phantoms_only
+        // bots that the roster would replace (or local bots that would go
+        // on Xbox Live as the human's guests first); refused, it takes them.
+        let hold = seating.fill
             && roster.is_none()
             && !self
                 .roster
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .refused
+                .refused;
+        // More local bots: on the lowest ports no bot asked for. The page's
+        // count fills them before any phantom; a Clankermatch fills up to
+        // its `local` first.
+        while !hold
+            && if seating.fill {
+                port_count(&own) < seating.local
+            } else {
+                own.len() < want.count
+            }
         {
-            wanted = 0;
+            let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
+            let Some(port) = (1..=3u8).find(|p| !taken.contains(p)) else {
+                break;
+            };
+            let k = skill(want.difficulty, port);
+            let (src, s) = self.clanker(k, 0xc1a4 ^ u64::from(port), bots::emote::DEFAULT_TAUNT);
+            let name = format!("Clanker {port}");
+            match self.local.add(port, &name, Box::new(src)) {
+                Ok(h) => {
+                    log.push(format!("{name} on ({k:?})"));
+                    // A Clankermatch's local bots go before its phantoms,
+                    // so they take the roster's first bots.
+                    let at = own
+                        .iter()
+                        .position(|o| matches!(o.seat, Seat::Phantom(..)))
+                        .unwrap_or(own.len());
+                    own.insert(
+                        at,
+                        Own {
+                            seat: Seat::Port(port, h),
+                            skill: s,
+                            xuid: 0,
+                            rostered: false,
+                        },
+                    );
+                }
+                Err(e) => {
+                    log.push(format!("{name}: {e}"));
+                    break;
+                }
+            }
         }
+        let ports = port_count(&own);
+        let wanted = if hold {
+            0
+        } else {
+            seating.seated.saturating_sub(ports)
+        };
         for o in own.iter_mut() {
             let Seat::Port(port, h) = o.seat else {
                 continue;
             };
-            let account =
-                roster
-                    .as_mut()
-                    .and_then(Iterator::next)
-                    .map(|r| bots::guest::BotAccount {
-                        xuid: r.identity.xuid,
-                        gamertag: r.identity.gamertag,
-                    });
+            let entry = roster.as_mut().and_then(Iterator::next);
+            // A Clankermatch's local bot plays at its roster bot's skill
+            // (the server's, from the human's level), as a phantom would.
+            if let Some(r) = entry.as_ref().filter(|_| seating.fill) {
+                o.skill.store(skill_index(r.skill), Ordering::Relaxed);
+            }
+            let account = entry.map(|r| bots::guest::BotAccount {
+                xuid: r.identity.xuid,
+                gamertag: r.identity.gamertag,
+            });
             let xuid = account.as_ref().map_or(0, |a| a.xuid);
             if xuid != o.xuid {
                 match &account {
@@ -1105,6 +1169,11 @@ impl Driver {
             // its level) and the bots the roster put on a team are fixed;
             // the rest are balanced around them.
             let mut fixed = vec![(seating.host_team, mean)];
+            // A Clankermatch's local bots are the human's party: on its
+            // team (a console's players play on one team).
+            if seating.fill {
+                fixed.extend(std::iter::repeat_n((seating.host_team, mean), ports));
+            }
             fixed.extend(seats.iter().filter_map(|(s, _)| Some((s.team?, k(s)))));
             let free: Vec<f32> = seats
                 .iter()
@@ -1271,10 +1340,23 @@ impl Driver {
                             String::new()
                         }
                     ));
+                    // Which bots are local and which phantoms
+                    // (docs/game/bots.md §8.4): local bots sign in to the
+                    // lobby as session players; phantoms join the lobby
+                    // this console hosts as peers (§5.1, "Phantoms in the
+                    // pregame lobby"). Both count toward the playlist's
+                    // fewest players, so the game starts it.
+                    let local = max_local(bots, mark.players, mark.teams);
+                    log.push(format!(
+                        "clankermatch: {local} local bots join the lobby on free controller ports; \
+                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\")",
+                        bots - local
+                    ));
                     *fill = Some(Fill {
                         hopper: mark.hopper_id,
                         bots,
                         teams: mark.teams,
+                        local,
                         schedule,
                         started: now,
                         seated: 0,
@@ -1596,6 +1678,19 @@ pub fn install(
     registry
         .add(&page.class())
         .map_err(|e| anyhow::anyhow!("clankers page: {e}"))?;
+    // The row's picture and description on Game Setup: a Spartan over a
+    // roster (an image of the set no retail row uses), and what the page
+    // is for.
+    let help = Arc::clone(&page);
+    crate::game_setup_help::register(
+        ROW_ACTION,
+        crate::game_setup_help::image::ROSTER,
+        Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+            let id = help.row_help_id()?;
+            help.write_texts(m).ok()?;
+            Some(id)
+        }),
+    );
     registry
         .add(&SetupRow { page })
         .map_err(|e| anyhow::anyhow!("clankers row: {e}"))?;

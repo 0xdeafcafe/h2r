@@ -21,6 +21,10 @@
 //! the behaviour), and in the first barrel `+8` the rate, `+0x6a` the
 //! projectiles per shot and `+0x8c` the projectile, whose `proj` `+0x17c`
 //! is its speed.
+//!
+//! Weapon skill (`crate::weapons`, `crate::grenades`): unit `+0x213` the
+//! left-hand weapon's slot when dual wielding, `+0x23c` the grenade type
+//! selected.
 
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
@@ -37,6 +41,13 @@ pub const UNIT_WEAPON_INDEX: u32 = 0x212;
 /// Unit `+0x218`: the four weapon object datums.
 pub const UNIT_WEAPONS: u32 = 0x218;
 pub const UNIT_WEAPON_SLOTS: u32 = 4;
+/// Unit `+0x213`: the left-hand weapon's slot when dual wielding (`i8`,
+/// -1 for none; docs/live/live-gamestate.md, `crates/boot/src/touch_glue.rs`,
+/// `0x186bd4`).
+pub const UNIT_LEFT_WEAPON_INDEX: u32 = 0x213;
+/// Unit `+0x23c`: the grenade type selected (`i8`, an index into
+/// [`UNIT_GRENADES`]: 0 frag, 1 plasma; docs/live/live-gamestate.md).
+pub const UNIT_GRENADE_SELECTED: u32 = 0x23c;
 /// Unit `+0x23e`: the frag and plasma grenade counts (`i8` each).
 pub const UNIT_GRENADES: u32 = 0x23e;
 
@@ -368,6 +379,15 @@ impl Gun {
     pub fn role(&self) -> Role {
         self.profile.role()
     }
+    /// The distances it is good at, from its role and its tag's aim assist
+    /// reach ([`crate::weapons::reach`]).
+    pub fn reach(&self) -> crate::weapons::Reach {
+        crate::weapons::reach(&self.profile)
+    }
+    /// How far `d` is outside its band, relative to it: 0 inside.
+    pub fn misfit(&self, d: f32) -> f32 {
+        crate::weapons::misfit(self.reach().band, d)
+    }
     /// Worth going for: its role's rating, nothing when dry. A blade with
     /// no battery read counts as live.
     pub fn rating(&self) -> u8 {
@@ -403,7 +423,7 @@ impl Ranged for Profile {
 }
 impl Ranged for Gun {
     fn band(&self) -> (f32, f32) {
-        self.role().band()
+        self.reach().band
     }
 }
 impl Ranged for Arms {
@@ -448,6 +468,12 @@ pub struct Arms {
     pub other: Option<Gun>,
     /// Frag and plasma grenades.
     pub grenades: [i8; 2],
+    /// The grenade type selected ([`UNIT_GRENADE_SELECTED`]): 0 frag, 1
+    /// plasma.
+    pub selected: i8,
+    /// The left-hand gun when dual wielding ([`UNIT_LEFT_WEAPON_INDEX`]):
+    /// the left trigger fires it, and no grenade can be thrown.
+    pub left: Option<Gun>,
 }
 
 impl Arms {
@@ -567,6 +593,10 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
     let other = other_gun.map(|g| g.ammo);
     let other_ready = other_gun.is_some_and(|g| g.ready());
     let other_role = other_gun.map_or(Role::Unknown, |g| g.role());
+    // Each gun's band and fire range: its role's, refined by its aim
+    // assist reach (crate::weapons::reach).
+    let held_misfit = |d: f32| held_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
+    let other_misfit = |d: f32| other_gun.map_or(Role::Unknown.misfit(d), |g| g.misfit(d));
     let nearest = |range: f32, want: &dyn Fn(&Pickup) -> bool| {
         s.pickups
             .iter()
@@ -585,8 +615,8 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         s.by_range
             && other_ready
             && other_role != Role::Unknown
-            && role.misfit(d) > RANGE_SWITCH_MISFIT
-            && other_role.misfit(d) == 0.0
+            && held_misfit(d) > RANGE_SWITCH_MISFIT
+            && other_misfit(d) == 0.0
     };
     if role == Role::Blade && held_gun.is_some_and(|g| g.ready()) {
         if let Some(d) = s.enemy
@@ -616,7 +646,7 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
         if let Some(d) = s.enemy
             && s.by_range
             && other_ready
-            && other_role.misfit(d) == 0.0
+            && other_misfit(d) == 0.0
         {
             return Kit::Switch;
         }
@@ -627,7 +657,8 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
     {
         return Kit::Switch;
     }
-    let out_of_reach = s.enemy.is_some_and(|d| d > role.fire_range().1);
+    let fire_to = held_gun.map_or(role.fire_range().1, |g| g.reach().fire.1);
+    let out_of_reach = s.enemy.is_some_and(|d| d > fire_to);
     let half = matches!(held, Ammo::Rounds { reserve, .. } if reserve > 0)
         && held.magazine() < BREATHER_RELOAD;
     if (held.wants_reload() && (s.calm || out_of_reach)) || (s.breather && half) {
@@ -657,8 +688,38 @@ pub fn plan(s: &Situation<'_>, skip: impl Fn(&Pickup) -> bool) -> Kit {
             return Kit::Seek(p);
         }
     }
+    if s.calm && s.by_range {
+        // A long gun and a short one: two of a kind, it takes one of the
+        // other kind, dropping the worse of the two.
+        if let (Some(h), Some(o)) = (held_gun, other_gun) {
+            let (ch, co) = (crate::weapons::class(&h), crate::weapons::class(&o));
+            if ch == co
+                && ch != crate::weapons::Class::Other
+                && let Some(p) = nearest(PAIR_RANGE, &|p| {
+                    let c = crate::weapons::class(&p.gun);
+                    c != ch && c != crate::weapons::Class::Other && !s.arms.carries(p.gun.def)
+                })
+            {
+                if h.rating() > o.rating() {
+                    return Kit::Switch;
+                }
+                return Kit::Seek(p);
+            }
+        }
+        // The other gun's magazine wants a reload and this one is full:
+        // draw it now, so the reload happens out of the fight.
+        if held.magazine() >= FULL_ENOUGH && other_gun.is_some_and(|o| o.ammo.wants_reload()) {
+            return Kit::Switch;
+        }
+    }
     Kit::Fine
 }
+
+/// Out of a fight, a gun that pairs a short one with a long one is taken
+/// within this (world units).
+pub const PAIR_RANGE: f32 = 15.0;
+/// A magazine this full needs nothing: the other gun is reloaded first.
+pub const FULL_ENOUGH: f32 = 0.9;
 
 // ---- reading it from the guest ----
 
@@ -794,14 +855,47 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
+/// Whether the selected gun has run out of loaded rounds, with rounds
+/// still in reserve. Only the held instance is needed for this cue.
+pub(crate) fn held_empty_magazine(m: &dyn GuestMemory, unit: u32) -> R<bool> {
+    let slot = u32::from(m.u8(unit + UNIT_WEAPON_INDEX)?);
+    if slot >= UNIT_WEAPON_SLOTS {
+        return Ok(false);
+    }
+    let Some(h) = DatumHandle::from_raw(m.u32(unit + UNIT_WEAPONS + 4 * slot)?) else {
+        return Ok(false);
+    };
+    let Some((objects::WEAPON, body)) = objects::get(m, h)? else {
+        return Ok(false);
+    };
+    let mag = body.addr + WEAPON_MAGAZINES;
+    if m.u16(mag + MAGAZINE_LOADED)? != 0 || m.u16(mag + MAGAZINE_RESERVE)? as i16 <= 0 {
+        return Ok(false);
+    }
+    let Some(def) = body.definition(m)? else {
+        return Ok(false);
+    };
+    let Some(tag) = Tags.entry(m, def)? else {
+        return Ok(false);
+    };
+    let meta = tag.address(m)?;
+    if meta == 0 {
+        return Ok(false);
+    }
+    let layout = WeaponDef::read(m, meta)?;
+    Ok(layout.magazine.is_some() && !layout.ages)
+}
+
 /// What the unit whose body is at `unit` carries.
 pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
     let held_slot = m.u8(unit + UNIT_WEAPON_INDEX)? as i8;
+    let left_slot = m.u8(unit + UNIT_LEFT_WEAPON_INDEX)? as i8;
     let mut arms = Arms {
         grenades: [
             m.u8(unit + UNIT_GRENADES)? as i8,
             m.u8(unit + UNIT_GRENADES + 1)? as i8,
         ],
+        selected: m.u8(unit + UNIT_GRENADE_SELECTED)? as i8,
         ..Arms::default()
     };
     for slot in 0..UNIT_WEAPON_SLOTS {
@@ -813,6 +907,8 @@ pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
         };
         if slot as i32 == i32::from(held_slot) {
             arms.held = Some(g);
+        } else if slot as i32 == i32::from(left_slot) {
+            arms.left = Some(g);
         } else if arms.other.is_none() {
             arms.other = Some(g);
         }
@@ -826,25 +922,90 @@ pub const OBJECT_LIMIT: i32 = 2048;
 /// The weapons lying in the world: live weapon objects with no parent
 /// (nobody holds them).
 pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
-    let Some(array) = objects::array(m)? else {
-        return Ok(Vec::new());
+    Ok(ground(m, None)?.weapons)
+}
+
+pub(crate) struct Ground {
+    pub weapons: Vec<Pickup>,
+    pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
+    /// Live grenades within [`crate::incoming::DANGER`] of `near`: none
+    /// when no `near` was given.
+    pub grenades: Vec<crate::incoming::Grenade>,
+}
+
+/// Scan the object table once for both ordinary pickups and occupied power
+/// placements. A bad equipment tag disables timing for the sample, while
+/// the independently readable weapons still reach the ordinary arms plan.
+/// With `near` (the bot's feet), the same scan looks for live grenades
+/// close to it (crate::incoming).
+pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R<Ground> {
+    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
+
+    let mut out = Ground {
+        weapons: Vec::new(),
+        supplies: None,
+        grenades: Vec::new(),
     };
-    let mut out = Vec::new();
+    let Some(array) = objects::array(m)? else {
+        return Ok(out);
+    };
+    out.supplies = Some(Vec::new());
+    let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
     for (h, header) in array.live(m, OBJECT_LIMIT)? {
-        if header.kind(m)? != objects::WEAPON || header.body(m)? == 0 {
-            continue;
-        }
-        let Some((g, body)) = gun(m, h)? else {
-            continue;
+        let site = match header.kind(m)? {
+            PROJECTILE => {
+                if let Some((at, defs)) = senses
+                    && let Ok(addr @ 1..) = header.body(m)
+                {
+                    let body = objects::Body::at(addr);
+                    if let Ok(Some(def)) = body.definition(m)
+                        && defs.contains(&Some(def))
+                        && let Ok(position) = body.position(m)
+                    {
+                        let distance = (position[0] - at[0])
+                            .hypot(position[1] - at[1])
+                            .hypot(position[2] - at[2]);
+                        if distance < DANGER {
+                            out.grenades.push(Grenade {
+                                id: h.raw(),
+                                at: position,
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+            objects::WEAPON => {
+                let Some((gun, body)) = gun(m, h)? else {
+                    continue;
+                };
+                if body.parent(m)?.is_some() {
+                    continue;
+                }
+                out.weapons.push(Pickup {
+                    id: h.raw(),
+                    position: body.position(m)?,
+                    gun,
+                });
+                if out.supplies.is_none() || !gun.role().power() {
+                    continue;
+                }
+                crate::guest::intel::supply(m, h, body, false)
+            }
+            crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
+                .body(m)
+                .and_then(|addr| crate::guest::intel::equipment(m, h, addr)),
+            _ => continue,
         };
-        if body.parent(m)?.is_some() {
-            continue;
+        match site {
+            Ok(Some(site)) => {
+                if let Some(sites) = &mut out.supplies {
+                    sites.push(site);
+                }
+            }
+            Ok(None) => {}
+            Err(_) => out.supplies = None,
         }
-        out.push(Pickup {
-            id: h.raw(),
-            position: body.position(m)?,
-            gun: g,
-        });
     }
     Ok(out)
 }

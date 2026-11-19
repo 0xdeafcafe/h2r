@@ -125,8 +125,37 @@ export interface MapFiles {
   kind?: "multiplayer" | "campaign";
   /** `halo1` for a Halo 1 map converted to run in Halo 2; absent for Halo 2's own. */
   game?: string;
-  /** Its display name, when the manifest carries one (Halo 1 maps do). */
+  /** Its display name, when the manifest carries one (Halo 1 maps and
+   *  mods do). */
   name?: string;
+  /** An installed mod's entry (`map/mod-<id>`): the MapId games report,
+   *  the map it is played as, and the SHA-256 of its patched map. */
+  map_id?: string;
+  base?: string;
+  sha256?: string;
+}
+
+/** The manifest entry to draw a game's map with, and its stem: the mod's
+ *  own entry when the art has one for the game's MapId (its level, objects,
+ *  scripted spawns and pictures, read from the patched map), else the map
+ *  name's. A mod is never drawn with another mod's entry, and an entry is
+ *  never found by a MapId it does not carry. */
+export function mapFilesFor(
+  maps: Record<string, MapFiles> | null | undefined,
+  map: string | null | undefined,
+  mapId?: string | null,
+): { stem: string; files: MapFiles } | null {
+  if (!maps) return null;
+  const id = mapId?.toLowerCase();
+  if (id) {
+    for (const [stem, files] of Object.entries(maps)) {
+      if (files.map_id === id) return { stem, files };
+    }
+  }
+  if (!map) return null;
+  const stem = mapStem(map);
+  const files = maps[stem];
+  return files ? { stem, files } : null;
 }
 
 /** The map's stem, as the art manifest keys it: the file name without path
@@ -162,7 +191,7 @@ export function parseMapFiles(raw: unknown): Record<string, MapFiles> {
   if (!raw || typeof raw !== "object") return out;
   const put = (stem: string, v: unknown) => {
     if (!v || typeof v !== "object") return;
-    const e = v as { geometry?: unknown; views?: unknown; kind?: unknown; game?: unknown; name?: unknown };
+    const e = v as { geometry?: unknown; views?: unknown; kind?: unknown; game?: unknown; name?: unknown; map_id?: unknown; base?: unknown; sha256?: unknown };
     const f: MapFiles = {};
     if (safeFile(e.geometry)) f.geometry = e.geometry;
     if (safeFile(e.views)) f.views = e.views;
@@ -170,6 +199,11 @@ export function parseMapFiles(raw: unknown): Record<string, MapFiles> {
     if (e.kind === "multiplayer" || e.kind === "campaign") f.kind = e.kind;
     if (typeof e.game === "string" && /^[a-z0-9_]{1,16}$/.test(e.game)) f.game = e.game;
     if (typeof e.name === "string" && e.name.trim()) f.name = e.name.trim().slice(0, 64);
+    const hex = (x: unknown) => (typeof x === "string" && /^[0-9a-f]{64}$/i.test(x) ? x.toLowerCase() : undefined);
+    const mapId = hex(e.map_id), sha = hex(e.sha256);
+    if (mapId) f.map_id = mapId;
+    if (sha) f.sha256 = sha;
+    if (typeof e.base === "string" && /^[\w.-]{1,64}$/.test(e.base)) f.base = e.base.toLowerCase();
     out[stem.toLowerCase()] = { ...out[stem.toLowerCase()], ...f };
   };
   const r = raw as { maps?: unknown; images?: unknown };

@@ -972,6 +972,12 @@ stored: players use their own disc for the base.
 | `GET /v1/maps/{map_id}` | read rule; a `read` token counts a download | `{map: summary + manifest, missing, position}`; 404; 410 if taken down |
 | `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
+| `PUT /v1/maps/{map_id}/credit` | admin or operator token, `lxm: content.moderate`; a credit `{authors?, release?, released?, source_url?, notes?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's credit; 403 for others; 404 if not published; 400 when malformed |
+| `PUT /v1/maps/{map_id}/details` | admin or operator token, `lxm: content.moderate`; details `{description?, images?: [{sha256, caption?, source_url?, credit?, licence?}], contents?, features?, pack?}` | 200 `{ok, position, map: summary}`; `{}` clears the admin's details; each image must be stored content that is a PNG or JPEG; 403 for others; 404 if not published; 400 when malformed |
+| `GET /v1/maps/{map_id}/images/{n}` | read rule | the details' `n`th image (from 0), its content type; 404 if none |
+| `GET /v1/mappacks` | read rule | `{items: [{id, name, description?, authors?, released?, source_url?, images?}], position}` |
+| `PUT /v1/mappacks/{id}` | admin or operator token, `lxm: content.moderate`; a pack `{name, description?, authors?, released?, source_url?, images?}`, or `null` to clear | 200 `{ok, position}`; ids are 1 to 64 of a-z, 0-9 and -; 400 when malformed |
+| `GET /v1/mappacks/{id}/images/{n}` | read rule | the pack's `n`th image; 404 if none |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
 | `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranks_as?}]}`: the served file's clanker hoppers (live-matchmaking.md §6.8) |
 
@@ -1000,14 +1006,30 @@ server with no data directory stores nothing (503).
 
 A package is published as an event the author signs with their own key,
 like the account's other events: stream `package-<map_id>`, type
-`MapPublished`, data `{manifest, image?, category?, source_url?}`. `manifest` is the package
+`MapPublished`, data `{manifest, image?, features?, gametypes?, version?, category?, source_url?, credit?}`. `manifest` is the package
 manifest as JSON (the TOML's tables and keys, with `[[patch]]` and
 `[[pack]]` as the arrays `patch` and `pack`); `image` is the SHA-256 of the
 preview, uploaded like a layer, given exactly when the manifest names one.
 `category` (one of `gameplay`, `weapons`, `vehicles`, `visuals`, `maps`,
 `other`) and `source_url` (an `http` or `https` URL of at most 300
 characters, where the mod came from) are the repository's display data,
-outside the `MapId` like the manifest's name (400 when malformed).
+outside the `MapId` like the manifest's name (400 when malformed). So are
+the in-game Mods page's (docs/game/maps.md §5, "A mod's page"):
+`features` (what the mod changes, each once, of `vehicles`, `weapons`,
+`objects`, `textures`, `shaders`, `scripts`, `geometry`, `ai`;
+`h2 live maps import` derives them), `gametypes` (each once, of `slayer`,
+`ctf`, `assault`, `oddball`, `koth`, `juggernaut`, `territories`; none:
+any) and `version` (one line, at most 24 characters); each optional and
+left out when empty. A server from before them refuses a document that
+has them (the document allows no unknown keys): update the server first.
+`credit` is who made the mod when the publisher did not: `{authors: [..],
+release?, released?, source_url?, notes?}`, `authors` the original
+creators as the release credits them (at most 12, each 1 to 64 characters
+on one line), `release` the original release's name (at most 120),
+`released` its date (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`), `source_url` as
+above, `notes` at most 500 characters. Without it the manifest's
+`[package] author` (one name) and `source_url` stand in. Servers before
+credits refuse a document that has it (unknown field: 400).
 The server checks the manifest as the runtime does ([maps.md](../game/maps.md) §7,
 "Manifest checks"), computes `MapId::of` and requires the stream to be that
 id's; refuses a manifest with no layers (only a retail base: 403) or naming a
@@ -1019,13 +1041,26 @@ and nonce checks apply.
 
 A summary is `{map_id, name, description?, author: {xuid, gamertag}, base:
 {map, sha256?, derived}, layers: [{sha256, size, kind: "patch"|"pack"}],
-size, image?, geometry?, published_at, position, downloads, credit?,
-category?, source_url?}`: `size` is the layers' bytes (what a player
+size, image?, features?, gametypes?, version?, geometry?, published_at,
+position, downloads, credit?, category?, source_url?, credits?}`: `size` is the layers' bytes (what a player
 without them downloads), `image` the preview's hash, `geometry` the
 manifest's `[result] geometry` (set when the mod changed the map's
 geometry), `position` the `MapPublished` event's log position, `downloads`
-how many accounts fetched the manifest, `credit` the manifest's `[package]
-author` (who made the mod; `author` is who published it). `missing` lists
+how many accounts fetched the manifest. `author` is the account that
+published the package (its key signed the manifest), never who made the
+mod: that is `credits`, an admin's correction (below) if there is one,
+else the publisher's `credit`, else the manifest's `[package] author`;
+`credit` is its authors on one line (`A`, `A & B`, `A, B & C`) for
+readers that know only that, and `source_url` is the credit's when it
+has one. An admin's details (`PUT /v1/maps/{id}/details`) add `images`
+(`[{sha256, caption?, source_url?, credit?, licence?}]`, served at
+`/v1/maps/{id}/images/{n}`), `contents` (the report's lines) and `pack`
+and `pack_name`; they replace `description` and `features` when set, and
+the first image is `image` when the package has no preview. A list page
+then has `packs: [{id, name, ...}]` for the packs its items name; a
+map's own answer has `report` (the whole contents report:
+`{lines, classes, swaps, stats, placements, scripts}`) and `pack_info`.
+`missing` lists
 layers the server no longer holds (deleted by an admin). Lists leave out
 taken-down packages. Servers before the repository send no `position` or
 `downloads`; read them as 0.
@@ -1048,6 +1083,8 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
       "description": "...", "author": {"xuid": "0009...", "gamertag": "Modder"},
       "credit": "who made it", "category": "weapons",
       "source_url": "https://...",
+      "credits": {"authors": ["who made it"], "released": "2005-03",
+                  "source_url": "https://..."},
       "base": {"map": "lockout", "sha256": "<64 hex>", "derived": false},
       "layers": [{"sha256": "<64 hex>", "size": 412345, "kind": "patch"}],
       "size": 412345, "image": "<64 hex>",
@@ -1068,8 +1105,8 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
 - Filters, all optional, empty ones ignored: `base` (the base map's name,
   any case), `author` (the publisher's gamertag; one no account has
   matches nothing), `category` (400 when not one of the six), `q` (a
-  case-insensitive substring of the name, description, credit, base map
-  name or publisher's gamertag).
+  case-insensitive substring of the name, description, credited authors
+  or release name, base map name or publisher's gamertag).
 - `limit` 1 to 1000 (default 100). `cursor` is opaque: for `new` it is the
   last item's position (`"4211"`), for `popular` its downloads and
   position (`"17:4211"`); one of the other sort's form is 400.
@@ -1091,6 +1128,28 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   count the same way, with no background task.
 - The picture is `GET /v1/maps/{map_id}/image` when `image` is set, else
   the base map's art.
+- **Details and packs.** `PUT /v1/maps/{map_id}/details` (the same
+  tokens) appends a server-signed `MapDetailed` event (stream
+  `package-<map_id>`, data `{map_id, details?, by?}`): a description of
+  up to 4000 characters, up to 8 images already uploaded as content (each
+  checked to be a PNG or JPEG), a contents report, a features list and a
+  pack id. `{}` clears it. `PUT /v1/mappacks/{id}` appends `MapPackSet`
+  (stream `mappack-<id>`, data `{id, pack?, by?}`); `null` clears it.
+  Both are display data only, like the credit. `h2 live maps details
+  --file docs/game/mod-details.toml` applies a file of them, and `h2 live
+  maps analyze` writes the contents reports.
+- **Credits.** `PUT /v1/maps/{map_id}/credit` (an admin's account token or
+  the operator's, `lxm: content.moderate`) sets who made a published
+  package, over what its publisher said: the body is a credit as above
+  (trimmed; blank fields dropped). The server appends a server-signed
+  `MapCredited` event (stream `package-<map_id>`, data `{map_id, credit?,
+  by?}`, public) and answers with the new summary. An empty body object
+  (`{}`) clears it, and the publisher's credit shows again. The manifest
+  the publisher signed, its `MapId` and every session on it are untouched:
+  this is display data only. The correction is kept by `MapId`, so a
+  package deleted and published again keeps it. `h2 live maps credit`
+  sends it, one package by flags or many from a file
+  (`docs/game/mod-credits.toml`).
 
 The client side (`h2 live maps publish DIR`, `h2 live maps import FILE`,
 `h2 live maps list`, and the join-time download) is in

@@ -458,6 +458,24 @@ pub fn leave_step(
     step
 }
 
+/// The bots' ports (`joining`, a mask: [`Local::joining_mask`]) whose slot
+/// holds a saved profile file (`saved`, [`crate::guest::saved_profile`]),
+/// to sign out (`SLOT_SIGN_OUT`) while no game runs (`in_game`). A bot is
+/// only ever signed in with no file, so a file there is a real profile a
+/// chooser gave the bot's controller (a stray A): the slot keeps it in
+/// use, so every chooser hides it, and the save pass would write the bot's
+/// block over it. Signed out, the profile is offered again and the join
+/// gate signs the bot in with its own block. Out of a game only: the
+/// bot's player is in it.
+pub fn release_step(in_game: bool, joining: u32, saved: impl Fn(u8) -> bool) -> Vec<u8> {
+    if in_game {
+        return Vec::new();
+    }
+    (0..4u8)
+        .filter(|&p| joining & 1 << p != 0 && saved(p))
+        .collect()
+}
+
 /// The input backend: one always-connected, synthesised pad per bot.
 pub struct Backend(Local);
 

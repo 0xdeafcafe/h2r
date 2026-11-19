@@ -26,6 +26,17 @@
 //! all the line says why (`ui: screen none (slot 4: window 1 active ...
 //! list [mask/id ...]; slot 0: ...)`), so a run shows what was there.
 //!
+//! Dialogs (windows 0 to 4) read as no screen: their list entries carry no
+//! plausible id at `+0x70` (the account picker's reads `0xe1670000`, its
+//! low half the cursor's row). Their active screen's id does read, so a
+//! none line with a dialog up names it ([`dialog`], [`dialog_name`]):
+//! `ui: screen none (...), dialog 0x14 dialog_live_signin (window 3, slot
+//! 4)`. Before this the menu drivers learnt the dialog only from the bots'
+//! join gate lines, which a Clankermatch run never prints at boot (its
+//! local bots are placed only once the roster comes), so run
+//! 20261119-115144 took the account picker for any dialog and pressed A on
+//! its no-account row.
+//!
 //! **The screens seen in runs** (20261118-092343, traced statically):
 //!
 //! | id | window | what |
@@ -180,13 +191,18 @@ fn screen_in<M: Gm + ?Sized>(
 pub struct Read {
     pub top: Option<Top>,
     pub why_none: String,
+    /// The first screen on windows 0 to 4 ([`dialog`]), if any.
+    pub dialog: Option<Dialog>,
 }
 
 impl Read {
+    /// A none line names the dialog up, if any (module docs); a screen's
+    /// line is as it was.
     pub fn line(&self) -> String {
-        match &self.top {
-            Some(t) => t.line(),
-            None => format!("ui: screen none ({})", self.why_none),
+        match (&self.top, &self.dialog) {
+            (Some(t), _) => t.line(),
+            (None, Some(d)) => format!("ui: screen none ({}), {}", self.why_none, d.line()),
+            (None, None) => format!("ui: screen none ({})", self.why_none),
         }
     }
 }
@@ -198,6 +214,7 @@ impl Read {
 /// controller. A window whose list has none for it passes the input on to
 /// the next slot, not the next window.
 pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
+    let dialog = dialog(m);
     let mut why = Vec::new();
     for slot in [SHARED, 0] {
         let Some((window, ch)) = (0..6)
@@ -228,6 +245,7 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
                     mode,
                 }),
                 why_none: String::new(),
+                dialog,
             };
         }
         why.push(format!(
@@ -240,6 +258,7 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
     Read {
         top: None,
         why_none: why.join("; "),
+        dialog,
     }
 }
 
@@ -316,6 +335,49 @@ pub struct Dialog {
     pub id: Option<u32>,
 }
 
+/// The account picker, `dialog_live_signin` (screen 20, loader
+/// `0x24b4a9`): row 0 is "no account" while the profile is signed out.
+pub const ACCOUNT_PICKER: u32 = 0x14;
+
+/// A dialog screen's tag name, by id, for the ones read off `mainmenu.map`
+/// (docs/game/ui-builder.md, "The modal dialog"). `None` for the others
+/// (the new profile's boot dialogs `0x0a` and `0xa7` are not named yet).
+pub fn dialog_name(id: u32) -> Option<&'static str> {
+    Some(match id {
+        0x08 => "error_dialog_ok",
+        ACCOUNT_PICKER => "dialog_live_signin",
+        0x15 => "dialog_live_password",
+        0x21 => "confirmation_dialog",
+        0xee => "tcr_dialog",
+        0xf0 => "error_dialog_large",
+        _ => return None,
+    })
+}
+
+impl Dialog {
+    /// `dialog 0x14 dialog_live_signin (window 3, slot 4)`; `dialog 0x0a
+    /// (window 3, slot 4)` without a name, `dialog ? (...)` without an id.
+    pub fn line(&self) -> String {
+        let id = match self.id {
+            Some(i) => match dialog_name(i) {
+                Some(n) => format!("0x{i:02x} {n}"),
+                None => format!("0x{i:02x}"),
+            },
+            None => "?".to_owned(),
+        };
+        format!("dialog {id} (window {}, slot {})", self.window, self.slot)
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.id.and_then(dialog_name),
+            "window": self.window,
+            "slot": self.slot,
+        })
+    }
+}
+
 /// The first screen on windows 0 to 4, any slot (4, the shared one, and
 /// the controllers' 0 to 3), as `0x14917c(window)` asks one window over
 /// every slot: whatever sits over the window-5 menus. The players screen
@@ -347,19 +409,32 @@ pub fn top<M: Gm + ?Sized>(m: &M) -> Option<Top> {
 }
 
 /// The newest read, for `ui.screen`, and when it was made.
-static LAST: Mutex<Option<(Instant, Option<Top>)>> = Mutex::new(None);
+static LAST: Mutex<Option<(Instant, Option<Top>, Option<Dialog>)>> = Mutex::new(None);
 
-/// The newest read and its age, if the watch runs.
-pub fn last() -> Option<(std::time::Duration, Option<Top>)> {
+/// The newest read (its screen and dialog) and its age, if the watch runs.
+pub fn last() -> Option<(std::time::Duration, Option<Top>, Option<Dialog>)> {
     let l = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    l.map(|(at, top)| (at.elapsed(), top))
+    l.map(|(at, top, dialog)| (at.elapsed(), top, dialog))
+}
+
+/// `ui.screen`'s answer: the screen's fields (`"screen": null` for none),
+/// `dialog` (`null`, or its `id`, `name`, `window` and `slot`), `age_ms`.
+pub fn screen_json(
+    age: std::time::Duration,
+    top: Option<Top>,
+    dialog: Option<Dialog>,
+) -> serde_json::Value {
+    let mut v = top.map_or_else(|| serde_json::json!({ "screen": null }), |t| t.json());
+    v["dialog"] = dialog.map_or(serde_json::Value::Null, |d| d.json());
+    v["age_ms"] = serde_json::json!(age.as_millis() as u64);
+    v
 }
 
 /// The line said last, so a line is said only on a change.
 static SAID: Mutex<String> = Mutex::new(String::new());
 
 fn note(r: Read) -> Option<String> {
-    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), r.top));
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), r.top, r.dialog));
     let line = r.line();
     let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
     if *said == line {
@@ -598,10 +673,13 @@ mod tests {
         screen(&mut f, WINDOW_1 + 4 * STRIDE_13, 0x8000_1000, 0xb6, 0x2);
         let r = read(&f);
         assert_eq!(r.top, None);
+        // The window 1 screen is the dialog up ([`dialog`]: any screen on
+        // windows 0 to 4, whoever's mask), and why player one's input
+        // goes nowhere, so the line names it.
         assert_eq!(
             r.line(),
             "ui: screen none (slot 4: window 1 active 0x80001000 pending 0x0 list [0x2/0xb6]; \
-             slot 0: no window)"
+             slot 0: no window), dialog 0xb6 (window 1, slot 4)"
         );
         // A screen in player one's own slot takes it.
         screen(&mut f, WINDOW_5, 0x8000_2000, 0x1e, 0x1);
@@ -625,6 +703,79 @@ mod tests {
         assert_eq!(t.line(), "ui: screen 0x1e (window 5, slot 4), mode 3");
     }
 
+    /// Run 20261119-115144: the account picker over the main menu reads as
+    /// no screen (its list entry's `+0x70` is `0xe1670000`), and the line
+    /// names it by its active screen's id.
+    #[test]
+    fn a_none_line_names_the_dialog_up() {
+        let mut f = Fake::default();
+        screen(
+            &mut f,
+            WINDOW_5 + 4 * STRIDE_5,
+            0x8000_0000,
+            0xe16e_0001,
+            0x1,
+        );
+        let ch = WINDOW_3 + 4 * STRIDE_13;
+        screen(&mut f, ch, 0x8000_1000, 0xe167_0000, 0x1);
+        // The active screen is another record than the list entry.
+        f.set_u32(ch + ACTIVE, 0x8000_2000);
+        f.set_u32(0x8000_2000 + ID, ACCOUNT_PICKER);
+        let r = read(&f);
+        assert_eq!(r.top, None);
+        assert_eq!(
+            r.line(),
+            "ui: screen none (slot 4: window 3 active 0x80002000 pending 0x0 list \
+             [0x1/0xe1670000]; slot 0: no window), dialog 0x14 dialog_live_signin \
+             (window 3, slot 4)"
+        );
+        let d = r.dialog.unwrap();
+        assert_eq!(d.json()["name"], "dialog_live_signin");
+        assert_eq!(d.json()["id"], 0x14);
+        // An unnamed one gives its id, an unread one `?`.
+        let d = Dialog {
+            window: 3,
+            slot: 4,
+            id: Some(0x0a),
+        };
+        assert_eq!(d.line(), "dialog 0x0a (window 3, slot 4)");
+        assert_eq!(d.json()["name"], serde_json::Value::Null);
+        let d = Dialog { id: None, ..d };
+        assert_eq!(d.line(), "dialog ? (window 3, slot 4)");
+        // A screen's line is as it was, dialog or not.
+        screen(&mut f, WINDOW_1 + 4 * STRIDE_13, 0x8000_3000, 0xb6, 0x1);
+        assert_eq!(read(&f).line(), "ui: screen 0xb6 (window 1, slot 4)");
+    }
+
+    #[test]
+    fn ui_screen_answers_with_the_dialog() {
+        let age = std::time::Duration::from_millis(40);
+        let v = screen_json(
+            age,
+            None,
+            Some(Dialog {
+                window: 3,
+                slot: 4,
+                id: Some(ACCOUNT_PICKER),
+            }),
+        );
+        assert_eq!(v["screen"], serde_json::Value::Null);
+        assert_eq!(v["dialog"]["name"], "dialog_live_signin");
+        assert_eq!(v["dialog"]["window"], 3);
+        assert_eq!(v["age_ms"], 40);
+        let top = Top {
+            window: 5,
+            slot: 4,
+            id: 0xba,
+            screen: 0x8000_0000,
+            live_row: Some(2),
+            mode: None,
+        };
+        let v = screen_json(age, Some(top), None);
+        assert_eq!(v["screen"], 0xba);
+        assert_eq!(v["dialog"], serde_json::Value::Null);
+    }
+
     #[test]
     fn lines_only_on_change() {
         // One test owns LAST and SAID.
@@ -644,6 +795,7 @@ mod tests {
         let r = |top: Option<Top>| Read {
             top,
             why_none: "slot 4: no window; slot 0: no window".into(),
+            dialog: None,
         };
         assert!(note(r(Some(a))).is_some());
         assert_eq!(note(r(Some(a))), None);

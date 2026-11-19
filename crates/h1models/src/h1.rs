@@ -484,6 +484,24 @@ pub fn strip_triangles(strip: &[u16]) -> Vec<[u16; 3]> {
         .collect()
 }
 
+/// A Halo 1 strip that [`strip_triangles`] reads back as `tris`, in order
+/// and wound as given: each triangle `[a, b, c]` sits at an even window as
+/// `a c b`, and the next one, `[d, e, f]`, follows after `b b d` (every
+/// window across the join repeats an index, so is skipped, and `d f e`
+/// lands on an even window again). For a part some of whose triangles are
+/// dropped.
+pub fn triangles_strip(tris: &[[u16; 3]]) -> Vec<u16> {
+    let mut strip = Vec::with_capacity(tris.len() * 9);
+    for (i, &[a, b, c]) in tris.iter().enumerate() {
+        if i > 0 {
+            let last = strip[strip.len() - 1];
+            strip.extend([last, last, a]);
+        }
+        strip.extend([a, c, b]);
+    }
+    strip
+}
+
 // ---------------------------------------------------------------------------
 // Animation graphs
 // ---------------------------------------------------------------------------
@@ -493,6 +511,35 @@ pub const ANTR_HEADER: usize = 0x80;
 const ANTR_UNITS: usize = 0x0c;
 const ANTR_WEAPONS: usize = 0x18;
 const ANTR_VEHICLES: usize = 0x24;
+/// The object overlays block (`0x14` each): `+0` i16 animation, `+2` u16
+/// function (0 to 3: the object's A to D output), `+4` u16 function
+/// controls (0 frame, 1 scale). V (Blood Gulch): the warthog's one
+/// element names its `firing` overlay with function 3 and controls 0;
+/// the scorpion's names no animation (-1).
+const ANTR_OBJECTS: usize = 0x00;
+const OBJECT_OVERLAY_LEN: usize = 0x14;
+/// A vehicles block element (`0x74`): the steering screen ([`AimScreen`])
+/// at `+0`, the vehicle slots (`i16` animation indices,
+/// [`VEHICLE_SLOTS`]) at `+0x5c`, the suspension block
+/// ([`SUSPENSION_LEN`]) at `+0x68`. V (Blood Gulch's warthog, ghost and
+/// scorpion): the warthog's slots name `vehicle steering` (0) and
+/// `vehicle ground-speed` (5), the ghost's `vehicle steering` (0); the
+/// warthog's four suspension elements name its four `suspension ...`
+/// animations and its four tire mass points, the scorpion's eight its
+/// `tread ...` animations and its eight tread mass points.
+const VEHICLE_LEN: usize = 0x74;
+const VEHICLE_SLOT_LIST: usize = 0x5c;
+const VEHICLE_SUSPENSION: usize = 0x68;
+/// A suspension element: `+0` i16 mass point (the `phys` mass point
+/// index), `+2` i16 animation, `+4` f32 full extension ground depth, `+8`
+/// f32 full compression ground depth, 8 bytes of padding.
+const SUSPENSION_LEN: usize = 0x14;
+/// A unit's aiming screen (`+0x20`) and unit slots (`+0x40`).
+const UNIT_SCREEN: usize = 0x20;
+const UNIT_SLOT_LIST: usize = 0x40;
+/// A weapon class's aiming screen (`+0x60`, after the label and two
+/// marker names).
+const CLASS_SCREEN: usize = 0x60;
 /// The first-person weapons block (`0x1c` each): 16 bytes, then a block of
 /// `i16` animation indices at `+0x10`, one per first-person slot
 /// ([`FIRST_PERSON_SLOTS`]).
@@ -543,6 +590,114 @@ pub struct Graph {
     /// per slot of [`FIRST_PERSON_SLOTS`], the animation it plays, -1 for
     /// none. Empty on other graphs.
     pub first_person_slots: Vec<i16>,
+    /// A vehicle graph's first vehicles element: steering screen, slots
+    /// and suspension. `None` without one.
+    pub vehicle: Option<VehicleSlots>,
+    /// The object overlays block: animations an object function drives.
+    pub objects: Vec<ObjectOverlay>,
+}
+
+/// Halo 1's vehicle slots, by position ([`VehicleSlots::slots`]): the
+/// words Halo 2 asks a vehicle's graph for as overlays (E: the vehicle
+/// animation update `0x000f0760` looks up `steering`, `roll`, `throttle`,
+/// `velocity`, `ground_speed` and `ground_speed_rear` through
+/// `0x001cb9d0`; Halo 2's string table holds `steering` .. `unoccupied`
+/// in this order, IDs `0x78` to `0x7f`). V that slot 0 is steering and
+/// slot 5 ground speed: the warthog's slots hold `vehicle steering` and
+/// `vehicle ground-speed` there, the ghost's slot 0 its `vehicle
+/// steering`. The others are S, by their order in Halo 2's string table.
+pub const VEHICLE_SLOTS: &[&str] = &[
+    "steering",
+    "roll",
+    "throttle",
+    "velocity",
+    "braking",
+    "ground_speed",
+    "occupied",
+    "unoccupied",
+];
+
+/// An aiming or steering screen (`0x18` bytes): the yaw and pitch each
+/// frame of a screen animation stands for. Halo 2's blend screen holds the
+/// same six fields after its label (V: the retail chaingun turret's
+/// `aiming` screen and the Halo 1 warthog's `fixed` class screen are the
+/// same 24 bytes; the retail ghost's two screens have the Halo 1 ghost's
+/// shape).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AimScreen {
+    pub right_yaw_per_frame: f32,
+    pub left_yaw_per_frame: f32,
+    pub right_frames: i16,
+    pub left_frames: i16,
+    pub down_pitch_per_frame: f32,
+    pub up_pitch_per_frame: f32,
+    pub down_frames: i16,
+    pub up_frames: i16,
+}
+
+impl AimScreen {
+    fn read(b: &[u8], at: usize) -> Self {
+        Self {
+            right_yaw_per_frame: f32_at(b, at),
+            left_yaw_per_frame: f32_at(b, at + 4),
+            right_frames: i16_at(b, at + 8),
+            left_frames: i16_at(b, at + 0xa),
+            down_pitch_per_frame: f32_at(b, at + 0xc),
+            up_pitch_per_frame: f32_at(b, at + 0x10),
+            down_frames: i16_at(b, at + 0x14),
+            up_frames: i16_at(b, at + 0x16),
+        }
+    }
+
+    /// The 24 bytes as Halo 1 (and Halo 2's blend screen) lay them out.
+    pub fn bytes(&self) -> [u8; 0x18] {
+        let mut b = [0u8; 0x18];
+        b[0..4].copy_from_slice(&self.right_yaw_per_frame.to_le_bytes());
+        b[4..8].copy_from_slice(&self.left_yaw_per_frame.to_le_bytes());
+        b[8..0xa].copy_from_slice(&self.right_frames.to_le_bytes());
+        b[0xa..0xc].copy_from_slice(&self.left_frames.to_le_bytes());
+        b[0xc..0x10].copy_from_slice(&self.down_pitch_per_frame.to_le_bytes());
+        b[0x10..0x14].copy_from_slice(&self.up_pitch_per_frame.to_le_bytes());
+        b[0x14..0x16].copy_from_slice(&self.down_frames.to_le_bytes());
+        b[0x16..0x18].copy_from_slice(&self.up_frames.to_le_bytes());
+        b
+    }
+
+    /// Whether the screen spans anything (an all-zero screen is none).
+    pub fn is_set(&self) -> bool {
+        self.right_frames != 0
+            || self.left_frames != 0
+            || self.down_frames != 0
+            || self.up_frames != 0
+    }
+}
+
+/// A graph's vehicles element ([`VEHICLE_LEN`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehicleSlots {
+    pub screen: AimScreen,
+    /// Per [`VEHICLE_SLOTS`] word, the animation index, -1 for none.
+    pub slots: Vec<i16>,
+    pub suspension: Vec<Suspension>,
+}
+
+/// One suspension element ([`SUSPENSION_LEN`]). Halo 1 writes the ground
+/// depths negative (V: the warthog's -0.314 and -0.135, the scorpion's
+/// -0.38 to -0.11).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Suspension {
+    pub mass_point: i16,
+    pub animation: i16,
+    pub full_extension_ground_depth: f32,
+    pub full_compression_ground_depth: f32,
+}
+
+/// One object overlay ([`OBJECT_OVERLAY_LEN`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectOverlay {
+    pub animation: i16,
+    pub function: u16,
+    pub controls: u16,
 }
 
 /// What each first-person slot is, in Halo 1's own words (the name half
@@ -593,6 +748,11 @@ pub const FIRST_PERSON_SLOTS: &[&str] = &[
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitSlots {
     pub label: String,
+    /// The unit's own aiming screen (`+0x20`).
+    pub screen: AimScreen,
+    /// The unit's own slots (`+0x40`; V: the warthog's 2 to 4 hold its
+    /// `stand acc-front-back`, `acc-left-right`, `acc-up-down`).
+    pub slots: Vec<i16>,
     pub classes: Vec<ClassSlots>,
 }
 
@@ -600,6 +760,12 @@ pub struct UnitSlots {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ClassSlots {
     pub label: String,
+    /// The class's aiming screen (`+0x60`), the yaw and pitch of each
+    /// frame of its aim animation (V: the warthog's and scorpion's
+    /// `fixed` screens are 2 + 1 + 2 yaw by 1 + 1 + 1 pitch frames, their
+    /// 15-frame `stand fixed aim-still`; the ghost's 1 by 3, its 3-frame
+    /// one).
+    pub screen: AimScreen,
     pub slots: Vec<i16>,
     pub types: Vec<(String, Vec<i16>)>,
 }
@@ -724,13 +890,43 @@ impl Graph {
                     .collect(),
                 None => Vec::new(),
             },
+            vehicle: match block(m, h, ANTR_VEHICLES, VEHICLE_LEN)?.first() {
+                Some(v) => Some(VehicleSlots {
+                    screen: AimScreen::read(v, 0),
+                    slots: block(m, v, VEHICLE_SLOT_LIST, 2)?
+                        .into_iter()
+                        .map(|s| i16_at(s, 0))
+                        .collect(),
+                    suspension: block(m, v, VEHICLE_SUSPENSION, SUSPENSION_LEN)?
+                        .into_iter()
+                        .map(|s| Suspension {
+                            mass_point: i16_at(s, 0),
+                            animation: i16_at(s, 2),
+                            full_extension_ground_depth: f32_at(s, 4),
+                            full_compression_ground_depth: f32_at(s, 8),
+                        })
+                        .collect(),
+                }),
+                None => None,
+            },
+            objects: block(m, h, ANTR_OBJECTS, OBJECT_OVERLAY_LEN)?
+                .into_iter()
+                .map(|o| ObjectOverlay {
+                    animation: i16_at(o, 0),
+                    function: u16_at(o, 2),
+                    controls: u16_at(o, 4),
+                })
+                .collect(),
         })
     }
 }
 
 fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
     let slots = |e: &[u8], at: usize| -> Result<Vec<i16>> {
-        Ok(block(m, e, at, 2)?.into_iter().map(|s| i16_at(s, 0)).collect())
+        Ok(block(m, e, at, 2)?
+            .into_iter()
+            .map(|s| i16_at(s, 0))
+            .collect())
     };
     block(m, h, ANTR_UNITS, UNIT_LEN)?
         .into_iter()
@@ -744,6 +940,7 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
                         .collect::<Result<Vec<_>>>()?;
                     Ok(ClassSlots {
                         label: name32(c, 0),
+                        screen: AimScreen::read(c, CLASS_SCREEN),
                         slots: slots(c, CLASS_SLOTS)?,
                         types,
                     })
@@ -751,10 +948,25 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
                 .collect::<Result<Vec<_>>>()?;
             Ok(UnitSlots {
                 label: name32(u, 0),
+                screen: AimScreen::read(u, UNIT_SCREEN),
+                slots: slots(u, UNIT_SLOT_LIST)?,
                 classes,
             })
         })
         .collect()
+}
+
+/// Every weapon type the units' classes of the graph at `address` list,
+/// `(type label, class label)`, without the animations.
+pub fn weapon_types<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<(String, String)>> {
+    let h = m.read(address, ANTR_HEADER)?;
+    let mut out = Vec::new();
+    for u in read_units(m, h)? {
+        for c in u.classes {
+            out.extend(c.types.into_iter().map(|(t, _)| (t, c.label.clone())));
+        }
+    }
+    Ok(out)
 }
 
 /// The animation names of the graph at `address`, without their data.

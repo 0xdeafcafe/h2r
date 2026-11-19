@@ -38,16 +38,73 @@ export interface MapSummary {
   position: number;
   /** Distinct signed-in accounts that fetched the manifest; 0 when absent. */
   downloads: number;
-  /** The mod's original author, as the manifest names it. */
+  /** Who made the mod (the original author or authors) on one line: never
+   *  the publishing account, which is `author`. */
   credit?: string;
+  /** The whole credit: authors, the original release and its date, where
+   *  it came from, notes. Set by the publisher or corrected by an admin. */
+  credits?: MapCredit;
   /** One of lib/mods.ts MOD_CATEGORIES, as the server sends it. */
   category?: string;
   /** Where the mod came from; kept only when it is http or https. */
   source_url?: string;
+  /** An admin's screenshots, in order: the `n`th is served at
+   *  `/v1/maps/{id}/images/{n}` (packageScreenshotUrl). */
+  images?: MapImage[];
+  /** What the mod contains, one line each ("projectile swap: ..."). */
+  contents?: string[];
+  /** The map pack it came out in, by id, and the pack's name when known. */
+  pack?: string;
+  pack_name?: string;
+}
+
+/** A map pack (`GET /v1/mappacks`, a map's `pack_info`): its images are
+ *  served at `/v1/mappacks/{id}/images/{n}` (packImageUrl). */
+export interface MapPack {
+  id: string;
+  name: string;
+  description?: string;
+  authors: string[];
+  released?: string;
+  source_url?: string;
+  images: MapImage[];
+}
+
+/** One screenshot of a mod and where it came from. */
+export interface MapImage {
+  sha256: string;
+  caption?: string;
+  /** The page it was found on; kept only when it is http or https. */
+  source_url?: string;
+  /** Who made the image. */
+  credit?: string;
+  licence?: string;
+}
+
+/** A reference a mod points elsewhere (`report.swaps`). */
+export interface MapSwap { kind: string; tag: string; field: string; from?: string; to?: string }
+
+/** What a mod contains, as `GET /v1/maps/{id}` reports it (`report`). */
+export interface MapReport {
+  lines: string[];
+  classes: Array<{ group: string; label: string; added: number; changed: number; removed: number; added_names?: string[] }>;
+  swaps: MapSwap[];
+  stats: Array<{ tag: string; stat: string; from: string; to: string }>;
+  scripts: boolean;
+}
+
+/** Who made a mod and where it came from (`credits` on a package). */
+export interface MapCredit {
+  authors: string[];
+  release?: string;
+  /** "2005", "2005-03" or "2005-03-14". */
+  released?: string;
+  source_url?: string;
+  notes?: string;
 }
 
 /** `GET /v1/maps/{map_id}`'s `map`. */
-export interface MapDetail extends MapSummary { manifest?: Record<string, unknown> }
+export interface MapDetail extends MapSummary { manifest?: Record<string, unknown>; report?: MapReport; pack_info?: MapPack }
 
 export function isMapId(v: unknown): v is MapId {
   return typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
@@ -103,8 +160,106 @@ export function parseMapSummary(raw: unknown): MapDetail | null {
   if (credit) out.credit = credit;
   if (category) out.category = category.toLowerCase();
   if (source) out.source_url = source;
+  const credits = parseMapCredit(r.credits);
+  if (credits) out.credits = credits;
+  const images = parseMapImages(r.images);
+  if (images.length) out.images = images;
+  const contents = (Array.isArray(r.contents) ? r.contents : []).map(text).filter((l): l is string => l !== null);
+  if (contents.length) out.contents = contents;
+  const report = parseMapReport(r.report);
+  if (report) out.report = report;
+  const pack = text(r.pack), packName = text(r.pack_name);
+  if (pack) out.pack = pack;
+  if (packName) out.pack_name = packName;
+  const packInfo = parseMapPack(r.pack_info);
+  if (packInfo) out.pack_info = packInfo;
   if (obj(r.manifest)) out.manifest = r.manifest as Record<string, unknown>;
   return out;
+}
+
+/** A package's `images`, read leniently: entries without a sha256 dropped
+ *  (the rest keep their place: the `n`th is served at `/images/{n}`, so
+ *  a dropped one would shift the others), unsafe source URLs dropped. */
+export function parseMapImages(raw: unknown): MapImage[] {
+  const list = Array.isArray(raw) ? raw : [];
+  if (!list.every((i) => typeof obj(i)?.sha256 === "string")) return [];
+  return list.map((i) => {
+    const o = obj(i)!;
+    const out: MapImage = { sha256: o.sha256 as string };
+    const caption = text(o.caption), credit = text(o.credit), licence = text(o.licence), source = safeSourceUrl(o.source_url);
+    if (caption) out.caption = caption;
+    if (credit) out.credit = credit;
+    if (licence) out.licence = licence;
+    if (source) out.source_url = source;
+    return out;
+  });
+}
+
+/** A package's contents `report`, read leniently; null when it says nothing. */
+export function parseMapReport(raw: unknown): MapReport | null {
+  const r = obj(raw);
+  if (!r) return null;
+  const list = (v: unknown) => (Array.isArray(v) ? v.map(obj).filter((o): o is Record<string, unknown> => o !== null) : []);
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const out: MapReport = {
+    lines: (Array.isArray(r.lines) ? r.lines : []).map(text).filter((l): l is string => l !== null),
+    classes: list(r.classes).map((c) => ({
+      group: str(c.group), label: str(c.label), added: n(c.added), changed: n(c.changed), removed: n(c.removed),
+      ...(Array.isArray(c.added_names) ? { added_names: c.added_names.map(text).filter((t): t is string => t !== null) } : {}),
+    })),
+    swaps: list(r.swaps).map((s) => ({
+      kind: str(s.kind), tag: str(s.tag), field: str(s.field),
+      ...(typeof s.from === "string" ? { from: s.from } : {}),
+      ...(typeof s.to === "string" ? { to: s.to } : {}),
+    })),
+    stats: list(r.stats).map((s) => ({ tag: str(s.tag), stat: str(s.stat), from: str(s.from), to: str(s.to) })),
+    scripts: r.scripts === true,
+  };
+  return out.lines.length || out.classes.length || out.swaps.length || out.stats.length || out.scripts ? out : null;
+}
+
+/** A map pack, read leniently; null without an id. */
+export function parseMapPack(raw: unknown): MapPack | null {
+  const r = obj(raw);
+  const id = text(r?.id);
+  if (!r || !id) return null;
+  const out: MapPack = {
+    id,
+    name: text(r.name) ?? id,
+    authors: (Array.isArray(r.authors) ? r.authors : []).map(text).filter((a): a is string => a !== null),
+    images: parseMapImages(r.images),
+  };
+  const description = text(r.description), released = text(r.released), source = safeSourceUrl(r.source_url);
+  if (description) out.description = description;
+  if (released) out.released = released;
+  if (source) out.source_url = source;
+  return out;
+}
+
+/** The URL of a map pack's `n`th image. */
+export function packImageUrl(api: string, packId: string, n: number): string {
+  return `${api}/mappacks/${packId}/images/${n}`;
+}
+
+/** The URL of a package's `n`th screenshot. */
+export function packageScreenshotUrl(api: string, mapId: MapId, n: number): string {
+  return `${api}/maps/${mapId}/images/${n}`;
+}
+
+/** A package's `credits`, read leniently: blank authors dropped, an unsafe
+ *  source URL dropped; null when nothing is left. */
+export function parseMapCredit(raw: unknown): MapCredit | null {
+  const r = obj(raw);
+  if (!r) return null;
+  const authors = (Array.isArray(r.authors) ? r.authors : []).map(text).filter((a): a is string => a !== null);
+  const out: MapCredit = { authors };
+  const release = text(r.release), released = text(r.released), source = safeSourceUrl(r.source_url), notes = text(r.notes);
+  if (release) out.release = release;
+  if (released) out.released = released;
+  if (source) out.source_url = source;
+  if (notes) out.notes = notes;
+  return authors.length || release || released || source || notes ? out : null;
 }
 
 /** A list response's items, dropping any that can't be read. */

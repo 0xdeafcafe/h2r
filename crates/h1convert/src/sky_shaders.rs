@@ -67,6 +67,11 @@
 //! ([`shad::CLOUDS_TREE`]): the offset runs from 0 to the scale over the
 //! period, from the scale to 0 when the period is negative.
 //!
+//! **Alpha.** A `schi`'s alpha comes from the maps its alpha functions
+//! reach ([`alpha_reach`]); a dome's picture, last after its star layers,
+//! is not one of them, so it is drawn from an opaque copy
+//! ([`H1SkyShader::opaque_picture`]).
+//!
 //! Lost: the masked star layers of the night and dusk domes (the picture
 //! alone draws), the per-map colour functions, the phase, rotation, the
 //! other animation functions (cosine, noise, spark: a handful), and
@@ -111,6 +116,56 @@ pub struct SkyMap {
     pub lod_offset: f32,
     /// Its u and v scrolling (module docs).
     pub scroll: [Option<shad::Slide>; 2],
+    /// Whether its alpha reaches the shader's ([`alpha_reach`]); always
+    /// for a `sotr` or `swat`.
+    pub alpha: bool,
+}
+
+/// A `schi` map's colour and alpha functions (`u16` each, `+0x2c` and
+/// `+0x2e`): how map `k + 1` combines with what maps `0..=k` made. The
+/// names are ours, from the values (D, every `schi` sky shader on the
+/// disc): 0 keeps the current value (the dome maps after its stars), 1
+/// takes the next map's (horizon land's alpha, the land's DXT3 cut-out
+/// after a detail map), 2 multiplies (stars by their mask, a cloud tile by
+/// its `A8` mask, colour and alpha), 3 is a doubled multiply (detail
+/// ground on horizon land) and 4 adds (the stars onto a dome).
+pub const SCHI_FUNCTIONS: usize = 0x2c;
+pub const FUNCTION_CURRENT: u16 = 0;
+pub const FUNCTION_NEXT: u16 = 1;
+
+/// Which of a `schi`'s maps (by element, `alpha_functions` in order) the
+/// shader's alpha comes from: map 0's to start, and each map's alpha
+/// function then keeps it ([`FUNCTION_CURRENT`]), replaces it with the
+/// next map's ([`FUNCTION_NEXT`]) or combines the next map's in (any
+/// other).
+///
+/// D: every clear, dusk, night and doom dome on the disc is a stack of
+/// star layers, twinkle and stars added on (colour functions 2 and 4),
+/// then the dome's picture last, every alpha function 0: the alpha is the
+/// first star map's, DXT1 or Y8, opaque. Halo 1 draws those domes opaque
+/// (alpha blended, framebuffer blend 0) whatever the picture's own alpha:
+/// Blood Gulch's and b30's `sky clear blue` is A8R8G8B8 with alpha 0 over
+/// most of it (a star mask, 0 to 252), and the sky is blue. The other
+/// domes' pictures are X8R8G8B8.
+pub fn alpha_reach(alpha_functions: &[u16]) -> Vec<bool> {
+    let mut reach = vec![false; alpha_functions.len()];
+    if let Some(first) = reach.first_mut() {
+        *first = true;
+    }
+    for (k, &f) in alpha_functions.iter().enumerate() {
+        let Some(next) = k.checked_add(1).filter(|&n| n < reach.len()) else {
+            break;
+        };
+        match f {
+            FUNCTION_CURRENT => {}
+            FUNCTION_NEXT => {
+                reach[..next].fill(false);
+                reach[next] = true;
+            }
+            _ => reach[next] = true,
+        }
+    }
+    reach
 }
 
 /// The slide of a map element's animation run at `at`: source 0 (game
@@ -167,9 +222,25 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
             let blend = u16::from_le_bytes(d.get(BLEND..BLEND + 2)?.try_into().ok()?);
             let block = h1map::Block::read(d, MAPS)?;
             let bytes = h1.block(block, size).ok()?;
-            let maps = bytes
-                .chunks_exact(size)
-                .filter_map(|e| {
+            let elements: Vec<&[u8]> = bytes.chunks_exact(size).collect();
+            let reach = if chicago {
+                let at = SCHI_FUNCTIONS + 2;
+                alpha_reach(
+                    &elements
+                        .iter()
+                        .map(|e| {
+                            e.get(at..at + 2)
+                                .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]))
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                vec![true; elements.len()]
+            };
+            let maps = elements
+                .iter()
+                .zip(reach)
+                .filter_map(|(&e, alpha)| {
                     let r = TagRef::read(e, bitmap)?;
                     let anim = if chicago { SCHI_ANIMATION } else { SOTR_ANIMATION };
                     (r.group == Group::new(b"bitm") && !r.id.is_none()).then_some(SkyMap {
@@ -177,6 +248,7 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                         scale: [f32_at(e, scale)?, f32_at(e, scale + 4)?],
                         lod_offset: shad::h1_lod_offset(h1, r.id),
                         scroll: [slide(e, anim), slide(e, anim + 0x10)],
+                        alpha,
                     })
                 })
                 .collect();
@@ -191,6 +263,7 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
                     scale: [1.0, 1.0],
                     lod_offset: shad::h1_lod_offset(h1, base),
                     scroll: [None, None],
+                    alpha: true,
                 }],
             )
         }
@@ -204,6 +277,21 @@ pub fn read_h1(h1: &H1Map, id: h1map::TagId) -> Option<H1SkyShader> {
         additive,
         maps,
     })
+}
+
+impl H1SkyShader {
+    /// The map drawn as the picture with its alpha made opaque
+    /// (`h1bitmaps::convert::convert_bitmap_opaque`): an alpha-blended
+    /// shader's [`Recipe::Picture`] whose own alpha doesn't reach the
+    /// shader's ([`alpha_reach`]). `sky_one_alpha_env` draws `t3.rgb ×
+    /// t3.a` with alpha `t3.a`; with the picture's star mask as that alpha
+    /// Blood Gulch's sky was black, the planet and ring drawn over nothing.
+    pub fn opaque_picture(&self) -> Option<usize> {
+        match recipe(self)? {
+            Recipe::Picture(k) if !self.maps[k].alpha => Some(k),
+            _ => None,
+        }
+    }
 }
 
 /// Which Halo 2 template a Halo 1 sky shader becomes, and with which of
@@ -339,9 +427,53 @@ mod tests {
                     scale,
                     lod_offset: 0.0,
                     scroll: [None, None],
+                    alpha: true,
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn the_alpha_follows_the_alpha_functions() {
+        // Blood Gulch's clear blue dome: twinkle, stars, the picture, every
+        // alpha function "current": the first map's alpha only.
+        assert_eq!(alpha_reach(&[0, 0, 0]), [true, false, false]);
+        // A cloud layer: the mask's alpha times the tile's.
+        assert_eq!(alpha_reach(&[2, 0]), [true, true]);
+        // Horizon land: the land's alpha replaces the detail's.
+        assert_eq!(alpha_reach(&[1, 0]), [false, true]);
+        // Damnation's horizon: a doubled multiply keeps both.
+        assert_eq!(alpha_reach(&[3, 0]), [true, true]);
+        // Replaced, then combined.
+        assert_eq!(alpha_reach(&[1, 4, 0]), [false, true, true]);
+        assert_eq!(alpha_reach(&[0]), [true]);
+        assert!(alpha_reach(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_dome_whose_picture_alpha_is_not_drawn_is_opaque() {
+        let mut dome = shader(true, false, &[[12.0, 12.0], [8.0, 8.0], [1.0, 1.0]]);
+        for (m, a) in dome.maps.iter_mut().zip(alpha_reach(&[0, 0, 0])) {
+            m.alpha = a;
+        }
+        assert_eq!(recipe(&dome), Some(Recipe::Picture(2)));
+        assert_eq!(dome.opaque_picture(), Some(2));
+        // A picture whose alpha is drawn keeps it: a planet (`sotr`), the
+        // horizon land's cut-out.
+        let planet = shader(false, false, &[[1.0, 1.0]]);
+        assert_eq!(planet.opaque_picture(), None);
+        let mut land = shader(true, false, &[[30.0, 18.0], [1.0, 1.0]]);
+        for (m, a) in land.maps.iter_mut().zip(alpha_reach(&[1, 0])) {
+            m.alpha = a;
+        }
+        assert_eq!(land.opaque_picture(), None);
+        // Clouds and additive layers are not pictures.
+        let mut clouds = shader(true, false, &[[1.0, 1.0], [6.0, 6.0]]);
+        clouds.maps[1].alpha = false;
+        assert_eq!(clouds.opaque_picture(), None);
+        let mut glow = shader(true, true, &[[3.0, 3.0], [1.0, 1.0]]);
+        glow.maps[1].alpha = false;
+        assert_eq!(glow.opaque_picture(), None);
     }
 
     #[test]

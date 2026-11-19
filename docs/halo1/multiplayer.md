@@ -821,8 +821,14 @@ choice means). Adding an option is a setting in `setting_defs` (choices
   (`h1_options_row::converted_map_name`). Only custom lobbies have Change
   Map (action 0), so only they get the row. Choosing it opens the
   options screen (`h1-options`, a list class of ours) on the dialog's own
-  window and slot, the way the skulls row opened its page. Left, right or
-  A changes a row; B backs out.
+  window and slot, the way the skulls row opened its page. The screen is
+  the lobby's Quick Options inside and out (`h1_options::DIALOG`,
+  docs/game/ui-builder.md "The Dialog kind"): its panel, its header
+  ("HALO 1 OPTIONS"), its `setting_lists` list with each row's name left
+  and its choice alone in the value column ("Sandbox  Halo 1"), the
+  row's one-line help (`OptionRow::help`) in Quick Options' help line,
+  and the legend in its footer. Left, right or A changes a row; B backs
+  out.
 - **Campaign:** a Halo 1 level's Game Options page (the skulls page after
   the difficulty, docs/game/skulls.md) lists Assets and HUD under Start
   Level, above the skulls, and opens even with no skull collected.
@@ -1343,10 +1349,14 @@ needs its own look. Proof:
 `tests/model_shaders_disc.rs`,
 `bloodgulch_leaves_cut_out_and_details_tile_by_their_scale`. Not converted
 yet: a `soso`'s self-illumination (multipurpose green times its animated
-colour, `+0x70` to `+0x8c`), its change colour (`+0x4c`, multipurpose blue
-on this disc), its detail mask (`+0xd6`) and the reflection of a
-cut-out one. **Additive chicago chains and the view-angle fade
-(converter version 84).** Blood Gulch's teleporter receivers (the three
+colour, `+0x70` to `+0x8c`), its detail mask (`+0xd6`) and the reflection of a
+cut-out one. A `soso`'s change colour (`+0x4c`, multipurpose
+blue) draws with Halo 2's change-colour stem from converter version 84
+(objects.md "Change colours"). A player biped also carries the player's
+emblem (models.md "The emblem").
+
+**Additive chicago chains and the view-angle fade
+(converter version 89).** Blood Gulch's teleporter receivers (the three
 `scenery\teleporter_base\teleporter_base` placements; the senders are
 in the bases' structure) draw a light cone,
 `scenery\teleporter_base\shaders\teleporter_cone` (`schi`, additive,
@@ -1385,7 +1395,7 @@ parallel, one `sotr` when perpendicular. Proof: `shad` unit tests
 `the_fade_mode_sets_the_facing_and_grazing_alphas`) and
 `tests/shad_rebuild.rs`,
 `additive_chicago_chains_draw_two_maps_scrolling_and_faded`. **Plasma
-`sotr` (converter version 85).** The receiver also draws
+`sotr` (converter version 89).** The receiver also draws
 `scenery\teleporter_shield\shaders\teleporter_shield` (`sotr`,
 additive, fade when parallel): seven combiner stages over four maps,
 `energy plasma` twice (scrolling u 10 s backwards and v 6 s; u 11 s and
@@ -1438,13 +1448,13 @@ second (the clouds tree, bitmap target 1, `c[22]` and `c[23]`),
 `0x01d2` and `0x01f3`: `c[20]` and `c[21]`).
 
 **Teleporter receiver brightness against Halo 1 (converter version
-86).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
+89).** Face on, per channel (`teleporter_receiver_brightness_against_halo1`,
 numbers from the disc's bitmaps). The cone (Halo 1 `dust × dust ×
 ramp`, no doubling): Halo 1's mean (0.012, 0.030, 0.014) and the
 conversion's are equal by construction (the dropped dust folded in as
 its mean); its peak (0.148, 0.362, 0.175) against the conversion's
 (0.062, 0.154, 0.073), the folded dust's peak averaged away. Before
-version 84 the grey dust drew alone: peak 0.61 in every channel.
+version 89 the grey dust drew alone: peak 0.61 in every channel.
 
 The shield's last stage (`teleporter_shield` stage 6, and every plasma
 but the jackal's and the generator's shields) adds `picture.rgb × (band
@@ -1469,7 +1479,7 @@ line Halo 1's glow peaks at (0, 0.262, 0.040) and averages (0, 0.067,
 0.014), the conversion's (0, 0.247, 0.051) and (0, 0.066, 0.014)
 (simulated before DXT5; the test decodes the mask the converter
 writes). The red and blue peaks differ because the stem has one hue
-where Halo 1 colours each texel its own. Version 85 drew the picture's
+where Halo 1 colours each texel its own. The first plasma rebuild (unreleased) drew the picture's
 mean colour masked by its alpha (0.10 to 0.13, nearly flat): peak
 (0.0005, 0.027, 0.004), 37 times too dim, shapeless and with no glow;
 before that `energy plasma`, white, peak 1.0 in every channel. Lost: a
@@ -1477,9 +1487,8 @@ glow an object's A output animates (the jackal's shield) holds at its
 lower bound; a plasma whose last stage is another sum (the jackal's and
 the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
 
-A material with no Halo 1
-base map to read names the base's model shader itself; Blood Gulch has
-none. The sky model's
+A material with no Halo 1 base map to read names the
+base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert

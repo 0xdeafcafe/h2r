@@ -425,6 +425,37 @@ six at a time.
   keyframe and snaps. Scrubbing decodes keyframes only, until the user
   lets go.
 
+**Vehicles and damage in the viewer (built 2026-11-19).** Recorded frames
+come irregularly, 2 to 24 ticks apart (a Cyclotron game: 45 frames in a
+290-tick chunk), and vehicles had no velocity, so a vehicle went in
+straight lines between them and was then eased (rate 18/s) behind that.
+`state/frames.ts` `vehiclePath` now follows the game's velocities when
+both frames carry them (`FrameVehicle.vel`, packed v6, the telemetry
+lane's) with the players' Hermite curve, and otherwise a Catmull-Rom curve
+through the frames either side (straight past `HERMITE_MAX_TICKS` or a
+neighbour a jump away); the 3D view takes the place as sampled
+(`smoothVehicles` `exact`), easing only the axes. Hits that did no damage
+(`amount` 0) are dropped from the markers (`map/events.ts` `mergeHits`):
+in that Cyclotron game 1358 of 1580 hits were `guardians`, amount 0, no
+attacker, runs a few ticks apart on one player, each drawn as a "0".
+
+Asked of telemetry (the viewer reads them when they come; nothing here
+changes the wire format):
+
+- `guardians` hits with amount 0: say what they are (a soft kill
+  volume's tick?) or leave them out at capture. Their `weapon` is the
+  victim's own (`smg_trigger`), not the cause.
+- `from` is missing on most hits (222 of 1580 in that game; 71 of 221 in
+  a Blood Gulch one), so damage lines can't be drawn from the attacker:
+  vehicle collisions (`vehicle`, 52), explosions and grenades especially.
+  The thrower of a grenade or the driver of a vehicle would do.
+- Vehicle orientation between frames is nlerped from 5 Hz samples: an
+  angular velocity (or the v6 `vel` plus a heading change rate) would let
+  a turning vehicle's nose follow its curve.
+- `anim` names say `combat:rifle:*` for the SMG; if the graph really is
+  the rifle one, fine; if not, the weapon class in the name would let the
+  viewer pick the right clips.
+
 ## Animation state (found, static reading)
 
 Every object has an animation manager inside its own data, and the frames

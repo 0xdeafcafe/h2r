@@ -152,7 +152,8 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         h1convert::sky_shaders::CLOUDS_TEMPLATE,
         h1convert::sky_shaders::ADDITIVE_TEMPLATE,
     ];
-    let (mut drawn, mut null, mut stood_in, mut sky, mut reflective) = (0, 0, 0, 0, 0);
+    let (mut drawn, mut null, mut stood_in, mut sky, mut reflective, mut emblem) =
+        (0, 0, 0, 0, 0, 0);
     for (id, name) in &modes {
         let b = out.read_tag_bytes(*id).unwrap();
         let at = out.tag(*id).unwrap().location.unwrap().address;
@@ -183,6 +184,12 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
                 sky += 1;
                 continue;
             }
+            // A player biped's emblem part draws with Halo 2's emblem
+            // material, which takes the player's own emblem and colours.
+            if template == "shaders\\shader_templates\\opaque\\emblem_overlay_simple" {
+                emblem += 1;
+                continue;
+            }
             // The tex_bump copy, or a Halo 1 shader rebuilt on its own
             // stem (a reflective `soso` on tex_bump_env, glass blended).
             assert!(
@@ -201,11 +208,13 @@ fn bloodgulch_halo1_sandbox_places_halo1_objects() {
         }
     }
     eprintln!(
-        "models: {} converted, {drawn} materials with Halo 1 textures ({reflective} on tex_bump_env), {stood_in} the base's model shader, {sky} sky shaders, {null} null",
+        "models: {} converted, {drawn} materials with Halo 1 textures ({reflective} on tex_bump_env), {stood_in} the base's model shader, {sky} sky shaders, {emblem} emblem, {null} null",
         modes.len()
     );
     // No material is null: the shader draw does not skip a NONE shader.
     assert_eq!(null, 0, "{drawn} drawn, {null} null");
+    // The cyborg's emblem part carries the player's emblem.
+    assert!(emblem > 0, "no player emblem material");
     assert!(
         drawn > 0 && drawn >= 4 * stood_in,
         "{drawn} drawn, {stood_in} stood in"

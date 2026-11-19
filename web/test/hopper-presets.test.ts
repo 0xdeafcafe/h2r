@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { findMap, parseCatalog, type Catalog } from "../src/admin/catalog";
 import { PRESETS, applyPreset, clip, resolvePreset, type Preset } from "../src/admin/presets";
-import { buildPatch, hopperErrors, toEditable, type HopperView } from "../src/admin/validate";
+import { buildPatch, hopperErrors, toEditable, type HopperView, type PatchHopper } from "../src/admin/validate";
 
 // Everything here is invented: map names, ids and variants are stand-ins,
 // not the game's.
@@ -91,7 +91,7 @@ describe("presets", () => {
     expect(hopperErrors({ ...edited[0]!, record_count: edited[0]!.records.length })).toEqual([]);
     const patch = buildPatch(original, edited);
     expect(patch.hoppers.length).toBe(1);
-    const h = patch.hoppers[0]!;
+    const h = patch.hoppers[0] as PatchHopper;
     expect(h).toMatchObject({ index: 0, title: "Solo Pit", description: "Alone.", ranges: [4, 8, 4], record_count: 2 });
     expect(h.records).toEqual([
       { id: 10, string: "", flags: 1, dwords: [3, 1], from: 0, from_hopper: 1 },

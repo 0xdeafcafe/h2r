@@ -434,6 +434,32 @@ what is drawn beneath it, and input and closing there. The tag (layout 2
 header, panel, cells) and the text questions in "What stays unverifiable
 offline" need the next run, once serving the tag is built.
 
+## Panel texts: information that isn't a row
+
+A page that shows facts (a mod's page: docs/game/maps.md "A mod's
+page") keeps them out of its list: its rows are only what A does
+something with, as retail's lists are. The rest is the screen's own
+texts and art, from a retail screen that shows information the same
+way (for a mod's page, the pregame lobby, screen 14):
+
+- `ScreenSpec::panel` (retail backings, `Layer::Panel` widgets
+  `panel.N`, held neither to a list nor to their pixels, as a modal's
+  panel is) and `ScreenSpec::texts` (`PaneText`: id, rectangle, font,
+  colour, left or right, the string), drawn by `view_of` after the
+  rows and the art and checked like any text (fit, overlap, safe area,
+  contrast).
+- In game, `ListClass::panel(Panel { art, texts })`: the art made
+  bitmap widgets and each `PanelText` a text block of the class's page
+  (justification and the retail block's depth bias kept) made a text
+  widget by the pane builder's text step when the pane is built; their
+  strings come from `Rows::panel_text(i)` and are set then and again
+  whenever the description is (`Rows::live_text`'s redraw). Only a
+  class with a description shows them.
+- The test `ui_kit::screens::tests::a_mods_page_is_the_lobby_layout_with_one_action`
+  draws the page and holds every part where the lobby has it; the disc
+  test holds the layout's constants to the lobby tag's blocks and draws
+  it again on the disc's geometry.
+
 ## The Dialog kind
 
 Built 2026-11-18: `KitScreen::dialog(base, opener)` (and
@@ -454,6 +480,50 @@ the retail dialog's content and is left out (`content_bitmaps`). A
 row's value goes in the skin's value column on Quick Options and after
 the label on the large dialog (`DialogBase::style`). The disc test holds
 `DialogGeometry::fallback_for` to the disc for both.
+
+**Quick Options inside** (read off `mainmenu.map`'s `quick_options` tag
+and its strings, 2026-11-19). The Clankers and Halo 1 Options pages had
+Quick Options' look as the target but were still built on the Controls
+tag with the skulls page's inside: the level select's one-text list
+(skin 0, 22 high, at (-215, 130), five rows and a scroll), values in the
+label (`Count: < 4 >`) and the five-line description pane on the right.
+Quick Options itself is:
+
+| Part | `quick_options` (screen 222, flags `0x10`: header layout 1) |
+|---|---|
+| Header | "QUICK OPTIONS" (its `header` string), layout 1's rectangle `[190 -253 170 30]`, font 2 |
+| Pane | animation 31; bitmaps `null`, `mp_games2` at (-267, 166) (the game type's picture, drawn by code), `fs_dialog` at (-270, 200) |
+| Text 1 | `quick_options_variant_name` (the variant's name, filled by code), white, font 1, `[163 -224 143 0]` |
+| Text 0 | `quick_options_help`, "Temporarily change settings for this game variant." (51 characters, one line), font 1, pale blue (0.388, 0.580, 0.757), left, `[143 -224 123 270]`, animation 31 |
+| List | skin 2 (`ui\list_skins\setting_lists\setting_lists`), 11 rows from (-254, 87), flags 1, animation 32 |
+| Skin 2 | label text font 4, pale blue, `[23 10 0 255]`; value text font 4, paler blue (0.561, 0.694, 0.812), `[23 256 0 500]`; bar `settings_list_bkd` and focus `hilite` at (-12, -4); items 26 high |
+| Footer | layout 1's second rectangle `[-178 -200 -198 259]` |
+
+No value is drawn with arrows: the executable has no `< %s >` format
+(neither byte nor wide), the skin has no arrow art, and the only
+`left_arrow`/`right_arrow` strings in the menu belong to the virtual
+keyboard. A settings row there is its name and its value, `Score to Win
+Round  50`.
+
+So a page on `DialogBase::QuickOptions` now takes all of it:
+`write_base_tag` copies Quick Options' root (header layout 1), pane
+(animation 31), `fs_dialog` and list block (skin, anchor, flags,
+animation); the rows show `ValueStyle::Setting` (the value alone in the
+value column); and the focused row's description goes in a text block
+equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
+tag's text block 0 by the disc test), which `KitScreen::dialog` and the
+Halo 1 class use unless told otherwise. A description is one line there,
+52 units at most (retail's is 51). The variant-name line and the game
+type picture are retail's content and stay out. The pages' titles are
+in capitals, as Quick Options' header is.
+
+The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
+holds both pages to that (dialog base, list place, value style, help
+block, one-line helps, capital title, footer) and draws each beside the
+kit's Quick Options sample (`kit.dialog`): every panel, title, row bar,
+label, value, help-line and legend widget the sample has is at the same
+rectangle, with the same art or font and justification. The disc test
+repeats that drawing on the disc's geometry.
 
 **Preview.** `DialogSpec` carries `base` and `rows` (and a `body`, empty
 for a rows-only dialog). `dialog_view` draws the base's panel and header
@@ -488,19 +558,142 @@ game-ui-fixes lane builds those on the in-game Controller Settings
 ### The Dialog kind's game run
 
 With a dialog screen on `QuickOptions` opened from the lobby (Clankers
-or Halo 1 options, once switched):
+or Halo 1 Options, both on it since 2026-11-19; they open on the Game
+Setup dialog's own window and slot, as before, not the dialogs' window):
 
 1. stderr: `<name>: a dialog on screen 222's tag (copy at ...)`. If it
    says `no dialog screen 222 in this interface`, the lobby's interface
    doesn't have Quick Options loaded; try `Large`.
 2. On screen: `fs_dialog` over the lobby, the header at the top left,
    the rows as Quick Options' (label left, value right) from (-254, 87),
-   no game type picture. Compare with `kit.dialog` in the sheet.
+   no game type picture. Compare with `kit.dialog` in the sheet, and with
+   the lobby's own Quick Options side by side: the same row bars and
+   focus highlight, the same two blues, the value alone ("Normal", not
+   "< Normal >"), the focused row's description in the one line where
+   Quick Options says "Temporarily change settings...", the legend in the
+   same footer place.
 3. The d-pad moves and changes rows; the lobby beneath doesn't move.
 4. B closes the dialog (stderr shows no close by slot), and the lobby
    takes input again at once. Open it again: it opens the same way.
 5. The title is ours (slot 18 sets it on the header after the pane is
    built, as on every class); note it if it reads "Quick Options".
+
+## The value picker
+
+The user (2026-11-19): a setting with a range of values opens a list of
+them, as retail's Game Options do, rather than stepping on A.
+
+**Retail's dialog** (read off `mainmenu.map` with a scratch reader,
+2026-11-19). The variant editor and Quick Options open
+`low_level_settings` (screen 223,
+`ui\screens\game_shell\settings_screen\variant_settings\editing_format_screens\low_level_settings`)
+for a setting row:
+
+| Part | `low_level_settings` |
+|---|---|
+| Root | flags 8: header layout 2, the large dialog's (title `[93 -243 73 255]`, legend `[-83 -243 -103 240]`); its title is the setting's name in capitals, set by code |
+| Pane | animation 23; `error_dialog_large`'s four panel blocks (`ul_07`, `br_07`, `dialog1`, `dialog2`) at the same places |
+| List | skin 22 (`ui\list_skins\default\default6`: `default`'s one text, row bar and end cap, its scroll arrows at (-27, 24) and (-27, -88)), 6 rows from (-231, 30), flags 1, animation 24 |
+| Text 0 | `description`, filled by code: `[74 15 -80 250]`, font 1, the pale blue, left |
+
+Every setting of the game's variant editor is a `sily` tag with a block
+of options, label string ids included; 49 of the 92 have two (On and
+Off), and they open the same dialog. So our two-value rows open it too.
+The tag is in `mainmenu.map` only (not in `shared.map` or
+`single_player_shared.map`); skin 22 is in every interface's `wigl`.
+
+**Built** (`ui_kit::picker`). `DialogBase::ValuePicker` is the dialog
+(`DialogGeometry::fallback_for`, `PICKER_LIST`, `PICKER_HELP_TEXT`,
+held to the disc by the disc test). Two classes show it: `kit.picker`
+on `low_level_settings` and `kit.picker.game` on the large dialog with
+the same list, skin and description block; `list_class::open` takes the
+second in a game. A row sets the process-wide `Pick` (title, values,
+held value, description, its setter) and opens `kit.picker`:
+
+- `KitScreen` value rows (`Row::value`, so every `ChoiceRow`): the
+  Clankers page, the kit's examples;
+- the Halo 1 Options screen's two rows (`h1_options::pick`).
+
+A on a value sets it through the row's own setter (the settings store:
+saved, its change callbacks run) and closes; B closes and changes
+nothing; X, Start, left and right do nothing there. Left and right on
+the row itself still step. A row with one value, or more than
+`picker::MAX_CHOICES` (61, its string-id family), keeps stepping on A.
+The legend is `(A) SELECT (B) CANCEL`; the pages' own legends gained
+`(A) SELECT`.
+
+Not on the picker yet: the Video and Voice screens (`ui::Model` rows,
+`Model::press`), the skulls (toggles, not settings) and the variant
+editor's More Options page (`variant_page`, its own rows). They step
+on A as before.
+
+`h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
+Count, nine values, 4 held, over Game Setup).
+
+**Not settled without a run.** The list's first focus: the class can't
+set it yet (no focus setter is traced), so the game likely opens on the
+first value, not the held one; the preview draws the held one focused.
+The rest to check: the picker opening over the Clankers or Halo 1
+Options dialog (both on the dialogs' window), the title and description
+set, A saving and closing, B closing, and the page beneath showing the
+new value.
+
+### The value picker's game run
+
+From a custom game lobby, Game Setup, Clanker Options:
+
+1. A on Difficulty: stderr `ui: opening kit.picker over the screen
+   beneath` and `kit.picker: a dialog on screen 223's tag`. On screen:
+   the large dialog's glow over the Clankers page, "DIFFICULTY" as its
+   title, Easy, Normal, Heroic, Legendary, Mixed down the left, "How well
+   they play..." on the right, `(A) SELECT (B) CANCEL` in the footer.
+2. Note which value has the focus (first, or the held one).
+3. Down to Heroic, A: stderr `kit.picker: clankers.difficulty -> Heroic`
+   then `kit.picker: chosen; closing`; the Clankers page shows Heroic.
+4. A on Count (more than six values): the list scrolls, its arrows show.
+   B: it closes, Count unchanged.
+5. Halo 1 Options (on a Halo 1 map): A on HUD shows Halo 1 and Halo 2
+   with both meanings on the right.
+
+## Game Setup's picture and description
+
+The user (2026-11-19): Clanker Options and Halo 1 Options get a picture
+and a description, as Quick Options has.
+
+**Retail's** (read from the XBE, 2026-11-19). The Game Setup dialog's
+update (`SQUAD_SETTINGS_UPDATE`, `0x2bbbf6`, vtable `0x45c524`) asks the
+focused row's action (`0x2bbaad`, EAX the list at screen `+0x610`), gets
+its text widgets 2, 3, 4 and bitmap widget 4 (`0x22edb8`), and by the
+action (jump table `0x2bbea8`, actions 0 to 9) sets text 2 (the
+description, `change_map_help`'s block `[-40 -241 -173 0]`), texts 3
+and 4 (a "current" label and value beside the picture) and the picture:
+the map's for Change Map, the game type's for Change Rules, else image N
+of `xbox_live.bitm` (`0x2b0a14` stores N at bitmap widget `+0x88` when it
+is under the bitmap's image count, `bitm +0x44`). The images, by row:
+Matchmaking 0 (and action 9's 4, the same roster), Quick Options 2,
+Switch To: Custom Game 6, Switch To: Co-Op 7; images 3 and 5 are 4x4
+blanks, and 1 (a Spartan over a roster of players) no row uses. Our
+actions (10 and up) fall to the default: no texts, image 0.
+
+**Built** (`boot::game_setup_help`). A before hook on the update runs
+retail's (passing its own call through once), then for one of our
+actions sets text 2 to our description and the picture to our image:
+
+| Row | Picture | Description |
+|---|---|---|
+| Clanker Options... | image 1, the roster no retail row uses | `clankers::ROW_HELP`, a slot of the page's (`KitScreen::row_help`) |
+| Halo 1 Options... | image 2, Quick Options' own | `h1_options::ROW_HELP` (`ROW_HELP_ID`, served with the other Halo 1 strings) |
+
+Texts 3 and 4 stay empty, as retail leaves them for a row with no value.
+
+### Its game run
+
+On a custom game lobby on a Halo 1 map, Game Setup: move the focus onto
+Quick Options (its picture and "Temporarily..." text), then Halo 1
+Options (the same picture, our text under the list), then Clanker
+Options (the Spartan over the roster, our text), then back to Change
+Map (its map picture comes back). Note any frame where the text flickers
+between empty and ours.
 
 ## Behaviour
 

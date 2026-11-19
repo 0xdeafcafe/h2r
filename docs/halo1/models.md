@@ -149,10 +149,10 @@ and warthog face away from their own normals. With this rule, 52 of 5,692
 
 | Offset | Field | Evidence |
 |---|---|---|
-| `00` | objects block | S |
-| `0c` | units block (24 on the cyborg) | V1 (count) |
+| `00` | objects block, `0x14`: i16 animation, u16 function (0..3, the object's A..D output), u16 controls | V (Blood Gulch: the warthog's one element names `firing` with function 3; the scorpion's names no animation) |
+| `0c` | units block (24 on the cyborg), `0x64`: label, aiming screen `20` (`0x18`), unit slots `40`, classes `58` (`0xbc`: label, slots `98`, types `b0`, the class's aiming screen `60`) | V1 (count); V (the warthog's, ghost's and scorpion's `fixed` class screens) |
 | `18` | weapons block | S |
-| `24` | vehicles block | S |
+| `24` | vehicles block, `0x74`: steering screen `00` (`0x18`), vehicle slots `5c` (i16 per `h1::VEHICLE_SLOTS`), suspension `68` (`0x14`: i16 mass point, i16 animation, f32 full extension and full compression ground depths, negative) | V (Blood Gulch's warthog, ghost, scorpion) |
 | `30` | devices block | S |
 | `3c` | unit damage block | S |
 | `48` | first-person weapons block, `0x1c`: 16 bytes, then at `10` a block of i16 animation indices, one per first-person slot (`h1::FIRST_PERSON_SLOTS`) | V (all 11 first-person graphs on Blood Gulch: one element; each slot's animation carries the slot's label wherever the two agree) |
@@ -207,10 +207,84 @@ person graphs keep their overlays among the actions, as before (retail
 keeps those in `+0xc` too: `aim_still_up`, `look`, ...; not changed here).
 
 The units, weapons and vehicles blocks map fixed engine slots to animation
-indices. They are not read: names are mapped from the animations' own names
-instead (below). **Some graphs have no node block** (the warthog, ghost,
+indices. A third-person graph's tree comes from the animations' own names
+(below); a vehicle graph also reads its vehicles block, objects block and
+screens (Vehicle graphs, next). **Some graphs have no node block** (the warthog, ghost,
 scorpion and the scenery on beavercreek): they animate their model's
 skeleton, and the converter takes the nodes from the model.
+
+**Vehicle graphs (converter version 84).** Halo 2 animates a vehicle
+by lookups the converted graphs never answered: until version 84 the
+Halo 1 warthog's, ghost's and scorpion's animations were actions named
+for their labels (`vehicle:steering`, `suspension:left_back`,
+`combat:fixed:aim_still`, `firing`), which no engine lookup asks for, so
+no converted vehicle turned its wheels, sprang, aimed its gun or spun its
+barrels. Version 84 lays a graph with Halo 1's vehicles block out as
+retail's are (`jmad::vehicle_plan`):
+
+- **Vehicle slots → overlays of `any:any:any`.** E: the vehicle
+  animation update `0x000f0760` asks for the overlays `steering`, `roll`,
+  `throttle`, `velocity`, `ground_speed` and `ground_speed_rear` through
+  `0x001cb9d0` under the current mode and class; Halo 2's string table
+  holds `steering` .. `unoccupied` as IDs `0x78`..`0x7f`, the order of
+  Halo 1's eight vehicle slots. V: the retail warthog keeps `steering`,
+  `ground_speed` and `ground_speed_rear` in `any:any:any`'s overlays.
+  The warthog's slots give `steering` and `ground_speed`; the ghost's
+  `steering`.
+- **Blend screens (`+0x24`, `0x1c`: label, then Halo 1's 24-byte
+  screen).** An animation's `+0x12` names its screen. V: the retail
+  warthog's `steering` names screen `steering`; the chaingun turret's
+  `combat:fixed:any` `aim_still_up` names `aiming`, whose 24 bytes equal
+  the Halo 1 warthog's `fixed` class screen. Every retail animation with a
+  screen is codec 8 (float rotations), so the converter writes those so.
+  The vehicles block's screen is `steering`'s, each class's screen goes
+  on its `aim_still_up` / `aim_move_up`.
+- **Aim names.** E: the unit aim update asks for `aim_still_up`
+  (`0x001134a3`). Halo 1's `stand fixed aim-still` becomes
+  `combat:fixed:any:aim_still_up` (vehicle graphs only; biped aim is not
+  converted).
+- **Overlays, not actions.** Every type 1 animation of a vehicle graph
+  goes to its type's overlays (`+0xc`): V, no retail vehicle tree holds an
+  overlay among its actions, and no base animation among its overlays
+  (`retail_vehicle_graphs`; the overlays may also hold a replacement,
+  type 2: the wraith's `any:any:any` `crouch`). E: `acc_*` are looked up
+  through `0x1cc1a0` → `0x1dbc80`, the overlay search. What type 2 does in
+  the engine is not established; no Halo 1 vehicle graph has one (86 on
+  the disc's campaign and multiplayer maps hold types 0 and 1 only), so
+  the converter needs no rule for it.
+- **Suspension (`+0x3c`, `0x28`).** E: `0x001dceb0` copies per element the
+  animation (`+4`), marker (`+8`), offset (`+0xc`), full extension
+  (`+0x10`) and full compression (`+0x14`) depths, region (`+0x18`) and
+  the destroyed numbers (`+0x1c`..`+0x24`); `0x000f6670` finds the marker
+  (`0x000b8d30`; no marker, no suspension), casts down from it by the
+  extension depth and plays the overlay at `1 - (d - comp) / (ext -
+  comp)`, clamped. So depths are positive distances below the marker. V:
+  the retail warthog's four are 0.308 / 0.132; Halo 1's warthog's
+  -0.314 / -0.135, written negated. The marker is the powered mass
+  point's (each powered point gets a marker of its name on the converted
+  model); an element whose mass point has none is reported
+  (`suspension_without_marker`, `no_home`) and dropped.
+- **Object overlays (`+0x44`, `0x14`: label, animation, controls,
+  function name).** E: the unit's function lookup `0x000c6b90` answers
+  `barrel_spin` (`0x000c6d41`) from its current weapon (`+0x212`,
+  `+0x218`; the weapon's own at `0x000ff7b0`). V: the retail chaingun's
+  `firing` names `barrel_spin`, controls 0. Halo 1's warthog drives
+  `firing` from its D output, an accumulating function not converted, so
+  the converted overlay follows `barrel_spin`.
+- **Weapon pairs (`+0x54`).** (`any`, `any`) and each (type, class) Halo
+  1's slot tables list: the warthog's (`cg`, `fixed`). The gun's own
+  class comes from the same tables when no animation name votes for it
+  (`Converter::weapon_class`): the warthog gun, label `cg`, had no class
+  and so no aim until version 84.
+
+Not converted: the ghost's `suspension` overlay (no slot or suspension
+element names it; which Halo 2 lookup it matches is not established), its
+`stand fixed c ghost gun fire-1`, and the scorpion's `tread pitch ...`
+overlays, which stay overlays under their names. Tests: h1models
+`a_vehicle_graph_takes_halo_2s_vehicle_layout`,
+`reads_a_vehicle_graph_s_tables`; h1objects
+`vehicle_animation_disc` (Blood Gulch on Coagulation, and the retail
+layout).
 
 **Node** (`0x40`): `char[32]` name, i16 next sibling (`20`), first child
 (`22`), parent (`24`), u32 joint flags (`28`), f32x3 base vector (`2c`),
@@ -398,6 +472,55 @@ Left empty: the node
 map block at `50`, errors, PRT info and render leaves, and the section
 blocks the decoder does not interpret (`10`, `28`, `30`, `44`, `54`, `5c`).
 
+### The emblem (**Design**, converter version 84)
+
+Halo 2 draws a player's emblem as a part of the body's model. The Chief's
+`mc_emblem` (stem `opaque\emblem_overlay_simple`, alpha blended on layer
+2) samples `ui\global_bitmaps\emblems\foreground` with its border
+clamped (sampler address 4), so only texture coordinates 0 to 1 show the
+emblem. Its 12 animated properties read the inputs
+`emblem_foreground_index`, `emblem_toggle_foreground` and `emblem_active`.
+The function evaluator `0x0022ace7` answers those for the player being
+drawn (`[0x510c4c]+0x1b4` via `0x0014cca0`, or `+0x1c0` via
+`0x0014ccf0`), and the colours are engine constants (E). The shader
+carries everything; the model only gives it a place. The converted
+multiplayer maps keep `mc_emblem`, because the base keeps the Chief.
+
+Halo 1's cyborg has no such part. The converter adds one to a player
+biped's model (`h1models::emblem`, called from `Converter::model` for a
+`bipd` that `health_hud::is_player_biped` names):
+
+- `place` casts a ray in the default pose. It starts 0.03 down the anchor
+  node's own x axis, which is the bone's length, from the node, and runs
+  along a model-space direction. It takes the farthest hit within reach
+  on triangles whose three vertices are bound mostly to the anchor, so
+  the outer surface, in the super-high geometry of the first permutation
+  hit.
+- `part` lays a square there: the hit triangle's normal turned to the
+  ray's side, the wanted up laid onto the surface, lifted 0.002 off it,
+  texture coordinates 0 to 1 (divided by the base map scale, which
+  `convert_model` multiplies back), every vertex bound to the anchor
+  alone. It is wound the way the hit triangle is relative to its vertex
+  normals, so it faces out as the model's own triangles do.
+- `add_emblem` puts the square in each detail level's geometry of that
+  permutation. It adds a shader entry of group `embl` (not `soso`, so the
+  part is drawn as the transparent kind, after the opaque body), whose
+  material the converter names as the base's `mc_emblem`.
+
+Default placement (`LEFT_SHOULDER`, a choice to confirm): the outside of
+the left shoulder plate. The anchor is `bip01 l upperarm`, the direction
+model +y (Halo 1 models face +x with z up, so +y is the biped's left),
+up +z, a square of 0.07 (about 21 cm) and a reach of 0.3. On Blood
+Gulch's cyborg the joint is at (-0.008, 0.09, 0.569) and the arm's x axis
+is (0.01, 0.19, -0.98). The right shoulder or the chest is a change of
+the placement's constants. The model is converted once per `mode` tag,
+so every object drawing the cyborg model wears the emblem; on
+multiplayer maps that is the player bipeds alone. Proof: the unit tests
+in `h1models/src/emblem.rs` (an invented arm) and
+`h1objects/tests/model_shaders_disc.rs`
+`bloodgulch_cyborg_wears_the_chiefs_emblem_on_its_left_shoulder`. The
+size, orientation and look need a live check.
+
 ### Marker names
 
 Halo 2's engine finds a marker by string ID through `0x000b8d30`, which
@@ -484,19 +607,21 @@ the cyborg).
   `airborne_dead`, `thrash_front/back`, `resurrect_front/back`, driven by
   the engine's damage tables rather than name lookup.
 - Vehicle overlays (`suspension left back`, `vehicle steering`,
-  `vehicle ground-speed`, `tread pitch ...`, `firing`, `ground speed`,
-  `acc-front-back` and kin) also stay one word-run action: V3 that retail
-  vehicle graphs carry only `combat:opening`/`combat:closing` — no
-  `suspension` or `vehicle` mode, no `steering` or `ground_speed` action
-  exists anywhere. Halo 2 drives suspension and steering outside the jmad
-  tree.
+  `vehicle ground-speed`, `firing`, `acc-front-back` and kin): V3 that
+  retail vehicle graphs carry only `combat:opening`/`combat:closing` as
+  actions, no `suspension` or `vehicle` mode. Halo 2 finds the rest as
+  overlays, in the suspension and object overlay blocks and by blend
+  screen; since converter version 84 the converter puts them there
+  (Vehicle graphs, above).
 - Seats that keep their Halo 1 label: `P-riderLM`, `P-riderLB`,
   `P-riderRM`, `P-riderRB` (their retail row number among `pelican_p_l01..05`
   is not recoverable from the trees) and the dropship seats
   `CD-passengerL01`/`CD-passenger01` (retail phantom seats are columns
   `phantom_p_a01..c03`, with no left/right correspondence).
-- The engine-slot structure of Halo 1 graphs (units/weapons/vehicles
-  blocks) is not converted. Halo 2's tree comes from names only.
+- The engine-slot structure of Halo 1 graphs (units/weapons blocks) is
+  not converted beyond borrowed slots, aiming screens and weapon pairs;
+  Halo 2's tree comes from names. The vehicles and objects blocks are
+  (Vehicle graphs, above).
 - Root movement (frame info) is dropped: 109 of the cyborg's 195
   animations have it. Halo 2 has a movement section after the flag sets
   that `crates/tags` does not decode yet.
