@@ -683,3 +683,110 @@ fn no_overlay_on_the_disc_is_shown_on_a_condition() {
     eprintln!("{overlays} overlays on {} maps, all shown always", maps.len());
     assert!(overlays >= 3 && maps.len() >= 10);
 }
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn scope_masks_use_the_hud_screen_effect_in_each_view() {
+    use h1objects::base::Base;
+    use h1objects::convert::{Converter, local_index};
+    use h1objects::h1hud::scope::ScopeMask;
+    use map::{FourCC, Map};
+    use tags::defs::{Defs, Target, Val};
+
+    let h1 = h1("bloodgulch");
+    let mut retail = Map::from_reader(Cursor::new(h2_file("/coagulation.map"))).unwrap();
+    let base = Base::read(&mut retail).unwrap();
+    let mut conv = Converter::new(&h1, &base);
+    let mut scopes = Vec::new();
+    for weapon in ["pistol", "sniper rifle", "rocket launcher"] {
+        let wphi = h1
+            .tags()
+            .iter()
+            .find(|t| {
+                t.group == Group::new(b"wphi")
+                    && t.name.starts_with(&format!("weapons\\{weapon}\\"))
+            })
+            .unwrap();
+        let mask = ScopeMask::read(&h1, wphi.id).unwrap().unwrap();
+        let images = [mask.full, mask.split].map(|id| {
+            let source = Bitmap::read(&h1, h1.tag(id.unwrap()).unwrap()).unwrap();
+            let image = &source.images[0];
+            [image.width, image.height, image.depth]
+        });
+        let (hud, _) = conv.weapon_hud(wphi.id).unwrap();
+        scopes.push((local_index(hud).unwrap(), images));
+    }
+    assert_eq!(
+        conv.tree
+            .tags
+            .iter()
+            .filter(|(_, t)| t.group == FourCC(*b"egor"))
+            .count(),
+        1
+    );
+
+    let mut set = map::build::TagSet::from_map(&mut retail).unwrap();
+    let ids = conv.tree.install_tags(&mut set).unwrap();
+    let (bytes, _) = set.build().unwrap();
+    let mut built = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let converted = Base::read(&mut built).unwrap();
+    let defs = Defs::builtin();
+    let nhdt = defs.group(FourCC(*b"nhdt")).unwrap();
+    let egor = defs.group(FourCC(*b"egor")).unwrap();
+    let mut lib = tags::material::ShaderLibrary::read(&mut built).unwrap();
+    for (hud, images) in scopes {
+        let record = converted.record(nhdt, ids[hud]).unwrap();
+        let id = |p: &str| match record.at(p) {
+            Some(Val::Ref {
+                target: Target::Id(id),
+                ..
+            }) => *id,
+            other => panic!("{p}: {other:?}"),
+        };
+        let full = id("screen_effects[0].effect_full");
+        assert_eq!(id("screen_effects[0].effect_half"), full);
+        assert_eq!(id("screen_effects[0].effect_quarter"), full);
+        let effect = converted.record(egor, full).unwrap();
+        let Some(Val::Ref {
+            target: Target::Id(shader),
+            ..
+        }) = effect.at("shader")
+        else {
+            panic!("scope effect is missing its shader")
+        };
+        let mat = lib.material(*shader, None).unwrap();
+        assert_eq!(mat.layers.len(), 1);
+        assert_eq!(mat.layers[0].layer, 15);
+        let pass = &mat.layers[0].passes[0].implementations[0];
+        assert_eq!(
+            pass.textures[0].unwrap().source,
+            tags::material::TextureSource::Engine(16)
+        );
+
+        let bitmap = id("screen_effects[0].bitmap");
+        let tags::TagData::Bitmap(art) = tags::DecodedTag::read(&mut built, bitmap).unwrap().data
+        else {
+            panic!("scope effect is missing its mask bitmap")
+        };
+        assert_eq!(
+            art.images
+                .iter()
+                .map(|im| im.dimensions)
+                .collect::<Vec<_>>(),
+            images
+        );
+        assert_eq!(
+            record.at("screen_effects[0].sequences"),
+            Some(&Val::List(vec![Val::Int(0), Val::Int(1), Val::Int(1)]))
+        );
+        assert_eq!(
+            record.at("screen_effects[0].hide_when"),
+            Some(&Val::List(vec![
+                Val::Int(0x40),
+                Val::Int(0),
+                Val::Int(4),
+                Val::Int(0)
+            ]))
+        );
+    }
+}

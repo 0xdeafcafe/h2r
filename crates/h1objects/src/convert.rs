@@ -30,6 +30,8 @@ use crate::{Error, Result};
 
 #[path = "convert_arsenal.rs"]
 mod arsenal_conv;
+#[path = "convert_scope.rs"]
+mod scope_conv;
 #[path = "convert_particles.rs"]
 mod particles_conv;
 #[path = "convert_flares.rs"]
@@ -3764,14 +3766,16 @@ impl Converter<'_> {
                 Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
             }
         }
-        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() {
+        let mut root = h1hud::nhdt(&widgets, &texts);
+        let scope = self.weapon_scope(wphi, &tag.name, &mut root)?;
+        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() && !scope {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
         let id = self.tree.push(
             &format!("{}{}", tag.name, h1hud::WEAPON_NHDT_SUFFIX),
             Converted {
                 group: FourCC(*b"nhdt"),
-                root: h1hud::nhdt(&widgets, &texts),
+                root,
                 raw: Vec::new(),
             },
         );

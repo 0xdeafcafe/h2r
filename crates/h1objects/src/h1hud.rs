@@ -315,6 +315,8 @@ pub fn to_halo2_offset(anchor: Anchor, (x, y): (i16, i16)) -> (i16, i16) {
     )
 }
 
+pub mod scope;
+
 /// Halo 1's weapon HUD (`wphi`) layout, from its draw (E, Halo 1's XBE,
 /// `0x000db5d0`..`0x000dc0b3`, `ebx` the `wphi`; the crosshairs
 /// `0x000dac68`..`0x000db374`).

@@ -320,6 +320,37 @@ level 1 on a copy whose sequence starts at sprite 1
 hidden on `0x04` (`ZOOM_LEVEL_STATES`). Placed as Halo 1 places the
 level's sprite. Inferred, not yet seen in a game run.
 
+### Scope mask (**Built**)
+
+Halo 1 looks at the first screen effect in the weapon's own
+`wphi +0xac`, before drawing the weapon HUD (E `0x000d6b37` and
+`0x000d6e33`). The effect is `0xb8` bytes. Flag 0 at `+0x04` gates
+the mask on zoom. The references at `+0x18` and `+0x28` select the
+first image of the full- and split-screen bitmap respectively
+(E `0x000d6b85`.. `0x000d6bb2`). The pistol and rocket launcher share
+the pistol art. The sniper rifle has its own masks (V, Blood Gulch).
+The mask's luminance describes the dark surround, transparent opening
+and brighter edge (V, both screen modes from the disc).
+
+`h1hud::scope` converts those images into one `bitm` with a sequence per
+mode. The rebuilt `nhdt` puts the effect at `+0x20`. Halo 2 gates it
+before the weapon widgets (E `0x0013a57d`.. `0x0013a5d8`) and selects
+the bitmap sequence and `egor` reference by mode (E `0x0022b8e2`).
+The new `egor`, `shad`, `stem` and `spas` use the layer-15
+screen-effect draw. The pass samples the HUD's engine texture 16
+(E `0x0022bb20`, `0x0022bb9f`, `0x00019817`) and blends black
+into the view by the mask's luminance. Its UVs come from the position
+normalized inside the current viewport (E `0x0002d5e0`), so each view
+gets the whole mask. This covers the mask compositor. The optional
+Halo 1 FOV-driven blur and colour filters in the same source effect
+still need their own conversion.
+
+The synthetic checks read the mask references, the zoom gate and the
+viewport-specific sequence numbers, and evaluate the pixel combiner.
+`scope_masks_use_the_hud_screen_effect_in_each_view` resolves the
+rebuilt tags and checks the two mask images against Halo 1's disc.
+The scope still needs an in-game check with the weapon zoom levels.
+
 ### The sniper rifle's angle ticks
 
 The sniper rifle's own `wphi` has two statics on `weapons\sniper
@@ -708,8 +739,9 @@ weapon's threshold (assault rifle 10 rounds) with rounds in reserve, gone
 after reloading or with nothing in reserve; "No ammo" there with nothing
 at all, "Battery depleted" on a spent plasma weapon (shown as long as
 the condition holds, not flashing for 3 s as Halo 1's do). Zoomed with
-the sniper rifle: "2x" at the first zoom, "10x" at the second, neither
-unzoomed. Nothing of
+the sniper rifle: the view darkened around the scope, "2x" at the first
+zoom and "10x" at the second. The pistol and rocket launcher show
+their scope mask when zoomed too. Nothing of
 `hud_ammo_alphas` under the ammunition panel (colour 0: Halo 1 does not
 draw it; v66's first cut did); the panel itself slightly translucent, as
 Halo 1's (alpha `0xdc`). With the shield
