@@ -87,7 +87,10 @@ export async function inflateRaw(body: Uint8Array): Promise<Uint8Array> {
   const w = ds.writable.getWriter();
   // Not awaited: the reader below drains it (awaiting would stall on a
   // body bigger than the stream's buffer).
-  w.write(body.slice()).catch(() => {});
+  const input = body.buffer instanceof ArrayBuffer
+    ? new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+    : body.slice();
+  w.write(input).catch(() => {});
   w.close().catch(() => {});
   return new Uint8Array(await new Response(ds.readable).arrayBuffer());
 }
