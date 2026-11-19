@@ -1138,9 +1138,8 @@ pub fn write_action(m: &mut dyn GuestMemory, slot: u32, action: &Action) -> R<()
     m.set_u32(slot + SLOT_STAMP, tick)
 }
 
-/// Turn rate at full right stick, radians a second (\[guess\]: about the
-/// game's at the bots' look sensitivity).
-pub const TURN_RATE: f32 = 3.0;
+/// Nominal turn rate at full stick, shared with the bot's hand.
+pub const TURN_RATE: f32 = crate::mind::TURN_RATE;
 
 /// A pad as an action, for a player facing `aim` (a unit vector) with
 /// weapon `weapon`, over `dt` seconds. The right stick turns from the
@@ -1154,12 +1153,12 @@ pub fn action_from_pad(
     dt: f32,
 ) -> Action {
     let (yaw, pitch) = (aim[1].atan2(aim[0]), aim[2].atan2(aim[0].hypot(aim[1])));
-    let (rx, ry) = pad.right_stick;
+    let (rx, ry) = crate::mind::turn_rate(pad.right_stick);
     let (lx, ly) = pad.left_stick;
     Action {
         flags: 0,
-        yaw: yaw - rx * TURN_RATE * dt,
-        pitch: pitch + ry * TURN_RATE * dt,
+        yaw: yaw - rx * dt,
+        pitch: pitch + ry * dt,
         forward: ly,
         // [guess] the action's strafe is positive to the left.
         strafe: -lx,

@@ -601,6 +601,7 @@ static LOADED: Mutex<Loaded> = Mutex::new(Loaded {
 pub fn map_loaded(map: &str) {
     let mut l = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     l.changed(map);
+    crate::decisions::radio::map_loaded();
     cache::set_current(None);
 }
 

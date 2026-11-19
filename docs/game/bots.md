@@ -231,8 +231,10 @@ The brain reads game state the way telemetry already does
 - the weapons, grenades and powerups lying in the world;
 - the objective: flag, bomb, ball, hill and territories, from the
   game-engine globals and the scenario's netgame flags (built, §3.7);
-- shots (the `0x104150` hook) and kills (`0x15ce70`), for "who is shooting
-  me" and for the emote triggers (§3.5).
+- nearby grenade projectiles, identified by the loaded map's grenade
+  definitions and checked against view and collision;
+- shots (the existing `0x104150` point) for a brief look toward the sound,
+  and kills (`0x15ce70`) for emote triggers (§3.5).
 
 **Line of sight** is a ray against the map's BSP collision, the same data
 the nav mesh comes from. A bot sees an enemy only when all three hold:
@@ -346,13 +348,13 @@ fight, apart from the aim:
 | holds a strafe (ticks) | 40 to 80 | 20 to 50 | 12 to 35 | 8 to 26 |
 | a new strafe is standing still | 35% | 15% | 5% | never |
 | on a hit: reverses the strafe (juke) | never | 20% | 50% | 70% |
-| on a hit: jumps | never | 10% | 25% | 35% |
 | on a hit beyond 8: crouches a moment | never | never | 10% | 15% |
 | backs off inside its range | no | 0.6 | 0.85 | full |
 | backs off to cover | no (straight back) | yes | yes | yes |
 
-- A hit is a shield drop of more than 0.03 in a tick; one reaction at
-  most every 20 ticks, a jump at most every 45.
+- A hit is a shield drop of more than 0.03 in a tick, with one
+  footwork reaction at most every 20 ticks. Jumping is reserved for
+  navigation, getting unstuck, and visible grenade threats.
 - **Range**: closes in beyond the far end of its range and backs off
   inside the near end. The range comes from `moves::preferred_range`,
   today 2.5 to 8 for every weapon: the seam for the weapons decision to
@@ -384,8 +386,8 @@ it can reach and has not been blacklisted wins.
 
 ### 3.3 Decision
 
-A utility layer runs about 5 times a second. It scores each action and
-keeps the best, with hysteresis so the bot does not flicker between two.
+The design calls for a utility layer running about five times a second.
+These are the inputs to that design.
 
 | Action | Driven by |
 |---|---|
@@ -398,31 +400,25 @@ keeps the best, with hysteresis so the bot does not flicker between two.
 | emote | §3.5 |
 | roam | the default: move toward the likely fight (spawns, weapon spots) |
 
-**Built so far** (`Mind::step`, a fixed order rather than scores):
+**In play today.** `Mind::step` chooses an activity per tick. A flag or
+bomb carrier moves toward its scoring point. A ball carrier looks for
+cover and melees anyone in reach. Both suppress weapon switches.
+An armed objective player stays on assignment. A dry player can still
+detour to get a usable weapon. In King, it only collects guns inside the
+active hill.
 
-1. it carries the flag or bomb: **carry** it to where it scores (§3.7),
-   whatever else is going on: no rearming, no backing off, no reload or
-   switch (a switch drops it), only a melee for whoever is in the way;
-2. it carries the ball: **keep** it, walking away from the nearest enemy
-   within 15 world units and meleeing one that comes within reach;
-3. the weapons decision (§3.6) says go for a weapon: **rearm**;
-4. an enemy in view: **fight**. With nothing to shoot it runs straight in
-   and melees (B within 1.2 world units); with its shields under 0.25 it
-   backs off while it shoots, until they are back to 0.9;
-5. an enemy seen in the last 10 s, shields down: **recover**, backing
-   away from where it was seen, facing that way;
-6. the objective asks something (§3.7): **play** it: take the enemy
-   flag or the ball, return our flag, hunt the carrier, escort a
-   teammate who carries, guard our flag, go to or stand in the hill;
-7. an enemy seen in the last 10 s: **chase** its last known position;
-8. otherwise **roam**.
+A bot can fire at a visible opponent while walking toward the hill,
+guarding its flag or escorting a carrier. Target choice combines the
+existing range, turn and stickiness costs with the objective, teammates'
+calls, recent kills and visible openings. A bot that loses sight plays its
+objective first. In Slayer it can recover shields, respond to a call,
+regroup after withdrawing, collect a due supply, investigate its last
+sighting, or roam. A team call alone never authorizes a shot.
 
-In an objective game the objective takes the place of chasing and
-roaming; fighting, rearming and recovering keep their place, except for
-a carrier.
-
-Reload (X) and switch weapons (Y) are taps of 2 ticks, at most one every
-2 s (reload) or 1.3 s (switch), on top of whichever of these runs.
+Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
+depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
+for reload and 1.3 s for switch. Melee also needs a target in reach and
+near the crosshair for a short time before the press.
 
 Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
 At the skill's rate in a fight at 3 to 12 world units, four times that rate
@@ -432,17 +428,19 @@ view in the last 2 s, while chasing. Each throw is flown against the map's
 collision and aimed to land (`bots::grenades`, "Built: weapon skill" in
 §10); none while dual wielding.
 
-The **personality** parameters (aggression, caution, objective focus, teamwork)
-scale the scores. Difficulty does not scale them: a Legendary bot can be
-timid, and an Easy bot can rush.
+Each bot seed produces its own aggression, caution, teamwork and objective
+focus. Skill scales how readily it notices an opening, how far it responds
+to teammates and how early it sets out for a supply. Changing difficulty
+preserves the personality.
 
 ### 3.4 Aim
 
-Aim is a model of a human hand on a stick, not a snap to the target.
+Aim feeds the biped's current view back into a model of a human thumb
+on a stick.
 
 | Part | Easy | Normal | Heroic | Legendary |
 |---|---|---|---|---|
-| reaction time (see to start turning) | 450 ms | 320 ms | 240 ms | 180 ms |
+| fresh reaction (ticks from first sight) | 10–18 | 7–13 | 5–9 | 5–8 |
 | tracking error (std. dev. of the angle) | large | medium | small | very small |
 | lead (fraction of the needed lead) | 0.3 | 0.6 | 0.85 | 1.0 |
 | flick overshoot | large | some | little | little |
@@ -450,10 +448,16 @@ Aim is a model of a human hand on a stick, not a snap to the target.
 | grenades (arc solve) | rarely, poor | sometimes | often, good | often, good |
 | weapon choice by range | no | partly | yes | yes |
 
-Tracking runs a second-order spring that turns the right stick toward the
-target, plus noise. A fully deflected stick turns no faster than the game's
-own turn rate. The game's aim assist then applies, exactly as it does for a
-human.
+Each encounter samples a reaction delay around the skill's normal pace.
+Already-alert reactions trend sooner with a five-tick floor (167 ms).
+A brief occlusion keeps the reaction clock and clears the velocity sample.
+
+The right thumb takes several ticks to cross the stick well. Large flicks
+carry a little past the target before settling. Small correlated errors and
+the occasional larger misread vary by skill. Fast crossings leave more
+tracking lag than slow ones. The local virtual pad uses the game's stick
+response, look acceleration and aim assist at sensitivity 3. Phantom
+actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
 
 Lead comes from the target's velocity and the weapon's projectile speed,
 read from the tag at load; hitscan needs no lead. A grenade's throw is
@@ -699,7 +703,7 @@ not know who is a bot.
 
 **The decision** (`objective::plan`, pure):
 
-CTF (and Assault, see below), in order:
+CTF uses this order.
 
 1. it carries the enemy flag: **carry** it to our return point, else our
    flag's spawn, along the nav mesh;
@@ -708,7 +712,8 @@ CTF (and Assault, see below), in order:
 3. our flag lies more than 2 world units from its spawn: **go** and touch
    it to return it (defenders always; attackers within 25);
 4. attackers: **go** for the enemy flag where it lies (at home or
-   dropped); with it taken by a teammate, **escort** them (within 3);
+   dropped). With it taken by a teammate, the remaining players divide
+   escort and guard duties. A lone teammate escorts within 3 world units.
 5. defenders, and attackers with nothing to do: **hold** our flag's spawn,
    within 4 world units, fighting from there.
 
@@ -719,11 +724,12 @@ King of the Hill: out of the hill, **go** to its centre; in it, **hold**
 within 0.6 of its radius and fight from there. When the hill moves, the
 bot goes to the new one.
 
-**Assault** is read and played as CTF with the bomb, except that the
-carrier takes it to the enemy's plate (bomb return), else their bomb
-spawn. Which team a neutral bomb's record names, and who attacks
-(`+0x1f4`), are not checked against a run, so Assault is a guess until
-the game run (§11.2).
+**Assault.** An attacker takes a friendly or neutral bomb to the enemy
+plate. Teammates escort the carrier and guard the plate during the plant.
+If the bomb lies on the plate, the closest teammate goes to it and the
+others cover. Defenders guard their own plate and intercept enemy
+carriers. The planner uses possession, team and proximity. The fuse state
+and one-bomb variant's attacking-side flag still need a game check.
 
 **Territories: next.** Its globals (`[0x51eccc]`) were found but not
 read; the territories' positions are presumably the netgame flags of the
@@ -1530,8 +1536,9 @@ no run yet).
 
 **The action from a pad** (`session::action_from_pad`): yaw and pitch
 are absolute world angles (`0x186f99`, `0x824d0`), so the right stick
-turns from the unit's facing: yaw minus x, pitch plus y, at 3 rad/s
-[guess, tuned in a run]. The left stick is the throttle (forward; strafe
+turns from the unit's facing. A radial curve maps the stick to yaw
+minus x and pitch plus y, with a nominal maximum of 3 rad/s. The left
+stick is the throttle (forward; strafe
 [guess] positive to the left), the right trigger `+0x14` (fire), the left
 `+0x18` (grenades), the weapon the unit's current (`+0x212`). The rest is
 what passes `0x14d0a0`: the second weapon, grenade type and `+0x24` -1,
@@ -3577,8 +3584,8 @@ list for the user to play (§11).
      `the_handling_reads_from_the_weapon_and_projectile_tags`), `-p bots
      --lib tactics`, `-p bots --lib mind::fight_tests`; the rest of
      `-p bots --lib mind` unchanged.
-   - **Not traced, wanted next:** who is shooting the bot (the shots
-     hook `0x104150` to Perception), the targets' shields, a projectile's
+   - **Not traced, wanted next:** whether a shot hit or was aimed at the
+     bot, a projectile's
      gravity for lobbed weapons, the energy sword's lunge range from its
      tag, and the flag, ball and bomb tags' aim assist (assumed none).
    - **Game run (the user):** `H2_BOTS_SKILL=heroic`, Slayer on
@@ -3733,6 +3740,76 @@ list for the user to play (§11).
        itself in `brain::Me`) in `brain::Seen`, so the melee finish and
        the noob combo's swap follow real shields, not shots on target.
    - **Game run (the user):** §11.1, "Weapon skill".
+
+   **Built: natural feel (sol).** Aim, walking and buttons are driven by
+   the simulation tick with separate seeded random streams. The full
+   pad is reused on repeated frames within a tick.
+
+   - Aim ramps into flicks and corrects overshoot. Tracking trails a fast
+     crossing more than a slow one, and brief wall occlusions discard
+     velocity. A gunshot may draw a delayed, coarse glance. Visible
+     enemies alone supply live targets and shot lead.
+   - The feet accelerate in world space, vary strafe deflection and
+     ease off near a destination. Cameras look into clear turns and
+     doorways before the feet finish the turn. The navigation follower
+     checks the corner cut for footing and keeps gap approaches at pace.
+   - Bots crouch-walk on quiet objective approaches. Hits alone can
+     change the strafe or start a crouch at range. Jumps are single
+     short presses at gaps, during stuck recovery, or on a clear
+     escape line from a visible nearby grenade.
+   - Weapon taps have a short intent delay, a hold and a release gap.
+     Melee needs a sustained chance in front of the bot. Semi-auto
+     pulls vary within the weapon's cadence and bursts start when the
+     bot lines up a shot.
+   - Small right-stick fidgets happen when an actor is standing idle
+     and on signed-in local pads in a network pregame lobby or while
+     awaiting a unit. They send zero left stick, triggers and buttons.
+     The phantom action adapter applies the turn curve. Face buttons
+     still require the phantom mapping described in §5.1.
+   - Seeing a live grenade and getting clear of it is `bots::incoming`
+     (named `grenade` on the lane; renamed at the merge so it does not
+     read as `bots::grenades`, which owns throwing). The live grenades
+     come from the same object scan as the pickups and supplies
+     (`arms::ground`, with the bot's feet). In a fight the aim
+     hand also carries a throw: while `grenades::Thrower` aims, the hand
+     tracks the throw's line instead of the target. Only a throw, not the
+     left gun's trigger when dual wielding, holds off the right trigger
+     and the weapon taps.
+   - Focused unit-test filters are `mind`, `tactics`, `moves`,
+     `nav::tests`, `incoming`, `sound` and `phantom::session` with
+     `cargo test -p bots --lib`. The game-run checklist is §11.1,
+     "Natural feel".
+
+   **Built: decisions boost (astra)** (2026-11-19, §§3.3 and 3.7).
+   Local slots and hosted phantoms on the same team exchange target
+   calls. Each bot hears completed ticks, so polling order and repeated
+   rendered frames at one tick give the same claims. Calls expire after
+   2.5 seconds. If two healthy bots have comparable targets, the higher
+   player slot yields the contested target. A hurt teammate can call for
+   focus fire. A recent friendly death makes its visible killer a trade
+   opportunity for three seconds. In free-for-all, a visible pair aiming
+   at each other presents an opening to a third player.
+
+   A nearby numerical disadvantage prompts withdrawal. With enough shield,
+   bots close on opponents with low shield or an empty magazine with
+   reserve rounds. The latter is a reload opportunity inferred from the
+   held weapon. Weapon minimum ranges still apply. CTF and Assault
+   carriers try routes away from recent sightings. Deaths of the bot and
+   its teammates mark dangerous routes for up to 20 seconds across
+   respawns. If the only route crosses danger, the bot can still score.
+
+   The host fills `brain::Observations` in `guest::perceive_as` with the
+   player slot and team, aim, shield and held magazine cue. The ground
+   scan supplies placed power weapons, overshield and camouflage. Supplies use
+   the scenario equipment placement and the placement or item collection
+   respawn time. A continuously observed return of a new object can teach
+   the actual period. Kill identity and body position come from the
+   existing `emote::KillLog`. A map load or a match tick rewind clears the
+   radio, learned supplies and danger memory. The coordinator's unit-test
+   filters are `decisions`, `objective::tests`, `arms::tests::decisions_`,
+   `guest::tests::decisions_` and `mind` under `cargo test -p bots --lib`.
+   The in-game checks are in §11.3.
+
 8. **Clankermatch.** First slice built (§8.3, §8.4; run checklist §8.5).
    - Built: the Live menu row (row 2; the rest moved down), the playlist
      filter at `0x00192db0`, the clanker hoppers in the default set and
@@ -3878,8 +3955,8 @@ Stuck (§3.2):
 
 Ammunition (§3.6):
 
-6. A bot that empties a magazine reloads at once, in a fight or not
-   (the reload animation plays).
+6. A bot that empties a magazine starts its reload after a short input
+   delay (the reload animation plays).
 7. A bot with a part-empty magazine reloads after a fight, not during it.
 8. A bot whose gun runs dry with a loaded second weapon switches to it
    (the switch animation plays).
@@ -3934,6 +4011,29 @@ on Lockout and Midship with a human:
 26. A magnum bot backs off to its rifle at a shorter range than before;
     a bot with an SMG stops spraying at you across the map.
 
+Natural feel ("Built: natural feel (sol)" in §10), local virtual pads:
+
+27. Compare Easy and Legendary on the same map. Peek from the edge of a
+    doorway, then cut sideways across the bot's view. Watch for a pause
+    at first sight, a quick turn with a small correction, and more lag
+    on fast crossings. Easy takes longer to settle.
+28. Strafe behind a pillar and change direction while hidden. Watch the
+    bot hold or scan the opening, then pick you up when you reappear.
+    Fire from behind a nearby wall. A short look toward the report can
+    happen before the bot has a target.
+29. Follow a bot through a doorway and around a corner. Look for small
+    changes of pace, a brief look into the opening, and a path that
+    leaves the frame and railings clear. Compare two bots strafing.
+30. Throw a grenade into plain view near a bot on level ground. Look for
+    one quick escape movement and, up close, a single jump when the
+    route is clear. In an ordinary gunfight, hits lead mostly to strafes
+    or crouches. At a genuine gap the bot takes a run-up.
+31. Watch a local bot in a quiet CTF or Hill approach, near an empty
+    magazine and during a close melee encounter. Look for a slower
+    crouch-walk, a brief delay before X or Y, and spaced melee swings.
+    Leave it waiting and check the lobby selection and respawn remain
+    under the human's control.
+
 ### 11.2 Objectives in play (checklist)
 
 For the user, or a coordinator run. Two teams of two or three (a human
@@ -3961,8 +4061,8 @@ CTF on Lockout or Beaver Creek:
 Oddball (any small map):
 
 8. When the ball spawns, the bots run for it.
-9. A bot with the ball moves away from the nearest enemy, does not shoot,
-   and melees a human who comes close.
+9. A bot with the ball takes cover or moves away from an approaching enemy.
+   It keeps its trigger up and melees a human who comes close.
 10. When a human has the ball, the bots come after them; in teams, a
     bot's teammate with it is followed, not attacked.
 
@@ -3976,12 +4076,44 @@ King of the Hill (Midship or Lockout):
 
 Assault (if tried):
 
-14. Does a bot pick up the bomb and take it to the enemy plate? Which
-    side's bots go for it? This is a guess today (§3.7).
+14. Check which side picks up a team bomb and a neutral bomb, and whether
+    the carrier scores at the plate its escorts defend (§3.7).
 
 All:
 
 15. No bot teabags while carrying, guarding or in the hill.
+
+### 11.3 Decisions boost in play (checklist)
+
+Use Heroic with at least two Clankers on one team. For the route and
+Oddball checks, use a map with a nav mesh and more than one way through.
+
+1. **Team Slayer.** Present two similarly distant targets. Watch the bots
+   split fire, then focus fire when one teammate takes damage. Break the
+   receiver's line of sight. It may move toward the call. Its trigger
+   should stay up until it can see an opponent. Kill the caller in view
+   of the other bot and look for an immediate target switch after its
+   normal reaction delay.
+2. **Odds and openings.** Isolate one bot against two nearby opponents.
+   Watch it back off, then regroup when sight breaks. Try a one-on-one
+   with a depleted shield or an empty magazine. In free-for-all, fight
+   another player in sight of a third bot and watch for it to close.
+3. **CTF.** Drop the home flag while a teammate is carrying the enemy
+   flag. Check the return, then the escort and home guard assignments.
+   Cause a death at one entrance and watch a carrier try the other one.
+   Repeat later to see the danger expire.
+4. **Oddball and King.** A ball holder should settle behind cover and a
+   hunter should favor the visible carrier. Shoot from outside the hill.
+   Watch for a bot to enter while returning fire, remain inside while
+   scoring and move when the hill changes.
+5. **Assault.** Try a team bomb and a neutral bomb. Follow one carrier to
+   the opposing plate. Watch teammates cover the plant and defenders
+   intercept the carrier. Drop the bomb on the plate and check who goes
+   to it.
+6. **Supplies.** Let a calm bot see you take a sniper rifle, rockets,
+   overshield or camouflage. Watch it return near the next spawn. Repeat
+   with the pickup hidden. An unseen disappearance should start no clock.
+   Repeat on Easy with the same roster to compare the timing.
 
 ## 12. Next tracing (offline)
 

@@ -45,6 +45,7 @@ fn holding(trigger: Trigger, ammo: Ammo) -> Arms {
 fn step(m: &mut Mind, me: Me, others: Vec<Seen>, teams: bool, tick: u32) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(me),
             others,
             teams,
@@ -120,7 +121,7 @@ fn a_moment_out_of_view_does_not_freeze_it_again() {
     };
     // Back after a moment: turns at once.
     let soon = run(10);
-    assert!(soon.0 < -0.5, "{soon:?}");
+    assert!(soon.0 < -0.1, "{soon:?}");
     // Back after long: a fresh reaction, standing still.
     assert_eq!(run(tactics::GRACE + 30), (0.0, 0.0));
 }
@@ -180,12 +181,13 @@ fn no_grenade_into_a_teammate() {
     assert!(pressed > 0 && thrown > 0, "{pressed} {thrown}");
 }
 
-/// The aim after a tick of the right stick: the game's turning, roughly
-/// (0.08 radians a tick at full deflection).
+/// The aim after a tick of the right stick: the game's turning as the
+/// hand models it ([`turn_rate`], the bots' sensitivity), one tick of it.
 fn turned(aim: Vec3, pad: &HostPadState) -> Vec3 {
     let flat = (aim[0] * aim[0] + aim[1] * aim[1]).sqrt();
-    let yaw = aim[1].atan2(aim[0]) - pad.right_stick.0 * 0.08;
-    let pitch = (aim[2].atan2(flat) + pad.right_stick.1 * 0.08).clamp(-1.4, 1.4);
+    let (rx, ry) = turn_rate(pad.right_stick);
+    let yaw = aim[1].atan2(aim[0]) - rx / TICKS;
+    let pitch = (aim[2].atan2(flat) + ry / TICKS).clamp(-1.4, 1.4);
     crate::grenades::direction(yaw, pitch)
 }
 

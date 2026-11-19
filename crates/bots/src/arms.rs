@@ -855,6 +855,37 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
+/// Whether the selected gun has run out of loaded rounds, with rounds
+/// still in reserve. Only the held instance is needed for this cue.
+pub(crate) fn held_empty_magazine(m: &dyn GuestMemory, unit: u32) -> R<bool> {
+    let slot = u32::from(m.u8(unit + UNIT_WEAPON_INDEX)?);
+    if slot >= UNIT_WEAPON_SLOTS {
+        return Ok(false);
+    }
+    let Some(h) = DatumHandle::from_raw(m.u32(unit + UNIT_WEAPONS + 4 * slot)?) else {
+        return Ok(false);
+    };
+    let Some((objects::WEAPON, body)) = objects::get(m, h)? else {
+        return Ok(false);
+    };
+    let mag = body.addr + WEAPON_MAGAZINES;
+    if m.u16(mag + MAGAZINE_LOADED)? != 0 || m.u16(mag + MAGAZINE_RESERVE)? as i16 <= 0 {
+        return Ok(false);
+    }
+    let Some(def) = body.definition(m)? else {
+        return Ok(false);
+    };
+    let Some(tag) = Tags.entry(m, def)? else {
+        return Ok(false);
+    };
+    let meta = tag.address(m)?;
+    if meta == 0 {
+        return Ok(false);
+    }
+    let layout = WeaponDef::read(m, meta)?;
+    Ok(layout.magazine.is_some() && !layout.ages)
+}
+
 /// What the unit whose body is at `unit` carries.
 pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
     let held_slot = m.u8(unit + UNIT_WEAPON_INDEX)? as i8;
@@ -891,25 +922,90 @@ pub const OBJECT_LIMIT: i32 = 2048;
 /// The weapons lying in the world: live weapon objects with no parent
 /// (nobody holds them).
 pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
-    let Some(array) = objects::array(m)? else {
-        return Ok(Vec::new());
+    Ok(ground(m, None)?.weapons)
+}
+
+pub(crate) struct Ground {
+    pub weapons: Vec<Pickup>,
+    pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
+    /// Live grenades within [`crate::incoming::DANGER`] of `near`: none
+    /// when no `near` was given.
+    pub grenades: Vec<crate::incoming::Grenade>,
+}
+
+/// Scan the object table once for both ordinary pickups and occupied power
+/// placements. A bad equipment tag disables timing for the sample, while
+/// the independently readable weapons still reach the ordinary arms plan.
+/// With `near` (the bot's feet), the same scan looks for live grenades
+/// close to it (crate::incoming).
+pub(crate) fn ground(m: &dyn GuestMemory, near: Option<crate::brain::Vec3>) -> R<Ground> {
+    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
+
+    let mut out = Ground {
+        weapons: Vec::new(),
+        supplies: None,
+        grenades: Vec::new(),
     };
-    let mut out = Vec::new();
+    let Some(array) = objects::array(m)? else {
+        return Ok(out);
+    };
+    out.supplies = Some(Vec::new());
+    let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
     for (h, header) in array.live(m, OBJECT_LIMIT)? {
-        if header.kind(m)? != objects::WEAPON || header.body(m)? == 0 {
-            continue;
-        }
-        let Some((g, body)) = gun(m, h)? else {
-            continue;
+        let site = match header.kind(m)? {
+            PROJECTILE => {
+                if let Some((at, defs)) = senses
+                    && let Ok(addr @ 1..) = header.body(m)
+                {
+                    let body = objects::Body::at(addr);
+                    if let Ok(Some(def)) = body.definition(m)
+                        && defs.contains(&Some(def))
+                        && let Ok(position) = body.position(m)
+                    {
+                        let distance = (position[0] - at[0])
+                            .hypot(position[1] - at[1])
+                            .hypot(position[2] - at[2]);
+                        if distance < DANGER {
+                            out.grenades.push(Grenade {
+                                id: h.raw(),
+                                at: position,
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
+            objects::WEAPON => {
+                let Some((gun, body)) = gun(m, h)? else {
+                    continue;
+                };
+                if body.parent(m)?.is_some() {
+                    continue;
+                }
+                out.weapons.push(Pickup {
+                    id: h.raw(),
+                    position: body.position(m)?,
+                    gun,
+                });
+                if out.supplies.is_none() || !gun.role().power() {
+                    continue;
+                }
+                crate::guest::intel::supply(m, h, body, false)
+            }
+            crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
+                .body(m)
+                .and_then(|addr| crate::guest::intel::equipment(m, h, addr)),
+            _ => continue,
         };
-        if body.parent(m)?.is_some() {
-            continue;
+        match site {
+            Ok(Some(site)) => {
+                if let Some(sites) = &mut out.supplies {
+                    sites.push(site);
+                }
+            }
+            Ok(None) => {}
+            Err(_) => out.supplies = None,
         }
-        out.push(Pickup {
-            id: h.raw(),
-            position: body.position(m)?,
-            gun: g,
-        });
     }
     Ok(out)
 }

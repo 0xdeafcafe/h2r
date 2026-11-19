@@ -8,7 +8,10 @@
 
 use crate::arms::{Arms, Gun, Kit, Ranged, Role};
 use crate::brain::{Seen, Vec3};
-use crate::mind::Skill;
+use crate::mind::{
+    Skill,
+    feel::{Rng, reached},
+};
 
 /// The target point's heights over a unit's origin: the chest (as the mind
 /// has it), the head, and the feet (splash).
@@ -25,15 +28,13 @@ pub const STICK: f32 = 0.6;
 /// An enemy back in view within this many ticks of last being seen needs
 /// no new reaction: strafing round a pillar does not freeze the bot.
 pub const GRACE: u32 = 45;
-/// In a fight already (another enemy seen within [`GRACE`]), a new
-/// target takes this fraction of the reaction time.
-pub const ALERT_REACTION: f32 = 0.5;
+/// One visual reaction, even for an alert Legendary bot, takes at least
+/// five ticks (167 ms). A reappearance during grace keeps the old clock.
+pub const MIN_REACTION: u32 = 5;
 /// Enemies remembered at most this long (ticks) for [`GRACE`].
 const FORGET: u32 = 4 * GRACE;
 
-/// A pull of a once-per-pull trigger lasts this many ticks...
-pub const PULL_TICKS: u32 = 2;
-/// ...and pulls come at least this many ticks apart (so it lets go).
+/// Pulls come at least this many ticks apart (so it lets go).
 pub const PULL_MIN: u32 = 4;
 /// Pulls this far apart when the weapon's rate is not known.
 pub const PULL_DEFAULT: u32 = 8;
@@ -106,8 +107,8 @@ impl Style {
 pub enum Pull {
     /// Held, in the skill's bursts (`None`: held throughout).
     Hold(Option<(u32, u32)>),
-    /// Pulled for [`PULL_TICKS`] every this many ticks: a once-per-pull
-    /// trigger fires once per pull, so holding it fires one shot.
+    /// Pulled for 2–3 ticks. The number is the minimum time between
+    /// starts: holding a once-per-pull trigger fires only one shot.
     Tap(u32),
     /// Not at all: a blade swings with melee.
     Never,
@@ -147,11 +148,11 @@ impl Shot {
         let pull = match p.trigger {
             crate::arms::Trigger::Single | crate::arms::Trigger::Charge => {
                 let every = if p.rate > 0.0 {
-                    (30.0 / p.rate).round() as u32
+                    (30.0 / p.rate).ceil() as u32
                 } else {
                     PULL_DEFAULT
                 };
-                Pull::Tap(every.max(PULL_MIN) + style.pace)
+                Pull::Tap(every.max(PULL_MIN).saturating_add(style.pace))
             }
             crate::arms::Trigger::Absent if role == Role::Blade => Pull::Never,
             _ => Pull::Hold(burst),
@@ -182,15 +183,23 @@ impl Shot {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Notice {
+    id: u32,
+    ready: u32,
+    last: u32,
+}
+
 /// The fight's state, kept by the mind.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Tactics {
-    /// Enemies noticed: id, the tick its reaction counts from, the tick
-    /// last seen.
-    known: Vec<(u32, u32, u32)>,
-    /// The next tick a pull may start, and the tick the current one ends.
-    next_pull: u32,
-    pull_until: u32,
+    reaction_rng: Rng,
+    trigger_rng: Rng,
+    known: Vec<Notice>,
+    pull: Option<Pull>,
+    next_pull: Option<u32>,
+    pull_until: Option<u32>,
+    holding: bool,
     /// For the movement: the range (min, max, world units) to keep the
     /// target at, from the held weapon ([`crate::arms::preferred_range`]).
     pub band: (f32, f32),
@@ -214,6 +223,16 @@ fn angle_between(a: Vec3, b: Vec3) -> f32 {
 /// `aim`: the cheapest by distance plus [`TURN_COST`] per radian off the
 /// aim, the current one's cost scaled by [`STICK`].
 pub fn choose(seen: &[Seen], eye: Vec3, aim: Vec3, current: Option<u32>) -> Option<Seen> {
+    choose_weighted(seen, eye, aim, current, |_| 1.0)
+}
+
+pub(crate) fn choose_weighted(
+    seen: &[Seen],
+    eye: Vec3,
+    aim: Vec3,
+    current: Option<u32>,
+    weight: impl Fn(Seen) -> f32,
+) -> Option<Seen> {
     seen.iter()
         .map(|o| {
             let to = sub([o.position[0], o.position[1], o.position[2] + CHEST], eye);
@@ -221,70 +240,150 @@ pub fn choose(seen: &[Seen], eye: Vec3, aim: Vec3, current: Option<u32>) -> Opti
             if current == Some(o.id) {
                 cost *= STICK;
             }
-            (cost, *o)
+            (cost * weight(*o), *o)
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, o)| o)
 }
 
+impl Default for Tactics {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
 impl Tactics {
-    /// Notes who is in view this tick. A newcomer's reaction counts from
-    /// now, or from half the reaction ago when the bot is already in a
-    /// fight; one back in view within [`GRACE`] keeps its old count.
-    pub fn see(&mut self, seen: &[Seen], tick: u32, reaction: u32) {
-        let alert = self
-            .known
-            .iter()
-            .any(|&(_, _, last)| tick.wrapping_sub(last) <= GRACE);
-        self.known
-            .retain(|&(_, _, last)| tick.wrapping_sub(last) <= FORGET);
-        let t0 = if alert {
-            tick.saturating_sub((reaction as f32 * ALERT_REACTION) as u32)
-        } else {
-            tick
-        };
-        for o in seen {
-            match self.known.iter().position(|k| k.0 == o.id) {
-                Some(i) if tick.wrapping_sub(self.known[i].2) <= GRACE => self.known[i].2 = tick,
-                Some(i) => self.known[i] = (o.id, t0, tick),
-                None => self.known.push((o.id, t0, tick)),
-            }
+    pub(crate) fn new(seed: u64) -> Self {
+        Self {
+            reaction_rng: Rng::new(seed ^ 0x7265_6163_746e),
+            trigger_rng: Rng::new(seed ^ 0x7472_6967_6765),
+            known: Vec::new(),
+            pull: None,
+            next_pull: None,
+            pull_until: None,
+            holding: false,
+            band: (0.0, 0.0),
+            wants_cover: false,
         }
     }
 
-    /// The tick `id`'s reaction counts from (`tick` if not noticed).
-    pub fn since(&self, id: u32, tick: u32) -> u32 {
-        self.known.iter().find(|k| k.0 == id).map_or(tick, |k| k.1)
+    /// Sample once when the bot takes notice. A return within the grace
+    /// window keeps the original deadline, including an unfinished reaction.
+    pub(crate) fn focus(&mut self, id: u32, tick: u32, skill: Skill) -> u32 {
+        self.known.retain(|n| tick.wrapping_sub(n.last) <= FORGET);
+        let prior = self.known.iter().position(|n| n.id == id);
+        if let Some(i) = prior
+            && tick.wrapping_sub(self.known[i].last) <= GRACE
+        {
+            self.known[i].last = tick;
+            return self.known[i].ready;
+        }
+        let alert = self
+            .known
+            .iter()
+            .any(|n| tick.wrapping_sub(n.last) <= GRACE);
+        // Two uniform rolls put most reactions near the middle. Being
+        // prepared shifts the distribution down without removing the floor.
+        let nominal = skill.aim().reaction;
+        let spread = match skill {
+            Skill::Easy => 4,
+            Skill::Normal => 3,
+            Skill::Heroic | Skill::Legendary => 2,
+        };
+        let shift = if alert { 2 } else { 0 };
+        let delay =
+            (nominal + self.reaction_rng.ticks(0, spread) + self.reaction_rng.ticks(0, spread))
+                .saturating_sub(spread + shift)
+                .max(MIN_REACTION);
+        let ready = tick.wrapping_add(delay);
+        let notice = Notice {
+            id,
+            ready,
+            last: tick,
+        };
+        if let Some(i) = prior {
+            self.known[i] = notice;
+        } else {
+            self.known.push(notice);
+        }
+        ready
     }
 
     /// Forgets everyone (the bot died).
     pub fn reset(&mut self) {
         self.known.clear();
-        self.next_pull = 0;
-        self.pull_until = 0;
+        self.pull = None;
+        self.next_pull = None;
+        self.pull_until = None;
+        self.holding = false;
         self.wants_cover = false;
     }
 
-    /// Whether the trigger is down this tick, wanting to fire (`want`):
-    /// held in bursts counted from `t0`, or pulled and let go.
-    pub fn trigger(&mut self, tick: u32, t0: u32, pull: Pull, want: bool) -> bool {
+    /// Break the pull when the target disappears or firing is impossible.
+    pub(crate) fn stop_trigger(&mut self, tick: u32) {
+        if self.pull_until.take().is_some() || self.holding {
+            let release = tick.wrapping_add(2);
+            if self.next_pull.is_none_or(|next| reached(release, next)) {
+                self.next_pull = Some(release);
+            }
+        }
+        self.holding = false;
+    }
+
+    /// Whether the trigger is down this tick. Tap lengths and recovery
+    /// gaps vary. Burst starts are relative to when the bot lines up a shot.
+    pub fn trigger(&mut self, tick: u32, pull: Pull, want: bool) -> bool {
+        if self.pull != Some(pull) {
+            let was_down = self.pull_until.is_some() || self.holding;
+            self.pull = Some(pull);
+            self.pull_until = None;
+            self.holding = false;
+            self.next_pull = was_down.then_some(tick.wrapping_add(2));
+        }
+        let ready = self.next_pull.is_none_or(|t| reached(tick, t));
         match pull {
             Pull::Never => false,
-            Pull::Hold(burst) => {
-                want && burst.is_none_or(|(on, off)| tick.wrapping_sub(t0) % (on + off) < on)
+            Pull::Hold(None) => {
+                self.holding = want && ready;
+                self.holding
             }
             Pull::Tap(every) => {
-                if tick < self.pull_until {
-                    // A pull under way finishes: letting go early would
-                    // waste it.
+                if self.pull_until.is_some_and(|t| !reached(tick, t)) {
                     return true;
                 }
-                if want && tick >= self.next_pull {
-                    self.pull_until = tick + PULL_TICKS;
-                    self.next_pull = tick + every;
+                self.pull_until = None;
+                if !want || !ready {
+                    return false;
+                }
+                let hold = self.trigger_rng.ticks(2, 3);
+                let gap = self.trigger_rng.ticks(1, 3);
+                self.pull_until = Some(tick.wrapping_add(hold));
+                self.next_pull = Some(
+                    tick.wrapping_add(
+                        every
+                            .saturating_add(self.trigger_rng.ticks(0, 3))
+                            .max(hold + gap),
+                    ),
+                );
+                true
+            }
+            Pull::Hold(Some((on, off))) => {
+                if self.pull_until.is_some_and(|t| !reached(tick, t)) && want {
                     return true;
                 }
-                false
+                self.pull_until = None;
+                if !want || !ready {
+                    return false;
+                }
+                let hold = self
+                    .trigger_rng
+                    .ticks(on.saturating_sub(2).max(1), on.saturating_add(2).max(1));
+                let gap = self
+                    .trigger_rng
+                    .ticks(off.saturating_sub(2).max(1), off.saturating_add(2).max(1));
+                self.pull_until = Some(tick.wrapping_add(hold));
+                self.next_pull = Some(tick.wrapping_add(hold).wrapping_add(gap));
+                true
             }
         }
     }

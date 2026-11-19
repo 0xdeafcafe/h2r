@@ -29,6 +29,7 @@ fn look(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: me([0.0; 3], aim),
             others,
             teams: false,
@@ -107,6 +108,7 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
         walls: wall(),
     };
     let p = |aim, at| Perception {
+        observations: Default::default(),
         me: me([0.0, 0.0, 0.0], aim),
         others: vec![enemy(1, at)],
         teams: false,
@@ -141,18 +143,24 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
 fn it_waits_its_reaction_time_before_turning_and_firing() {
     for skill in Skill::ALL {
         let mut m = Mind::new(skill, 7);
-        let r = skill.aim().reaction;
-        // Off to the left, so it has to turn.
         let at = [4.0, 4.0, 0.0];
-        let first = look(&mut m, X, vec![enemy(1, at)], 100, None);
-        assert_eq!(first.right_stick, (0.0, 0.0), "{skill:?} turns at once");
-        let before = look(&mut m, X, vec![enemy(1, at)], 100 + r - 1, None);
-        assert_eq!(before.right_stick, (0.0, 0.0), "{skill:?}");
-        let after = look(&mut m, X, vec![enemy(1, at)], 100 + r, None);
+        let mut first = None;
+        for tick in 100..130 {
+            let pad = look(&mut m, X, vec![enemy(1, at)], tick, None);
+            assert_eq!(pad.right_trigger, 0.0, "{skill:?} tick {tick}");
+            if pad.right_stick != (0.0, 0.0) {
+                first = Some(tick - 100);
+                assert!(
+                    (-0.26..-0.1).contains(&pad.right_stick.0),
+                    "{skill:?} {pad:?}"
+                );
+                break;
+            }
+        }
+        let delay = first.expect("starts moving the thumb");
         assert!(
-            after.right_stick.0 < -0.5,
-            "{skill:?}: {:?}",
-            after.right_stick
+            (tactics::MIN_REACTION..=18).contains(&delay),
+            "{skill:?} {delay}"
         );
         assert!(matches!(m.doing, Doing::Fight(1)));
     }
@@ -175,20 +183,23 @@ fn on_target_it_fires_and_off_target_it_does_not() {
 fn easy_fires_in_bursts() {
     let mut m = Mind::new(Skill::Easy, 3);
     let (on, off) = Skill::Easy.aim().burst.unwrap();
-    let r = Skill::Easy.aim().reaction;
+    let r = Skill::Easy.aim().reaction + 4;
     let mut fired = Vec::new();
     for t in 0..(r + on + off) {
         fired.push(look(&mut m, X, vec![enemy(1, [6.0, 0.0, 0.0])], t, None).right_trigger > 0.0);
     }
     let shots = fired.iter().filter(|f| **f).count() as u32;
-    assert!(shots > 0 && shots <= on + 1, "{shots} of {}", fired.len());
+    let start = fired.iter().position(|f| *f).expect("first burst");
+    let burst = fired[start..].iter().take_while(|f| **f).count() as u32;
+    assert!((on - 2..=on + 2).contains(&burst), "{fired:?}");
+    assert!(fired[start + burst as usize..].contains(&false));
+    assert!(shots < fired.len() as u32, "{shots} of {}", fired.len());
 }
 
 #[test]
 fn it_leads_a_moving_target_more_at_higher_skill() {
     let yaw_after = |skill: Skill| {
         let mut m = Mind::new(skill, 9);
-        m.err = (0.0, 0.0);
         // Crossing left to right (toward -Y) at 10 wu a second, 15 away.
         for t in 0..=20u32 {
             let y = 2.0 - 10.0 * t as f32 / TICKS;
@@ -221,6 +232,7 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     };
     let mut m = Mind::new(Skill::Normal, 42);
     let p = Perception {
+        observations: Default::default(),
         me: me([1.0, 1.0, 0.0], X),
         others: vec![],
         teams: false,
@@ -233,13 +245,14 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
     let g = m.goal.expect("a goal");
     assert!(g == map.nav.polys[0].center || g == map.nav.polys[1].center);
     let moving = pad.left_stick.0.abs() + pad.left_stick.1.abs();
-    assert!(moving > 0.5 || g == map.nav.polys[0].center, "{pad:?}");
+    assert!(moving > 0.3, "{pad:?}");
 }
 
 #[test]
 fn a_teammate_is_never_a_target() {
     let mut m = Mind::new(Skill::Legendary, 1);
     let p = Perception {
+        observations: Default::default(),
         me: me([0.0; 3], X),
         others: vec![Seen {
             id: 1,
@@ -331,6 +344,7 @@ fn with(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: at,
                 aim: X,
@@ -351,28 +365,26 @@ fn with(
 fn an_empty_magazine_is_reloaded_with_spaced_taps() {
     let mut m = Mind::new(Skill::Normal, 1);
     let a = armed(rounds(0, 40), None);
-    let mut presses = Vec::new();
-    for t in 0..(RELOAD_COOLDOWN * 2 + 5) {
-        if with(&mut m, [0.0; 3], a, vec![], vec![], t)
-            .buttons
-            .contains(RELOAD)
-        {
-            presses.push(t);
-        }
-    }
+    let down: Vec<_> = (0..210)
+        .map(|t| {
+            with(&mut m, [0.0; 3], a, vec![], vec![], t)
+                .buttons
+                .contains(RELOAD)
+        })
+        .collect();
     assert_eq!(m.kit, Kit::Reload);
-    // Two ticks a tap, a cooldown apart.
-    assert_eq!(
-        presses,
-        vec![
-            0,
-            1,
-            RELOAD_COOLDOWN,
-            RELOAD_COOLDOWN + 1,
-            2 * RELOAD_COOLDOWN,
-            2 * RELOAD_COOLDOWN + 1
-        ]
-    );
+    let starts: Vec<_> = (1..down.len())
+        .filter(|&i| !down[i - 1] && down[i])
+        .collect();
+    assert!(starts.len() >= 3, "{starts:?}");
+    assert!((7..=11).contains(&starts[0]), "{starts:?}");
+    for &i in starts.iter().take(3) {
+        let hold = down[i..].iter().take_while(|d| **d).count();
+        assert!((2..=4).contains(&hold), "tick {i}, {hold}");
+    }
+    for pair in starts.windows(2) {
+        assert!(pair[1] - pair[0] >= RELOAD_COOLDOWN as usize, "{starts:?}");
+    }
 }
 
 #[test]
@@ -386,10 +398,16 @@ fn a_low_magazine_waits_for_a_lull_to_reload() {
     // Gone from view: not calm yet...
     with(&mut m, [0.0; 3], a, vec![], vec![], 10);
     assert_eq!(m.kit, Kit::Fine);
-    // ...then calm.
-    let pad = with(&mut m, [0.0; 3], a, vec![], vec![], 10 + CALM_TICKS);
+    // ...then calm. It reaches for X after a short delay.
+    let t = 10 + CALM_TICKS;
+    let pad = with(&mut m, [0.0; 3], a, vec![], vec![], t);
     assert_eq!(m.kit, Kit::Reload);
-    assert!(pad.buttons.contains(RELOAD));
+    assert!(!pad.buttons.contains(RELOAD));
+    assert!((t + 1..=t + 11).any(|t| {
+        with(&mut m, [0.0; 3], a, vec![], vec![], t)
+            .buttons
+            .contains(RELOAD)
+    }));
 }
 
 #[test]
@@ -405,8 +423,21 @@ fn a_dry_gun_switches_to_the_loaded_one() {
         0,
     );
     assert_eq!(m.kit, Kit::Switch);
-    assert!(pad.buttons.contains(SWITCH));
+    assert!(!pad.buttons.contains(SWITCH));
     assert!(!pad.buttons.contains(RELOAD));
+    let first = (1..=11).find(|&t| {
+        let pad = with(
+            &mut m,
+            [0.0; 3],
+            a,
+            vec![enemy(1, [6.0, 0.0, 0.0])],
+            vec![],
+            t,
+        );
+        assert!(!pad.buttons.contains(RELOAD), "{pad:?}");
+        pad.buttons.contains(SWITCH)
+    });
+    assert!((7..=11).contains(&first.expect("switches after a delay")));
 }
 
 #[test]
@@ -419,9 +450,15 @@ fn with_nothing_to_shoot_it_runs_in_and_melees() {
     assert_eq!(m.kit, Kit::Melee);
     assert_eq!(pad.right_trigger, 0.0, "nothing to fire");
     assert!(pad.left_stick.1 > 0.9, "straight in: {:?}", pad.left_stick);
-    // In reach: melee.
+    // In reach: melee after reaching for the button.
     let pad = with(&mut m, [0.0; 3], a, foe(1.0), vec![], 40);
-    assert!(pad.buttons.contains(MELEE));
+    assert!(!pad.buttons.contains(MELEE));
+    let first = (41..=45).find(|&t| {
+        with(&mut m, [0.0; 3], a, foe(1.0), vec![], t)
+            .buttons
+            .contains(MELEE)
+    });
+    assert!((42..=45).contains(&first.expect("swings")));
 }
 
 #[test]
@@ -439,7 +476,10 @@ fn with_both_dry_it_goes_for_a_gun_and_takes_it() {
     };
     let pad = with(&mut m, [0.0; 3], a, vec![], vec![smg], 0);
     assert_eq!(m.doing, Doing::Rearm(smg.position));
-    assert!(pad.left_stick.1 > 0.9, "walks to it: {:?}", pad.left_stick);
+    assert!(
+        (0.3..=0.5).contains(&pad.left_stick.1),
+        "starts toward it: {pad:?}"
+    );
     assert!(!pad.buttons.contains(RELOAD));
     // On it: holds the action button...
     let on = [5.0, 0.1, 0.0];
@@ -499,6 +539,7 @@ fn without_grenades_it_throws_none() {
 fn shields_down_it_backs_off_instead_of_chasing() {
     let mut m = Mind::new(Skill::Normal, 1);
     let p = |shield, others, tick| Perception {
+        observations: Default::default(),
         me: Some(Me {
             position: [0.0; 3],
             aim: X,
@@ -539,9 +580,9 @@ fn a_bot_against_a_wall_sidesteps_jumps_then_gives_up_the_chase() {
     let w = crate::stuck::WINDOW;
     let at = |t: u32| log.iter().find(|l| l.0 == t).unwrap();
     // Walking at first.
-    assert!(at(2).1.left_stick.1 > 0.9);
-    // A sidestep: sideways and back, still facing the way.
-    let side = at(w + 2).1;
+    assert!(at(3).1.left_stick.1 > 0.9);
+    // A sidestep: sideways and back after a few ticks, still facing the way.
+    let side = at(w + 4).1;
     assert!(side.left_stick.0.abs() > 0.5, "{:?}", side.left_stick);
     assert!(side.left_stick.1 < 0.0, "{:?}", side.left_stick);
     assert!(
@@ -572,6 +613,7 @@ fn a_bot_that_gets_free_walks_on() {
     // Moved on toward it: walking straight again.
     let pad = m.step(
         &Perception {
+            observations: Default::default(),
             me: me([1.0, 0.0, 0.0], X),
             others: vec![],
             teams: false,
@@ -582,7 +624,11 @@ fn a_bot_that_gets_free_walks_on() {
         None,
     );
     assert_eq!(m.stuck.level, crate::stuck::Level::Moving);
-    assert!(pad.left_stick.1 > 0.9, "{:?}", pad.left_stick);
+    let still = look(&mut m, X, vec![], w + 6, None);
+    assert!(
+        still.left_stick.1 > 0.8,
+        "returns to the path: {pad:?} then {still:?}"
+    );
 }
 
 #[test]
@@ -657,6 +703,7 @@ fn roaming_goes_where_it_last_saw_an_enemy() {
     };
     let mut m = Mind::new(Skill::Legendary, 5);
     let p = |others, tick| Perception {
+        observations: Default::default(),
         me: me([2.0, 5.0, 0.0], X),
         others,
         teams: false,
@@ -681,6 +728,7 @@ fn it_chases_someone_last_seen_in_the_air() {
     };
     let mut m = Mind::new(Skill::Normal, 1);
     let p = |others, tick| Perception {
+        observations: Default::default(),
         me: me([2.0, 5.0, 0.0], X),
         others,
         teams: false,
@@ -717,6 +765,7 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
     for t in 0..120 {
         let pad = m.step(
             &Perception {
+                observations: Default::default(),
                 me: me([0.0, 0.0, 2.0], X),
                 others: vec![enemy(1, [6.0, 0.0, 2.0])],
                 teams: false,
@@ -776,6 +825,7 @@ fn play(
 ) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: at,
                 aim,
@@ -886,6 +936,7 @@ fn without_the_flag_a_dry_bot_still_rearms_first() {
     let mut m = Mind::new(Skill::Normal, 3);
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(Me {
                 position: [10.0, 5.0, 0.0],
                 ..me
@@ -950,7 +1001,7 @@ fn the_ball_carrier_runs_from_the_nearest_enemy() {
         None,
     );
     assert_eq!(m.doing, Doing::Keep);
-    assert!(pad.left_stick.1 < -0.5, "{pad:?}");
+    assert!(pad.left_stick.1 < -0.3, "{pad:?}");
     assert_eq!(pad.right_trigger, 0.0);
     // Close up: melee with the ball.
     let mut melee = false;
@@ -1020,5 +1071,118 @@ fn in_the_hill_it_stays_and_out_of_it_it_goes_there() {
         None,
     );
     assert_eq!(m.doing, Doing::Play(Goal::Go([-20.0, 10.0, 0.0])));
-    assert!(pad.right_stick.0.abs() > 0.5, "turning: {pad:?}");
+    assert!(
+        (0.1..0.3).contains(&pad.right_stick.0.abs()),
+        "starts to turn: {pad:?}"
+    );
+}
+
+#[test]
+fn occluded_positions_never_drive_the_stick_or_projectile_lead() {
+    let map = MapData {
+        nav: NavMesh::default(),
+        walls: wall(),
+    };
+    let mut east = Mind::new(Skill::Legendary, 13);
+    for tick in 0..=8 {
+        look(
+            &mut east,
+            X,
+            vec![enemy(7, [4.0, 0.0, 0.0])],
+            tick,
+            Some(&map),
+        );
+    }
+    let mut west = east.clone();
+    for tick in 9..20 {
+        let east_pad = look(
+            &mut east,
+            X,
+            vec![enemy(7, [6.0, 1.5, 0.0])],
+            tick,
+            Some(&map),
+        );
+        let west_pad = look(
+            &mut west,
+            X,
+            vec![enemy(7, [6.0, -1.5, 0.0])],
+            tick,
+            Some(&map),
+        );
+        assert_eq!(east_pad, west_pad, "tick {tick}");
+        assert_eq!(east_pad.right_trigger, 0.0);
+        assert!(!east.tracks.contains_key(&7));
+    }
+    look(
+        &mut east,
+        X,
+        vec![enemy(7, [4.0, 0.0, 0.0])],
+        20,
+        Some(&map),
+    );
+    assert_eq!(
+        east.tracks[&7].vel, [0.0; 3],
+        "no hidden sample enters the lead"
+    );
+}
+
+#[test]
+fn a_gunshot_can_turn_the_head_without_creating_a_target() {
+    let mut m = Mind::new(Skill::Normal, 15);
+    let report = [ShotSound {
+        at: [0.0, 4.0, EYE],
+        tick: 0,
+    }];
+    let mut looked = false;
+    for tick in 0..26 {
+        let p = Perception {
+            me: me([0.0; 3], X),
+            tick,
+            ..Perception::default()
+        };
+        let pad = m.step_with_cues(&p, None, &report, &[]);
+        assert_eq!(pad.left_stick, (0.0, 0.0));
+        assert_eq!((pad.left_trigger, pad.right_trigger), (0.0, 0.0));
+        assert_ne!(m.doing, Doing::Fight(1));
+        assert!(m.target.is_none());
+        if tick < 5 {
+            assert_eq!(pad.right_stick, (0.0, 0.0));
+        }
+        looked |= pad.right_stick.0 < -0.1;
+    }
+    assert!(looked);
+}
+
+#[test]
+fn a_quiet_objective_approach_uses_partial_crouch_walk() {
+    let start = [10.0, 5.0, 0.0];
+    let flag = [11.4, 5.0, 0.0];
+    let mut m = Mind::new(Skill::Normal, 3);
+    let pad = play(
+        &mut m,
+        start,
+        X,
+        Me::default(),
+        vec![],
+        carrying(None, flag),
+        0,
+        None,
+    );
+    assert_eq!(m.doing, Doing::Play(Goal::Go(flag)));
+    assert!(pad.buttons.contains(CROUCH));
+    assert!(!pad.buttons.contains(JUMP));
+    assert!((0.2..=0.55).contains(&pad.left_stick.1), "{pad:?}");
+}
+
+#[test]
+fn duplicate_input_frames_reuse_the_same_simulation_tick_pad() {
+    let mut a = Mind::new(Skill::Heroic, 42);
+    let mut b = a.clone();
+    for tick in 0..100 {
+        let at = [6.0, (tick as f32 * 0.19).sin() * 3.0, 0.0];
+        let expected = look(&mut a, X, vec![enemy(1, at)], tick, None);
+        for _ in 0..3 {
+            assert_eq!(look(&mut b, X, vec![enemy(1, at)], tick, None), expected);
+        }
+    }
 }

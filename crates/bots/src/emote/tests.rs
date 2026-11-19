@@ -239,6 +239,7 @@ fn the_mind_crouches_over_a_body_and_stands_still() {
     m.emote = Emoter::new(1.0, 5);
     m.emote.hear(&[kill(Some(1), 2, true, [1.0, 0.0, 0.0], 0)]);
     let p = Perception {
+        observations: Default::default(),
         me: Some(Me {
             position: HERE,
             aim: [1.0, 0.0, 0.0],

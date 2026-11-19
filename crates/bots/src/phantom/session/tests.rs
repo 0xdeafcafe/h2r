@@ -385,10 +385,13 @@ fn the_pad_turns_from_the_current_facing() {
     };
     let a = action_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
     assert!(
-        (a.yaw + TURN_RATE * 0.5).abs() < 1e-6,
+        (a.yaw + TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
         "+x turns right (yaw down), as the brain steers"
     );
-    assert!((a.pitch - TURN_RATE * 0.5).abs() < 1e-6, "+y looks up");
+    assert!(
+        (a.pitch - TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
+        "+y looks up"
+    );
     assert_eq!((a.forward, a.strafe), (0.5, -1.0));
     assert_eq!((a.trigger, a.trigger2, a.weapon), (1.0, 0.25, 2));
 }
