@@ -220,7 +220,9 @@ where
             // guard and lock taken again was a gate handshake and a mutex
             // round trip on every D3D call).
             let (error, fault) = {
-                let mut guest = ctx.memory();
+                // The post guard also checks the context's live return
+                // continuation while this guest-memory guard is held.
+                let mut guest = ctx.runtime().memory();
                 let mut mem = GuestAdapter::new(&mut guest);
                 match dev.lock() {
                     Err(_) => (
@@ -281,9 +283,15 @@ where
                                     ret.target_pc,
                                 );
                             }
-                            Err(err) => (err, mem.take_fault()),
+                            Err(err) => {
+                                d.swallow_entry_failed(e.name);
+                                (err, mem.take_fault())
+                            }
                         },
-                        Err(err) => (err, mem.take_fault()),
+                        Err(err) => {
+                            d.swallow_entry_failed(e.name);
+                            (err, mem.take_fault())
+                        }
                     },
                 }
             };

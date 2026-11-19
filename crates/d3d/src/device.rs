@@ -2183,7 +2183,7 @@ impl<B: Backend> Device<B> {
     /// mismatch, or a conflicting operation ends the transaction.
     pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
         self.live("swallow")?;
-        self.swallow_abort(SwallowRefusal::CallBoundary, || "another post call entered".into())?;
+        self.interrupt_swallow()?;
         self.traced(|| Traced::Arming);
         if let Some(cb) = self.drain_until_callback(mem)? {
             self.undelivered = Some(cb);
@@ -2227,6 +2227,12 @@ impl<B: Backend> Device<B> {
             plan: s,
         });
         Ok(true)
+    }
+
+    /// A new post call interrupts the previous one even when the new call
+    /// has no native plan. The original prefix stays before pending pushes.
+    pub fn interrupt_swallow(&mut self) -> Result<(), D3dError> {
+        self.swallow_abort(SwallowRefusal::CallBoundary, || "another post call entered".into())
     }
 
     /// Finishes a post call before its caller runs another command. A
@@ -2363,6 +2369,12 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} is a post transaction boundary"))
+    }
+
+    pub(crate) fn swallow_entry_failed(&mut self, entry: &'static str) {
+        if let Err(error) = self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} failed during the post call")) {
+            eprintln!("d3d: replaying the post originals after {entry} failed: {error}");
+        }
     }
 
     fn swallow_fate(&mut self, d: &ImmediateDraw, push: bool) -> Result<Fate, D3dError> {
@@ -2663,6 +2675,43 @@ impl<B: Backend> Device<B> {
         self.refuse_external(ExternalRefusal::Backend);
         self.traced(|| Traced::Note(format!("post {:?}: native encode refused, replaying {} draws", s.plan.call, plan.ranges)));
         self.swallow_replay(s.packets)
+    }
+
+    /// Records the last target and keeps a fully resolved packet if it
+    /// can be deferred without affecting another D3D operation.
+    fn swallow_resolved(
+        &mut self,
+        mem: &dyn GuestMemory,
+        mut packet: SwallowPacket<B>,
+        depth_dependency: bool,
+    ) -> Result<Option<SwallowPacket<B>>, D3dError> {
+        self.swallow_target(mem, packet.color, &packet.draw)?;
+        if !self.swallowing.as_ref().is_some_and(|s| s.holding) {
+            return Ok(Some(packet));
+        }
+        let draw = &packet.draw;
+        if depth_dependency || draw.hw.zpass_count_enable || !draw.state.bad.is_empty()
+            || self.depth_color.is_some_and(|c| c.header == self.render_target)
+            || (packet.depth.is_some()
+                && (draw.state.render.depth_mode != gfx::state::DepthBufferMode::Disabled
+                    || draw.state.render.stencil.enable))
+        {
+            self.swallow_abort(SwallowRefusal::Dependency, || "post draw has an unsupported state or device dependency".into())?;
+            return Ok(Some(packet));
+        }
+        packet.source_data = std::array::from_fn(|stage| {
+            if !packet.sampled[stage] {
+                return None;
+            }
+            let header = draw.textures[stage]?;
+            let tex = PixelContainer::read(mem, header).ok()?;
+            Some(self.cfg.address_map.to_virtual(tex.resource.data))
+        });
+        // Track dirty levels at the original point in the stream. Either
+        // the replacement or replay writes them before a dependent read.
+        self.mark_written(false);
+        self.swallow_hold(packet);
+        Ok(None)
     }
 
     /// Pins the packet's exact bindings. Static textures leave the cache
@@ -5174,32 +5223,21 @@ impl<B: Backend> Device<B> {
             texture_info,
             glyph_cache,
         };
-        self.swallow_target(mem, color, &draw)?;
-        if self.swallowing.as_ref().is_some_and(|s| s.holding) {
-            if writes_depth || draw.hw.zpass_count_enable || !draw.state.bad.is_empty()
-                || self.depth_color.is_some_and(|c| c.header == self.render_target)
-                || (depth.is_some()
-                    && (draw.state.render.depth_mode != gfx::state::DepthBufferMode::Disabled
-                        || draw.state.render.stencil.enable))
-                || aliases.iter().any(Option::is_some) || depth_levels.iter().any(Option::is_some)
-            {
-                self.swallow_abort(SwallowRefusal::Dependency, || "post draw has depth or pixel-count dependencies".into())?;
-            } else {
-                // Track dirty levels at the original point in the
-                // stream. Either the replacement or replay writes them.
-                self.mark_written(false);
-                let source_data = std::array::from_fn(|stage| {
-                    if !sampled[stage] { return None; }
-                    let header = draw.textures[stage]?;
-                    let tex = PixelContainer::read(mem, header).ok()?;
-                    Some(self.cfg.address_map.to_virtual(tex.resource.data))
-                });
-                self.swallow_hold(SwallowPacket {
-                    color, depth, draw, source_data, sampled, snapshots, keys, cached: HashMap::default(),
-                });
+        let (draw, snapshots) = if self.swallowing.is_some() {
+            let packet = SwallowPacket {
+                color, depth, draw, snapshots, keys, cached: HashMap::default(),
+                source_data: [None; 4], sampled,
+            };
+            let depth_dependency = writes_depth
+                || aliases.iter().any(Option::is_some)
+                || depth_levels.iter().any(Option::is_some);
+            let Some(packet) = self.swallow_resolved(mem, packet, depth_dependency)? else {
                 return Ok(());
-            }
-        }
+            };
+            (packet.draw, packet.snapshots)
+        } else {
+            (draw, snapshots)
+        };
         let admission = if self.swallowing.is_some() || self.admissions.is_empty()
             || !draw.state.bad.is_empty() || self.hw.zpass_count_enable
         {

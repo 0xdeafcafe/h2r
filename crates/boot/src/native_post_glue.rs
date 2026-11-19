@@ -1117,6 +1117,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn colour_pass(&self, mem: &mut dyn GuestMemory, site: CallSite, args: [u32; 7], fp: Fp, native: bool) -> bool {
+        self.interrupt();
         self.trace_end();
         let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         let ab = Ab::get();
@@ -1156,6 +1157,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, site: CallSite, call: ScreenEffect, fp: Fp) -> bool {
+        self.interrupt();
         let armed = self.effect(mem, site, call, fp);
         self.note(|| format!("hook: armed {armed}"));
         armed
@@ -1211,6 +1213,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    fn interrupt(&self) {
+        if let Ok(mut device) = self.device.lock()
+            && let Err(error) = device.interrupt_swallow()
+        {
+            eprintln!("native-post: replaying interrupted call: {error}");
+        }
+    }
+
     fn trace_summary(&self, stats: d3d::Stats) {
         if post_feature::trace_spec().is_none() {
             return;

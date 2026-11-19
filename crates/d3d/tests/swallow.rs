@@ -213,6 +213,19 @@ fn a_caller_outside_the_stack_frame_cannot_consume_queued_work() {
 }
 
 #[test]
+fn a_new_post_call_without_a_plan_still_interrupts_the_old_one() {
+    let (mut d, mut m, _) = setup(recorder());
+    assert!(d.swallow(&mut m, strips_plan(true)).unwrap());
+    d.swallow_caller(&m, CALL.esp - 4, END_SITE, |_| true).unwrap();
+    strip(&mut d, &mut m, 0.0);
+    d.interrupt_swallow().unwrap();
+    strip(&mut d, &mut m, 12.0);
+    assert_eq!(draws(&d).len(), 2);
+    assert_eq!(d.stats().swallow_draws_replayed, 1);
+    assert_eq!(d.stats().swallow_commits, 0);
+}
+
+#[test]
 fn a_backend_that_refuses_preparation_replays_the_complete_packet_set() {
     let (mut baseline, mut m, back) = setup(recorder());
     quads(&mut baseline, &mut m, back);
