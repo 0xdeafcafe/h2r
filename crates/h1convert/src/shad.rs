@@ -198,7 +198,60 @@ pub struct Layout {
     /// The instance animation tree an animated instance of the stem has,
     /// if this converts any animation onto it.
     pub animation: Option<&'static AnimTree>,
+    /// Where the [`Tint`] goes, on a stem drawn by
+    /// `transparent_generic_reflection`: its vertex shader blends `v[10]`
+    /// (perpendicular colour plus alpha, the surface facing the eye) into
+    /// `v[11]` (parallel, grazing) by the view angle, and the pass
+    /// multiplies its colour by the result's colour and alpha.
+    pub tint: Option<TintAt>,
 }
+
+/// The vectors a [`Tint`] is written to: the perpendicular and parallel
+/// colours (`[r, g, b, 0]`; `None` on a stem without them) and alphas
+/// (`[0, 0, 0, a]`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TintAt {
+    pub colors: Option<[usize; 2]>,
+    pub alphas: [usize; 2],
+}
+
+/// A transparent shader's colour and its view-angle fade, written into
+/// the [`Layout::tint`] vectors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tint {
+    /// The colour the stem's output is multiplied by (both angles).
+    pub color: [f32; 3],
+    /// The alpha where the surface faces the eye.
+    pub perpendicular: f32,
+    /// The alpha at a grazing angle.
+    pub parallel: f32,
+}
+
+impl Tint {
+    /// `color` with Halo 1's framebuffer fade mode `fade` (`schi`, `scex`,
+    /// `sotr` `+0x2e`: 0 none, 1 fade when perpendicular, 2 fade when
+    /// parallel) as the two alphas: fading when perpendicular is alpha 0
+    /// facing the eye and 1 grazing; when parallel, the reverse (a light
+    /// cone's silhouette fades out). Another value fades nothing.
+    pub fn faded(color: [f32; 3], fade: u16) -> Self {
+        let (perpendicular, parallel) = match fade {
+            FADE_PERPENDICULAR => (0.0, 1.0),
+            FADE_PARALLEL => (1.0, 0.0),
+            _ => (1.0, 1.0),
+        };
+        Self {
+            color,
+            perpendicular,
+            parallel,
+        }
+    }
+}
+
+/// Halo 1's transparent framebuffer fade mode (`+0x2e`) "fade when
+/// perpendicular".
+pub const FADE_PERPENDICULAR: u16 = 1;
+/// "Fade when parallel".
+pub const FADE_PARALLEL: u16 = 2;
 
 /// An animated stem's instance tree (postprocess `+0x1c` to `+0x54`,
 /// docs/formats/shader-instances.md): one LOD whose mask names the
@@ -354,6 +407,7 @@ pub const TEX_BUMP: Layout = Layout {
     vectors: &OPAQUE_VECTORS,
     root: Root::BaseMap,
     animation: None,
+    tint: None,
 };
 
 /// Opaque bumped surfaces with Halo 1's detail blend: stage 0 the base
@@ -397,6 +451,7 @@ pub const TEX_BUMP_DETAIL_BLEND_DETAIL: Layout = Layout {
     ],
     root: Root::BaseMap,
     animation: None,
+    tint: None,
 };
 
 /// Opaque bumped surfaces with a reflection: stage 0 the base (bitmap 2,
@@ -433,6 +488,7 @@ pub const TEX_BUMP_ENV: Layout = Layout {
     ],
     root: Root::BaseMap,
     animation: None,
+    tint: None,
 };
 
 /// [`TEX_BUMP_ENV`] with the object's change colours: Halo 2's player
@@ -490,6 +546,7 @@ pub const TEX_BUMP_ENV_FOUR_CHANGE_COLOR: Layout = Layout {
     ],
     root: Root::BaseMap,
     animation: None,
+    tint: None,
 };
 
 /// [`TEX_BUMP_ENV`]'s reflection colours (1 to 4: tints facing the eye
@@ -504,6 +561,7 @@ pub fn four_change_color_extras(env: &Extras) -> Extras {
             .map(|&(k, c)| (k + 3, c))
             .collect(),
         scroll: env.scroll,
+        ..Extras::default()
     }
 }
 
@@ -524,6 +582,7 @@ pub const TEX_BUMP_ALPHA_TEST: Layout = Layout {
     vectors: &OPAQUE_VECTORS,
     root: Root::BaseMap,
     animation: None,
+    tint: None,
 };
 
 /// Self-illuminated: one pass drawing bitmap 0 (`c[18]` vector 0).
@@ -542,9 +601,13 @@ pub const ILLUM: Layout = Layout {
     ],
     root: Root::SelfIllum,
     animation: None,
+    tint: None,
 };
 
-/// Additive: stage 1 bitmap 0, its rows vectors 0 and 1, white tints.
+/// Additive: stage 1 bitmap 0, its rows vectors 0 and 1; vectors 2 to 5
+/// the [`Tint`] (white, no fade, by default). `h2 shader` on retail's
+/// `teleporter_emitter_core`: `rgb = t1.rgb × c0.rgb × v0.rgb × v0.a`,
+/// `v[10]` = vector 2 + vector 4, `v[11]` = vector 3 + vector 5.
 pub const ONE_ADD_ILLUM: Layout = Layout {
     stem: "shaders\\shader_templates\\transparent\\one_add_illum",
     word_14: 5,
@@ -561,6 +624,93 @@ pub const ONE_ADD_ILLUM: Layout = Layout {
     ],
     root: Root::SelfIllum,
     animation: None,
+    tint: Some(TintAt {
+        colors: Some([2, 3]),
+        alphas: [4, 5],
+    }),
+};
+
+/// Additive, two maps multiplied: `rgb = t1.rgb × t2.rgb × 2 × v0.rgb ×
+/// c0.a × v0.a`, blend one/one, drawn two-sided (`CULLMODE` 0 in the
+/// pass). Bitmap 0 on stage 2, its rows vectors 0 and 1 (`c[22]`,
+/// `c[23]`), the one [`CLOUDS_TREE`] scrolls; bitmap 1 on stage 1, rows
+/// vectors 2 and 3 (`c[20]`, `c[21]`); vectors 4 to 7 the [`Tint`];
+/// colour 0's alpha the `c0.a` (opaque). D (`h2 shader` over the disc's
+/// 53 retail instances): retail's `elite_jetpack_exhaust` has its
+/// exhaust as bitmap 0 on stage 2 and its mask as bitmap 1 on stage 1,
+/// `vector[1]` in `c[23]`; `cr_stream` animates exactly the clouds tree
+/// (bitmap target 1, vertex targets 212 and 245, layer 15) and
+/// `cr_illumination` is unanimated with colour 0 `0xff000000`; an unused
+/// bitmap 1 is `default_multiplicative`. In Coagulation, Beaver Creek and
+/// 05a, not in `shared.map`.
+pub const TWO_ADD_CLOUDS: Layout = Layout {
+    stem: "shaders\\shader_templates\\transparent\\two_add_clouds",
+    word_14: 5,
+    ints: [0, 0],
+    bitmaps: &[
+        Bm::Role(Role::Tile, Fixed::ColorWhite),
+        Bm::Role(Role::Mask, Fixed::DefaultMultiplicative),
+    ],
+    colors: &[OPAQUE_ALPHA],
+    vectors: &[
+        Vector::URow(Role::Tile),
+        Vector::VRow(Role::Tile),
+        Vector::URow(Role::Mask),
+        Vector::VRow(Role::Mask),
+        Vector::Const(W1),
+        Vector::Const(W1),
+        Vector::Const(A1),
+        Vector::Const(A1),
+    ],
+    root: Root::None,
+    animation: Some(&CLOUDS_TREE),
+    tint: Some(TintAt {
+        colors: Some([4, 5]),
+        alphas: [6, 7],
+    }),
+};
+
+/// Plasma, added: two noise maps whose difference, squared and
+/// sharpened, lights thin moving bands (`h2 shader` on retail's
+/// `teleporter_plasma`: `r0 = t1 − t2`, squared ×4, `bx2` squared twice),
+/// coloured between colour 1 and colour 0 by the band's strength, times
+/// the mask's alpha and the fade alpha (`rgb = t3.a × v0.a × band`, blend
+/// one/one). Bitmap 0 on stage 1 (rows vectors 0 and 1, `c[20]`,
+/// `c[21]`), bitmap 1 on stage 2 (rows 2 and 3, `c[22]`, `c[23]`, the
+/// pair [`CLOUDS_TREE`] scrolls), bitmap 2 the mask on stage 3 (rows 4
+/// and 5). Vector 7 is `v[10]` and vector 6 `v[11]`: the perpendicular
+/// and parallel alphas (retail's `teleporter_plasma` and `grav_lift` 1
+/// and 0, the receiver and `needler_ammo_glow` 1 and 1). Colour 2 black
+/// on every retail instance; colour 3's alpha 0 leaves the fade alone.
+/// D: `needler_ammo_glow` animates exactly the clouds tree (bitmap
+/// target 1, vertex targets 212 and 245); retail's teleporter animates
+/// bitmap 0's pair too, which this doesn't. In `shared.map`.
+pub const PLASMA_ALPHA: Layout = Layout {
+    stem: "shaders\\shader_templates\\transparent\\plasma_alpha",
+    word_14: 5,
+    ints: [1, 0],
+    bitmaps: &[
+        Bm::Role(Role::Base, Fixed::ColorWhite),
+        Bm::Role(Role::Tile, Fixed::ColorWhite),
+        Bm::Role(Role::Mask, Fixed::ColorWhite),
+    ],
+    colors: &[WHITE, WHITE, 0, 0],
+    vectors: &[
+        Vector::URow(Role::Base),
+        Vector::VRow(Role::Base),
+        Vector::URow(Role::Tile),
+        Vector::VRow(Role::Tile),
+        Vector::URow(Role::Mask),
+        Vector::VRow(Role::Mask),
+        Vector::Const(A1),
+        Vector::Const(A1),
+    ],
+    root: Root::None,
+    animation: Some(&CLOUDS_TREE),
+    tint: Some(TintAt {
+        colors: None,
+        alphas: [7, 6],
+    }),
 };
 
 /// Alpha blended: stage 0 a reflection cube (black: none; a Halo 1 cube
@@ -594,6 +744,7 @@ pub const ONE_ALPHA_ENV: Layout = Layout {
     ],
     root: Root::None,
     animation: None,
+    tint: None,
 };
 
 /// The sky picture (`crate::sky_shaders`): stage 3 bitmap 2, every row
@@ -619,6 +770,7 @@ pub const SKY_PICTURE: Layout = Layout {
     ],
     root: Root::None,
     animation: None,
+    tint: None,
 };
 
 /// A cloud layer: stage 2 the tile (bitmap 0, rows 0 and 1), stage 1 the
@@ -641,6 +793,7 @@ pub const SKY_CLOUDS: Layout = Layout {
     ],
     root: Root::None,
     animation: Some(&CLOUDS_TREE),
+    tint: None,
 };
 
 /// An additive sky layer: stage 1 the picture (bitmap 0) times stage 2
@@ -667,6 +820,7 @@ pub const SKY_ADDITIVE: Layout = Layout {
     ],
     root: Root::None,
     animation: None,
+    tint: None,
 };
 
 /// Water (`swat`): stage 0 the ripple map (bitmap 0) at `c[20]`'s
@@ -693,10 +847,11 @@ pub const WATER_POOL: Layout = Layout {
     vectors: &[Vector::Tile(Role::Bump)],
     root: Root::None,
     animation: Some(&WATER_TREE),
+    tint: None,
 };
 
 /// Every layout.
-pub const LAYOUTS: [&Layout; 12] = [
+pub const LAYOUTS: [&Layout; 14] = [
     &TEX_BUMP,
     &TEX_BUMP_ENV,
     &TEX_BUMP_ENV_FOUR_CHANGE_COLOR,
@@ -704,6 +859,8 @@ pub const LAYOUTS: [&Layout; 12] = [
     &TEX_BUMP_ALPHA_TEST,
     &ILLUM,
     &ONE_ADD_ILLUM,
+    &TWO_ADD_CLOUDS,
+    &PLASMA_ALPHA,
     &ONE_ALPHA_ENV,
     &SKY_PICTURE,
     &SKY_CLOUDS,
@@ -742,6 +899,14 @@ pub struct Extras {
     /// The scrolling of the layout's animated map
     /// ([`Layout::animation`]); `None`: not animated.
     pub scroll: Option<[Option<Slide>; 2]>,
+    /// The colour and fade, on a layout with [`Layout::tint`] vectors;
+    /// `None` keeps the layout's (white, no fade).
+    pub tint: Option<Tint>,
+    /// The [`Role::Mask`] map is to be bound as a derived bitmap: the
+    /// Halo 1 picture with this gain times its brightest channel as alpha
+    /// (`h1bitmaps::mask::convert_brightest`, [`plasma_shader`]); the
+    /// caller converting the maps makes it. `None`: the map as it is.
+    pub brightest_mask: Option<f32>,
 }
 
 impl Extras {
@@ -887,6 +1052,24 @@ impl Library {
                 }
             })
             .collect();
+        let mut vectors = vectors;
+        if let (Some(at), Some(t)) = (layout.tint, extras.tint) {
+            let [r, g, b] = t.color;
+            let [pa, qa] = at.alphas;
+            let mut put = vec![
+                (pa, [0.0, 0.0, 0.0, t.perpendicular]),
+                (qa, [0.0, 0.0, 0.0, t.parallel]),
+            ];
+            if let Some([pc, qc]) = at.colors {
+                put.push((pc, [r, g, b, 0.0]));
+                put.push((qc, [r, g, b, 0.0]));
+            }
+            for (k, v) in put {
+                if let Some(x) = vectors.get_mut(k) {
+                    *x = v;
+                }
+            }
+        }
         let picture = match layout.root {
             Root::None => None,
             _ => layout
@@ -896,9 +1079,18 @@ impl Library {
         };
         let scroll = match (layout.animation, extras.scroll) {
             (Some(_), Some(offset)) if offset.iter().any(Option::is_some) => {
-                let r = layout.bitmaps.iter().find_map(|b| match b {
-                    Bm::Role(r, _) if *r != Role::Mask && *r != Role::Cube => Some(*r),
-                    _ => None,
+                // The tile is the scrolled map where the layout has one
+                // (`PLASMA_ALPHA`'s is its second bitmap).
+                let tile = layout
+                    .bitmaps
+                    .iter()
+                    .any(|b| matches!(b, Bm::Role(Role::Tile, _)))
+                    .then_some(Role::Tile);
+                let r = tile.or_else(|| {
+                    layout.bitmaps.iter().find_map(|b| match b {
+                        Bm::Role(r, _) if *r != Role::Mask && *r != Role::Cube => Some(*r),
+                        _ => None,
+                    })
                 });
                 Some(TextureScroll {
                     scale: r.map_or([1.0, 1.0], |r| scale(&r)),
@@ -1360,9 +1552,16 @@ pub const SPLA_MAP: usize = 0xd4;
 /// - `sgla`: [`ONE_ALPHA_ENV`] with the base map.
 /// - `smet`: [`ILLUM`] with its map.
 /// - `spla`: [`ONE_ADD_ILLUM`] with its map.
-/// - `schi`, `scex`, `sotr`: their least tiled map
+/// - `schi`, `scex` additive with maps multiplied together
+///   ([`multiply_chain`]): [`TWO_ADD_CLOUDS`] (two maps, one scrolling,
+///   the rest folded into the tint), falling back to [`ONE_ADD_ILLUM`].
+/// - `sotr` additive and one of Halo 1's plasma programs ([`is_plasma`]):
+///   [`PLASMA_ALPHA`] ([`plasma_shader`]), falling back to the next rule's.
+/// - `schi`, `scex`, `sotr` otherwise: their least tiled map
 ///   ([`crate::sky_shaders::recipe`]), [`ONE_ADD_ILLUM`] when the
-///   framebuffer blend is additive, else [`ONE_ALPHA_ENV`].
+///   framebuffer blend is additive, else [`ONE_ALPHA_ENV`]. Additive ones
+///   fade by the view angle as Halo 1's fade mode says ([`Tint::faded`]);
+///   Other `sotr` stages (combiners) aren't read.
 pub fn read_h1(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
     let mut s = read_h1_maps(h1, tag)?;
     s.fit_kinds(h1);
@@ -1560,7 +1759,21 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                     )
                 })
                 .collect();
-            Some(H1Shader {
+            let d = h1.tag_data(tag).ok()?;
+            let fade = d
+                .get(TRANSPARENT_FADE..TRANSPARENT_FADE + 2)
+                .map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+            if s.additive
+                && let Some(chained) = chicago_maps(h1, d, s.chicago)
+                && let Some(chain) = multiply_chain(&chained)
+            {
+                return Some(chain.shader(&tag.name, &group, &chained, fade));
+            }
+            let plasma = (s.additive && !s.chicago)
+                .then(|| generic_maps(h1, d))
+                .flatten()
+                .filter(|(maps, stages)| is_plasma(maps, *stages));
+            let mut out = H1Shader {
                 name: tag.name.clone(),
                 group,
                 layout: if s.additive {
@@ -1571,7 +1784,20 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 maps: transparent_maps(&maps, k, s.additive),
                 extras: Extras::default(),
                 fallback: None,
-            })
+            };
+            if s.additive {
+                out.extras.tint = Some(Tint::faded([1.0; 3], fade));
+            }
+            if let Some((maps, _)) = plasma
+                && let Some(hue) = h1_hue(h1, maps[3].bound.bitmap)
+            {
+                let light = PlasmaLight {
+                    hue,
+                    glow: plasma_glow(h1, d).unwrap_or([0.0; 3]),
+                };
+                return Some(plasma_shader(&tag.name, &maps, fade, light, out));
+            }
+            Some(out)
         }
         _ => None,
     }
@@ -1615,6 +1841,454 @@ pub fn transparent_maps(
         out.push((Role::Cube, maps[c].0));
     }
     out
+}
+
+/// The framebuffer fade mode of `schi`, `scex` and `sotr` ([`Tint::faded`]).
+pub const TRANSPARENT_FADE: usize = 0x2e;
+/// `schi` / `scex` flags byte: bit 3 the first map is in screen space.
+pub const CHICAGO_FLAGS: usize = 0x29;
+pub const CHICAGO_SCREENSPACE: u8 = 1 << 3;
+/// `schi` / `scex` first map type (`u16`): 0 a 2D map (the others are
+/// reflection cubes and object-centred maps).
+pub const CHICAGO_FIRST_MAP_TYPE: usize = 0x2a;
+/// A `schi` map's colour function (`+0x2c`, `u16`): how this map and the
+/// next combine. D (`scenery\teleporter_base\shaders\teleporter_cone`):
+/// maps 0 and 1 hold 2, map 2 (the last) 0.
+pub const CHICAGO_MAP_FUNCTION: usize = 0x2c;
+/// Colour function "multiply": this map times the next.
+pub const CHICAGO_MULTIPLY: u16 = 2;
+/// "Double multiply": twice the product.
+pub const CHICAGO_DOUBLE_MULTIPLY: u16 = 3;
+
+/// One map of a Halo 1 chicago shader as [`multiply_chain`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChainMap {
+    pub bound: H1Bound,
+    /// Its colour function ([`CHICAGO_MAP_FUNCTION`]).
+    pub function: u16,
+    /// Its u and v scrolling ([`crate::sky_shaders`]: a game-time slide).
+    pub scroll: [Option<Slide>; 2],
+    /// Its mean colour, 0 to 1 (image 0, the largest level).
+    pub mean: [f32; 3],
+}
+
+/// An additive chicago shader whose maps multiply together, as the two
+/// maps [`TWO_ADD_CLOUDS`] draws: `tile` (bitmap 0, the scrolling slot)
+/// and `mask` (bitmap 1, unanimated), indices into the maps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Chain {
+    pub tile: usize,
+    pub mask: usize,
+    /// 2 per double multiply.
+    pub factor: f32,
+}
+
+/// The [`Chain`] of `maps` when every map but the last multiplies into
+/// the next ([`CHICAGO_MULTIPLY`], [`CHICAGO_DOUBLE_MULTIPLY`]): the
+/// first scrolling map on the scrolling slot (else the first map), the
+/// first unanimated other map on the other (else the next one). `None`
+/// with fewer than two maps or another function in the chain.
+///
+/// D: Blood Gulch's teleporter cone (`teleporter_cone`, on every
+/// teleporter receiver, additive, fade when parallel, two-sided): grey
+/// `base volumetric dust` twice, scrolling at their own rates (u 6 s, v
+/// −20 s; u −4 s, v 15 s), times the green vertical ramp
+/// `teleporter_dust` (black at the top, 1×1.05). Before converter
+/// version 90 the least tiled map alone drew, the first dust: a grey,
+/// static cone at full brightness with hard edges and no green.
+pub fn multiply_chain(maps: &[ChainMap]) -> Option<Chain> {
+    let (_, chained) = maps.split_last()?;
+    if chained.is_empty() {
+        return None;
+    }
+    let mut factor = 1.0;
+    for m in chained {
+        match m.function {
+            CHICAGO_MULTIPLY => {}
+            CHICAGO_DOUBLE_MULTIPLY => factor *= 2.0,
+            _ => return None,
+        }
+    }
+    let scrolls = |k: usize| maps[k].scroll.iter().any(Option::is_some);
+    let tile = (0..maps.len()).find(|&k| scrolls(k)).unwrap_or(0);
+    let mask = (0..maps.len())
+        .find(|&k| k != tile && !scrolls(k))
+        .or_else(|| (0..maps.len()).find(|&k| k != tile))?;
+    Some(Chain { tile, mask, factor })
+}
+
+impl Chain {
+    /// The factor times the mean colour of every map not in `drawn`: a
+    /// multiplied map the stem has no slot for, folded into the tint (a
+    /// scrolling layer averages to its mean colour over its period).
+    pub fn folded(&self, maps: &[ChainMap], drawn: &[usize]) -> [f32; 3] {
+        let mut c = [self.factor; 3];
+        for (k, m) in maps.iter().enumerate() {
+            if !drawn.contains(&k) {
+                for (x, v) in c.iter_mut().zip(m.mean) {
+                    *x *= v;
+                }
+            }
+        }
+        c.map(|x| x.clamp(0.0, 1.0))
+    }
+
+    /// The shader: [`TWO_ADD_CLOUDS`] with the tile scrolling and the
+    /// rest folded into the tint, halved for the stem's doubling; on a
+    /// base without the stem, [`ONE_ADD_ILLUM`] drawing the mask with
+    /// every other map folded in. Both fade as `fade` says
+    /// ([`Tint::faded`]).
+    pub fn shader(&self, name: &str, group: &str, maps: &[ChainMap], fade: u16) -> H1Shader {
+        let plain = H1Shader {
+            name: name.to_owned(),
+            group: group.to_owned(),
+            layout: &ONE_ADD_ILLUM,
+            maps: vec![(Role::Base, maps[self.mask].bound)],
+            extras: Extras {
+                tint: Some(Tint::faded(self.folded(maps, &[self.mask]), fade)),
+                ..Extras::default()
+            },
+            fallback: None,
+        };
+        let half = self.folded(maps, &[self.tile, self.mask]).map(|x| x * 0.5);
+        H1Shader {
+            name: name.to_owned(),
+            group: group.to_owned(),
+            layout: &TWO_ADD_CLOUDS,
+            maps: vec![
+                (Role::Tile, maps[self.tile].bound),
+                (Role::Mask, maps[self.mask].bound),
+            ],
+            extras: Extras {
+                tint: Some(Tint::faded(half, fade)),
+                scroll: Some(maps[self.tile].scroll),
+                ..Extras::default()
+            },
+            fallback: Some(Box::new(plain)),
+        }
+    }
+}
+
+/// The maps of a chicago shader (`d`, its data; `chicago` false for
+/// `sotr`, whose stages this doesn't read: `None`) for
+/// [`multiply_chain`]. `None` when its first map is in screen space or
+/// not a 2D map, or any map lacks a 2D bitmap or its mean colour.
+fn chicago_maps(h1: &h1map::H1Map, d: &[u8], chicago: bool) -> Option<Vec<ChainMap>> {
+    use crate::sky_shaders::{MAPS, SCHI_ANIMATION, SCHI_MAP};
+    if !chicago || d.get(CHICAGO_FLAGS)? & CHICAGO_SCREENSPACE != 0 {
+        return None;
+    }
+    let u16_at =
+        |b: &[u8], at: usize| Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?));
+    let f32_at =
+        |b: &[u8], at: usize| Some(f32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?));
+    if u16_at(d, CHICAGO_FIRST_MAP_TYPE)? != 0 {
+        return None;
+    }
+    let (size, bitmap, scale) = SCHI_MAP;
+    let block = h1map::Block::read(d, MAPS)?;
+    let bytes = h1.block(block, size).ok()?;
+    bytes
+        .chunks_exact(size)
+        .map(|e| {
+            let r = h1map::TagRef::read(e, bitmap)?;
+            if r.group != h1map::Group::new(b"bitm")
+                || r.id.is_none()
+                || h1_texture_kind(h1, r.id) != Some(h1map::bitmap::ImageKind::D2)
+            {
+                return None;
+            }
+            Some(ChainMap {
+                bound: H1Bound {
+                    bitmap: r.id,
+                    scale: [f32_at(e, scale)?, f32_at(e, scale + 4)?],
+                },
+                function: u16_at(e, CHICAGO_MAP_FUNCTION)?,
+                scroll: [
+                    crate::sky_shaders::slide(e, SCHI_ANIMATION),
+                    crate::sky_shaders::slide(e, SCHI_ANIMATION + 0x10),
+                ],
+                mean: h1_mean_color(h1, r.id)?,
+            })
+        })
+        .collect()
+}
+
+/// The mean colour (0 to 1) of the Halo 1 bitmap `id`'s first image at
+/// its largest level.
+pub fn h1_mean_color(h1: &h1map::H1Map, id: h1map::TagId) -> Option<[f32; 3]> {
+    use h1bitmaps::BitmapExt;
+    let t = h1.tag(id).ok()?;
+    let b = h1map::bitmap::Bitmap::read(h1, t).ok()?;
+    let img = b.decode(h1, 0, 0).ok()?;
+    Some(mean_rgb(&img.rgba))
+}
+
+/// The mean of RGBA8 texels' red, green and blue, 0 to 1 (black for none).
+pub fn mean_rgb(rgba: &[u8]) -> [f32; 3] {
+    let n = rgba.len() / 4;
+    if n == 0 {
+        return [0.0; 3];
+    }
+    let mut s = [0u64; 3];
+    for px in rgba.chunks_exact(4) {
+        for (x, v) in s.iter_mut().zip(px) {
+            *x += u64::from(*v);
+        }
+    }
+    s.map(|x| (x as f64 / n as f64 / 255.0) as f32)
+}
+
+/// `sotr` stages block (count, address), `0x70` per stage: Halo 1's
+/// transparent generic combiner program.
+pub const SOTR_STAGES: usize = 0x60;
+/// Stages of Halo 1's plasma programs ([`is_plasma`]).
+pub const SOTR_PLASMA_STAGES: usize = 7;
+
+/// A `sotr`'s maps (each as a [`ChainMap`], function 0) and its stage
+/// count, `d` its data. `None` when a map lacks a 2D bitmap or its mean
+/// colour.
+fn generic_maps(h1: &h1map::H1Map, d: &[u8]) -> Option<(Vec<ChainMap>, usize)> {
+    use crate::sky_shaders::{MAPS, SOTR_ANIMATION, SOTR_MAP};
+    let f32_at =
+        |b: &[u8], at: usize| Some(f32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?));
+    let stages = h1map::Block::read(d, SOTR_STAGES)?.count as usize;
+    let (size, bitmap, scale) = SOTR_MAP;
+    let bytes = h1.block(h1map::Block::read(d, MAPS)?, size).ok()?;
+    let maps = bytes
+        .chunks_exact(size)
+        .map(|e| {
+            let r = h1map::TagRef::read(e, bitmap)?;
+            if r.group != h1map::Group::new(b"bitm")
+                || r.id.is_none()
+                || h1_texture_kind(h1, r.id) != Some(h1map::bitmap::ImageKind::D2)
+            {
+                return None;
+            }
+            Some(ChainMap {
+                bound: H1Bound {
+                    bitmap: r.id,
+                    scale: [f32_at(e, scale)?, f32_at(e, scale + 4)?],
+                },
+                function: 0,
+                scroll: [
+                    crate::sky_shaders::slide(e, SOTR_ANIMATION),
+                    crate::sky_shaders::slide(e, SOTR_ANIMATION + 0x10),
+                ],
+                mean: h1_mean_color(h1, r.id)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((maps, stages))
+}
+
+/// Whether an additive `sotr` is one of Halo 1's plasma programs: seven
+/// stages over four maps, the first two the same noise bitmap scrolling
+/// two ways, the last two still (an offset or energy mask, then the
+/// picture whose alpha shapes it). D (every `sotr` a model or structure
+/// draws on the disc): twelve, on four stage programs that differ only
+/// in their constants' wiring: the teleporter shield (Blood Gulch and the
+/// other multiplayer maps), the jackal's and the field generator's
+/// shields, the overshield and active camouflage powerups, the dropship's
+/// tractor beam, the needler's core and ammo glow, the gun turret's and
+/// index platform's beam tendrils, a50's prison energy door and shuttle
+/// bay doors (and b40's structure `b40_shaftenergy`). Every other `sotr`
+/// fails one test (0 to 4 stages, or another map pattern).
+pub fn is_plasma(maps: &[ChainMap], stages: usize) -> bool {
+    let scrolls = |m: &ChainMap| m.scroll.iter().any(Option::is_some);
+    stages == SOTR_PLASMA_STAGES
+        && maps.len() == 4
+        && maps[0].bound.bitmap == maps[1].bound.bitmap
+        && scrolls(&maps[0])
+        && scrolls(&maps[1])
+        && !scrolls(&maps[2])
+        && !scrolls(&maps[3])
+}
+
+/// An `[r, g, b]` (0 to 1) as a colour parameter, alpha 0.
+pub fn rgb_color(c: [f32; 3]) -> u32 {
+    let b = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (b(c[0]) << 16) | (b(c[1]) << 8) | b(c[2])
+}
+
+/// The name of a plasma picture `name` converted with its brightness as
+/// alpha at `gain` ([`Extras::brightest_mask`]): `<name>_brightness_<gain
+/// × 1000>`.
+pub fn brightness_mask_name(name: &str, gain: f32) -> String {
+    format!("{name}_brightness_{}", (gain * 1000.0).round() as u32)
+}
+
+/// One `sotr` stage's size, and its fields (`d`: the stage): `+0` flags
+/// (bit 0 colour mux, bit 1 alpha mux, bit 2 [`STAGE_A_OUT_COLOR0`]),
+/// `+0x0c` and `+0x1c` colour 0's lower and upper bounds (alpha, red,
+/// green, blue), `+0x3c` the four colour inputs A to D (u16 input, u16
+/// mapping each), `+0x54` the A×B + C×D output. D: the input numbering of
+/// the teleporter shield's stages (0 zero, 1 one, 2 half, 3 −1, 4 −half,
+/// 5 to 8 `t0` to `t3`, 9 and 10 `v0` and `v1`, 11 and 12 `r0` and `r1`,
+/// 13 and 14 `c0` and `c1`, then the same 15 to 24 as alphas), mapping 0
+/// unsigned, output 1 `r0`.
+pub const SOTR_STAGE: usize = 0x70;
+/// See [`SOTR_STAGE`]: colour 0 runs between its bounds by the object's A
+/// output, not by the stage's own function. D (every `sotr` of five
+/// levels): set only on Halo 1's plasma stages whose bounds differ, the
+/// first and last stage of each plasma (the jackal's and the generator's
+/// shields: the first and the fourth); the jackal's lower bound is its
+/// shield's spent look. An object exporting no A output (the
+/// teleporter's `teleporter_base`, which has no functions) holds it at
+/// the lower bound.
+pub const STAGE_A_OUT_COLOR0: u16 = 4;
+const STAGE_C0_LOWER: usize = 0x0c;
+const STAGE_C0_UPPER: usize = 0x1c;
+const STAGE_INPUTS: usize = 0x3c;
+const STAGE_SUM_OUT: usize = 0x54;
+/// The inputs (input, mapping) of a plasma's last stage that adds the
+/// picture's colour twice: `r0.a × t3 + c0 × t3`, into `r0`.
+const PICTURE_TIMES_BAND_PLUS_C0: [(u16, u16); 4] = [(21, 0), (8, 0), (13, 0), (8, 0)];
+
+/// The colour a plasma's last stage adds under its bands, as Halo 1
+/// draws it on an object without an A output: Halo 1's last stage (`d`
+/// the `sotr`'s data) `r0 = r0.a × picture + c0 × picture` adds the
+/// picture times colour 0 wherever the bands are dark ([`PlasmaLight`]):
+/// colour 0's lower bound when [`STAGE_A_OUT_COLOR0`] drives it (that
+/// output 0), else the upper (the stage function "one", 0 in Halo 1's
+/// periodic function list whose 6 is the slide [`crate::sky_shaders`]
+/// reads). `None` when the last stage isn't that sum (the jackal's shield
+/// adds `v1 × (1 − picture.a)` instead). V (the disc): the teleporter
+/// shield's lower bound is (0, 0.329, 0.424).
+pub fn plasma_glow(h1: &h1map::H1Map, d: &[u8]) -> Option<[f32; 3]> {
+    let bytes = h1.block(h1map::Block::read(d, SOTR_STAGES)?, SOTR_STAGE).ok()?;
+    let last = bytes.chunks_exact(SOTR_STAGE).last()?;
+    let u16_at = |o: usize| u16::from_le_bytes([last[o], last[o + 1]]);
+    let f32_at = |o: usize| f32::from_le_bytes(last[o..o + 4].try_into().unwrap());
+    let inputs: [(u16, u16); 4] =
+        std::array::from_fn(|i| (u16_at(STAGE_INPUTS + 4 * i), u16_at(STAGE_INPUTS + 4 * i + 2)));
+    if inputs != PICTURE_TIMES_BAND_PLUS_C0 || u16_at(STAGE_SUM_OUT) != 1 {
+        return None;
+    }
+    let at = if u16_at(0) & STAGE_A_OUT_COLOR0 != 0 {
+        STAGE_C0_LOWER
+    } else {
+        STAGE_C0_UPPER
+    };
+    // Alpha, red, green, blue.
+    Some(std::array::from_fn(|c| f32_at(at + 4 * (c + 1)).clamp(0.0, 1.0)))
+}
+
+/// The hue of a Halo 1 bitmap's first image ([`hue`]); `None` when it
+/// doesn't decode or is black.
+pub fn h1_hue(h1: &h1map::H1Map, id: h1map::TagId) -> Option<[f32; 3]> {
+    use h1bitmaps::BitmapExt;
+    let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).ok()?).ok()?;
+    hue(&b.decode(h1, 0, 0).ok()?.rgba)
+}
+
+/// RGBA8 texels' colour with its brightest channel 1: each channel's sum
+/// over the sum of every texel's brightest channel, then scaled so the
+/// largest is 1, so the bright texels set it. `None` for black.
+pub fn hue(rgba: &[u8]) -> Option<[f32; 3]> {
+    let mut sum = [0u64; 3];
+    let mut brightest = 0u64;
+    for t in rgba.chunks_exact(4) {
+        for c in 0..3 {
+            sum[c] += u64::from(t[c]);
+        }
+        brightest += u64::from(t[0].max(t[1]).max(t[2]));
+    }
+    if brightest == 0 {
+        return None;
+    }
+    let h = sum.map(|x| x as f64 / brightest as f64);
+    let top = h.iter().copied().fold(0.0, f64::max);
+    (top > 0.0).then(|| h.map(|x| (x / top) as f32))
+}
+
+/// How a Halo 1 plasma's light maps onto [`PLASMA_ALPHA`]. Halo 1 adds
+/// `picture.rgb × (band + glow)` (the band 1 except along thin dark
+/// lines: the two noises' squared difference `s`, expanded and squared
+/// to `(2s − 1)²`, then `x(2 − x)`; the glow [`plasma_glow`]). Halo 2's
+/// stem adds `mask.a × fade × (colour 0|1 × s + colour 2|3 × q)` (`h2
+/// shader` on retail's `teleporter_plasma`: stage 6 `r0 = r1 × t1 + r0.a
+/// × c0`, `t1 = s` from stage 2, `r1` between colours 0 and 1 at stage 3,
+/// `q = r0.a` after stage 4: `s` expanded and squared three times, 1
+/// except along thin dark lines; colours 2 and 3 are stage 5's, which
+/// reads only alpha, and stage 6's, which reads only colour, so the same
+/// colour with alpha 0 in both is right whichever is which). So the mask
+/// is the picture with alpha `gain × max(r, g, b)` (its brightness;
+/// [`Self::gain`] gives back the headroom the 8-bit colours lack),
+/// colours 2 and 3 the band (`hue × (1 + glow) / gain`, Halo 1's lit
+/// picture) and colours 0 and 1 the glow (`hue × glow / gain`, lighting
+/// the dark lines by `s` as Halo 1's glow does). Exact at Halo 1's peak
+/// in the hue's brightest channel, where the register combiners' clamp
+/// to 1 meets Halo 1's; the other channels as the picture's average hue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlasmaLight {
+    /// [`hue`] of the picture.
+    pub hue: [f32; 3],
+    /// [`plasma_glow`], 0 without one.
+    pub glow: [f32; 3],
+}
+
+impl PlasmaLight {
+    /// The hue's brightest channel.
+    fn top(&self) -> usize {
+        (0..3).fold(0, |k, c| if self.hue[c] > self.hue[k] { c } else { k })
+    }
+
+    /// `1 + glow` in the hue's brightest channel: the mask's alpha gain.
+    pub fn gain(&self) -> f32 {
+        1.0 + self.glow[self.top()]
+    }
+
+    /// Colours 0 and 1, `hue × glow / gain`.
+    pub fn glow_color(&self) -> [f32; 3] {
+        let g = self.gain();
+        std::array::from_fn(|c| self.hue[c] * self.glow[c] / g)
+    }
+
+    /// Colours 2 and 3, `hue × (1 + glow) / gain`: 1 in the brightest
+    /// channel.
+    pub fn band_color(&self) -> [f32; 3] {
+        let g = self.gain();
+        std::array::from_fn(|c| (self.hue[c] * (1.0 + self.glow[c]) / g).min(1.0))
+    }
+}
+
+/// A Halo 1 plasma ([`is_plasma`]) on [`PLASMA_ALPHA`], as Halo 2's own
+/// plasma shaders (its teleporters', the needler's) draw it: the first
+/// noise map still on bitmap 0, the second scrolling on bitmap 1 (their
+/// difference makes the moving bands), the picture on bitmap 2 with its
+/// brightness as alpha ([`Extras::brightest_mask`]), the colours and gain
+/// from `light` ([`PlasmaLight`]), and the fade from Halo 1's fade mode.
+/// `plain` (the single-map rebuild) is the fallback. Lost: the offset or
+/// energy mask (map 2), which only bends the bands; a glow an object's A
+/// output animates (held at the bound [`plasma_glow`] picks); the first
+/// noise's own scroll (the clouds tree animates one map).
+pub fn plasma_shader(
+    name: &str,
+    maps: &[ChainMap],
+    fade: u16,
+    light: PlasmaLight,
+    plain: H1Shader,
+) -> H1Shader {
+    let glow = rgb_color(light.glow_color());
+    let band = rgb_color(light.band_color());
+    H1Shader {
+        name: name.to_owned(),
+        group: plain.group.clone(),
+        layout: &PLASMA_ALPHA,
+        maps: vec![
+            (Role::Base, maps[0].bound),
+            (Role::Tile, maps[1].bound),
+            (Role::Mask, maps[3].bound),
+        ],
+        extras: Extras {
+            colors: vec![(0, glow), (1, glow), (2, band), (3, band)],
+            scroll: Some(maps[1].scroll),
+            tint: Some(Tint::faded([1.0; 3], fade)),
+            brightest_mask: Some(light.gain()),
+        },
+        fallback: Some(Box::new(plain)),
+    }
 }
 
 /// `swat`'s reflection map (D: a cube on each of the eight distinct
@@ -1676,8 +2350,8 @@ fn swat_water(d: &[u8]) -> Option<(Vec<(Role, H1Bound)>, Extras)> {
     };
     let scroll = [slide(velocity * angle.cos()), slide(velocity * angle.sin())];
     let extras = Extras {
-        colors: Vec::new(),
         scroll: scroll.iter().any(Option::is_some).then_some(scroll),
+        ..Extras::default()
     };
     Some((maps, extras))
 }
@@ -1907,7 +2581,7 @@ fn reflection(h1: &h1map::H1Map, d: &[u8], at: &ReflectionAt) -> Option<(H1Bound
         },
         Extras {
             colors,
-            scroll: None,
+            ..Extras::default()
         },
     ))
 }
@@ -2330,6 +3004,7 @@ mod tests {
                 (4, 0x3300_0000),
             ],
             scroll: None,
+            ..Extras::default()
         };
         let extras = four_change_color_extras(&env);
         assert_eq!(
@@ -2441,6 +3116,378 @@ mod tests {
         assert_eq!(vec(2), [0.0, 0.0, 12.0, 12.0], "c[20].zw");
         assert_eq!(vec(3), [1.0, 1.0, 0.0, 0.0]);
         assert_eq!(vec(7), [0.0, 0.0, 0.0, 0.0], "no specular");
+    }
+
+    fn chain_map(id: u32, function: u16, scroll: bool, mean: f32) -> ChainMap {
+        let s = Slide {
+            period: 6.0,
+            from: 0.0,
+            to: 1.0,
+        };
+        ChainMap {
+            bound: h1_bound(id, 1.0),
+            function,
+            scroll: [scroll.then_some(s), None],
+            mean: [mean, mean * 0.5, 0.0],
+        }
+    }
+
+    /// Fade when parallel: opaque facing the eye, gone at a grazing angle;
+    /// when perpendicular, the reverse; none (or an unknown mode) keeps
+    /// both.
+    #[test]
+    fn the_fade_mode_sets_the_facing_and_grazing_alphas() {
+        let f = |m| {
+            let t = Tint::faded([1.0; 3], m);
+            (t.perpendicular, t.parallel)
+        };
+        assert_eq!(f(0), (1.0, 1.0));
+        assert_eq!(f(FADE_PERPENDICULAR), (0.0, 1.0));
+        assert_eq!(f(FADE_PARALLEL), (1.0, 0.0));
+        assert_eq!(f(7), (1.0, 1.0));
+    }
+
+    /// The teleporter cone's shape: two scrolling dust maps multiplied,
+    /// then a static ramp. The first dust scrolls on the stem's animated
+    /// slot, the ramp is the other map, the second dust folds into the
+    /// tint as its mean colour.
+    #[test]
+    fn a_multiply_chain_draws_its_first_scrolling_map_and_first_still_one() {
+        let maps = [
+            chain_map(1, CHICAGO_MULTIPLY, true, 0.4),
+            chain_map(2, CHICAGO_MULTIPLY, true, 0.5),
+            chain_map(3, 0, false, 0.6),
+        ];
+        let c = multiply_chain(&maps).unwrap();
+        assert_eq!((c.tile, c.mask, c.factor), (0, 2, 1.0));
+        assert_eq!(c.folded(&maps, &[0, 2]), [0.5, 0.25, 0.0]);
+        let s = c.shader("cone", "schi", &maps, FADE_PARALLEL);
+        assert_eq!(s.layout, &TWO_ADD_CLOUDS);
+        assert_eq!(
+            s.maps,
+            vec![
+                (Role::Tile, h1_bound(1, 1.0)),
+                (Role::Mask, h1_bound(3, 1.0))
+            ]
+        );
+        let t = s.extras.tint.unwrap();
+        assert_eq!(t.color, [0.25, 0.125, 0.0], "halved: the stem doubles");
+        assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
+        assert_eq!(s.extras.scroll, Some(maps[0].scroll));
+        // Without the stem: the ramp alone, both dusts folded in.
+        let f = s.fallback.as_deref().unwrap();
+        assert_eq!(f.layout, &ONE_ADD_ILLUM);
+        assert_eq!(f.maps, vec![(Role::Base, h1_bound(3, 1.0))]);
+        let t = f.extras.tint.unwrap();
+        assert!((t.color[0] - 0.2).abs() < 1e-6 && (t.color[1] - 0.05).abs() < 1e-6);
+        assert_eq!(f.extras.scroll, None);
+    }
+
+    /// Nothing scrolling: maps 0 and 1 draw. A double multiply doubles the
+    /// fold (clamped to 1). Another function, or one map, is no chain.
+    #[test]
+    fn a_chain_needs_every_map_but_the_last_to_multiply() {
+        let maps = [
+            chain_map(1, CHICAGO_DOUBLE_MULTIPLY, false, 0.4),
+            chain_map(2, CHICAGO_MULTIPLY, false, 0.5),
+            chain_map(3, 4, false, 0.9),
+        ];
+        let c = multiply_chain(&maps).unwrap();
+        assert_eq!((c.tile, c.mask, c.factor), (0, 1, 2.0));
+        assert_eq!(
+            c.folded(&maps, &[0, 1]),
+            [1.0, 0.9, 0.0],
+            "2 × 0.9, clamped"
+        );
+        let mut add = maps;
+        add[1].function = 4;
+        assert_eq!(multiply_chain(&add), None, "add is not a multiply");
+        assert_eq!(multiply_chain(&maps[..1]), None);
+        // Two scrolling maps: the second takes the still slot, unanimated.
+        let both = [
+            chain_map(1, CHICAGO_MULTIPLY, true, 0.4),
+            chain_map(2, 0, true, 0.5),
+        ];
+        let c = multiply_chain(&both).unwrap();
+        assert_eq!((c.tile, c.mask), (0, 1));
+    }
+
+    #[test]
+    fn mean_rgb_averages_each_channel() {
+        assert_eq!(mean_rgb(&[]), [0.0; 3]);
+        let m = mean_rgb(&[255, 0, 51, 9, 0, 0, 51, 200]);
+        assert!((m[0] - 0.5).abs() < 1e-6 && m[1] == 0.0 && (m[2] - 0.2).abs() < 1e-6);
+    }
+
+    /// On `two_add_clouds`: the tile on bitmap 0 (rows 0 and 1, the
+    /// scrolled pair), the mask on bitmap 1 (rows 2 and 3), the tint in
+    /// vectors 4 to 7, colour 0 opaque, and the clouds tree animating the
+    /// tile. On `one_add_illum` the tint goes to vectors 2 to 5.
+    #[test]
+    fn the_tint_and_scroll_land_in_the_stems_vectors_and_tree() {
+        let lib = library();
+        let b = |id: u32, u: f32, v: f32| Bound {
+            id: TagId(id),
+            scale: [u, v],
+            lod_offset: 1.0,
+        };
+        let maps: HashMap<Role, Bound> = [
+            (Role::Tile, b(0xe300_0001, 1.0, 1.0)),
+            (Role::Mask, b(0xe300_0002, 1.0, 1.05)),
+        ]
+        .into_iter()
+        .collect();
+        let extras = Extras {
+            tint: Some(Tint {
+                color: [0.25, 0.5, 0.75],
+                perpendicular: 1.0,
+                parallel: 0.0,
+            }),
+            scroll: Some([
+                Some(Slide {
+                    period: 6.0,
+                    from: 0.0,
+                    to: 1.0,
+                }),
+                None,
+            ]),
+            ..Extras::default()
+        };
+        let rec = lib.record_with(&TWO_ADD_CLOUDS, &maps, &extras).unwrap();
+        let vec = |k: usize| match rec.at(&format!("postprocess[0].vectors[{k}].vector")) {
+            Some(Val::List(v)) => v
+                .iter()
+                .map(|x| match x {
+                    Val::Float(f) => *f,
+                    _ => f32::NAN,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let bm = |k: usize| {
+            rec.at(&format!("postprocess[0].bitmaps[{k}].bitmap"))
+                .cloned()
+        };
+        assert_eq!(bm(0), Some(Val::Datum(Target::Id(TagId(0xe300_0001)))));
+        assert_eq!(bm(1), Some(Val::Datum(Target::Id(TagId(0xe300_0002)))));
+        assert_eq!(vec(3), [0.0, 1.05, 0.0, 0.0], "the mask's v row");
+        assert_eq!(vec(4), [0.25, 0.5, 0.75, 0.0], "perpendicular colour");
+        assert_eq!(vec(5), [0.25, 0.5, 0.75, 0.0], "parallel colour");
+        assert_eq!(vec(6), [0.0, 0.0, 0.0, 1.0], "perpendicular alpha");
+        assert_eq!(vec(7), [0.0, 0.0, 0.0, 0.0], "parallel alpha");
+        assert_eq!(
+            rec.at("postprocess[0].colors[0].color"),
+            Some(&Val::Int(i64::from(OPAQUE_ALPHA)))
+        );
+        let n = |p: &str| match rec.at(p) {
+            Some(Val::Block(b)) => b.len(),
+            _ => usize::MAX,
+        };
+        assert_eq!(n("postprocess[0].animations"), 3);
+        assert_eq!(n("postprocess[0].property_refs"), 10);
+
+        let one: HashMap<Role, Bound> = [(Role::Base, b(0xe300_0002, 1.0, 1.0))]
+            .into_iter()
+            .collect();
+        let rec = lib.record_with(&ONE_ADD_ILLUM, &one, &extras).unwrap();
+        assert_eq!(
+            rec.at("postprocess[0].vectors[5].vector"),
+            Some(&Val::floats(&[0.0, 0.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            rec.at("postprocess[0].vectors[2].vector"),
+            Some(&Val::floats(&[0.25, 0.5, 0.75, 0.0]))
+        );
+        // A layout without tint vectors ignores the tint.
+        let plain = lib.record_with(&TEX_BUMP, &one, &extras).unwrap();
+        assert_eq!(
+            plain.at("postprocess[0].vectors[3].vector"),
+            Some(&Val::floats(&[0.39, 0.0, 0.93, 0.0]))
+        );
+    }
+
+    /// The teleporter shield's shape: seven stages, one noise bitmap twice
+    /// scrolling two ways, then a still energy mask and a still picture.
+    #[test]
+    fn a_plasma_is_seven_stages_over_one_noise_twice_then_two_still_maps() {
+        let noise = |scroll| chain_map(1, 0, scroll, 1.0);
+        let maps = [
+            noise(true),
+            noise(true),
+            chain_map(2, 0, false, 0.5),
+            chain_map(3, 0, false, 0.8),
+        ];
+        assert!(is_plasma(&maps, SOTR_PLASMA_STAGES));
+        assert!(!is_plasma(&maps, 4), "the stage count");
+        assert!(!is_plasma(&maps[..3], SOTR_PLASMA_STAGES), "four maps");
+        let mut other = maps;
+        other[1] = chain_map(9, 0, true, 1.0);
+        assert!(!is_plasma(&other, SOTR_PLASMA_STAGES), "one noise bitmap");
+        let mut still = maps;
+        still[1] = noise(false);
+        assert!(!is_plasma(&still, SOTR_PLASMA_STAGES), "both noises scroll");
+        let mut moving = maps;
+        moving[3] = chain_map(3, 0, true, 0.8);
+        assert!(
+            !is_plasma(&moving, SOTR_PLASMA_STAGES),
+            "the picture is still"
+        );
+
+        let plain = H1Shader {
+            name: "shield".into(),
+            group: "sotr".into(),
+            layout: &ONE_ADD_ILLUM,
+            maps: vec![(Role::Base, maps[0].bound)],
+            extras: Extras::default(),
+            fallback: None,
+        };
+        let light = PlasmaLight {
+            hue: [1.0, 0.5, 0.0],
+            glow: [0.25, 0.5, 1.0],
+        };
+        let s = plasma_shader("shield", &maps, FADE_PARALLEL, light, plain.clone());
+        assert_eq!(s.layout, &PLASMA_ALPHA);
+        assert_eq!(
+            s.maps,
+            vec![
+                (Role::Base, h1_bound(1, 1.0)),
+                (Role::Tile, h1_bound(1, 1.0)),
+                (Role::Mask, h1_bound(3, 1.0))
+            ]
+        );
+        // Gain 1 + the glow in the hue's brightest channel (red): 1.25.
+        // Colours 0 and 1 hue × glow / gain (0.2, 0.2, 0); 2 and 3 hue ×
+        // (1 + glow) / gain (1, 0.6, 0); alpha 0.
+        assert_eq!(s.extras.brightest_mask, Some(1.25));
+        assert_eq!(
+            s.extras.colors,
+            vec![
+                (0, 0x0033_3300),
+                (1, 0x0033_3300),
+                (2, 0x00ff_9900),
+                (3, 0x00ff_9900)
+            ]
+        );
+        assert_eq!(s.extras.scroll, Some(maps[1].scroll));
+        let t = s.extras.tint.unwrap();
+        assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
+        assert_eq!(s.fallback.as_deref(), Some(&plain));
+    }
+
+    /// A hue is weighted by brightness and scaled to 1 in its brightest
+    /// channel; black has none.
+    #[test]
+    fn a_hue_is_the_bright_texels_colour_scaled_to_one() {
+        let h = hue(&[255, 0, 0, 255, 0, 0, 0, 0, 0, 128, 0, 255]).unwrap();
+        // Sums (255, 128, 0): red is 1, green 128 / 255.
+        assert_eq!(h[0], 1.0);
+        assert!((h[1] - 128.0 / 255.0).abs() < 1e-6, "{h:?}");
+        assert_eq!(h[2], 0.0);
+        assert_eq!(hue(&[0, 0, 0, 255, 0, 0, 0, 0]), None);
+    }
+
+    /// Halo 1's lit picture `m × hue × (1 + glow)` at band 1 equals the
+    /// stem's `min(1, gain × m) × band colour` in the hue's brightest
+    /// channel, saturating together; at a dark line Halo 1's `m × hue ×
+    /// glow` equals `gain × m × glow colour` (the line's `s` at 1).
+    #[test]
+    fn a_plasmas_light_matches_halo1_in_its_brightest_channel() {
+        let light = PlasmaLight {
+            hue: [0.03, 1.0, 0.16],
+            glow: [0.0, 0.329, 0.424],
+        };
+        let g = light.gain();
+        assert!((g - 1.329).abs() < 1e-6);
+        let (band, glow) = (light.band_color(), light.glow_color());
+        for m in [0.1f32, 0.3, 0.6, 0.796, 1.0] {
+            let halo1 = (m * (1.0 + 0.329)).min(1.0);
+            let ours = (g * m).min(1.0) * band[1];
+            assert!((halo1 - ours).abs() < 1e-5, "{m}: {halo1} vs {ours}");
+            if g * m <= 1.0 {
+                for c in 0..3 {
+                    let halo1 = m * light.hue[c] * light.glow[c];
+                    assert!((halo1 - g * m * glow[c]).abs() < 1e-5, "{m} {c}");
+                }
+            }
+        }
+        assert!(band.iter().chain(&glow).all(|c| (0.0..=1.0).contains(c)));
+    }
+
+    /// On `plasma_alpha`: the noises on bitmaps 0 and 1, the mask on 2,
+    /// each map's rows in its pair, the scroll on bitmap 1's pair (its
+    /// scale in components 1 and 2), the alphas in vectors 7 (facing) and
+    /// 6 (grazing), the colours over the layout's.
+    #[test]
+    fn a_plasma_scrolls_its_second_noise_and_fades_through_vectors_7_and_6() {
+        let lib = library();
+        let b = |id: u32, s: f32| Bound {
+            id: TagId(id),
+            scale: [s, s],
+            lod_offset: 1.0,
+        };
+        let maps: HashMap<Role, Bound> = [
+            (Role::Base, b(0xe300_0001, 8.0)),
+            (Role::Tile, b(0xe300_0001, 16.0)),
+            (Role::Mask, b(0xe300_0003, 1.0)),
+        ]
+        .into_iter()
+        .collect();
+        let extras = Extras {
+            colors: vec![(0, 0x00cc_6600), (1, 0x00cc_6600)],
+            scroll: Some([
+                Some(Slide {
+                    period: 10.0,
+                    from: 1.0,
+                    to: 0.0,
+                }),
+                None,
+            ]),
+            tint: Some(Tint::faded([1.0; 3], FADE_PARALLEL)),
+            ..Extras::default()
+        };
+        let rec = lib.record_with(&PLASMA_ALPHA, &maps, &extras).unwrap();
+        let at = |p: &str| rec.at(p).cloned();
+        let id = |n: u32| Some(Val::Datum(Target::Id(TagId(n))));
+        assert_eq!(at("postprocess[0].bitmaps[0].bitmap"), id(0xe300_0001));
+        assert_eq!(at("postprocess[0].bitmaps[2].bitmap"), id(0xe300_0003));
+        assert_eq!(
+            at("postprocess[0].vectors[2].vector"),
+            Some(Val::floats(&[16.0, 0.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            at("postprocess[0].vectors[0].vector"),
+            Some(Val::floats(&[8.0, 0.0, 0.0, 0.0]))
+        );
+        assert_eq!(
+            at("postprocess[0].vectors[7].vector"),
+            Some(Val::floats(&[0.0, 0.0, 0.0, 1.0])),
+            "facing"
+        );
+        assert_eq!(
+            at("postprocess[0].vectors[6].vector"),
+            Some(Val::floats(&[0.0, 0.0, 0.0, 0.0])),
+            "grazing"
+        );
+        assert_eq!(
+            at("postprocess[0].colors[1].color"),
+            Some(Val::Int(0x00cc_6600))
+        );
+        assert_eq!(at("postprocess[0].colors[2].color"), Some(Val::Int(0)));
+        let n = |p: &str| match rec.at(p) {
+            Some(Val::Block(b)) => b.len(),
+            _ => usize::MAX,
+        };
+        assert_eq!(n("postprocess[0].animations"), 3);
+        // Component 1 (the u scale) is the scrolled noise's 16, not 8.
+        let scroll = TextureScroll {
+            scale: [16.0, 16.0],
+            offset: extras.scroll.unwrap(),
+        };
+        let blob = |k: usize| match rec.at(&format!("postprocess[0].properties[{k}].function")) {
+            Some(Val::Data(d)) => d.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(blob(1), scroll.properties()[1].1);
     }
 
     #[test]
