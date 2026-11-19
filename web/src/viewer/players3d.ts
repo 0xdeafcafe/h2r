@@ -517,8 +517,17 @@ export class ModelLibrary {
   private disposed = false;
   /** The reflections models take (the scene's environment), once given. */
   private env: THREE.Texture | null = null;
+  /** Fetches wait for this: the level's glb, while it loads (`hold`). */
+  private gate: Promise<unknown> = Promise.resolve();
 
   constructor(private onReady: () => void = () => {}, private load: LoadGlb = (url) => gltfLoader().loadAsync(url)) {}
+
+  /** Holds model fetches until `until` settles: the level's glb comes
+   *  first, so the level is drawn sooner (the models would share its
+   *  bandwidth; a campaign level's bipeds are about as big as it). */
+  hold(until: Promise<unknown>): void {
+    this.gate = until.then(() => undefined, () => undefined);
+  }
 
   /** Gives every model, loaded and to come, the scene's environment to reflect. */
   setEnvironment(env: THREE.Texture | null): void {
@@ -543,7 +552,7 @@ export class ModelLibrary {
     const e = map.get(url);
     if (e) return e.state === "ready" ? e.template : null;
     map.set(url, { state: "loading" });
-    this.load(url).then(resolveLooks).then(prepare, () => null).then((template) => {
+    this.gate.then(() => this.load(url)).then(resolveLooks).then(prepare, () => null).then((template) => {
       if (this.disposed) return;
       if (template) this.dressSurfaces(template.root);
       map.set(url, template ? { state: "ready", template } : { state: "failed" });

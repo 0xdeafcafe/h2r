@@ -70,6 +70,8 @@ export interface SampledVehicle {
   parent?: string;
   /** Where it aims (a turret), game coordinates, unit length. */
   aim?: Aim;
+  /** Velocity, game units a second, when the frame says (packed v6). */
+  vel?: Aim;
 }
 
 /** One piece of damage, as the views draw it. */
@@ -483,6 +485,9 @@ function fromFrameVehicle(v: FrameVehicle): SampledVehicle | null {
   const parent = cleanId(v.parent), aim = cleanAim(v.aim);
   if (parent && parent !== id) out.parent = parent;
   if (aim) out.aim = aim;
+  // (Optional on the wire from packed v6; read whatever the frame's type says.)
+  const vel = cleanVel((v as { vel?: unknown }).vel);
+  if (vel) out.vel = vel;
   return out;
 }
 
@@ -515,6 +520,48 @@ function vehiclesCached(f: Frame) {
   return c;
 }
 
+/** Where a vehicle is between frames `i` (`a`) and `i + 1` (`b`), `t` of
+ *  the way. With the game's velocities in both (packed v6), a Hermite
+ *  curve by them, as players have. Without, recorded frames come a few a
+ *  second, and straight lines between them turn a car's curve into a
+ *  polygon and its speed into steps. So the path is a Catmull-Rom curve:
+ *  at each end the velocity is the one the frames on either side of it
+ *  give (the vehicle in the frame before `a`, and after `b`), else the
+ *  segment's own. Straight when the gap is longer than
+ *  [`HERMITE_MAX_TICKS`], or a neighbour is a jump away (a respawn). */
+export function vehiclePath(frames: readonly Frame[], i: number, a: SampledVehicle, b: SampledVehicle, t: number): [number, number, number] {
+  const fa = frames[i]!, fb = frames[i + 1]!;
+  const span = fb.tick - fa.tick;
+  if (!(span > 0) || span > HERMITE_MAX_TICKS) return [lerp(a.x, b.x, t), lerp(a.y, b.y, t), lerp(a.z, b.z, t)];
+  const near = (f: Frame | undefined, from: SampledVehicle, ticks: number): SampledVehicle | null => {
+    if (!f || f.cinematic || !(ticks > 0) || ticks > HERMITE_MAX_TICKS) return null;
+    const v = vehiclesCached(f).byId.get(a.id);
+    if (!v || (v.parent ?? null) !== (a.parent ?? null)) return null;
+    return (v.x - from.x) ** 2 + (v.y - from.y) ** 2 + (v.z - from.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE ? null : v;
+  };
+  // The game's own velocities, when both frames carry them (packed v6):
+  // the curve the players' paths take (`hermite`).
+  if (a.vel && b.vel) {
+    const k = span / TICKS_PER_SECOND;
+    return [
+      hermite(a.x, a.vel[0] * k, b.x, b.vel[0] * k, t),
+      hermite(a.y, a.vel[1] * k, b.y, b.vel[1] * k, t),
+      hermite(a.z, a.vel[2] * k, b.z, b.vel[2] * k, t),
+    ];
+  }
+  const fp = i > 0 ? frames[i - 1] : undefined, fn = frames[i + 2];
+  const p = fp ? near(fp, a, fa.tick - fp.tick) : null;
+  const n = fn ? near(fn, b, fn.tick - fb.tick) : null;
+  // Velocities per tick at a and b.
+  const va = p ? [(b.x - p.x) / (fb.tick - fp!.tick), (b.y - p.y) / (fb.tick - fp!.tick), (b.z - p.z) / (fb.tick - fp!.tick)] : [(b.x - a.x) / span, (b.y - a.y) / span, (b.z - a.z) / span];
+  const vb = n ? [(n.x - a.x) / (fn!.tick - fa.tick), (n.y - a.y) / (fn!.tick - fa.tick), (n.z - a.z) / (fn!.tick - fa.tick)] : [(b.x - a.x) / span, (b.y - a.y) / span, (b.z - a.z) / span];
+  return [
+    hermite(a.x, va[0]! * span, b.x, vb[0]! * span, t),
+    hermite(a.y, va[1]! * span, b.y, vb[1]! * span, t),
+    hermite(a.z, va[2]! * span, b.z, vb[2]! * span, t),
+  ];
+}
+
 /** The vehicles at a (fractional) tick. One in only the earlier frame
  *  stays until the later frame is the nearer; one only in the later
  *  appears then. A big jump snaps. */
@@ -534,9 +581,10 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
     matched.add(a.id);
     if (!b) { if (t < 0.5) out.push(a); continue; }
     if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(t < 0.5 ? a : b); continue; }
+    const [x, y, z] = vehiclePath(frames, i, a, b, t);
     const v: SampledVehicle = {
       id: a.id, kind: t < 0.5 ? a.kind : b.kind,
-      x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
+      x, y, z,
       forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
       occupied: t < 0.5 ? a.occupied : b.occupied,
     };
@@ -544,6 +592,7 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
     if (parent) v.parent = parent;
     const aim = a.aim && b.aim ? nlerpAim(a.aim, b.aim, t) : t < 0.5 ? a.aim : b.aim;
     if (aim) v.aim = aim;
+    if (a.vel && b.vel) v.vel = [lerp(a.vel[0], b.vel[0], t), lerp(a.vel[1], b.vel[1], t), lerp(a.vel[2], b.vel[2], t)];
     out.push(v);
   }
   if (t >= 0.5) for (const [id, b] of next) if (!matched.has(id)) out.push(b);
