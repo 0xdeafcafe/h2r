@@ -1,8 +1,7 @@
 //! A pass implementation's render states (`ResolvedImplementation::render_states`,
 //! applied on entry by `0x00018900`) as the native pass's pipeline state:
-//! blend, colour writes, depth test and write, cull, alpha test
-//! (docs/graphics/native-renderer.md, "Stage 3: transparents", order of
-//! work 2). The values are the Xbox's (NV2A) and the slots build 5849's,
+//! blend, colour writes, depth test and write, cull and alpha test.
+//! The values are the Xbox's (NV2A) and the slots build 5849's,
 //! decoded by `gfx` as the D3D path decodes them.
 //!
 //! What a draw inherits from the draws before it is not modelled: the

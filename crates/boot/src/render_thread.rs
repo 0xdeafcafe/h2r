@@ -37,6 +37,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
     ),
+    ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
+    (
+        "occlusion",
+        "SCENE_TRANSPARENTS",
+        "shares the chain with the native transparents' return observer when enabled",
+    ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
     (

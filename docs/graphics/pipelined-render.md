@@ -1030,11 +1030,6 @@ Marked now:
   copies the drawn objects' node matrices out of the memory its context
   sees, which on the render thread is the frame's snapshot, so the pass
   draws the poses of the frame the render draws.
-- `native-transparents`' `before` on `TRANSPARENT_GEOMETRY` (the sorted
-  transparents' geometry handler) and its observer before
-  `SCENE_TRANSPARENTS`. The `before` answers `ret 4` for an entry the
-  native renderer draws and writes no guest memory; its runs of entries
-  reach the D3D device in render order, as the world's pass does.
 - `native-lights`' `before` on `RENDER_LIGHT_PASSES` (one dynamic light's
   layers) and its observer before `RENDER_DYNAMIC_LIGHTS`, the same shape:
   the `before` answers `ret 0x10` for a light the native renderer draws,
@@ -1045,6 +1040,10 @@ Marked now:
 
 Everything else is in `boot::render_thread::REFUSED`, with its reason:
 
+- `native-transparents` clears the sorted-entry scope when
+  `SCENE_TRANSPARENTS` returns. The return continuation takes the
+  game-thread fallback. Inside the call, an eligible indexed draw uses
+  the native vertex binding at its resolved position in the D3D stream.
 - `render-timing`, `render-loop` and `render-census` are off by default.
   Timing writes the game thread's frame table and needs after
   continuations. The render-loop ports park in Rust continuations around

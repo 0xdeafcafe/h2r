@@ -668,7 +668,7 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             convention: "stdcall(PrimitiveType, VertexCount, pIndexData); ret 0xC",
             call: |d, m, r| {
                 let a = args::<3>(m, r)?;
-                d.draw_indexed_vertices(m, a[0], a[1], a[2])?;
+                d.draw_indexed_vertices_at(m, a[0], a[1], a[2], Some(r.esp))?;
                 Ok(Outcome::pop(0xC))
             },
         },
