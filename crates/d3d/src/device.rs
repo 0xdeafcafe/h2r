@@ -310,6 +310,8 @@ pub mod clear_flags {
 /// Counters, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    /// Changes of the bound colour/depth pair, including a switch away and back.
+    pub target_changes: u64,
     /// Occlusion depth grids recorded ([`Device::request_depth_grid`]).
     pub depth_grids: u64,
     /// Asks not recorded (another depth bound, not W-buffered, the
@@ -3834,6 +3836,9 @@ impl<B: Backend> Device<B> {
         }
         let destroys = refs.commit(mem)?;
         self.destroy_resources(mem, destroys)?;
+        if (self.render_target, self.depth_stencil) != (target, z_stencil) {
+            self.stats.target_changes = self.stats.target_changes.wrapping_add(1);
+        }
         self.render_target = target;
         self.depth_stencil = z_stencil;
         let dev = self.cfg.layout.device;

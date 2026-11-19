@@ -274,7 +274,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let split = count != sorted.entries.len();
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
         let gel = plan.constants.gel;
-        let key = order.key(serial, gel, split);
+        let targets = d.stats().target_changes;
+        let key = order.key(serial, gel, targets, split);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let request = d3d::ExternalPlan {
             stage: timeline::native::Stage::Lights, view, ranges: count, slots: Vec::new(),
@@ -294,7 +295,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         reservation.commit();
         timeline::native::Stage::Lights.count(timeline::native::Metric::Suppressed, count as u64);
-        order.previous = (!split).then_some((serial, gel, key));
+        order.previous = (!split).then_some((serial, gel, targets, key));
         Ok(split)
     }
 }
@@ -366,12 +367,12 @@ fn select_parts(clusters: &ClusterParts, items: &[SortedItem], split: bool)
 
 #[derive(Default)]
 struct RunOrder {
-    previous: Option<(u64, Option<u32>, u64)>,
+    previous: Option<(u64, Option<u32>, u64, u64)>,
 }
 impl RunOrder {
-    fn key(&self, serial: u64, gel: Option<u32>, split: bool) -> u64 {
+    fn key(&self, serial: u64, gel: Option<u32>, targets: u64, split: bool) -> u64 {
         match self.previous {
-            Some((last, previous_gel, key)) if !split && last.checked_add(1) == Some(serial) && previous_gel == gel => key,
+            Some((last, previous_gel, previous_targets, key)) if targets == previous_targets && !split && last.checked_add(1) == Some(serial) && previous_gel == gel => key,
             _ => serial,
         }
     }
@@ -1148,12 +1149,13 @@ mod tests {
 
     #[test]
     fn a_run_requires_adjacent_whole_lights_with_the_same_gel() {
-        let order = RunOrder { previous: Some((5, Some(12), 3)) };
-        assert_eq!(order.key(6, Some(12), false), 3);
-        assert_eq!(order.key(7, Some(12), false), 7); // refused light or view boundary
-        assert_eq!(order.key(6, None, false), 6);
-        assert_eq!(order.key(6, Some(12), true), 6);
-        assert_eq!(RunOrder::default().key(7, None, false), 7); // preceding split
+        let order = RunOrder { previous: Some((5, Some(12), 9, 3)) };
+        assert_eq!(order.key(6, Some(12), 9, false), 3);
+        assert_eq!(order.key(6, Some(12), 11, false), 6); // away and back
+        assert_eq!(order.key(7, Some(12), 9, false), 7); // refused light or view boundary
+        assert_eq!(order.key(6, None, 9, false), 6);
+        assert_eq!(order.key(6, Some(12), 9, true), 6);
+        assert_eq!(RunOrder::default().key(7, None, 9, false), 7); // preceding split
     }
 
     #[test]
