@@ -8,7 +8,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 root = Path(__file__).resolve().parents[1]
-source = root / "crates/live-proto/src/clanker_appearance.c"
+source = root / "web/src/lib/clanker_appearance.c"
 output = root / "web/src/lib/clanker-kernel.json"
 with TemporaryDirectory(dir=os.environ.get("TMPDIR")) as scratch:
     wasm = Path(scratch) / "appearance.wasm"
