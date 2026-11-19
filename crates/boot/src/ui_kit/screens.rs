@@ -314,6 +314,10 @@ pub fn live(name: &str) -> Option<Box<dyn Live>> {
     match name {
         "signin-code" => Some(Box::new(Driven::new(crate::signin_screen::SigninPage))),
         "account" => Some(Box::new(Driven::new(AccountPage))),
+        "mods" | "mods.pack" | "mods.detail" => {
+            use crate::mods_screen::spec::{Sample, preview::Preview};
+            Some(Box::new(Preview::new(Sample::named(name)?)))
+        }
         _ => Some(Box::new(Driven::new(list_page(name)?))),
     }
 }
@@ -529,21 +533,9 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             list(ListPage::new(s.class(), described(&s)))
         }
         "mods" | "mods.pack" | "mods.detail" => {
-            use crate::mods_screen::spec::{
-                Sample, detail_spec, list_spec, pack_spec, sample_repo,
-            };
-            let open = match name {
-                "mods.detail" => Sample::Page,
-                "mods.pack" => Sample::Pack,
-                _ => Sample::List,
-            };
-            let repo = sample_repo(open);
-            let [list_class, pack_class, detail_class] = crate::mods_screen::classes(&repo);
-            match open {
-                Sample::Page => list(ListPage::new(detail_class, move || detail_spec(&repo))),
-                Sample::Pack => list(ListPage::new(pack_class, move || pack_spec(&repo))),
-                Sample::List => list(ListPage::new(list_class, move || list_spec(&repo))),
-            }
+            use crate::mods_screen::spec::{Sample, sample_repo};
+            let open = Sample::named(name)?;
+            list(open.page(sample_repo(open)))
         }
         "kit.picker" | "kit.picker.game" => {
             crate::ui_kit::picker::offer(picker_sample());
@@ -809,11 +801,21 @@ mod tests {
         assert_eq!(text("description").0, l::STATUS.rect);
         for k in 0..l::FACT_ROWS {
             let (r, font, j) = text(&format!("page.fact.{k}.label"));
-            assert_eq!((r, font, j), (l::row_rect(k), 1, Justify::Left), "fact {k}");
+            let [top, left, bottom, right] = l::row_rect(k);
+            assert_eq!(
+                (r, font, j),
+                ([top, left, bottom, l::VALUE_LEFT - 5], 1, Justify::Left),
+                "fact {k}"
+            );
             let (r, _, j) = text(&format!("page.fact.{k}.value"));
-            assert_eq!((r, j), (l::row_rect(k), Justify::Right), "fact {k}");
+            assert_eq!(
+                (r, j),
+                ([top, l::VALUE_LEFT, bottom, right], Justify::Right),
+                "fact {k}"
+            );
         }
-        assert_eq!(text("page.check.heading").0, l::row_rect(l::FACT_ROWS));
+        assert_eq!(text("page.check.heading").0[1], text("page.check.0.0").0[1]);
+        assert!(l::BODY.rect[2] > l::STATUS.rect[0]);
         for w in v.widgets.iter().filter(|w| w.id.starts_with("page.")) {
             let r = w.rect;
             assert!(
@@ -1088,7 +1090,7 @@ mod tests {
             assert_eq!([r.top, r.left, r.right], [135, -258, 45]);
             assert_eq!(l::BODY.rect[..2], [r.top, r.left]);
             // The lobby's status text is conduit-13 (font 4); the page sets
-            // its body in conduit-12 (font 1) on purpose, so four lines fit.
+            // its body in conduit-12 (font 1) on purpose, so the body and its hint fit.
             assert_eq!((body.font, l::BODY.font), (4, 1));
             assert_eq!(
                 (body.text_color, body.animation.0),
@@ -1100,7 +1102,7 @@ mod tests {
             let r = value.rect;
             assert_eq!(
                 [r.top, r.left, r.bottom],
-                [l::row_rect(0)[0], l::TABLE_LEFT, l::row_rect(0)[2]]
+                [l::row_rect(0)[0], 118, l::row_rect(0)[2]]
             );
             assert_eq!(value.flags & 3, 2, "right-justified");
             assert_eq!(value.text_color, l::PALE_BLUE);
