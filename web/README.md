@@ -523,6 +523,30 @@ with chevrons, reading the extras from the head of the glb (a streamed read
 that stops after the JSON, never the meshes). Both have a "Lifts &
 teleporters" button when the map has any.
 
+The lift's rendered glow is part of the map art. Ascension and Midship
+carry it on their placed objects, Lockout in the level geometry, and
+Ivory Tower (`cyclotron`) on its air lifts. The extractor reads their
+`plasma_alpha` shader's layer-15 pass and exports two noise maps, the beam
+mask, tint constants and the time-driven UV offsets. The viewer streams
+those pictures alongside the map textures and combines them in one
+unlit additive pass. It tests against the solid scene's depth and writes
+no depth.
+The emitter's solid parts still use their ordinary materials. The
+**Effects** switch controls these glows, and reduced motion holds the
+texture at the start of its cycle. **Lifts & teleporters** controls the
+guide separately. The plasma pass approximates the game's shading with
+its mask, tint and scrolling textures. Attached particles still require
+effect playback.
+
+To refresh an existing art directory with the updated CLI, run
+
+```sh
+h2 live assets extract --disc disc/halo2.iso --out "/path/to/game-art"
+```
+
+Use the same `--mappack` and `--installed` inputs as for your previous export.
+If the viewer uses published art, republish the refreshed directory.
+
 ## Names, icons and link previews
 
 **Names.** `src/brand.ts` holds the product names: `DASH_NAME` ("Live

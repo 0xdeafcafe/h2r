@@ -61,6 +61,7 @@ mod live_mod_features;
 mod live_mod_import;
 mod live_models;
 mod live_mods;
+mod live_plasma;
 mod live_query;
 mod live_recovery;
 mod live_render;
