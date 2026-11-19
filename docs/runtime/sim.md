@@ -283,7 +283,7 @@ A feature, `sim-metrics`, observes the game on the game thread, read-only:
 | `GAME_TICK` (after each tick) | `live_telemetry::memory::snapshot`: every player's score, kills, deaths, assists, suicides, team, unit, vehicle, grenades carried, vitality; team scores |
 | `WEAPON_FIRE` | a shot: the weapon's holder unit, so its player |
 | `DAMAGE_REPORT` | a hit: the owner player, the victim unit, so its player, and the damage |
-| `PLAYER_KILLED` | the kill log: attacker, victim, betrayal flag, tick |
+| `PLAYER_KILLED` | the kill log: attacker, victim, tick; a betrayal is a teammate killed in a team game (`bots::emote::kill_from_guest`) |
 | `GAME_END` | the end latch: the match is over |
 
 and each bot's brain is wrapped (`sim_glue::Metered`) to count, per game
