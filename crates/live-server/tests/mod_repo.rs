@@ -426,3 +426,118 @@ async fn downloads_are_replayed_from_the_log() {
     let _ = std::fs::remove_dir_all(&store_dir);
     let _ = std::fs::remove_dir_all(&data_dir);
 }
+
+fn operator(h: &Harness) -> (&'static str, String) {
+    (
+        "authorization",
+        format!(
+            "Bearer {}",
+            h.token(&h.operator, "server:live.test", lxm::CONTENT_MODERATE)
+        ),
+    )
+}
+
+async fn put_credit(h: &Harness, auth: (&'static str, String), id: &MapId, body: Value) -> Resp {
+    h.call(
+        Method::PUT,
+        &format!("/v1/maps/{id}/credit"),
+        &[auth],
+        body.to_string(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn the_credit_is_the_mods_makers_not_the_publishers() {
+    let store_dir = temp_dir();
+    let data_dir = temp_dir();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut m = Mod::new("credit", "zanzibar", "Beasthog");
+    m.credit = Some("Importer Guess");
+    m.source_url = Some("https://example.invalid/old");
+    let id = MapId::of(&m.doc().manifest);
+    {
+        let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+        let h = start(store, policy()).await;
+        h.live.set_data_dir(&data_dir);
+        let a = h.create("Publisher").await;
+        let x = h.create("Stranger").await;
+
+        // The publisher's document credit wins over the manifest's author.
+        let mut doc = m.doc();
+        doc.credit = Some(live_proto::maps::Credit {
+            authors: vec!["Group Bocked".into()],
+            released: Some("2005".into()),
+            ..Default::default()
+        });
+        let patch = m.patch();
+        let r = h
+            .call(
+                Method::PUT,
+                &format!("/v1/content/{}", Sha256::of(&patch)),
+                &[h.bearer(&a, lxm::CONTENT_WRITE)],
+                Body::from(patch),
+            )
+            .await;
+        assert!(r.status.is_success(), "{}", r.error());
+        let r = put_map(&h, &a, &doc).await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.error());
+        let item = &list(&h, "").await["items"][0];
+        assert_eq!(item["author"]["gamertag"], "Publisher");
+        assert_eq!(item["credit"], "Group Bocked");
+        assert_eq!(item["credits"]["authors"][0], "Group Bocked");
+        assert_eq!(item["credits"]["released"], "2005");
+        assert_eq!(item["source_url"], "https://example.invalid/old");
+
+        // Only an admin corrects it; a bad credit is refused.
+        let fix = serde_json::json!({
+            "authors": [" Synch ", "l PPF l NeoN"],
+            "release": "Ownage Modz Pack",
+            "released": "2006-01",
+            "source_url": "https://example.invalid/new",
+        });
+        let r = put_credit(&h, h.bearer(&a, lxm::CONTENT_MODERATE), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        let r = put_credit(&h, h.bearer(&x, lxm::CONTENT_MODERATE), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, serde_json::json!({"released": "05"})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, serde_json::json!({"who": "x"})).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &MapId([9; 32]), fix.clone()).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.error());
+        let r = put_credit(&h, operator(&h), &id, fix.clone()).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+        let answer = r.json();
+        assert_eq!(answer["map"]["credit"], "Synch & l PPF l NeoN");
+
+        let detail = h.get(&format!("/v1/maps/{id}")).await.json();
+        let s = &detail["map"];
+        assert_eq!(
+            s["credits"]["authors"],
+            serde_json::json!(["Synch", "l PPF l NeoN"])
+        );
+        assert_eq!(s["credits"]["release"], "Ownage Modz Pack");
+        assert_eq!(s["source_url"], "https://example.invalid/new");
+        assert_eq!(s["author"]["gamertag"], "Publisher", "the publisher stays");
+        // The manifest is the publisher's, as signed.
+        assert_eq!(s["manifest"]["package"]["author"], "Importer Guess");
+        assert_eq!(s["map_id"], id.to_string());
+        // Searching finds the credited author.
+        assert_eq!(names(&list(&h, "q=synch").await), ["Beasthog"]);
+        assert_eq!(names(&list(&h, "q=importer").await), Vec::<String>::new());
+    }
+    // Replayed from the log; then cleared back to the publisher's.
+    let store: Arc<dyn EventStore> = Arc::new(FileStore::open(&store_dir).await.unwrap());
+    let h = start(store, policy()).await;
+    h.live.set_data_dir(&data_dir);
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["credit"], "Synch & l PPF l NeoN");
+    let r = put_credit(&h, operator(&h), &id, serde_json::json!({})).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.error());
+    let item = &list(&h, "").await["items"][0];
+    assert_eq!(item["credit"], "Group Bocked");
+    drop(h);
+    let _ = std::fs::remove_dir_all(&store_dir);
+    let _ = std::fs::remove_dir_all(&data_dir);
+}

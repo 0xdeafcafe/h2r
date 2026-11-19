@@ -65,13 +65,18 @@ const LIST_ROWS: u32 = 8;
 const DETAIL_ROWS: u32 = 96;
 /// Rows the list shows at most (two slots each).
 pub const MAX_ROWS: usize = 40;
-pub const DETAIL_COUNT: usize = 5;
+pub const DETAIL_COUNT: usize = 6;
 /// The detail page's rows. Download first, so A on opening downloads.
+/// Author is who made the mod (the server's credit; "Unknown" when it has
+/// none), never the account that uploaded it, which is Uploaded By.
 pub const ROW_DOWNLOAD: i16 = 0;
 pub const ROW_AUTHOR: i16 = 1;
 pub const ROW_MAP: i16 = 2;
 pub const ROW_SIZE: i16 = 3;
 pub const ROW_PUBLISHED: i16 = 4;
+pub const ROW_UPLOADER: i16 = 5;
+/// A credit longer than this is cut with "..." (the value column).
+pub const CREDIT_CHARS: usize = 28;
 /// A name longer than this is cut with "..." (the label column is 245
 /// units of conduit-13).
 pub const NAME_CHARS: usize = 24;
@@ -474,7 +479,12 @@ impl Repo {
         let g = self.lock();
         Some(match row {
             ROW_DOWNLOAD => ("Download".into(), self.download_text(&g, &e)),
-            ROW_AUTHOR => ("Author".into(), e.author.clone()),
+            ROW_AUTHOR => (
+                "Author".into(),
+                e.credit
+                    .as_deref()
+                    .map_or_else(|| "Unknown".into(), |c| cut(c, CREDIT_CHARS)),
+            ),
             ROW_MAP => ("Map".into(), mods::base_title(&e.base)),
             ROW_SIZE => ("Size".into(), mods::size_text(e.size)),
             ROW_PUBLISHED => match e.downloads {
@@ -484,6 +494,7 @@ impl Repo {
                     e.published_at.get(..10).unwrap_or("").to_string(),
                 ),
             },
+            ROW_UPLOADER => ("Uploaded By".into(), e.author.clone()),
             _ => return None,
         })
     }

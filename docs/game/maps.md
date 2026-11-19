@@ -555,6 +555,59 @@ Deviations from the design above:
 Still open: a `--private` server's reads need a token, which the gate's
 fetches do not send yet.
 
+**Join-time download, reviewed 2026-11-19** (by reading and unit tests;
+no two-console run yet).
+
+Fixed, with tests in `live_hle::maps`:
+
+- A join's download used the Live worker's agent, whose 5 s timeout
+  covers the whole request, body included: any layer over a few MB failed
+  every time. Joins and the Mods screen now share `maps::download_agent`
+  (10 s to connect, 30 s per read, no whole-request limit)
+  (`a_download_outlasts_the_workers_whole_request_timeout`).
+- The preview image was a required download: an admin hiding a picture
+  (410) refused the whole map. It is now best-effort, and a package
+  written without it drops `[package] image` (outside the `MapId`)
+  (`a_taken_down_image_does_not_block_the_map`).
+- A package already here and already chosen in `active.toml` was
+  re-activated, rescanned and counted (a fresh token and a GET) on every
+  FindFromID, and the friend view asks repeatedly. Now only a change of
+  choice does that
+  (`preparing_a_package_already_served_writes_rescans_and_counts_nothing`).
+- Two writers of the same file (a join and a Mods screen install) shared
+  one temporary name per process, so one rename failed. Each write now
+  has its own name (`writes_from_two_threads_do_not_trip_over_each_other`).
+
+Open (each needs a live run or a design choice):
+
+- **The host advertises the loaded map, not the lobby's next one.** The
+  session's `map_id` comes from the boot's map probe
+  (`boot/src/lib.rs`, `map_override::map_id` of the map at `0x547898`),
+  which in a lobby is `mainmenu` (no id). A guest who joins in the lobby
+  sees no `map_id` and downloads nothing; the id only appears with a
+  `SessionUpdated` during a game. The id is also never cleared
+  (`live-hle/src/sessions.rs`), so a host back on retail keeps
+  advertising the last mod, and a guest already joined does not run the
+  gate when the id changes. Needs the lobby's selected map read from the
+  session attributes (confirm on a live run which field) and a guest-side
+  check on `SessionUpdated`.
+- **`active.toml` stays chosen.** A join or install leaves the package
+  served for its map; joining a retail game on that map later plays the
+  mod against a retail host. A join-time choice should be a per-session
+  override, not `active.toml`.
+- **The download runs on the Live worker's thread**, so heartbeats and
+  session updates wait for it (the Mods screen uses its own thread).
+- **Ranked pins are not applied**: sessions go out as `custom` with no
+  `hopper_id`, so `ranked_flags` is never true for a real session.
+- **New (derived) maps** are not advertised by the probe, and a guest's
+  `new_maps::install` runs only at boot.
+- **The Worker home buffers whole blobs** in the hub Durable Object
+  (R2 `bytes()`, then copies): a 95 MiB layer is several hundred MB in a
+  128 MB isolate. `BlobStore::get_stream` exists; `GET /v1/content` should
+  stream (needs a staging run with a large blob).
+- A local package with the right `MapId` but damaged layers is trusted
+  (`Need::Local`); the vfs then refuses it and serves the disc.
+
 ### The mod repository (Live)
 
 **Built** (lane "mod-repo-web": the server, web and publishing side).
@@ -570,13 +623,27 @@ fetches do not send yet.
   token (the console's join-time or menu download), once each, as
   server-signed `MapDownloaded` events (admins-only in the log).
 - **Display data** beyond the manifest: `MapPublished` data takes
-  `category` (gameplay, weapons, vehicles, visuals, maps, other) and
-  `source_url`; the manifest's `[package] author` is shown as the credit,
-  beside the account that published it. None of it is in the `MapId`.
+  `category` (gameplay, weapons, vehicles, visuals, maps, other),
+  `source_url` and `credit`. None of it is in the `MapId`.
+- **Credits.** Who made a mod is never the account that published it. A
+  package's credit (`live_proto::maps::Credit`: `authors`, the original
+  `release` name, `released` date, `source_url`, `notes`) comes from, in
+  order: an admin's correction (`PUT /v1/maps/{id}/credit`, a
+  server-signed `MapCredited` event), the publisher's signed `credit`, the
+  manifest's one-line `[package] author`. Lists and pages show it as
+  "by <authors>" ("unknown author" when there is none) and the publisher
+  as "uploaded by"; the game's Mods page has Author and Uploaded By rows.
+  The publisher's signature and the `MapId` never change with it.
+  `docs/game/mod-credits.toml` is the credit of every package published on
+  live.forbes.red (all imported by "afr"), researched from the original
+  releases; `h2 live maps credit --file docs/game/mod-credits.toml`
+  applies it, skipping packages already credited so.
 - **Web.** The stats site's "Mods" tab (`/games/halo2/mods`): Newest and
   Most Downloaded, base map, category and text filters, and a page per mod
-  (picture or base map art, base map, size to download, layers, date,
-  downloads, source link, report button). The web never sends a token on
+  (picture or base map art, author(s), original release and date, base
+  map, size to download, layers, date, downloads, uploader, source link,
+  report button). The admin area's packages table has Made by and
+  Uploader columns. The web never sends a token on
   `GET /v1/maps/{id}`, so viewing a mod page is no download.
 
 ### Importing a mod
@@ -617,11 +684,25 @@ a package that shares only the difference:
    publish DIR` would (`--no-publish` stops before that).
 
 The sidecar, `mod.toml` beside the file (or `--info`), every key optional
-and unknown keys ignored: `name`, `author` (the credit), `description`,
+and unknown keys ignored: `name`, `authors` (the original author or
+authors, a list: the credit), `author` (one name, the older form, used
+when `authors` is absent), `release` (the original release's name),
+`released` (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`), `notes`, `description`,
 `source_url`, `format` (`map`, `ppf`, `ips` or `bps`; else the file's
 signature decides), `base_map`, `category`, `image` (a PNG or JPEG beside
-it, at most 512 KiB). `h2 live maps publish DIR` reads `category` and
-`source_url` from `DIR/mod.toml`; `--category` and `--source-url` win.
+it, at most 512 KiB). The credit goes into the signed document's `credit`
+and, on one line, into the manifest's `[package] author`. `h2 live maps
+publish DIR` reads `category`, `source_url` and the credit from
+`DIR/mod.toml`; `--category` and `--source-url` win. Give the credit on
+every import: without it the package says "unknown author".
+
+`h2 live maps credit MAP_ID [--author NAME]... [--release NAME]
+[--released DATE] [--source-url URL] [--notes TEXT] [--clear]`, or `h2
+live maps credit --file CREDITS.toml [--dry-run]`, sets the credit of
+packages already published (an admin's account, `--as`, or the
+operator's key, `--data DIR`). The file is `[[mod]]` tables of `map_id`,
+`name` (checked against the server's), `authors`, `release`, `released`,
+`source_url`, `notes`; every entry is checked before anything is sent.
 
 **In the game.** A package on a Map Pack base installs and plays like one
 on a disc map, for a player who has the map pack installed (`h2
@@ -754,7 +835,9 @@ disc's):
    Live menu and coming back keeps "Mods". `<data>/live-mods.toml` holds
    the newest position.
 3. A on a map: its page, titled with its name; Download "Press A",
-   Author, Map, Size, Downloads.
+   Author (who made it, from the credit; "Unknown" when the server has
+   none, never the uploader), Map, Size, Downloads, Uploaded By (the
+   publishing account).
 4. A on Download: "Downloading N%", then "Installed"; stderr `mods: <id>
    installed`; `<data>/maps/live-<16 hex>/` exists and `active.toml`
    names it. B, B, then host a custom game on that base map: the mod

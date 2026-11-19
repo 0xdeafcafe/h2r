@@ -7,6 +7,7 @@ use std::sync::Arc;
 use content::manifest::Layer;
 use content::{Library, Manifest, MapId, Sha256};
 use live_hle::maps::{Bases, HttpFetch, MapGate, Refusal};
+use live_proto::lxm;
 use live_proto::maps::{MAP_PUBLISHED, MapDocument, package_stream};
 use live_proto::session::NewSession;
 use live_proto::sign::{AccountRequest, EventBody, KeyPair, issue_token};
@@ -210,6 +211,7 @@ fn installing_a_mod_counts_one_download_per_account() {
             image: None,
             category: None,
             source_url: None,
+            credit: None,
         })
         .unwrap(),
         time::OffsetDateTime::now_utc(),

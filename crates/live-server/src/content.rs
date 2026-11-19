@@ -15,6 +15,11 @@
 //! - **Retail bytes are never kept**: blobs whose hash is in
 //!   `<data>/retail-maps.sha256` are refused, and so is a manifest that is
 //!   only a retail base.
+//! - **Credit**: who made a mod is display data beside the signed
+//!   manifest: the publisher's `credit` (or `[package] author`), which an
+//!   admin may correct with `PUT /v1/maps/{id}/credit` (a server-signed
+//!   `MapCredited`; the manifest, its `MapId` and the publisher's
+//!   signature are untouched).
 //! - **Moderation**: admins hide, delete and block blobs and packages,
 //!   switch an account's uploads off, and read reports. Hidden, deleted or
 //!   blocked content answers 410, and sessions on it are refused.
@@ -37,9 +42,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use live_proto::maps::{
     self, Action, BaseInfo, CONTENT_MODERATED, CONTENT_REPORTED, CONTENT_STORED,
-    CONTENT_UPLOADS_SET, ContentStored, Downloaded, HOPPER_PINS_SET, HopperPin, LayerInfo,
-    MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument, MapId, MapSummary, Moderated,
-    Reported, Sha256, Standing, Target, UploadsSet, Who,
+    CONTENT_UPLOADS_SET, ContentStored, Credit, Credited, Downloaded, HOPPER_PINS_SET, HopperPin,
+    LayerInfo, MAP_CREDITED, MAP_DOWNLOADED, MAP_PUBLISHED, MapAnswer, MapDetail, MapDocument,
+    MapId, MapSummary, Moderated, Reported, Sha256, Standing, Target, UploadsSet, Who,
 };
 use live_proto::sign::{MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, ErrorCode, Gamertag, Page, Xuid, lxm, streams};
@@ -203,8 +208,8 @@ pub struct MapQuery {
     pub author: Option<String>,
     /// One of `live_proto::maps::CATEGORIES`.
     pub category: Option<String>,
-    /// A case-insensitive substring of the name, description, credit, base
-    /// map or publisher's gamertag.
+    /// A case-insensitive substring of the name, description, credited
+    /// authors or release, base map or publisher's gamertag.
     pub q: Option<String>,
     pub cursor: Option<MapCursor>,
     pub limit: usize,
@@ -316,6 +321,10 @@ pub struct CatalogState {
     pub pins: BTreeMap<u32, Vec<MapId>>,
     /// The accounts that fetched each package's manifest (`MapDownloaded`).
     pub downloads: HashMap<MapId, HashSet<Xuid>>,
+    /// Admins' credits (`MapCredited`), over the publishers'. Kept apart
+    /// from [`Self::maps`] so a package deleted and published again keeps
+    /// its correction.
+    pub credits: HashMap<MapId, Credit>,
 }
 
 impl CatalogState {
@@ -359,6 +368,12 @@ impl CatalogState {
     /// Whether `xuid` has fetched `id`'s manifest before.
     pub fn downloaded(&self, id: &MapId, xuid: Xuid) -> bool {
         self.downloads.get(id).is_some_and(|d| d.contains(&xuid))
+    }
+
+    /// Who made `p` (published as `id`): an admin's credit, else the
+    /// publisher's ([`MapDocument::credit`]).
+    pub fn credit_of(&self, id: &MapId, p: &Package) -> Option<Credit> {
+        self.credits.get(id).cloned().or_else(|| p.doc.credit())
     }
 
     pub fn reports_of(&self, target: Target, id: &str) -> usize {
@@ -469,6 +484,18 @@ impl CatalogState {
             MAP_DOWNLOADED => {
                 if let Ok(d) = serde_json::from_value::<Downloaded>(b.data.clone()) {
                     self.downloads.entry(d.map_id).or_default().insert(d.by);
+                }
+            }
+            MAP_CREDITED => {
+                if let Ok(d) = serde_json::from_value::<Credited>(b.data.clone()) {
+                    match d.credit.filter(|c| !c.is_empty()) {
+                        Some(c) => {
+                            self.credits.insert(d.map_id, c);
+                        }
+                        None => {
+                            self.credits.remove(&d.map_id);
+                        }
+                    }
                 }
             }
             HOPPER_PINS_SET => {
@@ -824,6 +851,7 @@ impl Live {
                 kind: kind.into(),
             })
             .collect();
+        let credit = s.credit_of(id, p);
         MapSummary {
             map_id: *id,
             name: m.package.name.clone(),
@@ -841,9 +869,13 @@ impl Live {
             published_at: p.published_at.clone(),
             position: p.position,
             downloads: s.downloads_of(id),
-            credit: m.package.author.clone(),
+            credit: credit.as_ref().and_then(Credit::names),
             category: p.doc.category.clone(),
-            source_url: p.doc.source_url.clone(),
+            source_url: credit
+                .as_ref()
+                .and_then(|c| c.source_url.clone())
+                .or_else(|| p.doc.source_url.clone()),
+            credits: credit,
         }
     }
 
@@ -1081,9 +1113,11 @@ impl Live {
                         .is_none_or(|c| p.doc.category.as_deref() == Some(c))
                     && needle.as_deref().is_none_or(|n| {
                         let has = |t: &str| t.to_lowercase().contains(n);
+                        let credit = s.credit_of(id, p).unwrap_or_default();
                         has(m.package.name.as_str())
                             || m.package.description.as_deref().is_some_and(has)
-                            || m.package.author.as_deref().is_some_and(has)
+                            || credit.authors.iter().any(|a| has(a.as_str()))
+                            || credit.release.as_deref().is_some_and(has)
                             || has(m.base.map.as_str())
                             || has(self.who(p.author).gamertag.as_str())
                     })
@@ -1239,6 +1273,43 @@ impl Live {
         let recorded = self.store.append(vec![event], &[]).await?;
         self.wait_applied(recorded[0].position).await?;
         Ok(recorded[0].position)
+    }
+
+    /// `PUT /v1/maps/{map_id}/credit`: an admin sets who made a published
+    /// package (a server-signed `MapCredited`); an empty credit clears the
+    /// admin's and the publisher's shows again. The manifest and its
+    /// signature are left as published.
+    pub async fn set_credit(
+        &self,
+        bearer: Option<&str>,
+        id: &str,
+        credit: Credit,
+    ) -> ApiResult<(u64, MapSummary)> {
+        let by = self.moderator(bearer)?;
+        let id: MapId = id
+            .parse()
+            .map_err(|_| invalid("a MapId is 64 hex digits"))?;
+        let credit = credit.tidy();
+        credit.validate().map_err(invalid)?;
+        let _guard = self.content_writes.lock().await;
+        if !self.catalog.read().maps.contains_key(&id) {
+            return Err(not_found("no such map"));
+        }
+        let data = Credited {
+            map_id: id,
+            credit: (!credit.is_empty()).then_some(credit),
+            by,
+        };
+        let event = self.server_event(
+            maps::package_stream(&id),
+            MAP_CREDITED,
+            serde_json::to_value(&data).expect("serializes"),
+        );
+        let recorded = self.store.append(vec![event], &[]).await?;
+        self.wait_applied(recorded[0].position).await?;
+        let s = self.catalog.read();
+        let p = s.maps.get(&id).ok_or_else(|| not_found("no such map"))?;
+        Ok((recorded[0].position, self.map_summary(&s, &id, p)))
     }
 
     /// `PUT /v1/admin/uploads/{gamertag}`.
@@ -1588,6 +1659,22 @@ pub(crate) async fn moderate_content(
     Ok(ok(live
         .moderate(bearer(&headers), Target::Content, &id, &action)
         .await?))
+}
+
+pub(crate) async fn put_credit(
+    State(live): Shared,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_text(body)?;
+    let credit: Credit =
+        serde_json::from_slice(&bytes).map_err(|e| invalid(format!("credit: {e}")))?;
+    let (position, map) = live.set_credit(bearer(&headers), &id, credit).await?;
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &json!({"ok": true, "position": position, "map": map}),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -19,7 +19,11 @@
 //!
 //! ```toml
 //! name = "Lockout Snipers"
-//! author = "who made it"          # [package] author: the credit
+//! authors = ["who made it"]       # the original author(s): the credit
+//! author = "who made it"          # older form of authors, one name
+//! release = "Snipers v2"          # the original release's name
+//! released = "2005-03"            # YYYY, YYYY-MM or YYYY-MM-DD
+//! notes = "..."                   # anything else about the credit
 //! description = "..."
 //! source_url = "https://..."      # where it came from
 //! format = "map"                  # map, ppf, ips or bps; else sniffed
@@ -28,15 +32,21 @@
 //! image = "preview.png"           # beside mod.toml, PNG or JPEG
 //! ```
 //!
+//! The credit is who made the mod, never the account that publishes it:
+//! it goes into the signed document's `credit` (live_proto::maps::Credit)
+//! and, as one line, into the manifest's `[package] author` for readers
+//! that know only that.
+//!
 //! The package directory gets `manifest.toml`, the layer, the image and a
-//! `mod.toml` with the repository's extras (`category`, `source_url`),
-//! which `h2 live maps publish DIR` reads.
+//! `mod.toml` with the repository's extras (`category`, `source_url` and
+//! the credit), which `h2 live maps publish DIR` reads.
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use content::manifest::{Layer, MANIFEST_FILE, MAX_IMAGE_BYTES, image_signature, is_map_name};
 use content::patch::{self, Overlay, Patch};
 use content::{Manifest, Sha256};
+use live_proto::maps::Credit;
 use serde::{Deserialize, Serialize};
 use vfs::Backend;
 
@@ -50,6 +60,14 @@ pub struct ModInfo {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authors: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +92,38 @@ impl ModInfo {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e).with_context(|| path.display().to_string()),
         }
+    }
+
+    /// The credit it gives: `authors` (else `author`), the release, its
+    /// date, the source URL and notes, tidied; None when it says nothing.
+    pub fn credit(&self) -> Option<Credit> {
+        let authors = match &self.authors {
+            Some(a) => Credit::authors(a),
+            None => Credit::authors(Self::text(&self.author)),
+        }
+        .authors;
+        let c = Credit {
+            authors,
+            release: self.release.clone(),
+            released: self.released.clone(),
+            source_url: self.source_url.clone(),
+            notes: self.notes.clone(),
+        }
+        .tidy();
+        (!c.is_empty()).then_some(c)
+    }
+
+    /// The credit's fields, written back as a package's `mod.toml` keeps
+    /// them (`authors`, never the older `author`).
+    fn with_credit(mut self, c: Option<&Credit>) -> Self {
+        if let Some(c) = c {
+            self.authors = (!c.authors.is_empty()).then(|| c.authors.clone());
+            self.release = c.release.clone();
+            self.released = c.released.clone();
+            self.notes = c.notes.clone();
+            self.source_url = c.source_url.clone();
+        }
+        self
     }
 
     /// Empty strings count as absent.
@@ -367,9 +417,10 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
             .join(format!("{stem}.package"))
     });
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let credit = info.credit();
     let mut manifest = Manifest::retail(&base, Sha256::of(&base_bytes));
     manifest.package.name = name.clone();
-    manifest.package.author = ModInfo::text(&info.author);
+    manifest.package.author = credit.as_ref().and_then(Credit::names);
     manifest.package.description = ModInfo::text(&info.description);
     manifest.patches = vec![Layer {
         file: file.clone(),
@@ -397,10 +448,12 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
             .or_else(|| ModInfo::text(&info.category)),
         base_map: Some(base),
         ..ModInfo::default()
-    };
+    }
+    .with_credit(credit.as_ref());
     let mut doc = live_proto::maps::MapDocument::new(manifest.clone(), None);
     doc.category = extras.category.clone();
     doc.source_url = extras.source_url.clone();
+    doc.credit = credit;
     doc.validate_extras()
         .map_err(|e| anyhow!("{}: {e}", info_path.display()))?;
 
@@ -421,12 +474,20 @@ pub fn import(opts: &ImportOptions) -> Result<Imported> {
 
 /// The repository extras a package directory's `mod.toml` names, for
 /// `publish`.
-pub fn extras_in(dir: &Path) -> Result<(Option<String>, Option<String>)> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Extras {
+    pub category: Option<String>,
+    pub source_url: Option<String>,
+    pub credit: Option<Credit>,
+}
+
+pub fn extras_in(dir: &Path) -> Result<Extras> {
     let info = ModInfo::read(&dir.join(MOD_FILE))?.unwrap_or_default();
-    Ok((
-        ModInfo::text(&info.category),
-        ModInfo::text(&info.source_url),
-    ))
+    Ok(Extras {
+        category: ModInfo::text(&info.category),
+        source_url: ModInfo::text(&info.source_url),
+        credit: info.credit(),
+    })
 }
 
 #[cfg(test)]

@@ -38,7 +38,8 @@ fn entry(n: u8, name: &str, position: Option<u64>) -> ModEntry {
         id: id(n),
         name: name.into(),
         description: None,
-        author: "Modder".into(),
+        author: "Uploader".into(),
+        credit: Some("Modder".into()),
         base: "lockout".into(),
         image: false,
         size: 3 * 1024 * 1024 + 400 * 1024,
@@ -209,6 +210,7 @@ fn a_mod_downloads_from_its_page_with_progress_then_shows_installed() {
         ("Map", "Lockout"),
         ("Size", "3.4 MB"),
         ("Published", "2026-11-18"),
+        ("Uploaded By", "Uploader"),
     ]
     .into_iter()
     .map(|(l, v)| (l.to_string(), v.to_string()))
@@ -417,4 +419,27 @@ fn a_snapshot_waits_for_downloads_and_carries_the_open_page() {
     assert_eq!(other.save_state(), bytes, "the same state again");
     assert!(other.load_state(&bytes[1..]).is_err());
     assert_eq!(other.save_state(), bytes, "damaged bytes change nothing");
+}
+
+#[test]
+fn the_author_row_credits_the_maker_and_the_uploader_has_its_own_row() {
+    let mut unknown = entry(1, "Canyon", Some(10));
+    unknown.credit = None;
+    let mut long = entry(2, "PPF Noobs Lockout", Some(20));
+    long.credit = Some("l PPF l NeoN, The PPF Noobs & Friends".into());
+    let (_, repo) = listed(vec![long, unknown], None);
+    repo.press_list(0);
+    let author = repo.detail_row(ROW_AUTHOR).unwrap().1;
+    assert_eq!(author.chars().count(), CREDIT_CHARS);
+    assert!(author.starts_with("l PPF l NeoN") && author.ends_with("..."));
+    assert_eq!(
+        repo.detail_row(ROW_UPLOADER).unwrap(),
+        ("Uploaded By".into(), "Uploader".into())
+    );
+    repo.press_list(1);
+    assert_eq!(
+        repo.detail_row(ROW_AUTHOR).unwrap(),
+        ("Author".into(), "Unknown".into()),
+        "never the uploader's gamertag"
+    );
 }

@@ -561,6 +561,7 @@ fn the_mod_list_reads_published_maps_newest_first() {
             image: None,
             category: None,
             source_url: None,
+            credit: None,
         };
         let jws = sign::EventBody::new(
             &a.key,

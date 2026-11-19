@@ -12,7 +12,9 @@
 //! The answer is read leniently: `id` or `map_id`; `author` and `base` as
 //! a name or as the content API's `{gamertag}` / `{map}` objects; `cursor`
 //! or `next`; an entry's `position`, `downloads` and `image` when the
-//! server has them. An entry with no `position` is never new.
+//! server has them. An entry with no `position` is never new. Who made the
+//! mod is `credits.authors` (else the one-line `credit`), never the
+//! publishing account (`author`).
 
 use serde::Deserialize;
 
@@ -24,8 +26,11 @@ pub struct ModEntry {
     pub id: MapId,
     pub name: String,
     pub description: Option<String>,
-    /// The author's gamertag.
+    /// The publishing account's gamertag (who uploaded it, not who made
+    /// it).
     pub author: String,
+    /// Who made the mod, on one line (`A & B`), when the server says.
+    pub credit: Option<String>,
     /// The disc map it is built on (`lockout`), what the player needs.
     pub base: String,
     /// Whether the server has a preview image for it.
@@ -101,11 +106,7 @@ pub(crate) fn spawn_install(
     let spawned = std::thread::Builder::new()
         .name("h2-live-mod".into())
         .spawn(move || {
-            let agent = ureq::AgentBuilder::new()
-                .timeout_connect(std::time::Duration::from_secs(10))
-                .timeout_read(std::time::Duration::from_secs(30))
-                .redirects(0)
-                .build();
+            let agent = crate::maps::download_agent();
             let fetch = crate::maps::HttpFetch {
                 agent: &agent,
                 api: &api,
@@ -220,6 +221,10 @@ struct RawEntry {
     author: Named,
     base: Named,
     #[serde(default)]
+    credit: Option<String>,
+    #[serde(default)]
+    credits: Option<RawCredits>,
+    #[serde(default)]
     image: Option<serde_json::Value>,
     #[serde(default)]
     size: u64,
@@ -229,6 +234,36 @@ struct RawEntry {
     downloads: Option<u64>,
     #[serde(default)]
     published_at: String,
+}
+
+#[derive(Deserialize)]
+struct RawCredits {
+    #[serde(default)]
+    authors: Vec<String>,
+}
+
+impl RawEntry {
+    /// `credits.authors` as one line, else `credit`; blanks are none.
+    fn credit_line(&self) -> Option<String> {
+        let authors: Vec<&str> = self
+            .credits
+            .iter()
+            .flat_map(|c| c.authors.iter())
+            .map(|a| a.trim())
+            .filter(|a| !a.is_empty())
+            .collect();
+        let line = match authors.as_slice() {
+            [] => self
+                .credit
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string(),
+            [one] => (*one).to_string(),
+            [rest @ .., last] => format!("{} & {last}", rest.join(", ")),
+        };
+        (!line.is_empty()).then_some(line)
+    }
 }
 
 #[derive(Deserialize)]
@@ -252,6 +287,7 @@ impl From<RawPage> for ModPage {
                 .items
                 .into_iter()
                 .map(|e| ModEntry {
+                    credit: e.credit_line(),
                     id: e.id,
                     name: e.name,
                     description: e.description.filter(|d| !d.trim().is_empty()),
@@ -291,6 +327,7 @@ mod tests {
         let e = &page.items[0];
         assert_eq!(e.id.to_string(), ID);
         assert_eq!((e.author.as_str(), e.base.as_str()), ("Modder", "lockout"));
+        assert_eq!(e.credit, None);
         assert!(e.image);
         assert_eq!((e.size, e.position, e.downloads), (2048, Some(41), Some(7)));
         assert_eq!(page.cursor.as_deref(), Some("41"));
@@ -322,12 +359,43 @@ mod tests {
         assert_eq!(new_count(&page.items, 0), 0, "no position: never new");
     }
 
+    #[test]
+    fn the_credit_is_the_makers_not_the_publishers() {
+        let item = |extra: serde_json::Value| {
+            let mut v = serde_json::json!({
+                "map_id": ID, "name": "Beasthog",
+                "author": {"xuid": "0009000000000001", "gamertag": "afr"},
+                "base": {"map": "zanzibar", "derived": false}
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let page: ModPage =
+                serde_json::from_value(serde_json::json!({ "items": [v] })).unwrap();
+            page.items[0].clone()
+        };
+        let e = item(serde_json::json!({
+            "credit": "Synch & NeoN",
+            "credits": {"authors": ["Synch", " NeoN ", ""], "released": "2006"}
+        }));
+        assert_eq!(e.author, "afr", "the publisher");
+        assert_eq!(e.credit.as_deref(), Some("Synch & NeoN"));
+        let e = item(serde_json::json!({"credits": {"authors": ["A", "B", "C"]}}));
+        assert_eq!(e.credit.as_deref(), Some("A, B & C"));
+        // An older server: the one-line credit only.
+        let e = item(serde_json::json!({"credit": " Group Bocked "}));
+        assert_eq!(e.credit.as_deref(), Some("Group Bocked"));
+        let e = item(serde_json::json!({"credit": " ", "credits": {"authors": []}}));
+        assert_eq!(e.credit, None);
+    }
+
     fn entry(position: Option<u64>) -> ModEntry {
         ModEntry {
             id: ID.parse().unwrap(),
             name: "M".into(),
             description: None,
             author: "A".into(),
+            credit: None,
             base: "lockout".into(),
             image: false,
             size: 0,

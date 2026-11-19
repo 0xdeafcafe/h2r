@@ -98,6 +98,19 @@ pub trait Fetch {
     }
 }
 
+/// The agent a map download uses: a connect and a per-read timeout, and no
+/// timeout on the whole request, so a big layer on a slow line finishes as
+/// long as bytes keep coming. The Live worker's own agent times the whole
+/// request out (`ServerOptions::request_timeout`, 5 s), which no layer of
+/// more than a few MB fits in.
+pub fn download_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(10))
+        .timeout_read(std::time::Duration::from_secs(30))
+        .redirects(0)
+        .build()
+}
+
 /// A fresh single-use `read` bearer token for each call, `None` when there
 /// is no account to make one for.
 pub type Reader = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
@@ -386,9 +399,13 @@ impl MapGate {
         let (answer, total) = match need {
             Need::Nothing => return Ok(None),
             Need::Local(dir) => {
-                self.activate(&dir, map_id)?;
-                self.installed(&dir);
-                self.count(f, map_id);
+                // Already the one served: nothing to write, rescan or count
+                // (FindFromID asks again for every look at a friend's
+                // session, not only on a join).
+                if self.activate(&dir, map_id)? {
+                    self.installed(&dir);
+                    self.count(f, map_id);
+                }
                 return Ok(Some(dir));
             }
             Need::Download { answer, bytes } => (answer, bytes),
@@ -400,42 +417,45 @@ impl MapGate {
         let dir = self.package_dir(&id);
         let io = |e: std::io::Error| Refusal::Download(format!("{}: {e}", dir.display()));
         std::fs::create_dir_all(&dir).map_err(io)?;
-        let image = m
-            .package
-            .image
-            .as_ref()
-            .zip(answer.map.summary.image.as_ref());
         for (file, sha) in m
             .patches
             .iter()
             .chain(&m.packs)
             .map(|l| (&l.file, &l.sha256))
-            .chain(image)
         {
             if has(&dir, file, sha) {
                 continue;
             }
-            let bytes = match f
-                .get(&format!("/content/{sha}"), MAX_DOWNLOAD)
-                .map_err(Refusal::Download)?
-            {
-                Got::Ok(b) => b,
-                Got::NotFound => {
-                    return Err(Refusal::Download(format!("the server no longer has {file}")));
-                }
-                Got::Gone(why) => return Err(Refusal::TakenDown(why)),
-            };
-            if Sha256::of(&bytes) != *sha {
-                return Err(Refusal::Download(format!(
-                    "{file} from the server does not match its SHA-256"
-                )));
-            }
+            let bytes = self.get_layer(f, file, sha)?;
             let rel = relative(file).map_err(|e| Refusal::Download(e.to_string()))?;
             write_atomic(&dir.join(rel), &bytes).map_err(io)?;
             done += bytes.len() as u64;
             progress(done, total.max(done));
         }
-        write_atomic(&dir.join(MANIFEST_FILE), m.to_toml().as_bytes()).map_err(io)?;
+        // The preview is display data, outside the MapId: one the server
+        // cannot give (an admin hid it, a bad copy) is left out of the
+        // package written, never the reason a map cannot be had.
+        let mut written = m.clone();
+        if let Some((file, sha)) = m
+            .package
+            .image
+            .as_ref()
+            .zip(answer.map.summary.image.as_ref())
+            && !has(&dir, file, sha)
+        {
+            let got = self.get_layer(f, file, sha).and_then(|bytes| {
+                let rel = relative(file).map_err(|e| Refusal::Download(e.to_string()))?;
+                write_atomic(&dir.join(rel), &bytes).map_err(io)
+            });
+            if let Err(why) = got {
+                eprintln!("live: map {id}: no preview image ({why})");
+                written.package.image = None;
+            }
+        } else if m.package.image.is_some() && answer.map.summary.image.is_none() {
+            written.package.image = None;
+        }
+        debug_assert_eq!(MapId::of(&written), id);
+        write_atomic(&dir.join(MANIFEST_FILE), written.to_toml().as_bytes()).map_err(io)?;
         if self.local(&id).is_none() {
             return Err(Refusal::Download(format!(
                 "the package written to {} does not resolve to {id}",
@@ -446,6 +466,28 @@ impl MapGate {
         self.installed(&dir);
         self.count(f, map_id);
         Ok(Some(dir))
+    }
+
+    /// The blob `sha` (the package's `file`), checked against its hash.
+    fn get_layer(&self, f: &dyn Fetch, file: &str, sha: &Sha256) -> Result<Vec<u8>, Refusal> {
+        let bytes = match f
+            .get(&format!("/content/{sha}"), MAX_DOWNLOAD)
+            .map_err(Refusal::Download)?
+        {
+            Got::Ok(b) => b,
+            Got::NotFound => {
+                return Err(Refusal::Download(format!(
+                    "the server no longer has {file}"
+                )));
+            }
+            Got::Gone(why) => return Err(Refusal::TakenDown(why)),
+        };
+        if Sha256::of(&bytes) != *sha {
+            return Err(Refusal::Download(format!(
+                "{file} from the server does not match its SHA-256"
+            )));
+        }
+        Ok(bytes)
     }
 
     /// Tells the server this account has the map now: the manifest asked
@@ -463,15 +505,15 @@ impl MapGate {
 
     /// Names `dir` in `active.toml` for its map, so the vfs serves it
     /// rather than another package for the same map (docs/game/maps.md §7,
-    /// "Choice rule").
-    fn activate(&self, dir: &Path, map_id: Option<MapId>) -> Result<(), Refusal> {
+    /// "Choice rule"). True when that changed the choice.
+    fn activate(&self, dir: &Path, map_id: Option<MapId>) -> Result<bool, Refusal> {
         let Some(pkg) = Library::open(&self.maps_dir)
             .packages()
             .iter()
             .find(|p| Some(p.id) == map_id)
             .cloned()
         else {
-            return Ok(());
+            return Ok(false);
         };
         let name = dir
             .file_name()
@@ -485,11 +527,15 @@ impl MapGate {
             .unwrap_or_default();
         let key = pkg.manifest.base.map.to_ascii_lowercase();
         if table.get(&key).and_then(|v| v.as_str()) == Some(name.as_str()) {
-            return Ok(());
+            return Ok(false);
         }
         table.insert(key, toml::Value::String(name));
-        write_atomic(&path, toml::to_string(&table).unwrap_or_default().as_bytes())
-            .map_err(|e| Refusal::Download(format!("{}: {e}", path.display())))
+        write_atomic(
+            &path,
+            toml::to_string(&table).unwrap_or_default().as_bytes(),
+        )
+        .map_err(|e| Refusal::Download(format!("{}: {e}", path.display())))?;
+        Ok(true)
     }
 }
 
@@ -505,7 +551,11 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension(format!("part-{}", std::process::id()));
+    // One name per write, not per process: a join and a Mods screen
+    // install of the same map may write the same file at once.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("part-{}-{n}", std::process::id()));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
 }
@@ -594,6 +644,7 @@ mod tests {
                     credit: None,
                     category: None,
                     source_url: None,
+                    credits: None,
                 },
                 manifest: m.clone(),
             },
@@ -690,6 +741,179 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_down_image_does_not_block_the_map() {
+        let maps = dir("image");
+        let patch = b"PATCH invented with a picture";
+        let mut m = modded(patch);
+        m.package.image = Some("preview.png".into());
+        let id = MapId::of(&m);
+        let img = Sha256([0x55; 32]);
+        let mut s = server_with(&m, patch);
+        let mut a = answer(&m, patch.len() as u64);
+        a.map.summary.image = Some(img);
+        s.answers.insert(
+            format!("/maps/{id}"),
+            Got::Ok(serde_json::to_vec(&a).unwrap()),
+        );
+        s.answers.insert(
+            format!("/content/{img}"),
+            Got::Gone("an admin hid it".into()),
+        );
+        let g = gate(&maps, true);
+        let dir = g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
+        assert!(
+            s.asked.lock().unwrap().contains(&format!("/content/{img}")),
+            "it was tried"
+        );
+        let lib = Library::open(&maps);
+        assert_eq!(lib.packages().len(), 1);
+        assert_eq!(lib.packages()[0].id, id, "the same map, with no picture");
+        assert_eq!(lib.packages()[0].manifest.package.image, None);
+        assert!(!dir.join("preview.png").exists());
+
+        // A good picture is kept.
+        let maps2 = dir("image-ok");
+        let png = b"\x89PNG\r\n\x1a\ninvented".to_vec();
+        let mut a = answer(&m, patch.len() as u64);
+        a.map.summary.image = Some(Sha256::of(&png));
+        let mut s = server_with(&m, patch);
+        s.answers.insert(
+            format!("/maps/{id}"),
+            Got::Ok(serde_json::to_vec(&a).unwrap()),
+        );
+        s.answers.insert(
+            format!("/content/{}", Sha256::of(&png)),
+            Got::Ok(png.clone()),
+        );
+        let dir = gate(&maps2, true)
+            .prepare(&s, &ad("custom", Some(id)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(std::fs::read(dir.join("preview.png")).unwrap(), png);
+        let lib = Library::open(&maps2);
+        assert_eq!(
+            lib.packages()[0].manifest.package.image.as_deref(),
+            Some("preview.png")
+        );
+        std::fs::remove_dir_all(&maps).unwrap();
+        std::fs::remove_dir_all(&maps2).unwrap();
+    }
+
+    #[test]
+    fn preparing_a_package_already_served_writes_rescans_and_counts_nothing() {
+        let maps = dir("again");
+        let patch = b"PATCH invented, asked for again";
+        let m = modded(patch);
+        let id = MapId::of(&m);
+        let s = server_with(&m, patch);
+        let g = gate(&maps, true);
+        let told: Arc<Mutex<usize>> = Arc::default();
+        let sink = Arc::clone(&told);
+        g.on_installed(Box::new(move |_| *sink.lock().unwrap() += 1));
+        g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
+        assert_eq!(
+            (*told.lock().unwrap(), s.counted.lock().unwrap().len()),
+            (1, 1)
+        );
+        let active = maps.join("active.toml");
+        let before = std::fs::metadata(&active).unwrap().modified().unwrap();
+        // The friend view's FindFromID asks again and again.
+        for _ in 0..5 {
+            g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
+        }
+        assert_eq!(*told.lock().unwrap(), 1, "no rescan");
+        assert_eq!(s.counted.lock().unwrap().len(), 1, "no counted GETs");
+        assert_eq!(
+            std::fs::metadata(&active).unwrap().modified().unwrap(),
+            before
+        );
+        // Another package chosen for lockout in between: choosing this one
+        // again is a change, and is told.
+        std::fs::write(&active, "lockout = \"someone-else\"\n").unwrap();
+        g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
+        assert_eq!(*told.lock().unwrap(), 2);
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    #[test]
+    fn writes_from_two_threads_do_not_trip_over_each_other() {
+        let d = dir("race");
+        let path = d.join("same.bin");
+        let threads: Vec<_> = (0..8u8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        write_atomic(&path, &[i; 4096]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() == 4096 && bytes.iter().all(|b| *b == bytes[0]));
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1, "no parts left");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// A one-request HTTP server that sends `body` in `chunks` pieces,
+    /// `gap` apart.
+    fn trickle(body: Vec<u8>, chunks: usize, gap: std::time::Duration) -> String {
+        use std::io::Write;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut req = [0u8; 4096];
+            let _ = c.read(&mut req);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            c.write_all(head.as_bytes()).unwrap();
+            for piece in body.chunks(body.len().div_ceil(chunks)) {
+                std::thread::sleep(gap);
+                if c.write_all(piece).is_err() {
+                    return;
+                }
+                let _ = c.flush();
+            }
+        });
+        api
+    }
+
+    #[test]
+    fn a_download_outlasts_the_workers_whole_request_timeout() {
+        let body = vec![7u8; 64 * 1024];
+        let gap = std::time::Duration::from_millis(250);
+        // The worker's agent: the whole request in 500 ms.
+        let worker = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_millis(500))
+            .build();
+        let api = trickle(body.clone(), 6, gap);
+        let f = HttpFetch {
+            agent: &worker,
+            api: &api,
+            reader: None,
+        };
+        assert!(
+            f.get("/content/x", MAX_DOWNLOAD).is_err(),
+            "times out mid-body"
+        );
+        // The download agent: bytes keep coming, so it finishes.
+        let agent = download_agent();
+        let api = trickle(body.clone(), 6, gap);
+        let f = HttpFetch {
+            agent: &agent,
+            api: &api,
+            reader: None,
+        };
+        assert_eq!(f.get("/content/x", MAX_DOWNLOAD).unwrap(), Got::Ok(body));
+    }
+
+    #[test]
     fn the_mod_repository_installs_a_map_by_id_with_progress() {
         let maps = dir("install");
         let patch = b"PATCH invented for the mod repository";
@@ -718,8 +942,9 @@ mod tests {
         assert_eq!(g.install(&s, id, &mut |d, t| again.push((d, t))).unwrap(), dir);
         assert!(again.is_empty());
         assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
-        // Asked again (the server counts an account once per package).
-        assert_eq!(s.counted.lock().unwrap().len(), 2);
+        // Already the one served: not counted again (the server would
+        // count an account once per package anyway).
+        assert_eq!(s.counted.lock().unwrap().len(), 1);
         std::fs::remove_dir_all(&maps).unwrap();
     }
 

@@ -9,13 +9,15 @@
 //! the flags. `import FILE` turns a third-party mod (a whole modded map,
 //! or a PPF, IPS or BPS) into a package over the user's own disc map
 //! (crate::live_mod_import) and publishes it. `list` prints what the
-//! server has.
+//! server has. `credit` sets who made published packages (an admin's
+//! `PUT /v1/maps/{id}/credit`), one by flags or many from a credits file
+//! (docs/game/mod-credits.toml).
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use content::manifest::{MANIFEST_FILE, relative};
 use content::{Manifest, MapId, Sha256};
-use live_proto::maps::{MAP_PUBLISHED, MapAnswer, MapDocument, MapSummary, package_stream};
+use live_proto::maps::{Credit, MAP_PUBLISHED, MapAnswer, MapDocument, MapSummary, package_stream};
 use live_proto::sign::{EventBody, issue_token};
 use live_proto::{Page, lxm};
 
@@ -38,6 +40,15 @@ pub const USAGE: &str = "usage: h2 live maps <command>
                           else a mappack.iso beside the disc
   list [--server URL] [--base MAP] [--author GAMERTAG] [--json]
                           the packages the server has
+  credit MAP_ID [--author NAME]... [--release NAME] [--released DATE]
+                [--source-url URL] [--notes TEXT] [--clear]
+  credit --file CREDITS.toml [--dry-run]
+                [--server URL] [--as GAMERTAG | --data DIR]
+                          set who made published packages (an admin's
+                          account, or the operator's key with --data);
+                          the file is [[mod]] tables of map_id, authors,
+                          release, released, source_url, notes; packages
+                          already credited so are left alone
 
   Categories: gameplay, weapons, vehicles, visuals, maps, other.";
 
@@ -155,8 +166,221 @@ pub fn run(mut args: Args) -> Result<()> {
             }
             Ok(())
         }
+        Some("credit") => {
+            args = args.shift();
+            let server = args.take("--server")?;
+            let as_tag = args.take("--as")?;
+            let data = args.take("--data")?;
+            let file = args.take("--file")?;
+            let dry_run = args.flag("--dry-run");
+            let clear = args.flag("--clear");
+            let mut authors = Vec::new();
+            while let Some(a) = args.take("--author")? {
+                authors.push(a);
+            }
+            let flags = Credit {
+                authors,
+                release: args.take("--release")?,
+                released: args.take("--released")?,
+                source_url: args.take("--source-url")?,
+                notes: args.take("--notes")?,
+            }
+            .tidy();
+            let positional = args.positional_for(USAGE)?;
+            let wanted: Vec<CreditEntry> = match (file, positional.as_slice()) {
+                (Some(path), []) => {
+                    if !flags.is_empty() || clear {
+                        bail!("--file takes its credits from the file, not flags");
+                    }
+                    read_credits(Path::new(&path))?
+                }
+                (None, [id]) => {
+                    if flags.is_empty() != clear {
+                        bail!("give the credit's flags, or --clear to drop an admin's credit");
+                    }
+                    vec![CreditEntry {
+                        map_id: id
+                            .parse()
+                            .map_err(|_| anyhow::anyhow!("{id:?} is not a MapId"))?,
+                        name: None,
+                        credit: flags,
+                    }]
+                }
+                _ => bail!("credit takes one MAP_ID or --file\n\n{USAGE}"),
+            };
+            let client = Client::connect(server)?;
+            let signer = match data {
+                Some(d) => Signer::Operator(crate::live_cmd::operator(Some(d), &client)?),
+                None => {
+                    Signer::Account(pick_account(&client, &accounts_path()?, as_tag.as_deref())?)
+                }
+            };
+            let done = apply_credits(&client, &signer, &wanted, dry_run)?;
+            for line in done {
+                println!("{line}");
+            }
+            Ok(())
+        }
         _ => bail!("{USAGE}"),
     }
+}
+
+/// One `[[mod]]` of a credits file: the package and who made it. Other
+/// keys (`name`, `base`, `confidence`, `evidence`) are for the reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CreditEntry {
+    pub map_id: MapId,
+    /// Checked against the server's name, when given.
+    pub name: Option<String>,
+    pub credit: Credit,
+}
+
+#[derive(serde::Deserialize)]
+struct CreditsFile {
+    #[serde(default, rename = "mod")]
+    mods: Vec<CreditRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreditRow {
+    map_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    authors: Vec<String>,
+    #[serde(default)]
+    release: Option<String>,
+    #[serde(default)]
+    released: Option<String>,
+    #[serde(default)]
+    source_url: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+/// The credits in `path`, each checked as the server checks it.
+pub(crate) fn read_credits(path: &Path) -> Result<Vec<CreditEntry>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    parse_credits(&text).with_context(|| path.display().to_string())
+}
+
+pub(crate) fn parse_credits(text: &str) -> Result<Vec<CreditEntry>> {
+    let file: CreditsFile = toml::from_str(text)?;
+    let mut seen = std::collections::BTreeSet::new();
+    file.mods
+        .into_iter()
+        .map(|r| {
+            let map_id: MapId = r
+                .map_id
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{:?} is not a MapId", r.map_id))?;
+            if !seen.insert(map_id) {
+                bail!("{map_id} is credited twice");
+            }
+            let credit = Credit {
+                authors: r.authors,
+                release: r.release,
+                released: r.released,
+                source_url: r.source_url,
+                notes: r.notes,
+            }
+            .tidy();
+            credit
+                .validate()
+                .map_err(|e| anyhow::anyhow!("{map_id}: {e}"))?;
+            Ok(CreditEntry {
+                map_id,
+                name: r.name,
+                credit,
+            })
+        })
+        .collect()
+}
+
+/// Who signs the credit's token: an admin's account, or the operator.
+pub(crate) enum Signer {
+    Account(crate::live_accounts::LocalAccount),
+    Operator(live_server::ServerIdentity),
+}
+
+impl Signer {
+    fn token(&self, client: &Client, method: &str) -> Result<String> {
+        Ok(match self {
+            Signer::Account(me) => {
+                let key = me.key_pair()?;
+                let author = me
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| live_accounts::author_id(me.xuid, &client.discovery.id));
+                issue_token(&key, &author, &client.discovery.id, method, now())
+            }
+            Signer::Operator(op) => issue_token(&op.key, &op.author(), &op.id, method, now()),
+        })
+    }
+}
+
+/// Puts each credit that differs from the server's (all of them when an
+/// entry clears), or only says what it would with `dry_run`. One line per
+/// package. A package the server does not list, or lists under another
+/// name than the entry's, is an error before anything is sent.
+pub(crate) fn apply_credits(
+    client: &Client,
+    signer: &Signer,
+    wanted: &[CreditEntry],
+    dry_run: bool,
+) -> Result<Vec<String>> {
+    let listed: std::collections::HashMap<MapId, MapSummary> = list(client, None, None)?
+        .into_iter()
+        .map(|m| (m.map_id, m))
+        .collect();
+    for w in wanted {
+        let m = listed
+            .get(&w.map_id)
+            .with_context(|| format!("{}: the server lists no such package", w.map_id))?;
+        if let Some(name) = &w.name
+            && name.trim() != m.name
+        {
+            bail!(
+                "{}: the server names it {:?}, the credit {:?}",
+                w.map_id,
+                m.name,
+                name
+            );
+        }
+    }
+    let mut out = Vec::new();
+    for w in wanted {
+        let m = &listed[&w.map_id];
+        let now_credit = m.credits.clone().unwrap_or_default();
+        let say = match w.credit.names() {
+            Some(n) => n,
+            None if w.credit.is_empty() => "(cleared)".into(),
+            None => "an unknown author".into(),
+        };
+        if !w.credit.is_empty() && now_credit == w.credit {
+            out.push(format!("{}  {}: already {say}", w.map_id, m.name));
+            continue;
+        }
+        if dry_run {
+            out.push(format!(
+                "{}  {}: would credit {say} (now {})",
+                w.map_id,
+                m.name,
+                m.credit.as_deref().unwrap_or("none")
+            ));
+            continue;
+        }
+        let req = client
+            .agent
+            .put(&client.url(&format!("/maps/{}/credit", w.map_id)))
+            .set("content-type", "application/json");
+        let req = client.authorized(req, signer.token(client, lxm::CONTENT_MODERATE)?)?;
+        let body = serde_json::to_vec(&w.credit)?;
+        call(req, Some(&body)).with_context(|| format!("crediting {} ({})", m.name, w.map_id))?;
+        out.push(format!("{}  {}: credited {say}", w.map_id, m.name));
+    }
+    Ok(out)
 }
 
 fn print_published(answer: &MapAnswer) {
@@ -219,10 +443,11 @@ pub(crate) fn publish(
     manifest
         .validate_in(dir)
         .with_context(|| path.display().to_string())?;
-    let (dir_category, dir_source) = extras_in(dir)?;
+    let extras = extras_in(dir)?;
     let mut doc = MapDocument::new(manifest.clone(), None);
-    doc.category = category.or(dir_category);
-    doc.source_url = source_url.or(dir_source);
+    doc.category = category.or(extras.category);
+    doc.source_url = source_url.or(extras.source_url);
+    doc.credit = extras.credit;
     doc.validate_extras().map_err(|e| anyhow::anyhow!(e))?;
     let me = pick_account(client, accounts, as_tag)?;
     let key = me.key_pair()?;
@@ -348,6 +573,143 @@ mod tests {
         std::fs::write(pkg.join("snipers.ips"), b"PATCH changed").unwrap();
         let err = publish(&client, &accounts, None, &pkg, None, None).unwrap_err();
         assert!(format!("{err:#}").contains("SHA-256"), "{err:#}");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn credits_files_read_and_are_checked() {
+        let id = "ab".repeat(32);
+        let ok = parse_credits(&format!(
+            r#"
+[[mod]]
+map_id = "{id}"
+name = "Beasthog"
+base = "zanzibar"
+authors = [" Group Bocked ", ""]
+released = "2005"
+source_url = "https://example.invalid/b"
+confidence = "high"
+evidence = "readme"
+"#
+        ))
+        .unwrap();
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].map_id.to_string(), id);
+        assert_eq!(ok[0].name.as_deref(), Some("Beasthog"));
+        assert_eq!(ok[0].credit.authors, ["Group Bocked"]);
+        assert_eq!(ok[0].credit.released.as_deref(), Some("2005"));
+        assert!(parse_credits("").unwrap().is_empty());
+        let twice = format!("[[mod]]\nmap_id = \"{id}\"\n[[mod]]\nmap_id = \"{id}\"\n");
+        assert!(format!("{:#}", parse_credits(&twice).unwrap_err()).contains("twice"));
+        let bad_date = format!("[[mod]]\nmap_id = \"{id}\"\nreleased = \"soon\"\n");
+        assert!(parse_credits(&bad_date).is_err());
+        assert!(parse_credits("[[mod]]\nmap_id = \"nope\"\n").is_err());
+    }
+
+    #[test]
+    fn the_published_mods_credits_file_reads() {
+        let all = parse_credits(include_str!("../../../docs/game/mod-credits.toml")).unwrap();
+        assert!(all.len() >= 47, "{}", all.len());
+        assert!(
+            all.iter().all(|e| e.name.is_some()),
+            "every entry names its package"
+        );
+        // Nobody is credited as the uploader.
+        assert!(all.iter().all(|e| {
+            !e.credit
+                .authors
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case("afr"))
+        }));
+    }
+
+    #[test]
+    fn the_operator_credits_published_packages_from_a_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-live-credit-{}-{}",
+            std::process::id(),
+            live_proto::sign::random_id()
+        ));
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir.join("server"),
+            Default::default(),
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        let (created, key) = client.create_account("Importer", None).unwrap();
+        let accounts = dir.join("accounts.json");
+        let mut list_of = Vec::new();
+        live_accounts::upsert(
+            &mut list_of,
+            LocalAccount::new(
+                created.xuid,
+                created.gamertag.as_str(),
+                &client.base,
+                &client.discovery,
+                &key,
+            ),
+        );
+        live_accounts::save(&accounts, &list_of).unwrap();
+        let pkg = dir.join("hog");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let patch = b"PATCH invented hog".to_vec();
+        std::fs::write(pkg.join("hog.ips"), &patch).unwrap();
+        let mut m = Manifest::retail("zanzibar", Sha256([0x22; 32]));
+        m.package.name = "Beasthog".into();
+        m.package.author = Some("A Guess".into());
+        m.patches = vec![Layer {
+            file: "hog.ips".into(),
+            sha256: Sha256::of(&patch),
+        }];
+        std::fs::write(pkg.join(MANIFEST_FILE), m.to_toml()).unwrap();
+        let id = publish(&client, &accounts, None, &pkg, None, None)
+            .unwrap()
+            .map
+            .summary
+            .map_id;
+
+        let wanted = parse_credits(&format!(
+            "[[mod]]\nmap_id = \"{id}\"\nname = \"Beasthog\"\nauthors = [\"Group Bocked\"]\nreleased = \"2005\"\n"
+        ))
+        .unwrap();
+        let op = Signer::Operator(
+            crate::live_cmd::operator(Some(dir.join("server").display().to_string()), &client)
+                .unwrap(),
+        );
+        let said = apply_credits(&client, &op, &wanted, true).unwrap();
+        assert!(
+            said[0].contains("would credit Group Bocked (now A Guess)"),
+            "{said:?}"
+        );
+        assert_eq!(
+            list(&client, None, None).unwrap()[0].credit.as_deref(),
+            Some("A Guess")
+        );
+        let said = apply_credits(&client, &op, &wanted, false).unwrap();
+        assert!(said[0].ends_with("credited Group Bocked"), "{said:?}");
+        let listed = &list(&client, None, None).unwrap()[0];
+        assert_eq!(listed.credit.as_deref(), Some("Group Bocked"));
+        assert_eq!(listed.author.gamertag, "Importer");
+        let said = apply_credits(&client, &op, &wanted, false).unwrap();
+        assert!(said[0].ends_with("already Group Bocked"), "{said:?}");
+
+        // A plain account is no admin; a wrong name or id sends nothing.
+        let me = Signer::Account(pick_account(&client, &accounts, None).unwrap());
+        let mut other = wanted.clone();
+        other[0].credit.authors = vec!["Someone".into()];
+        assert!(apply_credits(&client, &me, &other, false).is_err());
+        other[0].name = Some("Not Beasthog".into());
+        assert!(apply_credits(&client, &op, &other, false).is_err());
+        other[0].name = None;
+        other[0].map_id = MapId([7; 32]);
+        assert!(apply_credits(&client, &op, &other, false).is_err());
+        assert_eq!(
+            list(&client, None, None).unwrap()[0].credit.as_deref(),
+            Some("Group Bocked")
+        );
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
     }
