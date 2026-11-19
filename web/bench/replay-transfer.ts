@@ -16,12 +16,29 @@ const chunks = Array.from({ length: match.chunks }, (_, i) => {
 const utf8 = new TextDecoder();
 const fromJson = (b: Uint8Array): Frame[] => JSON.parse(utf8.decode(b));
 
+// Validate every endpoint before timing. Oct normals and radians go through
+// libm in Rust and JavaScript, so allow a few double-precision ulps.
+function checkValue(actual: unknown, expected: unknown): void {
+  if (actual === expected) return;
+  if (typeof actual === "number" && typeof expected === "number") {
+    assert.ok(Math.abs(actual - expected) <= 8 * Number.EPSILON * Math.max(1, Math.abs(expected)), `${actual} versus ${expected}`);
+    return;
+  }
+  assert.ok(actual !== null && typeof actual === "object");
+  assert.ok(expected !== null && typeof expected === "object");
+  assert.equal(Array.isArray(actual), Array.isArray(expected));
+  const keys = Object.keys(expected);
+  assert.equal(Object.keys(actual).length, keys.length);
+  for (const k of keys) {
+    assert.ok(Object.hasOwn(actual, k));
+    checkValue((actual as Record<string, unknown>)[k], (expected as Record<string, unknown>)[k]);
+  }
+}
+
 for (const c of chunks) {
   const actual = await decodeChunk(c.binary);
   const expected = fromJson(c.json);
-  // Golden vectors check each field exactly. Here check every frame's
-  // identity, allowing for different libm rounding in the scene's vectors.
-  assert.deepEqual(actual.map(f => [f.game_id, f.tick, f.players.length]), expected.map(f => [f.game_id, f.tick, f.players.length]));
+  checkValue(actual, expected);
 }
 
 // Warm both paths, alternate their order, time from the received bytes.

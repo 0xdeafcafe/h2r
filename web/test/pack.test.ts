@@ -120,6 +120,31 @@ describe("packed frames", () => {
     expect(seek.decode(rs[6]!).frame).toEqual(json[6]);
   });
 
+  test("a unit edit mask must end by its fifth group", () => {
+    const d = new FrameDecoder();
+    const key = d.decode(records(load("v7-motion").bin)[0]!);
+    const bits: number[] = [];
+    const u = (n: number, width: number) => {
+      for (let i = 0; i < width; i++) bits.push((n >> i) & 1);
+    };
+    const eg = (n: number, k: number) => {
+      const x = n + 2 ** k;
+      const width = Math.floor(Math.log2(x));
+      u(0, width - k);
+      u(1, 1);
+      u(x, width);
+    };
+    u(7, 4); u(0, 1); eg(key.sid, 0); eg(key.seq + 1, 8);
+    eg(1, 2); u(0, 3); eg(0, 1); // dt, no BSP change, cut or cinematic, zero strings
+    eg(1, 2); u(3, 2); eg(0, 0); // one matched player at the previous cursor
+    for (let i = 0; i < 5; i++) u(16, 5);
+    const delta = new Uint8Array(Math.ceil(bits.length / 8));
+    bits.forEach((bit, i) => { delta[i >> 3]! |= bit << (i & 7); });
+    expect(() => d.decode(delta)).toThrow("unit mask too long");
+    // A rejected delta leaves the stream usable at the same sequence.
+    expect(d.decode(records(load("v7-motion").bin)[1]!).frame.tick).toBe(1);
+  });
+
   test("container reads cannot borrow bytes from the following record", () => {
     const good = records(load("multiplayer").bin)[0]!;
     const bad = new Uint8Array(3 + good.length);

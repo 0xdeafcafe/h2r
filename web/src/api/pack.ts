@@ -65,6 +65,7 @@ export class BitReader {
   private pos = 0;
   private end: number;
   precise = false;
+  span = 0;
   constructor(private readonly bytes: Uint8Array) { this.end = bytes.length * 8; }
 
   record(start: number, end: number) {
@@ -146,10 +147,10 @@ function dyaw(q: number): number {
 // Field values as the wire holds them.
 type Id = { datum: number } | { player: number } | { text: string };
 type Vec3 = [number, number, number];
-type Direction = { x: number; y: number; unit: Vec3 };
+type Direction = { x: number; y: number; max: number; unit?: Vec3 };
 type Val = null | boolean | number | Vec3 | Direction | string | Id | readonly number[];
 
-const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions, Vel, Agos }
+const enum K { Bool, Pos, Angle, Dir, Str, Id, Uint, Bits, Actions, Vel, Agos, AnimPhase }
 interface Field { kind: K; arg?: number; opt?: boolean; key?: boolean }
 
 const f = (kind: K, arg?: number): Field => ({ kind, arg });
@@ -159,7 +160,7 @@ const key = (kind: K, arg?: number): Field => ({ kind, arg, key: true });
 /** Version 3's unit fields, after version 2's 13: vel, fire, body, shield, seat, actions_ago. */
 const UNIT_V3: Field[] = [o(K.Vel), o(K.Uint, 1), o(K.Bits, 6), o(K.Uint, 3), o(K.Uint, 0), o(K.Agos)];
 /** Version 4's: the animation's name and frame. */
-const UNIT_V4: Field[] = [o(K.Str), o(K.Uint, 4)];
+const UNIT_V4: Field[] = [o(K.Str), o(K.AnimPhase)];
 const PLAYER_V2: Field[] = [key(K.Uint, 2), f(K.Bool), f(K.Pos), f(K.Angle), o(K.Id), o(K.Str), o(K.Dir), o(K.Str), o(K.Uint, 1), o(K.Bits, 3), o(K.Uint, 6), o(K.Actions), o(K.Bits, 1)];
 const PLAYER_V3 = [...PLAYER_V2, ...UNIT_V3];
 const PLAYER = [...PLAYER_V3, ...UNIT_V4];
@@ -199,20 +200,22 @@ const SCHEMAS: Record<number, Schema> = {
 };
 
 
-/** Where an entity's (non-optional) position and its velocity sit, when it has both: what version 6 predicts from. */
-function motionFields(schema: Field[]): [number, number] | null {
-  const pos = schema.findIndex((x) => x.kind === K.Pos && !x.opt);
-  const vel = schema.findIndex((x) => x.kind === K.Vel);
-  return pos >= 0 && vel >= 0 ? [pos, vel] : null;
-}
-const MOTION = new Map<Field[], [number, number] | null>();
-function motionOf(schema: Field[]): [number, number] | null {
-  let m = MOTION.get(schema);
-  if (m === undefined) {
-    m = motionFields(schema);
-    MOTION.set(schema, m);
+/** A mask has one bit per non-key field. Adjacent bits can be read in a
+ *  single word even when their group starts after a key, as on machines. */
+type DeltaLayout = { mask: { first: number; width: number }[]; motion: [number, number] | null };
+const layouts = new Map<Field[], DeltaLayout>();
+for (const schema of Object.values(SCHEMAS)) for (const [fields] of schema.lists) {
+  if (layouts.has(fields)) continue;
+  const mask: DeltaLayout["mask"] = [];
+  for (let i = 0; i < fields.length;) {
+    if (fields[i]!.key) { i++; continue; }
+    const first = i++;
+    while (i < fields.length && !fields[i]!.key) i++;
+    mask.push({ first, width: i - first });
   }
-  return m;
+  const pos = fields.findIndex(f => f.kind === K.Pos && !f.opt);
+  const vel = fields.findIndex(f => f.kind === K.Vel);
+  layouts.set(fields, { mask, motion: pos >= 0 && vel >= 0 ? [pos, vel] : null });
 }
 
 /** v6 predicts from the mean of both velocities, rounded half up on its
@@ -253,14 +256,14 @@ function vector(r: BitReader, previous: Val | undefined, velocity: boolean): Vec
     const k = velocity ? 8 : 16;
     return [r.seg(k) / scale, r.seg(k) / scale, r.seg(k) / scale];
   }
-  const k = r.precise ? (velocity ? 2 : 3) : (velocity ? 4 : 7);
+  const k = r.precise ? 1 : (velocity ? 4 : 7);
   const component = (base: number) => base + (r.precise && !r.bit() ? 0 : r.seg(k)) / scale;
   return [component(previous[0]!), component(previous[1]!), component(previous[2]!)];
 }
 
 function angularCode(r: BitReader, previous: number | undefined): number {
   if (previous === undefined || r.bit()) return r.bits(14);
-  const delta = r.seg(3);
+  const delta = r.seg(0);
   if (delta < -64 || delta > 63) throw new PackError("angle delta out of range");
   return previous + delta;
 }
@@ -284,7 +287,7 @@ function readValue(r: BitReader, field: Field, prev: Val | undefined, strings: r
       const y = r.precise ? angularCode(r, before?.y) : r.bits(12);
       const max = r.precise ? DIR_MAX : DIR_MAX_V4;
       if (x < 0 || y < 0 || x > max || y > max) throw new PackError("direction out of range");
-      return { x, y, unit: unoct(x, y, max) };
+      return { x, y, max };
     }
     case K.Str: return str(r.eg(3));
     case K.Id: {
@@ -299,6 +302,9 @@ function readValue(r: BitReader, field: Field, prev: Val | undefined, strings: r
         default: throw new PackError("unknown id form");
       }
     }
+    case K.AnimPhase:
+      return r.precise && typeof prev === "number" && r.span >= 1 && r.span <= PREDICT_TICKS && r.bit()
+        ? prev + ANIM_SCALE * r.span : r.eg(4);
     case K.Uint: return r.eg(field.arg!);
     case K.Bits: {
       const v = r.bits(field.arg!);
@@ -346,39 +352,100 @@ function readFull(r: BitReader, schema: Field[], max: number, strings: readonly 
   return out;
 }
 
-/** Advance a v7 unit from the previously transmitted velocity, rounding
- *  the displacement to the position grid with ties away from zero. */
-function predictedPosition(e: Entity, [pos, vel]: [number, number], dt: number): Vec3 | undefined {
-  const v = e[vel] as Vec3 | null;
-  if (!v) return;
-  const step = (velocity: number) => {
-    const q = velocity * 1024 * dt / 30;
-    return Math.sign(q) * Math.round(Math.abs(q)) / 1024;
-  };
-  const x = step(v[0]), y = step(v[1]), z = step(v[2]);
-  if (x === 0 && y === 0 && z === 0) return;
-  const p = e[pos] as Vec3;
-  return [p[0] + x, p[1] + y, p[2] + z];
+/** Each 5-bit group contains four field toggles and one continuation bit.
+ *  Expand the wire order to schema bits once for each unit type. */
+function unitMask(order: number[]): Uint32Array {
+  const table = new Uint32Array(5 * 16);
+  for (let i = 0; i < order.length; i++) {
+    for (let n = 0; n < 16; n++) {
+      if (n & (1 << (i % 4))) table[(i >> 2) * 16 + n]! |= 1 << order[i]!;
+    }
+  }
+  return table;
 }
 
-function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly Entity[], strings: readonly string[], dt: number, predicting: boolean): Entity[] {
+const PLAYER_MASK = unitMask([14, 16, 3, 8, 13, 2, 6, 11, 20, 9, 10, 7, 1, 4, 5, 12, 15, 17, 18, 19]);
+const ACTOR_MASK = unitMask([14, 16, 3, 6, 13, 2, 4, 11, 20, 9, 10, 5, 1, 7, 8, 12, 15, 17, 18, 19]);
+
+function readUnitMask(r: BitReader, table: Uint32Array, previous: number): number {
+  for (let offset = 0; offset < table.length; offset += 16) {
+    const group = r.bits(5);
+    previous ^= table[offset + (group & 15)]!;
+    if (group < 16) return previous;
+  }
+  throw new PackError("unit mask too long");
+}
+
+function sameUnit(a: Entity, b: Entity): boolean {
+  const key = a[0], other = b[0];
+  if (typeof key === "number") return key === other;
+  return !!key && typeof key === "object" && "datum" in key &&
+    !!other && typeof other === "object" && "datum" in other && key.datum === other.datum;
+}
+
+/** Immutable entity arrays double as history. A run can share the previous
+ *  entity until the first field actually moves. Edits always own their copy. */
+function advance(before: Entity, older: Entity | undefined, motion: [number, number],
+                 aimField: number, dt: number, edit: boolean): Entity {
+  let e = edit ? before.slice() : before;
+  const [pos, vel] = motion;
+  const v = before[vel] as Vec3 | null;
+  let end = v;
+  if (older && sameUnit(before, older)) {
+    const yaw = before[3] as number;
+    const nextYaw = (2 * yaw - (older[3] as number)) & 16383;
+    if (nextYaw !== yaw) {
+      if (e === before) e = before.slice();
+      e[3] = nextYaw;
+    }
+    const a = before[aimField] as Direction | null, b = older[aimField] as Direction | null;
+    if (a && b && (a.x !== b.x || a.y !== b.y)) {
+      const x = Math.min(DIR_MAX, Math.max(0, 2 * a.x - b.x));
+      const y = Math.min(DIR_MAX, Math.max(0, 2 * a.y - b.y));
+      if (x !== a.x || y !== a.y) {
+        if (e === before) e = before.slice();
+        e[aimField] = { x, y, max: DIR_MAX };
+      }
+    }
+    const old = older[vel] as Vec3 | null;
+    if (v && old && (v[0] !== old[0] || v[1] !== old[1] || v[2] !== old[2])) {
+      if (e === before) e = before.slice();
+      e[vel] = end = [2 * v[0] - old[0], 2 * v[1] - old[1], 2 * v[2] - old[2]];
+    }
+  }
+  if (v && end) {
+    const step = (velocitySum: number) => {
+      const q = velocitySum * 512 * dt / 30;
+      return Math.sign(q) * Math.round(Math.abs(q)) / 1024;
+    };
+    const x = step(v[0] + end[0]), y = step(v[1] + end[1]), z = step(v[2] + end[2]);
+    if (x || y || z) {
+      if (e === before) e = before.slice();
+      const p = before[pos] as Vec3;
+      e[pos] = [p[0] + x, p[1] + y, p[2] + z];
+    }
+  }
+  return e;
+}
+
+function readDelta(r: BitReader, schema: Field[], max: number, prev: Entity[], strings: readonly string[], dt: number, predicting: boolean, older?: Entity[]): Entity[] {
   const n = readCount(r, max);
-  const motion = predicting && dt <= PREDICT_TICKS ? motionOf(schema) : null;
+  if (!n && !prev.length) return prev;
+  const layout = layouts.get(schema)!;
+  const motion = predicting && dt <= PREDICT_TICKS ? layout.motion : null;
   const advancing = r.precise && dt > 0 ? motion : null;
+  const table = r.precise ? (schema === PLAYER ? PLAYER_MASK : schema === ACTOR ? ACTOR_MASK : null) : null;
+  const aimField = schema === PLAYER ? 6 : 4;
   const out: Entity[] = [];
   let cursor = 0, mask = 0;
   while (out.length < n) {
     if (!r.bit()) {
       const run = r.eg(2) + 1;
       if (out.length + run > n || cursor + run > prev.length) throw new PackError("run past the list");
+      if (!advancing && !out.length && run === n && n === prev.length) return prev;
       for (let i = 0; i < run; i++) {
         const e = prev[cursor + i]!;
-        const predicted = advancing && predictedPosition(e, advancing, dt);
-        if (advancing && predicted) {
-          const moved = e.slice();
-          moved[advancing[0]] = predicted;
-          out.push(moved);
-        } else out.push(e);
+        out.push(advancing ? advance(e, older?.[cursor + i], advancing, aimField, dt, false) : e);
       }
       cursor += run;
       continue;
@@ -388,27 +455,20 @@ function readDelta(r: BitReader, schema: Field[], max: number, prev: readonly En
       const before = prev[j];
       if (j < 0 || !before) throw new PackError("entity refers past the list");
       // The changed fields' mask (keys never change), then their values.
-      if (!r.precise || r.bit()) {
+      if (table) mask = readUnitMask(r, table, mask);
+      else if (!r.precise || r.bit()) {
         mask = 0;
-        for (let i = 0; i < schema.length; i++) if (!schema[i]!.key && r.bit()) mask |= 1 << i;
+        for (const group of layout.mask) mask |= r.bits(group.width) << group.first;
       }
-      const e = before.slice();
+      const e = advancing ? advance(before, older?.[j], advancing, aimField, dt, true) : before.slice();
       // A predicted position: its error now, the prediction once the new
       // velocity (a later field) is read.
       const base = !r.precise && motion ? legacyVelocity(before[motion[1]]) : null;
-      if (advancing) {
-        const predicted = predictedPosition(before, advancing, dt);
-        if (predicted) e[advancing[0]] = predicted;
-      }
       let error: [number, number, number] | null = null;
       for (let fields = mask; fields; fields &= fields - 1) {
         const i = 31 - Math.clz32(fields & -fields);
         if (base && motion && i === motion[0]) error = [r.seg(PREDICT_K), r.seg(PREDICT_K), r.seg(PREDICT_K)];
-        else if (r.precise && i === 20 && before[i] != null && dt > 0 && dt <= PREDICT_TICKS) {
-          // The unit's animation phase usually advances one frame per tick.
-          if (!r.bit()) e[i] = null;
-          else e[i] = r.bit() ? (before[i] as number) + 16 * dt : r.eg(4);
-        } else e[i] = readField(r, schema[i]!, e[i], strings);
+        else e[i] = readField(r, schema[i]!, e[i], strings);
       }
       if (base && motion && error) {
         e[motion[0]] = legacyPosition(before[motion[0]] as Vec3, base, e[motion[1]], dt, error);
@@ -432,7 +492,10 @@ function idText(v: Val): string {
   return id.text;
 }
 const pos = (v: Val) => v as Vec3;
-const dir = (v: Val) => (v as Direction).unit;
+function dir(v: Val): Vec3 {
+  const d = v as Direction;
+  return d.unit ??= unoct(d.x, d.y, d.max);
+}
 function enumOf(table: readonly string[], v: number): string {
   const s = table[v];
   if (s === undefined) throw new PackError("enum value out of range");
@@ -571,6 +634,10 @@ interface StreamState {
   bsp: number | null;
   strings: string[];
   lists: Entity[][];
+  previousPlayers?: Entity[];
+  previousActors?: Entity[];
+  span?: number;
+  frame?: Frame;
 }
 
 export interface Decoded { sid: number; seq: number; keyframe: boolean; frame: Frame }
@@ -640,19 +707,30 @@ export class FrameDecoder {
     for (let i = 0; i < fresh; i++) state.strings.push(readStrLiteral(r));
     let hits: Entity[] = [];
     const dt = state.tick - prev.tick;
-    schema.lists.forEach(([fields, max], n) => {
+    r.span = dt;
+    if (r.precise && !keyframe) {
+      state.span = dt;
+      state.previousPlayers = prev.lists[0];
+      state.previousActors = prev.lists[2];
+    }
+    for (let n = 0; n < schema.lists.length; n++) {
+      const [fields, max] = schema.lists[n]!;
       if (n === 3) hits = readFull(r, schema.hit, 64, state.strings);
-      state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n] ?? [], state.strings, dt, schema.predict);
-    });
-    const [players, vehicles, actors, machines, objects, projectiles, items] = state.lists;
-    const frame: Frame = { game_id: state.gameId, tick: state.tick, players: players!.map(playerFrom) };
-    if (vehicles?.length) frame.vehicles = vehicles.map(vehicleFrom);
-    if (actors?.length) frame.actors = actors.map(actorFrom);
+      const older = dt === prev.span ? (n === 0 ? prev.previousPlayers : n === 2 ? prev.previousActors : undefined) : undefined;
+      state.lists[n] = keyframe ? readFull(r, fields, max, state.strings) : readDelta(r, fields, max, prev.lists[n] ?? [], state.strings, dt, schema.predict, older);
+    }
+    const prior = prev.frame;
+    const lists = state.lists;
+    const frame: Frame = { game_id: state.gameId, tick: state.tick, players:
+      prior && lists[0] === prev.lists[0] ? prior.players : lists[0]!.map(playerFrom) };
+    if (lists[1]?.length) frame.vehicles = lists[1] === prev.lists[1] ? prior!.vehicles : lists[1].map(vehicleFrom);
+    if (lists[2]?.length) frame.actors = lists[2] === prev.lists[2] ? prior!.actors : lists[2].map(actorFrom);
+    if (lists[3]?.length) frame.machines = lists[3] === prev.lists[3] ? prior!.machines : lists[3].map(machineFrom);
+    if (lists[4]?.length) frame.objects = lists[4] === prev.lists[4] ? prior!.objects : lists[4].map(objectFrom);
+    if (lists[5]?.length) frame.projectiles = lists[5] === prev.lists[5] ? prior!.projectiles : lists[5].map(projectileFrom);
+    if (lists[6]?.length) frame.items = lists[6] === prev.lists[6] ? prior!.items : lists[6].map(itemFrom);
     if (hits.length) frame.hits = hits.map(hitOf);
-    if (machines?.length) frame.machines = machines.map(machineFrom);
-    if (objects?.length) frame.objects = objects.map(objectFrom);
-    if (projectiles?.length) frame.projectiles = projectiles.map(projectileFrom);
-    if (items?.length) frame.items = items.map(itemFrom);
+    state.frame = frame;
     if (state.bsp !== null) frame.bsp = state.bsp;
     if (cut !== null) frame.cut = cut;
     if (cinematic) frame.cinematic = true;
