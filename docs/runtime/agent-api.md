@@ -637,6 +637,10 @@ How it behaves (**Code**, with tests in `crates/agent`):
   H2_OPT=2 H2_UI_WATCH=1 h2 serve disc/halo2.iso --out <image> --settings <dir>
   ```
 
+  For a headless System Link lobby, pass `--system-link` to `h2 serve`.
+  This enables XNet with no service URL or Live accounts. The coordinator
+  recipe uses one native process per console. [Dedicated host experiment](../live/dedicated-host.md#mac-system-link-spike)
+
   **Reaching a level select.** There is no campaign or level-select helper:
   `lobby mode campaign` (`agent_proto::sim::menu`) presses A on the main
   menu's Campaign row and expects screen `0xee`, and nothing goes further.
@@ -1235,9 +1239,9 @@ probe (`boot::agent_glue::session_view`):
 |---|---|---|
 | 0 | `none` (menus) | allowed (no players to write) |
 | 1 | `local` (campaign, split screen) | allowed |
-| 2, 3 | `coop_guest`, `coop_host` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
-| 4 | `mp_client` (distributed) | refused: the host owns the state and overwrites it |
-| 5 | `mp_host` (distributed) | allowed: host-authoritative |
+| 2, 3 | `coop_host`, `coop_guest` (synchronous) | **refused**: a write on one machine desyncs the others and trips the sim hash |
+| 4 | `mp_host` (distributed server world) | allowed: host-authoritative |
+| 5 | `mp_client` (distributed client world) | refused: the host owns the state and overwrites it |
 | unreadable | `unknown` | refused |
 
 A refusal is `INVALID_REQUEST` with the session in `data`. In co-op, drive
@@ -1339,9 +1343,11 @@ Game methods (`agent::havok::install`), answered at a tick boundary.
 | Method | Access | What |
 |---|---|---|
 | `havok.bodies` | read | `{near?, radius?, limit?}`: rigid bodies: `entity` (address, the key contacts use), `state` (`active`, `inactive`, `fixed`), `object` (agent id) and `datum`, `pos`, `velocity`, `angular_velocity`, `inv_mass`, `mass`, `friction`, `restitution`, and `shape` where it reads: `addr`, `vtable`, `kind` (`capsule`: `a`, `b` in the body's frame, `radius`, `height`; `sphere`: `radius`; `transform`: `translation`, `child`; else `other`). `near` (an object id) keeps bodies within `radius` (default 5) of its body, nearest first, with `distance`; `limit` default 64 |
+| `havok.agents` | read | `{object}` lists collision pairs and cached state. Details below. |
 | `havok.contacts` | read | `{object?}`: contact constraints, each `a`, `b` (`entity`, `object`, `datum`, `fixed` for the level and static bodies) and `points`: `pos`, `normal` (from `b` toward `a`, **S**), `distance` (negative is penetration), `impulse` (what the solver applied on its last step), `friction`, `restitution`. With `object`, only its contacts, with it as `a` |
 
 ```sh
+h2 agent havok.agents '{"object":"player.0"}'
 h2 agent havok.contacts '{"object":"player.0"}'
 h2 agent havok.bodies '{"near":"player.0","radius":3}'
 ```
@@ -1349,13 +1355,55 @@ h2 agent havok.bodies '{"near":"player.0","radius":3}'
 For a superbounce, poll `havok.contacts {object: player.0}` once a tick
 on one `h2 agent -` connection next to `object player.0`: the contact
 with `b.fixed` is the level, and `impulse` over the body's `mass` is the
-velocity it gave. Which triangle a point is on is not read yet
-([havok-runtime.md](../engine/havok-runtime.md), "Open").
+velocity it gave. Read the matching agent's child keys and contact IDs
+to see which structure surfaces have a cached manifold at that tick.
 
-A biped's `shape` is its standing or its crouching pill, chosen when its
-body is built ([havok-runtime.md](../engine/havok-runtime.md), "Shapes"):
-`height` says which (0.725 and 0.5 for `masterchief_mp`), and the address
-names the pill.
+For a direct biped capsule, `shape.height` distinguishes the standing and
+crouching pills (0.725 and 0.5 for `masterchief_mp`). A type-`0x17`
+wrapper reports `kind: "other"` in `havok.bodies`; its current pill is the
+pointer at `shape+0x30`. See [Shapes](../engine/havok-runtime.md#shapes).
+
+### `havok.agents`
+
+`object` is required. The reply contains `object`, a tick stamp (`at`) and
+`agents`. Each entry covers a pair with an allocated agent on any rigid
+body of that object. A live object with no such pair returns an empty list.
+A malformed selector returns `INVALID_PARAMS`. An absent object or a player
+between lives returns `GONE`.
+
+- `entry`, `island` and `collidables: [a,b]` are guest addresses in native
+  pair order. `object_side` is `a` or `b`, and `entity` is the requested
+  object's participating rigid body. `other` identifies the partner entity,
+  with its `datum`, object ID and fixed-island flag where available. It is
+  omitted for a partner without an entity. `pair_word` preserves the last
+  four bytes of the pair record.
+- `cache` contains `base`, `vtable`, `manager`, `kind` and `hex`. Addresses,
+  keys and raw words are eight lowercase hex digits. `hex` is two digits per
+  guest byte starting at `base`, including the allocation header and padding.
+- A `bv_tree` or `welded_bv_tree` also has `tree`. Its `min` and `max` are the
+  cached query box in the tree's frame. Each immediate child has `entry`,
+  `key`, raw `word_04` and its own `cache`. A type-1 structure MOPP key also
+  has `surface`, the numeric collision BSP surface index. A filtered child
+  appears as `kind: "empty"` with its shared header.
+- A `convex` or `swept_convex` cache has a `convex` block. `vertices_a` and
+  `vertices_b` are active support vertex IDs in that agent's dispatch order.
+  For convex against tree, child A is the convex body and child B is the
+  selected tree shape. `contact_ids` are the child manifold's IDs in the
+  shared manager. `separating_axis` and `separating_distance` describe the
+  separation bound used to skip a closest-feature search while positive.
+  Nonfinite decoded vectors or distances are null. `swept_sides` on the
+  swept agent records A in bit 0 and B in bit 1.
+- Unrecognised agents report `kind: "other"` and their inline bytes. Bounds
+  include 32,768 scanned pairs, 512 children per tree, 4 KiB per allocation
+  and 256 KiB of raw cache bytes per request. A failed memory read or exceeded
+  bound returns `UNAVAILABLE`.
+
+To compare ticks around a crouch, match a child by the partner and complete
+`key`. Record both agent bases to see replacements and inspect the active
+vertices, contact IDs and separation bound. Allocators can reuse an address
+between samples. The raw dump also contains
+pointers, unused slots and padding. A cached surface with an empty manifold
+is still a candidate in the query box.
 
 ## `world.raw`: an object's bytes, before and after
 

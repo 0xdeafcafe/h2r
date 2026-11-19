@@ -11,7 +11,10 @@ pub mod method {
     /// Contact points ([`super::ContactsParams`] → [`super::Contacts`]).
     pub const CONTACTS: &str = "havok.contacts";
 
-    pub const ALL: &[&str] = &[BODIES, CONTACTS];
+    /// Per-pair cached collision state ([`super::AgentsParams`] → [`super::Agents`]).
+    pub const AGENTS: &str = "havok.agents";
+
+    pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS];
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -152,4 +155,73 @@ pub struct Contact {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Contacts {
     pub contacts: Vec<Contact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsParams {
+    pub object: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Agents {
+    pub object: String,
+    pub agents: Vec<CollisionAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CollisionAgent {
+    pub entry: String,
+    pub island: String,
+    pub collidables: [String; 2],
+    /// `a` or `b` in dispatch order. `entity` belongs to the requested object.
+    pub object_side: String,
+    pub entity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other: Option<Side>,
+    pub pair_word: String,
+    pub cache: AgentCache,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree: Option<TreeCache>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentCache {
+    pub base: String,
+    pub manager: String,
+    pub vtable: String,
+    pub kind: String,
+    /// The complete inline allocation, including its header, in guest byte order.
+    pub hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub convex: Option<ConvexCache>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConvexCache {
+    pub vertices_a: Vec<u16>,
+    pub vertices_b: Vec<u16>,
+    pub contact_ids: Vec<u16>,
+    pub separating_axis: Option<[f32; 3]>,
+    pub separating_distance: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swept_sides: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TreeCache {
+    pub min: Option<[f32; 3]>,
+    pub max: Option<[f32; 3]>,
+    pub children: Vec<ChildCache>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChildCache {
+    pub entry: String,
+    pub key: String,
+    pub word_04: String,
+    /// BSP collision surface index for a type-1 key of the structure MOPP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<u16>,
+    pub cache: AgentCache,
 }
