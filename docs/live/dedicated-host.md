@@ -156,8 +156,12 @@ on a port other than the default 8074 without a public URL.
 Locally the server launches `h2 host run` with a writable directory under
 `<server-data>/hosts/<lease-id>`. A standalone `h2-live-server` deployment
 sets `LIVE_HOST_BIN` to the host-capable `h2` binary. Otherwise the provider
-uses the current executable. The local provider keeps the child handle,
-checks it with `try_wait` and reaps it when stopped.
+uses the current executable. The supervisor receives the full lease in
+`H2_HOST_LEASE_JSON` and checks that its ID matches `--lease` before
+provisioning. Concurrent local hosts use separate seven-port UDP ranges,
+starting at `H2_BASE_PORT` (default 31000). Each tunnel host also gets a
+separate TCP listener. On Unix, Live starts the supervisor in its own
+process group so an operator stop reaches both the supervisor and its game.
 
 ## Routing, assignment and arbitration
 
