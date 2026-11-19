@@ -10,8 +10,8 @@ use shaders::psh::PixelUniforms;
 use shaders::vsh::VertexUniforms;
 
 use crate::gpu::{Image, texture};
-use crate::light_look::{FRAME_DWORDS, LightProgram, LightStage, light_vertex};
-use crate::program::{INPUTS, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor, uniform_entry};
+use crate::light_look::{FRAME_DWORDS, LightProgram, LightStage, colour_uniforms, light_vertex};
+use crate::program::{INPUTS, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 use crate::world::WorldVertex;
 
 /// The texture shapes a light stage binds.
@@ -131,7 +131,6 @@ pub struct LightGpu {
     pub program: LightProgram,
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
-    uniforms_layout: wgpu::BindGroupLayout,
     textures_layout: wgpu::BindGroupLayout,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
@@ -139,11 +138,14 @@ pub struct LightGpu {
 }
 
 impl LightGpu {
-    /// Uploads `program`; `None` when a stage's bitmap does not decode.
+    /// Uploads `program`, its uniforms in group 0 laid out as
+    /// `uniforms_layout` ([`uniforms_layout`]: one buffer per run, dynamic
+    /// offsets); `None` when a stage's bitmap does not decode.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         program: LightProgram,
+        uniforms_layout: &wgpu::BindGroupLayout,
         stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
     ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
@@ -159,13 +161,6 @@ impl LightGpu {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("native light pass"),
             source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
-        });
-        let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("native light uniforms"),
-            entries: &[
-                uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT),
-                uniform_entry(1, wgpu::ShaderStages::VERTEX_FRAGMENT),
-            ],
         });
         let mut entries = Vec::new();
         for (n, d) in program.dims.iter().enumerate() {
@@ -193,7 +188,7 @@ impl LightGpu {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("native light pass"),
-            bind_group_layouts: &[Some(&uniforms_layout), Some(&textures_layout)],
+            bind_group_layouts: &[Some(uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
         let samplers = std::array::from_fn(|n| device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref())));
@@ -201,7 +196,6 @@ impl LightGpu {
             program,
             module,
             layout,
-            uniforms_layout,
             textures_layout,
             samplers,
             stage_views,
@@ -242,48 +236,6 @@ impl LightGpu {
             layout: &self.textures_layout,
             entries: &entries,
         }))
-    }
-
-    /// One light's uniforms for this frame: the view's constants, then the
-    /// light's frame constants (`c[31]`..`c[39]`).
-    pub fn uniforms(&self, device: &wgpu::Device, queue: &wgpu::Queue, view: &ViewInputs, frame: &[u32; FRAME_DWORDS]) -> wgpu::BindGroup {
-        self.uniforms_of(device, queue, &self.program, view, frame)
-    }
-
-    /// [`Self::uniforms`] with the constants of `program`, the same pass
-    /// resolved with another light's inputs ([`light_gpu_key`] equal).
-    pub fn uniforms_of(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        program: &LightProgram,
-        view: &ViewInputs,
-        frame: &[u32; FRAME_DWORDS],
-    ) -> wgpu::BindGroup {
-        let vertex = light_vertex(&frame_vertex(&program.vertex, view), frame);
-        let pixel = frame_pixel(&program.pixel, view);
-        let buffer = |label, bytes: &[u8]| {
-            let b = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&b, 0, bytes);
-            b
-        };
-        let vb = buffer("native light vertex", &vertex.to_bytes());
-        let pb = buffer("native light pixel", &pixel.to_bytes());
-        debug_assert_eq!(vertex.to_bytes().len(), VertexUniforms::SIZE);
-        debug_assert_eq!(pixel.to_bytes().len(), PixelUniforms::SIZE);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native light uniforms"),
-            layout: &self.uniforms_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: vb.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: pb.as_entire_binding() },
-            ],
-        })
     }
 
     /// Makes the pipeline for these target formats, with the pass's own
@@ -334,13 +286,15 @@ impl LightGpu {
     }
 
     /// Records one light's draw of `indices` (the world's vertex and index
-    /// buffers bound, the pipeline made for these formats). `false`:
-    /// nothing recorded.
+    /// buffers bound, the pipeline made for these formats), its uniforms at
+    /// `offsets` (vertex, pixel) in the run's group. `false`: nothing
+    /// recorded.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         uniforms: &wgpu::BindGroup,
+        offsets: [u32; 2],
         textures: &wgpu::BindGroup,
         indices: std::ops::Range<u32>,
         color: wgpu::TextureFormat,
@@ -348,7 +302,7 @@ impl LightGpu {
     ) -> bool {
         let Some(p) = self.pipelines.get(&(color, depth)) else { return false };
         pass.set_pipeline(p);
-        pass.set_bind_group(0, uniforms, &[]);
+        pass.set_bind_group(0, uniforms, &offsets);
         pass.set_bind_group(1, textures, &[]);
         pass.set_blend_constant(self.program.state.blend_constant);
         pass.draw_indexed(indices, 0, 0..1);
@@ -373,12 +327,45 @@ fn same_gpu_pass(a: &LightProgram, b: &LightProgram) -> bool {
             == format!("{:?}", (&b.stages, &b.samplers, &b.dims, &b.signed, &b.state))
 }
 
+/// The uniforms group's layout: the vertex and pixel uniforms, each at a
+/// dynamic offset in one buffer per run.
+pub fn uniforms_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let entry = |binding, size: usize| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: wgpu::BufferSize::new(size as u64),
+        },
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("native light uniforms"),
+        entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
+    })
+}
+
+/// Where each draw's uniforms sit in a run's buffer: `(vertex, pixel)`
+/// offsets for draw `i` of `count`, each block aligned to `align`, and the
+/// buffer's size.
+pub fn run_layout(count: usize, align: u64) -> (Vec<[u32; 2]>, u64) {
+    let align = align.max(1);
+    let up = |n: u64| n.div_ceil(align) * align;
+    let (v, p) = (up(VertexUniforms::SIZE as u64), up(PixelUniforms::SIZE as u64));
+    let offsets = (0..count as u64).map(|i| [(i * (v + p)) as u32, (i * (v + p) + v) as u32]).collect();
+    (offsets, count as u64 * (v + p))
+}
+
 /// One light's draw of one lit pass: the pass resolved with the light's
-/// inputs, its GPU key ([`light_gpu_key`]), the light's frame constants
-/// and gel, and the world's index ranges it covers.
+/// inputs but its colours, its GPU key ([`light_gpu_key`]), the light's
+/// colours (put in by [`colour_uniforms`]), frame constants and gel, and
+/// the world's index ranges it covers.
 pub struct LightDraw<'a> {
     pub program: &'a LightProgram,
     pub key: u64,
+    /// Colours A and B (engine vectors 5 and 6).
+    pub colours: [[f32; 3]; 2],
     pub frame: &'a [u32; FRAME_DWORDS],
     /// The gel's `bitm` datum (image 0), for a pass that samples it.
     pub gel: Option<u32>,
@@ -388,18 +375,18 @@ pub struct LightDraw<'a> {
 /// The world's light passes on the GPU: the engine's light textures, the
 /// gels by datum and the passes by key, made as lights first need them.
 /// `None` entries remember what did not upload.
-#[derive(Default)]
 pub struct LightSet {
     pub textures: LightTextures,
+    uniforms_layout: wgpu::BindGroupLayout,
     gels: HashMap<u32, Option<wgpu::TextureView>>,
     passes: HashMap<u64, Option<LightGpu>>,
 }
 
 /// A light draw made ready before the render pass: its pass's key, its
-/// groups and ranges.
+/// texture group, its uniforms' offsets in the run's group, its ranges.
 struct Prepared {
     key: u64,
-    uniforms: wgpu::BindGroup,
+    offsets: [u32; 2],
     textures: wgpu::BindGroup,
     ranges: Vec<std::ops::Range<u32>>,
 }
@@ -413,6 +400,7 @@ impl LightSet {
                 normalization: normalization.map(|i| layered_texture(device, queue, i, "native light normalization")),
                 attenuation: attenuation.map(|i| layered_texture(device, queue, i, "native light attenuation")),
             },
+            uniforms_layout: uniforms_layout(device),
             gels: HashMap::new(),
             passes: HashMap::new(),
         }
@@ -434,9 +422,10 @@ impl LightSet {
             .clone()
     }
 
-    /// The draws' groups, their passes made (with pipelines for these
-    /// formats) as needed; a draw whose pass, stage image, engine texture
-    /// or gel is missing is left out.
+    /// The draws' texture groups and one uniforms group for the run (one
+    /// buffer, each draw's uniforms at its own offsets), their passes made
+    /// (with pipelines for these formats) as needed; a draw whose pass,
+    /// stage image, engine texture or gel is missing is left out.
     #[allow(clippy::too_many_arguments)]
     fn prepare(
         &mut self,
@@ -448,8 +437,8 @@ impl LightSet {
         draws: &[LightDraw<'_>],
         stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
-    ) -> Vec<Prepared> {
-        let mut out = Vec::new();
+    ) -> Option<(wgpu::BindGroup, Vec<Prepared>)> {
+        let mut ready = Vec::new();
         for d in draws {
             if d.ranges.is_empty() {
                 continue;
@@ -460,31 +449,77 @@ impl LightSet {
             };
             let stale = self.passes.get(&d.key).is_some_and(|p| p.as_ref().is_some_and(|p| !same_gpu_pass(&p.program, d.program)));
             if stale || !self.passes.contains_key(&d.key) {
-                let p = LightGpu::new(device, queue, d.program.clone(), &mut *stage_image);
+                let p = LightGpu::new(device, queue, d.program.clone(), &self.uniforms_layout, &mut *stage_image);
                 self.passes.insert(d.key, p);
             }
             let Some(Some(pass)) = self.passes.get_mut(&d.key) else { continue };
             pass.pipeline(device, color, depth);
             let Some(textures) = pass.textures(device, &self.textures, gel.as_ref()) else { continue };
-            let uniforms = pass.uniforms_of(device, queue, d.program, view, d.frame);
-            out.push(Prepared {
+            ready.push((d, textures));
+        }
+        if ready.is_empty() {
+            return None;
+        }
+        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
+        let (offsets, size) = run_layout(ready.len(), align);
+        let mut bytes = vec![0u8; size as usize];
+        for ((d, _), o) in ready.iter().zip(&offsets) {
+            let [a, b] = d.colours;
+            let (vertex, pixel) = colour_uniforms(d.program, a, b);
+            let vertex = light_vertex(&frame_vertex(&vertex, view), d.frame).to_bytes();
+            let pixel = frame_pixel(&pixel, view).to_bytes();
+            let (v, p) = (o[0] as usize, o[1] as usize);
+            bytes[v..v + vertex.len()].copy_from_slice(&vertex);
+            bytes[p..p + pixel.len()].copy_from_slice(&pixel);
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("native light run uniforms"),
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&buffer, 0, &bytes);
+        let entry = |binding: u32, size: usize| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(size as u64),
+            }),
+        };
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native light run uniforms"),
+            layout: &self.uniforms_layout,
+            entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
+        });
+        let prepared = ready
+            .into_iter()
+            .zip(offsets)
+            .map(|((d, textures), offsets)| Prepared {
                 key: d.key,
-                uniforms,
+                offsets,
                 textures,
                 ranges: d.ranges.clone(),
-            });
-        }
-        out
+            })
+            .collect();
+        Some((group, prepared))
     }
 
     /// Records `draws` into `pass` (the world's vertex and index buffers
     /// bound), after [`Self::prepare`]. Returns how many ranges were drawn.
-    fn record(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &[Prepared], color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> usize {
+    fn record(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        uniforms: &wgpu::BindGroup,
+        prepared: &[Prepared],
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+    ) -> usize {
         let mut drawn = 0;
         for p in prepared {
             let Some(Some(gpu)) = self.passes.get(&p.key) else { continue };
             for r in &p.ranges {
-                if gpu.draw(pass, &p.uniforms, &p.textures, r.clone(), color, depth) {
+                if gpu.draw(pass, uniforms, p.offsets, &p.textures, r.clone(), color, depth) {
                     drawn += 1;
                 }
             }
@@ -513,10 +548,9 @@ impl LightSet {
         stage_image: &mut dyn FnMut(LightStage) -> Option<Image>,
         gel_image: &mut dyn FnMut(u32) -> Option<Image>,
     ) -> usize {
-        let prepared = self.prepare(device, queue, color_format, depth_format, view, draws, stage_image, gel_image);
-        if prepared.is_empty() {
+        let Some((uniforms, prepared)) = self.prepare(device, queue, color_format, depth_format, view, draws, stage_image, gel_image) else {
             return 0;
-        }
+        };
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native lights"),
@@ -547,7 +581,7 @@ impl LightSet {
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
         pass.set_vertex_buffer(0, vertices.slice(..));
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-        self.record(&mut pass, &prepared, color_format, depth_format)
+        self.record(&mut pass, &uniforms, &prepared, color_format, depth_format)
     }
 }
 
@@ -567,6 +601,23 @@ mod tests {
         odd[3] = (3, 1, 1, vec![0; 4]);
         assert!(LayeredImage::cube(odd).is_none(), "sizes differ");
         assert!(LayeredImage::cube((0..6).map(|f| (f, 2, 1, vec![0; 8])).collect()).is_none(), "not square");
+    }
+
+    #[test]
+    fn a_runs_uniforms_share_one_buffer_at_aligned_offsets() {
+        let (v, p) = (VertexUniforms::SIZE as u64, PixelUniforms::SIZE as u64);
+        let up = |n: u64| n.div_ceil(256) * 256;
+        let (offsets, size) = run_layout(3, 256);
+        let stride = up(v) + up(p);
+        assert_eq!(size, 3 * stride);
+        for (i, o) in offsets.iter().enumerate() {
+            assert_eq!(u64::from(o[0]), i as u64 * stride);
+            assert_eq!(u64::from(o[1]), i as u64 * stride + up(v));
+            assert_eq!((o[0] % 256, o[1] % 256), (0, 0));
+            assert!(u64::from(o[1]) + p <= size);
+        }
+        assert_eq!(run_layout(0, 256), (Vec::new(), 0));
+        assert_eq!(run_layout(1, 0).1, v + p, "no alignment asked");
     }
 
     #[test]

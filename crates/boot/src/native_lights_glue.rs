@@ -16,8 +16,10 @@
 //! - **Per light** ([`LightsWorld::plan`]): the parts whose bounds meet
 //!   the light's sphere, by material; for each the implementation the
 //!   engine would take (`engine::light_passes::implementation`), the
-//!   material resolved with the light's inputs, `light_look` and
-//!   `compile_light`, cached by inputs (`LookCache`). A light that meets a
+//!   material resolved with the light's inputs but its colours,
+//!   `light_look` and `compile_light`, cached by those inputs (`LookCache`;
+//!   the colours go into each light's uniforms, `colour_uniforms`, so an
+//!   animated colour resolves nothing). A light that meets a
 //!   surface it cannot light, or whose pass is refused, keeps its D3D
 //!   passes.
 //! - [`Host::accepts`]: [`drawable`] and a plan over the loaded world.
@@ -301,7 +303,9 @@ impl LightsWorld {
         let c = light.constants.filter(|c| !c.shadowed())?;
         let (centre, radius) = light.bounds;
         let meeting = parts_meeting(&self.parts, &self.elsewhere, centre, radius)?;
-        let inputs = LightInputs::from_constants(&c);
+        // Resolved without the colours, which each light's uniforms take
+        // (`colour_uniforms`): a light whose colour animates keeps its key.
+        let inputs = LightInputs::from_constants(&c).without_colours();
         let key = inputs.key();
         let mut out = Vec::new();
         let mut r = self.resolver.lock().unwrap_or_else(|e| e.into_inner());
@@ -566,6 +570,10 @@ impl d3d::ExternalPass for RunPass {
                 planned.iter().map(move |p| LightDraw {
                     program: &p.compiled.program,
                     key: p.compiled.key,
+                    colours: {
+                        let l = LightInputs::from_constants(c);
+                        [l.colour_a, l.colour_b]
+                    },
                     frame: &c.frame,
                     gel: c.gel,
                     ranges: p.ranges.clone(),

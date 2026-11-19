@@ -12,7 +12,9 @@
 use std::collections::HashMap;
 
 use map::TagId;
-use tags::material::{EngineInputs, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Register, TextureSource};
+use tags::material::{
+    EngineInputs, INSTANCE_INTS, INSTANCE_SCALARS, InputReads, Material, Register, TextureSource, VectorBinding, VectorTarget, pack_engine_colour,
+};
 use tags::shader::{PSDEF_SIZE, StageStates};
 
 use shaders::psh::{PixelUniforms, TextureDim};
@@ -63,18 +65,12 @@ impl LightInputs {
         }
     }
 
-    /// What resolving a material with these inputs depends on, as bits:
-    /// lights with equal keys resolve every material alike.
+    /// What resolving a material with these inputs depends on but the
+    /// colours, as bits: lights with equal keys resolve every material
+    /// alike once their colours are put in ([`colour_uniforms`]), so a
+    /// light whose colours animate keeps its key.
     pub fn key(&self) -> InputKey {
-        let [a0, a1, a2] = self.colour_a.map(f32::to_bits);
-        let [b0, b1, b2] = self.colour_b.map(f32::to_bits);
         InputKey([
-            a0,
-            a1,
-            a2,
-            b0,
-            b1,
-            b2,
             self.mode as u32,
             self.definition_8a as u16 as u32,
             self.definition_80 as u16 as u32,
@@ -82,16 +78,26 @@ impl LightInputs {
             scalar_16(self.falloff_0).to_bits(),
         ])
     }
+
+    /// These inputs with both colours zero: what the cache resolves with
+    /// (the colours are put in per light).
+    pub fn without_colours(&self) -> Self {
+        Self {
+            colour_a: [0.0; 3],
+            colour_b: [0.0; 3],
+            ..*self
+        }
+    }
 }
 
 /// [`LightInputs::key`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct InputKey(pub [u32; 11]);
+pub struct InputKey(pub [u32; 5]);
 
 /// Resolved light passes by (shader, layer, implementation, inputs), so a
 /// material is resolved once per distinct light rather than once per
 /// light per frame. Bounded: past `capacity` entries it starts again
-/// (lights' colours animate, so old keys stop coming back).
+/// (a bound, not a policy: the keys hold no colours, so few come and go).
 pub struct LookCache<V> {
     entries: HashMap<(TagId, usize, usize, InputKey), V>,
     capacity: usize,
@@ -183,6 +189,8 @@ pub struct LightLook {
     /// the inputs the material was resolved with.
     pub vertex_constants: Vec<Register>,
     pub vertex_defaults: Vec<Register>,
+    /// Where the colours (vectors 5 and 6) landed.
+    pub vector_bindings: Vec<VectorBinding>,
     pub state: PassState,
 }
 
@@ -272,6 +280,7 @@ pub fn light_look(material: &Material, layer: usize, implementation: usize) -> R
         pixel_shader: imp.pixel_shader,
         vertex_constants: imp.vertex_constants.clone(),
         vertex_defaults: imp.vertex_defaults.clone(),
+        vector_bindings: imp.vector_bindings.clone(),
         state,
     })
 }
@@ -298,6 +307,8 @@ pub struct LightProgram {
     /// frame ([`light_vertex`]).
     pub vertex: VertexUniforms,
     pub pixel: PixelUniforms,
+    /// Where the colours land in those uniforms ([`colour_uniforms`]).
+    pub colours: Vec<VectorBinding>,
     pub state: PassState,
 }
 
@@ -334,8 +345,54 @@ pub fn compile_light(look: &LightLook, microcode: &[u8]) -> Result<LightProgram,
         signed: t.signed,
         vertex: t.vertex,
         pixel: t.pixel,
+        colours: look.vector_bindings.clone(),
         state: look.state,
     })
+}
+
+/// `p`'s uniforms with one light's colours (engine vectors 5 and 6) put
+/// where the resolve put them: vertex constants and defaults take the
+/// colour, combiner constants its packing in their own lanes, as
+/// `0x00019be0` and `0x00019ca0` would. Bindings of other vectors are left
+/// (`light_look` refuses passes reading them).
+pub fn colour_uniforms(p: &LightProgram, colour_a: [f32; 3], colour_b: [f32; 3]) -> (VertexUniforms, PixelUniforms) {
+    let mut vertex = p.vertex.clone();
+    let mut pixel = p.pixel.clone();
+    for b in &p.colours {
+        let colour = match b.source {
+            5 => colour_a,
+            6 => colour_b,
+            _ => continue,
+        };
+        match b.target {
+            VectorTarget::Vertex { bank, reg, components } => {
+                let r = if bank == 1 {
+                    vertex.constants.get_mut(18 + usize::from(reg))
+                } else {
+                    vertex.defaults.get_mut(usize::from(reg))
+                };
+                let Some(r) = r else { continue };
+                for (k, c) in colour.iter().enumerate() {
+                    if components & (1 << k) != 0 {
+                        r[k] = *c;
+                    }
+                }
+            }
+            VectorTarget::Pixel { c1, slot, mask, half } => {
+                let bank = if c1 { &mut pixel.c1 } else { &mut pixel.c0 };
+                let Some(c) = bank.get_mut(usize::from(slot)) else { continue };
+                let packed = pack_engine_colour([colour[0], colour[1], colour[2], 0.0], half);
+                *c = shaders::psh::argb((repack(*c) & !mask) | (packed & mask));
+            }
+        }
+    }
+    (vertex, pixel)
+}
+
+/// `shaders::psh::argb` undone (its values are multiples of 1/255).
+fn repack(c: [f32; 4]) -> u32 {
+    let ch = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
+    ch(c[3]) << 24 | ch(c[0]) << 16 | ch(c[1]) << 8 | ch(c[2])
 }
 
 /// `base` with one light's frame constants (their bits as floats).
@@ -395,6 +452,7 @@ mod tests {
             pixel_constants_from_engine: true,
             per_draw_inputs: true,
             input_reads: InputReads { scalars: 0, vectors: 1 << 5, ints: 1 << 4 },
+            vector_bindings: Vec::new(),
             vertex_constants: vec![Register { index: 18, value: [1.0, 1.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }],
             vertex_defaults: Vec::new(),
             animated: Vec::new(),
@@ -570,11 +628,41 @@ mod tests {
         // A falloff of 2 and of 3 both read as scalar 1: the same key.
         let far = LightInputs { falloff_0: 3.0, ..l };
         assert_eq!(get(&mut cache, &far), 1);
-        let other = LightInputs { colour_b: [0.0, 0.0, 0.5], ..l };
-        assert_eq!(get(&mut cache, &other), 2);
+        // Colours are put in per light: an animated colour keeps the key.
+        let other = LightInputs { colour_a: [0.1, 0.2, 0.3], colour_b: [0.0, 0.0, 0.5], ..l };
+        assert_eq!(get(&mut cache, &other), 1);
+        assert_eq!(other.without_colours().colour_a, [0.0; 3]);
+        assert_eq!(other.without_colours().key(), other.key());
+        let second = LightInputs { definition_80: 4, ..l };
+        assert_eq!(get(&mut cache, &second), 2);
         assert_eq!(cache.len(), 2);
         let third = LightInputs { mode: 2, ..l };
         assert_eq!(get(&mut cache, &third), 3);
         assert_eq!(cache.len(), 1, "full: started again");
+    }
+
+    #[test]
+    fn colours_go_where_the_resolve_put_them() {
+        let m = material(DIFFUSE_LAYER, vec![implementation(1, TextureSource::Engine(9))]);
+        let look = light_look(&m, DIFFUSE_LAYER, 1).unwrap();
+        let mut p = compile_light(&look, &light_program()).expect("compiles");
+        p.vertex.constants[20] = [0.0, 0.0, 0.0, 7.0];
+        p.pixel.c0[2] = shaders::psh::argb(0x4000_0011);
+        p.colours = vec![
+            VectorBinding { source: 5, target: VectorTarget::Vertex { bank: 1, reg: 2, components: 0b0011 } },
+            VectorBinding { source: 6, target: VectorTarget::Vertex { bank: 0, reg: 10, components: 0b0111 } },
+            VectorBinding { source: 6, target: VectorTarget::Pixel { c1: false, slot: 2, mask: 0x00ff_ff00, half: false } },
+            VectorBinding { source: 5, target: VectorTarget::Pixel { c1: true, slot: 8, mask: 0x00ff_ffff, half: true } },
+            VectorBinding { source: 7, target: VectorTarget::Vertex { bank: 1, reg: 3, components: 0b0111 } },
+        ];
+        let (v, px) = colour_uniforms(&p, [0.5, 0.25, 1.0], [1.0, 0.0, 0.5]);
+        assert_eq!(v.constants[20], [0.5, 0.25, 0.0, 7.0], "x and y only");
+        assert_eq!(v.defaults[10][..3], [1.0, 0.0, 0.5]);
+        assert_eq!(v.constants[21], p.vertex.constants[21], "another vector is left");
+        // C0 of stage 2: red and green from colour B, alpha and blue kept.
+        assert_eq!(repack(px.c0[2]), 0x40ff_0011);
+        // The final C1: colour A at (x + 1) / 2.
+        assert_eq!(repack(px.c1[8]) & 0x00ff_ffff, 0x00bf_9fff);
+        assert_eq!(px.c0[3], p.pixel.c0[3]);
     }
 }

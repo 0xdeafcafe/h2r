@@ -1200,10 +1200,22 @@ skipped light never reaches.
      `light_gpu_key`, so lights whose inputs differ only in constants share
      a pipeline with their own uniforms). With the switch off the hooks are
      not placed, so `light_constants` never runs, and nothing loads.
-     Open: objects (a native light's object passes are skipped with the
-     rest until stage 4's objects item); a light whose colour animates
-     resolves its materials again each frame (the key holds the colours);
-     the uniform buffers are made per light per frame.
+     - Objects: the hook leaves a light to D3D when its sphere meets a
+       live object's (`objects::object_meets_sphere`, the object array to
+       its high-water mark; unreadable or non-finite answers yes), counted
+       in `native_lights::object_refusals`, so no object loses a light
+       until stage 4's objects item draws them.
+     - Colours: the resolve records where each mode-4 engine constant put
+       its vector (`ResolvedImplementation::vector_bindings`: a vertex
+       register's components, or a combiner constant's lanes packed as
+       `0x00019ca0` does, `pack_engine_colour`, minus what later bindings
+       overwrite). The cache key leaves the colours out and the host
+       resolves with them zero; `colour_uniforms` puts each light's
+       colours A and B (vectors 5 and 6) into its uniforms, so an animated
+       colour resolves nothing.
+     - Uniforms: one buffer per run, each draw's vertex and pixel uniforms
+       at aligned dynamic offsets (`light_gpu::uniforms_layout`,
+       `run_layout`), one group for the run.
 
 4. **Objects**, through the models as stage 3's objects.
 5. **Shadows**: layer 10 into our depth texture, the term in the light's
