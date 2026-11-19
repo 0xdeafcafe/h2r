@@ -234,6 +234,7 @@ pub fn compile_object(
         pixel: t.pixel,
         inputs: t.inputs,
         state: None,
+        rigid: None,
     })
 }
 
