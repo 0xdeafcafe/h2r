@@ -316,6 +316,23 @@ points! { ALL;
     /// (`engine::screen_effect::template_draws`; `0x0002d4be` skips the
     /// pass when it does not), `ret 0x18`. Hooked only by `H2_POST_TRACE`.
     TEMPLATE_PASS @ 0x0001_6610: [fn(shader: stack 0, layer: stack 1, implementation: stack 2, selector: stack 3, target: stack 4, flags: stack 5) -> al ret 24], Optional; "docs/graphics/native-renderer.md";
+    /// A batch of screen quads begins (`0x00035b90`): stdcall `(record)`,
+    /// `ret 4`. The record (`native_render::hud::Record`) names the
+    /// bitmaps, address modes, filter, blend mode and colours; the begin
+    /// sets that state and the combiner. Text (`0x0001f070`) is drawn this
+    /// way, one quad per glyph.
+    SCREEN_QUADS_BEGIN @ 0x0003_5b90: [fn(record: stack 0) ret 4]; "docs/graphics/native-renderer.md";
+    /// One screen quad (`0x000363a0`): stdcall `(&corners)`, four corners
+    /// of `0x14` bytes (x, y, u, v, colour), pushed as one inline
+    /// `Begin(7)`/`End` with no D3D entry. `ret 4`.
+    SCREEN_QUAD @ 0x0003_63a0: [fn(corners: stack 0) ret 4], Hot; "docs/graphics/native-renderer.md";
+    /// The batch's end (`0x00036560`): no arguments, `ret`.
+    SCREEN_QUADS_END @ 0x0003_6560: [fn() ret 0]; "docs/graphics/native-renderer.md";
+    /// One HUD shader quad (`0x0022a664`): ECX the four corners, EAX the
+    /// coordinate rectangle, stack `(bitmap datum, bitmap index, shader)`,
+    /// `ret 0xc`. A shader draw (`0x0001bbf0`) and one
+    /// `D3DDevice_Begin(7)`..`End`.
+    HUD_SHADER_QUAD @ 0x0022_a664: [fn(corners: ecx, rect: eax, bitmap: stack 0, index: stack 1, shader: stack 2) ret 12], Hot; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

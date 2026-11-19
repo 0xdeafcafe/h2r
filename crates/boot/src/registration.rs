@@ -365,6 +365,15 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
+    // The HUD's and the UI's screen draws on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_hud=on, off by default, or
+    // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
+    // context-only hooks on the screen-quad batch (text) and the HUD shader
+    // quad. Its host (native_hud_glue) plans each batch and pairs the plan
+    // with the D3D draws; every quad keeps its D3D draw so far.
+    features
+        .add(&feature::native_hud::NativeHud)
+        .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

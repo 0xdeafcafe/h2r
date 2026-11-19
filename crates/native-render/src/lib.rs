@@ -23,6 +23,7 @@ pub mod cull;
 pub mod glow;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+pub mod hud;
 pub mod instances;
 #[cfg(feature = "gpu")]
 pub mod light_gpu;
