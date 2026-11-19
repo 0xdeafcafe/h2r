@@ -9,6 +9,7 @@ use d3d::backend::{
 use d3d::shader::{CONSTANTS, ShaderInputs, VertexProcessing};
 use d3d::state::StateWords;
 use d3d::{Backend, DrawOutcome, ExternalPass, ExternalPlan, GfxBackend, ResolvedDraw, TargetCopy};
+use gfx::encode::HostPixelOrder;
 use gfx::state::{CompareFunc, CullMode, DepthBufferMode, StencilOp};
 use gfx::surface::SurfaceId;
 use gfx::texture::TextureKind;
@@ -455,6 +456,7 @@ fn uncached_world_geometry_shares_one_upload_and_one_pass() {
         slot_sizes: vec![],
     };
     let cache = Arc::new(Cache::default());
+    // Churn is scoped to this thread, and pass counts to this backend.
     let before = gfx::churn::snapshot();
     let passes = backend.batch_stats().render_passes;
     backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
@@ -479,8 +481,15 @@ fn uncached_world_geometry_shares_one_upload_and_one_pass() {
     assert_eq!(churn.buffers_created, 1);
     assert_eq!(churn.queue_writes, 1);
     assert_eq!(backend.batch_stats().render_passes - passes, 1);
-    let pixels = backend.read_color(color).unwrap().0;
-    let pixel = |x: usize| &pixels[4 * (4 * SIZE as usize + x)..][..4];
+    let (pixels, order) = backend.read_color(color).unwrap();
+    let pixel = |x: usize| {
+        let start = 4 * (4 * SIZE as usize + x);
+        let [c0, g, c2, a]: [u8; 4] = pixels[start..start + 4].try_into().unwrap();
+        match order {
+            HostPixelOrder::Bgra8 => [c2, g, c0, a],
+            HostPixelOrder::Rgba8 => [c0, g, c2, a],
+        }
+    };
     assert_eq!(pixel(4), [255, 0, 0, 255]);
     assert_eq!(pixel(20), [255, 255, 0, 255]);
 }
