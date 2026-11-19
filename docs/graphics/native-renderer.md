@@ -159,8 +159,8 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   02000's curb). The compare's first draws are the world's first passes,
   while the game may still be streaming bitmaps at low detail: 03000's
   dump saw the D3D path bind 2x8 and 4x8 DXT stand-ins where the native
-  stage has the 64x256 bitmap (the same bitmap, the D3D path's later
-  frames match native), so `H2_NATIVE_WORLD_DUMP` takes `@passes` to arm
+  stage has the 64x256 bitmap (S: low-detail stand-ins, since the
+  later frames match native to a mean of 0.009), so `H2_NATIVE_WORLD_DUMP` takes `@passes` to arm
   later. It now lists only the pixel shader and option fields that
   differ, the D3D draw's stipple pattern when it masks anything, and the
   pipeline's primitive (topology, winding, cull, fill) and depth write,
