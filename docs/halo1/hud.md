@@ -15,6 +15,11 @@ fixed in v66); the weapon counts have not been seen running. Labels as in [healt
 engine code (`h2 disasm`), **V** checked on the owner's discs, **D** a
 choice made here.
 
+**Built.** Campaign scripts control help, objectives, help flashes and
+the countdown. They can also hide or blink the health, shield and
+motion-sensor HUD components and hide the crosshair. The addresses and
+disc tests are in [text.md](text.md).
+
 ## What converts
 
 `h1objects::h1hud` turns Halo 1's unit HUD (`unhi`) into a Halo 2 `nhdt`

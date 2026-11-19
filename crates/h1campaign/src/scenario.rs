@@ -805,6 +805,7 @@ pub fn write(
     opts: &Options,
     lean: crate::Lean,
     [music, dialogue]: [u64; 2],
+    level_text: &h1text::scenario::LevelText,
     report: &mut Report,
 ) -> Result<()> {
     // A fresh level's scenario is written from nothing ([`fresh_root`]);
@@ -816,6 +817,7 @@ pub fn write(
         None => Block::new(base.bytes[..ROOT].to_vec()),
     };
     let rep = &mut report.scenario;
+    level_text.write(&mut root);
 
     // BSP descriptors: exactly Halo 1's BSPs, in order, so its BSP
     // indices (`switch_bsp`, zones, placements) need no map. A BSP past
@@ -1215,6 +1217,7 @@ pub fn write(
                     .then_some(opts.cutscene_graphs),
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
+                level_text,
             )?);
         }
         None => {
@@ -1787,6 +1790,7 @@ fn install_scripts(
     cutscene_data: Option<bool>,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
+    level_text: &h1text::scenario::LevelText,
 ) -> Result<ScriptReport> {
     use h1scripts::compile::{Missing, compile_with};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
@@ -1902,6 +1906,8 @@ fn install_scripts(
     let left = c.resolve_hooks(|h| {
         match h.type_name.as_str() {
             "string_id" => interned.get(&h.token).copied(),
+            "hud_message" => level_text.message_index(&h.token),
+            "hud_corner" => h1scripts::hud::corner(&h.token),
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
@@ -1932,6 +1938,9 @@ fn install_scripts(
             );
         })
     });
+    if let Some(hook) = left.iter().find(|h| h.type_name == "hud_message") {
+        return Err(invalid(format!("HUD message {:?} is missing", hook.token)));
+    }
     let mut unresolved: Vec<(String, usize)> = Vec::new();
     let mut samples: Vec<(String, String)> = Vec::new();
     for h in &left {

@@ -22,6 +22,8 @@ vfs.workspace = true
 content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
+h1scripts = { path = "../h1scripts" }
+h1text = { path = "../h1text" }
 map.workspace = true
 # Our settings (setting_defs, the ui model).
 settings = { path = "../settings" }

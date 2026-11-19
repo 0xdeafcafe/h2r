@@ -219,6 +219,22 @@ impl LocaleTable {
     }
 }
 
+/// Exact extent of a locale raw resource in the globals root. Locale
+/// indices store a row count rather than a byte length.
+pub(crate) fn locale_raw_len(matg: &[u8], offset: u32) -> Option<u32> {
+    let field = offset.checked_sub(0x188)?;
+    if field >= 9 * 0x1c {
+        return None;
+    }
+    let at = offset.checked_sub(8)? as usize;
+    let size = u32::from_le_bytes(matg.get(at..at + 4)?.try_into().ok()?);
+    match field % 0x1c {
+        0x10 => size.checked_mul(8),
+        0x14 => Some(size),
+        _ => None,
+    }
+}
+
 /// All nine locales for one map, loaded with map-relative file offsets.
 #[derive(Clone, Debug)]
 pub struct Localization {
