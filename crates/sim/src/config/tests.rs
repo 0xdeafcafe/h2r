@@ -388,6 +388,26 @@ fn safe_names() {
     assert_eq!(safe(""), "_");
 }
 
+/// The examples in docs/runtime/sim-examples stay valid.
+#[test]
+fn the_documented_examples_load() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/runtime/sim-examples");
+    let m = load_match(&dir.join("lockout-2v2.toml")).unwrap();
+    assert_eq!(m.bots.len(), 4);
+    assert_eq!(m.bots[0].params.skill.as_deref(), Some("legendary"));
+    assert_eq!(m.bots[3].params.aggression, Some(0.5));
+    let b = load_batch(&dir.join("batch.toml")).unwrap();
+    assert_eq!(b.runs.len(), 15);
+    assert_eq!(b.arms[1].params.aggression, Some(0.95));
+    let blue = &b.runs[0].config.bots[3];
+    assert_eq!(blue.arm.as_deref(), Some("aggressive"));
+    assert_eq!(blue.tuning.as_ref().unwrap().aggression, Some(0.95));
+    for name in ["base.toml", "aggressive.toml"] {
+        let p = BotParams::load(&dir.join("tuning").join(name)).unwrap();
+        assert!(p.problems(name).is_empty(), "{name}");
+    }
+}
+
 #[test]
 fn planned_runs_write_back_as_toml() {
     let b = batch(
