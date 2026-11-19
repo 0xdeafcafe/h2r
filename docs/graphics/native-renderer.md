@@ -2071,6 +2071,7 @@ effect per egor.
 | Kept convolution (flag bit 0 or 1 with its value 0) | Armed | Nothing to refuse: it draws nothing, and its result is the pass's target. |
 | Blur convolution (`0x000211a0`) | Armed (blur egor; waiting on the mainmenu A/B) | `Blur` and `StandIns` without the quads' frame. At the probe: a convolving pass that blends or masks colour (`ConvolutionStates`), a combiner that does not compile, the colour not sampleable. |
 | Wide convolution (`0x00021360`) | Armed (built; not run live yet) | `Wide` and `StandIns` without the frame, or when a grid cannot be made (`grid_of`: the source bound at no size, the grid's arithmetic failing). At the probe: as the blur, plus a grid strip under a triangle (`NoStrips`). |
+| A pass `0x00016610` does not draw (no vertex shader for its implementation) | Refused (`TemplateSkipped`) | `0x0002d140` skips it whole; the plan would wait for strips that never come. |
 | Convolution that copies its result (`0x000351a0`) | Refused (`TemplatePass`) | Not drawable natively. `0x0002d140` passes -1, so it never happens. |
 | A screen effect's plan that fails (too many corners, unreadable values, a convolution past its budget) | D3D | Logged once ("a screen effect keeps its D3D draws"). |
 | `0x0002df00` (`late`), `0x0002dd30` | D3D | Not traced yet (step 5 below). |
@@ -2604,6 +2605,20 @@ effect per egor.
      is issued into the target bound at the last draw. `H2_POST_SHAPES`
      writes each call's plan (egor, probe or drop, slot:primitive x
      count), the first 64 calls.
+   - **Then: the strips were never pushed.** With those, the next A/B
+     said `draw 0 of 1: planned TriangleStrip x4 into slot 1, pushed
+     QuadList x0, an inline array, after another draw` for the one egor
+     the menu calls (`0xe4380218`, `render_screen_effects`' 2 x 2): the
+     first draws after arming were the UI's, so `0x0002d140` drew
+     nothing. The plan assumed `0x00016610` draws (the differential stubs
+     it so), but `0x0002d140` skips a pass whole when it does not
+     (`0x0002d4be`). Its gate is now ported,
+     `screen_effect::template_draws` (Code, `0x00016610..0x000166ed`:
+     the template at the shader's `+4`, its `+0x5c` count, layer 15's bit
+     and word, the pass the implementation names, and the selector's
+     implementation's `+0x100` not -1), and a call with a pass it skips
+     keeps its D3D draws (`Missing::TemplateSkipped`). The menu's other
+     egor is never called there; the blur needs another scene.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

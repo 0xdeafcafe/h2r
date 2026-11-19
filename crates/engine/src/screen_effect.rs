@@ -185,6 +185,55 @@ pub fn implementations(mem: &dyn GuestMemory, shader: u32) -> Result<u32, Error>
     Ok(u32::from(mem.u16(words.wrapping_add(at * 2 + 0x1e))? >> 9))
 }
 
+/// The template layer `0x0002d140` draws through `0x00016610`.
+pub const TEMPLATE_LAYER: u32 = 15;
+
+/// Whether `0x00016610(shader, layer, implementation, selector, ..)`
+/// draws, its gate as the original reads it (Code,
+/// `0x00016610..0x000166ed`): the shader's template (the datum at its
+/// definition's `+4`), its definition's `+0x5c` with a count of at least
+/// one (as `dec`/`jns` tests it), `layer`'s bit in the 32-bit mask at `+2` of what its `+4` points
+/// at, the word `layer` past that one's low 9 bits in the words at its
+/// `+0xc` (its high 7 bits the passes, its low 9 the first), and of those
+/// passes the one `implementation` names (-1 any): its record (ten bytes
+/// each at `+0x14`) names a pass tag, whose definition's `+0x20` points
+/// at a block whose `+4` holds the implementations (`0x132` bytes each),
+/// and the one `selector` names draws unless its `+0x100` is -1 (no
+/// vertex shader). `0x0002d140` skips a pass, strips and convolutions,
+/// when it does not draw; [`plan`] assumes it does (the differential stubs
+/// it drawing), so the caller checks each pass with this.
+pub fn template_draws(mem: &dyn GuestMemory, shader: u32, layer: u32, implementation: i32, selector: i32) -> Result<bool, Error> {
+    if shader == u32::MAX {
+        return Ok(false);
+    }
+    let template = def(mem, mem.u32(def(mem, shader)?.wrapping_add(4))?)?;
+    let element = mem.u32(template.wrapping_add(0x5c))?;
+    // `dec ecx; jns`: the count less one not negative.
+    if (mem.u32(element)?.wrapping_sub(1) as i32) < 0 {
+        return Ok(false);
+    }
+    let layers = mem.u32(element.wrapping_add(4))?;
+    if mem.u32(layers.wrapping_add(2))? & 1u32.wrapping_shl(layer) == 0 {
+        return Ok(false);
+    }
+    let at = u32::from(mem.u16(layers)? & 0x1ff).wrapping_add(layer);
+    let word = u32::from(mem.u16(mem.u32(element.wrapping_add(0xc))?.wrapping_add(at.wrapping_mul(2)))?);
+    let records = mem.u32(element.wrapping_add(0x14))?;
+    for pass in 0..(word >> 9) {
+        if implementation != -1 && implementation as u32 != pass {
+            continue;
+        }
+        let record = records.wrapping_add(((word & 0x1ff) + pass).wrapping_mul(10));
+        let pass_def = def(mem, mem.u32(record.wrapping_add(4))?)?;
+        let implementations = mem.u32(mem.u32(pass_def.wrapping_add(0x20))?.wrapping_add(4))?;
+        let entry = implementations.wrapping_add((selector as u32).wrapping_mul(0x132));
+        if mem.u32(entry.wrapping_add(0x100))? != u32::MAX {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// The window as `0x0002d140` reads it: (top, left, bottom, right).
 fn window(mem: &dyn GuestMemory) -> Result<[i32; 4], Error> {
     let s = |o: u32| -> Result<i32, Error> { Ok(i32::from(mem.u16(WINDOW + o)? as i16)) };
@@ -555,6 +604,44 @@ mod tests {
 
     fn run(m: &FlatMemory, values: [u32; 4]) -> Option<Effect> {
         plan(m, DATUM, values, 2, 2, &corners(), 0x1f80, 0x027f).unwrap()
+    }
+
+    /// `0x00016610`'s gate over the test world's template: layer 15's
+    /// word (the one [`implementations`] reads) gives three passes from
+    /// record 0; pass 1's implementation 2 has a vertex shader.
+    #[test]
+    fn the_template_pass_draws_only_an_implementation_with_a_vertex_shader() {
+        const PDEF: u32 = 0x0061_4000;
+        const IMPLS: u32 = 0x0061_5000;
+        let mut m = world();
+        m.set_u32(SDEF + 4, 0xe002_0006).unwrap();
+        m.set_u32(X, 1).unwrap();
+        m.set_u32(X + 0x102, 1 << TEMPLATE_LAYER).unwrap();
+        m.set_u32(X + 0x14, X + 0x400).unwrap();
+        for pass in 0..3u32 {
+            m.set_u32(X + 0x400 + 10 * pass + 4, 0xe003_0007).unwrap();
+        }
+        m.set_u32(TT + 7 * 16 + 8, PDEF).unwrap();
+        m.set_u32(PDEF + 0x20, PDEF + 0x100).unwrap();
+        m.set_u32(PDEF + 0x104, IMPLS).unwrap();
+        for sel in 0..4u32 {
+            m.set_u32(IMPLS + 0x132 * sel + 0x100, u32::MAX).unwrap();
+        }
+        m.set_u32(IMPLS + 0x132 * 2 + 0x100, 5).unwrap();
+        let draws = |m: &FlatMemory, imp, sel| template_draws(m, SHADER, TEMPLATE_LAYER, imp, sel).unwrap();
+        assert!(draws(&m, 1, 2), "a vertex shader");
+        assert!(!draws(&m, 1, 1), "+0x100 -1: none, so 0x0002d140 skips the pass");
+        assert!(draws(&m, -1, 2), "-1 takes any pass");
+        assert!(!draws(&m, 3, 2), "past the layer's passes");
+        assert!(!template_draws(&m, u32::MAX, TEMPLATE_LAYER, 1, 2).unwrap());
+        let mut no_layer = m.clone();
+        no_layer.set_u32(X + 0x102, 1 << 14).unwrap();
+        assert!(!draws(&no_layer, 1, 2), "the template has no layer 15");
+        let mut empty = m.clone();
+        empty.set_u32(X, 0).unwrap();
+        assert!(!draws(&empty, 1, 2), "a count below one");
+        empty.set_u32(X, 0x8000_0000).unwrap();
+        assert!(draws(&empty, 1, 2), "dec/jns: 0x80000000 less one is positive");
     }
 
     #[test]
