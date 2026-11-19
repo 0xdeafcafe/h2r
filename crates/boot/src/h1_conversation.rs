@@ -59,7 +59,7 @@ impl feature::Feature for Conversations {
                 }
                 call.answer_async(move |cx| Box::pin(evaluate(cx, data, opcode)))
             },
-        );
+        ).first();
         b.snapshot(feature::SnapshotPolicy::Stateless);
         Ok(())
     }

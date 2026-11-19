@@ -129,7 +129,7 @@ pub(super) fn register(b: &mut Builder) {
             };
             c.answer_async(move |cx| Box::pin(eval(cx, tag, slot, bit, invert)))
         },
-    );
+    ).last();
     b.raw()
         .before(
             &HUD_WIDGET_GATE,

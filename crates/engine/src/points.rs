@@ -245,7 +245,6 @@ points! { ALL;
     GAME_UPDATE_FRAME @ 0x0013_7ed0: [fn(elapsed: stack 0) ret 4]; "docs/halo1/script-builtins.md";
     /// The shared HaloScript evaluator for discarded retail commands.
     OBJECT_FUNCTION_IMPORT @ 0x0010_8d90: [fn(object: stack 0, name: stack 1, value: ebx, active: edi) -> al ret 8]; "docs/halo1/script-builtins.md";
-    UNIT_FLASHLIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/script-builtins.md";
     HS_UNIT_FLAG_SET @ 0x002a_3200: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     HS_UNIT_FLAG_GET @ 0x002a_3a10: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     HS_AI_LIST_FLAG_SET @ 0x002a_55f0: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
@@ -392,7 +391,7 @@ points! { ALL;
     SCREEN_EFFECT @ 0x0002_d140: [fn(datum: eax, values: stack 0, columns: stack 1, rows: stack 2, corners: stack 3) ret 16]; "docs/graphics/native-renderer.md";
     /// Screen convolution blur, also called by the colour pass. From
     /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
-    SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [opaque]; "docs/graphics/native-renderer.md";
+    SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
     /// A unit's integrated-light update, called at the end of its tick.
     UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by

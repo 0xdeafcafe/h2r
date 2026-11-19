@@ -274,5 +274,6 @@ pub fn hooks(b: &mut feature::Builder) {
                 Ok(feature::Flow::Continue)
             },
         )
+        .after_feature("h1-hud-text")
         .context_only();
 }

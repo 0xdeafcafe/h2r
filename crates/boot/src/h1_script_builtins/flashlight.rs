@@ -111,7 +111,7 @@ fn weapon_power(m: &dyn GuestMemory, handle: u32) -> Result<Option<f32>, MemFaul
 }
 
 pub(super) fn install(b: &mut Builder) {
-    b.raw().before(&points::UNIT_FLASHLIGHT_UPDATE, "Update the AI unit's integrated light", |call| {
+    b.raw().before(&points::UNIT_LIGHT_UPDATE, "Update the AI unit's integrated light", |call| {
         let handle = call.cpu.eax;
         let mut mem = call.ctx.runtime().memory();
         let Ok(Some((body, flags, power))) = npc_light(&*mem, handle) else {

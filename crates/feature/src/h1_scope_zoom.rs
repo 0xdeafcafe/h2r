@@ -41,7 +41,7 @@ impl Feature for ScopeZoom {
                     .write(states, [0; (PLAYER_COUNT * VISION_STATE_SIZE) as usize])?;
                 Ok(Flow::Continue)
             },
-        );
+        ).first().context_only();
         b.raw().before(
             &points::UNIT_LIGHT_UPDATE,
             "update scope night vision",
@@ -49,7 +49,7 @@ impl Feature for ScopeZoom {
                 update_vision(&mut *c.ctx.memory(), states, c.cpu.eax);
                 Ok(Flow::Continue)
             },
-        );
+        ).after_feature("h1-script-builtins").context_only();
         b.raw()
             .before(
                 &points::SCREEN_EFFECT,
