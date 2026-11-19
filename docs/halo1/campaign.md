@@ -138,7 +138,7 @@ merged, built and tested together, then played.
 
 | Gap | Branch | Notes |
 |---|---|---|
-| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
+| a30 fails to convert at v95 when relocating b30's holo control | `a30convert` | **Built in converter version 99.** The relocation schema follows `obje +0xac` on controls and machines (§9). The a30 disc test is pending the integration run |
 | a10, a50, c40, d20 and d40 failed unpinning with Halo 1 assets in the v90 import | `a30convert` | **Built.** Both fresh paths read locale data at the lengths recorded in `matg`. The 20-variant disc test is pending the integration run (§9) |
 | Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |
 | AI command lists (`ai_command_list*`) | `commandlists` | Halo 2 uses command scripts instead |

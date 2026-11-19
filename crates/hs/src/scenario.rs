@@ -270,6 +270,11 @@ impl Scenario {
                 // unmarked retail call supplies the descriptor's name.
                 continue;
             }
+            let name = if n.opcode == 312 && name == "units_set_desired_flashlight_state" {
+                "ai_braindead_by_unit"
+            } else {
+                name
+            };
             if names
                 .insert(n.opcode, name.to_owned())
                 .is_some_and(|old| old != name)

@@ -175,6 +175,14 @@ fn squads(m: &dyn GuestMemory, ai: u32) -> Result<Vec<u32>, MemFault> {
 /// Retail's fixed evaluator and return routines use these same arrays.
 /// Check the salted nodes before interpreting a spare head-atom word.
 fn call_operation(call: &mut feature::Call<'_>, opcode: u16) -> Option<Operation> {
+    let head = call_head(call, opcode)?;
+    match call.ctx.runtime().memory().u32(head + 16).ok()? {
+        0 if opcode == MAGICALLY_SEE_PLAYERS => Some(Operation::SeePlayers),
+        marker => Operation::from_marker(marker).filter(|op| op.slot() == opcode),
+    }
+}
+
+pub(super) fn call_head(call: &mut feature::Call<'_>, opcode: u16) -> Option<u32> {
     use engine::{DatumHandle, datum::DatumArray};
 
     let thread = call.arg_u32("thread")?;
@@ -191,11 +199,7 @@ fn call_operation(call: &mut feature::Call<'_>, opcode: u16) -> Option<Operation
     if m.u16(head + 2).ok()? != opcode || m.u16(head + 4).ok()? != 2 {
         return None;
     }
-    match m.u32(head + 16).ok()? {
-        // Older converted maps used the stock one-argument profile.
-        0 if opcode == MAGICALLY_SEE_PLAYERS => Some(Operation::SeePlayers),
-        marker => Operation::from_marker(marker).filter(|op| op.slot() == opcode),
-    }
+    Some(head)
 }
 
 async fn arguments(

@@ -223,8 +223,12 @@ impl Loadout {
         };
         let mut weapon_indices = Vec::new();
         for c in &plan.characters {
-            let Some(&Some(weapon)) = self.0.get(&c.h2_character) else {
+            let Some(rebuilt) = self.0.get(&c.h2_character) else {
                 weapon_indices.push(None);
+                continue;
+            };
+            let Some(weapon) = *rebuilt else {
+                weapon_indices.push(Some(-1));
                 continue;
             };
             let entry = child
@@ -247,15 +251,30 @@ impl Loadout {
         }
         // Write the effective weapon on each location. An unarmed crewman
         // override must not inherit an armed squad member's pistol.
+        let rebuilt_weapon = |character: i16| {
+            usize::try_from(character).ok()
+                .and_then(|index| weapon_indices.get(index).copied().flatten())
+        };
         for q in &mut plan.ai.squads {
+            if let Some(index) = rebuilt_weapon(q.character) {
+                q.initial_weapon = index;
+            }
+            let default = q.initial_weapon;
+            if q.starting_locations.iter().any(|l| rebuilt_weapon(l.character) == Some(-1)) {
+                // A location with -1 inherits the squad weapon. Move that
+                // default onto the other locations in a mixed squad.
+                q.initial_weapon = -1;
+            }
             for l in &mut q.starting_locations {
                 let character = if l.character < 0 {
                     q.character
                 } else {
                     l.character
                 };
-                if let Some(Some(index)) = weapon_indices.get(character as usize) {
-                    l.initial_weapon = *index;
+                if let Some(index) = rebuilt_weapon(character) {
+                    l.initial_weapon = index;
+                } else if l.initial_weapon == -1 && q.initial_weapon != default {
+                    l.initial_weapon = default;
                 }
             }
         }

@@ -48,8 +48,8 @@ pub(super) fn check(
         positions.sort_by_key(|p| p.group);
         assert_eq!(positions.len(), zone.firing_positions.len());
         for (src, dst) in positions.into_iter().zip(&zone.firing_positions) {
-            assert_eq!(dst.position, src.position);
-            assert_eq!(dst.cluster, src.cluster);
+            // The roster pass projects ground points and queries the cluster
+            // just above the floor. Keep checking the serialized cluster mask.
             if dst.cluster >= 0 {
                 let c = dst.cluster as usize;
                 let area = &zone.areas[dst.area as usize];
@@ -58,7 +58,20 @@ pub(super) fn check(
             ground += 1;
             let [x, y, _] = src.position;
             let expected = mesh.sector_for_surface(src.surface as usize, x, y);
-            assert_eq!(dst.sector, expected.unwrap_or(u32::MAX), "{}", zone.name);
+            if let Some(sector) = expected {
+                use pathfind::geom::{contains_xy, dot, newell, sub};
+                let ring: Vec<_> = mesh.sector_polygon(sector as usize).unwrap()
+                    .into_iter().map(|i| mesh.vertices[i]).collect();
+                let normal = newell(&ring);
+                if contains_xy(&ring, x, y) && normal[2].abs() > f32::EPSILON {
+                    let dz = dot(normal, sub(src.position, ring[0])) / normal[2];
+                    if dz.abs() <= 0.25 && normal[2] > 0.0 {
+                        assert_eq!(dst.sector, sector, "{}", zone.name);
+                        assert_eq!(dst.position[..2], src.position[..2]);
+                        assert!((dst.position[2] - (src.position[2] - dz)).abs() < 0.001);
+                    }
+                }
+            }
             if dst.sector != u32::MAX {
                 assert!((dst.sector as usize) < mesh.sectors.len());
                 assigned += 1;

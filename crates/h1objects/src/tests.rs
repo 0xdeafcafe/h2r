@@ -91,7 +91,6 @@ fn weapon_zoom_rebuilds_from_the_halo1_tag() {
             &weapon,
             &arsenal::weapon_bytes(&map, tag).unwrap(),
             &arsenal::WeaponParts::default(),
-            &arsenal::Role::default(),
         )
         .unwrap();
         let bytes = &built.bytes;

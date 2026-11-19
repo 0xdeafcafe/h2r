@@ -353,8 +353,8 @@ level 1 on a copy whose sequence starts at sprite 1
 hidden on `0x06` (`ZOOM_LEVEL_STATES`). The widgets use Halo 1's
 sprite placement. Their draw has yet to be checked in a game run.
 
-Halo 1's pistol and sniper rifle retain their zoom levels through the
-weapon conversion. The assault rifle and other unscoped weapons have
+Converter version 99 retains the zoom levels of Halo 1's pistol and sniper
+rifle. The assault rifle and other unscoped weapons have
 zero levels and suppress Halo 2's binocular fallback.
 See [Weapon zoom](objects.md#weapon-zoom).
 
@@ -366,14 +366,6 @@ sniper rifle's `wphi +0xac` block references the full-screen
 `sniper_scope_mask2` and split-screen `sniper_scope_mask_sm` at
 element `+0x18` and `+0x28` on Blood Gulch. The pistol and rocket
 launcher reference their scope masks through the same block.
-
-The converter has no reader for that block. A full mask conversion
-needs to carry the Halo 1 bitmaps, reproduce the effect's screen
-coverage and compositing for each viewport, and draw it behind the
-scope lines at the weapon's zoom levels. Retail Halo 2 draws a
-centred, zoom-gated `scope_mask` bitmap widget for its sniper rifle.
-
-### Scope mask (**Built**)
 
 Halo 1 looks at the first screen effect in the weapon's own
 `wphi +0xac`, before drawing the weapon HUD (E `0x000d6b37` and

@@ -223,9 +223,10 @@ pub(crate) fn attach(hud: &mut Block, entries: &[Entry]) -> Result<()> {
                 Visibility::Zoomed => (0x190, 0x40),
                 Visibility::Unzoomed => (0x1d0, 0x180),
             };
+            let inactive = super::weapon_word_c::OFF_HAND | super::weapon_word_c::BACKPACK;
             for (name, words) in [
                 ("show_when", [show, 0, 1, 0]),
-                ("hide_when", [hide, 0, 4, 0]),
+                ("hide_when", [hide, 0, i64::from(inactive), 0]),
             ] {
                 set(
                     &mut record,
@@ -238,16 +239,15 @@ pub(crate) fn attach(hud: &mut Block, entries: &[Entry]) -> Result<()> {
                 "anchor",
                 Val::Int(super::Anchor::Centre as i64),
             )?;
-        }
-        set(&mut record, "anchor", Val::Int(super::Anchor::Centre as i64))?;
-        set(&mut record, "bitmap", Val::tag(FourCC(*b"bitm"), entry.bitmap))?;
-        set(
-            &mut record,
-            "sequences",
-            Val::List(entry.sequences.into_iter().map(|i| Val::Int(i.into())).collect()),
-        )?;
-        Ok(record)
-    }).collect::<Result<Vec<_>>>()?;
+            set(&mut record, "bitmap", Val::tag(FourCC(*b"bitm"), entry.bitmap))?;
+            set(
+                &mut record,
+                "sequences",
+                Val::List(entry.sequences.into_iter().map(|i| Val::Int(i.into())).collect()),
+            )?;
+            Ok(record)
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut root = defs::default_record(def);
     set(&mut root, "screen_effects", Val::Block(entries))?;
     let mut built =
@@ -312,7 +312,7 @@ mod tests {
             Some(&Val::List(vec![
                 Val::Int(0x40),
                 Val::Int(0),
-                Val::Int(4),
+                Val::Int(6),
                 Val::Int(0)
             ]))
         );

@@ -11,7 +11,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{H2_CAMPAIGN, build_and_read, h1_map, h2_map};
-use h1ai::convert::{Options, character_for, convert_for_map};
+use h1ai::convert::{Options, character_for, convert, convert_for_map};
 use h1ai::h1::{ActorType, H1Ai};
 use h1ai::h2::{Character, ScenarioAi};
 use h1map::disc::CAMPAIGN_LEVELS;

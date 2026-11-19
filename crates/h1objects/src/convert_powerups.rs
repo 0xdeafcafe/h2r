@@ -17,10 +17,8 @@ const HEADER: &str = "item.obje";
 // The words match on the health, overshield and camouflage pairs on the
 // two discs. The retail string IDs differ between maps and are interned
 // by name when the new tag is installed.
-const H1_ITEM_FLAGS: usize = 0x17c;
+#[cfg(test)]
 const H1_SORT_ORDER: usize = 0x180;
-const H1_DETONATION_EFFECTS: [(usize, &str); 2] =
-    [(0x2e8, "item.detonating_effect"), (0x2f8, "item.detonation_effect")];
 
 fn def_error(err: DefError) -> Error {
     Error::Invalid(err.to_string())
@@ -48,17 +46,8 @@ impl Converter<'_> {
                     .map_err(def_error)?;
             }
         }
-        for (at, field) in H1_DETONATION_EFFECTS {
-            if let Some(id) = h1::reference(self.h1, b, at) {
-                let effect = self.effect(self.h1_tag(id)?)?;
-                root.set(field, Val::tag(FourCC(*b"effe"), effect))
-                    .map_err(def_error)?;
-            }
-        }
-        if let Some(foot) = self.h1_foot(b, &mut rep)? {
-            root.set("item.obje.foot_ref_54", Val::tag(FourCC(*b"foot"), foot))
-                .map_err(def_error)?;
-        }
+        let references = self.item_effect_refs(b, &mut rep)?;
+        crate::arsenal::refs(&mut root, &references)?;
 
         let root = encode(&root)?;
         self.tree.reports.push(rep);
@@ -88,6 +77,8 @@ fn equipment_values(e: &Equipment, b: &[u8], hlmt: Option<TagId>) -> Result<defs
     } else {
         e.powerup_time
     };
+    crate::arsenal::item_words(&mut r, b)?;
+    rebuild::object_tuning(&mut r, HEADER, &e.object)?;
     for (field, value) in [
         ("item.obje.object_type", Val::Enum(3)),
         ("item.obje.flags", Val::Flags(e.object.flags.into())),
@@ -102,14 +93,6 @@ fn equipment_values(e: &Equipment, b: &[u8], hlmt: Option<TagId>) -> Result<defs
         (
             "item.obje.model",
             Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
-        ),
-        (
-            "item.unknown_bc",
-            Val::Bytes(b[H1_ITEM_FLAGS..H1_ITEM_FLAGS + 4].to_vec()),
-        ),
-        (
-            "item.unknown_c0",
-            Val::Bytes(b[H1_SORT_ORDER..H1_SORT_ORDER + 4].to_vec()),
         ),
         ("item.string_e0", Val::text(message)),
         ("powerup_type", Val::Int(e.powerup_type.into())),

@@ -229,10 +229,13 @@ pub(crate) fn name_one(
     let signature = ty(f.return_type()) == Some(e.returns)
         && f.parameters().len() == e.parameters.len()
         && f.parameters().iter().zip(e.parameters).all(|(&p, want)| ty(p) == Some(*want));
-    if f.name().is_some()
+    let flashlight_alias = e.index == 312
+        && e.name == "units_set_desired_flashlight_state"
+        && f.name().is_none_or(|name| name == "ai_braindead_by_unit");
+    if (f.name().is_some() && !flashlight_alias)
         || !signature
         || builtins.contains_key(e.name)
-        || builtins.values().any(|b| b.index == e.index)
+        || (!flashlight_alias && builtins.values().any(|b| b.index == e.index))
         || HELD.contains(&e.name)
     {
         return;

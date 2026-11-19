@@ -932,7 +932,7 @@ pub(crate) fn attached_particle_effect(
                     &p.source.as_effect_particle(0, 0),
                     &p.source.as_particle(),
                     p.tag,
-                                rate,
+                    rate,
                     Some(scale),
                     p.movement,
                     birth,

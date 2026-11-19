@@ -34,6 +34,10 @@ Retail grenade counts appear in a10 and the marked AI calls come from
 a30 and b30. The builtin-name census skips the marked operation, leaving the
 retail grenade count as the descriptor name when both share a cache.
 
+Slot 312 also serves the native `ai_braindead_by_unit` call. The runtime reads
+the function name from the current expression and dispatches only the authored
+flashlight call to the light handler. Both names share the retail descriptor.
+
 ## Converted-campaign hooks
 
 `h1scripts::unit_builtins::RUNTIME_SLOTS` is the table shared by the

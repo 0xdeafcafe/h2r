@@ -194,6 +194,21 @@ async fn skip_in_frame(cx: Cx, count: u16) -> EntryResult {
     Ok(Ret::new(0, 4))
 }
 
+fn calls_flashlight_list(call: &mut feature::Call<'_>, slot: &RuntimeSlot) -> Option<bool> {
+    let head = crate::h1_ai_control::call_head(call, slot.index)?;
+    let mem = call.ctx.runtime().memory();
+    let scnr = mem.u32(points::SCENARIO.base).ok()?;
+    let table = scnr.checked_add(h1scripts::compile::field::STRINGS)?;
+    let len = mem.u32(table).ok()?;
+    let offset = mem.u32(head + 12).ok()?;
+    if len.checked_sub(offset)? <= slot.name.len() as u32 {
+        return Some(false);
+    }
+    let base = mem.u32(table + 4).ok()?;
+    let name = mem.cstr(base.checked_add(offset)?, slot.name.len()).ok()?;
+    Some(name == slot.name.as_bytes())
+}
+
 impl Feature for ScriptBuiltins {
     fn manifest(&self) -> Manifest {
         Manifest::new("h1-script-builtins", "Extra Halo 1 campaign script operations")
@@ -225,6 +240,12 @@ impl Feature for ScriptBuiltins {
                     return Ok(Flow::Continue);
                 };
                 if !converted_campaign(&*call.ctx.runtime().memory()) {
+                    return Ok(Flow::Continue);
+                }
+                // Slot 312 also serves native ai_braindead_by_unit calls.
+                if slot.builtin == RuntimeBuiltin::FlashlightSetList
+                    && calls_flashlight_list(call, slot) != Some(true)
+                {
                     return Ok(Flow::Continue);
                 }
                 let state = Arc::clone(&state);

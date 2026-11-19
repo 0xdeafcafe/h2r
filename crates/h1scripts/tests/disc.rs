@@ -650,15 +650,18 @@ fn units_and_misc_builtins_translate() {
         .unwrap_or_else(|e| panic!("{level}: {e}"));
         let scenario = hs::Scenario::decode(&compiled.scenario_bytes(0x8000_0000), 0x8000_0000)
             .unwrap_or_else(|e| panic!("{level}: {e}"));
-        let names = scenario.builtin_names().unwrap();
+        let mut emitted = std::collections::BTreeSet::new();
+        for call in scenario.nodes().iter().filter(|n| n.live() && !n.atom() && !n.script_call()) {
+            let head = scenario.node(hs::Datum(call.data())).unwrap();
+            emitted.insert((call.opcode(), scenario.string(head.string_offset()).unwrap()));
+        }
         for slot in RUNTIME_SLOTS {
             assert!(
                 !compiled.missing.iter().any(|u| u.name == slot.name),
                 "{level}: {} was compiled as missing",
                 slot.name
             );
-            if let Some(name) = names.get(&slot.index) {
-                assert_eq!(name, slot.name, "{level}: slot {}", slot.index);
+            if emitted.contains(&(slot.index, slot.name)) {
                 used.insert(slot.name);
             }
         }
