@@ -918,6 +918,19 @@ impl Gpu {
     /// The texture group with `page` bound where the program samples the
     /// lightmap; `None` when a sampled stage has nothing to bind.
     pub(crate) fn textures(&self, device: &wgpu::Device, page: Option<&wgpu::TextureView>) -> Option<wgpu::BindGroup> {
+        self.textures_supplied(device, page, &HashMap::new())
+    }
+
+    /// [`Gpu::textures`] with `supplied` views at their stages: the
+    /// engine-texture stages (the water edge blend's scene copy and
+    /// reflections, supplied per view by the reservation), stage number
+    /// to view. A supplied stage must not be a bitmap stage.
+    pub(crate) fn textures_supplied(
+        &self,
+        device: &wgpu::Device,
+        page: Option<&wgpu::TextureView>,
+        supplied: &HashMap<usize, wgpu::TextureView>,
+    ) -> Option<wgpu::BindGroup> {
         let mut views = Vec::new();
         for (n, d) in self.program.dims.iter().enumerate() {
             if d.is_none() {
@@ -925,6 +938,7 @@ impl Gpu {
             }
             let view = match self.program.stages[n] {
                 Stage::Lightmap => page?.clone(),
+                Stage::Engine(_) => supplied.get(&n)?.clone(),
                 _ => self.stage_views[n].clone()?,
             };
             views.push((n, view));

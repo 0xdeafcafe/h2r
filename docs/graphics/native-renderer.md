@@ -2220,12 +2220,15 @@ loaded, drawn with each material's own translated layer-16 pass.
   the current layer is 16, the caller is the late passes' call
   (`[esp] == 0x0002c0e9`), the layer-draw's own gate holds
   (`[0x0048574c] == 3` or a fog byte set) and the list holds a BSP item
-  in the layer, asks the host; on accept it clears bit 16 of the
-  structure items the host draws (clusters only in the first slice:
-  a placement's fog needs the rigid program and per-placement rows, as
+  in the layer, asks the host; the host plans the skip over a preview,
+  reserves the replacement through the ordered handoff (recording on
+  every copy before anything is surrendered), applies the mask edits
+  and commits, and the hook remembers what was cleared for the restore
+  at the next layer draw (clusters only in the first slice: a
+  placement's fog needs the rigid program and per-placement rows, as
   its layer 3 does, and stays on the D3D path, by count in the load's
-  log) and remembers them for the restore at the next layer draw.
-  Objects' layer-16 items are never cleared: their fog is stage 2's.
+  log). Objects' layer-16 items are never cleared: their fog is stage
+  2's.
 - **The draw** (`fog_gpu::FogSet`, `GpuWorld::encode_fog`): the world's
   parts whose material compiled, each with its layer-16 passes in
   order, blended over the loaded depth with the pass's own
@@ -2242,26 +2245,55 @@ loaded, drawn with each material's own translated layer-16 pass.
   materials that stayed on D3D and why, and every 1,800 layer-16 views a
   line with the skip counts.
 
-### Water and the rest (the census first)
+### Water and the rest
 
-`impl.render.native_water` (off by default), `feature::native_water`:
-in its first slice it only counts. With
-`H2_NATIVE_WATER_CENSUS=<layers>` (default `6`; `6,18,19,21` or `all`)
-each layer draw of a named layer prints, the first view and then every
-1,800th, the census by caller and material: items in the layer, split
-structure (BSP cluster or placement, through the render record's `+4`)
-against object, the shaders by tag index, and — for layer 6 — the
-water wrappers' gates (bit 4 of `0x004b9fe0`, the cleared byte
-`0x00509430`). Nothing is skipped and nothing is drawn natively. The
-next slice is the load side (with the native world on, which loads the
-BSP): every material with a pass in a census layer, its template's
-stage sources — bitmap against engine texture, and which engine
-texture: the scene-copy and reflection inputs the pass would sample —
-and the count of parts; then drawing the water edge blend needs the
-wrapper (`0x0003ba90`/`0x0003c3c0`) traced, its alpha-channel window
-established, and the layers 18/19/21 camo and hologram passes resolved;
-each is a slice after the census has run on a water level (03b's lake,
-05a Delta Halo's fountains and ocean, 08a's delta).
+`impl.render.native_water` (off by default), `feature::native_water`,
+`native_render::water_gpu` and `boot::native_water_glue`. Two parts:
+
+- **The water edge blend, drawn natively (layer 6).** The skip is the
+  fog's shape: one context-only observer before the layer draw, when
+  the current layer is 6 and the caller is the late passes' call
+  (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4
+  of `0x004b9fe0` clear). The wrappers are never skipped — `0x0003ba90`
+  before the layer and `0x0003c3c0` with its alpha-only clear
+  `0x3c515` after it stay guest — so the native replacement lands
+  inside their window (the reservation drains `0x0003ba90`'s pushes
+  first, and the teardown's clear is a later guest entry) and the
+  alpha channel's lifetime is the game's own. The geometry is the
+  water surfaces themselves, the kind-4 transparent parts, and the
+  look is the material's own layer-6 pass
+  (`fog_gpu::supplied_layer_passes` — the acceptance is the fog
+  layer's: the states the implementation sets itself, a final combiner
+  of its own, no device-state texture modes).
+- **The scene-copy and reflection inputs, explicit.** A layer-6 pass
+  binds engine textures, and each is supplied per view
+  (`water_gpu::Supply`): the view's own target (id 5) as a copy of the
+  bound colour made in the recording (`WaterSet::make_copy`, remade
+  when the target changes — an attachment cannot be sampled as it is
+  drawn into; a colour that cannot be copied refuses the view in
+  `prepare_copy`), and the render targets (the engine-texture table's
+  `Target`s) through the reservation's `sampled` levels: their guest
+  surface headers from Halo's target table (`0x004b4b58`, stride
+  `0x98`, surface at `+0x88`), read at the ask, resolved by the device
+  per copy and refused whole when one does not resolve. Any other
+  engine id — run-time chosen, the light's, a rasterizer bitmap, a
+  cleared stage — refuses the material at the load
+  (`FogRefusal::Unsupplied`), fail-closed.
+- **The census** (`H2_NATIVE_WATER_CENSUS=<layers>`, default `6`;
+  `6,18,19,21` or `all`): at each layer draw of a named layer, the
+  first view and then every 1,800th, the census by caller and material
+  — items split structure (BSP cluster or placement) against object,
+  the shaders by tag index, and for layer 6 the wrappers' gates. At
+  load (the world's worker, `native_water_glue::census`) one line per
+  material with a pass in a census layer names its template's stage
+  sources: the bitmaps, and the engine textures with what each is
+  (the scene copy, the render targets by index) — the scene-copy and
+  reflection enumeration.
+- **Layers 18/19 (camouflage) and 21 (hologram)** are census-only:
+  their caller is not established in the lifted ports (the scene
+  passes draw them from nowhere the ports name), and their passes'
+  state does not resolve yet. The runtime census's layer-draw caller
+  address is the evidence the next slice needs.
 
 ## Stage 5: post and HUD (design)
 

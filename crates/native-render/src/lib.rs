@@ -66,4 +66,6 @@ pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_gpu;
+#[cfg(feature = "gpu")]
+pub mod water_gpu;
 pub mod world;

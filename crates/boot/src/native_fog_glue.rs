@@ -94,7 +94,7 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                     let compiled = lib
                         .material(shader, None)
                         .map_err(|e| format!("material: {e}"))
-                        .and_then(|mat| fog_gpu::fog_passes(&mat).map_err(|r| r.describe()))
+                        .and_then(|mat| fog_gpu::layer_passes(&mat, native_render::fog::FOG_LAYER).map_err(|r| r.describe()))
                         .and_then(|passes| {
                             passes
                                 .iter()

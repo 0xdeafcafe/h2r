@@ -105,11 +105,12 @@ pub struct FogPass {
     pub fog: FogWords,
 }
 
-/// Why a material's layer 16 stays on the D3D path.
+/// Why a material's layer stays on the D3D path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FogRefusal {
-    /// Its template draws nothing in layer 16 at the first level of detail.
-    NoLayer16,
+    /// Its template draws nothing in the layer at the first level of
+    /// detail.
+    NoPass { layer: usize },
     /// Pass `pass` has more than one implementation (S: which one the
     /// engine binds for a fog item is not traced).
     Implementations { pass: usize, count: usize },
@@ -131,6 +132,12 @@ pub enum FogRefusal {
     /// native pass does not have (the bump-environment matrices, the eye
     /// of the reflection modes, BRDF).
     DeviceState { pass: usize, stage: usize },
+    /// Pass `pass`, stage `stage` binds engine texture `id` that no
+    /// per-view supply resolves (run-time chosen, the light's, a
+    /// rasterizer bitmap, a cleared stage, invalid): the supplied-look
+    /// path ([`supplied_layer_passes`]) only takes the view's own target
+    /// and the render targets.
+    Unsupplied { pass: usize, stage: usize, id: u8 },
     /// Pass `pass`'s translation refused it (`crate::program::compile_pass`:
     /// per-draw engine inputs, a constant the native pass does not set, a
     /// stage with nothing bound, ...).
@@ -141,36 +148,100 @@ impl FogRefusal {
     /// One line for the load's log.
     pub fn describe(&self) -> String {
         match self {
-            FogRefusal::NoLayer16 => "no layer-16 pass".into(),
+            FogRefusal::NoPass { layer } => format!("no pass in layer {layer}"),
             FogRefusal::Implementations { pass, count } => format!("{count} implementations of pass {pass}"),
             FogRefusal::Look { pass, refusal } => format!("pass {pass}: {refusal:?}"),
             FogRefusal::State { pass, refusal } => format!("pass {pass} state: {refusal:?}"),
             FogRefusal::InheritsCull { pass } => format!("pass {pass} leaves CULLMODE to the previous draw"),
             FogRefusal::NoFinalCombiner { pass } => format!("pass {pass} has no final combiner of its own"),
             FogRefusal::DeviceState { pass, stage } => format!("pass {pass} stage {stage} reads device state"),
+            FogRefusal::Unsupplied { pass, stage, id } => {
+                format!("pass {pass} stage {stage} binds engine texture {id}, which no per-view supply resolves")
+            }
             FogRefusal::Compile { pass, reason } => format!("pass {pass}: {reason}"),
         }
     }
 }
 
-/// Every pass of `material`'s layer 16 (first level of detail), with its
+/// Every pass of `material`'s `layer` (first level of detail), with its
 /// look and state, in the order the layer draws them, or why not. All or
 /// nothing per material: an item is drawn natively only when every pass
 /// is. The compilation itself is the glue's (it owns the `vrtx` tag's
-/// microcode, [`compile_pass`]).
-pub fn fog_passes(material: &Material) -> Result<Vec<FogPass>, FogRefusal> {
+/// microcode, [`compile_pass`]). The look refuses engine-texture stages
+/// ([`Refusal::EngineTexture`]); [`supplied_layer_passes`] is the same
+/// with the per-view supplied ones kept.
+pub fn layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, false)
+}
+
+/// [`layer_passes`] with the engine-texture stages a per-view supply
+/// resolves kept as [`Stage::Engine`]: the view's own target (id 5) and
+/// the render targets (`crate::screen_look::engine_texture`'s `Target`s),
+/// what the water edge blend binds. An id nothing supplies refuses the
+/// material ([`FogRefusal::Unsupplied`]).
+pub fn supplied_layer_passes(material: &Material, layer: usize) -> Result<Vec<FogPass>, FogRefusal> {
+    passes_of(material, layer, true)
+}
+
+fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<FogPass>, FogRefusal> {
     let layer = material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == crate::fog::FOG_LAYER)
+        .find(|l| l.lod == 0 && l.layer == layer)
         .filter(|l| !l.passes.is_empty())
-        .ok_or(FogRefusal::NoLayer16)?;
+        .ok_or(FogRefusal::NoPass { layer })?;
     let mut out = Vec::with_capacity(layer.passes.len());
     for (n, pass) in layer.passes.iter().enumerate() {
         let [imp] = pass.implementations.as_slice() else {
             return Err(FogRefusal::Implementations { pass: n, count: pass.implementations.len() });
         };
-        let look = implementation_look(pass.pass, imp).map_err(|refusal| FogRefusal::Look { pass: n, refusal })?;
+        let look = if supplied {
+            // `implementation_look` with the engine stages kept when a
+            // per-view supply resolves them.
+            let mut textures = [Stage::Empty; 4];
+            for (stage, t) in textures.iter_mut().zip(&imp.textures) {
+                *stage = match t.map(|t| t.source) {
+                    None | Some(tags::material::TextureSource::None) => Stage::Empty,
+                    Some(tags::material::TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
+                    Some(tags::material::TextureSource::Lightmap) => Stage::Lightmap,
+                    Some(tags::material::TextureSource::Engine(id)) => {
+                        match crate::screen_look::engine_texture(id) {
+                            crate::screen_look::EngineTexture::View | crate::screen_look::EngineTexture::Target(_) => {
+                                Stage::Engine(id)
+                            }
+                            _ => return Err(FogRefusal::Unsupplied { pass: n, stage, id }),
+                        }
+                    }
+                    Some(tags::material::TextureSource::Default) => {
+                        return Err(FogRefusal::Look { pass: n, refusal: Refusal::DefaultTexture })
+                    }
+                    Some(tags::material::TextureSource::UnsetSlot(s)) => {
+                        return Err(FogRefusal::Look { pass: n, refusal: Refusal::UnsetSlot(s) })
+                    }
+                };
+            }
+            PassLook {
+                pass: pass.pass,
+                implementation: imp.index,
+                vertex_shader: imp
+                    .vertex_shader
+                    .ok_or(FogRefusal::Look { pass: n, refusal: Refusal::NoVertexShader })?,
+                textures,
+                stage_states: imp.stage_states.clone(),
+                pixel_shader: imp.pixel_shader,
+                vertex_constants: imp.vertex_constants.clone(),
+                vertex_defaults: imp.vertex_defaults.clone(),
+                per_draw_inputs: imp.per_draw_inputs,
+            }
+        } else {
+            implementation_look(pass.pass, imp).map_err(|refusal| FogRefusal::Look { pass: n, refusal })?
+        };
+        if !imp.animated.is_empty() {
+            return Err(FogRefusal::Look { pass: n, refusal: Refusal::Animated });
+        }
+        if let Some(r) = imp.vertex_constants.iter().find(|r| r.origin == tags::material::Origin::Engine) {
+            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineVertexConstant(r.index) });
+        }
         if !imp.engine_render_states.is_empty() {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineRenderStates });
         }
