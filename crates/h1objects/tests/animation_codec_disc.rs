@@ -67,16 +67,34 @@ fn h1_level(name: &str) -> H1Map {
     H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap()
 }
 
-/// Raw resources of the map whose bytes these are (local pointers only).
-struct Local(Vec<u8>);
+/// Raw resources of the map whose bytes these are and of the three
+/// shared cache files (most retail animations live in those).
+struct Local {
+    map: Vec<u8>,
+    shared: Vec<u8>,
+    single_player_shared: Vec<u8>,
+    main_menu: Vec<u8>,
+}
 
 impl Local {
-    fn span(&self, p: RawPointer, size: u32) -> tags::Result<&[u8]> {
-        if p.file != ResourceFile::Local {
-            return Err(tags::Error::Invalid("resource in another cache file"));
+    fn new(map: Vec<u8>) -> Self {
+        Local {
+            map,
+            shared: h2_map_bytes("shared"),
+            single_player_shared: h2_map_bytes("single_player_shared"),
+            main_menu: h2_map_bytes("mainmenu"),
         }
+    }
+
+    fn span(&self, p: RawPointer, size: u32) -> tags::Result<&[u8]> {
+        let file = match p.file {
+            ResourceFile::Local => &self.map,
+            ResourceFile::Shared => &self.shared,
+            ResourceFile::SinglePlayerShared => &self.single_player_shared,
+            ResourceFile::MainMenu => &self.main_menu,
+        };
         let (start, end) = (p.offset as usize, p.offset as usize + size as usize);
-        self.0
+        file
             .get(start..end)
             .ok_or(tags::Error::Invalid("resource past the end of the map"))
     }
@@ -159,7 +177,7 @@ fn retail_graphs_read_as_the_engine_reads_them() {
     let bytes = h2_map_bytes("coagulation");
     let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
     let base = Base::read(&mut map).unwrap();
-    let mut raw = Local(bytes);
+    let mut raw = Local::new(bytes);
     let mut out = Checked::default();
     let mut graphs = 0;
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"jmad")) {
@@ -210,7 +228,7 @@ fn converted_blood_gulch_graphs_read_as_the_engine_reads_them() {
     }
     let (bytes, _) = set.build().expect("map builds");
     let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
-    let mut raw = Local(bytes);
+    let mut raw = Local::new(bytes);
     let mut out = Checked::default();
     for (id, name) in &installed {
         check_graph(&mut map, &mut raw, *id, name, &mut out);
