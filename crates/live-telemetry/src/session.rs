@@ -169,6 +169,9 @@ pub struct Playlist {
     /// arbitration round is registered under (docs/live/live-matchmaking.md
     /// §8.4).
     pub session_id: Option<String>,
+    /// A clanker hopper (docs/game/bots.md §8): the game is a
+    /// Clankermatch, recorded as `kind: "clankermatch"`.
+    pub clankers: bool,
 }
 
 /// The Clankers a host runs (docs/game/bots.md §6, §9): every bot goes
@@ -366,6 +369,7 @@ impl Session {
         };
         let kind = match (campaign, &playlist) {
             (true, _) => "campaign",
+            (false, Some(p)) if p.clankers => "clankermatch",
             (false, Some(_)) => "matchmaking",
             (false, None) => "custom",
         };
@@ -2414,6 +2418,7 @@ mod tests {
             name: Some("Team Slayer".into()),
             id: "3".into(),
             session_id: Some("0123456789abcdef".into()),
+            clankers: false,
         }));
         session.start(&info(), vec![player(0, 0)]);
         let game = started(&mut session);
@@ -2421,6 +2426,20 @@ mod tests {
         assert_eq!(game.playlist.as_deref(), Some("Team Slayer"));
         assert_eq!(game.playlist_id.as_deref(), Some("3"));
         assert_eq!(game.session_id.as_deref(), Some("0123456789abcdef"));
+
+        // A clanker hopper's game is a Clankermatch, with its playlist and
+        // session as any matchmade game.
+        session.set_playlist(Some(Playlist {
+            name: None,
+            id: "9".into(),
+            session_id: Some("00000000000000c1".into()),
+            clankers: true,
+        }));
+        session.start(&info(), vec![player(0, 0)]);
+        let game = started(&mut session);
+        assert_eq!(game.kind.as_deref(), Some("clankermatch"));
+        assert_eq!(game.playlist_id.as_deref(), Some("9"));
+        assert_eq!(game.session_id.as_deref(), Some("00000000000000c1"));
 
         // A playlist never makes a campaign game a matchmaking one.
         session.start(&campaign(), vec![player(0, 0)]);

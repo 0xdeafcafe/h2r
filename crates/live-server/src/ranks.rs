@@ -253,6 +253,26 @@ impl Live {
             .is_some_and(|k| k.ranked())
     }
 
+    /// The playlist a Clankermatch game in hopper `playlist` (a descriptor
+    /// index) ranks in (docs/game/bots.md §8.2 item 1, §9.4 item 1): its
+    /// own index, or with `ranks_as` the index of the ranked hopper with
+    /// that playlist id. `None` when the served file does not mark the
+    /// hopper as a clanker one (or `ranks_as` names no ranked hopper).
+    pub(crate) async fn clanker_rank_playlist(&self, playlist: &str) -> Option<String> {
+        let index = playlist.parse::<u32>().ok()?;
+        let file = self.hoppers().await?;
+        let mark = *crate::admin::clanker_hoppers(Some(&file)).get(index)?;
+        match mark.ranks_as {
+            None => Some(playlist.to_string()),
+            Some(id) => (0..HOPPERS)
+                .find(|i| {
+                    file.descriptor(*i)
+                        .is_ok_and(|d| d.playlist_id == id && d.kind().is_some_and(|k| k.ranked()))
+                })
+                .map(|i| i.to_string()),
+        }
+    }
+
     /// The served hopper's title for a game record's `playlist_id` (a
     /// descriptor index), as `NewGame.playlist` takes it: at most 32
     /// characters, none of them control characters. `None` when the id
@@ -268,7 +288,9 @@ impl Live {
         (!name.is_empty()).then_some(name)
     }
 
-    async fn hoppers(&self) -> Option<HopperFile> {
+    /// The Halo 2 hopper file served now (published, or the built-in
+    /// lineup); `None` when there is none or it does not parse.
+    pub(crate) async fn hoppers(&self) -> Option<HopperFile> {
         let (_, bytes) = self
             .file(live_proto::HALO_2_TITLE_ID, HALO_2_HOPPER_FILE)
             .await
@@ -277,19 +299,32 @@ impl Live {
     }
 
     /// Ranked playlists by leaderboard: each ranked descriptor's playlist
-    /// id (what the game's stats read names) to its index.
+    /// id (what the game's stats read names) to its index, and each
+    /// clanker hopper's to the playlist its games rank in
+    /// ([`Self::clanker_rank_playlist`]), so a Clankermatch lobby shows
+    /// the rank its games move.
     async fn ranked_leaderboards(&self) -> BTreeMap<u32, String> {
         let Some(f) = self.hoppers().await else {
             return BTreeMap::new();
         };
-        (0..HOPPERS)
+        let mut boards: BTreeMap<u32, String> = (0..HOPPERS)
             .filter_map(|i| {
                 let d = f.descriptor(i).ok()?;
                 d.kind()
                     .is_some_and(|k| k.ranked())
                     .then(|| (d.playlist_id, i.to_string()))
             })
-            .collect()
+            .collect();
+        for h in crate::admin::clanker_hoppers(Some(&f)).hoppers {
+            let playlist = match h.ranks_as {
+                None => Some(h.hopper_id.to_string()),
+                Some(id) => boards.get(&id).cloned(),
+            };
+            if let Some(p) = playlist {
+                boards.entry(h.playlist_id).or_insert(p);
+            }
+        }
+        boards
     }
 
     /// Ranks a finished ranked matchmaking game once (docs/live/
@@ -306,7 +341,7 @@ impl Live {
     /// nothing.
     pub(crate) async fn rank_game(&self, game_id: &str) -> Result<(), ApiError> {
         let _guard = self.rank_writes.lock().await;
-        let (playlist, entrants, round) = {
+        let (playlist, entrants, round, clanker) = {
             let s = self.model.read();
             if s.ranks.games.contains(game_id) {
                 return Ok(());
@@ -322,9 +357,12 @@ impl Live {
             let Some(playlist) = started.playlist_id.clone() else {
                 return Ok(());
             };
-            if !finished || started.kind() != "matchmaking" {
+            // Clankermatch games rank like human ones (docs/game/bots.md
+            // §8.2 item 1), in their clanker hopper's rank playlist.
+            if !finished || !live_proto::game::is_matchmade(started.kind()) {
                 return Ok(());
             }
+            let clanker = started.kind() == "clankermatch";
             // Arbitration (docs/live/live-matchmaking.md §8.4): the host's
             // latest unused round in the game's session; only the humans
             // whose own account registered it are ranked.
@@ -364,11 +402,18 @@ impl Live {
                     Some((e, seat))
                 })
                 .collect();
-            (playlist, entrants, (session.to_string(), round))
+            (playlist, entrants, (session.to_string(), round), clanker)
         };
-        if !self.ranked_playlist(&playlist).await {
+        let playlist = if clanker {
+            match self.clanker_rank_playlist(&playlist).await {
+                Some(p) => p,
+                None => return Ok(()),
+            }
+        } else if self.ranked_playlist(&playlist).await {
+            playlist
+        } else {
             return Ok(());
-        }
+        };
         // The round is spent on this game whether or not anyone moves.
         let (session, round_id) = round;
         let used = self.server_event(
@@ -585,7 +630,8 @@ fn list<T: std::str::FromStr>(q: &BTreeMap<String, String>, key: &str) -> Result
 /// `GET /v1/rank-stats?leaderboards=&xuids=&session=`: the game's stats
 /// read (docs/live/live-matchmaking.md §8.3). Each leaderboard is a
 /// playlist id; one row per player for every leaderboard that is a ranked
-/// playlist in the served hopper file, a player with no games at level 1.
+/// playlist (or a clanker one, docs/game/bots.md §9.4 item 1) in the
+/// served hopper file, a player with no games at level 1.
 /// Other leaderboards (the recent-players board, unranked playlists) have
 /// no rows. With `session`, a made-up bot of that session's current roster
 /// answers its roster level on the roster's playlist (§8.4), as the lobby

@@ -5,6 +5,7 @@
 
 pub mod account_setup;
 mod auto;
+pub mod clankermatch;
 mod client;
 mod config;
 mod feedback;
@@ -423,6 +424,23 @@ impl Hle {
     pub fn matchmade(&self) -> Option<(u32, String)> {
         let keys = self.network.registered_keys();
         self.lock().matchmade(&keys)
+    }
+    /// The clanker hoppers the server served last (docs/game/bots.md §8):
+    /// the playlists the Clankermatch row lists and OptiMatch does not.
+    /// Never waits.
+    pub fn clanker_hoppers(&self) -> clankermatch::ClankerHoppers {
+        self.lock().clanker_hoppers()
+    }
+    /// Asks the server for its clanker hoppers again (also asked at each
+    /// logon). Returns at once.
+    pub fn refresh_clanker_hoppers(&self) -> Result<(), String> {
+        self.lock().refresh_clanker_hoppers()
+    }
+    /// The hosted session (hex) and its hopper's mark while this console
+    /// hosts a clanker hopper's lobby: a Clankermatch, whose bots the host
+    /// adds (§8.4). Never waits.
+    pub fn clanker_hosted(&self) -> Option<(String, clankermatch::ClankerHopper)> {
+        self.lock().clanker_hosted()
     }
     /// The Live session this console hosts (16 lowercase hex digits),
     /// while its advertisement stands. Never waits on the server.

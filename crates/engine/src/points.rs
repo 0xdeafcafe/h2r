@@ -425,6 +425,12 @@ points! { ALL;
     /// The Game Setup list's row chosen: jumps through a ten-entry table by
     /// the row's action with no bounds check.
     SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/halo1/multiplayer.md";
+    /// Whether the OptiMatch playlist list shows hopper `index` (0..16):
+    /// the range, two gates and the descriptor's validity (tail `jmp` to
+    /// `0x001934f0`). Its one caller is the list's item builder
+    /// `0x002b1ff4` (return address `0x002b2069`), which stores the index
+    /// in each row's datum at `+4`, so a skipped hopper leaves no hole.
+    HOPPER_LISTED @ 0x0019_2db0: [fn(index: ecx) -> al ret 0]; "docs/game/bots.md";
     /// The multiplayer level list's data array (`[0x4ee4e4]`, 8-byte
     /// elements, the map id at `+4`), or 0 without UI level data. The
     /// Select Map list's constructor (`0x2c9928`, list handler in ESI)

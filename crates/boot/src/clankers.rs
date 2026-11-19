@@ -334,6 +334,12 @@ pub trait Rosters: Send + Sync {
     /// The bot accounts in the hosted game now ([`Driver::session_bots`]):
     /// the hosted session is told of them as players. Never waits.
     fn players(&self, _bots: Vec<live_proto::Xuid>) {}
+    /// The hosted session and its hopper's mark while this console hosts
+    /// a clanker hopper's lobby: a Clankermatch (docs/game/bots.md §8.4),
+    /// which the driver fills with the playlist's bots. Never waits.
+    fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
+        None
+    }
 }
 
 impl Rosters for live_hle::Hle {
@@ -355,6 +361,9 @@ impl Rosters for live_hle::Hle {
     }
     fn players(&self, bots: Vec<live_proto::Xuid>) {
         self.set_session_players(bots)
+    }
+    fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
+        self.clanker_hosted()
     }
 }
 
@@ -385,6 +394,70 @@ struct RosterState {
     /// and the server has not answered yet: the bots keep who they are,
     /// but the roster is not the new session's until it does.
     carrying: Option<String>,
+    /// The server answered `asked` with no roster: a Clankermatch fills
+    /// with host-made bots instead of waiting.
+    refused: bool,
+}
+
+/// A Clankermatch lobby being filled (docs/game/bots.md §8.4): the hosted
+/// clanker hopper's bots join one at a time on
+/// [`crate::clankermatch::schedule`].
+#[derive(Clone, Debug)]
+struct Fill {
+    hopper: u32,
+    /// The bots the playlist holds besides the human.
+    bots: usize,
+    /// The playlist's teams (0 free for all).
+    teams: u32,
+    schedule: Vec<std::time::Duration>,
+    started: std::time::Instant,
+    /// How many are in now.
+    seated: usize,
+    /// When this console stopped hosting a session (a handoff, or the
+    /// player left): the fill ends [`FILL_GONE`] after.
+    gone: Option<std::time::Instant>,
+}
+
+/// A Clankermatch ends this long after its console last hosted a session:
+/// longer than a handoff's gap between the lobby's session and the game's
+/// (a few seconds, §9.5), short enough that leaving ends it.
+const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What the driver seats: the page's bots, or a Clankermatch's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Seating {
+    /// Bots wanted in all (the roster's count).
+    count: usize,
+    /// Of those, how many are in now.
+    seated: usize,
+    /// Phantoms only (a Clankermatch: local bots would join the party).
+    phantoms_only: bool,
+    /// The teams to balance the phantoms over (0: none).
+    teams: u32,
+    /// The roster's skill: the page's difficulty's, or none for a
+    /// Clankermatch (the server sets it from the human's level, §8.2.3).
+    skill: Option<f32>,
+}
+
+impl Seating {
+    fn of(want: Want, fill: Option<&Fill>) -> Seating {
+        match fill {
+            Some(f) => Seating {
+                count: f.bots,
+                seated: f.seated.min(f.bots),
+                phantoms_only: true,
+                teams: f.teams,
+                skill: None,
+            },
+            None => Seating {
+                count: want.count,
+                seated: want.count,
+                phantoms_only: false,
+                teams: 0,
+                skill: request_skill(want.difficulty),
+            },
+        }
+    }
 }
 
 /// What a roster ask for `asked` does, with `r` the roster state before it.
@@ -467,6 +540,13 @@ pub struct Want {
 }
 
 impl Want {
+    /// No bots.
+    pub const OFF: Want = Want {
+        count: 0,
+        difficulty: 1,
+        taunts: true,
+    };
+
     pub fn read(store: &Store) -> Want {
         let on = matches!(store.get(ENABLED.key), Some(Value::Bool(true)));
         let count = match store.get(COUNT.key) {
@@ -536,6 +616,8 @@ pub struct Driver {
     /// The hosted session was last told of some bots
     /// ([`Driver::report_players`]).
     reported: AtomicBool,
+    /// The Clankermatch being filled, while this console hosts one.
+    fill: Mutex<Option<Fill>>,
 }
 
 /// The bot accounts among `own`: local bots with one, and rostered
@@ -567,6 +649,7 @@ impl Driver {
             wants_roster: AtomicBool::new(false),
             me: std::sync::Weak::new(),
             reported: AtomicBool::new(false),
+            fill: Mutex::new(None),
         }
     }
 
@@ -590,12 +673,12 @@ impl Driver {
     fn rostered(
         &self,
         count: usize,
-        difficulty: i64,
+        skill: Option<f32>,
+        teams: bool,
         log: &mut Vec<String>,
     ) -> Option<Vec<RosterSeat>> {
         let rosters = self.rosters.as_ref()?;
         let playlist = rosters.playlist();
-        let skill = request_skill(difficulty);
         let session = rosters.session();
         let mut r = self.roster.lock().unwrap_or_else(|e| e.into_inner());
         let Some(session) = session else {
@@ -633,6 +716,7 @@ impl Driver {
             Ask::Fresh => {
                 r.roster = None;
                 r.carrying = None;
+                r.refused = false;
                 None
             }
             Ask::Carry(from) => {
@@ -649,7 +733,7 @@ impl Driver {
             playlist: asked.playlist.clone(),
             count: asked.count,
             skill: asked.skill,
-            teams: false,
+            teams,
             carry_from: carry_from.clone(),
         };
         let session = asked.session.clone();
@@ -698,7 +782,15 @@ impl Driver {
                         Err(e) => format!("no roster from Live ({e})"),
                     };
                     let Some(from) = carried else {
-                        return vec![format!("{why}: host-made bots")];
+                        r.refused = true;
+                        drop(r);
+                        let mut log = vec![format!("{why}: host-made bots")];
+                        // A Clankermatch waiting on it fills now.
+                        if self.filling() {
+                            let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+                            log.extend(self.apply(want.unwrap_or(Want::OFF)));
+                        }
+                        return log;
                     };
                     // The carry failed: the old roster is not this
                     // session's, so ask for a new one.
@@ -853,11 +945,23 @@ impl Driver {
     /// Adds or takes off bots to match `want`; what it did, for the log.
     pub fn apply(&self, want: Want) -> Vec<String> {
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(want);
+        let seating = Seating::of(
+            want,
+            self.fill.lock().unwrap_or_else(|e| e.into_inner()).as_ref(),
+        );
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         self.taunts.store(want.taunts, Ordering::Relaxed);
+        // A Clankermatch's bots are all phantoms: local bots would sign in
+        // as the human's party.
+        if seating.phantoms_only {
+            while let Some(i) = own.iter().rposition(|o| matches!(o.seat, Seat::Port(..))) {
+                let o = own.remove(i);
+                self.take_off(o.seat, &mut log);
+            }
+        }
         // Fewer: the last added go first.
-        while own.len() > want.count {
+        while own.len() > seating.seated {
             let o = own.pop().expect("more than wanted");
             self.take_off(o.seat, &mut log);
         }
@@ -868,7 +972,7 @@ impl Driver {
             );
         }
         // More local bots: on the lowest ports no bot asked for.
-        while own.len() < want.count {
+        while !seating.phantoms_only && own.len() < want.count {
             let taken: Vec<u8> = self.local.list().iter().map(|b| b.wanted).collect();
             let Some(port) = (1..=3u8).find(|p| !taken.contains(p)) else {
                 break;
@@ -896,16 +1000,29 @@ impl Driver {
             .iter()
             .filter(|o| matches!(o.seat, Seat::Port(..)))
             .count();
-        let wanted = want.count.saturating_sub(ports);
-        self.wants_roster.store(want.count > 0, Ordering::Relaxed);
+        let mut wanted = seating.seated.saturating_sub(ports);
+        self.wants_roster
+            .store(seating.count > 0, Ordering::Relaxed);
         // With Live, every bot is a server bot account: the local bots take
         // the roster's first, the phantoms the rest.
-        let mut roster = if want.count > 0 {
-            self.rostered(want.count, want.difficulty, &mut log)
+        let mut roster = if seating.count > 0 {
+            self.rostered(seating.count, seating.skill, seating.teams > 1, &mut log)
         } else {
             None
         }
         .map(Vec::into_iter);
+        // A Clankermatch waits for its roster rather than seat host-made
+        // bots that the roster would replace; refused, it takes them.
+        if seating.phantoms_only
+            && roster.is_none()
+            && !self
+                .roster
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .refused
+        {
+            wanted = 0;
+        }
         for o in own.iter_mut() {
             let Seat::Port(port, h) = o.seat else {
                 continue;
@@ -944,9 +1061,9 @@ impl Driver {
             return log;
         };
         // The phantoms: the server's roster's bots, else host-made ones.
-        let seats: Vec<(RosterSeat, bool)> = match roster {
-            Some(r) => r.take(wanted).map(|s| (s, true)).collect(),
-            None => (0..wanted)
+        let mut seats: Vec<(RosterSeat, bool)> = match roster {
+            Some(r) => r.map(|s| (s, true)).collect(),
+            None => (0..seating.count.saturating_sub(ports))
                 .map(|i| {
                     let n = (ports + i + 1) as u32;
                     let k = skill(want.difficulty, ((n - 1) % 3 + 1) as u8);
@@ -967,6 +1084,28 @@ impl Driver {
                 })
                 .collect(),
         };
+        // A Clankermatch's teams, balanced over the whole roster so a
+        // bot's team does not change as the others join (§9.1: "the host
+        // balances by total skill"). The human is taken to be on team 0.
+        if seating.teams > 1 {
+            let k = |s: &RosterSeat| f32::from(skill_index(s.skill)) / 3.0;
+            let mean = seats.iter().map(|(s, _)| k(s)).sum::<f32>() / seats.len().max(1) as f32;
+            // The human (at the bots' mean: the server matched them to
+            // its level) and the bots the roster put on a team are fixed;
+            // the rest are balanced around them.
+            let mut fixed = vec![(0u8, mean)];
+            fixed.extend(seats.iter().filter_map(|(s, _)| Some((s.team?, k(s)))));
+            let free: Vec<f32> = seats
+                .iter()
+                .filter(|(s, _)| s.team.is_none())
+                .map(|(s, _)| k(s))
+                .collect();
+            let mut teams = crate::clankermatch::balance(seating.teams, &fixed, &free).into_iter();
+            for (s, _) in seats.iter_mut().filter(|(s, _)| s.team.is_none()) {
+                s.team = teams.next().flatten();
+            }
+        }
+        seats.truncate(wanted);
         // The phantoms there already stay while they are the first of
         // these; otherwise (a new roster) they all go.
         let have: Vec<(u64, bool)> = own
@@ -1050,10 +1189,97 @@ impl Driver {
         }
     }
 
-    /// Whether the last [`Want`] applied asked for any bot (Clankers on).
+    /// Whether the last [`Want`] applied asked for any bot (Clankers on),
+    /// or a Clankermatch is being filled.
     pub fn on(&self) -> bool {
         let last = *self.last.lock().unwrap_or_else(|e| e.into_inner());
-        last.is_some_and(|w| w.count > 0)
+        last.is_some_and(|w| w.count > 0) || self.filling()
+    }
+
+    /// Whether a Clankermatch is being filled.
+    fn filling(&self) -> bool {
+        self.fill
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Follows the Clankermatch this console hosts, at `now`: a clanker
+    /// hopper's lobby starts a fill, its bots join on their schedule, and
+    /// it ends when the console hosts another kind of session or none for
+    /// [`FILL_GONE`]. Applies the last [`Want`] again when that changes
+    /// what is seated. Lines for the log.
+    pub fn tick_match(&self, now: std::time::Instant) -> Vec<String> {
+        let Some(rosters) = &self.rosters else {
+            return Vec::new();
+        };
+        let hosted = rosters.clanker_match();
+        let hosting = hosted.is_some() || rosters.session().is_some();
+        let mut log = Vec::new();
+        let changed = {
+            let mut fill = self.fill.lock().unwrap_or_else(|e| e.into_inner());
+            let current = fill.as_ref().map(|f| f.hopper);
+            match (current, hosted) {
+                (Some(h), Some((_, mark))) if h == mark.hopper_id => {
+                    let f = fill.as_mut().expect("a fill");
+                    f.gone = None;
+                    let n = crate::clankermatch::seated(
+                        &f.schedule,
+                        now.saturating_duration_since(f.started),
+                    );
+                    let more = n != f.seated;
+                    f.seated = n;
+                    more
+                }
+                (_, Some((session, mark))) => {
+                    let bots = mark.bots_for(1) as usize;
+                    let seed = u64::from_str_radix(&session, 16).unwrap_or(0) ^ 0xc1a4;
+                    let schedule = crate::clankermatch::schedule(bots, seed);
+                    log.push(format!(
+                        "clankermatch: hosting clanker playlist {} (session {session}): {bots} bots join over {:.1} s{}",
+                        mark.hopper_id,
+                        schedule.last().map_or(0.0, |t| t.as_secs_f32()),
+                        if mark.teams > 1 {
+                            format!(", {} teams", mark.teams)
+                        } else {
+                            String::new()
+                        }
+                    ));
+                    *fill = Some(Fill {
+                        hopper: mark.hopper_id,
+                        bots,
+                        teams: mark.teams,
+                        schedule,
+                        started: now,
+                        seated: 0,
+                        gone: None,
+                    });
+                    true
+                }
+                (Some(_), None) if hosting => {
+                    log.push("clankermatch: this console hosts another game: the bots go".into());
+                    *fill = None;
+                    true
+                }
+                (Some(_), None) => {
+                    let f = fill.as_mut().expect("a fill");
+                    let since = *f.gone.get_or_insert(now);
+                    if now.saturating_duration_since(since) > FILL_GONE {
+                        log.push("clankermatch: the game is over: the bots go".into());
+                        *fill = None;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                (None, None) => false,
+            }
+        };
+        if changed {
+            let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+            log.extend(self.apply(want.unwrap_or(Want::OFF)));
+        }
+        log
     }
 
     /// The ports of the local bots it keeps.
@@ -1098,7 +1324,8 @@ static DRIVER: Mutex<Option<std::sync::Weak<Driver>>> = Mutex::new(None);
 /// for a roster again if the hosted Live session changed
 /// ([`Driver::refresh`]). Never waits on the server.
 pub fn frame(n: u64) {
-    if n % 30 != 0 {
+    // Twice a second: a Clankermatch's bots join 0.5 to 3 s apart.
+    if n % 15 != 0 {
         return;
     }
     let d = DRIVER
@@ -1106,7 +1333,11 @@ pub fn frame(n: u64) {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|w| w.upgrade());
-    if let Some(d) = d {
+    let Some(d) = d else { return };
+    for line in d.tick_match(std::time::Instant::now()) {
+        eprintln!("clankers: {line}");
+    }
+    if n % 30 == 0 {
         for line in d.refresh() {
             eprintln!("clankers: {line}");
         }

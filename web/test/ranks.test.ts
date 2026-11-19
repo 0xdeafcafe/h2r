@@ -60,7 +60,8 @@ describe("rank sums", () => {
     expect(playlistName("1")).toBe("Team Slayer");
     expect(playlistName("12")).toBe("Playlist 12");
     expect(playlistName("3", { "3": "Snipers Only" })).toBe("Snipers Only");
-    expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(8);
+    expect(Object.keys(DEFAULT_PLAYLISTS)).toHaveLength(11);
+    expect(playlistName("8")).toBe("Clanker Slayer");
     expect(winRate(st({ games: 4, wins: 3 }))).toBe("75%");
     expect(winRate(st())).toBe("–");
   });

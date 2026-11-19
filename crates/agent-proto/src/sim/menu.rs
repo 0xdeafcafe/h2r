@@ -27,9 +27,11 @@ pub const MODE_LIVE: u32 = 3;
 pub const MODE_INVITE: u32 = 4;
 /// The campaign's screens: A on Campaign, and the one after it.
 pub const CAMPAIGN_SCREENS: [u32; 2] = [0xee, 0xd1];
-/// Live menu rows (`custom_games`).
-pub const BROWSER_ROW: u32 = 3;
-pub const COOP_ROW: u32 = 4;
+/// Live menu rows (`boot::custom_games`): 2 Clankermatch, 3 Custom Game
+/// (retail row 2, moved down), 4 the browser, 5 Co-op Campaign.
+pub const CLANKERMATCH_ROW: u32 = 2;
+pub const BROWSER_ROW: u32 = 4;
+pub const COOP_ROW: u32 = 5;
 /// Main menu rows (`boot::ui_watch`: `0x230827`): 0 Campaign, 1 Xbox Live,
 /// 2 Split Screen, 3 System Link, 4 Settings.
 pub const MAIN_LIVE_ROW: u32 = 1;

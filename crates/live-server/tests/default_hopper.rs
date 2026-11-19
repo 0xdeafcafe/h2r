@@ -67,7 +67,11 @@ async fn the_default_lineup_is_served_until_a_file_is_published() {
             p.entries.len()
         );
     }
-    assert_eq!(hoppers[8]["type"], 0, "unused slots are empty");
+    assert_eq!(
+        hoppers[playlists().len()]["type"],
+        0,
+        "unused slots are empty"
+    );
 
     // Other titles have no default.
     assert_eq!(

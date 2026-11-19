@@ -44,6 +44,7 @@
 //! from the owner's own console cache through `h2 live hopper import`
 //! (docs/live/live-admin.md).
 
+pub mod clankers;
 pub mod defaults;
 pub mod layout;
 pub mod variant;

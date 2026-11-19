@@ -14,10 +14,18 @@
 //! for small games, 45 s and 300 s for big team games); the playlists,
 //! their sizes, maps and weights are this project's choice.
 //!
+//! After the eight human playlists come three clanker playlists
+//! (docs/game/bots.md §8, §9.4 item 1): Clankermatch hoppers, where every
+//! other player is a bot the host runs. Their descriptors are ordinary ones;
+//! what makes them clanker hoppers is [`Playlist::clankers`], which the
+//! server keeps beside the file and serves as
+//! [`super::clankers::ClankerHoppers`].
+//!
 //! Map pack maps are left out: an entry whose map id the console does not
 //! have marks the whole hopper as an error (`0x00194660`), and the format
 //! has no per-entry "only when installed" flag.
 
+use super::clankers::Clankers;
 use super::layout::{Descriptor, Entry, Rules, default_skill_ceiling, start_waits};
 use super::variant::{self as v, GameType, VariantRecord};
 use super::{HopperFile, MAX_DESCRIPTION, MAX_TITLE};
@@ -169,6 +177,10 @@ pub struct Playlist {
     pub base_wait_ms: u32,
     pub search_timeout_ms: u32,
     pub entries: Vec<DefaultEntry>,
+    /// A clanker hopper's mark (docs/game/bots.md §9.4 item 1): not a game
+    /// field, kept beside the descriptor and served on
+    /// `GET /v1/hoppers/clankers`. `None` for a human hopper.
+    pub clankers: Option<Clankers>,
 }
 
 impl Playlist {
@@ -267,6 +279,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(king_of_the_hill, &[IVORY_TOWER, ASCENSION], 3),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 2,
@@ -280,6 +293,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(team_slayer, &[ZANZIBAR], 4),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 3,
@@ -297,6 +311,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(teamball, &[MIDSHIP, LOCKOUT], 3),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 4,
@@ -318,6 +333,7 @@ pub fn playlists() -> Vec<Playlist> {
                 ],
                 10,
             ),
+            clankers: None,
         },
         Playlist {
             playlist_id: 5,
@@ -337,6 +353,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(territories, &[HEADLONG, WATERWORKS], 4),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 6,
@@ -357,6 +374,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(teamball, &[LOCKOUT, BEAVER_CREEK], 3),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 7,
@@ -374,6 +392,7 @@ pub fn playlists() -> Vec<Playlist> {
                 on(king_of_the_hill, &[ASCENSION], 3),
             ]
             .concat(),
+            clankers: None,
         },
         Playlist {
             playlist_id: 8,
@@ -393,6 +412,64 @@ pub fn playlists() -> Vec<Playlist> {
                 on(teamball, &[LOCKOUT], 3),
             ]
             .concat(),
+            clankers: None,
+        },
+        // Clankermatch (docs/game/bots.md §8): one human (or a party) and
+        // bots up to the most players. All three are unranked hoppers: the
+        // descriptor's rules are what the game's own search and lobby read,
+        // and a ranked type's party and team-size rules (ranked teams need
+        // 2..=size a team and keep parties within limits; ranked free for
+        // all is solo) are made for filling a game with humans. An
+        // unranked type lets a lone human host and the bots fill every
+        // other seat, with uneven teams while they join. The server still
+        // ranks a Clankermatch game (bots.md §8.2 item 1, by its own kind)
+        // from the game record, not from the hopper type. Each keeps its
+        // own standing (`ranks_as: None`) until a test of the validator
+        // and playlist UI says duplicate playlist ids are fine (§9.4).
+        Playlist {
+            playlist_id: 9,
+            title: "Clanker Slayer",
+            description: "Free for all Slayer, up to 8 players, where every other player is a bot.",
+            rules: Rules::FreeForAll {
+                ranked: false,
+                players: (2, 8),
+            },
+            base_wait_ms: SMALL_WAIT,
+            search_timeout_ms: SMALL_TIMEOUT,
+            entries: on(rumble_slayer, &small_ffa, 10),
+            clankers: Some(Clankers::default()),
+        },
+        Playlist {
+            playlist_id: 10,
+            title: "Clanker Teams",
+            description: "Four against four Team Slayer. Bots fill every seat your party does not.",
+            rules: Rules::UnrankedTeams {
+                teams: 2,
+                team_size: (1, 4),
+                uneven: true,
+            },
+            base_wait_ms: SMALL_WAIT,
+            search_timeout_ms: SMALL_TIMEOUT,
+            entries: on(team_slayer, &small_team, 10),
+            clankers: Some(Clankers::default()),
+        },
+        Playlist {
+            playlist_id: 11,
+            title: "Clanker Doubles",
+            description: "Two against two Team Slayer. Bots fill every seat your party does not.",
+            rules: Rules::UnrankedTeams {
+                teams: 2,
+                team_size: (1, 2),
+                uneven: true,
+            },
+            base_wait_ms: SMALL_WAIT,
+            search_timeout_ms: SMALL_TIMEOUT,
+            entries: on(
+                team_slayer,
+                &[LOCKOUT, MIDSHIP, IVORY_TOWER, BEAVER_CREEK, FOUNDATION],
+                10,
+            ),
+            clankers: Some(Clankers::default()),
         },
     ]
 }
@@ -487,12 +564,20 @@ mod tests {
                 "Big Team Battle",
                 "Team Objective",
                 "Free for All",
-                "Unranked Teams"
+                "Unranked Teams",
+                "Clanker Slayer",
+                "Clanker Teams",
+                "Clanker Doubles"
             ]
         );
         let kinds: Vec<HopperType> = lineup.iter().map(|p| p.rules.hopper_type()).collect();
         assert!(kinds[..6].iter().all(|k| k.ranked()));
         assert!(kinds[6..].iter().all(|k| !k.ranked()));
+        // The human playlists first, then the clanker ones.
+        let marked: Vec<bool> = lineup.iter().map(|p| p.clankers.is_some()).collect();
+        assert_eq!(marked, (0..11).map(|i| i >= 8).collect::<Vec<bool>>());
+        let ids: Vec<u32> = lineup.iter().map(|p| p.playlist_id).collect();
+        assert_eq!(ids, (1..=11).collect::<Vec<u32>>());
         let file = HopperFile::default_set();
         let d = file.descriptor(2).unwrap();
         assert_eq!(

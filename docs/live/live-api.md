@@ -261,8 +261,8 @@ game it is; all five fields are optional and old senders leave them out:
 
 | field | values | rules |
 |---|---|---|
-| `kind` | `custom`, `matchmaking`, `campaign` | `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
-| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
+| `kind` | `custom`, `matchmaking`, `clankermatch`, `campaign` | `clankermatch` is a matchmade game against bots (docs/game/bots.md §8.2); `campaign` exactly when `mode` is; absent means `campaign` for campaign mode, else `custom` |
+| `playlist`, `playlist_id` | hopper name (1-32 characters, no control characters), id `[A-Za-z0-9_-]{1,64}` | matchmaking and clankermatch only; with no `playlist`, the server names it from the served hopper file when `playlist_id` is a descriptor index there |
 | `session_id` | the Live session, 16 lowercase hex digits (the game's 8 bytes in order) | matchmaking only; ranking finds the game's arbitration round by it ([Arbitration](#arbitration)) |
 | `difficulty` | `easy`, `normal`, `heroic`, `legendary` | campaign only |
 | `online` | boolean | campaign only: co-op partners on other machines (Live co-op, not sent yet); split-screen co-op is more than one player without it |
@@ -973,6 +973,7 @@ stored: players use their own disc for the base.
 | `GET /v1/maps/{map_id}/image` | read rule | the preview (PNG or JPEG, its content type); 404 if none |
 | `POST /v1/maps/{map_id}/report` | account token, `lxm: content.write`; `{reason}` | 201 `{ok, position}` |
 | `GET /v1/hoppers/pins` | read rule | `{pins: [{hopper_id, map_ids}], position}` |
+| `GET /v1/hoppers/clankers` | read rule | `{hoppers: [{hopper_id, playlist_id, players, teams, ranks_as?}]}`: the served file's clanker hoppers (live-matchmaking.md §6.8) |
 
 Uploads (`PUT /v1/content`) stream to `<data>/tmp`, hashed as they
 arrive, and the SHA-256 of the body must be the path's (400 otherwise).

@@ -1,5 +1,5 @@
-// What kind of game a game was, in words: a custom game, matchmaking (with
-// its playlist), or campaign (solo, co-op on one console, or co-op online),
+// What kind of game a game was, in words: a custom game, matchmaking or
+// Clankermatch (with its playlist), or campaign (solo, co-op on one console, or co-op online),
 // with the campaign's difficulty. Pure, so pages and tests share it.
 
 import type { GameState } from "./reducer";
@@ -7,7 +7,7 @@ import { titleCase } from "../lib/format";
 import { gametypeKey } from "../lib/gameart";
 import { variantType } from "./gameart";
 
-export type GameKind = "custom" | "matchmaking" | "campaign";
+export type GameKind = "custom" | "matchmaking" | "clankermatch" | "campaign";
 
 type KindOf = Pick<GameState, "mode" | "kind">;
 
@@ -17,7 +17,7 @@ type KindOf = Pick<GameState, "mode" | "kind">;
 export function gameKind(g: KindOf): GameKind {
   const campaign = g.mode === "campaign";
   if (campaign) return "campaign";
-  return g.kind === "matchmaking" ? "matchmaking" : "custom";
+  return g.kind === "matchmaking" || g.kind === "clankermatch" ? g.kind : "custom";
 }
 
 const DIFFICULTIES = ["easy", "normal", "heroic", "legendary"];
@@ -60,12 +60,13 @@ export function campaignLabel(g: Pick<GameState, "online" | "players">): string 
   return Object.keys(g.players).length > 1 ? "Campaign Co-op" : "Campaign";
 }
 
-/** The type of game: "Custom Game", "Matchmaking: <playlist>", or a
- *  campaign label. */
+/** The type of game: "Custom Game", "Matchmaking: <playlist>",
+ *  "Clankermatch: <playlist>" (against bots), or a campaign label. */
 export function gameTypeLabel(g: LabelOf): string {
   switch (gameKind(g)) {
     case "campaign": return campaignLabel(g);
     case "matchmaking": return g.playlist ? `Matchmaking: ${g.playlist}` : "Matchmaking";
+    case "clankermatch": return g.playlist ? `Clankermatch: ${g.playlist}` : "Clankermatch";
     default: return "Custom Game";
   }
 }

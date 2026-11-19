@@ -75,6 +75,7 @@ pub mod sampling;
 pub use live_telemetry as telemetry;
 pub mod bot_glue;
 pub mod bots_nav_auto;
+pub mod clankermatch;
 pub mod clankers;
 pub mod pause_menu;
 pub mod setting_defs;
@@ -1099,7 +1100,8 @@ pub fn run_hosted_with_live(
     }
     // A matchmaking game's record names its playlist and Live session
     // (docs/live/live-matchmaking.md §8.3, §8.4): the server fills in the
-    // hopper's title and finds the arbitration round by the session.
+    // hopper's title and finds the arbitration round by the session. A
+    // clanker hopper's game is a Clankermatch (docs/game/bots.md §8.2).
     if let (Some(t), Some(hle)) = (&_telemetry, &_live) {
         let hle = Arc::clone(hle);
         t.set_playlist_locator(Box::new(move || {
@@ -1107,6 +1109,7 @@ pub fn run_hosted_with_live(
                 name: None,
                 id: id.to_string(),
                 session_id: Some(session),
+                clankers: hle.clanker_hoppers().contains(id),
             })
         }));
     }

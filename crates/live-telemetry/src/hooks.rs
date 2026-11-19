@@ -578,6 +578,7 @@ mod tests {
                 name: None,
                 id: "1".into(),
                 session_id: Some("0123456789abcdef".into()),
+                clankers: false,
             })
         }));
         let mut guest = fixture::memory();

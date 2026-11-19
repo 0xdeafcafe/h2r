@@ -72,7 +72,7 @@ pub const FAMILIES: &[Family] = &[
     Family::new("mod texts", 0x20ff_d100, 128),
     Family::new("layouts", TABLE, 0x20),
     Family::new("speaker", TABLE + 0x30, 2),
-    Family::new("live menu rows", TABLE + 0x32, 7),
+    Family::new("live menu rows", TABLE + 0x32, 9),
     Family::new("ui model", TABLE + 0x40, 0xbf),
     Family::new("skulls", TABLE + 0x0100_0000, 0x100),
     Family::new("campaign picker", TABLE + 0x0200_0000, 65),

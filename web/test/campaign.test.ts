@@ -172,6 +172,7 @@ describe("game type labels", () => {
   test("kind: as sent, else inferred from the mode", () => {
     expect(gameKind(g({}))).toBe("custom");
     expect(gameKind(g({ kind: "matchmaking" }))).toBe("matchmaking");
+    expect(gameKind(g({ kind: "clankermatch" }))).toBe("clankermatch");
     expect(gameKind(g({ mode: "campaign" }))).toBe("campaign");
     // A campaign game stays campaign whatever its kind says.
     expect(gameKind(g({ mode: "campaign", kind: "custom" }))).toBe("campaign");
@@ -182,6 +183,8 @@ describe("game type labels", () => {
     expect(gameTypeLabel(g({ kind: "custom" }))).toBe("Custom Game");
     expect(gameTypeLabel(g({ kind: "matchmaking", playlist: "Quad Squad" }))).toBe("Matchmaking: Quad Squad");
     expect(gameTypeLabel(g({ kind: "matchmaking" }))).toBe("Matchmaking");
+    expect(gameTypeLabel(g({ kind: "clankermatch", playlist: "Clanker Slayer" }))).toBe("Clankermatch: Clanker Slayer");
+    expect(gameTypeLabel(g({ kind: "clankermatch" }))).toBe("Clankermatch");
     expect(campaignLabel(g({ mode: "campaign" }))).toBe("Campaign");
     expect(campaignLabel(g({ mode: "campaign", players: roster(2) }))).toBe("Campaign Co-op");
     expect(campaignLabel(g({ mode: "campaign", players: roster(2), online: true }))).toBe("Campaign Online");

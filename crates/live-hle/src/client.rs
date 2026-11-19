@@ -117,6 +117,8 @@ pub(crate) enum Reply {
     Presence(Vec<live_proto::Presence>),
     /// A page of the mod repository (docs/game/maps.md §5, "Mod downloads").
     Mods(crate::mods::ModPage),
+    /// The served hopper file's clanker hoppers (docs/game/bots.md §8).
+    ClankerHoppers(live_proto::hopper::clankers::ClankerHoppers),
     /// Where content is fetched from (the API base) and the map gate that
     /// installs it, for a download on a thread of its own.
     Content {
@@ -263,6 +265,9 @@ enum Work {
     Mods { limit: u32, cursor: Option<String> },
     /// The API base and map gate, for a mod download.
     ContentApi,
+    /// `GET /v1/hoppers/clankers` (docs/game/bots.md §8), as the first
+    /// account signed in on this console.
+    ClankerHoppers,
     Wake,
 }
 /// Called on the worker with a command's result, once it has one.
@@ -476,6 +481,12 @@ impl Service {
         then: Then,
     ) -> Result<(), u32> {
         self.submit_then(s, Work::Mods { limit, cursor }, Some(then))
+            .map(|_| ())
+    }
+    /// The served hopper file's clanker hoppers; `then` gets them on the
+    /// worker.
+    pub fn clanker_hoppers(&self, s: &Session, then: Then) -> Result<(), u32> {
+        self.submit_then(s, Work::ClankerHoppers, Some(then))
             .map(|_| ())
     }
     /// The API base and map gate; `then` gets them on the worker.
@@ -1631,6 +1642,18 @@ impl Worker {
                 let path = crate::mods::list_path(*limit, cursor.as_deref());
                 self.team_json::<crate::mods::ModPage>(user, &path)
                     .map(Reply::Mods)
+                    .map_err(Error::result)
+            }
+            Work::ClankerHoppers => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                let path = live_proto::hopper::clankers::PATH;
+                self.team_json::<live_proto::hopper::clankers::ClankerHoppers>(user, path)
+                    .map(Reply::ClankerHoppers)
                     .map_err(Error::result)
             }
             Work::ContentApi => {

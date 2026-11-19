@@ -68,11 +68,12 @@ use crate::coop_drive::{
 };
 
 /// The Xbox Live menu's Custom Game row (retail row 2). The rows, with
-/// ours (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Custom Game,
-/// 3 Custom Game Browser, 4 Co-op Campaign, 5 Content Download.
-pub const CUSTOM_GAME_ROW: u32 = 2;
+/// ours (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Clankermatch,
+/// 3 Custom Game, 4 Custom Game Browser, 5 Co-op Campaign, 6 Content
+/// Download.
+pub const CUSTOM_GAME_ROW: u32 = 3;
 /// The Xbox Live menu's last row.
-pub const LIVE_LAST_ROW: u32 = 5;
+pub const LIVE_LAST_ROW: u32 = 6;
 /// The Xbox Live menu's list mask on its `ui: screen none` line
 /// (`list [0xf/...]`); the main menu's, the OptiMatch playlists' and the
 /// lobby's are `0x1` (run 20261119-003044).
@@ -453,7 +454,7 @@ impl Driver {
                 self.say("in the Live custom game lobby".into());
             }
             Step::Hosting { .. } if text.starts_with("custom games: opening the browser") => {
-                self.queue = vec![press("b", "back from the browser: that was row 3")];
+                self.queue = vec![press("b", "back from the browser: that was row 4")];
             }
             _ => {}
         }

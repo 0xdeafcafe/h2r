@@ -122,12 +122,15 @@ pub struct NewGame {
     #[serde(default)]
     pub tick: Option<u64>,
     pub players: Vec<Player>,
-    /// `custom`, `matchmaking` or `campaign`; old senders leave it out and
-    /// [`NewGame::kind`] infers it from `mode`.
+    /// `custom`, `matchmaking`, `clankermatch` or `campaign`; old senders
+    /// leave it out and [`NewGame::kind`] infers it from `mode`. A
+    /// `clankermatch` game is a matchmade game against bots the host runs
+    /// (docs/game/bots.md §8.2 item 1): its own kind, played in a clanker
+    /// hopper, with a playlist like `matchmaking`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
-    /// Matchmaking only: the playlist (hopper) name and id the game came
-    /// from.
+    /// Matchmaking and Clankermatch only: the playlist (hopper) name and id
+    /// the game came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playlist: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,7 +166,14 @@ pub struct NewGame {
 }
 
 /// The game kinds `NewGame.kind` may name.
-pub const GAME_KINDS: [&str; 3] = ["custom", "matchmaking", "campaign"];
+pub const GAME_KINDS: [&str; 4] = ["custom", "matchmaking", "clankermatch", "campaign"];
+
+/// Whether games of `kind` come from a hopper (carry a playlist, count
+/// toward playlist stats and rank): `matchmaking` and `clankermatch`.
+pub fn is_matchmade(kind: &str) -> bool {
+    matches!(kind, "matchmaking" | "clankermatch")
+}
+
 /// The campaign difficulties `NewGame.difficulty` may name, easiest first.
 pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
 
@@ -890,15 +900,15 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     }
     if let Some(kind) = &game.kind {
         if !GAME_KINDS.contains(&kind.as_str()) {
-            return Err("kind must be custom, matchmaking or campaign".into());
+            return Err("kind must be custom, matchmaking, clankermatch or campaign".into());
         }
         if (kind == "campaign") != (game.mode == "campaign") {
             return Err("kind campaign goes with mode campaign, and only with it".into());
         }
     }
     let kind = game.kind();
-    if (game.playlist.is_some() || game.playlist_id.is_some()) && kind != "matchmaking" {
-        return Err("playlist is for matchmaking games".into());
+    if (game.playlist.is_some() || game.playlist_id.is_some()) && !is_matchmade(kind) {
+        return Err("playlist is for matchmaking and clankermatch games".into());
     }
     if let Some(name) = &game.playlist
         && (name.is_empty() || name.chars().count() > 32 || name.chars().any(char::is_control))
@@ -2178,6 +2188,13 @@ mod tests {
                 playlist_id: Some("3".into()),
                 ..custom.clone()
             },
+            NewGame {
+                kind: Some("clankermatch".into()),
+                playlist: Some("Clanker Slayer".into()),
+                playlist_id: Some("9".into()),
+                session_id: Some("00000000000000a1".into()),
+                ..custom.clone()
+            },
         ];
         for g in &ok {
             assert_eq!(validate_new(g), Ok(()), "{g:?}");
@@ -2186,6 +2203,13 @@ mod tests {
         assert_eq!(v["kind"], "matchmaking");
         assert_eq!(v["playlist"], "Team Slayer");
         assert_eq!(serde_json::from_value::<NewGame>(v).unwrap(), ok[3]);
+        let v = serde_json::to_value(&ok[4]).unwrap();
+        assert_eq!(v["kind"], "clankermatch");
+        assert_eq!(v["playlist_id"], "9");
+        assert_eq!(serde_json::from_value::<NewGame>(v).unwrap(), ok[4]);
+        assert!(GAME_KINDS.contains(&"clankermatch"));
+        assert!(is_matchmade("clankermatch") && is_matchmade("matchmaking"));
+        assert!(!is_matchmade("custom") && !is_matchmade("campaign"));
 
         let bad = [
             NewGame {
@@ -2207,6 +2231,20 @@ mod tests {
             NewGame {
                 kind: Some("matchmaking".into()),
                 playlist: Some("x".repeat(33)),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("clankermatch".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                kind: Some("custom".into()),
+                playlist_id: Some("9".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("clankermatch".into()),
+                playlist_id: Some("a b".into()),
                 ..custom.clone()
             },
             NewGame {

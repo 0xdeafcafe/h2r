@@ -272,6 +272,7 @@ struct FakeLive {
     playlist: Mutex<Option<String>>,
     asked: Mutex<Vec<(RosterRequest, Option<Done>)>>,
     players: Mutex<Vec<Vec<Xuid>>>,
+    clanker: Mutex<Option<(String, live_proto::hopper::clankers::ClankerHopper)>>,
 }
 
 impl Rosters for FakeLive {
@@ -287,6 +288,9 @@ impl Rosters for FakeLive {
     }
     fn players(&self, bots: Vec<Xuid>) {
         self.players.lock().unwrap().push(bots);
+    }
+    fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
+        self.clanker.lock().unwrap().clone()
     }
 }
 
@@ -712,4 +716,114 @@ fn a_matchmade_session_asks_for_its_playlists_bots() {
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].playlist.as_deref(), Some("3"));
     assert_eq!(r[0].count, 2);
+}
+
+// ---- Clankermatch (docs/game/bots.md §8.4) ----
+
+#[test]
+fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
+    use live_proto::hopper::clankers::ClankerHopper;
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c1";
+    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
+    // The page's Clankers stay off: the playlist decides. A 4 v 4 clanker
+    // hopper hosted by this console (descriptor 9).
+    *live.playlist.lock().unwrap() = Some("9".into());
+    *live.clanker.lock().unwrap() = Some((
+        SESSION.into(),
+        ClankerHopper {
+            hopper_id: 9,
+            playlist_id: 10,
+            players: 8,
+            teams: 2,
+            ranks_as: None,
+        },
+    ));
+    let t0 = Instant::now();
+    let log = d.tick_match(t0);
+    assert!(log.iter().any(|l| l.contains("7 bots join")), "{log:?}");
+    assert!(d.on(), "the nav mesh is wanted");
+    // One roster for the whole lobby, for the playlist, its skill the
+    // server's (from the human's level), with teams.
+    assert_eq!(
+        live.requests(),
+        vec![RosterRequest {
+            session_id: SESSION.into(),
+            playlist: Some("9".into()),
+            count: 7,
+            skill: None,
+            teams: true,
+            carry_from: None,
+        }]
+    );
+    // Nobody seated before the roster: no host-made bots to replace.
+    assert!(ph.list().is_empty());
+    live.answer(0, Ok(roster(SESSION, 7, 0.5)));
+    assert!(ph.list().is_empty(), "the first bot's time has not come");
+    let schedule =
+        crate::clankermatch::schedule(7, u64::from_str_radix(SESSION, 16).unwrap() ^ 0xc1a4);
+    for (i, at) in schedule.iter().enumerate() {
+        if i > 0 {
+            d.tick_match(t0 + *at - Duration::from_millis(1));
+            assert_eq!(ph.list().len(), i, "bot {i} not before its time");
+        }
+        d.tick_match(t0 + *at);
+        assert_eq!(ph.list().len(), i + 1, "bot {i} at {at:?}");
+    }
+    assert!(d.ports().is_empty(), "phantoms only: no local bots");
+    assert_eq!(live.requests().len(), 1, "asked once, not per bot");
+    // The roster's bot 2 asked for team 1; the rest balance around it and
+    // the human (team 0): 3 bots on red, 4 on blue, 4 v 4.
+    let teams: Vec<Option<u8>> = ph.list().iter().map(|p| p.team).collect();
+    assert_eq!(teams[1], Some(1));
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(0)).count(),
+        3,
+        "{teams:?}"
+    );
+    assert_eq!(
+        teams.iter().filter(|t| **t == Some(1)).count(),
+        4,
+        "{teams:?}"
+    );
+    // The game hands the lobby to a new session: no session for a few
+    // seconds keeps the bots.
+    *live.clanker.lock().unwrap() = None;
+    *live.session.lock().unwrap() = None;
+    let end = t0 + *schedule.last().unwrap();
+    d.tick_match(end + Duration::from_secs(1));
+    assert_eq!(ph.list().len(), 7, "a handoff's gap keeps them");
+    // Left for good: they go.
+    d.tick_match(end + FILL_GONE + Duration::from_secs(2));
+    assert!(ph.list().is_empty());
+    assert!(!d.on());
+}
+
+#[test]
+fn a_clankermatch_refused_a_roster_seats_host_made_phantoms() {
+    use live_proto::hopper::clankers::ClankerHopper;
+    use std::time::{Duration, Instant};
+    const SESSION: &str = "00000000000000c2";
+    let (_s, live, ph, d) = rostered_driver(Some(SESSION));
+    *live.clanker.lock().unwrap() = Some((
+        SESSION.into(),
+        ClankerHopper {
+            hopper_id: 8,
+            playlist_id: 9,
+            players: 4,
+            teams: 0,
+            ranks_as: None,
+        },
+    ));
+    let t0 = Instant::now();
+    d.tick_match(t0);
+    d.tick_match(t0 + Duration::from_secs(60));
+    assert!(ph.list().is_empty(), "waiting for the roster");
+    live.answer(0, Err("refused".into()));
+    let l = ph.list();
+    assert_eq!(l.len(), 3, "free for all of 4: three bots");
+    assert!(
+        l.iter()
+            .all(|p| live_proto::bots::is_local_xuid(Xuid(p.identity.xuid)) && p.team.is_none())
+    );
 }

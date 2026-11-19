@@ -15,7 +15,7 @@ export function statsWindow(asked: string | null | undefined): StatsWindow {
 }
 
 export interface Totals {
-  games: number; multiplayer: number; campaign: number; matchmaking: number; custom: number; coop: number;
+  games: number; multiplayer: number; campaign: number; matchmaking: number; clankermatch: number; custom: number; coop: number;
   kills: number; deaths: number; betrayals: number; suicides: number; campaign_deaths: number;
   player_seconds: number; legendary: number;
 }
@@ -48,7 +48,7 @@ export interface StatsSummary {
 }
 
 const TOTAL_KEYS: Array<keyof Totals> = [
-  "games", "multiplayer", "campaign", "matchmaking", "custom", "coop", "kills", "deaths", "betrayals",
+  "games", "multiplayer", "campaign", "matchmaking", "clankermatch", "custom", "coop", "kills", "deaths", "betrayals",
   "suicides", "campaign_deaths", "player_seconds", "legendary",
 ];
 

@@ -185,7 +185,8 @@ export function gameTitle(g: GameState): string {
 export function playlist(g: GameState): string {
   if (gameKind(g) === "campaign") return [campaignLabel(g), difficultyName(g.difficulty)].filter(Boolean).join(", ");
   const label = gameTypeLabel(g);
-  return gameKind(g) === "matchmaking" ? label : `${label}, ${g.team_play ? "Team Game" : "Free for All"}`;
+  const kind = gameKind(g);
+  return kind === "matchmaking" || kind === "clankermatch" ? label : `${label}, ${g.team_play ? "Team Game" : "Free for All"}`;
 }
 
 /** A campaign game's players, by name. */

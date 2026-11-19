@@ -28,7 +28,7 @@
 //!   it has accepted (the reader runs on an event). A dialog or the
 //!   players' screen in mode 4 after that gets A (that is the invitation
 //!   being taken). If the game hasn't joined within [`INVITE_WAIT_MS`] of
-//!   its acceptance, Xbox Live again, Custom Game Browser (row 3), and A on
+//!   its acceptance, Xbox Live again, Custom Game Browser (row 4), and A on
 //!   the first game once the browser has probed one.
 //! * The late guest: the same, its fallback held until
 //!   [`LATE_MS`] after the host invited it, so it joins in progress.
@@ -261,8 +261,9 @@ impl Driver {
                     self.step = Step::Lobby { since: now };
                 }
                 Step::Hosting { .. } if text.starts_with("custom games: opening the browser") => {
-                    // Row 3, not 4: back to the Live menu and again.
-                    self.queue = vec![press("b", "back from the browser: that was row 3")];
+                    // The browser's row, not co-op's: back to the Live menu
+                    // and again.
+                    self.queue = vec![press("b", "back from the browser: that was row 4")];
                 }
                 Step::Starting { .. }
                     if text.contains("session start returned 1")

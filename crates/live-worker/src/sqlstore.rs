@@ -897,7 +897,13 @@ mod tests {
         assert_eq!(status, 201, "{roster}");
         let bot = &roster["bots"][0];
         let tag = bot["gamertag"].as_str().unwrap();
-        let (status, v) = call("GET", format!("/v1/accounts/{}", tag.replace(' ', "%20")), None, String::new()).await;
+        let (status, v) = call(
+            "GET",
+            format!("/v1/accounts/{}", tag.replace(' ', "%20")),
+            None,
+            String::new(),
+        )
+        .await;
         assert_eq!(status, 200, "{v}");
         assert_eq!(v["bot"], true);
         assert_eq!(v["xuid"], bot["xuid"]);
@@ -1001,6 +1007,100 @@ mod tests {
         assert_eq!(carried["match_id"], next_id);
         assert_eq!(carried["bots"][0]["xuid"], bot["xuid"]);
         assert_eq!(carried["bots"][0]["gamertag"], bot["gamertag"]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Clankermatch on the Worker's own composition, as on a machine
+    /// (live-server's `tests/clankermatch.rs`, docs/game/bots.md §8.2 item
+    /// 1, §9.4 item 1): the default lineup's clanker hoppers are served by
+    /// descriptor index, and a game recorded as `kind: "clankermatch"` in
+    /// one reads back as its own kind, named from the served hopper.
+    #[tokio::test]
+    async fn a_clankermatch_game_reads_back_as_its_kind_on_the_worker() {
+        use axum::{body::Body, http::Request};
+        use http_body_util::BodyExt;
+        use live_proto::lxm;
+        use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+        use live_server::{Live, Policy, ServerIdentity, app::Timers};
+        use tower::ServiceExt;
+
+        let path = temp_db("clankermatch");
+        let store = SqlStore::open(Sqlite(pool(&path).await)).await.unwrap();
+        let identity = ServerIdentity::open(path.parent().unwrap(), Some("live.test")).unwrap();
+        let live = Live::start_with(Arc::new(store), identity, Policy::default(), Timers::Driven)
+            .await
+            .unwrap();
+        let call = |method: &'static str, uri: String, auth: Option<String>, body: String| {
+            let live = live.clone();
+            async move {
+                let mut req = Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json");
+                if let Some(a) = auth {
+                    req = req.header("authorization", format!("Bearer {a}"));
+                }
+                let r = live_server::http::router(live)
+                    .oneshot(req.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap();
+                let status = r.status().as_u16();
+                let body = r.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+
+        let (status, marks) = call("GET", "/v1/hoppers/clankers".into(), None, String::new()).await;
+        assert_eq!(status, 200, "{marks}");
+        let marks: live_proto::hopper::clankers::ClankerHoppers =
+            serde_json::from_value(marks).unwrap();
+        let ids: Vec<(u32, u32)> = marks
+            .hoppers
+            .iter()
+            .map(|h| (h.hopper_id, h.playlist_id))
+            .collect();
+        assert_eq!(ids, [(8, 9), (9, 10), (10, 11)]);
+
+        let now = live_server::app::now;
+        let key = KeyPair::generate();
+        let (status, created) = call(
+            "POST",
+            "/v1/accounts".into(),
+            None,
+            AccountRequest::sign(&key, "Host", None, "live.test", now()),
+        )
+        .await;
+        assert_eq!(status, 201, "{created}");
+        let author = created["id"].as_str().unwrap().to_string();
+        let token = issue_token(&key, &author, "live.test", lxm::GAMES_WRITE, now());
+        let game = serde_json::json!({
+            "console": "Den", "map": "lockout", "mode": "multiplayer", "variant": "Rumble Slayer",
+            "team_play": false, "tick": 0, "kind": "clankermatch", "playlist_id": "8",
+            "players": [
+                {"index": 0, "name": "Host", "xuid": created["xuid"], "team": 0, "local": true},
+                {"index": 1, "name": "Clanker 1", "team": 1, "local": true, "bot": true}
+            ]
+        });
+        let (status, started) =
+            call("POST", "/v1/games".into(), Some(token), game.to_string()).await;
+        assert_eq!(status, 201, "{started}");
+        let id = started["game_id"].as_str().unwrap().to_string();
+        let (_, g) = call("GET", format!("/v1/games/{id}"), None, String::new()).await;
+        assert_eq!(g["kind"], "clankermatch", "{g}");
+        assert_eq!(g["playlist"], "Clanker Slayer", "{g}");
+        let (_, list) = call("GET", "/v1/games".into(), None, String::new()).await;
+        let item = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["game_id"] == id.as_str())
+            .cloned()
+            .unwrap_or(Value::Null);
+        assert_eq!(item["kind"], "clankermatch", "{list}");
+        assert_eq!(item["playlist_id"], "8", "{list}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
