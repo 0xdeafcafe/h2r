@@ -185,8 +185,8 @@ pub fn load_object_model<R: Read + Seek>(
         });
     }
     let model = Model::build(&input);
-    if model.draws.is_empty() && model.transparents.is_empty() {
-        return Err("no drawable parts".into());
+    if model.draws.is_empty() {
+        return Err("nothing opaque to draw".into());
     }
     let shaders = geo.materials.iter().map(|m| m.shader.id).collect();
     Ok(LoadedModel {

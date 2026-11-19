@@ -948,6 +948,24 @@ impl d3d::backend::Backend for Headless {
     }
     // The native renderer's pass (docs/graphics/native-renderer.md):
     // nothing to draw into headless.
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.0.external_attachments(surfaces, textures, copy)
+    }
+
+    fn prepare_external(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
+        self.0.commit_external(recording);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.0.supports_external_pass()
     }
@@ -1175,6 +1193,8 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     install_occlusion_capture(&device);
     crate::native_world_glue::install(&device);
     crate::native_objects_glue::install(&device);
+    crate::native_decals_glue::install(&device);
+    crate::native_particles_glue::install(&device);
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
@@ -1197,6 +1217,8 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .map(|e| e.0)
         .collect();
     install_write_barrier(rt, &device, &entries)?;
+    crate::native_world_layers_glue::install(rt, &device);
+    crate::native_residual_glue::install(rt, &device, &r.implemented);
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let snapshot: Arc<dyn DeviceSnapshot> = device.clone();

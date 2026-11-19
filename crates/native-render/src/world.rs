@@ -28,8 +28,6 @@ pub struct WorldVertex {
     /// material programs read `v2..v5` from these and decode them in the
     /// shader as the D3D translation does (`crate::program::INPUTS`).
     pub packed: [u32; 4],
-    /// The lightmap coordinate's two signed normalized shorts.
-    pub packed_lightmap_uv: [i16; 2],
 }
 
 /// `v` as a `NORMPACKED3` word (signed 11:11:10, x in the low bits): each
@@ -171,8 +169,6 @@ pub struct TransparentDraw {
     /// Range in [`World::indices`] (absolute vertex indices).
     pub first_index: u32,
     pub index_count: u32,
-    /// Registers supplied by the part's streams.
-    pub inputs: u16,
     pub bounds: Aabb,
 }
 
@@ -199,11 +195,6 @@ pub struct SectionInput {
     pub tangents: Vec<[f32; 3]>,
     /// The signed lighting vectors (stream `30`); empty without them.
     pub lighting: Vec<[f32; 3]>,
-    /// Raw guest frame, lighting and lightmap UV data where loaded from
-    /// streams. Synthetic sections may supply only the decoded values.
-    pub packed_frame: Vec<[u32; 3]>,
-    pub packed_lighting: Vec<u32>,
-    pub packed_lightmap_uvs: Vec<[i16; 2]>,
     pub parts: Vec<PartInput>,
 }
 
@@ -349,20 +340,6 @@ impl WorldBuilder {
             let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
             let own = |v: &Vec<[f32; 3]>| v.get(i).copied().unwrap_or([0.0; 3]);
             let (binormal, tangent, lighting) = (own(&section.binormals), own(&section.tangents), own(&section.lighting));
-            let mut packed = pack_frame(normal, binormal, tangent, lighting);
-            if let Some(frame) = section.packed_frame.get(i) {
-                packed[..3].copy_from_slice(frame);
-            }
-            if let Some(&word) = section.packed_lighting.get(i) {
-                packed[3] = word;
-            }
-            let packed_lightmap_uv = if lit {
-                section.packed_lightmap_uvs.get(i).copied().unwrap_or_else(|| {
-                    section.lightmap_uvs[i].map(|f| (f.clamp(-1.0, 1.0) * 32767.0).round() as i16)
-                })
-            } else {
-                [0; 2]
-            };
             self.program_vertices.push(WorldVertex {
                 position: section.positions[i],
                 uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
@@ -371,8 +348,7 @@ impl WorldBuilder {
                 binormal,
                 tangent,
                 lighting,
-                packed,
-                packed_lightmap_uv,
+                packed: pack_frame(normal, binormal, tangent, lighting),
             });
             let (placed_normal, placed_binormal, placed_tangent, placed_lighting) = (
                 place.normal(normal),
@@ -402,7 +378,6 @@ impl WorldBuilder {
                 // Read by nothing that draws the placed copy (the lights
                 // read the floats, `crate::program::FLOAT_INPUTS`).
                 packed: pack_frame(placed_normal, placed_binormal, placed_tangent, placed_lighting),
-                packed_lightmap_uv,
             });
         }
         for (index, part) in section.parts.iter().enumerate() {
@@ -440,7 +415,6 @@ impl WorldBuilder {
                         lightmap,
                         first_index,
                         index_count,
-                        inputs,
                         bounds,
                     });
                 }
@@ -718,26 +692,6 @@ mod tests {
 
     /// The words a vertex program reads `v2..v5` from (the round trip
     /// through the decode is `load::tests`).
-    #[test]
-    fn transparent_placements_keep_the_unplaced_guest_vertex_words() {
-        let mut section = quad(3, true, true);
-        // The most negative signed code decodes to -1, like the next
-        // code. A decode/repack would silently change its bits.
-        section.packed_frame = vec![[0x400, 0, 0]; 4];
-        section.packed_lighting = vec![0x200 << 22; 4];
-        section.packed_lightmap_uvs = vec![[i16::MIN, 123]; 4];
-        let placement = Placement { position: [7.0, 8.0, 9.0], ..Placement::IDENTITY };
-        let mut b = WorldBuilder::new();
-        b.add_section(Owner::Instance(2), &section, &placement, PAGE);
-        let world = b.finish();
-        let vertex = &world.program_vertices[0];
-        assert_eq!(vertex.position, [0.0; 3]);
-        assert_eq!(vertex.packed, [0x400, 0, 0, 0x200 << 22]);
-        assert_eq!(vertex.packed_lightmap_uv, [i16::MIN, 123]);
-        assert_eq!(world.vertices[0].position, placement.position);
-        assert_eq!(world.transparent(Owner::Instance(2), 0).unwrap().first_index, 0);
-    }
-
     #[test]
     fn a_frame_packs_into_normpacked3_words() {
         assert_eq!(pack_normpacked3([1.0, -1.0, 0.5]), 0x3ff | 0x401 << 11 | 256 << 22);

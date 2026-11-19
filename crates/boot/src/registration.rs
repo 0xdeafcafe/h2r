@@ -334,15 +334,24 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
-    // The sorted transparents' geometry on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_transparents=on, off by default;
-    // docs/graphics/native-renderer.md, stage 3): a context-only skip on
-    // the geometry entries' handler, in the game's sort order. Its host
-    // (native_transparents_glue, installed with the world's) draws the
-    // native world's transparent parts; everything else keeps its D3D draw.
+    features
+        .add(&feature::native_world_layers::NativeWorldLayers)
+        .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+    features
+        .add(&feature::native_residual::NativeResidual)
+        .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
+    // Mark the sorted geometry entries so their resolved indexed draws
+    // can use a cached vertex binding in the game's order (off by default).
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
+    // Dynamic decals in their seven observed pass positions
+    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // docs/graphics/native-decals-research.md). Only a fully resolved callback
+    // is replaced; all others keep their D3D draws.
+    features
+        .add(&feature::native_decals::NativeDecals)
+        .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
     features
         .add(&feature::native_particles::NativeParticles)
         .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;

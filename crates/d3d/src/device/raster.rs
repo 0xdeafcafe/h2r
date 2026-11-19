@@ -1130,21 +1130,29 @@ impl<B: Backend> Device<B> {
     /// (textures over it are read again). Called only once the backend has
     /// drawn: a skipped draw dirties nothing.
     pub(super) fn mark_written(&mut self, writes_depth: bool) {
-        if let Some(t) = self.rtt.get_mut(&self.render_target) {
+        self.mark_color_written(self.render_target);
+        if writes_depth { self.mark_depth_written(); }
+    }
+
+    pub(super) fn mark_color_written(&mut self, header: u32) {
+        if let Some(t) = self.rtt.get_mut(&header) {
             self.rtt_epoch += u64::from(!t.dirty);
             t.dirty = true;
-            self.mirror_supersede(self.render_target);
+            self.mirror_supersede(header);
         }
         // The colour surface over the depth buffer's memory: that memory
         // now holds its pixels (textures over it made before are stale).
         if self
             .depth_color
-            .is_some_and(|c| c.header == self.render_target)
+            .is_some_and(|c| c.header == header)
         {
             self.depth_color_newer = true;
             self.depth_generation += 1;
         }
-        if writes_depth && self.depth_stencil != 0 {
+    }
+
+    pub(super) fn mark_depth_written(&mut self) {
+        if self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
                 self.rtt_epoch += u64::from(!t.dirty);
                 t.dirty = true;
@@ -1622,9 +1630,22 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_Clear";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Clear)?;
         let (w, h) = self.target_size(mem)?;
         let v = self.viewport;
+        let mask = ChannelMask::from_flags(flags);
+        if self.residual.enabled
+            && count == 0
+            && w != 0
+            && h != 0
+            && v.x == 0
+            && v.y == 0
+            && v.width >= w
+            && v.height >= h
+            && (mask.all() || !mask.any())
+        {
+            return self.native_attachment_clear(mem, E, flags, mask, color, z, stencil);
+        }
         let vp = Rect {
             x1: v.x as i32,
             y1: v.y as i32,
@@ -1667,7 +1688,6 @@ impl<B: Backend> Device<B> {
         if pixels.is_empty() {
             return Ok(());
         }
-        let mask = ChannelMask::from_flags(flags);
         let (c, d) = self.current_targets(mem, E)?;
         let depth = (flags & clear_flags::ZBUFFER != 0 && d.is_some()).then_some(z);
         let stencil = (flags & clear_flags::STENCIL != 0 && d.is_some()).then_some(stencil as u8);

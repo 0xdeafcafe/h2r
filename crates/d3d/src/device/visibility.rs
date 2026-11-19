@@ -153,7 +153,7 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DDevice_EndVisibilityTest";
         self.live(E)?;
         Self::check_index(E, index)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::EndQuery)?;
         let time = mem.read_u32(self.cfg.layout.device + field::GPU_TIME)?;
         let ticket = self
             .backend
@@ -199,7 +199,7 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DDevice_GetVisibilityTestResult";
         self.live(E)?;
         Self::check_index(E, index)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::QueryResult)?;
         let Some(test) = self.visibility.get(&index).copied() else {
             return Err(D3dError::invalid(
                 E,

@@ -48,6 +48,18 @@ impl Backend for MeteredBackend {
             {
                 phase::count(c, self.clears);
             }
+            {
+                use timeline::native::{Metric, Stage, Timer};
+                let _prep = Timer::start(Stage::World, Metric::PrepareNs);
+                gfx::churn::buffer_created();
+                {
+                    let _enc = Timer::start(Stage::Objects, Metric::EncodeNs);
+                    gfx::churn::upload_bytes(32 * self.clears as usize);
+                }
+                gfx::churn::upload_bytes(8);
+                Stage::World.attempted(1, true, 2);
+                Stage::World.invariant(1, true);
+            }
             std::thread::sleep(Duration::from_millis(1));
             let _submit = phase::enter(Phase::Submit);
             std::thread::sleep(Duration::from_millis(1));
@@ -138,6 +150,15 @@ fn queued_frame_stats_and_game_thread_waits_reach_csv() {
             assert!(row[col(timer)] >= 1000, "{timer}: {text}");
         }
         assert_eq!(row[col("read_bytes")], [123, 456][i]);
+        assert_eq!(row[col("native_world_upload_bytes")], 8);
+        assert_eq!(row[col("native_world_buffers")], 1);
+        assert_eq!(row[col("native_objects_upload_bytes")], (i as u64 + 1) * 32);
+        assert!(row[col("native_world_prepare_ns")] > 0);
+        assert!(row[col("native_objects_encode_ns")] > 0);
+        assert_eq!(row[col("native_world_v1_display_recorded")], 2);
+        assert_eq!(row[col("native_world_v1_display_ranges")], 0);
+        assert_eq!(row[col("native_world_v1_display_invariants")], 1);
+        assert_eq!(row[col("native_world_v1_reference_invariants")], 0);
     }
     assert!(rows[1][col("render-wait_us")] > 0, "{text}");
     // Game-thread self time still accounts for its whole wall interval;

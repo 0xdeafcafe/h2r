@@ -129,37 +129,3 @@ fn fs_main(v: V) -> Out {
     }
     return Out(vec4<f32>(base.rgb * lit, 1.0), w_depth(v.position));
 }
-
-override alpha_func: u32 = 0u;
-override alpha_reference: f32 = 0.0;
-
-fn alpha_passes(alpha: f32) -> bool {
-    // Same round-to-even comparison in byte units as the NV2A combiner.
-    let a = round(alpha * 255.0);
-    switch alpha_func {
-        case 1u: { return false; }
-        case 2u: { return a < alpha_reference; }
-        case 3u: { return a == alpha_reference; }
-        case 4u: { return a <= alpha_reference; }
-        case 5u: { return a > alpha_reference; }
-        case 6u: { return a != alpha_reference; }
-        case 7u: { return a >= alpha_reference; }
-        default: { return true; }
-    }
-}
-
-// A transparent part (stage 3): the same shading, with the base map's
-// alpha for the pass's blend.
-@fragment
-fn fs_transparent(v: V) -> Out {
-    let base = textureSample(base_map, linear, v.uv);
-    if (!alpha_passes(base.a)) {
-        discard;
-    }
-    let len = length(v.normal);
-    var lit = frame.ambient.rgb;
-    if (len > 1e-6) {
-        lit = lit + frame.light.w * max(dot(v.normal / len, frame.light.xyz), 0.0);
-    }
-    return Out(vec4<f32>(base.rgb * lit, base.a), w_depth(v.position));
-}

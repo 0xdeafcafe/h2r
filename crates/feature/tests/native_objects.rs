@@ -68,23 +68,35 @@ struct Stub {
     refuse: Mutex<bool>,
     /// Records whose items the host refuses to draw.
     refuse_records: Mutex<Vec<u16>>,
+    rebind_item: Mutex<Option<u32>>,
 }
 
 impl Host for Stub {
-    fn native(&self, _mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, _mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
         Some(Arc::new(self.set.lock().unwrap().clone()))
     }
     fn want(&self, definition: u32) {
         self.wanted.lock().unwrap().push(definition);
     }
-    fn draw(&self, camera: &RenderCamera, _generation: u64, objects: Vec<ObjectFrame>, items: Vec<ItemDraw>) -> Vec<bool> {
+    fn draw(
+        &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, _generation: u64,
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: native_objects::ItemMasks,
+    ) -> Option<native_render::objects::ClearedObjects> {
+        // The fixture's guest mask bits survive both planning and a failed reservation.
+        for d in &items {
+            let item = ITEMS + 0x18 * (u32::from(d.key.record) - 1);
+            assert_ne!(mem.u32(item + 0x10).unwrap() & (1 << 3), 0, "guest mask changed before reservation");
+        }
         if *self.refuse.lock().unwrap() {
-            return vec![false; items.len()];
+            return None;
         }
         let refused = self.refuse_records.lock().unwrap().clone();
-        let out = items.iter().map(|d| !d.shadow && !refused.contains(&d.key.record)).collect();
+        let out: Vec<_> = items.iter().map(|d| !d.shadow && !refused.contains(&d.key.record)).collect();
         self.drawn.lock().unwrap().push((*camera, objects, items));
-        out
+        if let Some(item) = self.rebind_item.lock().unwrap().take() {
+            mem.set_u32(item + 8, 0xe000_ffff).unwrap();
+        }
+        masks.apply(mem, &out)
     }
 }
 
@@ -302,6 +314,24 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m)[0], 0b0100);
+
+    // Both objects resolve. The host accepts only B's record. The two
+    // accepted candidates are separated by a guest-owned part of A.
+    m.set_u32(ITEMS + 0x10, 0b1010).unwrap();
+    stub.set.lock().unwrap().definitions.insert(DEF_B as u16, 1);
+    *stub.refuse_records.lock().unwrap() = vec![1];
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m), vec![0b1010, 0b1010, 0b0010, 0b1010]);
+    native_objects::restore_pending(&mut m);
+    assert_eq!(masks(&m), all);
+
+    // Rebinding B's item after planning invalidates the entire mask commit.
+    stub.refuse_records.lock().unwrap().clear();
+    *stub.rebind_item.lock().unwrap() = Some(ITEMS + 2 * 0x18);
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m), all);
+    native_objects::restore_pending(&mut m);
+    assert_eq!(masks(&m), all);
 }
 
 /// Alone at the layer draw, and with the world, the chain runs on the

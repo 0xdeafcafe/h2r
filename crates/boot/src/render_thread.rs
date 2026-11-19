@@ -37,6 +37,12 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "off by default, and pipelining is off with it (it watches the render on the game thread)",
     ),
+    ("native-transparents", "SCENE_TRANSPARENTS", AFTER),
+    (
+        "occlusion",
+        "SCENE_TRANSPARENTS",
+        "shares the chain with the native transparents' return observer when enabled",
+    ),
     // render_frame_and_present itself: the game thread runs it, and the
     // pipeline's implementation is what hands the rest to the render thread.
     (
@@ -214,7 +220,7 @@ mod tests {
         // render-thread safe together, and so are the lights' skip and view
         // observer (placed only without render-timing).
         let native =
-            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on".to_owned();
+            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on".to_owned();
         for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {

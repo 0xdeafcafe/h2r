@@ -2,22 +2,17 @@
 //! rest frames uploaded once when it is added; per view one write of the
 //! drawn objects' node matrices and instance records, and one render pass
 //! into the game's own colour target and depth with an indexed draw per
-//! (object, part), skinned in the vertex shader (`models.wgsl`). Their
-//! transparent parts (stage 3) draw run by run from the sorted transparents,
-//! each run with its own copy of the node matrices
-//! ([`GpuModels::encode_transparents`]).
+//! (object, part), skinned in the vertex shader (`models.wgsl`).
 
 use std::collections::HashMap;
 
 use bytemuck::{Pod, Zeroable};
-use wgpu::util::DeviceExt;
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::Frustum;
 use crate::gpu::{DepthRule, Image, PassViewport};
 use crate::instances::{FrameObjects, InstanceRecord, ObjectInput, pack};
 use crate::model::{Model, ModelVertex, NodeMatrix};
-use crate::pass_state::PassState;
 
 const SHADER: &str = include_str!("models.wgsl");
 
@@ -56,64 +51,14 @@ struct GpuModel {
     group: wgpu::BindGroup,
     /// Per model-local material.
     materials: HashMap<u16, wgpu::BindGroup>,
-    /// The transparent materials the caller set (stage 3).
-    transparents: HashMap<u16, TransparentMaterial>,
 }
 
-struct TransparentMaterial {
-    group: wgpu::BindGroup,
-    state: PassState,
-}
-
-/// What a models pipeline depends on beyond the target formats.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct TransparentKey {
-    blend: Option<wgpu::BlendState>,
-    color_writes: wgpu::ColorWrites,
-    depth_write: bool,
-    depth_compare: wgpu::CompareFunction,
-    primitive: wgpu::PrimitiveState,
-    alpha_test: Option<(wgpu::CompareFunction, u8)>,
-}
-
-impl TransparentKey {
-    fn of(s: &PassState) -> Self {
-        Self {
-            blend: s.blend,
-            color_writes: s.color_writes,
-            depth_write: s.depth_write,
-            depth_compare: s.depth_compare,
-            primitive: s.primitive,
-            alpha_test: s.alpha_test,
-        }
-    }
-}
-
-/// Why a transparent material is not taken.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransparentRefusal {
-    NoModel,
-    /// The model has no transparent part of that material.
-    NoParts,
-}
-
-/// One object's transparent parts of one material, in the run's order,
-/// posed by the node matrices the hook copied for this draw.
-pub struct TransparentItem<'a> {
-    pub model: u32,
-    pub material: u16,
-    pub nodes: &'a [NodeMatrix],
-}
-
-#[allow(clippy::too_many_arguments)]
 fn render_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     layouts: [&wgpu::BindGroupLayout; 3],
     color: wgpu::TextureFormat,
     depth: wgpu::TextureFormat,
-    fragment: &str,
-    key: &TransparentKey,
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("native models"),
@@ -123,21 +68,7 @@ fn render_pipeline(
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint8x4, 4 => Float32x4
     ];
-    let alpha_constants = key.alpha_test.map(|(func, reference)| {
-        use wgpu::CompareFunction::*;
-        let code = match func {
-            Never => 1,
-            Less => 2,
-            Equal => 3,
-            LessEqual => 4,
-            Greater => 5,
-            NotEqual => 6,
-            GreaterEqual => 7,
-            Always => 0,
-        };
-        [("alpha_func", f64::from(code)), ("alpha_reference", f64::from(reference))]
-    });
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    gfx::churn::create_render_pipeline(device, &wgpu::RenderPipelineDescriptor {
         label: Some("native models"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -150,26 +81,28 @@ fn render_pipeline(
                 attributes: &attributes,
             })],
         },
-        primitive: key.primitive,
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            // S: the models' winding is not checked yet; draw both.
+            cull_mode: None,
+            ..Default::default()
+        },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth,
-            depth_write_enabled: Some(key.depth_write),
-            depth_compare: Some(key.depth_compare),
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some(fragment),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: alpha_constants.as_ref().map_or(&[], |constants| &constants[..]),
-                ..Default::default()
-            },
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: color,
-                blend: key.blend,
-                write_mask: key.color_writes,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
         multiview_mask: None,
@@ -191,7 +124,6 @@ pub struct GpuModels {
     white: wgpu::TextureView,
     shader: wgpu::ShaderModule,
     pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
-    transparent_pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, TransparentKey), wgpu::RenderPipeline>,
     current: FrameObjects,
     pub lighting: Lighting,
 }
@@ -212,6 +144,7 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::T
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
+    gfx::churn::upload_bytes(image.rgba.len());
     queue.write_texture(
         t.as_image_copy(),
         &image.rgba,
@@ -226,7 +159,7 @@ fn texture(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::T
 }
 
 fn storage(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
+    gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
         label: Some(label),
         size: size.max(64),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -291,7 +224,7 @@ impl GpuModels {
                 },
             ],
         });
-        let frame = device.create_buffer(&wgpu::BufferDescriptor {
+        let frame = gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
             label: Some("native models frame"),
             size: std::mem::size_of::<FrameUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
@@ -326,7 +259,6 @@ impl GpuModels {
             white,
             shader,
             pipelines: HashMap::new(),
-            transparent_pipelines: HashMap::new(),
             current: FrameObjects::default(),
             lighting: Lighting::DEFAULT,
         }
@@ -339,7 +271,7 @@ impl GpuModels {
         nodes: &wgpu::Buffer,
         instances: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native models frame"),
             layout,
             entries: &[
@@ -369,7 +301,7 @@ impl GpuModels {
         base_map: &mut dyn FnMut(u16) -> Option<Image>,
     ) -> u32 {
         let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents,
                 usage,
@@ -390,7 +322,7 @@ impl GpuModels {
         let vertices = init("native model vertices", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
         let indices = init("native model indices", bytemuck::cast_slice(&idx), wgpu::BufferUsages::INDEX);
         let inverses = init("native model inverses", bytemuck::cast_slice(&inv), wgpu::BufferUsages::STORAGE);
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native model"),
             layout: &self.model_layout,
             entries: &[wgpu::BindGroupEntry {
@@ -409,13 +341,12 @@ impl GpuModels {
             indices,
             group,
             materials,
-            transparents: HashMap::new(),
         });
         self.models.len() as u32 - 1
     }
 
     fn material_group(&self, device: &wgpu::Device, view: &wgpu::TextureView) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native model material"),
             layout: &self.material_layout,
             entries: &[
@@ -429,33 +360,6 @@ impl GpuModels {
                 },
             ],
         })
-    }
-
-    /// Takes model `model`'s transparent material `material` (stage 3): its
-    /// base map (`None` draws white) and its pass's render states. Refused
-    /// when the model has no transparent part of it.
-    pub fn set_transparent(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        model: u32,
-        material: u16,
-        base_map: Option<Image>,
-        state: PassState,
-    ) -> Result<(), TransparentRefusal> {
-        let Some(m) = self.models.get(model as usize) else { return Err(TransparentRefusal::NoModel) };
-        if !m.model.transparents.iter().any(|d| d.material == material) {
-            return Err(TransparentRefusal::NoParts);
-        }
-        let view = base_map.map_or_else(|| self.white.clone(), |i| crate::gpu::texture(device, queue, &i, "native transparent model stage"));
-        let group = self.material_group(device, &view);
-        self.models[model as usize].transparents.insert(material, TransparentMaterial { group, state });
-        Ok(())
-    }
-
-    /// Whether model `model`'s transparent material `material` was taken.
-    pub fn has_transparent(&self, model: u32, material: u16) -> bool {
-        self.models.get(model as usize).is_some_and(|m| m.transparents.contains_key(&material))
     }
 
     /// The model added as `model` (draw tables, inverse frames).
@@ -473,7 +377,7 @@ impl GpuModels {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
         camera: &RenderCamera,
         depth: DepthRule,
         objects: &[ObjectInput<'_>],
@@ -489,7 +393,7 @@ impl GpuModels {
             ambient: [l.ambient[0], l.ambient[1], l.ambient[2], 1.0],
             light: [l.direction[0], l.direction[1], l.direction[2], l.diffuse],
         };
-        queue.write_buffer(&self.frame, 0, bytemuck::bytes_of(&u));
+        uploads.write(&self.frame, 0, bytemuck::bytes_of(&u));
         let node_bytes: &[u8] = bytemuck::cast_slice(&self.current.nodes);
         let inst_bytes: &[u8] = bytemuck::cast_slice(&self.current.instances);
         let mut regroup = false;
@@ -505,10 +409,10 @@ impl GpuModels {
             self.frame_group = Self::frame_group(device, &self.frame_layout, &self.frame, &self.nodes, &self.instances);
         }
         if !node_bytes.is_empty() {
-            queue.write_buffer(&self.nodes, 0, node_bytes);
+            uploads.write(&self.nodes, 0, node_bytes);
         }
         if !inst_bytes.is_empty() {
-            queue.write_buffer(&self.instances, 0, inst_bytes);
+            uploads.write(&self.instances, 0, inst_bytes);
         }
         &self.current
     }
@@ -516,15 +420,7 @@ impl GpuModels {
     fn pipeline(&mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) {
         let (shader, layouts) = (&self.shader, [&self.frame_layout, &self.model_layout, &self.material_layout]);
         self.pipelines.entry((color, depth)).or_insert_with(|| {
-            let opaque = TransparentKey {
-                blend: None,
-                color_writes: wgpu::ColorWrites::ALL,
-                depth_write: true,
-                depth_compare: wgpu::CompareFunction::LessEqual,
-                primitive: wgpu::PrimitiveState::default(),
-                alpha_test: None,
-            };
-            render_pipeline(device, shader, layouts, color, depth, "fs_main", &opaque)
+            render_pipeline(device, shader, layouts, color, depth)
         });
     }
 
@@ -540,9 +436,9 @@ impl GpuModels {
         depth: &wgpu::TextureView,
         depth_format: wgpu::TextureFormat,
         viewport: PassViewport,
-    ) {
+    ) -> usize {
         if self.current.draws.is_empty() {
-            return;
+            return 0;
         }
         self.pipeline(device, color_format, depth_format);
         let pipeline = &self.pipelines[&(color_format, depth_format)];
@@ -577,6 +473,7 @@ impl GpuModels {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.frame_group, &[]);
         let mut bound: Option<(u32, Option<u16>)> = None;
+        let mut recorded = 0;
         for d in &self.current.draws {
             let Some(m) = self.models.get(d.model as usize) else { continue };
             let Some(group) = m.materials.get(&d.material) else { continue };
@@ -591,135 +488,11 @@ impl GpuModels {
                 bound = Some((d.model, Some(d.material)));
             }
             pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, d.instance..d.instance + 1);
+            recorded += 1;
         }
-    }
-
-    /// Records one run's object transparents (stage 3) in `items`' order:
-    /// each item's transparent parts of its material, posed by its own node
-    /// matrices, with its pass's blend and depth state, over the loaded
-    /// target and depth. The run's matrices go in buffers of its own, so
-    /// runs and the opaque pass in one submit do not overwrite each other.
-    /// Items whose material was not taken or whose node count disagrees
-    /// with the model are left out. Returns the items drawn.
-    #[allow(clippy::too_many_arguments)]
-    pub fn encode_transparents(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::TextureView,
-        color_format: wgpu::TextureFormat,
-        depth: &wgpu::TextureView,
-        depth_format: wgpu::TextureFormat,
-        viewport: PassViewport,
-        camera: &RenderCamera,
-        depth_rule: DepthRule,
-        items: &[TransparentItem<'_>],
-    ) -> usize {
-        let mut nodes: Vec<NodeMatrix> = Vec::new();
-        let mut instances: Vec<InstanceRecord> = Vec::new();
-        // (item, instance) for every item drawn.
-        let mut drawn: Vec<(usize, u32)> = Vec::new();
-        for (k, item) in items.iter().enumerate() {
-            let Some(m) = self.models.get(item.model as usize) else { continue };
-            if !m.transparents.contains_key(&item.material) || item.nodes.len() != m.model.inverse_binds.len() {
-                continue;
-            }
-            drawn.push((k, instances.len() as u32));
-            instances.push(InstanceRecord {
-                node_base: nodes.len() as u32,
-                node_count: item.nodes.len() as u32,
-                _pad: [0; 2],
-            });
-            nodes.extend_from_slice(item.nodes);
-        }
-        if drawn.is_empty() {
-            return 0;
-        }
-        for &(k, _) in &drawn {
-            let item = &items[k];
-            let key = TransparentKey::of(&self.models[item.model as usize].transparents[&item.material].state);
-            let (shader, layouts) = (&self.shader, [&self.frame_layout, &self.model_layout, &self.material_layout]);
-            self.transparent_pipelines
-                .entry((color_format, depth_format, key))
-                .or_insert_with(|| render_pipeline(device, shader, layouts, color_format, depth_format, "fs_transparent", &key));
-        }
-        let l = self.lighting;
-        let u = FrameUniform {
-            view_proj: camera.view_projection(),
-            depth: [depth_rule.full_scale, 1.0 / camera.far, f32::from(u8::from(depth_rule.floor)), 0.0],
-            ambient: [l.ambient[0], l.ambient[1], l.ambient[2], 1.0],
-            light: [l.direction[0], l.direction[1], l.direction[2], l.diffuse],
-        };
-        let init = |label, contents: &[u8], usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage,
-            })
-        };
-        let frame = init("native transparent objects frame", bytemuck::bytes_of(&u), wgpu::BufferUsages::UNIFORM);
-        let node_buf = init("native transparent objects nodes", bytemuck::cast_slice(&nodes), wgpu::BufferUsages::STORAGE);
-        let inst_buf = init(
-            "native transparent objects instances",
-            bytemuck::cast_slice(&instances),
-            wgpu::BufferUsages::STORAGE,
-        );
-        let frame_group = Self::frame_group(device, &self.frame_layout, &frame, &node_buf, &inst_buf);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native transparent objects"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: depth_format.has_stencil_aspect().then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);
-        pass.set_bind_group(0, &frame_group, &[]);
-        for &(k, instance) in &drawn {
-            let item = &items[k];
-            let m = &self.models[item.model as usize];
-            let t = &m.transparents[&item.material];
-            let key = TransparentKey::of(&t.state);
-            pass.set_pipeline(&self.transparent_pipelines[&(color_format, depth_format, key)]);
-            pass.set_blend_constant(t.state.blend_constant);
-            pass.set_vertex_buffer(0, m.vertices.slice(..));
-            pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.set_bind_group(1, &m.group, &[]);
-            pass.set_bind_group(2, &t.group, &[]);
-            for d in m.model.transparents.iter().filter(|d| d.material == item.material) {
-                pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, instance..instance + 1);
-            }
-        }
-        drawn.len()
+        recorded
     }
 }
 
 /// The record layout the shader reads (checked against `models.wgsl`).
 pub const INSTANCE_RECORD_SIZE: usize = std::mem::size_of::<InstanceRecord>();
-
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_models_shader_with_alpha_test_validates() {
-        shaders::validate(super::SHADER).expect("valid models WGSL");
-    }
-}

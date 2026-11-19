@@ -66,6 +66,12 @@ pub fn bsp_shaders<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> Result<Vec<T
 /// A decoded section as builder input; `None` when its vertices do not
 /// decode.
 pub fn section_input(s: &Section) -> Option<SectionInput> {
+    let tangent_frame = VertexKind::TangentFrame;
+    if let Some(frame) = s.stream(tangent_frame)
+        && tangent_frame.expected_stride().is_some_and(|stride| frame.stride < stride)
+    {
+        return None;
+    }
     let v = s.vertices(None).ok()?;
     if v.positions.len() != s.vertex_count() {
         return None;
@@ -97,13 +103,6 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
         binormals: v.binormals,
         tangents: v.tangents,
         lighting: lighting_vectors(s),
-        packed_frame: s.stream(VertexKind::TangentFrame).map_or_else(Vec::new, |v| {
-            s.data(v).chunks_exact(usize::from(v.stride)).map(|row| {
-                std::array::from_fn(|i| u32::from_le_bytes(row[4 * i..4 * i + 4].try_into().unwrap()))
-            }).collect()
-        }),
-        packed_lighting: lighting_words(s),
-        packed_lightmap_uvs: lightmap_uv_words(s),
     })
 }
 
@@ -111,26 +110,18 @@ pub fn section_input(s: &Section) -> Option<SectionInput> {
 /// `tags::lighting::vertex_lighting`) as the vertex program reads them
 /// ([`program_lighting_vector`]); empty without that stream.
 pub fn lighting_vectors(s: &Section) -> Vec<[f32; 3]> {
-    lighting_words(s).into_iter().map(program_lighting_vector).collect()
-}
-
-fn lighting_words(s: &Section) -> Vec<u32> {
     s.vertex_buffers
         .iter()
-        .find(|vb| matches!(vertex_lighting(s, vb), Ok(Some(VertexLighting::Vector(_)))))
-        .map_or_else(Vec::new, |vb| {
-            s.data(vb).chunks_exact(4)
-                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-                .collect()
+        .find_map(|vb| match vertex_lighting(s, vb) {
+            Ok(Some(VertexLighting::Vector(_))) => Some(
+                s.data(vb)
+                    .chunks_exact(4)
+                    .map(|b| program_lighting_vector(u32::from_le_bytes([b[0], b[1], b[2], b[3]])))
+                    .collect(),
+            ),
+            _ => None,
         })
-}
-
-fn lightmap_uv_words(s: &Section) -> Vec<[i16; 2]> {
-    s.stream(VertexKind::LightmapTexcoord).map_or_else(Vec::new, |v| {
-        s.data(v).chunks_exact(usize::from(v.stride))
-            .map(|row| [i16::from_le_bytes([row[0], row[1]]), i16::from_le_bytes([row[2], row[3]])])
-            .collect()
-    })
+        .unwrap_or_default()
 }
 
 /// One stream-`30` word as the GPU hands it to the vertex program: the
@@ -216,11 +207,7 @@ pub fn load_world<R: Read + Seek>(
             Some((b, first)) => {
                 let lightmap_uvs = bucket_slice(&b.lightmap_uvs, first, n).map(<[_]>::to_vec);
                 let lighting = bucket_slice(&b.lighting, first, n).map(<[_]>::to_vec);
-                let packed_lightmap_uvs = bucket_slice(&b.packed_lightmap_uvs, first, n).map(<[_]>::to_vec);
-                let packed_lighting = bucket_slice(&b.packed_lighting, first, n).map(<[_]>::to_vec);
                 with_own = SectionInput {
-                    packed_lightmap_uvs: packed_lightmap_uvs.unwrap_or_else(|| def.packed_lightmap_uvs.clone()),
-                    packed_lighting: packed_lighting.unwrap_or_else(|| def.packed_lighting.clone()),
                     lightmap_uvs: lightmap_uvs.unwrap_or_else(|| def.lightmap_uvs.clone()),
                     lighting: lighting.unwrap_or_else(|| def.lighting.clone()),
                     ..def.clone()
@@ -265,8 +252,6 @@ pub struct BucketStreams {
     pub lightmap_uvs: Vec<[f32; 2]>,
     /// Stream `30`.
     pub lighting: Vec<[f32; 3]>,
-    packed_lightmap_uvs: Vec<[i16; 2]>,
-    packed_lighting: Vec<u32>,
 }
 
 /// Each of `group`'s buckets' streams, loaded once; empty for a bucket the
@@ -283,8 +268,6 @@ pub fn bucket_streams(group: &LightmapGroup, raw: &mut dyn RawSource) -> Vec<Buc
                 Ok(Some(s)) => BucketStreams {
                     lightmap_uvs: s.vertices(None).map(|v| v.lightmap_texcoords).unwrap_or_default(),
                     lighting: lighting_vectors(&s),
-                    packed_lightmap_uvs: lightmap_uv_words(&s),
-                    packed_lighting: lighting_words(&s),
                 },
                 _ => BucketStreams::default(),
             }

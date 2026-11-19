@@ -19,14 +19,13 @@ fn the_switch_off_places_nothing() {
 }
 
 #[test]
-fn the_hooks_can_run_without_shadowing_the_guest_handlers() {
+fn only_the_scene_wraps_the_guest_body_for_cleanup() {
     let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
     assert!(r.add(&NativeTransparents).unwrap());
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
     for (point, label) in [
         ("TRANSPARENT_GEOMETRY", "native_transparents_entry"),
-        ("SCENE_TRANSPARENTS", "native_transparents_view"),
         ("GAME_ACTIVATE", "native_transparents_generation"),
     ] {
         assert!(text.contains(label), "{text}");
@@ -34,6 +33,10 @@ fn the_hooks_can_run_without_shadowing_the_guest_handlers() {
         assert!(!chain.needs_shadow(), "{point}");
         assert!(chain.render_thread().is_ok(), "{point}");
     }
+    assert!(text.contains("native_transparents_view"), "{text}");
+    assert!(text.contains("native_transparents_end"), "{text}");
+    let scene = plan.chains.values().find(|c| c.point.name == "SCENE_TRANSPARENTS").unwrap();
+    assert!(scene.needs_shadow());
 }
 
 const GLOBALS: u32 = 0x005e_0000;
@@ -85,6 +88,8 @@ fn same_shader_parts_keep_their_sorted_slots_across_a_d3d_handler() {
     let b = guest.cluster_entry(2, 5);
     let mut scope = Scope::default();
     scope.begin_view(&guest, SCENE);
+    // The after hook changes the scene return slot before its body runs.
+    guest.set(SCENE, 0xb000_0010);
     guest.set(HANDLER + 4, a);
     scope.begin_entry(&guest, HANDLER, true);
     let (generation, first) = scope.indexed_entry(&guest, DRAW).unwrap();

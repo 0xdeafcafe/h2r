@@ -852,6 +852,17 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
+- **Native renderer counters.** `profile.counters` and `profile.capture`
+  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
+  capture CSV includes native columns with activity in its window. The
+  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
+  `native_<stage>_` prefix includes examined and suppressed guest items,
+  refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
+  groups created, upload bytes and pipeline misses. Per-view columns
+  distinguish reference and display ranges attempted and committed and
+  invariant failures. For instance, `native_world_v1_display_recorded` can
+  be positive while `native_world_v1_display_ranges` is zero when the
+  display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
   is what `profile.sample.stop` answers: the module-relative dump
@@ -980,6 +991,14 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
+- **Residual render census.** With
+  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
+  `render.stats` includes `counters.residual`. It lists completed
+  present numbers and, for each view kind, the invocation count and
+  distinct Direct3D entry and return-PC pairs, with ordinary backend
+  draw attempts. Use the stage counters
+  in the same reply to identify submitted native draws. See the
+  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`

@@ -65,7 +65,8 @@ impl Frame {
 
 #[derive(Clone, Copy)]
 struct Scene {
-    frame: Frame,
+    esp: u32,
+    frame: Option<Frame>,
     map: MapGeneration,
 }
 
@@ -84,11 +85,19 @@ pub struct Scope {
 
 impl Scope {
     pub fn begin_view(&mut self, mem: &dyn GuestRead, esp: u32) {
-        self.scene = Frame::read(mem, esp).zip(MapGeneration::read(mem)).map(|(frame, map)| Scene { frame, map });
+        self.scene = MapGeneration::read(mem).map(|map| Scene { esp, frame: None, map });
         self.handler = None;
     }
 
     pub fn begin_entry(&mut self, mem: &dyn GuestRead, esp: u32, objects: bool) {
+        if let Some(scene) = &mut self.scene
+            && scene.frame.is_none()
+            && esp < scene.esp
+        {
+            // The return observer's continuation replaces the original
+            // return slot after begin_view, before the body starts.
+            scene.frame = Frame::read(mem, scene.esp);
+        }
         self.handler = self.read_handler(mem, esp, objects);
     }
 
@@ -98,7 +107,7 @@ impl Scope {
         // The next function after the sorted-list dispatch is the effects
         // allocator. An invocation from another caller has no sorted slot.
         const NEXT_AFTER_SORTED_DISPATCH: u32 = 0x0001_e4e0;
-        if !scene.frame.contains(mem, esp)
+        if !scene.frame?.contains(mem, esp)
             || !(points::SCENE_TRANSPARENTS.base..NEXT_AFTER_SORTED_DISPATCH).contains(&frame.return_to)
         {
             return None;
@@ -117,7 +126,7 @@ impl Scope {
     pub fn indexed_entry(&self, mem: &dyn GuestRead, esp: u32) -> Option<(MapGeneration, Entry)> {
         let scene = self.scene?;
         let handler = self.handler?;
-        if !scene.frame.contains(mem, handler.frame.esp)
+        if !scene.frame?.contains(mem, handler.frame.esp)
             || !handler.frame.contains(mem, esp)
             || mem.read_u32(handler.frame.esp.checked_add(4)?) != Some(handler.data)
             || MapGeneration::read(mem) != Some(scene.map)
@@ -176,6 +185,11 @@ impl Feature for NativeTransparents {
                 let mut scope = Scope::default();
                 scope.begin_view(&ReadMemory(&*mem), c.cpu.esp);
                 SCOPE.with(|slot| slot.set(scope));
+            })
+            .context_only();
+        b.raw()
+            .observe_after(&points::SCENE_TRANSPARENTS, "native_transparents_end", |_| {
+                SCOPE.with(|slot| slot.set(Scope::default()));
             })
             .context_only();
         b.raw()

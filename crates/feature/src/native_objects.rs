@@ -43,8 +43,9 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::objects::{self, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
-use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
+use native_render::objects::{self, ClearedObjects, FIRST_PERSON_LAYER3_RETURN, ItemDraw, ItemKey, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
+use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER, MaskPlan, MaskPreview};
+use timeline::native::{Metric, Stage, Timer};
 
 use crate::native_world::Mem;
 use crate::{BuildError, Builder, Feature, Manifest};
@@ -135,23 +136,55 @@ pub fn item_refusal(
     None
 }
 
+/// Original list identities and tentative mask changes. Applying a reservation's
+/// per-item result restores every other candidate in the overlay before writing RAM.
+pub struct ItemMasks {
+    plan: MaskPlan,
+    candidates: ClearedObjects,
+    // Places in the complete candidate list for the items the host received.
+    // Comparison items can never be suppressed.
+    offered: Vec<Option<usize>>,
+}
+
+impl ItemMasks {
+    pub fn apply(self, mem: &mut dyn GuestMemory, drawn: &[bool]) -> Option<ClearedObjects> {
+        if drawn.len() != self.offered.len() { return None; }
+        let mut keep = HashSet::new();
+        for (original, &accepted) in self.offered.iter().zip(drawn) {
+            if accepted { keep.insert((*original)?); }
+        }
+        if keep.is_empty() { return None; }
+        let mut guest = Mem(mem);
+        let mut overlay = self.plan.edit(&guest);
+        let mut candidates = self.candidates;
+        objects::keep_items(&mut overlay, &mut candidates, &|i| keep.contains(&i));
+        let selected = overlay.finish()?;
+        selected.apply(&mut guest).then_some(candidates)
+    }
+}
+
 /// What draws the objects: boot's glue over the GPU models and the device.
 pub trait Host: Send + Sync {
-    /// Before the base layers' layer 3 (`mem` read only): the set drawn
+    /// Drain work preceding the base layers' layer 3. Return the set drawn
     /// natively now, or `None` to leave every object to the D3D path.
-    fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>>;
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>>;
     /// A definition met in layer 3 that the set does not hold: load its
     /// model if it has not been tried (cheap to call again).
     fn want(&self, definition: u32);
     /// Plans the view's pass over `items` (in the list's order, each with
     /// its object's frame in `objects`) against the set of `generation`,
-    /// and asks the device for it: per item whether it is drawn, decided
+    /// and reserves every required GPU copy. Apply the per-item flags to
+    /// `masks` after reservation, then commit and return the selected guest identities.
+    /// Per item, whether it is drawn is decided
     /// before the hook returns. An item is drawn only when everything its
     /// draw needs resolved (its model's GPU side, its part and
     /// implementation, every per-object constant, every state field); the
     /// rest, and every item when no pass is asked for, get their bits back
     /// before the layer draws. A `shadow` item is never drawn.
-    fn draw(&self, camera: &RenderCamera, generation: u64, objects: Vec<ObjectFrame>, items: Vec<ItemDraw>) -> Vec<bool>;
+    fn draw(
+        &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
+    ) -> Option<ClearedObjects>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -386,12 +419,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         stop(Stop::NoHost, || "no host installed".to_owned());
         return;
     };
-    let Some(camera) = RenderCamera::read(&m, RENDER_CAMERA) else {
-        stop(Stop::NoCamera, || format!("the render camera at {RENDER_CAMERA:#010x} does not read as a camera"));
+    let Some(set) = host.native(m.0) else {
+        stop(Stop::NoMap, || "the host has no native set at this boundary".to_owned());
         return;
     };
-    let Some(set) = host.native(&*m.0) else {
-        stop(Stop::NoMap, || "the host has no native set (no loaded map name)".to_owned());
+    let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
+    let Some(camera) = RenderCamera::read(&m, RENDER_CAMERA) else {
+        stop(Stop::NoCamera, || format!("the render camera at {RENDER_CAMERA:#010x} does not read as a camera"));
         return;
     };
     let accept = |_handle: u32, definition: u32, key: &ItemKey| {
@@ -404,10 +438,17 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         false
     };
-    let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
+    let Some(mut preview) = MaskPreview::new(&m) else {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
+    let Some(cleared) = objects::clear_objects(&mut preview, LIGHTMAP_LAYER, &accept) else {
+        stop(Stop::NoList, || "the current list does not read".to_owned());
+        return;
+    };
+    let unowned = (cleared.walk.walked - cleared.walk.accepted) as u64;
+    Stage::Objects.count(Metric::Examined, unowned);
+    Stage::Objects.count(Metric::RefusedOwnership, unowned);
     add_walk(&cleared.walk);
     count_implementations(&set.map, &cleared.walk);
     if cleared.items.is_empty() {
@@ -444,22 +485,28 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let shadow = set.shadowed.contains(&(definition as u16));
         items.push(ItemDraw { index: i, object, key: *key, rows, shadow });
     }
+    let unresolved = (cleared.items.len() - items.len()) as u64;
+    Stage::Objects.count(Metric::Examined, unresolved);
+    Stage::Objects.count(Metric::RefusedInputs, unresolved);
     if items.is_empty() {
         let accepted = cleared.items.len();
-        objects::restore(&mut m, &cleared);
         stop(Stop::NoneRead, || format!("{accepted} accepted items, none whose object, rows and texture accumulation target read"));
         return;
     }
     let count = items.len();
-    let indices: Vec<usize> = items.iter().map(|d| d.index).collect();
-    let drawn = host.draw(&camera, set.generation, frames, items);
-    // Exactly the items the host drew keep their bits cleared.
-    let keep: HashSet<usize> = indices.iter().zip(&drawn).filter(|(_, d)| **d).map(|(&i, _)| i).collect();
-    objects::keep_items(&mut m, &mut cleared, &|i| keep.contains(&i));
-    if cleared.items.is_empty() {
+    let Some(plan) = preview.finish() else {
+        Stage::Objects.count(Metric::Examined, count as u64);
+        Stage::Objects.count(Metric::RefusedMasks, count as u64);
+        return;
+    };
+    let masks = ItemMasks {
+        plan, candidates: cleared, offered: items.iter().map(|d| (!d.shadow).then_some(d.index)).collect(),
+    };
+    drop(planning);
+    let Some(cleared) = host.draw(m.0, &camera, set.generation, frames, items, masks) else {
         stop(Stop::DrawRefused, || format!("the host drew none of {count} items"));
         return;
-    }
+    };
     stop(Stop::Drawn, || format!("{} objects, {} of {count} items", cleared.handles.len(), cleared.items.len()));
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(cleared.handles.len() as u64, Ordering::Relaxed);
