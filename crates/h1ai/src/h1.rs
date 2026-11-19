@@ -311,6 +311,7 @@ pub struct H1Ai {
     pub command_lists: Vec<CommandList>,
     /// Conversations.
     pub conversations: Vec<Conversation>,
+    pub voice_definitions: Vec<crate::voices::Definition>,
     /// AI animation, script and recording reference counts.
     pub reference_counts: [usize; 3],
 }
@@ -520,6 +521,7 @@ impl H1Ai {
                 .map(|e| command_list(&sp, e))
                 .collect::<Result<_>>()?,
             conversations: crate::conversations::read(m)?,
+            voice_definitions: crate::voices::read(m)?,
             reference_counts: [
                 b(layout::AI_ANIMATIONS)?.len(),
                 b(layout::AI_SCRIPTS)?.len(),

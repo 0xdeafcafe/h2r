@@ -348,8 +348,8 @@ The base's old BSP region stays in the file, unused.
   on both its clusters' lists, and every cluster with geometry is reached
   through portals from every other, on every level (Chiron TL-34 has no
   portals at all: its rooms are sealed, and Halo 1 draws them one at a
-  time too). The visibility rows (`+0x54`) still say every cluster sees
-  every other.
+  time too). The v8 visibility data (`+0x54/+0x58`) carries the source
+  BSP's directional cluster bit rows in the original cluster order.
 - **Materials** (`h1convert::shaders`). One structure material per Halo 1
   shader, each copying the head (shader reference) of the base structure
   material it is matched to by name: the words of the Halo 1 shader's name

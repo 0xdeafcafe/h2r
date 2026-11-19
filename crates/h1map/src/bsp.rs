@@ -30,6 +30,8 @@ pub mod root {
     pub const LIGHTMAPS: usize = 0x104;
     /// Clusters block.
     pub const CLUSTERS: usize = 0x134;
+    /// Cluster-to-cluster visibility raw data.
+    pub const CLUSTER_VISIBILITY: usize = 0x140;
     /// Bytes in the root struct.
     pub const LEN: usize = 0x288;
 }
@@ -102,6 +104,22 @@ impl<'a> StructureBsp<'a> {
     /// The count of a root block (clusters, lightmaps, ...).
     pub fn block_count(&self, at: usize) -> u32 {
         Block::read(self.root, at).map_or(0, |b| b.count)
+    }
+
+    /// One little-endian bit row per cluster, padded to whole words.
+    pub fn cluster_visibility(&self) -> Result<&'a [u8]> {
+        let at = root::CLUSTER_VISIBILITY;
+        let len = u32_at(self.root, at).unwrap_or(0) as usize;
+        if len == 0 {
+            return Ok(&[]);
+        }
+        let n = self.block_count(root::CLUSTERS) as usize;
+        if n.checked_mul(n.div_ceil(32) * 4) != Some(len) {
+            return Err(Error::Invalid(format!(
+                "BSP visibility has {len} bytes for {n} clusters"
+            )));
+        }
+        self.space.at(u32_at(self.root, at + 0xc).unwrap_or(0), len)
     }
 
     /// The collision materials' shader references.

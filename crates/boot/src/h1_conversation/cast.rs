@@ -13,6 +13,8 @@ pub(super) const COMMAND_SCRIPT: u32 = 0x34;
 pub(super) const COMMAND_NEXT: u32 = 0x3c;
 pub(super) const DELETE_COMMAND: u32 = 0x0025_8540;
 const OBJECT_ORIGIN: u32 = 0x64;
+// The object location update at 0x000b866b mirrors the cluster into the header.
+const HEADER_CLUSTER: u32 = 4;
 const UNIT_AIM: u32 = 0x168;
 const VEHICLE_DRIVER: u32 = 0x248;
 const TEAM_RELATIONSHIPS: u32 = 0x004f_55ec;
@@ -25,6 +27,7 @@ pub(super) struct Unit {
     parent: u32,
     team: i16,
     pos: [f32; 3],
+    cluster: i16,
     forward: [f32; 3],
 }
 
@@ -39,11 +42,23 @@ impl Unit {
         }
         let parent = m.u32(body + OBJECT_PARENT)?;
         let origin = object_address(m, parent)?.unwrap_or(body);
+        let mut root = handle;
+        let mut next = parent;
+        for _ in 0..ACTOR_CAPACITY {
+            let Some(ancestor) = object_address(m, next)? else {
+                break;
+            };
+            root = next;
+            next = m.u32(ancestor + OBJECT_PARENT)?;
+        }
+        let cluster = datum(m, points::OBJECTS.base, root)?
+            .map_or(Ok(-1), |header| m.i16(header + HEADER_CLUSTER))?;
         Ok(Some(Self {
             handle,
             parent,
             team: m.i16(body + UNIT_TEAM)?,
             pos: m.vec3(origin + OBJECT_ORIGIN)?,
+            cluster,
             forward: m.vec3(body + UNIT_AIM)?,
         }))
     }
@@ -137,45 +152,6 @@ fn actor_handle(m: &dyn GuestMemory, unit: u32) -> Result<Option<u32>, MemFault>
     Ok((m.u32(actor + ACTOR_UNIT)? == unit).then_some(handle))
 }
 
-pub(super) fn voice_slot(
-    m: &dyn GuestMemory,
-    base: u32,
-    unit: u32,
-) -> Result<Option<u32>, MemFault> {
-    let Some(actor) = actor_handle(m, unit)? else {
-        return Ok(None);
-    };
-    let index = u32::from(actor as u16);
-    if index >= ACTOR_CAPACITY {
-        return Ok(None);
-    }
-    global(m, base.saturating_add(index), LONG)
-}
-
-#[derive(Default)]
-pub(super) struct VoiceProfile {
-    pub(super) voice: i16,
-    pub(super) leader: bool,
-}
-
-pub(super) fn profile(record: u32, unit: u32) -> Option<VoiceProfile> {
-    (record >> 16 == unit >> 16).then_some(VoiceProfile {
-        voice: (record as u16 & 0x7fff) as i16,
-        leader: record & 0x8000 != 0,
-    })
-}
-
-pub(super) fn store_profile(
-    m: &mut dyn GuestMemory,
-    cell: u32,
-    unit: u32,
-    voice: i16,
-    leader: bool,
-) -> Result<(), MemFault> {
-    let value = (unit & 0xffff_0000) | u32::from(voice as u16) | (u32::from(leader) << 15);
-    m.set_u32(cell, value)
-}
-
 pub(super) fn draw_voice(m: &mut dyn GuestMemory, count: usize) -> Result<usize, MemFault> {
     if count <= 1 {
         return Ok(0);
@@ -247,20 +223,29 @@ fn choose_voice<E>(
         .into_iter()
         .filter(|voice| (1..100).contains(voice))
         .collect();
-    // A fresh unit has no persona claim. A named persona can only use its
-    // own slot or a wildcard, as in Halo 1's candidate evaluator.
+    // The source cast falls back to generic recordings only for a
+    // generic unit whose existing selector has no exact line.
     if profile < 100 && !generic.is_empty() {
         return Ok(Some((generic[random(generic.len())?], 0.0)));
     }
     Ok(None)
 }
 
-fn score(
+struct Candidate {
+    unit: Unit,
+    peer_distance: f32,
+    rank: u32,
+    voice: u32,
+    profile: voices::Profile,
+    voices: [i16; 6],
+}
+
+fn candidate(
     m: &mut dyn GuestMemory,
     candidate: u32,
     voice_base: u32,
     options: u32,
-) -> Result<(), MemFault> {
+) -> Result<Option<Candidate>, MemFault> {
     let (Some(rank), Some(voice), Some(profiles), Some(v0), Some(v1), Some(v2)) = (
         global(m, candidate.saturating_add(1), REAL)?,
         global(m, candidate.saturating_add(2), SHORT)?,
@@ -269,16 +254,23 @@ fn score(
         global(m, voice_base.saturating_add(1), LONG)?,
         global(m, voice_base.saturating_add(2), LONG)?,
     ) else {
-        return Ok(());
+        return Ok(None);
     };
-    m.set_u32(rank, f32::MIN.to_bits())?;
+    m.set_f32(rank, f32::MIN)?;
     let unit = object_global(m, candidate)?;
-    let (Some(spoken), Some(row)) = (Unit::read(m, unit)?, voice_slot(m, m.u32(profiles)?, unit)?)
-    else {
-        return Ok(());
+    let Some(spoken) = Unit::read(m, unit)? else {
+        return Ok(None);
     };
-    let player = focus(m, Some(spoken), false)?;
-    let profile = profile(m.u32(row)?, unit).unwrap_or_default();
+    if actor_handle(m, unit)?.is_none() {
+        return Ok(None);
+    }
+    let Some(r) = voices::Registry::read(m)? else {
+        return Ok(None);
+    };
+    if r.state != m.u32(profiles)? {
+        return Ok(None);
+    }
+    let profile = voices::Table::Globals(r.state).get(m, unit)?;
     let count = (options >> 8) & 0xff;
     let first = options >> 16;
     let mut peer_dist = f32::INFINITY;
@@ -294,35 +286,101 @@ fn score(
             peer_dist = peer_dist.min(distance(peer.pos, spoken.pos));
         }
     }
-    let mode = options as u16 & 0xff;
-    let allied_to_player = match player {
-        Some(p) if matches!(mode, 0 | 6) => allied(m, spoken.team, p.team)?,
-        _ => true,
-    };
-    let mut passenger = false;
-    if mode == 2
-        && let Some(vehicle) = object_address(m, spoken.parent)?
-    {
-        passenger = m.u8(vehicle + 0xaa)? == 1 && m.u32(vehicle + VEHICLE_DRIVER)? != unit;
-    }
-    let Some(base) = score_cast(
-        spoken,
-        player,
-        peer_dist,
-        mode,
-        profile.leader,
-        allied_to_player,
-        passenger,
-    ) else {
-        return Ok(());
-    };
     let words = [m.u32(v0)?, m.u32(v1)?, m.u32(v2)?];
     let voices = std::array::from_fn(|i| (words[i / 2] >> (i % 2 * 16)) as i16);
-    let desired = choose_voice(profile.voice, voices, |count| draw_voice(m, count))?;
-    if let Some((voice_id, bonus)) = desired {
-        m.set_u16(voice, voice_id as u16)?;
-        m.set_u32(rank, (base + bonus).to_bits())?;
+    Ok(Some(Candidate {
+        unit: spoken,
+        peer_distance: peer_dist,
+        rank,
+        voice,
+        profile,
+        voices,
+    }))
+}
+
+pub(super) async fn score(
+    cx: &Cx,
+    scratch: u32,
+    cell: u32,
+    voice_base: u32,
+    options: u32,
+) -> Result<(), EntryError> {
+    let Some(mut c) = cx.write(|m| candidate(m, cell, voice_base, options))? else {
+        return Ok(());
+    };
+    let first = !c.peer_distance.is_finite();
+    let players = cx.read(|m| {
+        let mut players = Vec::new();
+        for p in crate::coop_players::players(m) {
+            let Some(p) = Unit::read(m, p.unit)? else {
+                continue;
+            };
+            if !first || visibility::in_pvs(m, c.unit.cluster, p.cluster)? {
+                players.push(p);
+            }
+        }
+        Ok::<_, MemFault>(players)
+    })?;
+    let mut player = None;
+    let mut player_bonus = 0.0;
+    let mut best = f32::NEG_INFINITY;
+    if !players.is_empty() {
+        c.unit.pos = visibility::head(cx, scratch, c.unit.handle).await?;
     }
+    for mut p in players {
+        p.pos = visibility::head(cx, scratch, p.handle).await?;
+        let d = distance(c.unit.pos, p.pos);
+        if d >= 30.0 {
+            continue;
+        }
+        let bonus = if first {
+            visibility::sight_bonus(cx, scratch, p.pos, c.unit.pos, d).await?
+        } else {
+            0.0
+        };
+        let score = player_preference(p, c.unit) + bonus;
+        if score > best {
+            best = score;
+            player = Some(p);
+            player_bonus = bonus;
+        }
+    }
+    cx.write(|m| {
+        let mode = options as u16 & 0xff;
+        // The source only allows actor-bound radio roles to cast without
+        // an eligible player (0x00143c8b, 0x00143f34).
+        if player.is_none() && !matches!(mode, 6 | 7) {
+            return Ok(());
+        }
+        let allied_to_player = match player {
+            Some(p) if matches!(mode, 0 | 6) => allied(m, c.unit.team, p.team)?,
+            _ => true,
+        };
+        let mut passenger = false;
+        if mode == 2
+            && let Some(vehicle) = object_address(m, c.unit.parent)?
+        {
+            passenger =
+                m.u8(vehicle + 0xaa)? == 1 && m.u32(vehicle + VEHICLE_DRIVER)? != c.unit.handle;
+        }
+        let Some(base) = score_cast(
+            c.unit,
+            player,
+            c.peer_distance,
+            mode,
+            c.profile.leader,
+            allied_to_player,
+            passenger,
+        ) else {
+            return Ok(());
+        };
+        let desired = choose_voice(c.profile.voice, c.voices, |count| draw_voice(m, count))?;
+        if let Some((voice_id, bonus)) = desired {
+            m.set_u16(c.voice, voice_id as u16)?;
+            m.set_f32(c.rank, base + bonus + player_bonus)?;
+        }
+        Ok::<_, MemFault>(())
+    })?;
     Ok(())
 }
 
@@ -367,18 +425,21 @@ pub(super) fn operate(
                 m.set_u32(out, closest)?;
             }
         }
-        Op::Score => score(m, a, b, c)?,
+
         Op::RememberVoice => {
             let unit = object_global(m, a)?;
-            if let (Some(slot), Some(voice)) = (voice_slot(m, c, unit)?, global(m, b, SHORT)?) {
-                let voice = m.u16(voice)?;
-                if voice != u16::MAX {
-                    let leader = profile(m.u32(slot)?, unit).is_some_and(|p| p.leader);
-                    store_profile(m, slot, unit, voice as i16, leader)?;
+            if unit != NONE
+                && voices::Registry::read(m)?.is_some_and(|r| r.state == c)
+                && let Some(voice) = global(m, b, SHORT)?
+            {
+                let voice = m.i16(voice)?;
+                if voice >= 0 {
+                    let table = voices::Table::Globals(c);
+                    let leader = table.get(m, unit)?.leader;
+                    table.put(m, unit, voices::Profile { voice, leader })?;
                 }
             }
         }
-        Op::RefreshVoices => super::leaders::refresh(m, a, b, c)?,
         op => unreachable!("sound operation {} in casting", op as u32),
     }
     Ok(())
@@ -394,6 +455,7 @@ mod tests {
             parent,
             team,
             pos: [x, 0.0, 0.0],
+            cluster: -1,
             forward: [1.0, 0.0, 0.0],
         }
     }
@@ -433,6 +495,15 @@ mod tests {
         let driver = score_cast(candidate, Some(player), 4.0, 2, false, true, false).unwrap();
         let passenger = score_cast(candidate, Some(player), 4.0, 2, false, true, true).unwrap();
         assert_eq!(passenger - driver, 1.0);
+    }
+
+    #[test]
+    fn seeded_generic_voice_beats_the_first_scripted_alternative() {
+        let voices = [2, 1, 4, 6, 5, -1];
+        assert_eq!(
+            choose_voice::<()>(4, voices, |_| panic!()),
+            Ok(Some((4, 0.7)))
+        );
     }
 
     #[test]

@@ -881,6 +881,7 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
         }],
         clusters: vec![vec![0], vec![0]],
         skies: vec![1, 0],
+        pvs: [1u32.to_le_bytes(), 2u32.to_le_bytes()].concat(),
     };
     let b = build_full(&sections, false, false, &visibility, &[]);
     let map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
@@ -893,6 +894,9 @@ fn portals_and_each_cluster_s_list_are_written_where_the_flood_reads_them() {
             word(b, o + 4).wrapping_sub(at) as usize,
         )
     };
+    let (len, v) = field(&sbsp, 0x54);
+    assert_eq!(len, 8);
+    assert_eq!([word(&sbsp, v), word(&sbsp, v + 4)], [1, 2]);
     let f32_at = |o: usize| f32::from_le_bytes(sbsp[o..o + 4].try_into().unwrap());
     // sbsp +0x5c: 0x24 each, the clusters, plane, centre, radius, open.
     let (n, p) = field(&sbsp, 0x5c);

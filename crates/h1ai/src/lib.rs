@@ -17,6 +17,7 @@
 
 mod bytes;
 pub mod conversations;
+pub mod voices;
 pub mod convert;
 pub mod h1;
 pub mod h2;

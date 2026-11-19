@@ -308,17 +308,32 @@ actors or preference for a unique voice. The bridge reads Halo 2's live
 campaign alliance matrix (`0x001df560`) and vehicle driver (`0x002a4270`).
 Candidates closer to players and to an already cast peer get the original
 distance and view-direction weights (`0x00143a96`, `0x00144026`).
+For the first cast member, the bridge screens prospective players with
+Halo 1's directional BSP visibility rows (`0x00143a37`). The converter
+copies those rows from the Halo 1 BSP's `+0x140/+0x14c` data reference into
+the rebuilt v8 BSP at `+0x54/+0x58`. A clear head-to-head collision ray or
+separation under three world units earns the original `0.5` bonus (Halo 1
+`0x00143a6e`, Halo 2 `0x000b8d30` and `0x001697c0`). The Halo 2
+object location update stores the cluster in the object header (`0x000b866b`).
 Voice selection prefers the exact persona, then the wildcard, then an
-eligible generic alternative (`0x001440e2`). A salted profile recorded in
-scenario globals follows a cast member into later scenes and checkpoints.
+eligible generic alternative (`0x001440e2`).
 Assigned object names still resolve to their captured actors.
 
+**Built.** Generic voices are seeded at unit construction. The converter
+pairs converted units and AI starting locations with the generic selectors
+authored on the source biped or vehicle (`+0x2b4`). The native unit hook
+rotates through those selectors in author order, including repeated zeroes,
+with a process-wide counter shared across unit definitions (Halo 1
+`0x000466e0`, Halo 2 `0x000c4410`).
+
 **Built.** The map carries the source marine squads' unique-leader rules.
-The native cast bridge seeds 100 or 101 from the live squad roster before
-binding roles. Halo 1's selection at `0x0013e563` supplies the forced,
-random and encounter-size cases. The first spawned living member of each
-new cohort takes the voice, leaving its peers generic. Halo 2 provides the
-current roster through the same squad chain read by `0x00204d30`.
+The placement-wave hook applies the forced, random and encounter-size
+rules before the first spawn attempt (Halo 1 `0x0013e563`, Halo 2
+`0x00201520` and `0x00203780`). The voice and leader flag follow the salted
+unit datum through squad migration and cast changes. The script map-init
+hook moves early births into scenario globals, which carry the profiles
+in checkpoints. Rebuild converted maps to install the spawn metadata and
+checkpoint globals.
 
 **Built.** Flag `0x20` runs the cast toward the focus player using the
 source distance at `+0x28` (Halo 1 `0x0014476c`). Line flags `0x10` and
@@ -337,7 +352,7 @@ Selection 1 supplies an unbound radio voice. Selections 6 and 7 bind
 an actor and route the voice over radio (`0x001426a3`, `0x00144992`).
 
 **Built.** Every spoken line owns its native sound instance. Spatial
-voices use the unit's mouth marker and the biped lip-sync path
+voices use the unit's head marker and the biped lip-sync path
 (`0x001891d0`, `0x00109220`). Radio uses the engine's untracked impulse
 entry (`0x00189fe0`). Workers poll the salted sound datum until it ends
 before applying the authored pause and advance flag. Stopping calls the
@@ -350,14 +365,6 @@ descriptor is four longs returning void and its original evaluator
 `hs::h1_conversation::BUILTINS`. Approach, facing and queue queries use
 stock builtin slots. The converted-map operation validates scenario
 global types and uses salted object, actor and sound handles.
-
-The converted cast ranks candidates with Halo 2 positions, alliances and
-aim. Halo 1 adds a BSP visibility bonus to the cast score and rotates
-fresh ambient voices through its biped dialogue permutations. The
-converted cast uses the authored scripted alternatives for fresh generic
-actors. Unique voices are initialized on the live Halo 2 roster when a
-cast is requested, so a cohort can differ after migration before its
-first conversation.
 
 ### Characters (the stopgap)
 

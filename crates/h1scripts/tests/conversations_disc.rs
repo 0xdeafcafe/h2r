@@ -124,14 +124,21 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
         let plan = h1ai::convert::convert(&ai, &Default::default());
         let scopes = SpeakerScopes::from_plan(&plan);
         if level == "a30" {
-            let leader = scopes
-                .leaders
+            let squad = plan
+                .ai
+                .squads
                 .iter()
-                .find(|leader| {
-                    plan.ai.squads[leader.squad as usize].name == "first_marine/left_back"
-                })
+                .position(|s| s.name == "first_marine/left_back")
                 .unwrap();
-            assert_eq!(leader.selection, 3);
+            assert_eq!(scopes.squad_voices[squad].leader_rule, 3);
+        }
+        if matches!(level, "a10" | "a30") {
+            assert!(
+                scopes
+                    .voice_definitions
+                    .iter()
+                    .any(|d| d.generic == [2, 4, 1, 5, 6])
+            );
         }
         let code = compile(&t, h1, &target, &ai.conversations, &scopes);
         for missing in &code.missing {
@@ -172,6 +179,43 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
             "{level}: missing sound tags"
         );
 
+        use hs::h1_conversation::spawn::*;
+        let word = |at: usize| u32::from_le_bytes(code.strings[at..at + 4].try_into().unwrap());
+        if !scopes.voice_definitions.is_empty() {
+            assert_eq!(word(4), SIGNATURE, "{level}: voice metadata signature");
+            assert_eq!(word(12) as usize, scopes.voice_definitions.len());
+            assert_eq!(word(16) as usize, scopes.squad_voices.len());
+            let end = HEADER + BANK_BYTES * scopes.voice_definitions.len();
+            for (bank, raw) in scopes
+                .voice_definitions
+                .iter()
+                .zip(code.strings[HEADER..end].chunks_exact(BANK_BYTES))
+            {
+                assert_eq!(
+                    i16::from_le_bytes(raw[2..4].try_into().unwrap()) as usize,
+                    bank.generic.len()
+                );
+                for (i, v) in bank.generic.iter().enumerate() {
+                    assert_eq!(
+                        i16::from_le_bytes(raw[4 + 2 * i..6 + 2 * i].try_into().unwrap()),
+                        *v
+                    );
+                }
+            }
+            let starts = end + SQUAD_BYTES * scopes.squad_voices.len();
+            let half = |at: usize| u16::from_le_bytes(code.strings[at..at + 2].try_into().unwrap());
+            for (i, squad) in scopes.squad_voices.iter().enumerate() {
+                let at = end + i * SQUAD_BYTES;
+                assert_eq!(half(at), squad.encounter);
+                assert_eq!(half(at + 2), squad.leader_rule);
+                assert_eq!(half(at + 4), squad.generic.unwrap_or(NO_BANK));
+                assert_eq!(usize::from(half(at + 8)), squad.locations.len());
+                let first = starts + 2 * usize::from(half(at + 6));
+                for (j, bank) in squad.locations.iter().enumerate() {
+                    assert_eq!(half(first + 2 * j), bank.unwrap_or(NO_BANK));
+                }
+            }
+        }
         let bytes = code.scenario_bytes(BASE);
         let sc = hs::Scenario::decode(&bytes, BASE).unwrap();
         let generated = sc

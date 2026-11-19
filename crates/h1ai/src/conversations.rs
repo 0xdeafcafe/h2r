@@ -130,15 +130,8 @@ impl Line {
 #[derive(Debug, Default)]
 pub struct SpeakerScopes {
     by_type: BTreeMap<u16, Vec<String>>,
-    pub leaders: Vec<LeaderSquad>,
-}
-
-/// The original unique-leader rule for a converted marine squad.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LeaderSquad {
-    pub squad: u16,
-    pub encounter: u16,
-    pub selection: u16,
+    pub voice_definitions: Vec<crate::voices::Definition>,
+    pub squad_voices: Vec<crate::voices::Squad>,
 }
 
 impl SpeakerScopes {
@@ -180,7 +173,8 @@ impl SpeakerScopes {
         }
         Self {
             by_type: result,
-            leaders: plan.conversation_leaders.clone(),
+            voice_definitions: plan.voice_definitions.clone(),
+            squad_voices: plan.squad_voices.clone(),
         }
     }
 

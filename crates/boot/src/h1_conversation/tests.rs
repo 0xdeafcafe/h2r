@@ -117,7 +117,7 @@ fn invoke(mut g: FakeGuest, op: Op, args: [u32; 3], handle: u32) -> Run {
                 }
                 SPATIAL_START => {
                     assert_eq!(call.esi, Some(SPEAKER));
-                    assert_eq!(call.eax, Some(MOUTH_MARKER));
+                    assert_eq!(call.eax, Some(HEAD_MARKER));
                     assert_eq!(call.args, [SCRATCH]);
                     assert_eq!(m.u32(SCRATCH + 4).unwrap(), TEST_TAG);
                     let row = INSTANCES + (handle & 0xffff) * 0xbc;

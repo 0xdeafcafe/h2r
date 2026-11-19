@@ -27,8 +27,6 @@ pub enum Op {
     RememberVoice,
     /// Unit global and command script index. Removes just that command from the actor stack.
     CancelCommand,
-    /// Consecutive leader descriptors, number of descriptors, profile table base.
-    RefreshVoices,
 }
 
 impl Op {
@@ -42,7 +40,6 @@ impl Op {
             Self::Score,
             Self::RememberVoice,
             Self::CancelCommand,
-            Self::RefreshVoices,
         ]
         .into_iter()
         .find(|&op| op as u32 == value)
@@ -59,3 +56,13 @@ pub const OBJECT: u16 = 50;
 
 pub const ACTOR_CAPACITY: u32 = 256;
 pub const ROLE_STRIDE: u32 = 5;
+
+/// The versioned spawn metadata at the start of converted script strings.
+pub mod spawn {
+    pub const SIGNATURE: u32 = u32::from_le_bytes(*b"H1V2");
+    pub const HEADER: usize = 20;
+    pub const BANK_BYTES: usize = 36;
+    pub const SQUAD_BYTES: usize = 10;
+    pub const NO_BANK: u16 = u16::MAX;
+    pub const VOICE_RECORDS: u32 = 256;
+}

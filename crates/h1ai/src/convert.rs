@@ -139,8 +139,8 @@ pub struct Plan {
     pub characters: Vec<CharacterChoice>,
     /// Command lists, for the scripts lane.
     pub command_scripts: Vec<CommandScript>,
-    /// Source unique-speaker selection by converted squad.
-    pub conversation_leaders: Vec<crate::conversations::LeaderSquad>,
+    pub voice_definitions: Vec<crate::voices::Definition>,
+    pub squad_voices: Vec<crate::voices::Squad>,
     /// What didn't carry over, one line each.
     pub notes: Vec<String>,
 }
@@ -158,7 +158,14 @@ fn letter(group: u16) -> String {
 pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
-    let mut conversation_leaders = Vec::new();
+    let mut squad_voices = Vec::new();
+    let voice_bank = |actor: i16| {
+        let unit = src.actor_palette.get(actor as usize)?.as_ref()?.unit.id;
+        src.voice_definitions
+            .iter()
+            .position(|bank| bank.tag == unit)
+            .and_then(|index| u16::try_from(index).ok())
+    };
 
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
@@ -339,13 +346,24 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     emitter_vehicle: -1,
                 })
                 .collect::<Vec<_>>();
-            if !unplaced && character.is_some_and(|i| characters[i].h1_type.0 == 7) {
-                conversation_leaders.push(crate::conversations::LeaderSquad {
-                    squad: ai.squads.len() as u16,
-                    encounter: ei as u16,
-                    selection: s.unique_leader,
-                });
-            }
+            let leader_rule = if src
+                .actor_of(s.actor as usize)
+                .is_some_and(|a| a.kind.0 == 7)
+            {
+                s.unique_leader
+            } else {
+                1
+            };
+            squad_voices.push(crate::voices::Squad {
+                encounter: ei as u16,
+                leader_rule,
+                generic: voice_bank(s.actor),
+                locations: s
+                    .starting_locations
+                    .iter()
+                    .map(|l| voice_bank(if l.actor == -1 { s.actor } else { l.actor }))
+                    .collect(),
+            });
             ai.squads.push(h2::Squad {
                 name,
                 flags: 0,
@@ -412,7 +430,8 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         ai,
         characters,
         command_scripts,
-        conversation_leaders,
+        voice_definitions: src.voice_definitions.clone(),
+        squad_voices,
         notes,
     }
 }
