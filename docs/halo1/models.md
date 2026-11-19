@@ -237,6 +237,19 @@ retail's are (`jmad::vehicle_plan`):
   `combat:fixed:any` `aim_still_up` names `aiming`, whose 24 bytes equal
   the Halo 1 warthog's `fixed` class screen. Every retail animation with a
   screen is codec 8 (float rotations), so the converter writes those so.
+- **Codec 8 streams are 16-byte aligned.** E: codec 8's interpolated
+  rotation function (`0x0028c530`, record 8 of the codec table at
+  `0x47fb14`, slot `+0x1c`) loads each frame's four floats at
+  `+0x20 + i * [+0x14] + frame * 16` of the stream with `movaps`
+  (`0x0028c589`), which faults on an address that is not a multiple of
+  16. V: every codec 8 stream on Coagulation is so aligned in its
+  resource (`h1objects/tests/animation_codec_disc.rs`). Through converter
+  version 87 the converter placed blobs 4-aligned, so from version 84 (the
+  first with codec 8) converted Blood Gulch stopped with `#GP at
+  0x28c589` about 5 s into a game, when a vehicle's steering or aim
+  overlay first played. Since version 88 every blob starts 16-aligned and
+  a static stream before a codec 8 stream is padded to 16 (its size
+  field covers the padding).
   The vehicles block's screen is `steering`'s, each class's screen goes
   on its `aim_still_up` / `aim_move_up`.
 - **Aim names.** E: the unit aim update asks for `aim_still_up`
@@ -512,11 +525,11 @@ grenades left from its origin (inferred: the lookup's fallback).
 |---|---|
 | Nodes (`0x20`) | name, next sibling, first child, parent, joint flags, base vector, vector range from the graph (or the model, for graphs without nodes) |
 | Animations (`0x6c`) | name (below), node list checksum, type, node count, frame count, flag `0x10` (in a resource), resource 0, data offset, static pose -1, both link indices -1, frame info type 0 |
-| Data | one raw resource for the whole graph (`0x200`-aligned and padded). Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data. Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales). Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)` |
+| Data | one raw resource for the whole graph (`0x200`-aligned and padded), each animation's blob at a 16-byte aligned offset. Base animations: static stream, codec 1, holding every channel Halo 1 keeps in default data (padded to 16 bytes before a codec 8 stream). Every animation: animated stream, codec 3, holding the channels Halo 1 animates (i16 rotations, which is Halo 1's own form; float translations and scales), or codec 8 (float rotations) on a vehicle's steering and aim overlays. Then both flag sets (each 3 arrays), set sizes `3 x ((n + 31) >> 3 & !3)`. `tags::anim::AnimationGraph::engine_problems` checks each animation against the engine's reader |
 | Modes tree | mode -> class -> type -> actions from the mapped names; action graph index -1. **Every level in ascending string-ID order** (converter version 64), laid out so when the map is built (`map::build::Block::sorted_by_string_id`): the engine finds a mode, class, type and action by binary search over signed string IDs (E `0x001dd560`, from the graph lookup `0x001db170`; every retail graph on Coagulation is so ordered, V). Through version 63 the levels were in name order, which hid names from the search: on Blood Gulch (version 60) the cyborg's graph found `combat:<class>:<type>:idle` for none of the Halo 1 weapons, so the player could neither start with nor pick up any of them ([objects.md](objects.md), "Holding is finding"). The tree also carries Halo 1's **borrowed slots**: Halo 1 finds a unit's animations through slot tables (`antr +0x0c` units, `0x64` each, label at +0, weapon classes at +0x58; a class is `0xbc`, label at +0, slot indices (`i16`) at +0x98, types at +0xb0; a type is `0x3c`, label at +0, slots at +0x30), and a slot may name another class's animation (every cyborg class's throw slot is `stand rifle throw-grenade`). Each such slot becomes an action of the borrowing mode, class and type naming the same animation, unless that path already has the action |
 | Resource (`0x14`) | the tag's datum, size, local raw pointer, `ffffffff`, 0 |
 
-Left empty: sound and effect references and events, blend screens,
+Left empty: sound and effect references and events, blend screens (but a vehicle's, above),
 inheritance, the `+0x54` string-ID pairs (count >= 1 on every retail graph;
 meaning unknown; written only on first-person graphs, as (`any`, `any`)), static poses, and the header word at `+8`.
 
