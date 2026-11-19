@@ -1,7 +1,7 @@
 // v8 keeps a causal predictor per list, row ordinal and field. Keys seed the
 // predictor and dictionary from the embedded v7 frame, leaving entropy priors fresh.
 import { K, LISTS, HIT, PackError, dir, dyaw, idText, materialize,
-  type Direction, type Entity, type Field, type Val, type Vec3 } from "./pack";
+  type Counter, type Direction, type Entity, type Field, type Val, type Vec3 } from "./pack";
 import { oct, rotatedOct } from "./pack-math";
 import { RangeModels, RangeReader } from "./pack-range";
 import type { Frame } from "./types";
@@ -20,15 +20,32 @@ function text(bytes: Uint8Array): string {
 
 export class ByteCursor {
   constructor(readonly bytes: Uint8Array, public at = 0, readonly end = bytes.length) {}
-  uint(): number {
-    let value = 0;
-    for (let shift = 0; shift <= 49 && this.at < this.end; shift += 7) {
+  // Use ordinary numbers for common counters. Only long envelopes need a
+  // bigint, so distinct u64 stream IDs always own distinct model states.
+  counter(offset = 0): Counter {
+    let n = offset;
+    for (let shift = 0; shift < 49 && this.at < this.end; shift += 7) {
       const b = this.bytes[this.at++]!;
       if (b === 0 && shift > 0) bad();
-      value += (b & 127) * 2 ** shift;
-      if (b < 128) return bounded(value, Number.MAX_SAFE_INTEGER);
+      n += (b & 127) * 2 ** shift;
+      if (b < 128) return n;
+    }
+    let wide = BigInt(n);
+    for (let shift = 49; shift <= 63 && this.at < this.end; shift += 7) {
+      const b = this.bytes[this.at++]!;
+      if (b === 0 || (shift === 63 && b > 1)) bad();
+      wide += BigInt(b & 127) << BigInt(shift);
+      if (b < 128) {
+        if (wide > 0xffffffffffffffffn) bad();
+        return wide <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(wide) : wide;
+      }
     }
     return bad();
+  }
+
+  uint(): number {
+    const n = this.counter();
+    return typeof n === "number" ? n : bad();
   }
 }
 
@@ -80,7 +97,7 @@ export class V8Stream {
   private cut?: number;
   private cinematic: boolean;
 
-  constructor(private frame: Frame, lists: Entity[][], hits: Entity[], public seq: number) {
+  constructor(private frame: Frame, lists: Entity[][], hits: Entity[], public seq: Counter) {
     this.game = frame.game_id;
     this.bsp = frame.bsp ?? undefined;
     this.cut = frame.cut ?? undefined;
@@ -228,7 +245,7 @@ export class V8Stream {
     return q[0]!;
   }
 
-  delta(bytes: Uint8Array, start: number, end: number, dt: number, seq: number): Frame {
+  delta(bytes: Uint8Array, start: number, end: number, dt: number, seq: Counter): Frame {
     const r = new RangeReader(bytes, this.models, start, end);
     if (r.bit(META)) {
       const c = new ByteCursor(blob(r, META + 1, 279));

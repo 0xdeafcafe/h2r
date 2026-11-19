@@ -62,13 +62,15 @@ export class PackError extends Error {
   }
 }
 
+export type Counter = number | bigint;
+
 export class BitReader {
   private pos = 0;
   private end: number;
   precise = false;
   span = 0;
-  sid = 0;
-  seq = 0;
+  sid: Counter = 0;
+  seq: Counter = 0;
   keyframe = false;
   constructor(private readonly bytes: Uint8Array) { this.end = bytes.length * 8; }
 
@@ -683,17 +685,17 @@ interface StreamState {
   frame?: Frame;
 }
 
-export interface Decoded { sid: number; seq: number; keyframe: boolean; frame: Frame }
+export interface Decoded { sid: Counter; seq: Counter; keyframe: boolean; frame: Frame }
 
 /** Follows any number of packed streams (by `sid`). A delta without its
  *  base (a dropped frame, or joining mid-stream) throws a gap error and is
  *  skipped until the stream's next keyframe. */
 export class FrameDecoder {
-  private readonly streams = new Map<number, StreamState>();
+  private readonly streams = new Map<Counter, StreamState>();
 
-  private readonly v8 = new Map<number, V8Stream>();
+  private readonly v8 = new Map<Counter, V8Stream>();
 
-  forget(sid: number): void {
+  forget(sid: Counter): void {
     this.streams.delete(sid);
     this.v8.delete(sid);
   }
@@ -706,7 +708,7 @@ export class FrameDecoder {
 
   /** Decode directly over a container, reusing the bit cursor for all
    *  records. Each read is bounded by its own length prefix. */
-  forEachRecord(bytes: Uint8Array, visit: (frame: Frame, sid: number, seq: number, keyframe: boolean) => void, skipGaps = false): void {
+  forEachRecord(bytes: Uint8Array, visit: (frame: Frame, sid: Counter, seq: Counter, keyframe: boolean) => void, skipGaps = false): void {
     const r = new BitReader(bytes);
     walkRecords(bytes, (start, end) => {
       r.record(start, end);
@@ -727,9 +729,9 @@ export class FrameDecoder {
       return frame;
     }
     const head = bytes[start]!, cursor = new ByteCursor(bytes, start + 1, end);
-    const sid = r.sid = head >>> 5 === 7 ? 7 + cursor.uint() : head >>> 5;
-    const seq = r.seq = cursor.uint();
-    if (!Number.isSafeInteger(sid)) throw new PackError("invalid v8 stream id");
+    const sid = r.sid = head >>> 5 === 7 ? cursor.counter(7) : head >>> 5;
+    const seq = r.seq = cursor.counter();
+    if (seq === 0xffffffffffffffffn) throw new PackError("invalid v8 sequence");
     r.keyframe = (head & 16) !== 0;
     if (r.keyframe) {
       if (!this.v8.has(sid) && !this.streams.has(sid) && this.v8.size + this.streams.size >= 256)
@@ -746,7 +748,7 @@ export class FrameDecoder {
     }
     const state = this.v8.get(sid);
     try {
-      if (!state || state.seq + 1 !== seq) throw new PackError("v8 delta needs its preceding frame", true);
+      if (!state || (typeof seq === "number" ? seq - 1 !== state.seq : seq - 1n !== BigInt(state.seq))) throw new PackError("v8 delta needs its preceding frame", true);
       const dt = cursor.uint();
       return state.delta(bytes, cursor.at, end, dt, seq);
     } catch (e) {
