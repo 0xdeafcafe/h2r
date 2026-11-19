@@ -16,6 +16,8 @@
 //! * [`render`] records one frame's passes and draws for `render.frame`
 //!   (boot's backend wrapper feeds [`render::PROBE`]) and answers
 //!   `render.stats` from what the host registers.
+//! * [`hostpads`] answers `input.host`: the host controllers as the input
+//!   layer and the debug menu's gate see them.
 //! * [`menu`] connects the debug menu as an in-process client, and adds
 //!   `settings.*` and `perf.overlay` for it (docs/runtime/debug-menu.md).
 //! * [`Reader`] is what it reads: [`GuestReader`] over `live-telemetry`'s
@@ -38,6 +40,7 @@
 mod capture;
 mod exec;
 pub mod havok;
+pub mod hostpads;
 pub mod hot;
 mod loads;
 pub mod menu;

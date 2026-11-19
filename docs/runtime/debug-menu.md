@@ -203,6 +203,29 @@ answers the calls the way the host methods do.
   redraws.
 - `crates/cli/src/play_cmd.rs`: makes the menu, sets the gate, hands it to
   the window and the game.
+- With the keyboard on (the default), player one is
+  `input::backend::fallback::KeyboardFallback`: the first pad merged with the
+  keyboard through the guest's pad. The merge carries the pad's touchpad
+  across, so the gate sees its click. It used to drop it, so neither the
+  click nor the chord opened the menu from player one's DualShock 4 or
+  DualSense (fixed 2026-11-19; test
+  `a_touchpad_click_on_player_ones_pad_opens_it_through_the_input_manager`).
+
+## When a pad doesn't open it
+
+`h2 agent hostpads` (`input.host`, [agent-api.md](agent-api.md#inputhost-the-host-controllers))
+shows each controller three ways. Run it while the touchpad is held down:
+
+- `devices`: the controller as GameController reads it. `profile` must be
+  `dualsense` or `dualshock4` for it to have a touchpad. `extended` means
+  the framework gave it a plain profile, so there is no touchpad to read.
+  `touchpad.click` should be `true` while the pad is held.
+- `pads`: what the gate is handed. Player one's touchpad should match the
+  one under `devices`.
+- `gate`: `open`, and per pad `touchpad`, `click`, `chord`, and
+  `chord_pending` (Start waiting for the click).
+
+`notes` says in words where the touchpad goes missing.
 
 ## To check in the game
 

@@ -46,6 +46,7 @@ use crate::gamepad::{
     PollingParameters, Rumble, State,
 };
 use crate::host::{ConfigError, ConvertConfig, HostPad, HostPadId};
+use crate::report::{HostReportHandle, PadInfo};
 
 /// One pad as a [`PadGate`] sees it: which backend reported it, and its
 /// state, which the gate may change before the game sees it.
@@ -172,6 +173,8 @@ pub struct InputManager {
     changes_rem: u32,
     completions: Vec<Completion>,
     gate: Option<Box<dyn PadGate>>,
+    /// The host pads as of the last sync ([`Self::host_report`]).
+    report: HostReportHandle,
 }
 
 impl InputManager {
@@ -186,6 +189,7 @@ impl InputManager {
             changes_rem: 0,
             completions: Vec::new(),
             gate: None,
+            report: HostReportHandle::default(),
         })
     }
 
@@ -211,6 +215,12 @@ impl InputManager {
         self.gate = Some(gate);
     }
 
+    /// The host pads as the backends and the gate saw them at each sync
+    /// ([`crate::report`]): what `h2 agent hostpads` answers.
+    pub fn host_report(&self) -> HostReportHandle {
+        self.report.clone()
+    }
+
     /// Pull host state and update the ports: removals, insertions, auto-poll
     /// publishing and rumble forwarding.
     pub fn sync(&mut self) {
@@ -232,6 +242,21 @@ impl InputManager {
                 seen.insert(key, pad);
             }
         }
+        // What the gate is handed, for the report.
+        let mut infos: Vec<PadInfo> = order
+            .iter()
+            .map(|k| {
+                let p = &seen[k];
+                PadInfo {
+                    backend: self.backends[k.0].name().to_owned(),
+                    key: (k.0, k.1.0),
+                    name: p.name.clone(),
+                    physical: p.physical,
+                    port: None,
+                    state: p.state,
+                }
+            })
+            .collect();
         if let Some(gate) = &mut self.gate {
             let mut gated: Vec<GatedPad> = order
                 .iter()
@@ -312,8 +337,13 @@ impl InputManager {
         for (i, port) in self.ports.iter().enumerate() {
             if let Some(d) = &port.device {
                 self.backends[d.host.0].placed(d.host.1, i);
+                if let Some(info) = infos.iter_mut().find(|p| p.key == (d.host.0, d.host.1.0)) {
+                    info.port = Some(i);
+                }
             }
         }
+        let devices = self.backends.iter().flat_map(|b| b.devices()).collect();
+        self.report.set(devices, infos);
     }
 
     /// `XGetDevices(XDEVICE_TYPE_GAMEPAD)`: bitmask of connected ports.
@@ -583,6 +613,55 @@ mod tests {
         // Ports and connection are untouched by the gate.
         assert_eq!(m.connected_mask(), 0b11);
         assert_eq!(m.open(p(0)).unwrap(), h, "the same device instance");
+    }
+
+    /// Describes one controller of its own, as GameController does.
+    struct Described;
+    impl HostBackend for Described {
+        fn name(&self) -> &str {
+            "described"
+        }
+        fn poll(&mut self) -> Vec<HostPad> {
+            Vec::new()
+        }
+        fn devices(&self) -> Vec<crate::report::DeviceInfo> {
+            vec![crate::report::DeviceInfo {
+                backend: "described".into(),
+                id: 3,
+                name: "DUALSHOCK 4 Wireless Controller".into(),
+                profile: Some("dualshock4".into()),
+                ..Default::default()
+            }]
+        }
+    }
+
+    #[test]
+    fn the_host_report_has_each_pad_as_the_gate_got_it_and_each_device() {
+        let (mut m, sh) = setup();
+        m.add_backend(Box::new(Described));
+        let report = m.host_report();
+        assert_eq!(report.get().syncs, 0);
+        sh.lock().unwrap().pads = vec![pad(10, true), pad(11, false)];
+        m.set_gate(Box::new(Clear(Arc::default())));
+        m.sync();
+        let r = report.get();
+        assert_eq!(r.syncs, 1);
+        assert_eq!(r.pads.len(), 2);
+        assert_eq!(r.pads[0].backend, "mock");
+        assert_eq!(r.pads[0].key, (0, 10));
+        assert_eq!(r.pads[0].port, Some(0));
+        assert_eq!(r.pads[1].port, Some(1));
+        assert!(
+            r.pads[0].state.buttons.contains(HostButton::South),
+            "before the gate cleared it"
+        );
+        assert_eq!(r.devices.len(), 1);
+        assert_eq!(r.devices[0].profile.as_deref(), Some("dualshock4"));
+        // Unplugged: gone at the next sync.
+        sh.lock().unwrap().pads.clear();
+        m.sync();
+        let r = report.get();
+        assert_eq!((r.syncs, r.pads.len()), (2, 0));
     }
 
     #[test]

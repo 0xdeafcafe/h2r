@@ -1226,6 +1226,9 @@ pub fn run_hosted_with_live(
         // Local bots' pads (docs/game/bots.md): after the host's own.
         input.add_backend(Box::new(bots::local::global().backend()));
     }
+    // `input.host` (`h2 agent hostpads`) reads the manager's report after
+    // the manager moves into XAPI.
+    let host_pads = host.input.as_ref().map(input::InputManager::host_report);
     let (xa, pad) = match (opts.xapi, host.input.take()) {
         (false, _) => (None, None),
         (true, Some(input)) => (
@@ -1322,6 +1325,7 @@ pub fn run_hosted_with_live(
     if let Some(a) = &agent {
         debug_menu_glue::install(
             host.debug_menu.as_ref(),
+            host_pads,
             &a.agent,
             host.settings.clone(),
             host.perf_overlay.clone(),

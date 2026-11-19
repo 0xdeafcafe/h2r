@@ -64,6 +64,34 @@ struct Track {
     start: StartHold,
 }
 
+/// One pad as the gate last saw it, for `h2 agent hostpads`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PadReport {
+    /// The input manager's key: backend index and the pad's id in it.
+    pub key: (usize, u64),
+    /// The pad came with a touchpad (so it can open the menu, and its
+    /// Start waits [`CHORD`] for the click).
+    pub touchpad: bool,
+    /// The touchpad click is down.
+    pub click: bool,
+    /// Touchpad click and Start are both down.
+    pub chord: bool,
+    /// Start is held back, waiting for the click.
+    pub chord_pending: bool,
+    /// The click that opened the menu is still down.
+    pub opened_by_press: bool,
+    /// Buttons hidden from the game until they are let go.
+    pub latched: HostButtons,
+}
+
+/// Every pad the gate saw at its last filter.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GateReport {
+    /// Filters since the gate was made.
+    pub syncs: u64,
+    pub pads: Vec<PadReport>,
+}
+
 /// The gate. One per [`input::InputManager`]; [`Shared::gate`] makes it.
 pub struct Gate {
     menu: Shared,
@@ -168,6 +196,21 @@ impl Gate {
             }
             t.held = raw;
         }
+        let report = &mut inner.gate;
+        report.syncs += 1;
+        report.pads.clear();
+        report.pads.extend(pads.iter().map(|g| {
+            let t = self.tracks.get(&g.key).copied().unwrap_or_default();
+            PadReport {
+                key: (g.key.0, g.key.1.0),
+                touchpad: g.pad.state.touchpad.is_some(),
+                click: t.click,
+                chord: t.chord,
+                chord_pending: matches!(t.start, StartHold::Waiting(_)),
+                opened_by_press: t.opened_by_press,
+                latched: t.latched,
+            }
+        }));
     }
 }
 

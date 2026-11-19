@@ -49,6 +49,8 @@ or a short form:
                          or '{\"player\":1,\"at_tick\":900,\"steps\":[{\"buttons\":[\"rt\"],\"ticks\":30}]}'
   unpress                input.release: let go of everything
   padstate               input.state: every player's pad, recording or replay
+  hostpads               input.host: the host controllers (profile, touchpad, buttons)
+                         as their backend and the debug menu see them
   sample-start [hz]      profile.sample.start (the game thread; the Xbox app)
   sample-stop            profile.sample.stop: writes LocalState\\profile.h2prof
   sample-status          profile.sample.status
@@ -526,6 +528,7 @@ fn parse_call(words: &[String]) -> Result<(String, Value)> {
         "stop" => Some(method::INPUT_STOP),
         "unpress" => Some(method::INPUT_RELEASE),
         "padstate" => Some(method::INPUT_STATE),
+        "hostpads" => Some(method::INPUT_HOST),
         "sample-stop" => Some(method::SAMPLE_STOP),
         "sample-status" => Some(method::SAMPLE_STATUS),
         "hostperf" => Some(method::HOST_PERF),
@@ -729,6 +732,7 @@ mod tests {
             )
         );
         assert_eq!(c("padstate"), ("input.state".into(), Value::Null));
+        assert_eq!(c("hostpads"), ("input.host".into(), Value::Null));
         assert_eq!(
             c("record fight replace"),
             (
