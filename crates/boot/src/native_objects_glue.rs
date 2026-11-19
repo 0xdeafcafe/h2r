@@ -346,6 +346,7 @@ fn spawn_worker(
                         let lit = cpu.lit.parts.len();
                         let lit_implementations = cpu.lit_implementations;
                         let texaccum = cpu.lit.samples_texaccum();
+                        let lit_sections: HashSet<u16> = cpu.lit.parts.iter().map(|p| p.section).collect();
                         if texaccum {
                             models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
                         }
@@ -370,6 +371,7 @@ fn spawn_worker(
                         if texaccum {
                             set.texaccum.insert(def as u16);
                         }
+                        set.sections.extend(lit_sections.iter().map(|&s| (def as u16, s)));
                         s.set = Arc::new(set);
                         // No lock held across the print.
                         drop(st);
@@ -626,7 +628,8 @@ const SHADER_VALUES: u32 = 0x44;
 fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
     let geo = &loaded.geometry;
     let mut sections = Vec::new();
-    for &si in &loaded.sections {
+    // Every detail level: a distant object's records draw a lower one.
+    for &si in &loaded.lod_sections {
         let Some(s) = geo.sections.get(si) else { continue };
         let flags = s.wire.compression_flags.0;
         let bounds = geo.compression.as_ref();
@@ -829,6 +832,39 @@ impl d3d::ExternalPass for ObjectsPass {
                 lit.has(i).then_some((i, o))
             })
             .collect();
+        if let Some(at) = probe_at()
+            && probe_due()
+        {
+            let vp = self.camera.view_projection();
+            let size = (t.guest_size.0 as f32, t.guest_size.1 as f32);
+            let texaccum = self.models.texaccum.lock().unwrap_or_else(|e| e.into_inner());
+            let mut hits = 0;
+            for o in &self.objects {
+                let Some(cover) = sphere_covers(&vp, o.sphere, size, at) else { continue };
+                hits += 1;
+                let model = index.get(&(o.definition as u16)).copied();
+                eprintln!(
+                    "native-objects probe at {at:?}: definition {:#010x} handle {:#010x} sphere {:?} (centre {:.1} px off, radius {:.1} px, w {:.2}); its records draw (section, implementation) {:?}, its native parts come from sections {:?}{}{}",
+                    o.definition,
+                    o.handle,
+                    o.sphere,
+                    cover.0,
+                    cover.1,
+                    cover.2,
+                    o.implementations,
+                    model.map(|m| lit.sections(m)).unwrap_or_default(),
+                    if model.is_some_and(|m| lit.has(m)) { "" } else { "; no lit model (not drawn by the programs)" },
+                    if texaccum.contains(&(o.definition as u16)) { "; samples the texture accumulation target" } else { "" },
+                );
+            }
+            eprintln!(
+                "native-objects probe at {at:?}: {hits} of {} objects' spheres cover it; texture accumulation level {:?} (guest {:?}, copy {:?})",
+                self.objects.len(),
+                t.sampled.first().map(|l| l.as_ref().map(|l| l.size)),
+                t.guest_size,
+                t.size
+            );
+        }
         if objects.is_empty() {
             return;
         }
@@ -861,6 +897,65 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 }
 
+/// `H2_NATIVE_OBJECTS_PROBE=x,y` (guest pixels): on the first passes and
+/// every 250th after, each object of the pass whose bounding sphere covers
+/// that pixel, with the sections its records draw, the sections its
+/// native parts come from, and the texture accumulation level's size.
+fn probe_at() -> Option<(f32, f32)> {
+    static AT: std::sync::OnceLock<Option<(f32, f32)>> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| {
+        let at = std::env::var("H2_NATIVE_OBJECTS_PROBE").ok().and_then(|v| parse_probe(&v));
+        if let Some(at) = at {
+            eprintln!("native-objects: probing guest pixel {at:?}");
+        }
+        at
+    })
+}
+
+fn probe_due() -> bool {
+    static PROBED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = PROBED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    n < 8 || n % 250 == 0
+}
+
+fn parse_probe(v: &str) -> Option<(f32, f32)> {
+    let (x, y) = v.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+/// Whether `sphere` (centre, radius), seen through `view_proj` on a
+/// screen of `size` pixels, covers pixel `at`: the centre's distance in
+/// pixels, the projected radius (the farthest of its six axis points from
+/// the centre on screen) and the centre's view depth `w`. A camera inside
+/// or at the sphere covers every pixel (radius infinite).
+fn sphere_covers(view_proj: &native_render::camera::Mat4, sphere: ([f32; 3], f32), size: (f32, f32), at: (f32, f32)) -> Option<(f32, f32, f32)> {
+    let (c, r) = sphere;
+    let clip = |p: [f32; 3]| native_render::camera::transform(view_proj, [p[0], p[1], p[2], 1.0]);
+    let screen = |v: [f32; 4]| ((v[0] / v[3] + 1.0) * 0.5 * size.0, (1.0 - v[1] / v[3]) * 0.5 * size.1);
+    let centre = clip(c);
+    let (px, py) = (at.0 + 0.5, at.1 + 0.5);
+    if centre[3] <= r {
+        return Some((0.0, f32::INFINITY, centre[3]));
+    }
+    let (sx, sy) = screen(centre);
+    let mut radius = 0f32;
+    for axis in 0..3 {
+        for sign in [-1.0, 1.0] {
+            let mut p = c;
+            p[axis] += sign * r;
+            let v = clip(p);
+            if v[3] <= 0.0 {
+                return Some((0.0, f32::INFINITY, centre[3]));
+            }
+            let (x, y) = screen(v);
+            radius = radius.max(((x - sx).powi(2) + (y - sy).powi(2)).sqrt());
+        }
+    }
+    let distance = ((px - sx).powi(2) + (py - sy).powi(2)).sqrt();
+    (distance <= radius).then_some((distance, radius, centre[3]))
+}
+
 /// Views whose texture accumulation level the device did not give though
 /// a drawn object's parts sample it (bound at the hook,
 /// `object_nodes::texaccum_bound`, yet no level over it after the drain):
@@ -885,6 +980,24 @@ fn guest_texels(texels: (u32, u32), guest: (u32, u32), size: (u32, u32)) -> (u32
 mod tests {
     use super::*;
     use native_render::model::{ModelDraw, NodeMatrix};
+
+    #[test]
+    fn the_probe_names_the_objects_whose_sphere_covers_its_pixel() {
+        assert_eq!(parse_probe(" 575, 410"), Some((575.0, 410.0)));
+        assert_eq!(parse_probe("575"), None);
+        // Identity but w = 2: x and y over 2 across the screen.
+        let mut vp = [[0.0f32; 4]; 4];
+        for (i, c) in vp.iter_mut().enumerate() {
+            c[i] = 1.0;
+        }
+        vp[3][3] = 2.0;
+        let size = (640.0, 480.0);
+        // Centre at (320, 240); radius 0.2 over w 2: 32 px across, 24 down.
+        let (d, r, w) = sphere_covers(&vp, ([0.0, 0.0, 0.0], 0.2), size, (330.0, 240.0)).expect("covered");
+        assert!((d - 10.5).abs() < 0.1 && (r - 32.0).abs() < 0.1 && w == 2.0, "{d} {r} {w}");
+        assert_eq!(sphere_covers(&vp, ([0.0, 0.0, 0.0], 0.2), size, (400.0, 240.0)), None, "outside");
+        assert_eq!(sphere_covers(&vp, ([0.0, 0.0, 0.0], 3.0), size, (0.0, 0.0)).map(|c| c.1), Some(f32::INFINITY), "the camera inside");
+    }
 
     #[test]
     fn a_levels_texels_under_the_render_scale_are_its_guest_size() {

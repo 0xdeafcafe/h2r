@@ -282,6 +282,15 @@ impl LitObjects {
         self.models.contains_key(&index)
     }
 
+    /// The sections model `index`'s lit parts come from, each once
+    /// (diagnostics).
+    pub fn sections(&self, index: u32) -> Vec<u16> {
+        let mut s: Vec<u16> = self.models.get(&index).map(|m| m.parts.iter().map(|p| p.section).collect()).unwrap_or_default();
+        s.sort_unstable();
+        s.dedup();
+        s
+    }
+
     /// Draws the lit parts of `objects` (each with its model index) into
     /// `color` and `depth` (both loaded and kept), the viewport the whole
     /// target as the programs expect. A part whose program samples the

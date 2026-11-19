@@ -340,6 +340,19 @@ fn an_object_sampling_the_texture_accumulation_target_waits_for_it() {
     assert!(!native_objects::ready(&mem, &set, &cleared, &mut frame), "the byte at +0x95 set");
 }
 
+/// The pass draws an object's lit parts by the section their records
+/// name: a record of a section none of its native parts come from (a
+/// permutation other than the one loaded, or a section whose parts did not
+/// load) would lose its items undrawn, so the object is left to D3D.
+#[test]
+fn an_object_drawing_a_section_its_native_parts_lack_is_named() {
+    let mut set = NativeSet::default();
+    set.sections.extend([(DEF_A as u16, 0), (DEF_A as u16, 2), (DEF_B as u16, 1)]);
+    assert_eq!(set.missing_section(DEF_A, [0, 2]), None);
+    assert_eq!(set.missing_section(DEF_A, [0, 1, 2]), Some(1), "B's section, not A's");
+    assert_eq!(set.missing_section(DEF_B, []), None);
+}
+
 #[test]
 fn a_shader_is_accepted_only_for_the_definitions_that_draw_it() {
     let mut set = NativeSet::default();

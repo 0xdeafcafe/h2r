@@ -874,12 +874,23 @@ count disagrees with its model's stays on the D3D path.
 
 ### LODs
 
-The game picks a LOD per object by pixel size; the native path draws the
-highest LOD present in each permutation (`Permutation::best_section`).
-Distant objects then cost more triangles than the game would draw: GPU
-work, never a missing surface. Matching the game's LOD needs the record
-bits above (the section in the record), a later step; the record would
-then also pin the permutation.
+The game picks a LOD per object by pixel size, and each render record
+names the section it draws (the key's bits 9..17). The parts drawn
+through the game's programs are drawn by that section: an object's parts
+come from the sections its records name, nothing else. So the load takes
+every detail level's section of the permutations picked
+(`model_load::pick_lod_sections`, highest first per region), and a
+distant object draws the lower level the game picked. Before, only the
+highest level loaded, and a distant object's records named a section the
+pass had no parts for: its items were skipped and nothing drawn (a thin
+object on 03a's rubble, gone at frames 3000 and 4000).
+
+An object whose records still name a section none of its native parts
+come from (another permutation than the one loaded, or a section whose
+parts did not load) is left to D3D at the hook, before its items' skip is
+kept (`NativeSet::sections`, `NativeSet::missing_section`), logged once
+per definition and section. The base-map stand-in for transparent parts
+still draws the highest level's.
 
 ### Permutations and regions
 
@@ -1037,6 +1048,13 @@ implementation samples engine texture 3.
     the stage's size (`ResolvedImplementation::dimension_bindings`, which
     the resolver left 0 by 0 for an engine texture) get it
     (`texaccum_dimensions`).
+- **The probe.** `H2_NATIVE_OBJECTS_PROBE=x,y` (guest pixels) prints, on
+  the first eight passes and every 250th after, each object of the pass
+  whose bounding sphere covers that pixel: its definition and handle,
+  the (section, implementation) its records draw, the sections its native
+  parts come from, whether it samples the texture accumulation target,
+  and the level's size. A section in the first list but not the second
+  is drawn by nothing.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

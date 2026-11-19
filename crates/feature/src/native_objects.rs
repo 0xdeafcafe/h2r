@@ -78,6 +78,12 @@ pub struct NativeSet {
     /// is there to bind ([`native_render::object_nodes::texaccum_bound`]),
     /// else its items keep their D3D draws.
     pub texaccum: HashSet<u16>,
+    /// Per definition, the mode sections (the render record key's bits
+    /// 9..17) its parts drawn through their own programs come from: an
+    /// object whose accepted records draw another (a permutation other
+    /// than the one loaded, or a section none of whose parts loaded) would
+    /// lose those items undrawn, so its items keep their D3D draws.
+    pub sections: HashSet<(u16, u16)>,
 }
 
 impl NativeSet {
@@ -94,7 +100,16 @@ impl NativeSet {
     pub fn lit(&self, definition: u32) -> Option<u8> {
         self.lit.get(&(definition as u16)).copied()
     }
+
+    /// The first of `sections` (an object's records' sections) that
+    /// `definition`'s lit parts do not come from, if any.
+    pub fn missing_section(&self, definition: u32, sections: impl IntoIterator<Item = u16>) -> Option<u16> {
+        sections.into_iter().find(|&s| !self.sections.contains(&(definition as u16, s)))
+    }
 }
+
+/// `(definition, section)` pairs already logged by [`ready`].
+static MISSING_SECTIONS: Mutex<Option<HashSet<(u16, u16)>>> = Mutex::new(None);
 
 /// Whether frame `f` (of a definition `set` draws) has what its draw
 /// needs, after copying its node rows when it is lit: a lit object needs
@@ -112,9 +127,25 @@ pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &m
     let Some(implementations) = set.lit(f.definition) else {
         return true;
     };
-    f.lighting.is_some_and(|l| l.root.is_some())
+    if !(f.lighting.is_some_and(|l| l.root.is_some())
         && objects::attach_node_rows(m, f, cleared).is_ok()
-        && f.implementations.iter().all(|&(_, i)| i < 8 && implementations & (1 << i) != 0)
+        && f.implementations.iter().all(|&(_, i)| i < 8 && implementations & (1 << i) != 0))
+    {
+        return false;
+    }
+    // Every record's section must be one the lit parts hold: the pass
+    // draws parts by section, so another's items would go undrawn.
+    if let Some(section) = set.missing_section(f.definition, f.implementations.iter().map(|&(s, _)| s)) {
+        let mut logged = MISSING_SECTIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if logged.get_or_insert_with(HashSet::new).insert((f.definition as u16, section)) {
+            eprintln!(
+                "native-objects: {}: definition {:#010x}'s records draw section {section}, which none of its native parts come from; its objects stay on D3D while they do (logged once per section)",
+                set.map, f.definition
+            );
+        }
+        return false;
+    }
+    true
 }
 
 /// What draws the objects: boot's glue over the GPU models and the device.
