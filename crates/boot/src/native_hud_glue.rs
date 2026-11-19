@@ -234,6 +234,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             Err(r) => refused(*r),
         }
         let what = match &plan {
+            _ if self.limit.is_none() => String::new(),
             Ok(b) => format!(
                 "batch at {record:#010x} over {:#010x} ({:?})",
                 b.bitmap.at, b.blend
@@ -245,6 +246,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn screen_quad(&self, mem: &mut dyn GuestMemory, _corners: u32) -> bool {
+        if self.limit.is_none() {
+            return false;
+        }
         let m = Ro(mem);
         // `0x000363a0` draws nothing while this word is set.
         if m.read_u32(hud::QUADS_OFF & !3)
