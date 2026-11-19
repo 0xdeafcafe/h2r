@@ -1,8 +1,8 @@
 //! Synthetic only. The coordinator runs this; no retail assets or game.
 #![cfg(feature = "gpu")]
 use native_render::particle_gpu::*;
-use native_render::particles::{DrawIdentity, QUAD_INDICES, Vertex};
-use shaders::vsh::encode::{Inst, Operand as O, program};
+use native_render::particles::{DrawIdentity, Vertex, QUAD_INDICES};
+use shaders::vsh::encode::{program, Inst, Operand as O};
 use shaders::{psh, vsh};
 
 const SIZE: u32 = 64;
@@ -93,6 +93,19 @@ fn admission_refuses_partial_geometry_unknown_depth_and_bad_clip() {
     bad = s;
     bad.identity.generation = 0;
     assert_eq!(bad.validate(), Err(Refused::Identity));
+}
+
+#[test]
+fn weather_lines_require_pairs_and_points_remain_unadmitted() {
+    let mut s = snapshot(1, 4., [1.; 4]);
+    s.primitive.topology = wgpu::PrimitiveTopology::LineList;
+    s.indices = vec![0, 1, 2, 3];
+    assert_eq!(s.validate(), Ok(()));
+    s.indices.pop();
+    assert_eq!(s.validate(), Err(Refused::Geometry));
+    s.indices.push(3);
+    s.primitive.topology = wgpu::PrimitiveTopology::PointList;
+    assert!(s.validate().is_err());
 }
 
 #[test]

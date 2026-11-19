@@ -153,6 +153,7 @@ pub enum Refused {
     Target,
     Scissor,
     Geometry,
+    Effect(&'static str),
     State,
     Texture(usize),
     Shader(String),
@@ -186,12 +187,15 @@ impl ImmediateDrawSnapshot {
             .as_ref()
             .map_or(self.vertices.len(), RawVertices::vertex_count);
         let strip = self.primitive.topology == wgpu::PrimitiveTopology::TriangleStrip;
+        let lines = self.primitive.topology == wgpu::PrimitiveTopology::LineList;
         if vertex_count == 0
             || vertex_count > 65536
             || self.indices.is_empty()
             || self.indices.len() > 393216
             || if strip {
                 self.indices.len() < 3
+            } else if lines {
+                !self.indices.len().is_multiple_of(2)
             } else {
                 !self.indices.len().is_multiple_of(3)
             }
@@ -199,7 +203,7 @@ impl ImmediateDrawSnapshot {
         {
             return Err(Refused::Geometry);
         }
-        if (!strip && self.primitive.topology != wgpu::PrimitiveTopology::TriangleList)
+        if (!strip && !lines && self.primitive.topology != wgpu::PrimitiveTopology::TriangleList)
             || self.primitive.strip_index_format != strip.then_some(wgpu::IndexFormat::Uint32)
             || self.primitive.polygon_mode != wgpu::PolygonMode::Fill
             || self.primitive.conservative

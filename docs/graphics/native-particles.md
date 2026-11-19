@@ -1,9 +1,10 @@
 # Native particles and effect geometry
 
 Status: particles, beam emissions, generated contrails and the researched
-four-vertex effect builder are connected to `d3d::DrawAdmission`, behind
+four-vertex effect builder, lens reflections, volume/trail billboards and
+weather layers/lines are connected to `d3d::DrawAdmission`, behind
 `impl.render.native_particles` (off by default). The handoff commit
-`2fe68835` was merged, not rebased. **No cargo, build or game run was
+`2fe68835` and subsequent contract `2a61f863` were merged, not rebased. **No cargo, build or game run was
 performed by this lane.** Source checks and synthetic tests are supplied;
 coverage, pixel parity and speedup remain coordinator checks.
 
@@ -64,9 +65,8 @@ work only; it does not remove the per-particle property evaluation.
   `0x0015743d` uses the same `0x0023ed30` emitter as particles. They share
   the particle decoder and admission without skipping the beam parents.
 - Other effect builders and unsupported declarations remain D3D-owned.
-  In particular, this does not claim native coverage of every handler
-  reached through `0x00179880` (lens/MGS2/tdtl). Their draw ownership is not
-  established by the researched leaf calls above.
+  The additional lens/MGS2/tdtl leaves and remaining refusals are catalogued
+  below; admission is per draw, never an entire effect-event handler.
 
 ## Bound admission contract
 
@@ -74,7 +74,7 @@ work only; it does not remove the per-particle property evaluation.
 `ImmediateAdmission` host and `DrawAdmission` implementation. When the
 switch is off it installs neither, avoiding extra D3D snapshot work.
 
-The hooks only observe; six context-only points have no Rust continuation:
+The original six hooks only observe, with no Rust continuation:
 particle entry, publication (`0x0023ef77`) and epilogue (`0x0023ef79`), and
 dynamic entry, post-builder/pre-publication (`0x0004b286`) and epilogue
 (`0x0004b2a3`). At entry the decoder captures the producer inputs. Before
@@ -162,7 +162,7 @@ checks refusal of a changed attachment identity. It skips if no GPU
 adapter is available; report that as a skip. Pure tests cover dynamic
 register assignment, colour channel order, z/w reset, NaN/signed zero,
 missing memory, alias/overflow refusal, clip/depth mismatch and malformed
-geometry. The feature test requires six render-safe observer points and
+geometry. The feature test requires nineteen render-safe observer points and
 none on
 `0x00174420`.
 
@@ -209,3 +209,61 @@ unrun, for the coordinator. The two-copy transactional behavior is the
 merged handoff contract, exercised by its `external_pass` tests; this lane
 adds source-geometry pairing, raw strip upload/readback, final-latch/W-clip
 and callback-preservation tests.
+
+## Additional immediate effect leaves
+
+The adapter also owns narrowly scoped immediate draws. These use the same
+`DrawAdmission` and two-copy reservation as particles. On each leaf's END
+boundary it drains previous published work with no owner, arms one draw,
+then drains/cancels at the next instruction. It never skips the leaf or its
+parent. For the two shared billboard emitters the saved return address must
+also match a researched caller; another caller gives `UnownedCaller`.
+
+| Producer | Researched path | Admission |
+| --- | --- | --- |
+| Lens-flare reflections | `0x0002e9e0`, call `0x0002f247` to `0x000480a0` | Four-vertex triangle fan; saved caller `0x0002f24c` |
+| Light volumes (`MGS2`) | Sorted handler `0x0004f010` → `0x0004f7e0` → `0x000480a0` or `0x000484b0` | Four-vertex triangle fan; saved callers `0x0004fddd` / `0x0004fd9d` |
+| Light trails (`tdtl`) | Sorted handler `0x000508d0` → `0x0004f7e0` | Same billboards, preserving every trail update and material change |
+| Weather layer | `0x00037a60` | Four-vertex quad strip |
+| Weather particle lines | `0x000391f0`, resolved LineList | Complete line pairs, bounded at 65,536 vertices |
+| Weather particle points | Same helper, resolved PointList | `WeatherPointRasterization`: point size/expansion is not represented by this renderer |
+
+Boundary pairs (before END / after END) are `0x00048497/0x0004849c`,
+`0x00048ae5/0x00048aea`, and `0x00038342/0x00038347`. Weather particles
+write END inline: observe before its put publication at `0x000396f7`, then
+finish at `0x000396f9`. Early-out paths never arm. The saved-caller stack
+offsets are `+0x24` and `+0x30` for the two billboard emitters.
+
+Admission requires a single 256-byte immediate stream with unique Float4
+attributes at `16 * register`, matching the resolved shader input mask,
+and position register zero present. `ImmediateDeclaration` and
+`ImmediateGeometry` identify malformed/unproved inputs. Written bits are
+copied exactly; unwritten attributes come from the resolved vertex defaults.
+The weather quad-strip winding is `(0,1,3),(0,3,2)`. Line primitives use the
+same shader/state translation as D3D and cannot enter the triangle pipeline.
+All shader, texture, target, scissor and state preflight restrictions above
+still apply. Failure on either copy retains the original draw.
+
+This assumes the resolved immediate stream is the authoritative output of
+the guest's geometry calculation. Unlike the particle emission decoder,
+this path does not independently re-evaluate billboard/weather arithmetic.
+Compare diagnostics validate scope, declaration, primitive, count and
+resolved resources; they do **not** establish arithmetic or pixel parity.
+Each of the four sites gets its own `H2_NATIVE_PARTICLES_COMPARE=N` budget.
+
+The updated handoff contract prepares every live copy before recording
+any. Particle passes retain one prepared entry per Reference/Display copy
+and remove only the matching entry when recording. This is required at
+2x and whenever both views are awake.
+
+Synthetic coverage adds `effect_immediate::` tests for winding, caller
+allowlisting, NaN/signed-zero preservation, defaults and point/odd-line
+refusals; boot tests cover declaration and input-mask mismatches. The GPU
+suite also checks line-pair validation. These tests are written, not run:
+
+```sh
+cargo test -p native-render --no-default-features --lib effect_immediate::
+cargo test -p native-render --test particles_gpu
+cargo test -p feature --test native_particles
+cargo test -p boot native_particles
+```

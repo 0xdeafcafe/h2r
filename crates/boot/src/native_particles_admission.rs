@@ -12,6 +12,7 @@ use engine::memory::GuestMemory;
 use feature::native_particles::{Call, Host, Mode, Producer};
 use gfx::vertex::{PrimitiveType, VertexDataType};
 use native_render::effect_geometry::{self, DynamicCall};
+use native_render::effect_immediate::{self, Site};
 use native_render::particle_gpu::*;
 use native_render::particles::{self, Declaration, DrawIdentity, Vertex};
 
@@ -21,12 +22,14 @@ use crate::native_lights_glue::DeviceMemory;
 enum Source {
     Particle(Call),
     Dynamic(DynamicCall, Vec<u8>),
+    Immediate(Site),
 }
 impl Source {
     fn producer(&self) -> Producer {
         match self {
             Self::Particle(_) => Producer::Particle,
             Self::Dynamic(..) => Producer::Dynamic,
+            Self::Immediate(site) => Producer::Immediate(*site),
         }
     }
 }
@@ -80,6 +83,18 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
     }
     fn arm_dynamic(&self, _: &mut dyn GuestMemory, call: &DynamicCall, mode: Mode) -> bool {
         self.arm(Source::Dynamic(*call, Vec::new()), mode)
+    }
+    fn arm_effect(&self, mem: &mut dyn GuestMemory, site: Site, mode: Mode) -> bool {
+        self.arm(Source::Immediate(site), mode);
+        // All vertices are published, but END is not. Drain prior work
+        // without ownership, then own only this leaf's completed draw.
+        self.publish(mem, Producer::Immediate(site), 0);
+        self.admission
+            .scope
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .issuing
+            .is_some()
     }
     fn publish(&self, mem: &mut dyn GuestMemory, producer: Producer, data: u32) {
         let mut device = self.device.lock().unwrap_or_else(|e| e.into_inner());
@@ -172,6 +187,36 @@ fn geometry(
         return Err(Refused::Geometry);
     }
     match source {
+        Source::Immediate(site) => {
+            if stream.stride != 256 {
+                return Err(Refused::Effect("ImmediateDeclaration"));
+            }
+            let mut written = 0u16;
+            for a in &layout.attributes {
+                let r = a.register.0;
+                if r >= 16
+                    || a.data_type != VertexDataType::Float4
+                    || a.offset != u32::from(r) * 16
+                    || written & (1 << r) != 0
+                {
+                    return Err(Refused::Effect("ImmediateDeclaration"));
+                }
+                written |= 1 << r;
+            }
+            if written != draw.shader.provided_inputs {
+                return Err(Refused::Effect("ImmediateDeclaration"));
+            }
+            let (vertices, indices) = effect_immediate::decode(
+                *site,
+                draw.primitive.xbox_value(),
+                draw.vertex_count,
+                &stream.data,
+                written,
+                draw.shader.vertex_defaults,
+            )
+            .map_err(|e| Refused::Effect(e.name()))?;
+            Ok((vertices, None, indices))
+        }
         Source::Particle(call) => {
             let [a] = layout.attributes.as_slice() else {
                 return Err(Refused::Geometry);
@@ -286,7 +331,19 @@ impl DrawAdmission for Admission {
             );
             return None;
         }
-        let (vertices, raw_vertices, indices) = result.ok()?;
+        let (vertices, raw_vertices, indices) = match result {
+            Ok(geometry) => geometry,
+            Err(reason) => {
+                static LOGGED: AtomicU64 = AtomicU64::new(0);
+                if LOGGED.fetch_add(1, Ordering::Relaxed) < 32 {
+                    eprintln!(
+                        "native-particles-refused: producer={:?} reason={reason:?}",
+                        pending.source.producer()
+                    );
+                }
+                return None;
+            }
+        };
         if snapshot.color_header == 0
             || snapshot.depth_header == 0
             || snapshot.draw.target.depth_format.is_none()
@@ -631,6 +688,41 @@ mod tests {
             admission.admit(&snapshot(&draw)).is_none(),
             "a later identical quad is not owned"
         );
+    }
+    #[test]
+    fn immediate_effect_requires_exact_register_declaration_and_rasterization() {
+        let (mut draw, _) = particle();
+        let source = Source::Immediate(Site::WeatherLayer);
+        draw.primitive = PrimitiveType::QuadStrip;
+        draw.layout.streams[0].stride = 256;
+        draw.layout.streams[0].attributes[0].data_type = VertexDataType::Float4;
+        draw.streams[0] = StreamBytes {
+            data: vec![0; 1024].into(),
+            stride: 256,
+        };
+        let (v, raw, indices) = geometry(&draw, &source).unwrap();
+        assert!(raw.is_none());
+        assert_eq!(v[0].registers[3], draw.shader.vertex_defaults[3]);
+        assert_eq!(indices, [0, 1, 3, 0, 3, 2]);
+        draw.layout.streams[0].attributes[0].offset = 16;
+        assert!(matches!(
+            geometry(&draw, &source),
+            Err(Refused::Effect("ImmediateDeclaration"))
+        ));
+        draw.layout.streams[0].attributes[0].offset = 0;
+        draw.primitive = PrimitiveType::PointList;
+        assert!(matches!(
+            geometry(&draw, &Source::Immediate(Site::WeatherParticles)),
+            Err(Refused::Effect("WeatherPointRasterization"))
+        ));
+        draw.primitive = PrimitiveType::LineList;
+        let (_, _, indices) = geometry(&draw, &Source::Immediate(Site::WeatherParticles)).unwrap();
+        assert_eq!(indices, [0, 1, 2, 3]);
+        draw.shader.provided_inputs |= 1 << 3;
+        assert!(matches!(
+            geometry(&draw, &Source::Immediate(Site::WeatherParticles)),
+            Err(Refused::Effect("ImmediateDeclaration"))
+        ));
     }
     #[test]
     fn raw_ribbon_bytes_and_live_register_mapping_must_match() {

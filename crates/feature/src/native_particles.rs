@@ -59,6 +59,7 @@ pub const DYNAMIC_END: Point = Point::new(
 pub enum Producer {
     Particle,
     Dynamic,
+    Immediate(native_render::effect_immediate::Site),
 }
 
 pub fn on(switches: &crate::Switches) -> bool {
@@ -85,11 +86,17 @@ pub trait Host: Send + Sync {
     /// or on any state/order/geometry mismatch. No prefix may be dropped.
     fn arm(&self, mem: &mut dyn GuestMemory, call: &Call, mode: Mode) -> bool;
     fn arm_dynamic(&self, mem: &mut dyn GuestMemory, call: &DynamicCall, mode: Mode) -> bool;
+    fn arm_effect(
+        &self,
+        mem: &mut dyn GuestMemory,
+        site: native_render::effect_immediate::Site,
+        mode: Mode,
+    ) -> bool;
     fn publish(&self, mem: &mut dyn GuestMemory, producer: Producer, data: u32);
     fn finish(&self, mem: &mut dyn GuestMemory, producer: Producer);
 }
 
-static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
+pub(crate) static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static DYNAMIC_CALLS: AtomicU64 = AtomicU64::new(0);
 static DECODED: AtomicU64 = AtomicU64::new(0);
@@ -256,6 +263,7 @@ impl Feature for NativeParticles {
                 })
                 .context_only();
         }
+        crate::native_effects::build(b);
         b.snapshot(crate::SnapshotPolicy::Stateless);
         Ok(())
     }

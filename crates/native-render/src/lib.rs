@@ -20,6 +20,7 @@
 pub mod camera;
 pub mod cull;
 pub mod effect_geometry;
+pub mod effect_immediate;
 #[cfg(feature = "gpu")]
 pub mod glow;
 #[cfg(feature = "gpu")]
