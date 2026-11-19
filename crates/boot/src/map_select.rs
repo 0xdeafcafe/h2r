@@ -19,9 +19,7 @@
 //! list from the disc, then each content package's `patch.lvl`, as 1.0
 //! fills the list itself (`0x19c120`, docs/game/map-pack.md 8.1). It is
 //! read again when a package is installed while the game runs
-//! ([`packages_changed`]), and the next Select Map follows; the slots of
-//! the maps packages replace take the packages' names and pictures
-//! ([`crate::mod_slots`]) after each list refresh and after such a change.
+//! ([`packages_changed`]), and the game refreshes its content slots.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -147,18 +145,11 @@ pub struct Map {
     pub sort: i32,
     /// Where the game loads it from (slot `+0xb4c`).
     pub path: String,
-    /// A disc map a package in `<data>/maps` replaces: the disc's own name
-    /// (the slot's), `name` being the package's ([`Catalogue::with_mods`]).
-    pub replaces: Option<String>,
 }
 
 impl Map {
-    /// [`category_of`] its path, but Mods for a disc map a package replaces.
     pub fn category(&self) -> Category {
-        match self.replaces {
-            Some(_) => Category::Mods,
-            None => category_of(&self.path),
-        }
+        category_of(&self.path)
     }
 
     /// The map file's name: the path's basename, lower case.
@@ -186,6 +177,7 @@ impl Map {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Catalogue {
     groups: Vec<(Category, Vec<Map>)>,
+    overflow: usize,
 }
 
 impl Catalogue {
@@ -219,49 +211,44 @@ impl Catalogue {
                 (!maps.is_empty()).then_some((c, maps))
             })
             .collect();
-        Catalogue { groups }
+        Catalogue {
+            groups,
+            overflow: 0,
+        }
     }
 
-    /// [`Catalogue::new`], with the disc maps a package replaces
-    /// (`mods`: map file name, the package's name) listed under Mods by
-    /// the package's name. The vfs serves one map per name
-    /// (docs/game/maps.md §7, "Choice rule"), so while a package is chosen
-    /// for a disc map its slot loads the package, and the disc's own map
-    /// can't be offered beside it. A package on a Map Pack base replaces
-    /// the Map Pack map's slot the same way (the vfs serves it over the
-    /// installed copy), unless the disc has a map of that name.
-    pub fn with_mods(maps: impl IntoIterator<Item = Map>, mods: &[(String, String)]) -> Self {
-        let maps: Vec<Map> = maps.into_iter().collect();
-        let on_disc = |file: &str| {
-            maps.iter()
-                .any(|m| category_of(&m.path) == Category::Halo2 && m.file() == file)
-        };
-        let replaced: Vec<Option<String>> = maps
-            .iter()
-            .map(|m| {
-                let file = m.file();
-                let replaceable = match category_of(&m.path) {
-                    Category::Halo2 => true,
-                    Category::MapPack => !on_disc(&file),
-                    _ => false,
-                };
-                replaceable
-                    .then(|| mods.iter().find(|(f, _)| f.eq_ignore_ascii_case(&file)))
-                    .flatten()
-                    .map(|(_, package)| package.clone())
-            })
-            .collect();
-        Self::new(maps.into_iter().zip(replaced).map(|(mut m, package)| {
-            if let Some(package) = package {
-                m.replaces = Some(std::mem::replace(&mut m.name, package));
-            }
-            m
-        }))
+    pub fn with_overflow(mut self, overflow: usize) -> Self {
+        self.overflow = overflow;
+        self
     }
 
-    /// The categories with maps, in order.
+    fn category_label(&self, c: Category) -> String {
+        if c == Category::Mods && self.overflow != 0 {
+            return format!("Mods ({} mods not shown, list full)", self.overflow);
+        }
+        c.label().to_owned()
+    }
+
     pub fn categories(&self) -> Vec<Category> {
-        self.groups.iter().map(|(c, _)| *c).collect()
+        Category::ALL
+            .into_iter()
+            .filter(|&c| !self.maps(c).is_empty() || (c == Category::Mods && self.overflow != 0))
+            .collect()
+    }
+
+    fn category_id(&self, c: Category) -> Option<u32> {
+        if let Some(map) = self.maps(c).first() {
+            return Some(map.id);
+        }
+        // The retail dialog draws each category from a real slot. A full,
+        // empty Mods category uses a row nobody else represents.
+        if c == Category::Mods && self.overflow != 0 {
+            return self
+                .groups
+                .iter()
+                .find_map(|(_, maps)| maps.get(1).map(|map| map.id));
+        }
+        None
     }
 
     /// Category `c`'s maps, in order (none when it is empty).
@@ -291,7 +278,7 @@ impl Catalogue {
             (IDS.id(MAPS_FOOTER), footer_legend(&prompts())),
         ];
         for c in Category::ALL {
-            s.push((IDS.id(CATEGORY_LABELS + c.index()), c.label().to_string()));
+            s.push((IDS.id(CATEGORY_LABELS + c.index()), self.category_label(c)));
         }
         for (n, m) in self.all().enumerate() {
             s.push((IDS.id(MAP_LABELS + n as u32), m.name.clone()));
@@ -321,7 +308,6 @@ pub fn map_of_slot(slot: &[u8]) -> Option<Map> {
         name: l.name,
         sort: l.sort,
         path: l.path,
-        replaces: None,
     })
 }
 
@@ -343,7 +329,6 @@ pub fn map_of_package(dir: &Path) -> Option<Map> {
         name: e.names[0].clone(),
         sort: e.sort,
         path: format!("t:\\$C\\{offer}\\{base}"),
-        replaces: None,
     })
 }
 
@@ -351,36 +336,24 @@ pub fn map_of_package(dir: &Path) -> Option<Map> {
 /// package's record under `content_root` (`TDATA\4D530064\$c`), in
 /// directory order.
 pub fn read(slots: &[Vec<u8>], content_root: &Path) -> Catalogue {
-    read_with_mods(slots, content_root, &[])
-}
-
-/// [`read`], with the disc maps packages replace listed under Mods
-/// ([`Catalogue::with_mods`]).
-pub fn read_with_mods(
-    slots: &[Vec<u8>],
-    content_root: &Path,
-    mods: &[(String, String)],
-) -> Catalogue {
     let mut maps: Vec<Map> = slots.iter().filter_map(|s| map_of_slot(s)).collect();
     let mut dirs: Vec<_> = std::fs::read_dir(content_root)
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     dirs.sort();
     maps.extend(dirs.iter().filter_map(|d| map_of_package(d)));
-    Catalogue::with_mods(maps, mods)
+    Catalogue::new(maps)
 }
 
 // ---- the screens ----
 
 /// What the two screens share: the catalogue, the category picked, and
-/// the map pressed. The catalogue (and what the replacing packages show on
-/// their maps' slots, [`crate::mod_slots`]) is read at boot and again when
+/// the map pressed. The catalogue is read at boot and again when
 /// a package is installed while the game runs ([`packages_changed`]); each
 /// change bumps [`Selection::generation`].
 #[derive(Default)]
 pub struct Selection {
     catalogue: Mutex<Arc<Catalogue>>,
-    fills: Mutex<Arc<Vec<crate::mod_slots::Fill>>>,
     generation: std::sync::atomic::AtomicU64,
     /// A content package (a new map) was added or removed this session:
     /// the game's own content scan runs again before the list is next
@@ -392,12 +365,8 @@ pub struct Selection {
 
 impl Selection {
     pub fn new(catalogue: Catalogue) -> Self {
-        Self::with_fills(catalogue, Vec::new())
-    }
-    pub fn with_fills(catalogue: Catalogue, fills: Vec<crate::mod_slots::Fill>) -> Self {
-        Selection {
+        Self {
             catalogue: Mutex::new(Arc::new(catalogue)),
-            fills: Mutex::new(Arc::new(fills)),
             ..Default::default()
         }
     }
@@ -405,15 +374,9 @@ impl Selection {
     pub fn catalogue(&self) -> Arc<Catalogue> {
         Arc::clone(&lock(&self.catalogue))
     }
-    /// What the replacing packages show on their maps' slots.
-    pub fn fills(&self) -> Arc<Vec<crate::mod_slots::Fill>> {
-        Arc::clone(&lock(&self.fills))
-    }
-    /// Read again: the new catalogue and fills, `content` when a content
-    /// package came or went.
-    pub fn set(&self, catalogue: Catalogue, fills: Vec<crate::mod_slots::Fill>, content: bool) {
+    /// Publish the refreshed catalogue and notify the game of changed offers.
+    pub fn set(&self, catalogue: Catalogue, content: bool) {
         *lock(&self.catalogue) = Arc::new(catalogue);
-        *lock(&self.fills) = Arc::new(fills);
         if content {
             self.content_changed
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -501,7 +464,7 @@ impl Describe for CategoryRows {
         let mut s = screen_spec(CATEGORIES, TITLE_TEXT, IDS.id(CATEGORIES_FOOTER));
         for c in self.0.catalogue().categories() {
             s.rows.push(
-                RowSpec::action(c.label())
+                RowSpec::action(&self.0.catalogue().category_label(c))
                     .press(Press::Open(MAPS.into()))
                     .ids(&[IDS.id(CATEGORY_LABELS + c.index())]),
             );
@@ -605,7 +568,7 @@ pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(
         Mode::Categories => cat
             .categories()
             .iter()
-            .filter_map(|&c| cat.maps(c).first().map(|m| (m.id, 0)))
+            .filter_map(|&c| cat.category_id(c).map(|id| (id, 0)))
             .collect(),
         Mode::Maps(c) => cat.maps(c).iter().map(|m| (m.id, flags(m.id))).collect(),
     }
@@ -766,29 +729,18 @@ impl Flow {
     }
 }
 
-/// UTF-16 labels in our memory: one 0x40-byte slot each (the slots' own
-/// name width, 32 units), the four categories first, then the maps.
-const LABEL_LEN: u32 = 0x40;
+/// Space for each category label, including the overflow notice.
+const LABEL_LEN: u32 = 0x80;
 
-/// The label a row shows instead of its slot's name: the category's in
-/// category mode, a package's name for a disc map it replaces. Its index
-/// in the label table, and the text.
 pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> {
-    match mode {
-        Mode::Categories => {
-            let c = cat
-                .categories()
-                .into_iter()
-                .find(|&c| cat.maps(c).first().is_some_and(|m| m.id == id))?;
-            Some((c.index(), c.label().to_string()))
-        }
-        Mode::Maps(_) => {
-            let n = cat.all().position(|m| m.id == id)?;
-            let m = cat.all().nth(n)?;
-            m.replaces.as_ref()?;
-            Some((4 + n as u32, m.name.clone()))
-        }
+    if mode != Mode::Categories {
+        return None;
     }
+    let category = cat
+        .categories()
+        .into_iter()
+        .find(|&c| cat.category_id(c) == Some(id))?;
+    Some((category.index(), cat.category_label(category)))
 }
 
 fn utf16z(text: &str) -> Vec<u8> {
@@ -812,27 +764,13 @@ pub struct MapSelect {
     pub sel: Arc<Selection>,
     pub flow: Arc<Flow>,
     pub slots: Arc<Slots>,
-    /// Our memory for a record the game applies (`mod_slots::map_scratch`);
-    /// `None`: the mods keep their maps' pictures.
-    pub scratch: Option<u32>,
+    pub live: Option<Arc<live_hle::Hle>>,
 }
 
-/// The replacing packages on their maps' slots, as this load has them
-/// ([`crate::mod_slots`]).
+/// Guards reentry when a tick resumes after refreshing the content slots.
 #[derive(Debug, Default)]
 pub struct Slots {
-    state: Mutex<crate::mod_slots::State>,
-    /// The [`Selection::generation`] the slots were last filled for.
-    filled: Mutex<Option<u64>>,
-    /// Our own call of the refresh is passing its hook.
     passing: std::sync::atomic::AtomicBool,
-}
-
-impl Slots {
-    /// The generation the slots were last filled for.
-    pub fn filled(&self) -> Option<u64> {
-        *lock(&self.filled)
-    }
 }
 
 /// Writes the array a Select Map in `mode` lists into our memory at
@@ -885,43 +823,24 @@ fn write_ours(
     }
 }
 
-/// Fills the loaded list's slots for the replacing packages
-/// ([`crate::mod_slots`]) and notes the generation filled.
-async fn refill(
-    cx: &engine::entry::Cx,
-    sel: &Selection,
-    slots: &Slots,
-    scratch: Option<u32>,
-    why: &str,
-) -> Result<(), EntryError> {
-    let generation = sel.generation();
-    let mut fills = sel.fills();
-    if scratch.is_none() {
-        // No memory for a record: names only, the maps' own pictures.
-        fills = Arc::new(
-            fills
-                .iter()
-                .map(|f| crate::mod_slots::Fill {
-                    preview: None,
-                    ..f.clone()
-                })
-                .collect(),
-        );
+/// Refresh in the main menu so a joining console can use its newly
+/// acquired map without opening Change Map.
+async fn refresh_slots(cx: &Cx, sel: &Selection) -> Result<(), EntryError> {
+    use crate::layout_glue::Gm;
+    let catalogue = sel.catalogue();
+    cx.write(|m| {
+        let mut m = crate::mod_slots::WriteGm(m);
+        let slots = crate::mod_slots::read_slots(&m);
+        for at in crate::mod_slots::obsolete(&slots, &catalogue) {
+            m.set_u32(at, u32::MAX);
+        }
+    });
+    cx.call(GuestCall::new(crate::mod_slots::CONTENT_SCAN))
+        .await?;
+    if let Some(array) = cx.read(|m| m.u32(LEVEL_ARRAY)).filter(|&a| a != 0) {
+        cx.call(GuestCall::new(crate::mod_slots::MP_ARRAY_BUILD).args([array]))
+            .await?;
     }
-    let found = cx.read(|m| crate::mod_slots::read_slots(&crate::layout_glue::ReadGm(m)));
-    *lock(&slots.filled) = Some(generation);
-    if found.is_empty() {
-        return Ok(());
-    }
-    let steps = crate::mod_slots::plan(&found, &fills, &mut lock(&slots.state));
-    if steps.is_empty() {
-        return Ok(());
-    }
-    let done = crate::mod_slots::run(cx, steps, scratch.unwrap_or(0)).await?;
-    eprintln!(
-        "map select: mods on their maps ({why}): {} named, {} pictures, {} put back, {} failed",
-        done.texts, done.pictures, done.restored, done.failed
-    );
     Ok(())
 }
 
@@ -935,8 +854,8 @@ impl feature::Feature for MapSelect {
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use engine::points::{
-            MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE, MP_LEVEL_ARRAY, MP_LEVEL_NAME,
-            MP_LEVEL_REFRESH, SCREEN_REQUEST,
+            GAME_TICK, LOBBY_SET_MAP, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
+            MP_LEVEL_ARRAY, MP_LEVEL_NAME, SCREEN_REQUEST,
         };
         use feature::Flow as F;
         let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
@@ -959,47 +878,51 @@ impl feature::Feature for MapSelect {
             },
         );
 
-        // The lists were built again (a main menu load): the replacing
-        // packages' texts and pictures onto their maps' slots.
-        let scratch = self.scratch;
-        let (slots, sel) = (Arc::clone(&self.slots), Arc::clone(&self.sel));
-        b.raw().before(
-            &MP_LEVEL_REFRESH,
-            "the mods' names and pictures onto their maps",
-            move |c| {
-                if slots
-                    .passing
-                    .swap(false, std::sync::atomic::Ordering::SeqCst)
-                {
+        if let Some(hle) = self.live.clone() {
+            b.raw()
+                .observe_after(&LOBBY_SET_MAP, "advertise the selected map", move |o| {
+                    let guest = o.guest();
+                    if crate::coop_probe::read_session(&*guest)
+                        .is_some_and(|s| s.live() && s.is_host() && !s.is_campaign())
+                    {
+                        hle.lobby_map_changed(&guest);
+                    }
+                });
+        }
+
+        let (sel, slots) = (Arc::clone(&self.sel), Arc::clone(&self.slots));
+        b.raw()
+            .before(&GAME_TICK, "refresh installed map offers", move |c| {
+                use std::sync::atomic::Ordering;
+                if slots.passing.swap(false, Ordering::SeqCst) {
                     return Ok(F::Continue);
                 }
-                let (slots, sel) = (Arc::clone(&slots), Arc::clone(&sel));
+                let main_menu = {
+                    let mem = c.ctx.runtime().memory();
+                    crate::mod_slots::in_main_menu(&crate::layout_glue::ReadGm(&*mem))
+                        && mem.u32(LEVEL_ARRAY).unwrap_or(0) != 0
+                };
+                if !main_menu || !sel.take_content_changed() {
+                    return Ok(F::Continue);
+                }
+                let (sel, slots) = (Arc::clone(&sel), Arc::clone(&slots));
                 c.answer_async(move |cx| -> engine::entry::EntryFuture {
                     Box::pin(async move {
-                        slots
-                            .passing
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                        cx.call(GuestCall::new(MP_LEVEL_REFRESH.base)).await?;
-                        lock(&slots.state).reset();
-                        // A content package from this session is in the
-                        // scan the refresh just ran.
-                        sel.take_content_changed();
-                        refill(&cx, &sel, &slots, scratch, "the lists were built").await?;
-                        Ok(engine::entry::Ret::new(0, 0))
+                        refresh_slots(&cx, &sel).await?;
+                        slots.passing.store(true, Ordering::SeqCst);
+                        let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
+                        Ok(engine::entry::Ret::new(r.eax, 0))
                     })
                 })
-            },
-        );
+            })
+            .after_feature(crate::skulls_custom::FEATURE)
+            .before_feature(crate::coop_probe::ID)
+            .before_feature(crate::coop_probe::LIVE_ID)
+            .before_feature(crate::coop_live::FEATURE)
+            .before_feature("sim-metrics");
 
-        // The list's array: ours for a Select Map of ours. Packages changed
-        // since the slots were last filled (one was installed while the game
-        // runs): the slots first, and the game's own content scan and
-        // array build when a new map came or went.
-        let (flow, sel, slots) = (
-            Arc::clone(&self.flow),
-            Arc::clone(&self.sel),
-            Arc::clone(&self.slots),
-        );
+        // The list's array for a Select Map of ours.
+        let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
         let region_list = region;
         b.raw().before(
             &MP_LEVEL_ARRAY,
@@ -1015,39 +938,6 @@ impl feature::Feature for MapSelect {
                     }
                 }
                 let mode = flow.building(c.cpu.esi);
-                let stale = slots.filled() != Some(sel.generation());
-                if stale {
-                    let (sel, slots) = (Arc::clone(&sel), Arc::clone(&slots));
-                    return c.answer_async(move |cx| -> engine::entry::EntryFuture {
-                        Box::pin(async move {
-                            if sel.take_content_changed() {
-                                cx.call(GuestCall::new(crate::mod_slots::CONTENT_SCAN))
-                                    .await?;
-                                let array = cx.read(|m| m.u32(LEVEL_ARRAY)).unwrap_or(0);
-                                if array != 0 {
-                                    cx.call(
-                                        GuestCall::new(crate::mod_slots::MP_ARRAY_BUILD)
-                                            .args([array]),
-                                    )
-                                    .await?;
-                                }
-                                eprintln!("map select: the game read its content packages again");
-                            }
-                            refill(&cx, &sel, &slots, scratch, "packages changed").await?;
-                            let ours = mode.and_then(|mode| {
-                                cx.write(|m| write_ours(m, &sel, mode, region_list))
-                            });
-                            let eax = match ours {
-                                Some(at) => at,
-                                // Not ours: the retail array, built again
-                                // (this call passes the hook: it returns
-                                // elsewhere than the list's constructor).
-                                None => cx.call(GuestCall::new(MP_LEVEL_ARRAY.base)).await?.eax,
-                            };
-                            Ok(engine::entry::Ret::new(eax, 0))
-                        })
-                    });
-                }
                 let Some(mode) = mode else {
                     return Ok(F::Continue);
                 };
@@ -1071,33 +961,32 @@ impl feature::Feature for MapSelect {
                     .store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
             });
 
-        // A row's name: the category's, or a replacing package's.
+        // Category rows supply their own labels. Map rows use their slot.
         let (flow, sel) = (Arc::clone(&self.flow), Arc::clone(&self.sel));
-        b.raw()
-            .before(&MP_LEVEL_NAME, "category and package names", move |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                let mut mem = rt.memory();
-                if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
-                    return Ok(F::Continue);
-                }
-                let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
-                let Some(mode) = flow.mode_of(handler) else {
-                    return Ok(F::Continue);
-                };
-                let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
-                    return Ok(F::Continue);
-                };
-                let Some((n, text)) = row_label(&sel.catalogue(), mode, id) else {
-                    return Ok(F::Continue);
-                };
-                let at = region + LABELS_AT + n * LABEL_LEN;
-                if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
-                    return Ok(F::Continue);
-                }
-                drop(mem);
-                c.cpu.eax = at;
-                c.ret(4).map(F::Return)
-            });
+        b.raw().before(&MP_LEVEL_NAME, "category names", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            if mem.u32(c.cpu.esp).ok() != Some(ROW_NAME_RET) {
+                return Ok(F::Continue);
+            }
+            let handler = flow.drawing.load(std::sync::atomic::Ordering::SeqCst);
+            let Some(mode) = flow.mode_of(handler) else {
+                return Ok(F::Continue);
+            };
+            let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
+                return Ok(F::Continue);
+            };
+            let Some((n, text)) = row_label(&sel.catalogue(), mode, id) else {
+                return Ok(F::Continue);
+            };
+            let at = region + LABELS_AT + n * LABEL_LEN;
+            if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
+                return Ok(F::Continue);
+            }
+            drop(mem);
+            c.cpu.eax = at;
+            c.ret(4).map(F::Return)
+        });
 
         // A press: a category pushes its maps; a map goes on as retail and
         // the categories close once its screen is freed.
@@ -1161,7 +1050,7 @@ impl feature::Feature for MapSelect {
                         let Some(cat) = catalogue
                             .categories()
                             .into_iter()
-                            .find(|&k| catalogue.maps(k).first().is_some_and(|m| m.id == id))
+                            .find(|&k| catalogue.category_id(k) == Some(id))
                         else {
                             return c.ret(8).map(F::Return);
                         };
@@ -1242,20 +1131,19 @@ const MAP_SCREEN_FREE_AT: u32 = 0x002b_b384;
 /// with one category or none Change Map opens the retail list until a
 /// package installed while the game runs makes a second). Returns whether
 /// they were added.
-pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry) -> anyhow::Result<bool> {
+pub fn install(
+    registry: &mut feature::Registry,
+    live: Option<Arc<live_hle::Hle>>,
+) -> anyhow::Result<bool> {
     let Some(sel) = PREPARED.get() else {
         return Ok(false);
     };
-    let scratch = crate::mod_slots::map_scratch(&mut rt.memory());
-    if scratch.is_none() {
-        eprintln!("map select: no memory for a mod's picture; mods keep their maps' pictures");
-    }
     let added = registry
         .add(&MapSelect {
             sel: Arc::clone(sel),
             flow: Arc::default(),
             slots: Arc::default(),
-            scratch,
+            live,
         })
         .map_err(|e| anyhow::anyhow!("map select: {e}"))?;
     if !added {
@@ -1269,11 +1157,15 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry) -> anyho
 static PREPARED: OnceLock<Arc<Selection>> = OnceLock::new();
 static SOURCES: OnceLock<Sources> = OnceLock::new();
 
-/// Keeps the boot's catalogue (and what the replacing packages show on
-/// their maps) for [`install`] and [`packages_changed`]. With one category
-/// or none, Change Map opens the retail list ([`Selection::active`]).
-pub fn prepare(catalogue: Catalogue, fills: Vec<crate::mod_slots::Fill>) -> Arc<Selection> {
-    let sel = Arc::new(Selection::with_fills(catalogue, fills));
+/// The selected map's content path, for a Live lobby advertisement.
+pub fn selected_path(id: u32) -> Option<String> {
+    let cat = PREPARED.get()?.catalogue();
+    let map = cat.all().find(|map| map.id == id)?;
+    crate::map_slots::slot_file(&format!("{}.map", map.path))
+}
+
+pub fn prepare(catalogue: Catalogue) -> Arc<Selection> {
+    let sel = Arc::new(Selection::new(catalogue));
     let _ = PREPARED.set(Arc::clone(&sel));
     sel
 }
@@ -1304,17 +1196,14 @@ impl Sources {
             .join(vfs::CONTENT_DIR)
     }
 
-    /// The catalogue and fills as the data directory has them now. With no
-    /// content package and no replacing package: an empty catalogue, the
-    /// disc unread. `Err` when the disc's slots can't be read.
-    pub fn read(&self) -> anyhow::Result<(Catalogue, Vec<crate::mod_slots::Fill>)> {
-        let fills = crate::mod_slots::replacing(&self.data_root);
+    /// Read the catalogue after registering the installed offers.
+    pub fn read(&self, overflow: usize) -> anyhow::Result<Catalogue> {
         let content_root = self.content_root();
         let any = std::fs::read_dir(&content_root)
             .map(|d| d.flatten().any(|e| e.path().join("patch.lvl").is_file()))
             .unwrap_or(false);
-        if !any && fills.is_empty() {
-            return Ok((Catalogue::default(), fills));
+        if !any && overflow == 0 {
+            return Ok(Catalogue::default());
         }
         let slots = {
             let mut cached = lock(&self.slots);
@@ -1323,37 +1212,8 @@ impl Sources {
             }
             cached.clone().unwrap_or_default()
         };
-        let mods: Vec<(String, String)> = fills
-            .iter()
-            .map(|f| (f.map.clone(), f.names[0].clone()))
-            .collect();
-        Ok((read_with_mods(&slots, &content_root, &mods), fills))
+        Ok(read(&slots, &content_root).with_overflow(overflow))
     }
-
-    /// The content packages' directories (their offers), to tell when a
-    /// new map came or went.
-    pub fn offers(&self) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(self.content_root())
-            .map(|d| {
-                d.flatten()
-                    .filter(|e| e.path().join("patch.lvl").is_file())
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect()
-            })
-            .unwrap_or_default();
-        v.sort();
-        v
-    }
-}
-
-/// The disc maps a package in `<data>/maps` replaces: `(map file name,
-/// package name)` for each name whose chosen package (the vfs's choice
-/// rule, `Library::choose`) isn't a derived (new) map.
-pub fn replacing_packages(data_root: &Path) -> Vec<(String, String)> {
-    crate::mod_slots::replacing(data_root)
-        .into_iter()
-        .map(|f| (f.map, f.names[0].clone()))
-        .collect()
 }
 
 fn summary(cat: &Catalogue) -> String {
@@ -1364,21 +1224,18 @@ fn summary(cat: &Catalogue) -> String {
         .join(", ")
 }
 
-/// Reads the list at boot (the disc's `mainmenu.map` slots, then the
-/// content packages under `<data>/disk/.../$c`, and the packages that
-/// replace disc maps) and [`prepare`]s it. Never fails: says why the retail
-/// list stays.
-pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> {
+/// Read the disc's multiplayer slots and the installed content offers at boot.
+pub fn prepare_at_boot(data_root: &Path, disc: &Path, overflow: usize) -> Option<Arc<Selection>> {
     use crate::new_maps::Disc as _;
     let disc = disc.to_path_buf();
     let sources = Sources::new(data_root, move || {
         crate::new_maps::IsoDisc::new(&disc).slots()
     });
-    let (cat, fills) = match sources.read() {
+    let cat = match sources.read(overflow) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("map select: mainmenu.map's map list unread ({e:#}); the retail list");
-            (Catalogue::default(), Vec::new())
+            Catalogue::default()
         }
     };
     match cat.categories().len() {
@@ -1386,14 +1243,10 @@ pub fn prepare_at_boot(data_root: &Path, disc: &Path) -> Option<Arc<Selection>> 
         _ => eprintln!("map select: by category ({})", summary(&cat)),
     }
     let _ = SOURCES.set(sources);
-    Some(prepare(cat, fills))
+    Some(prepare(cat))
 }
 
-/// A package was installed or chosen while the game runs (a download on
-/// the Mods screen, a join; `MapGate::on_installed`): new maps are
-/// installed as content packages (`crate::new_maps`), the catalogue and
-/// fills are read again, and the next Select Map (and the slots) follow.
-/// Runs on the caller's thread (the download's), never the game's.
+/// Rebuild the offers and catalogue on the download or removal thread.
 pub fn packages_changed(disc: &Path) {
     let (Some(sel), Some(sources)) = (PREPARED.get(), SOURCES.get()) else {
         return;
@@ -1403,28 +1256,13 @@ pub fn packages_changed(disc: &Path) {
     });
 }
 
-/// [`packages_changed`] over `sel` and `sources`, `new_maps` installing
-/// the new maps first.
-pub fn refresh(sel: &Selection, sources: &Sources, new_maps: impl FnOnce()) {
-    let before = sources.offers();
-    new_maps();
-    let content = sources.offers() != before;
-    match sources.read() {
-        Ok((cat, fills)) => {
-            eprintln!(
-                "map select: packages changed; {} ({} mods on their maps{})",
-                match cat.categories().len() {
-                    0 | 1 => "the retail list".to_string(),
-                    _ => format!("by category ({})", summary(&cat)),
-                },
-                fills.len(),
-                if content {
-                    ", content packages changed"
-                } else {
-                    ""
-                }
-            );
-            sel.set(cat, fills, content);
+/// Install and publish the updated set on the caller's thread.
+pub fn refresh(sel: &Selection, sources: &Sources, install: impl FnOnce() -> usize) {
+    let overflow = install();
+    match sources.read(overflow) {
+        Ok(cat) => {
+            eprintln!("map select: packages changed ({})", summary(&cat));
+            sel.set(cat, true);
         }
         Err(e) => eprintln!("map select: packages changed but the list is unread ({e:#})"),
     }
@@ -1444,14 +1282,12 @@ pub fn sample() -> Catalogue {
             name.to_lowercase(),
             name.to_lowercase()
         ),
-        replaces: None,
     };
     let package = |id: u32, offer: u32, name: &str, map: &str, sort: i32| Map {
         id,
         name: name.into(),
         sort,
         path: format!("t:\\$C\\4d530064{offer:08x}\\{map}"),
-        replaces: None,
     };
     let new_map = |id: u32, name: &str, map: &str| {
         package(id, content::map_list::offer_content(id), name, map, 1000)

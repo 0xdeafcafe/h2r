@@ -702,10 +702,9 @@ and the editor's playlist tool (`hopper_edit::model`) work the same way:
 What a playlist cannot do yet: **make a game play a custom map.** An
 entry is a map id and a variant; the format has no room for a `MapId`, and
 session setup (`0x00192e60`/`0x00192eb0`) picks an entry and loads
-`maps\<base>.map`. A pinned custom map is played only when the host
-already has it installed as that base map's active package (`active.toml`);
-the server then accepts the session's `map_id` (it is pinned), and joiners
-download it through `MapGate`. A host without it plays the base map. For a
+`maps\<base>.map`. A pin permits a custom content ID in the session
+advertisement. Custom games pick the package's separate slot under Mods.
+For a
 playlist entry to choose a custom map, three pieces are missing:
 
 1. **Data:** a per-entry binding kept by the server beside the file (for
@@ -713,8 +712,8 @@ playlist entry to choose a custom map, three pieces are missing:
    and replayed like `HopperPinsSet`), served with the pins.
 2. **Runtime:** a hook at the host's entry pick (after `0x00192eb0`
    chooses the entry, before the map load) that reads the binding, makes
-   the package ready through `MapGate` (download, base check) and serves it
-   for that load only, rather than the persistent `active.toml` choice.
+   the package ready through `MapGate` (download, base check) and selects
+   its content offer for that game.
 3. **Fallback:** what a host that cannot get the package does (play the
    base, or skip to another entry), and that every peer agrees before the
    load, since lockstep diverges on any byte.

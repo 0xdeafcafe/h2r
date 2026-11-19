@@ -849,7 +849,8 @@ Only the authenticated host may append events, signed with its registered key:
 
 - `SessionUpdated`: optional slots, attributes (full replacement), name, map,
   visibility, `map_id`, `skulls` or `variant_ext` (absent keeps the current
-  one; `skulls: []` turns them all off; a `variant_ext` replaces the last).
+  one). Use `clear_map_id: true` when a host returns to retail.
+  `skulls: []` turns them all off. A `variant_ext` replaces the last.
   A server from before `skulls` refuses an update that has it, so the HLE
   sends it only when the host's set changed; the same for `variant_ext`.
 - `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the

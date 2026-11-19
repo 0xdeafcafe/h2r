@@ -1047,6 +1047,11 @@ impl State {
     pub fn set_map_probe(&mut self, probe: Option<crate::sessions::MapProbe>) {
         self.sessions.set_map_probe(probe);
     }
+    pub fn lobby_map_changed(&mut self, guest: &Guest) {
+        let connection = self.session();
+        self.sessions
+            .lobby_map_changed(guest, self.service.as_ref(), connection.as_ref());
+    }
     pub fn set_skulls_probe(&mut self, probe: Option<crate::sessions::SkullsProbe>) {
         self.sessions.set_skulls_probe(probe);
     }

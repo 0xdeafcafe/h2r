@@ -5,6 +5,7 @@
 
 mod backend;
 mod campaign_maps;
+mod content_maps;
 mod dir_disc;
 mod disc;
 mod host;
@@ -20,6 +21,7 @@ mod write_behind;
 
 pub use backend::Backend;
 pub use campaign_maps::CampaignMapsBackend;
+pub use content_maps::{ContentMap, ContentMaps};
 pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
@@ -65,6 +67,8 @@ pub struct Config {
     /// Converted maps on the data partition served by a sandbox choice
     /// ([`VariantFiles`]); empty unless the boot registers some.
     pub variants: ContentVariants,
+    /// Independent paths for installed multiplayer packages.
+    pub content_maps: ContentMaps,
     /// Map packages (normally `<data>/maps`) served over the Multiplayer
     /// Map Pack's maps installed on the data partition
     /// ([`PackageBackend::over_map_pack`], docs/game/maps.md "Importing a
@@ -78,6 +82,7 @@ impl Config {
             title_id,
             utility_partition: 5,
             variants: ContentVariants::default(),
+            content_maps: ContentMaps::default(),
             map_packages: None,
         }
     }
@@ -158,6 +163,7 @@ pub type ChangeObserver = Box<dyn FnMut(&Changed) + Send>;
 pub struct Vfs {
     pub namespace: Namespace,
     mounts: Vec<Mount>,
+    content_maps: ContentMaps,
     handles: BTreeMap<u64, u64>,
     objects: BTreeMap<u64, OpenFile>,
     pending: HashSet<(usize, String)>,
@@ -179,7 +185,10 @@ impl Vfs {
         if !(3..=5).contains(&config.utility_partition) {
             return Err(Error::InvalidParameter);
         }
-        let mut vfs = Self::new();
+        let mut vfs = Self {
+            content_maps: config.content_maps.clone(),
+            ..Self::default()
+        };
         for partition in 1..=5 {
             let name = format!("Partition{partition}");
             let mut backend = HostBackend::new(
@@ -217,7 +226,13 @@ impl Vfs {
                             PackageBackend::over_map_pack(backend, library, config.title_id);
                         vfs.mount(&device, VariantFiles::new(packages, variants))?
                     }
-                    None => vfs.mount(&device, VariantFiles::new(backend, variants))?,
+                    None => vfs.mount(
+                        &device,
+                        VariantFiles::new(backend, variants).with_packages(
+                            config.content_maps.clone(),
+                            &config.data_root.join("maps"),
+                        ),
+                    )?,
                 }
             } else {
                 vfs.mount(&device, backend)?;
@@ -396,6 +411,18 @@ impl Vfs {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.map_id(&path)
     }
+    /// The device path of an installed package with this short name, when unique.
+    pub fn content_map_path(&self, name: &str) -> Option<String> {
+        let path = self.content_maps.path_for_name(name)?;
+        Some(format!("{DATA_DEVICE}\\{path}"))
+    }
+
+    /// The original map name used to group matches by base in telemetry.
+    pub fn content_base_name(&self, name: &str) -> Option<String> {
+        let path = self.content_maps.path_for_name(name)?;
+        Some(self.content_maps.get(&path)?.package.manifest.base.map)
+    }
+
     /// Look again at map packages (`<data>/maps`) on every mount, after
     /// one was installed or edited while the game runs: a map whose
     /// package changed is resolved again at its next open; a file open now

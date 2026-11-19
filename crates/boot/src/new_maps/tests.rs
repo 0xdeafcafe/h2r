@@ -21,6 +21,7 @@ impl Drop for Temp {
 struct FakeDisc {
     maps: Vec<&'static str>,
     slots: Vec<Vec<u8>>,
+    base_files: HashMap<String, vfs::HostFile>,
     preview: Option<Vec<u8>>,
     /// Panic on any read: for the retail-unchanged checks.
     untouchable: bool,
@@ -30,6 +31,9 @@ impl Disc for FakeDisc {
     fn has_map(&mut self, name: &str) -> Result<bool> {
         assert!(!self.untouchable, "the disc was read");
         Ok(self.maps.iter().any(|m| m.eq_ignore_ascii_case(name)))
+    }
+    fn map_file(&mut self, name: &str) -> Result<Option<vfs::HostFile>> {
+        Ok(self.base_files.get(&name.to_ascii_lowercase()).cloned())
     }
     fn slots(&mut self) -> Result<Vec<Vec<u8>>> {
         assert!(!self.untouchable, "the disc was read");
@@ -60,6 +64,9 @@ fn disc() -> FakeDisc {
         slots: vec![
             slot(1, "alpha", 0x3, [2; 16], 10),
             slot(2, "bravo", 0, [4; 16], 5),
+            empty.clone(),
+            empty.clone(),
+            empty.clone(),
             empty,
         ],
         preview: Some(vec![0x42; PREVIEW_LEN]),
@@ -83,6 +90,33 @@ fn content_root(data: &Path) -> PathBuf {
     vfs::Config::new(data, HALO2_TITLE)
         .title_data_dir()
         .join(vfs::CONTENT_DIR)
+}
+
+fn device_path(offer: u64, map: &str) -> String {
+    format!("{}\\{}", vfs::DATA_DEVICE, content_path(offer, map))
+}
+
+fn mounted(data: &Path, report: &Report) -> vfs::Vfs {
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
+    cfg.content_maps.replace(report.mounts.clone());
+    vfs::Vfs::with_storage(cfg).unwrap()
+}
+
+fn read(vfs: &mut vfs::Vfs, path: &str) -> Vec<u8> {
+    let handle = vfs.open(path, vfs::OpenOptions::default()).unwrap().handle;
+    let len = vfs.query_information(handle).unwrap().metadata.end_of_file;
+    let mut bytes = vec![0; len as usize];
+    assert_eq!(
+        vfs.read(handle, vfs::Offset::Absolute(0), &mut bytes)
+            .unwrap(),
+        bytes.len()
+    );
+    vfs.close(handle).unwrap();
+    bytes
+}
+
+fn served(data: &Path, report: &Report, offer: u64, map: &str) -> Vec<u8> {
+    read(&mut mounted(data, report), &device_path(offer, map))
 }
 
 fn dirs(data: &Path) -> Vec<String> {
@@ -114,21 +148,18 @@ fn installs_a_new_map_as_a_content_package() {
         &body(3),
         "[list]\nbase = \"alpha\"\nname.ja = \"J\"",
     );
-    // A derived package for a disc map stays a replacement, not a new map.
-    package(data, "alpha-remake", "alpha", &body(5), "");
     let mut d = disc();
     let r = install(data, &mut d).unwrap();
     assert_eq!(r.installed.len(), 1, "{r:?}");
     let (name, offer, id) = r.installed[0].clone();
     assert_eq!(name, "coldsnap");
-    assert_eq!(r.materialised, ["coldsnap"]);
     assert!((map_list::LIST_ID_FIRST..=map_list::LIST_ID_LAST).contains(&id));
     assert_eq!(offer, vfs::offer_id(HALO2_TITLE, 0x8000_0000 | id));
     assert_eq!(dirs(data), [vfs::content_dir_name(offer)]);
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
 
     // The map, through the resolver: here the layer's own bytes.
-    assert_eq!(std::fs::read(dir.join("coldsnap.map")).unwrap(), body(3));
+    assert_eq!(served(data, &r, offer, "coldsnap"), body(3));
     // patch.lvl passes 1.0's check and names the map beside it.
     let lvl = std::fs::read(dir.join("patch.lvl")).unwrap();
     patch_lvl::validate_v2(&lvl).unwrap();
@@ -202,7 +233,6 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
     let offer = first.installed[0].1;
     // Again: nothing to write.
     let again = install(data, &mut d).unwrap();
-    assert!(again.materialised.is_empty());
     assert_eq!(again.installed, first.installed);
     assert!(again.removed.is_empty());
     // A display change rewrites patch.lvl, not the map.
@@ -210,7 +240,6 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
     let text = std::fs::read_to_string(&manifest).unwrap();
     std::fs::write(&manifest, text.replace("Name of coldsnap", "Coldsnap 2")).unwrap();
     let renamed = install(data, &mut d).unwrap();
-    assert!(renamed.materialised.is_empty());
     let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(offer);
     assert_eq!(
         Entry::from_v2(&std::fs::read(dir.join("patch.lvl")).unwrap())
@@ -223,7 +252,6 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
     // directory goes.
     package(data, "coldsnap", "coldsnap", &body(7), "");
     let changed = install(data, &mut d).unwrap();
-    assert_eq!(changed.materialised, ["coldsnap"]);
     let new_offer = changed.installed[0].1;
     assert_ne!(new_offer, offer);
     assert_eq!(
@@ -231,8 +259,7 @@ fn refreshes_on_a_new_map_id_and_removes_what_is_gone() {
         [vfs::Config::new(data, HALO2_TITLE).content_dir(offer)]
     );
     assert_eq!(dirs(data), [vfs::content_dir_name(new_offer)]);
-    let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(new_offer);
-    assert_eq!(std::fs::read(dir.join("coldsnap.map")).unwrap(), body(7));
+    assert_eq!(served(data, &changed, new_offer, "coldsnap"), body(7));
 
     // Other content is never touched: the Map Pack's and any other offer.
     let pack = content_root(data).join("4d53006400000101");
@@ -259,7 +286,7 @@ fn retail_is_unchanged_without_new_maps() {
     let r = install(data, &mut untouchable).unwrap();
     assert!(r.line().is_none());
     assert!(!data.join("disk").exists(), "nothing created");
-    // Packages, none derived: the disc is not read either.
+    // A package whose base map is missing produces no offer.
     let d = data.join("maps/alpha-mod");
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(
@@ -270,13 +297,9 @@ fn retail_is_unchanged_without_new_maps() {
         ),
     )
     .unwrap();
-    let r = install(data, &mut untouchable).unwrap();
-    assert!(r.line().is_none());
-    assert!(!data.join("disk").exists());
-    // A derived package for a disc map: the disc is asked, nothing written.
-    package(data, "alpha-remake", "alpha", &body(5), "");
     let r = install(data, &mut disc()).unwrap();
-    assert!(r.line().is_none(), "{r:?}");
+    assert!(r.installed.is_empty());
+    assert_eq!(r.skipped.len(), 1);
     assert!(!data.join("disk").exists());
 }
 
@@ -357,7 +380,7 @@ fn images_defaults_and_the_map_pack_template() {
             "no base: the list's first retail entry"
         );
         if name == "pic" {
-            assert_eq!(std::fs::read(dir.join("shot.png")).unwrap(), png);
+            assert!(!dir.join("shot.png").exists());
             assert_eq!(&e.preview[(9 * 220 + 9) * 4..][..4], [30, 20, 10, 0xbf]);
             // The border is retail's (the disc's preview), as a retail
             // row's picture: Select Map showed ours with none.
@@ -396,10 +419,16 @@ fn a_bad_package_is_skipped_not_fatal() {
     std::fs::write(data.join("maps/bad/bad.map"), b"changed after hashing").unwrap();
     package(data, "long", &"x".repeat(39), &body(4), "");
     let r = install(data, &mut disc()).unwrap();
-    assert_eq!(r.installed.len(), 1);
-    assert_eq!(r.skipped.len(), 2, "{r:?}");
+    assert_eq!(r.installed.len(), 2);
+    assert_eq!(r.skipped.len(), 1, "{r:?}");
     assert!(r.skipped.iter().any(|s| s.contains("FATX")));
-    assert_eq!(dirs(data).len(), 1, "the failed one's directory is removed");
+    let bad = r.installed.iter().find(|(map, ..)| map == "bad").unwrap();
+    let mut vfs = mounted(data, &r);
+    assert_eq!(
+        vfs.open(&device_path(bad.1, "bad"), vfs::OpenOptions::default())
+            .unwrap_err(),
+        vfs::Error::FileCorrupt
+    );
 }
 
 /// The user's disc: a record for a derived map with a real retail base,
@@ -550,8 +579,7 @@ fn a_converted_map_installs_the_sandbox_the_setting_names() {
         let r = install(data, &mut disc()).unwrap();
         assert_eq!(r.installed.len(), 1, "{r:?}");
         ids.borrow_mut().push((r.installed[0].1, r.installed[0].2));
-        let dir = vfs::Config::new(data, HALO2_TITLE).content_dir(r.installed[0].1);
-        std::fs::read(dir.join("h1_gulch.map")).unwrap()
+        served(data, &r, r.installed[0].1, "h1_gulch")
     };
     // Halo 1's sandbox by default.
     assert_eq!(installed(data), body(7));
@@ -623,4 +651,244 @@ fn a_converted_map_is_served_in_the_sandbox_chosen_per_game() {
     assert_eq!(served.path, pair.h2.file);
     assert_eq!(served.len, body(9).len() as u64);
     assert_eq!(v.map_id(&name), pair.h2.id);
+}
+
+fn retail_package(data: &Path, dir: &str, name: &str, map: &str, base: &[u8], value: u8) -> MapId {
+    let dir = data.join("maps").join(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let patch = [b"PATCH\0\x08\0\0\x01".as_slice(), &[value], b"EOF"].concat();
+    std::fs::write(dir.join("a.ips"), &patch).unwrap();
+    let mut manifest = content::Manifest::retail(map, Sha256::of(base));
+    manifest.package.name = name.into();
+    manifest.patches.push(content::manifest::Layer {
+        file: "a.ips".into(),
+        sha256: Sha256::of(&patch),
+    });
+    std::fs::write(dir.join("manifest.toml"), manifest.to_toml()).unwrap();
+    manifest.map_id()
+}
+
+#[test]
+fn legacy_choices_migrate_to_independent_disc_and_map_pack_mods() {
+    use crate::map_select::{self, Category};
+
+    let t = Temp::new("legacy");
+    let data = &t.0;
+    let mut base = vec![0; 0x801];
+    base[..4].copy_from_slice(b"daeh");
+    base[0x198..0x19d].copy_from_slice(b"level");
+    let iso = {
+        // The source disc fixture fits one sector.
+        let mut disc_bytes = base.clone();
+        disc_bytes.truncate(0x800);
+        crate::map_override::tests::iso_at(data, &disc_bytes)
+    };
+    let disc_base = &base[..0x800];
+    let pack_offer = vfs::offer_id(HALO2_TITLE, 0x101);
+    let pack_dir = vfs::Config::new(data, HALO2_TITLE).content_dir(pack_offer);
+    std::fs::create_dir_all(&pack_dir).unwrap();
+    std::fs::write(pack_dir.join("turf.map"), &base).unwrap();
+    let pack = Entry {
+        scenario: "scenarios\\multi\\turf\\turf".into(),
+        map_id: 0x3e8,
+        names: std::array::from_fn(|_| "Turf".into()),
+        descriptions: Default::default(),
+        sort: 100,
+        flags: 3,
+        teams: [2; 16],
+        preview: vec![0x56; PREVIEW_LEN],
+    };
+    let pack_record = pack.to_v2().unwrap();
+    std::fs::write(pack_dir.join("patch.lvl"), &pack_record).unwrap();
+
+    let snow = retail_package(data, "a-snow", "Level Snow", "level", disc_base, 9);
+    let rockets = retail_package(data, "b-rockets", "Level Rockets", "level", disc_base, 7);
+    let turf = retail_package(data, "c-turf", "Turf Night", "turf", &base, 5);
+    let active = data.join("maps/active.toml");
+    let legacy = "level = \"a-snow\"\nturf = false\n";
+    std::fs::write(&active, legacy).unwrap();
+
+    let mut d = disc();
+    d.slots[0] = slot(1, "level", 3, [4; 16], 10);
+    let retail = &mut d.slots[0];
+    let utf16 = "Level"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    retail[0xc..0xc + utf16.len()].copy_from_slice(&utf16);
+    d.base_files.insert(
+        "level".into(),
+        vfs::HostFile {
+            path: iso.clone(),
+            offset: 37 * 2048,
+            len: 0x800,
+        },
+    );
+    let before = d.slots.clone();
+
+    let report = install(data, &mut d).unwrap();
+    assert_eq!(report.installed.len(), 3, "{report:?}");
+    assert_eq!(report.overflow, 0);
+    assert_eq!(std::fs::read_to_string(&active).unwrap(), legacy);
+    assert_eq!(d.slots, before);
+    assert_eq!(
+        std::fs::read(pack_dir.join("patch.lvl")).unwrap(),
+        pack_record
+    );
+    let cat = map_select::read(&d.slots, &content_root(data));
+    assert_eq!(
+        cat.maps(Category::Halo2)
+            .iter()
+            .find(|map| map.id == 1)
+            .unwrap()
+            .name,
+        "Level"
+    );
+    assert_eq!(cat.maps(Category::MapPack)[0].name, "Turf");
+    assert_eq!(cat.maps(Category::MapPack)[0].id, 0x3e8);
+    assert_eq!(
+        cat.maps(Category::Mods)
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Level Rockets", "Level Snow", "Turf Night"]
+    );
+
+    let cfg = vfs::Config::new(data, HALO2_TITLE);
+    cfg.content_maps.replace(report.mounts.clone());
+    let mut vfs = crate::map_override::mount(
+        cfg.clone(),
+        &iso,
+        None::<crate::map_override::tests::Upper>,
+        None,
+        &[],
+    )
+    .unwrap();
+    let disc_path = format!("{}\\maps\\level.map", vfs::CDROM_DEVICE);
+    let pack_path = device_path(pack_offer, "turf");
+    for (name, offer, id) in &report.installed {
+        assert_ne!(*id, 1);
+        assert_ne!(*id, 0x3e8);
+        let path = device_path(*offer, name);
+        let id = vfs.map_id(&path).unwrap();
+        let bytes = read(&mut vfs, &path);
+        let value = if id == snow {
+            9
+        } else if id == rockets {
+            7
+        } else {
+            assert_eq!(id, turf);
+            5
+        };
+        assert_eq!(bytes[0x800], value);
+        assert!(bytes[0x198..0x1b8].starts_with(name.as_bytes()));
+        assert_eq!(crate::map_override::map_id(&mut vfs, name), Some(id));
+        assert_eq!(
+            cfg.content_dir(*offer)
+                .join(format!("{name}.map"))
+                .metadata()
+                .unwrap()
+                .len(),
+            0
+        );
+        let lvl = std::fs::read(cfg.content_dir(*offer).join("patch.lvl")).unwrap();
+        assert_eq!(
+            Entry::from_v2(&lvl).unwrap().preview,
+            if id == turf {
+                pack.preview.clone()
+            } else {
+                d.preview.clone().unwrap()
+            }
+        );
+    }
+    assert_eq!(read(&mut vfs, &disc_path), disc_base);
+    assert_eq!(read(&mut vfs, &pack_path), base);
+    assert_eq!(vfs.map_id(&disc_path), None);
+    assert_eq!(vfs.map_id(&pack_path), None);
+    assert!(
+        !data.join("maps/cache").exists(),
+        "an IPS mod streams without a patched file"
+    );
+}
+
+#[test]
+fn slot_plan_preserves_retail_and_uses_the_mods_own_preview() {
+    let t = Temp::new("slot-preview");
+    let data = &t.0;
+    let mut d = disc();
+    let base = b"alpha";
+    let source = data.join("alpha.map");
+    std::fs::write(&source, base).unwrap();
+    d.base_files.insert(
+        "alpha".into(),
+        vfs::HostFile {
+            path: source,
+            offset: 0,
+            len: base.len() as u64,
+        },
+    );
+    let id = retail_package(data, "snow", "Alpha Snow", "alpha", base, 10);
+    let dir = data.join("maps/snow");
+    let manifest = dir.join("manifest.toml");
+    let mut m = content::Manifest::from_toml(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    m.package.image = Some("snow.png".into());
+    std::fs::write(&manifest, m.to_toml()).unwrap();
+    let mut png = png::Encoder::new(File::create(dir.join("snow.png")).unwrap(), 2, 2);
+    png.set_color(png::ColorType::Rgb);
+    png.set_depth(png::BitDepth::Eight);
+    png.write_header()
+        .unwrap()
+        .write_image_data(&[10, 20, 30].repeat(4))
+        .unwrap();
+
+    let slots = d.slots.clone();
+    let mut simulated_slots: Vec<_> = slots
+        .iter()
+        .map(|slot| u32::from_le_bytes(slot[..4].try_into().unwrap()))
+        .collect();
+    let report = install(data, &mut d).unwrap();
+    let (_, offer, list_id) = report.installed[0];
+    assert_eq!(slot_plan(&slots, &[], &[id]).0, [list_id]);
+    assert!(!simulated_slots.contains(&list_id));
+    let first_free = simulated_slots
+        .iter()
+        .position(|&id| id == u32::MAX)
+        .unwrap();
+    simulated_slots[first_free] = list_id;
+    assert_eq!(&simulated_slots[..first_free], [1, 2]);
+    assert_eq!(d.slots, slots);
+    let record = std::fs::read(
+        vfs::Config::new(data, HALO2_TITLE)
+            .content_dir(offer)
+            .join("patch.lvl"),
+    )
+    .unwrap();
+    let mod_slot = Entry::from_v2(&record).unwrap();
+    assert_eq!(mod_slot.map_id, list_id);
+    assert_eq!(mod_slot.names[0], "Alpha Snow");
+    assert_eq!(&mod_slot.preview[(8 * 220 + 8) * 4..][..3], [30, 20, 10]);
+    assert_eq!(&d.preview.as_ref().unwrap()[..3], [0x42; 3]);
+}
+
+#[test]
+fn slot_overflow_keeps_all_sources_and_only_registers_the_offers_that_fit() {
+    let t = Temp::new("overflow");
+    let data = &t.0;
+    let mut d = disc();
+    d.slots.truncate(3);
+    for name in ["one", "two", "three"] {
+        package(data, name, name, &body(3), "");
+    }
+    let r = install(data, &mut d).unwrap();
+    assert_eq!(r.installed.len(), 1);
+    assert_eq!(r.overflow, 2);
+    assert_eq!(dirs(data).len(), 1);
+    assert_eq!(Library::open(data.join("maps")).packages().len(), 3);
+    assert!(r.line().unwrap().contains("2 mods not shown, list full"));
+    let kept = Library::open(data.join("maps")).packages()[0].dir.clone();
+    std::fs::remove_dir_all(kept).unwrap();
+    let next = install(data, &mut d).unwrap();
+    assert_eq!(next.installed.len(), 1);
+    assert_eq!(next.overflow, 1);
+    assert_ne!(next.installed, r.installed);
 }

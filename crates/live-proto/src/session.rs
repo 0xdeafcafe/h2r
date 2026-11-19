@@ -278,10 +278,12 @@ pub struct Update {
     pub map: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<Visibility>,
-    /// A new `map_id` (the host changed map). A session cannot go back to
-    /// none: it is the same session on some map.
+    /// A new content MapId for the selected map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub map_id: Option<MapId>,
+    /// Return to retail, which has no advertised content ID.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clear_map_id: bool,
     /// The host's skulls changed: the new set, empty for none. Absent keeps
     /// them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -403,7 +405,12 @@ impl Session {
         if let Some(v) = u.visibility {
             next.visibility = v;
         }
-        if let Some(v) = u.map_id {
+        if u.clear_map_id {
+            if u.map_id.is_some() {
+                return Err("cannot set and clear map_id in the same update".into());
+            }
+            next.map_id = None;
+        } else if let Some(v) = u.map_id {
             next.map_id = Some(v);
         }
         if let Some(v) = &u.flags {

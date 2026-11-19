@@ -189,6 +189,9 @@ pub fn installed(data: &Path) -> Vec<FoundMap> {
             let found = (|| -> Result<FoundMap> {
                 let mut f = File::open(path)?;
                 let size = u32::try_from(f.metadata()?.len())?;
+                if size == 0 {
+                    anyhow::bail!("virtual map path");
+                }
                 Ok(FoundMap {
                     head: head_at(&mut f, 0, size)?,
                     stem: stem.clone(),

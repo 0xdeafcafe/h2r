@@ -934,6 +934,7 @@ fn run_configured(
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     // Converted Halo 1 maps follow the sandbox chosen per game (h1_variants).
     cfg.variants = h1_variants::mp_variants();
+    cfg.content_maps = new_maps::mounted_packages();
     // H2_SIM=<match file>: sim mode (sim_glue.rs, docs/runtime/sim.md).
     let (sim_mode, upload) = match sim {
         Some((sim, upload)) => (Some(sim), upload),
@@ -966,14 +967,14 @@ fn run_configured(
     // Packages for maps the disc doesn't have become content packages
     // under T:\$c, which the main menu reads for its map list
     // (docs/game/maps.md §4); before the VFS lists that folder.
-    new_maps::install_at_boot(&opts.data_root, &opts.disc);
+    let mods_not_shown = new_maps::install_at_boot(&opts.data_root, &opts.disc);
     // The map select by category (docs/game/map-select.md), from the list
     // the main menu will build: the disc's maps and those packages.
-    let _ = map_select::prepare_at_boot(&opts.data_root, &opts.disc);
+    let _ = map_select::prepare_at_boot(&opts.data_root, &opts.disc, mods_not_shown);
     // The Halo 1 maps' sandbox and the campaign's assets start as the
     // settings say; the pregame screen changes them per game, and the VFS
     // and the health model follow (h1_variants, docs/halo1/multiplayer.md).
-    let halo1_sandbox = h1_variants::init_from_store(&setting_defs::load(&opts.data_root, &[]).0);
+    h1_variants::init_from_store(&setting_defs::load(&opts.data_root, &[]).0);
     // A second campaign (docs/halo1/campaign-picker.md): read before the
     // VFS mounts, which serves its converted maps.
     let campaigns = campaigns::boot_state(&opts.data_root, &opts.disc);
@@ -981,9 +982,8 @@ fn run_configured(
         .as_ref()
         .map(|s| campaigns::host_maps(&opts.data_root, s))
         .unwrap_or_default();
-    // Map packages from <data>/maps (docs/game/maps.md) and edited maps from
-    // H2_MAP_DIR in place of the disc's (docs/runtime/storage.md "Map overrides");
-    // with neither, the disc is mounted as it always was.
+    // Explicit editor maps still use H2_MAP_DIR. Installed packages use
+    // their independent content offers (docs/game/maps.md).
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
     // Our campaigns' level pictures, added to mainmenu as the VFS serves it
@@ -1006,14 +1006,11 @@ fn run_configured(
         bot_mark::GearRewrite,
     );
     let rewrites = Some(vfs::Chain(fonts, cards));
-    let mounted = map_override::mount_with_hashes(
+    let mounted = map_override::mount(
         cfg.clone(),
         &opts.disc,
         rewrites,
         maps.as_deref(),
-        Some(&packages),
-        Some(halo1_sandbox),
-        disc_hashes,
         &campaign_maps,
     );
     if let Some(i) = &icons {
@@ -1035,19 +1032,23 @@ fn run_configured(
     if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
         ready(&vfs);
     }
-    // A package installed while the game runs (docs/game/maps.md §3): a Live
-    // join tells the VFS to look again at once (it also notices by itself
-    // at the map's next open), and the map-slots feature drops the game's
-    // cached copy of a map whose package changed (docs/runtime/cache-slots.md).
-    // The map select and the maps' slots follow in the same session: new
-    // maps become content packages, the catalogue is read again, and the
-    // next Select Map shows the mod by its name and picture
-    // (docs/game/map-select.md, "Installed while the game runs").
+    // Live downloads publish their offers before the join is handed to the
+    // game. The next main-menu tick refreshes the in-memory map list.
     if let (Some(vfs), Some(gate)) = (k.vfs(), &map_gate) {
         let disc = opts.disc.clone();
+        let maps = new_maps::mounted_packages();
+        let variants = h1_variants::mp_variants();
+        gate.on_prepare(Box::new(move |id| {
+            if maps.has_id(id) || variants.has_id(id) {
+                Ok(())
+            } else {
+                Err(format!("map {id} has no playable slot on this console"))
+            }
+        }));
         gate.on_installed(Box::new(move |_| {
-            vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
+            let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
             map_select::packages_changed(&disc);
+            vfs.rescan_maps();
         }));
     }
     let uses = opts
@@ -1165,10 +1166,10 @@ fn run_configured(
     // Which map exactly (docs/game/maps.md §5): a package's MapId, None for the
     // disc's own map. Games and advertisements carry it as `map_id`.
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
-        let data_root = opts.data_root.clone();
         t.set_map_id_locator(Box::new(move |map| {
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, &data_root, map)
+            let id = map_override::map_id(&mut v, map)?;
+            Some((id, v.content_base_name(map)))
         }));
     }
     // A matchmaking game's record names its playlist and Live session
@@ -1187,11 +1188,9 @@ fn run_configured(
         }));
     }
     if let (Some(hle), Some(vfs)) = (&_live, k.vfs()) {
-        let data_root = opts.data_root.clone();
         hle.set_map_probe(Some(Arc::new(move |g: &runtime::Guest| {
-            let name = telemetry::loaded_map_name(g).ok()?;
             let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
-            map_override::map_id(&mut v, &data_root, &name)
+            map_override::lobby_map_id(&mut v, g)
         })));
     }
     if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {

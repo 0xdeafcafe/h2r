@@ -1611,15 +1611,19 @@ fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
 /// The host's advertisement says exactly which map it has loaded when the
 /// boot's map probe names a package's `MapId` (docs/game/maps.md §5).
 #[test]
-fn advertisements_carry_the_hosts_map_id() {
+fn advertisements_carry_the_hosts_map_id_and_clear_it_for_retail() {
     let s = Server::new();
     let a = s.account("Host");
     let mut host = World::new(&s.embedded.url, &[&a]);
     host.logon();
     let id = live_proto::maps::MapId([0x6d; 32]);
+    let selected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let probe = selected.clone();
     host.hle
         .set_map_probe(Some(std::sync::Arc::new(move |_: &runtime::Guest| {
-            Some(id)
+            probe
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .then_some(id)
         })));
     attr(&host, MATCH_ATTR, 1, 101);
     assert_eq!(
@@ -1638,6 +1642,31 @@ fn advertisements_carry_the_hosts_map_id() {
         .find(|e| e.kind == "SessionCreated")
         .unwrap();
     assert_eq!(created.data["advertisement"]["map_id"], id.to_string());
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    let lo = host.u32(MATCH_ID);
+    let hi = host.u32(MATCH_ID + 4);
+    selected.store(false, std::sync::atomic::Ordering::SeqCst);
+    attr(&host, MATCH_ATTR, 1, 101);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 1, 7, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let update = host.u32(OUT);
+    assert_eq!(host.wait(update), TASK_SUCCESS);
+    assert_eq!(host.hle.local_sessions()[0].map_id, None);
+    let updated = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionUpdated")
+        .unwrap();
+    assert_eq!(updated.data["clear_map_id"], true);
+    assert!(updated.data.get("map_id").is_none());
 }
 
 /// The host asks for a bot roster for the session it advertised

@@ -191,7 +191,7 @@ impl Telemetry {
     }
 
     pub(crate) fn start(&self, guest: &runtime::Guest) -> Result<(), String> {
-        let info = memory::game_info(guest).map_err(|e| format!("read game options: {e:?}"))?;
+        let mut info = memory::game_info(guest).map_err(|e| format!("read game options: {e:?}"))?;
         let players = if info.is_match() {
             memory::players(guest).map_err(|e| format!("read players: {e:?}"))?
         } else {
@@ -207,7 +207,7 @@ impl Telemetry {
         } else {
             None
         };
-        let map_id = if info.is_match() && live_proto::game::valid_id(&info.map) {
+        let identity = if info.is_match() && live_proto::game::valid_id(&info.map) {
             self.map_ids
                 .lock()
                 .unwrap()
@@ -216,6 +216,12 @@ impl Telemetry {
         } else {
             None
         };
+        let map_id = identity.map(|(id, base)| {
+            if let Some(base) = base.filter(|name| live_proto::game::valid_id(name)) {
+                info.map = base;
+            }
+            id
+        });
         // The scenario's placements, to tell moved and gone objects from
         // those where the scenario put them; without them frames carry no
         // objects.
@@ -548,7 +554,7 @@ mod tests {
         let seen = asked.clone();
         telemetry.set_map_id_locator(Box::new(move |map| {
             seen.lock().unwrap().push(map.to_string());
-            (map == "lockout").then_some(id)
+            (map == "mod-lockout").then_some((id, Some("lockout".into())))
         }));
         let mut guest = fixture::memory();
         guest
@@ -561,18 +567,19 @@ mod tests {
             )
             .unwrap();
         guest
-            .write_bytes(layout::CACHE_MAP_NAME, b"lockout\0", 1)
+            .write_bytes(layout::CACHE_MAP_NAME, b"mod-lockout\0", 1)
             .unwrap();
         fixture::put_player(&mut guest, 0, "A", 0, true, u32::MAX);
         telemetry.protect(|| telemetry.start(&guest));
         drop(telemetry);
-        assert_eq!(*asked.lock().unwrap(), ["lockout"]);
+        assert_eq!(*asked.lock().unwrap(), ["mod-lockout"]);
         let text = std::fs::read_to_string(&path).unwrap();
         let started = text
             .lines()
             .find(|l| l.contains("GameStarted"))
             .expect("a GameStarted");
         assert!(started.contains(&id.to_string()), "{started}");
+        assert!(started.contains("\"map\":\"lockout\""), "{started}");
         let _ = std::fs::remove_file(path);
     }
 
