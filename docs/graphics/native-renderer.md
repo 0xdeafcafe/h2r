@@ -1079,7 +1079,7 @@ computed transforms in guest memory. Skinning runs in the vertex shader.
 | record `+0x10` → cache record → owner | How an object's render record names its object (`objects::record_owner`): `+0x10` points at `+0x44` of the object's record in the render-state cache (`0x0004b5d0`: `lea ebx, [record+0x44]`), or is 0; the cache record's `+4` is the owner's handle; the owner's body `+0xcc` holds the cache record's handle, which `0x0003ddd0` checks (`[data + 0x100·(body[+0xcc] & 0xffff) + 4] == handle`). The resolve requires all of it (pointer at a record's `+0x44`, index below the cache's high water `+0x38`, owner live by `0x000badc0`'s rules, `+0xcc` naming the record back); a record that fails stays on D3D. Code; Test on synthetic memory, Live pending. |
 | `0x000badc0` | The object lookup: slot `handle & 0xffff` below `[H+0x38]`, element `[H+0x24]·slot + [H+0x44]` (12 bytes; `0x0003ddd0` uses a fixed 12), live when its `u16` salt is non-zero and equals `handle >> 16`, body at `+8`. `objects::body` follows it. |
 | `0x0002bed5` | The return address of the base layers' layer-3 call (`call 0x00044550` at `0x0002bed0` in `render_scene_passes`, view kinds 1 and 2). The object skip acts only there, so first-person or other-kind layer draws are never touched. |
-| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. It stays on D3D: the observer would draw it with the scene camera, and first-person models are a later stage. Counted as `first person`, not as a wrong caller. |
+| `0x00040136` | The return address of the other layer-3 caller (about a third of layer-3 calls in the first live run): `call 0x00044550` at `0x00040131` in the first-person draw `0x0003fdf0`, which runs after the transparents for its own record list (`0x004c8740`, `[0x0050943c]` records) under the first-person camera and projection, then `0x000445d0`. With `impl.render.native_first_person=on`, `feature::native_first_person` owns this caller's eligible items with the device's first-person view constants; the objects observer leaves it alone. |
 | `0x0004baf0`, `0x0004b5d0` | LOD choice by pixel size inside `0x00133790` ([occlusion-culling.md](occlusion-culling.md)). |
 | `0x0016d764` | Region permutation choice (Likely): the variant's region map, its regions at `+0x18`, then `0x0016dad0` ([objects.md](../formats/objects.md)). |
 | `0x00165f16` (`points::FIRST_PERSON_RENDER`) | One local player's first-person weapon and arms, after the transparents, with their own projection (camera `0x0023c110`, FOV `0x00187130`). |
@@ -1179,11 +1179,12 @@ queues it.
 
 `native_first_person_glue` and `native_first_person_load` are separate from
 the objects stage's cache, but use its public model, stream and object
-program code. The device's constants at issue supply the first-person view
-(the camera is built by `0x0023c110` upstream), rather than a scene-camera
-copy. The pass requires a known W-buffered depth mode and a full-target
-viewport (split or partial views stay on D3D), uses the device's W-clip and
-per-call inherited cull, and loads depth/stencil: first person's flag
+program code. `begin_external_boundary` drains preceding packets before the
+entry states and first-person view constants are read (the camera itself is
+built by `0x0023c110` upstream), rather than copying the scene camera. The
+pass requires a known W-buffered depth mode and a full-target viewport with
+a `0.0..1.0` depth range (split or partial views stay on D3D), uses the
+device's W-clip and per-call inherited cull, and loads depth/stencil: first person's flag
 disables stencil writes, so no scene stencil is replaced. Record `+4`,
 not the owner definition's third-person model, names the `mode` to load;
 every section of that mode is built because the record key selects the
@@ -1194,8 +1195,12 @@ and the record's node rows are resolved as for native objects, without
 requiring the body and mode node counts to match. Admission is per item:
 `ItemKey` selects the exact section, geometry part, shader and
 implementation, and `LitObjects::plan` resolves every constant and every
-inherited `EntryStates` field before `Host::draw` returns. Only those
-planned items keep their bits cleared (`objects::keep_items`); mixed record
+inherited `EntryStates` field before `Host::draw` returns. The mask walk
+runs on a `MaskPreview`, leaving guest RAM untouched while each required
+copy is prepared. `prepare_external_bound` validates every model and index
+range; only then does `ItemMasks::apply` select the planned items and
+`ready.commit` release the copies. A refused copy, changed generation or
+failed mask application restores the entire candidate list. Mixed record
 models under one owner are therefore independent draws. An incomplete or
 non-geometry list leaves the whole call on D3D, and a mode with a refused
 material or a texture-accumulation dependency stays there too. Loader
@@ -1208,7 +1213,7 @@ on D3D, prepares the same native part and arms `d3d::uniform_compare` on
 the selected external-target encode (part 0, encode 0 by default; scaled
 output encodes a pass more than once). The ordinary path logs native draws,
 objects, skipped items and queue refusals every 1,800 first-person layer-3
-calls; issue-time shortfalls are counted and logged rather than silently
+calls; a failed reservation leaves every candidate on D3D rather than
 dropping a planned item. Synthetic tests cover caller selection, record/body
 model divergence, per-item masks and rows, mixed record modes, comparison
 shadowing, incomplete-list refusal, immediate and next-layer restoration,

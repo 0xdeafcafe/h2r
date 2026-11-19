@@ -7,12 +7,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_first_person::Host;
+use feature::native_first_person::{Host, ItemMasks};
 use feature::native_objects::NativeSet;
 use native_render::object_program_gpu::{LitObjects, PlannedDraw};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;
-use native_render::objects::{ItemDraw, ObjectFrame};
+use native_render::objects::{ClearedObjects, ItemDraw, ObjectFrame};
 use native_render::program::ViewInputs;
 
 use crate::native_first_person_load::{self, MapState, Models};
@@ -46,6 +46,8 @@ fn full_target_viewport<B: d3d::backend::Backend>(
         && viewport.y == 0
         && viewport.width == desc.width
         && viewport.height == desc.height
+        && viewport.min_z == 0.0
+        && viewport.max_z == 1.0
 }
 
 /// State every item's plan inherits, resolved before `Host::draw` returns.
@@ -66,8 +68,17 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
         *self.entry.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if !self
+            .device
+            .lock()
+            .ok()?
+            .begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
+            .ok()?
+        {
+            return None;
+        }
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() {
             return None;
@@ -167,51 +178,83 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn draw(
         &self,
+        mem: &mut dyn GuestMemory,
         generation: u64,
         objects: Vec<ObjectFrame>,
         items: Vec<ItemDraw>,
         models: HashMap<u16, u32>,
-    ) -> Vec<bool> {
-        let mut out = vec![false; items.len()];
-        let Some(gpu) = self
-            .state
+        masks: ItemMasks,
+    ) -> Option<ClearedObjects> {
+        let gpu = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(
+                &state
+                    .as_ref()
+                    .filter(|state| state.generation == generation)?
+                    .models,
+            )
+        };
+        let entry = self
+            .entry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .filter(|state| state.generation == generation)
-            .map(|state| Arc::clone(&state.models))
-        else {
-            return out;
-        };
-        let Some(entry) = self.entry.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-            return out;
-        };
-        let Ok(mut device) = self.device.lock() else {
-            return out;
-        };
-        if !device.can_external_pass() {
-            return out;
-        }
+            .take()?;
+        let mut device = self.device.lock().ok()?;
         let plan = plan_view(&gpu, &objects, &items, &models, &entry);
+        let ranges = plan.draws.len();
         let pending = !gpu
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_empty();
-        if plan.draws.is_empty() && plan.compare.is_none() && !pending {
-            return out;
+        if ranges == 0 && plan.compare.is_none() && !pending {
+            return None;
         }
+        let mut drawn = vec![false; items.len()];
         for &index in &plan.drawn {
-            out[index] = true;
+            drawn[index] = true;
         }
-        device.request_external_pass(Box::new(FirstPersonPass {
-            models: gpu,
+        let pass = Box::new(FirstPersonPass {
+            models: Arc::clone(&gpu),
             draws: plan.draws,
             compare: plan.compare,
-            view: entry.view,
+            view: Some(entry.view),
             w_clip: entry.w_clip,
-        }));
-        out
+        });
+        if ranges == 0 {
+            // Upload new models or arm a comparison; every guest item stays live.
+            device.request_external_pass(pass);
+            return None;
+        }
+        let view = mem
+            .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
+            .unwrap_or(u32::MAX);
+        let promise = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Objects,
+            view,
+            ranges,
+            slots: Vec::new(),
+        };
+        let ready = device
+            .prepare_external_bound(
+                &mut crate::native_lights_glue::DeviceMemory(mem),
+                promise,
+                pass,
+                Vec::new(),
+            )
+            .ok()??;
+        // Pin the load through mask application and the commit. A replaced
+        // generation cannot win after the copies have been reserved.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state
+            .as_ref()
+            .is_some_and(|state| state.generation == generation && Arc::ptr_eq(&state.models, &gpu))
+        {
+            return None;
+        }
+        let cleared = masks.apply(mem, &drawn)?;
+        ready.commit();
+        Some(cleared)
     }
 }
 
@@ -316,7 +359,7 @@ struct FirstPersonPass {
     models: Arc<Models>,
     draws: Vec<(u32, PlannedDraw)>,
     compare: Option<(u32, PlannedDraw, String)>,
-    view: [[f32; 4]; d3d::VIEW_CONSTANTS],
+    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
     w_clip: ([f32; 2], bool),
 }
 
@@ -359,19 +402,55 @@ impl FirstPersonPass {
 
 impl d3d::ExternalPass for FirstPersonPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = *constants;
+        self.view = Some(*constants);
     }
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
         self.w_clip = (clip.range, clip.clamp);
     }
 
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites {
+            color: self
+                .draws
+                .iter()
+                .any(|(_, draw)| !draw.state.color_writes.is_empty()),
+            depth_stencil: self.draws.iter().any(|(_, draw)| draw.state.depth_write),
+        }
+    }
+
+    fn prepare_copy(&mut self, target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+        if self.view.is_none() {
+            return Err("first-person view constants unavailable");
+        }
+        drop(self.upload(target));
+        let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        if lit.as_ref().is_some_and(|lit| {
+            self.draws
+                .iter()
+                .all(|(model, draw)| lit.has(*model) && !draw.indices.is_empty())
+        }) {
+            Ok(())
+        } else {
+            Err("planned first-person geometry unavailable")
+        }
+    }
+
     fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
-        let mut guard = self.upload(&target);
-        let lit = guard
-            .as_mut()
-            .expect("upload initializes the lit model cache");
-        let view = self.view_inputs(self.view, &target);
+        // Comparison-only views can upload models for the following view.
+        drop(self.upload(&target));
+        self.record_ranges(target);
+    }
+
+    fn record_ranges(&mut self, target: d3d::ExternalTarget<'_>) -> usize {
+        let Some(constants) = self.view else {
+            return 0;
+        };
+        let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(lit) = guard.as_mut() else {
+            return 0;
+        };
+        let view = self.view_inputs(constants, &target);
         if let Some((model, draw, label)) = &self.compare {
             arm_compare(
                 lit,
@@ -383,9 +462,9 @@ impl d3d::ExternalPass for FirstPersonPass {
             );
         }
         if self.draws.is_empty() {
-            return;
+            return 0;
         }
-        let drawn = lit.encode(
+        lit.encode(
             target.device,
             target.queue,
             &mut *target.encoder,
@@ -397,33 +476,7 @@ impl d3d::ExternalPass for FirstPersonPass {
             &view,
             &self.draws,
             None,
-        );
-        if drawn < self.draws.len() {
-            shortfall(
-                self.draws.len() - drawn,
-                "a planned model or pipeline was missing at the encode",
-            );
-        }
-    }
-}
-
-/// Draws surrendered at the hook that the issue could not record. All
-/// admission-time causes are refused before `draw`; these are issue-only
-/// failures and are always counted and logged, never silent.
-static SHORTFALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn shortfall(count: usize, why: &'static str) {
-    if count == 0 {
-        return;
-    }
-    SHORTFALL.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
-    static LOGGED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
-    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
-    if !logged.contains(&why) {
-        logged.push(why);
-        eprintln!(
-            "native-first-person: {count} planned draws not issued: {why} (logged once per reason)"
-        );
+        )
     }
 }
 

@@ -24,8 +24,8 @@ use native_render::objects::{
     RecordOwner,
 };
 use native_render::skip::{
-    CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, RENDER_RECORD_SIZE,
-    RENDER_RECORDS,
+    CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, LIGHTMAP_LAYER, MaskPlan, MaskPreview,
+    RENDER_RECORD_SIZE, RENDER_RECORDS,
 };
 
 use crate::native_objects::{NativeSet, item_refusal};
@@ -35,23 +35,56 @@ use crate::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-first-person";
 pub const SWITCH: &str = "impl.render.native_first_person";
 
+/// Tentative mask edits and the candidate identities, committed only after
+/// every required GPU copy has been reserved.
+pub struct ItemMasks {
+    plan: MaskPlan,
+    candidates: ClearedObjects,
+    offered: Vec<Option<usize>>,
+}
+
+impl ItemMasks {
+    pub fn apply(self, mem: &mut dyn GuestMemory, drawn: &[bool]) -> Option<ClearedObjects> {
+        if drawn.len() != self.offered.len() {
+            return None;
+        }
+        let mut keep = HashSet::new();
+        for (original, &accepted) in self.offered.iter().zip(drawn) {
+            if accepted {
+                keep.insert((*original)?);
+            }
+        }
+        if keep.is_empty() {
+            return None;
+        }
+        let mut guest = Mem(mem);
+        let mut overlay = self.plan.edit(&guest);
+        let mut candidates = self.candidates;
+        objects::keep_items(&mut overlay, &mut candidates, &|index| {
+            keep.contains(&index)
+        });
+        let selected = overlay.finish()?;
+        selected.apply(&mut guest).then_some(candidates)
+    }
+}
+
 /// What draws first-person objects: boot's glue over the object programs.
 pub trait Host: Send + Sync {
-    /// The models and materials resolved for this map and load.
-    fn native(&self, mem: &dyn GuestMemory) -> Option<Arc<NativeSet>>;
+    /// Drain preceding work and return the models and materials for this load.
+    fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>>;
     /// Load a record's mode met in the first-person list (cheap to repeat).
     fn want(&self, model: u32);
-    /// Plans every item before returning, in list order. `models` maps each
-    /// record to its mode; each object's frame supplies its owner's lighting.
-    /// The returned booleans correspond to `items` and commit only fully
-    /// planned draws. Shadow items are planned for comparison, never drawn.
+    /// Plan every item and reserve every required copy before applying the
+    /// corresponding flags to `masks`. Commit and return the selected items.
     fn draw(
         &self,
+        mem: &mut dyn GuestMemory,
         generation: u64,
         objects: Vec<ObjectFrame>,
         items: Vec<ItemDraw>,
         models: HashMap<u16, u32>,
-    ) -> Vec<bool>;
+        masks: ItemMasks,
+    ) -> Option<ClearedObjects>;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -147,7 +180,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
-    let Some(set) = host.native(&*m.0) else {
+    let Some(set) = host.native(m.0) else {
         return;
     };
     let Some(models) = admission(&m, &set, &*host) else {
@@ -158,14 +191,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
             .get(&key.record)
             .is_some_and(|&model| set.accepts(model, key))
     };
-    let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
+    let Some(mut preview) = MaskPreview::new(&m) else {
         return;
     };
-    if cleared.walk.write_failed != 0 {
-        objects::restore(&mut m, &cleared);
+    let Some(cleared) = objects::clear_objects(&mut preview, LIGHTMAP_LAYER, &accept) else {
         return;
-    }
-    if cleared.items.is_empty() {
+    };
+    if cleared.walk.write_failed != 0 || cleared.items.is_empty() {
         return;
     }
 
@@ -203,22 +235,23 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         });
     }
     if items.is_empty() {
-        objects::restore(&mut m, &cleared);
         return;
     }
-    let indices: Vec<usize> = items.iter().map(|item| item.index).collect();
-    let drawn = host.draw(set.generation, frames, items, models);
-    let keep: HashSet<usize> = indices
-        .iter()
-        .zip(&drawn)
-        .filter(|(_, drawn)| **drawn)
-        .map(|(&index, _)| index)
-        .collect();
-    objects::keep_items(&mut m, &mut cleared, &|index| keep.contains(&index));
-    if cleared.items.is_empty() {
+    let Some(plan) = preview.finish() else {
+        return;
+    };
+    let masks = ItemMasks {
+        plan,
+        candidates: cleared,
+        offered: items
+            .iter()
+            .map(|item| (!item.shadow).then_some(item.index))
+            .collect(),
+    };
+    let Some(cleared) = host.draw(m.0, set.generation, frames, items, models, masks) else {
         REFUSED.fetch_add(1, Ordering::Relaxed);
         return;
-    }
+    };
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(cleared.handles.len() as u64, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);

@@ -60,7 +60,7 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn native(&self, _mem: &dyn GuestMemory) -> Option<Arc<NativeSet>> {
+    fn native(&self, _mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
         Some(Arc::new(self.set.lock().unwrap().clone()))
     }
 
@@ -70,17 +70,22 @@ impl Host for Stub {
 
     fn draw(
         &self,
+        mem: &mut dyn GuestMemory,
         _generation: u64,
         objects: Vec<ObjectFrame>,
         items: Vec<ItemDraw>,
         models: HashMap<u16, u32>,
-    ) -> Vec<bool> {
+        masks: native_first_person::ItemMasks,
+    ) -> Option<native_render::objects::ClearedObjects> {
+        self.offered
+            .lock()
+            .unwrap()
+            .push((objects, items.clone(), models));
         if *self.refuse.lock().unwrap() {
-            return vec![false; items.len()];
+            return None;
         }
-        let out = items.iter().map(|item| !item.shadow).collect();
-        self.offered.lock().unwrap().push((objects, items, models));
-        out
+        let drawn: Vec<bool> = items.iter().map(|item| !item.shadow).collect();
+        masks.apply(mem, &drawn)
     }
 }
 
