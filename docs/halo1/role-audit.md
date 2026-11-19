@@ -1,14 +1,14 @@
 # Role audit: Halo 2 values in converted Halo 1 tags
 
-Status (2026-11-19, converter v90): first run on Blood Gulch (on
+Status (2026-11-19, converter v91): first run on Blood Gulch (on
 Coagulation; v85, before the fixes below): 526 tags, 2,341 role values
 noted, 3,169 leaks over 426 (group, field, kind) rows; 24 rows were
-unclassified and are now in the rule lists. Since v90 the weapons'
+unclassified and are now in the rule lists. Since v91 the weapons'
 overheated effect and melee damage, the projectiles' detonation effects
 and flyby sound, and the items' and projectiles' material effects are
-Halo 1's (below, "Fixed"). The v90 run passes on Blood Gulch; on every
+Halo 1's (below, "Fixed"). The v91 run passes on Blood Gulch; on every
 multiplayer map (`H1_MAPS=all`) it left one row, the flamethrower's HUD,
-fixed in v90 with the flamethrower's weapon class.
+fixed in v91 with the flamethrower's weapon class.
 
 ## Why
 
@@ -110,7 +110,7 @@ retail tags the counterparts hold in the slot (Coagulation).
 | `bipd` | `unit.obje.attachments` (shield-down effect, flashlight lights) | `effe`, `ligh` | a bug, after h1-bipd-colour: Halo 1's attachments name the functions that lane owns |
 | `vehi` | seats, hover and friction points, gears, physics, root and unit words | values | h1-veh-phys |
 
-### Fixed (v90): the named slots
+### Fixed (v91): the named slots
 
 | Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
@@ -128,13 +128,13 @@ These slots are named in `arsenal` (`WEAPON_OVERHEATED`,
 `PROJECTILE_FLYBY_SOUND`, ...) rather than in the definitions, so the
 lanes editing the same files keep their names. Proven by unit test
 (`halo1_slots_replace_the_counterparts_references`) and, once run, by the
-audit's v90 output; not seen in a game.
+audit's v91 output; not seen in a game.
 
 An object whose conversion reaches itself (a projectile whose detonation
 effect creates it) is now refused at that point instead of recursed into
 (`Converter::objects_open`); the effect part is left out and reported.
 
-### Fixed (v90): flamethrower
+### Fixed (v91): flamethrower
 
 | Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
@@ -209,10 +209,10 @@ First run, Blood Gulch on Coagulation, converter v85 (the tables
 `vehi` 195 rows (all h1-veh-phys's), `weap` 76, `bipd` 71, `proj` 19,
 `eqip` 19, `scen` 9, `prt3` 8, `ligh` 7, `hlmt` 7, `shad` 4, `effe` 4,
 `deca` 3, `nhdt` 3, `jpt!` 1. Each row is classified above. The rows the
-v90 fixes remove are under "Fixed".
+v91 fixes remove are under "Fixed".
 
-v90, `H1_MAPS=all`: the thirteen multiplayer maps on this disc (the PC
+v91, `H1_MAPS=all`: the thirteen multiplayer maps on this disc (the PC
 maps are not on it), eleven on Beaver Creek and two on Coagulation, from
 393 to 603 tags and 2,104 to 3,541 leaks each. Every row but one was
 classified by the Blood Gulch rules: Derelict's (`carousel`) flamethrower
-named the shotgun's HUD, fixed in v90 (above).
+named the shotgun's HUD, fixed in v91 (above).
