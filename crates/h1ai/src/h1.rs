@@ -156,7 +156,7 @@ pub struct Squad {
     pub flags: u32,
     /// Unique leader type (`+0x2c`).
     pub unique_leader: u16,
-    /// Squad index this one maneuvers to, `-1` none (`+0x4c`).
+    /// Squad index this one maneuvers to, `-1` none (`+0x4e`).
     pub maneuver_to: i16,
     /// Seconds before the squad spawns (`+0x50`).
     pub delay: f32,
@@ -194,6 +194,32 @@ pub struct Platoon {
     pub name: String,
     /// Flags (`+0x20`).
     pub flags: u32,
+    /// Condition for reversing the initial attack/defend state (`+0x30`).
+    pub change: PlatoonTrigger,
+    /// Condition for arming the maneuver order (`+0x3c`).
+    pub maneuver: PlatoonTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatoonTrigger {
+    /// The retail condition enum. Zero disables the trigger.
+    pub condition: u16,
+    /// Platoon whose status is tested, or -1 for the whole encounter.
+    pub subject: i16,
+}
+
+impl PlatoonTrigger {
+    pub const DISABLED: Self = Self {
+        condition: 0,
+        subject: -1,
+    };
+
+    fn read(bytes: &[u8], at: usize) -> Self {
+        Self {
+            condition: u16_at(bytes, at),
+            subject: i16_at(bytes, at + 2),
+        }
+    }
 }
 
 /// A firing position (`0x18` bytes).
@@ -399,7 +425,7 @@ fn squad(sp: &Space, e: &[u8]) -> Result<Squad> {
         return_state: u16_at(e, 0x26),
         flags: u32_at(e, 0x28),
         unique_leader: u16_at(e, 0x2c),
-        maneuver_to: i16_at(e, 0x4c),
+        maneuver_to: i16_at(e, 0x4e),
         delay: f32_at(e, 0x50),
         groups: std::array::from_fn(|i| u32_at(e, 0x54 + 4 * i)),
         normal_count: i16_at(e, 0x7c),
@@ -451,6 +477,8 @@ fn encounter(sp: &Space, e: &[u8]) -> Result<Encounter> {
             .map(|p| Platoon {
                 name: fixed_str(&p[..0x20]),
                 flags: u32_at(p, 0x20),
+                change: PlatoonTrigger::read(p, 0x30),
+                maneuver: PlatoonTrigger::read(p, 0x3c),
             })
             .collect(),
         firing_positions: b(layout::ENC_FIRING_POSITIONS)?

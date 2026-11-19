@@ -19,7 +19,8 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_magically_see_unit` | Maps to `ai_magically_see_object` (305). Halo 2's callee `0x00273d30` accepts a bare squad index. `boot::h1_ai_control` enumerates member squads for a converted encounter and calls that routine for each. |
 | `ai_magically_see_players` | Halo 1 `0x00141f10` walks the player records and reads each unit at `+0x34`. Converted scripts use descriptor 300, a discarded `(ai) -> void` entry unused in the Halo 2 map survey. On a Halo 1 campaign map the hook evaluates the argument through `0x00209d50`, walks Halo 2's occupied player records and sends live player units to the same native awareness routine as 305. Halo 2 updates its existing perception records. |
 | `ai_attack`, `ai_defend` | Halo 1 `0x0013eee0` resolves an encounter to all its platoons and a squad to its own platoon. The compiler selects each member's attacking or defending order with `ai_set_orders` (333). The orders use the firing position groups at Halo 1 squad `+0x54` and `+0x60`. Halo 2 `0x00275cb0` dispatches the order to the given squad. |
-| `ai_retreat`, `ai_maneuver`, `ai_maneuver_enable` | The two explicit requests share Halo 1 callee `0x001404e0`. The converter retains the requested maneuver destinations at squad `+0x4c` where the squad budget permits and snapshots the original actors before issuing native migrations, including reciprocal and cyclic routes. Each platoon with a scripted enable switch gets one boolean HaloScript global, initially enabled, to gate its explicit migrations. |
+| `ai_retreat`, `ai_maneuver`, `ai_maneuver_enable` | The two explicit requests share Halo 1 callee `0x001404e0` and arm the same persistent latch as the tag trigger. The enable switch gates movement independently of the latch (`0x00140460`). The converter retains destinations at squad `+0x4e` before other empty squads and snapshots actors before moving them. |
+| Automatic platoon triggers | Read the two source conditions at platoon `+0x30` and `+0x3c`. The continuous script uses native squad counts and vitality, the nine thresholds from Halo 1 `0x0013af30`, and the specified platoon or whole encounter. At `0x0013b080` the maneuver latches before the combat-state check. Native order dispatch applies the opposite of the initial combat order, and native actor migration and dialogue handle triggered maneuvers. |
 | `ai_follow_target_players`, `ai_follow_target_ai`, `ai_follow_target_unit`, `ai_follow_target_disable` | The converted registry stores the target separately from combat orders, as the encounter setters at Halo 1 `0x000efd90`–`0x000eff19` do. It resolves a live target each tick, including targets outside the encounter, and refreshes Halo 2's native area set at `0x00204450`. The collector uses squad `+0x80` as the target object. The area iterator at `0x00205039` reads that field while retaining the current combat order. |
 | `ai_follow_distance` | The VM evaluates the radius each time the script sets it. The value applies to the next area calculation and to automatic migration. Halo 1 uses 2 m if the assigned distance is nonpositive (`0x0013cf2a`–`0x0013cf45`). |
 | `ai_automatic_migration_target` | Preserves Halo 1 squad flag `0x20` and the separately enabled destination bit (setter `0x00140014`). The follow tick compares the converted firing positions of eligible squads, applies Halo 1's hysteresis against the farthest occupied candidate (`0x0013cf45`), and moves all participating actors into the selected squad through `0x001e3400`. Disabling a destination still lets its current actors move elsewhere. |
@@ -73,9 +74,10 @@ The source playfight firing and aiming adjustments at `0x001616ea`
 and `0x00162492` still need Halo 2 equivalents. Halo 1's script-held
 initial combat delay (squad flag `0x8`) is separate from Halo 2's timer.
 Computed `ai_timer_expire` selections still need their source flag data.
-Automatic platoon triggers and `ai_go_to_vehicle_override` remain open.
-Maneuvers and follow-driven migrations need their destination squads
-retained by the converter. The dynamic area collector requires the
+The aim/movement-state override on Halo 1 platoon flag `0x1` and
+`ai_go_to_vehicle_override` remain open. The converter reserves space for
+migration destinations first. A lean rebuild that removes empty squads
+can still remove a destination. The dynamic area collector requires the
 following squad to have an order.
 
 Conversations and command lists have separate converter lanes.

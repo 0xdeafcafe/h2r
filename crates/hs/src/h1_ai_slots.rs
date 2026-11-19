@@ -6,6 +6,9 @@
 //! fixed-signature evaluator. The retail descriptor still supplies the
 //! result type. See docs/halo1/ai-control.md.
 
+mod platoons;
+pub use platoons::{PlatoonRule, PlatoonTrigger, decode_words, encode_words};
+
 use crate::casts::types::{AI, BOOLEAN, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
 
 pub const VEHICLE_COUNT: u16 = 241;
@@ -20,6 +23,7 @@ pub const VEHICLE_WIDTH: u16 = 11;
 pub const FOLLOW_WORDS: u16 = 300;
 pub const MIGRATION_WORDS: u16 = 12;
 pub const DEFAULT_FOLLOW_RADIUS: f32 = 2.0;
+pub const MAX_PLATOON_TEXT: usize = 0xffff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registry {
@@ -151,6 +155,8 @@ pub enum Operation {
     FollowDistance = 29,
     FollowTick = 30,
     AutomaticMigrationTarget = 31,
+    PlatoonTick = 32,
+    SetManeuver = 33,
 }
 
 impl Operation {
@@ -193,6 +199,8 @@ impl Operation {
             29 => Self::FollowDistance,
             30 => Self::FollowTick,
             31 => Self::AutomaticMigrationTarget,
+            32 => Self::PlatoonTick,
+            33 => Self::SetManeuver,
             _ => return None,
         })
     }
@@ -234,7 +242,8 @@ impl Operation {
             Self::FreeUnits => &[OBJECT_LIST],
             Self::MigrateUnits => &[OBJECT_LIST, AI],
             Self::MigrateSpeak => &[AI, AI, STRING],
-            Self::Maneuver => &[STRING],
+            Self::Maneuver | Self::PlatoonTick => &[STRING],
+            Self::SetManeuver => &[STRING, BOOLEAN],
             Self::VehicleEncounter | Self::VehicleActors => &[UNIT, AI, LONG],
             Self::VehicleDistance => &[UNIT, REAL, LONG],
             Self::VehicleActorType => &[UNIT, ACTOR_TYPE, LONG],

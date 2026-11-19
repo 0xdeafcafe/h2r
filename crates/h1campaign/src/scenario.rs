@@ -1062,49 +1062,54 @@ pub fn write(
         }
         _ => Vec::new(),
     };
-    // h1ai keeps squads with no starting locations (empty) so scripts can
-    // name them; only those the scripts name are worth their room.
-    let mut named = tables
+    // Reserve exact destinations before ordinary script names. Halo 2's
+    // native migration accepts bare squad indices, so a group is no fallback.
+    let named = tables
         .as_ref()
         .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
         .unwrap_or_default()
         .into_iter()
         .map(|n| n.to_ascii_lowercase())
         .collect::<std::collections::BTreeSet<_>>();
-    // They go first when the level would pass the engine's squad cap
-    // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
-    // squad's encounter, its squad group ([`hook_value`]).
-    named.extend(h1ai::control::maneuver_targets(&ai_src, &requests));
-    named.extend(h1ai::control::automatic_migration_targets(&ai_src));
-    let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
-        q.starting_locations.is_empty()
-            && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
+    let mut destinations = h1ai::control::maneuver_targets(&ai_src, &requests);
+    destinations.extend(h1ai::control::automatic_migration_targets(&ai_src));
+    let mut candidates = Vec::new();
+    let mut placed = 0;
+    for encounter in &ai_src.encounters {
+        for squad in &encounter.squads {
+            if squad.starting_locations.is_empty() {
+                let name = format!("{}/{}", encounter.name, squad.name).to_ascii_lowercase();
+                let priority = destinations.contains(&name);
+                if priority || named.contains(&name) {
+                    candidates.push((!priority, name));
+                }
+            } else {
+                placed += 1;
+            }
+        }
+    }
+    // Stable sorting retains the source ordering within each priority.
+    candidates.sort_by_key(|&(ordinary, _)| ordinary);
+    let remaining = if lean.leaves_out(crate::Lean::EmptySquads) {
+        0
+    } else {
+        MAX_SQUADS.saturating_sub(placed)
     };
-    let placed = ai_src
-        .encounters
-        .iter()
-        .flat_map(|e| &e.squads)
-        .filter(|q| !q.starting_locations.is_empty())
-        .count();
-    let empty = ai_src
-        .encounters
-        .iter()
-        .flat_map(|e| e.squads.iter().map(move |q| (e, q)))
-        .filter(|(e, q)| empty_named(e, q))
-        .count();
-    let keep_empty = !lean.leaves_out(crate::Lean::EmptySquads) && placed + empty <= MAX_SQUADS;
-    if !keep_empty && empty > 0 {
+    let dropped = candidates.len().saturating_sub(remaining);
+    if dropped != 0 {
+        let destinations = candidates.iter().skip(remaining).filter(|(ordinary, _)| !ordinary).count();
         report.dropped.push(format!(
-            "ai: {empty} empty squads the scripts name left out ({placed} placed; cap {MAX_SQUADS}); the scripts name their squad groups"
+            "ai: {dropped} empty squads left out, including {destinations} migration destinations ({placed} placed, cap {MAX_SQUADS})"
         ));
     }
+    let retained_empty: std::collections::BTreeSet<_> = candidates.into_iter()
+        .take(remaining).map(|(_, name)| name).collect();
     let mut retained = ai_src.clone();
     for e in &mut retained.encounters {
         let encounter = e.name.clone();
         e.squads.retain(|q| {
             !q.starting_locations.is_empty()
-                || (keep_empty
-                    && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
+                || retained_empty.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase())
         });
     }
     let ai_options = h1ai::convert::Options::default();

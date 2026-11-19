@@ -10,6 +10,7 @@ use hs::h1_ai_slots::{self, Operation};
 mod actors;
 mod auto_migration;
 mod follow;
+mod platoons;
 mod playfight;
 mod preference;
 mod speech;
@@ -317,6 +318,8 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
                 actors::teleport(&cx, args[0], op == Operation::TeleportUnsupported).await?;
             }
             Operation::Maneuver => actors::maneuver(&cx, args[0]).await?,
+            Operation::PlatoonTick => platoons::tick(&cx, args[0]).await?,
+            Operation::SetManeuver => platoons::set(&cx, args[0], args[1] as u8 != 0)?,
             Operation::PreferAi | Operation::PreferPlayer | Operation::ClearPreference => {
                 preference::set(&cx, op, &args)?;
             }

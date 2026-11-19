@@ -335,6 +335,7 @@ pub fn compile_with_ai(
         resolves,
         ai_control,
         maneuver_switches: Default::default(),
+        maneuver_latches: Default::default(),
         ai_registries: Vec::new(),
         ai_scripts: Default::default(),
         ai_definitions: Vec::new(),
@@ -359,6 +360,7 @@ pub fn compile_with_ai(
     }
     c.out.scripts.append(&mut c.ai_definitions);
     c.install_ai_ticks()?;
+    c.install_platoon_tick()?;
     c.out.references = t
         .references
         .iter()
@@ -484,6 +486,7 @@ struct Compiler<'a> {
     resolves: &'a dyn Fn(&str, &str) -> bool,
     ai_control: Option<&'a h1ai::control::Control>,
     maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
+    maneuver_latches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
     ai_registries: Vec<(hs::h1_ai_slots::Registry, u16)>,
     ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
     ai_definitions: Vec<[u8; 40]>,
