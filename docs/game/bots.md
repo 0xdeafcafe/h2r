@@ -740,6 +740,152 @@ then a bot plays Territories as Slayer.
 takes them by walking over or needs the action button held is a game-run
 check (§11.2); the bot does not press it.
 
+### 3.8 Glitches (built, not checked in a game)
+
+The user asked: "add setting so that clankers can do glitches (super
+bounce, sword fly, etc) if turned on". The Clankers page has a
+**Glitches** row (`clankers.glitches`): **Off** (the default), **Some**
+(the occasional show-off) and **Lots** (whenever there is an opening).
+
+A glitch is the same button presses a player makes, with the same timing,
+on the bot's pad. Nothing in the engine is changed or called. The tricks
+work only because the recomp runs retail 1.0's code: no title update has
+patched sword flying or the super bounce out (title-updates.md). **Not one
+has been seen working in a game yet.** Each needs the checklist below.
+
+**The code.** `bots::glitches` is pure: each trick is a list of timed
+presses (`glitches::plan`, a `Macro` of `Beat`s), the rules for when one
+fits (`glitches::opening`) and the show-off clock (`glitches::ShowOff`).
+The fight tricks run in the noob combo's scheduler
+(`weapons::Combo::step`, its `ComboIn::glitch` gate); the show-offs run
+in the mind's roaming (`Mind::step`, `Stunt`). The setting follows the
+Taunts path: store, `clankers::Want::read`, the driver's shared
+`AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
+phantoms alike.
+
+**The tricks.** Presses at 30 ticks a second, as Legendary does them:
+
+| Trick | Presses (tick: button) | When | Source |
+|---|---|---|---|
+| BXR | 0 B, 5 X (held), 7 R | in melee reach with a gun whose magazine is full or has no reserve | [Halopedia, BXR](https://www.halopedia.org/BXR): B, then X once the melee lands (it cancels the melee's recovery), then R; full magazine only, else X reloads; [Bungie.net forum](https://www.bungie.net/en/Forums/Post/414304): "hold X while pressing R" |
+| BYYR | 0 B, 5 Y, 8 Y, 10 R | the same with a part-empty magazine and a second gun | Halopedia, BXR: "press Y twice instead of pressing X once" |
+| BXB | 0 B, 5 X, 7 B | the same with nothing in the magazine and nothing to load | Bungie.net forum: "like BXR, but after X press B again" |
+| Double shot | 0 R, 4 R (held), 6 X | a battle rifle, 6 rounds loaded and a reserve, the target in its range | Bungie.net forum: RRX, "holding the second R while pressing X"; "on a last clip it just shoots twice" |
+| Quad shot | a double shot, 9 Y, 12 Y, then a double shot from 15 | as the double shot, 12 rounds and a second gun | Bungie.net forum: "RRX, YY, RRX"; YY swaps back before the reload |
+| Sword flying | 0 Y, 1 X, 3 R, 11 A | the sword the other weapon, the gun in hand on target (its reticle red) past the sword's lunge, up to 20 units | [Halopedia, Sword flying](https://www.halopedia.org/Sword_flying): Y, X, RT "quickly in that order", the reticle red on the gun first; the window is 0.066 s at 30 fps (two ticks); A in the lunge goes higher |
+| Crouch jump | 0 A, 7 crouch (10 ticks) | roaming, now and then | superbounce.md, "The crouch height term": a crouch change in the air lifts the feet |
+| Super bounce | at a measured spot: stand still, A, hands off but a light push toward +y, land; again from a nudged place | roaming, a spot within 60 units | superbounce.md (traced; the spot's table is `glitches::spots`) |
+
+The 5 ticks from B to the melee landing (`MELEE_CONNECT`) and the 4 for
+the battle rifle's burst (`BURST`) are not traced. They are starting
+points to tune in a game run. The battle rifle is told from the tag: once
+per pull, one zoom level, a magazine of 30 or more.
+
+**Skill.** Each press after the first is late by up to 0 ticks
+(Legendary), 1 (Heroic), 2 (Normal) or 1 to 3 (Easy). Late presses miss
+windows the way a player's do: Easy's sword fly often lands its X outside
+the two-tick window and is an ordinary switch. Skill also scales how
+often it tries: Easy 40% of the setting's chance, Normal 70%, Heroic 90%,
+Legendary all of it.
+
+**How often.** A fight trick is rolled for at most once a second while
+one fits: 15% a roll on Some, 60% on Lots (times the skill's share), and
+not again for 2 s after one. A show-off comes every 45 to 90 s of calm on
+Some and every 8 to 20 s on Lots (longer at lower skill). A super bounce
+gets 3 tries on Some and 8 on Lots, then the bot gives the spot up.
+
+**Never:**
+
+- with the setting Off;
+- carrying the flag, the bomb or the ball, or with an objective to play
+  (show-offs);
+- when it would obviously lose: shields down (recovering), withdrawing,
+  or another enemy within 8 units; a sword fly never at a target with
+  another enemy within 2.5;
+- before its reaction to the target has passed;
+- a show-off with anyone in view, or within 1.5 s of seeing someone.
+
+While a trick runs the mind's own melee, reload, switch and grenades
+wait, and the trigger is the trick's.
+
+**The super bounce spots** (`glitches::spots::SPOTS`) hold only measured
+spots. Each spot has a map, the place to stand, a spread to nudge within
+between tries, a drift direction and a source. There is one:
+
+| Map | Stand at (x, y, z) | Drift | Source |
+|---|---|---|---|
+| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | superbounce.md: the crease where the ramp meets the floor, 5 bounces in 20 standing-jump landings; the launch is a pinch between faces at y 4.12 and 3.94 |
+
+The bot walks to 0.8 units short of the spot (lower y), steps onto it,
+stands still for 4 ticks, jumps with the stick let go, and pushes the
+stick 0.15 toward +y in the air, because every traced bounce came in
+moving slowly toward +y. Not every landing bounces, so it tries again from
+a nudged place. It knows it bounced when it rises 0.4 units again after
+starting to fall: a plain landing never does. Community guides
+([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
+give spots on most maps by landmark only, with a forced crouch first.
+superbounce.md found the crouch is not needed. A spot goes in the table
+only once a game run has found and traced it.
+
+**Not built:**
+
+- **Butterfly**: a two-player trick (one jumps on the other's head while
+  the bottom player, sword in hand, presses X and B), not one bot's
+  presses.
+- **BXL, LX, RRBX**: less well documented.
+- Super bounces off moving vehicles (Burial Mounds' Warthog launch).
+
+One community note matters here. The Bungie.net post says BXR "works as
+a reload glitch from any range, but only off host". Clankers play on the
+host. Whether the cancels work for a host-side player is the first thing
+to check.
+
+**Tests** (`cargo test -p bots glitches`, and
+`cargo test -p boot clankers`): each trick's presses and timing at
+Legendary; lateness within each skill's slop and never out of order;
+sword flying clean at Legendary and Heroic and often missed on Easy; the
+gate (Off never, never carrying, losing or before reacting, the trick
+that fits each moment); the combo scheduler playing B, X, R in order,
+often on Lots, less on Some, never on Off; the show-off clock (Off never,
+Lots 25 to 80 in ten calm minutes, never when not calm); the bounce run
+(walks on, standing jump, drift, a launch ends it, plain and caught
+landings retry until the tries run out); a roaming mind crouch jumping on
+Lots and never on Off; the setting off by default and reaching the
+driver.
+
+**Game run (checklist).** For the user. Use one Clanker against you on
+Legendary with Glitches on Lots. The agent API reads what happened:
+`world.object player.N physics` (havok_pos, havok_velocity, airborne,
+crouch), `havok.contacts {object: player.N}` and `trace.start player.N`
+for a row every tick ([agent-api.md](../runtime/agent-api.md)). Each line
+is a yes or no:
+
+1. **Off.** Glitches Off: in five minutes no bot does any of the below.
+2. **BXR.** Give the bot a battle rifle and let it get close. It melees
+   and fires at once, with no melee recovery between. Your shields drop
+   on the B and you die on the R. If the shot waits out the melee
+   anyway, try `MELEE_CONNECT` 3 to 8; if it never cancels, note "host".
+3. **BYYR and BXB.** The same with a part-empty magazine and a second
+   gun (two switches, then the shot), and with an empty SMG and no
+   reserve (two melees close together).
+4. **Double and quad shot.** At mid range with a battle rifle: two bursts
+   leave almost together (six rounds), then it reloads. With a second
+   gun, two switches and two more bursts. Tune `BURST` if the second pull
+   is ignored.
+5. **Sword flying.** Give it a battle rifle in hand and the sword as the
+   other weapon. Stand 5 to 15 units off. It switches and flies at you
+   much further than the sword's own lunge, higher with the A. On Easy
+   it mostly just switches.
+6. **Crouch jump.** Calm on Lots: now and then a jump with the legs
+   tucked at the top.
+7. **Super bounce.** Ascension, calm on Lots, nobody near the ramp: the
+   bot walks to the crease, jumps in place a few times, and one landing
+   throws it up (trace: two opposing contacts against the fixed body on
+   the launch tick, then +8 to +14 units a second up). With Some it gives
+   up after three tries.
+8. **Never.** It does none of these carrying the flag or the ball, with
+   its shields down, or with a second enemy close by.
+
 ## 4. Way in 1: local slots
 
 ### 4.1 The bot's pad (traced, Repo)
@@ -1663,6 +1809,7 @@ layout checks and the `Page` table tests. These are its rows:
 | Aggression | Calm, Normal, Wild | `clankers.aggression` |
 | Aim style | Steady, Twitchy | `clankers.aim_style` |
 | Taunts | On, Off | `clankers.taunts` |
+| Glitches | Off, Some, Lots | `clankers.glitches` (§3.8) |
 
 **Mixed** gives each bot a difficulty drawn around Normal. Per-bot
 difficulty can come later, as a sub-page per bot; the first page does not
@@ -3064,12 +3211,13 @@ list for the user to play (§11).
      - `team`: Auto-balance, Red or Blue;
      - `aggression`: Calm, Normal or Wild;
      - `aim_style`: Steady or Twitchy;
-     - `taunts`: Off or On; default On.
+     - `taunts`: Off or On; default On;
+     - `glitches`: Off, Some or Lots; default Off (§3.8, used).
 
      Teams, Aggression, Aim style and Taunts are saved but not used yet:
      they wait for the lobby teams (stage 6), the utility layer and aim
      styles (stages 4 and 5), and the emotes (stage 4).
-   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s on the
+   - **The page** is a kit screen, `clankers`: eight `ChoiceRow`s on the
      lobby's own settings dialog, Quick Options, inside and out
      (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
      Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
@@ -3189,8 +3337,8 @@ list for the user to play (§11).
         Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
         Options".
      2. Press A on it: the Clankers page opens over the dialog, with
-        seven rows and a description of the focused row. B goes back to
-        Game Setup.
+        eight rows (Glitches last) and a description of the focused row.
+        B goes back to Game Setup.
      3. Set Clankers to On and Count to 2 (the log says `clankers:
         Clanker 1 on (Normal)`). In Split Screen, bots join on the
         players screen, so back out of the lobby to it: "Clanker 1" and
@@ -3932,6 +4080,8 @@ Each item is for the user to play, or for a coordinator run.
     surface once it is built).
 11. Whether an empty search makes the game host in each playlist type, or
     `MatchProposed` with `host = me` is needed (§8.4).
+12. Every glitch (§3.8): none has been seen working in a game. Its
+    checklist is in §3.8.
 
 ### 11.1 The brain in play (checklist)
 

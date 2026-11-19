@@ -1186,3 +1186,31 @@ fn duplicate_input_frames_reuse_the_same_simulation_tick_pad() {
         }
     }
 }
+
+/// Crouch jumps (a jump, then crouch once A is up) a lone bot does over
+/// ten calm minutes with `setting`.
+fn hops(setting: crate::glitches::Glitches) -> usize {
+    let mut m = Mind::new(Skill::Legendary, 11);
+    m.glitches = setting;
+    let mut count = 0;
+    let mut jumped = false;
+    for tick in 0..10 * 60 * 30 {
+        let pad = look(&mut m, X, vec![], tick, None);
+        if pad.buttons.contains(JUMP) {
+            jumped = true;
+        } else if jumped && pad.buttons.contains(CROUCH) {
+            count += 1;
+            jumped = false;
+        }
+    }
+    count
+}
+
+#[test]
+fn glitches_off_never_shows_off_and_lots_crouch_jumps_often_when_calm() {
+    use crate::glitches::Glitches;
+    assert_eq!(hops(Glitches::Off), 0);
+    let lots = hops(Glitches::Lots);
+    assert!(lots >= 20, "{lots}");
+    assert!(hops(Glitches::Some) < lots);
+}

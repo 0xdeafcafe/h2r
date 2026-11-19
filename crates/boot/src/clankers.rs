@@ -6,7 +6,7 @@
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]), so they persist and
 //! `h2 settings` lists them.
 //!
-//! **The page** is a kit screen ([`page`]) of seven choice rows
+//! **The page** is a kit screen ([`page`]) of eight choice rows
 //! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
 //! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
 //! Options page is: Quick Options' panel, header and list (its
@@ -171,8 +171,21 @@ pub static TAUNTS: Def = def(
     Value::Bool(true),
 );
 
+pub static GLITCHES: Def = def(
+    "clankers.glitches",
+    "Glitches",
+    "Whether bots use Halo 2's glitches: BXR, double shots, sword flying, \
+     super bounces. Some is the occasional show-off; Lots whenever they can.",
+    Kind::Choice(&[
+        choice(0, "off", "Off"),
+        choice(1, "some", "Some"),
+        choice(2, "lots", "Lots"),
+    ]),
+    Value::Int(0),
+);
+
 /// Every Clankers setting, in the page's order.
-pub static DEFS: [&Def; 7] = [
+pub static DEFS: [&Def; 8] = [
     &ENABLED,
     &COUNT,
     &DIFFICULTY,
@@ -180,9 +193,10 @@ pub static DEFS: [&Def; 7] = [
     &AGGRESSION,
     &AIM_STYLE,
     &TAUNTS,
+    &GLITCHES,
 ];
 
-static ROWS: [ChoiceRow; 7] = [
+static ROWS: [ChoiceRow; 8] = [
     ChoiceRow::new(
         &ENABLED,
         "Clankers",
@@ -206,6 +220,11 @@ static ROWS: [ChoiceRow; 7] = [
         "Steady tracks smoothly; Twitchy flicks.",
     ),
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
+    ChoiceRow::new(
+        &GLITCHES,
+        "Glitches",
+        "Whether they BXR, sword fly and super bounce.",
+    ),
 ];
 
 /// The Game Setup row's text; the page's title stays [`TITLE`].
@@ -219,7 +238,7 @@ pub const ROW_HELP: &str =
 pub const TITLE: &str = "CLANKERS";
 
 /// The Clankers page over `store`: a dialog of its rows on Quick Options
-/// (its seven rows fit the eleven its list shows).
+/// (its eight rows fit the eleven its list shows).
 pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
@@ -561,6 +580,9 @@ struct Clanker {
     taunts: Arc<AtomicBool>,
     /// Its taunt with Taunts on: the default, or a roster bot's own.
     taunt: f32,
+    /// The page's Glitches (a [`GLITCHES`] value; shared by every
+    /// Clanker of the driver).
+    glitches: Arc<AtomicU8>,
 }
 
 impl local::PadSource for Clanker {
@@ -574,17 +596,21 @@ impl local::PadSource for Clanker {
         } else {
             0.0
         };
+        self.brain.mind.glitches =
+            bots::glitches::Glitches::from_index(self.glitches.load(Ordering::Relaxed));
         self.brain.pad(f)
     }
 }
 
 /// What the page asks for: how many bots (0 when off) at which
-/// difficulty, and whether they taunt.
+/// difficulty, whether they taunt, and their glitches (a [`GLITCHES`]
+/// value: 0 Off, 1 Some, 2 Lots).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub count: usize,
     pub difficulty: i64,
     pub taunts: bool,
+    pub glitches: u8,
 }
 
 impl Want {
@@ -593,6 +619,7 @@ impl Want {
         count: 0,
         difficulty: 1,
         taunts: true,
+        glitches: 0,
     };
 
     pub fn read(store: &Store) -> Want {
@@ -606,10 +633,15 @@ impl Want {
             _ => 1,
         };
         let taunts = !matches!(store.get(TAUNTS.key), Some(Value::Bool(false)));
+        let glitches = match store.get(GLITCHES.key) {
+            Some(Value::Int(g)) => g.clamp(0, 2) as u8,
+            _ => 0,
+        };
         Want {
             count: if on { count } else { 0 },
             difficulty,
             taunts,
+            glitches,
         }
     }
 }
@@ -652,6 +684,7 @@ pub struct Driver {
     phantoms: Option<Phantoms>,
     own: Mutex<Vec<Own>>,
     taunts: Arc<AtomicBool>,
+    glitches: Arc<AtomicU8>,
     rosters: Option<Arc<dyn Rosters>>,
     roster: Mutex<RosterState>,
     /// The last [`Want`] applied, for applying again when a roster comes
@@ -693,6 +726,7 @@ impl Driver {
             phantoms: None,
             own: Mutex::new(Vec::new()),
             taunts: Arc::new(AtomicBool::new(true)),
+            glitches: Arc::new(AtomicU8::new(0)),
             rosters: None,
             roster: Mutex::default(),
             last: Mutex::new(None),
@@ -1003,6 +1037,7 @@ impl Driver {
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         self.taunts.store(want.taunts, Ordering::Relaxed);
+        self.glitches.store(want.glitches, Ordering::Relaxed);
         // Fewer: the last added go first. A Clankermatch's local bots are
         // its first, so they are the last to go.
         while own.len() > seating.seated {
@@ -1243,6 +1278,7 @@ impl Driver {
             skill: Arc::clone(&s),
             taunts: Arc::clone(&self.taunts),
             taunt,
+            glitches: Arc::clone(&self.glitches),
         };
         (c, s)
     }
@@ -1504,7 +1540,13 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
             }
         }
     };
-    for key in [ENABLED.key, COUNT.key, DIFFICULTY.key, TAUNTS.key] {
+    for key in [
+        ENABLED.key,
+        COUNT.key,
+        DIFFICULTY.key,
+        TAUNTS.key,
+        GLITCHES.key,
+    ] {
         store.on_change(key, run.clone());
     }
     for line in d.apply(Want::read(store)) {
