@@ -29,9 +29,42 @@ struct Site {
     /// The bot has had sight of this empty pad since the pickup.
     timing_cycle: bool,
     learned: Option<u32>,
+    model: Option<u32>,
+    indirect: Option<(bool, u32)>,
+    broadcast: Option<(bool, u32)>,
 }
 
 impl Site {
+    /// Probability at arrival. A view now is the only certain observation.
+    fn probability(&self, tick: u32, arrival: f32, sense: f32) -> f32 {
+        let age = tick.wrapping_sub(self.last_seen);
+        if self.watched && age == 0 {
+            return if self.present { 1.0 } else { 0.0 };
+        }
+        let period = self.learned.or(self.supply.respawn).unwrap_or(1800) as f32;
+        let (present, since, indirect) = self
+            .indirect
+            .filter(|&(_, t)| tick.wrapping_sub(t) < age || !self.watched && t == self.last_seen)
+            .map_or((self.present, self.last_seen, false), |(up, t)| {
+                (up, t, true)
+            });
+        let elapsed = tick.wrapping_sub(since) as f32;
+        if present {
+            let confidence = if indirect { 0.78 } else { 0.94 };
+            return 0.52 + (confidence - 0.52) / (1.0 + elapsed / period);
+        }
+        let cycle = self
+            .taken
+            .filter(|_| !indirect)
+            .map_or(elapsed, |t| tick.wrapping_sub(t) as f32);
+        // Timing a pickup gives a head start, but a fresh empty-pad
+        // sighting still overrides an overdue estimate.
+        let estimate = (cycle + arrival * sense) / (period * (1.25 - 0.25 * sense));
+        let rise = estimate.clamp(0.0, 1.0).powi(2);
+        let freshness = ((elapsed + arrival * sense) / (0.15 * period)).min(1.0);
+        (if indirect { 0.19 } else { 0.04 }) + 0.74 * rise * freshness
+    }
+
     fn observe(&mut self, tick: u32, item: Option<Supply>) {
         let continuous = self.watched && tick.wrapping_sub(self.last_seen) <= 30;
         self.timing_cycle &= continuous;
@@ -55,6 +88,7 @@ impl Site {
             self.timing_cycle = continuous;
             self.present = false;
         }
+        self.indirect = None;
         self.watched = true;
         self.last_seen = tick;
     }
@@ -95,8 +129,76 @@ impl Timers {
                     taken: None,
                     timing_cycle: false,
                     learned: None,
+                    model: None,
+                    indirect: None,
+                    broadcast: None,
                 });
             }
+        }
+    }
+
+    pub(super) fn carriers(&mut self, p: &crate::brain::Perception, me: Me) {
+        for site in &mut self.0 {
+            if site.watched && site.present {
+                if let Some(pk) = p.pickups.iter().find(|pk| pk.id == site.supply.object) {
+                    site.model = Some(pk.gun.def);
+                }
+            }
+        }
+        let models = me
+            .arms
+            .into_iter()
+            .flat_map(|a| [a.held, a.other, a.left])
+            .flatten()
+            .map(|g| g.def)
+            .chain(p.observations.contacts.iter().filter_map(|c| c.weapon));
+        for model in models {
+            let mut matching = self.0.iter_mut().filter(|s| s.model == Some(model));
+            if let Some(site) = matching.next()
+                && matching.next().is_none()
+                && !site.watched
+            {
+                site.indirect = Some((false, p.tick));
+            }
+        }
+    }
+
+    pub(super) fn reports(&mut self, tick: u32) -> Vec<(Supply, bool)> {
+        let mut out = Vec::new();
+        for s in &mut self.0 {
+            if s.watched
+                && s.last_seen == tick
+                && s.broadcast
+                    .is_none_or(|(up, t)| up != s.present || tick.wrapping_sub(t) >= 60)
+            {
+                out.push((s.supply, s.present));
+                s.broadcast = Some((s.present, tick));
+            }
+        }
+        out
+    }
+
+    pub(super) fn hear(&mut self, supply: Supply, present: bool, tick: u32, now: u32) {
+        if let Some(s) = self.0.iter_mut().find(|s| s.supply.site == supply.site) {
+            if now.wrapping_sub(tick) < now.wrapping_sub(s.last_seen)
+                && s.indirect
+                    .is_none_or(|(_, t)| now.wrapping_sub(tick) < now.wrapping_sub(t))
+            {
+                s.indirect = Some((present, tick));
+            }
+        } else {
+            self.0.push(Site {
+                supply,
+                present,
+                last_seen: tick,
+                watched: false,
+                taken: None,
+                timing_cycle: false,
+                learned: None,
+                model: None,
+                indirect: Some((present, tick)),
+                broadcast: None,
+            });
         }
     }
 
@@ -120,32 +222,17 @@ impl Timers {
                 let s = site.supply;
                 // The ordinary arms plan handles weapons actually on the floor,
                 // including whether to drop a weapon and press the action button.
-                if !s.powerup && (has_power || site.present || me.arms.is_none()) {
+                let on_pad = site.present && site.watched && site.last_seen == tick;
+                if !s.powerup && (has_power || on_pad || me.arms.is_none()) {
                     return None;
                 }
-                let dest = if site.present { s.at } else { s.spawn };
+                let dest = if on_pad { s.at } else { s.spawn };
                 let dist = distance(me.position, dest);
                 if dist > 9.0 + 25.0 * sense || avoid(dest) {
                     return None;
                 }
-                let wait_cost = if site.present {
-                    if tick.wrapping_sub(site.last_seen) > 90 {
-                        return None;
-                    }
-                    0.0
-                } else {
-                    let elapsed = tick.wrapping_sub(site.taken?);
-                    // A witnessed period accounts for the variant's actual
-                    // respawn behavior. The placement value is an estimate.
-                    let interval = site.learned.or(s.respawn)?;
-                    let left = i64::from(interval) - i64::from(elapsed);
-                    let lead = (dist * 6.0 + 15.0) * sense;
-                    if left < -60 || left as f32 > lead {
-                        return None;
-                    }
-                    left.max(0) as f32 / 6.0
-                };
-                Some((dist + wait_cost, dest))
+                let chance = site.probability(tick, dist * 6.0, sense);
+                (chance >= 0.56).then_some((dist + 18.0 * (1.0 - chance), dest))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, p)| p)

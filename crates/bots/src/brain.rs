@@ -72,6 +72,8 @@ pub struct Observations {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Contact {
+    /// Model of the weapon visibly in hand.
+    pub weapon: Option<u32>,
     pub id: u32,
     pub aim: Vec3,
     pub shield: Option<f32>,

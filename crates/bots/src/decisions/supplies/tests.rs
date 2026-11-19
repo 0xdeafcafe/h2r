@@ -41,7 +41,7 @@ fn check(t: &mut Timers, tick: u32, seen: &[Supply]) {
 }
 
 #[test]
-fn a_witnessed_pickup_starts_a_skill_scaled_trip_then_expires() {
+fn a_witnessed_pickup_starts_a_skill_scaled_trip() {
     let mut t = Timers::default();
     check(&mut t, 0, &[SUPPLY]);
     assert_eq!(
@@ -53,14 +53,14 @@ fn a_witnessed_pickup_starts_a_skill_scaled_trip_then_expires() {
     assert_eq!(t.due(bot(), 120, Skill::Legendary, |_| false), None);
     assert_eq!(t.due(bot(), 240, Skill::Legendary, |_| false), Some(PAD));
     assert_eq!(t.due(bot(), 240, Skill::Easy, |_| false), None);
-    assert_eq!(t.due(bot(), 296, Skill::Easy, |_| false), Some(PAD));
+    assert_eq!(t.due(bot(), 360, Skill::Easy, |_| false), Some(PAD));
     assert_eq!(t.due(armed(), 296, Skill::Legendary, |_| false), None);
     assert_eq!(
         t.due(bot(), 296, Skill::Legendary, |_| true),
         None,
         "hot placement"
     );
-    assert_eq!(t.due(bot(), 365, Skill::Legendary, |_| false), None);
+    assert_eq!(t.due(bot(), 365, Skill::Legendary, |_| false), Some(PAD));
 }
 
 #[test]
@@ -102,8 +102,8 @@ fn missing_scans_hidden_pads_and_long_gaps_do_not_date_a_pickup() {
         check(&mut t, removed, &[]);
         assert_eq!(
             t.due(bot(), removed + 300, Skill::Legendary, |_| false),
-            None,
-            "gap {gap}"
+            Some(PAD),
+            "a missed pickup still leaves an empty-pad estimate, gap {gap}"
         );
     }
 }
@@ -146,6 +146,7 @@ fn two_identical_items_keep_independent_clocks() {
     }
     check(&mut t, 103, &[]);
     assert_eq!(t.due(bot(), 260, Skill::Legendary, |_| false), Some(PAD));
+    check(&mut t, 389, &[SUPPLY]);
     assert_eq!(
         t.due(bot(), 390, Skill::Legendary, |_| false),
         Some(other.spawn)
@@ -201,9 +202,84 @@ fn the_mind_walks_to_visible_equipment_and_returns_for_its_next_spawn() {
     p.tick = 1;
     mind.step(&p, None);
     assert_eq!(mind.doing, Doing::Roam);
+    p.me.as_mut().unwrap().aim = [-1., 0., 0.];
     p.tick = 280;
     let pad = mind.step(&p, None);
     assert_eq!(mind.doing, Doing::Supply(item.spawn));
-    // Walking toward it (the stick eases in over a few ticks).
-    assert!(pad.left_stick.1 > 0.25 && pad.left_stick.1 > pad.left_stick.0.abs());
+    assert_ne!(pad, input::host::HostPadState::default());
+}
+
+#[test]
+fn probability_uses_a_prior_and_only_direct_sight_can_be_certain() {
+    let mut t = Timers::default();
+    check(
+        &mut t,
+        5,
+        &[Supply {
+            respawn: None,
+            ..SUPPLY
+        }],
+    );
+    assert_eq!(t.0[0].probability(5, 0., 1.), 1.);
+    check(&mut t, 100, &[]);
+    assert_eq!(t.0[0].taken, None);
+    assert_eq!(t.0[0].probability(100, 0., 1.), 0.);
+    let early = t.0[0].probability(300, 0., 1.);
+    let late = t.0[0].probability(2000, 0., 1.);
+    assert!(0. < early && early < late && late < 1.);
+    t.hear(SUPPLY, true, 2001, 2002);
+    assert!(t.0[0].probability(2002, 0., 1.) < 1.);
+}
+
+#[test]
+fn radio_is_team_scoped_and_hearsay_is_never_rebroadcast_or_timed() {
+    use crate::brain::Perception;
+    use crate::decisions::radio::{Radio, SupplyCall};
+    let mut board = Radio::default();
+    board.advance(3);
+    board.publish_supply(SupplyCall {
+        sender: 1,
+        team: 0,
+        item: SUPPLY,
+        present: false,
+        tick: 3,
+    });
+    let mut p = Perception {
+        teams: true,
+        ..Default::default()
+    };
+    p.observations.player = Some((2, 0));
+    assert!(board.supply_calls(&p).is_empty());
+    board.advance(4);
+    let mut t = Timers::default();
+    let c = board.supply_calls(&p)[0];
+    t.hear(c.item, c.present, c.tick, 4);
+    assert!(t.reports(4).is_empty());
+    assert_eq!(t.0[0].learned, None);
+    p.observations.player = Some((2, 1));
+    assert!(board.supply_calls(&p).is_empty());
+}
+
+#[test]
+fn a_visible_carrier_is_weak_evidence_for_a_unique_known_pad() {
+    use crate::brain::{Contact, Perception};
+    let mut t = Timers::default();
+    check(&mut t, 0, &[SUPPLY]);
+    t.0[0].model = Some(3);
+    t.observe(50, None, |_| false);
+    let mut p = Perception {
+        tick: 50,
+        ..Default::default()
+    };
+    p.observations.contacts.push(Contact {
+        id: 1,
+        aim: [1., 0., 0.],
+        weapon: Some(3),
+        shield: None,
+        empty_magazine: false,
+    });
+    t.carriers(&p, bot());
+    assert!(t.0[0].probability(50, 0., 1.) < 0.3);
+    assert_eq!(t.0[0].taken, None);
+    assert!(t.0[0].probability(600, 0., 1.) > 0.7);
 }

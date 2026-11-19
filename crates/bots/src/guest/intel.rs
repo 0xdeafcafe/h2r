@@ -79,3 +79,18 @@ pub(crate) fn supply(
         powerup,
     }))
 }
+
+pub(super) fn held_model(m: &dyn GuestMemory, unit: u32) -> R<Option<u32>> {
+    let slot = u32::from(m.u8(unit + crate::arms::UNIT_WEAPON_INDEX)?);
+    if slot >= crate::arms::UNIT_WEAPON_SLOTS {
+        return Ok(None);
+    }
+    let Some(id) = DatumHandle::from_raw(m.u32(unit + crate::arms::UNIT_WEAPONS + 4 * slot)?)
+    else {
+        return Ok(None);
+    };
+    let Some((objects::WEAPON, body)) = objects::get(m, id)? else {
+        return Ok(None);
+    };
+    Ok(body.definition(m)?.map(|d| d.raw()))
+}

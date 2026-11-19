@@ -76,10 +76,32 @@ impl Mind {
         {
             return Doing::Supply(at);
         }
-        last.map_or(Doing::Roam, Doing::Chase)
+        if let Some(at) = last {
+            return Doing::Chase(at);
+        }
+        if let Some((at, heard)) = self.search {
+            let confidence = 1.0 - p.tick.wrapping_sub(heard) as f32 / MEMORY_TICKS as f32;
+            if confidence > 0.35
+                && len(sub(me.position, at)) > 1.0
+                && !self.stuck.blocked(at, p.tick)
+            {
+                return Doing::Support(at);
+            }
+        }
+        Doing::Roam
     }
 
     pub(crate) fn hear_deaths(&mut self, p: &Perception, kills: &[crate::emote::Kill]) {
+        for k in kills {
+            self.fight.forget(k.victim);
+            if self
+                .last_seen
+                .is_some_and(|(id, _, seen)| id == k.victim && reached(k.tick, seen))
+            {
+                self.last_seen = None;
+                self.tracks.remove(&k.victim);
+            }
+        }
         if self.decisions.hear(p, kills) {
             self.follower = None;
         }

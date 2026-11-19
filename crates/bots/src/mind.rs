@@ -236,6 +236,8 @@ pub struct Mind {
     target: Option<(u32, u32)>,
     tracks: std::collections::HashMap<u32, Track>,
     last_seen: Option<(u32, Vec3, u32)>,
+    /// An uncertain search area from hearing or a public kill announcement.
+    search: Option<(Vec3, u32)>,
     hand: Hand,
     feet: Feet,
     buttons: Buttons,
@@ -351,6 +353,7 @@ impl Mind {
             target: None,
             tracks: Default::default(),
             last_seen: None,
+            search: None,
             hand: Hand::new(seed),
             feet: Feet::new(seed),
             buttons: Buttons::new(seed),
@@ -412,6 +415,7 @@ impl Mind {
         self.tracks.clear();
         self.last_seen = None;
         self.last_threat = None;
+        self.search = None;
         self.decisions.died(tick);
         self.goal = None;
         self.evasion = Evasion::default();
@@ -492,6 +496,7 @@ impl Mind {
         self.target = chosen.map(|(o, ready)| (o.id, ready));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
+            self.search = None;
             self.roam.saw(o.position, p.tick);
             self.last_threat = Some(p.tick);
         }
@@ -1076,6 +1081,15 @@ impl Mind {
                 self.hand
                     .sound(eye, p.tick, map, sounds)
                     .map(|yaw| {
+                        // A bearing gives a search direction, never a target or range.
+                        self.search = Some((
+                            [
+                                me.position[0] + 6.0 * yaw.cos(),
+                                me.position[1] + 6.0 * yaw.sin(),
+                                me.position[2],
+                            ],
+                            p.tick,
+                        ));
                         let base = travel.map_or(facing.0, |w| w.face[1].atan2(w.face[0]));
                         let limit = if travel.is_some() { 0.9 } else { 1.5 };
                         (base + wrap(yaw - base).clamp(-limit, limit), 0.0)

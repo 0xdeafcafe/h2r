@@ -25,9 +25,9 @@ pub mod mind;
 pub mod moves;
 pub mod nav;
 pub mod objective;
+mod perceive;
 pub mod phantom;
 pub mod roam;
-mod perceive;
 mod sound;
 pub mod stuck;
 pub mod tactics;
@@ -143,7 +143,7 @@ impl Brain {
         sounds: &[sound::ShotSound],
         grenades: &[incoming::Grenade],
     ) -> HostPadState {
-        let (epoch, inbox) = {
+        let (epoch, inbox, supplies) = {
             let mut board = radio::lock(channel);
             if p.observations.player.is_some() {
                 board.advance(p.tick);
@@ -151,7 +151,7 @@ impl Brain {
                     board.forget_deaths(kills);
                 }
             }
-            (board.epoch, board.listen(p))
+            (board.epoch, board.listen(p), board.supply_calls(p))
         };
         if self.epoch != epoch {
             let taunt = self.mind.emote.taunt;
@@ -168,11 +168,18 @@ impl Brain {
             self.mind.emote.hear(kills);
         }
         self.mind.decisions.inbox = inbox;
+        self.mind.decisions.hear_supplies(&supplies, p.tick);
         let pad = self.mind.step_with_cues(p, map, sounds, grenades);
-        if let Some(call) = self.mind.decisions.report {
+        let reports = self.mind.decisions.supply_reports(p);
+        if self.mind.decisions.report.is_some() || !reports.is_empty() {
             let mut board = radio::lock(channel);
             if board.epoch == epoch {
-                board.publish(call);
+                if let Some(call) = self.mind.decisions.report {
+                    board.publish(call);
+                }
+                for c in reports {
+                    board.publish_supply(c);
+                }
             }
         }
         pad

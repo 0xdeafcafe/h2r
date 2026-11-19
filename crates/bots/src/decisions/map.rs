@@ -11,7 +11,7 @@ pub(super) const HOT_TICKS: u32 = 600;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MapMemory {
     deaths: Vec<(Vec3, u32)>,
-    timers: Timers,
+    pub(super) timers: Timers,
     /// A defensible ball position, reconsidered on a short cooldown.
     shelter: Option<Shelter>,
     route_threat: Option<Vec3>,
@@ -65,6 +65,7 @@ impl MapMemory {
                     && (dist < 3.0 || facing > dist * 0.42)
                     && map.is_none_or(|m| m.walls.clear(raised(me.position, EYE), raised(at, 0.2)))
             });
+        self.timers.carriers(p, me);
     }
 
     pub(crate) fn due(&self, me: Me, tick: u32, skill: Skill, stuck: &Stuck) -> Option<Vec3> {

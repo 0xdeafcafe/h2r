@@ -1366,6 +1366,7 @@ fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
     assert_eq!(
         p.observations.contacts,
         [crate::brain::Contact {
+            weapon: None,
             id: 0,
             aim: [0.0, 1.0, 0.0],
             shield: None,

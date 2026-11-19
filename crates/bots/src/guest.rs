@@ -979,6 +979,7 @@ fn perception(
             });
         } else {
             out.observations.contacts.push(crate::brain::Contact {
+                weapon: intel::held_model(m, body.addr).ok().flatten(),
                 id,
                 aim,
                 // These cues require a visible effect or reload animation.
