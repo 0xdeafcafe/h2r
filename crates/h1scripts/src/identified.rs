@@ -11,6 +11,9 @@
 //! (`0x001fb360`) with play flags 0, 8 and 0x10, which bounds the
 //! recording index by `scnr +0x110` and reads `0x34`-byte elements at
 //! `+0x114` (the scenario's recorded animations).
+//!
+//! Every slot this table claims is listed in docs/halo1/scripts.md beside
+//! each entry, for cross-lane clash checks.
 
 use crate::translate::H2Builtin;
 use std::collections::HashMap;
@@ -24,7 +27,7 @@ pub struct Identified {
     pub parameters: &'static [&'static str],
 }
 
-const fn id(
+pub(crate) const fn id(
     name: &'static str,
     index: u16,
     returns: &'static str,
@@ -167,6 +170,7 @@ pub const IDENTIFIED: &[Identified] = &[
     // boolean): the first of the three such builtins after
     // hud_cinematic_fade (624). The first is the one Halo 1's order gives.
     id("show_hud", 625, "boolean", &["boolean"]),
+
 ];
 
 /// Identifications not used yet; a held builtin stays missing and compiles
@@ -180,34 +184,40 @@ pub const HELD: &[&str] = &[];
 /// Adds each identification whose Halo 2 builtin is unnamed and has the
 /// signature it expects to `builtins`, except those [`HELD`].
 pub fn name_unnamed(builtins: &mut HashMap<String, H2Builtin>, c: &hs::Catalog) {
-    let ty = |t: u16| c.type_name(t).ok();
-    for e in IDENTIFIED {
-        let Ok(f) = c.function(e.index) else {
-            continue;
-        };
-        let signature = ty(f.return_type()) == Some(e.returns)
-            && f.parameters().len() == e.parameters.len()
-            && f.parameters()
-                .iter()
-                .zip(e.parameters)
-                .all(|(&p, want)| ty(p) == Some(*want));
-        if f.name().is_some()
-            || !signature
-            || builtins.contains_key(e.name)
-            || HELD.contains(&e.name)
-        {
-            continue;
-        }
-        builtins.insert(
-            e.name.to_owned(),
-            H2Builtin {
-                index: e.index,
-                return_type: f.return_type(),
-                parameters: f.parameters().to_vec(),
-                special: f.flags() & 2 != 0,
-            },
-        );
+    for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+        name_one(builtins, c, e);
     }
+}
+
+pub(crate) fn name_one(
+    builtins: &mut HashMap<String, H2Builtin>,
+    c: &hs::Catalog,
+    e: &Identified,
+) {
+    let ty = |t: u16| c.type_name(t).ok();
+    let Ok(f) = c.function(e.index) else {
+        return;
+    };
+    let signature = ty(f.return_type()) == Some(e.returns)
+        && f.parameters().len() == e.parameters.len()
+        && f.parameters().iter().zip(e.parameters).all(|(&p, want)| ty(p) == Some(*want));
+    if f.name().is_some()
+        || !signature
+        || builtins.contains_key(e.name)
+        || builtins.values().any(|b| b.index == e.index)
+        || HELD.contains(&e.name)
+    {
+        return;
+    }
+    builtins.insert(
+        e.name.to_owned(),
+        H2Builtin {
+            index: e.index,
+            return_type: f.return_type(),
+            parameters: f.parameters().to_vec(),
+            special: f.flags() & 2 != 0,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -225,6 +235,13 @@ mod tests {
             }
         }
         assert!(IDENTIFIED.windows(2).all(|w| w[0].index < w[1].index));
-        assert_eq!(IDENTIFIED.len(), 25);
+        let mut slots = std::collections::HashSet::new();
+        for e in IDENTIFIED.iter().chain(crate::unit_builtins::RETAIL_BUILTINS) {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+        }
+        for e in crate::unit_builtins::RUNTIME_SLOTS {
+            assert!(slots.insert(e.index), "duplicate slot {}", e.index);
+            assert_ne!(e.index, 300, "reserved by the AI-control lane");
+        }
     }
 }

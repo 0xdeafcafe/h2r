@@ -225,6 +225,23 @@ points! { ALL;
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// The frame's local tick batch and its elapsed seconds output.
+    GAME_UPDATE_TICKS @ 0x0013_7f70: [fn(ticks: eax, elapsed: ebx) ret 0]; "docs/halo1/script-builtins.md";
+    /// Per-frame gameplay updates after the local simulation batch.
+    GAME_UPDATE_FRAME @ 0x0013_7ed0: [fn(elapsed: stack 0) ret 4]; "docs/halo1/script-builtins.md";
+    /// The shared HaloScript evaluator for discarded retail commands.
+    OBJECT_FUNCTION_IMPORT @ 0x0010_8d90: [fn(object: stack 0, name: stack 1, value: ebx, active: edi) -> al ret 8]; "docs/halo1/script-builtins.md";
+    UNIT_FLASHLIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/script-builtins.md";
+    HS_UNIT_FLAG_SET @ 0x002a_3200: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_UNIT_FLAG_GET @ 0x002a_3a10: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_AI_LIST_FLAG_SET @ 0x002a_55f0: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    OBJECT_FUNCTION_VALUE @ 0x000b_ab40: [fn(object: stack 0, name: stack 1, value: stack 2) -> al ret 12]; "docs/halo1/script-builtins.md";
+    HS_SHORT_TO_LONG_EVALUATOR @ 0x002a_b760: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_UNUSED_EVALUATOR @ 0x002a_b130: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_LOOK_ANY_DIRECTION @ 0x002a_9340: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_MOVE_ANY_DIRECTION @ 0x002a_9370: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_FALSE_EVALUATOR @ 0x002a_5d50: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_CONSTANT_LONG_EVALUATOR @ 0x002a_c600: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";

@@ -332,6 +332,21 @@ pub const COUNTER_TREE: AnimTree = AnimTree {
 /// magazine's loaded maximum, `0x000ffadf`).
 pub const AMMUNITION_DIGITS: [&str; 2] = ["primary_ammunition_ones", "primary_ammunition_tens"];
 
+/// Names of the object functions that provide the Halo 1 engine timer's
+/// individual digits. The boot feature resolves these names in the loaded
+/// cache's StringID table before answering the shader's function lookups.
+pub const COUNTDOWN_DIGITS: [&str; 9] = [
+    "h1_countdown_digit_0",
+    "h1_countdown_digit_1",
+    "h1_countdown_digit_2",
+    "h1_countdown_digit_3",
+    "h1_countdown_digit_4",
+    "h1_countdown_digit_5",
+    "h1_countdown_digit_6",
+    "h1_countdown_digit_7",
+    "h1_countdown_digit_8",
+];
+
 /// A counter digit's frames: a digit's bitmap holds one image per digit,
 /// 0 to 9 in order (Halo 1's `numbers_plate` and retail's).
 pub const COUNTER_FRAMES: f32 = 10.0;
@@ -347,7 +362,7 @@ pub struct Property {
 }
 
 /// The ten properties of a counter digit ([`COUNTER_TREE`]) driven by the
-/// object function `input` (one of [`AMMUNITION_DIGITS`]): component 0 is
+/// object function `input` ([`AMMUNITION_DIGITS`] or [`COUNTDOWN_DIGITS`]): component 0 is
 /// the input mapped by an identity onto 0..[`COUNTER_FRAMES`], so the
 /// handler's `digit × 0.1` picks frame `digit`; the rest an identity
 /// transform. V: retail's `tens` and `ones` hold exactly these (property
@@ -2027,6 +2042,15 @@ pub struct H1Numeric {
 }
 
 impl H1Numeric {
+    /// An engine-number shader reads the digit selected by the model's
+    /// shader permutation through the Halo 1 routine at `0x56aa0`.
+    pub fn countdown_digit(&self, permutation: i16) -> Option<&'static str> {
+        if !self.engine_number || self.images != COUNTER_FRAMES as usize {
+            return None;
+        }
+        COUNTDOWN_DIGITS.get(usize::try_from(permutation).ok()?).copied()
+    }
+
     /// The Halo 2 weapon function ([`AMMUNITION_DIGITS`]) drawing digit
     /// `permutation` of this counter on a weapon whose A out is its
     /// rounds loaded over `loaded_maximum` (Halo 1's primary ammunition):

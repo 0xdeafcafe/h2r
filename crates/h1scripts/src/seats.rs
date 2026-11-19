@@ -130,13 +130,7 @@ pub fn h2_label_matches(token: &str, label: &str) -> bool {
     // rider's mode, Halo 1's label as the converted biped graphs name it
     // (`W-driver` is `warthog_d`, `GT-gunner` `guntower_d`, `pchair-driver`
     // `pchair_driver`). Scripts keep Halo 1's text, in any case.
-    let mode = h1models::names::MODES
-        .iter()
-        .find(|(h1, _)| h1.eq_ignore_ascii_case(&t))
-        .map_or_else(
-            || h1models::names::map_name(&t).mode,
-            |(_, h2)| (*h2).to_owned(),
-        );
+    let mode = h1models::names::mode_name(&t);
     if l == mode {
         return true;
     }

@@ -25,6 +25,8 @@ pub const SCRIPT_KIND_NAMES: u32 = 0x0021_c260;
 pub const SCRIPT_KIND_COUNT: usize = 5;
 /// Most parameters any definition declares.
 const MAX_PARAMETERS: u16 = 32;
+// The six strings unit_set_seat matches in 0x00039fa0.
+const UNIT_POSE_NAMES: u32 = 0x001f_7684;
 
 /// Value type indices used by name in this crate. The full list is read
 /// from the XBE ([`Catalog::types`]).
@@ -84,6 +86,7 @@ pub struct Catalog {
     functions: Vec<Function>,
     types: Vec<String>,
     script_kinds: Vec<String>,
+    unit_poses: Vec<String>,
     /// The parse function shared by fixed-signature builtins.
     ordinary_parse: u32,
 }
@@ -131,11 +134,13 @@ impl Catalog {
         if x.read_u32(TYPE_NAMES + 4 * TYPE_COUNT as u32)? >= 0x1_0000 {
             return Err(invalid("value type table is not 49 entries: unknown XBE"));
         }
-        Self::new(
+        let mut catalog = Self::new(
             functions,
             names(TYPE_NAMES, TYPE_COUNT)?,
             names(SCRIPT_KIND_NAMES, SCRIPT_KIND_COUNT)?,
-        )
+        )?;
+        catalog.unit_poses = names(UNIT_POSE_NAMES, 6)?;
+        Ok(catalog)
     }
 
     /// A catalog from its parts, checked: every type index in range, every
@@ -168,6 +173,7 @@ impl Catalog {
             functions,
             types,
             script_kinds,
+            unit_poses: Vec::new(),
             ordinary_parse,
         })
     }
@@ -211,6 +217,13 @@ impl Catalog {
             .map(String::as_str)
             .ok_or_else(|| invalid(format!("unknown script type {kind}")))
     }
+    /// Whether the executable's unit pose evaluator recognizes this name.
+    pub fn has_unit_pose(&self, token: &str) -> bool {
+        self.unit_poses
+            .iter()
+            .any(|pose| pose.eq_ignore_ascii_case(token))
+    }
+
     /// Whether builtin `index` is parsed with the ordinary parser, so its
     /// arguments match its declared parameters one for one. Special forms
     /// (`begin`, `if`, `set`, `sleep`, ...) have their own parsers.

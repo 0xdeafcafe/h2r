@@ -846,7 +846,7 @@ pub struct Converter<'a> {
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
     /// `schi`, permutation, loaded maximum).
-    counter_shaders: HashMap<(u32, i16, i16), Option<TagId>>,
+    counter_shaders: HashMap<(u32, i16, Option<i16>), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -1994,7 +1994,8 @@ impl<'a> Converter<'a> {
     /// when Halo 1's counters on it count its rounds
     /// ([`h1::Weapon::rounds_counter`]): a numeric `schi` entry then
     /// becomes the Halo 2 digit its permutation names
-    /// ([`Self::counter_shader`]), one `shad` per digit.
+    /// ([`Self::counter_shader`]), one `shad` per digit. The level countdown
+    /// uses a separate animation input for each digit.
     fn model_shaders(
         &mut self,
         rep: &mut ObjectReport,
@@ -2008,10 +2009,7 @@ impl<'a> Converter<'a> {
         };
         let mut out = Vec::new();
         for s in &model.shaders {
-            if let Some(loaded) = rounds
-                && let Some(id) =
-                    self.counter_shader(&template.library, s.tag, s.permutation, loaded)
-            {
+            if let Some(id) = self.counter_shader(&template.library, s.tag, s.permutation, rounds) {
                 out.push(id);
                 continue;
             }
@@ -2196,33 +2194,30 @@ impl<'a> Converter<'a> {
         .ok()
     }
 
-    /// Digit `permutation` of the Halo 1 numeric `schi` `id` on a weapon
-    /// whose counters count its rounds loaded (out of `loaded`), as a
-    /// Halo 2 ammunition counter digit
-    /// (`h1convert::shad::H1Numeric::ammunition_digit`): `illum_detail`
-    /// drawing Halo 1's digits, the frame picked by the weapon's
-    /// `primary_ammunition_ones` or `_tens`, as retail's battle rifle
-    /// counter is drawn (`h1convert::shad::counter_shader`). Named
-    /// `<schi>_ones` or `_tens`, built once per digit. `None` for any other
-    /// shader, or when the base lacks the stem; the entry then converts
-    /// as any other shader. Before converter version 95 both digits drew
-    /// the one `one_add_illum` copy of the digits' first image: the
-    /// assault rifle read 00.
+    /// Rebuild a numeric `schi` as one animated shader per digit using
+    /// the model's shader permutation. The digits come from either the
+    /// weapon's ammunition function or the converted campaign countdown.
     fn counter_shader(
         &mut self,
         library: &h1convert::shad::Library,
         id: h1map::TagId,
         permutation: i16,
-        loaded: i16,
+        loaded: Option<i16>,
     ) -> Option<TagId> {
+        let tag = self.h1.tag(id).ok()?;
+        if tag.group != h1map::Group::new(b"schi") {
+            return None;
+        }
         let key = (id.0, permutation, loaded);
         if let Some(t) = self.counter_shaders.get(&key) {
             return *t;
         }
+        let tag = tag.clone();
         let out = (|| {
-            let tag = self.h1.tag(id).ok()?.clone();
             let n = h1convert::shad::chicago_numeric(self.h1, &tag)?;
-            let input = n.ammunition_digit(permutation, loaded)?;
+            let input = n
+                .countdown_digit(permutation)
+                .or_else(|| n.ammunition_digit(permutation, loaded?))?;
             let s = h1convert::shad::counter_shader(&tag.name, &n, input);
             let digits = self.bitmap(n.bitmap)?;
             let maps = HashMap::from([(

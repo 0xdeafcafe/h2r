@@ -782,7 +782,7 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
     };
     let enter = format!("{} enter", seat.marker);
     SeatNames {
-        label: h1models::names::map_name(&seat.label).mode,
+        label: h1models::names::mode_name(&seat.label),
         marker: found(&seat.marker),
         enter_marker: if markers.iter().any(|m| m.eq_ignore_ascii_case(&enter)) {
             found(&enter)

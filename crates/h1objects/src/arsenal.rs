@@ -24,7 +24,7 @@
 
 use map::build::Block;
 use map::{FourCC, TagId};
-use tags::defs::{self, Defs, Kind, Record, StructDef, Val};
+use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 
 use crate::base::Base;
 use crate::h1;
@@ -355,6 +355,8 @@ fn header(
 pub struct WeaponParts {
     pub hlmt: Option<TagId>,
     pub predicted: Vec<Predicted>,
+    pub attachments: Vec<rebuild::AttachmentSpec>,
+    pub functions: Vec<crate::functions::FunctionSpec>,
     /// Per Halo 1 trigger, its converted projectile.
     pub projectiles: Vec<Option<TagId>>,
     /// Halo 1's first-person model and animations, converted.
@@ -619,6 +621,14 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
         set(&mut r, WEAPON_TYPE_NAME, Val::text(kind))?;
     }
     rebuild::predicted_resources(b"weap", &mut r, "item.obje", &parts.predicted)?;
+    if !parts.attachments.is_empty() {
+        let creation = match r.at("item.obje.creation_effect") {
+            Some(Val::Ref { target: Target::Id(id), .. }) => Some(*id),
+            _ => None,
+        };
+        rebuild::object_effects(b"weap", &mut r, "item.obje", &parts.attachments, creation)?;
+        rebuild::object_functions(b"weap", &mut r, "item.obje", &parts.functions)?;
+    }
     for (path, at) in WEAPON_WORDS {
         word(&mut r, path, u32_at(b, *at))?;
     }

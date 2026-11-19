@@ -417,6 +417,39 @@ impl Converter<'_> {
                 .halo1
                 .push(arsenal::halo1_ref(arsenal::ITEM_FOOT, b"foot", Some(f)));
         }
+        // The held weapon's integrated-light input carries the unit's
+        // flashlight to light attachments, including a50's marine rifle.
+        let inputs = h1::FunctionInputs::read(&bytes, w.object.object_type);
+        if inputs.weapon.contains(&14) {
+            let functions = crate::functions::convert(
+                &h1::functions(self.h1, &bytes)?,
+                &inputs,
+                &mut rep.no_home,
+            );
+            for attachment in h1::attachments(self.h1, &bytes)? {
+                if attachment.group != h1map::Group::new(b"ligh") {
+                    continue;
+                }
+                let Some(tag) = attachment.tag else { continue };
+                let scale = crate::functions::primary_scale(attachment.primary_scale, &functions);
+                if !functions.iter().flatten().any(|f| {
+                    f.export == scale && f.import == "integrated_light_power"
+                }) {
+                    continue;
+                }
+                let light = self.h1_tag(tag)?;
+                let tag = self.light(light)?;
+                parts.attachments.push(crate::rebuild::AttachmentSpec {
+                    group: *b"ligh",
+                    tag,
+                    marker: attachment.marker,
+                    primary_scale: scale,
+                    h1_primary: attachment.primary_scale,
+                });
+            }
+            parts.functions = functions.into_iter().flatten().collect();
+        }
+
         let role = self.item_role(b"weap")?;
         let (root, roles) =
             crate::provenance::capture(|| arsenal::weapon(&w, &bytes, &parts, &role));

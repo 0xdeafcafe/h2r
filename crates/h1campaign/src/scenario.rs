@@ -1863,16 +1863,32 @@ fn install_scripts(
         crate::cutscenes::H2_RECORDING_LEN,
         crate::cutscenes::recordings_block(&recordings),
     );
-    let mut interned: HashMap<String, u32> = HashMap::new();
-    for h in &c.hooks {
-        if h.type_name == "string_id" && !interned.contains_key(&h.token) {
-            let text = match h.h1_type == h1scripts::compile::ANIMATION_NAME {
-                true => crate::cutscenes::animation_name(&graphs, h),
-                false => h.token.clone(),
-            };
-            interned.insert(h.token.clone(), set.intern(&text)?);
-        }
+    let mut interned = HashMap::new();
+    for h in c.hooks.iter().filter(|h| h.type_name == "string_id") {
+        let text = match h.h1_type.as_str() {
+            h1scripts::compile::ANIMATION_NAME => Some(crate::cutscenes::animation_name(&graphs, h)),
+            h1scripts::compile::SEAT_NAME => Some(h1models::names::mode_name(&h.token)),
+            // An unknown pose requests the default mode. Halo 1 performs
+            // the same reset when its pose lookup returns -1.
+            h1scripts::compile::SEAT_POSE => s
+                .catalog
+                .has_unit_pose(&h.token)
+                .then(|| h1models::names::mode_name(&h.token)),
+            _ => Some(h.token.clone()),
+        };
+        // The same text can be a marker, a vehicle seat or an animation
+        // mode. Resolve by atom slot so these uses keep their own values.
+        let id = match text {
+            Some(text) => set.intern(&text)?,
+            None => 0,
+        };
+        interned.insert(h.slot, id);
     }
+    let profiles = if c.hooks.iter().any(|h| h.type_name == "starting_profile") {
+        crate::profiles::read(h1)?
+    } else {
+        Vec::new()
+    };
     // The seat-mapping table, in h1scripts.
     let seats = if seat_table {
         h1scripts::seats::Table::build(
@@ -1901,7 +1917,8 @@ fn install_scripts(
     let mut resolved_by_level = 0;
     let left = c.resolve_hooks(|h| {
         match h.type_name.as_str() {
-            "string_id" => interned.get(&h.token).copied(),
+            "string_id" => interned.get(&h.slot).copied(),
+            "starting_profile" => crate::profiles::script_index(&profiles, &h.token),
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
