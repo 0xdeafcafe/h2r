@@ -41,6 +41,7 @@ pub mod model_gpu;
 #[cfg(feature = "gpu")]
 pub mod model_load;
 pub mod objects;
+pub mod post;
 pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]

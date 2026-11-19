@@ -344,6 +344,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    // The view's post passes on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_post=on, off by default;
+    // docs/graphics/native-renderer.md, stage 5): a context-only skip on
+    // render_screen_effects, ahead of the fade and the HUD. No host yet, so
+    // every call keeps its D3D passes and the hook only counts them.
+    features
+        .add(&feature::native_post::NativePost)
+        .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
     // H2_UI_WATCH=1: the screen player one's input goes to, a line on each
     // change and `ui.screen` (`h2 coop test --drive`; ui_watch.rs).
     ui_watch::install(features)?;

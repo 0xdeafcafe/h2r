@@ -38,7 +38,7 @@ have drawn it. A skipped subtree costs nothing on the game thread, in
 | 2. Objects and skinning | Render models: rigid and skinned sections, permutations, LODs; node matrices from the game per frame | `0x00133790`'s render records for drawn objects, their layer entries in every base layer | Node matrices (read only), object list (read only) |
 | 3. Transparents and particles | Sorted transparents (`0x0001e370`, 2.58 ms), particle systems, decals, contrails | The transparent list and its per-entry handlers; particle update stays in the simulation | Depth (read), sorted order computed on the GPU or on our side |
 | 4. Lights and shadows | Dynamic lights (layers 10 to 14, `0x00031c80`, 1.88 ms of bookkeeping), shadow maps; E3 lighting becomes a pass ([e3-lighting.md](e3-lighting.md)) | The per-light passes and their gathering | Light list (read) |
-| 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | The late passes, `0x00013870`, the HUD draw | Nothing left: the D3D path is only a fallback |
+| 5. Post and HUD | Fog, bloom, active camouflage, screen effects, HUD and text, then the present | `render_screen_effects` (`0x00013870`: the colour pass, screen effects, `0x0002df00`), `0x0002dd30`, layer 17, the fade `0x00040890`, the UI and HUD `0x00147af1` (see "Stage 5: post and HUD") | Nothing left: the D3D path is only a fallback |
 
 Each stage is a feature switch under `impl.render.native_*`, off by
 default until its A/B passes, and each falls back per material (or per
@@ -1229,6 +1229,153 @@ skipped light never reaches.
    a pure skip.
 8. **The live A/B**, as the other stages': the same frame with the switch
    on and off, `external_passes_dropped` steady, and the light site's ms.
+
+## Stage 5: post and HUD (design)
+
+What the game draws after a view's scene comes in three groups: the
+last passes of `render_scene_passes`, the rest of `render_view_scene`
+(a fade, then the HUD and UI), and the end of the frame after every
+view. None of them is a layer of the scene list except layer 17. This
+section follows 03a's path in the order the game draws it. The census
+run's figure for `render_screen_effects` is 0.76 ms and 164 D3D calls a
+frame.
+
+### The path (Code, `h2 disasm`)
+
+- **The frame.** `render_frame_and_present` (`0x00223240`) renders the
+  views (`0x0002b5d0` → `render_game_view` `0x0002b790` →
+  `render_view_scene` `0x0002ba10`), then ends drawing (`0x00013b90`,
+  `0x00013cd0`) and presents (`0x00013f10`).
+- **One view.** `render_view_scene` runs the visibility and records
+  (`0x0002c3b0`, `0x0003fd70`, `0x0002b990`), then `0x00013680`, which
+  calls `render_scene_passes` (`0x0002bcd0`, at `0x000136ac`). After it,
+  in order: `0x00015370`, `0x00015680` (the view kind `[0x00485898]`),
+  `0x001917eb` when `[0x004b9ed8]` is not -1, then `0x00040890`, then
+  `0x00147af1` (EAX -1, two words pushed), then the view's end
+  `0x00013c20`.
+- **The scene passes' tail** (from `0x0002c19a`): the sorted
+  transparents `0x0001e370`, `0x00025dc0` (view kind not 2), the player
+  chain with `[0x00485a76]` set and `0x0002afa0`, the first person
+  (`0x0003fdf0(0)`, its lights `0x000404b0`, `0x0003fdf0(1)`),
+  `0x00040870` when BL is set (the transparents again, then
+  `[0x004b6284]` copied to `[0x004b6280]`), `[0x00485a76]` cleared, then
+  the late passes:
+  - `0x0002dd30` when the caller's byte `[esp+0x28]` is set: its own
+    target (`[0x00485602]`), render states (`0x003f5cf0`), a stipple
+    (`0x003f8cc0`) and quads (`0x0001cf50`, `0x0001c590`, `0x0001c710`,
+    `0x00020bb0`);
+  - layer 17 when the byte `[esp+0x2c]` is set (S: bloom; 250 passes on
+    the disc, from the scene list, gated by `0x004ba024`);
+  - `0x00020770`: the occlusion query results (`[0x0051f408]`,
+    `[0x0051f409]`, the frame count mod 3, `0x003f8630`);
+  - `render_screen_effects` (`0x00013870`,
+    `points::RENDER_SCREEN_EFFECTS`), stdcall `(late, colour)`, `ret 8`.
+    `colour` is the byte that gates layer 17, and `late` the one that
+    gates `0x0002dd30`;
+  - the exit `0x00013630`: with `[0x004850c8]` set (a view drawn into a
+    target of its own), the target back to 0 (`0x00014bc0`) and the
+    depth clip (`0x00015720`).
+- **`render_screen_effects`.** Its prologue sets `[0x004670bc]` to 1,
+  resets the shader draw state (`0x00016b10` on `0x00485b48`), stores the
+  word `[0x00485600]` at `[[0x00485890]+0x1c]`, and runs `0x000245c0`
+  with EAX `0x0051ecf0`. Then:
+  1. With `colour`, the colour pass `0x000214f0`. Its inputs are
+     computed by `0x000137a0` and blended with `[0x004b9fd0]..`, with
+     constants `0x407f7cee` and 0.25, and its last argument is "view
+     kind is 6". It binds the view's target `[0x004858b8]` as a texture
+     (`0x00014f60`), writes a combiner into the PSDEF at `0x00484f68`, and
+     draws through `0x0001ccf0`.
+  2. The scenario's screen effects. This needs a scenario
+     (`[0x004e0350]`), a view kind outside 5..7, both `[0x00485607]` and
+     `[0x004850c8]` clear, and `0x00022710` true. It reads a rectangle
+     from the words at `0x004b9dd0..`, then walks the scenario block at
+     `+0x3d0` (count) and `+0x3d4` (address), entries of `0x24` bytes:
+     `+0x14` is a tag datum, and `+0x20`/`+0x22` are function indices
+     whose values (`0x00134fc0`) decide whether `0x0002d140` draws the
+     entry (a shader through `0x00016610`). S: 03a's map holds one
+     `egor`, `effects\screen_effects\blur`.
+  3. With `late`, `0x0002df00`. It is shaped like `0x0002dd30`: a
+     target, render states, the viewport (`0x003f6840`, `0x003f6f40`,
+     `0x003f6390`, `0x003f6190`) and quads.
+- **After the scene.** `0x00040890` is a full-screen fade: when the mode
+  `[0x00485870]` is not 0, it draws the colour at `0x00485874..`
+  (packed by `0x00131e50`), with a blend picked through the jump table
+  at `0x00040dc0`. Then `0x00147af1` composes the UI and HUD. The HUD
+  render (`0x0013954b`, gated by `HUD_SHOWN` `0x0013939b`) is S: under
+  it; its caller chain is not traced. So the HUD is always drawn after
+  `render_screen_effects`, and the post passes need no HUD split: the
+  colour pass and the screen effects see the scene only, and the fade
+  and the HUD go over them.
+
+### Skip point and order
+
+One `before` on `RENDER_SCREEN_EFFECTS`, context-only:
+`feature::native_post`, with what the call was asked to draw read by
+`native_render::post::PostFrame` (the two stack bytes, the view kind,
+the scenario's screen-effect count and the loop's gates other than
+`0x00022710`). When the host draws the call, the hook answers `ret 8` in
+place of it. The host asks the device for an external pass, as stages 3
+and 4 do, and the device issues it at its next entry. That is the first
+device call after the scene passes return: the exit's target change for
+a view drawn into its own target, otherwise the fade or the UI and HUD.
+So the native post lands after layer 17 and before the fade and the
+HUD, once per view, in the game's order.
+
+The hook has nothing after its body, so the pipelined render runs it on
+its own thread. With `render-timing` on the feature places nothing: the
+timer it puts on the scene's callees, `0x00013870` among them, needs the
+call's end, which a skipped call never reaches.
+
+A skipped call must still leave what its prologue leaves. A host
+accepts a call only once it does that (item 2 below). Until then boot
+installs no host, the hook only counts (`native_post::counts`: calls,
+colour pass, late pass, screen effects possible), and every call keeps
+its D3D passes.
+
+### What the native post draws
+
+- **The colour pass**, `0x000214f0`'s combiner over a copy of the view's
+  colour target: a full-screen triangle sampling the scene the native
+  passes and the D3D passes drew. Its inputs (`0x000137a0` and the
+  blend) are ported as a pure function of guest memory, as the light
+  constants are.
+- **The screen effects**, each entry `0x0002d140` would draw: its shader
+  compiled as stage 3 compiles layer 15, drawn with the rectangle and
+  the entry's function values. Blur needs the scene as a texture, which
+  the colour pass's copy already gives.
+- **`0x0002df00`**, once it is traced; until then a call with `late`
+  set keeps its D3D passes.
+
+### Order of work
+
+1. **The skip and its order** (built: `feature::native_post`,
+   `native_render::post`, `impl.render.native_post`, off by default;
+   point `RENDER_SCREEN_EFFECTS`). Boot has no host, so nothing is
+   skipped, and the periodic line says what 03a's calls ask for.
+2. **The prologue of a skipped call.** `[0x004670bc]`, the shader draw
+   state `0x00016b10` resets on `0x00485b48` (the device side, as the
+   lights' tail does), `[[0x00485890]+0x1c]`, and what `0x000245c0`
+   leaves. Each is a guest word or a device call at that point, with a
+   test that a skipped call leaves what a drawn one does.
+3. **The colour pass**: trace `0x000137a0` and `0x000214f0`, port its
+   inputs, compile its combiner, and draw it from a copy of the colour
+   target. The host accepts calls with `colour` set and `late` clear, and
+   with no screen effect that would draw.
+4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
+   function values (`0x00134fc0`) read at the call.
+5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
+   same shape and gets its own skip point.
+6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.
+7. **The fade** `0x00040890`, a skip point of its own: one full-screen
+   quad with the colour and blend it reads.
+8. **The UI and HUD** (`0x00147af1`; `HUD_SHOWN`, the HUD render
+   `0x0013954b`): trace the caller chain first, then text and bitmaps
+   through the native renderer. Once that is done, `0x00013b90`,
+   `0x00013cd0` and the present (`0x00013f10`) are the last D3D work in
+   the frame.
+9. **The live A/B**, as the other stages': the same frame with the
+   switch on and off, `external_passes_dropped` steady, and the time of
+   `render_screen_effects`.
 
 ## Open
 
