@@ -230,3 +230,129 @@ fn ad_hoc_bound_or_unbound_boot_cannot_outlast_deadline() {
         assert!(!matcher.leases.contains_key(id));
     }
 }
+
+#[tokio::test]
+async fn leased_publication_authorizes_only_the_assigned_session() {
+    use crate::{Policy, ServerIdentity, app::Timers, store::MemoryStore};
+    use live_proto::{
+        ErrorCode, hosts, session,
+        sign::{EventBody, Jws, KeyPair, TYP_TOKEN, sign_batch},
+    };
+    use serde_json::json;
+
+    let live = Live::start_with(
+        Arc::new(MemoryStore::new()),
+        ServerIdentity {
+            id: "lease.test".into(),
+            key: KeyPair::generate(),
+        },
+        Policy::default(),
+        Timers::Driven,
+    )
+    .await
+    .unwrap();
+    let (mut matcher, mut host) = reserve();
+    let clock = now();
+    host.created_ms = clock * 1000;
+    matcher.leases.get_mut(&host.assignment_id).unwrap().until = clock + BOOT_SECONDS;
+    assert!(matcher.host_requested(&host));
+    *live.matchmaking.lock().unwrap() = matcher;
+
+    let mut other = host.clone();
+    other.id = HostLease::new_id();
+    let events = [&host, &other].map(|h| {
+        live.server_event(
+            hosts::STREAM.into(),
+            hosts::HOST_REQUESTED,
+            json!({"lease": h}),
+        )
+    });
+    let rows = live.store.append(events.into(), &[]).await.unwrap();
+    live.wait_applied(rows.last().unwrap().position)
+        .await
+        .unwrap();
+    let token = live.issue_host_token(&host);
+    let wrong = live.issue_host_token(&other);
+    let ad = serde_json::from_value::<session::NewSession>(json!({
+        "port":31000, "host_address":vec![0;36], "attributes":{}, "map":host.map,
+        "slots":{"public_open":2,"public_filled":0,"private_open":0,"private_filled":0}
+    }))
+    .unwrap();
+    let addr = Some(std::net::Ipv4Addr::LOCALHOST.into());
+    assert_eq!(
+        live.create_session(Some(&wrong), ad.clone(), addr)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    let row = live.create_session(Some(&token), ad, addr).await.unwrap();
+    assert_ne!(row.session_id, host.assignment_id);
+    let assignment = row.matchmaking.as_ref().unwrap();
+    assert_eq!(assignment.host_lease.as_ref(), Some(&host.id));
+    assert_eq!(assignment.members, host.roster);
+
+    let batch = |bearer: &str, kind: &str, data| {
+        let claims = Jws::parse(bearer).unwrap().json_payload(TYP_TOKEN).unwrap();
+        let key = KeyPair::from_secret_b64(claims["event_key"].as_str().unwrap()).unwrap();
+        let event = EventBody::at_unix(
+            &key,
+            claims["sub"].as_str().unwrap(),
+            &session::stream(&row.session_id),
+            kind,
+            data,
+            now(),
+        );
+        sign_batch(&key, &[event])
+    };
+    let update = |bearer: &str| batch(bearer, session::UPDATED, json!({"name":"ready"}));
+    assert_eq!(
+        live.append_session_events(Some(&wrong), &row.session_id, &update(&wrong))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    live.append_session_events(Some(&token), &row.session_id, &update(&token))
+        .await
+        .unwrap();
+    assert_eq!(
+        live.read_caller(Some(&token)).unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        live.append_signed(Some(&token), &update(&token))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+
+    let ended = live.server_event(
+        hosts::STREAM.into(),
+        hosts::HOST_ENDED,
+        json!({
+            "lease_id":host.id, "reason":"stopped", "ran_ms":2, "players_peak":0
+        }),
+    );
+    let events = live.store.append(vec![ended], &[]).await.unwrap();
+    live.wait_applied(events[0].position).await.unwrap();
+    assert_eq!(
+        live.append_session_events(Some(&token), &row.session_id, &update(&token))
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Forbidden
+    );
+    let delete = batch(&token, session::DELETED, json!({"reason":"closed"}));
+    let pos = live
+        .append_session_events(Some(&token), &row.session_id, &delete)
+        .await
+        .unwrap();
+    assert_eq!(
+        live.append_session_events(Some(&token), &row.session_id, &delete)
+            .await
+            .unwrap(),
+        pos
+    );
+}

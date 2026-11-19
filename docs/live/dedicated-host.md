@@ -253,9 +253,11 @@ or `H2_LEASE` before provisioning. It provisions the verified bundle under
 contain `default.xbe` and the maps. The module must match the XBE and its
 build settings, including `H2_OPT`.
 
-The child gets `H2_HOST_LOBBY=1` and its own private Unix agent socket. The
-supervisor opens the lease's map and variant through `host.lobby.open` and
-registers the endpoint once `host.lobby.state` shows a lobby. It requests
+The child gets `H2_HOST_LOBBY=1`, its own private Unix agent socket,
+and the provider's `H2_HOST_TOKEN`, `H2_HOST_LIVE_URL` and `H2_HOST_LEASE_JSON`.
+The supervisor opens the lease's map and variant with `host.lobby.open`
+and `live: true`. Open returns the session ID acknowledged by Live. The
+supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
 start when the lobby is ready and has at least the reserved player count,
 or one player for an open lobby. Lease roster authorization belongs to Live.
 
@@ -447,11 +449,11 @@ bundles or give each deployment its own cache.
 **Assignment.** [Ping-aware OptiMatch](live-matchmaking.md#9-ping-aware-optimatch-assignments)
 can reserve an opted-in solo cohort for a registered dedicated endpoint.
 Each client measures the actual UDP route with the existing QoS echo.
-The operator registers the service account and the service keeps its endpoint
-live in the queue. The lease names the selected host, roster and RTT table.
-A dedicated process still needs to start the compatible title lobby and
-publish it under that lease. A playerless lobby, automatic fleet startup,
-jitter and loss limits, and relay-backed multiplayer are separate work.
+A registered endpoint can use its existing account. For an ad hoc host the
+matchmaker binds the lease to the assignment before the provider starts the
+child. Live attaches that assignment, including `matchmaking.host_lease`, to
+the machine's session. A roster member checks the lease and the registered
+session ID before joining.
 [QoS implementation](../../crates/live-hle/src/qos.rs)
 
 **Ranked admission.** A peer-hosted match uses the session host’s game
@@ -569,14 +571,21 @@ handshakes still have to finish before the match can run.
 | Map setter `0x19a6f2` (ESI = map ID, stack = −1), default variant `0x19d220(out,type)`, variant setter `0x19a728(out)` | Check map (`S+0x4d0c`), distributed protocol 2 (`+0x4dac`), and the full `0x130`-byte rules at `+0x4db0`. Check the limit at variant `+0x78` and session `+0x4994`. Verify that bumping parameter revision `+0x4978` publishes the limit to the client and that retail refuses an extra join. |
 | Start check `0x19a2ce(0)`, countdown `0x19a78e` (EAX = port 0, stack = 10, 3), machine request `0x5a220(2)` | Verify start state 9 with a remote player and map status 3 or 4 for every peer (`S+0x58+peer*0x10c+0x88`). Check the fallback's calling convention and the stage change at `S+0x4980` against retail's countdown finisher `0x6e410`. Exercise both flag settings and verify remote controls move a unit. |
 | Roster and phase | Verify count/mask at `S+0x1118/+0x111c`, records at `S+0x1120+slot*0x13c`, peer at `+0x0c`, and effective UTF-16 name at `+0xa8`. Cross-check lifecycle `[0x527334]` (1/2 lobby, 3 game, 4 postgame), countdown `S+0x49a8`, and game globals `[0x4e6948]` (mode `+8`, active `+0x1120`, ended `+0x1128`). Confirm world `[0x4cf77c]` reaches distributed-server mode 4 at `+8` and running state 5 at `+0x18` before gameplay is reported. |
-| Leave sessions `0x593e0()` and return to menu `0x18f1c0(0)` | The target pointer `[0x52736c]` must hold no separate active matchmaking session. Check that remote clients leave, the network squad retires, the host returns to the menu, and the specific Live listing disappears. Repeat open and join in the same process, including close during countdown and during play. |
+| Leave sessions `0x593e0()` and return to menu `0x18f1c0(0)` | The target pointer `[0x52736c]` must hold no separate active matchmaking session. Check that remote clients leave, the network squad retires, the host returns to the menu, and the specific Live listing disappears. Repeat open and join on System Link. Use a fresh lease for each Live match. Exercise close during countdown and during play. |
 
-System Link can run this experiment without a service account. For Live,
-the current XOnline session HLE requires a connected logon before it will
-advertise. The host lease needs a machine credential with `sessions.publish`
-(contract 4) accepted by that path. A configured service URL alone cannot
-publish. Compare the ID returned by open with the service listing, then
-verify that no host user appears in membership or results.
+On a leased host, `XOnlineStartup` starts machine logon before the first
+retail advertisement. The HLE checks the token against Live discovery and
+publishes as `host:<lease_id>`. Live allocates one dedicated session ID for
+the lease. Retail updates and deletion use the host bearer and event batches
+signed with the lease key. The machine has zero signed-in users and publishes
+no gamertag, friends or presence. Plain `h2 serve --system-link` still runs
+with local networking only.
+
+For a real run, compare the ID returned by `host.lobby.open` with the
+registered endpoint and the roster member's session detail. Check
+`matchmaking.host_lease` against the assigned lease, join from a second
+console, and use `host.lobby.close` to verify withdrawal of the same ID.
+Only remote players should appear in the roster.
 
 The supervisor uses the agent API for these repeatable operations. The
 guest boundaries above come from static traces. The two-console lifecycle

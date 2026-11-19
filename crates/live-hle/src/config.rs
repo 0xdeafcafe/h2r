@@ -29,6 +29,8 @@ pub const NEW_ACCOUNT_XUID: u64 = 0x0009_0001_0000_0000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("invalid dedicated host publication configuration")]
+    HostCredential,
     #[error("could not configure the Live HTTP worker")]
     Worker,
     #[error("invalid Live network configuration: {0}")]

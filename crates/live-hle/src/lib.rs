@@ -14,7 +14,7 @@ pub mod maps;
 pub mod mods;
 mod messages;
 mod mutes;
-pub use client::{Retry, ServerOptions, ServerStatus};
+pub use client::{HostPublisher, Retry, ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
 #[cfg(unix)]
@@ -250,6 +250,14 @@ impl Hle {
         network.validate().map_err(ConfigError::Network)?;
         if options.request_timeout.is_zero() || options.heartbeat_interval.is_zero() {
             return Err(ConfigError::Worker);
+        }
+        if options.publisher.is_some()
+            && (!config.enabled
+                || config.server_url.is_none()
+                || config.accounts_path.is_some()
+                || config.offer_new_account)
+        {
+            return Err(ConfigError::HostCredential);
         }
         let address = network.address;
         let accounts = config.accounts()?;

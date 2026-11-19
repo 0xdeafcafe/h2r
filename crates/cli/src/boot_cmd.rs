@@ -153,8 +153,13 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
-    let live = headless_live_config(serve, system_link)?;
+    let mut live = headless_live_config(serve, system_link)?;
     check_host_options(serve, system_link, host_light, host_bots)?;
+    let publisher = if host_light {
+        leased_publisher(&mut live, |key| std::env::var_os(key))?
+    } else {
+        None
+    };
     if host_light && (!d3d || !bink || !dsound || !xapi) {
         bail!("--host-light needs the guest D3D, Bink, DirectSound and XAPI shims");
     }
@@ -252,7 +257,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         settings: settings_dir.map(|d| settings_store(cmd, &d)),
         ..boot::Host::default()
     };
-    let r = boot::run_hosted_with_live(
+    let r = boot::run_hosted_with_publisher(
         &xbe,
         &lib,
         &boot::RunOpts {
@@ -270,6 +275,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         },
         host,
         &live,
+        publisher,
     );
     // The kernel's storage may outlive the run (or never drop): store its
     // pending write metadata now. Signals and other abnormal exits fall
@@ -296,6 +302,28 @@ fn check_host_options(serve: bool, system_link: bool, light: bool, bots: bool) -
         bail!("--host-bots requires --host-light");
     }
     Ok(())
+}
+
+fn leased_publisher(
+    config: &mut boot::LiveConfig,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<Option<boot::HostPublisher>> {
+    let values = ["H2_HOST_TOKEN", "H2_HOST_LIVE_URL", "H2_HOST_LEASE_JSON"].map(env);
+    if values.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    let [Some(token), Some(url), Some(json)] = values.map(|v| v.and_then(|s| s.into_string().ok()))
+    else {
+        bail!("host publication requires H2_HOST_TOKEN, H2_HOST_LIVE_URL and H2_HOST_LEASE_JSON");
+    };
+    anyhow::ensure!(
+        live_proto::bearer_allowed(&url),
+        "host publication requires HTTPS or loopback HTTP"
+    );
+    let lease = serde_json::from_str(&json).context("invalid H2_HOST_LEASE_JSON")?;
+    let publisher = boot::HostPublisher::new(lease, token)?;
+    config.server_url = Some(url);
+    Ok(Some(publisher))
 }
 
 /// System Link only needs the XNet boundary. Leave accounts and HTTP unset.
@@ -459,6 +487,19 @@ mod tests {
             let error = run(cmd, vec!["--system-link".into()]).unwrap_err();
             assert_eq!(error.to_string(), "--system-link requires h2 serve");
         }
+    }
+
+    #[test]
+    fn leased_publication_requires_the_complete_child_environment() {
+        let mut config = headless_live_config(true, true).unwrap();
+        assert!(leased_publisher(&mut config, |_| None).unwrap().is_none());
+        for missing in ["H2_HOST_TOKEN", "H2_HOST_LIVE_URL", "H2_HOST_LEASE_JSON"] {
+            assert!(
+                leased_publisher(&mut config, |key| (key != missing).then(|| "value".into()))
+                    .is_err()
+            );
+        }
+        assert!(config.server_url.is_none() && config.accounts_path.is_none());
     }
 
     #[test]

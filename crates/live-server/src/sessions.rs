@@ -75,7 +75,11 @@ impl Live {
                 .values()
                 .find(|s| s.host == subject)
         {
-            return Ok(existing.clone());
+            return if existing.state == "open" {
+                Ok(existing.clone())
+            } else {
+                Err(conflict("the lease session has already closed"))
+            };
         }
         let matchmaking = if let Some(id) = match_id {
             if !session::valid_id(id) {
@@ -243,11 +247,32 @@ impl Live {
         if item.host != author.to_string() {
             return Err(forbidden("only the host writes this session"));
         }
-        if item.state != "open" {
-            return Err(conflict("session is closed"));
-        }
         let clock = now();
         let stream = session::stream(id);
+        if item.state != "open" {
+            // A worker retry can arrive after the delete committed but its
+            // HTTP acknowledgement was lost. Acknowledge that signed delete.
+            if grant.is_some()
+                && item.state == "deleted"
+                && bodies.len() == 1
+                && first.stream == stream
+                && first.kind == session::DELETED
+                && self
+                    .model
+                    .nonces
+                    .contains(&nonce_key(&first.author, &first.nonce), clock)
+            {
+                return Ok(self.position());
+            }
+            return Err(conflict("session is closed"));
+        }
+        // A stopped host may withdraw its own listing while shutting down.
+        // Its unexpired boot token cannot keep advertising or changing seats.
+        if let Some(host) = &grant
+            && bodies.iter().any(|b| b.kind != session::DELETED)
+        {
+            host.require_active(self)?;
+        }
         let mut nonces = BTreeSet::new();
         let mut changed = Vec::new();
         for (i, b) in bodies.iter().enumerate() {

@@ -14,11 +14,7 @@ pub fn install(
     config: &LiveConfig,
     maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
-    if !config.enabled {
-        return Ok(None);
-    }
-    let network = live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?;
-    install_with_network(rt, k, config, network, maps)
+    install_configured(rt, k, config, None, maps, None)
 }
 
 /// Explicit network settings for embedding/tests; install() reads the host env.
@@ -29,10 +25,26 @@ pub fn install_with_network(
     network: live_hle::NetworkConfig,
     maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
+    install_configured(rt, k, config, Some(network), maps, None)
+}
+
+pub(crate) fn install_configured(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    config: &LiveConfig,
+    network: Option<live_hle::NetworkConfig>,
+    maps: Option<Arc<MapGate>>,
+    publisher: Option<live_hle::HostPublisher>,
+) -> anyhow::Result<Option<Arc<Hle>>> {
     if !config.enabled {
         return Ok(None);
     }
+    let network = match network {
+        Some(network) => network,
+        None => live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?,
+    };
     let options = ServerOptions {
+        publisher,
         maps,
         build: build(),
         capabilities: CAPABILITIES.iter().map(|c| c.to_string()).collect(),

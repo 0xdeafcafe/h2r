@@ -3477,6 +3477,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "time",
+ "tokio",
  "toml",
  "tungstenite 0.26.2",
  "ureq",
