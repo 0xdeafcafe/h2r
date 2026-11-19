@@ -3,8 +3,8 @@
 //! stream to the web and recorded frames at rest. JSON stays for the public
 //! read API and the low-rate events.
 //!
-//! A frame is quantised (positions to 1/512 world unit, yaw to 12 bits,
-//! directions octahedral 2 x 12 bits, ...) and written least significant
+//! A frame is quantised (positions to 1/1024 world unit, yaw to 14 bits,
+//! directions octahedral 2 x 14 bits, ...) and written least significant
 //! bit first. Numbers use Exp-Golomb codes, so small values are short.
 //! A stream of frames from one [`Encoder`] sends a keyframe, then deltas
 //! against the frame before: each entity of a list is matched with the
@@ -26,35 +26,26 @@ use crate::game::{
     MAX_FRAME_PROJECTILES, MAX_FRAME_VEHICLES, MAX_PLAYERS, ObjectKind, STANCES,
 };
 
-/// The packed format's version, the first four bits of every frame, and
-/// the one the encoder writes. Version 6 carries the cinematic bit on every
-/// frame, adds a vehicle's velocity and the projectile and item lists, and
-/// codes a moving entity's position in a delta as the error of a
-/// prediction from its velocity ([`predict`]). Version 5 was version 4 with
-/// the cinematic bit, written only for cinematic frames
-/// ([`CINEMATIC_VERSION`]); version 4 added a player's and actor's
-/// animation; version 3 a player's and actor's velocity, fire ticks,
-/// vitality, seat and action ticks, a hit's tick and a frame's cut; version
-/// 2 a vehicle's parent and aim. Every older version (recorded frames, an
-/// older game's stream) still decodes.
-pub const VERSION: u64 = 6;
-/// The last version before 6 that wrote no cinematic bit on ordinary frames.
+/// Latest encoder version. V7 adds finer grids, sparse vector residuals,
+/// repeated edit masks and change-only positions relative to dead reckoning.
+/// V6 introduced vehicle velocity, projectiles and loose items.
+pub const VERSION: u64 = 7;
+/// V4 was the last ordinary frame format without a cinematic bit.
 pub const V4: u64 = 4;
-/// Version 4 with the cinematic bit: what a cinematic frame was before
-/// version 6 (decoded, no longer written).
+/// V5 was used for cinematic frames from v4 senders.
 pub const CINEMATIC_VERSION: u64 = 5;
-/// Positions are whole multiples of 1/512 world unit (about 6 mm).
-pub const POS_SCALE: f64 = 512.0;
-/// Yaw: a full turn in 4096 steps.
-pub const ANGLE_BITS: u32 = 12;
-/// Directions: octahedral, two components of 12 bits.
-pub const DIR_BITS: u32 = 12;
+/// Positions in 1/1024 world unit (about 3 mm).
+pub const POS_SCALE: f64 = 1024.0;
+/// Yaw: a full turn in 16384 steps.
+pub const ANGLE_BITS: u32 = 14;
+/// Directions: two octahedral components of 14 bits.
+pub const DIR_BITS: u32 = 14;
 /// Speeds in 1/16 unit a second.
 pub const SPEED_SCALE: f64 = 16.0;
 /// Hit amounts in 1/256 of a vitality.
 pub const AMOUNT_SCALE: f64 = 256.0;
-/// Velocities in 1/64 unit a second.
-pub const VEL_SCALE: f64 = 64.0;
+/// Velocities in 1/128 unit a second.
+pub const VEL_SCALE: f64 = 128.0;
 /// Body vitality (0..1) in 6 bits.
 pub const BODY_BITS: u32 = 6;
 /// Shield vitality in 1/32 of a shield.
@@ -165,11 +156,16 @@ impl BitWriter {
 pub struct BitReader<'a> {
     bytes: &'a [u8],
     pos: usize,
+    version: u64,
 }
 
 impl<'a> BitReader<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
-        BitReader { bytes, pos: 0 }
+        BitReader {
+            bytes,
+            pos: 0,
+            version: VERSION,
+        }
     }
 
     pub fn bits(&mut self, n: u32) -> Result<u64> {
@@ -258,8 +254,12 @@ pub fn oct(v: [f64; 3]) -> Result<[u32; 2]> {
 
 /// The unit vector [`oct`] packed.
 pub fn unoct(q: [u32; 2]) -> [f64; 3] {
-    let mut x = q[0] as f64 / DIR_MAX * 2.0 - 1.0;
-    let mut y = q[1] as f64 / DIR_MAX * 2.0 - 1.0;
+    unoct_grid(q, DIR_MAX)
+}
+
+fn unoct_grid(q: [u32; 2], max: f64) -> [f64; 3] {
+    let mut x = q[0] as f64 / max * 2.0 - 1.0;
+    let mut y = q[1] as f64 / max * 2.0 - 1.0;
     let z = 1.0 - x.abs() - y.abs();
     if z < 0.0 {
         let (ax, ay) = (x.abs(), y.abs());
@@ -361,6 +361,7 @@ enum Val {
     Int(u64),
     Pos([i64; 3]),
     Dir([u32; 2]),
+    LegacyDir([u32; 2]), // v1–6 octahedral grid, max 4094
     Str(String),
     Id(Id),
     List(Vec<u8>),
@@ -619,7 +620,8 @@ fn schema_of(version: u64) -> Option<Schema> {
         3 => schema(&LISTS_V3, HIT, true, false, false),
         V4 => schema(&LISTS_V4, HIT, true, false, false),
         CINEMATIC_VERSION => schema(&LISTS_V4, HIT, true, true, false),
-        VERSION => schema(&LISTS, HIT, true, true, true),
+        6 => schema(&LISTS, HIT, true, true, true),
+        VERSION => schema(&LISTS, HIT, true, true, false),
         _ => return None,
     })
 }
@@ -637,7 +639,13 @@ fn motion_fields(schema: &[Field]) -> Option<(usize, usize)> {
 /// [`PREDICT_TICKS`]. Both sides know it before the position's bits.
 fn predict_base(prev_vel: &Val, dt: u64) -> Option<[i64; 3]> {
     match prev_vel {
-        Val::Vel(a) if dt <= PREDICT_TICKS && a.iter().all(|c| c.abs() <= PREDICT_VEL) => Some(*a),
+        Val::Vel(a)
+            if dt <= PREDICT_TICKS
+                && a.iter()
+                    .all(|c| c.unsigned_abs() <= (2 * PREDICT_VEL) as u64) =>
+        {
+            Some(*a)
+        }
         _ => None,
     }
 }
@@ -650,12 +658,19 @@ fn predict_base(prev_vel: &Val, dt: u64) -> Option<[i64; 3]> {
 /// every decoder predicts the same.
 fn predict(prev_pos: [i64; 3], a: [i64; 3], new_vel: &Val, dt: u64) -> [i64; 3] {
     let b = match new_vel {
-        Val::Vel(b) if b.iter().all(|c| c.abs() <= PREDICT_VEL) => *b,
+        Val::Vel(b)
+            if b.iter()
+                .all(|c| c.unsigned_abs() <= (2 * PREDICT_VEL) as u64) =>
+        {
+            *b
+        }
         _ => a,
     };
     let dt = dt as i64;
     std::array::from_fn(|i| {
-        prev_pos[i].saturating_add((4 * (a[i] + b[i]) * dt + 15).div_euclid(30))
+        // Legacy coordinates and velocities are stored internally in the
+        // finer v7 grid. Round in the original grid before lifting back.
+        prev_pos[i].saturating_add(2 * (2 * (a[i] + b[i]) * dt + 15).div_euclid(30))
     })
 }
 
@@ -935,6 +950,7 @@ fn as_opt_pos(v: &Val) -> Result<Option<[f64; 3]>> {
 fn as_dir(v: &Val) -> Result<[f64; 3]> {
     match v {
         Val::Dir(q) => Ok(unoct(*q)),
+        Val::LegacyDir(q) => Ok(unoct_grid(*q, 4094.0)),
         _ => Err(PackError::Bad("expected a direction")),
     }
 }
@@ -1311,17 +1327,119 @@ fn read_str_literal(r: &mut BitReader) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| PackError::Bad("string is not UTF-8"))
 }
 
+/// A vector with a base uses one bit for a zero axis, then codes only
+/// nonzero residuals. A keyframe or a newly present field is absolute.
+fn write_vector(
+    w: &mut BitWriter,
+    q: &[i64; 3],
+    prev: Option<&[i64; 3]>,
+    abs_k: u32,
+    delta_k: u32,
+) {
+    if let Some(p) = prev {
+        for (v, base) in q.iter().zip(p) {
+            w.bit(v != base);
+            if v != base {
+                w.seg(v - base, delta_k);
+            }
+        }
+    } else {
+        for &v in q {
+            w.seg(v, abs_k);
+        }
+    }
+}
+
+fn read_vector(
+    r: &mut BitReader,
+    prev: Option<&[i64; 3]>,
+    abs_k: u32,
+    delta_k: u32,
+    old_k: u32,
+) -> Result<[i64; 3]> {
+    let mut q = prev.copied().unwrap_or_default();
+    for v in &mut q {
+        let residual = if r.version < VERSION {
+            // Both legacy grids have exactly half the new scale.
+            r.seg(if prev.is_some() { old_k } else { abs_k })? * 2
+        } else if prev.is_none() {
+            r.seg(abs_k)?
+        } else if r.bit()? {
+            r.seg(delta_k)?
+        } else {
+            0
+        };
+        *v = v
+            .checked_add(residual)
+            .ok_or(PackError::Bad("vector out of range"))?;
+    }
+    Ok(q)
+}
+
+fn write_angle_component(w: &mut BitWriter, value: u32, base: Option<u32>, wrap: bool) {
+    if let Some(base) = base {
+        let mut d = i64::from(value) - i64::from(base);
+        if wrap {
+            d = (d + 8192).rem_euclid(16384) - 8192;
+        }
+        let short = (-64..64).contains(&d);
+        w.bit(!short);
+        if short {
+            w.seg(d, 3);
+            return;
+        }
+    }
+    w.bits(u64::from(value), 14);
+}
+
+fn read_angle_component(r: &mut BitReader, base: Option<u32>, wrap: bool) -> Result<u32> {
+    if let Some(base) = base
+        && !r.bit()?
+    {
+        let d = r.seg(3)?;
+        if !(-64..64).contains(&d) {
+            return Err(PackError::Bad("angle residual out of range"));
+        }
+        let v = i64::from(base) + d;
+        return if wrap {
+            Ok(v.rem_euclid(16384) as u32)
+        } else {
+            u32::try_from(v).map_err(|_| PackError::Bad("direction out of range"))
+        };
+    }
+    Ok(r.bits(14)? as u32)
+}
+
 fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &Table) {
     match (kind, v) {
         (Kind::Bool, Val::Bool(b)) => w.bit(*b),
-        (Kind::Pos, Val::Pos(q)) => match prev {
-            Some(Val::Pos(p)) => (0..3).for_each(|i| w.seg(q[i] - p[i], 7)),
-            _ => q.iter().for_each(|c| w.seg(*c, 16)),
-        },
-        (Kind::Angle, Val::Int(n)) => w.bits(*n, ANGLE_BITS),
-        (Kind::Dir, Val::Dir([x, y])) => {
-            w.bits(u64::from(*x), DIR_BITS);
-            w.bits(u64::from(*y), DIR_BITS);
+        (Kind::Pos, Val::Pos(q)) => write_vector(
+            w,
+            q,
+            match prev {
+                Some(Val::Pos(p)) => Some(p),
+                _ => None,
+            },
+            16,
+            3,
+        ),
+        (Kind::Angle, Val::Int(n)) => write_angle_component(
+            w,
+            *n as u32,
+            match prev {
+                Some(Val::Int(p)) => Some(*p as u32),
+                _ => None,
+            },
+            true,
+        ),
+        (Kind::Dir, Val::Dir(q)) => {
+            let base = match prev {
+                Some(Val::Dir(p)) => Some(p),
+                _ => None,
+            };
+            for i in 0..2 {
+                write_angle_component(w, q[i], base.map(|p| p[i]), false);
+            }
         }
         (Kind::Str, Val::Str(s)) => w.eg(t.index[s], 3),
         (Kind::Id, Val::Id(id)) => match id {
@@ -1344,10 +1462,16 @@ fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &T
             w.eg(l.len() as u64, 0);
             l.iter().for_each(|a| w.bits(u64::from(*a), 3));
         }
-        (Kind::Vel, Val::Vel(q)) => match prev {
-            Some(Val::Vel(p)) => (0..3).for_each(|i| w.seg(q[i] - p[i], 4)),
-            _ => q.iter().for_each(|c| w.seg(*c, 8)),
-        },
+        (Kind::Vel, Val::Vel(q)) => write_vector(
+            w,
+            q,
+            match prev {
+                Some(Val::Vel(p)) => Some(p),
+                _ => None,
+            },
+            8,
+            2,
+        ),
         (Kind::Agos, Val::Ints(l)) => {
             w.eg(l.len() as u64, 0);
             l.iter().for_each(|a| w.eg(*a, 1));
@@ -1370,25 +1494,45 @@ fn read_value(
     };
     Ok(match kind {
         Kind::Bool => Val::Bool(r.bit()?),
-        Kind::Pos => match prev {
-            Some(Val::Pos(p)) => {
-                let mut q = *p;
-                for c in &mut q {
-                    *c = c
-                        .checked_add(r.seg(7)?)
-                        .ok_or(PackError::Bad("position out of range"))?;
-                }
-                Val::Pos(q)
-            }
-            _ => Val::Pos([r.seg(16)?, r.seg(16)?, r.seg(16)?]),
-        },
-        Kind::Angle => Val::Int(r.bits(ANGLE_BITS)?),
-        Kind::Dir => {
-            let (x, y) = (r.bits(DIR_BITS)? as u32, r.bits(DIR_BITS)? as u32);
-            if x > DIR_MAX as u32 || y > DIR_MAX as u32 {
+        Kind::Pos => Val::Pos(read_vector(
+            r,
+            match prev {
+                Some(Val::Pos(p)) => Some(p),
+                _ => None,
+            },
+            16,
+            3,
+            7,
+        )?),
+        Kind::Angle if r.version < VERSION => Val::Int(r.bits(12)? * 4),
+        Kind::Angle => Val::Int(u64::from(read_angle_component(
+            r,
+            match prev {
+                Some(Val::Int(p)) => Some(*p as u32),
+                _ => None,
+            },
+            true,
+        )?)),
+        Kind::Dir if r.version < VERSION => {
+            let q = [r.bits(12)? as u32, r.bits(12)? as u32];
+            if q.iter().any(|&v| v > 4094) {
                 return Err(PackError::Bad("direction out of range"));
             }
-            Val::Dir([x, y])
+            Val::LegacyDir(q)
+        }
+        Kind::Dir => {
+            let base = match prev {
+                Some(Val::Dir(p)) => Some(p),
+                _ => None,
+            };
+            let q = [
+                read_angle_component(r, base.map(|p| p[0]), false)?,
+                read_angle_component(r, base.map(|p| p[1]), false)?,
+            ];
+            if q.iter().any(|&v| v > DIR_MAX as u32) {
+                return Err(PackError::Bad("direction out of range"));
+            }
+            Val::Dir(q)
         }
         Kind::Str => Val::Str(string(r.eg(3)?)?),
         Kind::Id => match r.bits(2)? {
@@ -1411,18 +1555,16 @@ fn read_value(
             }
             Val::Int(v)
         }
-        Kind::Vel => match prev {
-            Some(Val::Vel(p)) => {
-                let mut q = *p;
-                for c in &mut q {
-                    *c = c
-                        .checked_add(r.seg(4)?)
-                        .ok_or(PackError::Bad("velocity out of range"))?;
-                }
-                Val::Vel(q)
-            }
-            _ => Val::Vel([r.seg(8)?, r.seg(8)?, r.seg(8)?]),
-        },
+        Kind::Vel => Val::Vel(read_vector(
+            r,
+            match prev {
+                Some(Val::Vel(p)) => Some(p),
+                _ => None,
+            },
+            8,
+            2,
+            4,
+        )?),
         Kind::Agos => {
             let n = r.eg(0)?;
             if n > MAX_FRAME_ACTIONS as u64 {
@@ -1503,64 +1645,79 @@ fn read_full(
     (0..n).map(|_| read_entity(r, schema, strings)).collect()
 }
 
-/// An entity's key: its key fields (at most two).
-fn key_of<'a>(schema: &[Field], e: &'a Entity) -> [Option<&'a Val>; 2] {
-    let mut key = [None; 2];
-    for (slot, (_, v)) in key
-        .iter_mut()
-        .zip(schema.iter().zip(e).filter(|(f, _)| f.key))
-    {
-        *slot = Some(v);
+/// Advance the shared base before run detection or editing. Fields without
+/// velocity stay at their last sent value. Corrections recover the exact
+/// quantized sample even on a teleport or a velocity change.
+fn advance_positions(list: &mut [Entity], schema: &[Field], ticks: u64) {
+    if list.is_empty() || !(1..=PREDICT_TICKS).contains(&ticks) {
+        return;
     }
-    key
+    let Some((pi, vi)) = motion_fields(schema) else {
+        return;
+    };
+    for e in list {
+        let Val::Vel(v) = e[vi] else {
+            continue;
+        };
+        let Val::Pos(p) = &mut e[pi] else {
+            continue;
+        };
+        for (pos, vel) in p.iter_mut().zip(v) {
+            // POS_SCALE / VEL_SCALE = 8; half away from zero. Saturation
+            // is reachable only with malformed wire integers.
+            let step = vel.saturating_mul(8 * ticks as i64);
+            *pos = pos.saturating_add(step.saturating_add(15 * step.signum()) / 30);
+        }
+    }
+}
+
+fn key_of(e: &Entity, first: usize, second: Option<usize>) -> (&Val, Option<&Val>) {
+    (&e[first], second.map(|i| &e[i]))
 }
 
 /// A list against the previous frame's: the count, then until it is
 /// reached either `0` and a run of unchanged entities taken in order from
 /// the previous list, or `1` and one entity: `1`, the previous entity it
 /// is (relative to the one after the last taken), a changed-field mask and
-/// the changed fields; or `0` and the whole entity. With `predict` (version
-/// 6), a changed position of an entity with a velocity is the error of
-/// [`predict`] over `dt` ticks when [`predict_base`] allows.
-fn write_delta(
-    w: &mut BitWriter,
-    schema: &[Field],
-    list: &[Entity],
-    prev: &[Entity],
-    t: &Table,
-    dt: u64,
-    predict: bool,
-) {
-    let motion = motion_fields(schema).filter(|_| predict);
+/// the changed fields; or `0` and the whole entity.
+fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Entity], t: &Table) {
     // Most frames list the same entities in the same order: match by
     // position, and only key a map when that fails.
+    let mut keys = schema
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.key.then_some(i));
+    let first = keys.next().expect("a delta schema has a key");
+    let second = keys.next();
     let same_order = list.len() == prev.len()
         && list
             .iter()
             .zip(prev)
-            .all(|(e, p)| key_of(schema, e) == key_of(schema, p));
-    let matches: Vec<Option<usize>> = if same_order {
-        (0..list.len()).map(Some).collect()
+            .all(|(e, p)| key_of(e, first, second) == key_of(p, first, second));
+    let reordered: Vec<Option<usize>> = if same_order {
+        Vec::new()
     } else {
-        let mut keys: HashMap<[Option<&Val>; 2], usize> = HashMap::with_capacity(prev.len());
+        let mut keys = HashMap::with_capacity(prev.len());
         for (j, e) in prev.iter().enumerate() {
-            keys.entry(key_of(schema, e)).or_insert(j);
+            keys.entry(key_of(e, first, second)).or_insert(j);
         }
         let mut used = vec![false; prev.len()];
         list.iter()
             .map(|e| {
-                let j = *keys.get(&key_of(schema, e))?;
+                let j = *keys.get(&key_of(e, first, second))?;
                 (!std::mem::replace(&mut used[j], true)).then_some(j)
             })
             .collect()
     };
     w.eg(list.len() as u64, 2);
     let mut cursor = 0usize;
+    let matched = |i: usize| if same_order { Some(i) } else { reordered[i] };
+    let mut last_mask = 0u32;
     let mut i = 0;
     while i < list.len() {
         let mut run = 0;
         while i + run < list.len()
-            && matches[i + run] == Some(cursor + run)
+            && matched(i + run) == Some(cursor + run)
             && list[i + run] == prev[cursor + run]
         {
             run += 1;
@@ -1573,28 +1730,32 @@ fn write_delta(
             continue;
         }
         w.bit(true);
-        match matches[i] {
+        match matched(i) {
             Some(j) => {
                 w.bit(true);
                 w.seg(j as i64 - cursor as i64, 0);
                 let before = &prev[j];
-                for ((field, v), p) in schema.iter().zip(&list[i]).zip(before) {
-                    if !field.key {
-                        w.bit(v != p);
-                    }
-                }
-                let base = motion.and_then(|(_, vi)| predict_base(&before[vi], dt));
-                for (idx, ((field, v), p)) in schema.iter().zip(&list[i]).zip(before).enumerate() {
-                    if field.key || v == p {
-                        continue;
-                    }
-                    match (motion, base, v, p) {
-                        (Some((pi, vi)), Some(a), Val::Pos(q), Val::Pos(pp)) if idx == pi => {
-                            let guess = self::predict(*pp, a, &list[i][vi], dt);
-                            (0..3).for_each(|c| w.seg(q[c] - guess[c], PREDICT_K));
+                let entity = &list[i];
+                // Key fields already matched and compare equal.
+                let mask = entity
+                    .iter()
+                    .zip(before)
+                    .enumerate()
+                    .fold(0u32, |mask, (i, (v, p))| mask | (u32::from(v != p) << i));
+                w.bit(mask != last_mask);
+                if mask != last_mask {
+                    for (i, field) in schema.iter().enumerate() {
+                        if !field.key {
+                            w.bit(mask & (1 << i) != 0);
                         }
-                        _ => write_field(w, *field, v, Some(p), t),
                     }
+                    last_mask = mask;
+                }
+                let mut changed = mask;
+                while changed != 0 {
+                    let i = changed.trailing_zeros() as usize;
+                    write_field(w, schema[i], &entity[i], Some(&before[i]), t);
+                    changed &= changed - 1;
                 }
                 cursor = j + 1;
             }
@@ -1625,6 +1786,7 @@ fn read_delta(
     let mut out: Vec<Entity> = Vec::with_capacity(n);
     // Where each of `prev` was moved to in `out` (HERE: not moved).
     let mut moved: Vec<usize> = Vec::new();
+    let mut last_mask = 0u32;
     let mut cursor = 0usize;
     while out.len() < n {
         if !r.bit()? {
@@ -1636,8 +1798,13 @@ fn read_delta(
                 moved.resize(prev.len(), HERE);
             }
             for (k, e) in prev[cursor..cursor + run].iter_mut().enumerate() {
-                moved[cursor + k] = out.len();
-                out.push(std::mem::take(e));
+                let source = &mut moved[cursor + k];
+                if *source == HERE {
+                    *source = out.len();
+                    out.push(std::mem::take(e));
+                } else {
+                    out.push(out[*source].clone());
+                }
             }
             cursor += run;
             continue;
@@ -1652,26 +1819,27 @@ fn read_delta(
                 Some(&at) if at != HERE => &out[at],
                 _ => &prev[j],
             };
-            let mut mask = 0u32;
-            for (idx, f) in schema.iter().enumerate() {
-                if !f.key && r.bit()? {
-                    mask |= 1 << idx;
+            if r.version < VERSION || r.bit()? {
+                last_mask = 0;
+                for (idx, f) in schema.iter().enumerate() {
+                    if !f.key && r.bit()? {
+                        last_mask |= 1 << idx;
+                    }
                 }
             }
             let mut e = before.clone();
-            // A predicted position: its error now, the prediction once the
-            // new velocity (a later field) is read.
+            // Only v6 defers the position until its new velocity is read.
             let mut error = None;
             let base = motion.and_then(|(_, vi)| predict_base(&before[vi], dt));
-            for (idx, field) in schema.iter().enumerate() {
-                if mask & (1 << idx) == 0 {
-                    continue;
-                }
+            let mut mask = last_mask;
+            while mask != 0 {
+                let idx = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
                 match (motion, base) {
                     (Some((pi, _)), Some(_)) if idx == pi => {
                         error = Some([r.seg(PREDICT_K)?, r.seg(PREDICT_K)?, r.seg(PREDICT_K)?]);
                     }
-                    _ => e[idx] = read_field(r, *field, Some(&before[idx]), strings)?,
+                    _ => e[idx] = read_field(r, schema[idx], Some(&before[idx]), strings)?,
                 }
             }
             if let (Some((pi, vi)), Some(a), Some(err)) = (motion, base, error) {
@@ -1682,7 +1850,7 @@ fn read_delta(
                 let mut q = [0i64; 3];
                 for c in 0..3 {
                     q[c] = guess[c]
-                        .checked_add(err[c])
+                        .checked_add(err[c] * 2)
                         .ok_or(PackError::Bad("position out of range"))?;
                 }
                 e[pi] = Val::Pos(q);
@@ -1754,8 +1922,6 @@ impl Encoder {
             return Err(PackError::Value("game id too long"));
         }
         let mut new_strings: Vec<&str> = Vec::new();
-        // Every frame is version 6, cinematic or not (a delta is against a
-        // frame of its own version; the check stays for a later version).
         let version = VERSION;
         let key = match &self.state {
             None => true,
@@ -1767,7 +1933,7 @@ impl Encoder {
                     }
                 }
                 self.since_key >= self.keyframe_every
-                    || s.version != version
+                    || frame.cut.is_some()
                     || s.game_id != frame.game_id
                     || frame.tick < s.tick
                     || s.strings.len() + new_strings.len() > MAX_STRINGS
@@ -1835,15 +2001,8 @@ impl Encoder {
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
-                write_delta(
-                    &mut w,
-                    schema,
-                    &lists.lists[n],
-                    &state.lists[n],
-                    &table,
-                    dt,
-                    true,
-                );
+                advance_positions(&mut state.lists[n], schema, dt);
+                write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table);
             }
         }
         state.seq = seq;
@@ -1890,6 +2049,7 @@ impl Decoder {
     pub fn decode(&mut self, bytes: &[u8]) -> Result<Decoded> {
         let mut r = BitReader::new(bytes);
         let version = r.bits(4)?;
+        r.version = version;
         let schema = schema_of(version).ok_or(PackError::Version(version))?;
         let key = r.bit()?;
         let sid = r.eg(0)?;
@@ -1950,6 +2110,9 @@ impl Decoder {
             state.lists[n] = if key {
                 read_full(&mut r, fields, *max, &state.strings)?
             } else {
+                if version == VERSION {
+                    advance_positions(&mut prev.lists[n], fields, dt);
+                }
                 read_delta(
                     &mut r,
                     fields,
