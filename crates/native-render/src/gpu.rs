@@ -168,12 +168,46 @@ impl PassStencil {
     }
 }
 
+/// Which sections' parts a pass draws ([`GpuWorld::set_owners`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Owners {
+    #[default]
+    All,
+    /// Clusters only: placements left to the D3D path.
+    Clusters,
+    /// Placements only: clusters left to the D3D path.
+    Placements,
+}
+
+impl Owners {
+    /// Whether `owner`'s parts are drawn.
+    pub fn keeps(self, owner: Owner) -> bool {
+        match (self, owner) {
+            (Owners::All, _) => true,
+            (Owners::Clusters, Owner::Cluster(_)) | (Owners::Placements, Owner::Instance(_)) => true,
+            _ => false,
+        }
+    }
+
+    /// `all`, `clusters` or `placements`.
+    pub fn parse(v: &str) -> Option<Self> {
+        match v.trim() {
+            "all" | "" => Some(Owners::All),
+            "clusters" => Some(Owners::Clusters),
+            "placements" => Some(Owners::Placements),
+            _ => None,
+        }
+    }
+}
+
 pub struct GpuWorld {
     world: World,
     /// The stencil the next pass draws with ([`GpuWorld::set_stencil`]).
     stencil: PassStencil,
     /// Whether [`GpuWorld::prepare`] culls on the CPU ([`GpuWorld::set_cull`]).
     culls: bool,
+    /// Which sections' parts it draws ([`GpuWorld::set_owners`]).
+    owners: Owners,
     vertices: wgpu::Buffer,
     /// [`World::program_vertices`]: what the material programs read.
     program_vertices: wgpu::Buffer,
@@ -410,6 +444,7 @@ impl GpuWorld {
             world,
             stencil: PassStencil::default(),
             culls: true,
+            owners: Owners::All,
             vertices,
             program_vertices,
             indices,
@@ -579,6 +614,13 @@ impl GpuWorld {
         self.culls = on;
     }
 
+    /// Which sections' parts [`GpuWorld::prepare`] leaves drawn (all by
+    /// default): a diagnostic, with the host leaving the rest to the D3D
+    /// path ([`Owners::keeps`] on the parts it skips).
+    pub fn set_owners(&mut self, owners: Owners) {
+        self.owners = owners;
+    }
+
     /// Draws `programs`' materials with their own programs from now on.
     pub fn set_programs(&mut self, programs: ProgramSet) {
         self.programs = Some(programs);
@@ -674,6 +716,18 @@ impl GpuWorld {
                 slot.instance_count = 1;
             }
             CullStats { visible: self.slots.len() as u32, total: self.world.draws.len() as u32 }
+        };
+        let stats = if self.owners == Owners::All {
+            stats
+        } else {
+            let mut visible = 0;
+            for (slot, d) in self.slots.iter_mut().zip(&self.world.draws) {
+                if !self.owners.keeps(d.owner) {
+                    slot.instance_count = 0;
+                }
+                visible += slot.instance_count.min(1);
+            }
+            CullStats { visible, total: stats.total }
         };
         let u = FrameUniform {
             view_proj,

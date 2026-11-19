@@ -41,7 +41,7 @@ use engine::memory::GuestMemory;
 use feature::native_world::{Host, PartSet};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
-use native_render::gpu::{DepthRule, GpuWorld, Image, PassStencil, PassViewport};
+use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
@@ -235,7 +235,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             traced: false,
             stencil,
         }));
-        Some(Arc::clone(&ready.parts))
+        let owners = Diagnostics::get().owners;
+        if owners == Owners::All {
+            return Some(Arc::clone(&ready.parts));
+        }
+        Some(Arc::new(ready.parts.iter().filter(|((o, _), _)| owners.keeps(*o)).map(|(&k, &v)| (k, v)).collect()))
     }
 }
 
@@ -359,6 +363,7 @@ impl d3d::ExternalPass for WorldPass {
         }
         let diag = Diagnostics::get();
         gpu.set_cull(!diag.no_cull);
+        gpu.set_owners(diag.owners);
         let culled = gpu.prepare(
             t.queue,
             &self.camera,
@@ -415,6 +420,10 @@ struct Diagnostics {
     /// parts whose triangles cover that pixel, on each traced pass
     /// ([`probe`]).
     probe: Option<(f32, f32)>,
+    /// `H2_NATIVE_WORLD_OWNERS=clusters|placements`: only those sections'
+    /// parts drawn natively, the rest left to the D3D path (their items
+    /// not skipped): which kind a difference belongs to.
+    owners: Owners,
 }
 
 impl Diagnostics {
@@ -426,8 +435,9 @@ impl Diagnostics {
                 trace: on("H2_NATIVE_WORLD_TRACE"),
                 no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
                 probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
+                owners: std::env::var("H2_NATIVE_WORLD_OWNERS").ok().and_then(|v| Owners::parse(&v)).unwrap_or_default(),
             };
-            if d.trace || d.no_cull {
+            if d.trace || d.no_cull || d.owners != Owners::All {
                 eprintln!("native-world: diagnostics {d:?}");
             }
             d
@@ -1381,6 +1391,18 @@ mod tests {
         assert_eq!(active_scenario_bsp(&addresses, 2, at), None, "loads elsewhere");
         assert_eq!(active_scenario_bsp(&addresses, 3, at), None, "no location");
         assert_eq!(active_scenario_bsp(&addresses, 4, at), None, "past the block");
+    }
+
+    #[test]
+    fn the_owners_switch_keeps_one_kind_of_section() {
+        assert_eq!(Owners::parse("clusters"), Some(Owners::Clusters));
+        assert_eq!(Owners::parse(" placements "), Some(Owners::Placements));
+        assert_eq!(Owners::parse(""), Some(Owners::All));
+        assert_eq!(Owners::parse("objects"), None);
+        let (c, i) = (Owner::Cluster(31), Owner::Instance(282));
+        assert!(Owners::All.keeps(c) && Owners::All.keeps(i));
+        assert!(Owners::Clusters.keeps(c) && !Owners::Clusters.keeps(i));
+        assert!(!Owners::Placements.keeps(c) && Owners::Placements.keeps(i));
     }
 
     #[test]

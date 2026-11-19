@@ -112,7 +112,13 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   `H2_NATIVE_WORLD_PROBE=x,y` adds, on each traced pass, the parts whose
   triangles cover that guest pixel through the render camera, nearest
   first: owner (cluster or placement), part, material, view depth and the
-  distance to the triangle's nearest edge (under a pixel: an edge tie). A view whose draws are not
+  distance to the triangle's nearest edge (under a pixel: an edge tie).
+  `H2_NATIVE_WORLD_OWNERS=clusters` (or `placements`) draws only that
+  kind natively and leaves the other's items to the D3D path. At 03000
+  the probe put the 43 px girder line on placement 282's edge (0.23 px
+  outside its triangle, over cluster 31), and the 02000 remainder and
+  01000's 3 px are edge pixels too (the van's outline, the curb): the
+  owners switch says whether the rigid path or the clusters own them. A view whose draws are not
   W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
   path (counted in the log): the programs write and clip w. The trace
   found it: every cinematic pass culled 0 of 1449 draws (and drawing
