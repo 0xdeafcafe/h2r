@@ -15,6 +15,7 @@ mod client;
 mod endpoint;
 pub mod expect;
 pub mod havok;
+pub mod host_lobby;
 pub mod hot;
 mod load;
 mod pad;
@@ -149,6 +150,10 @@ pub mod method {
     /// Recent tick cost and process resource use.
     pub const HOST_METRICS: &str = "host.metrics";
     pub const HOST_AUDIT: &str = "host.audit";
+    pub const HOST_LOBBY_OPEN: &str = "host.lobby.open";
+    pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
+    pub const HOST_LOBBY_START: &str = "host.lobby.start";
+    pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";

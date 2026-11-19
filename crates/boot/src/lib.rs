@@ -41,6 +41,7 @@ pub mod h1_options_row;
 pub mod h1_variants;
 pub mod health;
 pub mod host_audit;
+mod host_lobby;
 mod host_metrics;
 pub mod host_perf;
 pub mod hot_glue;
@@ -1506,6 +1507,7 @@ fn run_configured(
     }
     if let Some(a) = &agent {
         host_metrics::install(&mut features, &a.agent, host_light)?;
+        host_lobby::install(&mut features, &a.agent, host_light, opts, _live.clone())?;
     }
     if let Some(audit) = &audit {
         anyhow::ensure!(features.add(audit).map_err(anyhow::Error::msg)?,

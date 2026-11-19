@@ -192,6 +192,40 @@ dedicated process externally. The collector changes dispatch and memory
 watch costs, so use `host.metrics` in an ordinary run for sizing.
 [Report fields and corpus](sim.md#host-audit-corpus)
 
+### `host.lobby`
+
+Start a System Link light host with `H2_HOST_LOBBY=1`. On that process,
+`session.methods` lists these four methods. Each result object also carries
+the agent's usual `at` boundary stamp.
+
+| Method | Parameters | Result fields |
+|---|---|---|
+| `host.lobby.open` | `{"map":"lockout","variant":"team_slayer","max_players":8,"live":false}` | System Link returns an empty object. Live returns the advertised `session_id`. |
+| `host.lobby.state` | `{}` | `{"phase":"lobby","players":[{"slot":3,"peer":1,"name":"Example"}],"ready":true}` |
+| `host.lobby.start` | `{}` | An empty object when retail accepts the start request. Observe `state` for load and play. |
+| `host.lobby.close` | `{}` | An empty object once the network lobby has closed and the host is back at the menu. |
+
+The host looks up `map` by short name, scenario path or English display
+name. The optional `variant` defaults to Slayer. It accepts a disc variant,
+a signed and valid saved variant present at boot, a stock game type or a
+built-in Live playlist variant key. Names are case-insensitive. If a name
+matches two different saved or disc rulesets, open returns `INVALID_PARAMS`.
+
+`max_players` is an integer from 1 to 16. The required `live` boolean
+selects System Link or a Live custom game. Live requires a working
+service identity that can publish sessions. Open waits for retail to
+publish the requested lobby parameters. Repeating the same open in
+pregame returns the existing lobby. Close it before changing parameters.
+
+The phases are `menu`, `lobby`, `loading`, `playing`, and `postgame`. Player
+slots are retail membership slots and can have gaps. Split-screen players
+on a remote console share a peer index. An empty, joinable lobby reports
+`"players":[]` and `"ready":false`. Readiness requires a remote player,
+party leadership, the requested map and limit, loaded maps on every peer,
+and retail's ready-to-start result. Any connection may read state.
+Mutations respect `session.claim` and a concurrent mutation receives
+`BUSY`. [Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby)
+
 ### `ui`: what the menus and HUD show
 
 The client gets the **stack of open screens**, not pixels:
