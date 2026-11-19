@@ -9,6 +9,7 @@ use runtime::guest::Permissions;
 use serde_json::{Value, json};
 
 use super::*;
+use serde_json::json;
 use crate::{ConnId, GameStatus, Reader};
 
 struct Nothing;
@@ -155,6 +156,7 @@ fn edit_methods_read_write_list_and_revert() {
     assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");
 }
 
+#[cfg(feature = "render-overrides")]
 fn scratch(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("agent-hot-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -163,6 +165,7 @@ fn scratch(name: &str) -> PathBuf {
 
 const PROGRAM: &str = "00000000000000ab";
 
+#[cfg(feature = "render-overrides")]
 #[test]
 fn render_methods_drive_the_hub() {
     let hub: &'static Hub = Box::leak(Box::new(Hub::new()));

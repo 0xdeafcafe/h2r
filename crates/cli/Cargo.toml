@@ -7,40 +7,41 @@ license.workspace = true
 [[bin]]
 name = "h2"
 path = "src/main.rs"
+required-features = ["host"]
 
 [dependencies]
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
-hs.workspace = true
-tags.workspace = true
-shaders = { path = "../shaders" }
-font = { path = "../font" }
-assets.workspace = true
-map.workspace = true
-xiso.workspace = true
+hs = { workspace = true, optional = true }
+tags = { workspace = true, optional = true }
+shaders = { path = "../shaders", optional = true }
+font = { path = "../font", optional = true }
+assets = { workspace = true, optional = true }
+map = { workspace = true, optional = true }
+xiso = { workspace = true, optional = true }
 # Halo 1 maps and disc (`h2 h1`, `h2 import halo1`).
-h1map = { path = "../h1map" }
+h1map = { path = "../h1map", optional = true }
 # Halo 1 multiplayer maps converted (`h2 h1 convert`).
-h1convert = { path = "../h1convert" }
-scenario-edit = { path = "../scenario-edit" }
+h1convert = { path = "../h1convert", optional = true }
+scenario-edit = { path = "../scenario-edit", optional = true }
 # Halo 1 campaign levels converted (`h2 h1 convert <iso> a30`).
-h1campaign = { path = "../h1campaign" }
-h1bitmaps = { path = "../h1bitmaps" }
-h1sounds = { path = "../h1sounds" }
-h1models = { path = "../h1models" }
+h1campaign = { path = "../h1campaign", optional = true }
+h1bitmaps = { path = "../h1bitmaps", optional = true }
+h1sounds = { path = "../h1sounds", optional = true }
+h1models = { path = "../h1models", optional = true }
 # Halo 1 objects for the Halo 1 sandbox (`h2 h1 convert --sandbox h1`).
-h1objects = { path = "../h1objects" }
-movies.workspace = true
-xbe.workspace = true
-analyze.workspace = true
-symbols.workspace = true
-lift.workspace = true
-emit.workspace = true
-ir.workspace = true
+h1objects = { path = "../h1objects", optional = true }
+movies = { workspace = true, optional = true }
+xbe = { workspace = true, optional = true }
+analyze = { workspace = true, optional = true }
+symbols = { workspace = true, optional = true }
+lift = { workspace = true, optional = true }
+emit = { workspace = true, optional = true }
+ir = { workspace = true, optional = true }
 anyhow.workspace = true
-sha2 = "0.10"
-boot.workspace = true
-# h2 bots nav (docs/game/bots.md).
+sha2 = { version = "0.10", optional = true }
+boot = { path = "../boot", default-features = false }
+# Bots for sim runs and `h2 bots nav` (docs/game/bots.md).
 bots = { path = "../bots" }
 # h2 sim: match, batch and report files, the comparison (docs/runtime/sim.md).
 sim = { path = "../sim" }
@@ -49,38 +50,38 @@ snapshot = { path = "../snapshot" }
 # `h2 agent` and `h2 serve` (docs/runtime/agent-api.md).
 agent-proto = { path = "../agent-proto" }
 # h2 studio: the editor's agent API client (docs/editor/agent-api.md).
-studio-proto = { path = "../studio-proto" }
+studio-proto = { path = "../studio-proto", optional = true }
 # Our settings (play --set, h2 settings).
 settings = { path = "../settings" }
-timeline = { path = "../timeline" }
-app = { path = "../app" }
-debug-menu = { path = "../debug-menu" }
-lockstep = { path = "../lockstep" }
-d3d = { path = "../d3d" }
-kernel.workspace = true
-input = { path = "../input", default-features = false }
+timeline = { path = "../timeline", optional = true }
+app = { path = "../app", optional = true }
+debug-menu = { path = "../debug-menu", optional = true }
+lockstep = { path = "../lockstep", optional = true }
+d3d = { path = "../d3d", default-features = false, optional = true }
+kernel = { workspace = true, optional = true }
+input = { path = "../input", default-features = false, optional = true }
 # The controller-speaker settings and side output (play_cmd).
-dsound = { path = "../dsound" }
-audio = { path = "../audio" }
+dsound = { path = "../dsound", optional = true }
+audio = { path = "../audio", optional = true }
 # Voice chat's microphone and output (boot::voice_glue).
-voice = { workspace = true, features = ["device"] }
+voice = { workspace = true, features = ["device"], optional = true }
 vfs.workspace = true
-iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
-asf = { path = "../asf" }
-wma = { path = "../wma" }
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"], optional = true }
+asf = { path = "../asf", optional = true }
+wma = { path = "../wma", optional = true }
 live-proto.workspace = true
 live-server.workspace = true
 # Cloud saves while signed in to Live (docs/live/live-cloud-saves.md).
-cloud-saves.workspace = true
+cloud-saves = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-# `h2 live maps import` reads a mod's mod.toml.
+# Sim configuration and `h2 live maps import` read TOML.
 toml = "0.9"
 # map.glb's surface pictures are JPEG where opaque (live_looks.rs).
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 # map.glb.gz beside map.glb, for the art server to send compressed.
-flate2 = "1"
+flate2 = { version = "1", optional = true }
 # `h2 live account/motd` talk to the service over HTTP or HTTPS.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 # `h2 live q events --follow` reads the event stream.
@@ -100,7 +101,73 @@ png = "0.18"
 libc = "0.2"
 # Enable runtime-detected ARM SHA instructions for full-image cache
 # validation. sha2-asm has no MSVC build; Windows uses the portable code.
-sha2 = { version = "0.10", features = ["asm"] }
+sha2 = { version = "0.10", features = ["asm"], optional = true }
 
 [features]
-perf = ["dep:perf", "boot/perf"]
+default = ["desktop"]
+# The runtime commands, agent client, simulation and dedicated-host entry point.
+host = []
+# The windowed client and authoring, import and diagnostic commands.
+desktop = [
+    "host",
+    "boot/gpu",
+    "boot/movie-playback",
+    "boot/local-io",
+    "dep:hs",
+    "dep:tags",
+    "dep:shaders",
+    "dep:font",
+    "dep:assets",
+    "dep:map",
+    "dep:xiso",
+    "dep:h1map",
+    "dep:h1convert",
+    "dep:scenario-edit",
+    "dep:h1campaign",
+    "dep:h1bitmaps",
+    "dep:h1sounds",
+    "dep:h1models",
+    "dep:h1objects",
+    "dep:movies",
+    "dep:xbe",
+    "dep:analyze",
+    "dep:symbols",
+    "dep:lift",
+    "dep:emit",
+    "dep:ir",
+    "dep:studio-proto",
+    "dep:timeline",
+    "dep:app",
+    "dep:debug-menu",
+    "dep:lockstep",
+    "dep:d3d",
+    "dep:kernel",
+    "dep:input",
+    "dep:dsound",
+    "dep:audio",
+    "dep:voice",
+    "dep:iced-x86",
+    "dep:asf",
+    "dep:wma",
+    "dep:cloud-saves",
+    "dep:image",
+    "dep:flate2",
+    "dep:sha2",
+]
+perf = ["desktop", "dep:perf", "boot/perf"]
+
+[[test]]
+name = "emit_options"
+required-features = ["desktop"]
+
+[[test]]
+name = "guard"
+required-features = ["desktop"]
+
+[[test]]
+name = "lab"
+required-features = ["desktop"]
+
+[[test]]
+name = "shader_all"
+required-features = ["desktop"]

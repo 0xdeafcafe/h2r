@@ -332,6 +332,7 @@ pub enum HostFormat {
 }
 
 impl HostFormat {
+    #[cfg(feature = "gpu")]
     /// The matching wgpu format.
     pub fn to_wgpu(self) -> wgpu::TextureFormat {
         match self {
@@ -358,6 +359,7 @@ impl HostFormat {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// Depth buffer formats: the wgpu depth format for an Xbox depth `D3DFORMAT`.
 ///
 /// `F16`/`F24S8` are floating-point-depth variants (an NV2A "w-buffer"-ish
@@ -369,6 +371,60 @@ pub fn depth_format_to_wgpu(f: D3DFormat) -> Option<wgpu::TextureFormat> {
         D16 | LinD16 | F16 | LinF16 => Some(wgpu::TextureFormat::Depth16Unorm),
         D24S8 | LinD24S8 | F24S8 | LinF24S8 => Some(wgpu::TextureFormat::Depth24PlusStencil8),
         _ => None,
+    }
+}
+
+/// `D3DZ_MAX` for a 24-bit integer depth buffer: the range of
+/// pre-transformed z.
+pub const D3DZ_MAX_24: f32 = 16_777_215.0;
+/// `D3DZ_MAX` for a 16-bit integer depth buffer.
+pub const D3DZ_MAX_16: f32 = 65_535.0;
+/// `D3DZ_MAX` for the Xbox 16-bit float depth format (4-bit exponent,
+/// 12-bit mantissa): its largest value, `(2 - 2^-12) * 2^8`.
+pub const D3DZ_MAX_F16: f32 = 511.9375;
+/// `D3DZ_MAX` for the Xbox 24-bit float depth format (8-bit exponent,
+/// 16-bit mantissa): its largest value, `(2 - 2^-16) * 2^127`.
+pub const D3DZ_MAX_F24: f32 = 3.402_797_7e38;
+
+/// The full scale of window-space z for a depth buffer format
+/// (`D3DZ_MAX_*`): pre-transformed and vertex-program z is divided by it
+/// to get the host depth in 0..1. No depth buffer counts as D24S8.
+pub fn d3dz_max(depth: Option<D3DFormat>) -> f32 {
+    use D3DFormat as F;
+    match depth {
+        Some(F::D16 | F::LinD16) => D3DZ_MAX_16,
+        Some(F::F16 | F::LinF16) => D3DZ_MAX_F16,
+        Some(F::F24S8 | F::LinF24S8) => D3DZ_MAX_F24,
+        _ => D3DZ_MAX_24,
+    }
+}
+
+/// A 32-bit texel format as a byte permutation: logical red, green, blue
+/// and alpha are bytes `perm[0..4]` of the little-endian guest word, and an
+/// `opaque` format reads alpha as 255 (and writes it as 255).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WordFormat {
+    /// Byte of the guest word for R, G, B, A.
+    pub perm: [u8; 4],
+    /// `X8`: alpha is 255 whatever the word holds.
+    pub opaque: bool,
+}
+
+impl WordFormat {
+    /// The permutation for `format`, if it is one of the 32-bit colour
+    /// formats handled here (`A8R8G8B8`, `X8R8G8B8`, `A8B8G8R8`,
+    /// `B8G8R8A8`, `R8G8B8A8`, swizzled or linear).
+    pub fn of(format: D3DFormat) -> Option<Self> {
+        let (perm, opaque) = match format.texel() {
+            TexelFormat::A8R8G8B8 => ([2, 1, 0, 3], false),
+            TexelFormat::X8R8G8B8 => ([2, 1, 0, 3], true),
+            TexelFormat::A8B8G8R8 => ([0, 1, 2, 3], false),
+            TexelFormat::B8G8R8A8 => ([1, 2, 3, 0], false),
+            TexelFormat::R8G8B8A8 => ([3, 2, 1, 0], false),
+            _ => return None,
+        };
+        matches!(format.layout(), Layout::Swizzled | Layout::Linear)
+            .then_some(Self { perm, opaque })
     }
 }
 
@@ -426,6 +482,7 @@ mod tests {
         assert_eq!(D3DFormat::G8B8.texel(), D3DFormat::LinG8B8.texel());
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn depth_formats() {
         assert!(D3DFormat::D24S8.is_depth());

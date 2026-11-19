@@ -4,11 +4,27 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["playback"]
+playback = ["dep:movies", "dep:audio"]
+
 [dependencies]
 runtime.workspace = true
-movies.workspace = true
+movies = { workspace = true, optional = true }
 # Movie sound goes into the game's own mixer (audio_out.rs); no device code.
-audio = { path = "../audio", default-features = false }
+audio = { path = "../audio", default-features = false, optional = true }
 
 [dev-dependencies]
 xiso.workspace = true
+
+[[test]]
+name = "synthetic"
+required-features = ["playback"]
+
+[[test]]
+name = "loader_arena"
+required-features = ["playback"]
+
+[[test]]
+name = "avfoundation"
+required-features = ["playback"]

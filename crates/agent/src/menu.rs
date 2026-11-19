@@ -218,5 +218,5 @@ pub fn add_perf_overlay(agent: &Agent, on: Arc<AtomicBool>) {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "render-overrides"))]
 mod tests;

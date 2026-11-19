@@ -24,11 +24,19 @@ pub fn install(
     maps: Option<MapLocator>,
     watch: bool,
 ) {
+    #[cfg(feature = "gpu")]
+    install_overrides(agent, watch);
+    #[cfg(not(feature = "gpu"))]
+    let _ = watch;
+    install_edits(agent, rt, maps);
+}
+
+#[cfg(feature = "gpu")]
+fn install_overrides(agent: &agent::Agent, watch: bool) {
     let hub = hot_render::global();
     agent::hot::add_render_methods(agent, hub);
     if !watch {
         hub.set_dir(Some(agent_proto::hot::default_override_dir()));
-        install_edits(agent, rt, maps);
         return;
     }
     let r = agent::hot::watch_overrides(hub, agent_proto::hot::default_override_dir());
@@ -45,7 +53,6 @@ pub fn install(
             )
         }
     );
-    install_edits(agent, rt, maps);
 }
 
 /// `edit.*` over the runtime's memory.

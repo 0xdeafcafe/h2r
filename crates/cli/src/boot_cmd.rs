@@ -7,6 +7,20 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(not(feature = "desktop"))]
+const USAGE: &str = "usage:
+  h2 serve <disc.iso> --system-link --host-light [--host-bots] [--socket PATH]
+           [--out DIR] [--data DIR] [--fresh-data] [--settings DIR]
+
+--out defaults to the temporary directory's h2boot and must contain the
+prebuilt game module. Use the same H2_OPT the module was built with.
+--data sets the runtime data directory.
+--socket sets the agent API socket (default H2_AGENT or the agent's default).
+--host-light skips steady-state world rendering, uses a silent sound clock,
+disables kernel tracing and paces to real time. Requires --system-link.
+--host-bots enables bot support on a light host. H2_BOTS also enables it.";
+
+#[cfg(feature = "desktop")]
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
@@ -78,10 +92,14 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut dsound = true;
     let mut xapi = true;
     let mut fresh = false;
+    #[cfg(feature = "desktop")]
     let mut check = false;
+    #[cfg(feature = "desktop")]
     let mut no_mappack = false;
+    #[cfg(feature = "desktop")]
     let mut no_halo1 = false;
     let mut tier = None;
+    #[cfg(feature = "desktop")]
     let mut background = false;
     let mut settings_dir = None;
     let mut it = args.into_iter();
@@ -92,7 +110,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--data" => data = PathBuf::from(val()?),
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
+            #[cfg(feature = "desktop")]
             "--check" if cmd == "build" => check = true,
+            #[cfg(feature = "desktop")]
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
@@ -103,12 +123,19 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
+            #[cfg(feature = "desktop")]
             "--movies" => movies = boot::movies_glue::Movies::Dir(PathBuf::from(val()?)),
+            #[cfg(not(feature = "desktop"))]
+            "--movies" => bail!("movie playback needs the desktop feature"),
             "--no-movies" => movies = boot::movies_glue::Movies::Off,
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
+            #[cfg(feature = "desktop")]
             "--no-mappack" => no_mappack = true,
+            #[cfg(feature = "desktop")]
             "--no-halo1" => no_halo1 = true,
+            #[cfg(not(feature = "desktop"))]
+            "--no-mappack" | "--no-halo1" => {}
             "--slices" => slices = val()?.parse()?,
             "--transfers" => transfers = val()?.parse()?,
             "-h" | "--help" => bail!("{USAGE}"),
@@ -133,6 +160,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         Some(t) => t,
         None => Choice::from_env()?,
     };
+    #[cfg(feature = "desktop")]
     if cmd == "build" {
         // `build` builds one tier: clang's unless asked for the fast one.
         let fast = choice == Choice::Fast;
@@ -191,9 +219,11 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
+    #[cfg(feature = "desktop")]
     if crate::mappack_cmd::auto_enabled(no_mappack) {
         crate::mappack_cmd::auto_install(&disc, &data);
     }
+    #[cfg(feature = "desktop")]
     if crate::h1_import::auto_enabled(no_halo1) {
         crate::h1_import::auto_import(&disc, &data);
     }
@@ -275,7 +305,7 @@ fn settings_store(cmd: &str, dir: &Path) -> Arc<settings::Store> {
 /// `build --background`: lower this process's priority (clang's processes
 /// inherit it) and take `out`'s background-build lock, held until the
 /// returned file drops; `None` when another build holds it.
-#[cfg(unix)]
+#[cfg(all(unix, feature = "desktop"))]
 fn background_lock(out: &Path) -> Result<Option<std::fs::File>> {
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(out)?;

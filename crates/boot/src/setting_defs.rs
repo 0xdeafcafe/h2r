@@ -87,7 +87,7 @@ pub static RENDER_SCALE: Def = Def {
            size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
            H2_RENDER_SCALE take up to 6. A change applies at the next frame.",
     kind: Kind::Int {
-        valid: 1..=d3d::scaled::MAX_SCALE as i64,
+        valid: 1..=d3d::MAX_SCALE as i64,
         steps: &[1, 2, 3, 4],
         unit: Unit::Pixels {
             width: GUEST_FRAME.0,

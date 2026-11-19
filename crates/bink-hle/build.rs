@@ -4,6 +4,10 @@ use std::process::{Command, Stdio};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(has_ffmpeg)");
+    println!("cargo:rerun-if-changed=build.rs");
+    if env::var_os("CARGO_FEATURE_PLAYBACK").is_none() {
+        return;
+    }
     println!("cargo:rerun-if-env-changed=PATH");
     if Command::new("ffmpeg")
         .arg("-version")

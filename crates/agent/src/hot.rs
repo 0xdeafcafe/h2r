@@ -8,15 +8,19 @@
 //! never inside one. The render methods only talk to the hub; the renderer
 //! picks changes up at its next frame.
 
+#[cfg(feature = "render-overrides")]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use agent_proto::hot::method;
 use agent_proto::{RpcError, code};
+#[cfg(feature = "render-overrides")]
 use hot_render::{DumpRequest, Hub};
 use hot_tags::{Editor, ErrorKind, TagSel};
 use runtime::Guest;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(feature = "render-overrides")]
+use serde_json::json;
 
 use crate::{Access, Agent};
 
@@ -73,6 +77,7 @@ fn tag_sel(o: &serde_json::Map<String, Value>) -> Result<TagSel, RpcError> {
     })
 }
 
+#[cfg(feature = "render-overrides")]
 fn to_json<T: serde::Serialize>(v: T) -> Result<Value, RpcError> {
     serde_json::to_value(v).map_err(|e| RpcError::new(code::UNAVAILABLE, e.to_string()))
 }
@@ -143,6 +148,7 @@ pub fn add_edit_methods(agent: &Agent, editor: Editor, guest: WithGuest) {
     });
 }
 
+#[cfg(feature = "render-overrides")]
 /// Adds `render.*` over `hub` (`hot_render::global()` in the game).
 pub fn add_render_methods(agent: &Agent, hub: &'static Hub) {
     agent.add_method(method::RENDER_OVERRIDES, Access::Read, move |_| {
@@ -265,6 +271,7 @@ pub fn add_render_methods(agent: &Agent, hub: &'static Hub) {
     });
 }
 
+#[cfg(feature = "render-overrides")]
 /// Points `hub` at `dir`, loads it and watches it (a quarter-second look).
 /// Returns the first load's report.
 pub fn watch_overrides(hub: &'static Hub, dir: PathBuf) -> hot_render::ReloadReport {

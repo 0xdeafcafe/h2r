@@ -6,19 +6,25 @@
 //! `render.frame` needs nothing here: the draw diagnostics wrapper
 //! (`d3d_diag`) feeds `agent::render::PROBE` itself.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+#[cfg(feature = "gpu")]
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+#[cfg(feature = "gpu")]
 static INTERP: Mutex<Option<Arc<Mutex<d3d::interp::InterpStats>>>> = Mutex::new(None);
+#[cfg(feature = "gpu")]
 static HOLDS: Mutex<Option<Arc<Mutex<d3d::interp::HoldLog>>>> = Mutex::new(None);
 static PIPELINE: Mutex<Option<feature::pipeline_render::PipelineRender>> = Mutex::new(None);
 
+#[cfg(feature = "gpu")]
 /// The interpolated replay's counters (`d3d::InterpBackend::stats`).
 pub fn set_interp(stats: Arc<Mutex<d3d::interp::InterpStats>>) {
     *INTERP.lock().unwrap_or_else(|e| e.into_inner()) = Some(stats);
 }
 
+#[cfg(feature = "gpu")]
 /// E1's hold log (`d3d::InterpBackend::holds`): `interp.holds`.
 pub fn set_interp_holds(holds: Arc<Mutex<d3d::interp::HoldLog>>) {
     *HOLDS.lock().unwrap_or_else(|e| e.into_inner()) = Some(holds);
@@ -29,6 +35,7 @@ pub fn set_pipeline(p: feature::pipeline_render::PipelineRender) {
     *PIPELINE.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
 }
 
+#[cfg(feature = "gpu")]
 fn interp() -> Option<Value> {
     let s = INTERP.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
     let s = *s.lock().unwrap_or_else(|e| e.into_inner());
@@ -58,14 +65,17 @@ fn counters() -> Option<Value> {
 
 pub fn sources() -> agent::render::RenderSources {
     agent::render::RenderSources {
+        #[cfg(feature = "gpu")]
         interp: Box::new(interp),
+        #[cfg(not(feature = "gpu"))]
+        interp: Box::new(|| None),
         pipeline: Box::new(pipeline),
         paths: Some(feature::render_loop::path_calls),
         counters: Box::new(counters),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
 

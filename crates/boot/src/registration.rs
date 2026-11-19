@@ -328,6 +328,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // context-only, so the pipelined render runs it on its own thread. It
     // runs after render-timing's; the world's map file comes from the
     // locator boot sets (native_world_glue::set_locator).
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
@@ -336,6 +337,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // docs/graphics/native-renderer.md, stage 2). Its observers on the
     // layer draw sit inside render-timing's and the world's; the models
     // load per map through native_objects_glue.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
@@ -345,6 +347,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // the geometry entries' handler, in the game's sort order. Its host
     // (native_transparents_glue, installed with the world's) draws the
     // native world's transparent parts; everything else keeps its D3D draw.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
@@ -355,6 +358,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (native_lights_glue) does the device side of a skipped light's tail
     // and reports the bound target, but takes no light yet, so every light
     // keeps its D3D passes.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
@@ -366,7 +370,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // and draws the glow natively in place of the last; the game's code
     // runs and leaves every state. H2_POST_AB=<dir> places it with the
     // switch off too, observing, for the frame A/B's captures.
+    #[cfg(feature = "gpu")]
     feature::native_post::place_for_capture(crate::native_post_glue::ab_requested());
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;

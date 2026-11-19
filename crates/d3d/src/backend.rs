@@ -2,7 +2,7 @@
 //!
 //! The device resolves every guest-visible thing (state arrays, resource
 //! headers, vertex bytes, shader inputs) into a [`ResolvedDraw`] and hands it
-//! to a [`Backend`]. [`GfxBackend`](crate::gfx_backend::GfxBackend) renders
+//! to a [`Backend`]. `GfxBackend` renders
 //! through `gfx`; [`RecordingBackend`] records calls for CPU-only tests.
 
 use gfx::texture::{DecodedTexture, TextureDesc};
@@ -262,6 +262,7 @@ pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    #[cfg(feature = "gpu")]
     /// Records the pass, on the thread that owns the GPU. Called once per
     /// copy of the targets: twice under the render scale (the 1x
     /// reference and the scaled view), with the same frame each time.
@@ -282,15 +283,15 @@ pub trait ExternalPass: Send {
 
     /// Whether the pass draws colour only (a full-screen post pass): the
     /// device then issues it with no depth bound, and the backend gives it
-    /// a scratch depth ([`ExternalTarget::depth`]) it must not rely on.
+    /// a scratch depth (`ExternalTarget::depth`) it must not rely on.
     fn colour_only(&self) -> bool {
         false
     }
 
     /// Guest texture headers the pass samples, read when it is issued: the
     /// render-to-texture levels the D3D path drew into them (the game's
-    /// texture accumulation target), given to [`ExternalPass::encode`] as
-    /// [`ExternalTarget::sampled`] in this order. Empty by default.
+    /// texture accumulation target), given to `ExternalPass::encode` as
+    /// `ExternalTarget::sampled` in this order. Empty by default.
     fn sampled(&self) -> Vec<u32> {
         Vec::new()
     }
@@ -318,6 +319,7 @@ pub struct DepthClip {
 /// (docs/graphics/native-renderer.md, "What a world pass reads").
 pub const VIEW_CONSTANTS: usize = 18;
 
+#[cfg(feature = "gpu")]
 /// What an [`ExternalPass`] draws into.
 pub struct ExternalTarget<'a> {
     pub device: &'a wgpu::Device,
@@ -344,8 +346,9 @@ pub struct ExternalTarget<'a> {
     pub sampled: &'a [Option<SampledLevel>],
 }
 
+#[cfg(feature = "gpu")]
 /// A render-to-texture level an [`ExternalPass`] samples
-/// ([`ExternalTarget::sampled`]).
+/// (`ExternalTarget::sampled`).
 #[derive(Clone, Debug)]
 pub struct SampledLevel {
     pub view: wgpu::TextureView,
@@ -623,12 +626,12 @@ pub trait Backend: Send {
     /// When the guest called `Swap` for the present that comes next, read
     /// on the guest's thread (a render thread passes it along with the
     /// present). Only the interpolated replay uses it
-    /// ([`crate::interp`]); the default ignores it.
+    /// (`crate::interp`); the default ignores it.
     fn stamp_present(&mut self, at: std::time::Instant) {
         let _ = at;
     }
     /// Shows a host-only frame between the guest's presents (an
-    /// interpolated replay, [`crate::interp`]): the present hook sees it,
+    /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and
     /// the `D3DSWAP_FINISH` wait are left alone where a backend has them.
     /// The default presents with no flags.
@@ -642,7 +645,7 @@ pub trait Backend: Send {
     /// Draws colour surface `src` over all of `dst` (same guest size)
     /// through a projective warp: `dst`'s texel at normalised `(u, v)`
     /// samples `src` at `h * (u, v, 1)` (rows), filtered, clamped to the
-    /// edge. Host-only (the interpolated reprojection, [`crate::interp`]).
+    /// edge. Host-only (the interpolated reprojection, `crate::interp`).
     /// `Ok(false)`: the backend cannot (the default).
     fn warp_surface(
         &mut self,
@@ -656,7 +659,7 @@ pub trait Backend: Send {
     /// The size in host texels of what `surface` shows when presented (a
     /// view backend's scaled copy, say). Host-only: the interpolated
     /// replay checks its frames against the guest's with it
-    /// ([`crate::interp`]). `None` (the default): not known.
+    /// (`crate::interp`). `None` (the default): not known.
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         let _ = surface;
         None
@@ -665,7 +668,7 @@ pub trait Backend: Send {
     /// whether the GPU has finished it, without waiting. Host-only: the
     /// interpolated replay drops an in-between frame while the last one is
     /// still on the GPU, so its work never queues up ahead of the guest's
-    /// frames ([`crate::interp`]). `None` (the default): never behind.
+    /// frames (`crate::interp`). `None` (the default): never behind.
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         None
     }
@@ -805,7 +808,7 @@ pub trait Backend: Send {
     /// as `color`: a colour-only pass ([`ExternalPass::colour_only`]),
     /// given a scratch depth of the colour's size. `sampled`: per header
     /// of [`ExternalPass::sampled`], the surface it samples, which the pass
-    /// gets a view of ([`ExternalTarget::sampled`]). `Ok(false)`: the
+    /// gets a view of (`ExternalTarget::sampled`). `Ok(false)`: the
     /// backend cannot (the default) and `pass` is dropped.
     fn external_pass(
         &mut self,

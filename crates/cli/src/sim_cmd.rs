@@ -141,7 +141,7 @@ impl Common {
             }
             return Ok(None);
         }
-        let accounts = crate::live_accounts::load(&crate::live_cmd::accounts_path()?)?;
+        let accounts = crate::live_accounts::load(&crate::live_accounts::accounts_path()?)?;
         let mut choices = accounts.iter().filter(|account| {
             self.as_tag
                 .as_ref()
