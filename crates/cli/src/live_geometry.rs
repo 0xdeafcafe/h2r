@@ -2618,7 +2618,8 @@ impl Level {
                             extras["device"] =
                                 serde_json::json!({"index": m.index, "loop": rig.loops});
                         }
-                        .named(m.name.clone())
+                        node.extras = Some(extras);
+                        node
                     })
                     .collect(),
             });
