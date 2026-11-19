@@ -45,6 +45,7 @@ fn holding(trigger: Trigger, ammo: Ammo) -> Arms {
 fn step(m: &mut Mind, me: Me, others: Vec<Seen>, teams: bool, tick: u32) -> HostPadState {
     m.step(
         &Perception {
+            observations: Default::default(),
             me: Some(me),
             others,
             teams,

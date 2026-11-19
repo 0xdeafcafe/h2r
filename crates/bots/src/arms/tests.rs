@@ -810,3 +810,90 @@ fn the_unit_reads_its_left_hand_and_grenade_type() {
     assert_eq!(a.left, None);
     assert_eq!(a.other.unwrap().def, def_raw(PP, 1));
 }
+
+#[test]
+fn decisions_read_only_the_held_magazines_reload_window() {
+    let mut w = world();
+    let mag = BODIES + 0x400 + WEAPON_MAGAZINES;
+    assert!(!held_empty_magazine(&w.g, w.unit).unwrap());
+    w.g.put_u16(mag + MAGAZINE_LOADED, 0);
+    assert!(held_empty_magazine(&w.g, w.unit).unwrap());
+    w.g.put_u16(mag + MAGAZINE_RESERVE, 0);
+    assert!(!held_empty_magazine(&w.g, w.unit).unwrap(), "entirely dry");
+    w.g.put_u16(mag + MAGAZINE_RESERVE, 10)
+        .put_u8(w.unit + UNIT_WEAPON_INDEX, 2);
+    assert!(
+        !held_empty_magazine(&w.g, w.unit).unwrap(),
+        "other gun holstered"
+    );
+}
+
+#[test]
+fn decisions_ground_scan_matches_live_items_to_their_spawn_and_clock() {
+    use crate::decisions::supplies::Supply;
+    const SCENARIO: u32 = 0x006a_0000;
+    const SITES: u32 = SCENARIO + 0x1000;
+    const COLLECTION: u32 = TAGS + 0xc00;
+    const COLLECTION_ID: u32 = 0xd210_0003;
+    let mut w = world();
+    let g = &mut w.g;
+    // An ordinary two-zoom gun, and a piece of equipment whose clock comes
+    // from its item collection. The gun has a per-placement override.
+    g.put_u16(BR_TAG + WEAP_ZOOM_LEVELS, 2)
+        .put_u32(BR_TAG + WEAP_TRIGGERS, 1)
+        .put_u32(BR_TAG + WEAP_TRIGGERS + 4, BR_TAG + 0x380)
+        .put_u16(BR_TAG + 0x380 + TRIGGER_DEF_BEHAVIOUR, 1)
+        .put_u8(OBJECTS_DATA + 4 * 0xc + 3, crate::guest::intel::EQUIPMENT)
+        .put_u32(TAG_ENTRIES + 0x20, u32::from_be_bytes(*b"eqip"))
+        .put_u16(FLAG_TAG + 0x12c, 2)
+        .put_u8(BODIES + 3 * 0x400 + 0xaf, 0)
+        .put_u8(BODIES + 4 * 0x400 + 0xaf, 1)
+        .put_u32(points::SCENARIO.base, SCENARIO)
+        .put_u32(SCENARIO + 0x120, 2)
+        .put_u32(SCENARIO + 0x124, SITES)
+        .put_f32(SITES + 0x40, 29.5)
+        .put_u16(SITES + 0x0e, 13)
+        .put_f32(SITES + 0x90 + 0x40, 40.0)
+        .put_u32(SITES + 0x90 + 0x5c, COLLECTION_ID)
+        .put_u32(TAG_INDEX + 0x18, 4)
+        .put_u32(TAG_ENTRIES + 0x30, u32::from_be_bytes(*b"itmc"))
+        .put_u32(TAG_ENTRIES + 0x34, COLLECTION_ID)
+        .put_u32(TAG_ENTRIES + 0x38, COLLECTION)
+        .put_u16(COLLECTION + 8, 31);
+    let gun = Supply {
+        site: 0,
+        object: DatumHandle::new(0xb003, 3).raw(),
+        spawn: [29.5, 0.0, 0.0],
+        at: [30.0, 0.0, 0.0],
+        respawn: Some(13 * 30),
+        powerup: false,
+    };
+    let eq = Supply {
+        site: 1,
+        object: DatumHandle::new(0xb004, 4).raw(),
+        spawn: [40.0, 0.0, 0.0],
+        at: [40.0, 0.0, 0.0],
+        respawn: Some(31 * 30),
+        powerup: true,
+    };
+    for kind in [2, 3] {
+        g.put_u16(FLAG_TAG + 0x12c, kind);
+        let sample = ground(g, None).unwrap();
+        assert_eq!(sample.weapons.len(), 1);
+        assert_eq!(sample.supplies.unwrap(), [gun, eq], "equipment type {kind}");
+    }
+    // A grenade is equipment too. A dropped gun far from its placement
+    // is still an ordinary pickup and cannot establish a spawn point.
+    g.put_u16(FLAG_TAG + 0x12c, 6)
+        .put_f32(BODIES + 3 * 0x400 + 0x64, 10.0);
+    let sample = ground(g, None).unwrap();
+    assert_eq!(sample.weapons.len(), 1);
+    assert!(sample.supplies.unwrap().is_empty());
+
+    // An unreadable equipment definition makes this an unknown supply
+    // sample. It cannot hide the readable rifle or start a phantom clock.
+    g.put_u32(TAG_ENTRIES + 0x28, 0x00dd_0000);
+    let sample = ground(g, None).unwrap();
+    assert!(sample.supplies.is_none());
+    assert_eq!(sample.weapons.len(), 1);
+}

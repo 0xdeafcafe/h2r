@@ -137,7 +137,11 @@ fn the_world_scan_only_yields_nearby_grenade_projectiles() {
             .put_u32(body, tag)
             .put_f32(body + 0x64, x);
     }
-    let (pickups, grenades) = crate::arms::ground_items(&g, Some([0.0; 3])).unwrap();
+    let crate::arms::Ground {
+        weapons: pickups,
+        grenades,
+        ..
+    } = crate::arms::ground(&g, Some([0.0; 3])).unwrap();
     assert!(pickups.is_empty());
     assert_eq!(grenades.len(), 1);
     assert_eq!(grenades[0].id, DatumHandle::new(0xb401, 0).raw());

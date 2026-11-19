@@ -12,6 +12,7 @@ pub mod arms;
 pub mod autonav;
 pub mod brain;
 pub mod cache;
+pub mod decisions;
 pub mod emote;
 pub mod grenades;
 pub mod guest;
@@ -30,6 +31,7 @@ pub mod stuck;
 pub mod tactics;
 pub mod weapons;
 
+use decisions::radio;
 use input::host::HostPadState;
 
 pub use sound::{clear_shots, observe_shot};
@@ -57,15 +59,71 @@ pub struct Brain {
     /// The last death heard from [`emote::kills`].
     kills_seen: u64,
     fidget: mind::pad::Fidget,
+    seed: u64,
+    epoch: u64,
 }
 
 impl Brain {
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
+            seed,
+            epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
             fidget: mind::pad::Fidget::new(seed),
         }
+    }
+
+    /// One observer and one pad. The radio lock covers the exchange only.
+    fn play(
+        &mut self,
+        p: &brain::Perception,
+        map: Option<&cache::MapData>,
+        kills: &[emote::Kill],
+        channel: &std::sync::Mutex<radio::Radio>,
+    ) -> HostPadState {
+        self.play_with_cues(p, map, kills, channel, &[], &[])
+    }
+
+    /// [`Brain::play`] with what the bot hears and the live grenades near
+    /// it ([`mind::Mind::step_with_cues`]).
+    fn play_with_cues(
+        &mut self,
+        p: &brain::Perception,
+        map: Option<&cache::MapData>,
+        kills: &[emote::Kill],
+        channel: &std::sync::Mutex<radio::Radio>,
+        sounds: &[sound::ShotSound],
+        grenades: &[incoming::Grenade],
+    ) -> HostPadState {
+        let (epoch, inbox) = {
+            let mut board = radio::lock(channel);
+            if p.observations.player.is_some() {
+                board.advance(p.tick);
+                if board.epoch == self.epoch {
+                    board.forget_deaths(kills);
+                }
+            }
+            (board.epoch, board.listen(p))
+        };
+        if self.epoch != epoch {
+            let taunt = self.mind.emote.taunt;
+            self.mind = mind::Mind::new(self.mind.skill, self.seed);
+            self.mind.emote.taunt = taunt;
+            self.epoch = epoch;
+        } else {
+            self.mind.hear_deaths(p, kills);
+            self.mind.emote.hear(kills);
+        }
+        self.mind.decisions.inbox = inbox;
+        let pad = self.mind.step_with_cues(p, map, sounds, grenades);
+        if let Some(call) = self.mind.decisions.report {
+            let mut board = radio::lock(channel);
+            if board.epoch == epoch {
+                board.publish(call);
+            }
+        }
+        pad
     }
 }
 
@@ -85,39 +143,43 @@ impl local::PadSource for Brain {
             Some(id) => guest::Who::Machine(id),
             None => guest::Who::Port(u32::from(f.port)),
         };
+        let Ok((p, grenades)) = guest::perceive_for_brain(f.guest, who) else {
+            self.fidget.reset();
+            return HostPadState::default();
+        };
         let (kills, cursor) = emote::kills().since(self.kills_seen);
         self.kills_seen = cursor;
-        self.mind.emote.hear(&kills);
-        match guest::perceive_for_brain(f.guest, who) {
-            Ok((p, grenades)) => {
-                if p.me.is_some() {
-                    self.fidget.reset();
-                    let shots = sound::recent(p.tick);
-                    return self.mind.step_with_cues(
-                        &p,
-                        cache::current().as_deref(),
-                        &shots,
-                        &grenades,
-                    );
-                }
-                let pad = self.mind.step(&p, None);
-                // Only a signed-in local pad fidgets in a pregame lobby.
-                // Outside play it sends only right-stick axes.
-                if f.machine.is_none()
-                    && (guest::game_mode(f.guest) == Some(guest::MODE_MULTIPLAYER)
-                        || (guest::slot_held(f.guest, u32::from(f.port)).unwrap_or(false)
-                            && lobby::in_pregame(f.guest)))
-                {
-                    self.fidget.pad(f.frame)
-                } else {
-                    self.fidget.reset();
-                    pad
-                }
-            }
-            Err(_) => {
-                self.fidget.reset();
-                HostPadState::default()
-            }
+        // The radio and the deaths every frame, alive or not
+        // (crate::decisions); the shots heard only in play.
+        let alive = p.me.is_some();
+        let shots = if alive {
+            sound::recent(p.tick)
+        } else {
+            Vec::new()
+        };
+        let pad = self.play_with_cues(
+            &p,
+            cache::current().as_deref(),
+            &kills,
+            radio::host(),
+            &shots,
+            &grenades,
+        );
+        if alive {
+            self.fidget.reset();
+            return pad;
+        }
+        // Only a signed-in local pad fidgets in a pregame lobby.
+        // Outside play it sends only right-stick axes.
+        if f.machine.is_none()
+            && (guest::game_mode(f.guest) == Some(guest::MODE_MULTIPLAYER)
+                || (guest::slot_held(f.guest, u32::from(f.port)).unwrap_or(false)
+                    && lobby::in_pregame(f.guest)))
+        {
+            self.fidget.pad(f.frame)
+        } else {
+            self.fidget.reset();
+            pad
         }
     }
 }
