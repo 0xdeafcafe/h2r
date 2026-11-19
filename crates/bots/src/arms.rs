@@ -794,6 +794,37 @@ fn finite(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 { v } else { 0.0 }
 }
 
+/// Whether the selected gun has run out of loaded rounds, with rounds
+/// still in reserve. Only the held instance is needed for this cue.
+pub(crate) fn held_empty_magazine(m: &dyn GuestMemory, unit: u32) -> R<bool> {
+    let slot = u32::from(m.u8(unit + UNIT_WEAPON_INDEX)?);
+    if slot >= UNIT_WEAPON_SLOTS {
+        return Ok(false);
+    }
+    let Some(h) = DatumHandle::from_raw(m.u32(unit + UNIT_WEAPONS + 4 * slot)?) else {
+        return Ok(false);
+    };
+    let Some((objects::WEAPON, body)) = objects::get(m, h)? else {
+        return Ok(false);
+    };
+    let mag = body.addr + WEAPON_MAGAZINES;
+    if m.u16(mag + MAGAZINE_LOADED)? != 0 || m.u16(mag + MAGAZINE_RESERVE)? as i16 <= 0 {
+        return Ok(false);
+    }
+    let Some(def) = body.definition(m)? else {
+        return Ok(false);
+    };
+    let Some(tag) = Tags.entry(m, def)? else {
+        return Ok(false);
+    };
+    let meta = tag.address(m)?;
+    if meta == 0 {
+        return Ok(false);
+    }
+    let layout = WeaponDef::read(m, meta)?;
+    Ok(layout.magazine.is_some() && !layout.ages)
+}
+
 /// What the unit whose body is at `unit` carries.
 pub fn read(m: &dyn GuestMemory, unit: u32) -> R<Arms> {
     let held_slot = m.u8(unit + UNIT_WEAPON_INDEX)? as i8;
@@ -826,25 +857,59 @@ pub const OBJECT_LIMIT: i32 = 2048;
 /// The weapons lying in the world: live weapon objects with no parent
 /// (nobody holds them).
 pub fn pickups(m: &dyn GuestMemory) -> R<Vec<Pickup>> {
-    let Some(array) = objects::array(m)? else {
-        return Ok(Vec::new());
+    Ok(ground(m)?.weapons)
+}
+
+pub(crate) struct Ground {
+    pub weapons: Vec<Pickup>,
+    pub supplies: Option<Vec<crate::decisions::supplies::Supply>>,
+}
+
+/// Scan the object table once for both ordinary pickups and occupied power
+/// placements. A bad equipment tag disables timing for the sample, while
+/// the independently readable weapons still reach the ordinary arms plan.
+pub(crate) fn ground(m: &dyn GuestMemory) -> R<Ground> {
+    let mut out = Ground {
+        weapons: Vec::new(),
+        supplies: None,
     };
-    let mut out = Vec::new();
+    let Some(array) = objects::array(m)? else {
+        return Ok(out);
+    };
+    out.supplies = Some(Vec::new());
     for (h, header) in array.live(m, OBJECT_LIMIT)? {
-        if header.kind(m)? != objects::WEAPON || header.body(m)? == 0 {
-            continue;
-        }
-        let Some((g, body)) = gun(m, h)? else {
-            continue;
+        let site = match header.kind(m)? {
+            objects::WEAPON => {
+                let Some((gun, body)) = gun(m, h)? else {
+                    continue;
+                };
+                if body.parent(m)?.is_some() {
+                    continue;
+                }
+                out.weapons.push(Pickup {
+                    id: h.raw(),
+                    position: body.position(m)?,
+                    gun,
+                });
+                if out.supplies.is_none() || !gun.role().power() {
+                    continue;
+                }
+                crate::guest::intel::supply(m, h, body, false)
+            }
+            crate::guest::intel::EQUIPMENT if out.supplies.is_some() => header
+                .body(m)
+                .and_then(|addr| crate::guest::intel::equipment(m, h, addr)),
+            _ => continue,
         };
-        if body.parent(m)?.is_some() {
-            continue;
+        match site {
+            Ok(Some(site)) => {
+                if let Some(sites) = &mut out.supplies {
+                    sites.push(site);
+                }
+            }
+            Ok(None) => {}
+            Err(_) => out.supplies = None,
         }
-        out.push(Pickup {
-            id: h.raw(),
-            position: body.position(m)?,
-            gun: g,
-        });
     }
     Ok(out)
 }

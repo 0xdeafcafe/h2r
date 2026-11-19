@@ -12,6 +12,7 @@ use engine::points;
 use engine::view::{objects, players};
 
 use crate::brain::{Me, Perception, Seen};
+pub(crate) mod intel;
 
 pub type R<T> = Result<T, MemFault>;
 
@@ -902,12 +903,17 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
         if !p.listed(m)? {
             continue;
         }
+        let id = u32::from(handle.index());
+        let team = i16::from(p.team(m)?);
+        let ours = is(m, &p, who)?;
+        if ours {
+            out.observations.player = Some((id, team));
+        }
         let Some((position, aim, body)) = living_unit(m, &p)? else {
             continue;
         };
-        let team = i16::from(p.team(m)?);
-        if is(m, &p, who)? {
-            me_index = Some(u32::from(handle.index()));
+        if ours {
+            me_index = Some(id);
             // Ammunition is extra: a fault reading it leaves the bot
             // playing without it (section 3.6), not blind.
             out.me = Some(Me {
@@ -919,15 +925,21 @@ pub fn perceive_as(m: &dyn GuestMemory, who: Who) -> R<Perception> {
                 arms: crate::arms::read(m, body.addr).ok(),
             });
         } else {
-            out.others.push(Seen {
-                id: u32::from(handle.index()),
-                position,
-                team,
+            out.observations.contacts.push(crate::brain::Contact {
+                id,
+                aim,
+                shield: body.shield(m).ok().filter(|s| s.is_finite()),
+                empty_magazine: crate::arms::held_empty_magazine(m, body.addr).unwrap_or(false),
             });
+            out.others.push(Seen { id, position, team });
         }
     }
     if let Some(me) = me_index {
-        out.pickups = crate::arms::pickups(m).unwrap_or_default();
+        if let Ok(ground) = crate::arms::ground(m) {
+            out.pickups = ground.weapons;
+            out.observations.supplies = ground.supplies;
+            out.observations.pickups_scanned = true;
+        }
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();

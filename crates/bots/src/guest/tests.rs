@@ -1254,3 +1254,33 @@ mod objective_reads {
         assert_eq!(perceive(&g, 1).unwrap().objective.unwrap().hill, None);
     }
 }
+
+#[test]
+fn decisions_observe_player_slot_while_dead_and_only_live_contacts() {
+    let players = [
+        (0, 0, 0, [0.0; 3], [0.0, 1.0, 0.0], false),
+        (1, 1, 1, [4.0, 0.0, 0.0], X, false),
+        (-1, -1, 1, [5.0, 0.0, 0.0], X, true),
+    ];
+    let mut g = game(&players, true, &[0, 1]);
+    g.put_f32(BODIES + 0xf0, 0.3);
+    let p = perceive(&g, 1).unwrap();
+    assert_eq!(p.observations.player, Some((1, 1)));
+    assert_eq!(
+        p.observations.contacts,
+        [crate::brain::Contact {
+            id: 0,
+            aim: [0.0, 1.0, 0.0],
+            shield: Some(0.3),
+            empty_magazine: false,
+        }]
+    );
+    assert!(p.observations.pickups_scanned);
+    assert_eq!(p.observations.supplies, Some(Vec::new()));
+    g.put_u16(BODIES + 0x400 + 0x10a, BODY_DEPLETED);
+    let p = perceive(&g, 1).unwrap();
+    assert!(p.me.is_none());
+    assert_eq!(p.observations.player, Some((1, 1)));
+    assert!(!p.observations.pickups_scanned);
+    assert_eq!(p.observations.supplies, None);
+}
