@@ -1127,7 +1127,7 @@ fn bloodgulch_weapon_hud_and_zoom_survive_the_fresh_build() {
         let hud = base.reference(&root, 0x2b0).unwrap();
         let (_, path) = base.name(hud).unwrap();
         assert!(path.ends_with(h1hud::WEAPON_NHDT_SUFFIX), "{name}: {path}");
-        let root = base.head(hud, NHDT_ROOT).unwrap();
+        let root = base.head(hud, NHDT_ROOT as u64).unwrap();
         for (block, size) in [
             (NHDT_BITMAP_WIDGETS, BITMAP_WIDGET_SIZE),
             (h1hud::NHDT_TEXT_WIDGETS, h1hud::text::SIZE),
