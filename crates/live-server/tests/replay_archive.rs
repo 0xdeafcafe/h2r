@@ -371,3 +371,87 @@ async fn end_of_new_game_queues_a_verified_archive_on_the_shared_alarm() {
     h.live.sweep().await;
     assert_eq!(h.live.store().head().await.unwrap(), head);
 }
+
+#[tokio::test]
+async fn a_failed_final_blob_write_keeps_the_source_open_for_retry() {
+    let h = common::start_driven(Arc::new(MemoryStore::new()), Policy::default()).await;
+    h.live
+        .set_blobs(live_server::blobs::Blobs::dir(&h.dir).unwrap());
+    let host = h.create("Host").await;
+    let id = h.start_game(&host, two_player_game(&host)).await;
+    let author = live_proto::Author::parse(&host.author).unwrap();
+    let frame = live_proto::game::Frame {
+        game_id: id.clone(),
+        tick: 40,
+        ..Default::default()
+    };
+    h.live.ingest_frame(&author, frame.clone()).await.unwrap();
+    let end = || {
+        h.batch(
+            &host,
+            &id,
+            &[("GameEnded", json!({"tick":40,"reason":"finished"}))],
+        )
+    };
+    // A regular file where the private chunk directory belongs makes the
+    // write fail even when the test runs as root.
+    let obstruction = h.dir.join("frames");
+    std::fs::write(&obstruction, b"occupied").unwrap();
+    assert_eq!(
+        h.post_batch(&host, &id, end()).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(h.live.frame_chunks(&id).await.unwrap().is_empty());
+    std::fs::remove_file(obstruction).unwrap();
+    assert_eq!(
+        h.post_batch(&host, &id, end()).await.status,
+        StatusCode::CREATED
+    );
+    assert_eq!(h.live.chunk_frames(&id).await.unwrap(), vec![frame]);
+    h.live.sweep().await;
+    let index = h
+        .get(&format!("/v1/games/{id}/chunks?format=archive"))
+        .await
+        .json();
+    assert!(index["archive_sha256"].is_string());
+}
+
+#[tokio::test]
+async fn rewound_chunk_starts_retain_each_distinct_original_in_the_blob_store() {
+    let h = common::start_driven(Arc::new(MemoryStore::new()), Policy::default()).await;
+    h.live
+        .set_blobs(live_server::blobs::Blobs::dir(&h.dir).unwrap());
+    let host = h.create("Host").await;
+    let id = h.start_game(&host, two_player_game(&host)).await;
+    let author = live_proto::Author::parse(&host.author).unwrap();
+    for (n, tick) in [40, 340, 40].into_iter().enumerate() {
+        if n != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        }
+        h.live
+            .ingest_frame(
+                &author,
+                live_proto::game::Frame {
+                    game_id: id.clone(),
+                    tick,
+                    bsp: Some(n as u32),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let end = h.batch(
+        &host,
+        &id,
+        &[("GameEnded", json!({"tick":40,"reason":"finished"}))],
+    );
+    assert_eq!(
+        h.post_batch(&host, &id, end).await.status,
+        StatusCode::CREATED
+    );
+    let frames = h.live.chunk_frames(&id).await.unwrap();
+    let mut values: Vec<_> = frames.iter().map(|f| (f.bsp, f.tick)).collect();
+    values.sort();
+    assert_eq!(values, vec![(Some(0), 40), (Some(1), 340), (Some(2), 40)]);
+}

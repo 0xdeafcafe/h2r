@@ -4,7 +4,7 @@
 //! the presence and game managers that write `PresenceExpired` and
 //! `GameEnded {reason: "lost"}` when clients go quiet.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -134,6 +134,9 @@ struct FrameClock {
     machines: BTreeMap<String, game::FrameMachine>,
     /// The sent frames being cut into chunks for the recording.
     chunks: ChunkWriter,
+    // Retain closed chunks until their signed index is durable.
+    writes: VecDeque<(ChunkMeta, Bytes)>,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
     /// The game's packed live stream.
     pack: pack::Encoder,
     /// Its frames since the last keyframe, for readers that join.
@@ -149,6 +152,8 @@ impl FrameClock {
             unsent: game::FrameCarry::default(),
             machines: BTreeMap::new(),
             chunks: ChunkWriter::default(),
+            writes: VecDeque::new(),
+            write_lock: Default::default(),
             pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
             since_key: Vec::new(),
             pending: Default::default(),
@@ -480,7 +485,7 @@ impl Live {
         let ends = events_end(&events);
         if ends {
             // The last frames' chunk goes in before the end.
-            self.flush_frames(game_id).await;
+            self.flush_recording(game_id).await?;
             events.insert(events.len() - 1, self.server_event(stream, crate::replay_archive::REQUESTED, json!({})));
         }
         let recorded = self.store.append(events, &[]).await?;
@@ -512,36 +517,59 @@ impl Live {
         self.model.touch_game(&frame.game_id, now_s);
         let game_id = frame.game_id.clone();
         let clock = self.ingest.clock(&game_id);
-        let closed = {
-            let mut clock = clock.lock().unwrap();
-            if !clock.admit(&mut frame, Instant::now()) {
-                return Ok(FrameOutcome::Throttled);
+        // Apply backpressure after a failed write. Ordinary live frames
+        // never acquire the async storage lock while its queue is empty.
+        let recorded = loop {
+            {
+                let mut state = clock.lock().unwrap();
+                if state.writes.is_empty() {
+                    if !state.admit(&mut frame, Instant::now()) {
+                        return Ok(FrameOutcome::Throttled);
+                    }
+                    let closed = state.record(&frame);
+                    let _ = self.frames.send(state.publish(frame));
+                    if let Some(c) = closed {
+                        state.writes.push_back((c.meta, c.bytes.into()));
+                        break true;
+                    }
+                    break false;
+                }
             }
-            let closed = clock.record(&frame);
-            // Sent under the game's lock: its frames go out in order.
-            let _ = self.frames.send(clock.publish(frame));
-            closed
+            self.write_pending(&game_id, &clock).await?;
         };
-        let recorded = closed.is_some();
-        if let Some(c) = closed {
-            self.store_chunk(&game_id, c).await?;
+        if recorded {
+            self.write_pending(&game_id, &clock).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
     }
 
-    /// Stores game `id`'s open chunk, if it has frames: at the game's end
-    /// (its `GameEnded`, or the sweep ending it as lost). Failures are
-    /// logged; the chunk is lost, the game is not.
+    /// Flush explicitly without closing the game (also used by parity tests).
     pub async fn flush_frames(&self, id: &str) {
-        let clock = self.ingest.games.lock().unwrap().get(id).cloned();
-        let Some(clock) = clock else {
-            return;
-        };
-        let chunk = clock.lock().unwrap().chunks.finish();
-        if let Some(c) = chunk
-            && let Err(e) = self.store_chunk(id, c).await
-        {
+        if let Err(e) = self.flush_recording(id).await {
             eprintln!("live: frame chunk of {id}: {}", e.message);
+        }
+    }
+
+    async fn flush_recording(&self, id: &str) -> Result<(), ApiError> {
+        let clock = self.ingest.games.lock().unwrap().get(id).cloned();
+        let Some(clock) = clock else { return Ok(()) };
+        {
+            let mut state = clock.lock().unwrap();
+            if let Some(c) = state.chunks.finish() {
+                state.writes.push_back((c.meta, c.bytes.into()));
+            }
+        }
+        self.write_pending(id, &clock).await
+    }
+
+    async fn write_pending(&self, id: &str, clock: &Mutex<FrameClock>) -> Result<(), ApiError> {
+        let writer = clock.lock().unwrap().write_lock.clone();
+        let _guard = writer.lock().await;
+        loop {
+            let chunk = clock.lock().unwrap().writes.front().cloned();
+            let Some((meta, bytes)) = chunk else { return Ok(()) };
+            self.store_chunk(id, &meta, bytes).await?;
+            clock.lock().unwrap().writes.pop_front();
         }
     }
 
@@ -549,7 +577,7 @@ impl Live {
     /// the data directory natively; the event store's blobs on a server
     /// with neither), then its index entry in the log as a server-signed
     /// `FrameChunk`.
-    async fn store_chunk(&self, id: &str, c: Chunk) -> Result<(), ApiError> {
+    async fn store_chunk(&self, id: &str, chunk: &ChunkMeta, bytes: Bytes) -> Result<(), ApiError> {
         match self.blobs() {
             Some(b) => {
                 let meta = crate::blobs::Meta {
@@ -558,7 +586,7 @@ impl Live {
                     cache_control: None,
                 };
                 b.private
-                    .put(&chunk_key(id, c.meta.from_tick), c.bytes.into(), &meta)
+                    .put(&format!("{}-{}", chunk_key(id, chunk.from_tick), chunk.sha256), bytes, &meta)
                     .await
                     .map_err(|e| {
                         eprintln!("live: frame chunk of {id}: {e}");
@@ -568,9 +596,9 @@ impl Live {
                         )
                     })?;
             }
-            None => self.store.put_blob(&c.meta.sha256, &c.bytes).await?,
+            None => self.store.put_blob(&chunk.sha256, &bytes).await?,
         }
-        let data = serde_json::to_value(&c.meta).expect("serializes");
+        let data = serde_json::to_value(chunk).expect("serializes");
         let event = self.server_event(game::stream(id), chunk::FRAME_CHUNK, data);
         self.store.append(vec![event], &[]).await?;
         Ok(())
@@ -625,9 +653,13 @@ impl Live {
         let mut bytes = None;
         let mut unavailable = None;
         if let Some(b) = self.blobs() {
-            match b.private.get(&chunk_key(id, from_tick)).await {
-                Ok(found) => bytes = found,
-                Err(e) => unavailable = Some(ApiError::new(live_proto::ErrorCode::Unavailable, e.to_string())),
+            let old = chunk_key(id, from_tick);
+            for key in [format!("{old}-{}", meta.sha256), old] {
+                match b.private.get(&key).await {
+                    Ok(Some(found)) => { bytes = Some(found); break; }
+                    Ok(None) => {}
+                    Err(e) => unavailable = Some(ApiError::new(live_proto::ErrorCode::Unavailable, e.to_string())),
+                }
             }
         }
         if bytes.is_none() {
@@ -1032,7 +1064,10 @@ impl Live {
             ));
         }
         for (id, tick, players) in idle {
-            self.flush_frames(&id).await;
+            if let Err(e) = self.flush_recording(&id).await {
+                eprintln!("live: retrying the last chunk of {id}: {}", e.message);
+                continue;
+            }
             let ended = GameEnded {
                 tick,
                 reason: "lost".into(),

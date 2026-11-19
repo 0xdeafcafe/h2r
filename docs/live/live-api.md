@@ -319,10 +319,12 @@ A chunk is stored when a frame lands in the next window, and when the game
 ends (its `GameEnded`, or the idle sweep ending it as `lost`); there is no
 timer. A server that stops mid-window loses at most that window.
 
-Each chunk is an immutable blob in the private blob store,
-`frames/<game id>/<first tick>` (R2 on the Worker, the data directory
-natively; the event store's blobs on a server with neither), and a
-server-signed `FrameChunk` event in the game's stream is its index entry:
+The private blob store uses `frames/<game id>/<first tick>-<sha256>` for
+new chunks and reads older chunks under `frames/<game id>/<first tick>`.
+The digest keeps both originals when a checkpoint rewind repeats a chunk
+start. The Worker uses R2 and the native server uses its data directory.
+With neither configured, the event store holds the bytes. A server-signed
+`FrameChunk` event in the game's stream records its index entry.
 
 ```json
 { "from_tick": 9000, "to_tick": 9298, "frames": 150, "bytes": 38211,
