@@ -613,6 +613,7 @@ pub struct QueuedExternalDraw<S> {
 
 /// Validate and seal every copy, either on the worker or over pinned handles
 /// on the device thread. Refusal discards all copies and their uploads.
+#[cfg(feature = "gpu")]
 pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     request: ExternalPassRequest, plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     slots_valid: bool, pin: impl FnOnce() -> Result<ExternalCopies<T>, String>,
