@@ -407,6 +407,62 @@ see [live-telemetry.md](live-telemetry.md).
 The ticket endpoint can also issue a ticket directly to an authenticated
 member, and accepts a current ticket for renewal.
 
+## Dedicated host containers
+
+When Live grants a Cloudflare lease, the hub calls the room named by the
+lease ID. Its private `start` request launches the image entrypoint, which
+configures the module and cache and executes `/opt/h2/h2 host run`. The
+host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
+and SHA-256. It fetches the private bundle and registers with Live over
+outbound HTTPS. The room keeps the boot credentials out of Durable Object
+storage. Registration opens the match for joins.
+[Lease and boot contracts](dedicated-host-build.md)
+
+Wrangler configures two container applications in each environment. A
+capped application has a fixed size, so `HostRoom` handles Small leases
+and `LargeHostRoom` handles Large leases. Each uses the same Dockerfile
+and room implementation. Both use 12 GB of scratch disk. Small reserves
+1 vCPU and 3 GiB, Large reserves 2 vCPU and 6 GiB. Those memory values
+meet the default scheduling policy's 3 GiB per vCPU minimum.
+[Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
+[Custom instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/)
+
+| Worker setting | Purpose |
+|---|---|
+| `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
+| `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
+| `LIVE_HOST_DATA_URL` | Set as an environment-specific Worker secret containing a signed download URL for the owner's private bundle. Renew before the URL expires. |
+| `LIVE_HOST_DATA_SHA256` | SHA-256 of that bundle. Update alongside its signed URL. |
+
+`GET /v1/hosts/{lease}/tunnel` takes a fresh `sessions.relay` account
+bearer on each WebSocket upgrade. LiveHub checks the roster and match
+state, then sends a fresh upgrade to the lease's room. The account bearer
+stays in LiveHub. The room forwards the upgrade to TCP port 31100 and
+returns the WebSocket response. The diagnostic agent uses container
+loopback on port 14720. Each binary message carries one tunnel frame end
+to end. The host assigns peer IDs and handles the game ports.
+[WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
+
+Only provider start can launch a container. A liveness check reads
+`container.running`. On stop or match end, the provider calls the room to
+destroy the running instance. The room also arms an alarm at the lease's
+hard deadline before starting compute. It restores the container's
+inactivity timeout on wake so bot-only matches can run while the room is
+quiet. The game supervisor and Live reaper measure match idle time.
+[Container lifecycle API](https://developers.cloudflare.com/containers/api/durable-object-container/)
+
+Before deploying, stage the owner's Linux binary and module under
+`deploy/host/stage/`. Wrangler uses `deploy/host/` as the build context
+and uploads the resulting image to the account's private registry.
+[Preparing the host image](../../deploy/host/README.md)
+
+In staging, exercise both sizes with a private bundle. Check
+that the host registers, a rostered client can exchange binary datagrams,
+and a different account receives 403. End one lease through a normal match
+and stop another from the admin page. Confirm each instance stops in
+Cloudflare and that a subsequent tunnel request leaves it stopped.
+[Coordinator integration pass](dedicated-host-build.md#coordinators-integration-pass)
+
 ## Cost of the relay
 
 Co-op sends about 30 packets a second per player, so a two-player session is
