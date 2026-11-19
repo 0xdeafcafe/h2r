@@ -709,7 +709,10 @@ impl Driver {
                         "{why}: session {from}'s bots did not carry to {}; asking for new ones",
                         asked.session
                     )];
-                    if let Some(want) = *self.last.lock().unwrap_or_else(|e| e.into_inner()) {
+                    // Copied out first: `apply` takes `last` again, and an
+                    // `if let` would hold its guard through the body.
+                    let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(want) = want {
                         log.extend(self.apply(want));
                     }
                     return log;

@@ -2875,8 +2875,13 @@ mod tests {
             ports: 0,
             accounts: Vec::new(),
         }));
+        // Player 0 is this console's own in `player`; here it is a
+        // remote phantom.
         let mut pa = player(0, 0);
         pa.machine = listed;
+        pa.local_user = None;
+        pa.controller = None;
+        pa.player.local = Some(false);
         let mut human = player(1, 0);
         human.machine = [0x00, 0x50, 0xf2, 9, 9, 9];
         let roster = vec![pa, human];
