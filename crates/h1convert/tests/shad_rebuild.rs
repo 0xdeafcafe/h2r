@@ -674,6 +674,7 @@ fn cloud_scroll_matches_retail_animated_instances() {
     let mut seen = HashSet::new();
     let mut checked = 0;
     let mut additive = 0;
+    let mut plasma_second = 0;
     for (name, base, size) in h2_maps(&disc) {
         let mut map = open(&disc, base, size);
         let Ok(lib) = ShaderLibrary::read(&mut map) else { continue };
@@ -713,7 +714,16 @@ fn cloud_scroll_matches_retail_animated_instances() {
                 .map(|r| (r.start, u16::from(r.count)));
             assert_eq!(got, tree.implementation, "{at}");
             let binds: Vec<[u8; 4]> = p.animations.iter().map(|b| [b.target, b.b1, b.b2, b.properties]).collect();
-            assert_eq!(binds, tree.bindings, "{at}");
+            // A plasma_alpha may scroll its first noise instead
+            // (`glass_gravunit_glow`): bitmap target 0 and binding words
+            // 0x01d2 and 0x01f3, `c[20]` and `c[21]` (register 2 and 3 of
+            // bank 1), bitmap 0's rows. The tree the converter writes
+            // scrolls the second (`needler_ammo_glow`).
+            let first = binds == PLASMA_FIRST_NOISE;
+            if !(plasma && first) {
+                assert_eq!(binds, tree.bindings, "{at}");
+            }
+            plasma_second += usize::from(plasma && !first);
             assert_eq!(p.property_refs.len(), 10, "{at}");
             // Component -> value at time 0, and whether time drives it.
             let mut comp = [(f32::NAN, false); 10];
@@ -725,8 +735,9 @@ fn cloud_scroll_matches_retail_animated_instances() {
                 let timed = f.kind != tags::effects::function::FunctionType::Constant;
                 comp[r.component as usize] = (v, timed);
             }
-            // The scrolled pair: vectors 0 and 1, plasma_alpha's 2 and 3.
-            let row = if plasma { 2 } else { 0 };
+            // The scrolled pair: vectors 0 and 1, plasma_alpha's 2 and 3
+            // (0 and 1 when it scrolls its first noise).
+            let row = if plasma && !first { 2 } else { 0 };
             assert_eq!(comp[1].0, p.vectors[row][0], "{at}: u scale");
             assert_eq!(comp[2].0, p.vectors[row + 1][1], "{at}: v scale");
             assert!(comp[0] == (1.0, false) && comp[3] == (1.0, false), "{at}: {comp:?}");
@@ -736,9 +747,16 @@ fn cloud_scroll_matches_retail_animated_instances() {
             checked += 1;
         }
     }
-    eprintln!("{checked} animated cloud layers, {additive} of them two_add_clouds or plasma_alpha");
-    assert!(checked > additive && additive > 0);
+    eprintln!(
+        "{checked} animated cloud layers, {additive} of them two_add_clouds or plasma_alpha, \
+         {plasma_second} plasma_alpha scrolling its second noise"
+    );
+    assert!(checked > additive && additive > 0 && plasma_second > 0);
 }
+
+/// A retail `plasma_alpha` scrolling its first noise (bitmap 0) rather
+/// than [`shad::CLOUDS_TREE`]'s second.
+const PLASMA_FIRST_NOISE: [[u8; 4]; 3] = [[210, 1, 0, 0], [243, 1, 0, 0], [0, 0, 0, 0]];
 
 /// A texture's kind as the slot needs it: Halo 1's "white" placeholder
 /// is a 2D texture.
@@ -1179,6 +1197,157 @@ fn plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does() {
     assert_eq!((v.period, v.from, v.to), (7.0, 0.0, -1.0));
     let t = extras.tint.unwrap();
     assert_eq!((t.perpendicular, t.parallel), (1.0, 0.0));
-    assert_eq!(extras.colors.len(), 2);
-    assert_eq!(extras.colors[0], extras.colors[1]);
+    // Colours 0 and 1 (the band's two ends), both the picture's mean.
+    assert_eq!(extras.colors.iter().map(|c| c.0).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(extras.colors[0].1, extras.colors[1].1);
+}
+
+/// A Halo 1 bitmap's first image as RGBA8 texels, 0 to 1.
+fn h1_texels(h1: &H1Map, id: h1map::TagId) -> Vec<[f32; 4]> {
+    use h1bitmaps::BitmapExt;
+    let b = h1map::bitmap::Bitmap::read(h1, h1.tag(id).unwrap()).unwrap();
+    let img = b.decode(h1, 0, 0).unwrap();
+    img.rgba
+        .chunks_exact(4)
+        .map(|p| [0, 1, 2, 3].map(|k| f32::from(p[k]) / 255.0))
+        .collect()
+}
+
+/// Per channel: the largest, and the mean, of `f` over `texels`.
+fn peak_and_mean(texels: &[[f32; 4]], f: impl Fn(&[f32; 4]) -> [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let mut peak = [0.0f32; 3];
+    let mut sum = [0.0f64; 3];
+    for t in texels {
+        let v = f(t);
+        for k in 0..3 {
+            peak[k] = peak[k].max(v[k]);
+            sum[k] += f64::from(v[k]);
+        }
+    }
+    (peak, sum.map(|s| (s / texels.len() as f64) as f32))
+}
+
+/// Blood Gulch's teleporter receiver, how bright the conversion draws it
+/// against Halo 1, face on (both fade alphas 1), per channel.
+///
+/// The cone: Halo 1 adds `factor × dust × dust × ramp` (the chain's
+/// product, `factor` 2 per double multiply); the conversion adds
+/// `tile × ramp × 2 × tint` (`two_add_clouds`). The dusts scroll apart, so
+/// over time Halo 1's mean is the product of the maps' means and its peak
+/// at most the product of their peaks. The conversion's mean must equal
+/// Halo 1's; its peak is lower, the dropped dust drawn as its mean.
+///
+/// The shield: Halo 1's last stage adds `picture.rgb × (band + c0)`, the
+/// band 0 to 1 and `c0` stage 6's animated constant (`lo` to `hi`), so
+/// its peak is `picture.rgb × (1 + hi)` (saturated) at the brightest
+/// texel; the conversion (`plasma_alpha`) adds `mask.a × colour × band`,
+/// at most the picture's largest alpha times colour 0. Printed; the
+/// conversion must not be brighter than Halo 1 anywhere.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn teleporter_receiver_brightness_against_halo1() {
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let e = disc.map("bloodgulch").cloned().unwrap();
+    let h1 = H1Map::from_reader(Cursor::new(iso.read(&e).unwrap())).unwrap();
+    let find = |n: &str| h1.tags().iter().find(|t| t.name == n).unwrap();
+    let near = |a: [f32; 3], b: [f32; 3], eps: f32| (0..3).all(|k| (a[k] - b[k]).abs() <= eps);
+    let below = |a: [f32; 3], b: [f32; 3]| (0..3).all(|k| a[k] <= b[k] + 1e-3);
+
+    // The cone.
+    let tag = find(r"scenery\teleporter_base\shaders\teleporter_cone");
+    let d = h1.tag_data(tag).unwrap();
+    let (size, bitmap, _) = h1convert::sky_shaders::SCHI_MAP;
+    let elems = h1
+        .block(
+            h1map::Block::read(d, h1convert::sky_shaders::MAPS).unwrap(),
+            size,
+        )
+        .unwrap();
+    let mut factor = 1.0f32;
+    let mut h1_peak = [1.0f32; 3];
+    let mut h1_mean = [1.0f32; 3];
+    let n = elems.len() / size;
+    for (k, e) in elems.chunks_exact(size).enumerate() {
+        if k + 1 < n {
+            let f = u16::from_le_bytes([
+                e[shad::CHICAGO_MAP_FUNCTION],
+                e[shad::CHICAGO_MAP_FUNCTION + 1],
+            ]);
+            factor *= if f == shad::CHICAGO_DOUBLE_MULTIPLY {
+                2.0
+            } else {
+                1.0
+            };
+        }
+        let id = h1map::TagRef::read(e, bitmap).unwrap().id;
+        let (p, m) = peak_and_mean(&h1_texels(&h1, id), |t| [t[0], t[1], t[2]]);
+        for c in 0..3 {
+            h1_peak[c] *= p[c];
+            h1_mean[c] *= m[c];
+        }
+    }
+    let h1_peak = h1_peak.map(|x| (x * factor).min(1.0));
+    let h1_mean = h1_mean.map(|x| (x * factor).min(1.0));
+    let s = shad::read_h1(&h1, tag).unwrap();
+    assert_eq!(s.layout.stem, shad::TWO_ADD_CLOUDS.stem);
+    let role = |r: Role| s.maps.iter().find(|(x, _)| *x == r).unwrap().1.bitmap;
+    let tint = s.extras.tint.unwrap().color;
+    let (tp, tm) = peak_and_mean(&h1_texels(&h1, role(Role::Tile)), |t| [t[0], t[1], t[2]]);
+    let (mp, mm) = peak_and_mean(&h1_texels(&h1, role(Role::Mask)), |t| [t[0], t[1], t[2]]);
+    let conv_peak: [f32; 3] = std::array::from_fn(|c| (tp[c] * mp[c] * 2.0 * tint[c]).min(1.0));
+    let conv_mean: [f32; 3] = std::array::from_fn(|c| (tm[c] * mm[c] * 2.0 * tint[c]).min(1.0));
+    eprintln!(
+        "cone: factor {factor}; Halo 1 peak {h1_peak:?} mean {h1_mean:?}; converted peak {conv_peak:?} mean {conv_mean:?}"
+    );
+    assert!(
+        near(conv_mean, h1_mean, 0.01),
+        "cone mean {conv_mean:?} vs Halo 1 {h1_mean:?}"
+    );
+    assert!(
+        below(conv_peak, h1_peak),
+        "cone peak {conv_peak:?} vs Halo 1 {h1_peak:?}"
+    );
+
+    // The shield.
+    let tag = find(r"scenery\teleporter_shield\shaders\teleporter_shield");
+    let d = h1.tag_data(tag).unwrap();
+    let stages = h1
+        .block(h1map::Block::read(d, shad::SOTR_STAGES).unwrap(), 0x70)
+        .unwrap();
+    let last = &stages[6 * 0x70..7 * 0x70];
+    let argb = |at: usize| -> [f32; 4] {
+        std::array::from_fn(|k| {
+            f32::from_le_bytes(last[at + 4 * k..at + 4 * k + 4].try_into().unwrap())
+        })
+    };
+    let (lo, hi) = (argb(0x0c), argb(0x1c));
+    let s = shad::read_h1(&h1, tag).unwrap();
+    assert_eq!(s.layout.stem, shad::PLASMA_ALPHA.stem);
+    let picture = h1_texels(
+        &h1,
+        s.maps
+            .iter()
+            .find(|(r, _)| *r == Role::Mask)
+            .unwrap()
+            .1
+            .bitmap,
+    );
+    let (h1_peak, _) = peak_and_mean(&picture, |t| {
+        std::array::from_fn(|c| (t[c] * (1.0 + hi[c + 1])).min(1.0))
+    });
+    let (_, h1_glow) = peak_and_mean(&picture, |t| std::array::from_fn(|c| t[c] * lo[c + 1]));
+    let colour = s.extras.colors[0].1;
+    let colour = [16, 8, 0].map(|sh| ((colour >> sh) & 0xff) as f32 / 255.0);
+    let alpha = picture.iter().fold(0.0f32, |m, t| m.max(t[3]));
+    let conv_peak = colour.map(|c| c * alpha);
+    eprintln!(
+        "shield: c0 lo {lo:?} hi {hi:?}; Halo 1 peak {h1_peak:?}, its unbanded glow at lo {h1_glow:?} (mean); \
+         converted peak {conv_peak:?} (colour {colour:?} × mask alpha {alpha})"
+    );
+    assert!(
+        below(conv_peak, h1_peak),
+        "shield peak {conv_peak:?} vs Halo 1 {h1_peak:?}"
+    );
 }

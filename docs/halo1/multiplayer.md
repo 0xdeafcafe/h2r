@@ -1429,7 +1429,33 @@ and `tests/shad_rebuild.rs`,
 `plasma_sotrs_draw_on_plasma_alpha_and_no_other_sotr_does` (prints what
 every `sotr` becomes). Which instance colour reaches which combiner
 constant is read from the retail colour values, not the pass's
-bindings. A material with no Halo 1
+bindings (colours 2 and 3 both 0 make the order of those two moot).
+Retail `plasma_alpha` scrolls either noise: `needler_ammo_glow` the
+second (the clouds tree, bitmap target 1, `c[22]` and `c[23]`),
+04a's `glass_gravunit_glow` the first (bitmap target 0, binding words
+`0x01d2` and `0x01f3`: `c[20]` and `c[21]`).
+
+**Teleporter receiver brightness against Halo 1.** Face on, per
+channel (`teleporter_receiver_brightness_against_halo1`, numbers from
+the disc's bitmaps). The cone (Halo 1 `dust × dust × ramp`, no doubling):
+Halo 1's mean (0.012, 0.030, 0.014) and the conversion's are equal by
+construction (the dropped dust folded in as its mean); its peak
+(0.148, 0.362, 0.175) against the conversion's (0.062, 0.154, 0.073),
+the folded dust's peak averaged away. Before version 84 the grey dust
+drew alone: peak 0.61 in every channel. The shield: Halo 1's last stage
+(`teleporter_shield` stage 6) adds `picture.rgb × (band + c0)`, `c0`
+animated from (0, 0.329, 0.424) to white, so it peaks at (0.125, 1.0,
+0.188) and glows (0 to 0.005, 0.067 to 0.202, 0.014 to 0.033) on
+average even without bands; the picture's alpha (0.10 to 0.133) only
+pulls the two noises towards each other. `plasma_alpha` can only shape
+and dim through its mask's alpha, so the conversion (mask the picture,
+colour its mean, 0x013408) peaks at (0.0005, 0.027, 0.004): about 37
+times dimmer than Halo 1 in green, with no shape (that alpha is nearly
+flat) and no glow between bands. Before version 85 it was `energy
+plasma` alone, white, peak 1.0 in every channel. Matching Halo 1 needs
+a mask whose alpha is the picture's colour (`max(r, g, b)`), with
+colours 0 and 1 the picture's hue scaled by `1 + c0`, which the
+converter's one-bitmap-per-tag pipeline can't make yet. A material with no Halo 1
 base map to read names the base's model shader itself; Blood Gulch has
 none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
