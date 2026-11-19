@@ -1117,3 +1117,30 @@ fn every_named_mod_state_uses_its_rows_footer_and_fits_the_synthetic_layout() {
         }
     }
 }
+
+#[test]
+fn a_refresh_keeps_installed_state_for_maps_still_visible_on_this_visit() {
+    let (fake, repo) = listed(three(), None);
+    fake.here.lock().unwrap().insert(id(2));
+    repo.listed(Ok(three()));
+    repo.opened();
+    repo.press_list(1);
+    repo.listed(Ok(Vec::new()));
+    assert_eq!(repo.detail_line(0).as_deref(), Some("Remove"));
+    repo.closed();
+    repo.listed(Err(ModsError::Offline));
+    assert_eq!(repo.list_line(0).as_deref(), Some("Try Again"));
+}
+
+#[test]
+fn loading_a_snapshot_requires_a_fresh_removal_confirmation() {
+    let (fake, repo) = listed(three(), None);
+    repo.press_list(1);
+    repo.install_done(id(2), Ok(()));
+    repo.act();
+    let bytes = repo.save_state();
+    repo.load_state(&bytes).unwrap();
+    assert_eq!(repo.detail_line(0).as_deref(), Some("Remove"));
+    repo.act();
+    assert!(fake.removed.lock().unwrap().is_empty());
+}

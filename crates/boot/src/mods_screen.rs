@@ -449,6 +449,10 @@ pub struct Repo {
     changed: AtomicU64,
 }
 
+fn newest(items: &[ModEntry]) -> u64 {
+    items.iter().filter_map(|e| e.position).max().unwrap_or(0)
+}
+
 impl Repo {
     /// Over `source`, keeping the last-seen position in `seen_file`.
     pub fn new(source: Arc<dyn Source>, seen_file: Option<PathBuf>) -> Arc<Self> {
@@ -565,8 +569,15 @@ impl Repo {
     pub fn listed(&self, r: Result<Vec<ModEntry>, ModsError>) {
         let installed = match &r {
             Ok(items) => {
-                let ids: Vec<MapId> = items.iter().map(|e| e.id).collect();
-                Some(self.source.installed(&ids))
+                // A refresh may omit a map that is still on the current page.
+                let mut ids: BTreeSet<_> = items.iter().take(MAX_ROWS).map(|e| e.id).collect();
+                {
+                    let g = self.lock();
+                    if g.visiting && let List::Loaded(visible) = &g.list {
+                        ids.extend(visible.iter().map(|e| e.id));
+                    }
+                }
+                Some(self.source.installed(&ids.into_iter().collect::<Vec<_>>()))
             }
             Err(_) => None,
         };
@@ -586,7 +597,7 @@ impl Repo {
                         g.next_list = Some(items);
                     } else {
                         if g.visiting {
-                            self.mark_seen(&mut g, &items);
+                            self.mark_seen(&mut g, newest(&items));
                         }
                         g.list = List::Loaded(items);
                     }
@@ -594,7 +605,7 @@ impl Repo {
                 Err(e) => {
                     eprintln!("mods: no list: {e}");
                     // A list already read stays shown through a failed refresh.
-                    if !matches!(g.list, List::Loaded(_)) {
+                    if !matches!(&g.list, List::Loaded(rows) if !rows.is_empty()) {
                         g.list = List::Failed(e);
                     }
                 }
@@ -620,17 +631,17 @@ impl Repo {
             g.shown_from = g.seen;
             g.pictures = None;
             if let List::Loaded(items) = &g.list {
-                let items = items.clone();
-                self.mark_seen(&mut g, &items);
+                let position = newest(items);
+                self.mark_seen(&mut g, position);
             }
         }
+        self.footer(SCREEN, Some(0));
         self.want_list();
         self.touch();
         self.refresh_menu();
     }
 
-    fn mark_seen(&self, g: &mut Inner, items: &[ModEntry]) {
-        let seen = items.iter().filter_map(|e| e.position).max().unwrap_or(0);
+    fn mark_seen(&self, g: &mut Inner, seen: u64) {
         if seen > g.seen {
             g.seen = seen;
             if let Some(path) = &self.seen_file
@@ -923,6 +934,7 @@ impl Repo {
     fn open_pack(&self, name: &str) -> Chosen {
         self.lock().pack = Some(name.to_string());
         self.texts.set(PACK_TITLE, &text_fit::line(name, text_fit::TITLE));
+        self.footer(PACK, Some(0));
         self.touch();
         Chosen::Open(PACK)
     }
@@ -1373,6 +1385,7 @@ impl Repo {
         r.finish().map_err(e)?;
         {
             let mut g = self.lock();
+            g.removing = None;
             g.selected = some.then_some(id);
             g.pack = pack.clone();
             g.pictures = None;
