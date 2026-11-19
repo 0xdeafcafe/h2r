@@ -267,7 +267,8 @@ The mesh holds:
   - **teleporter**: from the scenario's teleporter netgame flags;
   - **lift**: man cannons and gravity lifts, from scenery and device
     positions;
-  - **vehicle**: a later stage.
+  - **vehicle**: not built. Vehicles follow the bipeds' mesh for now
+    (§3.9).
 
 Paths come from A\* over the sector graph, smoothed with a funnel pass and
 followed by steering:
@@ -419,6 +420,11 @@ Reload (X) and switch weapons (Y) take 5–13 ticks of stable intent,
 depending on skill, then hold 2–4 ticks. Retries are at least 2 s apart
 for reload and 1.3 s for switch. Melee also needs a target in reach and
 near the crosshair for a short time before the press.
+
+Vehicles (§3.9) sit across this order: in a vehicle the vehicle layer
+makes the whole pad; on foot, after the order above, boarding a close and
+slow enemy vehicle takes over in a fight or not, and taking a free one
+takes over only when calm and not carrying or rearming.
 
 Grenades (left trigger) need one in hand (unit `+0x23e`, §3.6, when read).
 At the skill's rate in a fight at 3 to 12 world units, four times that rate
@@ -739,6 +745,327 @@ then a bot plays Territories as Slayer.
 **Picking up.** The flag, ball and bomb are walked over. Whether Halo 2
 takes them by walking over or needs the action button held is a game-run
 check (§11.2); the bot does not press it.
+
+### 3.8 Glitches (built, not checked in a game)
+
+The user asked: "add setting so that clankers can do glitches (super
+bounce, sword fly, etc) if turned on". The Clankers page has a
+**Glitches** row (`clankers.glitches`): **Off** (the default), **Some**
+(the occasional show-off) and **Lots** (whenever there is an opening).
+
+A glitch is the same button presses a player makes, with the same timing,
+on the bot's pad. Nothing in the engine is changed or called. The tricks
+work only because the recomp runs retail 1.0's code: no title update has
+patched sword flying or the super bounce out (title-updates.md). **Not one
+has been seen working in a game yet.** Each needs the checklist below.
+
+**The code.** `bots::glitches` is pure: each trick is a list of timed
+presses (`glitches::plan`, a `Macro` of `Beat`s), the rules for when one
+fits (`glitches::opening`) and the show-off clock (`glitches::ShowOff`).
+The fight tricks run in the noob combo's scheduler
+(`weapons::Combo::step`, its `ComboIn::glitch` gate); the show-offs run
+in the mind's roaming (`Mind::step`, `Stunt`). The setting follows the
+Taunts path: store, `clankers::Want::read`, the driver's shared
+`AtomicU8`, then `Mind::glitches` at the bot's next frame, local bots and
+phantoms alike.
+
+**The tricks.** Presses at 30 ticks a second, as Legendary does them:
+
+| Trick | Presses (tick: button) | When | Source |
+|---|---|---|---|
+| BXR | 0 B, 5 X (held), 7 R | in melee reach with a gun whose magazine is full or has no reserve | [Halopedia, BXR](https://www.halopedia.org/BXR): B, then X once the melee lands (it cancels the melee's recovery), then R; full magazine only, else X reloads; [Bungie.net forum](https://www.bungie.net/en/Forums/Post/414304): "hold X while pressing R" |
+| BYYR | 0 B, 5 Y, 8 Y, 10 R | the same with a part-empty magazine and a second gun | Halopedia, BXR: "press Y twice instead of pressing X once" |
+| BXB | 0 B, 5 X, 7 B | the same with nothing in the magazine and nothing to load | Bungie.net forum: "like BXR, but after X press B again" |
+| Double shot | 0 R, 4 R (held), 6 X | a battle rifle, 6 rounds loaded and a reserve, the target in its range | Bungie.net forum: RRX, "holding the second R while pressing X"; "on a last clip it just shoots twice" |
+| Quad shot | a double shot, 9 Y, 12 Y, then a double shot from 15 | as the double shot, 12 rounds and a second gun | Bungie.net forum: "RRX, YY, RRX"; YY swaps back before the reload |
+| Sword flying | 0 Y, 1 X, 3 R, 11 A | the sword the other weapon, the gun in hand on target (its reticle red) past the sword's lunge, up to 20 units | [Halopedia, Sword flying](https://www.halopedia.org/Sword_flying): Y, X, RT "quickly in that order", the reticle red on the gun first; the window is 0.066 s at 30 fps (two ticks); A in the lunge goes higher |
+| Crouch jump | 0 A, 7 crouch (10 ticks) | roaming, now and then | superbounce.md, "The crouch height term": a crouch change in the air lifts the feet |
+| Super bounce | at a measured spot: stand still, A, hands off but a light push toward +y, land; again from a nudged place | roaming, a spot within 60 units | superbounce.md (traced; the spot's table is `glitches::spots`) |
+
+The 5 ticks from B to the melee landing (`MELEE_CONNECT`) and the 4 for
+the battle rifle's burst (`BURST`) are not traced. They are starting
+points to tune in a game run. The battle rifle is told from the tag: once
+per pull, one zoom level, a magazine of 30 or more.
+
+**Skill.** Each press after the first is late by up to 0 ticks
+(Legendary), 1 (Heroic), 2 (Normal) or 1 to 3 (Easy). Late presses miss
+windows the way a player's do: Easy's sword fly often lands its X outside
+the two-tick window and is an ordinary switch. Skill also scales how
+often it tries: Easy 40% of the setting's chance, Normal 70%, Heroic 90%,
+Legendary all of it.
+
+**How often.** A fight trick is rolled for at most once a second while
+one fits: 15% a roll on Some, 60% on Lots (times the skill's share), and
+not again for 2 s after one. A show-off comes every 45 to 90 s of calm on
+Some and every 8 to 20 s on Lots (longer at lower skill). A super bounce
+gets 3 tries on Some and 8 on Lots, then the bot gives the spot up.
+
+**Never:**
+
+- with the setting Off;
+- carrying the flag, the bomb or the ball, or with an objective to play
+  (show-offs);
+- when it would obviously lose: shields down (recovering), withdrawing,
+  or another enemy within 8 units; a sword fly never at a target with
+  another enemy within 2.5;
+- before its reaction to the target has passed;
+- doing anything but fighting or roaming on foot (`mind::glitch_doing`,
+  an allowlist: getting in, driving or riding a vehicle is never on it).
+  The vehicle work's seat pad returns before the fight and roam code, so
+  it must call `Mind::drop_glitches` first;
+- a show-off with anyone in view, or within 1.5 s of seeing someone.
+
+While a trick runs the mind's own melee, reload, switch and grenades
+wait, and the trigger is the trick's.
+
+**The super bounce spots** (`glitches::spots::SPOTS`) hold only measured
+spots. Each spot has a map, the place to stand, a spread to nudge within
+between tries, a drift direction and a source. There is one:
+
+| Map | Stand at (x, y, z) | Drift | Source |
+|---|---|---|---|
+| `ascension` | (−10.62, 3.88, −3.19), nudged up to 0.04 | +y | superbounce.md: the crease where the ramp meets the floor, 5 bounces in 20 standing-jump landings; the launch is a pinch between faces at y 4.12 and 3.94 |
+
+The bot walks to 0.8 units short of the spot (lower y), steps onto it,
+stands still for 4 ticks, jumps with the stick let go, and pushes the
+stick 0.15 toward +y in the air, because every traced bounce came in
+moving slowly toward +y. Not every landing bounces, so it tries again from
+a nudged place. It knows it bounced when it rises 0.4 units again after
+starting to fall: a plain landing never does. Community guides
+([Halopedia, Super bouncing](https://www.halopedia.org/Super_Bouncing))
+give spots on most maps by landmark only, with a forced crouch first.
+superbounce.md found the crouch is not needed. A spot goes in the table
+only once a game run has found and traced it.
+
+**Not built:**
+
+- **Butterfly**: a two-player trick (one jumps on the other's head while
+  the bottom player, sword in hand, presses X and B), not one bot's
+  presses.
+- **BXL, LX, RRBX**: less well documented.
+- Super bounces off moving vehicles (Burial Mounds' Warthog launch).
+
+One community note matters here. The Bungie.net post says BXR "works as
+a reload glitch from any range, but only off host". Clankers play on the
+host. Whether the cancels work for a host-side player is the first thing
+to check.
+
+**Tests** (`cargo test -p bots glitches`, and
+`cargo test -p boot clankers`): each trick's presses and timing at
+Legendary; lateness within each skill's slop and never out of order;
+sword flying clean at Legendary and Heroic and often missed on Easy; the
+gate (Off never, never carrying, losing or before reacting, the trick
+that fits each moment); the combo scheduler playing B, X, R in order,
+often on Lots, less on Some, never on Off; the show-off clock (Off never,
+Lots 25 to 80 in ten calm minutes, never when not calm); the bounce run
+(walks on, standing jump, drift, a launch ends it, plain and caught
+landings retry until the tries run out); a roaming mind crouch jumping on
+Lots and never on Off; the setting off by default and reaching the
+driver.
+
+**Game run (checklist).** For the user. Use one Clanker against you on
+Legendary with Glitches on Lots. The agent API reads what happened:
+`world.object player.N physics` (havok_pos, havok_velocity, airborne,
+crouch), `havok.contacts {object: player.N}` and `trace.start player.N`
+for a row every tick ([agent-api.md](../runtime/agent-api.md)). Each line
+is a yes or no:
+
+1. **Off.** Glitches Off: in five minutes no bot does any of the below.
+2. **BXR.** Give the bot a battle rifle and let it get close. It melees
+   and fires at once, with no melee recovery between. Your shields drop
+   on the B and you die on the R. If the shot waits out the melee
+   anyway, try `MELEE_CONNECT` 3 to 8; if it never cancels, note "host".
+3. **BYYR and BXB.** The same with a part-empty magazine and a second
+   gun (two switches, then the shot), and with an empty SMG and no
+   reserve (two melees close together).
+4. **Double and quad shot.** At mid range with a battle rifle: two bursts
+   leave almost together (six rounds), then it reloads. With a second
+   gun, two switches and two more bursts. Tune `BURST` if the second pull
+   is ignored.
+5. **Sword flying.** Give it a battle rifle in hand and the sword as the
+   other weapon. Stand 5 to 15 units off. It switches and flies at you
+   much further than the sword's own lunge, higher with the A. On Easy
+   it mostly just switches.
+6. **Crouch jump.** Calm on Lots: now and then a jump with the legs
+   tucked at the top.
+7. **Super bounce.** Ascension, calm on Lots, nobody near the ramp: the
+   bot walks to the crease, jumps in place a few times, and one landing
+   throws it up (trace: two opposing contacts against the fixed body on
+   the launch tick, then +8 to +14 units a second up). With Some it gives
+   up after three tries.
+8. **Never.** It does none of these carrying the flag or the ball, with
+   its shields down, or with a second enemy close by.
+
+### 3.9 Vehicles (built: first slice)
+
+The user, after playing the Clankers: "clankers also don't seem to
+interact with vehicles, try and board, go and take, lock on with
+rockets." The first slice (`crates/bots/src/vehicle.rs` and
+`vehicle/`, glued into the mind by `crates/bots/src/mind/ride.rs`):
+
+1. **Rocket lock-on.** A rocket launcher at an enemy in a vehicle is held
+   on the vehicle's middle until it locks, then fired.
+2. **Perception.** Every vehicle, its seats, who sits in each (by player
+   and team), and the bot's own seat.
+3. **Go and take.** A calm bot walks to a free Ghost, Warthog or Scorpion
+   near it, stands beside the driver's seat and holds X; or mans the gun
+   of a teammate's Warthog.
+4. **Drive.** A driver follows the nav mesh to where it is going,
+   steering by the camera as a player does, shoots with the vehicle's
+   guns, runs infantry over, backs up when stuck, and gets out when the
+   vehicle is about to blow up, flipped, stuck for good, or where it was
+   going needs feet. A gunner or passenger shoots, and gets out when
+   nobody drives.
+5. **Board.** An enemy vehicle close and slow is boarded (X by it).
+
+**Fields.** No new disassembly was done for this slice (the lane ran no
+disassembler). Every field below comes from an earlier trace, except the
+two marked "not traced", which come from Halo 2's tag definitions and
+need a run or a trace (§12). `O` is an object's body, `U` a unit's, `V` a
+`vehi` tag's metadata, `S` one of its seat definitions.
+
+| Field | Where | Type | Confidence | From |
+|---|---|---|---|---|
+| parent: a rider's vehicle, a mounted turret's vehicle | `O+0x14` | datum | confirmed | live-gamestate.md; `engine::view::objects::Body::parent`; `live-telemetry` `object_in` (riders) and `vehicle_mount` (turrets) |
+| position, forward, up | `O+0x64`, `+0x70`, `+0x7c` | `f32[3]` each | confirmed; relative to the parent when there is one | `engine::view::objects::Body`; live-telemetry.md (a mounted turret's `+0x64` is relative to its vehicle). A rider's own position is not used: as telemetry does, a rider is where its vehicle is |
+| body vitality | `O+0xec` | `f32`, 0 to 1 | confirmed | `object_get_health` `0x2a1a20` (live-telemetry `layout::BODY_VITALITY`) |
+| wrecked | `O+0x10a` bit 2 | `u16` | confirmed | `0xd6800` (`guest::BODY_DEPLETED`) |
+| the unit's seat | `U+0x1fc` | `i16`, -1 none | confirmed | live-telemetry `layout::UNIT_SEAT`: the enter-vehicle routine `0xea1f0` stores it (`0xea405`), leaving stores -1 (`0xea995`) |
+| seats block | `V+0x1c8` count, `+0x1cc` pointer | `i32`, `u32` | confirmed | `crates/tags/src/defs/unit.txt` (`group vehi`, `block_1c8`, `0xb0` each; the seat label at `+4` checked against 05a's scripts, `h1scripts::seats`); the stride is `0xea1f0`'s `imul edi,0xb0` (`0xea330`) |
+| seat flags | `S+0` | `u32` | position confirmed (the field before the label); **bits not traced** | bit 2 driver, bit 3 gunner, from Halo 2's tag definition (the seat flags' order: invisible, locked, driver, gunner, ...). With no seat flagged driver, the first seat that is not a gunner's is taken for the driver's (`vehicle::read::roles`) |
+| vehicle type | `V+0x1f0` | `u16` | position confirmed; **names not traced** | objects.md: the vehicle code compares it with 5 and 6 (`0xef545`). The order (tank, jeep, boat, plane, scout, fighter, turret) is Halo 2's tag definition's; 5 the Banshee's flying and 6 the turret fit the two compares |
+| the gun mounted on a Warthog | a vehicle object whose parent is the Warthog; its gunner's parent is the gun | | confirmed | live-telemetry.md (`parent` on a frame vehicle); `live-telemetry` `vehicle_mount` |
+| a rocket launcher | `weap` zoom levels `+0x1fe` 1, and the blast role (§3.6) | | checked on Zanzibar's tags (zoom) | §3.6's handling table: the rocket launcher is the only blast weapon with a zoom level |
+
+How the bot reads them (`vehicle::read::sight`, once a frame for each bot
+in a multiplayer game, after the perception): the objects array (at most
+2048 slots) for live vehicle objects that are not wrecked and whose
+definition is a `vehi` tag, each with its class and seats; a mounted
+turret's pose is made a world one from its vehicle's; then each listed
+player's living biped whose parent is one of those vehicles fills the
+seat `U+0x1fc` names, and the bot's own is its `riding`. A fault leaves
+the bot on foot, never blind. It is kept apart from `brain::Perception`
+(the mind is handed it with `Mind::see_vehicles`), so every other test
+and caller plays as before.
+
+`guest::perceive_as` now puts a rider where its vehicle is (its own
+`+0x64` is relative to it): a Warthog's driver and an enemy on its gun are
+seen at the Warthog and at the gun, not near the world's origin.
+
+**Lock-on** (`vehicle::lock`). With a rocket launcher in hand
+(`lock::locks_on`) and the target riding a vehicle, the bot aims at the
+vehicle's middle (0.3 over its origin) with no lead (a locked rocket
+follows it), and fires only once it has held the vehicle in the reticle
+(the vehicle's apparent size, 0.8 world units, plus the skill's fire
+cone) for the lock time. At infantry nothing changes: fired unlocked, at
+the feet for Heroic and Legendary (§3.4). The game's own lock time is not
+traced; the bot assumes 1 s (`lock::LOCK_TICKS`) and adds its margin:
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| waits for the lock | no (fires as at infantry) | yes | yes | yes |
+| holds past 1 s | | 0.4 s | 0.2 s | 0.07 s |
+| off the vehicle forgiven | | 3 ticks | 6 ticks | 8 ticks |
+
+The bot does not zoom: Halo 2's launcher is taken to lock without it
+(§12). "A blast weapon with a zoom" stands for the rocket launcher; the
+fuel rod's zoom was not looked at (it is not on Zanzibar). If it has one,
+a bot with it waits a second at a vehicle and then fires: slower, not
+wrong.
+
+**Which vehicles.** By class (`vehicle::Class::spec`, data):
+
+| Class (`V+0x1f0`) | Taken | Driver shoots | Where to stand to get in (forward, left of its origin) |
+|---|---|---|---|
+| jeep (Warthog) | driver; its gun as a teammate's gunner | no | driver (0, 0.8); gun (-1.2, 0) |
+| scout (Ghost, Spectre, Wraith) | driver | yes | (-0.2, 0.7) |
+| tank (Scorpion) | driver | yes | (0, 1.4) |
+| fighter (Banshee), boat, plane, a turret on its own | no (the Banshee is later) | | |
+
+The points are guesses at the seats' sides: the game picks the seat whose
+entry point is nearest, and the seats' entry markers and radius (`S+0x98`,
+by the field order) are not read yet. A side that does not take is tried
+from the other side (mirrored); a Warthog's driver on the right gets the
+passenger's seat, which is still a ride.
+
+**Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). Only calm
+(no enemy in view for 1.5 s), not carrying, not going for a weapon, and
+in an objective game only when the objective's point is more than 20
+away. The nearest vehicle by distance (plus 3 per unit of height) within
+the skill's range that:
+
+- is a class it drives, whole (over 0.4), upright, standing still (under
+  0.5 a second);
+- has its driver's seat free and nobody of the other side aboard;
+- no teammate on foot is clearly nearer to (within 6, and nearer than 0.8
+  of the bot's distance): they have it;
+- it has not given up on, or got out of, in the last 10 s.
+
+With the skill's gunner option, a teammate's Warthog with a free gun
+counts too, 4 units worse than a free vehicle. It walks the nav mesh to
+the point beside the seat, then stands and holds X (the action button,
+Default layout) for 40 ticks; then the other side for 40; then gives up
+on it for 10 s. Getting in is read back from `U+0x1fc` and the parent:
+from then on the mind is in the vehicle. It also gives up after 12 s, or
+when the seat is taken or an enemy gets in.
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| takes a vehicle within | 12 | 20 | 28 | 35 |
+| mans a teammate's gun | no | yes | yes | yes |
+| boards within (XY) | never | 1.5 | 2.2 | 2.8 |
+| boards going slower than (units a second) | | 1.5 | 3 | 4.5 |
+| runs infantry over | no | yes | yes | yes |
+
+**Board** (`vehicle::plan::board`). An enemy (in free-for-all, anyone)
+driving a vehicle (not a Banshee) on the bot's level (within 1 in height),
+within the skill's boarding range, slower than its boarding speed: in a
+fight or not, the bot runs straight at the driver's side and holds X
+within 1.2 of the vehicle's middle. It lets go when the vehicle speeds off
+or after 3 s. Speeds come from the vehicles' positions tick to tick
+(`vehicle::Memory`), not from `O+0x88`, whose units are not checked.
+
+**Drive** (`vehicle::drive`, `Mind::ride`). Halo 2 steers a Ghost or a
+Warthog by the camera: the left stick says where to go relative to where
+the player looks. The driver:
+
+- goes to the objective's point, else the enemy it fights, else where an
+  enemy was last seen, else a roaming goal (§3.2);
+- plans a route on the nav mesh (the bipeds' mesh: there is no vehicle
+  mesh yet) and drives at a carrot, the furthest of the next route points
+  within 4 (a point is passed within 1.5, or when the next one is
+  nearer);
+- looks at the carrot (or the enemy it fights) and pushes the stick that
+  way, full ahead when the camera is on it, down to 0.35 at a turn of 1.6
+  radians or more;
+- with infantry in front within 15, drives at them (splatter), the skill
+  allowing;
+- shoots with the vehicle's guns when its seat has them (a Ghost's, a
+  Scorpion's; not a Warthog driver's);
+- under throttle and slower than 0.4 a second for 1.5 s, backs up for 1 s;
+  the third time within 15 s it is stuck for good.
+
+A gunner aims and shoots (the gun's trigger held in the skill's bursts); a
+passenger shoots its own gun as on foot. With nothing to shoot they look
+where the enemy was last seen, else ahead.
+
+**Getting out** (`drive::leave`): the vehicle under 0.2, lying flipped
+for 1 s, stuck for good (driver), nobody driving for 4 s (gunner,
+passenger), or within 3 of an objective point it must reach on foot (the
+flag or ball it is going for). It holds X 15 ticks in every 20, so a press
+and a hold both work, and stops driving. The vehicle it left is left alone
+for 10 s, so it does not get straight back in.
+
+**Seeing it in a game.** Two or three Clankers on a map with vehicles
+(Coagulation, Headlong, Waterworks, Zanzibar), Slayer, Normal or
+Legendary (`H2_BOTS_SKILL=legendary`). §11.4 is the checklist.
+
+**Open** (§12): the seat flag bits and the type's names (the two "not
+traced" rows); the lock time and whether it needs a zoom; the entry
+points (the seats' markers and `S+0x98`); whether X held enters and a
+press exits, as assumed; a vehicle nav mesh (wider clearance, no jumps);
+the Banshee; driving tactics beyond "at the enemy" (circling, keeping
+range for a gunner); and a Warthog driver waiting for its gunner.
 
 ## 4. Way in 1: local slots
 
@@ -1712,6 +2039,7 @@ layout checks and the `Page` table tests. These are its rows:
 | Aggression | Calm, Normal, Wild | `clankers.aggression` |
 | Aim style | Steady, Twitchy | `clankers.aim_style` |
 | Taunts | On, Off | `clankers.taunts` |
+| Glitches | Off, Some, Lots | `clankers.glitches` (§3.8) |
 
 **Mixed** gives each bot a difficulty drawn around Normal. Per-bot
 difficulty can come later, as a sub-page per bot; the first page does not
@@ -3201,12 +3529,13 @@ list for the user to play (§11).
      - `team`: Auto-balance, Red or Blue;
      - `aggression`: Calm, Normal or Wild;
      - `aim_style`: Steady or Twitchy;
-     - `taunts`: Off or On; default On.
+     - `taunts`: Off or On; default On;
+     - `glitches`: Off, Some or Lots; default Off (§3.8, used).
 
      Teams, Aggression, Aim style and Taunts are saved but not used yet:
      they wait for the lobby teams (stage 6), the utility layer and aim
      styles (stages 4 and 5), and the emotes (stage 4).
-   - **The page** is a kit screen, `clankers`: seven `ChoiceRow`s on the
+   - **The page** is a kit screen, `clankers`: eight `ChoiceRow`s on the
      lobby's own settings dialog, Quick Options, inside and out
      (`KitScreen::dialog(DialogBase::QuickOptions, ..)`, as the Halo 1
      Options page is; docs/game/ui-builder.md "The Dialog kind"): Quick
@@ -3326,8 +3655,8 @@ list for the user to play (§11).
         Halo 1 map). The pages they open are titled "Clankers" and "Halo 1
         Options".
      2. Press A on it: the Clankers page opens over the dialog, with
-        seven rows and a description of the focused row. B goes back to
-        Game Setup.
+        eight rows (Glitches last) and a description of the focused row.
+        B goes back to Game Setup.
      3. Set Clankers to On and Count to 2 (the log says `clankers:
         Clanker 1 on (Normal)`). In Split Screen, bots join on the
         players screen, so back out of the lobby to it: "Clanker 1" and
@@ -3973,8 +4302,14 @@ list for the user to play (§11).
         pins have): today only the default lineup's clanker playlists,
         kept where a published file has the same playlist id at the same
         index.
-9. **Vehicles** (later). Mounting, driving along the nav mesh's vehicle
-   graph, and gunner roles.
+9. **Vehicles.** First slice built (§3.9): rocket lock-on, the vehicles'
+   perception, going to take a free Ghost, Warthog or Scorpion (or a
+   teammate's Warthog gun), driving along the bipeds' nav mesh, shooting
+   from a seat, splattering, getting out, boarding. Tests:
+   `vehicle::` (the planners, and the reader on synthetic memory) and
+   `mind::ride::` (the mind end to end). Next: a game run (§11.4), the
+   untraced fields (§12), a vehicle nav graph, the Banshee, and driving
+   tactics.
 
 ## 10.1 Library surface (for the agent API)
 
@@ -4069,6 +4404,8 @@ Each item is for the user to play, or for a coordinator run.
     surface once it is built).
 11. Whether an empty search makes the game host in each playlist type, or
     `MatchProposed` with `host = me` is needed (§8.4).
+12. Every glitch (§3.8): none has been seen working in a game. Its
+    checklist is in §3.8.
 
 ### 11.1 The brain in play (checklist)
 
@@ -4252,6 +4589,34 @@ Oddball checks, use a map with a nav mesh and more than one way through.
    with the pickup hidden. An unseen disappearance should start no clock.
    Repeat on Easy with the same roster to compare the timing.
 
+### 11.4 Vehicles in play (checklist)
+
+For the user, or a coordinator run. Two or three Clankers on Coagulation
+or Headlong (Slayer), Normal, then Legendary. Each line is a yes or no.
+
+1. Soon after spawning, a bot with no enemy in view walks to a nearby
+   Ghost or Warthog and gets in from the side.
+2. Two bots on one team do not both run to the same vehicle; with a
+   teammate driving a Warthog, another bot gets on its gun.
+3. A bot driving a Ghost follows the map's roads and paths, turns
+   without circling, and does not sit against a wall for more than a few
+   seconds (it backs up, then gets out).
+4. A driving bot drives at a human on foot in front of it and runs them
+   over, firing the Ghost's guns; a Warthog driver does not fire.
+5. A bot gunner shoots at the human; when its driver gets out, it gets
+   out within about 4 s.
+6. A bot in a vehicle about to blow up, or flipped, gets out.
+7. A bot holding the rocket launcher, at a human driving a vehicle, keeps
+   the reticle on the vehicle for about a second and fires a rocket that
+   follows it; at a human on foot it fires at once.
+8. The human driving a Ghost slowly past a Normal bot within about 1.5
+   (about 3 on Legendary) gets boarded; driving fast past it, not.
+9. The fields: on the human's own unit in a Warthog, `h2 agent object`
+   reads `+0x1fc` 0 as the driver and the gun's seat on the gun; the
+   Warthog's `vehi` seats' `+0` flags have bit 2 on the driver's seat and
+   the gun's bit 3; `+0x1f0` reads 1 for the Warthog, 4 for the Ghost, 5
+   for the Banshee.
+
 ## 12. Next tracing (offline)
 
 Done for stage 1 (§4.1 to §4.3): the pad seam, the slot flags and the
@@ -4279,6 +4644,13 @@ Still open:
   (`0x2c0a7d`); whether a ball's spawn is netgame flag type 4 in the
   engine (Oddball's init); and King of the Hill's in-hill test (player
   `+0x1b8`) against our geometric one.
+- For vehicles (§3.9): the seat flags' bits (`S+0`: driver 2, gunner 3
+  assumed) and the type's values (`V+0x1f0`), from the enter-vehicle
+  routine `0xea1f0` and its caller (which seat a player near a vehicle
+  gets, and how the entry point is picked: the seats' entry markers and
+  `S+0x98`); the rocket launcher's lock (the weapon or projectile fields
+  that time it, and whether a zoom is needed); whether entering is a hold
+  of X and leaving a press; and the units of `O+0x88` (velocity).
 - For the weapons layer (§3.6): whether the flag, ball, bomb and energy
   sword's `weap` tags have no magazines and no aging barrel (the sword
   should read as a battery to be sought); the `weap` field naming the

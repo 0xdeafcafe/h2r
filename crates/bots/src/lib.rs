@@ -14,6 +14,7 @@ pub mod brain;
 pub mod cache;
 pub mod decisions;
 pub mod emote;
+pub mod glitches;
 pub mod grenades;
 pub mod guest;
 mod incoming;
@@ -29,6 +30,8 @@ pub mod roam;
 mod sound;
 pub mod stuck;
 pub mod tactics;
+pub mod tuning;
+pub mod vehicle;
 pub mod weapons;
 
 use decisions::radio;
@@ -61,6 +64,11 @@ pub struct Brain {
     fidget: mind::pad::Fidget,
     seed: u64,
     epoch: u64,
+    /// The map [`Brain::mind`]'s super bounce spots are for.
+    map: String,
+    /// Over the skill's aim table, awareness and the seeded personality
+    /// (sim mode's tuning files; [`tuning`]).
+    tuning: Option<tuning::Tuning>,
 }
 
 impl Brain {
@@ -71,6 +79,31 @@ impl Brain {
             epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
             fidget: mind::pad::Fidget::new(seed),
+            map: String::new(),
+            tuning: None,
+        }
+    }
+
+    /// The brain with `t` over its skill: the aim table and awareness while
+    /// it thinks, and the personality now and in every new match's mind.
+    pub fn with_tuning(mut self, t: tuning::Tuning) -> Self {
+        if t.is_empty() {
+            self.tuning = None;
+            return self;
+        }
+        self.tuning = Some(t);
+        self.retune();
+        self
+    }
+
+    pub fn tuning(&self) -> Option<tuning::Tuning> {
+        self.tuning
+    }
+
+    fn retune(&mut self) {
+        if let Some(t) = self.tuning {
+            let p = &mut self.mind.decisions.personality;
+            *p = t.personality(*p);
         }
     }
 
@@ -96,6 +129,19 @@ impl Brain {
         sounds: &[sound::ShotSound],
         grenades: &[incoming::Grenade],
     ) -> HostPadState {
+        let t = self.tuning;
+        tuning::with(t, || self.think(p, map, kills, channel, sounds, grenades))
+    }
+
+    fn think(
+        &mut self,
+        p: &brain::Perception,
+        map: Option<&cache::MapData>,
+        kills: &[emote::Kill],
+        channel: &std::sync::Mutex<radio::Radio>,
+        sounds: &[sound::ShotSound],
+        grenades: &[incoming::Grenade],
+    ) -> HostPadState {
         let (epoch, inbox) = {
             let mut board = radio::lock(channel);
             if p.observations.player.is_some() {
@@ -108,9 +154,14 @@ impl Brain {
         };
         if self.epoch != epoch {
             let taunt = self.mind.emote.taunt;
+            let glitches = self.mind.glitches;
+            let bounces = std::mem::take(&mut self.mind.bounces);
             self.mind = mind::Mind::new(self.mind.skill, self.seed);
             self.mind.emote.taunt = taunt;
+            self.mind.glitches = glitches;
+            self.mind.bounces = bounces;
             self.epoch = epoch;
+            self.retune();
         } else {
             self.mind.hear_deaths(p, kills);
             self.mind.emote.hear(kills);
@@ -147,11 +198,23 @@ impl local::PadSource for Brain {
             self.fidget.reset();
             return HostPadState::default();
         };
+        // This map's super bounce spots (crate::glitches::spots).
+        let map = autonav::loaded();
+        if map != self.map {
+            self.mind.bounces = glitches::bounces(&map);
+            self.map = map;
+        }
         let (kills, cursor) = emote::kills().since(self.kills_seen);
         self.kills_seen = cursor;
         // The radio and the deaths every frame, alive or not
         // (crate::decisions); the shots heard only in play.
         let alive = p.me.is_some();
+        // Vehicles are extra: a fault reading them leaves the bot on foot
+        // (docs/game/bots.md, Vehicles).
+        if alive {
+            self.mind
+                .see_vehicles(vehicle::read::sight_in_game(f.guest, who));
+        }
         let shots = if alive {
             sound::recent(p.tick)
         } else {
@@ -193,6 +256,42 @@ mod tests {
     use super::*;
     use input::host::HostButton;
     use local::{Frame, PadSource};
+
+    #[test]
+    fn a_tuned_brain_keeps_its_personality_across_matches() {
+        let t = tuning::Tuning {
+            aggression: Some(0.95),
+            teamwork: Some(0.05),
+            ..tuning::Tuning::default()
+        };
+        let seeded = Brain::new(mind::Skill::Heroic, 11)
+            .mind
+            .decisions
+            .personality;
+        let mut b = Brain::new(mind::Skill::Heroic, 11).with_tuning(t);
+        let p = b.mind.decisions.personality;
+        assert_eq!((p.aggression, p.teamwork), (0.95, 0.05));
+        assert_eq!(p.caution, seeded.caution);
+        // A new match (the radio's epoch moves on): a fresh mind, the
+        // tuning put back over its seeded personality.
+        b.epoch = b.epoch.wrapping_add(7);
+        let board = std::sync::Mutex::new(radio::Radio::default());
+        b.play(&brain::Perception::default(), None, &[], &board);
+        let p = b.mind.decisions.personality;
+        assert_eq!(
+            (p.aggression, p.teamwork, p.caution),
+            (0.95, 0.05, seeded.caution)
+        );
+        // The scope ended with the think.
+        assert!(tuning::current().is_none());
+        // An empty tuning is none.
+        assert!(
+            Brain::default()
+                .with_tuning(tuning::Tuning::default())
+                .tuning()
+                .is_none()
+        );
+    }
 
     #[test]
     fn h2_bots_is_a_count() {

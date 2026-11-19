@@ -213,6 +213,7 @@ mod tests {
             creation_effect: None,
             attachments: Vec::new(),
             widgets: Vec::new(),
+            change_colours: Vec::new(),
         }
     }
 
