@@ -2387,6 +2387,7 @@ fn hover_points_take_their_paired_points_words() {
         creation_effect: None,
         attachments: Vec::new(),
         widgets: Vec::new(),
+        change_colours: Vec::new(),
     };
     let f = |v: f32| v.to_bits();
     let role = VehicleRole {
