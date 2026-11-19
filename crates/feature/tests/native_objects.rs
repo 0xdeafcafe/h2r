@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
-use feature::native_objects::{self, Host, NativeObjects, NativeSet};
+use feature::native_objects::{self, Host, NativeObjects, NativeSet, Stop};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
@@ -191,6 +191,30 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     assert_eq!(masks(&m), all);
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
+
+    // Where each layer-3 call ended: no host, the wrong caller, drawn
+    // twice, refused once; B wanted once.
+    assert_eq!(native_objects::stop_count(Stop::NoHost), 1);
+    assert_eq!(native_objects::stop_count(Stop::WrongCaller), 1);
+    assert_eq!(native_objects::stop_count(Stop::Drawn), 2);
+    assert_eq!(native_objects::stop_count(Stop::DrawRefused), 1);
+    assert_eq!(native_objects::diagnostics(), (5, 1));
+    // No model loaded for anything yet: live object items, none accepted;
+    // every item of an unknown definition asks (A twice, B once; the host
+    // dedupes).
+    let saved = std::mem::take(&mut *stub.set.lock().unwrap());
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m), all);
+    assert_eq!(native_objects::stop_count(Stop::NoneAccepted), 1);
+    assert_eq!(native_objects::diagnostics(), (6, 4));
+    *stub.set.lock().unwrap() = saved;
+    // No live object behind any item: counted apart, so a live run can
+    // tell "no models yet" from "no objects found".
+    m.set_u32(OBJECTS, 0).unwrap();
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(native_objects::stop_count(Stop::NoObjectItems), 1);
+    m.set_u32(OBJECTS, ARRAY).unwrap();
+    assert!(native_objects::summary().contains("drawn 2"), "{}", native_objects::summary());
 
     // Another layer: nothing.
     *stub.refuse.lock().unwrap() = false;

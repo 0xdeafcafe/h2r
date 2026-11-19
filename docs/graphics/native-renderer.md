@@ -681,6 +681,19 @@ tests); evidence labels below are what the tests will show once run.
   `... left to the D3D path (<why>)`; every 1,800 views
   `native-objects: D of V layer-3 views drawn natively, O objects, I
   object items skipped`.
+- **Diagnostics** (added after the first live run drew nothing and
+  printed no `native-objects:` line at all). Every layer-3 call of the
+  observer ends in one counted `Stop`: wrong caller (`[esp]` is not
+  `0x0002bed5`), no host, no camera, no map, no list, no object items (no
+  item's handle names a live object), none accepted (models not loaded,
+  refused, or shaders not native), none read (node count), draw refused,
+  drawn. The first of each prints `native-objects: first layer-3 call
+  ending in "<stop>": <detail>`; each distinct wrong caller prints its
+  `[esp]` (up to four); every 1,800 layer-3 calls one line counts them
+  all, with the definitions wanted and the summed walk (items, in layer,
+  geometry builds, with handles, live, accepted, failed writes, and up to
+  four other build functions met in layer 3). A run that draws nothing
+  says which return it took.
 
 ### The live A/B
 

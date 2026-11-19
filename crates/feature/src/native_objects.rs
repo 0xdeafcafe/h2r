@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use engine::memory::GuestMemory;
 use engine::points;
 use native_render::camera::{GuestRead, GuestWrite, RENDER_CAMERA, RenderCamera};
-use native_render::objects::{self, ClearedObjects, ObjectFrame, SCENE_LAYER3_RETURN};
+use native_render::objects::{self, ClearedObjects, ObjectFrame, SCENE_LAYER3_RETURN, WalkStats};
 use native_render::skip::{CURRENT_LAYER, LIGHTMAP_LAYER};
 
 use crate::native_world::Mem;
@@ -94,6 +94,143 @@ static DRAWN: AtomicU64 = AtomicU64::new(0);
 static OBJECTS: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
 
+/// Where a layer-3 call of the observer ended (diagnostics: the first of
+/// each prints a line with its detail, and every 1,800 layer-3 calls a
+/// line counts them all).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// Layer 3, but `[esp]` is not the base layers' call `0x0002bed5`.
+    WrongCaller,
+    NoHost,
+    /// The render camera record does not read as a camera.
+    NoCamera,
+    /// The host has no set (no loaded map name).
+    NoMap,
+    /// The current list does not read.
+    NoList,
+    /// The walk met no item whose handle names a live object.
+    NoObjectItems,
+    /// Live object items, none accepted (models not loaded yet, or
+    /// refused, or their shaders not native).
+    NoneAccepted,
+    /// Accepted items, but no object read with its model's node count.
+    NoneRead,
+    /// The host could not ask the device for the pass.
+    DrawRefused,
+    Drawn,
+}
+
+impl Stop {
+    pub const ALL: [Stop; 10] = [
+        Stop::WrongCaller,
+        Stop::NoHost,
+        Stop::NoCamera,
+        Stop::NoMap,
+        Stop::NoList,
+        Stop::NoObjectItems,
+        Stop::NoneAccepted,
+        Stop::NoneRead,
+        Stop::DrawRefused,
+        Stop::Drawn,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Stop::WrongCaller => "wrong caller",
+            Stop::NoHost => "no host",
+            Stop::NoCamera => "no camera",
+            Stop::NoMap => "no map",
+            Stop::NoList => "no list",
+            Stop::NoObjectItems => "no object items",
+            Stop::NoneAccepted => "none accepted",
+            Stop::NoneRead => "none read",
+            Stop::DrawRefused => "draw refused",
+            Stop::Drawn => "drawn",
+        }
+    }
+}
+
+static STOPS: [AtomicU64; 10] = [const { AtomicU64::new(0) }; 10];
+/// Layer-3 calls of the observer, any caller.
+static LAYER3: AtomicU64 = AtomicU64::new(0);
+/// Definitions handed to `Host::want`.
+static WANTED: AtomicU64 = AtomicU64::new(0);
+/// The walks' counts, summed.
+static WALKS: Mutex<Option<WalkStats>> = Mutex::new(None);
+/// Distinct wrong callers printed so far (at most four).
+static CALLERS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// How often each [`Stop`] happened, in [`Stop::ALL`] order.
+pub fn stops() -> [u64; 10] {
+    std::array::from_fn(|i| STOPS[i].load(Ordering::Relaxed))
+}
+
+/// The count of one [`Stop`].
+pub fn stop_count(s: Stop) -> u64 {
+    STOPS[s as usize].load(Ordering::Relaxed)
+}
+
+/// Layer-3 calls seen and definitions wanted.
+pub fn diagnostics() -> (u64, u64) {
+    (LAYER3.load(Ordering::Relaxed), WANTED.load(Ordering::Relaxed))
+}
+
+/// Counts `s`; its first time prints `detail`.
+fn stop(s: Stop, detail: impl FnOnce() -> String) {
+    if STOPS[s as usize].fetch_add(1, Ordering::Relaxed) == 0 {
+        eprintln!("native-objects: first layer-3 call ending in \"{}\": {}", s.name(), detail());
+    }
+}
+
+fn add_walk(w: &WalkStats) {
+    let mut sum = WALKS.lock().unwrap_or_else(|e| e.into_inner());
+    let t = sum.get_or_insert_with(WalkStats::default);
+    t.walked += w.walked;
+    t.in_layer += w.in_layer;
+    t.geometry += w.geometry;
+    t.object_handles += w.object_handles;
+    t.live += w.live;
+    t.accepted += w.accepted;
+    t.write_failed += w.write_failed;
+    for &(b, n) in &w.other_builds {
+        match t.other_builds.iter_mut().find(|(x, _)| *x == b) {
+            Some((_, m)) => *m += n,
+            None if t.other_builds.len() < 4 => t.other_builds.push((b, n)),
+            None => {}
+        }
+    }
+}
+
+fn walk_text(w: &WalkStats) -> String {
+    let builds: Vec<String> = w.other_builds.iter().map(|(b, n)| format!("{b:#010x} x{n}")).collect();
+    format!(
+        "items {} in layer {} geometry {} with handles {} live {} accepted {} write failed {}, other builds [{}]",
+        w.walked,
+        w.in_layer,
+        w.geometry,
+        w.object_handles,
+        w.live,
+        w.accepted,
+        w.write_failed,
+        builds.join(", ")
+    )
+}
+
+/// The summary line every 1,800 layer-3 calls.
+pub fn summary() -> String {
+    let counts: Vec<String> = Stop::ALL
+        .iter()
+        .map(|&s| format!("{} {}", s.name(), stop_count(s)))
+        .collect();
+    let walk = WALKS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map_or_else(|| "no walks".to_owned(), walk_text);
+    let (l3, wanted) = diagnostics();
+    format!("native-objects: {l3} layer-3 calls: {}; {wanted} definitions wanted; walks: {walk}", counts.join(", "))
+}
+
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
@@ -115,17 +252,32 @@ pub fn counts() -> (u64, u64, u64, u64) {
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let mut m = Mem(mem);
-    if ret != SCENE_LAYER3_RETURN || m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
+    if m.read_u32(CURRENT_LAYER) != Some(LIGHTMAP_LAYER) {
+        return;
+    }
+    if LAYER3.fetch_add(1, Ordering::Relaxed) % 1800 == 1 {
+        eprintln!("{}", summary());
+    }
+    if ret != SCENE_LAYER3_RETURN {
+        stop(Stop::WrongCaller, || format!("[esp] {ret:#010x}, the base layers' call returns to {SCENE_LAYER3_RETURN:#010x}"));
+        let mut seen = CALLERS.lock().unwrap_or_else(|e| e.into_inner());
+        if !seen.contains(&ret) && seen.len() < 4 {
+            seen.push(ret);
+            eprintln!("native-objects: layer 3 called with [esp] {ret:#010x} (not the base layers'; left to D3D)");
+        }
         return;
     }
     VIEWS.fetch_add(1, Ordering::Relaxed);
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        stop(Stop::NoHost, || "no host installed".to_owned());
         return;
     };
     let Some(camera) = RenderCamera::read(&m, RENDER_CAMERA) else {
+        stop(Stop::NoCamera, || format!("the render camera at {RENDER_CAMERA:#010x} does not read as a camera"));
         return;
     };
     let Some(set) = host.native(&*m.0) else {
+        stop(Stop::NoMap, || "the host has no native set (no loaded map name)".to_owned());
         return;
     };
     let accept = |_handle: u32, definition: u32, shader: u32| {
@@ -133,14 +285,24 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
             return true;
         }
         if !set.definitions.contains_key(&(definition as u16)) {
+            WANTED.fetch_add(1, Ordering::Relaxed);
             host.want(definition);
         }
         false
     };
     let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
+        stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
+    add_walk(&cleared.walk);
     if cleared.items.is_empty() {
+        let w = walk_text(&cleared.walk);
+        if cleared.walk.live == 0 {
+            stop(Stop::NoObjectItems, || w);
+        } else {
+            let (d, sh) = (set.definitions.len(), set.shaders.len());
+            stop(Stop::NoneAccepted, || format!("{w}; the set has {d} definitions, {sh} shaders"));
+        }
         return;
     }
     let mut frames = Vec::with_capacity(cleared.handles.len());
@@ -152,15 +314,21 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
     }
     let drawn: HashSet<u32> = frames.iter().map(|f| f.handle).collect();
+    let accepted = cleared.handles.len();
     objects::keep_only(&mut m, &mut cleared, &|h: u32| drawn.contains(&h));
     if frames.is_empty() {
+        stop(Stop::NoneRead, || {
+            format!("{accepted} accepted objects, none read with its model's node count (node block at body +0x114/+0x116)")
+        });
         return;
     }
     let count = frames.len() as u64;
     if !host.draw(&camera, frames) {
+        stop(Stop::DrawRefused, || "the device cannot take an external pass".to_owned());
         objects::restore(&mut m, &cleared);
         return;
     }
+    stop(Stop::Drawn, || format!("{count} objects, {} items", cleared.items.len()));
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(count, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
