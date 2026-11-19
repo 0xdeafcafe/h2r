@@ -1,6 +1,9 @@
 //! One byte-renormalized rANS state per packet. Collect intervals forward so
 //! the causal encoder and decoder learn in the same order; emit in reverse.
 use super::*;
+#[path = "byte_range.rs"]
+mod byte_range;
+use byte_range::{ByteReader, ByteWriter};
 const SCALE: u32 = 4096;
 const LOW: u32 = 1 << 23;
 const K: usize = 16;
@@ -155,11 +158,11 @@ fn finish(spans: &[Span], out: &mut Vec<u8>) {
     out.splice(at..at, state.to_le_bytes());
 }
 
-struct Tape<'a, E, const SPARSE: bool> {
+struct Tape<'a, E, const SPARSE: bool, const BINARY: bool> {
     engine: E,
     t: &'a mut Tables,
 }
-impl<E: Engine, const SPARSE: bool> Tape<'_, E, SPARSE> {
+impl<E: Engine, const SPARSE: bool, const BINARY: bool> Tape<'_, E, SPARSE, BINARY> {
     #[inline]
     fn uniform(&mut self, bits: u32, want: u64) -> u64 {
         let shift = 12 - bits;
@@ -172,7 +175,7 @@ impl<E: Engine, const SPARSE: bool> Tape<'_, E, SPARSE> {
         u64::from(sym)
     }
 }
-impl<E: Engine, const SPARSE: bool> Symbols for Tape<'_, E, SPARSE> {
+impl<E: Engine, const SPARSE: bool, const BINARY: bool> Symbols for Tape<'_, E, SPARSE, BINARY> {
     const WRITING: bool = E::WRITE;
     const SPARSE: bool = SPARSE;
     #[inline]
@@ -198,6 +201,23 @@ impl<E: Engine, const SPARSE: bool> Symbols for Tape<'_, E, SPARSE> {
     }
     #[inline]
     fn uint(&mut self, ctx: usize, want: u64) -> u64 {
+        if BINARY {
+            let x = want + 1;
+            let bits = x.ilog2();
+            if !self.bit(ctx, bits != 0) {
+                return 0;
+            }
+            let mut k = 1;
+            while self.bit(ctx + k.min(15) as usize, k < bits) {
+                k += 1;
+                assert!(k <= 62);
+            }
+            let mut n = 1;
+            for j in (0..k).rev() {
+                n = n * 2 + u64::from(self.bit(ctx + 16 + j.min(15) as usize, x >> j & 1 != 0));
+            }
+            return n - 1;
+        }
         let d = &mut self.t.ints[ctx >> 5];
         let s = if E::WRITE {
             if want < 8 {
@@ -240,18 +260,45 @@ impl<E: Engine, const SPARSE: bool> Symbols for Tape<'_, E, SPARSE> {
 }
 
 #[derive(Default)]
-pub(super) struct Ans<const CACHE: bool, const SPARSE: bool> {
+pub(super) struct Ans<
+    const CACHE: bool,
+    const SPARSE: bool,
+    const FORWARD: bool = false,
+    const BINARY: bool = false,
+    const PACKED_KEY: bool = false,
+> {
     projection: projection::Projection,
     pub(super) h: History,
     tables: Tables,
     spans: Vec<Span>,
 }
-impl<const CACHE: bool, const SPARSE: bool> Ans<CACHE, SPARSE> {
+impl<
+    const CACHE: bool,
+    const SPARSE: bool,
+    const FORWARD: bool,
+    const BINARY: bool,
+    const PACKED_KEY: bool,
+> Ans<CACHE, SPARSE, FORWARD, BINARY, PACKED_KEY>
+{
     pub(super) fn encode(&mut self, f: &Frame, key: bool) -> Vec<u8> {
         let seq = self.h.seq;
         if key {
             self.h = History::default();
             self.tables = Tables::default();
+        }
+        if PACKED_KEY && key {
+            if CACHE {
+                self.projection.get(f).unwrap();
+            }
+            let record = encode_keyframe(f).unwrap();
+            let canonical = decode_keyframe(&record).unwrap();
+            self.seed_key(&canonical, seq);
+            let mut p = Vec::new();
+            var(&mut p, 2 * seq + 1);
+            p.extend(record);
+            let mut framed = Vec::new();
+            push_record(&mut framed, &p);
+            return framed;
         }
         let dt = f.tick - self.h.tick;
         let raw;
@@ -262,18 +309,27 @@ impl<const CACHE: bool, const SPARSE: bool> Ans<CACHE, SPARSE> {
             (&raw, 0)
         };
         self.h.held_lists = if key { 0 } else { held };
-        self.spans.clear();
-        let mut r = Tape::<_, SPARSE> {
-            engine: Writer(&mut self.spans),
-            t: &mut self.tables,
-        };
-        self.h.write_frame(&mut r, f, src, dt);
-        self.h.tick = f.tick;
-        self.h.seq = seq + 1;
-        let mut payload = Vec::new();
+        let mut payload = Vec::with_capacity(128);
         var(&mut payload, seq * 2 + u64::from(key));
         var(&mut payload, dt);
-        finish(&self.spans, &mut payload);
+        if FORWARD {
+            let mut r = Tape::<_, SPARSE, BINARY> {
+                engine: ByteWriter::new(&mut payload),
+                t: &mut self.tables,
+            };
+            self.h.write_frame(&mut r, f, src, dt);
+            r.engine.finish();
+        } else {
+            self.spans.clear();
+            let mut r = Tape::<_, SPARSE, BINARY> {
+                engine: Writer(&mut self.spans),
+                t: &mut self.tables,
+            };
+            self.h.write_frame(&mut r, f, src, dt);
+            finish(&self.spans, &mut payload);
+        }
+        self.h.tick = f.tick;
+        self.h.seq = seq + 1;
         let mut packet = Vec::new();
         push_record(&mut packet, &payload);
         packet
@@ -290,14 +346,51 @@ impl<const CACHE: bool, const SPARSE: bool> Ans<CACHE, SPARSE> {
         } else {
             assert_eq!(self.h.seq, seq);
         }
+        if PACKED_KEY && tag & 1 != 0 {
+            let f = decode_keyframe(body).unwrap();
+            self.seed_key(&f, seq);
+            return f;
+        }
         let dt = number(&mut body);
-        let mut r = Tape::<_, SPARSE> {
+        if FORWARD {
+            let mut r = Tape::<_, SPARSE, BINARY> {
+                engine: ByteReader::new(body),
+                t: &mut self.tables,
+            };
+            let f = self.h.read_frame(&mut r, dt, seq);
+            r.engine.finished();
+            return f;
+        }
+        let mut r = Tape::<_, SPARSE, BINARY> {
             engine: Reader::new(body),
             t: &mut self.tables,
         };
         let f = self.h.read_frame(&mut r, dt, seq);
         r.engine.finished();
         f
+    }
+    fn seed_key(&mut self, f: &Frame, seq: u64) {
+        // Both ends seed from the decoded v7 key, including its exact grids.
+        struct Seed<const S: bool>;
+        impl<const S: bool> Symbols for Seed<S> {
+            const WRITING: bool = true;
+            const SPARSE: bool = S;
+            fn bit(&mut self, _: usize, v: bool) -> bool {
+                v
+            }
+            fn uint(&mut self, _: usize, v: u64) -> u64 {
+                v
+            }
+            fn literal(&mut self, v: u8) -> u8 {
+                v
+            }
+        }
+        self.h
+            .write_frame(&mut Seed::<SPARSE>, f, &Lists::of(f).unwrap(), 0);
+        self.h.seq = seq + 1;
+        self.h.tick = f.tick;
+        // Raw projection survives a key; a static-list hold on the next
+        // packet must compare with this key's source, not the preceding tick.
     }
     pub(super) fn snapshot(&self) -> Vec<u8> {
         let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());

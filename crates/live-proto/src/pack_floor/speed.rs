@@ -37,6 +37,12 @@ codec!(Connection);
 codec!(ans::Ans<false,false>);
 codec!(ans::Ans<true,false>);
 codec!(ans::Ans<true,true>);
+type ByteSymbols = ans::Ans<true, true, true, false, false>;
+type ByteBits = ans::Ans<true, true, true, true, false>;
+type PackedKey = ans::Ans<true, true, true, false, true>;
+codec!(ByteSymbols);
+codec!(ByteBits);
+codec!(PackedKey);
 fn check<C: Codec>(frames: &[Frame]) {
     let mut tx = C::default();
     let mut rx = C::default();
@@ -62,6 +68,9 @@ pub fn verify() {
         check::<ans::Ans<false, false>>(&scene);
         check::<ans::Ans<true, false>>(&scene);
         check::<ans::Ans<true, true>>(&scene);
+        check::<ByteSymbols>(&scene);
+        check::<ByteBits>(&scene);
+        check::<PackedKey>(&scene);
     }
 }
 fn timed<T>(d: &mut Duration, f: impl FnOnce() -> T) -> T {
@@ -129,6 +138,9 @@ pub fn compare() {
     measure::<ans::Ans<false, false>>(&frames, "symbol rANS");
     measure::<ans::Ans<true, false>>(&frames, "rANS + projection cache");
     measure::<ans::Ans<true, true>>(&frames, "rANS + sparse groups");
+    measure::<ByteSymbols>(&frames, "byte range symbols");
+    measure::<ByteBits>(&frames, "byte range bits");
+    measure::<PackedKey>(&frames, "byte symbols + v7 key");
 }
 
 #[derive(Clone, Copy)]
