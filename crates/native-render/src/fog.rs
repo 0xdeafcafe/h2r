@@ -166,7 +166,8 @@ mod tests {
         item(&mut m, 2, GEOMETRY_BUILD, 7);
         item(&mut m, 3, 0x0005_0000, 2);
         m.w(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX);
-        m.w(RENDER_RECORDS + 0x20 * 2, 37 << 9);
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9);
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12);

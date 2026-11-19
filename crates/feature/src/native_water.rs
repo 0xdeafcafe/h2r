@@ -22,11 +22,10 @@
 //!
 //! The load-side census (which materials have passes in a census layer,
 //! and the engine textures their stages would sample — the scene-copy
-//! and reflection inputs) is boot's glue (`native_water_glue`), printed
-//! when the world loads with the feature on. What draws the water edge
-//! blend natively is a later slice: the wrappers `0x0003ba90` and
-//! `0x0003c3c0` are not traced, and the camo and hologram passes are not
-//! resolved.
+//! and reflection inputs) is a later slice, with the world's load. What
+//! draws the water edge blend natively is a later slice too: the
+//! wrappers `0x0003ba90` and `0x0003c3c0` are not traced, and the camo
+//! and hologram passes are not resolved.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -168,7 +167,7 @@ pub fn tally(mem: &dyn GuestRead, layer: u32) -> Option<Tally> {
 }
 
 /// Views seen per census layer, for [`EVERY`].
-static VIEWS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new);
+static VIEWS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
 /// Lines printed per census layer (the first view's is the census).
 static LINES: AtomicU64 = AtomicU64::new(0);
 
@@ -288,7 +287,8 @@ mod tests {
         item(&mut m, 2, GEOMETRY_BUILD, 7, 1 << 6);
         item(&mut m, 3, 0x0005_0000, 2, 1 << 6);
         m.w(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX);
-        m.w(RENDER_RECORDS + 0x20 * 2, 37 << 9);
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9);
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12);

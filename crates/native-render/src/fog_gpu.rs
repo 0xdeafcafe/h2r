@@ -106,7 +106,7 @@ pub struct FogPass {
 }
 
 /// Why a material's layer 16 stays on the D3D path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FogRefusal {
     /// Its template draws nothing in layer 16 at the first level of detail.
     NoLayer16,
@@ -321,7 +321,7 @@ impl FogSet {
         parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
         programs: HashMap<u16, Vec<FogProgram>>,
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
-        lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
+        lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
         let mut materials = HashMap::new();
         'material: for (material, passes) in programs {
@@ -350,7 +350,7 @@ impl FogSet {
                 let page = match lightmap {
                     Some(k) => pages
                         .entry(k)
-                        .or_insert_with(|| lightmap(k).map(|i| crate::gpu::texture(device, queue, &i, "native fog lightmap")))
+                        .or_insert_with(|| lightmap_image(k).map(|i| crate::gpu::texture(device, queue, &i, "native fog lightmap")))
                         .clone(),
                     None => None,
                 };

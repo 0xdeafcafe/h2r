@@ -8,7 +8,7 @@
 //! path.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use engine::memory::{FlatMemory, GuestMemory};
 use feature::native_fog::{self, Host, NativeFog};
@@ -17,6 +17,10 @@ use feature::{Registry, Switches};
 use native_render::fog::{FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS};
 use native_render::world::Owner;
+
+/// `HOST` and `CLEARED` are process-wide: the tests that touch them run
+/// one at a time.
+static LOCK: Mutex<()> = Mutex::new(());
 
 /// A host that draws one part: cluster 37's part 1 with shader 0x10.
 struct OnePart(Option<Arc<HashMap<(Owner, u8), u16>>>);
@@ -53,7 +57,8 @@ fn scene() -> FlatMemory {
     item(&mut m, 1, GEOMETRY_BUILD, 5);
     item(&mut m, 2, 0x0005_0000, 2);
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX).unwrap();
-    m.set_u32(RENDER_RECORDS + 0x20 * 2, 37 << 9).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 2, 0).unwrap();
+    m.set_u32(RENDER_RECORDS + 0x20 * 2 + 0xc, 37 << 9).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004).unwrap();
     // The layer draw's gate on: the fog mode 3.
     m.set_u32(FOG_MODE, 3).unwrap();
@@ -114,6 +119,7 @@ fn all_parts() -> HashMap<(Owner, u8), u16> {
 
 #[test]
 fn the_hosts_parts_lose_their_bit_and_get_it_back() {
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     install_host(Some(all_parts()));
     let mut m = scene();
     draw(&mut m);
@@ -128,6 +134,7 @@ fn the_hosts_parts_lose_their_bit_and_get_it_back() {
 
 #[test]
 fn nothing_changes_without_a_host_for_another_layer_or_gate_off() {
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     install_host(None);
     let mut m = scene();
     draw(&mut m);
@@ -145,13 +152,14 @@ fn nothing_changes_without_a_host_for_another_layer_or_gate_off() {
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
     // A fog byte draws it (the player chain's).
-    m.set_u32(STENCIL_OFF_FLAGS, 0x0001_0000);
+    m.set_u32(STENCIL_OFF_FLAGS, 0x0001_0000).unwrap();
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 3);
 }
 
 #[test]
 fn another_caller_or_a_part_left_to_d3d_keeps_the_layer() {
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     install_host(Some(all_parts()));
     let mut m = scene();
     native_fog::before_layer(&mut m, 0x0004_0136);

@@ -427,7 +427,11 @@ mod tests {
         let device = [Some(0), Some(3), Some(1.0f32.to_bits()), Some(9.0f32.to_bits()), Some(0), Some(0), Some(0x00ff_ff80)];
         let w = own.resolve(&device).unwrap();
         assert_eq!(w[0], 1, "the pass's own FOGENABLE wins");
-        assert_eq!(w[1..].to_vec(), device[1..].to_vec(), "the rest is the device's");
+        assert_eq!(
+            w[1..].to_vec(),
+            device[1..].iter().map(|w| w.unwrap()).collect::<Vec<_>>(),
+            "the rest is the device's"
+        );
         let none = [None; 7];
         assert_eq!(own.resolve(&none), None, "a slot nothing sets does not resolve");
         assert_eq!(FogWords::default().resolve(&device), Some(device.map(|w| w.unwrap())));
