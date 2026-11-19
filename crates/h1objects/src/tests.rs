@@ -2259,14 +2259,16 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     };
     let b = vec![0u8; WEAP_SIZE + 2 * TRIGGER_SIZE];
     let shake = TagId(0xe123_0045);
+    let (effe, snd) = (FourCC(*b"effe"), FourCC(*b"snd!"));
     let parts = WeaponParts {
         firing_effects: vec![vec![
             FiringParts {
-                effects: [Some(local(3)), None, Some(local(4))],
+                // Halo 1's empty effect may be a sound (the plasma rifle's).
+                effects: [Some((effe, local(3))), None, Some((snd, local(4)))],
                 damage: [Some(shake), None, None],
             },
             FiringParts {
-                effects: [Some(local(5)), None, None],
+                effects: [Some((effe, local(5))), None, None],
                 damage: [None; 3],
             },
         ]],
@@ -2301,6 +2303,16 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     let effects = |e: &Record| FIRING_EFFECT_REFS.map(|p| target(e, p));
     let damage = |e: &Record| FIRING_DAMAGE_REFS.map(|p| target(e, p));
     assert_eq!(effects(&fx[0]), [Some(local(3)), None, Some(local(4))]);
+    let group = |e: &Record, p: &str| match e.at(p) {
+        Some(Val::Ref { group, .. }) => *group,
+        x => panic!("{p}: {x:?}"),
+    };
+    assert_eq!(group(&fx[0], FIRING_EFFECT_REFS[0]), effe.as_u32());
+    assert_eq!(
+        group(&fx[0], FIRING_EFFECT_REFS[2]),
+        snd.as_u32(),
+        "a sound stays a sound"
+    );
     assert_eq!(damage(&fx[0]), [Some(shake), None, None]);
     assert_eq!(effects(&fx[1]), [Some(local(5)), None, None]);
     assert!(

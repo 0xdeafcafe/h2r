@@ -243,7 +243,7 @@ impl Converter<'_> {
                     ));
                 }
                 list.push(arsenal::FiringParts {
-                    effects: f.effects.map(|e| self.weapon_effect(e, &mut rep)),
+                    effects: f.effects.map(|e| self.weapon_slot(e, &mut rep)),
                     damage,
                 });
             }

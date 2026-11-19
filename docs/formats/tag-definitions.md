@@ -1404,7 +1404,9 @@ starts from the definition default, then:
   element, the firing, misfire and empty effects (Halo 1 `+0x24`,
   `+0x34`, `+0x44`) converted with `Converter::effect` (their `snd!`
   parts with `h1sounds`) into `ref_4`, `ref_c`, `ref_14`
-  (`arsenal::FIRING_EFFECT_REFS`). Each magazine's reloading effect
+  (`arsenal::FIRING_EFFECT_REFS`); one Halo 1 names as a bare `snd!`
+  (the plasma rifle's empty effect) is converted as a sound and named
+  as one, which retail's slots also hold. Each magazine's reloading effect
   (Halo 1 `+0x38`) is Halo 1's at magazine `+0x34`. Until version 84
   every barrel took the counterpart's firing effects, so the assault
   rifle fired with the SMG's sound (its counterpart, `TEMPLATES`) and a
@@ -1413,8 +1415,8 @@ starts from the definition default, then:
   83, Blood Gulch, `h2 agent edit get`): each of the eight converted
   hand weapons' `block_e4` elements was datum for datum a retail
   weapon's, and the three converted vehicle guns had none. V
-  (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` only at
-  `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
+  (`weapon_sounds_disc`): Halo 1 firing effects hold `effe` or `snd!`
+  only at `+0x24/+0x34/+0x44` and `jpt!` only at `+0x54/+0x64/+0x74` on every
   map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
   `ref_1c..ref_2c` `jpt!`; on Blood Gulch every weapon's built firing
   and reloading effects are Halo 1's by path and play Halo 1's sounds.

@@ -732,7 +732,7 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
-        let (_, bytes, _) = self.assemble(base, mopp)?;
+        let (_, bytes, _) = self.assemble(base, mopp, true)?;
         let manifest = self.manifest(&bytes);
         Ok(Converted {
             name: map_name(&self.h1_name),
@@ -743,16 +743,22 @@ impl Prepared {
 
     /// The pinned map: the set it was built from (the base decomposed,
     /// with everything converted added), its bytes, and the converted
-    /// structure's BSP section.
+    /// structure's BSP section. `check_tag_memory`: hold it to the
+    /// engine's tag memory ([`TagSet::check_tag_memory`]), as a map that
+    /// ships must be. A pinned map keeps every base tag, reached or not,
+    /// with the conversion's added after them: the fresh build reads it
+    /// back and writes only what is reached, and checks that.
     pub(crate) fn assemble<R: Read + Seek>(
         &self,
         base: &mut Map<R>,
         mopp: &[u8],
+        check_tag_memory: bool,
     ) -> Result<(TagSet, Vec<u8>, usize)> {
         let mut patched = Cursor::new(Vec::new());
         scenario_edit::save::write_patched(base, &self.scenario, &mut patched)?;
         let mut patched = Map::from_reader(Cursor::new(patched.into_inner()))?;
         let mut set = TagSet::from_map(&mut patched)?;
+        set.check_tag_memory = check_tag_memory;
         // The vehicle collections the placements build first (their
         // datums were picked from the first added slot), then the
         // converted objects.

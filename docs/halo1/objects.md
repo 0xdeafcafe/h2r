@@ -102,10 +102,12 @@ effects (`0x84`). V1 (`94` is a `proj` on every trigger with one), S
 otherwise.
 
 **Firing effect (`0x84`, `h1::FiringEffect`):** `00`/`02` i16 shot count
-lower and upper, `24` firing, `34` misfire, `44` empty effect (`effe`),
-`54` firing, `64` misfire, `74` empty damage (`jpt!`). V (every map,
+lower and upper, `24` firing, `34` misfire, `44` empty effect (`effe`,
+or a bare `snd!`: the plasma rifle's empty effect on a10 is one), `54`
+firing, `64` misfire, `74` empty damage (`jpt!`). V (every map,
 `weapon_sounds_disc::halo1_firing_effect_layout`: no other reference in
-an element), names S. A shot plays the firing effect, whose `snd!` parts
+an element), names S. A `snd!` converts as a sound and stays one in
+Halo 2's slot, which takes either group (retail names both there). A shot plays the firing effect, whose `snd!` parts
 are the weapon's fire sound; the converted weapon names Halo 1's since
 converter version 84 (docs/formats/tag-definitions.md, "What a shot and
 a reload play").

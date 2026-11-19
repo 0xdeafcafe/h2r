@@ -8,13 +8,15 @@
 //!
 //! - `halo1_firing_effect_layout`: every trigger firing effect on every
 //!   Halo 1 map holds references only at `h1::FIRING_EFFECT_EFFECTS`
-//!   (`effe`) and `h1::FIRING_EFFECT_DAMAGE` (`jpt!`).
+//!   (`effe`, or `snd!`: the plasma rifle's empty effect) and
+//!   `h1::FIRING_EFFECT_DAMAGE` (`jpt!`).
 //! - `halo2_firing_effect_groups`: on Coagulation every retail barrel firing
 //!   effect names `effe` or `snd!` in `arsenal::FIRING_EFFECT_REFS` and
 //!   `jpt!` in `arsenal::FIRING_DAMAGE_REFS`; magazine `+0x34` names `effe`.
 //! - `every_weapon_fires_its_halo1_sounds`: Blood Gulch (`$H1_MAPS`, comma
 //!   separated, picks other multiplayer maps) built fresh in the Halo 1
-//!   sandbox, as `h2 serve` plays it. Every Halo 1 weapon in the built map:
+//!   sandbox, as `h2 serve` plays it, within the engine's tag memory (the
+//!   numbers printed). Every Halo 1 weapon in the built map:
 //!   each barrel's firing effects are Halo 1's (by path), and every sound
 //!   part of each is the Halo 1 sound its Halo 1 effect plays (by path) and
 //!   is in the map; the same for the magazines' reloading effects. Before
@@ -113,10 +115,11 @@ fn block<'r>(r: &'r Record, path: &str) -> &'r [Record] {
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO)"]
 fn halo1_firing_effect_layout() {
-    let (mut elements, mut effects, mut damage) = (0, 0, 0);
+    let (mut elements, mut effects, mut sounds, mut damage) = (0, 0, 0, 0);
     for (name, h1) in h1_maps() {
         let effe = Group::new(b"effe");
         let jpt = Group::new(b"jpt!");
+        let snd = Group::new(b"snd!");
         for t in h1.tags() {
             if t.group != Group::new(b"weap") {
                 continue;
@@ -130,12 +133,17 @@ fn halo1_firing_effect_layout() {
                     elements += 1;
                     let found = h1objects::refs::scan(&h1, e);
                     for f in &found {
-                        let ok = (FIRING_EFFECT_EFFECTS.contains(&f.offset) && f.group == effe)
+                        // An effect slot names an effect or a bare sound
+                        // (the plasma rifle's empty effect is a `snd!`).
+                        let ok = (FIRING_EFFECT_EFFECTS.contains(&f.offset)
+                            && (f.group == effe || f.group == snd))
                             || (FIRING_EFFECT_DAMAGE.contains(&f.offset) && f.group == jpt);
                         assert!(ok, "{name} {}: {} at {:#x}", t.name, f.group, f.offset);
                         if f.tag.is_some() {
                             if f.group == effe {
                                 effects += 1;
+                            } else if f.group == snd {
+                                sounds += 1;
                             } else {
                                 damage += 1;
                             }
@@ -145,7 +153,9 @@ fn halo1_firing_effect_layout() {
             }
         }
     }
-    println!("{elements} firing effects: {effects} effects and {damage} damage named");
+    println!(
+        "{elements} firing effects: {effects} effects, {sounds} sounds and {damage} damage named"
+    );
     assert!(elements > 0 && effects > 0);
 }
 
@@ -238,6 +248,19 @@ fn every_weapon_fires_its_halo1_sounds() {
         .unwrap_or_else(|e| panic!("{name}: {e}"));
         let mopp = structure_mopp(&p.collision).unwrap();
         let fresh = p.build_fresh(&mut base, &mopp).unwrap();
+        // The tag memory the map takes, against the engine's (the build
+        // refuses a map over it), and the pinned map it was read from.
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let budget = map::writer::max_metadata_size(map::CacheType::Multiplayer).unwrap();
+        let memory = word(&fresh.bytes, 0x1c);
+        println!(
+            "{name}: metadata {:#x}, tag memory {memory:#x} of {budget:#x} ({:#x} free); pinned map read from: metadata {:#x}, tag memory {:#x}",
+            word(&fresh.bytes, 0x18),
+            budget.saturating_sub(memory),
+            fresh.report.assembled.0,
+            fresh.report.assembled.1,
+        );
+        assert!(memory <= budget, "{name}: over the engine's tag memory");
         let built = Map::from_reader(Cursor::new(fresh.bytes.clone())).unwrap();
         let index: Vec<(TagId, FourCC, String)> = built
             .tags()

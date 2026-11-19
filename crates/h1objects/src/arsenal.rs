@@ -330,12 +330,16 @@ pub struct WeaponParts {
 /// vehicle guns) had no firing effect and fired silent.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FiringParts {
-    pub effects: [Option<TagId>; 3],
+    /// Each with its group: Halo 1 names a `snd!` as well as an `effe`
+    /// here (the plasma rifle's empty effect), and the Halo 2 slot takes
+    /// either ([`FIRING_EFFECT_REFS`]).
+    pub effects: [Option<(FourCC, TagId)>; 3],
     pub damage: [Option<TagId>; 3],
 }
 
 /// `barrels.block_e4` references, in Halo 1's order: firing, misfire and
-/// empty effect (`effe`; retail Halo 2 also names a `snd!` there), then
+/// empty effect (`effe` or `snd!`: retail Halo 2 names both there, and so
+/// does Halo 1's element), then
 /// firing, misfire and empty damage (`jpt!`). V: on every retail weapon
 /// the first three hold `effe` or `snd!` and the last three `jpt!`
 /// (`weapon_sounds_disc`); names S, by Halo 1's order.
@@ -646,8 +650,9 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
         for f in parts.firing_effects.get(i).into_iter().flatten() {
             let mut x = defs::default_record(fd);
             words(&mut x, role.element("barrels.block_e4"))?;
-            for (path, id) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
-                set(&mut x, path, Val::tag(FourCC(*b"effe"), id.unwrap_or(TagId::NULL)))?;
+            for (path, fx) in FIRING_EFFECT_REFS.iter().zip(f.effects) {
+                let (g, id) = fx.unwrap_or((FourCC(*b"effe"), TagId::NULL));
+                set(&mut x, path, Val::tag(g, id))?;
             }
             for (path, id) in FIRING_DAMAGE_REFS.iter().zip(f.damage) {
                 set(&mut x, path, Val::tag(FourCC(*b"jpt!"), id.unwrap_or(TagId::NULL)))?;
