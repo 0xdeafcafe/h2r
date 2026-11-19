@@ -236,6 +236,11 @@ pub struct BuildStats {
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub vertices: Vec<WorldVertex>,
+    /// What a material program reads, index for index with `vertices`:
+    /// each section's vertices as its streams hold them, unplaced (a
+    /// placement's go through the program's rigid classification with its
+    /// rows, [`World::rows`]).
+    pub program_vertices: Vec<WorldVertex>,
     pub indices: Vec<u32>,
     /// Sorted by batch.
     pub draws: Vec<WorldDraw>,
@@ -245,12 +250,41 @@ pub struct World {
     pub transparents: Vec<TransparentDraw>,
     pub bounds: Option<Aabb>,
     pub stats: BuildStats,
+    /// Each placement's model rows ([`model_rows`]), sorted by placement.
+    pub placements: Vec<(u32, ModelRows)>,
+}
+
+/// The three model rows `c[50..52]` (hardware numbering) the structure
+/// draw uploads for a placement.
+pub type ModelRows = [[f32; 4]; 3];
+
+/// The bytes of a placement (`sbsp+0x144`, `0x58` each) [`model_rows`]
+/// reads: through the position at `+0x28`.
+pub const PLACEMENT_ROW_BYTES: usize = 0x34;
+
+/// The model rows the structure draw uploads for the placement whose tag
+/// element is `element` (`0x0004d830`, the render record's `+0x1c`
+/// pointing at it): `c[50+k]` is component `k` of forward (`+4`), left
+/// (`+0x10`), up (`+0x1c`) and the position (`+0x28`), copied bit for bit
+/// (`movss` loads and stores), the scale at `+0` not applied. `None` when
+/// `element` is short.
+pub fn model_rows(element: &[u8]) -> Option<ModelRows> {
+    let f = |o: usize| -> Option<f32> { Some(f32::from_bits(u32::from_le_bytes(element.get(o..o + 4)?.try_into().ok()?))) };
+    let mut rows = [[0.0; 4]; 3];
+    for (k, row) in rows.iter_mut().enumerate() {
+        for (c, at) in [4, 0x10, 0x1c, 0x28].into_iter().enumerate() {
+            row[c] = f(at + 4 * k)?;
+        }
+    }
+    Some(rows)
 }
 
 /// Collects sections, then sorts their draws into batches.
 #[derive(Default)]
 pub struct WorldBuilder {
     vertices: Vec<WorldVertex>,
+    program_vertices: Vec<WorldVertex>,
+    placements: Vec<(u32, ModelRows)>,
     indices: Vec<u32>,
     draws: Vec<WorldDraw>,
     transparents: Vec<TransparentDraw>,
@@ -281,6 +315,16 @@ impl WorldBuilder {
         for i in 0..n {
             let normal = section.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
             let turn = |v: &Vec<[f32; 3]>| v.get(i).map_or([0.0; 3], |&v| place.normal(v));
+            let own = |v: &Vec<[f32; 3]>| v.get(i).copied().unwrap_or([0.0; 3]);
+            self.program_vertices.push(WorldVertex {
+                position: section.positions[i],
+                uv: section.uvs.get(i).copied().unwrap_or([0.0; 2]),
+                lightmap_uv: if lit { section.lightmap_uvs[i] } else { [0.0; 2] },
+                normal,
+                binormal: own(&section.binormals),
+                tangent: own(&section.tangents),
+                lighting: own(&section.lighting),
+            });
             self.vertices.push(WorldVertex {
                 // Unplaced geometry (a cluster) keeps its positions' bits:
                 // the D3D path feeds them to the same program, and the
@@ -358,6 +402,12 @@ impl WorldBuilder {
         }
     }
 
+    /// Placement `instance`'s model rows, for a material program's rigid
+    /// classification ([`World::rows`]).
+    pub fn place_rows(&mut self, instance: u32, rows: ModelRows) {
+        self.placements.push((instance, rows));
+    }
+
     /// Sorts the draws by (material, lightmap, owner) and groups them.
     pub fn finish(mut self) -> World {
         self.draws
@@ -381,8 +431,12 @@ impl WorldBuilder {
             bounds.add(d.bounds.max);
         }
         self.transparents.sort_by_key(|t| (t.owner, t.part));
+        self.placements.sort_by_key(|p| p.0);
+        self.placements.dedup_by_key(|p| p.0);
         World {
             vertices: self.vertices,
+            program_vertices: self.program_vertices,
+            placements: self.placements,
             indices: self.indices,
             draws: self.draws,
             batches,
@@ -406,6 +460,14 @@ impl World {
         keys.sort();
         keys.dedup();
         keys
+    }
+
+    /// Placement `instance`'s model rows, when the load gave them.
+    pub fn rows(&self, instance: u32) -> Option<&ModelRows> {
+        self.placements
+            .binary_search_by_key(&instance, |p| p.0)
+            .ok()
+            .map(|i| &self.placements[i].1)
     }
 
     /// The transparent part `part` of `owner`'s section.
@@ -552,6 +614,74 @@ mod tests {
         assert_eq!(w.vertices[0].normal, [0.0, 0.0, 1.0]);
         assert_eq!(w.draws[0].bounds, Aabb { min: [-2.0, 0.0, 10.0], max: [0.0, 2.0, 10.0] });
         assert_eq!(w.draws[0].owner, Owner::Instance(7));
+    }
+
+    #[test]
+    fn a_program_reads_every_section_unplaced() {
+        // A placement's vertices go through the rigid classification,
+        // which places them on the GPU with its rows: the program's copy
+        // holds the definition's streams as they are, while the placed
+        // copy (bounds, culling, stage 1) is in world space.
+        let mut b = WorldBuilder::new();
+        let place = Placement {
+            scale: 2.0,
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            position: [0.0, 0.0, 10.0],
+        };
+        let mut s = quad(0, false, true);
+        s.positions[3] = [-0.0, f32::from_bits(1), 1.0e30];
+        s.normals[1] = [1.0, 0.0, 0.0];
+        s.lighting = vec![[0.25, -0.5, 1.0]; 4];
+        b.add_section(Owner::Cluster(0), &quad(1, false, false), &Placement::IDENTITY, None);
+        b.add_section(Owner::Instance(7), &s, &place, PAGE);
+        b.place_rows(7, [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]]);
+        let w = b.finish();
+        assert_eq!(w.program_vertices.len(), w.vertices.len());
+        let bits = |p: [f32; 3]| p.map(f32::to_bits);
+        for i in 0..4 {
+            let v = w.program_vertices[4 + i];
+            assert_eq!(bits(v.position), bits(s.positions[i]), "vertex {i}");
+            assert_eq!(v.normal, s.normals[i]);
+            assert_eq!(v.lighting, s.lighting[i]);
+            assert_eq!(v.lightmap_uv, [0.5; 2]);
+        }
+        assert_eq!(w.vertices[5].position, [0.0, 2.0, 10.0], "the placed copy");
+        assert_eq!(w.vertices[5].normal, [0.0, 1.0, 0.0]);
+        assert_eq!(w.program_vertices[1], w.vertices[1], "a cluster's copies agree");
+        assert_eq!(w.rows(7).map(|r| r[1][3]), Some(8.0));
+        assert_eq!(w.rows(0), None);
+    }
+
+    #[test]
+    fn model_rows_are_the_basis_columns_and_the_position() {
+        // `0x0004d830`: c[50] = (forward.x, left.x, up.x, position.x), and
+        // so on; the scale (+0) is not applied, and the bits are copied.
+        let mut e = vec![0u8; 0x58];
+        let words: [u32; 13] = [
+            2.0f32.to_bits(),
+            1.0f32.to_bits(),
+            0.5f32.to_bits(),
+            0x7fc0_1234,
+            (-0.0f32).to_bits(),
+            3.0f32.to_bits(),
+            4.0f32.to_bits(),
+            5.0f32.to_bits(),
+            6.0f32.to_bits(),
+            7.0f32.to_bits(),
+            100.0f32.to_bits(),
+            f32::INFINITY.to_bits(),
+            1,
+        ];
+        for (i, w) in words.iter().enumerate() {
+            e[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        let rows = model_rows(&e).unwrap();
+        let bits = rows.map(|r| r.map(f32::to_bits));
+        assert_eq!(bits[0], [words[1], words[4], words[7], words[10]]);
+        assert_eq!(bits[1], [words[2], words[5], words[8], words[11]]);
+        assert_eq!(bits[2], [words[3], words[6], words[9], words[12]]);
+        assert_eq!(model_rows(&e[..PLACEMENT_ROW_BYTES]).map(|r| r.map(|r| r.map(f32::to_bits))), Some(bits));
+        assert_eq!(model_rows(&e[..PLACEMENT_ROW_BYTES - 1]), None);
     }
 
     #[test]

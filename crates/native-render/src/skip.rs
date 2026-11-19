@@ -22,6 +22,15 @@
 //!   each); set, an instanced-geometry placement (`+0xc` bits 18..28, the
 //!   placements at `+0x144`, `0x58` each); then the argument's low byte
 //!   is the index into that section's parts (`[section+4] + 0x48·part`).
+//! - The geometry draw `0x0004d0b0` switches the stencil around an item in
+//!   layers 1 and 3: before it (`0x0004d640`), with either flag byte
+//!   `0x00485a75`, `0x00485a76` set, mode 0 (stencil off); else, when the
+//!   render record's `+0` has bit 14, mode 2 (`ALWAYS`, reference `0xff`,
+//!   `REPLACE` on pass); after it (`0x0004d720`), on either condition,
+//!   mode 1 (the same with reference 0). Modes by `0x00015370`'s table at
+//!   `0x00015658`. Bit 14 is the item's visibility flag `0x200` moved up
+//!   (`0x001332f0`). An item with neither leaves the stencil as the layer
+//!   found it.
 
 use crate::camera::{GuestRead, GuestWrite};
 use crate::world::Owner;
@@ -37,6 +46,15 @@ pub const ITEM_SIZE: u32 = 0x18;
 pub const LIGHTMAP_LAYER: u32 = 3;
 /// Items walked at most (the list's capacity is far below).
 const MAX_ITEMS: u32 = 1 << 16;
+/// The geometry draw (an item's `+4`) that switches the stencil.
+pub const GEOMETRY_DRAW: u32 = 0x0004_d0b0;
+/// The render record's `+0` bit that marks an item's pixels in the
+/// stencil (mode 2).
+pub const STENCIL_MARK: u32 = 1 << 14;
+/// The word holding the two flag bytes `0x00485a75` and `0x00485a76` (its
+/// bytes 1 and 2): either set, layers 1 and 3 draw their items with the
+/// stencil off.
+pub const STENCIL_OFF_FLAGS: u32 = 0x0048_5a74;
 
 /// Items whose layer bit was cleared, to set back after the layer draw.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -145,6 +163,45 @@ fn clear_items(
     Some(out)
 }
 
+/// Whether `layer`'s draw changes the stencil state between its items
+/// (the module notes): layer 1 or 3, and either flag byte set or an item
+/// in the layer drawn by the geometry draw (built by it, or drawn by it)
+/// whose render record has [`STENCIL_MARK`]. Otherwise every item draws
+/// with the stencil state the layer starts with. `None` when something it
+/// reads does not.
+pub fn stencil_switches(mem: &dyn GuestRead, layer: u32) -> Option<bool> {
+    if layer != 1 && layer != 3 {
+        return Some(false);
+    }
+    if mem.read_u32(STENCIL_OFF_FLAGS)? & 0x00ff_ff00 != 0 {
+        return Some(true);
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return Some(false);
+    }
+    let count = mem.read_u32(list + 4)?;
+    let first = mem.read_u32(list + 0xc)?;
+    let items = mem.read_u32(list + 0x14)?;
+    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+        let item = items + ITEM_SIZE * i;
+        if mem.read_u32(item + 0x10)? & (1 << layer) == 0 {
+            continue;
+        }
+        if mem.read_u32(item)? != GEOMETRY_BUILD && mem.read_u32(item + 4)? != GEOMETRY_DRAW {
+            continue;
+        }
+        let record = (mem.read_u32(item + 0xc)? as i32 >> 8) as u16 as i16;
+        if record < 0 {
+            continue;
+        }
+        if mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32)? & STENCIL_MARK != 0 {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 /// Sets the bits [`clear_structure`] cleared back.
 pub fn restore(mem: &mut dyn GuestWrite, cleared: &Cleared) {
     let bit = 1u32 << cleared.layer;
@@ -191,6 +248,34 @@ mod tests {
         m.w(RENDER_RECORDS + 0x20 * 5 + 4, 0xe1a3_0004);
         m.w(RENDER_RECORDS + 0x20 * 7 + 4, u32::MAX);
         m
+    }
+
+    #[test]
+    fn a_marked_record_or_a_flag_switches_the_stencil_in_layers_1_and_3() {
+        let mut m = scene();
+        m.w(STENCIL_OFF_FLAGS, 0x1200_0011);
+        for record in [2, 5, 7] {
+            m.w(RENDER_RECORDS + 0x20 * record, 0x1008 | 0x8000);
+        }
+        assert_eq!(stencil_switches(&m, 3), Some(false), "no mark, no flag (the bytes around them do not count)");
+        assert_eq!(stencil_switches(&m, 5), Some(false), "another layer");
+        // Record 7's item is in layer 1 only: its mark counts there.
+        m.w(RENDER_RECORDS + 0x20 * 7, STENCIL_MARK);
+        assert_eq!(stencil_switches(&m, 3), Some(false));
+        assert_eq!(stencil_switches(&m, 1), Some(true));
+        // An object's item (record 5) in layer 3 is drawn by the same draw.
+        m.w(RENDER_RECORDS + 0x20 * 5, STENCIL_MARK | 1);
+        assert_eq!(stencil_switches(&m, 3), Some(true));
+        m.w(RENDER_RECORDS + 0x20 * 5, 0);
+        assert_eq!(stencil_switches(&m, 3), Some(false));
+        for flag in [0x0000_0100, 0x0001_0000] {
+            m.w(STENCIL_OFF_FLAGS, flag);
+            assert_eq!(stencil_switches(&m, 3), Some(true), "flag {flag:#x}");
+        }
+        // Unreadable: the caller cannot say.
+        let mut m = scene();
+        m.w(STENCIL_OFF_FLAGS, 0);
+        assert_eq!(stencil_switches(&m, 3), None, "the records' first words are not there");
     }
 
     fn mask(m: &Mem, i: u32) -> u32 {

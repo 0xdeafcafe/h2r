@@ -1743,6 +1743,41 @@ impl<B: Backend> Device<B> {
         self.backend.supports_external_pass()
     }
 
+    /// Render-state slot `slot` (guest numbering) as the setters stored it
+    /// in the guest's array: the state a draw recorded now would take.
+    /// `None` past the slots or when it does not read. Read-only, for a
+    /// native pass standing in for the next draws.
+    pub fn render_state(&self, mem: &dyn GuestMemory, slot: u32) -> Option<u32> {
+        if slot as usize >= RENDER_STATE_SLOTS {
+            return None;
+        }
+        mem.read_u32(self.cfg.layout.render_state_slot(slot)).ok()
+    }
+
+    /// The stencil state a draw recorded now would take: the guest's
+    /// render-state array through the build's slot table, decoded as
+    /// draws decode it. `None` when a slot does not read or holds a value
+    /// outside its enum.
+    pub fn stencil_state(&self, mem: &dyn GuestMemory) -> Option<gfx::state::StencilState> {
+        use gfx::state::RenderStateType as R;
+        let table = RenderStateTable::default();
+        let mut rs = gfx::state::RenderState::default();
+        for t in [
+            R::StencilEnable,
+            R::StencilFunc,
+            R::StencilRef,
+            R::StencilMask,
+            R::StencilWriteMask,
+            R::StencilFail,
+            R::StencilZFail,
+            R::StencilPass,
+        ] {
+            let guest = table.canonical_to_guest(t.index())?;
+            rs.set_raw(t, self.render_state(mem, guest)?).ok()?;
+        }
+        Some(rs.stencil)
+    }
+
     /// The `A8R8G8B8` entries of the palette bound at `stage` now
     /// (`SetPalette`), as the D3D path samples a P8 texture there: `None`
     /// when none is bound or it does not read. Read-only, for a native

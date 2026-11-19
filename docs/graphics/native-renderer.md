@@ -150,11 +150,27 @@ is render state only; the simulation never reads it, and co-op lockstep
 hashes nothing of it. The native renderer itself never writes guest
 memory.
 
-The structure draw also sets stencil mode 1 in layers 1 and 3
-(`0x0004d720` -> `0x00015370`), and mode 2 for sections with flag `0x4000`
-([e3-lighting.md](e3-lighting.md)). What reads those marks is not traced;
-the native pass writes the same stencil value as a first approximation
-(S), and the A/B shows whether anything depends on it.
+The structure draw also switches the stencil around an item in layers 1
+and 3 (`0x0004d0b0`; modes by `0x00015370`'s table at `0x00015658`):
+
+- before the item (`0x0004d640`): either flag byte `0x00485a75`,
+  `0x00485a76` set, mode 0 (stencil off); else, the render record's `+0`
+  bit 14, mode 2 (`ALWAYS`, reference `0xff`, `REPLACE` on pass, masks
+  `0xff`). Bit 14 is the item's visibility flag `0x200` moved up
+  (`0x001332f0`), the same for clusters and placements;
+- after it (`0x0004d720`), on either condition, mode 1 (the same with
+  reference 0).
+
+An item with neither draws with the stencil as the layer found it. So
+the native pass draws only views where no item in layer 3 switches it
+(`skip::stencil_switches`, checked before the host is asked: the feature
+counts the rest, `native_world::stencil_views`, and the D3D path draws
+them), and then tests and writes the stencil the device holds when it is
+asked (`Device::stencil_state`, translated as the D3D path's pipeline
+translates it, `gpu::PassStencil`): after an earlier marked item that is
+mode 1, reference 0 written where the world draws. What reads the marks
+later is not traced. The transparents and objects still draw without the
+stencil (S).
 
 ### Where the native pass goes, and depth
 
@@ -205,14 +221,24 @@ native pass must match, per part:
   `c[170..171]` and places it with `c[50..52]`; `0x0004d830` uploads
   those rows from the matrix at render record `+0x1c`, which for a
   placement is the placement's tag element (`[sbsp+0x144] + 0x58·i`):
-  forward, left and up by column and the position, the scale at `+0`
-  not applied. The native world places them on the CPU
-  (`Placement::point`, another order of operations), so its depth there
-  is not the D3D path's, and they stay on the D3D path
-  (`native_world_glue::drawn_natively`; the load says how many parts).
-  Drawing them natively means the rigid program with those rows per
-  placement. The lights take only materials without placements, since
-  their native passes would meet the D3D depth there.
+  forward, left and up by column and the position, copied bit for bit,
+  the scale at `+0` not applied. The native pass does the same: the
+  load reads each placement's rows from its tag element
+  (`world::model_rows`, `World::rows`), the material's pass is compiled
+  with classification 1 as well (`look::rigid_program`,
+  `program::compile_rigid`, which requires that it read `c[50..52]`;
+  `program::rigid_fit`), and each placement's parts draw with it from
+  the definition's vertices as their streams hold them
+  (`World::program_vertices`), the placement's uniforms at its slot's
+  dynamic offset in one buffer per material (`program::rigid_vertex`,
+  the frame's view then the rows). Within a batch the draws sort by
+  owner, so the clusters draw as one run and each placement as another.
+  `tests/model_rows_differential.rs` runs the lifted `0x0004d830` on
+  seeded placements and checks the floats it hands the constant upload
+  `0x003f7330` (at `c[50]`, twelve) equal the port's, bit for bit. A
+  material without a rigid program (or whose placements lack a stream
+  it reads) keeps its placements on the D3D path, by reason in the
+  load's log; the lights take only materials with none left there.
 
 ### Match the look
 
@@ -403,8 +429,9 @@ surfaces only (the D3D ones are the game's own):
   anisotropic; mip chains);
 - **cut-out foliage or grates filled in or missing**: the pass's alpha
   test (03a's alpha-tested world passes pass below 255);
-- **stencil-driven effects** after layer 3 (the structure draw sets
-  stencil in layer 3, the native pass does not; S).
+- **stencil-driven effects** after layer 3: the native pass writes the
+  device's stencil as the layer starts, and leaves views where an item
+  switches it to the D3D path (S: what reads the marks is not traced).
 
 ### Next: matching the look
 
@@ -446,8 +473,8 @@ and these constants (hardware numbering, D3D register + 96):
 | `c[10]`, `c[11]` | the viewport scale and offset (`oPos` fix-up) | per view | the device's values |
 | `c[12..17]` | six registers in one block | `0x00025c70` | the device's values |
 | `c[18..20]` | stage 0..2 texture-coordinate scale (xy) and offset (zw) | the instance (`0x00018e80`) | `tags::material`'s instance constants |
-| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; the instance's matrix for instanced geometry |
-| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP, so the default upload (`0x0001cf29`, scale 1, offset 0) | `(1, 1, 0, 0)`: BSP vertices are uncompressed |
+| `c[50..52]` | model transform rows | `0x0004d830` from the render record's matrix, skipped for clusters (`[record+8] == -1`) | identity for clusters; for a placement (rigid program) its rows per draw, `world::model_rows` |
+| `c[170..172]` | position and texcoord decompression (scale, offset) | `0x0001cdd0`; `0x0004d7c0` passes no compression for the BSP (record `+4` is `-1`), so the default upload (`0x0001cf29`, scale 1, offset 0) | `c[170]` all 1, `c[171]` 0, `c[172]` `(1, 1, 0, 0)`: BSP vertices are uncompressed |
 
 Where `v5` and `v6` come from depends on the render record
 (`0x004ba138 + 0x20·i`). `0x0002cbf0` packs its `+0xc` as bits 0..3 an
@@ -628,8 +655,7 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
    - Colour: the D3D path and the native pass both sample `Rgba8Unorm`
      (or compressed unorm) textures and write the game's own target, with
      no sRGB view on either side, so there is no gamma step to match.
-   - Left (S): the stencil the structure draw sets in layer 3; the
-     inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
+   - Left (S): the inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
      not resident starts lower (a smaller image, the same coordinates).
 
    Of 03a's scenario shaders with a layer 3, about a third sample the

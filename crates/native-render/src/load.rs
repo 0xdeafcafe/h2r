@@ -10,7 +10,7 @@ use tags::geometry::{RawSource, Section, TagView};
 use tags::lighting::{VertexLighting, vertex_lighting};
 use tags::structure::{Lightmap, LightmapGroup, LightmapRenderInfo, StructureRender, load_bucket};
 
-use crate::world::{LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
+use crate::world::{self, LightmapKey, Owner, PartInput, Placement, SectionInput, World, WorldBuilder};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -199,6 +199,10 @@ pub fn load_world<R: Read + Seek>(
             position: inst.position,
         };
         b.add_section(Owner::Instance(ii as u32), def, &place, key(instances.get(ii)));
+        // What the structure draw uploads for it, from its tag element.
+        if let Some(rows) = world::model_rows(&inst.raw) {
+            b.place_rows(ii as u32, rows);
+        }
     }
     Ok(LoadedWorld {
         bsp: bsp_id,
