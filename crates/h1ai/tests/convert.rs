@@ -343,10 +343,14 @@ fn named_platoons_become_child_squad_groups() {
         Platoon {
             name: "lz_toon".into(),
             flags: 0,
+            change: h1ai::h1::PlatoonTrigger::DISABLED,
+            maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
         },
         Platoon {
             name: "unnamed_toon".into(),
             flags: 0,
+            change: h1ai::h1::PlatoonTrigger::DISABLED,
+            maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
         },
     ];
     // elites and grunts in the named platoon, empty squad left in the
@@ -389,6 +393,8 @@ fn scripted_platoon_controls_follow_source_indices_and_round_trip() {
     encounter.platoons.push(h1ai::h1::Platoon {
         name: "front".into(),
         flags: 0,
+        change: h1ai::h1::PlatoonTrigger::DISABLED,
+        maneuver: h1ai::h1::PlatoonTrigger::DISABLED,
     });
     encounter.squads[0].platoon = 0;
     encounter.squads[0].groups[3] = 1;
@@ -466,6 +472,70 @@ fn scripted_platoon_controls_follow_source_indices_and_round_trip() {
     assert_eq!(order_for(leader, 1).flags, 0);
     assert_eq!(order_for(stop, 0).flags, 0);
     assert!(back.check_indices().is_empty());
+}
+
+#[test]
+fn automatic_platoon_rules_retain_routes_and_use_the_selected_platoons_health() {
+    use h1ai::{
+        control::{Trigger, maneuver_targets, prepare},
+        h1::{Platoon, PlatoonTrigger},
+    };
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.platoons = vec![
+        Platoon {
+            name: "front".into(),
+            flags: 4,
+            change: PlatoonTrigger {
+                condition: 2,
+                subject: 1,
+            },
+            maneuver: PlatoonTrigger {
+                condition: 6,
+                subject: -1,
+            },
+        },
+        Platoon {
+            name: "rear".into(),
+            flags: 0,
+            change: PlatoonTrigger::DISABLED,
+            maneuver: PlatoonTrigger::DISABLED,
+        },
+    ];
+    encounter.squads[0].platoon = 0;
+    encounter.squads[0].groups[3] = 1 << 2;
+    encounter.squads[0].maneuver_to = 2;
+    encounter.squads[1].platoon = 1;
+    assert!(maneuver_targets(&source, &[]).contains("first/empty"));
+
+    let opts = Options::default();
+    let mut plan = convert(&source, &opts);
+    let control = prepare(&source, &mut plan, &opts, &[]);
+    let [rule] = control.platoon_rules.as_slice() else {
+        panic!("one platoon has automatic rules");
+    };
+    assert_eq!(rule.members, [0]);
+    assert_eq!(rule.routes, [(0, 2)]);
+    assert_eq!(
+        rule.change,
+        Some(Trigger {
+            condition: 2,
+            squads: vec![1]
+        })
+    );
+    assert_eq!(
+        rule.maneuver,
+        Some(Trigger {
+            condition: 6,
+            squads: vec![0, 1, 2]
+        })
+    );
+
+    let (back, _) = build_and_read(&plan);
+    assert!(back.squads[2].initial_order >= 0);
+    let initial = &back.orders[back.squads[0].initial_order as usize];
+    assert_eq!(initial.primary_areas[0].area, 1);
+    assert_ne!(rule.orders[0].1, back.squads[0].initial_order as u16);
 }
 
 #[test]

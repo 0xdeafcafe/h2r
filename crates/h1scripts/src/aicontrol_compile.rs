@@ -2,7 +2,8 @@
 
 use h1ai::control::{Action, Control, Platoon};
 use hs::h1_ai_slots::{
-    CONTROL, CONTROL_TOKEN, ManeuverEdge, Operation as RuntimeOperation, Registry,
+    CONTROL, CONTROL_TOKEN, ManeuverEdge, Operation as RuntimeOperation, PlatoonRule,
+    PlatoonTrigger, Registry, encode_words,
 };
 use hs::{Datum, Node};
 
@@ -19,27 +20,40 @@ impl Compiler<'_> {
             return Ok(());
         };
         for &platoon in &control.switches {
-            let index = self.out.globals.len();
-            let h2_index = u16::try_from(index)
-                .ok()
-                .filter(|&i| i < 0x7fff)
-                .ok_or_else(|| invalid("too many globals for maneuver switches"))?;
-            let name = switch_name(platoon);
-            if self
-                .t
-                .globals
-                .iter()
-                .any(|g| g.name.eq_ignore_ascii_case(&name))
-            {
-                return Err(invalid(format!("global name collision: {name}")));
+            let index = self.declare_maneuver_state(&switch_name(platoon), true)?;
+            self.maneuver_switches.insert(platoon, index);
+        }
+        if self.has_runtime_control() {
+            for rule in &control.platoon_rules {
+                if rule.can_arm {
+                    let platoon = rule.platoon;
+                    let name = format!("h1_latch_{}_{}", platoon.encounter, platoon.index);
+                    let index = self.declare_maneuver_state(&name, false)?;
+                    self.maneuver_latches.insert(platoon, index);
+                }
             }
-            let root = self.number(h2t::BOOLEAN, 1);
-            self.out
-                .globals
-                .push(definition(&name, h2t::BOOLEAN, 0, root, index)?);
-            self.maneuver_switches.insert(platoon, h2_index);
         }
         Ok(())
+    }
+
+    fn declare_maneuver_state(&mut self, name: &str, initial: bool) -> Result<u16> {
+        let index = self.out.globals.len();
+        if index >= hs::MAX_DEFINITIONS {
+            return Err(invalid("too many globals for maneuver state"));
+        }
+        if self
+            .t
+            .globals
+            .iter()
+            .any(|g| g.name.eq_ignore_ascii_case(name))
+        {
+            return Err(invalid(format!("global name collision: {name}")));
+        }
+        let root = self.number(h2t::BOOLEAN, i32::from(initial));
+        self.out
+            .globals
+            .push(definition(name, h2t::BOOLEAN, 0, root, index)?);
+        Ok(index as u16)
     }
 
     fn maneuver_switch(&mut self, platoon: Platoon) -> Option<Datum> {
@@ -102,6 +116,50 @@ impl Compiler<'_> {
         let Some(request) = aicontrol::request(name, self.t.node(first)?, self.t) else {
             return Ok(None);
         };
+        if self.has_runtime_control() {
+            if let Some(platoons) = control.maneuver_requests.get(&request) {
+                let mut indices = String::new();
+                encode_words(
+                    &mut indices,
+                    platoons
+                        .iter()
+                        .filter_map(|id| self.maneuver_latches.get(id).copied()),
+                );
+                let indices = self.control_string(&indices);
+                let value = self.number(h2t::BOOLEAN, 1);
+                return self
+                    .runtime_control_call(
+                        RuntimeOperation::SetManeuver,
+                        &[indices, value],
+                        expected,
+                    )
+                    .map(Some);
+            }
+            if request.operation == h1ai::control::Operation::ManeuverEnable
+                && let Some(actions) = control.actions.get(&request)
+            {
+                let [_, value] = args else {
+                    return Err(invalid("ai_maneuver_enable arity"));
+                };
+                let mut indices = String::new();
+                encode_words(
+                    &mut indices,
+                    actions.iter().filter_map(|action| match action {
+                        Action::Enable(id) => self.maneuver_switches.get(id).copied(),
+                        _ => None,
+                    }),
+                );
+                let indices = self.control_string(&indices);
+                let value = self.expr(*value, h2t::BOOLEAN)?;
+                return self
+                    .runtime_control_call(
+                        RuntimeOperation::SetManeuver,
+                        &[indices, value],
+                        expected,
+                    )
+                    .map(Some);
+            }
+        }
         let Some(actions) = control.actions.get(&request) else {
             return Ok(None);
         };
@@ -410,6 +468,63 @@ impl Compiler<'_> {
                 .push(definition(name, h2t::LONG, 0, root, index)?);
         }
         Ok(())
+    }
+
+    pub(super) fn install_platoon_tick(&mut self) -> Result<()> {
+        let Some(control) = self.ai_control else {
+            return Ok(());
+        };
+        if !self.has_runtime_control() || control.platoon_rules.is_empty() {
+            return Ok(());
+        }
+        let mut rules = String::new();
+        for rule in &control.platoon_rules {
+            let trigger = |trigger: &h1ai::control::Trigger| PlatoonTrigger {
+                condition: trigger.condition,
+                squads: trigger.squads.clone(),
+            };
+            PlatoonRule {
+                latch: self.maneuver_latches.get(&rule.platoon).copied(),
+                enabled_by: self.maneuver_switches.get(&rule.platoon).copied(),
+                maneuver_flags: rule.maneuver_flags,
+                members: rule.members.clone(),
+                change: rule.change.as_ref().map(trigger),
+                maneuver: rule.maneuver.as_ref().map(trigger),
+                orders: rule.orders.clone(),
+                routes: rule.routes.clone(),
+            }
+            .append_to(&mut rules);
+        }
+        if rules.len() > hs::h1_ai_slots::MAX_PLATOON_TEXT {
+            return Err(invalid(
+                "converted AI platoon table exceeds its argument size",
+            ));
+        }
+        let name = "h1_ai_platoon_tick";
+        if self
+            .t
+            .scripts
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(name))
+        {
+            return Err(invalid(format!("script name collision: {name}")));
+        }
+        let argument = self.control_string(&format!("{:04x}{rules}", rules.len()));
+        let root =
+            self.runtime_control_call(RuntimeOperation::PlatoonTick, &[argument], h2t::VOID)?;
+        self.out.scripts.push(definition(
+            name,
+            2,
+            h2t::VOID,
+            root,
+            self.out.scripts.len(),
+        )?);
+        Ok(())
+    }
+
+    fn control_string(&mut self, literal: &str) -> Datum {
+        let offset = self.intern(literal.as_bytes());
+        self.literal(h2t::STRING, h2t::STRING, offset, literal.as_bytes())
     }
 
     fn runtime_control_call(

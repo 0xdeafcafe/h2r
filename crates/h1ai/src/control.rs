@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     convert::{Options, Plan},
-    h1::{Encounter, H1Ai, Squad},
+    h1::{Encounter, H1Ai, PlatoonTrigger, Squad},
     h2::{AreaRef, Order},
 };
 
@@ -55,14 +55,39 @@ pub enum Action {
         platoon: Option<Platoon>,
     },
     Enable(Platoon),
-    ExpireTimer { squad: u16, reveal_players: bool },
+    ExpireTimer {
+        squad: u16,
+        reveal_players: bool,
+    },
     Spawn(u16),
+}
+
+/// A source platoon trigger resolved to retained Halo 2 squads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Trigger {
+    pub condition: u16,
+    pub squads: Vec<u16>,
+}
+
+/// Native squad orders and migration routes driven by a Halo 1 platoon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlatoonRule {
+    pub platoon: Platoon,
+    pub members: Vec<u16>,
+    pub change: Option<Trigger>,
+    pub maneuver: Option<Trigger>,
+    pub orders: Vec<(u16, u16)>,
+    pub routes: Vec<(u16, u16)>,
+    pub maneuver_flags: u16,
+    pub can_arm: bool,
 }
 
 #[derive(Default)]
 pub struct Control {
     pub actions: BTreeMap<Request, Vec<Action>>,
     pub switches: BTreeSet<Platoon>,
+    pub maneuver_requests: BTreeMap<Request, Vec<Platoon>>,
+    pub platoon_rules: Vec<PlatoonRule>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
 }
@@ -115,7 +140,7 @@ fn maneuver_target(encounter: &Encounter, squad: &Squad) -> Option<usize> {
 /// The additional empty squads needed for scripted maneuvers. The caller
 /// still applies the runtime's total squad capacity.
 pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String> {
-    requests
+    let explicit = requests
         .iter()
         .filter(|r| r.operation == Operation::Maneuver)
         .filter_map(|r| decode(source, r.reference))
@@ -124,8 +149,20 @@ pub fn maneuver_targets(source: &H1Ai, requests: &[Request]) -> BTreeSet<String>
                 .flat_map(move |platoon| members(encounter, platoon))
                 .filter_map(|q| maneuver_target(encounter, q))
                 .map(|i| squad_name(encounter, &encounter.squads[i]).to_ascii_lowercase())
+        });
+    let triggered = source.encounters.iter().flat_map(|encounter| {
+        encounter.squads.iter().filter_map(move |squad| {
+            let platoon = encounter
+                .platoons
+                .get(usize::try_from(squad.platoon).ok()?)?;
+            if platoon.maneuver.condition == 0 {
+                return None;
+            }
+            let i = maneuver_target(encounter, squad)?;
+            Some(squad_name(encounter, &encounter.squads[i]).to_ascii_lowercase())
         })
-        .collect()
+    });
+    explicit.chain(triggered).collect()
 }
 
 /// Follow-driven migration uses even unoccupied squads as destinations.
@@ -176,13 +213,6 @@ fn converted_indices(source: &H1Ai, plan: &Plan) -> Vec<Vec<Option<u16>>> {
 pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Request]) -> Control {
     let indices = converted_indices(source, plan);
     let mut control = Control::default();
-    for (encounter, ids) in source.encounters.iter().zip(&indices) {
-        for (squad, &index) in encounter.squads.iter().zip(ids) {
-            if squad.flags & 0x20 != 0 && let Some(index) = index {
-                control.automatic_migration.insert(index);
-            }
-        }
-    }
     let mut orders = BTreeMap::new();
     let mut follow_orders = BTreeMap::new();
     let radii: BTreeMap<_, _> = requests
@@ -196,6 +226,17 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
             continue;
         };
         let ids = &indices[usize::from(encounter_index)];
+        if request.operation == Operation::Maneuver {
+            control.maneuver_requests.insert(
+                request,
+                platoons(encounter, selection)
+                    .map(|index| Platoon {
+                        encounter: encounter_index,
+                        index,
+                    })
+                    .collect(),
+            );
+        }
         let actions = if request.operation == Operation::Spawn {
             // Halo 1's counted spawn accepts a squad, or picks the first
             // member of a platoon. An encounter is not a spawn selection.
@@ -211,16 +252,24 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
                 .and_then(|i| ids[i])
                 .map(|i| vec![Action::Spawn(i)])
         } else if request.operation == Operation::TimerExpire {
-            Some(encounter.squads.iter().enumerate()
-                .filter(|(index, squad)| match selection {
-                    Selection::Encounter => true,
-                    Selection::Platoon(i) => squad.platoon == i16::from(i),
-                    Selection::Squad(i) => *index == usize::from(i),
-                })
-                .filter_map(|(index, squad)| Some(Action::ExpireTimer {
-                    squad: ids[index]?,
-                    reveal_players: squad.flags & 0x10 != 0,
-                })).collect())
+            Some(
+                encounter
+                    .squads
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, squad)| match selection {
+                        Selection::Encounter => true,
+                        Selection::Platoon(i) => squad.platoon == i16::from(i),
+                        Selection::Squad(i) => *index == usize::from(i),
+                    })
+                    .filter_map(|(index, squad)| {
+                        Some(Action::ExpireTimer {
+                            squad: ids[index]?,
+                            reveal_players: squad.flags & 0x10 != 0,
+                        })
+                    })
+                    .collect(),
+            )
         } else if request.operation == Operation::FollowDistance {
             // The source analysis proved this assignment is folded into
             // the subsequent follow order.
@@ -271,7 +320,160 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
             control.actions.insert(request, actions);
         }
     }
+    prepare_platoon_rules(source, plan, opts, &indices, &mut orders, &mut control);
+    for (ei, (encounter, ids)) in source.encounters.iter().zip(&indices).enumerate() {
+        for (squad, &index) in encounter.squads.iter().zip(ids) {
+            if let Some(index) = index
+                && squad.flags & 0x20 != 0
+            {
+                control.automatic_migration.insert(index);
+                if plan.ai.squads[usize::from(index)].initial_order < 0
+                    && let Some(order) =
+                        build_order(plan, opts, ei as u16, squad, index, Operation::Attack)
+                {
+                    plan.ai.squads[usize::from(index)].initial_order = order as i16;
+                }
+            }
+        }
+    }
     control
+}
+
+fn prepare_platoon_rules(
+    source: &H1Ai,
+    plan: &mut Plan,
+    opts: &Options,
+    indices: &[Vec<Option<u16>>],
+    orders: &mut BTreeMap<(u16, Operation), u16>,
+    control: &mut Control,
+) {
+    let explicit: BTreeSet<_> = control
+        .maneuver_requests
+        .values()
+        .flatten()
+        .copied()
+        .collect();
+    for (ei, (encounter, ids)) in source.encounters.iter().zip(indices).enumerate() {
+        let members = |subject: Option<i16>| {
+            encounter
+                .squads
+                .iter()
+                .zip(ids)
+                .filter(move |(q, _)| subject.is_none_or(|id| q.platoon == id))
+                .filter_map(|(q, &id)| Some((q, id?)))
+        };
+        let trigger = |trigger: PlatoonTrigger| {
+            if !(1..=9).contains(&trigger.condition) {
+                return None;
+            }
+            let subject = usize::try_from(trigger.subject)
+                .ok()
+                .filter(|&i| i < encounter.platoons.len())
+                .map(|i| i as i16);
+            Some(Trigger {
+                condition: trigger.condition,
+                squads: members(subject).map(|(_, id)| id).collect(),
+            })
+        };
+        for index in platoons(encounter, Selection::Encounter) {
+            let source = &encounter.platoons[usize::from(index)];
+            let platoon = Platoon {
+                encounter: ei as u16,
+                index,
+            };
+            let initial = if source.flags & 4 != 0 {
+                Operation::Defend
+            } else {
+                Operation::Attack
+            };
+            let changed = if initial == Operation::Attack {
+                Operation::Defend
+            } else {
+                Operation::Attack
+            };
+            let change = trigger(source.change);
+            let maneuver = trigger(source.maneuver);
+            let can_arm = maneuver.is_some() || explicit.contains(&platoon);
+            let mut rule = PlatoonRule {
+                platoon,
+                members: Vec::new(),
+                change,
+                maneuver,
+                orders: Vec::new(),
+                routes: Vec::new(),
+                maneuver_flags: source.flags as u16 & 3,
+                can_arm,
+            };
+            for (q, id) in members(Some(i16::from(index))) {
+                rule.members.push(id);
+                if rule.change.is_some() || initial == Operation::Defend {
+                    // Cache the attacking order before installing a defensive default.
+                    let attack =
+                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Attack);
+                    let defend =
+                        cached_order(plan, opts, orders, ei as u16, q, id, Operation::Defend);
+                    if let (Some(attack), Some(defend)) = (attack, defend) {
+                        plan.ai.squads[usize::from(id)].initial_order =
+                            if initial == Operation::Attack {
+                                attack
+                            } else {
+                                defend
+                            } as i16;
+                        if rule.change.is_some() {
+                            rule.orders.push((
+                                id,
+                                if changed == Operation::Attack {
+                                    attack
+                                } else {
+                                    defend
+                                },
+                            ));
+                        }
+                    }
+                }
+                if can_arm
+                    && let Some(target) = maneuver_target(encounter, q)
+                    && let Some(to) = ids[target]
+                    && id != to
+                {
+                    if plan.ai.squads[usize::from(to)].initial_order < 0
+                        && let Some(order) = build_order(
+                            plan,
+                            opts,
+                            ei as u16,
+                            &encounter.squads[target],
+                            to,
+                            Operation::Attack,
+                        )
+                    {
+                        plan.ai.squads[usize::from(to)].initial_order = order as i16;
+                    }
+                    rule.routes.push((id, to));
+                }
+            }
+            if !rule.members.is_empty() && (can_arm || rule.change.is_some()) {
+                control.platoon_rules.push(rule);
+            }
+        }
+    }
+}
+
+fn cached_order(
+    plan: &mut Plan,
+    opts: &Options,
+    orders: &mut BTreeMap<(u16, Operation), u16>,
+    encounter: u16,
+    squad: &Squad,
+    id: u16,
+    operation: Operation,
+) -> Option<u16> {
+    use std::collections::btree_map::Entry;
+    Some(match orders.entry((id, operation)) {
+        Entry::Occupied(entry) => *entry.get(),
+        Entry::Vacant(entry) => {
+            *entry.insert(build_order(plan, opts, encounter, squad, id, operation)?)
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -326,17 +528,8 @@ fn platoon_actions(
                     });
                 }
             } else {
-                let order = match orders.entry((from, operation)) {
-                    std::collections::btree_map::Entry::Occupied(e) => *e.get(),
-                    std::collections::btree_map::Entry::Vacant(e) => *e.insert(build_order(
-                        plan,
-                        opts,
-                        encounter_index,
-                        squad,
-                        from,
-                        operation,
-                    )?),
-                };
+                let order =
+                    cached_order(plan, opts, orders, encounter_index, squad, from, operation)?;
                 actions.push(Action::SetOrder { squad: from, order });
             }
         }
