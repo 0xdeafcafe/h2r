@@ -41,7 +41,7 @@ for (const prefix of ["mp16", "campaign"]) {
     const first = actual[0]!, last = actual.at(-1)!;
     const segment = {from_tick:first.tick, to_tick:last.tick, frames:actual.length,
       bytes:buffers[i]!.byteLength, sha256:sha(buffers[i]!), keyframes};
-    const node = Buffer.from(JSON.stringify(["H2 replay archive v1", first.game_id, revision, previousHash, segment]));
+    const node = Buffer.from(JSON.stringify(["H2AR1", first.game_id, revision, previousHash, Object.values(segment)]));
     indexBytes += node.byteLength;
     previousHash = sha(node);
   }

@@ -179,6 +179,12 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
     let index = h.get(&public).await.json();
     assert_eq!(index["items"].as_array().unwrap().len(), 2);
     let digest = end["archive_sha256"].as_str().unwrap();
+    let node = h.live.store().blob(digest).await.unwrap().unwrap();
+    let fields: serde_json::Value = serde_json::from_slice(&node).unwrap();
+    assert_eq!(fields[0], "H2AR1");
+    let previous = fields[3].as_str().unwrap();
+    let first_node = h.live.store().blob(previous).await.unwrap().unwrap();
+    assert_eq!(end["totals"]["index_bytes"], first_node.len() + node.len());
     let url = format!("/v1/games/{id}/archive/{digest}/0");
     let first = h.get(&url).await;
     assert_eq!(first.headers["content-encoding"], "br");

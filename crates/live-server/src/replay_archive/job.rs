@@ -375,13 +375,17 @@ pub(crate) async fn step<'a>(
         &p.backup_sha256,
         &rows,
     ))?;
-    let index = bytes(&(
-        "H2 replay archive v1",
-        id,
-        r.position,
-        &p.archive_sha256,
-        &seg,
-    ))?;
+    // The immutable node has a fixed versioned field order. Repeating
+    // public JSON property names in every stored node cost 75 bytes each.
+    let fields = (
+        seg.from_tick,
+        seg.to_tick,
+        seg.frames,
+        seg.bytes,
+        &seg.sha256,
+        &seg.keyframes,
+    );
+    let index = bytes(&("H2AR1", id, r.position, &p.archive_sha256, fields))?;
     let index_bytes = index.len() as u64;
     let progress = Progress {
         source_position: r.position,
