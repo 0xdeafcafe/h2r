@@ -316,6 +316,71 @@ The follower's own stall check (`nav::Follower`, a jump after 30 frames
 without getting closer to the waypoint, then a fresh path) still runs
 under this; the state machine is what escalates and blacklists.
 
+**Corners and doorways** (`nav::NavMesh::portal`, built). A path never
+aims at a wall corner itself: each portal end that is a corner of the
+mesh (a vertex on a side nobody walks across: a wall or a ledge) is
+pulled 0.3 world units in (`nav::CLEARANCE`), so a bot turns a body's
+width off the corner instead of catching its shoulder on it. A link
+the builder made between surfaces that do not share an edge (a doorway
+off a long wall) spans the near polygon's whole side; the portal is cut
+to the part the far polygon lies along, so the path goes through the
+door and not through the wall beside it. Nearing a corner (0.8) the
+follower bends toward the next leg, so a turn is a curve, not a stop
+and a pivot (never into a jump or a drop, which start at their edge).
+
+**Off the mesh** (`nav::NavMesh::nearest`, built). A start or goal no
+polygon is under (a bot on a crate or knocked off an edge, someone seen
+mid-jump) snaps to the nearest polygon within 3 world units whose floor
+is at most 0.6 over it or 3 under it: the bot walks (or jumps up) onto
+the mesh first, and a chase to someone seen in the air goes to the floor
+under them instead of giving up. A bot whose next waypoint's floor is
+more than 1.2 (plus its distance) over it has fallen below its path and
+plans again at once.
+
+**Moving in a fight** (`crates/bots/src/moves.rs`, built). The feet in a
+fight, apart from the aim:
+
+| | Easy | Normal | Heroic | Legendary |
+|---|---|---|---|---|
+| holds a strafe (ticks) | 40 to 80 | 20 to 50 | 12 to 35 | 8 to 26 |
+| a new strafe is standing still | 35% | 15% | 5% | never |
+| on a hit: reverses the strafe (juke) | never | 20% | 50% | 70% |
+| on a hit: jumps | never | 10% | 25% | 35% |
+| on a hit beyond 8: crouches a moment | never | never | 10% | 15% |
+| backs off inside its range | no | 0.6 | 0.85 | full |
+| backs off to cover | no (straight back) | yes | yes | yes |
+
+- A hit is a shield drop of more than 0.03 in a tick; one reaction at
+  most every 20 ticks, a jump at most every 45.
+- **Range**: closes in beyond the far end of its range and backs off
+  inside the near end. The range comes from `moves::preferred_range`,
+  today 2.5 to 8 for every weapon: the seam for the weapons decision to
+  give a shotgun a short range and a sniper a long one.
+- **Shields down or reloading**: backs away, reloading at half the pace
+  and never closing in. With cover allowed it looks (every 15 ticks) at
+  16 spots 1.5 and 3 away, walkable in a straight line, for one where the
+  enemy's eye cannot see its chest through the walls (`los::Walls`), and
+  goes to the nearest such, favouring ones away from the enemy; with none,
+  straight back.
+- **Footing**: every step is checked 0.5 and 1 ahead on the nav mesh:
+  no drop or rise over 0.5 (no strafing off a bridge) and no wall at
+  knee height. Blocked, it strafes the other way, else steps forward or
+  back, else stands.
+- **Stuck in a fight**: pushing a way for 15 ticks without moving 0.15
+  reverses the strafe and jumps.
+
+**Roaming** (`crates/bots/src/roam.rs`, built). With nobody to fight or
+chase, a bot goes to likely places: each candidate is scored, the best
+it can reach and has not been blacklisted wins.
+
+- a place it saw an enemy in the last 60 s (4.5, fading to 0.5);
+- a weapon lying in the world worth taking (1.5);
+- six polygons picked at random (0.5), so it still explores;
+- less 2.5 for a place within 5 it was at in the last 40 s (fading), and
+  2 for one under 4 away;
+- plus a random wobble: 8 on Easy (it wanders nearly at random), 2 on
+  Normal, 1 on Heroic, 0.4 on Legendary (it goes where the fight was).
+
 ### 3.3 Decision
 
 A utility layer runs about 5 times a second. It scores each action and
@@ -2079,6 +2144,58 @@ list for the user to play (§11).
      bots_nav -- --ignored` builds every multiplayer map into a scratch
      directory, then finds them all up to date.
    - **Game run (the user):** see stage 3, which uses the same run.
+   **Built: movement boost** (2026-11-19, §3.2). The user's run: "bots
+   kinda suck, they get stuck ... give the ai a nice big boost". This is
+   the feet; weapons, targets and grenades are the fight lane's.
+   - **Corners and doorways** (`bots::nav`): paths keep 0.3 off wall
+     corners, a seam or step link's portal is cut to the polygon beyond
+     (no path through the wall beside a door), and the follower curves
+     into a turn. No mesh file changes: `cache::GENERATOR` stays 1.
+   - **Off the mesh**: a start or goal off the mesh snaps to the nearest
+     floor (3 across, 0.6 up, 3 down); a bot on a crate walks off it, a
+     chase to someone seen mid-jump goes on. A bot that falls below its
+     path plans again at once, not after the 2 s stall.
+   - **Fight footwork** (`bots::moves`): strafe rhythm by skill, jukes,
+     jumps and crouches when hit, range keeping, backing to cover with the
+     shields down, moving (not standing) while reloading, no strafing off
+     ledges or into walls, a jump and the other way when pinned.
+   - **Roaming** (`bots::roam`): to recent sightings and weapons, away
+     from where it has just been, not to random polygons.
+   - `mind.rs` holds two hooks only: the fight branch's movement calls
+     `Moves::fight`, and `roam_goal` asks `Roam::pick`.
+   - Tests (`cargo test -p bots --lib nav`, `moves`, `roam`, `mind`): the
+     L corridor turning off its corner; corners found (not inside a ring);
+     a doorway walked through, not around; a start and a goal off the mesh;
+     a start below a floor's edge jumping up; the follower's bend and not
+     into a jump; a fall below the path; the skills' styles in order;
+     Legendary changing direction more than Easy, Easy standing; range
+     kept, and the range given honoured; jukes and jumps when hit
+     (none on Easy); a crouch at range; never off a bridge; a wall turning
+     the strafe; cover behind a wall (Easy straight back); moving while
+     reloading; pinned, it flips and jumps; roaming to a fresh sighting,
+     forgetting an old one, Easy wandering; not back where it has been;
+     the memory bounded; and in the mind, roaming to where it last saw
+     someone, chasing someone seen in the air, and a fight on a bridge.
+   - **Game run (the user):** `h2 play` with Clankers (or `H2_BOTS=3`),
+     Slayer on Lockout, then Ivory Tower and Midship.
+     1. Doorways and corners: bots walk through doors and round corners
+        without scraping or stopping on the frame; none stands stuck on a
+        corner for more than a moment.
+     2. Fight a Legendary bot (`H2_BOTS_SKILL=legendary`): it strafes in
+        short, uneven bursts, jumps or reverses when you hit it, and with
+        its shields popped backs round a wall rather than straight back
+        in the open. An Easy bot strafes in long, even sweeps and sometimes
+        just stands.
+     3. On a bridge or ledge (Ivory Tower's, Midship's walkways) a bot in
+        a fight does not strafe off the edge.
+     4. Empty its magazine (or watch one reload): it keeps moving, backing
+        off, while it reloads.
+     5. Hide after a fight: the bots come back to where they saw you, and
+        between fights they visit weapon spawns and do not pace one room.
+     6. Knock a bot off a ledge or let one stand on a crate: it finds the
+        floor and goes on.
+     7. Note any spot where a bot still gets stuck for good (map, roughly
+        where) and send the `bots:` lines.
 3. **Combat.** Built: `bots::mind` (`Mind`, the `H2_BOTS` brain).
    - **Seeing.** An enemy is seen when it is inside 65 degrees of the
      aim, or within 3 units anywhere, and the walls leave a clear line from

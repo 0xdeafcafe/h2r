@@ -192,13 +192,15 @@ pub struct Mind {
     last_seen: Option<(u32, Vec3, u32)>,
     /// The tracking error (yaw, pitch).
     err: (f32, f32),
-    strafe: (f32, u32),
     grenade_ready: u32,
     grenade_until: u32,
     follower: Option<Follower>,
     goal: Option<Vec3>,
     /// Getting unstuck (section 3.2).
     pub stuck: Stuck,
+    /// Footwork in a fight and roaming memory (section 3.2).
+    pub moves: crate::moves::Moves,
+    pub roam: crate::roam::Roam,
     /// The last weapons decision (section 3.6).
     pub kit: Kit,
     /// The last tick an enemy was in view.
@@ -275,12 +277,13 @@ impl Mind {
             tracks: Default::default(),
             last_seen: None,
             err: (0.0, 0.0),
-            strafe: (1.0, 0),
             grenade_ready: 0,
             grenade_until: 0,
             follower: None,
             goal: None,
             stuck: Stuck::new(),
+            moves: crate::moves::Moves::new(seed),
+            roam: crate::roam::Roam::new(seed),
             kit: Kit::Fine,
             last_threat: None,
             tap: None,
@@ -408,6 +411,7 @@ impl Mind {
         self.target = chosen.map(|(o, t0)| (o.id, t0));
         if let Some((o, _)) = chosen {
             self.last_seen = Some((o.id, o.position, p.tick));
+            self.roam.saw(o.position, p.tick);
             self.last_threat = Some(p.tick);
         }
         if self
@@ -525,56 +529,38 @@ impl Mind {
                         look = look.map(|l| up(l, 0.15 * dist));
                     }
                 }
-                // Until it reacts it stands, caught out. Then it strafes,
-                // closing in from afar and backing off close up; with no
-                // ammunition it runs straight in to melee, and with its
-                // shields down it backs off.
+                // Until it reacts it stands, caught out. Then its footwork
+                // (crate::moves): strafing, keeping its range, reacting to
+                // hits, backing to cover; with no ammunition it runs straight
+                // in to melee.
                 if !reacted {
                     self.follower = None;
                 } else {
-                    if p.tick >= self.strafe.1 {
-                        let flip = if self.uniform() < 0.5 { -1.0 } else { 1.0 };
-                        let hold = 15 + (self.uniform() * 30.0) as u32;
-                        self.strafe = (flip, p.tick + hold);
-                    }
                     let to = sub(o.position, me.position);
                     let flat = (to[0] * to[0] + to[1] * to[1]).sqrt().max(1e-6);
-                    let (fx, fy) = (to[0] / flat, to[1] / flat);
-                    let side = [-fy * self.strafe.0, fx * self.strafe.0];
-                    let fwd = if melee {
-                        1.0
-                    } else if self.recovering && flat < 8.0 {
-                        -0.8
-                    } else if flat > 8.0 {
-                        1.0
-                    } else if flat < 2.5 {
-                        -0.7
-                    } else {
-                        0.0
+                    let fight = crate::moves::FightIn {
+                        tick: p.tick,
+                        skill: self.skill,
+                        at: me.position,
+                        foe: o.position,
+                        shield: me.shield,
+                        rush: melee,
+                        retreat: self.recovering,
+                        // SEAM (bots-fight): `self.fight.wants_cover` and
+                        // `self.fight.band` once tactics is merged.
+                        reloading: matches!(self.kit, Kit::Reload | Kit::Switch),
+                        range: crate::moves::preferred_range(&me),
                     };
-                    let mut d = if melee {
-                        [fx, fy]
-                    } else {
-                        [side[0] + fx * fwd, side[1] + fy * fwd]
-                    };
-                    if map.is_none() {
-                        // Stage 1's walk: straight at it.
-                        d = [fx, fy];
+                    let mv = self.moves.fight(&fight, map, &bodies);
+                    if mv.jump {
+                        pad.buttons.set(JUMP, true);
                     }
-                    if let Some(m) = map
-                        && !melee
-                        && m.nav
-                            .locate(add(me.position, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
-                            .is_none()
-                    {
-                        // Off the mesh that way: the other side.
-                        self.strafe.0 = -self.strafe.0;
-                        d = [-side[0] + fx * fwd, -side[1] + fy * fwd];
+                    if mv.crouch {
+                        pad.buttons.set(CROUCH, true);
                     }
-                    let d = around_bodies(me.position, d, &bodies);
                     walk = Some(Walk {
-                        walk: d,
-                        face: [fx, fy],
+                        walk: mv.walk,
+                        face: [to[0] / flat, to[1] / flat],
                     });
                     self.follower = None;
                 }
@@ -660,7 +646,7 @@ impl Mind {
             }
             Doing::Roam => {
                 if self.goal.is_none() || self.follower.as_ref().is_none_or(Follower::done) {
-                    self.goal = self.roam_goal(me.position, p.tick, map);
+                    self.goal = self.roam_goal(me.position, p.tick, map, &p.pickups);
                     self.follower = None;
                 }
                 if let Some(g) = self.goal {
@@ -734,6 +720,9 @@ impl Mind {
         }
         if !self.navigated {
             self.stuck.reset();
+        }
+        if !matches!(self.doing, Doing::Fight(_)) {
+            self.moves.calm();
         }
 
         // Reload and switch: taps, spaced.
@@ -828,7 +817,10 @@ impl Mind {
                         .nav
                         .path_avoiding(at, goal, &|e| st.blocks_segment(e.a, e.b, tick))
                         .or_else(|| m.nav.path(at, goal));
-                    self.follower = path.map(|p| Follower::new(p, u64::from(tick)));
+                    // Kept with the goal asked for: a goal off the mesh ends
+                    // the path at the nearest point on it, and that is not
+                    // a new goal.
+                    self.follower = path.map(|p| Follower::new(p, u64::from(tick)).toward(goal));
                     self.follower.as_ref()?;
                 }
                 let f = self.follower.as_mut()?;
@@ -882,28 +874,32 @@ impl Mind {
             .map(|d| Walk::straight(around_bodies(at, d, bodies)))
     }
 
-    /// Somewhere to wander to: the farthest of three polygons picked at
-    /// random, none it got stuck going to.
-    fn roam_goal(&mut self, at: Vec3, tick: u32, map: Option<&MapData>) -> Option<Vec3> {
+    /// Somewhere to roam to (crate::roam): where enemies were seen
+    /// lately, a weapon worth taking, or somewhere new, not where it has
+    /// just been; reachable, and none it got stuck going to.
+    fn roam_goal(
+        &mut self,
+        at: Vec3,
+        tick: u32,
+        map: Option<&MapData>,
+        pickups: &[crate::arms::Pickup],
+    ) -> Option<Vec3> {
         let m = map?;
-        let n = m.nav.polys.len();
-        if n == 0 {
-            return None;
+        if let Some(g) = self.goal {
+            self.roam.visit(g, tick);
         }
-        let here = m.nav.locate(at, 1.0);
-        let mut best: Option<Vec3> = None;
-        for _ in 0..3 {
-            let i = (self.next() % n as u64) as u32;
-            let c = m.nav.polys[i as usize].center;
-            if self.stuck.blocked(c, tick) {
-                continue;
-            }
-            let reachable = here.is_some_and(|h| h == i || m.nav.corridor(h, i).is_some());
-            if reachable && best.is_none_or(|b| len(sub(c, at)) > len(sub(b, at))) {
-                best = Some(c);
-            }
-        }
-        best
+        self.roam.visit(at, tick);
+        let here = m.nav.poly_near(at);
+        let st = &self.stuck;
+        let ok = |c: Vec3| {
+            !st.blocked(c, tick)
+                && here.is_some_and(|h| {
+                    m.nav
+                        .poly_near(c)
+                        .is_some_and(|i| i == h || m.nav.corridor(h, i).is_some())
+                })
+        };
+        self.roam.pick(at, tick, &m.nav, pickups, self.skill, &ok)
     }
 }
 

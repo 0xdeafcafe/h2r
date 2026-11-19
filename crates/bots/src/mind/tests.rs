@@ -639,6 +639,95 @@ fn with_a_nav_mesh_a_path_goes_around_where_it_got_stuck() {
     assert!(wp.face[1] > wp.face[0].abs(), "{wp:?}");
 }
 
+// ---- movement (section 3.2: corners, footing, roaming) ----
+
+#[test]
+fn roaming_goes_where_it_last_saw_an_enemy() {
+    let map = MapData {
+        nav: floor(),
+        walls: Walls::default(),
+    };
+    let mut m = Mind::new(Skill::Legendary, 5);
+    let p = |others, tick| Perception {
+        me: me([2.0, 5.0, 0.0], X),
+        others,
+        teams: false,
+        tick,
+        pickups: vec![],
+        objective: None,
+    };
+    m.step(&p(vec![enemy(1, [17.0, 5.0, 0.0])], 0), Some(&map));
+    // Long after the chase is forgotten, it roams back there.
+    m.step(&p(vec![], MEMORY_TICKS + 100), Some(&map));
+    assert_eq!(m.doing, Doing::Roam);
+    assert_eq!(m.goal, Some([17.0, 5.0, 0.0]));
+}
+
+#[test]
+fn it_chases_someone_last_seen_in_the_air() {
+    // Seen mid-jump, 2.5 over the floor: the chase goes to the floor under
+    // that point instead of giving up for want of a path.
+    let map = MapData {
+        nav: floor(),
+        walls: Walls::default(),
+    };
+    let mut m = Mind::new(Skill::Normal, 1);
+    let p = |others, tick| Perception {
+        me: me([2.0, 5.0, 0.0], X),
+        others,
+        teams: false,
+        tick,
+        pickups: vec![],
+        objective: None,
+    };
+    let air = [14.0, 5.0, 2.5];
+    m.step(&p(vec![enemy(1, air)], 0), Some(&map));
+    for t in 5..8 {
+        let pad = m.step(&p(vec![], t), Some(&map));
+        assert_eq!(m.doing, Doing::Chase(air), "tick {t}");
+        assert!(pad.left_stick.1 > 0.5, "tick {t}: {pad:?}");
+    }
+}
+
+#[test]
+fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32, z: f32| {
+        Poly::new(vec![[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]])
+    };
+    let map = MapData {
+        nav: NavMesh::new(
+            vec![
+                quad(-20.0, -0.4, 20.0, 0.4, 2.0),
+                quad(-20.0, -20.0, 20.0, 20.0, 0.0),
+            ],
+            vec![],
+        ),
+        walls: Walls::default(),
+    };
+    let mut m = Mind::new(Skill::Legendary, 2);
+    let mut walked = 0;
+    for t in 0..120 {
+        let pad = m.step(
+            &Perception {
+                me: me([0.0, 0.0, 2.0], X),
+                others: vec![enemy(1, [6.0, 0.0, 2.0])],
+                teams: false,
+                tick: t,
+                pickups: vec![],
+                objective: None,
+            },
+            Some(&map),
+        );
+        assert!(matches!(m.doing, Doing::Fight(1)));
+        assert!(pad.left_stick.0.abs() < 0.05, "tick {t}: {pad:?}");
+        if pad.left_stick.1.abs() > 0.5 {
+            walked += 1;
+        }
+    }
+    // Not frozen either: it steps along the bridge instead.
+    assert!(walked > 60, "{walked}");
+}
+
 // ---- objectives (section 3.7) ----
 
 use crate::objective::{Game, Item, Objective, Spot, kind};
