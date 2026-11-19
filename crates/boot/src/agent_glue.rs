@@ -294,9 +294,10 @@ mod tests {
         g.put_u32(engine::points::SIM_GLOBALS.base, globals);
         g.map(globals, 0x40);
         for (mode, kind) in [
-            (3, SessionKind::CoopHost),
-            (2, SessionKind::CoopGuest),
-            (5, SessionKind::MpHost),
+            (2, SessionKind::CoopHost),
+            (3, SessionKind::CoopGuest),
+            (4, SessionKind::MpHost),
+            (5, SessionKind::MpClient),
             (1, SessionKind::Local),
         ] {
             g.put_u32(globals + 8, mode);

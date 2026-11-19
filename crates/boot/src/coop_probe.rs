@@ -480,24 +480,29 @@ pub fn read_sim<M: Gm + ?Sized>(m: &M) -> Option<Sim> {
     })
 }
 
-/// The mode's name, from the table at `0x468c64`.
+/// The simulation world's mode name (`[0x4cf77c]+8`). The world numbers its
+/// modes otherwise than the game (options `+4`, the table at `0x468c64`):
+/// `0x68c00` maps game 1..5 to world 1, 3, 2, 5, 4 through the jump table at
+/// `0x68da8`, so here 2 is the synchronous server and 4 the distributed one
+/// (`bots::phantom::session::world_mode` is that map).
 pub fn mode_name(mode: u32) -> &'static str {
     match mode {
         0 => "none",
         1 => "local",
-        2 => "sync-client",
-        3 => "sync-server",
-        4 => "dist-client",
-        5 => "dist-server",
+        2 => "sync-server",
+        3 => "sync-client",
+        4 => "dist-server",
+        5 => "dist-client",
         _ => "?",
     }
 }
 
-/// The hash log's role word for a mode.
+/// The hash log's role word for a simulation world mode (the servers, 2 and
+/// 4, are the host; the clients, 3 and 5, the guests).
 pub fn role(mode: u32) -> &'static str {
     match mode {
-        3 | 5 => "host",
-        2 | 4 => "guest",
+        2 | 4 => "host",
+        3 | 5 => "guest",
         _ => "local",
     }
 }
