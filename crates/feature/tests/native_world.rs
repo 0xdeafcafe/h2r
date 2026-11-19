@@ -32,11 +32,12 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
     assert!(!text.contains("native_world_restore"), "nothing after the body: {text}");
 }
 
-/// Alone at the layer draw, the chain runs on the pipelined render thread:
-/// one context-only observer before, nothing after.
+/// Alone at the layer draw (switched on: it is off by default), the chain
+/// runs on the pipelined render thread: one context-only observer before,
+/// nothing after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::default());
+    let mut r = Registry::new(Switches::parse("impl.render.native_world=on").unwrap());
     assert!(r.add(&NativeWorld).unwrap());
     let plan = r.build(&Base).unwrap();
     let chain = plan
