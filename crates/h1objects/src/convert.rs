@@ -848,6 +848,9 @@ pub struct Converter<'a> {
     /// The base's scenery rigid body words ([`Self::scenery_body`]),
     /// computed once.
     scenery_body: Option<Option<crate::rebuild::BodyWords>>,
+    /// The base's rigid bodies' sizes and size classes
+    /// ([`crate::rebuild::size_classes`]), read once.
+    size_classes: Option<Vec<(f32, u16)>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
     /// under ([`Self::weapon_class`]), computed once.
     weapon_classes: Option<HashMap<String, String>>,
@@ -887,6 +890,7 @@ impl<'a> Converter<'a> {
             dialogue_bytes: 0,
             scenery_role: None,
             scenery_body: None,
+            size_classes: None,
             weapon_classes: None,
         }
     }
@@ -2983,8 +2987,17 @@ impl<'a> Converter<'a> {
             (PhysicsKind::Biped, n) => format!("{how}; ragdoll of {n} constraints (crate::ragdoll)"),
             _ => how,
         };
+        // Scenery bodies take their own size class (`+0x1e`) by their size,
+        // as the base's (crate::rebuild::size_class).
+        if matches!(kind, PhysicsKind::Scenery(_)) && self.size_classes.is_none() {
+            self.size_classes = Some(crate::rebuild::size_classes(self.base)?);
+        }
+        let classes: &[(f32, u16)] = match kind {
+            PhysicsKind::Scenery(_) => self.size_classes.as_deref().unwrap_or(&[]),
+            _ => &[],
+        };
         Ok(Some((
-            crate::rebuild::physics_model(&bodies, &nodes, words, &joints)?,
+            crate::rebuild::physics_model_sized(&bodies, &nodes, words, &joints, classes)?,
             how,
         )))
     }

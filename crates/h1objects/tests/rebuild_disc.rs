@@ -220,6 +220,7 @@ fn every_scenery_rebuilds_from_its_definition() {
         let mut seen = HashSet::new();
         let mut role = None;
         let body = h1objects::rebuild::scenery_body(&base).unwrap();
+        let classes = h1objects::rebuild::size_classes(&base).unwrap();
         println!("{base_name}: scenery rigid body words {body:?}");
         for level in levels {
             if !wanted(&level) {
@@ -321,13 +322,17 @@ fn every_scenery_rebuilds_from_its_definition() {
                     for rb in rbs {
                         let w = word(rb, "unknown_18");
                         assert_eq!(
-                            (
-                                w as u16,
-                                (w >> 16) as u16,
-                                (word(rb, "unknown_1c") >> 16) as u16
-                            ),
-                            (words.flags, words.motion, words.word_1e),
+                            (w as u16, (w >> 16) as u16),
+                            (words.flags, words.motion),
                             "{name}: rigid body words"
+                        );
+                        let Some(Val::Float(radius)) = rb.at("bounding_sphere_radius") else {
+                            panic!("{name}: radius")
+                        };
+                        assert_eq!(
+                            Some((word(rb, "unknown_1c") >> 16) as u16),
+                            h1objects::rebuild::size_class(&classes, *radius),
+                            "{name}: size class of a body of radius {radius}"
                         );
                     }
                     *tally.entry("built phmo".into()).or_default() += 1;
@@ -478,18 +483,27 @@ fn retail_scenery_has_bsp_physics_and_predicts_its_model() {
 
 /// The words built scenery bodies take (`rebuild::scenery_body`): on each
 /// base, every rigid body of every scenery `phmo` and how many hold each
-/// (flags `+0x18`, motion `+0x1a`, `+0x1e`); on Coagulation, Blood
-/// Gulch's base, every scenery with collision has a `phmo` and all their
-/// bodies hold one pattern, the one `scenery_body` returns.
+/// flags `+0x18` and motion `+0x1a`; on Coagulation, Blood Gulch's base,
+/// every scenery with collision has a `phmo` and all their bodies hold
+/// one pattern, the one `scenery_body` returns. Their `+0x1e`, the size
+/// class, is each body's own: the class of the base body nearest in
+/// bounding radius, the body itself left out (`rebuild::size_class`),
+/// on every Coagulation scenery body (V: 5 at 1.72 to 1.82, 6 at 2.53 and
+/// 7.33); the other bases print how many agree.
 #[test]
 #[ignore = "reads the Halo 2 disc ($H2_DISC)"]
 fn scenery_bodies_take_the_bases_scenery_words() {
-    use h1objects::rebuild::{PHMO_RIGID_BODIES, RIGID_BODY_SIZE, scenery_body};
+    use h1objects::rebuild::{
+        PHMO_RIGID_BODIES, RIGID_BODY_SIZE, scenery_body, size_class, size_classes,
+    };
     for base_name in ["coagulation", "beavercreek", "05a_deltaapproach"] {
         let mut m = h2_map(base_name);
         let base = Base::read(&mut m).unwrap();
+        let all = size_classes(&base).unwrap();
         let mut seen = HashSet::new();
-        let mut votes = BTreeMap::<(u16, u16, u16), Vec<String>>::new();
+        let mut votes = BTreeMap::<(u16, u16), Vec<String>>::new();
+        // (scenery, radius, its class, the class by its size)
+        let mut sizes = Vec::new();
         let (mut with_coll, mut with_phmo) = (0, 0);
         for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
             let r = base.root(t.0).unwrap();
@@ -514,15 +528,23 @@ fn scenery_bodies_take_the_bases_scenery_words() {
             {
                 let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
                 votes
-                    .entry((h(0x18), h(0x1a), h(0x1e)))
+                    .entry((h(0x18), h(0x1a)))
                     .or_default()
                     .push(t.2.clone());
+                let radius = f32::from_le_bytes(rb[0x14..0x18].try_into().unwrap());
+                let mut others = all.clone();
+                if let Some(k) = others.iter().position(|c| *c == (radius, h(0x1e))) {
+                    others.remove(k);
+                }
+                sizes.push((t.2.clone(), radius, h(0x1e), size_class(&others, radius)));
                 i += 1;
             }
         }
         let body = scenery_body(&base).unwrap();
+        let agree = sizes.iter().filter(|s| Some(s.2) == s.3).count();
         println!(
-            "{base_name}: {with_phmo} of {with_coll} scenery with collision have a phmo; bodies (flags, motion, +0x1e): {votes:#?}; scenery_body {body:?}"
+            "{base_name}: {with_phmo} of {with_coll} scenery with collision have a phmo; bodies (flags, motion): {votes:#?}; scenery_body {body:?}; size classes (scenery, radius, +0x1e, by size) {sizes:#?}; {agree} of {} agree",
+            sizes.len()
         );
         if base_name == "coagulation" {
             assert_eq!(
@@ -530,9 +552,10 @@ fn scenery_bodies_take_the_bases_scenery_words() {
                 "every Coagulation scenery with collision"
             );
             assert_eq!(votes.len(), 1, "one pattern: {votes:?}");
-            let ((flags, motion, word_1e), _) = votes.iter().next().unwrap();
+            let ((flags, motion), _) = votes.iter().next().unwrap();
             let (w, _) = body.unwrap();
-            assert_eq!((w.flags, w.motion, w.word_1e), (*flags, *motion, *word_1e));
+            assert_eq!((w.flags, w.motion), (*flags, *motion));
+            assert_eq!(agree, sizes.len(), "size classes by size: {sizes:?}");
         }
     }
 }

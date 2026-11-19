@@ -346,10 +346,20 @@ same object words (beavercreek also `0x1c`) and no `hlmt` majority.
 **Physics** (since converter version 85). Scenery whose Halo 1 collision
 holds solid space gets a `phmo` built from it as a device's is (one rigid
 body per collision node, on its model node, of the node's solid cells;
-"Physics models from Halo 1"), whose bodies take the words the base's
-scenery bodies hold (`rebuild::scenery_body`: flags `+0x18`, motion
-`+0x1a`, `+0x1e`, the most common over every body of every scenery
-`phmo` of the base), and its `coll` then has no BSP physics slots
+"Physics models from Halo 1"), whose bodies take the flags `+0x18` and
+motion `+0x1a` the base's scenery bodies hold (`rebuild::scenery_body`,
+the most common over every body of every scenery `phmo` of the base;
+V coagulation: all six bodies flags 0, motion 2) and each its own size
+class `+0x1e` (since version 87, `rebuild::size_class`: the class of the
+base body, any `phmo`, nearest in bounding radius). V, every rigid body
+of every `phmo` on coagulation, beavercreek and 05a: `+0x1e` rises with
+the bounding radius `+0x14`, 3 from 0.30 to 0.70, 4 from 0.73 to 1.23,
+5 from 1.39 to 1.96, 6 from 2.13 to 9.73 (1 and 2 overlap below 0.48);
+coagulation's trees hold 5 at 1.72 to 1.82 and 6 at 2.53 and 7.33, so
+no one value is the scenery's. E: `0x001d5ec0` takes the largest over an
+object's bodies (`0x001d63fd`) and `0x001d69d0` picks a creature's
+collision layer by it (`0x001d6a32`: up to 1 layer 4, 5 and over 5,
+else 3); what reads it for scenery was not found. Its `coll` then has no BSP physics slots
 (retail: nothing with a `phmo` has them). Other scenery with collision
 (no solid cell, or a base whose scenery has no `phmo`) keeps the slots.
 Through version 84 no scenery had a `phmo`, and in a game run on
@@ -366,7 +376,8 @@ Proof: `tests/rebuild_disc.rs`, `every_scenery_rebuilds_from_its_definition`
 (a `phmo` exactly where the collision is solid and the base has scenery
 bodies, every body with their words, no slots beside it) and
 `scenery_bodies_take_the_bases_scenery_words` (Coagulation's scenery
-bodies hold one pattern, the one taken). Whether the player now stops
+bodies hold one flags and motion pattern, the one taken, and each its
+size class by its radius among the base's other bodies). Whether the player now stops
 at the boulders is the game run's to show.
 
 **Not carried:** Halo 1's attachments (on the ten levels and the
@@ -640,8 +651,9 @@ Halo ring were already built this way.
   The wheels and treads (`convert::wheel_nodes`: the gripping points'
   nodes and every node under them) follow the role (since version 86):
   where most of the role's members have wheel or tread shapes in their
-  `phmo` (`rebuild::member_wheel_shapes`: polyhedra reaching sideways
-  as far as the nearest friction marker; `VehicleRole::wheel_shapes`)
+  `phmo` (`rebuild::member_wheel_shapes`, since version 87: most of
+  the member's friction points name no region or a region its `phmo`
+  has; `VehicleRole::wheel_shapes`)
   the body holds them above the hull's lowest point, each wheel node's
   cells cut there and enclosed in one piece (`convert::held_wheels`);
   otherwise they stay out. Halo 2 holds a vehicle up on its
@@ -651,8 +663,16 @@ Halo ring were already built this way.
   side where its hull reaches 0.53, from 0.22 above the origin where the
   hull's lowest point is 0.25; the retail warthog's has no wheel shape
   (a hull on node 0 whose lowest point is 0.18 above the origin, and a
-  bumper box), so the converted scorpion holds its treads and the
-  converted warthog leaves its tires out, as retail. Versions 77 to 85 left the wheels and treads out
+  bumper box). The warthog's four friction points name its wheel
+  regions (`lf_wheel` ...; hlmt regions 4, 7, 3, 6), which its `phmo`
+  (regions `bumper`, `hull`; bodies on nodes `hull` and `bumper`) does
+  not have; the scorpion's twelve name none, its `phmo` one region,
+  `hull`, two bodies on no node. Every friction marker of both hangs
+  from node 0, so the markers' nodes cannot tell wheels from hull, and
+  in version 86 a width test (polyhedra reaching the nearest friction
+  marker) said yes to the warthog too. So the converted scorpion holds
+  its treads and the converted warthog leaves its tires out, as retail.
+  Versions 77 to 85 left the wheels and treads out
   entirely, and the user walked through the converted scorpion's treads
   on Blood Gulch (2026-11-19) though its `coll` carried them, so a biped
   meets a vehicle through its `phmo` (inferred from that run; the engine

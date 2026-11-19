@@ -818,8 +818,8 @@ pub struct VehicleRole {
     /// empty when a marker is not found. A rebuilt vehicle's points are
     /// paired with them by position ([`crate::convert::sphere_order`]).
     pub hover_at: Vec<[f32; 3]>,
-    /// Whether most members with friction points have wheel or tread
-    /// shapes in their physics models ([`member_wheel_shapes`]): a
+    /// Whether most members with friction points carry their wheels or
+    /// treads in their physics models ([`member_wheel_shapes`]): a
     /// rebuilt vehicle's body then holds its wheels and treads above its
     /// hull's lowest point ([`crate::convert::held_wheels`]), and leaves
     /// them out otherwise. V, coagulation: the scorpion's yes, the
@@ -1125,24 +1125,28 @@ pub fn vehicle_role(
     }))
 }
 
-/// The polyhedra block of a `phmo` root and its element size
-/// (`tags::collision::PhysicsModel`); each element's shape-space box is
-/// its centre at `+0x40` and half extents at `+0x30`.
-pub const PHMO_POLYHEDRA: usize = 0x70;
-pub const POLYHEDRON_SIZE: usize = 0x100;
+/// `phmo +0xc0`: the physics model's regions, `0xc` each, the name a
+/// string ID at `+0`.
+pub const PHMO_REGIONS: usize = 0xc0;
+pub const PHMO_REGION_SIZE: usize = 0xc;
 
-/// Whether a base vehicle's physics model has wheel or tread shapes: its
-/// polyhedra reach out sideways (`|y|`) at least as far as the nearest
-/// of its friction points' markers ([`VEHI_FRICTION`],
-/// [`marker_positions`]); a vehicle with friction points and no `phmo`
-/// has none. `None` when it has no friction points or a marker is not
-/// found.
+/// Whether a base vehicle's physics model carries its wheels or treads:
+/// most of its friction points ([`VEHI_FRICTION`]) either name no region
+/// ([`FRICTION_REGION`] null: the point rides the body) or name a region
+/// the `phmo` has ([`PHMO_REGIONS`]). A vehicle with friction points and
+/// no `phmo` has none; `None` when it has no friction points.
 ///
-/// V, coagulation: the scorpion's tread polyhedra reach 1.13 either side
-/// past its tread markers; the warthog's one polyhedron reaches 0.43, inside
-/// its wheel markers, and its other shape is a bumper box (boxes are not
-/// read). Printed by `tests/vehicle_rebuild_disc.rs`,
-/// `wheels_and_treads_are_solid_above_the_hull`.
+/// V, coagulation: the warthog's four points name the wheel regions
+/// `lf_wheel`, `rf_wheel`, `lb_wheel`, `rb_wheel` (the hlmt's regions 4,
+/// 7, 3, 6), none of which its `phmo` has (its regions `bumper`, `hull`;
+/// its bodies on nodes `hull` and `bumper`, none on a tire node), so no;
+/// the scorpion's twelve points name none, and its `phmo` (one region,
+/// `hull`; two bodies on no node, node -1) holds tread shapes reaching
+/// 1.13 either side where its hull reaches 0.53, so yes. Every friction
+/// marker of both hangs from node 0, the hull, so the markers' nodes do
+/// not tell wheels from hull. E: `0x205fd1` turns a friction point off
+/// once its region is destroyed, so a point with a region is a part that
+/// can come off, which neither `phmo` gives a shape.
 pub fn member_wheel_shapes(
     base: &crate::base::Base,
     root: &[u8],
@@ -1150,21 +1154,14 @@ pub fn member_wheel_shapes(
     at: usize,
     e: &StructDef,
 ) -> Result<Option<bool>> {
-    let marker_at = field_offset(e, FRICTION_MARKER)? as usize;
-    let mut names = Vec::new();
-    while let Some(x) = base.element(root, at, e.size as usize, names.len())? {
-        names.push(crate::base::u32_at(&x, marker_at));
+    let region_at = field_offset(e, FRICTION_REGION)? as usize;
+    let mut regions = Vec::new();
+    while let Some(x) = base.element(root, at, e.size as usize, regions.len())? {
+        regions.push(crate::base::u32_at(&x, region_at));
     }
-    if names.is_empty() {
+    if regions.is_empty() {
         return Ok(None);
     }
-    let Some(spots) = marker_positions(base, root, d, &names)? else {
-        return Ok(None);
-    };
-    let inner = spots
-        .iter()
-        .map(|p| p[1].abs())
-        .fold(f32::INFINITY, f32::min);
     let Some(hlmt) = base.reference(root, path_offset(d, "unit.obje.model")? as usize) else {
         return Ok(Some(false));
     };
@@ -1173,14 +1170,15 @@ pub fn member_wheel_shapes(
         return Ok(Some(false));
     };
     let p = base.root(phmo)?;
-    let f = |b: &[u8], o: usize| f32::from_le_bytes(b[o..o + 4].try_into().expect("4"));
-    let mut reach = 0.0f32;
-    let mut i = 0;
-    while let Some(x) = base.element(&p, PHMO_POLYHEDRA, POLYHEDRON_SIZE, i)? {
-        reach = reach.max(f(&x, 0x44).abs() + f(&x, 0x34).abs());
-        i += 1;
+    let mut have = Vec::new();
+    while let Some(x) = base.element(&p, PHMO_REGIONS, PHMO_REGION_SIZE, have.len())? {
+        have.push(crate::base::u32_at(&x, 0));
     }
-    Ok(Some(reach >= inner))
+    let carried = regions
+        .iter()
+        .filter(|r| **r == 0 || have.contains(r))
+        .count();
+    Ok(Some(2 * carried > regions.len()))
 }
 
 /// A base vehicle's hover points ([`VEHI_HOVER`], element `e` at `at` of
@@ -1905,7 +1903,14 @@ pub struct BodyWords {
     /// `+0x1a`, the motion: 0 to 5 are Havok motions 2 to 7 (E: the table
     /// at `0x001d5bd4`); 2 is box inertia.
     pub motion: u16,
-    /// `+0x1e`; meaning not established.
+    /// `+0x1e`, the body's size class ([`size_class`]): V, every rigid
+    /// body of every `phmo` on coagulation, beavercreek and
+    /// 05a_deltaapproach, it rises with the body's bounding sphere radius
+    /// (`+0x14`): 3 from 0.30 to 0.70, 4 from 0.73 to 1.23, 5 from 1.39 to
+    /// 1.96, 6 from 2.13 (1 and 2 overlap below 0.48). E: `0x001d5ec0`
+    /// takes the largest over an object's bodies (`0x001d63fd`) and
+    /// `0x001d69d0` picks a creature's collision layer by it (`0x001d6a32`:
+    /// up to 1 layer 4, 5 and over layer 5, else 3).
     pub word_1e: u16,
 }
 
@@ -1936,9 +1941,12 @@ pub const RIGID_BODY_SIZE: usize = 0x90;
 
 /// The rigid body words of the base map's scenery physics models: over
 /// every rigid body of every `phmo` a `scen` of the base names (through
-/// its `hlmt`, [`crate::convert::h2::HLMT_PHYSICS_MODEL`]), the words
-/// most of them hold, with how many bodies there were; `None` when no
-/// scenery of the base has a physics model.
+/// its `hlmt`, [`crate::convert::h2::HLMT_PHYSICS_MODEL`]), the flags and
+/// motion most of them hold, with how many bodies there were; `None` when
+/// no scenery of the base has a physics model. The `+0x1e` returned is
+/// the most common among those bodies; a built body takes its own by its
+/// size instead ([`size_class`]; V, coagulation: 5 on the trees whose
+/// bodies reach 1.72 to 1.82, 6 on the two of 2.53 and 7.33).
 ///
 /// Converted scenery is built a physics model from its Halo 1 collision
 /// with these words. Through converter version 84 it had none, only its
@@ -1954,7 +1962,8 @@ pub const RIGID_BODY_SIZE: usize = 0x90;
 pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize)>> {
     let model = crate::convert::h2::MODEL;
     let physics = crate::convert::h2::HLMT_PHYSICS_MODEL;
-    let mut votes = std::collections::BTreeMap::<(u16, u16, u16), usize>::new();
+    let mut votes = std::collections::BTreeMap::<(u16, u16), usize>::new();
+    let mut sizes = std::collections::BTreeMap::<u16, usize>::new();
     let mut seen = std::collections::HashSet::new();
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
         let bytes = base.root(t.0)?;
@@ -1971,15 +1980,20 @@ pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize
         let mut i = 0;
         while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
             let h = |o: usize| u16::from_le_bytes([rb[o], rb[o + 1]]);
-            *votes.entry((h(0x18), h(0x1a), h(0x1e))).or_default() += 1;
+            *votes.entry((h(0x18), h(0x1a))).or_default() += 1;
+            *sizes.entry(h(0x1e)).or_default() += 1;
             i += 1;
         }
     }
     let total: usize = votes.values().sum();
+    let word_1e = sizes
+        .into_iter()
+        .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
+        .map_or(0, |(w, _)| w);
     Ok(votes
         .into_iter()
         .max_by_key(|(w, c)| (*c, std::cmp::Reverse(*w)))
-        .map(|((flags, motion, word_1e), _)| {
+        .map(|((flags, motion), _)| {
             (
                 BodyWords {
                     flags,
@@ -1989,6 +2003,32 @@ pub fn scenery_body(base: &crate::base::Base) -> Result<Option<(BodyWords, usize
                 total,
             )
         }))
+}
+
+/// Every rigid body of every physics model of the base: (bounding sphere
+/// radius `+0x14`, size class `+0x1e`), for [`size_class`].
+pub fn size_classes(base: &crate::base::Base) -> Result<Vec<(f32, u16)>> {
+    let mut out = Vec::new();
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"phmo")) {
+        let phmo = base.root(t.0)?;
+        let mut i = 0;
+        while let Some(rb) = base.element(&phmo, PHMO_RIGID_BODIES, RIGID_BODY_SIZE, i)? {
+            let radius = f32::from_le_bytes(rb[0x14..0x18].try_into().expect("4"));
+            out.push((radius, u16::from_le_bytes([rb[0x1e], rb[0x1f]])));
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// A body's size class ([`BodyWords::word_1e`]) by its bounding sphere
+/// radius: the class of the base body whose radius is nearest
+/// ([`size_classes`]); `None` with no base bodies.
+pub fn size_class(classes: &[(f32, u16)], radius: f32) -> Option<u16> {
+    classes
+        .iter()
+        .min_by(|a, b| (a.0 - radius).abs().total_cmp(&(b.0 - radius).abs()))
+        .map(|c| c.1)
 }
 
 /// The global material every built piece names, with the index retail
@@ -2030,6 +2070,19 @@ pub fn physics_model(
     nodes: &[PhysNode],
     words: BodyWords,
     joints: &[crate::ragdoll::Constraint],
+) -> Result<Block> {
+    physics_model_sized(bodies, nodes, words, joints, &[])
+}
+
+/// [`physics_model`], each body's `+0x1e` its own size class by its
+/// bounding sphere radius ([`size_class`] over `classes`) where `classes`
+/// has any, else `words`'.
+pub fn physics_model_sized(
+    bodies: &[Body],
+    nodes: &[PhysNode],
+    words: BodyWords,
+    joints: &[crate::ragdoll::Constraint],
+    classes: &[(f32, u16)],
 ) -> Result<Block> {
     let d = def(b"phmo")?;
     let mut r = defs::default_record(d);
@@ -2190,7 +2243,11 @@ pub fn physics_model(
         set(&mut rb, "bounding_sphere_offset", Val::floats(&centre))?;
         set(&mut rb, "bounding_sphere_radius", Val::Float(radius))?;
         set(&mut rb, "unknown_18", u16_pair(words.flags, words.motion))?;
-        set(&mut rb, "unknown_1c", u16_hi(words.word_1e))?;
+        set(
+            &mut rb,
+            "unknown_1c",
+            u16_hi(size_class(classes, radius).unwrap_or(words.word_1e)),
+        )?;
         set(&mut rb, "unknown_20", f(1.0))?;
         set(&mut rb, "unknown_28", f(0.05))?;
         set(&mut rb, "shape_type", Val::Int(shape_type))?;
