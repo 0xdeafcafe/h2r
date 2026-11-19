@@ -641,6 +641,26 @@ stream sends only the ones that changed.
 
 ## Packed frames
 
+### Version 8 implementation plan
+
+Negotiate v8 on live connections. A sender and reader that have only agreed
+to packed v7 continue using v7. Both native and Worker ingest, replay and
+archive processing dispatch by the stored version nibble. The viewer uses
+the same dispatch for live and replay records.
+
+Keep the length-prefixed container, v7 field grids and a complete key every
+150 samples. Each v8 key embeds an independently decodable v7 key with its
+machine baseline. Between keys, send one forward byte-range-coded packet per
+sample using causal field predictions, grouped unchanged fields and adaptive
+symbol frequencies. The envelope carries version, key flag, stream id and
+sequence; deltas also carry the tick increment. A discontinuity requires a
+key or a matching decoder checkpoint. Checkpoints include field history,
+the dictionary, machine travel and active probability models.
+
+Verify every reconstructed field, mixed versions, cuts and joining mid-stream.
+Compare framed production encoders in alternating pairs on the same 9,000
+samples before enabling v8 by default.
+
 Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
 server to readers (`/v1/stream?frames=packed`), recorded frames at rest
 (frame chunks, [live-api.md](live-api.md#frame-chunks); before them
