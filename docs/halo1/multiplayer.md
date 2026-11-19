@@ -91,7 +91,7 @@ polygon, on 50,000 random points (open or solid, and which leaf), on 20,000
 random segments and 20,000 segments from open space (where each first
 enters solid, compared exactly), and on a ray down from every spawn point.
 
-**Placed scenery joins it** (converter version 92,
+**Placed scenery joins it** (converter version 96,
 `h1convert::scenery_collision`). For each scenery placement there from the
 start, its object's collision (`h1objects::coll::object_bsps`: each
 collision node's BSP for permutation 0 of its region, the one a converted
@@ -1351,7 +1351,7 @@ tags are added after the vehicle collections, which are added first.
 Blood Gulch 50 placements on 19 entries, Battle Creek 30 on 9, none left
 out.
 
-**Placed scenery is solid as structure (Built, converter version 92:
+**Placed scenery is solid as structure (Built, converter version 96:
 `h1convert::scenery_collision`, `convert::halo1::merge_scenery_collision`).**
 The engine gives scenery no Havok body, so a placed rock or tree drawn as
 scenery was walked through ([objects.md](objects.md), "Collision for
