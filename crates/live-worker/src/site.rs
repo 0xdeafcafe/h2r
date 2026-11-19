@@ -1,8 +1,9 @@
 //! What the Worker answers itself, ahead of the hub: the game art at
 //! `/art/game/*`, the stats site's old addresses (`/stats/*`, a 301 to
 //! the same page under `/games/halo2`, in entry.rs), and the app's pages
-//! (the built `index.html` with each page's link preview,
-//! [`live_server::page_meta`]).
+//! (the built `index.html` with each page's link preview
+//! [`live_server::page_meta`], and a game page's pre-rendered header
+//! [`live_server::page_header`], which the hub's answer carries).
 //!
 //! The Worker has no art files (they are the owner's, extracted from their
 //! disc). Art published to a public bucket (`h2 live assets publish`,

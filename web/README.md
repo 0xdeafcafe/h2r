@@ -573,6 +573,28 @@ by the CDN under a key that includes the game's log position (an ended
 game's card never changes). The open questions are the Worker's wasm size
 and CPU budget for a 1200 x 630 render.
 
+**The game page's header, pre-rendered.** The game page's header strip —
+the game's title on its map, LIVE/FINAL and the result, the type of game,
+and the players (teams, scores, and each player's emblem) — is written
+into the HTML above `#root`, in place of the `<!-- game-header -->` block,
+by both homes the same way they write the link previews
+(`crates/live-server/src/page_header.rs`; the Worker's copy of the model
+rides the hub's `GET /v1/page-meta` answer). The first paint is the final
+header, emblem included: the emblems are the art pack's own deterministic
+picks (`src/stats/gameHeader.ts`, the same FNV pick `components/Emblem.tsx`
+makes), static cacheable WebPs at a fixed 16px, so nothing swaps when the
+app boots — which is what fixed the emblem flicker, an emblem having
+rendered as the placeholder pick and swapped to the canvas-composited one
+once the server's game art arrived. The model ships beside the header (a
+`<script type="application/json">`), and the client (`Game.tsx`) adopts
+the header as it is when its own derivation matches that model
+byte-for-byte, rewriting it in place only when the game has moved on (a
+navigation, a live score) and hiding it on any other page. The client
+derivation and renderer are the TypeScript module; the servers' are the
+Rust one; the fixtures under `test/fixtures/game-header.{json,html}` (made
+by `test/fixtures/gen-game-header.ts`, run with bun) are the contract both
+sides are tested against, so the markup cannot drift apart.
+
 ## Architecture
 
 **Snapshot, then one stream.** `src/state/live.ts` discovers the server
