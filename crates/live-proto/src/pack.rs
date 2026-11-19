@@ -372,7 +372,7 @@ enum Val {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Kind {
     Bool,
-    /// Three signed Exp-Golomb (k 16), as differences k 7 in a delta.
+    /// Three position axes. V7 edits carry sparse residuals against the motion base.
     Pos,
     /// [`ANGLE_BITS`] bits.
     Angle,
@@ -384,11 +384,13 @@ enum Kind {
     Id,
     /// Exp-Golomb of order k.
     Uint(u32),
+    /// Animation phase in sixteenths. A matched v7 edit can advance by its tick span.
+    AnimPhase,
     /// A fixed number of bits.
     Bits(u32),
     /// A count (Exp-Golomb k 0), then 3 bits each.
     Actions,
-    /// Three signed Exp-Golomb (k 8), as differences k 4 in a delta.
+    /// Three velocity axes. V7 edits carry sparse residuals against the last velocity.
     Vel,
     /// A count (Exp-Golomb k 0, at most [`MAX_FRAME_ACTIONS`]), then
     /// Exp-Golomb k 1 each: ticks back.
@@ -446,7 +448,7 @@ const PLAYER: &[Field] = &[
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
     o(Kind::Str),             // anim name (version 4)
-    o(Kind::Uint(4)),         // anim frame
+    o(Kind::AnimPhase),       // anim frame
 ];
 /// Fields a version 2 or 3 player or actor has: the later ones are last.
 const V2_UNIT_FIELDS: usize = 13;
@@ -489,7 +491,7 @@ const ACTOR: &[Field] = &[
     o(Kind::Uint(0)),         // seat
     o(Kind::Agos),            // actions_ago
     o(Kind::Str),             // anim name (version 4)
-    o(Kind::Uint(4)),         // anim frame
+    o(Kind::AnimPhase),       // anim frame
 ];
 const ACTOR_V2: &[Field] = ACTOR.split_at(V2_UNIT_FIELDS).0;
 const ACTOR_V3: &[Field] = ACTOR.split_at(V3_UNIT_FIELDS).0;
@@ -1410,7 +1412,14 @@ fn read_angle_component(r: &mut BitReader, base: Option<u32>, wrap: bool) -> Res
     Ok(r.bits(14)? as u32)
 }
 
-fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &Table) {
+fn advanced_phase(prev: Option<&Val>, ticks: u64) -> Option<u64> {
+    match prev {
+        Some(Val::Int(q)) if (1..=PREDICT_TICKS).contains(&ticks) => Some(q + ticks * 16),
+        _ => None,
+    }
+}
+
+fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &Table, ticks: u64) {
     match (kind, v) {
         (Kind::Bool, Val::Bool(b)) => w.bit(*b),
         (Kind::Pos, Val::Pos(q)) => write_vector(
@@ -1456,6 +1465,15 @@ fn write_value(w: &mut BitWriter, kind: Kind, v: &Val, prev: Option<&Val>, t: &T
                 w.eg(t.index[s], 3);
             }
         },
+        (Kind::AnimPhase, Val::Int(n)) => {
+            if let Some(phase) = advanced_phase(prev, ticks) {
+                w.bit(*n == phase);
+                if *n == phase {
+                    return;
+                }
+            }
+            w.eg(*n, 4);
+        }
         (Kind::Uint(k), Val::Int(n)) => w.eg(*n, k),
         (Kind::Bits(n), Val::Int(v)) => w.bits(*v, n),
         (Kind::Actions, Val::List(l)) => {
@@ -1485,6 +1503,7 @@ fn read_value(
     kind: Kind,
     prev: Option<&Val>,
     strings: &[String],
+    ticks: u64,
 ) -> Result<Val> {
     let string = |i: u64| {
         strings
@@ -1547,6 +1566,16 @@ fn read_value(
             2 => Val::Id(Id::Text(string(r.eg(3)?)?)),
             _ => return Err(PackError::Bad("unknown id form")),
         },
+        Kind::AnimPhase => {
+            if r.version == VERSION
+                && let Some(phase) = advanced_phase(prev, ticks)
+                && r.bit()?
+            {
+                Val::Int(phase)
+            } else {
+                Val::Int(r.eg(4)?)
+            }
+        }
         Kind::Uint(k) => Val::Int(r.eg(k)?),
         Kind::Bits(n) => {
             let v = r.bits(n)?;
@@ -1586,12 +1615,19 @@ fn read_value(
     })
 }
 
-fn write_field(w: &mut BitWriter, field: Field, v: &Val, prev: Option<&Val>, t: &Table) {
+fn write_field(
+    w: &mut BitWriter,
+    field: Field,
+    v: &Val,
+    prev: Option<&Val>,
+    t: &Table,
+    ticks: u64,
+) {
     if field.opt {
         w.bit(!matches!(v, Val::None));
     }
     if !matches!(v, Val::None) {
-        write_value(w, field.kind, v, prev, t);
+        write_value(w, field.kind, v, prev, t, ticks);
     }
 }
 
@@ -1600,23 +1636,24 @@ fn read_field(
     field: Field,
     prev: Option<&Val>,
     strings: &[String],
+    ticks: u64,
 ) -> Result<Val> {
     if field.opt && !r.bit()? {
         return Ok(Val::None);
     }
-    read_value(r, field.kind, prev, strings)
+    read_value(r, field.kind, prev, strings, ticks)
 }
 
 fn write_entity(w: &mut BitWriter, schema: &[Field], e: &Entity, t: &Table) {
     for (field, v) in schema.iter().zip(e) {
-        write_field(w, *field, v, None, t);
+        write_field(w, *field, v, None, t, 0);
     }
 }
 
 fn read_entity(r: &mut BitReader, schema: &[Field], strings: &[String]) -> Result<Entity> {
     schema
         .iter()
-        .map(|field| read_field(r, *field, None, strings))
+        .map(|field| read_field(r, *field, None, strings, 0))
         .collect()
 }
 
@@ -1680,7 +1717,14 @@ fn key_of(e: &Entity, first: usize, second: Option<usize>) -> (&Val, Option<&Val
 /// the previous list, or `1` and one entity: `1`, the previous entity it
 /// is (relative to the one after the last taken), a changed-field mask and
 /// the changed fields; or `0` and the whole entity.
-fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Entity], t: &Table) {
+fn write_delta(
+    w: &mut BitWriter,
+    schema: &[Field],
+    list: &[Entity],
+    prev: &[Entity],
+    t: &Table,
+    ticks: u64,
+) {
     // Most frames list the same entities in the same order: match by
     // position, and only key a map when that fails.
     let mut keys = schema
@@ -1754,7 +1798,7 @@ fn write_delta(w: &mut BitWriter, schema: &[Field], list: &[Entity], prev: &[Ent
                 let mut changed = mask;
                 while changed != 0 {
                     let i = changed.trailing_zeros() as usize;
-                    write_field(w, schema[i], &entity[i], Some(&before[i]), t);
+                    write_field(w, schema[i], &entity[i], Some(&before[i]), t, ticks);
                     changed &= changed - 1;
                 }
                 cursor = j + 1;
@@ -1839,7 +1883,7 @@ fn read_delta(
                     (Some((pi, _)), Some(_)) if idx == pi => {
                         error = Some([r.seg(PREDICT_K)?, r.seg(PREDICT_K)?, r.seg(PREDICT_K)?]);
                     }
-                    _ => e[idx] = read_field(r, schema[idx], Some(&before[idx]), strings)?,
+                    _ => e[idx] = read_field(r, schema[idx], Some(&before[idx]), strings, dt)?,
                 }
             }
             if let (Some((pi, vi)), Some(a), Some(err)) = (motion, base, error) {
@@ -2002,7 +2046,7 @@ impl Encoder {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
                 advance_positions(&mut state.lists[n], schema, dt);
-                write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table);
+                write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table, dt);
             }
         }
         state.seq = seq;
