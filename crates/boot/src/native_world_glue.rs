@@ -7,24 +7,29 @@
 //! - **Load once.** On a new (map, BSP) the worker opens the map through
 //!   the VFS ([`set_locator`]), finds the scenario BSP whose tag data sits
 //!   at the active BSP's address, builds the world (`native_render::load`),
-//!   and decodes each material's base map and each lightmap page. The GPU
-//!   side is made on the render thread by the first pass. Until it is
-//!   ready, or when it fails, the D3D path draws the world.
+//!   decodes each lightmap page, and translates each material's layer-3
+//!   pass. The GPU side is made on the render thread by the first pass.
+//!   Until it is ready, or when it fails, the D3D path draws the world.
 //! - **Per frame.** The camera and one external pass; the device records it
 //!   after the next drain, in order with the draws.
-//! - **Fallback.** A material whose base map does not decode is left out
-//!   of the world and keeps its D3D draws (the skip only clears items of
-//!   the shaders the world draws).
+//! - **Material programs** (`impl.render.native_world_programs`, on with
+//!   the world). A material is native only when its layer-3 pass
+//!   translates (`native_render::look::layer3_pass`,
+//!   `native_render::program::compile_world`) and every part of it can be
+//!   drawn with it (`program::world_fit`, its stage bitmaps decode); it
+//!   then draws with its own vertex program, pixel shader, stage textures,
+//!   constants and render states, and the device's view constants each
+//!   frame. Every other material is left out of the world and keeps its
+//!   D3D draws (the skip only clears items of the shaders the world draws,
+//!   and a shader only when all its materials are native). The load says
+//!   the coverage and each reason once, with counts.
+//! - **Stage 1** (`impl.render.native_world_programs=off`, for the A/B
+//!   only): every material whose base map decodes, drawn as base map
+//!   times lightmap.
 //! - **Lights** (`impl.render.native_lights`): the lights' part of the
 //!   world, loaded with it (`native_lights_glue::load`).
-//! - **Material programs** (`impl.render.native_world_programs`, off by
-//!   default). A native material whose layer-3 pass translates
-//!   (`native_render::look`, `native_render::program`) draws with its own
-//!   vertex program, pixel shader, stage textures and constants, and the
-//!   device's view constants each frame; the others keep stage 1's base
-//!   map times lightmap.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
@@ -59,6 +64,9 @@ pub struct CpuWorld {
     pub lightmaps: HashMap<LightmapKey, Image>,
     /// Materials with their own programs, and their stages' images.
     pub programs: HashMap<u16, MaterialProgram>,
+    /// Material programs on: the world draws only with them, never with
+    /// stage 1's program.
+    pub programs_on: bool,
     pub stage_images: StageImages,
     /// Transparent materials (`impl.render.native_transparents`): each
     /// one's layer-15 passes, compiled.
@@ -193,15 +201,22 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         mut base_maps,
         lightmaps,
         programs,
+        programs_on,
         stage_images,
         transparents,
     } = cpu;
-    let mut g = GpuWorld::new(device, queue, world, &mut |m| base_maps.remove(&m), &mut |k| lightmaps.get(&k).cloned());
+    // With programs on, stage 1's groups are never drawn: no copy of the
+    // lightmap pages for them (the programs upload their own).
+    let mut g = GpuWorld::new(device, queue, world, &mut |m| base_maps.remove(&m), &mut |k| {
+        if programs_on { None } else { lightmaps.get(&k).cloned() }
+    });
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
         Stage::Empty | Stage::Lightmap => None,
     };
-    if !programs.is_empty() {
+    if programs_on {
+        // Set even when empty: with programs on, a batch without one is
+        // never drawn with stage 1's program.
         let set = ProgramSet::new(device, queue, g.world(), programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
         eprintln!("native-world: {} materials draw with their own programs", set.len());
         g.set_programs(set);
@@ -231,9 +246,16 @@ impl d3d::ExternalPass for WorldPass {
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return };
-        if let Some(constants) = self.view
-            && gpu.program_count() > 0
-        {
+        if gpu.has_programs() {
+            // The programs read the view from the device's constants: a
+            // pass issued without them draws nothing rather than a world
+            // with last frame's (or no) camera.
+            let Some(constants) = self.view else {
+                if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("native-world: a pass came without the device's view constants; it draws nothing");
+                }
+                return;
+            };
             gpu.prepare_programs(
                 t.queue,
                 &ViewInputs {
@@ -263,8 +285,16 @@ impl d3d::ExternalPass for WorldPass {
             PassViewport { x, y, width, height },
             t.size,
         );
+        let unbound = gpu.unbound_batches();
+        if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("native-world: {unbound} batch draws left out: their material program could not be bound");
+        }
     }
 }
+
+/// Said once: a pass without view constants, batches left out.
+static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Raw resource reads over the map and its shared maps.
 pub(crate) struct Raw(pub(crate) assets::ResourceFiles);
@@ -315,24 +345,10 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     } = load::load_world(&mut map, &mut raw, index)?;
     let mut files = raw.0;
 
-    // Base maps: a material without one stays on the D3D path.
-    let mut base_maps = HashMap::new();
-    let mut native = ShaderSet::new();
-    let mut decoded: HashMap<TagId, Option<Image>> = HashMap::new();
-    for m in world.materials() {
-        let Some(&shader) = shaders.get(usize::from(m)) else { continue };
-        let Some(bitmap) = load::base_map(&mut map, shader) else { continue };
-        let image = decoded
-            .entry(bitmap)
-            .or_insert_with(|| decode_first(&mut map, &mut files, bitmap))
-            .clone();
-        if let Some(image) = image {
-            base_maps.insert(m, image);
-            native.insert(shader.0 as u16);
-        }
-    }
-    // Lightmap pages through their palettes.
+    let programs_on = feature::Switches::from_env().is_ok_and(|s| feature::native_world::programs_on(&s));
+    // Lightmap pages through their palettes, with their mip chains.
     let mut lightmaps = HashMap::new();
+    let mut linear_pages = 0;
     if let Some(id) = lightmap_bitmap
         && let Ok(tags::DecodedTag {
             data: tags::TagData::Bitmap(b),
@@ -347,21 +363,56 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
                 continue;
             }
             let Ok(d) = assets::decode_image(image, &mut files) else { continue };
-            let Some(l) = d.levels.into_iter().find(|l| l.face == 0 && l.level == 0) else { continue };
-            // P8 decodes as L8: the index in every channel.
-            let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|p| p[0]).collect();
-            let Some(page) = Image::level(l.width, l.height, load::expand_page(&indices, palette)) else { continue };
+            if programs_on && d.desc.format.layout() == gfx::format::Layout::Linear {
+                // A linear texture is addressed in texels on the D3D path
+                // (its `tex_scale`); the programs here take coordinates
+                // as normalised. Its materials stay on the D3D path.
+                linear_pages += 1;
+                continue;
+            }
+            let Some(page) = expand_levels(d.levels, palette) else { continue };
             lightmaps.insert(key, page);
         }
     }
-    // Material programs: each native material's own layer-3 pass where it
-    // translates, with its stages' images.
-    let programs_on = feature::Switches::from_env().is_ok_and(|s| feature::native_world::programs_on(&s));
-    let (programs, mut stage_images) = if programs_on {
-        material_programs(&mut map, &mut files, &shaders, &base_maps)
+    if linear_pages > 0 {
+        eprintln!("native-world: {linear_pages} lightmap pages are linear textures; their materials stay on the D3D path");
+    }
+    // What draws natively. With material programs (the default) a
+    // material is native only when its own layer-3 pass translates and
+    // every part of it can be drawn with it: the rest keep their D3D
+    // draws, never stage 1's look. Without them (the A/B against stage 1:
+    // `impl.render.native_world_programs=off`), every material whose base
+    // map decodes, drawn as base map times lightmap.
+    let mut base_maps = HashMap::new();
+    let mut native = HashSet::new();
+    let (mut programs, mut stage_images, refused) = if programs_on {
+        let (programs, images, refused) = material_programs(&mut map, &mut files, &shaders, &world, &lightmaps);
+        native.extend(programs.keys().copied());
+        (programs, images, refused)
     } else {
+        let mut decoded: HashMap<TagId, Option<Image>> = HashMap::new();
+        for m in world.materials() {
+            let Some(&shader) = shaders.get(usize::from(m)) else { continue };
+            let Some(bitmap) = load::base_map(&mut map, shader) else { continue };
+            let image = decoded
+                .entry(bitmap)
+                .or_insert_with(|| decode_first(&mut map, &mut files, bitmap))
+                .clone();
+            if let Some(image) = image {
+                base_maps.insert(m, image);
+                native.insert(m);
+            }
+        }
         Default::default()
     };
+    // The game's skip is per shader: a shader is skipped only when every
+    // material of the world that uses it is native.
+    let (native, shader_set, shared) = native_shaders(&world.materials(), &shaders, &native);
+    programs.retain(|m, _| native.contains(m));
+    base_maps.retain(|m, _| native.contains(m));
+    if programs_on {
+        log_coverage(&mut map, &world, &shaders, &native, refused, &shared);
+    }
     // Transparent materials: each one's layer-15 passes where they all
     // translate, and the parts the native pass can draw.
     let transparents_on = feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s));
@@ -374,32 +425,122 @@ fn load_ready(name: &str, bsp: u32) -> Result<Ready, load::Error> {
     // to D3D are where native lights cannot draw.
     let lights_on = feature::Switches::from_env().is_ok_and(|s| feature::native_lights::on(&s));
     let lights = if lights_on {
-        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| base_maps.contains_key(&m)).map(Arc::new)
+        crate::native_lights_glue::load(&mut map, &mut files, &shaders, &world, &|m| native.contains(&m)).map(Arc::new)
     } else {
         None
     };
     // Draw only what a native material owns: the rest keeps its D3D draws.
-    let world = keep_materials(world, &base_maps);
+    let world = keep_materials(world, &native);
     Ok(Ready {
         cpu: Mutex::new(Some(CpuWorld {
             world,
             base_maps,
             lightmaps,
             programs,
+            programs_on,
             stage_images,
             transparents,
         })),
         gpu: Mutex::new(None),
-        shaders: Arc::new(native),
+        shaders: Arc::new(shader_set),
         transparent_parts: Arc::new(transparent_parts),
         lights,
     })
 }
 
+/// A P8 page's decoded levels (the index in every channel) through
+/// `palette`, largest first, as one image with its mip chain.
+fn expand_levels(levels: Vec<assets::Level>, palette: &[u32; 256]) -> Option<Image> {
+    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    Image::from_levels(
+        levels
+            .into_iter()
+            .map(|l| {
+                // P8 decodes as L8: the index in every channel.
+                let indices: Vec<u8> = l.rgba.chunks_exact(4).map(|p| p[0]).collect();
+                (l.width, l.height, load::expand_page(&indices, palette))
+            })
+            .collect(),
+    )
+}
+
+/// Of the world's materials (`materials`, by BSP index; `shaders` the
+/// shader of each), those drawn natively and the shaders the skip clears:
+/// a shader only when every one of the world's materials that uses it is
+/// in `native`, since the game skips by shader. Also the materials left
+/// out for sharing a shader with one that is not native.
+fn native_shaders(materials: &[u16], shaders: &[TagId], native: &HashSet<u16>) -> (HashSet<u16>, ShaderSet, Vec<u16>) {
+    let shader = |m: u16| shaders.get(usize::from(m)).map(|s| s.0 as u16);
+    let refused: HashSet<u16> = materials
+        .iter()
+        .filter(|&&m| !native.contains(&m))
+        .filter_map(|&m| shader(m))
+        .collect();
+    let mut kept = HashSet::new();
+    let mut set = ShaderSet::new();
+    let mut shared = Vec::new();
+    for &m in materials.iter().filter(|&&m| native.contains(&m)) {
+        let Some(s) = shader(m) else { continue };
+        if refused.contains(&s) {
+            shared.push(m);
+        } else {
+            kept.insert(m);
+            set.insert(s);
+        }
+    }
+    (kept, set, shared)
+}
+
+/// Materials left to the D3D path, by reason.
+type Refused = std::collections::BTreeMap<String, Vec<u16>>;
+
+/// The coverage of one load on stderr: how many materials (and parts)
+/// draw natively, then one line per reason the rest stay on the D3D path,
+/// most parts first, with a material that has it.
+fn log_coverage<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    world: &World,
+    shaders: &[TagId],
+    native: &HashSet<u16>,
+    mut refused: Refused,
+    shared: &[u16],
+) {
+    if !shared.is_empty() {
+        refused.insert("shares its shader with a material left to D3D".into(), shared.to_vec());
+    }
+    let mut parts: HashMap<u16, usize> = HashMap::new();
+    for d in &world.draws {
+        *parts.entry(d.material).or_default() += 1;
+    }
+    let count = |ms: &[u16]| ms.iter().map(|m| parts.get(m).copied().unwrap_or(0)).sum::<usize>();
+    let materials = world.materials();
+    let drawn: Vec<u16> = native.iter().copied().collect();
+    eprintln!(
+        "native-world: {} of {} materials draw natively with their own programs ({} of {} parts); {} stay on the D3D path for {} reasons",
+        native.len(),
+        materials.len(),
+        count(&drawn),
+        world.draws.len(),
+        materials.len().saturating_sub(native.len()),
+        refused.len()
+    );
+    let mut lines: Vec<(usize, String, Vec<u16>)> = refused.into_iter().map(|(why, ms)| (count(&ms), why, ms)).collect();
+    lines.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for (n, why, ms) in lines {
+        let example = ms
+            .first()
+            .and_then(|&m| shaders.get(usize::from(m)))
+            .and_then(|&s| map.tag(s).ok().and_then(|t| t.name.clone()))
+            .unwrap_or_default();
+        eprintln!("native-world: D3D keeps {} materials ({n} parts): {why}; e.g. {example}", ms.len());
+    }
+}
+
 /// The world without the draws of materials left to the D3D path.
-fn keep_materials(mut world: World, native: &HashMap<u16, Image>) -> World {
-    world.draws.retain(|d| native.contains_key(&d.material));
-    world.batches.retain(|b| native.contains_key(&b.material));
+fn keep_materials(mut world: World, native: &HashSet<u16>) -> World {
+    world.draws.retain(|d| native.contains(&d.material));
+    world.batches.retain(|b| native.contains(&b.material));
     let mut first = 0;
     for b in &mut world.batches {
         b.first_draw = first;
@@ -416,57 +557,94 @@ fn keep_materials(mut world: World, native: &HashMap<u16, Image>) -> World {
 /// Stage images by (bitmap, image index).
 pub type StageImages = HashMap<(TagId, u32), Image>;
 
-/// The materials of `native` (by BSP material index; `shaders` the BSP's
-/// shader per material) whose layer-3 pass translates, with the images
-/// their stages sample. Says on stderr how many stay with stage 1 and why.
+/// The world's materials whose layer-3 pass translates and whose every
+/// part the native pass can draw with it (`program::compile_world`,
+/// `program::world_fit`), with the images their stages sample; and the
+/// others by the reason they stay on the D3D path.
 fn material_programs<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
     shaders: &[TagId],
-    native: &HashMap<u16, Image>,
-) -> (HashMap<u16, MaterialProgram>, StageImages) {
+    world: &World,
+    lightmaps: &HashMap<LightmapKey, Image>,
+) -> (HashMap<u16, MaterialProgram>, StageImages, Refused) {
     let mut programs = HashMap::new();
     let mut images = StageImages::new();
+    let mut refused = Refused::new();
+    let materials = world.materials();
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("native-world: material programs: the shader tags do not read ({e}); stage 1 draws every material");
-            return (programs, images);
+            refused.insert(format!("the shader tags do not read ({e})"), materials);
+            return (programs, images, refused);
         }
     };
-    let mut refused: HashMap<String, usize> = HashMap::new();
-    let mut materials: Vec<u16> = native.keys().copied().collect();
-    materials.sort_unstable();
+    let mut failed: HashSet<(TagId, u32)> = HashSet::new();
     for m in materials {
-        let Some(&shader) = shaders.get(usize::from(m)) else { continue };
+        let Some(&shader) = shaders.get(usize::from(m)) else {
+            refused.entry("no shader".into()).or_default().push(m);
+            continue;
+        };
         let compiled = lib
             .material(shader, None)
             .map_err(|e| format!("material: {e}"))
-            .and_then(|mat| look::layer3_look(&mat).map_err(|r| format!("{r:?}")))
+            .and_then(|mat| look::layer3_pass(&mat).map_err(|r| format!("layer 3: {r:?}")))
             .and_then(|pass| {
-                let code = look::world_program(map, lib.metadata(), pass.vertex_shader).ok_or("no world-space vertex program")?;
-                program::compile(&pass, &code)
+                let code = look::world_program(map, lib.metadata(), pass.look.vertex_shader).ok_or("no world-space vertex program")?;
+                program::compile_world(&pass, &code)
+            })
+            .and_then(|p| {
+                program::world_fit(world, m, &p, &|k: LightmapKey| lightmaps.contains_key(&k))?;
+                for (n, s) in p.stages.iter().enumerate() {
+                    let Stage::Bitmap { bitmap, image } = *s else { continue };
+                    if p.dims[n].is_none() || images.contains_key(&(bitmap, image)) {
+                        continue;
+                    }
+                    if failed.contains(&(bitmap, image)) {
+                        return Err(format!("stage {n} bitmap does not decode"));
+                    }
+                    match decode_stage(map, files, bitmap, image as usize) {
+                        Ok(i) => {
+                            images.insert((bitmap, image), i);
+                        }
+                        Err(why) => {
+                            failed.insert((bitmap, image));
+                            return Err(format!("stage {n} bitmap {why}"));
+                        }
+                    }
+                }
+                Ok(p)
             });
         match compiled {
             Ok(p) => {
-                for (n, s) in p.stages.iter().enumerate() {
-                    if let Stage::Bitmap { bitmap, image } = *s
-                        && p.dims[n].is_some()
-                        && !images.contains_key(&(bitmap, image))
-                        && let Some(i) = decode_image(map, files, bitmap, image as usize)
-                    {
-                        images.insert((bitmap, image), i);
-                    }
-                }
                 programs.insert(m, p);
             }
-            Err(why) => *refused.entry(why).or_default() += 1,
+            Err(why) => refused.entry(why).or_default().push(m),
         }
     }
-    let mut why: Vec<_> = refused.into_iter().collect();
-    why.sort();
-    eprintln!("native-world: {} materials translate; with stage 1: {why:?}", programs.len());
-    (programs, images)
+    (programs, images, refused)
+}
+
+/// Image `index` of a stage's bitmap, or why the stage cannot have it: it
+/// does not decode, or it is a linear texture (addressed in texels on the
+/// D3D path, `tex_scale`, where the programs here take normalised
+/// coordinates).
+fn decode_stage<R: std::io::Read + std::io::Seek>(
+    map: &mut Map<R>,
+    files: &mut assets::ResourceFiles,
+    id: TagId,
+    index: usize,
+) -> Result<Image, &'static str> {
+    let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| "does not read")?.data else {
+        return Err("is not a bitmap");
+    };
+    let d = assets::decode_image(b.images.get(index).ok_or("has no such image")?, files).map_err(|_| "does not decode")?;
+    if d.desc.format.layout() == gfx::format::Layout::Linear {
+        return Err("is a linear texture");
+    }
+    let mut levels: Vec<_> = d.levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect()).ok_or("does not decode")
 }
 
 /// The first image of a bitmap as RGBA, with its mip chain.
@@ -512,10 +690,55 @@ mod tests {
         for (i, m) in [1u16, 2, 2, 3].into_iter().enumerate() {
             b.add_section(Owner::Cluster(i as u32), &tri(m), &Placement::IDENTITY, None);
         }
-        let native: HashMap<u16, Image> = [(2, Image::solid([1; 4])), (3, Image::solid([1; 4]))].into_iter().collect();
+        let native: HashSet<u16> = [2, 3].into_iter().collect();
         let w = keep_materials(b.finish(), &native);
         let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
         assert_eq!(batches, vec![(2, 0, 2), (3, 2, 1)]);
         assert_eq!(w.draws.iter().map(|d| (d.material, d.batch)).collect::<Vec<_>>(), vec![(2, 0), (2, 0), (3, 1)]);
+    }
+
+    #[test]
+    fn a_shader_is_skipped_only_when_all_its_materials_are_native() {
+        // Materials 0..4; 1 and 3 share shader 0xe000_0011. 1 translates,
+        // 3 does not: the shader stays on D3D, so 1 does too (its items
+        // carry the same shader and the skip goes by shader).
+        let shaders = [0xe000_0010, 0xe000_0011, 0xe000_0012, 0xe000_0011, 0xe000_0014].map(TagId);
+        let translated: HashSet<u16> = [0, 1, 2].into_iter().collect();
+        let (native, set, shared) = native_shaders(&[0, 1, 2, 3, 4], &shaders, &translated);
+        assert_eq!(native, [0, 2].into_iter().collect::<HashSet<u16>>());
+        assert_eq!(set, [0x10, 0x12].into_iter().collect::<ShaderSet>(), "by tag index");
+        assert_eq!(shared, vec![1]);
+        // A material without a shader is never native.
+        let (native, _, _) = native_shaders(&[0, 9], &shaders, &[0, 9].into_iter().collect());
+        assert_eq!(native, [0].into_iter().collect::<HashSet<u16>>());
+    }
+
+    #[test]
+    fn an_untranslated_material_keeps_its_d3d_draws_and_a_translated_one_is_skipped() {
+        // The world as the loader leaves it with programs on: material 7
+        // translated, material 8 refused. 8 is neither drawn natively nor
+        // skipped, so the D3D path still draws it; 7 is drawn natively
+        // and its shader is skipped.
+        let tri = |m| SectionInput {
+            positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            parts: vec![PartInput {
+                material: m,
+                transparent: false,
+                triangles: vec![[0, 1, 2]],
+            }],
+            ..Default::default()
+        };
+        let mut b = WorldBuilder::new();
+        b.add_section(Owner::Cluster(0), &tri(7), &Placement::IDENTITY, None);
+        b.add_section(Owner::Cluster(1), &tri(8), &Placement::IDENTITY, None);
+        let world = b.finish();
+        let mut shaders = vec![TagId(0xe000_0000); 9];
+        shaders[7] = TagId(0xe000_0107);
+        shaders[8] = TagId(0xe000_0108);
+        let translated: HashSet<u16> = [7].into_iter().collect();
+        let (native, set, _) = native_shaders(&world.materials(), &shaders, &translated);
+        let w = keep_materials(world, &native);
+        assert!(w.draws.iter().all(|d| d.material == 7), "8 is not drawn natively (no stage 1 look)");
+        assert!(set.contains(&0x107) && !set.contains(&0x108), "only 7's shader is skipped");
     }
 }

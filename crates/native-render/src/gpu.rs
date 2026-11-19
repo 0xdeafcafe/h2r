@@ -124,6 +124,9 @@ pub struct GpuWorld {
     transparents: Option<TransparentSet>,
     /// The light passes (stage 4), once a light needs them.
     lights: Option<LightSet>,
+    /// Batches left out of a pass because their material program could
+    /// not be bound (with programs set; see [`GpuWorld::encode`]).
+    unbound_batches: u64,
 }
 
 const SHADER: &str = include_str!("world.wgsl");
@@ -339,7 +342,14 @@ impl GpuWorld {
             programs: None,
             transparents: None,
             lights: None,
+            unbound_batches: 0,
         }
+    }
+
+    /// Batch draws left out since upload because their material program
+    /// could not be bound (zero when the loader's checks hold).
+    pub fn unbound_batches(&self) -> u64 {
+        self.unbound_batches
     }
 
     pub fn world(&self) -> &World {
@@ -475,6 +485,12 @@ impl GpuWorld {
     /// Draws `programs`' materials with their own programs from now on.
     pub fn set_programs(&mut self, programs: ProgramSet) {
         self.programs = Some(programs);
+    }
+
+    /// Whether material programs are set: the world then draws only with
+    /// them, never with stage 1's program.
+    pub fn has_programs(&self) -> bool {
+        self.programs.is_some()
     }
 
     /// How many materials draw with their own programs.
@@ -628,6 +644,12 @@ impl GpuWorld {
                 pass.set_pipeline(program);
                 pass.set_bind_group(0, uniforms, &[]);
                 pass.set_bind_group(1, textures, &[]);
+            } else if self.programs.is_some() {
+                // With material programs, stage 1's look is never drawn:
+                // the loader keeps only materials whose program uploads,
+                // so this is a batch it could not bind (counted, left out).
+                self.unbound_batches += 1;
+                continue;
             } else {
                 if own != Some(false) {
                     pass.set_viewport(viewport.x, viewport.y, viewport.width, viewport.height, 0.0, 1.0);

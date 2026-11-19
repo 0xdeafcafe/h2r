@@ -297,14 +297,29 @@ The crate `native-render` (`crates/native-render`):
 - **Boot glue** (`crates/boot/src/native_world_glue.rs`). The host: on a
   new (map name, active BSP address) a worker opens the loaded map
   through the VFS with its shared maps, picks the scenario BSP whose tag
-  data sits at that address, builds the world, decodes each material's
-  base map and each lightmap page, and drops the draws of materials whose
-  base map does not decode (they stay on the D3D path). Each layer-3 view
-  then asks the device for a `WorldPass` with the view's camera; the first
-  pass uploads the world on the render thread. A line per load:
-  `native-world: <map> BSP at <addr>: N draws in B batches, M materials
-  native, in S s`; every 1,800 layer-3 views: `native-world: D of V
-  layer-3 views drawn natively, I world items skipped`.
+  data sits at that address, builds the world, decodes each lightmap page
+  (with its mip chain), and translates each material's layer-3 pass
+  ("Order of work" 4). A material is native only when its pass translates
+  and every part of it can be drawn with it; every other material is left
+  out of the world and keeps its D3D draws, never stage 1's look. The skip
+  goes by shader, so a shader is skipped only when every material of the
+  world that uses it is native. Each layer-3 view then asks the device for
+  a `WorldPass` with the view's camera; the first pass uploads the world
+  on the render thread. Lines per load:
+  `native-world: N of M materials draw natively with their own programs
+  (P of Q parts); K stay on the D3D path for R reasons`, then one line per
+  reason, most parts first, `native-world: D3D keeps K materials (P
+  parts): <why>; e.g. <a shader that has it>`, then `native-world: <map>
+  BSP at <addr>: N draws in B batches, M materials native, in S s`; at the
+  upload `native-world: N materials draw with their own programs`; every
+  1,800 layer-3 views: `native-world: D of V layer-3 views drawn natively,
+  I world items skipped`. Said once if it ever happens (it should not):
+  `native-world: a pass came without the device's view constants; it
+  draws nothing`, `native-world: N batch draws left out: their material
+  program could not be bound`.
+  With `impl.render.native_world_programs=off` (the A/B against stage 1
+  only) every material whose base map decodes is drawn as base map times
+  lightmap, as stage 1 first did.
 
 ### The live A/B
 
@@ -314,20 +329,41 @@ views line shows every layer-3 view drawn natively; the frame shows the
 world (no holes where the BSP was, objects and transparents in front of
 and behind it as before); `cpu` and the `0x0002bed0` site (layer 3) drop
 by most of the world's share of the 8.26 ms, and `encode` and `submit`
-drop with the D3D draws that are gone. The pixel diff is expected to be
-large on world surfaces until step 4 (base map times lightmap only, no
-detail maps or bump, no fog-free exposure match; base maps are mipmapped
-since step 4) and small elsewhere.
+drop with the D3D draws that are gone, in proportion to the parts the
+coverage line says are native.
 A frame where the device's `external_passes_dropped` grows has a world
 hole: it means the pass was asked for and could not be drawn.
 
+The stage 1 look (base map times lightmap, on by default until
+2026-11-19) was far from the D3D path on screen, lighting most of all:
+no detail maps, no bump, none of the material's constants. The world is
+now drawn only with each material's own translated pass, and a material
+whose pass does not translate stays on the D3D path, so with any mix the
+frame should match the D3D path's. Where it still differs, on native
+surfaces only (the D3D ones are the game's own):
+
+- **speckle or holes on world surfaces**, or objects showing through:
+  depth. Layer 1 (D3D) wrote the world's depth and the native layer 3
+  tests `LessEqual` against it, so the native W depth must be the D3D
+  path's bit for bit; one step deeper fails the test;
+- **a whole material too dark, too bright or flat**: its lightmap (the
+  P8 page through its palette, bound at stage 3) or a constant;
+  `impl.render.native_world_programs=off` shows that material in the
+  stage 1 look for comparison;
+- **shimmer or blur at a distance**: sampling (the bump stage is 4x
+  anisotropic; mip chains);
+- **cut-out foliage or grates filled in or missing**: the pass's alpha
+  test (03a's alpha-tested world passes pass below 255);
+- **stencil-driven effects** after layer 3 (the structure draw sets
+  stencil in layer 3, the native pass does not; S).
+
 ### Next: matching the look
 
-The base map per material comes from a name rule today; step 4 moves the
-03a templates to their own translated programs (above, "Match the look"),
-each behind the per-material fallback, with mipmaps and the template's
-detail maps and scales. No hand-written per-template WGSL in between: it
-would be replaced by the translated programs.
+Step 4 below draws every native material with its own translated pass
+(above, "Match the look"), and a material whose pass does not translate
+stays on the D3D path: there is no hand-written look in between, and the
+stage 1 look (the base map by a name rule, times the lightmap) is kept
+only behind `impl.render.native_world_programs=off` for the A/B.
 
 #### What a world pass reads (Code, `h2 disasm`, `h2 shader`, `vsh` disassembly)
 
@@ -449,33 +485,80 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
    chain, `gpu::Image::from_levels`).
 4. `native-render::gpu`: one pipeline per (program, definition) through
    `shaders::link`, the uniforms filled as the D3D path fills them, one
-   bind group per material. Built as `native-render::program` behind
-   `impl.render.native_world_programs` (off by default; exact key, and
-   only with the native world on):
-   - `program::compile` translates the pass (inputs `v0..v6` from the
-     world vertex: position, uv, normal, binormal, tangent, lighting
+   bind group per material. Built as `native-render::program`, and the
+   native world's only look: `impl.render.native_world_programs` is on
+   with the world (exact key; `=off` brings back stage 1's look for the
+   A/B against it, nothing else):
+   - `look::layer3_pass` takes the pass's implementation as above and
+     its own render states (`pass_state`, as transparents do): depth test
+     and write, colour writes, alpha test and cull. The 03a world passes
+     set `COLORWRITEENABLE` (all four channels), `ALPHABLENDENABLE` 0 and
+     `ZWRITEENABLE` 1; some add an alpha test (`ALPHATESTENABLE`,
+     `ALPHAREF`, `ALPHAFUNC`), and those that sample the texaccum (the
+     `_combined` templates) set `ZFUNC` equal without depth writes. A
+     state the pass does not set is inherited from the previous draw on
+     the D3D path (S, not traced): `ZFUNC` is taken as `LessEqual` and
+     an unset `CULLMODE` culls nothing (the world is opaque and
+     depth-tested). It refuses: engine-driven render or stage states, a
+     blending pass, fog enabled, stencil, depth bias.
+   - `program::compile_world` translates the pass (inputs `v0..v6` from
+     the world vertex: position, uv, normal, binormal, tangent, lighting
      vector, lightmap uv) and fills the instance constants by their
      written components, `c[172] = (1, 1, 0, 0)` and identity model rows
-     `c[50..52]` (the vertices are already placed). It refuses, and the
-     material keeps stage 1's look: per-draw engine inputs, a program
-     reading other inputs (but those the pass sets itself with
-     `SET_VERTEX_DATA4F_M`, `0x00018e3b`: the resolved
-     `vertex_defaults`, read from `xvs.defaults[n]`; 03a's transparents
-     read `v10` and `v11`, two colours, mask `0x0c00`), a translation
-     warning, a non-2D fetch, a
-     sampled stage with nothing bound, signed channels on the lightmap.
-     Signed channels of a stage bitmap are stored biased (`s + 128`) as
-     the D3D path stores them.
+     `c[50..52]` (the vertices are already placed). It refuses:
+     per-draw engine inputs, a program reading other inputs (but those
+     the pass sets itself with `SET_VERTEX_DATA4F_M`, `0x00018e3b`: the
+     resolved `vertex_defaults`, read from `xvs.defaults[n]`; 03a's
+     transparents read `v10` and `v11`, two colours, mask `0x0c00`), a
+     translation warning, a non-2D fetch, a sampled stage with nothing
+     bound, signed channels on the lightmap; and (`world_parity`, the
+     constants check) anything the D3D path takes from device state the
+     native pass does not have:
+     - a vertex constant outside the view's `c[0..18]`, the instance's,
+       `c[50..52]` and `c[172]` (the structure draw uploads `c[21]`,
+       `c[24]`, `c[31]`, `c[174]` and others per draw), or one addressed
+       relative to `a0.x`. 03a's world programs (`lightmap_perpixel_*`,
+       classification 0) read `c[0..3]`, `c[5..11]` (view), `c[18..20]`
+       (instance) and `c[172]` only;
+     - fog: a combiner that reads the fog register, or a definition
+       without a final combiner (D3D builds one from the fog and specular
+       states). The pass does not set `FOGENABLE`, so the device's fog is
+       whatever the previous draw left; 03a's world passes program their
+       own final combiner and read no fog (the world's fog is a later
+       layer), so none is refused for it;
+     - texture modes that read device state: bump-environment matrices,
+       the eye of the reflection modes, BRDF;
+     - border addressing on a sampled stage.
+   - `program::world_fit`: every part of the material supplies every
+     vertex register the program reads (`WorldDraw::inputs`: a section
+     without lighting vectors or a tangent frame would read zero), and,
+     where the program samples the lightmap, has a page that decoded. A
+     stage bitmap must decode and be swizzled (a linear texture is
+     addressed in texels on the D3D path, `tex_scale`), and so must a
+     lightmap page. One part that cannot be drawn keeps the whole
+     material on the D3D path (the skip is per shader).
+   - Samplers are made as the D3D path makes them
+     (`gfx::translate::SamplerKey::from_stage`: anisotropy, `MAXMIPLEVEL`
+     as the smallest LOD, address 5 clamping to the edge), and
+     `D3DTSS_MIPMAPLODBIAS` goes into the pixel uniforms' `lod_bias` as
+     `d3d::nv2a` puts it. Lightmap pages keep their mip chains.
    - Per frame the device's `c[0..18]` (the external pass's
      `view_constants`), the guest and texel sizes (surface and the
      render-scale shift) and the W-buffer's depth scale (`w_clip`,
      `depth`, `depth_range`). A program batch draws over the whole
-     target: the game's viewport is in `c[10..11]`.
-   - Gaps (S): fog stays at the pixel shader's default (no fog colour
-     from the device yet), stage borders clamp to the edge, `D3DTSS`
-     LOD bias and anisotropy are not applied.
-   The load line says how many materials translate and why the rest do
-   not (`native-world: N materials translate; with stage 1: [...]`).
+     target: the game's viewport is in `c[10..11]`. A pass without the
+     view constants draws nothing.
+   - Colour: the D3D path and the native pass both sample `Rgba8Unorm`
+     (or compressed unorm) textures and write the game's own target, with
+     no sRGB view on either side, so there is no gamma step to match.
+   - Left (S): the stencil the structure draw sets in layer 3; the
+     inherited `ZFUNC`; the decoded chain of a bitmap whose top level is
+     not resident starts lower (a smaller image, the same coordinates).
+
+   Of 03a's scenario shaders with a layer 3, about a third sample the
+   texaccum (engine texture 3, the `_combined` templates) and stay on the
+   D3D path; most of the rest are `tex_bump` and its variants, one pass
+   with the per-pixel lightmap implementation, and translate.
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 
