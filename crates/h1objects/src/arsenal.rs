@@ -24,7 +24,7 @@
 
 use map::build::Block;
 use map::{FourCC, TagId};
-use tags::defs::{self, Defs, Kind, Record, StructDef, Val};
+use tags::defs::{self, Defs, Kind, Record, StructDef, Target, Val};
 
 use crate::base::Base;
 use crate::h1;

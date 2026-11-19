@@ -39,6 +39,7 @@ pub mod game_setup_help;
 pub mod h1_options;
 pub mod h1_options_row;
 mod h1_particle_physics;
+mod h1_script_builtins;
 pub mod h1_variants;
 pub mod health;
 pub mod host_perf;

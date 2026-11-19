@@ -109,7 +109,7 @@ fn action_name(s: &str) -> String {
 pub fn mode_name(unit: &str) -> String {
     MODES
         .iter()
-        .find(|(a, _)| *a == unit)
+        .find(|(a, _)| a.eq_ignore_ascii_case(unit))
         .map(|(_, b)| (*b).to_owned())
         .unwrap_or_else(|| unit.replace('-', "_").to_ascii_lowercase())
 }
@@ -434,5 +434,24 @@ mod tests {
             RETAIL_PATHS.len(),
             RETAIL_ABSENT.len()
         );
+    }
+
+    /// The seat label a script's Halo 1 text names, in any case, is the one
+    /// the vehicle rebuild writes on the seat (`h1objects`'s `seat_names`):
+    /// the MODES target for a table entry, else the label lower case with
+    /// `-` as `_`.
+    #[test]
+    fn seat_labels_match_the_built_ones() {
+        // Halo 1's tags label seats `CT-driver` while scripts write
+        // `ct-driver`; both must give the table's target.
+        assert_eq!(mode_name("ct-driver"), "c_turret_ap_d");
+        assert_eq!(mode_name("CT-driver"), "c_turret_ap_d");
+        assert_eq!(mode_name("w-gunner"), "warthog_g");
+        assert_eq!(mode_name("P-riderLF"), "pelican_p_l01");
+        assert_eq!(mode_name("p-riderlf"), "pelican_p_l01");
+        // Not in the table: the label as seat_names writes it.
+        assert_eq!(mode_name("cargo"), "cargo");
+        assert_eq!(mode_name("cd-passengerl01"), "cd_passengerl01");
+        assert_eq!(mode_name("alert"), "combat");
     }
 }

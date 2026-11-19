@@ -1265,7 +1265,8 @@ pub fn functions(map: &H1Map, b: &[u8]) -> Result<Vec<Function>> {
 
 /// Where an object's A to D inputs come from: its `obje` sources
 /// (`+0x108`), a unit's (`unit +0x198`) and a vehicle's (`vehi +0x31c`),
-/// each four 16-bit enums. V (`halo1_vehicle_functions_survey`): a
+/// or a weapon's (`weap +0x330`), each four 16-bit enums. V
+/// (`halo1_vehicle_functions_survey`): a
 /// vehicle's input takes the vehicle's source where it names one, else
 /// the unit's: the warthog's A (headlights) is the unit's 1 (driver's
 /// seat power) with the vehicle's 0, its B (taillights) the vehicle's 12

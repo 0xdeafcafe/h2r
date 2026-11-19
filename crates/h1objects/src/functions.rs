@@ -141,6 +141,7 @@ fn weapon_import(source: u16) -> Option<&'static str> {
         11 => "secondary_charged",
         12 => "illumination",
         13 => "age",
+        14 => "integrated_light_power",
         _ => return None,
     })
 }

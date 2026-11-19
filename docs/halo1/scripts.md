@@ -135,6 +135,8 @@ under an index nobody calls. Value types map by name; Halo 2 lacks
   converter version 16) every such wait ended at once, so a level's
   dialogue played over itself. `sound_impulse_time_waits_on_the_playing_sound`
   checks the mapping on the discs.
+  The [unit and object builtin notes](script-builtins.md) cover the other
+  aliases, the equipment adapter and the converted-campaign hooks.
 - **Named by position**: Halo 2 builtins no retail script calls, named
   from the XBE (below, "Builtins named by position").
 - **`ai_status`** has no Halo 2 counterpart of the same scale. Halo 1's
@@ -196,18 +198,18 @@ version 27, played from 28 with the streams rewritten by
 254 and `device_set_position` 256; E: its evaluator `0x002a4780` returns
 the device's float at `+0x134`; d40's control rooms wait on it) and
 `unit_has_weapon_readied` 243 (`(unit object_definition) -> boolean`,
-after `unit_has_weapon` 242; a30's sniper tutorial). Other unnamed
-descriptors with plausible signatures (241 `(unit) -> short`, 600
-`(sound) -> long`, 586 and 587 `() -> boolean`) are not named: their
-neighbours do not pin them down. Each is added only when that index is
-unnamed and its signature matches. The neighbours and reasons are in the
-module. Only the recordings have more than position as evidence.
+after `unit_has_weapon` 242; a30's sniper tutorial).
+
+The [unit and object builtin notes](script-builtins.md) list the additional
+retail descriptors, their evaluator evidence and the runtime slot assignments.
+The unnamed sound descriptor at 600 still has only positional evidence.
 
 Object, AI, device, trigger volume, cutscene, tag, enum and string ID values
 keep their Halo 1 token and become hooks (step 3); AI encounters map to
 squads in another lane.
 
-Coverage, share of builtin calls (`translation_coverage`):
+Historical coverage before the units round, share of builtin calls
+(`translation_coverage`):
 
 | Map | Calls | Direct | Renamed | Adapter | Missing | Missing builtins |
 |---|---|---|---|---|---|---|
@@ -264,6 +266,18 @@ retail compiler writes them; literals keep their source type.
   adapter defaults) holds `none` (`0xffffffff`), keeps its token, and is listed
   in `Compiled::hooks` with its slot, Halo 2 type and Halo 1 type.
   `Compiled::resolve_hooks` writes the converter's values in.
+- **Seat names**: the string argument of `unit_enter_vehicle` and
+  `unit_set_seat` becomes a hook of `h1_type` `compile::SEAT_NAME`. Halo 2's
+  engine matches a seat label string ID exactly (E `0x11ade0`, the
+  enter-seat search: the seat's label at `vehi+0x1cc` element `+4`,
+  compared equal), and a rebuilt vehicle labels each seat with the rider's
+  mode (`h1objects::rebuild::seat_names`), so the converter writes the
+  string ID of the label the Halo 1 text names
+  (`h1models::names::mode_for`, the `MODES` table in any case, else the
+  label lower case with `-` as `_`). a30's `"w-gunner"` becomes
+  `warthog_g`; a10's cryotube seat `ct-driver` becomes `c_turret_ap_d`.
+  `vehicle_load_magic`/`vehicle_unload` take a `unit_seat_mapping`
+  instead, resolved through the seat-mapping table below.
 - **Casts**: Halo 2's interpreter casts every value to its node's type
   through a table with no null check (`hs::castable`, haloscript.md). A
   string literal stays a string only where that cast exists; elsewhere it

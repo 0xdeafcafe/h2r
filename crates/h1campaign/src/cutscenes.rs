@@ -27,14 +27,12 @@ use h1scripts::compile::Cutscenes;
 ///
 /// Played: every graph the cutscenes name converts, every recording and
 /// dialogue length is written, and no call left stubbed in a cinematic
-/// holds it (`cutscenes_convert_and_read_back` lists them: HUD and
-/// screen effects, `object_beautify`, `object_pvs_activate`,
-/// `unit_set_emotion`, `unit_set_seat`, command lists).
+/// holds it (`cutscenes_convert_and_read_back` lists the missing ones).
 pub const LEVELS: &[(&str, Cutscenes, &str)] = &[
     (
         "a10",
         Cutscenes::PlayShortPaths,
-        "cinematics played; the cryo tutorial still takes fast_setup (its look tests have no Halo 2 builtin)",
+        "cinematics played; the cryo tutorial takes fast_setup pending an integrated tutorial run",
     ),
     ("a30", Cutscenes::Play, "every cutscene converts"),
     ("a50", Cutscenes::Play, "every cutscene converts"),
