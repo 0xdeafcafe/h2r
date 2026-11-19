@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State, rejection::BytesRejection};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use live_proto::game::{self, GameDetail, GameSummary, PlayerScore, SimGame};
 use live_proto::{ErrorCode, Page, lxm};
 use serde::{Deserialize, Serialize};
@@ -365,7 +365,7 @@ pub(crate) async fn upload(
         }
         if let Some(old) = &game.sim_report {
             if old.sha256 == index.sha256 {
-                return Ok(StatusCode::NO_CONTENT.into());
+                return Ok(StatusCode::NO_CONTENT.into_response());
             }
             return Err(conflict("this run already has a report"));
         }
@@ -389,5 +389,5 @@ pub(crate) async fn upload(
     );
     let stored = live.store().append(vec![event], &[]).await?;
     live.wait_applied(stored[0].position).await?;
-    Ok(StatusCode::NO_CONTENT.into())
+    Ok(StatusCode::NO_CONTENT.into_response())
 }

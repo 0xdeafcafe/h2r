@@ -358,10 +358,10 @@ impl Session {
         players: Vec<PlayerState>,
         teams: Vec<live_proto::game::TeamScore>,
     ) {
-        if self.is_sim() && info.mode != "multiplayer" {
+        let is_sim = self.is_sim();
+        if is_sim && info.mode != "multiplayer" {
             return;
         }
-        let sim = self.sim.as_ref();
         let mut players = players;
         self.link(&mut players);
         // Campaign re-activates the same map on every checkpoint revert and
@@ -370,7 +370,7 @@ impl Session {
         if let Some(current) = &mut self.current
             && !current.ended
             && current.map == info.map
-            && ((current.campaign && info.mode == "campaign") || sim.is_some())
+            && ((current.campaign && info.mode == "campaign") || is_sim)
         {
             current.mark_cut(info.tick);
             return;
@@ -379,6 +379,7 @@ impl Session {
         if !info.is_match() {
             return;
         }
+        let sim = self.sim.as_ref();
         let game_id = sim.map_or_else(live_proto::sign::random_id, |sim| {
             live_proto::game::sim_game_id(&sim.run_id)
         });
