@@ -549,8 +549,8 @@ pub struct InheritedCull {
     /// The placements' rigid draws take it (the D3D path's draws of a
     /// placement were compared: `d3d::uniform_compare`).
     pub placements: bool,
-    /// The clusters' draws take it too (not compared: S, that the
-    /// structure draw does not set its own between).
+    /// The clusters' draws take it (03a's 02000: 81 cluster pixels on a
+    /// curb went with it, nothing else changed).
     pub clusters: bool,
 }
 

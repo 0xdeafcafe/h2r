@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
+use engine::memory::GuestMemory;
 use engine::points;
 use feature::{BuildError, Builder, Flow, Manifest};
 
@@ -50,13 +50,9 @@ pub const TEXT_KIND: u32 = 6;
 pub const DESCRIPTION_TEXT: u32 = 2;
 pub const BITMAP_KIND: u32 = 8;
 pub const PICTURE_BITMAP: u32 = 4;
-/// A bitmap widget's image index (`0x2b0a14`), its block (`+0x70`) and
-/// the block's bitmap datum (`+0x1c`).
-pub const WIDGET_IMAGE: u32 = 0x88;
-const WIDGET_BLOCK: u32 = 0x70;
-const BLOCK_BITMAP: u32 = 0x1c;
-/// A `bitm` tag's image count (`0x2b0a14` checks the index against it).
-const BITMAP_IMAGES: u32 = 0x44;
+/// A bitmap widget's image index and [`set_image`], shared with our list
+/// class's pictures.
+pub use crate::list_class::{WIDGET_IMAGE, set_image};
 
 /// `xbox_live.bitm`'s pictures, as the Game Setup rows use them.
 pub mod image {
@@ -106,27 +102,6 @@ pub fn register(action: i16, image: u16, text: HelpText) {
 /// The row of ours with `action`.
 pub fn for_action(action: i16) -> Option<RowHelp> {
     rows().iter().find(|r| r.action == action).cloned()
-}
-
-/// Sets bitmap widget `widget`'s image to `index`, as `0x2b0a14` does:
-/// only when its bitmap is loaded and has that many images. Whether it
-/// did.
-pub fn set_image(m: &mut dyn GuestMemory, widget: u32, index: u16) -> Result<bool, MemFault> {
-    let block = m.u32(widget.wrapping_add(WIDGET_BLOCK))?;
-    if block == 0 {
-        return Ok(false);
-    }
-    let datum = m.u32(block.wrapping_add(BLOCK_BITMAP))?;
-    if datum == u32::MAX {
-        return Ok(false);
-    }
-    let entries = m.u32(points::TAG_ENTRIES.base)?;
-    let tag = m.u32(entries.wrapping_add((datum & 0xffff) * 0x10 + 8))?;
-    if tag == 0 || u32::from(index) >= m.u32(tag.wrapping_add(BITMAP_IMAGES))? {
-        return Ok(false);
-    }
-    m.set_u16(widget.wrapping_add(WIDGET_IMAGE), index)?;
-    Ok(true)
 }
 
 /// The Game Setup screen whose update is being let through to retail's
@@ -229,8 +204,11 @@ pub fn install(registry: &mut feature::Registry) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::list_class::{BITMAP_IMAGES, WIDGET_BLOCK};
     use engine::testing::FakeGuest;
 
+    /// A bitmap block's `bitm` datum.
+    const BLOCK_BITMAP: u32 = 0x1c;
     const WIDGET: u32 = 0x0010_0000;
     const BLOCK: u32 = 0x0010_1000;
     const ENTRIES: u32 = 0x0010_2000;

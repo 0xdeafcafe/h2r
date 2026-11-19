@@ -202,7 +202,9 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     }
     let read = |a: u32| m.u32(a).ok();
     let ready = m.u8(points::NETWORK_READY.base).ok().unwrap_or(0) != 0;
-    let s = read(points::SQUAD_SESSION.base).unwrap_or(0);
+    // The game's session: the squad's in a custom game, the target
+    // session in a matchmade one (`crate::lobby::game_session`).
+    let s = crate::lobby::game_session(m).unwrap_or(0);
     let sim = read(SIM_GLOBALS).unwrap_or(0);
     if !ready || s == 0 || sim == 0 {
         // A game with no network session: a local game, no host.
@@ -444,22 +446,26 @@ pub fn game_start(m: &mut dyn GuestMemory, s: u32, planned: bool) -> Vec<String>
 }
 
 /// The live network session, game or lobby: the session whose peers a
-/// game's end takes phantoms out of.
+/// game's end takes phantoms out of. The game's session for the life
+/// cycle ([`crate::lobby::game_session`]): the squad session in a custom
+/// game, the target session in matchmaking (its lobby and its game).
 pub fn live_session(m: &dyn GuestMemory) -> Option<u32> {
     if m.u8(points::NETWORK_READY.base).ok()? == 0 {
         return None;
     }
-    let s = m.u32(points::SQUAD_SESSION.base).ok().filter(|&s| s != 0)?;
+    let s = crate::lobby::game_session(m).ok().filter(|&s| s != 0)?;
     (m.u32(s + STATE).ok()? == STATE_LIVE).then_some(s)
 }
 
 /// The pregame lobby this console hosts, when a phantom can join it now
 /// (docs/game/bots.md §5.1, "Phantoms in the pregame lobby"): a pregame
 /// lobby's squad session ([`crate::lobby::pregame`]: session type 1 or 2,
-/// a lobby state) that is live (state 5), distributed (protocol 2: a
-/// System Link or Xbox Live lobby, not Split Screen's local one) and this
-/// console's (the host peer `+0x40` is its own `+0x72d8`), with no game
-/// running ([`host_session`] takes that). A real peer joins such a lobby
+/// a lobby state), or a matchmaking lobby's target session this console
+/// hosts ([`crate::lobby::matchmaking_host`]: type 6 or 7, a Clankermatch
+/// after its empty search, §8.4), that is live (state 5), distributed
+/// (protocol 2: a System Link or Xbox Live lobby, not Split Screen's
+/// local one) and this console's (the host peer `+0x40` is its own
+/// `+0x72d8`), with no game running ([`host_session`] takes that). A real peer joins such a lobby
 /// through the host's join (`0x5c720`): a peer (`0x5fbd0`), then its
 /// properties (`0x5ed90`) and players (`0x60000`); a phantom gets the
 /// same writes.
@@ -470,10 +476,10 @@ pub fn host_lobby(m: &dyn GuestMemory) -> Result<u32, NotNow> {
     let Ok(f) = crate::lobby::facts(m) else {
         return Err(NotNow::Wait);
     };
-    if !crate::lobby::pregame(&f) {
+    if !crate::lobby::joinable(&f) {
         return Err(NotNow::Wait);
     }
-    let s = m.u32(crate::lobby::SESSION).unwrap_or(0);
+    let s = crate::lobby::game_session(m).unwrap_or(0);
     let read = |a: u32| m.u32(a).ok();
     let shown = |v: Option<u32>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
     let state = read(s + STATE);
@@ -820,6 +826,11 @@ fn bump(m: &mut dyn GuestMemory, s: u32) -> R<()> {
     m.set_u32(s + UPDATE, u.wrapping_add(1))?;
     let c = m.u32(s + CHANGES)?;
     m.set_u32(s + CHANGES, c.wrapping_add(1))
+}
+
+/// The players peer `p` of `s` holds (peer `+0xf8`).
+pub fn peer_players(m: &dyn GuestMemory, s: u32, p: u32) -> R<u32> {
+    m.u32(peer(s, p) + PEER_PLAYERS)
 }
 
 fn peer(s: u32, p: u32) -> u32 {

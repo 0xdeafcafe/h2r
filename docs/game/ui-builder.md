@@ -513,9 +513,11 @@ value column); and the focused row's description goes in a text block
 equal to Quick Options' help line (`dialog::QUICK_HELP_TEXT`, held to the
 tag's text block 0 by the disc test), which `KitScreen::dialog` and the
 Halo 1 class use unless told otherwise. A description is one line there,
-52 units at most (retail's is 51). The variant-name line and the game
-type picture are retail's content and stay out. The pages' titles are
-in capitals, as Quick Options' header is.
+52 units at most (retail's is 51). The variant-name line stays out; the
+game type picture is retail's content and stays out of the base, and a
+page shows its own icon there ("A page's header"), with its own line in
+the help line in place of the focused row's description. The pages'
+titles are in capitals, as Quick Options' header is.
 
 The test `ui_kit::screens::tests::our_settings_dialogs_are_quick_options_inside`
 holds both pages to that (dialog base, list place, value style, help
@@ -630,6 +632,32 @@ on A as before.
 `h2 ui preview kit.picker` and `kit.picker.game` draw it (the kit's
 Count, nine values, 4 held, over Game Setup).
 
+**It opened blank in the game** (the user, 2026-11-19: no title, no
+values, no description on the Clankers and Halo 1 Options pages; the
+preview was right). `TEXT_SET` (`0x253b1a`) copies the string as it
+sets it: it resolves the id into a buffer of its own (`0x230134`) and
+hands the widget that, so a slot of ours must hold its text before the
+call names it. Two things broke that:
+
+- `ListClass::build` takes the title's string id once, at boot, before
+  any pick. The picker's title slot was filled only then (empty), and
+  nothing filled it as a pick opened.
+- Row text set the description's slot after it had written the texts
+  for that pass, then named it, so `TEXT_SET` read the slot as it was
+  before (empty on a first open, the last pick's after).
+
+Now the picker fills every slot of the pick (title, description, each
+value) in `Rows::count`, which the loader asks first and follows with
+`Rows::write_texts`, so all of it is in guest memory before the screen
+is built; and row text writes the texts again after the description
+and panel texts are named, before their `TEXT_SET`. That second fix is
+in `list_class` itself, so every class's description and panel texts
+get it. `list_class::tests::the_value_picker_opens_with_its_pick_on_the_games_path`
+runs the game's path (the class taken at build, a row's A, the loader,
+the pane set-up, row text for each item) on the runner, and reads each
+`TEXT_SET`'s string from the slot at the moment of the call, as the
+game does.
+
 **Not settled without a run.** The list's first focus: the class can't
 set it yet (no focus setter is traced), so the game likely opens on the
 first value, not the held one; the preview draws the held one focused.
@@ -654,6 +682,62 @@ From a custom game lobby, Game Setup, Clanker Options:
    B: it closes, Count unchanged.
 5. Halo 1 Options (on a Halo 1 map): A on HUD shows Halo 1 and Halo 2
    with both meanings on the right.
+
+## A page's header
+
+The user (2026-11-19): the Clanker Options and Halo 1 Options pages
+have Quick Options' header at their top, its picture and its one line
+of help, rather than (only) a picture and description on their Game
+Setup rows.
+
+**Quick Options'** (see the table in "Quick Options inside"): bitmap
+block 1, `mp_games2.bitm` at (-267, 166), depth 3, animation 31, the
+variant's game type icon (eleven icons, 40 x 40); text block 1, the
+variant's name in white `[163 -224 143 0]`; text block 0, the help line
+`[143 -224 123 270]`, 494 units wide, one line. The bitmap widget's
+constructor (`0x2b01eb`) zeroes its image index (`+0x88`) whatever its
+block holds; code sets it after (`0x2b0a14`).
+
+**Built.** `KitScreen::header(help, icon)` (the Clankers page) and the
+Halo 1 Options class do the same:
+
+- the help line (`QUICK_HELP_TEXT`, already the pages' description
+  block) shows the page's own line whatever the focus
+  (`Rows::description` names one slot); the rows' own descriptions show
+  in the value picker A opens;
+- the picture is Quick Options' block 1, copied and placed as Quick
+  Options has it (`dialog::QUICK_PICTURE`, through `ListClass::picture`),
+  its image set to the page's icon once the widget is made
+  (`Rows::picture_image`, `list_class::set_image`). Quick Options' own
+  copy of the block stays out of the base (`content_bitmaps`), so only
+  ours shows there.
+
+| Page | Icon (`mp_games2`) | Line |
+|---|---|---|
+| Clankers | 0, a Spartan standing (`dialog::icon::SPARTAN`) | `clankers::HEADER_HELP`, "Add bots: how many, how well they play and which team they join." |
+| Halo 1 Options | 9, a banner of three stars (`dialog::icon::BANNER`) | `h1_options::HEADER_HELP`, "Halo 1's weapons, vehicles and HUD on this map, or Halo 2's." |
+
+The lines are the Game Setup rows' descriptions said in one line: the
+help line is 494 units, and in the disc's font 1 `clankers::ROW_HELP`
+is 492 (and wraps on the kit's own measure, 7.5 a character) and
+`h1_options::ROW_HELP` is 562; these are 409 and 371. The white
+variant-name line stays empty: the title bar already names the page.
+
+The spec carries the line as `ScreenSpec::help` (the description block
+shows it in place of the focused row's) and the icon as an `art` entry
+(`dialog::quick_icon`), which `dialog_view` now draws. The disc test
+holds `QUICK_PICTURE` to the tag's block, checks `mp_games2`'s eleven
+icons are 40 high and 40 or 41 wide, and measures both lines in the
+help line's font; `our_settings_dialogs_are_quick_options_inside`
+checks each page's line, icon and where the icon is drawn.
+
+### Its game run
+
+From a custom game lobby (on a Halo 1 map for Halo 1 Options), Game
+Setup: open Clanker Options. At its top left, left of the help line,
+the Spartan icon where Quick Options shows its game type; the help line
+reads "Add bots: ..." and stays as the focus moves. Halo 1 Options: the
+banner icon and its line. Open Quick Options to compare the places.
 
 ## Game Setup's picture and description
 

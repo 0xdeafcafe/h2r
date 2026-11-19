@@ -6,13 +6,16 @@
 //! other ([`DEFS`], in [`crate::setting_defs::ALL`]), so they persist and
 //! `h2 settings` lists them.
 //!
-//! **The page** is a kit screen ([`page`]) of seven choice rows
+//! **The page** is a kit screen ([`page`]) of eight choice rows
 //! ([`crate::ui_kit::choice::ChoiceRow`]) on the lobby's own settings
 //! dialog, Quick Options (`DialogBase::QuickOptions`), as the Halo 1
 //! Options page is: Quick Options' panel, header and list (its
 //! `setting_lists` skin, label left and the value alone in the value
-//! column), the focused row's description in its one-line help line, and
-//! the legend in its footer (docs/game/ui-builder.md "The Dialog kind").
+//! column), Quick Options' header (a Spartan icon in its game type
+//! picture and the page's line, [`HEADER_HELP`], in its help line; each
+//! row's own description shows in the value picker A opens), and the
+//! legend in its footer (docs/game/ui-builder.md "The Dialog kind", "A
+//! page's header").
 //!
 //! **The row.** A custom game's Game Setup dialog gets a "Clanker Options..." row,
 //! the way it gets the Halo 1 Options row (`crate::h1_options_row`, whose
@@ -171,8 +174,21 @@ pub static TAUNTS: Def = def(
     Value::Bool(true),
 );
 
+pub static GLITCHES: Def = def(
+    "clankers.glitches",
+    "Glitches",
+    "Whether bots use Halo 2's glitches: BXR, double shots, sword flying, \
+     super bounces. Some is the occasional show-off; Lots whenever they can.",
+    Kind::Choice(&[
+        choice(0, "off", "Off"),
+        choice(1, "some", "Some"),
+        choice(2, "lots", "Lots"),
+    ]),
+    Value::Int(0),
+);
+
 /// Every Clankers setting, in the page's order.
-pub static DEFS: [&Def; 7] = [
+pub static DEFS: [&Def; 8] = [
     &ENABLED,
     &COUNT,
     &DIFFICULTY,
@@ -180,9 +196,10 @@ pub static DEFS: [&Def; 7] = [
     &AGGRESSION,
     &AIM_STYLE,
     &TAUNTS,
+    &GLITCHES,
 ];
 
-static ROWS: [ChoiceRow; 7] = [
+static ROWS: [ChoiceRow; 8] = [
     ChoiceRow::new(
         &ENABLED,
         "Clankers",
@@ -206,6 +223,11 @@ static ROWS: [ChoiceRow; 7] = [
         "Steady tracks smoothly; Twitchy flicks.",
     ),
     ChoiceRow::new(&TAUNTS, "Taunts", "Whether they taunt after a kill."),
+    ChoiceRow::new(
+        &GLITCHES,
+        "Glitches",
+        "Whether they BXR, sword fly and super bounce.",
+    ),
 ];
 
 /// The Game Setup row's text; the page's title stays [`TITLE`].
@@ -214,17 +236,23 @@ pub const ROW_LABEL: &str = "Clanker Options...";
 /// the focus, as retail's rows have theirs (`crate::game_setup_help`).
 pub const ROW_HELP: &str =
     "Add bots to this game: how many, how well they play, and which team they join.";
+/// The page's own line at its top, in Quick Options' help line beside the
+/// page's icon ([`KitScreen::header`]): [`ROW_HELP`] cut to the one line
+/// the help line holds (409 of its 494 units in the disc's font 1; the
+/// whole of [`ROW_HELP`] is 492 and wraps on the kit's own measure).
+pub const HEADER_HELP: &str = "Add bots: how many, how well they play and which team they join.";
 /// The page's title, in capitals as Quick Options' header ("QUICK
 /// OPTIONS") is.
 pub const TITLE: &str = "CLANKERS";
 
 /// The Clankers page over `store`: a dialog of its rows on Quick Options
-/// (its seven rows fit the eleven its list shows).
+/// (its eight rows fit the eleven its list shows).
 pub fn page(store: Arc<Store>) -> KitScreen {
     let mut s = KitScreen::new(FEATURE, SCREEN, IDS, TITLE)
         .row_label(ROW_LABEL)
         .row_help(ROW_HELP)
-        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS);
+        .dialog(DialogBase::QuickOptions, Opener::GAME_SETUP_CLANKERS)
+        .header(HEADER_HELP, crate::ui_kit::dialog::icon::SPARTAN);
     for r in &ROWS {
         s = s.row(r.row(Arc::clone(&store)));
     }
@@ -345,9 +373,11 @@ pub trait Rosters: Send + Sync {
         request: live_proto::bots::RosterRequest,
         done: Box<dyn FnOnce(Result<live_proto::bots::Roster, String>) + Send>,
     ) -> Result<(), String>;
-    /// The bot accounts in the hosted game now ([`Driver::session_bots`]):
-    /// the hosted session is told of them as players. Never waits.
-    fn players(&self, _bots: Vec<live_proto::Xuid>) {}
+    /// The bot accounts in the hosted game now ([`Driver::session_bots`]),
+    /// rostered for `session` (the roster in force's, `None` with none):
+    /// that session is told of them as players, and no other. Never
+    /// waits.
+    fn players(&self, _session: Option<String>, _bots: Vec<live_proto::Xuid>) {}
     /// The hosted session and its hopper's mark while this console hosts
     /// a clanker hopper's lobby: a Clankermatch (docs/game/bots.md §8.4),
     /// which the driver fills with the playlist's bots. Never waits.
@@ -373,8 +403,8 @@ impl Rosters for live_hle::Hle {
     ) -> Result<(), String> {
         self.roster_bots(request, done)
     }
-    fn players(&self, bots: Vec<live_proto::Xuid>) {
-        self.set_session_players(bots)
+    fn players(&self, session: Option<String>, bots: Vec<live_proto::Xuid>) {
+        self.set_session_players(session.as_deref(), bots)
     }
     fn clanker_match(&self) -> Option<(String, live_proto::hopper::clankers::ClankerHopper)> {
         self.clanker_hosted()
@@ -423,7 +453,7 @@ struct Fill {
     bots: usize,
     /// The playlist's teams (0 free for all).
     teams: u32,
-    /// How many of the bots may be local bots ([`max_local`]); the rest
+    /// How many of the bots may be local bots ([`MATCH_LOCAL`]); the rest
     /// are phantoms.
     local: usize,
     schedule: Vec<std::time::Duration>,
@@ -443,22 +473,16 @@ struct Fill {
 /// (a few seconds, §9.5), short enough that leaving ends it.
 const FILL_GONE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How many of a Clankermatch's `bots` go on this console's free
-/// controller ports (docs/game/bots.md §8.4): local bots sign in to the
-/// lobby as session players, so the lobby reaches the playlist's fewest
-/// players and the game starts it (phantoms now join the lobby too, §5.1;
-/// with `H2_PHANTOM_LOBBY=0` they join only the game, and the local bots
-/// alone carry the start). A console's players are one party, on one team in a team game, so
-/// a team playlist takes no more than fill the human's team (a team of
-/// `players / teams`); free for all takes up to the three free ports.
-pub fn max_local(bots: usize, players: u32, teams: u32) -> usize {
-    let party = if teams > 1 {
-        (players / teams).saturating_sub(1) as usize
-    } else {
-        3
-    };
-    bots.min(party).min(3)
-}
+/// How many of a Clankermatch's bots go on this console's controller
+/// ports: none (docs/game/bots.md §8.4, "Phantoms only"). Every bot is a
+/// phantom, a remote peer in the match's target session, as the players a
+/// search finds are. A local bot is a local user, and the game's
+/// local-player pass (`0x65770`) adds a signed-in local user to every live
+/// session, the party's squad session too, so it showed in the human's
+/// party (the user's run on f5d3010c); and the matchmade start checks each
+/// local player's controller, which a bot's port fails ("Player 2's
+/// controller is not plugged in", back to the lobby).
+pub const MATCH_LOCAL: usize = 0;
 
 /// What the driver seats: the page's bots, or a Clankermatch's.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -471,7 +495,7 @@ struct Seating {
     /// refused), and no more than `local` of the seated are local bots.
     fill: bool,
     /// The most local bots: the page's count, or a Clankermatch's
-    /// [`max_local`].
+    /// [`MATCH_LOCAL`].
     local: usize,
     /// The teams to balance the phantoms over (0: none).
     teams: u32,
@@ -561,6 +585,9 @@ struct Clanker {
     taunts: Arc<AtomicBool>,
     /// Its taunt with Taunts on: the default, or a roster bot's own.
     taunt: f32,
+    /// The page's Glitches (a [`GLITCHES`] value; shared by every
+    /// Clanker of the driver).
+    glitches: Arc<AtomicU8>,
 }
 
 impl local::PadSource for Clanker {
@@ -574,17 +601,21 @@ impl local::PadSource for Clanker {
         } else {
             0.0
         };
+        self.brain.mind.glitches =
+            bots::glitches::Glitches::from_index(self.glitches.load(Ordering::Relaxed));
         self.brain.pad(f)
     }
 }
 
 /// What the page asks for: how many bots (0 when off) at which
-/// difficulty, and whether they taunt.
+/// difficulty, whether they taunt, and their glitches (a [`GLITCHES`]
+/// value: 0 Off, 1 Some, 2 Lots).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Want {
     pub count: usize,
     pub difficulty: i64,
     pub taunts: bool,
+    pub glitches: u8,
 }
 
 impl Want {
@@ -593,6 +624,7 @@ impl Want {
         count: 0,
         difficulty: 1,
         taunts: true,
+        glitches: 0,
     };
 
     pub fn read(store: &Store) -> Want {
@@ -606,10 +638,15 @@ impl Want {
             _ => 1,
         };
         let taunts = !matches!(store.get(TAUNTS.key), Some(Value::Bool(false)));
+        let glitches = match store.get(GLITCHES.key) {
+            Some(Value::Int(g)) => g.clamp(0, 2) as u8,
+            _ => 0,
+        };
         Want {
             count: if on { count } else { 0 },
             difficulty,
             taunts,
+            glitches,
         }
     }
 }
@@ -652,6 +689,7 @@ pub struct Driver {
     phantoms: Option<Phantoms>,
     own: Mutex<Vec<Own>>,
     taunts: Arc<AtomicBool>,
+    glitches: Arc<AtomicU8>,
     rosters: Option<Arc<dyn Rosters>>,
     roster: Mutex<RosterState>,
     /// The last [`Want`] applied, for applying again when a roster comes
@@ -693,6 +731,7 @@ impl Driver {
             phantoms: None,
             own: Mutex::new(Vec::new()),
             taunts: Arc::new(AtomicBool::new(true)),
+            glitches: Arc::new(AtomicU8::new(0)),
             rosters: None,
             roster: Mutex::default(),
             last: Mutex::new(None),
@@ -967,7 +1006,10 @@ impl Driver {
 
     /// Tells the hosted session its players ([`Driver::session_bots`]),
     /// while a roster is in force and once more after, so the bots it
-    /// was told of leave it.
+    /// was told of leave it. The bots go to the session their roster is
+    /// for ([`Driver::roster_in_force`]) and no other: a Clankermatch
+    /// host advertises its party's lobby session beside the match, and
+    /// the server refuses a roster's bots anywhere else.
     fn report_players(&self) {
         let Some(rosters) = &self.rosters else {
             return;
@@ -975,7 +1017,12 @@ impl Driver {
         let bots = self.session_bots();
         let had = self.reported.swap(!bots.is_empty(), Ordering::Relaxed);
         if had || !bots.is_empty() {
-            rosters.players(bots);
+            let session = if bots.is_empty() {
+                None
+            } else {
+                self.roster_in_force()
+            };
+            rosters.players(session, bots);
         }
     }
 
@@ -1003,6 +1050,7 @@ impl Driver {
         let mut own = self.own.lock().unwrap_or_else(|e| e.into_inner());
         let mut log = Vec::new();
         self.taunts.store(want.taunts, Ordering::Relaxed);
+        self.glitches.store(want.glitches, Ordering::Relaxed);
         // Fewer: the last added go first. A Clankermatch's local bots are
         // its first, so they are the last to go.
         while own.len() > seating.seated {
@@ -1243,6 +1291,7 @@ impl Driver {
             skill: Arc::clone(&s),
             taunts: Arc::clone(&self.taunts),
             taunt,
+            glitches: Arc::clone(&self.glitches),
         };
         (c, s)
     }
@@ -1340,16 +1389,15 @@ impl Driver {
                             String::new()
                         }
                     ));
-                    // Which bots are local and which phantoms
-                    // (docs/game/bots.md §8.4): local bots sign in to the
-                    // lobby as session players; phantoms join the lobby
-                    // this console hosts as peers (§5.1, "Phantoms in the
-                    // pregame lobby"). Both count toward the playlist's
-                    // fewest players, so the game starts it.
-                    let local = max_local(bots, mark.players, mark.teams);
+                    // Every bot a phantom (docs/game/bots.md §8.4,
+                    // "Phantoms only"): they join the match's target
+                    // session as peers, never the party, and count toward
+                    // the playlist's fewest players, so the game starts it.
+                    let local = MATCH_LOCAL;
                     log.push(format!(
                         "clankermatch: {local} local bots join the lobby on free controller ports; \
-                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\")",
+                         {} phantoms join the lobby as peers (\"bots: phantom ... joins\"), \
+                         in the match only",
                         bots - local
                     ));
                     *fill = Some(Fill {
@@ -1384,9 +1432,19 @@ impl Driver {
                 (None, None) => false,
             }
         };
+        // While a fill runs, its phantoms join the match alone: never the
+        // party's lobby before the search or after the game. Set before
+        // any phantom is seated, and cleared only once they are gone.
+        let filling = self.filling();
+        if let (Some(ph), true) = (&self.phantoms, filling) {
+            ph.set_match_only(true);
+        }
         if changed {
             let want = *self.last.lock().unwrap_or_else(|e| e.into_inner());
             log.extend(self.apply(want.unwrap_or(Want::OFF)));
+        }
+        if let (Some(ph), false) = (&self.phantoms, filling) {
+            ph.set_match_only(false);
         }
         log
     }
@@ -1504,7 +1562,13 @@ pub fn drive(store: &Arc<Store>, driver: Driver) -> Arc<Driver> {
             }
         }
     };
-    for key in [ENABLED.key, COUNT.key, DIFFICULTY.key, TAUNTS.key] {
+    for key in [
+        ENABLED.key,
+        COUNT.key,
+        DIFFICULTY.key,
+        TAUNTS.key,
+        GLITCHES.key,
+    ] {
         store.on_change(key, run.clone());
     }
     for line in d.apply(Want::read(store)) {

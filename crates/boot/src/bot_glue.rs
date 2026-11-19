@@ -75,6 +75,12 @@
 //!   flags `0xBAD00000` counts as none there, `0x646df`), which the bot
 //!   gets from [`bots::guest::go_live_as`] within 30 frames.
 //!
+//! Never in a matchmaking lobby (life cycle 6, screen `0xd2`): there the
+//! local-player pass adds a local user to the party's squad session as
+//! well as the match's, and the matchmade start checks each local
+//! player's controller, which a bot's port fails. A Clankermatch's bots
+//! are all phantoms (docs/game/bots.md §8.4, "Phantoms only").
+//!
 //! Each port's gate is logged when it changes, naming the screen it
 //! thinks is up (`players`, `lobby`, the top screen's id or `none`), and
 //! each sign-in.
@@ -150,7 +156,10 @@ pub enum Screen {
     /// mask (`+8`) at `screen`.
     Players { screen: u32 },
     /// A pregame lobby (Live or System Link custom game,
-    /// [`bots::lobby::pregame`]) and no game runs. The lobby is read from
+    /// [`bots::lobby::pregame`]) and no game runs. Never a matchmaking
+    /// lobby: a local user there is added to the party's session too, and
+    /// the matchmade start checks each local player's controller
+    /// (docs/game/bots.md §8.4, "Phantoms only"). The lobby is read from
     /// its squad session, not from the screens: it shares its window and
     /// slot with the screens over it, and `ui_watch` reads it as no screen
     /// (the user's run: `top none`). A bot joins with the game's sign-in
@@ -479,6 +488,8 @@ pub struct Bots {
     owners: Arc<Mutex<Option<Hidden>>>,
     /// The last lobby facts line said.
     lobby_said: Arc<Mutex<String>>,
+    /// The lobby's player count last said (`bots::lobby::players_line`).
+    players_said: Arc<Mutex<Option<u32>>>,
     /// When the Xbox Live and the sign-in tries were last made.
     live_every: Arc<Every>,
     sign_in_every: Arc<Every>,
@@ -509,6 +520,7 @@ impl Bots {
             listeners: Arc::default(),
             owners: Arc::default(),
             lobby_said: Arc::default(),
+            players_said: Arc::default(),
             live_every: Arc::default(),
             sign_in_every: Arc::default(),
             skipped: Arc::default(),
@@ -760,6 +772,7 @@ impl feature::Feature for Bots {
             Arc::clone(&self.gates),
         );
         let lobby_said = Arc::clone(&self.lobby_said);
+        let players_said = Arc::clone(&self.players_said);
         b.raw().before(
             &points::RENDER_FRAME,
             "bot pads; hide bot views",
@@ -827,6 +840,16 @@ impl feature::Feature for Bots {
                     if *said != line {
                         eprintln!("{line}");
                         *said = line;
+                    }
+                    // The lobby's own player count, once per change: what
+                    // a Clankermatch's start counts.
+                    let n = bots::lobby::lobby_players(g, f).ok().flatten();
+                    let mut said = lock(&players_said);
+                    if *said != n {
+                        if let Some(n) = n {
+                            eprintln!("{}", bots::lobby::players_line(n));
+                        }
+                        *said = n;
                     }
                 }
                 let mut open = [false; 4];

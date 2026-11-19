@@ -5,6 +5,7 @@
 use crate::backend::HostBackend;
 use crate::gamepad::Rumble;
 use crate::host::{HostPad, HostPadId};
+use crate::report::DeviceInfo;
 
 /// The backends in order; their pads in that order. A pad's id carries its
 /// backend's index in the top byte, so ids stay unique and stable.
@@ -52,6 +53,10 @@ impl HostBackend for Multi {
         if let Some((b, id)) = self.route(id) {
             b.set_rumble(id, rumble);
         }
+    }
+
+    fn devices(&self) -> Vec<DeviceInfo> {
+        self.backends.iter().flat_map(|b| b.devices()).collect()
     }
 }
 

@@ -1,0 +1,3 @@
+# A bot tuning (docs/runtime/sim.md, "Bot parameters from a file").
+# Anything left out keeps the built-in value for the bot's skill.
+skill = "legendary"

@@ -46,14 +46,14 @@ import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./ma
 import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
 import { TextureSwap, deferTextures, loadFlats, mapAnisotropy, streamTextures, texturesSharing, type TexturePair } from "./textures3d";
-import { ScenarioObjects } from "./scenario3d";
+import { ScenarioObjects, isVehicle, objectOf } from "./scenario3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
 import { easeAngle, mountedTurrets, pickTurret, type TurretAim } from "./turrets";
 import { findTurrets, poseTurret, turretWant, type TurretObj } from "./turrets3d";
 import { BOOST, FLY_KEYS, MOUSE_LOOK, PAD_LOOK, TOUCH_LOOK, addMoves, anglesOf, approach, keyBoost, keyMove, lookStep, looksWith, moveIsIdle, padInput, pointerLook, speedLabel, speedStep, twoFingerMove, type FlyMove } from "./flycam";
 import { cameraFit, eyeView, followDistance, markerScale, type Box3 } from "./camera";
-import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
+import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, takesSeeThrough, type SeeMode } from "./cutaway";
 
 /** `eyes`: first person, through the followed player's eyes along their aim. */
 export type ViewMode = "orbit" | "top" | "follow" | "eyes";
@@ -370,16 +370,25 @@ export class ViewerScene {
       // nor a zone only a cutscene uses.
       const assetExtras = (gltf.asset as { extras?: unknown } | undefined)?.extras;
       const box = new THREE.Box3();
-      // Machines share the level's class materials in the glb: they get
-      // copies of their own, which the see-through leaves alone.
+      // Machines and placed objects share the level's class materials in
+      // the glb: they get copies of their own, so the level's culling
+      // doesn't reach them; vehicle placements another set, which the
+      // see-through leaves alone (takesSeeThrough).
       const machineMats = new Map<THREE.Material, THREE.Material>();
-      const own = (m: THREE.Material) => {
-        let c = machineMats.get(m);
-        if (!c) { c = m.clone(); machineMats.set(m, c); }
-        return c;
-      };
-      const walk = (o: THREE.Object3D, names: string[], aside = false) => {
+      const vehicleMats = new Map<THREE.Material, THREE.Material>();
+      const walk = (o: THREE.Object3D, names: string[], aside = false, vehicle = false) => {
         const path = o.name ? [...names, o.name] : names;
+        // A scenario placement's extras say what it is.
+        if (!vehicle && names.length && /^scenario(_\d+)?$/i.test(names[names.length - 1]!)) {
+          const info = objectOf(o.userData);
+          vehicle = info !== null && isVehicle(info);
+        }
+        const pool = vehicle ? vehicleMats : machineMats;
+        const own = (m: THREE.Material) => {
+          let c = pool.get(m);
+          if (!c) { c = m.clone(); pool.set(m, c); }
+          return c;
+        };
         // (Placed objects don't frame the camera either: some stand far out.)
         aside ||= isBackdrop(o.name) || o.name === "scenario" || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
         const role = meshRole(path);
@@ -408,13 +417,13 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway(m, role === "level");
+            this.cutaway(m, takesSeeThrough(role, vehicle));
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
           if (!aside) box.expandByObject(mesh);
         }
-        for (const c of o.children) walk(c, path, aside);
+        for (const c of o.children) walk(c, path, aside, vehicle);
       };
       const used = new Set<THREE.Material>();
       let wet = false;
@@ -582,7 +591,7 @@ export class ViewerScene {
   }
 
   /** The height cut on a material, and the see-through unless `see` is
-   *  false (machines: they are always drawn whole). */
+   *  false (vehicle placements: they are always drawn whole). */
   private cutaway(m: THREE.Material, see = true) {
     if (this.patched.has(m)) return;
     this.patched.add(m);

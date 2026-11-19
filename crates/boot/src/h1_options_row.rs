@@ -75,18 +75,23 @@ const WIDGET_PARENT: u32 = 0x10;
 /// ([`h1_options::DIALOG`], docs/game/ui-builder.md "The Dialog kind"),
 /// inside as well as out: Quick Options' tag copied with its own list (its
 /// `setting_lists` skin, a name and a choice per row, where Quick Options
-/// has it), the focused row's help in Quick Options' help line, and the
-/// legend in its footer. Left, right and A step a row; B closes it.
+/// has it), Quick Options' header (the screen's icon in its game type
+/// picture, its line in the help line), and the legend in its footer.
+/// Left and right step a row, A opens the value picker; B closes it.
 pub fn class(screen: Arc<OptionsScreen>) -> ListClass {
     let base = h1_options::DIALOG;
-    let c = ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
+    let mut c = ListClass::with_rows(SCREEN_FEATURE, h1_options::SCREEN, screen)
         .dialog(base)
         .sideways()
         .footer(h1_options::FOOTER_ID);
-    match base.help() {
-        Some(help) => c.description(help),
-        None => c,
+    if let Some(help) = base.help() {
+        c = c.description(help);
     }
+    // Quick Options' header: the screen's icon in its game type picture.
+    if let Some(picture) = base.picture() {
+        c = c.picture(picture);
+    }
+    c
 }
 
 /// Whether a Game Setup list with these actions, on a lobby whose map is

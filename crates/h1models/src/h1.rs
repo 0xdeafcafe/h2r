@@ -966,7 +966,7 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
 /// lists without an animation named for it has no path there. Derelict's
 /// flamethrower, `ft`, which no Halo 1 animation name holds, took
 /// (`rifle`, `ft`) from a biped graph's lists from converter version 84
-/// to 89, a path the converted player graph does not find (`sandbox_disc`
+/// to 90, a path the converted player graph does not find (`sandbox_disc`
 /// `every_halo1_weapon_is_held_by_the_halo1_player_graph`).
 pub fn weapon_types<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<(String, String)>> {
     let h = m.read(address, ANTR_HEADER)?;

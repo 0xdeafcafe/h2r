@@ -356,9 +356,10 @@ are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
 `c`, `[` and `]` or the slider) hides the level above a height, and while
 following a player keeps to just over their head; **See-through** (key `x`
 steps off, *in focus* and *everyone*; *in focus* by default) cuts away
-whatever of the level lies between the camera and the
+whatever of the level, its machines (doors, lifts, platforms) and its
+placed objects lies between the camera and the
 player being followed (or pointed at in the scoreboard), else every player
-(up to 8, nearest the camera first), a cone to each with a dithered rim,
+(up to 8, nearest the camera first), a cone to each with a clean edge,
 leaving the floor they stand on, so a player inside a building is seen
 through its walls and roof. Only a surface that is in the way is cut: one
 the line of sight passes through, near where it crosses, with the player
@@ -366,7 +367,18 @@ behind it (its normal is the triangle's own, from the shader's
 derivatives; floors, terrain and ceilings count as level). Ground under or
 beside the line, a step near the player and a wall running alongside stay,
 so open terrain keeps its sand instead of showing a hole to the sky; *everyone* cuts to all of them as well as the
-one in focus. Players, vehicles and machines are never cut. Both are a clipping
+one in focus. Machines and placed objects are cut exactly as the level
+is, in world space (an instanced batch through each instance's own
+matrix), so a lift in front of a player goes with the wall behind it
+instead of standing whole in the hole; players and vehicles (the frames'
+and the level's parked ones, which a player may be riding) are never cut.
+The rim is a hard edge, not a dither: a per-pixel dither speckled the
+boundary, crawled as the camera moved, and the occlusion, which reads the
+scene's own depth, picked the speckle up as dark freckles. The occlusion
+takes both cuts because it reads that depth (and, without a depth texture,
+its own normal pass is patched the same way); the see-through leaves
+shadows alone, so a room seen through its roof keeps the shade the roof
+gives it. Both are a clipping
 plane and a few lines in the map materials' shaders, shared by all of
 them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
 pop-out page set them from a link. (Culling front faces instead was

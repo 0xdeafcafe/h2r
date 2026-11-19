@@ -268,6 +268,10 @@ pub struct ScreenSpec {
     pub rows: Vec<RowSpec>,
     pub focus: usize,
     pub description: Option<DescriptionBlock>,
+    /// The screen's own line in the description block, in place of the
+    /// focused row's description: a page's help line, as Quick Options'
+    /// `quick_options_help` is ([`crate::ui_kit::screen::KitScreen::header`]).
+    pub help: Option<String>,
     /// The legend under the description (or alone when there is none).
     pub prompts: Vec<Prompt>,
     /// The inputs the screen takes itself; B and Back close unless taken.
@@ -305,6 +309,7 @@ impl ScreenSpec {
             rows: Vec::new(),
             focus: 0,
             description: None,
+            help: None,
             prompts: Vec::new(),
             inputs: Vec::new(),
             scrolls: false,
@@ -320,9 +325,11 @@ impl ScreenSpec {
     pub fn footer_text(&self) -> Option<String> {
         (self.footer && !self.prompts.is_empty()).then(|| footer_legend(&self.prompts))
     }
-    /// The focused row's description with the legend under it, as drawn.
+    /// The focused row's description (the screen's help line when it has
+    /// one) with the legend under it, as drawn.
     pub fn description_text(&self) -> Option<String> {
-        let row = self.rows.get(self.focus)?.description.clone();
+        let focused = self.rows.get(self.focus)?;
+        let row = self.help.clone().or_else(|| focused.description.clone());
         let legend = if self.footer {
             String::new()
         } else {
