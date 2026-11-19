@@ -334,6 +334,13 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
+    // The first-person arms and weapon on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_first_person=on, off by default):
+    // both 0x0003fdf0 layer-3 draws, with the light and transparent calls
+    // between and after them left in guest order.
+    features
+        .add(&feature::native_first_person::NativeFirstPerson)
+        .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
     features
         .add(&feature::native_world_layers::NativeWorldLayers)
         .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
