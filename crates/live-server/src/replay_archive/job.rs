@@ -34,6 +34,8 @@ pub(crate) struct Totals {
     pub frames: u64,
     pub segments: u64,
     pub archive_bytes: u64,
+    #[serde(default)]
+    pub index_bytes: u64,
     pub source_bytes: u64,
 }
 
@@ -260,6 +262,9 @@ pub(crate) async fn step<'a>(
         return Err(conflict("archive cursor is stale"));
     }
     let i = usize::try_from(p.totals.segments).map_err(|_| invalid("invalid archive cursor"))?;
+    if mode == Mode::Apply && r.rolled_back && i != 0 {
+        return Err(conflict("restart rolled back archive at its first segment"));
+    }
     if mode != Mode::DryRun {
         let expected = if i == 0 {
             r.base()
@@ -342,12 +347,18 @@ pub(crate) async fn step<'a>(
         &p.archive_sha256,
         &seg,
     ))?;
+    let index_bytes = index.len() as u64;
     let progress = Progress {
         source_position: r.position,
         after: batch.next.unwrap_or_default(),
         archive_sha256: Some(blob(live, ARCHIVE, index.into(), mode).await?),
         backup_sha256: Some(blob(live, BACKUP, backup.into(), mode).await?),
         totals: Totals {
+            index_bytes: p
+                .totals
+                .index_bytes
+                .checked_add(index_bytes)
+                .ok_or_else(|| invalid("index size overflow"))?,
             segments: p
                 .totals
                 .segments

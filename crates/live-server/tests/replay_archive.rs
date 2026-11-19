@@ -225,3 +225,114 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
         1.0 / 65536.0
     );
 }
+
+#[tokio::test]
+async fn fragmented_chunks_resume_at_first_unread_object() {
+    use live_proto::{chunk, game, sign::EventBody};
+    use live_server::store::NewEvent;
+    let h = start(
+        Arc::new(MemoryStore::new()),
+        Policy {
+            admins: vec![Gamertag::new("Boss").unwrap()],
+            ..Default::default()
+        },
+    )
+    .await;
+    let boss = h.create("Boss").await;
+    let id = h.start_game(&boss, two_player_game(&boss)).await;
+    let mut events = Vec::new();
+    let signed = |kind: &str, data| {
+        let body = EventBody::new(
+            &h.operator,
+            &format!("server:{}", h.id),
+            &game::stream(&id),
+            kind,
+            data,
+            time::OffsetDateTime::now_utc(),
+        );
+        NewEvent {
+            jws: body.sign(&h.operator).into(),
+            jws_index: None,
+            body,
+        }
+    };
+    let mut writer = chunk::ChunkWriter::new(300);
+    let mut bytes = 0;
+    for tick in 0..33 {
+        assert!(
+            writer
+                .push(&game::Frame {
+                    game_id: id.clone(),
+                    tick,
+                    ..Default::default()
+                })
+                .is_none()
+        );
+        let chunk = writer.finish().unwrap();
+        bytes += chunk.meta.bytes;
+        h.live
+            .store()
+            .put_blob(&chunk.meta.sha256, &chunk.bytes)
+            .await
+            .unwrap();
+        events.push(signed(
+            chunk::FRAME_CHUNK,
+            serde_json::to_value(chunk.meta).unwrap(),
+        ));
+    }
+    events.push(signed(
+        game::GAME_ENDED,
+        json!({"tick":32,"reason":"finished"}),
+    ));
+    let seal = h
+        .live
+        .store()
+        .append(events, &[])
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .position;
+    h.live.applied().wait_for(|n| *n >= seal).await.unwrap();
+    let uri = format!("/v1/admin/replay-archives/{id}/step");
+    for mode in ["dry_run", "apply", "verify"] {
+        let mut request = json!({"mode":mode,"source_position":seal});
+        for (first, frames) in [(true, 32), (false, 1)] {
+            let response = h
+                .call(
+                    Method::POST,
+                    &uri,
+                    &[
+                        h.bearer(&boss, "admin.write"),
+                        ("content-type", "application/json".into()),
+                    ],
+                    request.to_string(),
+                )
+                .await;
+            assert_eq!(response.status, StatusCode::OK, "{:?}", response.json());
+            let page = response.json();
+            assert_eq!(page["frames"], frames);
+            assert_eq!(page["done"], !first);
+            if first {
+                request["cursor"] = page["next"].clone();
+            } else {
+                assert_eq!(page["totals"]["frames"], 33);
+                assert_eq!(page["totals"]["source_bytes"], bytes);
+                assert!(page["totals"]["index_bytes"].as_u64().unwrap() > 0);
+            }
+        }
+    }
+    let index = h
+        .get(&format!("/v1/games/{id}/chunks?format=archive"))
+        .await
+        .json();
+    for (i, expected) in [(0, (0..32).collect::<Vec<_>>()), (1, vec![32])] {
+        let url = format!(
+            "/v1/games/{id}/archive/{}/{i}",
+            index["archive_sha256"].as_str().unwrap()
+        );
+        let response = h.get(&url).await;
+        let frames = live_proto::archive::decode(&response.body).unwrap();
+        assert_eq!(frames.iter().map(|f| f.tick).collect::<Vec<_>>(), expected);
+    }
+}

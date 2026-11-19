@@ -10,6 +10,10 @@ use crate::Live;
 use crate::app::{ApiError, conflict, invalid};
 use crate::store::{Query, RecordedEvent};
 
+// Each original chunk requires an object read and backup write/readback.
+// Fragmented recordings can reach this bound before the frame or byte limits.
+const MAX_SOURCE_CHUNKS: usize = 32;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Cursor {
     pub after: u64,
@@ -154,6 +158,7 @@ pub(super) async fn batch(
         return Err(conflict("source cursor is past the sealed recording"));
     }
     let mut batch = Batch::default();
+    let mut source_chunks = 0;
     let mut query = Query {
         after: cursor.after,
         limit: 8,
@@ -169,6 +174,11 @@ pub(super) async fn batch(
                 return Err(conflict("recording changed"));
             }
             if row.body.kind == chunk::FRAME_CHUNK {
+                if source_chunks == MAX_SOURCE_CHUNKS {
+                    batch.next = Some(cursor);
+                    return Ok(batch);
+                }
+                source_chunks += 1;
                 if let Some(next) = batch.packed(live, &row, id, cursor).await? {
                     batch.next = Some(next);
                     return Ok(batch);
