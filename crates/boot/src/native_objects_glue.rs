@@ -189,6 +189,9 @@ struct MapState {
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
+    /// The device's cull at this layer-3 call, read in `native` for the
+    /// pass `draw` asks for ([`ObjectsPass::cull`]).
+    cull: Mutex<Option<native_render::program::Cull>>,
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -240,6 +243,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 return None;
             }
         }
+        // The cull layer 3 starts in, which the passes that do not set
+        // `CULLMODE` draw with on the D3D path, as the world's.
+        let cull = if inherit_cull() {
+            self.device
+                .lock()
+                .ok()
+                .and_then(|d| d.cull_state(&crate::native_world_glue::ReadMemory(mem)))
+                .map(crate::native_world_glue::inherited_cull)
+        } else {
+            None
+        };
+        *self.cull.lock().unwrap_or_else(|e| e.into_inner()) = cull;
         Some(set)
     }
 
@@ -263,6 +278,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         else {
             return false;
         };
+        let cull = *self.cull.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(mut d) = self.device.lock() else {
             return false;
         };
@@ -286,6 +302,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             view: None,
             texaccum,
             w_clip: None,
+            cull,
         }));
         true
     }
@@ -309,6 +326,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state,
+        cull: Mutex::new(None),
     }));
 }
 
@@ -378,6 +396,9 @@ fn spawn_worker(
                             set.texaccum.insert(def as u16);
                         }
                         set.sections.extend(lit_sections.iter().map(|&s| (def as u16, s)));
+                        if compare().is_some_and(|c| c.definition == def as u16) {
+                            set.shadowed.insert(def as u16);
+                        }
                         s.set = Arc::new(set);
                         // No lock held across the print.
                         drop(st);
@@ -785,6 +806,23 @@ struct ObjectsPass {
     /// (03a: 256 depth units), and drew the part of an object nearer
     /// than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
+    /// The device's cull at the layer-3 call (`None`: not read, or
+    /// `H2_NATIVE_OBJECTS_INHERIT_CULL=0`): the lit parts whose
+    /// implementation does not set `CULLMODE` draw with it, as the D3D
+    /// path draws them (`LitObjects::set_inherited_cull`). Without it they
+    /// culled nothing.
+    cull: Option<native_render::program::Cull>,
+}
+
+/// Whether the lit parts that do not set `CULLMODE` take the device's
+/// cull: unless `H2_NATIVE_OBJECTS_INHERIT_CULL=0`.
+fn inherit_cull() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| parse_inherit(std::env::var("H2_NATIVE_OBJECTS_INHERIT_CULL").ok().as_deref()))
+}
+
+fn parse_inherit(v: Option<&str>) -> bool {
+    !matches!(v.map(str::trim), Some("0" | "none" | "off" | "false"))
 }
 
 impl d3d::ExternalPass for ObjectsPass {
@@ -840,6 +878,8 @@ impl d3d::ExternalPass for ObjectsPass {
         let Some(constants) = self.view else { return };
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let Some(lit) = lit.as_mut() else { return };
+        lit.set_inherited_cull(self.cull);
+        let compared = compare();
         let objects: Vec<(u32, &ObjectFrame)> = self
             .objects
             .iter()
@@ -848,6 +888,10 @@ impl d3d::ExternalPass for ObjectsPass {
                 lit.has(i).then_some((i, o))
             })
             .collect();
+        // The compared definition's objects are left to D3D (their items
+        // kept): armed against, not drawn.
+        let (shadowed, objects): (Vec<(u32, &ObjectFrame)>, Vec<(u32, &ObjectFrame)>) =
+            objects.into_iter().partition(|(_, o)| compared.is_some_and(|c| c.definition == o.definition as u16));
         let probing = probe_at().is_some() && probe_due();
         if let Some(at) = probe_at()
             && probing
@@ -882,10 +926,13 @@ impl d3d::ExternalPass for ObjectsPass {
                 t.size
             );
         }
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        if let (Some(c), Some(&(model, o))) = (compared, shadowed.first()) {
+            arm_compare(c, lit, model, o, &self.view_inputs(constants, &t), texaccum);
+        }
         if objects.is_empty() {
             return;
         }
-        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
         if self.texaccum && texaccum.is_none() && TEXACCUM_MISSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
             eprintln!(
                 "native-objects: the texture accumulation target was bound at the hook but the device gave no level for it; parts sampling it go undrawn this view (logged once, counted)"
@@ -948,6 +995,80 @@ impl ObjectsPass {
             z_scale: t.z_scale,
             w_clip: self.w_clip,
         }
+    }
+}
+
+/// `H2_NATIVE_OBJECTS_COMPARE=definition:part[:after]`: one lit part
+/// compared with the D3D path's draw of it (`d3d::uniform_compare`, as
+/// the world's `H2_NATIVE_WORLD_DUMP`). The definition's objects keep
+/// their D3D draws (`NativeSet::shadowed`); on the pass after `after`
+/// (default 0) that holds one, its first object's part is armed with what
+/// the pass would draw it with, and the D3D draws with the same node rows
+/// are compared (the part's own program field by field; the object's
+/// other draws, its other layers among them, named with their cull and
+/// depth).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Compare {
+    definition: u16,
+    part: usize,
+    after: u32,
+}
+
+fn compare() -> Option<Compare> {
+    static C: std::sync::OnceLock<Option<Compare>> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        let c = std::env::var("H2_NATIVE_OBJECTS_COMPARE").ok().and_then(|v| parse_compare(&v));
+        if let Some(c) = c {
+            eprintln!("native-objects: comparing {c:?} with the D3D path's draws (its objects left to D3D)");
+        }
+        c
+    })
+}
+
+fn parse_compare(v: &str) -> Option<Compare> {
+    let mut it = v.trim().split(':');
+    let definition = *parse_definitions(it.next()?).first()?;
+    let part = it.next().map_or(Some(0), |p| p.trim().parse().ok())?;
+    let after = it.next().map_or(Some(0), |a| a.trim().parse().ok())?;
+    Some(Compare { definition, part, after })
+}
+
+/// Arms the comparison once, on the pass after `c.after` holding one of
+/// its objects (`o`, model `model`).
+fn arm_compare(c: Compare, lit: &LitObjects, model: u32, o: &ObjectFrame, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) {
+    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) != c.after {
+        return;
+    }
+    let label = format!("object {:#010x} definition {:#010x} part {}", o.handle, o.definition, c.part);
+    match lit.part_uniforms(model, o, c.part, view, texaccum) {
+        Ok(u) => {
+            eprintln!(
+                "native-objects compare {label}: implementation {}, {} program words, rows c[50..] {:?}, decompression c[170..173] {:?}, depth {:?}, primitive {:?}, textures {:?}",
+                u.implementation,
+                u.words.len(),
+                &u.vertex.constants[50..53],
+                &u.vertex.constants[170..173],
+                u.depth,
+                u.primitive,
+                u.textures
+            );
+            d3d::uniform_compare::arm(d3d::uniform_compare::Expected {
+                label,
+                words: u.words,
+                vertex: u.vertex,
+                pixel: u.pixel,
+                options: u.options,
+                def: u.def,
+                pixel_options: u.pixel_options,
+                primitive: u.primitive,
+                depth: (u.depth.0, u.depth.1, Default::default()),
+                textures: u.textures,
+                samplers: u.samplers,
+                draws: 4,
+            });
+        }
+        Err(e) => eprintln!("native-objects compare {label}: {e}"),
     }
 }
 
@@ -1065,13 +1186,26 @@ mod tests {
             view: None,
             texaccum: false,
             w_clip: None,
+            cull: None,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
         assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
+        // The device's cull is inherited unless turned off.
+        assert!(parse_inherit(None));
+        assert!(parse_inherit(Some("1")));
+        assert!(!parse_inherit(Some("0")));
+        assert!(!parse_inherit(Some(" none ")));
         let constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
         let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
         let u = native_render::program::frame_vertex(&Default::default(), &view);
         assert_eq!(u.w_clip, Some([256.0, 16_777_215.0]), "near at the device's 256, not 0");
+    }
+
+    #[test]
+    fn a_comparison_names_a_definition_a_part_and_a_pass() {
+        assert_eq!(parse_compare("0xe92207ad:2:30"), Some(Compare { definition: 0x07ad, part: 2, after: 30 }));
+        assert_eq!(parse_compare("e92207ad"), Some(Compare { definition: 0x07ad, part: 0, after: 0 }));
+        assert_eq!(parse_compare("0xe92207ad:x"), None);
     }
 
     #[test]

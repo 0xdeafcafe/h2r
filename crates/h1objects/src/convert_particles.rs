@@ -168,7 +168,10 @@ impl Converter<'_> {
         rep.no_home.push(
             "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
         );
-        let root = particles::particle(p, &role, &shader, bitmap, collision, death)?;
+        let (root, roles) = crate::provenance::capture(|| {
+            particles::particle(p, &role, &shader, bitmap, collision, death)
+        });
+        let root = root?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             name,
@@ -178,6 +181,7 @@ impl Converter<'_> {
                 raw: Vec::new(),
             },
         );
+        self.tree.note_roles(id, roles);
         Ok(Some(id))
     }
 }

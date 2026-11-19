@@ -49,7 +49,17 @@ const WEAPON: [u8; 4] = *b"weap";
 const VEHICLE: [u8; 4] = *b"vehi";
 const MACHINE: [u8; 4] = *b"mach";
 const DAMAGE_EFFECT: [u8; 4] = *b"jpt!";
-const KEPT: [[u8; 4]; 5] = [BIPED, WEAPON, VEHICLE, MACHINE, DAMAGE_EFFECT];
+const PROJECTILE: [u8; 4] = *b"proj";
+const EQUIPMENT: [u8; 4] = *b"eqip";
+const KEPT: [[u8; 4]; 7] = [
+    BIPED,
+    WEAPON,
+    VEHICLE,
+    MACHINE,
+    DAMAGE_EFFECT,
+    PROJECTILE,
+    EQUIPMENT,
+];
 
 /// Names of a map's biped, weapon, vehicle, machine and damage-effect tags
 /// by full salted datum, as the frame ids made from them: worked out once
@@ -199,6 +209,16 @@ impl TagNames {
     }
 
     /// The file stem of the damage effect (`jpt!`) `datum`.
+    /// The file stem of the projectile whose definition is `datum`.
+    pub fn projectile(&self, datum: u32) -> Option<String> {
+        self.named(datum, PROJECTILE)?.id.clone()
+    }
+
+    /// The file stem of the equipment whose definition is `datum`.
+    pub fn equipment(&self, datum: u32) -> Option<String> {
+        self.named(datum, EQUIPMENT)?.id.clone()
+    }
+
     pub fn damage_effect(&self, datum: u32) -> Option<String> {
         self.named(datum, DAMAGE_EFFECT)?.id.clone()
     }

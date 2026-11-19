@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::rt::Instant;
+use bytes::Bytes;
 
 use live_proto::game::{
     self, Frame, GameCreated, GameDetail, GameEnded, GameStarted, GameSummary, NewGame, Outline,
@@ -609,21 +610,26 @@ impl Live {
 
     /// `GET /v1/games/{id}/chunks/{from_tick}`: one chunk's bytes, checked
     /// against the hash its signed index entry holds.
-    pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Vec<u8>, ApiError> {
+    pub async fn frame_chunk(&self, id: &str, from_tick: u64) -> Result<Bytes, ApiError> {
         let index = self.frame_chunks(id).await?;
         let meta = index
             .iter()
             .find(|m| m.from_tick == from_tick)
             .ok_or_else(|| not_found("no such chunk"))?;
+        self.stored_chunk(id, meta).await
+    }
+
+    async fn stored_chunk(&self, id: &str, meta: &ChunkMeta) -> Result<Bytes, ApiError> {
+        let from_tick = meta.from_tick;
         let mut bytes = None;
         if let Some(b) = self.blobs() {
             match b.private.get(&chunk_key(id, from_tick)).await {
-                Ok(found) => bytes = found.map(|b| b.to_vec()),
+                Ok(found) => bytes = found,
                 Err(e) => eprintln!("live: frame chunk of {id}: {e}"),
             }
         }
         if bytes.is_none() {
-            bytes = self.store.blob(&meta.sha256).await?;
+            bytes = self.store.blob(&meta.sha256).await?.map(Bytes::from);
         }
         let bytes = bytes.ok_or_else(|| not_found("the chunk is not stored"))?;
         if sign::hex(&Sha256::digest(&bytes)) != meta.sha256 {
@@ -638,7 +644,7 @@ impl Live {
     pub async fn chunk_frames(&self, id: &str) -> Result<Vec<Frame>, ApiError> {
         let mut out = Vec::new();
         for meta in self.frame_chunks(id).await? {
-            let bytes = self.frame_chunk(id, meta.from_tick).await?;
+            let bytes = self.stored_chunk(id, &meta).await?;
             out.extend(chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?);
         }
         Ok(out)

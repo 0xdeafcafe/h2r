@@ -452,10 +452,68 @@ pub struct Frame {
     /// actors, vehicles, hits, machines or objects, only the tick and the
     /// BSP, so a viewer shows a cutscene rather than the puppets the
     /// scripts move about (docs/live/live-telemetry.md, "Cinematics";
-    /// packed version 5).
+    /// packed version 5; every version 6 frame carries the bit).
     #[serde(default, skip_serializing_if = "is_false")]
     pub cinematic: bool,
+    /// Projectiles in flight that a viewer can see fly (grenades, rockets,
+    /// plasma, needles: slower than [`MAX_PROJECTILE_SPEED`]; faster ones
+    /// live a tick or two and are drawn from `fire` and `aim`), at most
+    /// [`MAX_FRAME_PROJECTILES`] (packed version 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projectiles: Vec<FrameProjectile>,
+    /// Weapons and equipment lying loose in the world that no scenario
+    /// placement or netgame spawn made (those are in `objects`): a dead
+    /// unit's dropped gun, a dropped flag, ball or bomb. At most
+    /// [`MAX_FRAME_ITEMS`] (packed version 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<FrameItem>,
 }
+
+/// A projectile in flight (packed version 6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameProjectile {
+    /// The projectile's object datum in hex.
+    pub id: String,
+    /// The `proj` tag file stem (`frag_grenade`, `plasma_grenade`,
+    /// `rocket`, ...), or `unknown`.
+    pub kind: String,
+    /// World position; with `parent`, where that object is (a stuck plasma
+    /// grenade's own transform is relative to what it stuck to).
+    pub pos: [f64; 3],
+    /// Velocity, game units a second; absent when stuck or not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
+    /// The object it is attached to (a plasma grenade stuck to a unit or a
+    /// vehicle): its id as players, actors and vehicles carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+}
+
+/// A loose weapon or piece of equipment (packed version 6).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameItem {
+    /// The object datum in hex.
+    pub id: String,
+    /// The `weap` (or with `equipment`, `eqip`) tag file stem: `flag`,
+    /// `ball`, `assault_bomb`, `battle_rifle`, ..., or `unknown`.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// Unit length, game coordinates.
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+    /// An `eqip` tag (grenades, powerups), not a `weap`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub equipment: bool,
+}
+
+/// Most projectiles one frame may carry.
+pub const MAX_FRAME_PROJECTILES: usize = 64;
+/// Most loose items one frame may carry.
+pub const MAX_FRAME_ITEMS: usize = 128;
+/// Projectiles faster than this (world units a second) are not sent: a
+/// bullet (400) crosses a map in a tick or two, and the viewer draws it
+/// from the shooter's `fire` and `aim`.
+pub const MAX_PROJECTILE_SPEED: f64 = 100.0;
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
 /// packed format's kind code (docs/live/live-telemetry.md, Packed frames). Its
@@ -634,6 +692,10 @@ pub struct FrameVehicle {
     /// points. Unit length, game coordinates; absent when not read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aim: Option<[f64; 3]>,
+    /// Velocity, game units a second (body `+0x88`), as players' and
+    /// actors' `vel` (packed version 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vel: Option<[f64; 3]>,
 }
 
 /// An AI-controlled biped.
@@ -1000,6 +1062,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         if v.aim.is_some_and(|a| !direction(a)) {
             return Err("vehicle aim must be a finite, non-zero vector".into());
         }
+        validate_vel(v.vel)?;
     }
     for a in &frame.actors {
         let ids = [
@@ -1047,6 +1110,8 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         return Err(format!("at most {MAX_FRAME_MACHINES} machines"));
     }
     validate_objects(&frame.objects)?;
+    validate_projectiles(&frame.projectiles)?;
+    validate_items(&frame.items)?;
     for m in &frame.machines {
         if !valid_model_id(&m.id) || !valid_model_id(&m.kind) {
             return Err("machine id and kind must be [a-z0-9_]{1,32}".into());
@@ -1059,6 +1124,51 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         if m.position.is_some_and(|p| !(0.0..=1.0).contains(&p)) {
             return Err("machine position must be 0 to 1".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_vel(vel: Option<[f64; 3]>) -> Result<(), String> {
+    if vel.is_some_and(|v| !v.iter().all(|c| c.is_finite()) || length(v) > MAX_FRAME_SPEED) {
+        return Err(format!("vel must be finite and at most {MAX_FRAME_SPEED}"));
+    }
+    Ok(())
+}
+
+fn validate_projectiles(projectiles: &[FrameProjectile]) -> Result<(), String> {
+    if projectiles.len() > MAX_FRAME_PROJECTILES {
+        return Err(format!("at most {MAX_FRAME_PROJECTILES} projectiles"));
+    }
+    for p in projectiles {
+        if !valid_model_id(&p.id) || !valid_model_id(&p.kind) {
+            return Err("projectile id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if p.parent
+            .as_deref()
+            .is_some_and(|id| !valid_model_id(id) || id == p.id)
+        {
+            return Err("projectile parent must be another [a-z0-9_]{1,32} id".into());
+        }
+        if !p.pos.iter().all(|c| c.is_finite()) {
+            return Err("projectile pos must be finite".into());
+        }
+        validate_vel(p.vel)?;
+    }
+    Ok(())
+}
+
+fn validate_items(items: &[FrameItem]) -> Result<(), String> {
+    if items.len() > MAX_FRAME_ITEMS {
+        return Err(format!("at most {MAX_FRAME_ITEMS} items"));
+    }
+    let direction = |v: [f64; 3]| v.iter().all(|c| c.is_finite()) && length(v) >= 1e-6;
+    for i in items {
+        if !valid_model_id(&i.id) || !valid_model_id(&i.kind) {
+            return Err("item id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if !i.pos.iter().all(|c| c.is_finite()) || !direction(i.forward) || !direction(i.up) {
+            return Err("item pos must be finite, forward and up finite and non-zero".into());
         }
     }
     Ok(())
@@ -1453,6 +1563,10 @@ pub fn normalize_frame(frame: &mut Frame) {
     for v in &mut frame.vehicles {
         unit(&mut v.forward);
         unit(&mut v.up);
+    }
+    for i in &mut frame.items {
+        unit(&mut i.forward);
+        unit(&mut i.up);
     }
     for a in &mut frame.actors {
         if let Some(aim) = &mut a.aim {

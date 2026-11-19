@@ -146,6 +146,8 @@ impl Shared {
         snapshot.machines.clear();
         snapshot.placed.clear();
         snapshot.bodies.clear();
+        snapshot.projectiles.clear();
+        snapshot.items.clear();
         snapshot.hits.clear();
         let mut spare = self.spare.lock().unwrap();
         if spare.len() < SPARE_SNAPSHOTS {

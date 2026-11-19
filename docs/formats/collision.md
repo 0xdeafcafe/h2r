@@ -74,7 +74,10 @@ shapes, bipd `+0x264`, get Havok vtables in `0x001c2390`), vehicles and
 loose items, so scenery with neither a `phmo` nor these slots is not
 there for them: the player walks through it (Guess for the walk itself:
 inferred from the biped's Havok shapes, not traced through the biped's
-movement code).
+movement code). No engine path that puts an object's slots in the Havok
+world has been found, and scenery gets no rigid body from a `phmo`
+either (rigid bodies, below): on converted Blood Gulch the player walked
+through boulders with slots (version 84) and with a `phmo` (version 90).
 
 **The rule (V, `retail_static_scenery_carries_bsp_physics`, every map on
 the disc: 7,033 permutations, 280 slots):** a `coll`'s permutations have
@@ -246,6 +249,17 @@ engine does with the first words when it adds a body to the Havok world:
 | `+0x18 u16` bit 0 | read at `0x001d5d81` (set, or the object is a vehicle, sets a local flag); effect not established | E (read only) |
 | `+0x1a u16` | motion: 0..5 become Havok motions 2..7 (7 fixed, 6 keyframed) | E: jump table `0x001d5bd4` in `0x001d5940` |
 | `+0x1e u16` | not established (1 on every retail biped body) | V |
+
+Which objects get bodies at all (E): only bipeds, vehicles, machines,
+crates and creatures. `0x001c35f0`, the one place an object gets its
+physics component (`0x001cf0b0`) and bodies (`0x001cf120`), returns at
+`0x001c361c` unless the type is in the mask `0x1883`, and `0x001cf120`'s
+switch (byte table `0x001cf20c`) has cases for those five types only.
+Scenery, weapons, equipment, garbage, projectiles, controls and light and
+sound scenery never get a rigid body from their `phmo`. A game run on
+converted Blood Gulch agrees: `havok.bodies` shows no body for any of its
+50 scenery placements ([tag-definitions.md](tag-definitions.md), Scenery
+from definitions).
 
 How a body's motion and layer are chosen (E, `0x001d5940` and callers):
 
