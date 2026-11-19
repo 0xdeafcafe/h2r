@@ -88,6 +88,11 @@ pub struct LightmapKey {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldDraw {
     pub owner: Owner,
+    /// The part's index in its section (transparent and undrawn parts
+    /// counted too): the low byte of a layer item's render argument,
+    /// which the build `0x0004cbf0` uses as the index into the section's
+    /// parts (`[section+4] + 0x48·part`).
+    pub part: u8,
     /// Index into the BSP's materials (`sbsp+0xa4`), `u16::MAX` none.
     pub material: u16,
     pub lightmap: Option<LightmapKey>,
@@ -329,8 +334,11 @@ impl WorldBuilder {
                 }
                 continue;
             }
+            // Past 255 parts an item's byte cannot name it.
+            let Ok(part_index) = u8::try_from(index) else { continue };
             self.draws.push(WorldDraw {
                 owner,
+                part: part_index,
                 material: part.material,
                 lightmap,
                 first_index,
