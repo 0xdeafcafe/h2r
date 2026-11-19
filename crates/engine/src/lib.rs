@@ -32,6 +32,7 @@ pub mod abi;
 pub mod colour_pass;
 pub mod datum;
 pub mod entry;
+pub mod glow;
 pub mod handle;
 pub mod light_constants;
 pub mod light_passes;

@@ -1347,9 +1347,34 @@ its D3D passes.
      `pack(x, third x3)` at `0x00484f90`, drawn by `0x00034a90` into the
      view's target; then the target is set back (`0x00014bc0`).
 
-  Its numbers are `engine::colour_pass` (built, below). The native pass
-  is the same two passes over a copy of the view's colour target, the
-  blur once `0x000211a0` is traced.
+  Between them, `0x000211a0` blurs target 7 (Code):
+  - `0x00020f30` first writes the blur's combiner (eight stages with the
+    fifth argument above 0, else three; `0x00131ed0` packs its colour,
+    and the local `y` sets a `<< 24` word) and selects it (the device's
+    `+0x924`, `+0x928`, `+0x92c` = the block, `0x003fa3d0`);
+  - then up to `ceil(first argument)` steps (about 3.99: four), each
+    binding the last result to stages 0..3 (sampler words as above) and
+    drawing four taps into the other buffer (7 and 8 in turn), with
+    spread `fraction * scale`, the scale growing by
+    `1 - g + g * [0x0045dc0c]` per step (`g` the fourth argument, 0.25):
+    a Kawase-style blur. It returns the last buffer drawn.
+
+  The quad draw `0x00034a90` (eleven arguments, `ret 0x2c`): the target
+  (`0x00014bc0` unless -1), `0x000142f0` with the second argument unless
+  -1, the colour write mask (third, `0x1010101`), Z off (or mode 2 with
+  the first byte), Z bias 0, Z write off, cull none, stencil off, with
+  the byte two more simple states (S: alpha test; `0x203`/`0x204` by the sign of the sixth
+  argument); then per tap (the ninth argument: 4 or 1) an offset from the
+  word tables at `0x00485af4`/`0x00485b04` over the source's size
+  (`0x0001dd60`), or the screen rectangle `0x004b9dd0..`, and the
+  spread (seventh); the quad through `0x0001c590` and `0x00034420`.
+
+  Its numbers are built: `engine::colour_pass` (the arguments and
+  parameters), `engine::glow` (`pass_a`, `pass_b`, `blur_combiner`: the
+  three 60-word blocks; `blur`: each step's source, target and spread,
+  and the result). The native pass is these three stages over a copy of
+  the view's colour target, through the stage 3 combiner compiler with
+  these blocks.
 - **The screen effects**, each entry `0x0002d140` would draw: its shader
   compiled as stage 3 compiles layer 15, drawn with the rectangle and
   the entry's function values. Blur needs the scene as a texture, which
@@ -1394,13 +1419,44 @@ its D3D passes.
    `parameters`: the callee's override record and clamps;
    `pack_colour`: `0x00131e50`; `Parameters::colours`: the two combiner
    colours), bit-equal to the lifted original
-   (`engine/tests/colour_pass_differential.rs`). Next: trace the blur
-   `0x000211a0` and the quad draw `0x00034a90`, then draw the two passes
-   natively over a copy of the colour target, and leave what the pass
-   leaves (its texture-stage words and dirty bits, the PSDEF words at
-   `0x00484f68`, its render states, the target set back). The host then
-   accepts calls with `colour` set and `late` clear, and with no screen
-   effect that would draw.
+   (`engine/tests/colour_pass_differential.rs`), and the glow's:
+   `engine::glow` (`engine/tests/glow_differential.rs`: the three
+   combiner blocks, and the blur's steps with the device calls stubbed).
+   The host (`boot::native_post_glue::refusal`) refuses every call that
+   draws, logging each reason once. Next, in order:
+   1. Trace `0x00034420` and `0x0001c590` (the quad's vertices and
+      vertex shader: how the spread moves the taps), `0x0001dd60` (the
+      target sizes) and the formats of targets 7 and 8.
+   2. The native glow in `native-render`: a copy of the view's colour,
+      the down-sample with `pass_a` into a target 7 stand-in, the blur
+      steps with `blur_combiner` ping-ponging between the 7 and 8
+      stand-ins, the composite with `pass_b` and the blend of
+      `0x000222d0`'s states over the view's colour.
+   3. The leftovers, side by side as the prologue's: the texture-stage
+      words and dirty bits (including `0x000214f0` writing back the dirty
+      word it read before its binds), the block (`pass_b`'s), the quad
+      draw's states and Halo's state cache (`0x004b82e0..`), the
+      selected combiner and the target set back (`0x00014bc0`).
+   4. The host accepts calls with `colour` set, `late` clear and no
+      screen effect that would draw, after the frame A/B below.
+
+   **The frame A/B** for the glow: the same frame (a fixed save, view
+   and time, `H2_FEATURES` differing only in `impl.render.native_post`)
+   captured with the D3D path and the native one, compared:
+   - the view's colour target after `render_screen_effects` (before the
+     fade and the HUD), per pixel, within a small tolerance for filtering
+     (report max and mean error and the count over it);
+   - targets 7 and 8 after the down-sample and after each blur step,
+     when the capture can read them, to place a difference in a stage;
+   - the guest words the call leaves (the block at `0x00484f68`,
+     `D3D__TextureState`, `D3D__DirtyFlags`, `D3D__RenderState`, Halo's
+     state cache) and the device's bound target and states at the next
+     entry: equal, not within a tolerance;
+   - the frame's next draws (the fade and the HUD) as d3d records them:
+     equal;
+   - the counts: `external_passes_dropped` steady, the refusals and
+     `prologue_refused` at 0 on the scene, and the ms of
+     `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
