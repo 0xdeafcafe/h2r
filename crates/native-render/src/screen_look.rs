@@ -281,8 +281,21 @@ mod tests {
         Some(StageTexture { source, size: None, stage_size: None })
     }
 
-    /// A blur's shape: the view's colour (an engine texture) and a bitmap.
+    /// A blur's shape: the view's colour (an engine texture) and a bitmap;
+    /// no blending, no depth write (the states `pass_state` needs set).
     fn implementation(index: usize) -> ResolvedImplementation {
+        use gfx::state::RenderStateType as R;
+        use tags::shader::RenderStateValue;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .unwrap()
+        };
+        let render_states = vec![
+            RenderStateValue { state: slot(R::AlphaBlendEnable), value: 0 },
+            RenderStateValue { state: slot(R::ZWriteEnable), value: 0 },
+        ];
         ResolvedImplementation {
             index,
             vertex_shader: Some(TagId(0xe000_0010 + index as u32)),
@@ -293,7 +306,7 @@ mod tests {
                 None,
             ],
             stage_states: Vec::new(),
-            render_states: Vec::new(),
+            render_states,
             restore_states: Vec::new(),
             pixel_shader: [7; PSDEF_SIZE],
             variant: false,
