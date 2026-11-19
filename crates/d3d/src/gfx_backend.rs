@@ -1564,9 +1564,21 @@ impl Backend for GfxBackend {
         &mut self,
         color: SurfaceId,
         depth: SurfaceId,
+        sampled: Vec<Option<SurfaceId>>,
         request: crate::backend::ExternalPassRequest,
         mut pass: Box<dyn crate::backend::ExternalPass>,
     ) -> Result<bool, String> {
+        // The sampled levels' own views (as `surface_texture` gives them).
+        let sampled: Vec<Option<crate::backend::SampledLevel>> = sampled
+            .into_iter()
+            .map(|s| {
+                let s = self.store.get(s?).ok()?;
+                let t = s.texture();
+                let sampleable = t.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+                    && gfx::program::filterable(t.format(), self.ctx.device.features());
+                sampleable.then(|| crate::backend::SampledLevel { view: s.view().clone(), size: (t.width(), t.height()) })
+            })
+            .collect();
         let attachment = |s: &gfx::surface::Surface| {
             let single = s.desc().samples <= 1;
             let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
@@ -1625,6 +1637,7 @@ impl Backend for GfxBackend {
             z_scale: request.z_scale,
             guest_size: request.surface_size,
             size,
+            sampled: &sampled,
         });
         self.open = Some((enc, passes + 1));
         Ok(true)

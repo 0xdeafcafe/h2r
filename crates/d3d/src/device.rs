@@ -2043,6 +2043,13 @@ impl<B: Backend> Device<B> {
             pass.depth_clip(self.depth_clip(mem, z_max));
         }
         let colour_only = pass.colour_only();
+        // The levels it samples, as a draw binding them now would sample
+        // them in place; `None` where one cannot be.
+        let sampled = pass
+            .sampled()
+            .into_iter()
+            .map(|header| self.rtt_level(mem, header, 0).ok().flatten().map(|(_, surface)| surface))
+            .collect();
         let issued = match self.external_ready(mem, colour_only) {
             Err(why) => Err(why),
             Ok(request) => match self.current_targets(mem, "external pass") {
@@ -2051,7 +2058,7 @@ impl<B: Backend> Device<B> {
                 // gives it a scratch depth; `Backend::external_pass`).
                 Ok((color, depth)) => match if colour_only { Some(color) } else { depth } {
                     None => Err(ExternalRefusal::NoDepth),
-                    Some(depth) => match self.backend.external_pass(color, depth, request, pass) {
+                    Some(depth) => match self.backend.external_pass(color, depth, sampled, request, pass) {
                         Ok(true) => Ok(()),
                         Ok(false) => Err(ExternalRefusal::Backend),
                         Err(_) => Err(ExternalRefusal::Failed),

@@ -797,6 +797,13 @@ impl<B: Backend> Device<B> {
         self.rtt_direct && self.backend.can_sample_surfaces()
     }
 
+    /// Whether render-to-texture levels are sampled in place ([`Self::rtt_lazy`]):
+    /// what an external pass sampling one ([`crate::backend::ExternalPass::sampled`])
+    /// needs to be given it.
+    pub fn samples_levels_in_place(&self) -> bool {
+        self.rtt_lazy()
+    }
+
     /// Lazy render-to-texture (the default): draws sample a level's host
     /// surface in place and its pixels reach guest memory only when the
     /// guest is about to read them (`docs/graphics/d3d.md`). Off: every target
@@ -938,6 +945,30 @@ impl<B: Backend> Device<B> {
         header: u32,
         color_sign: u32,
     ) -> Result<Option<(TextureInfo, B::Texture)>, D3dError> {
+        let Some((info, surface)) = self.rtt_level(mem, header, color_sign)? else {
+            return Ok(None);
+        };
+        let Some(texture) = self
+            .backend
+            .surface_texture(surface)
+            .map_err(D3dError::Backend)?
+        else {
+            return Ok(None);
+        };
+        self.stats.rtt_direct_samples += 1;
+        Ok(Some((info, texture)))
+    }
+
+    /// The render-to-texture level texture `header` samples in place, as
+    /// [`Self::rtt_texture`] finds it (its write-back and refresh done),
+    /// and the level's host surface: what a draw, or an external pass
+    /// ([`crate::backend::ExternalPass::sampled`]), binding it now reads.
+    pub(super) fn rtt_level(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+        color_sign: u32,
+    ) -> Result<Option<(TextureInfo, B::Surface)>, D3dError> {
         if self.rtt.is_empty() || !self.rtt_lazy() || color_sign & COLOR_SIGN_MASK != 0 {
             return Ok(None);
         }
@@ -1000,14 +1031,6 @@ impl<B: Backend> Device<B> {
         // alias) goes to memory first, and this one takes it up there.
         self.write_back_overlapping(mem, h)?;
         self.refresh_rtt(mem, h)?;
-        let Some(texture) = self
-            .backend
-            .surface_texture(t.surface)
-            .map_err(D3dError::Backend)?
-        else {
-            return Ok(None);
-        };
-        self.stats.rtt_direct_samples += 1;
         Ok(Some((
             TextureInfo {
                 header,
@@ -1019,7 +1042,7 @@ impl<B: Backend> Device<B> {
                 depth: desc.depth,
                 levels: desc.levels,
             },
-            texture,
+            t.surface,
         )))
     }
 

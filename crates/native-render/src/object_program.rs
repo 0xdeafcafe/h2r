@@ -108,6 +108,10 @@ pub struct ObjectPass {
     /// The stages that sample the vector normalization cube (empty in
     /// `program.stages`; the host binds the cube).
     pub normalization: [bool; 4],
+    /// The stages that sample the texture accumulation target
+    /// ([`TEXACCUM_TEXTURE`]; empty in `program.stages`; the host binds the
+    /// level the D3D path drew, in texel coordinates).
+    pub texaccum: [bool; 4],
 }
 
 /// Compiles `imp` of `pass` with `microcode` for a vertex buffer
@@ -122,13 +126,13 @@ pub fn object_pass(
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
     let state = object_pass_state(imp)?;
-    let (look, normalization) = object_look_stages(pass, imp)?;
+    let (look, EngineBound { normalization, texaccum }) = object_look_stages(pass, imp)?;
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
-    let mut program = compile_object_stages(&look, normalization, microcode, state.alpha_test, provided)?;
+    let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided)?;
     program.state = Some(state);
-    Ok(ObjectPass { program, implementation: imp.clone(), normalization })
+    Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an
@@ -186,27 +190,53 @@ pub const LIGHTMAP_STREAM: u8 = 0x2e;
 /// [`crate::light_look::LightStage::Normalization`]).
 pub const NORMALIZATION_TEXTURE: u8 = 1;
 
+/// The engine texture of the texture accumulation target (Code): render
+/// target 1 (`0x00019530`'s entry for 3, `0x000195b2`, binds what
+/// `0x00014f60` gives for target 1: its kind, the byte at `0x00015154 + 1`,
+/// takes `0x00015044`, the texture `0x0001dcc0(1)` returns). Layer 1's
+/// `_combined` passes draw into it; layer 3 samples it in screen space,
+/// a linear texture read in texels.
+pub const TEXACCUM_TEXTURE: u8 = 3;
+
+/// The texture header `0x0001dcc0(1)` returns for target 1: the target
+/// descriptors are `0x98` bytes from `0x004b4b58`, the texture at `+4`
+/// (valid while `+0x88` is set and the byte at `+0x95` clear).
+pub const TEXACCUM_HEADER: u32 = 0x004b_4b58 + 0x98 + 4;
+
+/// The stages of an object pass the host binds an engine texture at
+/// (empty in the look).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineBound {
+    /// The vector normalization cube (engine texture 1, sampled as a cube
+    /// without a bias as the lights do).
+    pub normalization: [bool; 4],
+    /// The texture accumulation target (engine texture 3, 2D, unbiased).
+    pub texaccum: [bool; 4],
+}
+
 /// [`object_look`] with the stages that sample the vector normalization
-/// cube (engine texture 1, bound by the host, sampled as a cube without a
-/// bias as the lights do); in the look those stages are empty.
-pub fn object_look_stages(pass: map::TagId, imp: &ResolvedImplementation) -> Result<(PassLook, [bool; 4]), String> {
+/// cube or the texture accumulation target, which the host binds; in the
+/// look those stages are empty.
+pub fn object_look_stages(pass: map::TagId, imp: &ResolvedImplementation) -> Result<(PassLook, EngineBound), String> {
     inputs_supported(imp)?;
     let mut instance = imp.clone();
     for r in instance.vertex_constants.iter_mut().chain(instance.vertex_defaults.iter_mut()) {
         r.origin = Origin::Instance;
     }
-    let mut normalization = [false; 4];
+    let mut bound = EngineBound::default();
     for (n, t) in instance.textures.iter_mut().enumerate() {
-        if let Some(t) = t
-            && t.source == tags::material::TextureSource::Engine(NORMALIZATION_TEXTURE)
-        {
-            t.source = tags::material::TextureSource::None;
-            normalization[n] = true;
-        }
+        let Some(t) = t else { continue };
+        let slot = match t.source {
+            tags::material::TextureSource::Engine(NORMALIZATION_TEXTURE) => &mut bound.normalization[n],
+            tags::material::TextureSource::Engine(TEXACCUM_TEXTURE) => &mut bound.texaccum[n],
+            _ => continue,
+        };
+        *slot = true;
+        t.source = tags::material::TextureSource::None;
     }
     let mut look = implementation_look(pass, &instance).map_err(|r: Refusal| format!("{r:?}"))?;
     look.per_draw_inputs = false;
-    Ok((look, normalization))
+    Ok((look, bound))
 }
 
 /// Whether an object pass sets constant `c` (hardware numbering) for
@@ -229,14 +259,14 @@ pub fn compile_object(
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
 ) -> Result<MaterialProgram, String> {
-    compile_object_stages(look, [false; 4], microcode, alpha_test, provided_inputs)
+    compile_object_stages(look, EngineBound::default(), microcode, alpha_test, provided_inputs)
 }
 
-/// [`compile_object`] with the stages that sample the normalization cube
+/// [`compile_object`] with the stages the host binds an engine texture at
 /// ([`object_look_stages`]).
 pub fn compile_object_stages(
     look: &PassLook,
-    normalization: [bool; 4],
+    engine: EngineBound,
     microcode: &[u8],
     alpha_test: Option<(wgpu::CompareFunction, u8)>,
     provided_inputs: u16,
@@ -259,8 +289,10 @@ pub fn compile_object_stages(
         microcode,
         pixel_shader: &look.pixel_shader,
         dims: std::array::from_fn(|n| {
-            if normalization[n] {
+            if engine.normalization[n] {
                 Some(shaders::psh::TextureDim::Cube)
+            } else if engine.texaccum[n] {
+                Some(shaders::psh::TextureDim::D2)
             } else {
                 (look.textures[n] != crate::look::Stage::Empty).then_some(shaders::psh::TextureDim::D2)
             }
@@ -287,6 +319,28 @@ pub fn compile_object_stages(
         state: None,
         rigid: None,
     })
+}
+
+/// Puts the texture accumulation target's size (`guest_size`, what
+/// `0x00019530` writes for the stage when it binds it) into the engine
+/// vertex constants of `imp` that read the size of a stage in `stages`
+/// (`ResolvedImplementation::dimension_bindings`): the resolver knew no
+/// size for an engine texture and left 0 by 0 there.
+pub fn texaccum_dimensions(u: &mut VertexUniforms, imp: &ResolvedImplementation, stages: [bool; 4], guest_size: (u32, u32)) {
+    let size = (guest_size.0 as f32, guest_size.1 as f32);
+    for c in &imp.dimension_bindings {
+        let Some(stage) = usize::from(c.stage).checked_sub(1) else { continue };
+        if !stages.get(stage).copied().unwrap_or(false) {
+            continue;
+        }
+        let row = match c.bank {
+            1 => u.constants.get_mut(18 + usize::from(c.reg)),
+            _ => u.defaults.get_mut(usize::from(c.reg)),
+        };
+        if let Some(row) = row {
+            c.eval_size(row, size);
+        }
+    }
 }
 
 /// One drawn object's inputs.
@@ -427,6 +481,7 @@ pub(crate) mod tests {
             animated: Vec::new(),
             engine_render_states: Vec::new(),
             engine_stage_states: Vec::new(),
+            dimension_bindings: Vec::new(),
         }
     }
 
@@ -445,6 +500,33 @@ pub(crate) mod tests {
             ],
             vec![VectorBinding { source: 23, target: vertex(1, 0b1000) }],
         )
+    }
+
+    #[test]
+    fn the_texture_accumulation_target_is_a_stage_the_host_binds_with_its_size() {
+        use tags::material::{EngineVertexConstant, StageTexture, TextureSource};
+        let mut imp = lit();
+        imp.textures[2] = Some(StageTexture { source: TextureSource::Engine(TEXACCUM_TEXTURE), size: None, stage_size: None });
+        // The combiners sample t2 (PROJECT2D, 5 bits a stage).
+        imp.pixel_shader = shaders::PixelShaderDef { texture_modes: 1 << 10, ..Default::default() }.to_bytes();
+        // c[20].xy the size of stage 2's texture (mode 9; stage 3 names
+        // texture 2), which the resolver left 0 by 0 for an engine texture.
+        imp.dimension_bindings = vec![EngineVertexConstant { bank: 1, reg: 2, mode: 9, stage: 3, source: 0 }];
+        assert!(crate::look::implementation_look(map::TagId(0xe000_0001), &imp).is_err(), "the world's look refuses it");
+        let (look, bound) = object_look_stages(map::TagId(0xe000_0001), &imp).unwrap();
+        assert_eq!(bound.texaccum, [false, false, true, false]);
+        assert_eq!(bound.normalization, [false; 4]);
+        assert_eq!(look.textures[2], Stage::Empty, "bound by the host");
+        let p = compile_object_stages(&look, bound, &rigid_program(), None, WORLD).unwrap();
+        assert_eq!(p.dims[2], Some(shaders::psh::TextureDim::D2));
+        let mut u = p.vertex.clone();
+        texaccum_dimensions(&mut u, &imp, bound.texaccum, (640, 480));
+        assert_eq!(u.constants[20][..2], [640.0, 480.0]);
+        assert_eq!(u.constants[20][2..], p.vertex.constants[20][2..], "mode 9 writes x and y");
+        // A binding of another stage's size is left as resolved.
+        let mut other = p.vertex.clone();
+        texaccum_dimensions(&mut other, &imp, [true, false, false, false], (640, 480));
+        assert_eq!(other.constants[20], p.vertex.constants[20]);
     }
 
     #[test]
