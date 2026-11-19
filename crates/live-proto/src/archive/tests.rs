@@ -75,6 +75,23 @@ fn scene(frames: Vec<Frame>, name: &str) -> (usize, usize) {
     let mut chunks: Vec<_> = frames.iter().filter_map(|f| w.push(f)).collect();
     chunks.extend(w.finish());
     drop(frames);
+    // These fixed scenes have a single authoritative baseline per stored
+    // chunk. The public index byte measurement uses these exact offsets.
+    for c in &chunks {
+        assert!(c.meta.cuts.is_empty());
+        assert_eq!(c.meta.from_tick % chunk::CHUNK_TICKS, 0);
+        let container = chunk::container(&c.bytes).unwrap();
+        for (i, record) in pack::records(&container).enumerate() {
+            let header = record.unwrap()[0];
+            assert_eq!(header & 15, 7);
+            assert_eq!(
+                header & 16 != 0,
+                i == 0,
+                "{name}, chunk {}, frame {i}",
+                c.meta.from_tick
+            );
+        }
+    }
     let old: usize = chunks.iter().map(|c| c.bytes.len()).sum();
     let mut total = 0;
     let mut pending = Vec::new();
