@@ -25,6 +25,7 @@ pub mod phantom;
 pub mod roam;
 pub mod stuck;
 pub mod tactics;
+pub mod vehicle;
 
 use input::host::HostPadState;
 
@@ -80,7 +81,15 @@ impl local::PadSource for Brain {
         self.kills_seen = cursor;
         self.mind.emote.hear(&kills);
         match guest::perceive_as(f.guest, who) {
-            Ok(p) => self.mind.step(&p, cache::current().as_deref()),
+            Ok(p) => {
+                // Vehicles are extra: a fault reading them leaves the bot
+                // on foot (docs/game/bots.md section 3.8).
+                if p.me.is_some() {
+                    let sight = vehicle::read::sight_in_game(f.guest, who);
+                    self.mind.see_vehicles(sight);
+                }
+                self.mind.step(&p, cache::current().as_deref())
+            }
             Err(_) => HostPadState::default(),
         }
     }

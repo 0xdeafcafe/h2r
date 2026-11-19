@@ -179,6 +179,13 @@ pub enum Doing {
     /// Playing the objective: taking, returning, guarding, hunting the
     /// carrier, escorting, holding the hill.
     Play(Goal),
+    /// Going to get in this vehicle object: a free one to take, or an
+    /// enemy's to board (section 3.8, `mind::ride`).
+    Mount(u32),
+    /// Driving this vehicle (section 3.8).
+    Drive(u32),
+    /// In this vehicle's gunner's or passenger's seat.
+    Ride(u32),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,6 +238,9 @@ pub struct Mind {
     navigated: bool,
     /// The teabag layer (§3.5).
     pub emote: crate::emote::Emoter,
+    /// Vehicles (§3.8): what it sees of them, and what it is doing with
+    /// one (`mind::ride`).
+    pub vehicles: crate::vehicle::Memory,
 }
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
@@ -306,6 +316,7 @@ impl Mind {
             gave_up: false,
             navigated: false,
             emote: crate::emote::Emoter::new(crate::emote::DEFAULT_TAUNT, seed ^ 0x7ea_ba6),
+            vehicles: Default::default(),
         }
     }
 
@@ -373,6 +384,7 @@ impl Mind {
             self.take = None;
             self.recovering = false;
             self.fight.reset();
+            self.vehicles.reset();
             return pad;
         };
         let new_tick = self.tick != Some(p.tick);
@@ -479,6 +491,12 @@ impl Mind {
         self.fight
             .signal(me.arms.as_ref(), self.kit, self.recovering, enemy_dist);
 
+        // In a vehicle (section 3.8, mind::ride): it drives or shoots from
+        // its seat, and that is the whole pad.
+        if let Some(pad) = self.ride(p, map, &me, chosen, goal, new_tick) {
+            return pad;
+        }
+
         self.doing = match (chosen, self.last_seen, self.kit, goal) {
             (_, _, _, Some(Goal::Carry(at))) => Doing::Carry(at),
             (_, _, _, Some(Goal::Keep)) => Doing::Keep,
@@ -489,6 +507,11 @@ impl Mind {
             (None, Some((_, at, _)), _, None) => Doing::Chase(at),
             (None, None, _, None) => Doing::Roam,
         };
+        // A vehicle to take or board (section 3.8): boarding in a fight
+        // too, taking only when calm; never carrying.
+        if let Some(id) = self.mount_plan(p, &me, calm, goal) {
+            self.doing = Doing::Mount(id);
+        }
         if !matches!(self.doing, Doing::Rearm(_)) {
             self.take = None;
         }
@@ -509,9 +532,15 @@ impl Mind {
                 // speed, the range it shoots at, and head, chest or feet.
                 let held = me.arms.and_then(|a| a.held);
                 let shot = Shot::of(held, me.arms.is_some(), &style, aim.burst, SHOT_SPEED);
-                let target = up(o.position, shot.height);
+                // Rockets at a vehicle (section 3.8, mind::ride): its
+                // middle, no lead, held until locked.
+                let locking = self.lock_on(&o, held, eye, me.aim, p.tick, aim.fire_cone);
+                let target = locking.map_or(up(o.position, shot.height), |(at, _)| at);
                 let dist = len(sub(target, eye));
-                let vel = self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel);
+                let vel = match locking {
+                    Some(_) => [0.0; 3],
+                    None => self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel),
+                };
                 let lead = scale(vel, aim.lead * dist / shot.speed);
                 let reacted = p.tick.wrapping_sub(t0) >= aim.reaction;
                 let blade = shot.role == arms::Role::Blade;
@@ -522,7 +551,11 @@ impl Mind {
                     // weapon's range.
                     let off = angle_between(sub(target, eye), me.aim);
                     let cone = aim.fire_cone + (0.4 / dist.max(0.5)).min(0.3);
-                    let want = off < cone && shot.in_range(dist) && shot.ready && !melee;
+                    let want = off < cone
+                        && shot.in_range(dist)
+                        && shot.ready
+                        && !melee
+                        && locking.is_none_or(|(_, locked)| locked);
                     if self.fight.trigger(p.tick, t0, shot.pull, want) {
                         pad.right_trigger = 1.0;
                     }
@@ -743,7 +776,13 @@ impl Mind {
                     }
                 }
             }
-            Doing::Idle => {}
+            Doing::Mount(_) => {
+                let (w, l) = self.mount_step(me.position, p.tick, map, &mut pad, &bodies);
+                walk = w;
+                look = l.or(look);
+            }
+            // In a vehicle `ride` made the pad.
+            Doing::Drive(_) | Doing::Ride(_) | Doing::Idle => {}
         }
         // Pre-aim (tactics): chasing, it looks where the enemy went.
         if look.is_none()
@@ -936,6 +975,8 @@ impl Mind {
         self.roam.pick(at, tick, &m.nav, pickups, self.skill, &ok)
     }
 }
+
+mod ride;
 
 #[cfg(test)]
 mod fight_tests;
