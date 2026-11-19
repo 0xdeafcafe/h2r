@@ -60,12 +60,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::h1_options::{self, OptionRow};
-use crate::layout_glue::chosen_row;
+use crate::layout_glue::{ReadGm, chosen_row};
 use crate::list_class::{self, Action, ListClass, ListLayout, OnFree, PictureSpec, TextBlock};
 use crate::skulls;
 use crate::skulls_menu::{self, SkullsScreen};
 use crate::ui_kit::input::OpenerGuard;
 use crate::ui_kit::lifecycle;
+use crate::ui_watch;
 use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
 use engine::memory::MemFault;
 use feature::{BuildError, Builder, Call, Flow, Manifest};
@@ -87,6 +88,12 @@ pub const DIFFICULTY_LIST_MODE: u32 = 0x2a0;
 pub const SCREEN_CLOSE: u32 = lifecycle::SCREEN_CLOSE;
 #[cfg(test)]
 use lifecycle::{SCREEN_SLOT, SCREEN_WINDOW};
+/// Where the difficulty press (mode 0) opens the loading screen: window 5,
+/// slot 4 (`0x149f49(.., 5, 4, 0x2b1467)` at `0x2c9dae`..`0x2c9dc3`).
+pub const PRESS_WINDOW: u32 = 5;
+pub const PRESS_SLOT: u32 = 4;
+/// The loading screen's id (`0x2b1467`'s, `screen + 0x70`).
+pub const LOADING_SCREEN: u32 = 0xd1;
 /// The difficulty rows: Easy, Normal, Heroic, Legendary.
 pub const DIFFICULTIES: std::ops::RangeInclusive<i16> = 0..=3;
 const DIFFICULTY_NAMES: [&str; 4] = ["Easy", "Normal", "Heroic", "Legendary"];
@@ -578,6 +585,8 @@ pub async fn continue_level(cx: &Cx, flow: &PageFlow, p: &Pending) -> Result<boo
         p.list,
         skulls_on_line(&p.profile)
     );
+    let before = cx.read(|m| ui_watch::stack(&ReadGm(m), PRESS_WINDOW, PRESS_SLOT));
+    eprintln!("{}", stack_line(false, before.as_ref()));
     let r = match cx.write(|m| write_press(m, scratch, p)) {
         Ok((chain, row)) => {
             cx.call(
@@ -595,7 +604,29 @@ pub async fn continue_level(cx: &Cx, flow: &PageFlow, p: &Pending) -> Result<boo
         "skulls page: the difficulty press returned ({:#x}); the level should be loading",
         r.eax
     );
+    let after = cx.read(|m| ui_watch::stack(&ReadGm(m), PRESS_WINDOW, PRESS_SLOT));
+    eprintln!("{}", stack_line(true, after.as_ref()));
     Ok(true)
+}
+
+/// The log line of the press's window and slot before or after it ran:
+/// its screens, and after it whether the loading screen is among them (a
+/// mode 0 press opens it there).
+pub fn stack_line(after: bool, stack: Option<&ui_watch::Stack>) -> String {
+    let when = if after { "after" } else { "before" };
+    let Some(s) = stack else {
+        return format!(
+            "skulls page: {when} the press: window {PRESS_WINDOW} slot {PRESS_SLOT} unreadable"
+        );
+    };
+    let loading = match (after, s.holds(LOADING_SCREEN)) {
+        (false, _) => String::new(),
+        (true, true) => format!("; the loading screen ({LOADING_SCREEN:#x}) is there"),
+        (true, false) => {
+            format!("; no loading screen ({LOADING_SCREEN:#x}) there: the press opened none")
+        }
+    };
+    format!("skulls page: {when} the press: {}{loading}", s.line())
 }
 
 /// The page's state as a machine snapshot keeps it
@@ -1160,6 +1191,37 @@ mod tests {
             .expect("the press, at the guard's end");
         assert_eq!(p.row, 1);
         assert_eq!(f.begin_at(opened + GUARD), Err(Step::Busy));
+    }
+
+    /// The lines around the press say what window 5 slot 4 holds, and
+    /// after it whether the loading screen went there.
+    #[test]
+    fn the_press_is_logged_with_the_screens_around_it() {
+        let stack = |list: Vec<(u32, Option<u32>)>| ui_watch::Stack {
+            window: 5,
+            slot: 4,
+            active: list[0].0,
+            pending: 0,
+            list,
+        };
+        let page = stack(vec![(0x100, Some(0x2a)), (0x200, Some(0x0c))]);
+        assert_eq!(
+            stack_line(false, Some(&page)),
+            "skulls page: before the press: window 5 slot 4: active 0x100, pending 0x0, \
+             list [0x100/0x2a 0x200/0xc]"
+        );
+        let after = stack_line(true, Some(&page));
+        assert!(
+            after.ends_with("no loading screen (0xd1) there: the press opened none"),
+            "{after}"
+        );
+        let loading = stack(vec![(0x300, Some(LOADING_SCREEN)), (0x100, Some(0x2a))]);
+        let after = stack_line(true, Some(&loading));
+        assert!(after.ends_with("; the loading screen (0xd1) is there"), "{after}");
+        assert_eq!(
+            stack_line(true, None),
+            "skulls page: after the press: window 5 slot 4 unreadable"
+        );
     }
 
     /// A kept list that is no longer a difficulty list is not called.

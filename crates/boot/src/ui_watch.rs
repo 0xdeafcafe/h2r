@@ -243,6 +243,70 @@ pub fn read<M: Gm + ?Sized>(m: &M) -> Read {
     }
 }
 
+/// One window channel's screens, for a log line: its active and pending
+/// screens and its list, top first, each with its id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack {
+    pub window: u32,
+    pub slot: u32,
+    pub active: u32,
+    pub pending: u32,
+    /// The list's screens and ids (`None`: no plausible id).
+    pub list: Vec<(u32, Option<u32>)>,
+}
+
+impl Stack {
+    /// Whether a screen with `id` is the channel's active or pending one,
+    /// or in its list.
+    pub fn holds(&self, id: u32) -> bool {
+        self.list.iter().any(|(_, i)| *i == Some(id))
+    }
+    pub fn line(&self) -> String {
+        let list: Vec<String> = self
+            .list
+            .iter()
+            .map(|(at, id)| match id {
+                Some(id) => format!("{at:#x}/{id:#x}"),
+                None => format!("{at:#x}/?"),
+            })
+            .collect();
+        format!(
+            "window {} slot {}: active {:#x}, pending {:#x}, list [{}]",
+            self.window,
+            self.slot,
+            self.active,
+            self.pending,
+            list.join(" ")
+        )
+    }
+}
+
+/// `window`'s channel for `slot` as it is now; `None` when there is no
+/// such channel or it is unreadable. The active and pending screens are
+/// added to the list when it does not hold them.
+pub fn stack<M: Gm + ?Sized>(m: &M, window: u32, slot: u32) -> Option<Stack> {
+    let ch = channel(window, slot)?;
+    let (active, pending) = (m.u32(ch + ACTIVE)?, m.u32(ch + PENDING)?);
+    let mut list = Vec::new();
+    let mut at = m.u32(ch + LIST)?;
+    while at != 0 && list.len() < MAX_LIST {
+        list.push((at, id_of(m, at)));
+        at = m.u32(at + NEXT).unwrap_or(0);
+    }
+    for s in [active, pending] {
+        if s != 0 && !list.iter().any(|(at, _)| *at == s) {
+            list.push((s, id_of(m, s)));
+        }
+    }
+    Some(Stack {
+        window,
+        slot,
+        active,
+        pending,
+        list,
+    })
+}
+
 /// A screen on windows 0 to 4 (see [`dialog`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dialog {
@@ -383,6 +447,27 @@ mod tests {
         f.set_u32(ch + LIST, at);
         f.set_u16(at + MASK, mask);
         f.set_u32(at + ID, id);
+    }
+
+    /// The skulls page's log of window 5 slot 4 around the difficulty
+    /// press: every screen in the list, the pending one too.
+    #[test]
+    fn a_stack_lists_its_screens_with_their_ids() {
+        let mut f = Fake::default();
+        let ch = WINDOW_5 + 4 * STRIDE_5;
+        screen(&mut f, ch, 0x8000_0000, 0x0c, 0xf);
+        screen(&mut f, ch, 0x8000_1000, 0x2a, 0xf);
+        f.set_u32(ch + PENDING, 0x8000_2000);
+        f.set_u32(0x8000_2000 + ID, 0xd1);
+        let s = stack(&f, 5, 4).unwrap();
+        assert_eq!(s.active, 0x8000_1000);
+        assert!(s.holds(0xd1) && s.holds(0x0c) && !s.holds(0x09));
+        assert_eq!(
+            s.line(),
+            "window 5 slot 4: active 0x80001000, pending 0x80002000, \
+             list [0x80001000/0x2a 0x80000000/0xc 0x80002000/0xd1]"
+        );
+        assert_eq!(stack(&f, 9, 4), None, "no such window");
     }
 
     #[test]

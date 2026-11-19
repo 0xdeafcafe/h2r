@@ -295,6 +295,11 @@ How the flow is made (static reading, not seen running):
   player chain and the row to a page of ours, and calls `0x2c9d38` on the
   kept list; the hook lets that one call through. So the start is
   retail's own, from either loader, and never runs into a closing screen.
+- Around the kept press `continue_level` logs window 5 slot 4's screens
+  (`skulls page: before the press: window 5 slot 4: active .., pending ..,
+  list [screen/id ..]`), and after it whether the loading screen (`0xd1`)
+  is among them, so a Start Level that loads nothing says whether the
+  press opened its loading screen (`boot::ui_watch::stack`).
 - `H2_SKULLS_CONTINUE=freed` or `=stay` forces either order, for trying
   in game only.
 

@@ -619,6 +619,42 @@ How it behaves (**Code**, with tests in `crates/agent`):
   reading mid-tick. During a load the mode reads as none, not `unknown_0`.
 - **Stopping.** `h2 serve` removes its socket on Ctrl-C or SIGTERM. A
   socket left by a crash is replaced at the next start.
+- **Settings.** A headless run has no settings store unless given one, and
+  the menus built on it stay retail: the campaign's Game Options page
+  (Start Level, the Halo 1 options, the skulls), the Video screen's rows,
+  the Halo 1 options on Game Setup. Its log says `skulls: off: no settings
+  store (a headless run); pickups are not kept`. `--settings DIR` (on
+  `serve` and `run`) builds the store as `h2 play` builds its own
+  (`boot::setting_defs::load`,
+  `crates/cli/src/boot_cmd.rs`): `DIR/settings.toml`, then the `H2_*`
+  variables, then the defaults, logged as `h2 serve: settings from
+  DIR/settings.toml`. A setting changed in a menu is written back to that
+  file, so give a copy, or a scratch directory, unless the run should
+  change it. `h2 play`'s file is `<data>/settings.toml`, the same `--data`
+  both commands default to (**Code**).
+
+  ```sh
+  H2_OPT=2 H2_UI_WATCH=1 h2 serve disc/halo2.iso --out <image> --settings <dir>
+  ```
+
+  **Reaching a level select.** There is no campaign or level-select helper:
+  `lobby mode campaign` (`agent_proto::sim::menu`) presses A on the main
+  menu's Campaign row and expects screen `0xee`, and nothing goes further.
+  Drive the rest with `h2 agent press` and read where the input went with
+  `h2 agent ui` (`H2_UI_WATCH=1`). Which screen Campaign opens depends on
+  the profile: the main menu's Campaign press (`0x2b16ad`..`0x2b16d4`)
+  opens the level select (`0x2b130a`, the picker in its place when a
+  second campaign is installed) only when bit 21 of what `0x18fb0d`
+  returns is set (read from the generated code); otherwise it calls
+  `0x148c3e(.., 3)`, which `boot::ui_watch`'s table of seen screens gives
+  as `0xee` and then the loading screen `0xd1` (**Doc**). That the bit
+  means "a campaign was played" is a guess (**S**); if so, a fresh profile
+  reaches neither the picker nor Halo 1. Use a `--data` whose
+  profile has the level select (the one `h2 play` uses does, once a
+  campaign was played there), not `--fresh-data`. On the level select, a
+  Halo 1 level's first entry is always listed (docs/halo1/campaign-picker.md
+  "Only the first level listed"), and its difficulty opens Game Options
+  even with no skull collected.
 - **Waits.** `session.wait` settles at tick boundaries (and between
   slices for wall-clock timeouts and while loading). A condition already
   true answers at once; `timeout_ticks` and `timeout_ms` (default 30 s,
