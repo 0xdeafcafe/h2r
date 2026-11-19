@@ -72,6 +72,10 @@ impl SimHandle {
         self.lock().bots = bots;
     }
 
+    pub(crate) fn writable_session(&self, ctx: &mut GameCtx<'_>) -> Result<SessionView, RpcError> {
+        self.lock().writable_session(ctx)
+    }
+
     /// Sets the session probe.
     pub fn set_probe(&self, probe: SessionProbe) {
         self.lock().probe = Some(probe);
@@ -115,27 +119,6 @@ fn invalid(msg: impl Into<String>) -> RpcError {
 /// The `<n>` of `sim.<n>`.
 fn sim_number(id: &str) -> Option<u32> {
     id.strip_prefix("sim.")?.parse().ok()
-}
-
-/// Reads guest memory through the reader.
-fn with_guest<T>(
-    ctx: &mut GameCtx<'_>,
-    f: impl FnOnce(&mut dyn GuestMemory) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
-    let mut f = Some(f);
-    let mut out = None;
-    let ran = ctx.reader.with_guest(&mut |m| {
-        if let Some(f) = f.take() {
-            out = Some(f(m));
-        }
-    });
-    match out {
-        Some(r) if ran => r,
-        _ => Err(RpcError::new(
-            code::UNAVAILABLE,
-            "no guest memory here (the game isn't running)",
-        )),
-    }
 }
 
 impl Sim {
@@ -382,9 +365,7 @@ impl Sim {
         })
     }
 
-    fn state_set(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
-        let p: SetParams = params(v)?;
-        state::validate(&p)?;
+    fn writable_session(&mut self, ctx: &mut GameCtx<'_>) -> Result<SessionView, RpcError> {
         let session = self.session(ctx);
         if let Err(why) = session.kind.writes() {
             let mut e = RpcError::new(code::INVALID_REQUEST, why);
@@ -397,8 +378,15 @@ impl Sim {
                 "host writes happen at a tick boundary, and the game isn't ticking",
             ));
         }
+        Ok(session)
+    }
+
+    fn state_set(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
+        let p: SetParams = params(v)?;
+        state::validate(&p)?;
+        let session = self.writable_session(ctx)?;
         let index = self.target(&p.player, ctx)?;
-        let wrote = with_guest(ctx, |m| state::apply(m, index, &p))?;
+        let wrote = ctx.with_guest(|m| state::apply(m, index, &p))?;
         Ok(json!({ "player": format!("player.{index}"), "wrote": wrote, "session": session }))
     }
 
@@ -475,7 +463,7 @@ impl Sim {
                     continue;
                 };
                 let mut v = serde_json::to_value(o).expect("serialises");
-                let vit = with_guest(ctx, |m| state::vitals(m, id.key)).unwrap_or_default();
+                let vit = ctx.with_guest(|m| state::vitals(m, id.key)).unwrap_or_default();
                 if let Some(obj) = v.as_object_mut() {
                     obj.extend(vit);
                 }

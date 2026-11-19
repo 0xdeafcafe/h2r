@@ -1399,6 +1399,35 @@ h2 agent raw player.0 entity,shape              # some parts
 h2 agent world.raw '{"id":"player.0","parts":["object"],"len":2048}'
 ```
 
+## `world.poke`: replace bytes in one object part
+
+| Method | Access | What |
+|---|---|---|
+| `world.poke` | claim | `{id, part?, offset, hex}` |
+
+Writes 1 to 64 bytes at a tick boundary. `id` and `part` use the same
+names as `world.raw`, and `part` defaults to `object`. `offset` is a
+nonnegative byte offset from the part's base. `hex` takes two hex digits
+per byte. The entire range must fit in the part that `world.raw` reads
+with its default lengths.
+
+The calling connection must hold `session.claim`. `sim.session` reports
+whether the current session allows host writes. A session refusal
+returns `INVALID_REQUEST` with `data.session`, and a request served
+between slices returns `UNAVAILABLE` when the session allows writes.
+
+The result includes `id`, `datum`, `part`, `base`, `offset`, and `at`.
+`base` is the first address of the part. `before` and `after` give the
+bytes at the requested offset as lowercase hex.
+
+The standalone short form takes a claim for the life of its connection.
+Its offset can be decimal or prefixed with `0x`. In a script, send
+`claim` on the same connection first.
+
+```sh
+h2 agent poke <id> <part> <offset> <hex>
+```
+
 ## Tick traces and the flight recorder
 
 Polling `world.object` from outside (`h2 agent -`) drops ticks when the
