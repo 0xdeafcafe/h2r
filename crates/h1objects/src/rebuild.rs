@@ -606,6 +606,15 @@ pub const SEAT_BOARDING: u32 = 1 << 11;
 pub const SEAT_NOT_PLAYER: u32 = 1 << 16;
 /// See [`SEAT_DRIVER`].
 pub const SEAT_NOT_NON_PLAYER: u32 = 1 << 17;
+/// A seat whose rider is the vehicle's gunner when a player rides it. E:
+/// the rider assignment (`0x000cc810`) makes a seat's rider the gunner
+/// (`+0x24c`, who fires the vehicle's weapon) when the seat holds
+/// [`SEAT_GUNNER`] (`0x000cc934`), or this bit and the rider has a player
+/// (`0x000cc939..0x000cc951`: `+0x13c` set). V: the retail warthog's
+/// driver seat holds it (`0x48014`), so its player driver sounds the
+/// horn, the warthog's one weapon. Halo 1 has no such bit: its gunner is
+/// its gunner seat's rider only.
+pub const SEAT_PLAYER_GUNNER: u32 = 1 << 18;
 /// The seat flag bits Halo 1 holds (its seat `+0`), which a rebuilt seat
 /// takes from Halo 1: Halo 1 sets none above bit 10, and on the eight
 /// pairs of `tests/vehicle_rebuild_disc.rs` its bits agree with the Halo 2
@@ -637,9 +646,13 @@ impl SeatKind {
 /// A rebuilt seat's flags: Halo 1's bits ([`H1_SEAT_FLAGS`]) over the
 /// rest of the role's word, less the bits that would keep a rider out
 /// (Halo 1 seats are neither boarding seats nor closed to players or
-/// non-players).
+/// non-players) and the player gunner bit ([`SEAT_PLAYER_GUNNER`]): who
+/// fires is Halo 1's gunner bit alone. Through converter version 83 the
+/// warthog's driver seat took that bit from the retail warthog's, and a
+/// player driving the converted warthog fired its chaingun.
 pub fn seat_flags(h1_flags: u32, role: u32) -> u32 {
-    let closed = H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER;
+    let closed =
+        H1_SEAT_FLAGS | SEAT_BOARDING | SEAT_NOT_PLAYER | SEAT_NOT_NON_PLAYER | SEAT_PLAYER_GUNNER;
     (role & !closed) | (h1_flags & H1_SEAT_FLAGS)
 }
 
