@@ -635,6 +635,63 @@ built map; `tests/sandbox_disc.rs`
 `h1campaign/tests/disc.rs` (`every_campaign_level_converts`) run it on
 every converted map against what the retail base already breaks.
 
+### Cut-out model shaders (**Built**, converter version 92)
+
+Halo 1 alpha-tests a model shader (`soso`) on its base map's alpha
+unless its flags (`+0x28`) set bit 2, which no Blood Gulch `soso` does
+(`h1convert::shad::soso_alpha_tested`). The leaf cards of the trees and
+plants are such shaders, each a DXT3 base three quarters clear:
+
+| Object | `soso` | Base |
+|---|---|---|
+| `tree_desert_whitebark` | `whitebark_leaves` (flags 2, two-sided) | `whitebark_leaves`, 128², 72 % clear |
+| `shrub_large` | `tree_leafy_leaves` (2) | `tree_leafy_leaves`, 256² |
+| `plant fern` | `plant fern` (2) | `plant fern`, 256² |
+| `plant_broadleaf_short` | `broadleaf top`, `broadleaf bottom` (0) | `plant_broadleaf_leaf`, 256² |
+
+`tree_desert_dead` has no leaves: its one shader is its trunk (V, Blood
+Gulch on the disc). The whitebark's model scales its texture coordinates
+by (255.9, 119.1) (`mode +0x30`); its leaf cards span one tile each, u
+104.9 to 106.0, v 95.0 to 96.0, so the whole leaf image lies on each card.
+
+From converter version 84 these draw on
+`opaque\tex_bump_alpha_test_single_pass` with the leaf in slot 2, the
+base. That stem cuts out in two places (V, `h2 shader` on coagulation's
+`bush_vine` and `tree_cliff_leaf`, both on it; and
+`tests/model_shaders_disc.rs`): its colour pass (layer 3,
+`lightmap_tex_detail_alpha_test`) alpha-tests with the base at stage 0,
+and its layer 10 (`shadow\shadow_generate`, whose implementations 1 and 2
+write depth only, the depth the light passes then test equal against)
+samples **slot 0, the bump map**, at stage 0 with `D3DTSS_ALPHAKILL` on.
+Retail's alpha-tested bump maps carry the cut-out: they are P8 bump with
+palette index 255 exactly where the colour map is clear
+(`tree_cliff_leaf_bump`: 24,367 of its 24,396 texels with colour alpha
+below 128 are index 255, none above 159). The converted shaders had
+`default_vector` there, opaque, so each card's depth covered the whole
+card: live on Blood Gulch (version 91) the whitebark's canopies drew as
+flat near-black diamonds, the clear part showing the dark colour behind
+the depth, not the cliff. Pointing the leaf shader's slot 0 at the leaf
+bitmap itself (`h2 agent edit set`) cut the canopies into the leaf's
+star shape at once.
+
+The converter now binds a bump map of its own in slot 0 when a cut-out
+`soso` has none (`h1bitmaps::mask::cutout_bump`, tag `<base
+name>_alpha_test_bump`, built once per base): DXT5 of the base's size and
+mip chain, every texel the flat normal (129, 128, 255, a fixed colour
+block within a step of `default_vector`'s 128, 128, 255), its alpha 0
+where the base's level is below 128 and 255 elsewhere. A binary alpha
+keeps the depth cut where the colour pass cuts; the threshold is Halo 1's
+half and agrees with retail's leaf bump above. Its tiling and LOD offset
+are the base's. A base that doesn't decode, or has more than one image,
+keeps the default bump, uncut, as before. Proof:
+`h1bitmaps` `a_cut_out_base_gives_a_flat_bump_with_its_binary_alpha`;
+`tests/model_shaders_disc.rs`,
+`bloodgulch_leaves_cut_their_depth_out_by_the_leaf_alpha` (retail's
+slots on coagulation, then every converted shader on the cut-out stem
+among the five plants and trees). Not covered: an alpha-tested `senv`
+(structure) shader on the same stem still binds its own P8 bump or the
+default, whether or not that bump's alpha cuts.
+
 ### Change colours (`obje +0xac`, **Built**, converter version 84)
 
 Halo 2 colours a player by its object's change colours, not by its
