@@ -12,7 +12,9 @@
 //!   layers after 3 on the scene list, 5 and up, come next in the same
 //!   view, so the bits are back before anything reads them again), each
 //!   only if the item still holds the mask it left ([`restore_pending`]);
-//! - then, when the current layer is 3: read how its items switch the
+//! - then, when the current layer is 3 and its list holds a BSP item
+//!   ([`native_render::skip::has_structure_items`]: not the first-person
+//!   render's layer 3, models only): read how its items switch the
 //!   stencil ([`native_render::skip::stencil_plan`]: the native pass
 //!   draws a marked section's parts with the reference the game's mode 2
 //!   writes), the render camera and the active BSP, ask the [`Host`]
@@ -108,6 +110,7 @@ static VIEWS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
 static STENCIL: AtomicU64 = AtomicU64::new(0);
+static WITHOUT_WORLD: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -127,6 +130,12 @@ pub fn counts() -> (u64, u64, u64) {
 /// do not read.
 pub fn stencil_views() -> u64 {
     STENCIL.load(Ordering::Relaxed)
+}
+
+/// Layer-3 views whose list holds no BSP item (the first-person render's):
+/// the host is not asked.
+pub fn views_without_world() -> u64 {
+    WITHOUT_WORLD.load(Ordering::Relaxed)
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -156,6 +165,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
         return;
     };
+    // A layer 3 that draws no BSP item is not the world's (the first-person
+    // render's, `skip::has_structure_items`): the native pass would draw
+    // the whole world again over the finished scene.
+    if skip::has_structure_items(&m, LIGHTMAP_LAYER) != Some(true) {
+        WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     // How the layer's items switch the stencil (0x0004d640/0x0004d720):
     // unreadable, the D3D path draws the view.
     let Some(stencil) = skip::stencil_plan(&m, LIGHTMAP_LAYER) else {
@@ -180,7 +196,10 @@ pub fn before_layer(mem: &mut dyn GuestMemory) {
         let views = VIEWS.load(Ordering::Relaxed);
         if views % 1800 == 1 {
             let (v, d, i) = counts();
-            eprintln!("native-world: {d} of {v} layer-3 views drawn natively, {i} world items skipped");
+            let w = views_without_world();
+            eprintln!(
+                "native-world: {d} of {v} layer-3 views drawn natively ({w} without BSP items: first person), {i} world items skipped"
+            );
         }
         let left = c.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
         *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared: c, left });

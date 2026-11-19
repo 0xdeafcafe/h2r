@@ -227,6 +227,39 @@ pub fn stencil_plan(mem: &dyn GuestRead, layer: u32) -> Option<StencilPlan> {
     Some(plan)
 }
 
+/// Whether `layer`'s current list holds a BSP item in the layer
+/// ([`is_structure_item`]): the layer draws the world. Not every layer-3
+/// draw does: the first-person render (`0x0003fdf0`) draws layers 1, 3,
+/// 8, 20 and 7 of the scene list built again with the player's
+/// first-person models only (layer 3 at `0x000400ce`..`0x00040131`), with
+/// its own projection in the view constants and, under the flag byte
+/// `0x00485a76` its caller sets, over the scene's depth (no clear,
+/// `0x0004004f`..`0x00040066`). A native pass asked there draws the whole
+/// world again over the finished scene. `None` when the list does not
+/// read.
+pub fn has_structure_items(mem: &dyn GuestRead, layer: u32) -> Option<bool> {
+    if layer >= 32 {
+        return Some(false);
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return Some(false);
+    }
+    let count = mem.read_u32(list + 4)?;
+    let first = mem.read_u32(list + 0xc)?;
+    let items = mem.read_u32(list + 0x14)?;
+    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+        let item = items + ITEM_SIZE * i;
+        if mem.read_u32(item + 0x10)? & (1 << layer) == 0 {
+            continue;
+        }
+        if is_structure_item(mem, item)? {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 /// Sets the bits [`clear_structure`] cleared back.
 pub fn restore(mem: &mut dyn GuestWrite, cleared: &Cleared) {
     let bit = 1u32 << cleared.layer;
@@ -313,6 +346,30 @@ mod tests {
         let mut m = scene();
         m.w(STENCIL_OFF_FLAGS, 0);
         assert_eq!(stencil_plan(&m, 3), None, "the records' first words are not there");
+    }
+
+    #[test]
+    fn a_list_of_models_only_does_not_draw_the_world() {
+        let mut m = scene();
+        assert_eq!(has_structure_items(&m, 3), Some(true), "item 0, a cluster in layers 1 and 3");
+        assert_eq!(has_structure_items(&m, 1), Some(true));
+        assert_eq!(has_structure_items(&m, 5), Some(false), "no item in layer 5");
+        // The first-person render's list: models only (item 0's record an
+        // object's too). The object item (1) and the other build (3) are
+        // in layer 3; item 2 (BSP) is in layer 1 only.
+        m.w(RENDER_RECORDS + 0x20 * 2 + 4, 0xe1a3_0009);
+        assert_eq!(has_structure_items(&m, 3), Some(false));
+        assert_eq!(has_structure_items(&m, 1), Some(true), "item 2, record 7");
+        // A list starting past its BSP items, and no list.
+        let mut m = scene();
+        m.w(LIST + 0xc, 1);
+        assert_eq!(has_structure_items(&m, 3), Some(false));
+        m.w(CURRENT_LIST, 0);
+        assert_eq!(has_structure_items(&m, 3), Some(false));
+        // An unreadable record: the caller cannot say.
+        let mut m = scene();
+        m.w(LIST + 0x14, 0x7000_0000);
+        assert_eq!(has_structure_items(&m, 3), None);
     }
 
     fn mask(m: &Mem, i: u32) -> u32 {

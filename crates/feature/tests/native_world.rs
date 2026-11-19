@@ -223,4 +223,25 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked);
     assert_eq!(native_world::stencil_views(), left + 1);
+
+    // The first-person render's layer 3 (0x0003fdf0): the scene list
+    // built again with models only, under the flag byte 0x00485a76 (the
+    // stencil off). Not the world's: the host is not asked, so no native
+    // pass draws the world again over the finished scene, and nothing is
+    // cleared.
+    let without = native_world::views_without_world();
+    let mut m = guest();
+    m.set_u32(STENCIL_OFF_FLAGS, 0x0001_0000).unwrap();
+    for record in [1u32, 2] {
+        m.set_u32(RENDER_RECORDS + 0x20 * record + 4, 0xe124_0002).unwrap();
+    }
+    native_world::before_layer(&mut m);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked, "not asked");
+    assert_eq!(native_world::views_without_world(), without + 1);
+    // One BSP item back in the list: the world's layer 3 again.
+    m.set_u32(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX).unwrap();
+    native_world::before_layer(&mut m);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
+    native_world::restore_pending(&mut m);
 }

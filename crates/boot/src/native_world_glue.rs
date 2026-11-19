@@ -1164,6 +1164,112 @@ mod tests {
         assert!(!state.enable && marked.is_empty(), "mode 0: the stencil off");
     }
 
+    /// The device's stencil state as `0x00015370` sets it for `mode`
+    /// (`engine::render::stencil::for_mode`); mode 0 only clears the
+    /// enable, over `before`.
+    fn device_mode(mode: u16, before: gfx::state::StencilState) -> gfx::state::StencilState {
+        use engine::render::stencil::{Compare, Op, for_mode};
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        let op = |o| match o {
+            Op::Keep => StencilOp::Keep,
+            Op::Replace => StencilOp::Replace,
+        };
+        match for_mode(mode).expect("a mode the helper takes") {
+            None => StencilState { enable: false, ..before },
+            Some(s) => StencilState {
+                enable: s.enable,
+                func: match s.func {
+                    Compare::Equal => CompareFunc::Equal,
+                    Compare::NotEqual => CompareFunc::NotEqual,
+                    Compare::Always => CompareFunc::Always,
+                },
+                reference: s.reference,
+                read_mask: s.mask,
+                write_mask: s.write_mask,
+                fail: op(s.fail),
+                depth_fail: op(s.depth_fail),
+                pass: op(s.pass),
+            },
+        }
+    }
+
+    /// The stencil value a pixel keeps after the native pass draws
+    /// `owner`'s part over `stored` (depth passing), as the pass's
+    /// pipeline evaluates it: the device's state translated
+    /// (`PassStencil::from_device`, a D24S8 depth) with the owner's
+    /// reference (`PassStencil::reference_of`), `WorldPass::encode`'s.
+    fn native_write(state: &gfx::state::StencilState, marked: &[Owner], owner: Owner, stored: u8) -> u8 {
+        let mut s = PassStencil::from_device(state, wgpu::TextureFormat::Depth24PlusStencil8);
+        if s == PassStencil::default() {
+            return stored;
+        }
+        s.marked = marked.to_vec();
+        let reference = s.reference_of(owner) as u8;
+        let face = s.state.front;
+        let (read, write) = (s.state.read_mask as u8, s.state.write_mask as u8);
+        let passes = match face.compare {
+            wgpu::CompareFunction::Always => true,
+            wgpu::CompareFunction::Equal => reference & read == stored & read,
+            wgpu::CompareFunction::NotEqual => reference & read != stored & read,
+            other => panic!("not a compare the device's modes use: {other:?}"),
+        };
+        let op = if passes { face.pass_op } else { face.fail_op };
+        match op {
+            wgpu::StencilOperation::Keep => stored,
+            wgpu::StencilOperation::Replace => (stored & !write) | (reference & write),
+            other => panic!("not an op the device's modes use: {other:?}"),
+        }
+    }
+
+    /// What the game's layer 3 leaves in the stencil where a section's
+    /// item draws (`0x0004d640`, the draw, `0x0004d720`), against what the
+    /// native pass writes for its part, over every stored value; and the
+    /// device's state after the layer, which the native pass does not set
+    /// (the D3D items left in the layer and the passes after it see the
+    /// state the layer started in): the same as the game's after its last
+    /// switching item, mode 1.
+    #[test]
+    fn the_native_stencil_writes_and_leaves_what_the_game_s_layer_3_does() {
+        let mode1 = device_mode(1, gfx::state::StencilState::default());
+        let marked = Owner::Cluster(4);
+        let plain = [Owner::Cluster(1), Owner::Instance(2)];
+        let cases = [
+            // (the layer's plan, the game's mode for the marked section and
+            // for the rest)
+            (StencilPlan { off: false, marked: vec![marked], switches: true }, 2, 1),
+            (StencilPlan { switches: true, ..StencilPlan::default() }, 1, 1),
+            (StencilPlan { off: true, marked: vec![], switches: true }, 0, 0),
+            (StencilPlan::default(), 1, 1),
+        ];
+        for (plan, marked_mode, plain_mode) in cases {
+            let (state, sections) = pass_stencil(&mode1, &plan).expect("mode 1 at the layer's start: drawn");
+            for stored in 0..=255u8 {
+                for (owner, mode) in std::iter::once((marked, marked_mode)).chain(plain.iter().map(|&o| (o, plain_mode))) {
+                    let game = device_mode(mode, mode1);
+                    let expect = if game.enable {
+                        let s = engine::render::stencil::for_mode(mode).unwrap().unwrap();
+                        if s.passes(stored) { s.after_pass(stored) } else { stored }
+                    } else {
+                        stored
+                    };
+                    assert_eq!(
+                        native_write(&state, &sections, owner, stored),
+                        expect,
+                        "{plan:?}: {owner:?} over {stored:#x} (game mode {mode})"
+                    );
+                }
+            }
+            // After the layer: the game's switching items end in mode 1
+            // (0x0004d720), and without a switch the state is the start's.
+            // The native pass sets no device state, so the device holds
+            // `mode1`, the start: equal either way.
+            let game_after = if plan.switches { device_mode(1, mode1) } else { mode1 };
+            assert_eq!(game_after, mode1, "{plan:?}");
+        }
+        // Mode 2's write is 0xff, mode 1's 0: the reference alone differs.
+        assert_eq!(device_mode(2, mode1), gfx::state::StencilState { reference: PassStencil::MARK as u8, ..mode1 });
+    }
+
     /// A 2x2 level and its 1x1 mip as `assets` decodes a P8 image: the
     /// index in every channel.
     fn indexed(indices: [u8; 4]) -> Vec<assets::Level> {

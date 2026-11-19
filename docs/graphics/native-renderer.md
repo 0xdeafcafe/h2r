@@ -191,9 +191,33 @@ not run; the glue (`native_world_glue::pass_stencil`) makes that exact:
 
 Each part writes what its own item would where it is drawn (`ALWAYS`,
 `REPLACE` on pass): which part is last at a pixel is the depth test's,
-as on the D3D path (S: coplanar ties may differ). What reads the marks
-later is not traced. The transparents and objects still draw without the
-stencil (S).
+as on the D3D path (S: coplanar ties may differ). The native pass sets
+no device state, so the layer's D3D items and everything after it see
+the state the layer started in: mode 1 whenever an item switches, which
+is what the game's last switching item leaves (`0x0004d720`).
+`native_world_glue`'s test checks the per-mode writes and that state
+against `engine::render::stencil::for_mode` over every stored value.
+Nothing after layer 3 tests the stencil from engine code: every caller
+of `0x00015370` passes mode 0, 1 or 2 (the light passes 0), and only
+`0x00015370` and the quad `0x0003bf20` set `STENCILFUNC`
+(e3-lighting.md, "Stencil: every use, named"). The transparents and
+objects still draw without the stencil (S).
+
+**Only the world's layer 3.** The layer draw also runs for the
+first-person render (`0x0003fdf0`, after the transparents): layers 1,
+3, 8, 20 and 7 of a list holding the player's first-person models only,
+under its own projection, with `0x00485a76` set by its caller (so the
+stencil plan says "off") and no depth clear under that flag
+(`0x0004004f`..`0x00040066`). About a third of all layer-3 draws are
+these. The feature asks for the native pass only when the layer's list
+holds a BSP item (`skip::has_structure_items`); otherwise the whole
+world was drawn again over the finished scene with the first-person
+constants, nearer than the scene's depth: decals, the dynamic lights'
+`ZFUNC` equal passes and the transparents (03a's fire and smoke) were
+painted over with bare world while the walls looked right. That, not
+depth or stencil, is what the 2026-11-19 A/Bs at 03000/04000 showed;
+refusing stencil-switching views hid it only because the first-person
+view's flag counted as a switch.
 
 ### Where the native pass goes, and depth
 
@@ -227,9 +251,11 @@ That dependency is not only layers 7 and 8: on 03a every world template
 has, after layer 3, shadow application (11), the lights (12, 13) and
 planar fog (16), all `ZFUNC` equal (`0x202`) without depth writes
 (`h2 shader`). The 2026-11-19 A/B (the walls right, the palette fixed)
-lost them where native depth was not the D3D path's: decals and signs,
-a doorway's light, the fire's light on the rocks as speckle. What the
-native pass must match, per part:
+lost decals and signs, a doorway's light and the fire's light on the
+rocks; most of that was the world drawn again in the first-person
+render's layer 3 ("Only the world's layer 3", above), not depth (S: the
+speckle on the rocks may still be). What the native pass must match,
+per part:
 
 - **Clusters**: classification 0 of the pass's vertex program, `v0`
   the section's position. The world keeps a cluster's position bits as
@@ -455,8 +481,11 @@ surfaces only (the D3D ones are the game's own):
 - **stencil-driven effects** after layer 3: the native pass writes the
   device's stencil as the layer starts and mode 2's mark on marked
   sections, and leaves views to D3D where an item switches the stencil
-  and the layer does not start in mode 1 (S: what reads the marks is not
-  traced).
+  and the layer does not start in mode 1 (no engine code after layer 3
+  tests the stencil; a tag's or engine render-state list could, S);
+- **decals, lights, fire and smoke gone, walls right**: the world drawn
+  over the finished scene by a native pass in a layer 3 that is not the
+  world's (the first-person render's; `skip::has_structure_items`).
 
 ### Next: matching the look
 
