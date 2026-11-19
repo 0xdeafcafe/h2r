@@ -309,8 +309,13 @@ pub struct WeaponParts {
     pub barrel_halo2: Vec<Halo2Refs>,
     /// Per Halo 1 trigger, its firing effects, converted ([`FiringParts`]).
     pub firing_effects: Vec<Vec<FiringParts>>,
-    /// Per Halo 1 magazine, its reloading effect, converted.
-    pub magazine_effects: Vec<Option<TagId>>,
+    /// Root references converted from Halo 1 ([`WEAPON_EFFECTS`]): they
+    /// replace the counterpart's in those slots, which stay empty where
+    /// Halo 1 names nothing.
+    pub halo1: Halo2Refs,
+    /// Per Halo 1 magazine, its reloading and chambering effects,
+    /// converted.
+    pub magazine_effects: Vec<[Option<(FourCC, TagId)>; 2]>,
     /// The weapon class and type a unit's graph holds it by
     /// ([`WEAPON_CLASS`], [`WEAPON_TYPE_NAME`]); `None` leaves both null.
     pub animation: Option<(String, String)>,
@@ -340,10 +345,39 @@ pub const FIRING_DAMAGE_REFS: [&str; 3] = ["ref_1c", "ref_24", "ref_2c"];
 pub const FIRING_DAMAGE_AT: [usize; 3] = [0x1c, 0x24, 0x2c];
 
 /// Magazine `+0x34`: the reloading effect (`effe`). V: retail's SMG
-/// names an effect here; Halo 1's magazine `+0x38`. The chambering
-/// effect (`+0x44` by the group words' pattern: `+0x3c` and `+0x4c` hold
-/// `jpt!` group words) has no definition field yet and is not written.
-pub const MAGAZINE_RELOADING_EFFECT: &str = "ref_34";
+/// names an effect here; Halo 1's magazine `+0x38`.
+pub const MAGAZINE_RELOADING_EFFECT: &str = "reloading_effect";
+/// Magazine `+0x44`: the chambering effect. S: it sits between two `jpt!`
+/// group words (`+0x3c`, `+0x4c`) as the reloading effect does before
+/// `+0x3c`; Halo 1's magazine `+0x48`.
+pub const MAGAZINE_CHAMBERING_EFFECT: &str = "chambering_effect";
+
+/// The weapon's own effects and sounds, written from Halo 1: (Halo 2
+/// path, Halo 1 `weap` offset of the reference). The Halo 2 slots
+/// (docs/halo1/objects.md, "Weapon effects and sounds"): every retail
+/// weapon on Coagulation names only `effe` in the effects and `snd!` in
+/// the sounds (`needler\ready`, `plasma_rifle\overheated`,
+/// `smg\smg_ammo`, `sniper_rifle\zoom_in`, `zoom_out`); E: the zoom
+/// sounds are read at `0x000c5ba0` (out, `+0x278`) and `0x000c5ba8` (in,
+/// `+0x270`) by magnification, the pickup sound at `0x000a009a`
+/// (`+0x268`, played by `0x001896c0` for a weapon), the overheated and
+/// detonation effects at `0x000cf12c` (`+0x170`) and `0x000cf19f`
+/// (`+0x180`); each skips a null datum. Until converter version 84 these
+/// were the counterpart's: drawing the assault rifle played the needler's
+/// ready effect (the SMG's), picking it up the SMG's ammunition sound.
+pub const WEAPON_EFFECTS: &[(&str, usize)] = &[
+    ("ready_effect", 0x33c),
+    ("overheated_effect", 0x374),
+    ("detonation_effect", 0x384),
+    ("light_power_on_effect", 0x420),
+    ("light_power_off_effect", 0x430),
+    ("pickup_sound", 0x490),
+    ("zoom_in_sound", 0x4a0),
+    ("zoom_out_sound", 0x4b0),
+    ("item.collision_sound", 0x258),
+    ("item.detonating_effect", 0x2e8),
+    ("item.detonation_effect", 0x2f8),
+];
 
 /// `weap +0x288`, `+0x28c`: the weapon class and type (string IDs) the
 /// holder's animation graph is looked up by. A unit takes a weapon only
@@ -518,6 +552,7 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
     let mut r = defs::default_record(d);
     words(&mut r, &role.root)?;
     refs(&mut r, &parts.halo2)?;
+    refs(&mut r, &parts.halo1)?;
     header(&mut r, "item.obje", WEAPON_TYPE, &w.object, parts.hlmt)?;
     if let Some((class, kind)) = &parts.animation {
         set(&mut r, WEAPON_CLASS, Val::text(class))?;
@@ -567,12 +602,14 @@ pub fn weapon(w: &h1::Weapon, b: &[u8], parts: &WeaponParts, role: &Role) -> Res
                 m.rounds_loaded_maximum,
             )),
         )?;
-        if let Some(reloading) = parts.magazine_effects.get(mags.len()) {
-            set(
-                &mut e,
-                MAGAZINE_RELOADING_EFFECT,
-                Val::tag(FourCC(*b"effe"), reloading.unwrap_or(TagId::NULL)),
-            )?;
+        if let Some(fx) = parts.magazine_effects.get(mags.len()) {
+            for (path, x) in [MAGAZINE_RELOADING_EFFECT, MAGAZINE_CHAMBERING_EFFECT]
+                .iter()
+                .zip(fx)
+            {
+                let (g, id) = x.unwrap_or((FourCC(*b"effe"), TagId::NULL));
+                set(&mut e, path, Val::tag(g, id))?;
+            }
         }
         mags.push(e);
     }

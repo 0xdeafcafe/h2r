@@ -2241,12 +2241,13 @@ fn role_spheres_read_the_physics_elements_multisphere() {
 /// parts give, and a barrel whose trigger has none gets none (before
 /// converter version 84 every barrel took the Halo 2 counterpart's, the
 /// last one's when it had fewer barrels). A magazine takes Halo 1's
-/// reloading effect.
+/// reloading and chambering effects, and the root's Halo 1 references
+/// win over the counterpart's.
 #[test]
 fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     use crate::arsenal::{
-        FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, FiringParts, MAGAZINE_RELOADING_EFFECT, Role,
-        WeaponParts, weapon,
+        FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, FiringParts, MAGAZINE_CHAMBERING_EFFECT,
+        MAGAZINE_RELOADING_EFFECT, Role, WeaponParts, weapon,
     };
     use crate::h1::{Magazine, TRIGGER_SIZE, Trigger, WEAP_SIZE, Weapon};
     use tags::defs::{self, Defs, Record, Target, Val};
@@ -2269,7 +2270,13 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
                 damage: [None; 3],
             },
         ]],
-        magazine_effects: vec![Some(local(6))],
+        magazine_effects: vec![[
+            Some((FourCC(*b"effe"), local(6))),
+            Some((FourCC(*b"effe"), local(7))),
+        ]],
+        // The counterpart's ready effect is replaced by Halo 1's sound.
+        halo2: vec![("ready_effect".into(), FourCC(*b"effe"), TagId(0xe5ee_0479))],
+        halo1: vec![("ready_effect".into(), FourCC(*b"snd!"), local(8))],
         ..Default::default()
     };
     let root = weapon(&w, &b, &parts, &Role::default()).unwrap();
@@ -2302,4 +2309,8 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     );
     let mags = block(&r, "magazines");
     assert_eq!(target(&mags[0], MAGAZINE_RELOADING_EFFECT), Some(local(6)));
+    assert_eq!(target(&mags[0], MAGAZINE_CHAMBERING_EFFECT), Some(local(7)));
+    assert_eq!(target(&r, "ready_effect"), Some(local(8)));
+    // Slots no part names are empty.
+    assert_eq!(target(&r, "pickup_sound"), None);
 }

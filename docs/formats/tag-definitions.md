@@ -1394,8 +1394,8 @@ starts from the definition default, then:
   (impact, and detonation: Halo 1's attached detonation damage or the
   first `jpt!` its detonation effect names). The slots Halo 1 has nothing
   converted for take the **Halo 2 counterpart's reference** (the
-  `TEMPLATES` row; references only): melee damage, the root's effects and
-  sounds (ready, overheated, pickup), and each firing effect's damage
+  `TEMPLATES` row; references only): melee damage, the material
+  effects (`item +0xf4`) and each firing effect's damage
   (the shot's rumble and shake: a `jpt!` from Halo 1 carries only damage
   bounds). A projectile takes no `jpt!` from Halo 2.
 - **What a shot and a reload play** (converter version 84): each barrel's
@@ -1418,14 +1418,13 @@ starts from the definition default, then:
   map; retail's `ref_4..ref_14` hold `effe` or `snd!` and
   `ref_1c..ref_2c` `jpt!`; on Blood Gulch every weapon's built firing
   and reloading effects are Halo 1's by path and play Halo 1's sounds.
-  Not carried yet: the chambering effect (magazine `+0x44` by its group
-  words, no field), the root's ready, overheated, detonation and
-  light effects and the pickup and zoom sounds (Halo 2 offsets not
-  established), the shot counts (`+0` of both elements; Halo 2's word
+  The weapon's own effects and sounds (ready, overheated, detonation,
+  light, pickup, zoom, collision) and the chambering effect are Halo 1's
+  too, or empty (docs/halo1/objects.md, "Weapon effects and sounds"),
+  and the first-person graphs carry Halo 1's animation sounds
+  (docs/halo1/models.md, "Animation sounds"). Not carried yet: the shot counts (`+0` of both elements; Halo 2's word
   stays the role's: live on converted Blood Gulch every retail element,
-  33 weapons' worth, holds i16 1, 1, so the role word is that), and the sounds Halo 1's first-person animations
-  name (`antr` sound references; the reload and ready sounds of most
-  weapons, not converted, docs/halo1/models.md). The HUD (`+0x2b0`) is Halo 1's
+  33 weapons' worth, holds i16 1, 1, so the role word is that). The HUD (`+0x2b0`) is Halo 1's
   `wphi` converted (`Converter::weapon_hud`, docs/halo1/hud.md); the
   counterpart's `nhdt` is the weapon's Halo 2 HUD in its HUD pair.
 

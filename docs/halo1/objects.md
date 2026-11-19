@@ -110,6 +110,40 @@ are the weapon's fire sound; the converted weapon names Halo 1's since
 converter version 84 (docs/formats/tag-definitions.md, "What a shot and
 a reload play").
 
+### Weapon effects and sounds
+
+Every effect and sound a converted weapon plays is Halo 1's since
+converter version 84; a slot Halo 1 leaves empty stays empty (the engine
+skips a null datum at each read below), never the Halo 2 counterpart's.
+Halo 2 offsets: V from the groups and names on every retail weapon of
+Coagulation (`h2 object coagulation <weapon>`), E where an engine read is
+cited. Every root and item offset below is also typed in
+`tags::object::layouts` (`ITEM`, `WEAP`) as a reference of that group,
+checked on every map of the disc, so the S rows are S for the name only.
+
+| Halo 2 | Halo 1 | Field | Evidence |
+|---|---|---|---|
+| `weap +0x140` | `weap +0x33c` | ready effect | V: `needler\ready` (needler, SMG), `energy_blade\blade_activate_fp` |
+| `weap +0x16c` | `+0x374` | overheated effect | V: the plasma pistol's, plasma rifle's, ghost's `overheated`; E `0x000cf12c` reads `+0x170` when the weapon's overheated bit is set |
+| `weap +0x17c` | `+0x384` | detonation effect | S: `effe` group words, then `jpt!` at `+0x184`; E `0x000cf19f` reads `+0x180` |
+| `weap +0x244`, `+0x24c` | `+0x420`, `+0x430` | light power-on, power-off effect | S: `effe` group words, in Halo 1's order |
+| `weap +0x264` | `+0x490` | pickup sound | V: `smg_ammo`, `magnum_ammo`, ... on 10 weapons; E `0x000a009a` plays `+0x268` (through `0x001896c0`) when the object picked up is a weapon |
+| `weap +0x26c`, `+0x274` | `+0x4a0`, `+0x4b0` | zoom in, zoom out sound | V: `sniper_rifle\zoom_in`, `zoom_out`, the beam rifle's; E `0x000c5ba8` (`+0x270`) and `0x000c5ba0` (`+0x278`), by the weapon's magnification levels (`+0x1fe`); without a weapon definition the globals' zoom sounds play |
+| `item +0xfc` | `item +0x258` | collision sound | S: `snd!` group words |
+| `item +0x11c`, `+0x124` | `+0x2e8`, `+0x2f8` | detonating, detonation effect | S: `effe` group words |
+| magazine `+0x34`, `+0x44` | magazine `+0x38`, `+0x48` | reloading, chambering effect | V (`+0x34`, the SMG's); S (`+0x44`, between two `jpt!` group words) |
+
+A Halo 1 slot may name a `snd!` or an `effe`; each converts by the group
+of the tag it names (`Converter::weapon_slot`). Before version 84 the
+counterpart's were kept: drawing the assault rifle played the needler's
+ready effect (the SMG's), picking it up the SMG's ammunition sound. The
+melee damage (`+0x1bc..+0x1f4`), the firing damage and the material
+effects (`item +0xf4`) are still the counterpart's.
+
+Halo 1's reload, ready and other first-person sounds are on the
+animations, not the weapon: see [models.md](models.md), "Animation
+sounds".
+
 ### `proj` (root `0x24c`)
 
 | Offset | Field | Evidence |

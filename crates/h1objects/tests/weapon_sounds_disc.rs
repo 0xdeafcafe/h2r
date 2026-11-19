@@ -29,7 +29,10 @@ use std::io::{BufReader, Cursor};
 use h1convert::convert::halo1::prepare_halo1;
 use h1convert::convert::structure_mopp;
 use h1map::{Group, H1Map};
-use h1objects::arsenal::{FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, MAGAZINE_RELOADING_EFFECT};
+use h1objects::arsenal::{
+    FIRING_DAMAGE_REFS, FIRING_EFFECT_REFS, MAGAZINE_CHAMBERING_EFFECT, MAGAZINE_RELOADING_EFFECT,
+    WEAPON_EFFECTS,
+};
 use h1objects::base::Base;
 use h1objects::h1::{self, FIRING_EFFECT_DAMAGE, FIRING_EFFECT_EFFECTS, FIRING_EFFECT_SIZE};
 use h1objects::sandbox::Objects;
@@ -91,6 +94,13 @@ fn h1_map(name: &str) -> Option<H1Map> {
 
 fn def(g: &[u8; 4]) -> &'static StructDef {
     Defs::builtin().group(FourCC(*g)).unwrap()
+}
+
+fn int(r: &Record, path: &str) -> i64 {
+    match r.at(path) {
+        Some(Val::Int(x)) => *x,
+        v => panic!("{path}: {v:?}"),
+    }
 }
 
 fn block<'r>(r: &'r Record, path: &str) -> &'r [Record] {
@@ -206,6 +216,7 @@ fn halo1_sounds(h1: &H1Map, effect: h1map::TagId) -> BTreeSet<String> {
 fn every_weapon_fires_its_halo1_sounds() {
     let maps = std::env::var("H1_MAPS").unwrap_or_else(|_| "bloodgulch".into());
     let mut weapons = 0;
+    let mut anim_sounds = 0;
     for name in maps.split(',') {
         let (_, _, base_name) = h1convert::convert::MAPS
             .iter()
@@ -276,8 +287,15 @@ fn every_weapon_fires_its_halo1_sounds() {
             let want_name = h1.tag(want).unwrap().name.clone();
             let (g, n) =
                 got.unwrap_or_else(|| panic!("{what}: no effect, Halo 1's is {want_name}"));
+            assert_eq!(n, want_name, "{what}: not Halo 1's");
+            if h1.tag(want).unwrap().group == Group::new(b"snd!") {
+                // A sound slot: Halo 1's sound itself.
+                assert_eq!(g, FourCC(*b"snd!"), "{what}");
+                assert!(find(b"snd!", &n).is_some(), "{what}: {n} not in the map");
+                println!("  {what}: {n}");
+                return;
+            }
             assert_eq!(g, FourCC(*b"effe"), "{what}");
-            assert_eq!(n, want_name, "{what}: not Halo 1's effect");
             let id = find(b"effe", &n).unwrap_or_else(|| panic!("{what}: {n} not in the map"));
             let fx = record(b"effe", id);
             let mut sounds = BTreeSet::new();
@@ -336,9 +354,170 @@ fn every_weapon_fires_its_halo1_sounds() {
                     MAGAZINE_RELOADING_EFFECT,
                     h.reloading_effect,
                 );
+                check(
+                    &mut record,
+                    format!("{} magazine {i} chambering", t.name),
+                    m,
+                    MAGAZINE_CHAMBERING_EFFECT,
+                    h.chambering_effect,
+                );
+            }
+            // The weapon's own effects and sounds: Halo 1's, or empty
+            // (never the counterpart's).
+            let bytes = h1objects::arsenal::weapon_bytes(&h1, t).unwrap();
+            for (slot, at) in WEAPON_EFFECTS {
+                let want = h1::reference(&h1, &bytes, *at);
+                check(&mut record, format!("{} {slot}", t.name), &r, slot, want);
+            }
+            // First-person animation sounds (reload, ready): every Halo 1
+            // animation's sound is the converted graph's sound event on the
+            // same animation and frame, naming Halo 1's sound.
+            if let Some(antr) = w.first_person_animations {
+                let antr = h1.tag(antr).unwrap();
+                let sounds = h1models::sounds::read(&h1, antr).unwrap();
+                let fp = block(&r, "first_person");
+                let (_, graph) = path(&fp[0], "animations")
+                    .unwrap_or_else(|| panic!("{}: no first-person graph", t.name));
+                let jmad = record(b"jmad", find(b"jmad", &graph).unwrap());
+                let refs: Vec<Option<String>> = block(&jmad, "sound_references")
+                    .iter()
+                    .map(|x| path(x, "sound").map(|k| k.1))
+                    .collect();
+                let anims = block(&jmad, "animations");
+                for (a, k, frame) in &sounds.events {
+                    let Some(sref) = sounds.refs[*k] else {
+                        continue;
+                    };
+                    let want = h1.tag(sref).unwrap().name.clone();
+                    let events = block(&anims[*a], "sound_events");
+                    let got: Vec<(Option<String>, i64)> = events
+                        .iter()
+                        .map(|e| {
+                            let i = int(e, "sound");
+                            (refs.get(i as usize).cloned().flatten(), int(e, "frame"))
+                        })
+                        .collect();
+                    println!("  {} animation {a}: {want} at frame {frame}", graph);
+                    assert_eq!(
+                        got,
+                        [(Some(want.clone()), i64::from(*frame))],
+                        "{} animation {a}: Halo 1 plays {want} at frame {frame}",
+                        graph
+                    );
+                    assert!(find(b"snd!", &want).is_some(), "{want} not in the map");
+                }
+                anim_sounds += sounds.events.len();
             }
         }
     }
-    println!("{weapons} weapons checked");
+    println!("{weapons} weapons checked, {anim_sounds} first-person animation sounds");
     assert!(weapons > 0);
+}
+
+/// Halo 1's animation sounds (`h1models::sounds`) on every map: each
+/// sound reference element (`H1_SOUND_REF_LEN`) holds a `snd!` reference
+/// at `+0` and nothing else, and every animation's sound index is -1 or a
+/// reference with its frame inside the animation.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO)"]
+fn halo1_animation_sounds() {
+    use h1models::sounds::{H1_ANIMATION_SOUND, H1_SOUND_REF_LEN, H1_SOUND_REFS};
+    let (mut graphs, mut refs, mut events, mut out_of_range) = (0, 0, 0, 0);
+    let snd = Group::new(b"snd!");
+    for (name, h1) in h1_maps() {
+        for t in h1.tags() {
+            if t.group != Group::new(b"antr") {
+                continue;
+            }
+            let h = h1.tag_data(t).unwrap();
+            let blk = h1map::Block::read(h, H1_SOUND_REFS).unwrap();
+            let sref = h1.block(blk, H1_SOUND_REF_LEN).unwrap().to_vec();
+            let n = sref.len() / H1_SOUND_REF_LEN;
+            for e in sref.chunks_exact(H1_SOUND_REF_LEN) {
+                let found = h1objects::refs::scan(&h1, e);
+                assert!(found.len() <= 1, "{name} {}: {found:?}", t.name);
+                if let Some(f) = found.first() {
+                    assert_eq!((f.offset, f.group), (0, snd), "{name} {}", t.name);
+                }
+            }
+            let ab = h1map::Block::read(h, 0x74).unwrap();
+            let anims = h1.block(ab, 0xb4).unwrap().to_vec();
+            for a in anims.chunks_exact(0xb4) {
+                let s = i16::from_le_bytes([a[H1_ANIMATION_SOUND], a[H1_ANIMATION_SOUND + 1]]);
+                let f = i16::from_le_bytes([a[H1_ANIMATION_SOUND + 2], a[H1_ANIMATION_SOUND + 3]]);
+                let frames = i16::from_le_bytes([a[0x22], a[0x23]]);
+                if s < 0 {
+                    continue;
+                }
+                assert!((s as usize) < n, "{name} {}: sound {s} of {n}", t.name);
+                if (0..frames.max(1)).contains(&f) {
+                    events += 1;
+                } else {
+                    out_of_range += 1;
+                }
+            }
+            let got = h1models::sounds::read(&h1, t).unwrap();
+            assert_eq!(got.refs.len(), n);
+            graphs += 1;
+            refs += n;
+        }
+    }
+    println!(
+        "{graphs} graphs, {refs} sound references, {events} animation sounds ({out_of_range} with a frame outside the animation)"
+    );
+    assert!(events > 0);
+}
+
+/// Retail Halo 2 graphs on Coagulation: how many animations carry sound
+/// events, and what the word after the frame holds (the evidence for
+/// writing 0 there, `h1models::sounds`); every sound reference names a
+/// `snd!`.
+#[test]
+#[ignore = "reads the Halo 2 disc ($H2_DISC)"]
+fn retail_animation_sound_events() {
+    let mut m = h2_map("coagulation");
+    let base = Base::read(&mut m).unwrap();
+    let (mut graphs, mut events, mut zero) = (0, 0, 0);
+    let mut words = BTreeSet::new();
+    for t in m.tags().to_vec() {
+        if t.group != FourCC(*b"jmad") || t.location.is_none() {
+            continue;
+        }
+        let Ok(r) = base.record(def(b"jmad"), t.id) else {
+            continue;
+        };
+        let name = t.name.clone().unwrap_or_default();
+        for x in block(&r, "sound_references") {
+            if let Some(Val::Ref {
+                target: Target::Id(id),
+                ..
+            }) = x.at("sound")
+                && let Some((g, _)) = base.name(*id)
+            {
+                assert_eq!(g, FourCC(*b"snd!"), "{name}");
+            }
+        }
+        let mut here = 0;
+        for a in block(&r, "animations") {
+            for e in block(a, "sound_events") {
+                here += 1;
+                let w = format!("{:?}", e.at("string_4"));
+                if w.contains("Index(0)") || w.contains("Text(\"\")") {
+                    zero += 1;
+                }
+                words.insert(w);
+            }
+        }
+        if here > 0 {
+            graphs += 1;
+            events += here;
+            if name.contains("\\fp\\") {
+                println!("{name}: {here} sound events");
+            }
+        }
+    }
+    println!(
+        "{graphs} graphs with {events} sound events; {zero} with an empty word; words {words:?}"
+    );
+    assert!(events > 0);
 }
