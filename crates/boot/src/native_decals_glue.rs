@@ -23,6 +23,11 @@ struct Glue;
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
+    if !feature::Switches::from_env().is_ok_and(|s| feature::native_decals::on(&s))
+        && std::env::var_os("H2_NATIVE_DECALS_COMPARE").is_none()
+    {
+        return;
+    }
     let Ok(mut d) = device.lock() else { return };
     d.add_draw_admission(Arc::new(Glue));
 }

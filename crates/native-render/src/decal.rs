@@ -54,10 +54,12 @@ pub struct Vertex {
 
 /// Triangle indices for a quad list, as the D3D path expands type 8.
 pub fn quad_indices(quads: u32) -> Vec<u32> {
-    (0..quads).flat_map(|q| {
-        let b = q * 4;
-        [b, b + 1, b + 2, b, b + 2, b + 3]
-    })
+    (0..quads)
+        .flat_map(|q| {
+            let b = q * 4;
+            [b, b + 1, b + 2, b, b + 2, b + 3]
+        })
+        .collect()
 }
 
 #[cfg(test)]

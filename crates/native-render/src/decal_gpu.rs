@@ -486,7 +486,7 @@ impl DecalGpu {
                     shader_location: 3,
                 },
             ];
-            let mut ds = c.depth;
+            let mut ds = c.depth.clone();
             ds.format = depth;
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native decal program"),
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn every_mode_checks_its_depth_and_blend() {
-        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n));
+        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n as u32));
         let extras = [StageExtras::default(); 4];
         for mode in [
             Mode::Alpha0,
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn mode_specific_bias_is_not_inherited() {
-        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n));
+        let stages = std::array::from_fn(|n| TextureStageState::default_for_stage(n as u32));
         let extras = [StageExtras::default(); 4];
         let mut rs = state(Mode::Multiply);
         rs.solid_offset_enable = false;
