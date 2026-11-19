@@ -731,6 +731,13 @@ impl<B: Backend> Backend for DiagBackend<B> {
     ) -> Result<bool, String> {
         self.inner.request_depth_grid(surface, request, sink)
     }
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<d3d::ExternalCopies, String> {
+        self.inner.external_attachments(surfaces, textures.map(|t| t.map(|t| &t.inner)), copy)
+    }
+
     fn prepare_external(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,

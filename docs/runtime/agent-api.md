@@ -217,6 +217,23 @@ The client gets the **stack of open screens**, not pixels:
 Two layers. The **map** is static and comes from the tags. The **world** is
 what is alive now.
 
+**Audio routing** (`h2 agent audio.voices`, no parameters). Available with
+DirectSound. The result has `distance_reverb` (host enhancement enabled),
+`reverb_active` (audible environment configured), and `voices`. Each
+playing buffer, queued unpaused stream and playing mix-in has a mixer
+`id`, `kind`, `volume_mb` and `distance_units` (listener-relative
+world units, null for an unpositioned voice). Match a stream's output
+`bin` to a mix-in's `input_bin` to find the positioned emitter.
+
+`direct_gain` and `room_gain` are linear low-frequency gains including
+voice volume and headroom. `direct_hf_db` and `room_hf_db` give the
+additional loss at `reference_hz`. Each ordered entry in `bins` has
+its raw `bin`, `volume_mb` and its linear `gain` including that pair's
+volume and path gain. These are routing settings before spatial panning,
+master gain and the reverb return. A disabled environment or unconnected
+bus can have a configured send gain and deliver silence. Plain stereo
+routing has `bins: null`.
+
 **Map** (`world.map`). One call gives the shape of the level as a summary:
 
 ```json
@@ -835,6 +852,17 @@ h2 agent --socket /tmp/h2-play.sock hostpads
   is read-only, so it needs no claim. With frame stats off it answers
   `UNAVAILABLE` (the agent starts a quiet collection when nothing else
   does, so they are on unless something stopped them).
+- **Native renderer counters.** `profile.counters` and `profile.capture`
+  use the field names of `H2_FRAME_STATS_CSV`. Each agent response and
+  capture CSV includes native columns with activity in its window. The
+  streaming `H2_FRAME_STATS_CSV` writes a fixed header at startup. Each
+  `native_<stage>_` prefix includes examined and suppressed guest items,
+  refusals by reason, prepare and encode nanoseconds, GPU buffers and bind
+  groups created, upload bytes and pipeline misses. Per-view columns
+  distinguish reference and display ranges attempted and committed and
+  invariant failures. For instance, `native_world_v1_display_recorded` can
+  be positive while `native_world_v1_display_ranges` is zero when the
+  display copy fails validation. [Field definitions](../graphics/native-renderer.md#ordered-replacement-handoff).
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, boot's `sampling`) over the window, and `sampling`
   is what `profile.sample.stop` answers: the module-relative dump

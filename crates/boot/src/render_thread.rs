@@ -214,7 +214,7 @@ mod tests {
         // render-thread safe together, and so are the lights' skip and view
         // observer (placed only without render-timing).
         let native =
-            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on".to_owned();
+            "impl.render.native_objects=on,impl.render.native_transparents=on,impl.render.native_decals=on,impl.render.native_lights=on,impl.render.native_post=on,impl.render.native_gels=on".to_owned();
         for switches in [String::new(), native, ALL_ON.to_owned(), format!("{ALL_ON},render-census")] {
             let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
             for c in plan.chains.values() {

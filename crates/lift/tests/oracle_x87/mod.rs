@@ -53,7 +53,6 @@
 //! not follow.
 
 use iced_x86::{Instruction, InstructionInfoFactory, MemorySize, Mnemonic as M, OpAccess, OpKind, Register};
-use ir::Gpr;
 use ir::interp::{self, Cpu, Memory};
 
 const SW_STICKY: u16 = 0x007b; // IE DE OE UE PE SF
@@ -302,12 +301,19 @@ impl X87Check {
     /// fixture.
     pub fn before(&mut self, insn: &Instruction, cpu: &Cpu, memory: &mut dyn Memory) -> Result<(), String> {
         let m = insn.mnemonic();
-        let ea_of = |base: Register, index: Register, scale: u32, disp: u32| {
-            let r = |reg: Register| if reg == Register::None { 0 } else { cpu.reg(gpr_of(reg)) };
-            r(base).wrapping_add(r(index).wrapping_mul(scale)).wrapping_add(disp)
+        let register_value = |reg: Register, _, _| {
+            if reg == Register::FS {
+                Some(u64::from(cpu.fs_base))
+            } else if reg.is_segment_register() {
+                Some(0)
+            } else {
+                // The decoder can report a partial register as an address
+                // component, such as XLAT's unsigned AL index.
+                let (gpr, slice) = lift::lower::gpr(reg)?;
+                Some(u64::from((cpu.reg(gpr) >> slice.shift()) & slice.width().mask() as u32))
+            }
         };
-        let ea =
-            || ea_of(insn.memory_base(), insn.memory_index(), insn.memory_index_scale(), insn.memory_displacement32());
+        let ea = || insn.virtual_address(0, 0, register_value).expect("x87 memory operand address") as u32;
         // Overwrites end masks: the flags it writes, the EAX bits and bytes
         // it writes outright or fully determines, the bytes it stores.
         let ah = (self.eax >> 8) & 0xff;
@@ -382,7 +388,7 @@ impl X87Check {
             }
         }
         for u in info.used_memory() {
-            let a = ea_of(u.base(), u.index(), u.scale(), u.displacement() as u32);
+            let a = u.virtual_address(0, register_value).expect("fixture memory operand address") as u32;
             let n = u.memory_size().size() as u32;
             match u.access() {
                 OpAccess::Write => self.mem.retain(|&(b, _)| b.wrapping_sub(a) >= n),
@@ -659,20 +665,6 @@ fn eflags_of(r: u32) -> u32 {
 fn lift_x87(m: M) -> bool {
     let n = format!("{m:?}");
     n.starts_with('F') || n == "Wait"
-}
-
-fn gpr_of(r: Register) -> Gpr {
-    match r {
-        Register::EAX => Gpr::Eax,
-        Register::ECX => Gpr::Ecx,
-        Register::EDX => Gpr::Edx,
-        Register::EBX => Gpr::Ebx,
-        Register::ESP => Gpr::Esp,
-        Register::EBP => Gpr::Ebp,
-        Register::ESI => Gpr::Esi,
-        Register::EDI => Gpr::Edi,
-        r => panic!("operand addressed through {r:?}"),
-    }
 }
 
 mod tests {

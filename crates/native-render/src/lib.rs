@@ -22,6 +22,9 @@ pub mod cull;
 pub mod decal;
 #[cfg(feature = "gpu")]
 pub mod decal_gpu;
+pub mod gels;
+#[cfg(feature = "gpu")]
+pub mod gels_gpu;
 #[cfg(feature = "gpu")]
 pub mod glow;
 #[cfg(feature = "gpu")]
@@ -51,8 +54,13 @@ pub mod object_nodes;
 pub mod object_program;
 #[cfg(feature = "gpu")]
 pub mod object_program_gpu;
+#[cfg(feature = "gpu")]
+pub mod object_state;
 pub mod object_streams;
 pub mod objects;
+pub mod particles;
+#[cfg(feature = "gpu")]
+pub mod particle_gpu;
 pub mod post;
 #[cfg(feature = "gpu")]
 pub mod screen_gpu;
