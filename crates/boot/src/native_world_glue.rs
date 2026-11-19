@@ -46,6 +46,7 @@ use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::transparent_gpu::{TransparentProgram, TransparentSet};
+use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
 use crate::telemetry::{MapFile, MapLocator};
@@ -113,7 +114,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera) -> Option<Arc<PartSet>> {
+    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<Arc<PartSet>> {
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() || bsp == 0 {
             return None;
@@ -191,13 +192,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             return None;
         }
-        // The stencil the layer's draws take now (the feature leaves the
-        // views where an item switches it to the D3D path): the native
-        // pass tests and writes the same, as the structure draw's mode 1
-        // writes reference 0 over every item it draws.
+        // The stencil the layer's draws take now, and how its items switch
+        // it (`skip::stencil_plan`).
         let Some(stencil) = d.stencil_state(&ReadMemory(mem)) else {
             if !STENCIL_UNREAD.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 eprintln!("native-world: the device's stencil state does not read; the D3D path draws the world");
+            }
+            return None;
+        };
+        let Some(stencil) = pass_stencil(&stencil, plan) else {
+            let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n % 600 == 0 {
+                eprintln!(
+                    "native-world: {} views left to the D3D path: an item switches the stencil and layer 3 starts in another state ({stencil:?})",
+                    n + 1
+                );
             }
             return None;
         };
@@ -280,8 +289,8 @@ struct WorldPass {
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
     view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    /// The device's stencil state when the pass was asked for.
-    stencil: gfx::state::StencilState,
+    /// The stencil the pass draws with ([`pass_stencil`]).
+    stencil: (gfx::state::StencilState, Vec<Owner>),
 }
 
 impl d3d::ExternalPass for WorldPass {
@@ -320,7 +329,12 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
-        gpu.set_stencil(PassStencil::from_device(&self.stencil, t.depth_format));
+        let (state, marked) = &self.stencil;
+        let mut stencil = PassStencil::from_device(state, t.depth_format);
+        if stencil != PassStencil::default() {
+            stencil.marked = marked.clone();
+        }
+        gpu.set_stencil(stencil);
         let [x, y, width, height] = t.viewport;
         gpu.encode(
             t.device,
@@ -344,6 +358,33 @@ static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static STENCIL_UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static STENCIL_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The stencil the native pass draws layer 3 with, from the device's state
+/// as the layer starts (`now`) and how its items switch it (`plan`,
+/// `0x0004d640`/`0x0004d720`): the state and the sections drawn with mode
+/// 2's reference; `None` when that cannot be exact.
+///
+/// The native pass draws its parts before the layer's items and clears
+/// them, so their switches do not run. Without any switch, every item
+/// draws with `now`. With one, an item leaves mode 1, so `now` must be
+/// mode 1 for the items left to D3D to see what they would have: then the
+/// flags' mode 0 is the stencil off for every item, and otherwise a marked
+/// section draws with mode 1's state and reference `0xff` (mode 2), the
+/// rest with mode 1. Each part writes what its own item would have where
+/// it is drawn (`ALWAYS`; the depth test decides which part is last).
+fn pass_stencil(now: &gfx::state::StencilState, plan: &StencilPlan) -> Option<(gfx::state::StencilState, Vec<Owner>)> {
+    if !plan.switches {
+        return Some((*now, Vec::new()));
+    }
+    if !PassStencil::is_structure_mode(now) {
+        return None;
+    }
+    if plan.off {
+        return Some((gfx::state::StencilState { enable: false, ..*now }, Vec::new()));
+    }
+    Some((*now, plan.marked.clone()))
+}
 
 /// The device palette at each texture stage (`A8R8G8B8` entries), or
 /// `None`: what a palettized stage bitmap (P8, P8 bump) is sampled through
@@ -1095,6 +1136,32 @@ mod tests {
         assert_eq!(parts, want);
         let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
         assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);
+    }
+
+    #[test]
+    fn the_pass_stencil_follows_the_items_switches() {
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        let mode1 = StencilState {
+            enable: true,
+            func: CompareFunc::Always,
+            reference: 0,
+            read_mask: 0xff,
+            write_mask: 0xff,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Replace,
+        };
+        let other = StencilState { enable: true, func: CompareFunc::Equal, reference: 3, ..mode1 };
+        let none = StencilPlan::default();
+        assert_eq!(pass_stencil(&other, &none), Some((other, vec![])), "no switch: the state as it is");
+        let marked = StencilPlan { off: false, marked: vec![Owner::Cluster(4)], switches: true };
+        assert_eq!(pass_stencil(&mode1, &marked), Some((mode1, vec![Owner::Cluster(4)])));
+        assert_eq!(pass_stencil(&other, &marked), None, "a switch leaves mode 1, which the layer did not start in");
+        let object = StencilPlan { switches: true, ..StencilPlan::default() };
+        assert_eq!(pass_stencil(&mode1, &object), Some((mode1, vec![])), "an object's switch: mode 1 throughout");
+        let off = StencilPlan { off: true, marked: vec![], switches: true };
+        let (state, marked) = pass_stencil(&mode1, &off).unwrap();
+        assert!(!state.enable && marked.is_empty(), "mode 0: the stencil off");
     }
 
     /// A 2x2 level and its 1x1 mip as `assets` decodes a P8 image: the

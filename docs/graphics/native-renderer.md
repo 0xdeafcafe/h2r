@@ -86,7 +86,15 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   game's own aspect rule (`0x0002fb70`). Read once per view, at the layer-3
   hook (below), so it is the camera the game's own draws would use.
 - **Cull.** Frustum planes from the view-projection, tested against each
-  draw's world bounds on the CPU (a few thousand AABBs: microseconds). The
+  draw's world bounds on the CPU (a few thousand AABBs: microseconds).
+  With material programs only the four sides and the eye's plane
+  (`Frustum::sides`): the programs clip as the D3D path does, and the
+  render camera's `near`/`far` are not that range (03a's distant
+  buildings in the intro cinematic, and a far girder in play, lay past
+  the camera's `far` and were left out natively while their items were
+  skipped: holes showing what was behind). A placement's placed copy is
+  unscaled, as the game draws it (`load`), so its bounds are where it
+  draws. The
   result is written as `instance_count` 0 or 1 into the indirect buffer
   (one 20-byte slot per draw), which is the only per-frame upload besides
   one uniform block. A compute shader can take this over unchanged (same
@@ -161,14 +169,29 @@ and 3 (`0x0004d0b0`; modes by `0x00015370`'s table at `0x00015658`):
 - after it (`0x0004d720`), on either condition, mode 1 (the same with
   reference 0).
 
-An item with neither draws with the stencil as the layer found it. So
-the native pass draws only views where no item in layer 3 switches it
-(`skip::stencil_switches`, checked before the host is asked: the feature
-counts the rest, `native_world::stencil_views`, and the D3D path draws
-them), and then tests and writes the stencil the device holds when it is
-asked (`Device::stencil_state`, translated as the D3D path's pipeline
-translates it, `gpu::PassStencil`): after an earlier marked item that is
-mode 1, reference 0 written where the world draws. What reads the marks
+An item with neither draws with the stencil as the layer found it.
+
+The feature reads how layer 3's items switch it before asking the host
+(`skip::stencil_plan`: the flags, the marked BSP sections by cluster or
+placement, whether any item switches; unreadable, the D3D path draws the
+view, `native_world::stencil_views`). The native pass draws its parts
+before the layer's items and clears their items, so their switches do
+not run; the glue (`native_world_glue::pass_stencil`) makes that exact:
+
+- no item switches: every part draws with the stencil the device holds
+  when asked (`Device::stencil_state`, translated as the D3D path's
+  pipeline translates it, `gpu::PassStencil`);
+- some item switches: an item leaves mode 1, so the layer must start in
+  mode 1 (`PassStencil::is_structure_mode`) for the items left to D3D to
+  draw as they would; else the D3D path draws the view (counted in the
+  log). Then with a flag every part draws with the stencil off (mode 0),
+  and otherwise a marked section's parts draw with reference `0xff`
+  (mode 2, its own run in the batch, `PassStencil::reference_of`), the
+  rest with mode 1.
+
+Each part writes what its own item would where it is drawn (`ALWAYS`,
+`REPLACE` on pass): which part is last at a pixel is the depth test's,
+as on the D3D path (S: coplanar ties may differ). What reads the marks
 later is not traced. The transparents and objects still draw without the
 stencil (S).
 
@@ -430,8 +453,10 @@ surfaces only (the D3D ones are the game's own):
 - **cut-out foliage or grates filled in or missing**: the pass's alpha
   test (03a's alpha-tested world passes pass below 255);
 - **stencil-driven effects** after layer 3: the native pass writes the
-  device's stencil as the layer starts, and leaves views where an item
-  switches it to the D3D path (S: what reads the marks is not traced).
+  device's stencil as the layer starts and mode 2's mark on marked
+  sections, and leaves views to D3D where an item switches the stencil
+  and the layer does not start in mode 1 (S: what reads the marks is not
+  traced).
 
 ### Next: matching the look
 

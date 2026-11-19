@@ -104,16 +104,43 @@ pub struct PassViewport {
 }
 
 /// The stencil test and write the layer's draws take on the D3D path, as
-/// the device holds them when the native pass is asked for: the native
-/// pass draws with the same (`skip::stencil_switches` leaves it the
-/// views where no item switches them).
+/// the device holds them when the native pass is asked for, and the
+/// sections the game draws in its mode 2 (`skip::StencilPlan::marked`):
+/// the same state with reference [`PassStencil::MARK`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct PassStencil {
     pub state: wgpu::StencilState,
     pub reference: u32,
+    /// Sorted.
+    pub marked: Vec<Owner>,
 }
 
 impl PassStencil {
+    /// The reference mode 2 writes (`0x00015411`: `0xff` but in mode 1).
+    pub const MARK: u32 = 0xff;
+
+    /// Whether `s` is the structure draw's mode 1 (`0x0001539d`: enabled,
+    /// `ALWAYS`, reference 0, masks `0xff`, `KEEP` on fail and depth fail,
+    /// `REPLACE` on pass): what every item leaves after a switch, so
+    /// leaving out a switching item's switches changes nothing for the
+    /// items after it, and its mode 2 is this state with [`Self::MARK`].
+    pub fn is_structure_mode(s: &gfx::state::StencilState) -> bool {
+        use gfx::state::{CompareFunc, StencilOp};
+        s.enable
+            && s.func == CompareFunc::Always
+            && s.reference == 0
+            && s.read_mask == 0xff
+            && s.write_mask == 0xff
+            && s.fail == StencilOp::Keep
+            && s.depth_fail == StencilOp::Keep
+            && s.pass == StencilOp::Replace
+    }
+
+    /// The reference `owner`'s parts draw with.
+    pub fn reference_of(&self, owner: Owner) -> u32 {
+        if self.marked.binary_search(&owner).is_ok() { Self::MARK } else { self.reference }
+    }
+
     /// The device's stencil state as the D3D path's pipeline takes it
     /// (`gfx::translate::depth_stencil_state`): off without a stencil
     /// aspect in `depth`.
@@ -136,6 +163,7 @@ impl PassStencil {
                 write_mask: u32::from(s.write_mask),
             },
             reference: u32::from(s.reference),
+            marked: Vec::new(),
         }
     }
 }
@@ -620,7 +648,15 @@ impl GpuWorld {
     /// slots' instance counts.
     pub fn prepare(&mut self, queue: &wgpu::Queue, camera: &RenderCamera, depth: DepthRule) -> CullStats {
         let view_proj = camera.view_projection();
-        let stats = cull(&self.world, &Frustum::from_view_projection(&view_proj), &mut self.slots);
+        // The material programs clip as the D3D path does: cull by the
+        // sides and the eye only (`Frustum::sides`). Stage 1 draws with
+        // the render camera's own range.
+        let frustum = if self.programs.is_some() {
+            Frustum::sides(&view_proj)
+        } else {
+            Frustum::from_view_projection(&view_proj)
+        };
+        let stats = cull(&self.world, &frustum, &mut self.slots);
         let u = FrameUniform {
             view_proj,
             depth: [depth.full_scale, 1.0 / camera.far, f32::from(u8::from(depth.floor)), 0.0],
@@ -696,23 +732,25 @@ impl GpuWorld {
                 if own != Some(true) {
                     pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
                     pass.set_vertex_buffer(0, self.program_vertices.slice(..));
-                    if has_stencil {
-                        pass.set_stencil_reference(self.stencil.reference);
-                    }
                 }
                 own = Some(true);
                 // A batch's draws sort by owner: its clusters first, then
                 // each placement's parts together. The clusters draw with
                 // the world program; a placement's with the rigid one, its
                 // rows at its slot's offset, as the structure draw uploads
-                // them before each of its draws (`0x0004d830`).
+                // them before each of its draws (`0x0004d830`). A section
+                // the game draws in stencil mode 2 is a run of its own, with
+                // that reference.
                 let first = b.first_draw as usize;
                 let draws = &self.world.draws[first..first + b.draw_count as usize];
                 let mut k = 0;
                 while k < draws.len() {
                     let owner = draws[k].owner;
+                    let reference = self.stencil.reference_of(owner);
                     let same = |d: &WorldDraw| match owner {
-                        Owner::Cluster(_) => matches!(d.owner, Owner::Cluster(_)),
+                        Owner::Cluster(_) => {
+                            matches!(d.owner, Owner::Cluster(_)) && self.stencil.reference_of(d.owner) == reference
+                        }
                         Owner::Instance(_) => d.owner == owner,
                     };
                     let end = k + draws[k..].iter().take_while(|d| same(d)).count();
@@ -734,6 +772,9 @@ impl GpuWorld {
                         }
                     }
                     pass.set_bind_group(1, textures, &[]);
+                    if has_stencil {
+                        pass.set_stencil_reference(reference);
+                    }
                     pass.multi_draw_indexed_indirect(&self.indirect, (first + k) as u64 * SLOT_SIZE, (end - k) as u32);
                     k = end;
                 }
@@ -780,6 +821,7 @@ mod tests {
             pass: StencilOp::Replace,
         };
         let s = PassStencil::from_device(&mode1, wgpu::TextureFormat::Depth24PlusStencil8);
+        assert!(s.marked.is_empty());
         assert_eq!(s.state.front.compare, wgpu::CompareFunction::Always);
         assert_eq!(s.state.front.pass_op, wgpu::StencilOperation::Replace);
         assert_eq!(s.state.back, s.state.front);
@@ -794,6 +836,19 @@ mod tests {
         assert_eq!(PassStencil::from_device(&mode1, wgpu::TextureFormat::Depth32Float), PassStencil::default());
         let off = StencilState { enable: false, ..mode1 };
         assert_eq!(PassStencil::from_device(&off, wgpu::TextureFormat::Depth24PlusStencil8), PassStencil::default());
+        // Mode 1 is what a switching item leaves; anything else is not.
+        assert!(PassStencil::is_structure_mode(&mode1));
+        assert!(!PassStencil::is_structure_mode(&off));
+        assert!(!PassStencil::is_structure_mode(&StencilState { reference: 0xff, ..mode1 }));
+        assert!(!PassStencil::is_structure_mode(&StencilState { write_mask: 0x0f, ..mode1 }));
+        assert!(!PassStencil::is_structure_mode(&StencilState { depth_fail: StencilOp::Replace, ..mode1 }));
+        // A marked section draws with mode 2's reference, the rest with
+        // the device's.
+        use crate::world::Owner;
+        let s = PassStencil { marked: vec![Owner::Cluster(3), Owner::Instance(1)], ..s };
+        assert_eq!(s.reference_of(Owner::Cluster(3)), 0xff);
+        assert_eq!(s.reference_of(Owner::Instance(1)), 0xff);
+        assert_eq!(s.reference_of(Owner::Cluster(1)), 0);
     }
 
     fn level(w: u32, h: u32) -> (u32, u32, Vec<u8>) {
