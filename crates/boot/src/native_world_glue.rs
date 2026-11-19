@@ -101,7 +101,11 @@ pub struct Ready {
 }
 
 /// The current (map, BSP) and its world.
-pub(crate) type State = Arc<Mutex<(Option<(String, u32)>, Load)>>;
+/// The current (map, BSP address, BSP index) and its world. The index
+/// matters: a level's BSPs load at one address (03a's intro cinematic and
+/// its first play space share `0x800e6010`), so the address alone loaded
+/// the play space's world for the cinematic's BSP.
+pub(crate) type State = Arc<Mutex<(Option<(String, u32, u16)>, Load)>>;
 
 pub(crate) enum Load {
     Idle,
@@ -122,7 +126,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if name.is_empty() || bsp == 0 {
             return None;
         }
-        let key = (name, bsp);
+        let index = active_bsp_index(mem)?;
+        let key = (name, bsp, index);
         let ready = 'ready: {
             {
                 let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -145,7 +150,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     .name("native-world load".into())
                     .spawn(move || {
                         let t0 = std::time::Instant::now();
-                        let out = load_ready(&key.0, key.1, palettes);
+                        let out = load_ready(&key.0, key.1, key.2, palettes);
                         let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
                         if st.0.as_ref() != Some(&key) {
                             return;
@@ -162,8 +167,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                                     cpu.as_ref().map_or((0, 0), |c| (c.world.draws.len(), c.world.batches.len()))
                                 };
                                 eprintln!(
-                                    "native-world: {} BSP at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
+                                    "native-world: {} BSP {} at {:#010x}: {} draws in {} batches, {} parts native, in {:.1} s",
                                     key.0,
+                                    key.2,
                                     key.1,
                                     draws,
                                     batches,
@@ -173,7 +179,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                                 Load::Ready(Arc::new(r))
                             }
                             Err(e) => {
-                                eprintln!("native-world: {} BSP at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.1);
+                                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.0, key.2, key.1);
                                 Load::Failed
                             }
                         };
@@ -364,8 +370,14 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
-        if diag.trace && !std::mem::replace(&mut self.traced, true) {
-            trace(&self.camera, self.view.as_ref(), self.clip, &t, culled);
+        if diag.trace
+            && !std::mem::replace(&mut self.traced, true)
+            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled)
+            && let Some(at) = diag.probe
+        {
+            let [_, _, width, height] = t.viewport;
+            let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
+            eprintln!("native-world probe at {at:?}: {} parts: {hits:?}", hits.len());
         }
         let (state, marked) = &self.stencil;
         let mut stencil = PassStencil::from_device(state, t.depth_format);
@@ -402,6 +414,10 @@ impl d3d::ExternalPass for WorldPass {
 struct Diagnostics {
     trace: bool,
     no_cull: bool,
+    /// `H2_NATIVE_WORLD_PROBE=x,y` (guest pixels, with the trace on): the
+    /// parts whose triangles cover that pixel, on each traced pass
+    /// ([`probe`]).
+    probe: Option<(f32, f32)>,
 }
 
 impl Diagnostics {
@@ -412,6 +428,7 @@ impl Diagnostics {
             let d = Diagnostics {
                 trace: on("H2_NATIVE_WORLD_TRACE"),
                 no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
+                probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
             };
             if d.trace || d.no_cull {
                 eprintln!("native-world: diagnostics {d:?}");
@@ -438,10 +455,10 @@ fn trace(
     clip: Option<d3d::DepthClip>,
     t: &d3d::ExternalTarget<'_>,
     culled: native_render::cull::CullStats,
-) {
+) -> bool {
     let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n >= TRACE_FIRST && n % TRACE_EVERY != 0 {
-        return;
+        return false;
     }
     let vp = camera.view_projection();
     let constants = view.map(|c| [c[0], c[1], c[2], c[3]]);
@@ -462,6 +479,88 @@ fn trace(
         culled.visible,
         culled.total,
     );
+    true
+}
+
+/// `"x,y"` as a probe pixel.
+fn parse_probe(v: &str) -> Option<(f32, f32)> {
+    let (x, y) = v.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+/// One part under a probed pixel ([`probe`]).
+#[derive(Clone, Debug, PartialEq)]
+struct ProbeHit {
+    owner: Owner,
+    part: u8,
+    material: u16,
+    /// The view depth (clip `w`) of the nearest covering triangle there.
+    depth: f32,
+    /// Pixels from the pixel to that triangle's nearest edge: under about
+    /// one, the pixel is on an edge (a rasterization tie can differ).
+    edge: f32,
+}
+
+/// The world's parts whose triangles cover pixel `at` (pixel centres at
+/// `+0.5`, y down, in a `size` viewport) through `view_proj` (the render
+/// camera's, the CPU cull's: within a pixel of the programs'), nearest
+/// first: which part a differing pixel belongs to (a cluster or a
+/// placement), how deep, and whether it lies on an edge. A triangle with a
+/// vertex behind the eye is skipped (S: not clipped here).
+fn probe(world: &World, view_proj: &native_render::camera::Mat4, size: (f32, f32), at: (f32, f32)) -> Vec<ProbeHit> {
+    let screen = |p: [f32; 3]| {
+        let c = native_render::camera::transform(view_proj, [p[0], p[1], p[2], 1.0]);
+        (c[3] > 0.0).then(|| ((c[0] / c[3] + 1.0) * 0.5 * size.0, (1.0 - c[1] / c[3]) * 0.5 * size.1, c[3]))
+    };
+    let (px, py) = (at.0 + 0.5, at.1 + 0.5);
+    let mut hits: Vec<ProbeHit> = Vec::new();
+    for d in &world.draws {
+        let mut best: Option<(f32, f32)> = None;
+        let range = d.first_index as usize..(d.first_index + d.index_count) as usize;
+        for tri in world.indices[range].chunks_exact(3) {
+            let v: Option<Vec<(f32, f32, f32)>> = tri.iter().map(|&i| screen(world.vertices[i as usize].position)).collect();
+            let Some(v) = v else { continue };
+            let Some((depth, edge)) = covers(&v, (px, py)) else { continue };
+            if best.is_none_or(|(b, _)| depth < b) {
+                best = Some((depth, edge));
+            }
+        }
+        if let Some((depth, edge)) = best {
+            hits.push(ProbeHit { owner: d.owner, part: d.part, material: d.material, depth, edge });
+        }
+    }
+    hits.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+    hits.truncate(8);
+    hits
+}
+
+/// Whether screen triangle `v` (x, y, view depth) covers `p`, within one
+/// pixel outside its edges: the view depth there (interpolated
+/// perspective-correctly) and the signed distance in pixels to its
+/// nearest edge (negative outside).
+fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
+    let [a, b, c] = [v[0], v[1], v[2]];
+    let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    if area.abs() < 1e-6 {
+        return None;
+    }
+    let sign = area.signum();
+    let edge = |s: (f32, f32, f32), e: (f32, f32, f32)| {
+        let len = ((e.0 - s.0).powi(2) + (e.1 - s.1).powi(2)).sqrt();
+        sign * ((e.0 - s.0) * (p.1 - s.1) - (e.1 - s.1) * (p.0 - s.0)) / len
+    };
+    let (ea, eb, ec) = (edge(b, c), edge(c, a), edge(a, b));
+    let nearest = ea.min(eb).min(ec);
+    if nearest < -1.0 {
+        return None;
+    }
+    // Barycentrics (screen space), then perspective-correct depth.
+    let wa = sign * ((b.0 - p.0) * (c.1 - p.1) - (b.1 - p.1) * (c.0 - p.0)) / area.abs();
+    let wb = sign * ((c.0 - p.0) * (a.1 - p.1) - (c.1 - p.1) * (a.0 - p.0)) / area.abs();
+    let wc = 1.0 - wa - wb;
+    let inv = wa / a.2 + wb / b.2 + wc / c.2;
+    (inv > 0.0).then(|| (1.0 / inv, nearest))
 }
 
 static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -551,7 +650,26 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 }
 
 /// Loads the world of map `name`'s BSP whose tag data sits at `bsp`.
-fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, load::Error> {
+/// The active structure BSP's index in the scenario's BSP block: the
+/// game globals' (`engine::points::GAME_GLOBALS`) `i16` at `+2`, as
+/// `0x0011c1b0` and `0x00137d40` index the block with it
+/// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
+/// or unread.
+fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
+    let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
+}
+
+/// Which of the scenario's BSPs (`addresses`: each one's load address, in
+/// block order) is the active one: the game's index, when that BSP loads
+/// at the active BSP's address. Not the first BSP at that address: a
+/// level's BSPs share it.
+fn active_scenario_bsp(addresses: &[Option<u32>], index: u16, bsp: u32) -> Option<usize> {
+    let i = usize::from(index);
+    (addresses.get(i).copied().flatten() == Some(bsp)).then_some(i)
+}
+
+fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Result<Ready, load::Error> {
     let file = locate(name).ok_or("the map's file is not found")?;
     let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
     let mut files = assets::ResourceFiles::new();
@@ -566,10 +684,11 @@ fn load_ready(name: &str, bsp: u32, palettes: StagePalettes) -> Result<Ready, lo
         }
     }
     let bsps = load::scenario_bsps(&mut map)?;
-    let index = bsps
+    let addresses: Vec<Option<u32>> = bsps
         .iter()
-        .position(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).is_some_and(|l| l.address == bsp))
-        .ok_or("no scenario BSP at the active BSP's address")?;
+        .map(|(id, _)| map.tag(*id).ok().and_then(|t| t.location).map(|l| l.address))
+        .collect();
+    let index = active_scenario_bsp(&addresses, active, bsp).ok_or("the active BSP index is not a scenario BSP at the active BSP's address")?;
     let mut raw = Raw(files);
     let LoadedWorld {
         world,
@@ -1253,6 +1372,55 @@ mod tests {
         assert_eq!(parts, want);
         let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
         assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);
+    }
+
+    /// 03a's intro cinematic: the level's BSPs load at one address, and the
+    /// game's index says which is active. The first BSP at the address is
+    /// not it (the address alone gave the play space's world, whose parts
+    /// matched some of the cinematic BSP's items by cluster, part and
+    /// shader: those items were skipped and nothing drew them).
+    #[test]
+    fn the_active_bsp_is_the_game_s_index_not_the_first_at_its_address() {
+        let at = 0x800e_6010;
+        let addresses = [Some(at), Some(at), Some(0x8010_0000), None];
+        assert_eq!(active_scenario_bsp(&addresses, 1, at), Some(1));
+        assert_eq!(active_scenario_bsp(&addresses, 0, at), Some(0));
+        assert_eq!(active_scenario_bsp(&addresses, 2, at), None, "loads elsewhere");
+        assert_eq!(active_scenario_bsp(&addresses, 3, at), None, "no location");
+        assert_eq!(active_scenario_bsp(&addresses, 4, at), None, "past the block");
+    }
+
+    #[test]
+    fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
+        assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
+        assert_eq!(parse_probe("520"), None);
+        assert_eq!(parse_probe("x,1"), None);
+        // A screen triangle (0,0) (10,0) (0,10), view depths 2, 4, 4; both
+        // windings.
+        let t = [(0.0, 0.0, 2.0), (10.0, 0.0, 4.0), (0.0, 10.0, 4.0)];
+        let (depth, edge) = covers(&t, (2.0, 2.0)).unwrap();
+        assert!((edge - 2.0).abs() < 1e-4, "2 px from the x and y edges: {edge}");
+        // Screen barycentrics (0.6, 0.2, 0.2): 1 / (0.6/2 + 0.2/4 + 0.2/4).
+        assert!((depth - 2.5).abs() < 1e-4, "{depth}");
+        let r = [t[0], t[2], t[1]];
+        assert_eq!(covers(&r, (2.0, 2.0)).map(|(d, e)| ((d * 1e3).round(), (e * 1e3).round())), Some((2500.0, 2000.0)));
+        let (_, edge) = covers(&t, (5.0, 5.0)).unwrap();
+        assert!(edge.abs() < 1e-4, "on the hypotenuse");
+        assert!(covers(&t, (-0.5, 3.0)).unwrap().1 < 0.0, "half a pixel outside: kept, negative");
+        assert_eq!(covers(&t, (-2.0, 3.0)), None, "past a pixel outside");
+        assert_eq!(covers(&[(0.0, 0.0, 1.0), (1.0, 1.0, 1.0), (2.0, 2.0, 1.0)], (1.0, 1.0)), None, "degenerate");
+    }
+
+    #[test]
+    fn the_active_bsp_index_reads_the_game_globals() {
+        let mut m = engine::memory::FlatMemory::new(0x0040_0000, 0x0021_0000);
+        assert_eq!(active_bsp_index(&m), None, "no globals yet");
+        let globals = 0x0050_0000;
+        m.set_u32(engine::points::GAME_GLOBALS.base, globals).unwrap();
+        m.set_u32(globals, 0x0001_0000).unwrap();
+        assert_eq!(active_bsp_index(&m), Some(1));
+        m.set_u32(globals, 0xffff_0000).unwrap();
+        assert_eq!(active_bsp_index(&m), None, "-1: none active");
     }
 
     #[test]
