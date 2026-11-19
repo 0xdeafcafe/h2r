@@ -266,3 +266,38 @@ fn a_start_press_asks_the_game_its_state_then_runs_the_frame() {
          the party (session +0x72d8 is not +0x50); port 1 0x10 offline, port 2 0x10 offline"
     );
 }
+
+#[test]
+fn a_on_the_start_game_row_from_a_controller_with_a_profile_is_a_start_press() {
+    // The run 20261119-005001: the drive's A on Start Game reached the
+    // list's row handler, never the screen's input handler.
+    const ITEM: u32 = 0x0072_0000;
+    const ROW: u32 = 0x0072_0100;
+    let mut g = FakeGuest::new();
+    g.map(SLOTS, 4 * SLOT_STRIDE).put_u32(slot(0), SLOT_PROFILE);
+    g.put_u32(ITEM, EVENT)
+        .put_u32(EVENT + EVENT_KIND, EVENT_BUTTON_PRESS)
+        .put_u32(EVENT + EVENT_CONTROLLER, 0)
+        .put_u32(EVENT + EVENT_BUTTON, BUTTON_A)
+        .put_u16(ROW, ROW_START_GAME);
+    assert_eq!(start_row_press(&g, ITEM, ROW).unwrap(), Some(0));
+    g.put_u16(ROW, 1);
+    assert_eq!(
+        start_row_press(&g, ITEM, ROW).unwrap(),
+        None,
+        "the other row"
+    );
+    g.put_u16(ROW, ROW_START_GAME)
+        .put_u32(EVENT + EVENT_CONTROLLER, 2);
+    assert_eq!(
+        start_row_press(&g, ITEM, ROW).unwrap(),
+        None,
+        "no profile on port 2"
+    );
+    g.put_u32(EVENT + EVENT_CONTROLLER, 7);
+    assert_eq!(
+        start_row_press(&g, ITEM, ROW).unwrap(),
+        None,
+        "no such port"
+    );
+}

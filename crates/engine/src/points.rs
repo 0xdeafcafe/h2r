@@ -509,6 +509,14 @@ points! { ALL;
     /// a controller with a profile reaches Start Game (`0x250c30`,
     /// `0x25106c`); from one without, the profile chooser (`0x250cc3`).
     PREGAME_LOBBY_INPUT @ 0x0025_0b1e: [fn(screen: ecx, event: stack 0) -> al ret 4]; "docs/game/bots.md";
+    /// The pregame lobby's list item handler (ECX the screen, `ret 8`),
+    /// set for its rows at `0x24fb40`: stack 0 a record whose `+0` is the
+    /// input event (`+4` the controller), stack 1 the row (a word: 0 Start
+    /// Game, which asks the start state at `0x251051` and starts the
+    /// countdown on 9). The list takes A before the screen does, so A on
+    /// Start Game never reaches `PREGAME_LOBBY_INPUT` (the run
+    /// 20261119-005001 started its game with no `bots: start state` line).
+    LOBBY_ROW_PRESS @ 0x0025_0fb3: [fn(screen: ecx, item: stack 0, row: stack 1) -> al ret 8]; "docs/game/bots.md";
     /// The per-tick player update (from `game_tick`, `0x13801f`): every
     /// player; a first spawn pending (flags byte `+2` bit 3) goes to
     /// `PLAYER_SPAWN`; the co-op respawn (`0x14cdd0`) runs inside it.

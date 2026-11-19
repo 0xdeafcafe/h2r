@@ -32,10 +32,18 @@ pub mod at {
     pub const CHANNEL_SIZE: u32 = 0x14;
     pub const STATE: u32 = 0x741c;
     pub const CHANGES: u32 = 0x7618;
-    /// Peer indices the removal (`0x5fe20`) moves down.
-    pub const LOCAL_PEER: u32 = 0x40;
+    /// The host's peer index. A joining client sets it to 0 and its own
+    /// peer to 1 (`0x61050`: the host's address is peer 0, its own
+    /// peer 1); becoming the host (state 5, `0x61390` at `0x6141a`) sets
+    /// it to [`LOCAL_PEER`]. The removal (`0x5fe20`) moves it down.
+    pub const HOST_PEER: u32 = 0x40;
+    /// The party leader's peer index (the lobby's leader check `0x592f0`
+    /// compares it with [`LOCAL_PEER`]).
     pub const PEER_50: u32 = 0x50;
-    pub const HOST_PEER: u32 = 0x72d8;
+    /// This console's own peer index (skipped for views).
+    pub const LOCAL_PEER: u32 = 0x72d8;
+    /// The protocol `0x6ec80` reads: 0 local, 1 synchronous, 2 distributed.
+    pub const PROTOCOL: u32 = 0x4dac;
 
     /// In a peer.
     pub const PEER_MAC: u32 = 0xa;
@@ -128,9 +136,14 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
         ));
     }
     if mode != Some(MODE_DIST_SERVER) {
+        // 0x6ec80 made it 4 + (local peer == host peer): say both.
         return Err(NotNow::NotHost(format!(
-            "the simulation is not the distributed server (mode {}, the server's is {MODE_DIST_SERVER})",
-            shown(mode)
+            "the simulation is not the distributed server (mode {}, the server's is {MODE_DIST_SERVER}; \
+             session host peer {}, this console's peer {}, peer count {})",
+            shown(mode),
+            shown_index(read(s + HOST_PEER)),
+            shown_index(read(s + LOCAL_PEER)),
+            shown(read(s + PEER_COUNT)),
         )));
     }
     let state = read(s + STATE);
@@ -148,6 +161,183 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
         )));
     }
     Ok(s)
+}
+
+/// A peer index as the log shows it: -1 for none.
+fn shown_index(v: Option<u32>) -> String {
+    v.map_or_else(|| "?".to_owned(), |v| (v as i32).to_string())
+}
+
+/// The session states in which this console is the session's host
+/// (`0x58d20`; state 5 is entered by `0x61390`, which makes the local
+/// peer the host).
+pub const HOST_STATES: std::ops::RangeInclusive<u32> = 5..=8;
+/// The distributed protocol (`+0x4dac`), every shipped multiplayer engine's.
+pub const PROTOCOL_DISTRIBUTED: u32 = 2;
+
+/// What the session game start (`0x6ec80`) reads to choose the simulation
+/// mode, as the bots' hook before it reads them: the mode is 1 for
+/// protocol 0, `2 + is_host` for 1 and `4 + is_host` for 2, with `is_host`
+/// the local peer (`+0x72d8`) equal to the host peer (`+0x40`,
+/// `0x6ee60..0x6ee71`, `0x6eeba..0x6eecd`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartFacts {
+    pub state: u32,
+    pub protocol: u32,
+    pub peers: u32,
+    pub host: u32,
+    pub local: u32,
+    /// Peers other than this console's that are not phantoms (their
+    /// machine id is not ours, [`crate::phantom::handle_of`]).
+    pub consoles: u32,
+}
+
+impl StartFacts {
+    pub fn read(m: &dyn GuestMemory, s: u32) -> R<StartFacts> {
+        let peers = m.u32(s + PEER_COUNT)?;
+        let local = m.u32(s + LOCAL_PEER)?;
+        let mut consoles = 0;
+        for p in 0..peers.min(MAX) {
+            if p != local && crate::phantom::handle_of(mac_at(m, peer(s, p) + PEER_MAC)?).is_none()
+            {
+                consoles += 1;
+            }
+        }
+        Ok(StartFacts {
+            state: m.u32(s + STATE)?,
+            protocol: m.u32(s + PROTOCOL)?,
+            peers,
+            host: m.u32(s + HOST_PEER)?,
+            local,
+            consoles,
+        })
+    }
+
+    /// The mode `0x6ec80` will choose from these, when it starts the game.
+    pub fn mode(&self) -> Option<u32> {
+        let host = u32::from(self.host == self.local);
+        match self.protocol {
+            0 => Some(MODE_LOCAL),
+            1 => Some(2 + host),
+            2 => Some(4 + host),
+            _ => None,
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "session state {}, protocol {}, peer count {} ({} other consoles), host peer {}, this console's peer {}",
+            self.state,
+            self.protocol as i32,
+            self.peers,
+            self.consoles,
+            self.host as i32,
+            self.local as i32,
+        )
+    }
+}
+
+/// What the bots' hook does before a game starts from the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostFix {
+    /// Leave the session as it is, and why.
+    Keep(String),
+    /// Phantoms are planned and the session is this console's alone, but
+    /// its host peer is not its own: make it so (`+0x40` = `local`), as
+    /// becoming the host does (`0x61390`), so the game starts as the
+    /// distributed server (mode 5) and phantoms can join.
+    Host { host: u32, local: u32 },
+}
+
+/// Decides [`HostFix`] for a game start from `f` with phantoms `planned`.
+/// Only a distributed session in a host state (5 to 8) with no other
+/// console in it is changed: there the host can only be this console, so
+/// a host peer that is not its own is wrong, and the game would start as
+/// a distributed client of nobody (mode 4). The user's run 20261119-005001:
+/// a Live custom game, one console, `mode 4`.
+pub fn host_fix(f: &StartFacts, planned: bool) -> HostFix {
+    if !planned {
+        return HostFix::Keep("no phantoms planned".into());
+    }
+    if f.protocol != PROTOCOL_DISTRIBUTED {
+        return HostFix::Keep(format!(
+            "protocol {}, not distributed: phantoms join System Link and Xbox Live games only",
+            f.protocol as i32
+        ));
+    }
+    if f.host == f.local {
+        return HostFix::Keep(
+            "this console is the session's host: the game starts as the distributed server".into(),
+        );
+    }
+    if !HOST_STATES.contains(&f.state) {
+        return HostFix::Keep(format!(
+            "session state {} is not a host's (5 to 8): this console joined someone's game",
+            f.state
+        ));
+    }
+    if f.local >= f.peers.min(MAX) {
+        return HostFix::Keep(format!(
+            "this console's peer {} is not one of the {} peers",
+            f.local as i32, f.peers
+        ));
+    }
+    if f.consoles > 0 {
+        return HostFix::Keep(format!(
+            "{} other console{} in the session: its host stays",
+            f.consoles,
+            if f.consoles == 1 { "" } else { "s" }
+        ));
+    }
+    HostFix::Host {
+        host: f.host,
+        local: f.local,
+    }
+}
+
+/// Makes this console the session's host (`+0x40` = `local`), as
+/// [`HostFix::Host`] says.
+pub fn make_host(m: &mut dyn GuestMemory, s: u32, local: u32) -> R<()> {
+    m.set_u32(s + HOST_PEER, local)
+}
+
+/// The bots' hook before the session game start (`SESSION_GAME_START`,
+/// `0x6ec80`, EDX the session `s`), with phantoms `planned`: says what the
+/// start will read and, when [`host_fix`] says so, makes this console the
+/// session's host first. Lines for the log.
+pub fn game_start(m: &mut dyn GuestMemory, s: u32, planned: bool) -> Vec<String> {
+    let f = match StartFacts::read(&*m, s) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![format!(
+                "bots: game start: the session at {s:#x} faulted at {:#x}",
+                e.addr
+            )];
+        }
+    };
+    let mode = f
+        .mode()
+        .map_or_else(|| "none".to_owned(), |m| m.to_string());
+    let mut log = vec![format!(
+        "bots: game start: {}: simulation mode {mode}",
+        f.describe()
+    )];
+    match host_fix(&f, planned) {
+        HostFix::Keep(why) => log.push(format!("bots: game start: session as it is ({why})")),
+        HostFix::Host { host, local } => match make_host(m, s, local) {
+            Ok(()) => log.push(format!(
+                "bots: game start: phantoms planned and no other console in the session: \
+                 this console hosts it (host peer {} -> {local}), so the game starts as the \
+                 distributed server (mode {MODE_DIST_SERVER})",
+                host as i32
+            )),
+            Err(e) => log.push(format!(
+                "bots: game start: could not make this console the host (fault at {:#x})",
+                e.addr
+            )),
+        },
+    }
+    log
 }
 
 /// The live network session, game or lobby: the session whose peers a

@@ -21,9 +21,14 @@
 //!   ([`to_switch_account`]). When no human is on Live any more, a bot on
 //!   Live as its account leaves Live ([`to_leave_live`],
 //!   [`bots::guest::leave_live`]). Offline and in System Link, nothing.
-//! - A Start press in the pregame lobby (`PREGAME_LOBBY_INPUT`) while bots
-//!   are in logs the game's start state and what holds it back
+//! - A Start press in the pregame lobby (`PREGAME_LOBBY_INPUT`, or A on
+//!   the list's Start Game row, `LOBBY_ROW_PRESS`) while bots are in logs
+//!   the game's start state and what holds it back
 //!   ([`bots::lobby::start_state_then`]), before the next `SOUND_UPDATE`.
+//! - A game start from the session (`SESSION_GAME_START`) with phantoms
+//!   planned makes this console the session's host when no other console
+//!   is in it ([`bots::phantom::session::game_start`]), so the game starts
+//!   as the distributed server and the phantoms can join.
 //! - Before each `RENDER_FRAME` (the game thread) each bot's source gives
 //!   its pad for the frame ([`bots::local::Local::frame`]).
 //! - Around `RENDER_FRAME` and `SOUND_UPDATE`, the bots' local users are
@@ -517,6 +522,50 @@ impl feature::Feature for Bots {
                 if let Ok(Some(_)) = bots::lobby::start_press(&*o.guest(), event) {
                     pressed.store(true, Ordering::Relaxed);
                 }
+            },
+        );
+
+        // A on the lobby list's Start Game row: the list takes it before
+        // the screen's handler, so it is noted here too.
+        let (local, pressed) = (self.local.clone(), Arc::clone(&self.pressed));
+        b.raw().observe_before(
+            &points::LOBBY_ROW_PRESS,
+            "bots: note a Start Game press",
+            move |o| {
+                if local.port_mask() == 0 {
+                    return;
+                }
+                let (Some(item), Some(row)) = (o.arg_u32("item"), o.arg_u32("row")) else {
+                    return;
+                };
+                if let Ok(Some(_)) = bots::lobby::start_row_press(&*o.guest(), item, row) {
+                    pressed.store(true, Ordering::Relaxed);
+                }
+            },
+        );
+
+        // A game starting from the session with phantoms planned: this
+        // console must start it as the distributed server, or phantoms
+        // never join (docs/game/bots.md §5.1, "Hosting the game").
+        let phantoms = self.phantoms.clone();
+        b.raw().before(
+            &points::SESSION_GAME_START,
+            "phantoms: this console hosts the game",
+            move |c| {
+                let planned = phantoms
+                    .list()
+                    .iter()
+                    .any(|p| !matches!(p.state, bots::phantom::State::Failed(_)));
+                if !planned {
+                    return Ok(Flow::Continue);
+                }
+                let session = c.cpu.edx;
+                let rt = Arc::clone(c.ctx.runtime());
+                let mut mem = rt.memory();
+                for line in bots::phantom::session::game_start(&mut *mem, session, planned) {
+                    eprintln!("{line}");
+                }
+                Ok(Flow::Continue)
             },
         );
 

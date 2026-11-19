@@ -131,6 +131,17 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "PREGAME_LOBBY_INPUT",
         "a lobby input event on the game thread; notes a Start press for the start-state log",
     ),
+    (
+        "bots",
+        "LOBBY_ROW_PRESS",
+        "a lobby list event on the game thread; notes a Start Game press for the start-state log",
+    ),
+    (
+        "bots",
+        "SESSION_GAME_START",
+        "the session's game start on the game thread; makes this console the host when phantoms \
+         are planned",
+    ),
 ];
 
 #[cfg(test)]

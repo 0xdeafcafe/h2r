@@ -378,6 +378,235 @@ fn the_action_goes_in_the_slot_stamped_with_the_tick() {
     );
 }
 
+/// The run 20261119-005001's game start, as the bots' hook reads it: a
+/// Live custom game with this console alone in the session, distributed,
+/// in a host state, whose host peer is not this console's own.
+fn one_console_start(host: u32) -> FakeGuest {
+    let mut g = hosted();
+    g.put_u32(S + PROTOCOL, PROTOCOL_DISTRIBUTED)
+        .put_u32(S + LOCAL_PEER, 0)
+        .put_u32(S + HOST_PEER, host);
+    g
+}
+
+#[test]
+fn the_start_facts_give_the_mode_the_session_start_chooses() {
+    let g = one_console_start(1);
+    let f = StartFacts::read(&g, S).unwrap();
+    assert_eq!(
+        f,
+        StartFacts {
+            state: STATE_LIVE,
+            protocol: 2,
+            peers: 1,
+            host: 1,
+            local: 0,
+            consoles: 0,
+        }
+    );
+    assert_eq!(f.mode(), Some(4), "a distributed client: the run's mode 4");
+    assert_eq!(
+        f.describe(),
+        "session state 5, protocol 2, peer count 1 (0 other consoles), host peer 1, this console's peer 0"
+    );
+    let host = StartFacts {
+        host: 0,
+        ..f.clone()
+    };
+    assert_eq!(host.mode(), Some(MODE_DIST_SERVER));
+    assert_eq!(
+        StartFacts {
+            protocol: 0,
+            ..f.clone()
+        }
+        .mode(),
+        Some(MODE_LOCAL)
+    );
+    assert_eq!(
+        StartFacts {
+            protocol: 1,
+            ..host
+        }
+        .mode(),
+        Some(3)
+    );
+    assert_eq!(StartFacts { protocol: 7, ..f }.mode(), None);
+}
+
+#[test]
+fn a_phantom_peer_is_not_another_console() {
+    let mut g = one_console_start(1);
+    add_peer(&mut g, S, MAC_A, "A").unwrap().unwrap();
+    let f = StartFacts::read(&g, S).unwrap();
+    assert_eq!((f.peers, f.consoles), (2, 0));
+    // A real console's peer counts.
+    add_peer(&mut g, S, [0x00, 0x50, 0xf2, 9, 9, 9], "Guest")
+        .unwrap()
+        .unwrap();
+    assert_eq!(StartFacts::read(&g, S).unwrap().consoles, 1);
+}
+
+#[test]
+fn a_lone_hosts_session_is_made_its_own_host_when_phantoms_are_planned() {
+    let mut g = one_console_start(1);
+    let f = StartFacts::read(&g, S).unwrap();
+    assert_eq!(host_fix(&f, true), HostFix::Host { host: 1, local: 0 });
+    make_host(&mut g, S, 0).unwrap();
+    let after = StartFacts::read(&g, S).unwrap();
+    assert_eq!(after.mode(), Some(MODE_DIST_SERVER));
+    assert!(
+        matches!(host_fix(&after, true), HostFix::Keep(w) if w.contains("is the session's host"))
+    );
+    // A host peer of none (-1) is fixed the same way.
+    let g = one_console_start(u32::MAX);
+    let f = StartFacts::read(&g, S).unwrap();
+    assert_eq!(
+        host_fix(&f, true),
+        HostFix::Host {
+            host: u32::MAX,
+            local: 0
+        }
+    );
+}
+
+#[test]
+fn the_session_is_left_alone_unless_it_can_only_be_this_consoles() {
+    let base = StartFacts {
+        state: STATE_LIVE,
+        protocol: 2,
+        peers: 1,
+        host: 1,
+        local: 0,
+        consoles: 0,
+    };
+    let keep = |f: StartFacts, planned: bool, why: &str| match host_fix(&f, planned) {
+        HostFix::Keep(w) => assert!(w.contains(why), "{w:?} lacks {why:?}"),
+        other => panic!("{other:?} for {f:?}"),
+    };
+    keep(base.clone(), false, "no phantoms planned");
+    keep(
+        StartFacts {
+            protocol: 0,
+            ..base.clone()
+        },
+        true,
+        "not distributed",
+    );
+    keep(
+        StartFacts {
+            protocol: 1,
+            ..base.clone()
+        },
+        true,
+        "not distributed",
+    );
+    keep(
+        StartFacts {
+            host: 0,
+            ..base.clone()
+        },
+        true,
+        "is the session's host",
+    );
+    // A client's states: this console joined another's game.
+    keep(
+        StartFacts {
+            state: 3,
+            ..base.clone()
+        },
+        true,
+        "not a host's",
+    );
+    keep(
+        StartFacts {
+            state: 4,
+            ..base.clone()
+        },
+        true,
+        "not a host's",
+    );
+    keep(
+        StartFacts {
+            local: 1,
+            ..base.clone()
+        },
+        true,
+        "not one of the 1 peers",
+    );
+    keep(
+        StartFacts {
+            local: u32::MAX,
+            ..base.clone()
+        },
+        true,
+        "not one of",
+    );
+    keep(
+        StartFacts {
+            peers: 2,
+            consoles: 1,
+            ..base.clone()
+        },
+        true,
+        "1 other console in the session",
+    );
+    // Phantom peers are no other console: still fixed.
+    assert_eq!(
+        host_fix(
+            &StartFacts {
+                peers: 3,
+                ..base.clone()
+            },
+            true
+        ),
+        HostFix::Host { host: 1, local: 0 }
+    );
+    for state in HOST_STATES {
+        assert!(matches!(
+            host_fix(
+                &StartFacts {
+                    state,
+                    ..base.clone()
+                },
+                true
+            ),
+            HostFix::Host { .. }
+        ));
+    }
+}
+
+#[test]
+fn the_game_start_hook_says_what_it_read_and_makes_the_host() {
+    let mut g = one_console_start(1);
+    let log = game_start(&mut g, S, true);
+    assert_eq!(
+        log,
+        vec![
+            "bots: game start: session state 5, protocol 2, peer count 1 (0 other consoles), \
+             host peer 1, this console's peer 0: simulation mode 4"
+                .to_owned(),
+            "bots: game start: phantoms planned and no other console in the session: this \
+             console hosts it (host peer 1 -> 0), so the game starts as the distributed server \
+             (mode 5)"
+                .to_owned(),
+        ]
+    );
+    assert_eq!(g.u32(S + HOST_PEER).unwrap(), 0);
+    // Again: nothing more to do.
+    let log = game_start(&mut g, S, true);
+    assert!(log[0].ends_with("simulation mode 5"), "{log:?}");
+    assert!(
+        log[1].contains("session as it is (this console is the session's host"),
+        "{log:?}"
+    );
+
+    // Without phantoms nothing is written.
+    let mut g = one_console_start(1);
+    let log = game_start(&mut g, S, false);
+    assert!(log[1].contains("no phantoms planned"), "{log:?}");
+    assert_eq!(g.u32(S + HOST_PEER).unwrap(), 1);
+}
+
 mod books {
     use super::*;
     use crate::phantom::{Identity, Phantoms, State, machine_id};
@@ -482,7 +711,8 @@ mod books {
             log,
             vec![
                 "bots: phantom Clanker 4 waits: this console is not the game's host yet \
-                 (the simulation is not the distributed server (mode 4, the server's is 5))"
+                 (the simulation is not the distributed server (mode 4, the server's is 5; \
+                 session host peer 0, this console's peer 0, peer count 1))"
                     .to_owned()
             ]
         );

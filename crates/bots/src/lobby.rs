@@ -278,6 +278,27 @@ pub fn start_press(m: &dyn GuestMemory, event: u32) -> R<Option<u32>> {
     Ok(Some(port))
 }
 
+/// The lobby list's Start Game row (`LOBBY_ROW_PRESS`'s row 0).
+pub const ROW_START_GAME: u16 = 0;
+
+/// Whether the lobby list's item press (`LOBBY_ROW_PRESS`: `item` the
+/// record whose `+0` is the input event, `row` the row word's address) is
+/// Start Game pressed from a controller with a profile, the handler's own
+/// tests (`0x250fd5`, `0x25100e`), so the start state is asked for
+/// (`0x251051`). The list takes A before the screen's handler, so this is
+/// how A on Start Game is seen.
+pub fn start_row_press(m: &dyn GuestMemory, item: u32, row: u32) -> R<Option<u32>> {
+    if m.u16(row)? != ROW_START_GAME {
+        return Ok(None);
+    }
+    let event = m.u32(item)?;
+    let port = m.u32(event + crate::guest::EVENT_CONTROLLER)?;
+    if port >= 4 || !crate::guest::signed_in(m, port)? {
+        return Ok(None);
+    }
+    Ok(Some(port))
+}
+
 /// For a Start press in the lobby: asks the game for its start state
 /// (`LOBBY_START_STATE`, no progress out; it only reads), reads what its
 /// checks read ([`facts`]) and the slots on `ports`
