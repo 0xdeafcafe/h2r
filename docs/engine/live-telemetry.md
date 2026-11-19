@@ -130,6 +130,29 @@ original objects and signed index rows before publishing the final pointer.
 The migration receipt reports compressed payload and immutable index-node
 bytes separately. Both count toward the archive's storage cost.
 
+The ten-minute multiplayer archive spans 20 independent segments. The
+first contains 450 frames in 15,556 bytes. The browser can play it before
+the event log or any other segment arrives. The table counts immutable
+index nodes serialized with source log position 64. A different number of
+decimal digits in that position changes each node’s length by the same
+number of bytes. Backup copies, HTTP headers and signed event-log storage
+are outside these totals.
+
+| Multiplayer, 16 players for 10 minutes | Stored bytes | Bytes/player-minute |
+|---|---:|---:|
+| Original deflated v7 chunks | 1,322,664 | 8,266.65 |
+| H2AR Brotli segments | 317,041 | 1,981.51 |
+| Immutable archive index nodes | 5,775 | 36.09 |
+| Archive payload plus index | **322,816** | **2,017.60** |
+
+The archive and its index together occupy **24.41%** of the deflated v7
+chunks. Encoding and verification run after the match. In the quality-10
+multiplayer run, native segment encoding alone took 124–223 ms per segment.
+These CPU costs are separate from the live sender measurements above.
+Run `bun bench/archive-transfer.ts <H2_ARCHIVE_DUMP>` from `web/` for
+the byte counts, first-segment and whole-replay decode timings, and an
+exact comparison of every decoded field against the Rust export.
+
 The following compressor comparison used identical inflated H2AR bodies from
 revision `65b71186`. Each segment was independently compressed. These are
 payload bytes, measured before the production source-byte partition was
