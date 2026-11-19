@@ -39,8 +39,10 @@
 //!
 //! **The fill.** While this console hosts a clanker hopper's lobby, the
 //! Clankers driver (`crate::clankers`) asks Live for the playlist's roster
-//! and seats its bots as phantoms one at a time ([`schedule`]), on teams
-//! [`balance`] picks.
+//! and seats its bots one at a time ([`schedule`]): local bots on the free
+//! controller ports first (`crate::clankers::max_local`), which sign in to
+//! the lobby so it reaches the playlist's fewest players and starts, then
+//! phantoms, which join once the game runs, on teams [`balance`] picks.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
