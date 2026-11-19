@@ -82,12 +82,19 @@ pub struct PlatoonRule {
     pub can_arm: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CombatTimer {
+    pub flags: u32,
+    pub seconds: f32,
+}
+
 #[derive(Default)]
 pub struct Control {
     pub actions: BTreeMap<Request, Vec<Action>>,
     pub switches: BTreeSet<Platoon>,
     pub maneuver_requests: BTreeMap<Request, Vec<Platoon>>,
     pub platoon_rules: Vec<PlatoonRule>,
+    pub combat_timers: BTreeMap<u16, CombatTimer>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
 }
@@ -323,9 +330,16 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
     prepare_platoon_rules(source, plan, opts, &indices, &mut orders, &mut control);
     for (ei, (encounter, ids)) in source.encounters.iter().zip(&indices).enumerate() {
         for (squad, &index) in encounter.squads.iter().zip(ids) {
-            if let Some(index) = index
-                && squad.flags & 0x20 != 0
-            {
+            let Some(index) = index else {
+                continue;
+            };
+            if squad.flags & 0x18 != 0 || squad.delay.is_finite() && squad.delay > 0.0 {
+                control.combat_timers.insert(index, CombatTimer {
+                    flags: squad.flags,
+                    seconds: squad.delay,
+                });
+            }
+            if squad.flags & 0x20 != 0 {
                 control.automatic_migration.insert(index);
                 if plan.ai.squads[usize::from(index)].initial_order < 0
                     && let Some(order) =

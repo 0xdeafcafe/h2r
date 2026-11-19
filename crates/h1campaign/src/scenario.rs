@@ -1115,6 +1115,16 @@ pub fn write(
     let ai_options = h1ai::convert::Options::default();
     let mut plan = h1map::phase::time("ai", || h1ai::convert::convert(&retained, &ai_options));
     let ai_control = h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests);
+    if opts.scripts.is_some_and(|scripts| {
+        scripts.target.builtins.get("ai_magically_see_players")
+            .is_some_and(|builtin| builtin.index == hs::h1_ai_slots::CONTROL)
+    }) {
+        for &squad in ai_control.combat_timers.keys() {
+            // Halo 1's delay gates an existing actor's initial movement.
+            // It should not delay native Halo 2 squad placement.
+            plan.ai.squads[usize::from(squad)].delay = 0.0;
+        }
+    }
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
             "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",

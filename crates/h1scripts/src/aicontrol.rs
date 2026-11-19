@@ -175,6 +175,7 @@ pub(crate) fn runtime_operation(name: &str) -> Option<hs::h1_ai_slots::Operation
         "ai_try_to_fight_nothing" => Some(RuntimeOperation::ClearPreference),
         "ai_playfight" => Some(RuntimeOperation::Playfight),
         "ai_link_activation" => Some(RuntimeOperation::LinkActivation),
+        "ai_timer_expire" => Some(RuntimeOperation::ExpireSquadTimers),
         "ai_automatic_migration_target" => Some(RuntimeOperation::AutomaticMigrationTarget),
         "ai_follow_target_players" => Some(RuntimeOperation::FollowPlayers),
         "ai_follow_target_ai" => Some(RuntimeOperation::FollowAi),

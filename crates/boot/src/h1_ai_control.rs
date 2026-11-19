@@ -17,6 +17,7 @@ mod speech;
 #[path = "h1_ai_control/squads.rs"]
 mod squad_control;
 mod state;
+mod timers;
 mod vehicles;
 
 const NONE: u32 = u32::MAX;
@@ -105,6 +106,18 @@ impl feature::Feature for AiControl {
             },
         );
         playfight::register_firing_hooks(b);
+        b.raw().before(
+            &points::AI_SUBMIT_UNIT_CONTROL,
+            "hold actor movement during the Halo 1 combat timer",
+            |call| {
+                if is_converted_campaign(call) {
+                    let actor = call.cpu.eax;
+                    let mut guest = call.ctx.runtime().memory();
+                    let _ = timers::hold_movement(&mut *guest, actor);
+                }
+                Ok(Flow::Continue)
+            },
+        );
         b.raw().after(
             &points::AI_TARGET_SCORE,
             "score a Halo 1 actor's preferred target",
@@ -329,6 +342,16 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
                 squad_control::expire(&cx, args[0])?;
                 if args[1] as u8 != 0 {
                     awareness(&cx, args[0], None).await?;
+                }
+            }
+            Operation::TimerTick | Operation::ExpireSquadTimers => {
+                let revealed = if op == Operation::TimerTick {
+                    timers::tick(&cx, args[0])?
+                } else {
+                    timers::expire(&cx, args[0])?
+                };
+                for squad in revealed {
+                    awareness(&cx, squad, None).await?;
                 }
             }
             Operation::LinkActivation => squad_control::link(&cx, args[0], args[1], args[2])?,

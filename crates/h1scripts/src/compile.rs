@@ -360,6 +360,7 @@ pub fn compile_with_ai(
     }
     c.out.scripts.append(&mut c.ai_definitions);
     c.install_ai_ticks()?;
+    c.install_combat_timers()?;
     c.install_platoon_tick()?;
     c.out.references = t
         .references

@@ -43,20 +43,31 @@ pub(super) fn hook_base(
     let Some(shift) = kind.hook_shift() else {
         return Ok(None);
     };
-    let Some(index) = last_global_index(m, hs::h1_ai_slots::HOOK_STATE)? else {
+    let index = if timers_base(m)?.is_some() {
+        global_index_from_end(m, hs::h1_ai_slots::HOOK_STATE, 1)?
+    } else {
+        global_index_from_end(m, hs::h1_ai_slots::HOOK_STATE, 0)?
+    };
+    let Some(index) = index else {
         return Ok(None);
     };
     let base = (m.u32(addr(m, index)?)? >> shift) as u16;
     Ok((base != u16::MAX).then_some(u32::from(base)))
 }
 
-fn last_global_index(m: &dyn GuestMemory, name: &str) -> Result<Option<u32>, MemFault> {
+pub(super) fn timers_base(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
+    global_index_from_end(m, hs::h1_ai_slots::timers::GLOBAL, 0)?
+        .map(|index| m.u32(addr(m, index)?))
+        .transpose()
+}
+
+fn global_index_from_end(m: &dyn GuestMemory, name: &str, trailing: u32) -> Result<Option<u32>, MemFault> {
     let scenario = m.u32(super::points::SCENARIO.base)?;
     if scenario == 0 {
         return Ok(None);
     }
     let count = m.u32(scenario + 0x1c0)?;
-    let Some(index) = count.checked_sub(1) else {
+    let Some(index) = count.checked_sub(1 + trailing) else {
         return Ok(None);
     };
     let definitions = m.u32(scenario + 0x1c4)?;

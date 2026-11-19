@@ -439,12 +439,15 @@ fn automatic_platoon_rules_retain_routes_and_use_the_selected_platoons_health() 
     encounter.squads[0].platoon = 0;
     encounter.squads[0].groups[3] = 1 << 2;
     encounter.squads[0].maneuver_to = 2;
+    encounter.squads[0].flags = 0x18;
     encounter.squads[1].platoon = 1;
     assert!(maneuver_targets(&source, &[]).contains("first/empty"));
 
     let opts = Options::default();
     let mut plan = convert(&source, &opts);
     let control = prepare(&source, &mut plan, &opts, &[]);
+    assert_eq!(control.combat_timers[&0].flags, 0x18);
+    assert_eq!(control.combat_timers[&0].seconds, 2.0);
     let [rule] = control.platoon_rules.as_slice() else {
         panic!("one platoon has automatic rules");
     };

@@ -8,6 +8,7 @@
 
 mod platoons;
 pub use platoons::{PlatoonRule, PlatoonTrigger, decode_words, encode_words};
+pub mod timers;
 
 use crate::casts::types::{AI, BOOLEAN, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
 
@@ -157,6 +158,8 @@ pub enum Operation {
     AutomaticMigrationTarget = 31,
     PlatoonTick = 32,
     SetManeuver = 33,
+    TimerTick = 34,
+    ExpireSquadTimers = 35,
 }
 
 impl Operation {
@@ -201,6 +204,8 @@ impl Operation {
             31 => Self::AutomaticMigrationTarget,
             32 => Self::PlatoonTick,
             33 => Self::SetManeuver,
+            34 => Self::TimerTick,
+            35 => Self::ExpireSquadTimers,
             _ => return None,
         })
     }
@@ -238,7 +243,11 @@ impl Operation {
 
     pub const fn parameters(self) -> &'static [u16] {
         match self {
-            Self::SeePlayers | Self::Free | Self::Teleport | Self::TeleportUnsupported => &[AI],
+            Self::SeePlayers
+            | Self::Free
+            | Self::Teleport
+            | Self::TeleportUnsupported
+            | Self::ExpireSquadTimers => &[AI],
             Self::FreeUnits => &[OBJECT_LIST],
             Self::MigrateUnits => &[OBJECT_LIST, AI],
             Self::MigrateSpeak => &[AI, AI, STRING],
@@ -264,7 +273,7 @@ impl Operation {
             Self::FollowAi => &[AI, AI, LONG],
             Self::FollowUnit => &[AI, UNIT, LONG],
             Self::FollowDistance => &[AI, REAL, LONG],
-            Self::FollowTick => &[LONG],
+            Self::FollowTick | Self::TimerTick => &[LONG],
             Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }
     }

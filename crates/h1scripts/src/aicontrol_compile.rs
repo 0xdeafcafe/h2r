@@ -83,6 +83,14 @@ impl Compiler<'_> {
         if let Some(op) = aicontrol::runtime_operation(name)
             && aicontrol::runtime_target(self.h2, op).is_some()
         {
+            if op == RuntimeOperation::ExpireSquadTimers
+                && let Some(control) = self.ai_control
+                && let [reference] = args
+                && let Some(request) = aicontrol::request(name, self.t.node(*reference)?, self.t)
+                && let Some(actions) = control.actions.get(&request)
+            {
+                return self.emit_actions(control, actions, args, expected).map(Some);
+            }
             return self.runtime_control(op, args, expected).map(Some);
         }
         match name {
@@ -299,8 +307,12 @@ impl Compiler<'_> {
                     reveal_players,
                 } => {
                     let squad = self.ai_literal(squad)?;
-                    let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
-                    self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                    if self.has_runtime_control() {
+                        self.runtime_control_call(RuntimeOperation::ExpireSquadTimers, &[squad], ty)?
+                    } else {
+                        let reveal = self.number(h2t::BOOLEAN, i32::from(reveal_players));
+                        self.runtime_control_call(RuntimeOperation::TimerExpire, &[squad, reveal], ty)?
+                    }
                 }
                 Action::Spawn(squad) => {
                     let squad = self.ai_literal(squad)?;
@@ -476,6 +488,44 @@ impl Compiler<'_> {
                 .globals
                 .push(definition(name, h2t::LONG, 0, root, index)?);
         }
+        Ok(())
+    }
+
+    pub(super) fn install_combat_timers(&mut self) -> Result<()> {
+        use hs::h1_ai_slots::timers;
+
+        let Some(control) = self.ai_control else {
+            return Ok(());
+        };
+        if !self.has_runtime_control() || control.combat_timers.is_empty() {
+            return Ok(());
+        }
+        let rows = control.combat_timers.iter().map(|(&id, timer)| (id, timer.flags, timer.seconds));
+        let words = timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
+        let base = self.out.globals.len();
+        if hs::vm::EXTERNAL_GLOBALS + base + words.len() >= 0xc00 {
+            return Err(invalid("converted AI timers exceed the Halo 2 global pool"));
+        }
+        for (offset, value) in words.into_iter().enumerate() {
+            self.declare_timer_word(&format!("h1_ai_timer_{offset}"), value)?;
+        }
+        self.declare_timer_word(timers::GLOBAL, base as u32)?;
+        let name = "h1_ai_timer_tick";
+        if self.t.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
+            return Err(invalid(format!("script name collision: {name}")));
+        }
+        let base = self.number(h2t::LONG, base as i32);
+        let root = self.runtime_control_call(RuntimeOperation::TimerTick, &[base], h2t::VOID)?;
+        self.out.scripts.push(definition(name, 2, h2t::VOID, root, self.out.scripts.len())?);
+        Ok(())
+    }
+
+    fn declare_timer_word(&mut self, name: &str, value: u32) -> Result<()> {
+        if self.t.globals.iter().any(|g| g.name.eq_ignore_ascii_case(name)) {
+            return Err(invalid(format!("global name collision: {name}")));
+        }
+        let root = self.number(h2t::LONG, value as i32);
+        self.out.globals.push(definition(name, h2t::LONG, 0, root, self.out.globals.len())?);
         Ok(())
     }
 
