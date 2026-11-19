@@ -688,7 +688,7 @@ struct PoweredPoint {
 }
 
 /// The order to write a vehicle's friction points in: point `i` of the
-/// result rides the role's wheel sphere `i` ([`crate::rebuild::role_spheres`]).
+/// result corresponds to target position `i`.
 /// Each sphere in turn takes the nearest point not yet taken (object
 /// space); points past the last sphere follow in their own order. V: the
 /// engine reads friction point `i`'s suspension from the phantom's sphere
@@ -777,11 +777,8 @@ pub const FOOT_FIELD: &str = "unit.obje.foot_ref_54";
 /// How the [`Converter`] builds tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
-    /// Build bipeds from the `bipd` definition ([`crate::rebuild::biped`])
-    /// instead of on a template: Halo 1's model, collision size and
-    /// physics, the role's words, and the references of the Halo 2
-    /// counterpart ([`crate::rebuild::COUNTERPARTS`]). On by default; off
-    /// builds them on templates.
+    /// Build from the Halo 1 unit, collision and model. Turn off to compare
+    /// to the historical template path in the disc tests.
     pub rebuild_bipeds: bool,
     /// The most sample bytes the rebuilt bipeds' dialogue
     /// ([`Converter::dialogue`]) may add in sounds no other object
@@ -847,11 +844,6 @@ pub struct Converter<'a> {
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
     /// `schi`, permutation, loaded maximum).
     counter_shaders: HashMap<(u32, i16, i16), Option<TagId>>,
-    /// Biped role words, per role ([`Self::biped_role`]).
-    roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
-    /// Weapon, equipment, projectile and damage role words, per group
-    /// ([`crate::arsenal::role`]).
-    item_roles: HashMap<[u8; 4], crate::arsenal::Role>,
     /// Vehicle role words, per vehicle type and powered point count
     /// ([`Self::vehicle_role`]).
     vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
@@ -859,27 +851,19 @@ pub struct Converter<'a> {
     /// into [`Tree::sounds`] and [`Tree::loops`] (`None`: did not convert).
     sound_index: HashMap<u32, Option<usize>>,
     loop_index: HashMap<u32, Option<usize>>,
-    /// Light role words per kind ([`crate::rebuild::light_role`]).
-    light_roles: HashMap<u32, Option<crate::rebuild::LightRole>>,
-    /// The base's decal role ([`crate::rebuild::decal_role`]), once.
-    decal_role: Option<Option<crate::rebuild::DecalRole>>,
-    /// Decals being converted (a next-decal chain that loops ends there).
-    decals_open: Vec<u32>,
-    /// The base's particle role ([`crate::particles::particle_role`]), once.
-    particle_role: Option<Option<crate::particles::ParticleRole>>,
-    /// The base's emitter role ([`crate::particles::emitter_role`]), once.
-    emitter_role: Option<Option<crate::particles::EmitterRole>>,
+    /// Compiled shader bindings shared by particles on this base.
+    particle_shaders: Option<Vec<crate::particles::ParticleShader>>,
     /// Effects whose particles are being converted (a particle's own
     /// effects that lead back to one are left out).
     effects_open: Vec<u32>,
     /// Objects being converted ([`Self::object`]), so one whose effects
     /// lead back to it is refused instead of recursed into.
     objects_open: Vec<u32>,
+    /// Detect cycles in decal chains.
+    decals_open: Vec<u32>,
     /// Per Halo 1 `pctl`, its lasting particle states' `prt3`s with the
     /// state and its type's initial count ([`Self::effect_particle_systems`]).
     pctl_done: HashMap<u32, Vec<(TagId, crate::particles::H1ParticleState, u16)>>,
-    /// Scenery role words ([`Self::scenery_role`]), computed once.
-    scenery_role: Option<Option<crate::rebuild::SceneryRole>>,
     /// Per Halo 1 weapon label, the weapon class the map's graphs hold it
     /// under ([`Self::weapon_class`]), computed once.
     weapon_classes: Option<HashMap<String, String>>,
@@ -909,21 +893,15 @@ impl<'a> Converter<'a> {
             cutout_bumps: HashMap::new(),
             change_colour_bitmaps: HashMap::new(),
             counter_shaders: HashMap::new(),
-            roles: HashMap::new(),
-            item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
             sound_index: HashMap::new(),
             loop_index: HashMap::new(),
-            light_roles: HashMap::new(),
-            decal_role: None,
-            particle_role: None,
-            emitter_role: None,
+            particle_shaders: None,
             effects_open: Vec::new(),
             objects_open: Vec::new(),
             pctl_done: HashMap::new(),
             decals_open: Vec::new(),
             dialogue_bytes: 0,
-            scenery_role: None,
             weapon_classes: None,
         }
     }
@@ -1047,7 +1025,7 @@ impl<'a> Converter<'a> {
         let Some(t) = u
             .references
             .iter()
-            .find(|r| r.group == h1map::Group::new(b"foot"))
+            .find(|r| r.group == h1map::Group::new(b"foot") && (group != *b"bipd" || r.offset == 0x38c))
             .and_then(|r| r.tag)
         else {
             return Ok(root);
@@ -1116,13 +1094,7 @@ impl<'a> Converter<'a> {
         if x.bitmap.is_some() && bitmap.is_none() {
             rep.no_home.push("bitmap: did not convert".into());
         }
-        if self.decal_role.is_none() {
-            self.decal_role = Some(crate::rebuild::decal_role(self.base)?);
-        }
-        let (root, roles) = crate::provenance::capture(|| {
-            crate::rebuild::decal(&x, next, bitmap, self.decal_role.flatten().as_ref())
-        });
-        let root = root?;
+        let root = crate::rebuild::decal(&x, next, bitmap)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -1132,7 +1104,6 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
-        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1144,18 +1115,7 @@ impl<'a> Converter<'a> {
             return Ok(*id);
         }
         let l = h1::Light::read(self.h1, tag)?;
-        let kind = if l.is_cone() {
-            crate::rebuild::LIGHT_FRUSTUM
-        } else {
-            crate::rebuild::LIGHT_SPHERE
-        };
-        if !self.light_roles.contains_key(&kind) {
-            let role = crate::rebuild::light_role(self.base, kind)?;
-            self.light_roles.insert(kind, role);
-        }
-        let role = self.light_roles[&kind].as_ref();
-        let (root, roles) = crate::provenance::capture(|| crate::rebuild::light(&l, role));
-        let mut root = root?;
+        let mut root = crate::rebuild::light(&l)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         if let Some(lens) = self.flare_for_light(l.lens_flare, &mut rep) {
             root = flares_conv::light_with_flare(&root, lens)?;
@@ -1169,7 +1129,6 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
-        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -1388,10 +1347,6 @@ impl<'a> Converter<'a> {
     /// Converts any supported object tag (once; later calls return the
     /// same tag).
     pub fn object(&mut self, tag: &Tag) -> Result<TagId> {
-        self.object_with(tag, None)
-    }
-
-    fn object_with(&mut self, tag: &Tag, template: Option<TagId>) -> Result<TagId> {
         if let Some(id) = self.done.get(&tag.id.0) {
             return Ok(*id);
         }
@@ -1406,7 +1361,7 @@ impl<'a> Converter<'a> {
         self.objects_open.push(tag.id.0);
         let got = match &tag.group.0.to_be_bytes() {
             b"weap" => self.weapon(tag),
-            b"proj" => self.projectile(tag, template),
+            b"proj" => self.projectile(tag),
             b"eqip" => self.equipment(tag),
             b"bipd" | b"vehi" => self.unit(tag),
             b"scen" => self.scenery(tag),
@@ -1720,13 +1675,6 @@ impl<'a> Converter<'a> {
         name: &str,
     ) -> Result<Option<TagId>> {
         debug_assert!(!has_phmo, "the rebuilt path borrows no physics model");
-        // Scenery's unknown spans take the role's words; other groups'
-        // stay zero (their lanes own them).
-        let words = if h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"scen") {
-            self.scenery_role()?.map(|r| r.hlmt).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
         let (count, nodes) = h1models::mode::hlmt_nodes(h1_model);
         let render: Vec<(String, Vec<String>)> = h1_model
             .regions
@@ -1764,7 +1712,6 @@ impl<'a> Converter<'a> {
                 physics: None,
                 nodes: (count, nodes),
                 regions,
-                words,
                 materials: coll.map_or_else(Vec::new, |c| self.coll_materials[&c.1].clone()),
             })
         });
@@ -1788,15 +1735,15 @@ impl<'a> Converter<'a> {
     /// Scenery from the `scen` definition ([`crate::rebuild::scenery`]),
     /// no template: every scenery object (the template path was removed in
     /// converter version 50). Its `hlmt` and `mode` materials are written
-    /// from their definitions; its unknown spans take the base's scenery
-    /// role words ([`crate::rebuild::SceneryRole`]). Its `coll` has BSP
+    /// from their definitions; Halo 1 supplies the object header. Its `coll` has BSP
     /// physics slots, as retail static scenery with no `phmo`; neither
     /// makes scenery solid (the engine gives scenery no Havok body), so
     /// each placement's collision is merged into the level's
     /// (`h1convert::scenery_collision`; docs/halo1/objects.md, "Collision
     /// for Havok").
     fn scenery(&mut self, tag: &Tag) -> Result<TagId> {
-        let mut object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
+        let bytes = self.h1.tag_data(tag)?;
+        let mut object = h1::Object::read(self.h1, bytes)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
@@ -1807,17 +1754,8 @@ impl<'a> Converter<'a> {
             None => "none (no Halo 1 collision)".into(),
         });
         let predicted = self.predicted(hlmt);
-        let words = self.scenery_role()?.map(|r| r.scen).unwrap_or_default();
-        let (root, roles) = crate::provenance::capture(|| {
-            crate::rebuild::scenery(&object, hlmt, &predicted, &words)
-        });
-        let root = root?;
-        let attached = object.attachments.iter().flatten().count();
-        if attached > 0 {
-            rep.no_home.push(format!(
-                "obje attachments: {attached} Halo 1 attachments (lights, effects, sounds) not carried; the block is empty"
-            ));
-        }
+        let root = crate::rebuild::scenery(&object, hlmt, &predicted)?;
+        let root = self.halo1_attachments(*b"scen", "object", root, bytes, &object, &mut rep)?;
         let widgets = object.widgets.iter().flatten().count();
         if widgets > 0 {
             rep.no_home.push(format!(
@@ -1833,20 +1771,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
-        self.tree.note_roles(id, roles);
         Ok(id)
-    }
-
-    /// The base map's scenery role words ([`crate::rebuild::scenery_role`]),
-    /// computed once. `None` when the base holds no scenery: the unknown
-    /// spans then stay zero.
-    pub fn scenery_role(&mut self) -> Result<Option<crate::rebuild::SceneryRole>> {
-        if let Some(r) = &self.scenery_role {
-            return Ok(r.clone());
-        }
-        let r = crate::rebuild::scenery_role(self.base)?;
-        self.scenery_role = Some(r.clone());
-        Ok(r)
     }
 
     /// The weapon class a Halo 1 weapon `label` (its animation label,
@@ -2611,8 +2536,8 @@ impl<'a> Converter<'a> {
             tag,
             &match &role {
                 Some(r) => format!(
-                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, role over {} base vehicles)",
-                    r.words.members.len()
+                    "none: rebuilt from tags::defs (vehicle type {vehicle_type}, native controller {})",
+                    r.member
                 ),
                 None => format!(
                     "none: rebuilt from tags::defs (vehicle type {vehicle_type}; the base has none of the type: turret role)"
@@ -2673,10 +2598,9 @@ impl<'a> Converter<'a> {
             }
         }
         let points: Vec<crate::rebuild::Point> = {
-            // Friction points follow the role's phantom spheres; hover
-            // points (a role with no friction points) the member's hover
-            // markers, so each takes the words of the retail point nearest
-            // it (`VehicleRole::hover_each`).
+            // Keep wheels in H1 order for both friction points and spheres.
+            // Hover controls with a coefficient set per marker use the
+            // closest source point to each native marker.
             let spheres = match &role {
                 Some(r)
                     if r.friction.is_none()
@@ -2685,45 +2609,34 @@ impl<'a> Converter<'a> {
                 {
                     r.hover_at.clone()
                 }
-                Some(r) => crate::rebuild::role_spheres(r),
-                None => Vec::new(),
+                _ => Vec::new(),
             };
             let at: Vec<[f32; 3]> = powered.iter().map(|p| p.object).collect();
             let order = sphere_order(&at, &spheres);
             order.into_iter().map(|i| powered[i].point.clone()).collect()
         };
-        // The unit's weapons: Halo 1's, converted where they convert.
-        let mut weapons = Vec::new();
-        for r in &u.references {
-            let Some(id) = r.tag else { continue };
-            if r.group.0.to_be_bytes() != *b"weap" {
-                continue;
-            }
+        let weapons = self.unit_weapons(b, &mut rep)?;
+        let mut references = Vec::new();
+        for (path, at) in [("snd_ref_284", 0x3b0), ("ref_28c", 0x3c0),
+                           ("foot_ref_294", 0x3d0), ("ref_29c", 0x3e0),
+                           ("unit.effe_ref_c4", 0x188), ("unit.ref_164", 0x288)] {
+            let Some(id) = h1::reference(self.h1, b, at) else { continue };
             let t = self.h1_tag(id)?;
-            match self.object(t) {
-                Ok(w) if !weapons.contains(&w) => weapons.push(w),
-                Ok(_) => {}
-                Err(e) => rep
-                    .no_home
-                    .push(format!("unit weapon {}: not converted ({e})", t.name)),
-            }
+            let group = t.group.0.to_be_bytes();
+            let out = match &group {
+                b"snd!" => self.sound(t, &mut rep),
+                b"foot" => Some(self.foot(t, &mut rep)?),
+                b"effe" => Some(self.effect(t)?),
+                b"jpt!" => Some(self.damage(id)?),
+                _ => return Err(Error::Invalid(format!("{} at vehicle +{at:#x}", t.group))),
+            };
+            references.push(crate::arsenal::halo1_ref(path, &group, out));
         }
-        let (mut attachments, creation_effect) = self.object_effects(b, &u.object, &mut rep)?;
-        // Halo 1's functions, and the attachments' primary scales naming
-        // their outputs (`crate::functions`).
-        let mut notes = Vec::new();
-        let inputs = h1::FunctionInputs::read(b, u.object.object_type);
-        let converted = crate::functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
-        for a in &mut attachments {
-            a.primary_scale = crate::functions::primary_scale(a.h1_primary, &converted);
-            if a.h1_primary != 0 && a.primary_scale.is_empty() {
-                notes.push(format!("attachment at {:?}: output {} not converted, always on", a.marker, a.h1_primary));
-            }
-        }
-        let functions: Vec<_> = converted.into_iter().flatten().collect();
-        rep.no_home.extend(notes.into_iter().map(|n| format!("vehi {n}")));
+        let (attachments, functions, creation_effect) = self.object_outputs(b, &u.object, &mut rep)?;
         let (root, roles) = crate::provenance::capture(|| {
             crate::rebuild::vehicle(&crate::rebuild::VehicleSpec {
+                source: b,
+                references: &references,
                 attachments: &attachments,
                 functions: &functions,
                 creation_effect,
@@ -2740,7 +2653,7 @@ impl<'a> Converter<'a> {
                 points: &points,
             })
         });
-        let root = self.unit_foot(*b"vehi", root?, u, &mut rep)?;
+        let root = root?;
         rep.no_home.push(format!(
             "vehi: Halo 1's type, flags (low half), camera, {} seats (label as the rider's mode, markers), {} weapons and {} powered mass points as friction or hover points; the type's role words and gears; {} attachments (looping sounds and effects) and the creation effect from Halo 1; {} seat camera tracks Halo 1's; HUD and damage null; {} Halo 1 references",
             u.seats.len(),
@@ -2787,7 +2700,7 @@ impl<'a> Converter<'a> {
     /// whose friction and hover points are nearest `points`, Halo 1's
     /// powered mass points ([`crate::rebuild::vehicle_role`]), computed
     /// once per type and count. The turret type keeps the disc-wide
-    /// turret tables ([`crate::rebuild::TURRET_ROLE`]): `None`.
+    /// seat entry thresholds and an empty phantom: `None`.
     pub fn vehicle_role(
         &mut self,
         vehicle_type: u16,
@@ -2914,6 +2827,10 @@ impl<'a> Converter<'a> {
                 .map_or(-1, |i| i as i16);
             out.push(PoweredPoint {
                 point: crate::rebuild::Point {
+                    sphere: [m.position[0], m.position[1], m.position[2], m.radius],
+                    antigravity: phys.powered_flags.get(m.powered_mass_point as usize)
+                        .filter(|flags| *flags & (1 << 6) != 0)
+                        .and_then(|_| phys.antigravity.get(m.powered_mass_point as usize).copied()),
                     marker,
                     region,
                     region_index,
@@ -2935,20 +2852,6 @@ impl<'a> Converter<'a> {
         Ok(out)
     }
 
-    /// The role's words over the base's bipeds ([`crate::rebuild::biped_role`]),
-    /// computed once per role.
-    pub fn biped_role(
-        &mut self,
-        role: crate::rebuild::BipedRole,
-    ) -> Result<Option<crate::rebuild::RoleWords>> {
-        if let Some(w) = self.roles.get(&role) {
-            return Ok(w.clone());
-        }
-        let w = crate::rebuild::biped_role(self.base, role)?;
-        self.roles.insert(role, w.clone());
-        Ok(w)
-    }
-
     /// The Halo 2 biped a Halo 1 biped takes its references from: the
     /// first [`crate::rebuild::COUNTERPARTS`] row the base holds, else the
     /// template path's template. `None` when the base has neither.
@@ -2959,135 +2862,151 @@ impl<'a> Converter<'a> {
             .find_map(|n| Some((self.base.find(b"bipd", n)?, n)))
     }
 
-    /// The role a Halo 1 biped is rebuilt with: its own
-    /// ([`crate::rebuild::BipedRole::of_h1`]), else its counterpart's (the
-    /// flood, sentinels and the monitor take the template path's template,
-    /// the Chief, as that path does).
-    pub fn biped_rebuild_role(&self, path: &str) -> Option<crate::rebuild::BipedRole> {
-        crate::rebuild::BipedRole::of_h1(path).or_else(|| {
-            self.biped_counterpart(path)
-                .and_then(|(_, n)| crate::rebuild::BipedRole::of_h2(n))
-        })
+    fn unit_weapons(&mut self, bytes: &[u8], rep: &mut ObjectReport) -> Result<Vec<TagId>> {
+        let mut weapons = Vec::new();
+        for entry in h1::elements(self.h1, bytes, 0x2d8, 0x24)? {
+            if let Some(id) = h1::reference(self.h1, entry, 0) {
+                let t = self.h1_tag(id)?;
+                match self.object(t) {
+                    Ok(out) => weapons.push(out),
+                    Err(e) => rep.no_home.push(format!("unit weapon {}: {e}", t.name)),
+                }
+            }
+        }
+        Ok(weapons)
     }
 
-    /// A Halo 1 biped from the `bipd` definition ([`crate::rebuild::biped`]):
-    /// Halo 1's model chain with a physics model built from its collision
-    /// ([`PhysicsKind::Biped`]), the counterpart's references on the
-    /// `bipd` and the `hlmt` (damage, dialogue, camouflage), and for the
-    /// player the counterpart's HUD with the health meter.
-    fn biped_rebuilt(
-        &mut self,
-        tag: &Tag,
-        u: &Unit,
-        role: crate::rebuild::BipedRole,
-        words: &crate::rebuild::RoleWords,
-    ) -> Result<TagId> {
-        use crate::rebuild::{BIPED_OWN, BIPED_WITH_REFERENCES, BipedParts, MODEL_OWN};
-        let (cid, cname) = self
-            .biped_counterpart(&tag.name)
-            .ok_or_else(|| Error::NoTemplate(format!("bipd {}: no counterpart", tag.name)))?;
-        let mut rep = Self::report(
-            tag,
-            &format!(
-                "none: rebuilt from tags::defs ({role:?} role over {} base bipeds; references from {cname})",
-                words.members.len()
-            ),
-        );
-        let bipd_def = tags::defs::Defs::builtin()
-            .group(FourCC(*b"bipd"))
-            .ok_or_else(|| Error::Invalid("no bipd definition".into()))?;
-        let counterpart = self.base.record(bipd_def, cid)?;
+    fn object_outputs(&mut self, b: &[u8], object: &h1::Object, rep: &mut ObjectReport)
+        -> Result<(Vec<crate::rebuild::AttachmentSpec>, Vec<crate::functions::FunctionSpec>, Option<TagId>)> {
+        let (mut attachments, creation_effect) = self.object_effects(b, object, rep)?;
+        // Halo 1's functions, and the attachments' primary scales naming
+        // their outputs (`crate::functions`).
+        let mut notes = Vec::new();
+        let inputs = h1::FunctionInputs::read(b, object.object_type);
+        let converted = crate::functions::convert(&h1::functions(self.h1, b)?, &inputs, &mut notes);
+        for a in &mut attachments {
+            a.primary_scale = crate::functions::primary_scale(a.h1_primary, &converted);
+            if a.h1_primary != 0 && a.primary_scale.is_empty() {
+                notes.push(format!("attachment at {:?}: output {} not converted, always on", a.marker, a.h1_primary));
+            }
+        }
+        let functions: Vec<_> = converted.into_iter().flatten().collect();
+        rep.no_home.extend(notes);
+        Ok((attachments, functions, creation_effect))
+    }
+
+    /// Rebuild the biped. The matching H2 model supplies the native damage
+    /// section responses and camouflage shader, and the switchable H2 HUD.
+    fn biped_rebuilt(&mut self, tag: &Tag, u: &Unit) -> Result<TagId> {
+        use tags::defs::{self, Defs, Val};
+        let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
+        let b = self.h1.tag_data(tag)?;
+        let cid = self.biped_counterpart(&tag.name).map(|c| c.0);
+        let counterpart = cid.map(|id| self.base.root(id)).transpose()?;
+        let counterpart_hlmt = counterpart.as_deref().and_then(|r| self.base.reference(r, h2::MODEL));
         let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
-        let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
         // Halo 1's dialogue: the first `udlg` the unit names (its
         // dialogue variants block), in place of the counterpart's. V:
         // 125 of the 169 bipeds over the campaign and multiplayer maps
         // name one; 21 name more than one (variants Halo 2's single
         // model dialogue cannot hold; `every_dialogue_converts`).
-        let udlg = match u
-            .references
-            .iter()
-            .find(|r| r.group == h1map::Group::new(b"udlg"))
-            .and_then(|r| r.tag)
-        {
-            Some(t) => {
-                let t = self.h1_tag(t)?;
-                self.dialogue(t, &mut rep)?
-            }
+        let dialogue = h1::elements(self.h1, b, 0x2b4, 0x18)?
+            .into_iter().find_map(|v| h1::reference(self.h1, v, 8));
+        let udlg = match dialogue {
+            Some(id) => self.dialogue(self.h1_tag(id)?, &mut rep)?,
             None => None,
         };
-        if let (Some(h), Some(ch)) = (hlmt, counterpart_hlmt) {
-            let hd = tags::defs::Defs::builtin()
-                .group(FourCC(*b"hlmt"))
-                .ok_or_else(|| Error::Invalid("no hlmt definition".into()))?;
-            let c = self.base.record(hd, ch)?;
-            let fields = crate::rebuild::counterpart_fields(hd, &c, MODEL_OWN, &[]);
-            let k = h.0 as usize & 0xffff;
-            let root = &mut self.tree.tags[k].1.root;
-            let mut r = tags::defs::from_built(hd, root)
-                .map_err(|e| Error::Invalid(format!("hlmt: {e}")))?;
-            for (path, v) in &fields {
-                r.set(path, v.clone())
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-            }
-            if let Some(d) = udlg {
-                r.set(DIALOGUE_FIELD, tags::defs::Val::tag(FourCC(*b"udlg"), d))
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-                rep.no_home.push("hlmt: dialogue converted from Halo 1's".into());
-            }
-            *root = tags::defs::to_built(hd, &r, &mut |_| None)
+        let source_damage = u.object.collision.map(|id| -> Result<_> {
+            h1::tag_bytes(self.h1, self.h1_tag(id)?, b"coll", h1::COLL_SIZE)
+        }).transpose()?;
+        let mut blood = None;
+        if let Some(h) = hlmt {
+            let hd = Defs::builtin().group(FourCC(*b"hlmt")).expect("hlmt");
+            let native = counterpart_hlmt.map(|id| self.base.record(hd, id)).transpose()?;
+            let mut r = defs::from_built(hd, &self.tree.tags[h.0 as usize & 0xffff].1.root)
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let copied = fields
-                .iter()
-                .map(|(path, value)| crate::provenance::RoleField {
-                    path: path.clone(),
-                    value: value.clone(),
-                })
-                .collect();
+            let mut copied = Vec::new();
+            if let Some(v) = native.as_ref().and_then(|c| c.at("shad_ref_94")) {
+                r.set("shad_ref_94", v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            if let Some(src) = source_damage {
+                let mut damage = defs::default_record(hd.child("block_60").expect("model damage"));
+                // Native shield shaders and damage sections are coupled to the H2
+                // damage system (object_new indexes +0xbc). H1 has no overshield shader slot.
+                for path in ["tagref_7c", "tagref_84", "tagref_e8", "tagref_f0",
+                             "block_bc"] {
+                    let field = format!("block_60[0].{path}");
+                    if let Some(v) = native.as_ref().and_then(|c| c.at(&field)) {
+                        damage.set(path, v.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+                        copied.push(crate::provenance::RoleField { path: field, value: v.clone() });
+                    }
+                }
+                for (path, at) in [("unknown_28", 0x08), ("unknown_8c", 0xcc),
+                                   ("unknown_98", 0x10c), ("unknown_9c", 0x110)] {
+                    damage.set(path, Val::Bytes(src[at..at+4].to_vec()))
+                        .map_err(|e| Error::Invalid(e.to_string()))?;
+                }
+                let half = |at: usize| u16::from_le_bytes([src[at], src[at + 1]]);
+                let materials = h1::elements(self.h1, src, 0x234, 0x48)?;
+                let body_type = materials.get(usize::from(half(4)))
+                    .map(|m| u16::from_le_bytes([m[0x24], m[0x25]]));
+                let shield_type = (f32::from_le_bytes(src[0xcc..0xd0].try_into().unwrap()) > 0.0)
+                    .then(|| half(0xd2));
+                let mut material_indices = [u16::MAX; 2];
+                for (i, (path, kind)) in [("string_90", shield_type), ("string_4", body_type)].into_iter().enumerate() {
+                    if let Some((_, global)) = kind.and_then(|k| crate::arsenal::MATERIALS.get(usize::from(k))) {
+                        let m = crate::rebuild::model_material("", global, &self.base.materials)?;
+                        damage.set(path, Val::text(&m.global)).map_err(|e| Error::Invalid(e.to_string()))?;
+                        material_indices[i] = m.global_index as u16;
+                    }
+                }
+                let indices = material_indices.into_iter().flat_map(u16::to_le_bytes).collect();
+                damage.set("unknown_cc", Val::Bytes(indices)).map_err(|e| Error::Invalid(e.to_string()))?;
+                let time = f32::from_le_bytes(src[0x110..0x114].try_into().expect("recharge time"));
+                let rate = if time > 0.0 { time.recip() } else { 1000.0 };
+                damage.set("unknown_d0", Val::Bytes(rate.to_le_bytes().to_vec()))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+                for (path, at) in [("tagref_a4", 0x188), ("tagref_ac", 0x198), ("tagref_b4", 0x1a8)] {
+                    if let Some(id) = h1::reference(self.h1, src, at) {
+                        let out = self.effect(self.h1_tag(id)?)?;
+                        damage.set(path, Val::tag(FourCC(*b"effe"), out)).map_err(|e| Error::Invalid(e.to_string()))?;
+                    }
+                }
+                if let Some(id) = h1::reference(self.h1, src, 0x84) {
+                    blood = Some(self.effect(self.h1_tag(id)?)?);
+                }
+                r.set("block_60", Val::Block(vec![damage])).map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            if let Some(id) = udlg {
+                r.set(DIALOGUE_FIELD, Val::tag(FourCC(*b"udlg"), id))
+                    .map_err(|e| Error::Invalid(e.to_string()))?;
+            }
+            self.tree.tags[h.0 as usize & 0xffff].1.root =
+                defs::to_built(hd, &r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))?;
             self.tree.note_roles(h, copied);
-            rep.no_home.push(format!(
-                "hlmt: {} reference fields from {} (damage, dialogue, camouflage shaders)",
-                fields.len(),
-                self.base.name(ch).map_or("?", |n| n.1)
-            ));
         }
         self.object_physics(&mut rep, hlmt, &u.object, &tag.name, PhysicsKind::Biped)?;
         let predicted = self.predicted(hlmt);
         let mut swap = None;
-        let hud = if health_hud::is_player_biped(&tag.name) {
-            let tpl_root = self.base.root(cid)?;
-            match self.health_interfaces(&tpl_root) {
-                Ok(ids) => {
-                    rep.no_home.push(format!(
-                        "HUD: {cname}'s with Halo 1's health meter ({} interfaces; docs/halo1/health.md)",
-                        ids.len()
-                    ));
-                    match self.unit_hud(u) {
-                        Ok((h1, n)) => {
-                            match self.sensor_centre(u) {
-                                Ok(c) => self.tree.hud_sensor = Some(c),
-                                Err(e) => rep.no_home.push(format!("HUD: motion sensor centre: {e}")),
-                            }
-                            rep.no_home.push(format!(
-                                "HUD: Halo 1's ({n} widgets; docs/halo1/hud.md), Halo 2's at the switch"
-                            ));
-                            swap = Some((h1, ids[0]));
-                            Some(vec![h1; ids.len()])
-                        }
-                        Err(e) => {
-                            rep.no_home.push(format!("HUD: no Halo 1 HUD: {e}"));
-                            Some(ids)
-                        }
+        let mut hud = None;
+        if health_hud::is_player_biped(&tag.name) {
+            let native = counterpart.as_deref().and_then(|r| self.health_interfaces(r).ok());
+            match self.unit_hud(u) {
+                Ok((id, _)) => {
+                    if let Ok(centre) = self.sensor_centre(u) {
+                        self.tree.hud_sensor = Some(centre);
                     }
+                    if let Some(other) = native.as_ref().and_then(|ids| ids.first()) {
+                        swap = Some((id, *other));
+                    }
+                    hud = Some(vec![id; native.as_ref().map_or(1, |ids| ids.len().max(1))]);
                 }
                 Err(e) => {
-                    rep.no_home.push(format!("HUD: no health meter: {e}"));
-                    None
+                    rep.no_home.push(format!("HUD conversion: {e}"));
+                    hud = native;
                 }
             }
-        } else {
-            None
-        };
+        }
         let markers = match u.object.model {
             Some(m) => {
                 h1models::model_from_map(self.h1, self.h1_tag(m)?, &ModelOptions::default())?
@@ -3099,25 +3018,28 @@ impl<'a> Converter<'a> {
             }
             None => Vec::new(),
         };
-        let parts = BipedParts {
-            counterpart: Some(counterpart),
-            hud,
-            markers,
-        };
-        let (root, roles) = crate::provenance::capture(|| {
-            crate::rebuild::biped(u, hlmt, &predicted, words, &parts)
+        let mut tracks = Vec::new();
+        for id in &u.camera_tracks {
+            tracks.push(self.camera_track(self.h1_tag(*id)?)?);
+        }
+        let weapons = self.unit_weapons(b, &mut rep)?;
+        let integrated_light = h1::reference(self.h1, b, 0x188)
+            .map(|id| self.effect(self.h1_tag(id)?)).transpose()?;
+        let melee = h1::reference(self.h1, b, 0x288).map(|id| self.damage(id)).transpose()?;
+        let (attachments, functions, creation) = self.object_outputs(b, &u.object, &mut rep)?;
+        let mut physics = Vec::new();
+        if let Some(h) = hlmt {
+            self.locals_in(&self.tree.tags[h.0 as usize & 0xffff].1.root, FourCC(*b"phmo"), &mut physics);
+        }
+        let mass = physics.first().map(|p| {
+            let bytes = &self.tree.tags[p.0 as usize & 0xffff].1.root.bytes;
+            f32::from_le_bytes(bytes[4..8].try_into().expect("phmo mass"))
         });
-        let root = self.unit_foot(*b"bipd", root?, u, &mut rep)?;
-        let taken = crate::rebuild::reference_fields(bipd_def)
-            .into_iter()
-            .filter(|p| !BIPED_OWN.contains(&p.as_str()))
-            .count()
-            + BIPED_WITH_REFERENCES.len();
-        rep.no_home.push(format!(
-            "bipd: the role's words, Halo 1's camera field of view, {} matched words and collision size (character shapes sized to it); {taken} reference fields from {cname}; {} Halo 1 references not converted (their groups have no converter here)",
-            crate::rebuild::BIPED_WORDS.len(),
-            u.references.iter().filter(|r| r.tag.is_some()).count()
-        ));
+        let parts = crate::rebuild::BipedParts {
+            hud, markers, tracks, weapons, melee, integrated_light, blood, attachments, functions, creation, mass,
+        };
+        let root = crate::rebuild::biped(u, hlmt, &predicted, &parts)?;
+        let root = self.unit_foot(*b"bipd", root, u, &mut rep)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -3127,7 +3049,6 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         );
-        self.tree.note_roles(id, roles);
         if let Some((halo1, halo2)) = swap {
             self.tree.hud_swaps.push(HudSwap {
                 owner: id,
@@ -3463,12 +3384,8 @@ impl<'a> Converter<'a> {
         if &g == b"vehi" {
             return self.vehicle_rebuilt(tag, &u);
         }
-        if &g == b"bipd"
-            && self.options.rebuild_bipeds
-            && let Some(role) = self.biped_rebuild_role(&tag.name)
-            && let Some(words) = self.biped_role(role)?
-        {
-            return self.biped_rebuilt(tag, &u, role, &words);
+        if &g == b"bipd" && self.options.rebuild_bipeds {
+            return self.biped_rebuilt(tag, &u);
         }
         let (tpl, tpl_name) = self.template(&g, &tag.name, &g)?;
         let tpl_root = self.base.root(tpl)?;
@@ -3508,11 +3425,7 @@ impl Converter<'_> {
     /// Where the unit's Halo 1 HUD (`unhi`) centres the motion sensor
     /// ([`crate::h1hud::sensor_centre`]).
     pub fn sensor_centre(&self, u: &crate::h1::Unit) -> Result<[i16; 2]> {
-        let unhi = u
-            .references
-            .iter()
-            .filter(|r| r.group == h1map::Group::new(b"unhi"))
-            .find_map(|r| r.tag)
+        let unhi = u.hud_interfaces.first().copied()
             .ok_or_else(|| Error::Invalid("no unhi".into()))?;
         let tag = self.h1.tag(unhi)?;
         let b = crate::h1::tag_bytes(self.h1, tag, b"unhi", crate::h1hud::unhi::SIZE)?;
@@ -3520,11 +3433,7 @@ impl Converter<'_> {
     }
 
     pub fn unit_hud(&mut self, u: &crate::h1::Unit) -> Result<(TagId, usize)> {
-        let unhi = u
-            .references
-            .iter()
-            .filter(|r| r.group == h1map::Group::new(b"unhi"))
-            .find_map(|r| r.tag)
+        let unhi = u.hud_interfaces.first().copied()
             .ok_or_else(|| Error::Invalid("no unhi".into()))?;
         let tag = self.h1.tag(unhi)?.clone();
         if let Some(id) = self.done.get(&tag.id.0) {

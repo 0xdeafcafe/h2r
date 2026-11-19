@@ -42,12 +42,8 @@ impl Converter<'_> {
 }
 
 impl Converter<'_> {
-    /// A rebuilt object's root (`group`, its object struct at `path`) with
-    /// Halo 1's attachments in place of whatever it holds (a counterpart's):
-    /// those that convert here ([`Converter::object_effects`]: looping
-    /// sounds, effects, lights, contrails). Unchanged when none converts,
-    /// so a projectile whose Halo 1 attachments have no converter keeps its
-    /// counterpart's.
+    /// Resolve the source object's creation effect, functions and attachments
+    /// together so the attachment scales name the rebuilt function outputs.
     pub(super) fn halo1_attachments(
         &mut self,
         group: [u8; 4],
@@ -57,30 +53,15 @@ impl Converter<'_> {
         obj: &crate::h1::Object,
         rep: &mut super::ObjectReport,
     ) -> Result<map::build::Block> {
-        let (attachments, _) = self.object_effects(object_bytes, obj, rep)?;
-        if attachments.is_empty() {
+        let (attachments, functions, creation) = self.object_outputs(object_bytes, obj, rep)?;
+        if attachments.is_empty() && functions.is_empty() && creation.is_none() {
             return Ok(root);
         }
-        let d = tags::defs::Defs::builtin()
-            .group(FourCC(group))
-            .ok_or_else(|| crate::Error::Invalid("no definition".into()))?;
+        let d = tags::defs::Defs::builtin().group(FourCC(group))
+            .ok_or_else(|| crate::Error::Invalid("no object definition".into()))?;
         let mut r = tags::defs::from_built(d, &root).map_err(|e| crate::Error::Invalid(e.to_string()))?;
-        let e = d
-            .child(&format!("{path}.attachments"))
-            .ok_or_else(|| crate::Error::Invalid("no attachments".into()))?;
-        let list = attachments
-            .iter()
-            .map(|a| {
-                let mut x = tags::defs::default_record(e);
-                x.set("type", tags::defs::Val::tag(FourCC(a.group), a.tag))?;
-                x.set("marker", tags::defs::Val::text(&a.marker))?;
-                Ok(x)
-            })
-            .collect::<std::result::Result<Vec<_>, tags::defs::DefError>>()
-            .map_err(|e| crate::Error::Invalid(e.to_string()))?;
-        r.set(&format!("{path}.attachments"), tags::defs::Val::Block(list))
-            .map_err(|e| crate::Error::Invalid(e.to_string()))?;
-        rep.no_home.push(format!("attachments: Halo 1's ({} converted)", attachments.len()));
+        crate::rebuild::object_effects(&group, &mut r, path, &attachments, creation)?;
+        crate::rebuild::object_functions(&group, &mut r, path, &functions)?;
         tags::defs::to_built(d, &r, &mut |_| None).map_err(|e| crate::Error::Invalid(e.to_string()))
     }
 }
@@ -105,20 +86,17 @@ impl Converter<'_> {
     /// The `prt3` of particle `p` (from `tag`: a `part`, or a `pctl` whose
     /// particle state `p` stands for), pushed as `name`. Not cached.
     pub(super) fn particle_of(&mut self, tag: &Tag, name: &str, p: &H1Particle) -> Result<Option<TagId>> {
-        if self.particle_role.is_none() {
-            self.particle_role = Some(particles::particle_role(self.base)?);
+        if self.particle_shaders.is_none() {
+            self.particle_shaders = Some(particles::particle_shaders(self.base)?);
         }
-        let Some(role) = self.particle_role.clone().flatten() else {
-            return Ok(None);
-        };
+        let shaders = self.particle_shaders.as_ref().expect("initialised");
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.source = name.to_owned();
         let (want, proven) = particles::particle_stem(p.blend);
-        let shader = role
-            .shaders
+        let shader = shaders
             .iter()
             .find(|s| s.name == want)
-            .or_else(|| role.shaders.iter().find(|s| s.name == particles::particle_stem(0).0));
+            .or_else(|| shaders.iter().find(|s| s.name == particles::particle_stem(0).0));
         let Some(shader) = shader.cloned() else {
             return Ok(None);
         };
@@ -169,7 +147,7 @@ impl Converter<'_> {
             "emitter-side fields (lifespan, fade times, radius and frame animation, physics, contact deterioration, fade sizes, orientation, secondary map) not carried: Halo 2 holds them on the effect's emitter".into(),
         );
         let (root, roles) = crate::provenance::capture(|| {
-            particles::particle(p, &role, &shader, bitmap, collision, death)
+            particles::particle(p, &shader, bitmap, collision, death)
         });
         let root = root?;
         self.tree.reports.push(rep);
@@ -216,13 +194,6 @@ impl Converter<'_> {
         if total == 0 {
             return Ok(root);
         }
-        if self.emitter_role.is_none() {
-            self.emitter_role = Some(particles::emitter_role(self.base)?);
-        }
-        let Some(role) = self.emitter_role.clone().flatten() else {
-            rep.no_home.push(format!("{total} particles left out (the base has no emitter role)"));
-            return Ok(root);
-        };
         let d = tags::defs::Defs::builtin()
             .group(FourCC(*b"effe"))
             .ok_or_else(|| crate::Error::Invalid("no effe definition".into()))?;
@@ -250,7 +221,7 @@ impl Converter<'_> {
                     left += 1;
                     continue;
                 };
-                systems.push(particles::particle_system(p, &h, id, &role, d)?);
+                systems.push(particles::particle_system(p, &h, id, d)?);
             }
             for (id, location) in systems_of.get(k).into_iter().flatten() {
                 let Ok(t) = self.h1.tag(*id) else { continue };
@@ -263,7 +234,6 @@ impl Converter<'_> {
                         &state.as_effect_particle(count, *location),
                         &state.as_particle(),
                         prt3,
-                        &role,
                         d,
                     )?);
                 }

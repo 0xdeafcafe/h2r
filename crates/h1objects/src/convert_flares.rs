@@ -33,24 +33,17 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
     defs::to_built(d, r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 
-/// The `garb` root for a Halo 1 garbage object: the role's words (the
-/// base's garbage, majority per unknown word; none on most bases), the
-/// object header (type, bounds, model, predicted resources) and the
-/// attachments; everything else the definition's default. No retail
-/// template is read.
-pub fn garbage(
+/// Builds the item and object header from the source garbage tag.
+fn garbage(
     obj: &h1::Object,
+    source: &[u8],
     hlmt: Option<TagId>,
     predicted: &[crate::rebuild::Predicted],
-    role: &[(String, u32)],
-    attachments: &[crate::rebuild::AttachmentSpec],
-) -> Result<Block> {
+    refs: &[(String, FourCC, TagId)],
+) -> Result<Record> {
     let d = def(b"garb")?;
     let mut r = defs::default_record(d);
-    crate::provenance::note_words("", role);
-    for (p, w) in role {
-        set(&mut r, p, Val::Bytes(w.to_le_bytes().to_vec()))?;
-    }
+    crate::rebuild::object_tuning(&mut r, "item.obje", obj)?;
     set(&mut r, "item.obje.object_type", Val::Enum(GARBAGE_TYPE))?;
     set(
         &mut r,
@@ -68,8 +61,9 @@ pub fn garbage(
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     crate::rebuild::predicted_resources(b"garb", &mut r, "item.obje", predicted)?;
-    crate::rebuild::object_effects(b"garb", &mut r, "item.obje", attachments, None)?;
-    built(d, &r)
+    crate::arsenal::item_words(&mut r, source)?;
+    crate::arsenal::refs(&mut r, refs)?;
+    Ok(r)
 }
 
 /// `root` (a `group` built by [`crate::rebuild::device`]) with
@@ -153,19 +147,18 @@ impl Converter<'_> {
         if let Some(id) = self.done.get(&tag.id.0) {
             return Ok(*id);
         }
-        let b = h1::tag_bytes(self.h1, tag, b"garb", h1::OBJE_SIZE)?;
+        let b = h1::tag_bytes(self.h1, tag, b"garb", 0x308)?;
         let object = h1::Object::read(self.h1, b)?;
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
         rep.physics = Some("none (garbage has no physics model)".into());
         let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
         let predicted = self.predicted(hlmt);
-        let role = crate::arsenal::role(self.base, b"garb", &[])?
-            .map(|r| r.root)
-            .unwrap_or_default();
-        let (attachments, _) = self.object_effects(b, &object, &mut rep)?;
-        let (root, roles) =
-            crate::provenance::capture(|| garbage(&object, hlmt, &predicted, &role, &attachments));
-        let root = root?;
+        let refs = self.item_effect_refs(b, &mut rep)?;
+        let mut item = garbage(&object, b, hlmt, &predicted, &refs)?;
+        let (attachments, functions, creation) = self.object_outputs(b, &object, &mut rep)?;
+        crate::rebuild::object_effects(b"garb", &mut item, "item.obje", &attachments, creation)?;
+        crate::rebuild::object_functions(b"garb", &mut item, "item.obje", &functions)?;
+        let root = built(def(b"garb")?, &item)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(
             &tag.name,
@@ -175,7 +168,6 @@ impl Converter<'_> {
                 raw: Vec::new(),
             },
         );
-        self.tree.note_roles(id, roles);
         self.done.insert(tag.id.0, id);
         Ok(id)
     }
@@ -206,6 +198,7 @@ mod tests {
     fn object() -> h1::Object {
         h1::Object {
             object_type: 4,
+            acceleration_scale: 0.0,
             flags: 0,
             bounding_radius: 0.3,
             bounding_offset: [0.0, 0.0, 0.1],
@@ -233,7 +226,12 @@ mod tests {
             h1_primary: 0,
         }];
         let d = def(b"garb").unwrap();
-        let r = defs::from_built(d, &garbage(&object(), Some(hlmt), &[], &[], &a).unwrap()).unwrap();
+        let mut source = [0; 0x308];
+        source[0x2e0..0x2e4].copy_from_slice(&0.75f32.to_le_bytes());
+        let mut item = garbage(&object(), &source, Some(hlmt), &[], &[]).unwrap();
+        crate::rebuild::object_effects(b"garb", &mut item, "item.obje", &a, None).unwrap();
+        let r = defs::from_built(d, &built(d, &item).unwrap()).unwrap();
+        assert_eq!(r.at("item.unknown_114"), Some(&Val::Bytes(0.75f32.to_le_bytes().to_vec())));
         assert_eq!(r.at("item.obje.object_type"), Some(&Val::Enum(GARBAGE_TYPE)));
         assert_eq!(r.at("item.obje.bounding_radius"), Some(&Val::Float(0.3)));
         assert!(names(r.at("item.obje.model"), hlmt));
@@ -259,7 +257,7 @@ mod tests {
             lens_flare: None,
         };
         let lens = TagId(0xe100_0009);
-        let root = light_with_flare(&crate::rebuild::light(&l, None).unwrap(), lens).unwrap();
+        let root = light_with_flare(&crate::rebuild::light(&l).unwrap(), lens).unwrap();
         let r = defs::from_built(def(b"ligh").unwrap(), &root).unwrap();
         assert!(names(r.at("lens_flare"), lens));
         assert_eq!(r.at("radius"), Some(&Val::Float(2.0)));

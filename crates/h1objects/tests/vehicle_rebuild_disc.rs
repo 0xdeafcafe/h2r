@@ -404,14 +404,14 @@ fn every_vehicle_rebuilds_from_its_definition() {
                 // The type's role, where the base has the type.
                 let role = c.vehicle_role(h1_type, h1_powered(&h1, &u)).unwrap();
                 if let Some(role) = &role {
-                    for (p, w) in &role.words.root {
+                    for (p, w) in &role.controller {
                         assert_eq!(
                             r.at(p),
                             Some(&Val::Bytes(w.to_le_bytes().to_vec())),
                             "{name}: role {p}"
                         );
                     }
-                    assert_eq!(flags & 0xffff_0000, role.flags_high, "{name}");
+                    assert_eq!(flags & 0xffff_0000, 0, "{name}");
                     assert_eq!(
                         r.at(VEHI_CONTROL),
                         Some(&Val::Bytes(role.control.to_le_bytes().to_vec())),
@@ -456,7 +456,7 @@ fn every_vehicle_rebuilds_from_its_definition() {
                     role.as_ref()
                         .map_or("turret tables".to_owned(), |x| format!(
                             "over {:?}",
-                            x.words.members
+                            x.member
                         )),
                 ));
             }
@@ -575,10 +575,7 @@ fn powered_mass_points_become_friction_and_hover_points() {
             println!("{name}: {block}[{k}] marker {marker}, region {region}, {} instances", ms.len());
         }
         if *block == VEHI_FRICTION {
-            // Point k rides the phantom's sphere k (h1objects::convert::
-            // sphere_order): its Halo 1 position is nearer that sphere
-            // than any other. Halo 1 lists the warthog's back tires first;
-            // the spheres run front first.
+            // The phantom and friction markers use the same source order.
             let Some(Val::Block(ph)) = r.at(VEHI_PHYSICS) else { panic!() };
             let n = word(&ph[0], &format!("unknown_{PHANTOM_SPHERE_COUNT:x}")).min(PHANTOM_MAX_SPHERES) as usize;
             let spheres: Vec<[f32; 3]> = (0..n)
@@ -599,6 +596,7 @@ fn powered_mass_points_become_friction_and_hover_points() {
                     .position;
                 let d = |s: &[f32; 3]| (0..3).map(|a| (at[a] - s[a]).powi(2)).sum::<f32>();
                 let nearest = (0..n).min_by(|x, y| d(&spheres[*x]).total_cmp(&d(&spheres[*y]))).unwrap();
+                assert_eq!(at, spheres[k], "{name}: source mass point");
                 assert_eq!(nearest, k, "{name}: {marker} at {at:?} rides sphere {k} of {spheres:?}");
             }
         }
@@ -941,14 +939,11 @@ fn ghost_takes_the_retail_ghosts_role() {
     println!("coagulation's hover vehicles (hover points): {hovers:?}");
     assert!(hovers.len() > 1, "{hovers:?}");
 
-    let all = h1objects::rebuild::vehicle_role(&base, 4, None)
-        .unwrap()
-        .unwrap();
     let mut c = Converter::new(&h1, &base);
     let role = c.vehicle_role(4, 3).unwrap().unwrap();
     assert_eq!(
-        role.words.members,
-        vec!["objects\\vehicles\\ghost\\ghost".to_string()]
+        role.member,
+        "objects\\vehicles\\ghost\\ghost"
     );
     let ghost = base
         .root(
@@ -956,24 +951,16 @@ fn ghost_takes_the_retail_ghosts_role() {
                 .unwrap(),
         )
         .unwrap();
-    for (p, w) in &role.words.root {
+    for (p, w) in &role.controller {
         assert_eq!(u32_at(&ghost, offset(d, p, 0) as usize), *w, "role {p}");
     }
-    let lost: Vec<_> = role
-        .words
-        .root
-        .iter()
-        .filter(|(p, _)| !all.words.root.iter().any(|(q, _)| q == p))
-        .collect();
-    println!(
-        "{} ghost words a role over every hover vehicle leaves zero: {lost:x?}",
-        lost.len()
-    );
-    assert!(lost.iter().any(|(p, _)| p == "unknown_1f4"), "{lost:?}");
-
     let id = c.object(t).unwrap();
     let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
-    for (p, w) in &role.words.root {
+    let src = h1.tag_data(t).unwrap();
+    let speed = f32::from_le_bytes(src[0x2f8..0x2fc].try_into().unwrap()) * 30.0;
+    assert_eq!(r.at("unknown_1f4"), Some(&Val::Bytes(speed.to_le_bytes().to_vec())));
+
+    for (p, w) in &role.controller {
         assert_eq!(
             r.at(p),
             Some(&Val::Bytes(w.to_le_bytes().to_vec())),
@@ -984,82 +971,13 @@ fn ghost_takes_the_retail_ghosts_role() {
         panic!()
     };
     assert_eq!(points.len(), 3, "hover points");
-    // Each point takes one retail point's own words, paired by position:
-    // the three retail points' words each once, and the strongest (the
-    // retail back point's) on the Halo 1 point nearest its marker.
-    assert_eq!(role.hover_each.len(), 3, "the ghost's hover points");
-    assert_eq!(role.hover_at.len(), 3, "the ghost's hover markers");
-    let word = |x: &Record, k: &str| match x.get(k) {
-        Some(Val::Bytes(b)) => u32::from_le_bytes(b[..4].try_into().unwrap()),
-        v => panic!("{k}: {v:?}"),
-    };
-    let fields = [
-        "unknown_8",
-        "unknown_10",
-        "unknown_14",
-        "unknown_18",
-        "unknown_1c",
-        "unknown_20",
-    ];
-    let mut want: Vec<Vec<u32>> = role
-        .hover_each
-        .iter()
-        .map(|w| {
-            fields
-                .iter()
-                .map(|f| w.iter().find(|(p, _)| p == f).map_or(0, |(_, x)| *x))
-                .collect()
-        })
-        .collect();
-    let mut got: Vec<Vec<u32>> = points
-        .iter()
-        .map(|p| fields.iter().map(|f| word(p, f)).collect())
-        .collect();
-    want.sort();
-    got.sort();
-    assert_eq!(got, want, "the retail ghost's hover points, each once");
-    let strength = |w: &[(String, u32)]| {
-        f32::from_bits(
-            w.iter()
-                .find(|(p, _)| p == "unknown_8")
-                .map_or(0, |(_, x)| *x),
-        )
-    };
-    let back = (0..3)
-        .max_by(|a, b| strength(&role.hover_each[*a]).total_cmp(&strength(&role.hover_each[*b])))
-        .unwrap();
     let phys = h1::Physics::read(&h1, h1.tag(u.object.physics.unwrap()).unwrap()).unwrap();
-    let h1_points: Vec<(String, [f32; 3])> = phys
-        .mass_points
-        .iter()
-        .filter(|m| m.powered_mass_point >= 0)
-        .map(|m| (h1objects::coll::sid_name(&m.name), m.position))
-        .collect();
-    println!("retail hover markers {:?}, back {back}", role.hover_at);
-    println!("Halo 1 powered points {h1_points:?}");
-    let dist = |a: [f32; 3], b: [f32; 3]| (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>();
-    let nearest = h1_points
-        .iter()
-        .min_by(|a, b| dist(a.1, role.hover_at[back]).total_cmp(&dist(b.1, role.hover_at[back])))
-        .unwrap();
-    let strongest = points
-        .iter()
-        .max_by(|a, b| {
-            f32::from_bits(word(a, "unknown_8")).total_cmp(&f32::from_bits(word(b, "unknown_8")))
-        })
-        .unwrap();
-    assert_eq!(
-        strongest.get("string_0"),
-        Some(&Val::String(Str::Text(nearest.0.clone()))),
-        "the back point's words"
-    );
-    for (k, p) in points.iter().enumerate() {
-        for f in ["unknown_8", "unknown_10", "unknown_14"] {
-            assert!(
-                matches!(p.get(f), Some(Val::Bytes(b)) if b.iter().any(|x| *x != 0)),
-                "hover point {k} {f}: {:?}",
-                p.get(f)
-            );
+    for point in points {
+        let Some(Val::String(Str::Text(marker))) = point.get("string_0") else { panic!("no marker") };
+        let source = phys.mass_points.iter().find(|p| h1objects::coll::sid_name(&p.name) == *marker).unwrap();
+        let lift = phys.antigravity[source.powered_mass_point as usize];
+        for (field, value) in ["unknown_8", "unknown_c", "unknown_10", "unknown_14"].into_iter().zip(lift) {
+            assert_eq!(point.at(field), Some(&Val::Bytes(value.to_le_bytes().to_vec())), "{marker} {field}");
         }
     }
 }
@@ -1350,6 +1268,10 @@ fn every_powered_point_rides_the_root_node() {
     let mut c = Converter::new(&h1, &base);
     let id = c.object(t).unwrap();
     let r = read_back(local(&c.tree, id).unwrap(), "ghost_mp");
+    let src = h1.tag_data(t).unwrap();
+    let speed = f32::from_le_bytes(src[0x2f8..0x2fc].try_into().unwrap()) * 30.0;
+    assert_eq!(r.at("unknown_1f4"), Some(&Val::Bytes(speed.to_le_bytes().to_vec())));
+
     let h = defs::from_built(
         def(b"hlmt"),
         &reference(&r, "unit.obje.model")

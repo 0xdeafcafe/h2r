@@ -388,7 +388,25 @@ pub fn apply_engine_data(schema: &mut Schema) {
 /// Halo 1's weapons fill each (`h1objects::arsenal::WEAPON_EFFECTS`,
 /// `MAGAZINE_CHAMBERING_EFFECT`).
 pub const ENGINE_REFS: &[(FourCC, &[u32], u32)] = &[
+    (FourCC(*b"bipd"), &[], 0x4c),
+    (FourCC(*b"vehi"), &[], 0x4c),
+    (FourCC(*b"weap"), &[], 0x4c),
+    (FourCC(*b"eqip"), &[], 0x4c),
+    (FourCC(*b"proj"), &[], 0x4c),
+    (FourCC(*b"scen"), &[], 0x4c),
+    (FourCC(*b"garb"), &[], 0xfc),
+    (FourCC(*b"garb"), &[], 0x10c),
+    (FourCC(*b"garb"), &[], 0x11c),
+    (FourCC(*b"garb"), &[], 0x124),
+    (FourCC(*b"garb"), &[], 0x4c),
+    (FourCC(*b"vehi"), &[], 0xc4),
+    (FourCC(*b"vehi"), &[], 0x164),
+    (FourCC(*b"vehi"), &[], 0x284),
+    (FourCC(*b"vehi"), &[], 0x294),
+    (FourCC(*b"eqip"), &[], 0xfc),
+    (FourCC(*b"eqip"), &[], 0x11c),
     (FourCC(*b"weap"), &[], 0xfc),
+    (FourCC(*b"weap"), &[], 0x10c),
     (FourCC(*b"weap"), &[], 0x11c),
     (FourCC(*b"weap"), &[], 0x124),
     (FourCC(*b"weap"), &[], 0x17c),
@@ -406,6 +424,17 @@ pub fn apply_engine_refs(schema: &mut Schema) {
                 Field::Block(child) => at(child, rest),
                 _ => None,
             },
+        }
+    }
+    // Halo 2 embeds the same object header in all three. The native biped
+    // populates both arrays, equipment and debris on the disc leave them empty.
+    for at in [0x64, 0x94] {
+        if let Some(field) = schema.groups.get(&FourCC(*b"bipd")).and_then(|r| r.fields.get(&at)).cloned() {
+            for group in [b"eqip", b"garb"] {
+                if let Some(root) = schema.groups.get_mut(&FourCC(*group)) {
+                    root.fields.insert(at, field.clone());
+                }
+            }
         }
     }
     for &(group, path, offset) in ENGINE_REFS {

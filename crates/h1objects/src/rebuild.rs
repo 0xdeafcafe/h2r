@@ -1,13 +1,6 @@
-//! Objects written field by field from typed definitions
-//! ([`tags::defs`]), with no retail template bytes. Every field starts at
-//! its definition's default (zero, null or empty; unknown spans zero) and
-//! only what the conversion knows is set, plus, for unknown spans where
-//! zero is not neutral, the words most retail tags of the same role hold
-//! (computed from the base map at conversion time). Scenery: the `scen`,
-//! its `hlmt` and its `mode`'s material list, the only scenery path since
-//! converter version 50. The field-by-field comparison with the removed
-//! template path is in `tests/rebuild_disc.rs` and
-//! `docs/formats/tag-definitions.md`.
+//! Object tags built from their Halo 2 definitions and Halo 1 source data.
+//! Vehicle controller dependencies and their evidence are listed in
+//! `docs/halo1/role-audit.md`.
 
 use map::build::{Block, FixupKind};
 use map::{FourCC, TagId};
@@ -35,18 +28,23 @@ fn built(d: &StructDef, r: &Record) -> Result<Block> {
     defs::to_built(d, r, &mut |_| None).map_err(|e| Error::Invalid(e.to_string()))
 }
 
+/// Shared fields retained by both object formats. H1 inserts its origin
+/// offset between the bounding centre and acceleration scale.
+pub(crate) fn object_tuning(r: &mut Record, path: &str, object: &h1::Object) -> Result<()> {
+    set(r, &format!("{path}.flags"), Val::Flags(u32::from(object.flags & 7)))?;
+    set(r, &format!("{path}.unknown_14"), Val::Bytes(object.acceleration_scale.to_le_bytes().to_vec()))
+}
+
 /// The `scen` root: the object header with Halo 1's bounding sphere, the
-/// model and the predicted resources, the role's words ([`SceneryRole`])
-/// in its unknown spans, everything else at its default.
+/// model and the predicted resources, everything else at its default.
 pub fn scenery(
     obj: &h1::Object,
     hlmt: Option<TagId>,
     predicted: &[Predicted],
-    words: &[(String, u32)],
 ) -> Result<Block> {
     let d = def(b"scen")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, "", words)?;
+    object_tuning(&mut r, "object", obj)?;
     set(&mut r, "object.object_type", Val::Enum(SCENERY_TYPE))?;
     set(
         &mut r,
@@ -68,50 +66,6 @@ pub fn scenery(
     built(d, &r)
 }
 
-/// Scenery's role words: per 4-byte unknown span of the `scen` and of the
-/// `hlmt` its model is, the word at least half the base map's scenery
-/// holds there when it is not zero (the rule of [`TURRET_ROLE`] and
-/// [`RoleWords`]). Computed from the map at conversion time, so no retail
-/// value is kept in the source.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SceneryRole {
-    /// Scenery tags the words were taken from, and how many had a model.
-    pub members: usize,
-    pub models: usize,
-    pub scen: Vec<(String, u32)>,
-    pub hlmt: Vec<(String, u32)>,
-}
-
-/// [`SceneryRole`] over every `scen` the base map holds; `None` when it
-/// has none.
-pub fn scenery_role(base: &crate::base::Base) -> Result<Option<SceneryRole>> {
-    let (ds, dh) = (def(b"scen")?, def(b"hlmt")?);
-    let (mut ss, mut hs) = (Vec::new(), Vec::new());
-    word_spans(ds, "", 0, &mut ss);
-    word_spans(dh, "", 0, &mut hs);
-    let model = crate::convert::h2::MODEL;
-    let (mut st, mut ht) = (Tally::new(), Tally::new());
-    let (mut members, mut models) = (0, 0);
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"scen")) {
-        let bytes = base.root(t.0)?;
-        tally_words(&bytes, &ss, &mut st);
-        members += 1;
-        if let Some(h) = base.reference(&bytes, model) {
-            tally_words(&base.root(h)?, &hs, &mut ht);
-            models += 1;
-        }
-    }
-    if members == 0 {
-        return Ok(None);
-    }
-    Ok(Some(SceneryRole {
-        members,
-        models,
-        scen: majority(&st),
-        hlmt: majority(&ht),
-    }))
-}
-
 /// One `hlmt` region: name, collision region (-1 none), physics region,
 /// and per permutation its name, collision and physics permutation.
 pub struct Region {
@@ -130,9 +84,6 @@ pub struct Model {
     /// Node count and the node array ([`h1models::mode::hlmt_nodes`]).
     pub nodes: (u32, Block),
     pub regions: Vec<Region>,
-    /// Role words for the unknown spans ([`SceneryRole::hlmt`]); empty
-    /// leaves them zero.
-    pub words: Vec<(String, u32)>,
     /// The materials ([`model_materials`]).
     pub materials: Vec<ModelMaterial>,
 }
@@ -292,7 +243,6 @@ pub fn model_material_count(hlmt: &Block) -> u32 {
 pub fn model(m: &Model) -> Result<Block> {
     let d = def(b"hlmt")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, "", &m.words)?;
     set(&mut r, "render_model", Val::tag(FourCC(*b"mode"), m.render))?;
     set(
         &mut r,
@@ -396,53 +346,9 @@ pub const VEHICLE_TYPE: u32 = 1;
 /// fighterbomber and Halo ring are props the scripts seat units in.
 pub const ROLE_VEHICLE_TYPE: u32 = 6;
 
-/// Unknown spans a vehicle built from scratch takes from its role rather
-/// than zero, as (path in the `vehi` record, little-endian word): every
-/// 4-byte unknown span where at least half of Halo 2's turret-type
-/// vehicles (`vehicle_type` turret, 25 distinct tags on the disc) hold one
-/// nonzero value, and that value. Zero is not neutral in these: most are
-/// scales and distances that retail never leaves at zero, and a few are
-/// `-1` indices where zero would name element 0. The table is derived
-/// from the disc, not copied from one tag: `tests/unit_rebuild_disc.rs`
-/// recomputes it and fails if it differs. Fields not listed stay at the
-/// definition default (zero, null, empty).
-pub const TURRET_ROLE: &[(&str, u32)] = &[
-    ("unit.obje.unknown_18", 0x0001_0000),
-    ("unit.obje.unknown_1c", 0x0000_0002),
-    ("unit.obje.unknown_6c", 0x3f80_0000),
-    ("unit.obje.unknown_70", 0x4020_0000),
-    ("unit.obje.unknown_74", 0x4090_0000),
-    ("unit.obje.unknown_78", 0x3e4c_cccd),
-    ("unit.obje.unknown_7c", 0x3fa0_0000),
-    ("unit.obje.unknown_80", 0x4020_0000),
-    ("unit.obje.unknown_84", 0x4120_0000),
-    ("unit.obje.unknown_88", 0x3e4c_cccd),
-    ("unit.obje.unknown_8c", 0x3fa0_0000),
-    ("unit.unknown_144", 0x4049_0fdb),
-    ("unknown_210", 0x3f80_0000),
-    ("unknown_23c", 0x40c0_0000),
-    ("unknown_240", 0x41b4_0000),
-    ("unknown_25c", 0x447a_0000),
-    ("unknown_270", 0x3f80_0000),
-    ("unknown_280", 0x3f80_0000),
-    ("unknown_2c0", 0x3f80_0000),
-    ("unknown_2c4", 0x3f7f_be77),
-    ("unknown_2e0", 0x3f80_0000),
-];
-
-/// [`TURRET_ROLE`] for each seat (`vehi +0x1c8` elements), over the turret
-/// vehicles' driver seats ([`SEAT_DRIVER`], the seat a turret's rider
-/// works it from; 8 on the disc): every boarding and passenger seat left
-/// out, the entry tests ([`SEAT_ENTRY`]: 1, pi and 70 degrees, 2) have a
-/// majority, and none of them may be zero. The flags have none; a seat's
-/// are Halo 1's ([`seat_flags`]).
+/// Seat access parameters for H1 seats which have no authored entry
+/// constraints. The checks at 0xc9040 reject zero entry reach and angles.
 pub const TURRET_SEAT_ROLE: &[(&str, u32)] = &[
-    ("unknown_24", 0x3de3_8e39),
-    ("unknown_28", 0x3de3_8e39),
-    ("unknown_2c", 0x3dcc_cccd),
-    ("unknown_3c", 0xffff_0005),
-    ("unknown_58", 0x3f80_0000),
-    ("unknown_5c", 0x3f80_0000),
     ("unknown_98", 0x3f80_0000),
     ("unknown_9c", 0x4049_0fdb),
     ("unknown_a0", 0x3f9c_61aa),
@@ -450,7 +356,7 @@ pub const TURRET_SEAT_ROLE: &[(&str, u32)] = &[
     ("unknown_ac", 0xffff_ffff),
 ];
 
-/// [`TURRET_ROLE`] for the one physics element every retail vehicle has
+/// Unassigned shape indices in the one physics element every vehicle has
 /// (`vehi +0x2f8`, `0x2a0`): four `-1` halves; the rest of a turret's is
 /// zero.
 pub const TURRET_PHYSICS_ROLE: &[(&str, u32)] = &[
@@ -494,33 +400,6 @@ pub const PHANTOM_SPHERES: u32 = 0x70;
 /// The most spheres one multisphere holds (V: the scorpion's twelve are
 /// eight and a second shape's four).
 pub const PHANTOM_MAX_SPHERES: u32 = 8;
-
-/// The centres of the role's phantom spheres ([`PHANTOM_SPHERE_COUNT`]),
-/// in order; none when the role's physics element has none. Friction
-/// point `i` takes its suspension from sphere `i`
-/// ([`crate::convert::sphere_order`]).
-pub fn role_spheres(role: &VehicleRole) -> Vec<[f32; 3]> {
-    let Some(e) = role
-        .words
-        .blocks
-        .iter()
-        .find(|(p, _)| p == VEHI_PHYSICS)
-        .and_then(|(_, e)| e.first())
-    else {
-        return Vec::new();
-    };
-    let word = |at: u32| {
-        let name = format!("unknown_{at:x}");
-        e.iter().find(|(p, _)| *p == name).map_or(0, |(_, w)| *w)
-    };
-    let n = word(PHANTOM_SPHERE_COUNT).min(PHANTOM_MAX_SPHERES);
-    (0..n)
-        .map(|i| {
-            let at = PHANTOM_SPHERES + i * 0x10;
-            std::array::from_fn(|a| f32::from_bits(word(at + 4 * a as u32)))
-        })
-        .collect()
-}
 
 fn role(r: &mut Record, scope: &str, table: &[(&str, u32)]) -> Result<()> {
     crate::provenance::note_words(scope, table);
@@ -581,8 +460,7 @@ pub const H1_VEHICLE_TYPE: usize = 0x2f4;
 /// `vehicle_flags` (`vehi +0x1ec`). V: the low halves are equal on five of
 /// the eight pairs (warthog, scorpion, wraith, banshee, gun turret); the
 /// ghost differs in bit 8, the pelican and dropship in the bits Halo 2's
-/// fliers add. Halo 2's high half has no Halo 1 counterpart and comes from
-/// the vehicle type's role ([`VehicleRole::flags_high`]).
+/// fliers add. Halo 2's high bits retain their definition defaults.
 pub const H1_VEHICLE_FLAGS: usize = 0x2f0;
 
 /// Seat flags (`vehi +0x1c8` element `+0`, the word the definition leaves
@@ -640,27 +518,6 @@ pub const SEAT_PLAYER_GUNNER: u32 = 1 << 18;
 /// bit on every one.
 pub const H1_SEAT_FLAGS: u32 = 0x7ff;
 
-/// What a seat is to its rider, by its flags: the role words a rebuilt
-/// seat takes are those of the base's seats of the same kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SeatKind {
-    Driver = 0,
-    Gunner = 1,
-    Passenger = 2,
-}
-
-impl SeatKind {
-    pub fn of(flags: u32) -> Self {
-        if flags & SEAT_DRIVER != 0 {
-            Self::Driver
-        } else if flags & SEAT_GUNNER != 0 {
-            Self::Gunner
-        } else {
-            Self::Passenger
-        }
-    }
-}
-
 /// A rebuilt seat's flags: Halo 1's bits ([`H1_SEAT_FLAGS`]) over the
 /// rest of the role's word, less the bits that would keep a rider out
 /// (Halo 1 seats are neither boarding seats nor closed to players or
@@ -704,6 +561,7 @@ pub struct SeatNames {
     /// above the camera marker and 3.7 behind it: on a vehicle the camera
     /// sits far above the hull.
     pub camera_track: Option<TagId>,
+    pub camera_angles: [u32; 5],
     /// Halo 1's seat flags ([`seat_flags`]).
     pub flags: u32,
 }
@@ -791,64 +649,27 @@ pub fn seat_names(seat: &h1::Seat, markers: &[String]) -> SeatNames {
         },
         camera_marker: found(&seat.camera_marker),
         camera_track: None,
+        camera_angles: seat.camera_angles,
         flags: seat.flags,
     }
 }
 
-/// The words a vehicle of one type takes from the retail vehicles of that
-/// type in the base map: the turret rule ([`TURRET_ROLE`]) over every
-/// member, computed at conversion time so no retail value is kept in the
-/// source.
+/// The Halo 2 drivetrain selected for a source vehicle's type and point count.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VehicleRole {
-    /// The root's words and its plain-word blocks (the physics element,
-    /// `block_2f8`; `unit.block_1a8`, `unit.block_1b8`).
-    pub words: RoleWords,
-    /// A seat's words by its kind ([`SeatKind`] order): the majority over
-    /// the members' seats of that kind, boarding seats left out (a rebuilt
-    /// seat is one a unit rides, [`SEAT_BOARDING`]); a kind no member has
-    /// takes the majority over all their other seats.
-    pub seats: [Vec<(String, u32)>; 3],
-    /// The high half of `vehicle_flags` most members hold.
-    pub flags_high: u32,
-    /// [`VEHI_CONTROL`], the half after the vehicle type, most members
-    /// hold.
+    pub member: String,
+    pub controller: Vec<(String, u32)>,
     pub control: u16,
-    /// The words of each friction (wheel and tread) point, `+0x2f0`: the
-    /// majority over every point of every member that does not steer
-    /// ([`FRICTION_STEERS`]; over every point when none do); `None` when
-    /// fewer than half the members have any (fliers, hover vehicles,
-    /// turrets).
+    /// Native tire/tread coefficients, separated by steering.
     pub friction: Option<Vec<(String, u32)>>,
-    /// The same over the members' steering points (flag
-    /// [`FRICTION_STEERS`]); `None` when no member steers by its points
-    /// (V: the warthog's two front wheels steer; the role's other points
-    /// take [`Self::friction`]).
     pub friction_steered: Option<Vec<(String, u32)>>,
-    /// The same for the hover points, `+0x2e8`.
     pub hover: Option<Vec<(String, u32)>>,
-    /// With one member: each of its hover points' own words, in its order
-    /// (V: the retail ghost's back point holds strength `+0x8` 3.75 and
-    /// height `+0x10` 0.5, its front pair 1.85 and 0.45, so one majority
-    /// gives all three the front pair's); empty with several members.
+    /// Per-point lift controller coefficients and rest-pose marker positions.
     pub hover_each: Vec<Vec<(String, u32)>>,
-    /// Where those points' markers sit in the member's space, at its
-    /// render model's rest pose ([`marker_positions`]), in the same order;
-    /// empty when a marker is not found. A rebuilt vehicle's points are
-    /// paired with them by position ([`crate::convert::sphere_order`]).
     pub hover_at: Vec<[f32; 3]>,
-    /// Whether most members with friction points carry their wheels or
-    /// treads in their physics models ([`member_wheel_shapes`]): a
-    /// rebuilt vehicle's body then holds its wheels and treads above its
-    /// hull's lowest point ([`crate::convert::held_wheels`]), and leaves
-    /// them out otherwise. V, coagulation: the scorpion's yes, the
-    /// warthog's no.
+    /// Whether the H2 wheel/tread controller carries solid wheel shapes.
     pub wheel_shapes: bool,
-    /// The engine gears, `+0x268`: the element count most members with
-    /// gears hold and each element's majority words, every 4-byte field
-    /// (raw curve pointers included, kept as the words they are: the
-    /// curves live in the shared map the base uses). Empty when fewer than
-    /// half the members have gears.
+    /// Native gear curves, in the order the controller indexes them.
     pub gears: Vec<Vec<(String, u32)>>,
 }
 
@@ -905,8 +726,11 @@ pub const FRICTION_STEERS: u32 = 1 << 2;
 
 /// A Halo 1 powered mass point as a Halo 2 point: the marker the converted
 /// model gains for it and the region it belongs to (empty for none).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Point {
+    /// Halo 1 mass-point centre in object space and its collision radius.
+    pub sphere: [f32; 4],
+    pub antigravity: Option<[f32; 4]>,
     pub marker: String,
     pub region: String,
     /// That region's index among the model's regions (the `hlmt`'s), -1
@@ -916,46 +740,6 @@ pub struct Point {
     /// middle (the warthog's front tires). It takes the role's steering
     /// words ([`VehicleRole::friction_steered`]) where the role has them.
     pub steered: bool,
-}
-
-/// Per element of the block at `at` (element `e`) of every member: the
-/// majority words over all elements together, `None` when fewer than half
-/// the members have any element.
-fn all_elements(
-    base: &crate::base::Base,
-    members: &[(String, Vec<u8>)],
-    at: usize,
-    e: &StructDef,
-) -> Result<Option<Vec<(String, u32)>>> {
-    all_elements_where(base, members, at, e, |_| true)
-}
-
-/// [`all_elements`] over the elements `keep` accepts; `None` too when it
-/// accepts none.
-fn all_elements_where(
-    base: &crate::base::Base,
-    members: &[(String, Vec<u8>)],
-    at: usize,
-    e: &StructDef,
-    keep: impl Fn(&[u8]) -> bool,
-) -> Result<Option<Vec<(String, u32)>>> {
-    let mut spans = Vec::new();
-    word_spans(e, "", 0, &mut spans);
-    let mut t = Tally::new();
-    let mut having = 0;
-    let mut kept = 0;
-    for (_, bytes) in members {
-        let mut i = 0;
-        while let Some(x) = base.element(bytes, at, e.size as usize, i)? {
-            if keep(&x) {
-                tally_words(&x, &spans, &mut t);
-                kept += 1;
-            }
-            i += 1;
-        }
-        having += usize::from(i > 0);
-    }
-    Ok((2 * having >= members.len() && having > 0 && kept > 0).then(|| majority(&t)))
 }
 
 /// Every 4-byte field of `e` that holds a plain word or a raw pointer, as
@@ -970,21 +754,8 @@ fn gear_spans(e: &StructDef) -> Vec<(String, u32)> {
         .collect()
 }
 
-/// The members a role is taken over: the indices of `counts` (each
-/// member's friction and hover points together) nearest `points` (the
-/// Halo 1 vehicle's powered mass points), every index on a tie.
-///
-/// A role is a majority word by word, and a word on which no majority
-/// agrees is left zero. Over vehicles of one type that are tuned apart
-/// that zeroes their driving: the base's three hover vehicles (the
-/// ghost's three hover points, the spectre's four, the wraith's six)
-/// agree on few of their driving words, so through converter version 83
-/// the converted ghost held zero in 16 root words the retail ghost fills
-/// (`vehi +0x1d0`..`+0x1dc`, `+0x1f4` 5.0 and `+0x1f8` 2.5 among them)
-/// and zero at `+0x8`, `+0x10` and `+0x14` of its hover points (the
-/// retail ghost's 3.75 or 1.85, 0.5 or 0.45, and 1.0), and did not move
-/// under its driver (converted Blood Gulch, 2026-11-19). Halo 1's ghost
-/// has three powered points, so it takes the ghost alone.
+/// Candidate controllers with the closest contact count to the H1 vehicle.
+/// The caller chooses by tag path when counts tie.
 pub fn nearest_members(counts: &[usize], points: usize) -> Vec<usize> {
     let Some(best) = counts.iter().map(|c| c.abs_diff(points)).min() else {
         return Vec::new();
@@ -1006,9 +777,6 @@ pub fn vehicle_role(
 ) -> Result<Option<VehicleRole>> {
     let d = def(b"vehi")?;
     let ty = field_offset(d, "vehicle_type")? as usize;
-    let flags_at = field_offset(d, "vehicle_flags")? as usize;
-    let seat_at = field_offset(d, VEHI_SEATS)? as usize;
-    let seat_def = d.child(VEHI_SEATS).expect("vehi seats");
     let mut members = Vec::new();
     for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"vehi")) {
         let bytes = base.root(t.0)?;
@@ -1032,116 +800,54 @@ pub fn vehicle_role(
             .map(|(_, m)| m)
             .collect();
     }
-    let words = role_over(base, d, &members)?;
-    let mut sspans = Vec::new();
-    word_spans(seat_def, "", 0, &mut sspans);
-    let mut seats: [Tally; 3] = Default::default();
-    let mut ridden = Tally::new();
-    let mut flags = std::collections::BTreeMap::<u32, usize>::new();
-    for (_, bytes) in &members {
-        *flags
-            .entry(crate::base::u32_at(bytes, flags_at) & 0xffff_0000)
-            .or_default() += 1;
-        let mut i = 0;
-        while let Some(x) = base.element(bytes, seat_at, seat_def.size as usize, i)? {
-            i += 1;
-            let f = crate::base::u32_at(&x, 0);
-            if f & SEAT_BOARDING != 0 {
-                continue;
-            }
-            tally_words(&x, &sspans, &mut seats[SeatKind::of(f) as usize]);
-            tally_words(&x, &sspans, &mut ridden);
-        }
+    // A drivetrain's curves and coefficients are one native controller.
+    // Never vote on its pieces independently. The point count selects the
+    // controller above; the path breaks ties independently of tag order.
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+    let (name, root) = &members[0];
+    let root_fields = named_words(root, &[
+        0x218, 0x244, 0x250, 0x254, 0x258, 0x25c, 0x260, 0x264, 0x270, 0x274, 0x278,
+        0x27c, 0x280, 0x2b0, 0x2b4, 0x2b8, 0x2bc, 0x2c0, 0x2c4,
+        0x2d8, 0x2dc, 0x2e0, 0x2e4,
+    ]);
+    let (fat, hat, gat) = (field_offset(d, VEHI_FRICTION)? as usize,
+        field_offset(d, VEHI_HOVER)? as usize, field_offset(d, VEHI_GEARS)? as usize);
+    let fdef = d.child(VEHI_FRICTION).expect("friction points");
+    let hdef = d.child(VEHI_HOVER).expect("hover points");
+    let gdef = d.child(VEHI_GEARS).expect("gears");
+    let mut friction = None;
+    let mut friction_steered = None;
+    let mut i = 0;
+    while let Some(x) = base.element(root, fat, fdef.size as usize, i)? {
+        let steers = crate::base::u32_at(&x, 4) & FRICTION_STEERS != 0;
+        let target = if steers { &mut friction_steered } else { &mut friction };
+        target.get_or_insert_with(|| named_words(&x, &[4, 8, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38]));
+        i += 1;
     }
-    let control_at = field_offset(d, VEHI_CONTROL)? as usize;
-    let mut controls = std::collections::BTreeMap::<u16, usize>::new();
-    for (_, bytes) in &members {
-        *controls
-            .entry(u16::from_le_bytes([bytes[control_at], bytes[control_at + 1]]))
-            .or_default() += 1;
-    }
-    let control = controls
-        .iter()
-        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
-        .map_or(0, |(w, _)| *w);
-    let flags_high = flags
-        .iter()
-        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
-        .map_or(0, |(w, _)| *w);
-    let block = |name: &str| -> Result<(usize, &StructDef)> {
-        Ok((
-            field_offset(d, name)? as usize,
-            d.child(name)
-                .ok_or_else(|| Error::Invalid(format!("vehi {name}")))?,
-        ))
-    };
-    let (fat, fdef) = block(VEHI_FRICTION)?;
-    let fflags_at = field_offset(fdef, FRICTION_FLAGS)? as usize;
-    let steers = |x: &[u8]| crate::base::u32_at(x, fflags_at) & FRICTION_STEERS != 0;
-    let (hat, hdef) = block(VEHI_HOVER)?;
-    let (hover_each, hover_at) = match members.as_slice() {
-        [(_, root)] => member_hover(base, root, d, hat, hdef)?,
-        _ => (Vec::new(), Vec::new()),
-    };
-    let (mut with, mut wheeled) = (0, 0);
-    for (_, root) in &members {
-        if let Some(w) = member_wheel_shapes(base, root, d, fat, fdef)? {
-            with += 1;
-            wheeled += usize::from(w);
-        }
-    }
-    let wheel_shapes = with > 0 && 2 * wheeled > with;
-    let (gat, gdef) = block(VEHI_GEARS)?;
-    // Gears: the count most members with gears hold, each element's
-    // majority over the members of that count.
+    let (hover_each, hover_at) = member_hover(base, root, d, hat, hdef)?;
     let gspans = gear_spans(gdef);
-    let mut counts = std::collections::BTreeMap::<usize, usize>::new();
-    let mut per: Vec<Vec<Vec<u8>>> = Vec::new();
-    for (_, bytes) in &members {
-        let mut es = Vec::new();
-        while let Some(x) = base.element(bytes, gat, gdef.size as usize, es.len())? {
-            es.push(x);
-        }
-        if !es.is_empty() {
-            *counts.entry(es.len()).or_default() += 1;
-        }
-        per.push(es);
-    }
-    let having: usize = counts.values().sum();
     let mut gears = Vec::new();
-    if having > 0 && 2 * having >= members.len() {
-        let n = *counts.iter().max_by_key(|(n, c)| (**c, **n)).expect("some").0;
-        for k in 0..n {
-            let mut t = Tally::new();
-            for es in per.iter().filter(|es| es.len() == n) {
-                tally_words(&es[k], &gspans, &mut t);
-            }
-            // Every gear field, zero included: a curve pointer or scale
-            // left out would read as none.
-            let mut words = Vec::new();
-            for (path, vals) in &t {
-                let (w, _) = vals.iter().max_by_key(|(_, c)| **c).expect("some");
-                words.push((path.clone(), *w));
-            }
-            gears.push(words);
-        }
+    while let Some(x) = base.element(root, gat, gdef.size as usize, gears.len())? {
+        gears.push(gspans.iter().map(|(path, at)| (path.clone(), crate::base::u32_at(&x, *at as usize))).collect());
     }
     Ok(Some(VehicleRole {
-        words,
-        seats: seats.map(|t| majority(if t.is_empty() { &ridden } else { &t })),
-        flags_high,
-        control,
-        friction: match all_elements_where(base, &members, fat, fdef, |x| !steers(x))? {
-            Some(w) => Some(w),
-            None => all_elements(base, &members, fat, fdef)?,
-        },
-        friction_steered: all_elements_where(base, &members, fat, fdef, steers)?,
-        hover: all_elements(base, &members, hat, hdef)?,
-        hover_each,
-        hover_at,
-        wheel_shapes,
+        member: name.clone(),
+        controller: root_fields,
+        control: if vehicle_type == 0 { 2 } else { 0 },
+        friction: friction.or_else(|| friction_steered.clone()),
+        friction_steered,
+        hover: hover_each.first().cloned(),
+        hover_each, hover_at,
+        wheel_shapes: member_wheel_shapes(base, root, d, fat, fdef)?.unwrap_or(false),
         gears,
     }))
+}
+
+fn named_words(bytes: &[u8], offsets: &[usize]) -> Vec<(String, u32)> {
+    offsets.iter().filter_map(|&at| {
+        let word = crate::base::u32_at(bytes, at);
+        (word != 0).then(|| (format!("unknown_{at:x}"), word))
+    }).collect()
 }
 
 /// `phmo +0xc0`: the physics model's regions, `0xc` each, the name a
@@ -1210,15 +916,11 @@ fn member_hover(
     at: usize,
     e: &StructDef,
 ) -> Result<(Vec<Vec<(String, u32)>>, Vec<[f32; 3]>)> {
-    let mut spans = Vec::new();
-    word_spans(e, "", 0, &mut spans);
     let marker_at = field_offset(e, HOVER_MARKER)? as usize;
     let mut words = Vec::new();
     let mut names = Vec::new();
     while let Some(x) = base.element(root, at, e.size as usize, words.len())? {
-        let mut t = Tally::new();
-        tally_words(&x, &spans, &mut t);
-        words.push(majority(&t));
+        words.push(named_words(&x, &[4, 8, 0xc, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c]));
         names.push(crate::base::u32_at(&x, marker_at));
     }
     let positions = marker_positions(base, root, d, &names)?.unwrap_or_default();
@@ -1406,63 +1108,6 @@ fn field_offset(d: &StructDef, name: &str) -> Result<u32> {
         .ok_or_else(|| Error::Invalid(format!("{}: no field {name}", d.name)))
 }
 
-/// [`RoleWords`] over `members` (name, root bytes) of the group `d`
-/// defines: per 4-byte unknown span of the root and its embedded structs,
-/// the majority word; per plain-word block, the majority element count and
-/// each element's majority words.
-fn role_over(
-    base: &crate::base::Base,
-    d: &StructDef,
-    members: &[(String, Vec<u8>)],
-) -> Result<RoleWords> {
-    let mut spans = Vec::new();
-    word_spans(d, "", 0, &mut spans);
-    let mut blocks = Vec::new();
-    word_blocks(d, "", 0, &mut blocks);
-    let mut root = Tally::new();
-    let mut counts: Vec<std::collections::BTreeMap<usize, usize>> =
-        vec![Default::default(); blocks.len()];
-    let mut elements: Vec<Vec<Tally>> = vec![Vec::new(); blocks.len()];
-    for (_, bytes) in members {
-        tally_words(bytes, &spans, &mut root);
-        for (k, (_, at, e)) in blocks.iter().enumerate() {
-            let mut espans = Vec::new();
-            word_spans(e, "", 0, &mut espans);
-            let mut i = 0;
-            while let Some(x) = base.element(bytes, *at as usize, e.size as usize, i)? {
-                if elements[k].len() <= i {
-                    elements[k].push(Tally::new());
-                }
-                tally_words(&x, &espans, &mut elements[k][i]);
-                i += 1;
-            }
-            if i > 0 {
-                *counts[k].entry(i).or_default() += 1;
-            }
-        }
-    }
-    let mut out_blocks = Vec::new();
-    for (k, (path, _, _)) in blocks.iter().enumerate() {
-        let having: usize = counts[k].values().sum();
-        if 2 * having < members.len() {
-            continue;
-        }
-        let (n, _) = counts[k]
-            .iter()
-            .max_by_key(|(n, c)| (**c, **n))
-            .expect("some");
-        out_blocks.push((
-            path.clone(),
-            elements[k][..*n].iter().map(majority).collect(),
-        ));
-    }
-    Ok(RoleWords {
-        members: members.iter().map(|m| m.0.clone()).collect(),
-        root: majority(&root),
-        blocks: out_blocks,
-    })
-}
-
 /// A vehicle's bounding sphere from its render model: the centre of the
 /// box around every vertex of every geometry (Halo 1 keeps them in model
 /// space at the rest pose), the radius the farthest vertex from it.
@@ -1510,6 +1155,8 @@ pub fn model_sphere(model: &h1models::h1::Model) -> Option<(f32, [f32; 3])> {
 /// What a rebuilt vehicle carries from Halo 1 ([`vehicle`]).
 pub struct VehicleSpec<'a> {
     pub object: &'a h1::Object,
+    pub source: &'a [u8],
+    pub references: &'a [(String, FourCC, TagId)],
     /// The bounding sphere (radius, centre) written in place of Halo 1's
     /// ([`model_sphere`]); `None` keeps Halo 1's.
     pub bounds: Option<(f32, [f32; 3])>,
@@ -1525,7 +1172,7 @@ pub struct VehicleSpec<'a> {
     /// weapons`, `+0x1c0`).
     pub weapons: &'a [TagId],
     /// The type's role over the base's vehicles; `None` takes the turret
-    /// tables ([`TURRET_ROLE`]), as for a type the base has none of.
+    /// tables (definition defaults), as for a type the base has none of.
     pub role: Option<&'a VehicleRole>,
     /// Halo 1's powered mass points: friction points where the role has
     /// them, else hover points where it has those, else none.
@@ -1539,52 +1186,113 @@ pub struct VehicleSpec<'a> {
     pub creation_effect: Option<TagId>,
 }
 
-/// A Halo 1 vehicle written from the `vehi` definition, no retail template
-/// read: the object header (type, bounds, model, predicted resources),
-/// Halo 1's vehicle type, flags (low half) and camera field of view, one
-/// seat per Halo 1 seat ([`SeatNames`]), the unit's weapons, and the
-/// type's role words ([`VehicleRole`]; the turret tables when there is
-/// none). Everything else is the definition default.
+/// The loader at 0x205550 sets vtables, pointer arrays and child indices
+/// from +0x38. Each of the four inline shapes holds up to eight spheres.
+fn write_vehicle_phantom(record: &mut Record, points: &[Point]) -> Result<()> {
+    let mut write = |at: usize, bits: u32| set(record, &format!("unknown_{at:x}"), Val::Bytes(bits.to_le_bytes().to_vec()));
+    if points.len() > 32 {
+        return Err(Error::Invalid(format!("vehicle has {} wheel spheres; phantom capacity is 32", points.len())));
+    }
+    let groups = points.chunks(PHANTOM_MAX_SPHERES as usize);
+    write(0x38, groups.len() as u32)?;
+    write(0x3c, 3)?;
+    let mut bounds = [[f32::INFINITY, f32::NEG_INFINITY]; 3];
+    for (i, group) in groups.enumerate() {
+        let start = 0x60 + i * 0x90;
+        write(start + 0xc, group.len() as u32)?;
+        for (j, point) in group.iter().enumerate() {
+            let [x, y, z, radius] = point.sphere;
+            for (axis, pos) in [x, y, z].into_iter().enumerate() {
+                bounds[axis][0] = bounds[axis][0].min(pos - radius);
+                bounds[axis][1] = bounds[axis][1].max(pos + radius);
+            }
+            for (k, value) in point.sphere.iter().enumerate() {
+                write(start + 0x10 + j * 0x10 + k * 4, value.to_bits())?;
+            }
+        }
+    }
+    for (axis, [lo, hi]) in bounds.into_iter().enumerate() {
+        write(0x48 + axis * 8, lo.to_bits())?;
+        write(0x4c + axis * 8, hi.to_bits())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod phantom_tests {
+    use super::*;
+
+    #[test]
+    fn wheel_spheres_span_inline_shapes_in_source_order() {
+        let d = def(b"vehi").unwrap().child(VEHI_PHYSICS).unwrap();
+        let mut r = defs::default_record(d);
+        let mut points: Vec<_> = (0..9).map(|i| Point {
+            sphere: [i as f32, 1.0, -2.0, 0.5],
+            antigravity: None,
+            marker: format!("wheel_{i}"),
+            region: String::new(),
+            region_index: -1,
+            steered: false,
+        }).collect();
+        write_vehicle_phantom(&mut r, &points).unwrap();
+        let word = |at| {
+            let Some(Val::Bytes(b)) = r.get(&format!("unknown_{at:x}")) else { panic!("phantom +{at:x}") };
+            u32::from_le_bytes(b.as_slice().try_into().unwrap())
+        };
+        assert_eq!((word(0x38), word(0x6c), word(0xfc)), (2, 8, 1));
+        assert_eq!((word(0x48), word(0x4c)), ((-0.5f32).to_bits(), 8.5f32.to_bits()));
+        assert_eq!((word(0x100), word(0x10c)), (8f32.to_bits(), 0.5f32.to_bits()));
+        let before = r.clone();
+        points.resize(33, points[0].clone());
+        assert!(write_vehicle_phantom(&mut r, &points).is_err());
+        assert_eq!(r, before);
+    }
+}
+
+/// Builds the vehicle from Halo 1 and its native drivetrain, with one
+/// seat per source seat and one contact per powered mass point.
 pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     let d = def(b"vehi")?;
     let mut r = defs::default_record(d);
-    match v.role {
-        Some(role) => {
-            role_words(&mut r, "", &role.words.root)?;
-            for (path, elems) in &role.words.blocks {
-                let e = d
-                    .child(path)
-                    .ok_or_else(|| Error::Invalid(format!("vehi {path}")))?;
-                let mut out = Vec::new();
-                for (i, words) in elems.iter().enumerate() {
-                    let mut x = defs::default_record(e);
-                    role_words(&mut x, &format!("{path}[{i}]."), words)?;
-                    out.push(x);
-                }
-                set(&mut r, path, Val::Block(out))?;
-            }
-        }
-        None => {
-            role(&mut r, "", TURRET_ROLE)?;
-            let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
-            let mut p = defs::default_record(phys_def);
-            role(&mut p, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
-            set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
+    if let Some(role) = v.role {
+        role_words(&mut r, "", &role.controller)?;
+    }
+    let mut phantom = defs::default_record(d.child(VEHI_PHYSICS).expect("vehicle phantom"));
+    if v.role.is_some_and(|role| role.friction.is_some()) && !v.points.is_empty() {
+        write_vehicle_phantom(&mut phantom, v.points)?;
+    } else {
+        role(&mut phantom, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
+    }
+    set(&mut r, VEHI_PHYSICS, Val::Block(vec![phantom]))?;
+    for &(path, at) in UNIT_WORDS {
+        if let Some(bytes) = v.source.get(at..at + 4) {
+            set(&mut r, path, Val::Bytes(bytes.to_vec()))?;
         }
     }
-    // Every retail vehicle has exactly one physics element.
-    if !matches!(r.at(VEHI_PHYSICS), Some(Val::Block(b)) if b.len() == 1) {
-        let phys_def = d.child(VEHI_PHYSICS).expect("vehi physics");
-        let mut p = defs::default_record(phys_def);
-        role(&mut p, &format!("{VEHI_PHYSICS}[0]."), TURRET_PHYSICS_ROLE)?;
-        set(&mut r, VEHI_PHYSICS, Val::Block(vec![p]))?;
+    // H1 cache speeds are in units/tick and accelerations in units/tick².
+    for (path, at, scale) in [
+        ("unknown_1f4", 0x2f8, 30.0), ("unknown_1f8", 0x2fc, 30.0),
+        ("unknown_1fc", 0x300, 900.0), ("unknown_200", 0x304, 900.0),
+        ("unknown_204", 0x308, 1.0), ("unknown_208", 0x30c, 1.0),
+        ("unknown_20c", 0x310, 1.0), ("unknown_210", 0x314, 1.0),
+        ("unknown_214", 0x318, 30.0),
+        ("unknown_22c", 0x330, 30.0), ("unknown_230", 0x334, 30.0),
+        ("unknown_234", 0x338, 900.0), ("unknown_238", 0x33c, 900.0),
+        ("unknown_23c", 0x340, 30.0), ("unknown_240", 0x344, 30.0),
+    ] {
+        if let Some(bytes) = v.source.get(at..at + 4) {
+            let value = f32::from_le_bytes(bytes.try_into().expect("four bytes")) * scale;
+            set(&mut r, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
+        }
     }
+    crate::arsenal::refs(&mut r, v.references)?;
     let (obj, hlmt, predicted) = (v.object, v.hlmt, v.predicted);
     set(
         &mut r,
         "unit.camera_field_of_view",
         Val::Float(v.camera_field_of_view),
     )?;
+    object_tuning(&mut r, "unit.obje", obj)?;
     set(&mut r, "unit.obje.object_type", Val::Enum(VEHICLE_TYPE))?;
     let (radius, centre) = v.bounds.unwrap_or((obj.bounding_radius, obj.bounding_offset));
     set(&mut r, "unit.obje.bounding_radius", Val::Float(radius))?;
@@ -1595,7 +1303,6 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
         Val::tag(FourCC(*b"hlmt"), hlmt.unwrap_or(TagId::NULL)),
     )?;
     set(&mut r, "vehicle_type", Val::Enum(v.vehicle_type.into()))?;
-    let high = v.role.map_or(0, |x| x.flags_high);
     let control = v.role.map_or(0, |x| x.control);
     if v.role.is_some() {
         crate::provenance::note(VEHI_CONTROL, &Val::Bytes(control.to_le_bytes().to_vec()));
@@ -1604,7 +1311,7 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     set(
         &mut r,
         "vehicle_flags",
-        Val::Int(i64::from(high | (v.flags & 0xffff))),
+        Val::Int(i64::from(v.flags & 0xffff)),
     )?;
     predicted_resources(b"vehi", &mut r, "unit.obje", predicted)?;
     object_change_colors(b"vehi", &mut r, "unit.obje", &obj.change_colours)?;
@@ -1640,33 +1347,8 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
     for (i, s) in v.seats.iter().enumerate() {
         let scope = format!("{VEHI_SEATS}[{i}].");
         let mut e = defs::default_record(seat_def);
-        match v.role {
-            Some(x) => role_words(&mut e, &scope, &x.seats[SeatKind::of(s.flags) as usize])?,
-            None => role(&mut e, &scope, TURRET_SEAT_ROLE)?,
-        }
-        let role_flags = match e.get(SEAT_FLAGS) {
-            Some(Val::Bytes(b)) if b.len() == 4 => u32::from_le_bytes(b[..4].try_into().expect("4")),
-            _ => 0,
-        };
-        set(
-            &mut e,
-            SEAT_FLAGS,
-            Val::Bytes(seat_flags(s.flags, role_flags).to_le_bytes().to_vec()),
-        )?;
-        // An entry test the role leaves zero (no majority among its
-        // seats: coagulation's hover drivers) would admit no one; it takes
-        // the turret drivers' value, the disc-wide driver seat's.
-        for field in SEAT_ENTRY {
-            if matches!(e.get(field), Some(Val::Bytes(b)) if b.iter().all(|x| *x == 0)) {
-                let w = TURRET_SEAT_ROLE
-                    .iter()
-                    .find(|(p, _)| p == field)
-                    .map(|(_, w)| *w)
-                    .expect("entry word");
-                crate::provenance::note_words(&scope, &[(*field, w)]);
-                set(&mut e, field, Val::Bytes(w.to_le_bytes().to_vec()))?;
-            }
-        }
+        role(&mut e, &scope, TURRET_SEAT_ROLE)?;
+        set(&mut e, SEAT_FLAGS, Val::Bytes(seat_flags(s.flags, 0).to_le_bytes().to_vec()))?;
         // Halo 1's entry markers face the vehicle's forward, not the way a
         // rider comes from, so no facing test applies to them.
         set(
@@ -1674,6 +1356,10 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
             SEAT_ENTRY_FACING,
             Val::Bytes(ANY_FACING.to_bits().to_le_bytes().to_vec()),
         )?;
+        for (path, bits) in ["unknown_68", "unknown_6c", "unknown_70", "unknown_88", "unknown_8c"]
+            .into_iter().zip(s.camera_angles) {
+            set(&mut e, path, Val::Bytes(bits.to_le_bytes().to_vec()))?;
+        }
         set(&mut e, "label", Val::text(&s.label))?;
         // V: Halo 2's seats hold the rider's marker at +8 (`driver`,
         // `gunner`), the entry marker at +0xc (`driver_enter`) and the
@@ -1716,9 +1402,15 @@ pub fn vehicle(v: &VehicleSpec) -> Result<Block> {
                     _ => words,
                 };
                 role_words(&mut x, &format!("{block}[{i}]."), words)?;
+                if block == VEHI_HOVER && let Some(lift) = p.antigravity {
+                    for (field, value) in ["unknown_8", "unknown_c", "unknown_10", "unknown_14"].into_iter().zip(lift) {
+                        set(&mut x, field, Val::Bytes(value.to_le_bytes().to_vec()))?;
+                    }
+                }
                 set(&mut x, marker, Val::text(&p.marker))?;
                 set(&mut x, region, Val::text(&p.region))?;
                 if block == VEHI_FRICTION {
+                    set(&mut x, "unknown_c", Val::Bytes(p.sphere[3].to_le_bytes().to_vec()))?;
                     let index: u32 = if p.region_index >= 0 {
                         p.region_index as u32
                     } else {
@@ -1804,6 +1496,7 @@ pub fn device(dev: &h1::Device, hlmt: Option<TagId>, predicted: &[Predicted]) ->
     let d = def(group)?;
     let mut r = defs::default_record(d);
     let obj = &dev.object;
+    object_tuning(&mut r, "devi.obje", obj)?;
     let ty = if control { CONTROL_TYPE } else { MACHINE_TYPE };
     set(&mut r, "devi.obje.object_type", Val::Enum(ty))?;
     set(
@@ -2348,237 +2041,43 @@ fn ragdoll(d: &StructDef, r: &mut Record, joints: &[crate::ragdoll::Constraint])
 /// `obje +0` for bipeds (docs/formats/objects.md).
 pub const BIPED_TYPE: u32 = 0;
 
-/// Biped words carried from Halo 1 as they are, as (`bipd` record path,
-/// Halo 1 `bipd` offset). V: on the five pairs of a Halo 1 biped and its
-/// Halo 2 counterpart (cyborg and masterchief, marine_armored and
-/// marine, elite, grunt, jackal) the two words agree within 1 % on every
-/// pair, and no other Halo 1 word does (`tests/unit_rebuild_disc.rs`
-/// checks it). Their meaning is not established: `+0x1f4` holds 60 to 90
-/// degrees in radians, `+0x220` 0.2, `+0x26c` 0.45 to 0.5, `+0x2a0` and
-/// `+0x2a8` both 45 degrees. The camera's field of view (`unit +0xcc`,
-/// Halo 1 `+0x1a0`) is named and written separately.
-pub const BIPED_WORDS: &[(&str, usize)] = &[
-    ("unknown_1f4", 0x2f8),
-    ("unknown_220", 0x408),
-    ("unknown_26c", 0x428),
-    ("unknown_2a0", 0x360),
-    ("unknown_2a8", 0x360),
+/// Shared unit tuning. The two sequences at +0x220 and +0x264 are
+/// contiguous on both discs (cyborg, crewman, marine, elite and grunt).
+pub const UNIT_WORDS: &[(&str, usize)] = &[
+    ("unit.unknown_bc", 0x17c), ("unit.unknown_c0", 0x180), // default team and motion sensor blip
+    ("unit.unknown_dc", 0x1e8), ("unit.unknown_e0", 0x1ec), ("unit.unknown_e4", 0x1f0),
+    ("unit.unknown_10c", 0x220), ("unit.unknown_110", 0x224),
+    ("unit.unknown_114", 0x228), ("unit.unknown_118", 0x22c),
+    ("unit.unknown_11c", 0x230), ("unit.unknown_120", 0x234),
+    ("unit.unknown_124", 0x238), ("unit.unknown_144", 0x264),
+    ("unit.unknown_148", 0x268), ("unit.unknown_14c", 0x26c),
+    ("unit.unknown_1b0", 0x2c0), ("unit.unknown_1b4", 0x2c4),
 ];
 
-/// Which retail bipeds a rebuilt biped takes its unknown spans from: the
-/// Chief, humans, or the Covenant. A Halo 1 biped of none (flood,
-/// sentinels, the monitor) takes its counterpart's
-/// (`Converter::biped_rebuild_role`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BipedRole {
-    Chief,
-    Human,
-    Covenant,
-}
+/// Biped turning, landing, camera heights, ground slopes and their cached
+/// trigonometric values. The crewman's distinct cutoff and falloff angles
+/// distinguish the source fields (a30 and 05a_deltaapproach).
+pub const BIPED_WORDS: &[(&str, usize)] = &[
+    ("unknown_1ec", 0x2f0), ("unknown_1f4", 0x2f8),
+    ("unknown_1fc", 0x3d4), ("unknown_200", 0x3d8), ("unknown_204", 0x3dc),
+    ("unknown_208", 0x3e0), ("unknown_20c", 0x3e4),
+    ("unknown_218", 0x400), ("unknown_21c", 0x404), ("unknown_220", 0x408),
+    ("unknown_24c", 0x4c8), ("unknown_29c", 0x358), ("unknown_2a0", 0x35c),
+    ("unknown_2a4", 0x360), ("unknown_2a8", 0x368), ("unknown_2ac", 0x36c),
+    ("unknown_2b0", 0x364), ("unknown_2b4", 0x370), ("unknown_2b8", 0x4d0),
+    ("unknown_2bc", 0x4d4), ("unknown_2c0", 0x4d8), ("unknown_2c4", 0x4dc),
+    ("unknown_2c8", 0x4e0),
+    ("unknown_2cc", 0x324), ("unknown_2d0", 0x328), ("unknown_2d4", 0x32c),
+    ("unknown_2d8", 0x330), ("unknown_2dc", 0x334), ("unknown_2e0", 0x338),
+    ("unknown_2ec", 0x344), ("unknown_2f4", 0x34c),
+];
 
-impl BipedRole {
-    /// The role of a Halo 2 biped, by its path.
-    pub fn of_h2(path: &str) -> Option<Self> {
-        let n = path.rsplit('\\').next().unwrap_or(path);
-        let has = |ks: &[&str]| ks.iter().any(|k| path.contains(k));
-        if has(&["flood", "sentinel", "monitor", "gravemind", "prophet"]) {
-            return None;
-        }
-        if n.starts_with("masterchief") {
-            Some(Self::Chief)
-        } else if has(&[
-            "\\marine",
-            "\\miranda",
-            "\\crewman",
-            "\\lord_hood",
-            "\\johnson",
-            "\\cortana",
-        ]) {
-            Some(Self::Human)
-        } else if has(&[
-            "\\elite",
-            "\\grunt",
-            "\\jackal",
-            "\\brute",
-            "\\bugger",
-            "\\hunter",
-            "\\dervish",
-            "\\heretic",
-        ]) {
-            Some(Self::Covenant)
-        } else {
-            None
-        }
-    }
-
-    /// The role of a Halo 1 biped, by its path.
-    pub fn of_h1(path: &str) -> Option<Self> {
-        let has = |ks: &[&str]| ks.iter().any(|k| path.contains(k));
-        if has(&["flood", "sentinel", "monitor", "infection"]) {
-            None
-        } else if has(&["\\cyborg"]) {
-            Some(Self::Chief)
-        } else if has(&[
-            "\\marine",
-            "\\crewman",
-            "\\captain",
-            "\\pilot",
-            "\\cortana",
-            "\\keyes",
-            "\\johnson",
-            "\\bisenti",
-            "\\mendoza",
-            "\\jenkins",
-        ]) {
-            Some(Self::Human)
-        } else if has(&["\\elite", "\\grunt", "\\jackal", "\\hunter", "\\engineer"]) {
-            Some(Self::Covenant)
-        } else {
-            None
-        }
-    }
-}
-
-/// A role's words: per record path, the word at least half the role's
-/// retail bipeds hold there when it is not zero (the turret rule,
-/// [`TURRET_ROLE`]); and for each block whose elements are plain words
-/// (every field an unknown span), the element count most of the role's
-/// bipeds that have any hold, with each element's majority words.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct RoleWords {
-    pub members: Vec<String>,
-    pub root: Vec<(String, u32)>,
-    pub blocks: Vec<(String, Vec<RoleElement>)>,
-}
-
-/// One block element's role words, as (path in the element, word).
-pub type RoleElement = Vec<(String, u32)>;
-
-pub(crate) type Tally = std::collections::BTreeMap<String, std::collections::BTreeMap<u32, usize>>;
-
-/// The 4-byte unknown spans of `d` and the structs it embeds (not its
-/// blocks), as (path, offset).
-pub(crate) fn word_spans(d: &StructDef, prefix: &str, at: u32, out: &mut Vec<(String, u32)>) {
-    for f in &d.fields {
-        let p = format!("{prefix}{}", f.name);
-        match &f.kind {
-            defs::Kind::Struct(s) => word_spans(s, &format!("{p}."), at + f.offset, out),
-            defs::Kind::Unknown { len: 4, .. } => out.push((p, at + f.offset)),
-            _ => {}
-        }
-    }
-}
-
-/// The plain-word blocks of `d` and the structs it embeds: (path, offset
-/// of the block field, element definition).
-fn word_blocks<'d>(
-    d: &'d StructDef,
-    prefix: &str,
-    at: u32,
-    out: &mut Vec<(String, u32, &'d StructDef)>,
-) {
-    for f in &d.fields {
-        let p = format!("{prefix}{}", f.name);
-        match &f.kind {
-            defs::Kind::Struct(s) => word_blocks(s, &format!("{p}."), at + f.offset, out),
-            defs::Kind::Block(e)
-                if e.fields
-                    .iter()
-                    .all(|x| matches!(x.kind, defs::Kind::Unknown { len: 4, .. })) =>
-            {
-                out.push((p, at + f.offset, e))
-            }
-            _ => {}
-        }
-    }
-}
-
-pub(crate) fn tally_words(bytes: &[u8], spans: &[(String, u32)], t: &mut Tally) {
-    for (p, o) in spans {
-        let o = *o as usize;
-        if o + 4 <= bytes.len() {
-            let w = u32::from_le_bytes(bytes[o..o + 4].try_into().expect("4"));
-            *t.entry(p.clone()).or_default().entry(w).or_default() += 1;
-        }
-    }
-}
-
-pub(crate) fn majority(t: &Tally) -> Vec<(String, u32)> {
-    let mut out = Vec::new();
-    for (p, vals) in t {
-        let n: usize = vals.values().sum();
-        if let Some((w, c)) = vals.iter().max_by_key(|(_, c)| **c)
-            && *w != 0
-            && 2 * c >= n
-        {
-            out.push((p.clone(), *w));
-        }
-    }
-    out
-}
-
-/// [`RoleWords`] over the bipeds of `role` the base map holds. Computed
-/// from the map at conversion time, so no retail value is kept in the
-/// source; `None` when the base has none of the role.
-pub fn biped_role(base: &crate::base::Base, role: BipedRole) -> Result<Option<RoleWords>> {
-    let d = def(b"bipd")?;
-    let mut spans = Vec::new();
-    word_spans(d, "", 0, &mut spans);
-    let mut blocks = Vec::new();
-    word_blocks(d, "", 0, &mut blocks);
-    let members: Vec<(TagId, String)> = base
-        .tags
-        .iter()
-        .filter(|t| t.1 == FourCC(*b"bipd") && BipedRole::of_h2(&t.2) == Some(role))
-        .map(|t| (t.0, t.2.clone()))
-        .collect();
-    if members.is_empty() {
-        return Ok(None);
-    }
-    let mut root = Tally::new();
-    let mut counts: Vec<std::collections::BTreeMap<usize, usize>> =
-        vec![Default::default(); blocks.len()];
-    let mut elements: Vec<Vec<Tally>> = vec![Vec::new(); blocks.len()];
-    for (id, _) in &members {
-        let bytes = base.root(*id)?;
-        tally_words(&bytes, &spans, &mut root);
-        for (k, (_, at, e)) in blocks.iter().enumerate() {
-            let mut espans = Vec::new();
-            word_spans(e, "", 0, &mut espans);
-            let mut i = 0;
-            while let Some(x) = base.element(&bytes, *at as usize, e.size as usize, i)? {
-                if elements[k].len() <= i {
-                    elements[k].push(Tally::new());
-                }
-                tally_words(&x, &espans, &mut elements[k][i]);
-                i += 1;
-            }
-            if i > 0 {
-                *counts[k].entry(i).or_default() += 1;
-            }
-        }
-    }
-    let mut out_blocks = Vec::new();
-    for (k, (path, _, _)) in blocks.iter().enumerate() {
-        let having: usize = counts[k].values().sum();
-        if 2 * having < members.len() {
-            continue;
-        }
-        let (n, _) = counts[k]
-            .iter()
-            .max_by_key(|(n, c)| (**c, **n))
-            .expect("some");
-        out_blocks.push((
-            path.clone(),
-            elements[k][..*n].iter().map(majority).collect(),
-        ));
-    }
-    Ok(Some(RoleWords {
-        members: members.into_iter().map(|m| m.1).collect(),
-        root: majority(&root),
-        blocks: out_blocks,
-    }))
-}
+/// H1 caches these rates per tick. The c20 monitor and its 04b counterpart
+/// agree on all three flying accelerations after conversion to seconds.
+pub const BIPED_RATES: &[(&str, usize)] = &[
+    ("unknown_1f8", 0x3b4), ("unknown_250", 0x4cc), ("unknown_2e4", 0x33c),
+    ("unknown_2e8", 0x340), ("unknown_2f0", 0x348),
+];
 
 /// Writes role words into `r`, noting them under `scope`, `r`'s path in
 /// the tag ([`crate::provenance`]).
@@ -2670,84 +2169,22 @@ pub fn usable_size(s: &h1::BipedSize) -> bool {
         .all(|v| v.is_finite() && *v > 0.0)
 }
 
-/// Whether elements of `d` hold a tag reference at any depth.
-fn holds_reference(d: &StructDef) -> bool {
-    d.fields.iter().any(|f| match &f.kind {
-        defs::Kind::TagRef { .. } => true,
-        defs::Kind::Block(e) | defs::Kind::Struct(e) => holds_reference(e),
-        _ => false,
-    })
-}
-
-/// The fields of `d` that carry references, as record paths: every tag
-/// reference of the root and its embedded structs, and every block whose
-/// elements hold one at any depth (the block is the unit that carries
-/// them: attachments with their markers, the HUD interfaces, camera
-/// tracks, damage sections). Blocks of plain words never do, so these
-/// never meet [`RoleWords::blocks`].
-pub fn reference_fields(d: &StructDef) -> Vec<String> {
-    fn walk(d: &StructDef, prefix: &str, out: &mut Vec<String>) {
-        for f in &d.fields {
-            let p = format!("{prefix}{}", f.name);
-            match &f.kind {
-                defs::Kind::Struct(s) => walk(s, &format!("{p}."), out),
-                defs::Kind::TagRef { .. } => out.push(p),
-                defs::Kind::Block(e) if holds_reference(e) => out.push(p),
-                _ => {}
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(d, "", &mut out);
-    out
-}
-
-/// `bipd` fields a rebuilt biped never takes from its counterpart: the
-/// model is Halo 1's.
-pub const BIPED_OWN: &[&str] = &["unit.obje.model"];
-/// Taken from the counterpart with its references though they hold
-/// none: attachments and change colours name the object's functions
-/// (`obje +0x64`, matched by name, `0x000bac20`), so the functions come
-/// with them.
-pub const BIPED_WITH_REFERENCES: &[&str] = &["unit.obje.functions"];
 /// `bipd +0x1a0`, the HUD interfaces (one `nhdt` reference each,
 /// [`crate::health_hud::UNIT_HUD_INTERFACES`]).
 pub const BIPD_HUD: &str = "unit.block_1a0";
-/// `hlmt` fields a rebuilt model never takes from a counterpart: its
-/// chain, nodes and regions are Halo 1's, and variants name the
-/// counterpart's regions (the template path clears them too).
-pub const MODEL_OWN: &[&str] = &[
-    "render_model",
-    "collision_model",
-    "phys_ref_18",
-    "physics_model",
-    "variants",
-    "regions",
-    "nodes",
-];
-
-/// The fields of `counterpart` (a record of `d`) a rebuilt tag takes:
-/// [`reference_fields`] less `own`, plus `with`.
-pub fn counterpart_fields(
-    d: &StructDef,
-    counterpart: &Record,
-    own: &[&str],
-    with: &[&str],
-) -> Vec<(String, Val)> {
-    reference_fields(d)
-        .into_iter()
-        .filter(|p| !own.contains(&p.as_str()))
-        .chain(with.iter().map(|p| p.to_string()))
-        .filter_map(|p| counterpart.at(&p).cloned().map(|v| (p, v)))
-        .collect()
-}
-
-/// What a rebuilt biped takes beyond Halo 1's header and its role's words.
+/// Halo 1 resources converted for the unit.
 #[derive(Clone, Debug, Default)]
 pub struct BipedParts {
-    /// The Halo 2 counterpart's `bipd` record ([`COUNTERPARTS`]): its
-    /// references ([`counterpart_fields`]).
-    pub counterpart: Option<Record>,
+    pub tracks: Vec<TagId>,
+    pub weapons: Vec<TagId>,
+    pub integrated_light: Option<TagId>,
+    pub blood: Option<TagId>,
+    pub melee: Option<TagId>,
+    pub attachments: Vec<AttachmentSpec>,
+    pub functions: Vec<crate::functions::FunctionSpec>,
+    pub creation: Option<TagId>,
+    /// The mass of the rebuilt rigid bodies, when present.
+    pub mass: Option<f32>,
     /// HUD interfaces in place of the counterpart's ([`BIPD_HUD`]): the
     /// player's, with the health meter.
     pub hud: Option<Vec<TagId>>,
@@ -2822,40 +2259,40 @@ pub fn counterpart_candidates(path: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// A Halo 1 biped written from the `bipd` definition: the object header
-/// (type 0, Halo 1's bounding sphere, the model and its predicted
-/// resources), its role's words ([`biped_role`]), Halo 1's camera field
-/// of view, [`BIPED_WORDS`] and collision size with the character shapes
-/// sized to it ([`biped_shapes`]), and every reference its counterpart
-/// carries ([`BipedParts`]), the HUD interfaces replaced when given.
-/// Blocks other than those stay empty.
+/// Build the biped and its unit layer from its source object and resources.
 pub fn biped(
     unit: &h1::Unit,
     hlmt: Option<TagId>,
     predicted: &[Predicted],
-    role: &RoleWords,
     parts: &BipedParts,
 ) -> Result<Block> {
     let d = def(b"bipd")?;
     let mut r = defs::default_record(d);
-    role_words(&mut r, "", &role.root)?;
-    for (path, elems) in &role.blocks {
-        let e = d
-            .child(path)
-            .ok_or_else(|| Error::Invalid(format!("bipd {path}")))?;
-        let mut out = Vec::new();
-        for (i, words) in elems.iter().enumerate() {
-            let mut x = defs::default_record(e);
-            role_words(&mut x, &format!("{path}[{i}]."), words)?;
-            out.push(x);
+    object_effects(b"bipd", &mut r, "unit.obje", &parts.attachments, parts.creation)?;
+    object_functions(b"bipd", &mut r, "unit.obje", &parts.functions)?;
+    for (path, group, target) in [
+        ("unit.effe_ref_c4", b"effe", parts.integrated_light),
+        ("ref_25c", b"effe", parts.blood),
+        ("unit.ref_164", b"jpt!", parts.melee),
+    ] {
+        if let Some(id) = target {
+            set(&mut r, path, Val::tag(FourCC(*group), id))?;
         }
-        set(&mut r, path, Val::Block(out))?;
     }
-    if let Some(c) = &parts.counterpart {
-        for (path, v) in counterpart_fields(d, c, BIPED_OWN, BIPED_WITH_REFERENCES) {
-            crate::provenance::note(path.as_str(), &v);
-            set(&mut r, &path, v)?;
+    for (path, field, group, ids) in [
+        ("unit.block_e8", "ref_0", b"trak", &parts.tracks),
+        ("unit.weapons", "weapon", b"weap", &parts.weapons),
+    ] {
+        let mut elements = Vec::new();
+        for id in ids {
+            let mut e = defs::default_record(d.child(path).expect("unit reference block"));
+            set(&mut e, field, Val::tag(FourCC(*group), *id))?;
+            elements.push(e);
         }
+        set(&mut r, path, Val::Block(elements))?;
+    }
+    if let Some(mass) = parts.mass {
+        set(&mut r, "unknown_274", Val::Bytes(mass.to_le_bytes().to_vec()))?;
     }
     if let Some(hud) = &parts.hud {
         let e = d.child(BIPD_HUD).expect("bipd HUD interfaces");
@@ -2868,6 +2305,7 @@ pub fn biped(
         set(&mut r, BIPD_HUD, Val::Block(out))?;
     }
     let obj = &unit.object;
+    object_tuning(&mut r, "unit.obje", obj)?;
     set(&mut r, "unit.obje.object_type", Val::Enum(BIPED_TYPE))?;
     set(
         &mut r,
@@ -2896,15 +2334,51 @@ pub fn biped(
             set(&mut r, path, Val::text(marker))?;
         }
     }
-    for (path, at) in BIPED_WORDS {
+    for (path, at) in BIPED_WORDS.iter().chain(UNIT_WORDS) {
         if let Some((_, w)) = unit.biped_words.iter().find(|x| x.0 == *at) {
             set(&mut r, path, Val::Bytes(w.to_le_bytes().to_vec()))?;
         }
+    }
+    for (path, at) in BIPED_RATES {
+        if let Some((_, ticks)) = unit.biped_words.iter().find(|w| w.0 == *at) {
+            let rate = 30.0 * f32::from_bits(*ticks);
+            set(&mut r, path, Val::Bytes(rate.to_le_bytes().to_vec()))?;
+        }
+    }
+    if let Some((_, flags)) = unit.biped_words.iter().find(|w| w.0 == 0x2f4) {
+        // H1 cyborgs and both H2 player characters use the player bit.
+        // Both flying controller pairs (monitor, sentinel) select 0x13.
+        let controller = ((flags & 2) << 1) | if flags & 4 != 0 { 0x13 } else { 0 };
+        set(&mut r, "unknown_264", Val::Bytes(controller.to_le_bytes().to_vec()))?;
     }
     if let Some(size) = unit.size.filter(usable_size) {
         for (path, v) in biped_shapes(&size)? {
             set(&mut r, &path, v)?;
         }
+    }
+    if let Some(size) = unit.size.filter(|s| !usable_size(s)) {
+        // 0x1c2460 selects one of two spheres when the pill array is empty.
+        let radius = if size.radius > 0.0 { size.radius } else { obj.bounding_radius };
+        let mut sphere = defs::default_record(d.child("block_294").expect("character sphere"));
+        for (path, word) in [("unknown_4", 0xffff_u32), ("unknown_1c", 0xffff_0000)] {
+            set(&mut sphere, path, Val::Bytes(word.to_le_bytes().to_vec()))?;
+        }
+        for (path, value) in [
+            ("unknown_2c", radius), ("unknown_40", 1.0), ("unknown_54", 1.0),
+            ("unknown_68", 1.0), ("unknown_70", obj.bounding_offset[0]),
+            ("unknown_74", obj.bounding_offset[1]), ("unknown_78", obj.bounding_offset[2]),
+        ] {
+            set(&mut sphere, path, Val::Bytes(value.to_le_bytes().to_vec()))?;
+        }
+        set(&mut r, BIPD_SIZE[2], Val::Bytes(radius.to_le_bytes().to_vec()))?;
+        let mut probes = Vec::new();
+        for scale in SPHERE_SCALES {
+            let mut probe = sphere.clone();
+            set(&mut probe, "unknown_2c", Val::Bytes((scale * radius).to_le_bytes().to_vec()))?;
+            probes.push(probe);
+        }
+        set(&mut r, BIPD_SPHERES, Val::Block(probes))?;
+        set(&mut r, "block_294", Val::Block(vec![sphere.clone(), sphere]))?;
     }
     built(d, &r)
 }
@@ -3138,65 +2612,19 @@ pub const LIGHT_NO_SHADOW: u32 = 1 << 3;
 pub const LIGHT_SPHERE: u32 = 0;
 pub const LIGHT_FRUSTUM: u32 = 2;
 
-/// The base map's lights of one kind, as the turret rule takes them: the
-/// majority word of every 4-byte unknown span, and the majority
-/// brightness bounds. `None` when the base has no light of the kind.
-#[derive(Clone, Debug, PartialEq)]
-pub struct LightRole {
-    pub words: RoleWords,
-    pub brightness: [f32; 2],
-}
-
-pub fn light_role(base: &crate::base::Base, kind: u32) -> Result<Option<LightRole>> {
-    let d = def(b"ligh")?;
-    let kind_at = field_offset(d, "kind")? as usize;
-    let bright_at = field_offset(d, "brightness")? as usize;
-    let mut members = Vec::new();
-    let mut bright = std::collections::BTreeMap::<(u32, u32), usize>::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"ligh")) {
-        let bytes = base.head(t.0, d.size.into())?;
-        if u32::from(u16::from_le_bytes([bytes[kind_at], bytes[kind_at + 1]])) != kind
-        {
-            continue;
-        }
-        *bright
-            .entry((
-                crate::base::u32_at(&bytes, bright_at),
-                crate::base::u32_at(&bytes, bright_at + 4),
-            ))
-            .or_default() += 1;
-        members.push((t.2.clone(), bytes));
-    }
-    if members.is_empty() {
-        return Ok(None);
-    }
-    let (b, _) = bright
-        .iter()
-        .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
-        .expect("some");
-    Ok(Some(LightRole {
-        words: role_over(base, d, &members)?,
-        brightness: [f32::from_bits(b.0), f32::from_bits(b.1)],
-    }))
-}
-
 /// A Halo 1 light written from the `ligh` definition, no retail template
 /// read: a sphere of Halo 1's radius, or a frustum (Halo 1's cutoff angle
 /// as the field of view, its radius as the range), Halo 1's two colours as
 /// the diffuse and specular colours at the two intensity bounds, no
-/// shadow, Halo 1's duration in seconds (ticks over 30), and the kind's
-/// role words and brightness ([`LightRole`]); everything else the
+/// shadow, Halo 1's duration in seconds (ticks over 30), and unity
+/// brightness. Everything else takes the
 /// definition's default.
-pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
+pub fn light(l: &h1::Light) -> Result<Block> {
     let d = def(b"ligh")?;
     let mut r = defs::default_record(d);
-    if let Some(role) = role {
-        role_words(&mut r, "", &role.words.root)?;
-        crate::provenance::note("brightness", &Val::floats(&role.brightness));
-        set(&mut r, "brightness", Val::floats(&role.brightness))?;
-    } else {
-        set(&mut r, "brightness", Val::floats(&[1.0, 1.0]))?;
-    }
+    // 0x000c0dc9 interpolates RGB and a separate brightness multiplier.
+    // Halo 1 specifies RGB directly, so its multiplier is unity.
+    set(&mut r, "brightness", Val::floats(&[1.0, 1.0]))?;
     set(&mut r, "flags", Val::Int(LIGHT_NO_SHADOW.into()))?;
     if l.is_cone() {
         set(&mut r, "kind", Val::Enum(LIGHT_FRUSTUM))?;
@@ -3228,74 +2656,25 @@ pub fn light(l: &h1::Light, role: Option<&LightRole>) -> Result<Block> {
     built(d, &r)
 }
 
-/// The base map's decals as a role: the majority layer, maximum
-/// overlapping count and `+0x18` scale word (the turret rule, no retail
-/// value in the source). `None` when the base has no decal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecalRole {
-    pub layer: u16,
-    pub max_overlapping: u16,
-    pub scale_18: u32,
-}
-
-pub fn decal_role(base: &crate::base::Base) -> Result<Option<DecalRole>> {
-    let d = def(b"deca")?;
-    let mut tallies: [std::collections::BTreeMap<u32, usize>; 3] = Default::default();
-    let mut n = 0;
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"deca")) {
-        let b = base.head(t.0, d.size.into())?;
-        n += 1;
-        *tallies[0].entry(u16::from_le_bytes([b[4], b[5]]).into()).or_default() += 1;
-        *tallies[1].entry(u16::from_le_bytes([b[6], b[7]]).into()).or_default() += 1;
-        *tallies[2].entry(crate::base::u32_at(&b, 0x18)).or_default() += 1;
-    }
-    if n == 0 {
-        return Ok(None);
-    }
-    let top = |t: &std::collections::BTreeMap<u32, usize>| {
-        *t.iter()
-            .max_by_key(|(w, c)| (**c, std::cmp::Reverse(**w)))
-            .expect("some")
-            .0
-    };
-    Ok(Some(DecalRole {
-        layer: top(&tallies[0]) as u16,
-        max_overlapping: top(&tallies[1]) as u16,
-        scale_18: top(&tallies[2]),
-    }))
-}
-
 /// A Halo 1 decal written from the `deca` definition, no retail template
 /// read: Halo 1's flags, kind, radius, colours, lifetime, decay time and
 /// sprite extent (the two hold them in the same order), the converted
-/// next decal and bitmap, and the role's layer, overlap count and scale
-/// ([`DecalRole`]; Halo 1's layer enumeration is not Halo 2's).
+/// next decal and bitmap, and the corresponding Halo 2 layer.
 pub fn decal(
     x: &h1::Decal,
     next: Option<TagId>,
     bitmap: Option<TagId>,
-    role: Option<&DecalRole>,
 ) -> Result<Block> {
     let d = def(b"deca")?;
     let mut r = defs::default_record(d);
     set(&mut r, "flags", Val::Int(x.flags.into()))?;
     set(&mut r, "kind", Val::Int(x.kind.into()))?;
-    let role = role.copied().unwrap_or(DecalRole {
-        layer: 1,
-        max_overlapping: 8,
-        scale_18: 0.75f32.to_bits(),
-    });
-    for (path, v) in [
-        ("layer", Val::Int(role.layer.into())),
-        ("max_overlapping", Val::Int(role.max_overlapping.into())),
-        (
-            "unknown_18",
-            Val::Bytes(role.scale_18.to_le_bytes().to_vec()),
-        ),
-    ] {
-        crate::provenance::note(path, &v);
-        set(&mut r, path, v)?;
-    }
+    // H1's solid, inner glow, outer glow and environment layers.
+    // See the matched impact, plasma-burn and airlock-floor decal chains
+    // in role-audit.md. A layer outside the H1 enumeration is malformed.
+    let layer = [2, 4, 5, 1].get(usize::from(x.layer))
+        .ok_or_else(|| Error::Invalid(format!("unknown Halo 1 decal layer {}", x.layer)))?;
+    set(&mut r, "layer", Val::Int(*layer))?;
     set(&mut r, "next_decal", Val::tag(FourCC(*b"deca"), next.unwrap_or(TagId::NULL)))?;
     set(&mut r, "radius", Val::floats(&x.radius))?;
     set(&mut r, "colour_lower", Val::floats(&x.colour_lower))?;

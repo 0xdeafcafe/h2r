@@ -750,6 +750,11 @@ Halo ring were already built this way.
   base map uses, so the converted map built on that base reads the same
   ones). On 05a the jeep takes the warthog's four, the tank the
   scorpion's two; hover vehicles, fliers and turrets have none.
+- **Built** in the full-rebuild lane. The vehicle's native drivetrain is
+  selected once. Its seat, movement and wheel geometry come from Halo 1.
+  The loader at `0x205550` builds the phantom's pointers from the inline
+  mass-point spheres. The role descriptions below record earlier converter
+  versions. See [the current source mappings](../halo1/role-audit.md).
 - **The type's role** (`rebuild::vehicle_role`): the turret rule over the
   base map's vehicles of the same `vehicle_type`, at conversion time:
   each 4-byte unknown span of the root, every seat, every friction and

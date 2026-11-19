@@ -396,10 +396,10 @@ instances); bytes are left to [function.rs](#function-curve-data).
 | +0 u16 | `flags` (0, 1, 8, 0x100, 0x108, 0x148, 0x168 ...) | V values; meaning unreviewed |
 | +2 u16 | `kind` 0..=3 | V range |
 | +4 u16 | `layer` 1..=5 | V range |
-| +6 u16 | `max_overlapping` (8 on 1,419 of 1,570) | E: placement code (`0x0017ef10`) skips the decal when zero |
+| +6 u16 | `max_overlapping` (8 on 1,419 of 1,570) | E: zero skips the overlap search at `0x0017f030` and continues placement at `0x0017f304` |
 | +8 tag ref | `next_decal`, class `deca` (null on 1,172 of 1,571) | V |
 | +0x10/+0x14 f32 | `radius` pair | E: `+0x14` scales the placement test (`0x0017e670`) |
-| +0x18 f32 | `unknown_18` (0.75 on 1,543) | E: read as a scale in `0x0017ef10` |
+| +0x18 f32 | `unknown_18` (0.75 on 1,543) | E: placement uses one for a zero scale at `0x0017f088` |
 | +0x1c..+0x34 | two RGB triples | S |
 | +0x34..+0x44 | four f32 (180/180/20/20 on 773) | unreviewed |
 | +0x88 tag ref | `bitmap`, class `bitm` | V, 1,970 refs resolve across `next_decal` and `bitmap` |
