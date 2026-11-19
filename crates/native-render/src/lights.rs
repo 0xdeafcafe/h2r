@@ -108,9 +108,11 @@ pub struct LightConstants {
     /// Falloff word 0 (`[0x00485a30]`, scalar 16).
     pub falloff_0: u32,
     /// The `bitm` datum engine texture 10 (the gel) binds, image 0
-    /// (`engine::light_passes::gel`); `None`: something else, which the
-    /// host does not draw.
+    /// (`engine::light_passes::gel`). A shader-driven gel uses the live
+    /// target-13 binding supplied separately by its producer.
     pub gel: Option<u32>,
+    /// The constants setup also renders a shader into target 13.
+    pub animated_gel: bool,
 }
 
 impl LightConstants {
@@ -125,18 +127,24 @@ impl LightConstants {
 /// feature adds lights while the pass waits in the device; the pass takes
 /// them when the device issues it ([`Run::seal`]), after which the next
 /// native light needs a new run (a D3D light's draws came between).
-#[derive(Debug, Default)]
-pub struct Run {
-    inner: Mutex<(Vec<Light>, bool)>,
+#[derive(Debug)]
+pub struct Run<T = Light> {
+    inner: Mutex<(Vec<T>, bool)>,
 }
 
-impl Run {
+impl<T> Default for Run<T> {
+    fn default() -> Self {
+        Self { inner: Mutex::default() }
+    }
+}
+
+impl<T> Run<T> {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Adds `light`; `false` once the run is sealed.
-    pub fn push(&self, light: Light) -> bool {
+    pub fn push(&self, light: T) -> bool {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if g.1 {
             return false;
@@ -146,7 +154,7 @@ impl Run {
     }
 
     /// Takes the lights and closes the run (the device issued its pass).
-    pub fn seal(&self) -> Vec<Light> {
+    pub fn seal(&self) -> Vec<T> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.1 = true;
         std::mem::take(&mut g.0)

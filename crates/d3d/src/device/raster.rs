@@ -1615,6 +1615,16 @@ impl<B: Backend> Device<B> {
         Ok(Some((bound, pieces)))
     }
 
+    /// The projected, guest-rounded rectangle after SetScissors. A
+    /// disjoint window would need several scissored draws.
+    pub fn light_scissor(&self, mem: &dyn GuestMemory) -> Result<[u32; 4], &'static str> {
+        match self.draw_clip(mem).map_err(|_| "unreadable light scissor")? {
+            None => Ok([0; 4]),
+            Some((r, pieces)) if pieces.is_empty() => Ok([r.x, r.y, r.width, r.height]),
+            Some(_) => Err("light uses disjoint window clips"),
+        }
+    }
+
     /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,
     /// Z, Stencil`).
     #[allow(clippy::too_many_arguments)] // the D3D signature
@@ -1630,9 +1640,22 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         const E: &str = "D3DDevice_Clear";
         self.live(E)?;
-        self.sync_push_buffer(mem)?;
+        self.sync_residual_entry(mem, EntryKind::Clear)?;
         let (w, h) = self.target_size(mem)?;
         let v = self.viewport;
+        let mask = ChannelMask::from_flags(flags);
+        if self.residual.enabled
+            && count == 0
+            && w != 0
+            && h != 0
+            && v.x == 0
+            && v.y == 0
+            && v.width >= w
+            && v.height >= h
+            && (mask.all() || !mask.any())
+        {
+            return self.native_attachment_clear(mem, E, flags, mask, color, z, stencil);
+        }
         let vp = Rect {
             x1: v.x as i32,
             y1: v.y as i32,
@@ -1675,7 +1698,6 @@ impl<B: Backend> Device<B> {
         if pixels.is_empty() {
             return Ok(());
         }
-        let mask = ChannelMask::from_flags(flags);
         let (c, d) = self.current_targets(mem, E)?;
         let depth = (flags & clear_flags::ZBUFFER != 0 && d.is_some()).then_some(z);
         let stencil = (flags & clear_flags::STENCIL != 0 && d.is_some()).then_some(stencil as u8);

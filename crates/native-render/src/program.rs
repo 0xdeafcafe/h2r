@@ -69,10 +69,8 @@ pub const WORLD_FETCH: [InputFetch; 16] = {
     f
 };
 
-/// [`INPUTS`] with the frame and lighting vector as floats (the
-/// [`WorldVertex`] fields): what the native lights read, from the placed
-/// copy of the world (`crate::light_gpu`; their programs translate with
-/// float fetch).
+/// Float layout of the placed world's frame and lighting vector.
+/// Cluster material and light programs use [`INPUTS`] and [`WORLD_FETCH`].
 pub const FLOAT_INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (0, std::mem::offset_of!(WorldVertex, position) as u64, wgpu::VertexFormat::Float32x3),
     (1, std::mem::offset_of!(WorldVertex, uv) as u64, wgpu::VertexFormat::Float32x2),
@@ -293,7 +291,7 @@ pub fn rigid_vertex(base: &VertexUniforms, view: &ViewInputs, rows: &ModelRows) 
 
 /// Whether the native world sets constant `c` (hardware numbering) for a
 /// pass with instance constants `instance`.
-fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
+pub(crate) fn set_constants(instance: &[Register]) -> impl Fn(u8) -> bool + '_ {
     move |c| {
         let c = usize::from(c);
         c < VIEW_CONSTANTS
@@ -342,6 +340,11 @@ pub fn constants_read(program: &vsh::Program) -> Result<Vec<u8>, String> {
 ///   the border in the shader).
 pub fn world_parity(look: &PassLook) -> Result<(), String> {
     let def = PixelShaderDef::from_bytes(&look.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
+    pixel_parity(&def, &look.stage_states, look.textures.map(|s| s != Stage::Empty))
+}
+
+/// Pixel dependencies that neither the world nor the light pass supplies.
+pub(crate) fn pixel_parity(def: &PixelShaderDef, stages: &[StageStates], sampled: [bool; 4]) -> Result<(), String> {
     let c = def.decode();
     let Some(f) = c.final_combiner else {
         return Err("no final combiner (D3D builds one from the fog and specular states)".into());
@@ -364,9 +367,8 @@ pub fn world_parity(look: &PassLook) -> Result<(), String> {
             return Err(format!("stage {n} texture mode {m:?} reads device state"));
         }
     }
-    for (n, s) in look.stage_states.iter().enumerate().take(4) {
-        let sampled = look.textures[n] != Stage::Empty;
-        if sampled && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
+    for (n, s) in stages.iter().enumerate().take(4) {
+        if sampled[n] && [s.address_u, s.address_v, s.address_w].contains(&ADDRESS_BORDER) {
             return Err(format!("stage {n} addresses the border"));
         }
     }
@@ -793,10 +795,13 @@ pub(crate) struct Gpu {
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
     stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    /// The pass's own pipelines by target formats ([`Gpu::pipeline`]):
+    /// the fog and water layers' passes, whose state is each pass's own
+    /// (`crate::fog_gpu`, `crate::water_gpu`).
+    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
 }
 
 /// A world or rigid pipeline's key: target formats, stencil state and the
@@ -922,8 +927,8 @@ impl Gpu {
             samplers,
             stage_views,
             stage_info,
-            pipelines: HashMap::new(),
             world_pipelines: HashMap::new(),
+            pipelines: HashMap::new(),
         })
     }
 
@@ -1111,8 +1116,11 @@ impl Rigid {
     /// Uploads `gpu`'s rigid program for `material`'s placements in
     /// `world`; `None` without one, or with no placement to draw.
     pub(crate) fn new(device: &wgpu::Device, gpu: &Gpu, world: &World, material: u16) -> Option<Self> {
+        Self::with_slots(device, gpu, rigid_slots(world, material)?)
+    }
+
+    pub(crate) fn with_slots(device: &wgpu::Device, gpu: &Gpu, slots: Vec<(u32, ModelRows)>) -> Option<Self> {
         let program = gpu.program.rigid.clone()?;
-        let slots = rigid_slots(world, material)?;
         if slots.is_empty() {
             return None;
         }
@@ -1408,7 +1416,8 @@ mod tests {
         let regs: Vec<u32> = INPUTS.iter().map(|i| i.0).collect();
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
-        assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
+        assert_eq!(INPUTS[6], (6, 20, wgpu::VertexFormat::Float32x2));
+        assert_eq!(FLOAT_INPUTS[6].1, 20, "the lights still read the float coordinate");
         assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
         assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
         // The packed registers are words, decoded in the shader.

@@ -25,6 +25,7 @@ struct Seen {
     color: wgpu::TextureFormat,
     depth_is_depth: bool,
     sizes: ((u32, u32), (u32, u32)),
+    copy: d3d::TargetCopy,
 }
 
 type Got = Arc<Mutex<Vec<Seen>>>;
@@ -40,6 +41,7 @@ impl ExternalPass for Probe {
             color: t.color_format,
             depth_is_depth: t.depth_format.is_depth_stencil_format(),
             sizes: (t.guest_size, t.size),
+            copy: t.copy,
         });
         drop(t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("probe"),
@@ -182,6 +184,42 @@ fn passes_asked_before_one_drain_are_all_issued_in_order() {
     assert_eq!(order.lock().unwrap().len(), 2, "issued once");
 }
 
+#[test]
+fn an_immediate_reference_marker_follows_pending_passes_and_is_never_reissued() {
+    let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    let order = Arc::default();
+    d.request_external_pass(Box::new(Named("pending", Arc::clone(&order))));
+    // RecordingBackend declines the GPU operation, but each pass sees its
+    // constants immediately, after the commands preceding this boundary.
+    assert!(!d.external_pass_now(&mut m, Box::new(Named("marker", Arc::clone(&order)))).unwrap());
+    assert_eq!(*order.lock().unwrap(), vec!["pending", "marker"]);
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(order.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_confirmed_threaded_pass_reports_the_actual_target_refusal_to_the_guest() {
+    struct Confirmed;
+    impl ExternalPass for Confirmed {
+        fn confirm_issue(&self) -> bool { true }
+        fn encode(&mut self, _: ExternalTarget<'_>) {}
+    }
+
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    let (mut d, mut m) = create(ThreadedBackend::new(backend).unwrap(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    // The worker advertised external passes but declines this request.
+    d.backend.with_inner(|b| b.external_passes = false).unwrap();
+    assert!(d.can_external_pass());
+    assert!(!d.external_pass_now(&mut m, Box::new(Confirmed)).unwrap());
+    assert_eq!(d.stats().external_refusals[d3d::ExternalRefusal::Backend.index()], 1);
+    d.backend.with_inner(|b| b.external_passes = true).unwrap();
+    assert!(d.external_pass_now(&mut m, Box::new(Confirmed)).unwrap());
+    assert_eq!(d.stats().external_passes, 1);
+}
+
 /// Keeps the depth clip it is given.
 struct Clip(Arc<Mutex<Option<d3d::DepthClip>>>);
 
@@ -223,6 +261,7 @@ fn a_backend_that_cannot_drops_it() {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
     set_states(&mut d, &mut m);
     assert!(!d.can_external_pass());
+    assert_eq!(d.external_ready(&m, false), Err(d3d::ExternalRefusal::Unsupported));
     let got: Got = Arc::default();
     d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
     d.drain_until_callback(&mut m).unwrap();
@@ -253,6 +292,9 @@ fn colour_only<B: Backend>(b: B) {
         .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
         .unwrap();
     d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(d.external_ready(&m, false), Err(d3d::ExternalRefusal::NoDepth));
+    assert!(d.external_ready(&m, true).is_ok());
+    assert_eq!(d.stats().external_passes_dropped, 0, "preflight only reads");
     let needs: Got = Arc::default();
     d.request_external_pass(Box::new(Probe(Arc::clone(&needs))));
     d.drain_until_callback(&mut m).unwrap();
@@ -353,7 +395,6 @@ fn threaded_prepare_waits_for_actual_recording_and_refuses_partial_ranges() {
     assert!(d.prepare_external_pass(&mut m, plan(2), Box::new(pass)).unwrap().is_none());
     assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference]);
 }
-
 
 #[derive(Default)]
 struct SnapshotProbe(Mutex<Vec<d3d::ResolvedDraw>>);
@@ -550,4 +591,105 @@ fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
     bind_quad(&mut d, &mut m);
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(d.backend.draws().len(), 1);
+}
+
+/// Record a synthetic full-screen triangle. The caller's scissor and
+/// constant blend colour distinguish execution order and scaled copies.
+struct Paint {
+    run: u64,
+    x: u32,
+    color: wgpu::Color,
+    refuse_display: bool,
+    bundles: [Option<d3d::backend::ExternalBundles>; 2],
+}
+
+impl ExternalPass for Paint {
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+
+    fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
+        let display = t.copy == d3d::TargetCopy::Display;
+        if display && self.refuse_display { return Err("synthetic second-copy refusal"); }
+        let shader = t.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl("
+                @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+                    let p = array(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
+                    return vec4f(p[i], 0, 1);
+                }
+                @fragment fn fs() -> @location(0) vec4f { return vec4f(1); }
+            ".into()),
+        });
+        let pipeline = t.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None, layout: None,
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader, entry_point: Some("fs"), compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: t.color_format, write_mask: wgpu::ColorWrites::ALL,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Constant,
+                            dst_factor: wgpu::BlendFactor::Zero, operation: wgpu::BlendOperation::Add },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                })],
+            }),
+            primitive: Default::default(), multisample: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState { format: t.depth_format,
+                depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(), bias: Default::default() }),
+            multiview_mask: None, cache: None,
+        });
+        let mut b = t.device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+            label: None, color_formats: &[Some(t.color_format)], sample_count: 1, multiview: None,
+            depth_stencil: Some(wgpu::RenderBundleDepthStencil { format: t.depth_format,
+                depth_read_only: false, stencil_read_only: !t.depth_format.has_stencil_aspect() }),
+        });
+        b.set_pipeline(&pipeline);
+        b.draw(0..3, 0..1);
+        let scale = t.size.0 / t.guest_size.0;
+        self.bundles[usize::from(display)] = Some(d3d::backend::ExternalBundles {
+            run: self.run, ranges: 1, scissor: [self.x * scale, 0, 8 * scale, t.size.1],
+            groups: vec![(self.color, b.finish(&Default::default()))],
+        });
+        Ok(())
+    }
+
+    fn record_bundles(&mut self, target: &mut ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+        self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()
+    }
+}
+
+#[test]
+fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext { instance: ctx.instance.clone(), adapter: ctx.adapter.clone(),
+        device: ctx.device.clone(), queue: ctx.queue.clone(), caps: ctx.caps });
+    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    let seen: Got = Arc::default();
+    assert!(d.external_pass_now(&mut m, Box::new(Probe(seen.clone()))).unwrap());
+    assert_eq!(seen.lock().unwrap().iter().map(|s| s.copy).collect::<Vec<_>>(),
+        [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let baseline = GfxBackend::native_bundle_passes();
+    let paint = |x, color, refuse_display| Box::new(Paint { run: 17, x, color, refuse_display, bundles: [None, None] });
+    d.prepare_external_pass(&mut m, plan(1), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, plan(1), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
+    assert!(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
+    // A bundle can be well formed while its dynamic scissor is invalid for the
+    // actual render pass. Catch the validation error before taking the guest draws.
+    assert!(d.prepare_external_pass(&mut m, plan(1), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
+    drop(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
+    let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    assert_eq!(GfxBackend::native_bundle_passes(), baseline.map(|n| n + 1));
+    for (scale, pixels) in [(1usize, reference), (2, display)] {
+        for (x, rgba) in [(0, [255; 4]), (3, [255; 4]), (4, [0,0,0,255]), (11, [0,0,0,255]), (12, [0,255,0,255])] {
+            let at = x * scale * 4;
+            assert_eq!(pixels[at..at+4], rgba, "{scale}x at {x}");
+        }
+    }
 }

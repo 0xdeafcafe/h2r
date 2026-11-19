@@ -80,6 +80,13 @@ pub struct CachedBytes {
     pub bytes: std::sync::Arc<[u8]>,
 }
 
+impl CachedBytes {
+    /// An immutable derived stream with its own GPU cache identity.
+    pub fn derived(bytes: Vec<u8>) -> Self {
+        Self { id: crate::vertex_cache::next_snapshot_id(), bytes: bytes.into() }
+    }
+}
+
 impl StreamData {
     /// The cache snapshot's id, if this is one.
     pub fn cache_id(&self) -> Option<u64> {
@@ -267,6 +274,12 @@ pub trait ExternalPass: Send {
     /// reference and the scaled view), with the same frame each time.
     fn encode(&mut self, target: ExternalTarget<'_>) { self.record_ranges(target); }
 
+    /// The guest is deciding whether to skip the work this pass replaces.
+    /// Report the encoder's decision to that caller even on a threaded backend.
+    fn confirm_issue(&self) -> bool {
+        false
+    }
+
     /// Validate stage-specific resources on this copy before recording.
     fn prepare_copy(&mut self, _target: &ExternalTarget<'_>) -> Result<(), &'static str> {
         Ok(())
@@ -277,6 +290,10 @@ pub trait ExternalPass: Send {
     fn record_ranges(&mut self, _target: ExternalTarget<'_>) -> usize {
         0
     }
+
+    /// Fully recorded bundles for an ordered run on the bound attachments.
+    /// The per-copy reservation checks their range count before commit.
+    fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
@@ -368,6 +385,10 @@ pub struct ExternalTarget<'a> {
     pub uploads: &'a gfx::ring::SubmissionUploads,
     pub copy: TargetCopy,
     pub stages: [Option<&'a wgpu::TextureView>; 4],
+    /// An initially empty list for [`ExternalPass::record_ranges`] on an
+    /// isolated encoder. Callbacks run just before submission and are
+    /// discarded with a refused or cancelled recording.
+    pub on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl ExternalTarget<'_> {
@@ -460,6 +481,7 @@ pub enum ExternalCopies {
 
 /// GPU handles pinned for a complete prepare/record transaction.
 pub struct ExternalAttachments {
+    pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
     pub uploads: gfx::ring::SubmissionUploads,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -475,12 +497,18 @@ pub struct ExternalAttachments {
 }
 
 impl ExternalAttachments {
-    fn target<'a>(&'a self, request: ExternalPassRequest, encoder: &'a mut wgpu::CommandEncoder) -> ExternalTarget<'a> {
+    fn target<'a>(
+        &'a self,
+        request: ExternalPassRequest,
+        encoder: &'a mut wgpu::CommandEncoder,
+        on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
+    ) -> ExternalTarget<'a> {
         ExternalTarget {
             device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
             depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
             z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
             uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
+            on_submit,
         }
     }
 }
@@ -492,8 +520,56 @@ pub struct ExternalRecording {
     pub items: usize,
     pub copy: TargetCopy,
     pub ranges: usize,
-    pub commands: wgpu::CommandBuffer,
+    pub commands: ExternalCommands,
     pub uploads: gfx::ring::SubmissionUploads,
+    pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
+}
+
+pub struct ExternalBundles {
+    pub run: u64,
+    pub scissor: [u32; 4],
+    pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
+    pub ranges: usize,
+}
+
+impl ExternalBundles {
+    /// Use identical attachments and dynamic state for validation and final submission.
+    pub(crate) fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
+        depth: &wgpu::TextureView, stencil: bool, packets: &[Self]) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native light run"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+            }),
+            ..Default::default()
+        });
+        for draws in packets {
+            let [x, y, width, height] = draws.scissor;
+            pass.set_scissor_rect(x, y, width, height);
+            for (blend, bundle) in &draws.groups {
+                pass.set_blend_constant(*blend);
+                pass.execute_bundles(std::iter::once(bundle));
+            }
+        }
+    }
+}
+
+pub enum ExternalCommands {
+    Standalone(wgpu::CommandBuffer),
+    Bundles {
+        setup: wgpu::CommandBuffer,
+        targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
+        color: wgpu::TextureView,
+        depth: wgpu::TextureView,
+        stencil: bool,
+        draws: ExternalBundles,
+    },
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
@@ -1040,7 +1116,7 @@ pub trait Backend: Send {
         for target in targets {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
             let mut encoder = target.device.create_command_encoder(&Default::default());
-            let ready = pass.prepare_copy(&target.target(request, &mut encoder)).is_ok();
+            let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
             let invalid = pollster::block_on(scope.pop()).is_some();
             if !ready || invalid {
                 plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
@@ -1055,9 +1131,28 @@ pub trait Backend: Send {
         let mut recordings = Vec::with_capacity(prepared.len());
         for (target, mut encoder) in prepared {
             let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let ranges = pass.record_ranges(target.target(request, &mut encoder));
+            let mut on_submit = Vec::new();
+            let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
+            let (ranges, commands) = match bundles {
+                Some(draws) => {
+                    // Usage conflicts (e.g. sampling the colour attachment) and render-pass
+                    // compatibility are only checked when a finished bundle is executed.
+                    // Never submit this verification encoder. Both copies are still cancellable.
+                    let mut verify = target.device.create_command_encoder(&Default::default());
+                    ExternalBundles::encode_run(&mut verify, &target.color, &target.depth,
+                        target.depth_format.has_stencil_aspect(), std::slice::from_ref(&draws));
+                    drop(verify.finish());
+                    (draws.ranges, ExternalCommands::Bundles {
+                        setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                        stencil: target.depth_format.has_stencil_aspect(), draws,
+                    })
+                }
+                None => {
+                    let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
+                    (ranges, ExternalCommands::Standalone(encoder.finish()))
+                }
+            };
             plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
-            let commands = encoder.finish();
             let invalid = pollster::block_on(scope.pop()).is_some();
             let complete = plan.complete(target.copy, ranges);
             if invalid || !complete {
@@ -1065,7 +1160,16 @@ pub trait Backend: Send {
                 failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedRanges });
                 continue;
             }
-            recordings.push(ExternalRecording { stage: plan.stage, view: plan.view, items: item_count as usize, copy: target.copy, ranges, commands, uploads: target.uploads });
+            recordings.push(ExternalRecording {
+                stage: plan.stage,
+                view: plan.view,
+                items: item_count as usize,
+                copy: target.copy,
+                ranges,
+                commands,
+                uploads: target.uploads,
+                on_submit,
+            });
         }
         if let Some(why) = failure { return refuse(why); }
         Ok(Some(recordings))

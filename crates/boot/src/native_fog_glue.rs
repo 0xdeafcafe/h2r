@@ -9,11 +9,11 @@
 //!
 //! - **At load** ([`load`], on the world's worker, before the world's
 //!   draws are kept): each material's layer-16 passes
-//!   (`native_render::fog_gpu::fog_passes`) compiled with their own
+//!   (`native_render::fog_gpu::layer_passes`) compiled with their own
 //!   programs ([`FogProgram::compile`]), all or nothing, their stage
 //!   images decoded and their fog words kept; then the parts that can
-//!   draw: a material that compiled, with no placement parts (their fog
-//!   needs the rigid program) and its lightmap pages when a pass samples
+//!   draw: a material that compiled, with the rigid classification for
+//!   placements and its lightmap pages when a pass samples
 //!   them. One line says how many and why the rest stay on the D3D path.
 //! - **Per view** ([`Host::ask`], at the layer-16 call): the fog state
 //!   the device holds (`d3d::nv2a::d3d_fog` over the `D3DRS_FOG*` words,
@@ -42,7 +42,7 @@ use native_render::look::{self, Stage};
 use native_render::program::{self, ViewInputs};
 use native_render::world::{LightmapKey, Owner, World};
 
-use crate::native_world_glue::{Load, Ready, StageDecoder, StageImages, State};
+use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
 /// The fog of one loaded world, kept for the whole load: what compiled
 /// with its fog words, and the parts the native pass draws.
@@ -145,11 +145,13 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
                     let Some(passes) = programs.get(&d.material) else { continue };
                     // A placement part draws only with the rigid program
                     // for every pass and its rows read
-                    // ([`FogSet::new`] holds the holder; without either,
+                    // ([`fog_gpu::FogSet::new`] holds the holder; without either,
                     // the part keeps its D3D draws).
-                    if let Owner::Instance(i) = d.owner
-                        && !passes.iter().all(|p| p.rigid.is_some())
-                    {
+                    if !passes.iter().all(|p| match d.owner {
+                        Owner::Cluster(_) => p.program.inputs & !d.inputs == 0,
+                        Owner::Instance(i) => world.rows(i).is_some()
+                            && p.rigid.as_ref().is_some_and(|r| r.inputs & !d.inputs == 0),
+                    }) {
                         continue;
                     }
                     let samples_lightmap = passes
@@ -195,7 +197,7 @@ pub fn upload_fog(
     stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
     lightmap: &mut dyn FnMut(LightmapKey) -> Option<Image>,
 ) {
-    let set = fog_gpu::FogSet::new(device, queue, fog.parts.clone(), fog.programs.clone(), stage_image, lightmap);
+    let set = fog_gpu::FogSet::new(device, queue, gpu.world(), fog.parts.clone(), fog.programs.clone(), stage_image, lightmap);
     eprintln!("native-fog: {} materials' layer-16 passes uploaded, {} parts", set.len(), fog.parts.len());
     gpu.set_fog(set);
 }
@@ -204,7 +206,7 @@ pub fn upload_fog(
 /// (`None` a slot that does not read).
 pub fn device_fog_words<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> [Option<u32>; 7] {
     let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-    FOG_WORD_SLOTS.map(|slot| table.canonical_to_guest(slot).and_then(|guest| d.render_state(mem, guest)))
+    FOG_WORD_SLOTS.map(|slot| table.canonical_to_guest(slot).and_then(|guest| d.render_state(&ReadMemory(mem), guest)))
 }
 
 /// The fog unit and colour of resolved words, as the D3D commit programs
@@ -221,27 +223,24 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    fn ready(&self) -> Option<Arc<Ready>> {
-        match &self.state.lock().unwrap_or_else(|e| e.into_inner()).1 {
-            Load::Ready(r) => Some(Arc::clone(r)),
-            Load::Idle | Load::Loading | Load::Failed => None,
-        }
-    }
-}
-
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
-        let ready = self.ready()?;
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(current_ready(&state, mem)?)
+        };
         let fog = ready.fog.clone()?;
         let Ok(mut d) = self.device.lock() else { return None };
-        if !d.can_external_pass() {
+        if !d.can_external_pass()
+            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
+        {
             return None;
         }
-        // The programs write w as depth and clip w (`xps_w_depth`): a view
-        // whose draws store z instead is the D3D path's, as the world's.
-        if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
+        let read = ReadMemory(mem);
+        if !d.stencil_state(&read).is_some_and(|s| !s.enable)
+            || !palettes_hold(&ready.palettes, &|n| d.stage_palette(&read, n))
+        {
             return None;
         }
         // The fog state the device holds, each material's own words over
@@ -262,7 +261,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             fogs.insert(material, fog_of(&resolved));
         }
         let compare = compare();
-        let without: Vec<(Owner, u8)> = compare.map(|(o, p, _)| vec![(o, p)]).unwrap_or_default();
         if let Some((owner, part, _)) = compare {
             eprintln!("native-fog compare: {} part {part} keeps its D3D draws for the comparison", owner_name(owner));
         }
@@ -270,21 +268,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // reservation has recorded on every copy
         // (`native_render::skip::MaskPreview`).
         let planning = timeline::native::Timer::start(Stage::Fog, Metric::PrepareNs);
-        let mut preview = native_render::skip::MaskPreview::new(&feature::native_fog::Mem(mem))?;
-        let selected = std::cell::RefCell::new(Vec::new());
-        let cleared = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
+        let read = ReadMemory(mem);
+        let mut preview = native_render::skip::MaskPreview::new(&read)?;
+        let (selected, cleared) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
             let accepted =
-                !without.contains(&(item.owner, item.part)) && fog.draws(item.owner, item.part, item.shader);
-            if accepted {
-                selected.borrow_mut().push((item.owner, item.part));
-            } else {
+                !compare.is_some_and(|(owner, part, _)| (owner, part) == (item.owner, item.part))
+                    && fog.draws(item.owner, item.part, item.shader);
+            if !accepted {
                 Stage::Fog.count(Metric::Examined, 1);
                 Stage::Fog.count(Metric::RefusedOwnership, 1);
             }
             accepted
         })?;
         let masks = preview.finish()?;
-        let ranges = selected.borrow().len();
+        let ranges = selected.len();
         if ranges == 0 {
             return None;
         }
@@ -296,25 +293,36 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .any(|passes| passes.iter().any(|p| p.state.depth_write));
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
+        let expected = compare.map(|_| Arc::new(std::sync::Mutex::new(Vec::new())));
         let pass = Box::new(FogViewPass {
             ready: Arc::clone(&ready),
-            selected: selected.into_inner(),
+            selected: selected.into_iter().map(|item| (item.owner, item.part)).collect(),
             fogs,
             view: None,
             w_clip: None,
             writes_depth,
-            compare,
-            compared: false,
+            compare: compare.zip(expected.clone()),
         });
         drop(planning);
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
             .ok()??;
+        // Keep this load pinned until the masks and the sealed commands commit.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+            return None;
+        }
         if !masks.apply(&mut feature::native_fog::Mem(mem)) {
             Stage::Fog.count(Metric::RefusedMasks, ranges as u64);
             return None;
         }
         reservation.commit();
+        if let Some(expected) = expected {
+            // D3D observes uniforms while decoding the next guest draw,
+            // before the GPU submission callbacks run.
+            let candidates = std::mem::take(&mut *expected.lock().unwrap_or_else(|e| e.into_inner()));
+            d3d::uniform_compare::arm_entry(candidates, false);
+        }
         Some(cleared)
     }
 }
@@ -351,8 +359,7 @@ struct FogViewPass {
     /// declaration).
     writes_depth: bool,
     /// The compare's part, when `H2_NATIVE_FOG_COMPARE` names one.
-    compare: Option<(Owner, u8, Option<u16>)>,
-    compared: bool,
+    compare: Option<((Owner, u8, Option<u16>), Arc<std::sync::Mutex<Vec<d3d::uniform_compare::Expected>>>)>,
 }
 
 impl d3d::ExternalPass for FogViewPass {
@@ -361,12 +368,12 @@ impl d3d::ExternalPass for FogViewPass {
     }
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = Some((clip.range, clip.clamp));
+        self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() {
-            return Err("fog view constants unavailable");
+        if self.view.is_none() || self.w_clip.is_none() {
+            return Err("fog view constants or W-buffer clip unavailable");
         }
         let mut guard = crate::native_world_glue::upload(&self.ready, t);
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
@@ -397,10 +404,11 @@ impl d3d::ExternalPass for FogViewPass {
             z_scale: t.z_scale,
             w_clip: self.w_clip,
         };
-        if let (Some(fog), Some((owner, part, material))) = (self.ready.fog.clone(), self.compare)
-            && !std::mem::replace(&mut self.compared, true)
+        if t.copy == d3d::TargetCopy::Reference
+            && let (Some(fog), Some(((owner, part, material), expected))) = (&self.ready.fog, &self.compare)
         {
-            arm_compare(&fog, &view, &self.fogs, owner, part, material);
+            *expected.lock().unwrap_or_else(|e| e.into_inner()) =
+                compare_candidates(fog, &view, &self.fogs, *owner, *part, *material);
         }
         let mut gpu = crate::native_world_glue::upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
@@ -408,7 +416,7 @@ impl d3d::ExternalPass for FogViewPass {
             let mut uploads = t.encoder_uploads();
             gpu.prepare_fog(&mut uploads, &view, &self.fogs);
         }
-        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size)
+        gpu.encode_fog(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &self.selected)
     }
 }
 
@@ -426,26 +434,25 @@ fn compare() -> Option<(Owner, u8, Option<u16>)> {
     Some((Owner::Cluster(cluster), part, material))
 }
 
-/// Arms the uniform compare with the native pass's programs for the
-/// compared part's material.
-fn arm_compare(
+/// Builds the uniform comparison for the selected guest part.
+fn compare_candidates(
     fog: &FogView,
     view: &ViewInputs,
     fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     owner: Owner,
     part: u8,
     material: Option<u16>,
-) {
+) -> Vec<d3d::uniform_compare::Expected> {
     let Some(&(_, _, _, m)) = fog.parts.iter().find(|(k, _)| *k == (owner, part)).map(|(_, v)| v) else {
         eprintln!("native-fog compare: {} part {part} is not a fog part here", owner_name(owner));
-        return;
+        return Vec::new();
     };
     if material.is_some_and(|want| want != m) {
         eprintln!("native-fog compare: {} part {part} is material {m}, not the named one", owner_name(owner));
-        return;
+        return Vec::new();
     }
-    let Some(passes) = fog.programs.get(&m) else { return };
-    let Some((unit, color)) = fogs.get(&m) else { return };
+    let Some(passes) = fog.programs.get(&m) else { return Vec::new() };
+    let Some((unit, color)) = fogs.get(&m) else { return Vec::new() };
     let mut candidates = Vec::new();
     for p in passes {
         let mut base = p.program.pixel.clone();
@@ -468,15 +475,15 @@ fn arm_compare(
             samplers: p.program.samplers.map(|s| s.and_then(|s| program::sampler_key(&s))),
             primitive,
             depth: (depth.0, depth.1, Default::default()),
+            color: Some(d3d::uniform_compare::ColorState {
+                blend: p.state.blend,
+                write_mask: p.state.color_writes,
+                blend_constant: p.state.blend_constant,
+            }),
             draws: 4,
         });
     }
-    if candidates.is_empty() {
-        eprintln!("native-fog compare: material {m} has no compiled fog passes");
-        return;
-    }
-    eprintln!("native-fog compare: {} part {part} (material {m}) armed, {} passes", owner_name(owner), candidates.len());
-    d3d::uniform_compare::arm_all(candidates);
+    candidates
 }
 
 #[cfg(test)]

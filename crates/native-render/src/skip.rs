@@ -116,6 +116,14 @@ impl GuestWrite for MaskPreview<'_> {
 }
 
 impl MaskPlan {
+    /// Reopen a detached mask walk to restore declined items in the overlay.
+    /// Applying the resulting plan still validates the original read set.
+    pub fn edit(self, guest: &dyn GuestRead) -> MaskPreview<'_> {
+        MaskPreview {
+            guest, reads: self.reads.into(), edits: self.edits.into_iter().collect(), failed: false.into(),
+        }
+    }
+
     /// Revalidate the list identity, item words and masks, then apply the edits.
     /// If a write faults, put the original words back before D3D proceeds.
     pub fn apply(&self, guest: &mut dyn GuestWrite) -> bool {

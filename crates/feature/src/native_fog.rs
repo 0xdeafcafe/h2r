@@ -23,8 +23,7 @@
 //!   bit on the structure items whose part it draws, in the layer's item
 //!   order ([`native_render::fog::clear_fog`]): the layer then builds no
 //!   entry for them. Objects' fog items are never cleared (stage 2's),
-//!   and a placement's fog needs the rigid program and stays on the D3D
-//!   path in this slice.
+//!   and a placement draws natively when its rigid program and rows resolve.
 //!
 //! The fog the passes read is the device's at the layer (set by
 //! `0x00025d50` before the layer begins): the glue reads it through

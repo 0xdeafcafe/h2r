@@ -220,6 +220,13 @@ fn a_failed_host_write_is_reported_once_by_the_files_next_operation() {
     assert_eq!(b.read_at("a", 0, &mut buffer), Err(Error::IoDeviceError));
     assert_eq!(read(&mut b, "a", 0, 16), b"kept");
 
+    // A failed format leaves errors for surviving files reportable.
+    q.test(|t| t.fail_next = Some(ErrorKind::StorageFull));
+    b.write_at("a", 0, b"x").unwrap();
+    b.next_format_error.set(Some(Error::AccessDenied));
+    assert_eq!(b.format(), Err(Error::AccessDenied));
+    assert_eq!(b.read_at("a", 0, &mut buffer), Err(Error::DiskFull));
+
     // Format drops latched errors with the files.
     q.test(|t| t.fail_next = Some(ErrorKind::Other));
     b.write_at("a", 0, b"x").unwrap();

@@ -12,9 +12,11 @@ const STAGES: [&str; 11] = ["world", "objects", "transparents", "lights", "post"
 pub enum Metric {
     Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
     PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
+    WorkerRoundTrips, ReferencePasses, DisplayPasses,
 }
-const METRICS: [&str; 15] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
-    "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses"];
+const METRICS: [&str; 18] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+    "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
+    "worker_round_trips", "reference_passes", "display_passes"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;
@@ -105,6 +107,10 @@ mod tests {
         let columns: Vec<_> = phase::counter_columns().collect();
         assert_eq!(columns.len(), phase::COUNTERS);
         for (i, (slot, _)) in columns.iter().enumerate() { assert_eq!(*slot, i); }
+        for (metric, label) in [(Metric::WorkerRoundTrips, "native_lights_worker_round_trips"),
+            (Metric::ReferencePasses, "native_lights_reference_passes"), (Metric::DisplayPasses, "native_lights_display_passes")] {
+            assert_eq!(columns[phase::Counter::ALL.len() + Stage::Lights as usize * STRIDE + metric as usize].1, label);
+        }
         let i = Stage::Objects.view_index(2);
         assert_eq!(columns[i].1, "native_objects_v2_reference_ranges");
         assert_eq!(columns[i + 1].1, "native_objects_v2_display_ranges");

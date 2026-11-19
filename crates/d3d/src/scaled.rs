@@ -225,6 +225,23 @@ pub struct ScaledSurface<R, V> {
     pub size: (u32, u32),
 }
 
+impl<R, V: Copy> crate::ExternalSurfaces<ScaledSurface<R, V>> {
+    /// None means the reference is the only required copy. A required
+    /// display copy must resolve every attachment and sampled slot.
+    fn display_copy(&self, awake: bool, frame: Option<(u32, u32)>,
+        scaled_shadow: impl Fn(&R) -> bool, live: impl Fn(Option<V>) -> Option<V>,
+    ) -> Result<Option<crate::ExternalSurfaces<V>>, crate::TargetCopy> {
+        let needs_view = |s: &ScaledSurface<R, V>| {
+            s.view.is_some() || frame == Some(s.size) || scaled_shadow(&s.reference)
+        };
+        if awake && (needs_view(&self.color) || needs_view(&self.depth)
+            || self.slots.iter().flatten().any(needs_view)) {
+            return self.try_map(|s| live(s.view)).map(Some).ok_or(crate::TargetCopy::Display);
+        }
+        Ok(None)
+    }
+}
+
 /// A [`ScaledBackend`] texture.
 #[derive(Debug)]
 pub struct ScaledTexture<R, V> {
@@ -1047,10 +1064,15 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 
 /// One external pass drawn into both copies of the targets.
 #[derive(Clone)]
-struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>);
+struct SharedPass(std::sync::Arc<std::sync::Mutex<Box<dyn crate::backend::ExternalPass>>>, crate::TargetCopy);
 
 impl crate::backend::ExternalPass for SharedPass {
-    fn encode(&mut self, target: crate::backend::ExternalTarget<'_>) {
+    fn confirm_issue(&self) -> bool {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).confirm_issue()
+    }
+
+    fn encode(&mut self, mut target: crate::backend::ExternalTarget<'_>) {
+        target.copy = self.1;
         self.0.lock().unwrap_or_else(|e| e.into_inner()).encode(target);
     }
 }
@@ -1645,17 +1667,17 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             crate::ExternalCopies::Ready(copies) => copies,
             missing => return Ok(missing),
         };
-        let needs_view = |s: &Self::Surface| s.view.is_some() || self.frame == Some(s.size)
-            || (self.shadow_factor() > 1 && self.shadow_at(&s.reference).is_some());
-        if self.awake() && (needs_view(&surfaces.color) || needs_view(&surfaces.depth)
-            || surfaces.slots.iter().flatten().any(needs_view)) {
-            let Some(view) = surfaces.try_map(|s| self.live(s.view)) else { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)) };
-            let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
-            if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)); }
-            match self.view.external_attachments(view, vt, crate::TargetCopy::Display)? {
-                crate::ExternalCopies::Ready(display) => commands.extend(display),
-                missing => return Ok(missing),
-            }
+        let view = match surfaces.display_copy(self.awake(), self.frame,
+            |r| self.shadow_factor() > 1 && self.shadow_at(r).is_some(), |v| self.live(v)) {
+            Ok(Some(view)) => view,
+            Ok(None) => return Ok(crate::ExternalCopies::Ready(commands)),
+            Err(copy) => return Ok(crate::ExternalCopies::Missing(copy)),
+        };
+        let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
+        if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(crate::ExternalCopies::Missing(crate::TargetCopy::Display)); }
+        match self.view.external_attachments(view, vt, crate::TargetCopy::Display)? {
+            crate::ExternalCopies::Ready(display) => commands.extend(display),
+            missing => return Ok(missing),
         }
         Ok(crate::ExternalCopies::Ready(commands))
     }
@@ -1685,12 +1707,18 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         // Both copies get the pass: the reference (what the guest reads
         // back and what repairs come from) and the view (what is shown),
         // each sampling its own copy of the sampled levels.
-        let shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)));
+        let mut shared = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(pass)), crate::TargetCopy::Reference);
         let reference = sampled.iter().map(|s| s.as_ref().map(|s| s.reference)).collect();
         let view = sampled.iter().map(|s| s.as_ref().and_then(|s| self.live(s.view))).collect();
         let drawn = self
             .reference
             .external_pass(color.reference, depth.reference, reference, request, Box::new(shared.clone()))?;
+        // A confirmed reference refusal returns the entire light to D3D,
+        // which will draw both copies.
+        if !drawn && crate::backend::ExternalPass::confirm_issue(&shared) {
+            return Ok(false);
+        }
+        shared.1 = crate::TargetCopy::Display;
         if let (Some(c), Some(d)) = (color.view, depth.view)
             && !self.view.external_pass(c, d, view, request, Box::new(shared))?
         {
@@ -2125,6 +2153,40 @@ pub fn lighting_ab(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transactional_stages_require_live_frame_and_scaled_shadow_copies() {
+        use crate::{ExternalSurfaces, TargetCopy};
+
+        let frame = (80, 48);
+        let local = ScaledSurface { reference: 1, view: None, size: (20, 12) };
+        let missing_frame = ScaledSurface { reference: 2, view: None, size: frame };
+        let shadow = ScaledSurface { reference: 3, view: None, size: (16, 16) };
+        let select = |surfaces: &ExternalSurfaces<ScaledSurface<u32, u32>>, awake, shadows| {
+            surfaces.display_copy(awake, Some(frame), |r| shadows && *r == shadow.reference, |v| v)
+        };
+        let mut pass = ExternalSurfaces {
+            color: local, depth: local, sampled: vec![], slots: vec![], slot_sizes: vec![],
+        };
+        assert!(matches!(select(&pass, true, true), Ok(None)));
+        pass.color = missing_frame;
+        assert!(matches!(select(&pass, false, false), Ok(None)));
+        assert!(matches!(select(&pass, true, false), Err(TargetCopy::Display)));
+        pass.color = local;
+        pass.depth = shadow;
+        assert!(matches!(select(&pass, true, false), Ok(None)));
+        assert!(matches!(select(&pass, true, true), Err(TargetCopy::Display)));
+        pass.depth = local;
+        pass.slots = vec![Some(missing_frame)];
+        pass.slot_sizes = vec![Some(frame)];
+        assert!(matches!(select(&pass, true, false), Err(TargetCopy::Display)));
+        pass.color.view = Some(10);
+        pass.depth.view = Some(11);
+        assert!(matches!(select(&pass, true, false), Err(TargetCopy::Display)));
+        pass.slots[0].as_mut().unwrap().view = Some(12);
+        let display = select(&pass, true, false).unwrap().unwrap();
+        assert_eq!((display.color, display.depth, display.slots), (10, 11, vec![Some(12)]));
+    }
 
     #[test]
     fn the_flag_takes_whole_scales_from_one_to_six() {

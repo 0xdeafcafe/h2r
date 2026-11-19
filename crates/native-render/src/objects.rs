@@ -176,14 +176,60 @@ pub struct ObjectFrame {
     pub lighting: Option<Lighting>,
     /// The inputs' defaults, read with it; `None` when they do not read.
     pub defaults: Option<Defaults>,
-    /// Per mode section its layer-3 records draw: the node rows the draw
-    /// uploads at `c[50..]` ([`crate::object_nodes::node_rows`]), copied
-    /// at the hook ([`attach_node_rows`]). Empty until then.
-    pub node_rows: Vec<(u16, Vec<Row>)>,
-    /// Per mode section the implementation of its layer-3 pass its
-    /// records draw ([`crate::object_nodes::record_implementation`]),
-    /// copied with the rows.
-    pub implementations: Vec<(u16, usize)>,
+}
+
+/// What one layer-3 item draws, as the guest picked it: its render record,
+/// the shader the item names (`+8`), the record key's section (bits 9..17)
+/// and part (bits 0..3, the index into the section's parts), and the
+/// layer-3 implementation the record's `+0` picks
+/// ([`crate::object_nodes::record_implementation`]). The native pass draws
+/// exactly this part with exactly this implementation, or the item keeps
+/// its D3D draw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ItemKey {
+    pub record: u16,
+    pub shader: u32,
+    pub section: u16,
+    pub part: u8,
+    pub implementation: usize,
+}
+
+/// The key of geometry item `item`, `None` when its record, key or
+/// implementation word does not read.
+pub fn item_key(mem: &dyn GuestRead, item: u32) -> Option<ItemKey> {
+    let record = item_record(mem, item)?;
+    let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
+    let key = mem.read_u32(at + RECORD_KEY)?;
+    let word = mem.read_u32(at + RECORD_IMPLEMENTATION)?;
+    Some(ItemKey {
+        record,
+        shader: mem.read_u32(item + 8)?,
+        section: ((key >> 9) & 0x1ff) as u16,
+        part: (key & 0xf) as u8,
+        implementation: record_implementation(word),
+    })
+}
+
+/// One accepted item handed to the host, in the list's order: `index` its
+/// place in [`ClearedObjects`], `object` its object's frame in the frames
+/// handed with it, its key, and the node rows its record uploads at
+/// `c[50..]` ([`record_rows`]). A `shadow` item keeps its D3D draw whatever
+/// the host says (the comparison's, `NativeSet::shadowed`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemDraw {
+    pub index: usize,
+    pub object: usize,
+    pub key: ItemKey,
+    pub rows: Vec<Row>,
+    pub shadow: bool,
+}
+
+/// The node rows render record `record`'s draw uploads at `c[50..]`
+/// ([`crate::object_nodes::node_rows`]); an error when they do not read or
+/// the draw would upload none (then a program would read another draw's).
+pub fn record_rows(mem: &dyn GuestRead, record: u16) -> Result<Vec<Row>, String> {
+    let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
+    node_rows(mem, at).map_err(|e| format!("record {record}: {e}"))
 }
 
 /// The lighting of the live object `handle` whose body is `body`: `+0x44`
@@ -246,38 +292,7 @@ pub fn read_object(mem: &dyn GuestRead, handle: u32) -> Option<ObjectFrame> {
         sphere,
         lighting,
         defaults: Defaults::read(mem),
-        node_rows: Vec::new(),
-        implementations: Vec::new(),
     })
-}
-
-/// Copies into `frame` the node rows of every record its cleared items
-/// draw (`cleared.records[i]` for the items whose owner is the frame's),
-/// one per mode section (the key's bits 9..17), and the implementation
-/// each section's records draw. An error names the first record whose
-/// rows or implementation do not read, whose draw would upload no rows,
-/// or whose section's records disagree: the object is then left to D3D,
-/// since a program would read another draw's rows.
-pub fn attach_node_rows(mem: &dyn GuestRead, frame: &mut ObjectFrame, cleared: &ClearedObjects) -> Result<(), String> {
-    for (&record, _) in cleared.records.iter().zip(&cleared.owners).filter(|(_, o)| **o == frame.handle) {
-        let at = RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(record);
-        let key = mem.read_u32(at + RECORD_KEY).ok_or("a record's key does not read")?;
-        let section = ((key >> 9) & 0x1ff) as u16;
-        let rows = node_rows(mem, at).map_err(|e| format!("record {record}: {e}"))?;
-        let word = mem.read_u32(at + RECORD_IMPLEMENTATION).ok_or_else(|| format!("record {record}'s implementation does not read"))?;
-        let implementation = record_implementation(word);
-        match frame.node_rows.iter().find(|(s, _)| *s == section) {
-            Some((_, r)) if *r != rows => return Err(format!("section {section}'s records upload different rows")),
-            Some(_) => {}
-            None => frame.node_rows.push((section, rows)),
-        }
-        match frame.implementations.iter().find(|(s, _)| *s == section) {
-            Some((_, i)) if *i != implementation => return Err(format!("section {section}'s records draw different implementations")),
-            Some(_) => {}
-            None => frame.implementations.push((section, implementation)),
-        }
-    }
-    Ok(())
 }
 
 /// What [`clear_objects`] cleared: the items (to restore), the object
@@ -290,6 +305,8 @@ pub struct ClearedObjects {
     pub owners: Vec<u32>,
     /// The render record `items[i]` draws.
     pub records: Vec<u16>,
+    /// What `items[i]` draws ([`ItemKey`]).
+    pub keys: Vec<ItemKey>,
     pub handles: Vec<u32>,
     /// What the walk met, for the feature's diagnostics.
     pub walk: WalkStats,
@@ -391,14 +408,16 @@ pub fn item_object(mem: &dyn GuestRead, item: u32) -> Option<u32> {
 }
 
 /// Clears `layer`'s bit on every object item of the current list that
-/// `native(handle, definition, shader)` accepts, when the current layer is `layer`
+/// `native(handle, definition, key)` accepts ([`ItemKey`]: the record, shader,
+/// section, part and implementation the guest picked; an item whose key
+/// does not read is not offered), when the current layer is `layer`
 /// and `layer` is in [`REPLACED_LAYERS`]. `None` (nothing written) for
 /// another layer or an unreadable list; an unreadable item ends the walk
 /// with what was cleared so far.
 pub fn clear_objects(
     mem: &mut dyn GuestWrite,
     layer: u32,
-    native: &dyn Fn(u32, u32, u32) -> bool,
+    native: &dyn Fn(u32, u32, &ItemKey) -> bool,
 ) -> Option<ClearedObjects> {
     if layer >= 32 || REPLACED_LAYERS & (1 << layer) == 0 || mem.read_u32(CURRENT_LAYER)? != layer {
         return None;
@@ -457,14 +476,10 @@ pub fn clear_objects(
                 d
             }
         };
-        let (Some(def), Some(shader)) = (def, mem.read_u32(item + 8)) else { continue };
+        let (Some(def), Some(key)) = (def, item_key(mem, item)) else { continue };
         out.walk.live += 1;
-        if let Some(r) = item_record(mem, item)
-            && let Some(w) = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * u32::from(r) + RECORD_IMPLEMENTATION)
-        {
-            out.walk.implementations[record_implementation(w)] += 1;
-        }
-        if !native(handle, def, shader) {
+        out.walk.implementations[key.implementation] += 1;
+        if !native(handle, def, &key) {
             continue;
         }
         out.walk.accepted += 1;
@@ -474,7 +489,8 @@ pub fn clear_objects(
         }
         out.items.push(item);
         out.owners.push(handle);
-        out.records.push(item_record(mem, item).unwrap_or(0));
+        out.records.push(key.record);
+        out.keys.push(key);
         if !out.handles.contains(&handle) {
             out.handles.push(handle);
         }
@@ -485,6 +501,14 @@ pub fn clear_objects(
 /// Gives the objects `keep` refuses their bits back at once (they are not
 /// drawn natively after all) and drops them from `cleared`.
 pub fn keep_only(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &dyn Fn(u32) -> bool) {
+    let owners = cleared.owners.clone();
+    keep_items(mem, cleared, &|i| keep(owners[i]));
+}
+
+/// Gives the items `keep` refuses (by their place in `cleared`) their bits
+/// back at once and drops them from `cleared`, which keeps the rest in
+/// order; a handle stays while one of its items does.
+pub fn keep_items(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &dyn Fn(usize) -> bool) {
     let mut back = ClearedObjects {
         layer: cleared.layer,
         ..Default::default()
@@ -493,13 +517,16 @@ pub fn keep_only(mem: &mut dyn GuestWrite, cleared: &mut ClearedObjects, keep: &
         layer: cleared.layer,
         ..Default::default()
     };
-    for ((&item, &owner), &record) in cleared.items.iter().zip(&cleared.owners).zip(&cleared.records) {
-        let to = if keep(owner) { &mut kept } else { &mut back };
-        to.items.push(item);
-        to.owners.push(owner);
-        to.records.push(record);
+    for i in 0..cleared.items.len() {
+        let to = if keep(i) { &mut kept } else { &mut back };
+        to.items.push(cleared.items[i]);
+        to.owners.push(cleared.owners[i]);
+        to.records.push(cleared.records[i]);
+        if let Some(&k) = cleared.keys.get(i) {
+            to.keys.push(k);
+        }
     }
-    kept.handles = cleared.handles.iter().copied().filter(|&h| keep(h)).collect();
+    kept.handles = cleared.handles.iter().copied().filter(|h| kept.owners.contains(h)).collect();
     kept.walk = std::mem::take(&mut cleared.walk);
     restore(mem, &back);
     *cleared = kept;
@@ -548,6 +575,9 @@ pub(crate) mod tests {
     /// record` lit by `lighting`, or the BSP's for `None`.
     pub fn record(m: &mut Mem, record: u32, lighting: Option<u32>) {
         let at = RENDER_RECORDS + 0x20 * record;
+        // A model record of section 0, part 0, implementation 0.
+        m.w(at + RECORD_KEY, 0x2000_0000);
+        m.w(at + RECORD_IMPLEMENTATION, 0);
         match lighting {
             Some(l) => {
                 m.w(at + RECORD_MODEL, 0xe100_0000 | record);
@@ -786,9 +816,10 @@ pub(crate) mod tests {
     fn only_accepted_object_items_lose_the_bit_and_get_it_back() {
         let (mut m, a, b) = scene();
         let before: Vec<u32> = (0..5).map(|i| mask(&m, i)).collect();
-        let c = clear_objects(&mut m, 3, &|_, def, shader| def == 0xe000_0100 || (def == 0xe000_0200 && shader != 0x10)).unwrap();
+        let c = clear_objects(&mut m, 3, &|_, def, key| def == 0xe000_0100 || (def == 0xe000_0200 && key.shader != 0x10)).unwrap();
         assert_eq!(c.items, vec![ITEMS + ITEM_SIZE, ITEMS + 2 * ITEM_SIZE]);
         assert_eq!(c.owners, vec![a, a]);
+        assert_eq!(c.keys.iter().map(|k| (k.record, k.shader)).collect::<Vec<_>>(), vec![(2, 0x10), (3, 0x11)]);
         let w = &c.walk;
         assert_eq!(
             (w.walked, w.in_layer, w.geometry, w.object_records, w.live, w.accepted, w.write_failed),
@@ -820,6 +851,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn single_items_get_their_bits_back_and_the_rest_keep_their_order() {
+        let (mut m, a, b) = scene();
+        let mut c = clear_objects(&mut m, 3, &|_, _, _| true).unwrap();
+        // A's second item (record 3) refused: A stays, by its first.
+        keep_items(&mut m, &mut c, &|i| i != 1);
+        assert_eq!(c.records, vec![2, 4]);
+        assert_eq!(c.keys.iter().map(|k| k.record).collect::<Vec<_>>(), vec![2, 4]);
+        assert_eq!(c.handles, vec![a, b]);
+        assert_eq!((mask(&m, 1), mask(&m, 2), mask(&m, 3)), (0b0010, 0b1000, 0));
+        keep_items(&mut m, &mut c, &|i| i == 1);
+        assert_eq!(c.handles, vec![b], "A has no item left");
+    }
+
+    #[test]
+    fn an_items_key_is_its_records_section_part_and_implementation() {
+        let (mut m, ..) = scene();
+        let at = RENDER_RECORDS + RENDER_RECORD_SIZE * 2;
+        m.w(at + RECORD_KEY, 0x2000_0000 | 5 << 9 | 3);
+        m.w(at + RECORD_IMPLEMENTATION, 2 << 29 | 0x55);
+        let k = item_key(&m, ITEMS + ITEM_SIZE).unwrap();
+        assert_eq!(k, ItemKey { record: 2, shader: 0x10, section: 5, part: 3, implementation: 2 });
+        m.w(at + RECORD_IMPLEMENTATION, 7 << 29);
+        assert_eq!(item_key(&m, ITEMS + ITEM_SIZE).unwrap().implementation, 3, "5..7 draw 3");
+        assert_eq!(item_key(&m, ITEMS + ITEM_SIZE * 9), None, "no item there");
+    }
+
+    #[test]
     fn the_walk_counts_items_of_other_builds_by_build() {
         let (mut m, ..) = scene();
         m.w(ITEMS + ITEM_SIZE * 3, 0x0004_b5d0);
@@ -842,7 +900,6 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod node_row_tests {
-    use super::tests::*;
     use super::*;
     use crate::camera::tests::Mem;
     use crate::object_nodes::{RECORD_MATRIX, RECORD_NODES};
@@ -854,41 +911,17 @@ mod node_row_tests {
     }
 
     #[test]
-    fn an_objects_records_node_rows_are_copied_per_section() {
+    fn a_records_node_rows_are_what_its_draw_uploads() {
         let mut m = Mem::default();
-        let a = object(&mut m, 1, 0xe000_0100, 1);
-        let b = object(&mut m, 2, 0xe000_0200, 1);
         for i in 0..13 {
             m.f(MATRIX + 4 * i, i as f32);
         }
-        // A draws records 2 and 3 (section 5, the same matrix), B record 4.
-        for (r, section) in [(2u32, 5u32), (3, 5), (4, 6)] {
-            m.w(record_at(r) + RECORD_KEY, section << 9);
-            m.w(record_at(r) + RECORD_MATRIX, MATRIX);
-            m.w(record_at(r) + RECORD_NODES, u32::MAX);
-            m.w(record_at(r) + RECORD_IMPLEMENTATION, 2 << 29 | 0x55);
-        }
-        let cleared = ClearedObjects {
-            layer: 3,
-            items: vec![0x10, 0x20, 0x30],
-            owners: vec![a, a, b],
-            records: vec![2, 3, 4],
-            handles: vec![a, b],
-            walk: WalkStats::default(),
-        };
-        let mut f = read_object(&m, a).unwrap();
-        attach_node_rows(&m, &mut f, &cleared).unwrap();
+        m.w(record_at(2) + RECORD_MATRIX, MATRIX);
+        m.w(record_at(2) + RECORD_NODES, u32::MAX);
         let rows = vec![[1.0, 4.0, 7.0, 10.0], [2.0, 5.0, 8.0, 11.0], [3.0, 6.0, 9.0, 12.0]];
-        assert_eq!(f.node_rows, vec![(5, rows)], "one entry for section 5, none of B's");
-        assert_eq!(f.implementations, vec![(5, 2)]);
-        // Two records of section 5 drawing different implementations.
-        m.w(record_at(3) + RECORD_IMPLEMENTATION, 1 << 29);
-        let mut f = read_object(&m, a).unwrap();
-        assert!(attach_node_rows(&m, &mut f, &cleared).unwrap_err().contains("different implementations"));
-        m.w(record_at(3) + RECORD_IMPLEMENTATION, 2 << 29);
-        // Record 3 uploads nothing (no matrix, no node block): A is not drawn.
-        m.w(record_at(3) + RECORD_MATRIX, 0);
-        let mut f = read_object(&m, a).unwrap();
-        assert!(attach_node_rows(&m, &mut f, &cleared).unwrap_err().contains("record 3"));
+        assert_eq!(record_rows(&m, 2).unwrap(), rows);
+        // Record 3 uploads nothing (no matrix, no node block).
+        m.w(record_at(3) + RECORD_NODES, u32::MAX);
+        assert!(record_rows(&m, 3).unwrap_err().contains("record 3"));
     }
 }

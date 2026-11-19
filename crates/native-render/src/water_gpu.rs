@@ -64,8 +64,8 @@ pub fn supply_of(stage: Stage) -> Option<Supply> {
 pub struct WaterSet {
     materials: HashMap<u16, WaterMaterial>,
     /// Each water part, by owner and part index: its index range,
-    /// lightmap page and material, in the transparents' order.
-    parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
+    /// lightmap page and material.
+    parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
     /// The distinct render targets the materials sample (the supplies'
     /// `Target`s), ascending: the order of the sampled levels the
     /// reservation hands [`WaterSet::draw`].
@@ -98,6 +98,8 @@ impl WaterSet {
         queue: &wgpu::Queue,
         parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
         programs: HashMap<u16, (Vec<FogPass>, Vec<FogProgram>)>,
+        targets: Vec<u32>,
+        samples_view: bool,
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
         lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
@@ -123,17 +125,6 @@ impl WaterSet {
             }
             materials.insert(material, WaterMaterial { passes: gpus, supplies, words });
         }
-        let mut targets: Vec<u32> = materials
-            .values()
-            .flat_map(|m| {
-                m.supplies
-                    .iter()
-                    .filter_map(|s| match s { Some(Supply::Target(t)) => Some(*t), _ => None })
-            })
-            .collect();
-        targets.sort_unstable();
-        targets.dedup();
-        let samples_view = materials.values().any(|m| m.supplies.contains(&Some(Supply::View)));
         let mut pages = HashMap::new();
         for &(_, (_, _, lightmap, material)) in &parts {
             if materials.contains_key(&material)
@@ -143,7 +134,7 @@ impl WaterSet {
                 pages.insert(k, lightmap_image(k).map(|i| texture(device, queue, &i, "native water lightmap")));
             }
         }
-        Self { materials, parts, targets, samples_view, pages, copy: None }
+        Self { materials, parts: parts.into_iter().collect(), targets, samples_view, pages, copy: None }
     }
 
     /// How many materials draw natively.
@@ -158,7 +149,14 @@ impl WaterSet {
     /// Whether the set draws `part` of `owner`: the `prepare_copy` check
     /// that every selected part will record.
     pub fn draws_part(&self, owner: Owner, part: u8) -> bool {
-        self.parts.iter().any(|&((o, p), _)| o == owner && p == part)
+        let Some(&(_, count, page, material)) = self.parts.get(&(owner, part)) else { return false };
+        count != 0 && self.materials.get(&material).is_some_and(|m| {
+            let has_page = page.and_then(|k| self.pages.get(&k)).is_some_and(Option::is_some);
+            m.passes.iter().all(|(g, _)| {
+                has_page || !g.program.stages.iter().zip(&g.program.dims)
+                    .any(|(s, dim)| *s == Stage::Lightmap && dim.is_some())
+            })
+        })
     }
 
     /// The fog words of `material`'s passes, to resolve over the device's
@@ -197,12 +195,22 @@ impl WaterSet {
         }
     }
 
+    /// The scene copy needs the full, single-sampled colour attachment.
+    pub fn can_copy(color: &wgpu::TextureView, size: (u32, u32)) -> bool {
+        let texture = color.texture();
+        texture.usage().contains(wgpu::TextureUsages::COPY_SRC)
+            && texture.dimension() == wgpu::TextureDimension::D2
+            && texture.sample_count() == 1
+            && texture.depth_or_array_layers() == 1
+            && (texture.width(), texture.height()) == size
+    }
+
     /// Copies the bound colour for the stages that sample the view's own
     /// target, into the kept copy (remade when the target's extent or
     /// format changes), and returns its view. The copy is made before
     /// the pass draws into the target, so the stages read the scene as
     /// the wrapper's own draws found it.
-    pub fn make_copy(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView) -> Option<&wgpu::TextureView> {
+    pub fn make_copy(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView) -> Option<wgpu::TextureView> {
         let texture = color.texture();
         let extent = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let format = texture.format();
@@ -221,12 +229,12 @@ impl WaterSet {
             let v = t.create_view(&Default::default());
             self.copy = Some((extent, format, t, v));
         }
-        let (_, _, source, copy) = self.copy.as_ref()?;
-        encoder.copy_texture_to_texture(source.as_image_copy(), copy.as_image_copy(), extent);
-        Some(copy)
+        let (_, _, destination, view) = self.copy.as_ref()?;
+        encoder.copy_texture_to_texture(texture.as_image_copy(), destination.as_image_copy(), extent);
+        Some(view.clone())
     }
 
-    /// Records every part's passes in order into `pass` (the world's
+    /// Records the selected items in order into `pass` (the world's
     /// vertex and index buffers bound): `copy` the view copy
     /// ([`WaterSet::make_copy`], when a material samples the view), and
     /// `sampled` the render targets' views in [`WaterSet::targets`]'
@@ -239,12 +247,13 @@ impl WaterSet {
         color_format: wgpu::TextureFormat,
         depth_format: wgpu::TextureFormat,
         copy: Option<&wgpu::TextureView>,
+        selected: &[(Owner, u8)],
         sampled: &[Option<wgpu::TextureView>],
     ) -> usize {
-        let mut drawn = 0;
         let mut groups: HashMap<(u16, Option<LightmapKey>), Vec<wgpu::BindGroup>> = HashMap::new();
-        for &(_, (first_index, index_count, lightmap, material)) in &self.parts {
-            let Some(m) = self.materials.get(&material) else { continue };
+        for key in selected {
+            let Some(&(first_index, index_count, lightmap, material)) = self.parts.get(key) else { return 0 };
+            let Some(m) = self.materials.get(&material) else { return 0 };
             let page = match lightmap {
                 Some(k) => self.pages.get(&k).cloned().flatten(),
                 None => None,
@@ -273,37 +282,24 @@ impl WaterSet {
                     }
                 }
                 if !ok {
-                    groups.insert(key, Vec::new());
-                    continue;
+                    return 0;
                 }
-                let views: Vec<Option<wgpu::BindGroup>> = m
-                    .passes
-                    .iter()
+                let Some(views) = m.passes.iter()
                     .map(|(g, _)| g.textures_supplied(device, page.as_ref(), &supplied))
-                    .collect();
-                match views.into_iter().collect::<Option<Vec<_>>>() {
-                    Some(v) => {
-                        groups.insert(key, v);
-                    }
-                    None => {
-                        groups.insert(key, Vec::new());
-                    }
-                }
+                    .collect::<Option<Vec<_>>>()
+                else { return 0 };
+                groups.insert(key, views);
             }
-            let Some(entry) = groups.get(&key) else { continue };
-            if entry.is_empty() || m.passes.iter().any(|(g, _)| !g.pipelines.contains_key(&(color_format, depth_format))) {
-                continue;
-            }
-            for ((g, state), textures) in m.passes.iter().zip(entry) {
-                pass.set_pipeline(&g.pipelines[&(color_format, depth_format)]);
+            for ((g, state), textures) in m.passes.iter().zip(&groups[&key]) {
+                let Some(pipeline) = g.pipelines.get(&(color_format, depth_format)) else { return 0 };
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &g.uniforms, &[]);
                 pass.set_bind_group(1, textures, &[]);
                 pass.set_blend_constant(state.blend_constant);
                 pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);
             }
-            drawn += 1;
         }
-        drawn
+        selected.len()
     }
 }
 

@@ -14,7 +14,6 @@ use engine::memory::{FlatMemory, GuestMemory};
 use feature::native_fog::{self, Host, NativeFog};
 use feature::plan::Base;
 use feature::{Registry, Switches};
-use native_render::camera::GuestWrite;
 use native_render::fog::{self, FOG_BYTES, FOG_LAYER, FOG_MODE, SCENE_FOG_RETURN};
 use native_render::skip::{Cleared, CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, ITEM_SIZE, RENDER_RECORDS, STENCIL_OFF_FLAGS};
 use native_render::world::Owner;
@@ -159,6 +158,7 @@ fn nothing_changes_without_a_host_for_another_layer_or_gate_off() {
     m.set_u32(STENCIL_OFF_FLAGS, 0x0001_0000).unwrap();
     native_fog::before_layer(&mut m, SCENE_FOG_RETURN);
     assert_eq!(mask(&m, 0), 1 << 3);
+    native_fog::restore_pending(&mut m);
 }
 
 #[test]

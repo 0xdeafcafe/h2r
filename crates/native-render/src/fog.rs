@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(cleared.items, vec![ITEMS]);
         assert_eq!(mask(&m, 2), 1 << 16 | 1 << 3, "a placement the host leaves");
         // A shader the host does not draw with: kept, even on the part.
-        let other = |i: FogItem| i.shader != 0x0010;
+        let other = |i: FogItem| i.shader == 0x0099;
         let mut m = scene();
         assert!(clear_fog(&mut m, 16, &other).unwrap().0.is_empty());
     }

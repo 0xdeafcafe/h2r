@@ -13,7 +13,8 @@
 //! surface at `+0x88`) are named in the same lines when a pass would
 //! sample them: what a native pass must supply per view, and how (the
 //! reservation's `sampled` levels, or a copy of the bound colour for the
-//! view's own target).
+//! view's own target). `H2_NATIVE_WATER_PROBE=1` logs the first
+//! committed recording for each target copy.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,8 +29,9 @@ use native_render::program::ViewInputs;
 use native_render::screen_look::{engine_texture, EngineTexture};
 use native_render::water_gpu::{self, Supply, WaterSet, WATER_LAYER};
 use native_render::world::{LightmapKey, Owner, World};
+use tags::material::{Material, TextureSource};
 
-use crate::native_world_glue::{Load, Ready, StageDecoder, StageImages, State};
+use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
 /// The water of one loaded world: what compiled, the parts the native
 /// pass draws, and the engine-texture supplies it needs per view.
@@ -114,7 +116,7 @@ pub fn census<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, shaders: &[Tag
         let Ok(mat) = lib.material(shader, None) else { continue };
         for &layer in &CENSUS_LAYERS {
             let Some(passes) = layer_passes_of(&mat, layer) else { continue };
-            for (n, (imp, _)) in passes {
+            for (imp, n) in passes {
                 let stages: Vec<String> = imp
                     .textures
                     .iter()
@@ -149,7 +151,7 @@ fn layer_passes_of(mat: &Material, layer: usize) -> Option<Vec<(&tags::material:
             out.push((imp, n));
         }
     }
-    (out.is_empty()).then_none()
+    (!out.is_empty()).then_some(out)
 }
 
 /// The guest surface header of render target `t` (the scene-copy and
@@ -221,6 +223,10 @@ pub(crate) fn load<R: std::io::Read + std::io::Seek>(
             }
             let mut unlit = 0;
             for t in &world.transparents {
+                // This lane has no rigid water program for placement-local streams.
+                if matches!(t.owner, Owner::Instance(_)) {
+                    continue;
+                }
                 let Some(compiled) = programs.get(&t.material) else { continue };
                 let samples_lightmap = compiled.iter().any(|c| {
                     c.program.stages.iter().zip(&c.program.dims).any(|(s, d)| matches!(s, Stage::Lightmap) && d.is_some())
@@ -285,7 +291,10 @@ pub fn upload_water(
             programs.insert(m, (ps.clone(), compiled.clone()));
         }
     }
-    let set = WaterSet::new(device, queue, water.parts.clone(), programs, stage_image, lightmap_image);
+    let set = WaterSet::new(
+        device, queue, water.parts.clone(), programs, water.targets.clone(), water.samples_view,
+        stage_image, lightmap_image,
+    );
     eprintln!(
         "native-water: {} materials' layer-6 passes uploaded, {} parts, targets {:?}, samples the view: {}",
         set.len(),
@@ -301,27 +310,24 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     state: State,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    fn ready(&self) -> Option<Arc<Ready>> {
-        match &self.state.lock().unwrap_or_else(|e| e.into_inner()).1 {
-            Load::Ready(r) => Some(Arc::clone(r)),
-            Load::Idle | Load::Loading | Load::Failed => None,
-        }
-    }
-}
-
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
-        let ready = self.ready()?;
+        let ready = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(current_ready(&state, mem)?)
+        };
         let water = ready.water.clone()?;
         let Ok(mut d) = self.device.lock() else { return None };
-        if !d.can_external_pass() {
+        if !d.can_external_pass()
+            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
+        {
             return None;
         }
-        // The programs write w as depth and clip w (`xps_w_depth`): a view
-        // whose draws store z instead is the D3D path's, as the world's.
-        if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
+        let read = ReadMemory(mem);
+        if !d.stencil_state(&read).is_some_and(|s| !s.enable)
+            || !palettes_hold(&ready.palettes, &|n| d.stage_palette(&read, n))
+        {
             return None;
         }
         // The render targets the passes sample (the reflection inputs):
@@ -353,20 +359,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let planning = timeline::native::Timer::start(Stage::Water, Metric::PrepareNs);
-        let mut preview = native_render::skip::MaskPreview::new(&feature::native_fog::Mem(mem))?;
-        let selected = std::cell::RefCell::new(Vec::new());
-        let cleared = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
+        let read = ReadMemory(mem);
+        let mut preview = native_render::skip::MaskPreview::new(&read)?;
+        let (selected, cleared) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
             let accepted = water.part_set.get(&(item.owner, item.part)) == Some(&(item.shader));
-            if accepted {
-                selected.borrow_mut().push((item.owner, item.part));
-            } else {
+            if !accepted {
                 Stage::Water.count(Metric::Examined, 1);
                 Stage::Water.count(Metric::RefusedOwnership, 1);
             }
             accepted
         })?;
         let masks = preview.finish()?;
-        let ranges = selected.borrow().len();
+        let ranges = selected.len();
         if ranges == 0 {
             return None;
         }
@@ -378,7 +382,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let plan = d3d::ExternalPlan { stage: Stage::Water, view, ranges, slots: Vec::new() };
         let pass = Box::new(WaterViewPass {
             ready: Arc::clone(&ready),
-            selected: selected.into_inner(),
+            selected: selected.into_iter().map(|item| (item.owner, item.part)).collect(),
             fogs,
             headers,
             view: None,
@@ -389,6 +393,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let reservation = d
             .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
             .ok()??;
+        // Keep this load pinned until the masks and the sealed commands commit.
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
+            return None;
+        }
         if !masks.apply(&mut feature::native_fog::Mem(mem)) {
             Stage::Water.count(Metric::RefusedMasks, ranges as u64);
             return None;
@@ -429,7 +438,7 @@ impl d3d::ExternalPass for WaterViewPass {
     }
 
     fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = Some((clip.range, clip.clamp));
+        self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
     }
 
     /// The render targets' surface headers, read at the ask: the
@@ -440,8 +449,8 @@ impl d3d::ExternalPass for WaterViewPass {
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() {
-            return Err("water view constants unavailable");
+        if self.view.is_none() || self.w_clip.is_none() {
+            return Err("water view constants or W-buffer clip unavailable");
         }
         let mut guard = crate::native_world_glue::upload(&self.ready, t);
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
@@ -451,12 +460,11 @@ impl d3d::ExternalPass for WaterViewPass {
                 return Err("a selected water part did not bind");
             }
         }
+        if t.sampled.len() != self.headers.len() || t.sampled.iter().any(Option::is_none) {
+            return Err("a water target sample is unavailable on this copy");
+        }
         if set.samples_view
-            && !t
-                .color
-                .texture()
-                .usage()
-                .contains(wgpu::TextureUsages::COPY_SRC)
+            && (t.color.texture().format() != t.color_format || !WaterSet::can_copy(t.color, t.size))
         {
             return Err("the bound colour cannot be copied for the scene stages");
         }
@@ -483,6 +491,27 @@ impl d3d::ExternalPass for WaterViewPass {
             let mut uploads = t.encoder_uploads();
             gpu.prepare_water(&mut uploads, &view, &self.fogs);
         }
-        gpu.encode_water(t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format, t.size, &sampled)
+        let ranges = gpu.encode_water(
+            t.device, t.encoder, t.color, t.color_format, t.depth, t.depth_format,
+            t.size, &self.selected, &sampled,
+        );
+        if std::env::var_os("H2_NATIVE_WATER_PROBE").is_some_and(|v| v == "1")
+            && let Some(on_submit) = t.on_submit
+        {
+            let copy = t.copy;
+            let size = t.size;
+            on_submit.push(Box::new(move || {
+                static REFERENCE: AtomicBool = AtomicBool::new(false);
+                static DISPLAY: AtomicBool = AtomicBool::new(false);
+                let logged = match copy {
+                    d3d::TargetCopy::Reference => &REFERENCE,
+                    d3d::TargetCopy::Display => &DISPLAY,
+                };
+                if !logged.swap(true, Ordering::Relaxed) {
+                    eprintln!("native-water probe: {copy:?} {size:?}, committed {ranges} parts");
+                }
+            }));
+        }
+        ranges
     }
 }

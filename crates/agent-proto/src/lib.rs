@@ -161,6 +161,10 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    /// Active mixer voices, bin gains and distance-dependent path parameters.
+    pub const AUDIO_VOICES: &str = "audio.voices";
+    /// Completed per-light shadow-map comparisons.
+    pub const RENDER_SHADOWS: &str = "render.shadows";
     /// Sim mode's match (`H2_SIM`, `boot::sim_glue`): the match file, the
     /// phase (`waiting`, `playing`, `over`), ticks, game and wall seconds,
     /// the speed-up so far, frames skipped, and the end once over.

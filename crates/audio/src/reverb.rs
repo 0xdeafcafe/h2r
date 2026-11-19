@@ -22,8 +22,8 @@
 //! - **Room HF**: the wet signal passes a one-pole low-pass that is `room_hf`
 //!   millibels down at `hf_reference`.
 //!
-//! `room_rolloff` (distance dependence of the send) is not modelled: sends
-//! reach the reverb at the level the voice's mix bin gives them.
+//! The mixer applies source and environment room rolloff and source HF loss
+//! to each bin-10 send before summing the voices here.
 //!
 //! The reverb is plain arithmetic on its own state: given the same sequence
 //! of inputs it produces the same sequence of outputs, whatever the block

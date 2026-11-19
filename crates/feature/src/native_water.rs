@@ -383,7 +383,7 @@ pub struct NativeWater;
 
 impl Feature for NativeWater {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The water, camouflage and hologram census (read-only)")
+        Manifest::new(ID, "Native water edge blend and a census of water, camouflage and hologram draws")
             .doc("docs/graphics/native-renderer.md")
     }
 

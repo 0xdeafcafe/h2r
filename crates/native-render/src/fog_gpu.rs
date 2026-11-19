@@ -17,7 +17,7 @@
 //! translates and uploads; anything else keeps its D3D draws (the load
 //! logs why, most parts first).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::gpu::Image;
 use crate::look::{implementation_look, PassLook, Refusal, Stage};
@@ -25,7 +25,7 @@ use crate::pass_state::{pass_state, PassState, StateRefusal};
 use crate::program::{
     compile_pass, world_constants_read, Gpu, MaterialProgram, Rigid, RigidProgram, ViewInputs,
 };
-use crate::world::{LightmapKey, Owner, World};
+use crate::world::{LightmapKey, ModelRows, Owner, World};
 use gfx::state::RenderStateType;
 use gfx::xdk::{HALO2_BUILD, RenderStateTable};
 use shaders::psh::{self, PixelShaderDef, TexMode};
@@ -201,7 +201,7 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
             // `implementation_look` with the engine stages kept when a
             // per-view supply resolves them.
             let mut textures = [Stage::Empty; 4];
-            for (stage, t) in textures.iter_mut().zip(&imp.textures) {
+            for (n_stage, (stage, t)) in textures.iter_mut().zip(&imp.textures).enumerate() {
                 *stage = match t.map(|t| t.source) {
                     None | Some(tags::material::TextureSource::None) => Stage::Empty,
                     Some(tags::material::TextureSource::Bitmap { bitmap, image, .. }) => Stage::Bitmap { bitmap, image },
@@ -211,7 +211,7 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
                             crate::screen_look::EngineTexture::View | crate::screen_look::EngineTexture::Target(_) => {
                                 Stage::Engine(id)
                             }
-                            _ => return Err(FogRefusal::Unsupplied { pass: n, stage, id }),
+                            _ => return Err(FogRefusal::Unsupplied { pass: n, stage: n_stage, id }),
                         }
                     }
                     Some(tags::material::TextureSource::Default) => {
@@ -246,6 +246,9 @@ fn passes_of(material: &Material, layer: usize, supplied: bool) -> Result<Vec<Fo
         }
         if !imp.engine_render_states.is_empty() {
             return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineRenderStates });
+        }
+        if !imp.engine_stage_states.is_empty() {
+            return Err(FogRefusal::Look { pass: n, refusal: Refusal::EngineStageStates });
         }
         match fog_parity(&look) {
             Ok(()) => {}
@@ -395,10 +398,8 @@ struct FogMaterial {
 /// (the glue's parts list, in the world's draw order).
 pub struct FogSet {
     materials: HashMap<u16, FogMaterial>,
-    /// Each part the fog draws, by owner and part index: its index range,
-    /// lightmap page and material, in the order the load named them (the
-    /// world's draw order).
-    parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))>,
+    /// Index range, lightmap page and material for each eligible part.
+    parts: HashMap<(Owner, u8), (u32, u32, Option<LightmapKey>, u16)>,
 }
 
 impl FogSet {
@@ -418,6 +419,16 @@ impl FogSet {
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
         lightmap_image: &mut dyn FnMut(LightmapKey) -> Option<Image>,
     ) -> Self {
+        // Layer 3 may have retained a different set of parts. Use the fog
+        // parts to select the placement rows from the shared world.
+        let mut placements: HashMap<u16, BTreeMap<u32, ModelRows>> = HashMap::new();
+        for &((owner, _), (_, _, _, material)) in &parts {
+            if let Owner::Instance(i) = owner
+                && let Some(rows) = world.rows(i)
+            {
+                placements.entry(material).or_default().insert(i, *rows);
+            }
+        }
         let mut materials = HashMap::new();
         'material: for (material, passes) in programs {
             if passes.is_empty() {
@@ -437,7 +448,9 @@ impl FogSet {
                 // A placement's draws take the rigid program, one holder
                 // per pass with its own pipeline keys
                 // ([`FogMaterial::passes`]).
-                let rigid = g.program.rigid.clone().and_then(|_| Rigid::new(device, &g, world, material));
+                let rigid = placements.get(&material).and_then(|slots| {
+                    Rigid::with_slots(device, &g, slots.iter().map(|(&i, rows)| (i, *rows)).collect())
+                });
                 gpus.push((g, p.state, rigid));
             }
             materials.insert(material, FogMaterial { passes: gpus, words, groups: HashMap::new() });
@@ -447,9 +460,11 @@ impl FogSet {
         // material with no placement parts needs none).
         let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = parts;
         parts.retain(|&((owner, _), (_, _, _, material))| {
-            let placed = matches!(owner, Owner::Instance(_));
             let Some(m) = materials.get(&material) else { return false };
-            !placed || (!m.passes.is_empty() && m.passes.iter().all(|(_, _, r)| r.is_some()))
+            match owner {
+                Owner::Cluster(_) => true,
+                Owner::Instance(i) => m.passes.iter().all(|(_, _, r)| r.as_ref().and_then(|r| r.offset(i)).is_some()),
+            }
         });
         let mut pages: HashMap<LightmapKey, Option<wgpu::TextureView>> = HashMap::new();
         let mut out = Vec::new();
@@ -467,7 +482,7 @@ impl FogSet {
                 let groups = m
                     .passes
                     .iter()
-                    .map(|(g, _)| g.textures(device, page.as_ref()))
+                    .map(|(g, _, _)| g.textures(device, page.as_ref()))
                     .collect::<Option<Vec<_>>>();
                 match groups {
                     Some(groups) => {
@@ -485,7 +500,7 @@ impl FogSet {
             materials.remove(&material);
         }
         out.retain(|(_, (_, _, _, mat))| materials.contains_key(mat));
-        Self { materials, parts: out }
+        Self { materials, parts: out.into_iter().collect() }
     }
 
     /// How many materials draw natively.
@@ -497,15 +512,10 @@ impl FogSet {
         self.materials.is_empty()
     }
 
-    /// The parts the set draws, in order.
-    pub fn parts(&self) -> &[((Owner, u8), (u32, u32, Option<LightmapKey>, u16))] {
-        &self.parts
-    }
-
     /// Whether the set draws `part` of `owner` (whatever the shader): the
     /// `prepare_copy` check that every selected part will record.
     pub fn draws_part(&self, owner: Owner, part: u8) -> bool {
-        self.parts.iter().any(|&((o, p), _)| o == owner && p == part)
+        self.parts.get(&(owner, part)).is_some_and(|&(_, count, _, _)| count != 0)
     }
 
     /// The frame's uniforms for every pass, with each material's fog
@@ -545,32 +555,32 @@ impl FogSet {
         }
     }
 
-    /// Records every part's passes in order into `pass` (the world's
-    /// vertex and index buffers bound), each part with every pass of its
-    /// material. Returns how many parts were drawn.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, color: wgpu::TextureFormat, depth: wgpu::TextureFormat) -> usize {
+    /// Records the selected items in reservation order. A missing pass
+    /// invalidates the whole recording.
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        selected: &[(Owner, u8)],
+    ) -> usize {
         let stencil = wgpu::StencilState::default();
-        let mut drawn = 0;
-        for &((owner, _), &(first_index, index_count, lightmap, material)) in &self.parts {
-            let Some(m) = self.materials.get(&material) else { continue };
-            let Some(groups) = m.groups.get(&lightmap) else { continue };
-            if m.passes.iter().any(|(g, ..)| !g.pipelines.contains_key(&(color, depth))) {
-                continue;
-            }
-            let instance = match owner {
-                Owner::Instance(n) => Some(n),
-                Owner::Cluster(_) => None,
-            };
+        for &(owner, part) in selected {
+            let Some(&(first_index, index_count, lightmap, material)) = self.parts.get(&(owner, part)) else { return 0 };
+            let Some(m) = self.materials.get(&material) else { return 0 };
+            let Some(groups) = m.groups.get(&lightmap) else { return 0 };
             for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
-                match (rigid, instance) {
-                    (Some(r), Some(n)) => {
-                        let Some(offset) = r.offset(n) else { continue };
-                        let Some(pipeline) = r.pipeline_at(color, depth, None, &stencil) else { continue };
+                match owner {
+                    Owner::Instance(n) => {
+                        let Some(r) = rigid else { return 0 };
+                        let Some(offset) = r.offset(n) else { return 0 };
+                        let Some(pipeline) = r.pipeline_at(color, depth, None, &stencil) else { return 0 };
                         pass.set_pipeline(pipeline);
                         pass.set_bind_group(0, &r.uniforms, &[offset]);
                     }
-                    _ => {
-                        pass.set_pipeline(&g.pipelines[&(color, depth)]);
+                    Owner::Cluster(_) => {
+                        let Some(pipeline) = g.pipelines.get(&(color, depth)) else { return 0 };
+                        pass.set_pipeline(pipeline);
                         pass.set_bind_group(0, &g.uniforms, &[]);
                     }
                 }
@@ -578,8 +588,7 @@ impl FogSet {
                 pass.set_blend_constant(state.blend_constant);
                 pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);
             }
-            drawn += 1;
         }
-        drawn
+        selected.len()
     }
 }
