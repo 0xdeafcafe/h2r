@@ -979,20 +979,41 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let got = bitmaps(&mut m, &mut converted_files);
         std::fs::remove_file(&path).unwrap();
         // The converted lightmap took the base's lightmap bitmap's slot:
-        // every other image is the base's.
+        // every other image is the base's, less the base bitmaps nothing
+        // in the converted map reaches, which pinned pruning drops
+        // (`fresh::prune_pinned`): no tag of those names is left.
         let slot_name = p.lightmap.as_ref().map(|l| l.replaces.clone());
         let lightmap_name = slot_name.clone().unwrap_or_default();
-        let want: Vec<_> = want.into_iter().filter(|w| w.0 != lightmap_name).collect();
+        let present: std::collections::HashSet<String> = m
+            .tags()
+            .iter()
+            .filter(|t| t.group == FourCC(*b"bitm"))
+            .filter_map(|t| t.name.clone())
+            .collect();
+        let (want, pruned): (Vec<_>, Vec<_>) = want
+            .into_iter()
+            .filter(|w| w.0 != lightmap_name)
+            .partition(|w| present.contains(&w.0));
+        let pruned_bitmaps: std::collections::BTreeSet<&str> =
+            pruned.iter().map(|w| w.0.as_str()).collect();
+        eprintln!(
+            "    pinned pruning dropped {} base bitmaps ({} images)",
+            pruned_bitmaps.len(),
+            pruned.len()
+        );
         let converted_lightmap = format!("{}_lightmap", h1convert::convert::scenario_path(name));
         let got: Vec<_> = got
             .into_iter()
             .filter(|g| g.0 != converted_lightmap)
             .filter(|g| !p.textures.bitmaps.iter().any(|(n, _)| *n == g.0))
             .filter(|g| {
-                !p.skies
-                    .skies
-                    .iter()
-                    .any(|s| s.bitmaps.iter().any(|b| b.1 == g.0))
+                !p.skies.skies.iter().any(|s| {
+                    s.bitmaps.iter().any(|b| b.1 == g.0)
+                        || s.flares
+                            .iter()
+                            .flatten()
+                            .any(|f| f.bitmap.as_ref().is_some_and(|b| b.0 == g.0))
+                })
             })
             .collect();
         if got.len() != want.len() {

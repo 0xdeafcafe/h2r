@@ -1638,8 +1638,8 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
             }
         };
         let mopp = structure_mopp(&p.collision).unwrap();
-        let done = p
-            .build(&mut base, &mopp)
+        let (done, pruned) = p
+            .build_pruned(&mut base, &mopp)
             .unwrap_or_else(|e| panic!("{sandbox:?}: {e}"));
         let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
         let (memory, metadata) = (word(&done.bytes, 0x1c), word(&done.bytes, 0x18));
@@ -1711,6 +1711,122 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
         let mut groups: Vec<_> = groups.into_iter().collect();
         groups.sort_by(|a, b| b.1.1.cmp(&a.1.1));
         eprintln!("  by group: {:?}", &groups[..groups.len().min(15)]);
+        // What keeps the base's vehicles: for the warthog's and wraith's
+        // collision and every base vehicle kept, the chain of edges
+        // pinned pruning reached it by (`fresh::Pruned::why`), back to
+        // its root.
+        let label = |id: TagId| {
+            base_ids
+                .iter()
+                .find(|t| t.0 == id)
+                .map(|t| format!("{} {}", t.1, t.2.as_deref().unwrap_or("?")))
+                .or_else(|| {
+                    out.tags().iter().find(|t| t.id == id).map(|t| {
+                        format!("{} {} (built)", t.group, t.name.as_deref().unwrap_or("?"))
+                    })
+                })
+                .unwrap_or_else(|| format!("{:#x}", id.0))
+        };
+        let mut asked: Vec<TagId> = all
+            .iter()
+            .filter(|t| {
+                t.1 == FourCC(*b"coll")
+                    && matches!(
+                        t.2.as_deref(),
+                        Some(
+                            "objects\\vehicles\\warthog\\warthog"
+                                | "objects\\vehicles\\wraith\\wraith"
+                        )
+                    )
+            })
+            .map(|t| t.0)
+            .collect();
+        asked.extend(
+            all.iter()
+                .filter(|t| t.0.index() < first && t.1 == FourCC(*b"vehi"))
+                .map(|t| t.0),
+        );
+        for id in asked {
+            let mut chain = vec![label(id)];
+            let mut at = id;
+            for _ in 0..64 {
+                let step = match pruned.why.get(&at) {
+                    None => "not reached (a tag pruning keeps without reaching it)".to_string(),
+                    Some(h1convert::fresh::Reach::Root(r)) => format!("root: {r}"),
+                    Some(h1convert::fresh::Reach::Datum { by }) => {
+                        at = *by;
+                        format!("datum in {}", label(*by))
+                    }
+                    Some(h1convert::fresh::Reach::Address { by, word }) => {
+                        at = *by;
+                        format!("address {word:#x} in {}", label(*by))
+                    }
+                    Some(h1convert::fresh::Reach::Gap { by, gap }) => {
+                        at = *by;
+                        format!(
+                            "datum in the unowned bytes at {gap:#x} {} points into",
+                            label(*by)
+                        )
+                    }
+                };
+                let end = step.starts_with("root") || step.starts_with("not");
+                chain.push(step);
+                if end {
+                    break;
+                }
+            }
+            eprintln!("{sandbox:?}: kept: {}", chain.join("\n      <- "));
+        }
+        // The scenario's vehicle palette: what it names, and how many
+        // placements use each entry (fresh::null_unplaced nulls a base
+        // entry none uses).
+        if let Some(scnr) = out
+            .tags()
+            .iter()
+            .find(|t| t.group == FourCC(*b"scnr"))
+            .cloned()
+            && let Some(b) = bytes_of.get(&scnr.id)
+        {
+            let at = scnr.location.unwrap().address;
+            let (pl, pal, stride) = tags::object::OBJECT_TYPES[1].placement.unwrap();
+            let w = |o: u32| {
+                let o = o.checked_sub(at)? as usize;
+                Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
+            };
+            let (n, p) = (word(b, pl as usize), word(b, pl as usize + 4));
+            let (e, q) = (word(b, pal as usize), word(b, pal as usize + 4));
+            let used: Vec<Option<i16>> = (0..n)
+                .map(|k| w(p + k * u32::from(stride)).map(|x| x as u16 as i16))
+                .collect();
+            for k in 0..e {
+                let d = w(q + k * 0x28 + 4);
+                let n = used.iter().filter(|u| **u == Some(k as i16)).count();
+                eprintln!(
+                    "{sandbox:?}: vehicle palette {k}: {} ({n} placements)",
+                    d.map_or("outside the scenario's bytes".into(), |d| label(TagId(d)))
+                );
+            }
+        }
+        // The Halo 1 sandbox's vehicle list names Blood Gulch's Halo 1
+        // warthog, ghost and scorpion in place of Halo 2's
+        // (`plan_vehicle_list`), so those retail vehicles, which nothing
+        // else reaches, are dropped.
+        if matches!(sandbox, Sandbox::Halo1) {
+            let retail: Vec<String> = ["warthog", "ghost", "scorpion"]
+                .iter()
+                .map(|v| format!("objects\\vehicles\\{v}\\{v}"))
+                .collect();
+            let still: Vec<&str> = all
+                .iter()
+                .filter(|t| t.0.index() < first && t.1 == FourCC(*b"vehi"))
+                .filter_map(|t| t.2.as_deref())
+                .filter(|n| retail.iter().any(|r| r == n))
+                .collect();
+            assert!(
+                still.is_empty(),
+                "{sandbox:?}: retail vehicles kept: {still:?}"
+            );
+        }
         assert!(
             memory + 0x10000 <= budget,
             "{sandbox:?}: {memory:#x} leaves under 0x10000 of {budget:#x}"

@@ -308,6 +308,8 @@ pub fn prepare_halo1<R: Read + Seek>(
     // (weapons, grenades, powerups, a vehicle's).
     let mut kinds: Vec<u8> = Vec::new();
     let mut spawns: Vec<(Halo1Spawn, usize)> = Vec::new();
+    // The Halo 1 vehicles the spawns place, converted, by name.
+    let mut placed_vehicles: Vec<String> = Vec::new();
     for sp in plan_objects(h1)? {
         let group = if sp.is_vehicle() { *b"vehc" } else { *b"itmc" };
         let c = match collections
@@ -322,6 +324,9 @@ pub fn prepare_halo1<R: Read + Seek>(
                 for it in &sp.items {
                     match objects.object(it.group, &it.name) {
                         Ok(k) => {
+                            if &it.group == b"vehi" && !placed_vehicles.contains(&it.name) {
+                                placed_vehicles.push(it.name.clone());
+                            }
                             entries.push((k, it.weight));
                             kind.get_or_insert(halo1_netgame_type(it.group, &it.name));
                         }
@@ -405,6 +410,13 @@ pub fn prepare_halo1<R: Read + Seek>(
         });
     }
     let weapon_list = plan_weapon_list(h1, base, objects, first, &mut applied.unresolved)?;
+    let vehicle_list = plan_vehicle_list(
+        base,
+        objects,
+        first,
+        &placed_vehicles,
+        &mut applied.unresolved,
+    )?;
     let starting = plan_starting_equipment(
         h1,
         base,
@@ -471,6 +483,7 @@ pub fn prepare_halo1<R: Read + Seek>(
     p.player_hands = player_hands;
     p.grenades = grenades;
     p.weapon_list = weapon_list;
+    p.vehicle_list = vehicle_list;
     Ok(p)
 }
 
@@ -624,6 +637,28 @@ fn plan_weapon_list<R: Read + Seek>(
     first: usize,
     unresolved: &mut Vec<String>,
 ) -> Result<Vec<(usize, TagId)>> {
+    let mut out = Vec::new();
+    for (i, name) in base_list(base, crate::globals::List::Weapons)? {
+        let name = name.as_str();
+        let Some(h1_name) = halo1_weapon(h1, name) else {
+            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+            continue;
+        };
+        match objects.object(*b"weap", &h1_name) {
+            Ok(k) => out.push((i, added_datum(first + k))),
+            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+        }
+    }
+    Ok(out)
+}
+
+/// The base `mulg`'s universal `list` (`crate::globals::List`): each
+/// entry that names a tag, with the tag's name ("?" for none). Empty when
+/// the base has no globals or multiplayer globals.
+fn base_list<R: Read + Seek>(
+    base: &mut Map<R>,
+    list: crate::globals::List,
+) -> Result<Vec<(usize, String)>> {
     let find = |base: &Map<R>, group: &[u8; 4]| {
         base.tags()
             .iter()
@@ -651,27 +686,70 @@ fn plan_weapon_list<R: Read + Seek>(
         return Ok(Vec::new());
     };
     let bytes = base.read_tag_bytes(mulg)?;
-    let list = crate::globals::weapon_list(&bytes, address)?;
-    let names: Vec<(TagId, String)> = base
-        .tags()
+    let entries = crate::globals::universal_list(&bytes, address, list)?;
+    Ok(entries
         .iter()
-        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
-        .collect();
+        .enumerate()
+        .filter_map(|(i, id)| {
+            let id = (*id)?;
+            let name = base
+                .tags()
+                .iter()
+                .find(|t| t.id == id)
+                .and_then(|t| t.name.clone())
+                .unwrap_or_else(|| "?".into());
+            Some((i, name))
+        })
+        .collect())
+}
+
+/// The Halo 1 vehicle of `placed` (the Halo 1 vehicles the spawns place)
+/// that stands for the Halo 2 vehicle `h2_name`: one whose Halo 2
+/// equivalent ([`crate::sandbox::h2_equivalent`]) is the role named as
+/// the vehicle (`warthog` for `objects\vehicles\warthog\warthog`, not
+/// the rocket warthog's `warthog_gauss`). `None` when the spawns place
+/// none of that role.
+pub fn halo1_vehicle_for<'a>(h2_name: &str, placed: &'a [String]) -> Option<&'a str> {
+    let last = h2_name
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(h2_name)
+        .to_ascii_lowercase();
+    crate::sandbox::vehicle_class(&last)?;
+    placed
+        .iter()
+        .find(|n| matches!(h2_equivalent(n), Some(H2Item::Vehicle(r)) if r == last))
+        .map(String::as_str)
+}
+
+/// The Halo 1 sandbox's vehicle list: each entry of the base's `mulg`
+/// vehicle list ([`crate::globals::UNIVERSAL_VEHICLES`]) whose vehicle
+/// the spawns place a Halo 1 vehicle for ([`halo1_vehicle_for`]) gets
+/// that vehicle, so a game variant's vehicle option that swaps a vehicle
+/// for another of its class gives a Halo 1 one. The other entries (the
+/// wraith, the spectre, the turrets: Halo 1 has none, or the map places
+/// none) keep the base's and are reported. As the list names the base's
+/// vehicles, a pinned map kept every retail vehicle and all it names
+/// (`fresh::prune_pinned`): pointed at the Halo 1 vehicles, those the
+/// map's spawns stand in for are dropped.
+fn plan_vehicle_list<R: Read + Seek>(
+    base: &mut Map<R>,
+    objects: &mut dyn Halo1Objects,
+    first: usize,
+    placed: &[String],
+    unresolved: &mut Vec<String>,
+) -> Result<Vec<(usize, TagId)>> {
     let mut out = Vec::new();
-    for (i, id) in list.iter().enumerate() {
-        let Some(id) = id else { continue };
-        let name = names
-            .iter()
-            .find(|(t, _)| t == id)
-            .map(|(_, n)| n.as_str())
-            .unwrap_or("?");
-        let Some(h1_name) = halo1_weapon(h1, name) else {
-            unresolved.push(format!("weapon list {i}: {name} has no Halo 1 weapon on the map"));
+    for (i, name) in base_list(base, crate::globals::List::Vehicles)? {
+        let Some(h1_name) = halo1_vehicle_for(&name, placed) else {
+            unresolved.push(format!(
+                "vehicle list {i}: {name} has no Halo 1 vehicle the map places; the base's stays"
+            ));
             continue;
         };
-        match objects.object(*b"weap", &h1_name) {
+        match objects.object(*b"vehi", h1_name) {
             Ok(k) => out.push((i, added_datum(first + k))),
-            Err(w) => unresolved.push(format!("weapon list {i}: {h1_name}: {w}")),
+            Err(w) => unresolved.push(format!("vehicle list {i}: {h1_name}: {w}")),
         }
     }
     Ok(out)
@@ -966,6 +1044,39 @@ mod tests {
         assert_eq!(sc.palette_block().bytes.len(), 2 * SCENERY_PALETTE_ENTRY);
         assert_eq!(sc.palette_block().fixups.len(), 2);
         assert_eq!(sc.placements_block().bytes.len(), 2 * SCENERY_PLACEMENT);
+    }
+
+    /// Each Coagulation vehicle list entry and the Blood Gulch vehicle
+    /// that stands for it: the warthog's is the plain warthog, not the
+    /// rocket warthog; the wraith, spectre and turrets have none, nor does
+    /// a vehicle the spawns don't place.
+    #[test]
+    fn a_vehicle_list_entry_takes_the_placed_halo1_vehicle_of_its_role() {
+        let placed: Vec<String> = [
+            "vehicles\\rwarthog\\rwarthog",
+            "vehicles\\warthog\\mp_warthog",
+            "vehicles\\ghost\\ghost_mp",
+            "vehicles\\scorpion\\scorpion_mp",
+        ]
+        .map(String::from)
+        .to_vec();
+        let v = |n: &str| halo1_vehicle_for(n, &placed);
+        assert_eq!(
+            v("objects\\vehicles\\warthog\\warthog"),
+            Some("vehicles\\warthog\\mp_warthog")
+        );
+        assert_eq!(
+            v("objects\\vehicles\\ghost\\ghost"),
+            Some("vehicles\\ghost\\ghost_mp")
+        );
+        assert_eq!(
+            v("objects\\vehicles\\scorpion\\scorpion"),
+            Some("vehicles\\scorpion\\scorpion_mp")
+        );
+        assert_eq!(v("objects\\vehicles\\banshee\\banshee"), None);
+        assert_eq!(v("objects\\vehicles\\wraith\\wraith"), None);
+        assert_eq!(v("objects\\vehicles\\spectre\\spectre"), None);
+        assert_eq!(v("objects\\vehicles\\c_turret_ap\\c_turret_ap"), None);
     }
 
     #[test]

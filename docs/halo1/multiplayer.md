@@ -683,6 +683,28 @@ one. The largest tag under a base name is no base tag: the structure BSP
 is Halo 1's, written into Coagulation's `sbsp` slot (and so under its
 path), and lives in the BSP region, not the metadata.
 
+**The multiplayer globals' vehicle list** (`mulg` universal `+0x70`,
+8-byte tag references like the weapon list at `+0x68`;
+`h1convert::globals::UNIVERSAL_VEHICLES`). V, Coagulation: 11 entries,
+the warthog, ghost, scorpion, wraith, banshee, spectre, none,
+`h_turret_ap`, none, none, `c_turret_ap`. It is the only place that
+names every retail vehicle (S: the swaps a variant's vehicle options
+make take their vehicle from it, by its shape; the reader is not
+traced), and the `mulg` is kept whole, so it kept
+every retail vehicle and all each names (models, collision, physics,
+animations, the warthog's and scorpion's turrets) in a pinned Halo 1
+sandbox map: the chain each kept tag was reached by is
+`fresh::Pruned::why` (`Prepared::build_pruned`), and the pinned test
+prints it for the vehicles. In the Halo 1 sandbox each entry whose
+vehicle the spawns place a Halo 1 vehicle of the same role for
+(`convert::halo1::halo1_vehicle_for`: the warthog's entry the plain
+warthog, not the rocket warthog) now names that vehicle
+(`plan_vehicle_list`, written with `globals::set_universal_list` when the
+map is built, as the weapon list is), so a variant's swap gives a
+Halo 1 vehicle and the retail ones the spawns stand in for are dropped.
+The others keep the base's and are reported: on Blood Gulch the wraith,
+banshee, spectre and both turrets.
+
 **Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
 Halo 1 keeps a level's background sounds and sound environments in the
 structure (`sbsp +0x1fc`, `0x74` each, and `+0x208`, `0x50` each; a name

@@ -776,6 +776,9 @@ pub struct Pruned {
     /// points into their bytes.
     pub freed: u64,
     pub kept_by_pointer: usize,
+    /// [`prune_pinned`]: each kept slot's datum and the edge it was first
+    /// reached by, to follow what keeps a tag back to its root.
+    pub why: std::collections::HashMap<TagId, Reach>,
 }
 
 impl Pruned {
@@ -1148,15 +1151,43 @@ fn walk(
 /// owns that a word-read tag points into. Returns the slots reached and
 /// how many were reached only by such an address.
 fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize) {
+    let (seen, by_pointer, _) = pinned_reach_why(set, keep, roots);
+    (seen, by_pointer)
+}
+
+/// How [`pinned_reach`] reached a slot first: the edge that kept it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// A root: the scenario, the globals, a [`Keep`] group or name
+    /// prefix, or one of the caller's tags.
+    Root(&'static str),
+    /// A word of `by` is its datum.
+    Datum { by: TagId },
+    /// A word of `by` (`word`) is an address in its bytes.
+    Address { by: TagId, word: u32 },
+    /// A word in metadata no tag owns (starting at `gap`) that `by`
+    /// points into is its datum.
+    Gap { by: TagId, gap: u32 },
+}
+
+/// [`pinned_reach`], with the edge each reached slot was first reached
+/// by (`None` for one not reached).
+fn pinned_reach_why(
+    set: &TagSet,
+    keep: &Keep,
+    roots: &[TagId],
+) -> (Vec<bool>, usize, Vec<Option<Reach>>) {
     let n = set.slots.len();
     let space = Space::new(set);
     let schema = Schema::builtin();
     let mut seen = vec![false; n];
     let mut todo = Vec::new();
     let mut by_pointer = 0;
-    let mark = |i: usize, seen: &mut Vec<bool>, todo: &mut Vec<usize>| {
+    let mut why: Vec<Option<Reach>> = vec![None; n];
+    let mut mark = |i: usize, how: Reach, seen: &mut Vec<bool>, todo: &mut Vec<usize>| {
         if i < n && !seen[i] && set.slots[i].tag.is_some() {
             seen[i] = true;
+            why[i] = Some(how);
             todo.push(i);
             true
         } else {
@@ -1165,15 +1196,25 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
     };
     for (i, s) in set.slots.iter().enumerate() {
         let Some(t) = &s.tag else { continue };
-        if t.id == set.scenario
-            || t.id == set.globals
-            || keep.groups.iter().any(|g| t.group == FourCC(**g))
-            || roots.contains(&t.id)
-            || s.name
-                .as_deref()
-                .is_some_and(|n| keep.prefixes.iter().any(|p| n.starts_with(p)))
+        let root = if t.id == set.scenario {
+            Some("scenario")
+        } else if t.id == set.globals {
+            Some("globals")
+        } else if keep.groups.iter().any(|g| t.group == FourCC(**g)) {
+            Some("kept group")
+        } else if roots.contains(&t.id) {
+            Some("caller's root")
+        } else if s
+            .name
+            .as_deref()
+            .is_some_and(|n| keep.prefixes.iter().any(|p| n.starts_with(p)))
         {
-            mark(i, &mut seen, &mut todo);
+            Some("kept name prefix")
+        } else {
+            None
+        };
+        if let Some(r) = root {
+            mark(i, Reach::Root(r), &mut seen, &mut todo);
         }
     }
     let datum = |w: u32| {
@@ -1182,10 +1223,13 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
     };
     let mut live_gaps = std::collections::HashSet::new();
     let (mut datums, mut arrays) = (Vec::new(), Vec::new());
+    let mut gap_datums: Vec<(u32, u32)> = Vec::new();
     while let Some(i) = todo.pop() {
         let Some(t) = &set.slots[i].tag else { continue };
+        let by = t.id;
         datums.clear();
         arrays.clear();
+        gap_datums.clear();
         let mut words_too = false;
         match &t.payload {
             TagPayload::Pinned { address, bytes } => {
@@ -1226,7 +1270,7 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
             let Some(p) = space.part(a) else { continue };
             match space.parts[p].3 {
                 Some(owner) if owner != i => {
-                    if mark(owner, &mut seen, &mut todo) {
+                    if mark(owner, Reach::Address { by, word: a }, &mut seen, &mut todo) {
                         by_pointer += 1;
                     }
                 }
@@ -1240,7 +1284,8 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
                         .iter()
                         .map(|w| u32::from_le_bytes(*w))
                         .collect();
-                    datums.extend(words.iter().copied());
+                    let gap = space.parts[p].0;
+                    gap_datums.extend(words.iter().map(|w| (*w, gap)));
                     arrays.extend(words);
                 }
                 _ => {}
@@ -1248,11 +1293,16 @@ fn pinned_reach(set: &TagSet, keep: &Keep, roots: &[TagId]) -> (Vec<bool>, usize
         }
         for &w in &datums {
             if let Some(k) = datum(w) {
-                mark(k, &mut seen, &mut todo);
+                mark(k, Reach::Datum { by }, &mut seen, &mut todo);
+            }
+        }
+        for &(w, gap) in &gap_datums {
+            if let Some(k) = datum(w) {
+                mark(k, Reach::Gap { by, gap }, &mut seen, &mut todo);
             }
         }
     }
-    (seen, by_pointer)
+    (seen, by_pointer, why)
 }
 
 /// A scenario palette element's size (every object palette, D;
@@ -1376,8 +1426,14 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let (seen, by_pointer) = pinned_reach(set, keep, &roots);
+    let (seen, by_pointer, why) = pinned_reach_why(set, keep, &roots);
     out.kept_by_pointer = by_pointer;
+    out.why = set
+        .slots
+        .iter()
+        .zip(why)
+        .filter_map(|(s, w)| Some((s.tag.as_ref()?.id, w?)))
+        .collect();
     for (i, s) in set.slots.iter_mut().enumerate().take(first) {
         if seen[i] {
             continue;
@@ -1514,6 +1570,25 @@ mod pinned_prune_tests {
         assert_eq!(p.tags(), 3);
         assert_eq!(p.freed, 0xc0);
         assert_eq!(p.kept_by_pointer, 1);
+        // Each kept tag's first edge, to follow back to a root.
+        assert_eq!(p.why.get(&id(0)), Some(&Reach::Root("scenario")));
+        assert_eq!(p.why.get(&id(2)), Some(&Reach::Root("caller's root")));
+        assert_eq!(
+            p.why.get(&id(3)),
+            Some(&Reach::Address {
+                by: id(2),
+                word: BASE + 0x904
+            })
+        );
+        assert_eq!(
+            p.why.get(&id(4)),
+            Some(&Reach::Gap {
+                by: id(2),
+                gap: BASE + 0xa00
+            })
+        );
+        assert_eq!(p.why.get(&id(7)), Some(&Reach::Datum { by: id(6) }));
+        assert_eq!(p.why.get(&id(5)), None);
         // A conversion's tag (from `first` on) is never dropped.
         let mut set = super::pinned_prune_tests::set();
         prune_pinned(&mut set, N - 1, &NOTHING, &roots);

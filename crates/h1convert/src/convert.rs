@@ -210,6 +210,11 @@ pub struct Prepared {
     /// map is built ([`crate::globals::set_weapon_list`]); empty keeps
     /// the base's.
     pub weapon_list: Vec<(usize, TagId)>,
+    /// The Halo 1 sandbox's vehicle list entries (entry, a Halo 1 vehicle
+    /// among the added objects), written over the base `mulg`'s when the
+    /// map is built ([`crate::globals::set_universal_list`]); empty keeps
+    /// the base's.
+    pub vehicle_list: Vec<(usize, TagId)>,
     /// The base's scenario with the placements applied.
     scenario: Scenario,
     /// The base's structure BSP and lightmap slots, reused.
@@ -554,6 +559,7 @@ pub fn prepare<R: Read + Seek>(
         player_hands: None,
         grenades: Vec::new(),
         weapon_list: Vec::new(),
+        vehicle_list: Vec::new(),
         scenario,
         sbsp,
         ltmp,
@@ -732,13 +738,26 @@ impl Prepared {
 
     /// Writes the map with `mopp` as the structure's MOPP code block.
     pub fn build<R: Read + Seek>(&self, base: &mut Map<R>, mopp: &[u8]) -> Result<Converted> {
-        let (_, bytes, _, _) = self.assemble(base, mopp)?;
+        Ok(self.build_pruned(base, mopp)?.0)
+    }
+
+    /// [`Self::build`], with what pinned pruning dropped and why each
+    /// kept tag stayed ([`crate::fresh::Pruned::why`]).
+    pub fn build_pruned<R: Read + Seek>(
+        &self,
+        base: &mut Map<R>,
+        mopp: &[u8],
+    ) -> Result<(Converted, crate::fresh::Pruned)> {
+        let (_, bytes, _, pruned) = self.assemble(base, mopp)?;
         let manifest = self.manifest(&bytes);
-        Ok(Converted {
-            name: map_name(&self.h1_name),
-            bytes,
-            manifest,
-        })
+        Ok((
+            Converted {
+                name: map_name(&self.h1_name),
+                bytes,
+                manifest,
+            },
+            pruned,
+        ))
     }
 
     /// The pinned map: the set it was built from (the base decomposed,
@@ -772,6 +791,13 @@ impl Prepared {
         }
         if !self.weapon_list.is_empty() {
             crate::globals::set_weapon_list(&mut set, &self.weapon_list)?;
+        }
+        if !self.vehicle_list.is_empty() {
+            crate::globals::set_universal_list(
+                &mut set,
+                crate::globals::List::Vehicles,
+                &self.vehicle_list,
+            )?;
         }
 
         set.name = map_name(&self.h1_name);
