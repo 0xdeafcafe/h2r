@@ -147,6 +147,7 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             mut base_maps,
             transparents,
             lit,
+            lit_implementations: _,
         } = cpu;
         let i = gpu.add_model(t.device, t.queue, model, &mut |m| base_maps.remove(&m));
         if !lit.is_empty() {
