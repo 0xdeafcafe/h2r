@@ -780,10 +780,13 @@ pub struct Pruned {
     /// reached by, to follow what keeps a tag back to its root.
     pub why: std::collections::HashMap<TagId, Reach>,
     /// [`prune_pinned`]: the kept pinned tags read word by word, every
-    /// word a datum and an address, because their schema walk failed
-    /// (a group the schema doesn't know, or an array outside the
-    /// metadata): stale words in them keep tags.
+    /// word a datum and an address, because the schema doesn't know their
+    /// group or their root doesn't read: stale words in them keep tags.
     pub word_read: Vec<TagId>,
+    /// [`prune_pinned`]: the kept pinned tags walked by the schema with
+    /// some array skipped ([`walk`]: outside the metadata, or implausibly
+    /// long); their own words name tags too, as datums only.
+    pub partly_walked: Vec<TagId>,
 }
 
 impl Pruned {
@@ -1109,9 +1112,13 @@ impl<'a> Space<'a> {
 /// array it holds (as the fresh build's [`named`] reads a built tree: a
 /// datum may sit in a field the schema doesn't describe), and every
 /// array's address. Bytes no array covers (an emptied block's old
-/// elements, a removed placement's) are not read. `None` when an array is
-/// not in the metadata or is implausibly long: the caller then reads the
-/// tag word by word.
+/// elements, a removed placement's) are not read. An array below the
+/// root that is not in the metadata or is implausibly long is skipped
+/// (counted in `skipped`), its pointer not an address: only the fields the
+/// schema says are blocks give addresses, never a data word. `None` when
+/// the root array itself doesn't read: the caller then reads the tag word
+/// by word.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     space: &Space,
     s: &tags::schema::Struct,
@@ -1120,14 +1127,17 @@ fn walk(
     depth: usize,
     words: &mut Vec<u32>,
     arrays: &mut Vec<u32>,
+    skipped: &mut usize,
 ) -> Option<()> {
     if depth > 32 || count > 0x10_0000 {
         return None;
     }
     let len = count.checked_mul(s.size)?;
+    let mut own = Vec::with_capacity(len as usize / 4);
     for o in (0..len / 4).map(|k| k * 4) {
-        words.push(space.word(at.checked_add(o)?)?);
+        own.push(space.word(at.checked_add(o)?)?);
     }
+    words.extend(own);
     for e in 0..count {
         let base = at + e * s.size;
         for (off, f) in &s.fields {
@@ -1135,8 +1145,19 @@ fn walk(
                 let n = space.word(base + off)?;
                 let p = space.word(base + off + 4)?;
                 if n > 0 && p != 0 {
-                    arrays.push(p);
-                    walk(space, child, p, n, depth + 1, words, arrays)?;
+                    // An array that doesn't read (outside the metadata,
+                    // implausibly long: a field the schema takes for a
+                    // block that isn't one) is skipped, and its pointer is
+                    // not an address the tag holds.
+                    let (mut w, mut a) = (Vec::new(), Vec::new());
+                    match walk(space, child, p, n, depth + 1, &mut w, &mut a, skipped) {
+                        Some(()) => {
+                            arrays.push(p);
+                            words.extend(w);
+                            arrays.extend(a);
+                        }
+                        None => *skipped += 1,
+                    }
                 }
             }
         }
@@ -1148,9 +1169,14 @@ fn walk(
 /// `roots`, as the fresh build would see it. A pinned tag with a schema
 /// layout names what its arrays hold ([`walk`], from its root through
 /// every block, so stale words outside them, an emptied block's old
-/// elements or a removed placement's, keep nothing); one without (or whose walk leaves
-/// the metadata) names every word in it, as a datum and as an address. A
-/// built tag names its fixups and words ([`named`]). A tag whose bytes
+/// elements or a removed placement's, keep nothing), and points at its
+/// blocks' arrays only; one without (or whose root doesn't read) names
+/// every word in it, as a datum and as an address. A built tag names its
+/// fixups and words ([`named`]), as datums only: its own blocks are laid
+/// out when it is built, and a word in it that falls in another tag's
+/// bytes is data (V: the sound gestalt rebuilt with Halo 1's sounds holds
+/// raw offsets such as `0x804f3600`, inside Coagulation's wraith model,
+/// which kept every retail vehicle). A tag whose bytes
 /// hold an array a reached tag points to is reached too (pinned arrays can
 /// sit in another tag's range), and so is every datum in metadata no tag
 /// owns that a word-read tag points into. Returns the slots reached and
@@ -1176,13 +1202,14 @@ pub enum Reach {
 }
 
 /// [`pinned_reach`], with the edge each reached slot was first reached
-/// by (`None` for one not reached), and the pinned tags read word by word
-/// (their schema walk failed).
+/// by (`None` for one not reached), the pinned tags read word by word
+/// (no schema, or their root doesn't read) and those walked with arrays
+/// skipped ([`walk`]).
 fn pinned_reach_why(
     set: &TagSet,
     keep: &Keep,
     roots: &[TagId],
-) -> (Vec<bool>, usize, Vec<Option<Reach>>, Vec<TagId>) {
+) -> (Vec<bool>, usize, Vec<Option<Reach>>, [Vec<TagId>; 2]) {
     let n = set.slots.len();
     let space = Space::new(set);
     let schema = Schema::builtin();
@@ -1231,6 +1258,7 @@ fn pinned_reach_why(
     let (mut datums, mut arrays) = (Vec::new(), Vec::new());
     let mut gap_datums: Vec<(u32, u32)> = Vec::new();
     let mut word_read = Vec::new();
+    let mut partly = Vec::new();
     while let Some(i) = todo.pop() {
         let Some(t) = &set.slots[i].tag else { continue };
         let by = t.id;
@@ -1241,13 +1269,27 @@ fn pinned_reach_why(
         match &t.payload {
             TagPayload::Pinned { address, bytes } => {
                 let walked = schema.groups.get(&t.group).and_then(|s| {
-                    let (mut d, mut a) = (Vec::new(), Vec::new());
-                    walk(&space, s, *address, 1, 0, &mut d, &mut a).map(|()| (d, a))
+                    let (mut d, mut a, mut skipped) = (Vec::new(), Vec::new(), 0);
+                    walk(&space, s, *address, 1, 0, &mut d, &mut a, &mut skipped)
+                        .map(|()| (d, a, skipped))
                 });
                 match walked {
-                    Some((d, a)) => {
+                    Some((d, a, skipped)) => {
                         datums = d;
                         arrays = a;
+                        // Arrays it couldn't walk: its own words still
+                        // name tags (a datum may sit in one), but none is
+                        // taken for an address.
+                        if skipped > 0 {
+                            datums.extend(
+                                bytes
+                                    .as_chunks::<4>()
+                                    .0
+                                    .iter()
+                                    .map(|w| u32::from_le_bytes(*w)),
+                            );
+                            partly.push(by);
+                        }
                     }
                     None => {
                         datums.extend(
@@ -1262,10 +1304,11 @@ fn pinned_reach_why(
                     }
                 }
             }
-            other => {
-                named(other, &mut datums);
-                words_too = true;
-            }
+            // A built tag names what its fixups and words name; it holds
+            // no address into the pinned metadata (its blocks are laid out
+            // when it is built), so its data words (a rebuilt sound
+            // gestalt's raw offsets) are not taken for addresses.
+            other => named(other, &mut datums),
         }
         if words_too {
             arrays.extend(datums.iter().copied());
@@ -1310,7 +1353,7 @@ fn pinned_reach_why(
             }
         }
     }
-    (seen, by_pointer, why, word_read)
+    (seen, by_pointer, why, [word_read, partly])
 }
 
 /// A scenario palette element's size (every object palette, D;
@@ -1434,9 +1477,10 @@ pub fn prune_pinned(set: &mut TagSet, first: usize, keep: &Keep, extra: &[TagId]
             write_word(set, field, kept.len() as u32);
         }
     }
-    let (seen, by_pointer, why, word_read) = pinned_reach_why(set, keep, &roots);
+    let (seen, by_pointer, why, [word_read, partly]) = pinned_reach_why(set, keep, &roots);
     out.kept_by_pointer = by_pointer;
     out.word_read = word_read;
+    out.partly_walked = partly;
     out.why = set
         .slots
         .iter()
@@ -1603,6 +1647,49 @@ mod pinned_prune_tests {
         prune_pinned(&mut set, N - 1, &NOTHING, &roots);
         assert!(set.slots[N - 1].tag.is_some());
         assert!(set.slots[8].tag.is_none());
+    }
+
+    /// Only a field the schema says is a block gives an address: a built
+    /// tag's words (a rebuilt sound gestalt's raw offsets) and a walked
+    /// tag's data words that fall inside another tag's bytes keep nothing.
+    /// A block that doesn't read (here outside the metadata) is skipped,
+    /// and the tag's own words then name tags as datums only.
+    #[test]
+    fn data_words_inside_another_tag_keep_nothing() {
+        let mut set = set();
+        // A built gestalt whose data words land in tag 3's bytes and in
+        // the gap holding tag 4's datum.
+        let mut gestalt = map::build::Block::zeroed(0x10);
+        put(&mut gestalt.bytes, 0x0, BASE + 0x904);
+        put(&mut gestalt.bytes, 0x4, BASE + 0xa00);
+        set.slots.push(Slot {
+            name: Some("gestalt".into()),
+            tag: Some(TagEntry {
+                id: id(N),
+                group: FourCC(*b"ugh!"),
+                payload: TagPayload::Built(gestalt),
+            }),
+        });
+        // The walked `MGS2`: a data word in its element pointing into tag
+        // 3, and its element's block (`+0x10`) pointing outside the
+        // metadata.
+        let b = bytes(&mut set, 6);
+        put(b, 0x10 + 0x30, BASE + 0x904);
+        put(b, 0x10 + 0x10, 5);
+        put(b, 0x10 + 0x14, BASE + 0x2000);
+        let p = prune_pinned(&mut set, N + 1, &NOTHING, &[id(6), id(N)]);
+        let kept: Vec<bool> = set.slots.iter().map(|s| s.tag.is_some()).collect();
+        assert_eq!(
+            kept,
+            [
+                true, true, false, false, false, false, true, true, true, false, true
+            ]
+        );
+        assert_eq!(p.kept_by_pointer, 0);
+        // The skipped block: `MGS2`'s own words name tags (the stale
+        // datum of tag 8), none of them an address.
+        assert_eq!(p.partly_walked, [id(6)]);
+        assert_eq!(p.why.get(&id(8)), Some(&Reach::Datum { by: id(6) }));
     }
 
     /// A pinned scenario's object palette keeps the entries a placement

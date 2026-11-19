@@ -1712,10 +1712,12 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
                 eprintln!("{sandbox:?}: kept: {}", chain.join("\n      <- "));
             }
             let word_read: Vec<String> = pruned.word_read.iter().map(|id| label(*id)).collect();
+            let partly: Vec<String> = pruned.partly_walked.iter().map(|id| label(*id)).collect();
             eprintln!(
-                "{sandbox:?}: {} base tags dropped ({:#x} bytes); read word by word: {word_read:?}",
+                "{sandbox:?}: {} base tags dropped ({:#x} bytes), {} kept by an address; read word by word: {word_read:?}; walked with arrays skipped: {partly:?}",
                 pruned.tags(),
-                pruned.freed
+                pruned.freed,
+                pruned.kept_by_pointer
             );
         }
         let (done, _) = p

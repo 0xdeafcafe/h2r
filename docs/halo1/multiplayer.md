@@ -667,11 +667,19 @@ walked from its root through its blocks and names every word of the
 arrays it holds (as the fresh build reads a built tree), so stale words
 no array covers (an emptied block's old elements, a removed
 placement's) keep nothing; an array it points to in another tag's bytes
-keeps that tag. A tag the schema doesn't describe (or whose walk leaves
-the metadata) is read word by word, every word a datum and an address:
-metadata no tag owns that it points into is read the same way, and a
-base tag it points into is kept. A gap nothing points into keeps
-nothing. The scenario's own edits (trigger
+keeps that tag; an array below the root that doesn't read (outside the
+metadata, implausibly long) is skipped, and the tag's own words then
+name tags as datums only (`Pruned::partly_walked`). Only a field the
+schema says is a block gives an address. A tag the schema doesn't
+describe (or whose root doesn't read) is read word by word, every word a
+datum and an address: metadata no tag owns that it points into is read
+the same way, and a base tag it points into is kept. A gap nothing
+points into keeps nothing. A built tag names its fixups and words as
+datums only. Before converter version 92 every word of a built tag was
+also an address: the sound gestalt, rebuilt with Halo 1's sounds, holds
+raw offsets (`0x804f3600`, `0x8030a600`, `0x802f3400`) that fall inside
+Coagulation's wraith and warthog models and collision, and that kept
+every retail vehicle (`Pruned::why` named the edge). The scenario's own edits (trigger
 volumes parked, Halo 1's skies and ambience, the base's light fixtures
 and decorators emptied) are made before this, so the base's sky,
 ambience and decorators they replace go too. On the fresh map Blood Gulch drops
