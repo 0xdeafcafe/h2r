@@ -55,6 +55,7 @@ pub struct Sample {
     pub rtt_ms: Option<u16>,
 }
 
+// dh-lease: a lease ID and telemetry source extend the queue wire types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assignment {
     pub id: String,
@@ -67,6 +68,9 @@ pub struct Assignment {
     pub teams: BTreeMap<Xuid, u8>,
     /// Member -> selected host, in milliseconds. A peer host's own entry is zero.
     pub rtt_ms: BTreeMap<Xuid, u16>,
+    /// Omitted unless an ad hoc dedicated host serves this assignment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_lease: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,5 +79,65 @@ pub enum Queue {
     Probing { candidates: Vec<Candidate> },
     Host { assignment: Assignment },
     Waiting { assignment: Assignment },
-    Join { session_id: String },
+    Join {
+        session_id: String,
+        /// The dedicated host supplies the match's telemetry frames.
+        #[serde(default)]
+        frames_from_host: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn assignment_host_lease_round_trips_and_is_optional() {
+        let mut wire = json!({
+            "id": "0123456789abcdef",
+            "hopper": 1,
+            "host": "0009000000000001",
+            "dedicated": true,
+            "members": ["0009000000000002"],
+            "rtt_ms": {"0009000000000002": 35},
+        });
+        let assignment: Assignment = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(assignment.host_lease, None);
+        assert_eq!(serde_json::to_value(&assignment).unwrap(), wire);
+
+        wire["host_lease"] = json!("hl-AAAAAAAAAAAAAAAAAAAAAA");
+        let with_lease = Assignment {
+            host_lease: Some("hl-AAAAAAAAAAAAAAAAAAAAAA".into()),
+            ..assignment
+        };
+        assert_eq!(serde_json::to_value(&with_lease).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<Assignment>(wire).unwrap(),
+            with_lease
+        );
+    }
+
+    #[test]
+    fn queue_join_frame_source_round_trips_and_defaults_to_false() {
+        let id = "0123456789abcdef";
+        for (wire_value, expected) in [(None, false), (Some(false), false), (Some(true), true)] {
+            let mut wire = json!({ "state": "join", "session_id": id });
+            if let Some(frames_from_host) = wire_value {
+                wire["frames_from_host"] = json!(frames_from_host);
+            }
+            let join: Queue = serde_json::from_value(wire.clone()).unwrap();
+            let Queue::Join {
+                ref session_id,
+                frames_from_host,
+            } = join
+            else {
+                panic!("expected a join reply");
+            };
+            assert_eq!(session_id.as_str(), id);
+            assert_eq!(frames_from_host, expected);
+            wire["frames_from_host"] = json!(expected);
+            assert_eq!(serde_json::to_value(join).unwrap(), wire);
+        }
+    }
 }

@@ -127,7 +127,10 @@ impl Matchmaker {
             if state.sessions.get(&assignment.id).is_some_and(|s| {
                 s.state == "open" && s.advertisement.slots.public_open > 0
             }) {
-                return Ok(Queue::Join { session_id: assignment.id.clone() });
+                return Ok(Queue::Join {
+                    session_id: assignment.id.clone(),
+                    frames_from_host: false, // dh-lease: existing registered or peer host
+                });
             }
             return Ok(Queue::Waiting { assignment: assignment.clone() });
         }
@@ -253,6 +256,7 @@ impl Bucket {
             members,
             teams,
             rtt_ms: selected.rtt_ms,
+            host_lease: None, // dh-lease: existing registered or peer host
         };
         self.remove(host);
         for &member in &assignment.members {

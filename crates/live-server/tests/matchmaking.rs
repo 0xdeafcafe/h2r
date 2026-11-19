@@ -132,7 +132,11 @@ async fn matchmaking_reserves_dedicated_host_and_publishes_the_rtt_table() {
     let replay = write(&h, &host, Method::POST, "/v1/sessions", advertisement, Some(&assignment.id)).await;
     assert_eq!(replay.json()["session_id"], assignment.id);
     let r = ticket(&h, &first, 31000, false, json!([])).await;
-    assert_eq!(r.json(), json!({"state":"join", "session_id":assignment.id}));
+    // dh-lease: the registered host leaves the legacy frame source in place.
+    assert_eq!(
+        r.json(),
+        json!({"state":"join", "session_id":assignment.id, "frames_from_host":false})
+    );
 
     let detail = format!("/v1/sessions/{}", assignment.id);
     let read = h.get(&detail).await.json();

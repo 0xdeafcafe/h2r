@@ -1010,7 +1010,7 @@ impl Worker {
             {
                 Step::Complete(Outcome::Host(assignment))
             }
-            Queue::Join { session_id } if valid_id(&session_id) => {
+            Queue::Join { session_id, .. } if valid_id(&session_id) => { // dh-lease
                 let rows = self.matches_request(user, MatchRequest::Find(session_id.clone()))?;
                 let Some(row) = rows.first() else {
                     return Ok(Reply::Matchmaking(Box::new(Step::Retry(Vec::new()))));
