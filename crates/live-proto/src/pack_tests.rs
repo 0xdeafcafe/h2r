@@ -281,6 +281,7 @@ fn deltas_of_odd_frames_round_trip() {
     let mut a = odd_frame();
     let mut b = odd_frame();
     b.tick += 2;
+    b.cut = None;
     b.bsp = Some(4);
     b.players.swap(0, 1);
     b.players[0].pos[0] += 0.5;
@@ -294,8 +295,9 @@ fn deltas_of_odd_frames_round_trip() {
     a.objects[1].gone = true;
     let mut e = Encoder::new(0, 100);
     let mut d = Decoder::new();
-    for f in [&a, &b, &c, &a] {
-        let (bytes, _) = e.encode(f).unwrap();
+    for (f, expected_key) in [(&a, true), (&b, false), (&c, false), (&a, true)] {
+        let (bytes, key) = e.encode(f).unwrap();
+        assert_eq!(key, expected_key);
         assert_eq!(d.decode(&bytes).unwrap().frame, quantize(f).unwrap());
     }
 }
