@@ -95,6 +95,7 @@ render(
       <Route path="/dash/clans/:tag" component={() => <Navigate href={`/dash/teams/${useParams().tag}`} />} />
       <Route path="/dash/admin/style" component={DeckStyle} />
       <Route path="/dash/admin/usage" component={Usage} />
+      <Route path="/dash/admin/hosts" component={lazy(() => import("./deck/HostsPage"))} />
       <Route path="/dash/admin/events" component={EventLog} />
       <Route path="/dash/admin" component={() => <Navigate href="/dash/admin/usage" />} />
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
