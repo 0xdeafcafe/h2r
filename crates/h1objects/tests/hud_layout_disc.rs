@@ -616,12 +616,20 @@ fn the_zoom_level_readout_is_a_widget_per_level() {
     use h1hud::{Skip, WeaponEntryKind, crosshair_type as ct};
     let m = h1("bloodgulch");
     let mut levels = std::collections::BTreeMap::new();
+    let mut split = 0;
     for wt in m.tags().iter().filter(|t| t.group == Group::new(b"weap")) {
         let Some(hud) = h1objects::h1::reference(&m, m.tag_data(wt).unwrap(), 0x480) else {
             continue;
         };
         for e in h1hud::weapon_entries(&m, hud).unwrap() {
             let WeaponEntryKind::Crosshair(ct::ZOOM_LEVEL, _) = e.kind else { continue };
+            // The sniper rifle carries a second readout for split screen
+            // only; that one stays out like every split-screen entry.
+            if e.screen == h1hud::SPLIT_SCREEN_ONLY {
+                assert_eq!(h1hud::zoom_widget(&e, 0, Some(TagId(1)), TagId(3)), Err(Skip::SplitScreen));
+                split += 1;
+                continue;
+            }
             assert_eq!(
                 h1hud::weapon_widget(&e, Some(TagId(1)), TagId(2), TagId(3)),
                 Err(Skip::ZoomLevels)
@@ -643,7 +651,8 @@ fn the_zoom_level_readout_is_a_widget_per_level() {
             levels.insert(short.clone(), (b.name.clone(), e.sequence, n));
         }
     }
-    eprintln!("zoom readouts {levels:?}");
+    eprintln!("zoom readouts {levels:?}; split-screen only {split}");
+    assert!(split > 0, "the sniper's split-screen readout is on the disc");
     let sniper = &levels["sniper rifle"];
     assert!(sniper.0.ends_with("hud_reticles_scope"), "{sniper:?}");
     assert_eq!((sniper.1, sniper.2), (1, 2));
