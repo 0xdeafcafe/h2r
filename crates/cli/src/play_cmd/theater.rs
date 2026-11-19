@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use app::theater_overlay as shell;
 use boot::theater_ui::{
@@ -19,37 +19,7 @@ impl Library for FilmLibrary {
         let entries = self.0.list().map_err(|e| e.to_string())?;
         Ok(entries
             .into_iter()
-            .map(|entry| {
-                let meta = entry.meta;
-                let playable_here =
-                    meta.source == film::Source::Host && meta.playable_here(stamp);
-                FilmMeta {
-                    id: meta.id,
-                    map: meta.map,
-                    variant: meta.variant,
-                    started_ms: meta.started_ms,
-                    length_ticks: meta.length_ticks,
-                    players: meta
-                        .players
-                        .into_iter()
-                        .map(|player| Player {
-                            name: player.name,
-                            team: (player.team >= 0).then(|| player.team.to_string()),
-                            score: i32::try_from(player.score).ok(),
-                            ..Player::default()
-                        })
-                        .collect(),
-                    source: match meta.source {
-                        film::Source::Host => Source::Host,
-                        film::Source::Local => Source::Local,
-                    },
-                    image_stamp: meta.image_stamp,
-                    playable_here,
-                    saved: entry.saved,
-                    result: None,
-                    host: None,
-                }
-            })
+            .map(|entry| film_meta(entry.meta, entry.saved, stamp))
             .collect())
     }
 
@@ -66,20 +36,63 @@ impl Library for FilmLibrary {
     }
 }
 
-pub(super) fn overlay(theater: Theater, screenshots: PathBuf) -> shell::Overlay {
-    shell::Overlay(Arc::new(Controller {
-        theater,
-        screenshots,
-    }))
+pub(crate) fn film_meta(meta: film::FilmMeta, saved: bool, stamp: &str) -> FilmMeta {
+    let playable_here = meta.source == film::Source::Host && meta.playable_here(stamp);
+    FilmMeta {
+        id: meta.id,
+        map: meta.map,
+        variant: meta.variant,
+        started_ms: meta.started_ms,
+        length_ticks: meta.length_ticks,
+        players: meta
+            .players
+            .into_iter()
+            .map(|player| Player {
+                name: player.name,
+                team: (player.team >= 0).then(|| player.team.to_string()),
+                score: i32::try_from(player.score).ok(),
+                ..Player::default()
+            })
+            .collect(),
+        source: match meta.source {
+            film::Source::Host => Source::Host,
+            film::Source::Local => Source::Local,
+        },
+        image_stamp: meta.image_stamp,
+        playable_here,
+        saved,
+        result: None,
+        host: None,
+    }
 }
 
-struct Controller {
+pub(crate) fn overlay(theater: Theater, screenshots: PathBuf) -> (shell::Overlay, Arc<Controller>) {
+    let controller = Arc::new(Controller {
+        theater,
+        screenshots,
+        input: Mutex::new(None),
+    });
+    (shell::Overlay(controller.clone()), controller)
+}
+
+pub(crate) struct Controller {
     theater: Theater,
     screenshots: PathBuf,
+    input: Mutex<Option<input::InputManager>>,
+}
+
+impl Controller {
+    pub(crate) fn attach_input(&self, mut input: input::InputManager) {
+        input.set_gate(self.theater.pad_gate(None));
+        *self.input.lock().unwrap_or_else(|e| e.into_inner()) = Some(input);
+    }
 }
 
 impl shell::Controller for Controller {
     fn update(&self) -> shell::View {
+        if let Some(input) = self.input.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            input.sync();
+        }
         self.theater.pump();
         let mut view = shell::View {
             web_url: self.theater.web_url(),
@@ -102,7 +115,6 @@ impl shell::Controller for Controller {
             shell::Key::Down => Key::Down,
             shell::Key::Slower => Key::Slower,
             shell::Key::Faster => Key::Faster,
-            shell::Key::Camera => Key::Camera,
             shell::Key::Hide => Key::Hide,
             shell::Key::Hud => Key::Hud,
             shell::Key::Clip => Key::Clip,

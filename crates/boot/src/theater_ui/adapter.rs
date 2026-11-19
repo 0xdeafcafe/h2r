@@ -2,10 +2,13 @@
 //! keeps UI-only fields optional when the recording does not supply them.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
+use agent_proto::{CallError, Client};
 use debug_menu::{Call, Rpc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -74,34 +77,82 @@ pub(super) fn load_clips(path: &Path) -> Result<Vec<Clip>, String> {
     }
 }
 
-pub(super) fn store_clips(path: &Path, clips: &[Clip]) -> Result<(), String> {
-    fn write(path: &Path, clips: &[Clip]) -> anyhow::Result<()> {
+pub(super) fn update_clips(
+    path: &Path,
+    edit: impl FnOnce(&mut Vec<Clip>),
+) -> Result<Vec<Clip>, String> {
+    fn write(
+        path: &Path,
+        edit: impl FnOnce(&mut Vec<Clip>),
+    ) -> anyhow::Result<Vec<Clip>> {
         let parent = path.parent().expect("clip path contains the data root");
         std::fs::create_dir_all(parent)?;
+        // The menu and the player can both edit clips. Lock a separate
+        // file because publishing the new list replaces the data inode.
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))?;
+        lock.lock()?;
+        let mut clips = load_clips(path).map_err(anyhow::Error::msg)?;
+        edit(&mut clips);
         let tmp = path.with_extension("json.part");
-        std::fs::write(&tmp, serde_json::to_vec(clips)?)?;
+        std::fs::write(&tmp, serde_json::to_vec(&clips)?)?;
         std::fs::rename(tmp, path)?;
-        Ok(())
+        Ok(clips)
     }
-    write(path, clips).map_err(|e| e.to_string())
+    write(path, edit).map_err(|e| e.to_string())
 }
 
 pub(super) fn clips_path(dir: &Path) -> PathBuf {
     dir.join("theater-clips.json")
 }
 
-/// Use the same local JSON-RPC connection as the debug menu.
+/// Watch uses the menu agent. Once the playback window opens, its
+/// controls use the playback process's own agent endpoint.
 pub(super) struct Playback {
-    rpc: agent::menu::MenuRpc,
+    rpc: Box<dyn Rpc>,
     next: u64,
 }
 
 impl Playback {
     pub(super) fn new(agent: &agent::Agent) -> Self {
         Self {
-            rpc: agent::menu::MenuRpc::new(agent),
+            rpc: Box::new(agent::menu::MenuRpc::new(agent)),
             next: 1,
         }
+    }
+
+    pub(super) fn socket(path: PathBuf) -> std::io::Result<Self> {
+        let (calls, requests) = mpsc::channel::<(u64, Call)>();
+        let (replies, answers) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("h2-theater-controls".into())
+            .spawn(move || {
+                let mut connected = None;
+                for (id, call) in requests {
+                    let answer = (|| -> Result<Value, CallError> {
+                        if connected.is_none() {
+                            let client = Client::connect(&path)?;
+                            client.set_timeout(Some(Duration::from_secs(2)))?;
+                            connected = Some(client);
+                        }
+                        connected.as_mut().unwrap().call(&call.method, call.params)
+                    })();
+                    if matches!(&answer, Err(CallError::Io(_) | CallError::Protocol(_))) {
+                        connected = None;
+                    }
+                    if replies.send((id, answer.map_err(|e| e.to_string()))).is_err() {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Self {
+            rpc: Box::new(SocketRpc { calls, answers }),
+            next: 1,
+        })
     }
 
     pub(super) fn send(&mut self, method: &'static str, params: Value) -> u64 {
@@ -114,8 +165,19 @@ impl Playback {
     pub(super) fn answers(&mut self) -> Vec<(u64, Result<Value, String>)> {
         self.rpc.recv()
     }
+}
 
-    pub(super) fn play(&mut self, id: &str) -> u64 {
-        self.send("theater.play", json!({ "id": id }))
+struct SocketRpc {
+    calls: Sender<(u64, Call)>,
+    answers: Receiver<(u64, Result<Value, String>)>,
+}
+
+impl Rpc for SocketRpc {
+    fn send(&mut self, id: u64, call: &Call) {
+        let _ = self.calls.send((id, call.clone()));
+    }
+
+    fn recv(&mut self) -> Vec<(u64, Result<Value, String>)> {
+        self.answers.try_iter().collect()
     }
 }

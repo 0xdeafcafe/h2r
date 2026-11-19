@@ -16,6 +16,7 @@ struct Options {
     out: PathBuf,
     socket: PathBuf,
     data: Option<PathBuf>,
+    range: Option<[u64; 2]>,
 }
 impl Options {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self> {
@@ -54,8 +55,21 @@ impl Options {
             out,
             socket,
             data,
+            range: std::env::var("H2_THEATER_RANGE")
+                .ok()
+                .map(|value| parse_range(&value))
+                .transpose()?,
         })
     }
+}
+
+fn parse_range(value: &str) -> Result<[u64; 2]> {
+    let (start, end) = value
+        .split_once(':')
+        .context("expected start:end for H2_THEATER_RANGE")?;
+    let (start, end) = (start.parse::<u64>()?, end.parse::<u64>()?);
+    ensure!(start < end, "invalid film clip range");
+    Ok([start, end])
 }
 
 /// Consume the movie option before the supervisor parses its lease arguments.
@@ -103,7 +117,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         return child(opts, Path::new(&work));
     }
     let header = film::Reader::open(&opts.film)?.header;
-    let mut target = 0u64;
+    let mut target = opts.range.map_or(0, |[start, _]| start);
     let mut speed = opts.speed;
     let mut paused = false;
     loop {
@@ -192,6 +206,8 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         dsound: true,
         movies: boot::movies_glue::Movies::Off,
     };
+    #[cfg(feature = "desktop")]
+    let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
     let replay = boot::theater::Replay {
         path: opts.film,
         render_every: opts.every,
@@ -223,16 +239,36 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     bail!("rendered film playback requires the desktop feature");
     #[cfg(feature = "desktop")]
     {
+        use crate::play_cmd::theater::{film_meta, overlay};
+
+        let dir = std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .or_else(|| opts.data.as_ref().map(|data| data.join("films")))
+            .unwrap_or(film_parent);
+        let meta = film.header.meta;
+        let title = meta.map.clone();
+        let stamp = meta.image_stamp.clone();
+        let theater = boot::theater_ui::Theater::playback(
+            film_meta(meta, false, &stamp),
+            opts.range,
+            opts.socket,
+            dir.clone(),
+        )?;
+        let (overlay, controller) = overlay(theater, dir.join("screenshots"));
         let config = app::AppConfig {
-            title: format!("Theater — {}", film.header.meta.map),
+            title: format!("Theater — {}", title),
             audio: false,
             keyboard: false,
-            gamepads: false,
+            gamepads: true,
+            theater: Some(overlay),
             mouse_capture: false,
             keep_open_on_guest_exit: false,
             ..Default::default()
         };
-        let exit = app::run(config, move |window| {
+        let exit = app::run(config, move |mut window| {
+            if let Some(input) = window.take_input() {
+                controller.attach_input(input);
+            }
             let gfx = d3d::GfxBackend::new(window.gfx_context()).on_present(window.present_hook());
             let life = window.lifecycle();
             run(
@@ -257,6 +293,15 @@ fn child(opts: Options, work: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theater_clip_range_requires_ordered_ticks() {
+        assert_eq!(parse_range("0:30").unwrap(), [0, 30]);
+        for invalid in ["0", "7:7", "9:8", "-1:30", "1:2:3"] {
+            assert!(parse_range(invalid).is_err(), "{invalid}");
+        }
+    }
+
     #[test]
     fn theater_options_require_finite_speed_and_honor_render_zero() {
         let options = |speed: &str| {

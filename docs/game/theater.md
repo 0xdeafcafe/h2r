@@ -266,25 +266,21 @@ upload. These checks and both hash experiments still need a real run.
   screen:
   - bottom: the transport (play/pause, speed, back and forward 5 s/30 s,
     a timeline with kill and bookmark marks);
-  - left: a player list with live scores that picks the POV;
-  - top right: the camera mode (First person, Follow, Orbit, Free) and
-    a HUD toggle;
+  - left: a player list with scores and roster selection;
+  - top right: the default camera, future camera modes and a HUD toggle;
   - clip in/out marks and a screenshot.
 - **Pad:**
   - A: play/pause.
   - LT/RT: speed.
   - D-pad left/right: skip 5 s. Hold for 30 s.
-  - D-pad up/down: the POV player.
-  - Y: camera mode.
+  - D-pad up/down: move through the roster.
   - X: mark clip in/out.
   - Back: hide the overlay.
   - B: leave.
   - Sticks: the free camera.
-- **Keyboard:** space, arrows, `[`/`]` for speed, `C` for camera, `H` to
-  hide.
-- Until tier B's experiments pass, Watch opens exact playback from the
-  host's view. That's the host's observer camera, Follow on the selected
-  player. The Free camera is greyed out with "after keyframes".
+- **Keyboard:** space, arrows, `[`/`]` for speed, and `H` to hide.
+- Watch opens the film with the recorded default camera. Free, Follow,
+  Orbit and First person are greyed out with "after keyframes".
 
 **On the web** (tier A, the stats look):
 
@@ -314,15 +310,16 @@ camera plate after blitting the guest frame. While playback owns input,
 Back or H hides the plates. LB or J toggles the game HUD through the
 existing HUD control, and RB or F12 saves a clean guest frame under
 `<data>/films/screenshots`. Press X to mark the in and out points. Completed ranges appear in Clips. B or Escape exits the desktop playback
-session. Follow is selected at the start. Free and stick camera control
+session. Roster selection moves the highlight. Camera and POV changes
 wait for keyframes. A film's scores, kills, bookmarks and seek support
 depend on what the playback agent reports.
 
 The library adapter is in `boot::theater_ui::adapter`. The desktop runner
 accepts its opener via `play_cmd::run_with_theater`. The integration pass
-supplies an opener over `film::Library::open`, maps saved status and
-`playable_here`, and connects the existing playback methods through the
-local agent connection. Theater does not make a second socket.
+supplies an opener over `film::Library::open` and maps saved status and
+`playable_here`. The menu agent launches the player with a private
+`--socket` path. The child window sends transport and HUD calls to that
+socket.
 
 The coordinator can preview the guest screens and transport model with
 `h2 ui preview theater.films`, `h2 ui preview theater.film` and

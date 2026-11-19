@@ -500,7 +500,7 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
-mod theater;
+pub(crate) mod theater;
 
 pub fn run(args: Vec<String>) -> Result<()> {
     run_with_theater(args, Some(theater::open_library))
@@ -778,10 +778,11 @@ pub(crate) fn run_with_theater(
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
     let theater = open_library.map(|open| (boot::theater_ui::Theater::default(), open));
     if let Some((controller, _)) = &theater {
-        config.theater = Some(theater::overlay(
+        let (overlay, _) = theater::overlay(
             controller.clone(),
             opts.data_root.join("films/screenshots"),
-        ));
+        );
+        config.theater = Some(overlay);
     }
     let report = app::run(config, move |host| {
         let mut host = hosted(
@@ -799,16 +800,8 @@ pub(crate) fn run_with_theater(
         // The menu sees every pad first, and hides them from the game while
         // it is open.
         if let Some(input) = host.input.as_mut() {
-            let debug_gate = debug_menu.as_ref().map(|menu| {
-                Box::new(menu.gate()) as Box<dyn input::PadGate>
-            });
-            let gate = if let Some((controller, _)) = &theater {
-                Some(controller.pad_gate(debug_gate))
-            } else {
-                debug_gate
-            };
-            if let Some(gate) = gate {
-                input.set_gate(gate);
+            if let Some(menu) = &debug_menu {
+                input.set_gate(Box::new(menu.gate()));
             }
         }
         host.theater = theater;

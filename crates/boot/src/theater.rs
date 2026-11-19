@@ -250,7 +250,6 @@ impl Session {
         m: &mut kernel::Machine,
         agent: Option<&crate::agent_glue::AgentGlue>,
         rt: &runtime::Runtime,
-        mut window_open: impl FnMut() -> bool,
     ) -> Result<bool> {
         loop {
             {
@@ -261,6 +260,9 @@ impl Session {
                 };
                 if let Some(e) = &s.failure {
                     bail!("{e}")
+                }
+                if r.window_closed.as_ref().is_some_and(|closed| closed()) {
+                    return Ok(false);
                 }
                 if let Some(target) = s.restart {
                     std::fs::write(
@@ -287,7 +289,6 @@ impl Session {
                     return Ok(true);
                 }
             }
-            ensure!(window_open(), "film window closed");
             let a = agent.context("paused film needs the agent API")?;
             a.agent
                 .poll_theater(&mut agent::GuestReader::new(|| rt.memory()));
@@ -317,12 +318,13 @@ impl Session {
         telemetry: Option<&Arc<crate::telemetry::Telemetry>>,
     ) -> Result<()> {
         let mut s = self.lock();
-        if let Mode::Replay(_, _) = &s.mode {
+        if let Mode::Replay(_, replay) = &s.mode {
+            let window_closed = replay.window_closed.as_ref().is_some_and(|closed| closed());
             s.check_end(slices)?;
             if let Some(e) = &s.failure {
                 bail!("{e}")
             }
-            if teardown && !s.complete && s.restart.is_none() {
+            if teardown && !s.complete && s.restart.is_none() && !window_closed {
                 bail!(
                     "playback stopped before the end of the film at tick {}",
                     s.tick

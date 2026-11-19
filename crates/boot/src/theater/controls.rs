@@ -31,6 +31,12 @@ impl Session {
                     match name {
                         api::PLAY => {
                             let p = params::<api::Play>(p)?;
+                            if p.range.is_some() {
+                                return Err(RpcError::new(
+                                    code::INVALID_PARAMS,
+                                    "range is only for opening a film",
+                                ));
+                            }
                             if p.id.is_some_and(|id| id != s.header.meta.id) {
                                 return Err(RpcError::new(code::GONE, "film is not loaded"));
                             }
@@ -137,6 +143,12 @@ pub(crate) fn library_methods(
                         let entry = film::Library::open(&dir)
                             .and_then(|lib| lib.get(&id))
                             .map_err(|e| unavailable(e.to_string()))?;
+                        if request
+                            .range
+                            .is_some_and(|[start, end]| start >= end || end > entry.meta.length_ticks)
+                        {
+                            return Err(RpcError::new(code::INVALID_PARAMS, "invalid clip range"));
+                        }
                         let socket = std::env::temp_dir()
                             .join(format!("h2t-{}.sock", live_proto::sign::random_id()));
                         let exe =
@@ -146,7 +158,14 @@ pub(crate) fn library_methods(
                                 "launch host films with h2 theater play".into(),
                             ));
                         }
-                        let child = std::process::Command::new(exe)
+                        let mut command = std::process::Command::new(exe);
+                        command
+                            .env("H2_FILM_DIR", &dir)
+                            .env_remove("H2_THEATER_RANGE");
+                        if let Some([start, end]) = request.range {
+                            command.env("H2_THEATER_RANGE", format!("{start}:{end}"));
+                        }
+                        let child = command
                             .args(["theater", "play"])
                             .arg(entry.path)
                             .arg("--data")
