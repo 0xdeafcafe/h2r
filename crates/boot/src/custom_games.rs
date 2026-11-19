@@ -928,15 +928,25 @@ mod tests {
         assert_eq!(row_text_id(CLANKERMATCH_ROW), Some(CLANKERMATCH_TEXT_ID));
         // Custom Game, one down, keeps the game's own (localized) label,
         // the one `0x230f36` gives its retail row 2.
-        assert_eq!(row_kind(CUSTOM_GAME_ROW), Row::CustomGame);
-        assert_eq!(row_text_id(CUSTOM_GAME_ROW), Some(CUSTOM_GAME_TEXT_ID));
-        assert_eq!(row_kind(ROW), Row::Browser);
-        assert_eq!(row_kind(COOP_ROW), Row::Download);
-        assert_eq!([CUSTOM_GAME_ROW, ROW, COOP_ROW, DOWNLOAD_ROW], [3, 4, 5, 6]);
-        assert_eq!(row_text_id(ROW), Some(TEXT_ID));
+        // Co-op off: Custom Game 3, the browser 4, Content Download 5.
+        let (custom, browser, download) = (COOP_ROW, CUSTOM_GAME_ROW, ROW);
+        assert_eq!(row_kind(custom), Row::CustomGame);
+        assert_eq!(row_text_id(custom), Some(CUSTOM_GAME_TEXT_ID));
+        assert_eq!(row_kind(browser), Row::Browser);
+        assert_eq!(row_kind(download), Row::Download);
+        // Co-op on: Co-op Campaign directly above Custom Game.
+        assert_eq!([COOP_ROW, CUSTOM_GAME_ROW, ROW, DOWNLOAD_ROW], [3, 4, 5, 6]);
+        assert_eq!(row_kind_with(CUSTOM_GAME_ROW, true), Row::CustomGame);
+        assert_eq!(
+            row_text_id_with(CUSTOM_GAME_ROW, true, None),
+            Some(CUSTOM_GAME_TEXT_ID)
+        );
+        assert_eq!(row_kind_with(ROW, true), Row::Browser);
+        assert_eq!(row_text_id(browser), Some(TEXT_ID));
         // Content Download keeps the game's own (localized) label.
-        assert_eq!(row_text_id(COOP_ROW), Some(DOWNLOAD_TEXT_ID));
+        assert_eq!(row_text_id(download), Some(DOWNLOAD_TEXT_ID));
         assert_eq!(row_kind(6), Row::Retail, "past the last row");
+        assert_eq!(row_kind_with(7, true), Row::Retail, "past the last row");
         assert_eq!(row_kind_with(DOWNLOAD_ROW, true), Row::Download);
         assert_eq!(row_kind_with(COOP_ROW, true), Row::Coop);
         assert_eq!(TEXT, "Custom Game Browser");
@@ -951,13 +961,25 @@ mod tests {
             row_kind(CLANKERMATCH_ROW).retail_press(),
             Some(RETAIL_OPTIMATCH_ROW)
         );
-        assert_eq!(
-            row_kind(CUSTOM_GAME_ROW).retail_press(),
-            Some(RETAIL_CUSTOM_GAME_ROW)
-        );
-        for r in [0, 1, ROW, COOP_ROW, DOWNLOAD_ROW] {
-            for coop in [false, true] {
-                assert_eq!(row_kind_with(r, coop).retail_press(), None, "row {r}");
+        for coop in [false, true] {
+            let custom = if coop { CUSTOM_GAME_ROW } else { COOP_ROW };
+            assert_eq!(
+                row_kind_with(custom, coop).retail_press(),
+                Some(RETAIL_CUSTOM_GAME_ROW),
+                "co-op {coop}"
+            );
+        }
+        // Co-op Campaign rewrites its own press (the layout glue), the
+        // browser and Content Download open screens: none is a retail_press.
+        for r in [0, 1, COOP_ROW, ROW, DOWNLOAD_ROW] {
+            let custom_off = r == COOP_ROW;
+            assert_eq!(
+                row_kind_with(r, true).retail_press(),
+                None,
+                "row {r}, co-op on"
+            );
+            if !custom_off {
+                assert_eq!(row_kind_with(r, false).retail_press(), None, "row {r}");
             }
         }
     }
@@ -967,21 +989,26 @@ mod tests {
         // Extended tag: Clankermatch shows pane 4, the browser 5, Custom
         // Game its own retail pane 2, Content Download its own pane 3.
         assert_eq!(pane_of(CLANKERMATCH_ROW, EXTENDED_PANES), Pane::Show(4));
-        assert_eq!(pane_of(CUSTOM_GAME_ROW, EXTENDED_PANES), Pane::Show(2));
-        assert_eq!(pane_of(ROW, EXTENDED_PANES), Pane::Show(5));
-        assert_eq!(pane_of(COOP_ROW, EXTENDED_PANES), Pane::Show(3));
+        // (Co-op off here: Custom Game 3, the browser 4, Download 5.)
+        assert_eq!(pane_of(COOP_ROW, EXTENDED_PANES), Pane::Show(2));
+        assert_eq!(pane_of(CUSTOM_GAME_ROW, EXTENDED_PANES), Pane::Show(5));
+        assert_eq!(pane_of(ROW, EXTENDED_PANES), Pane::Show(3));
         for r in 0..2 {
             assert_eq!(pane_of(r, EXTENDED_PANES), Pane::Retail);
             assert_eq!(pane_of(r, VANILLA_PANES), Pane::Retail);
         }
-        // With co-op: its pane is 6, Content Download one row down.
+        // With co-op: its pane is 6, directly above Custom Game (retail
+        // pane 2), then the browser (5) and Content Download (3).
         assert_eq!(pane_of_with(COOP_ROW, 7, true), Pane::Show(6));
+        assert_eq!(pane_of_with(CUSTOM_GAME_ROW, 7, true), Pane::Show(2));
+        assert_eq!(pane_of_with(ROW, 7, true), Pane::Show(5));
         assert_eq!(pane_of_with(DOWNLOAD_ROW, 7, true), Pane::Show(3));
         // A tag we did not extend has none of ours: keep the shown one.
-        assert_eq!(pane_of(ROW, VANILLA_PANES), Pane::Keep);
+        assert_eq!(pane_of(CUSTOM_GAME_ROW, VANILLA_PANES), Pane::Keep);
         assert_eq!(pane_of(CLANKERMATCH_ROW, VANILLA_PANES), Pane::Keep);
-        assert_eq!(pane_of(CUSTOM_GAME_ROW, VANILLA_PANES), Pane::Show(2));
-        assert_eq!(pane_of(COOP_ROW, VANILLA_PANES), Pane::Show(3));
+        assert_eq!(pane_of(COOP_ROW, VANILLA_PANES), Pane::Show(2));
+        assert_eq!(pane_of(ROW, VANILLA_PANES), Pane::Show(3));
+        assert_eq!(pane_of_with(COOP_ROW, VANILLA_PANES, true), Pane::Keep);
     }
 
     #[test]
@@ -1321,7 +1348,7 @@ mod tests {
             row_text_id_with(DOWNLOAD_ROW, true, Some(label)),
             Some(label)
         );
-        assert_eq!(row_text_id_with(COOP_ROW, false, Some(label)), Some(label));
+        assert_eq!(row_text_id_with(ROW, false, Some(label)), Some(label));
         assert_eq!(
             row_text_id_with(DOWNLOAD_ROW, true, None),
             Some(DOWNLOAD_TEXT_ID)
