@@ -15,6 +15,12 @@
 //!
 //! Stage 3, transparents: sorted geometry entries ([`transparent`])
 //! use native vertex bindings at their original indexed draws.
+//!
+//! Stage 4b, planar fog: the world's materials drawn again with their own
+//! layer-16 passes, the fog unit resolved per view from the device's
+//! state ([`fog`], [`fog_gpu`]), and the water edge blend, layer 6, with
+//! its scene-copy and reflection inputs supplied per view
+//! ([`water_gpu`]).
 
 pub mod camera;
 pub mod cull;
@@ -23,6 +29,9 @@ pub mod decal;
 pub mod decal_gpu;
 pub mod effect_geometry;
 pub mod effect_immediate;
+pub mod fog;
+#[cfg(feature = "gpu")]
+pub mod fog_gpu;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -78,6 +87,8 @@ pub mod skip;
 pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_streams;
+#[cfg(feature = "gpu")]
+pub mod water_gpu;
 pub mod world;
 pub mod world_layers;
 #[cfg(feature = "gpu")]

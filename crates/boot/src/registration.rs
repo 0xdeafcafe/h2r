@@ -326,6 +326,20 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
+    // Planar fog, layer 16, on the native GPU renderer
+    // (H2_FEATURES=impl.render.native_fog=on, off by default;
+    // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
+    // observer sits inside render-timing's and the world's; the fog
+    // materials load with the world (native_world_glue's worker,
+    // native_fog_glue's load).
+    features
+        .add(&feature::native_fog::NativeFog)
+        .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
+    // Water edge blend (layer 6) and the water, camouflage and hologram
+    // census. The layer observer is enabled by impl.render.native_water.
+    features
+        .add(&feature::native_water::NativeWater)
+        .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
     // Objects' render models on the native GPU renderer, skinned on the
     // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
     // docs/graphics/native-renderer.md, stage 2). Its observers on the

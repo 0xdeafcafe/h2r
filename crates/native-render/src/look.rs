@@ -38,6 +38,12 @@ pub enum Stage {
     Bitmap { bitmap: TagId, image: u32 },
     /// The section's lightmap page through its palette.
     Lightmap,
+    /// An engine texture by id (`0x00019530`'s table): supplied per view,
+    /// never decoded at load. The look refuses these
+    /// ([`Refusal::EngineTexture`]); the stages that supply them (the
+    /// water edge blend's scene copy and reflections,
+    /// `crate::water_gpu`) build their own look with them.
+    Engine(u8),
 }
 
 /// One material's layer-3 pass.

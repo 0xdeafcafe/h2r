@@ -9,6 +9,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::camera::{Mat4, RenderCamera};
 use crate::cull::{CullStats, Frustum, IndirectSlot, SLOT_SIZE, cull, indirect_slots};
+use crate::fog_gpu::FogSet;
 use crate::light_gpu::{LightDraw, LightSet};
 use crate::light_look::LightStage;
 use crate::program::{ProgramSet, ViewInputs};
@@ -269,6 +270,10 @@ pub struct GpuWorld {
     /// Materials drawn with their own programs ([`crate::program`]); the
     /// rest draw with stage 1's.
     programs: Option<ProgramSet>,
+    /// The fog materials layer 16 draws ([`crate::fog_gpu`]).
+    fog: Option<FogSet>,
+    /// The water materials layer 6 draws ([`crate::water_gpu`]).
+    water: Option<crate::water_gpu::WaterSet>,
     /// The light passes (stage 4), once a light needs them.
     lights: Option<LightSet>,
     /// Batches left out of a pass because their material program could
@@ -546,6 +551,8 @@ impl GpuWorld {
             shader,
             pipelines: HashMap::new(),
             programs: None,
+            fog: None,
+            water: None,
             lights: None,
             unbound_batches: 0,
         }
@@ -561,6 +568,173 @@ impl GpuWorld {
         &self.world
     }
 
+    /// Draws the world's layer-16 passes of `set`'s materials from now on.
+    pub fn set_fog(&mut self, set: FogSet) {
+        self.fog = Some(set);
+    }
+
+    /// The fog materials, when they are uploaded.
+    pub fn fog(&self) -> Option<&FogSet> {
+        self.fog.as_ref()
+    }
+
+    /// Draws the water edge blend of `set`'s materials from now on.
+    pub fn set_water(&mut self, set: crate::water_gpu::WaterSet) {
+        self.water = Some(set);
+    }
+
+    /// The water materials, when they are uploaded.
+    pub fn water(&self) -> Option<&crate::water_gpu::WaterSet> {
+        self.water.as_ref()
+    }
+
+    /// The water uniforms for one view ([`WaterSet::prepare`]), through
+    /// the submission's upload arena.
+    pub fn prepare_water(
+        &mut self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.water.as_ref() {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's water edge blend (layer 6) in reservation
+    /// order, each selected part with every pass
+    /// of its material's layer-6 set, blended into the target over the
+    /// depth (loaded and kept). The view copy for the stages that sample
+    /// the scene is made first ([`WaterSet::make_copy`]); `sampled` are
+    /// the render targets' views in the set's `targets` order. Returns
+    /// how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_water(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+        sampled: &[Option<wgpu::TextureView>],
+    ) -> usize {
+        let Some(set) = self.water.as_mut() else { return 0 };
+        set.pipelines(device, color_format, depth_format);
+        let copy = set
+            .samples_view
+            .then(|| set.make_copy(device, encoder, color))
+            .flatten();
+        let set = &*set;
+        let has_stencil = depth_format.has_stencil_aspect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native water"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // The programs carry the game's viewport in their constants: the
+        // pass covers the whole target, as the world's programs do.
+        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        set.draw(device, &mut pass, color_format, depth_format, copy.as_ref(), selected, sampled)
+    }
+
+    /// The fog uniforms for one view ([`FogSet::prepare`]), through the
+    /// submission's upload arena (the reservation records into an
+    /// isolated encoder, where a queue write would escape cancellation).
+    pub fn prepare_fog(
+        &mut self,
+        uploads: &mut gfx::ring::EncoderUploads<'_>,
+        view: &ViewInputs,
+        fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
+    ) {
+        if let Some(set) = self.fog.as_ref() {
+            set.prepare(uploads, view, fogs);
+        }
+    }
+
+    /// Records one view's planar fog (layer 16) in reservation order,
+    /// each selected part with
+    /// every pass of its material's layer-16 set, blended into the target
+    /// over the depth (loaded and kept). The uniforms are
+    /// [`GpuWorld::prepare_fog`]'s. Returns how many parts were drawn.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_fog(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        selected: &[(Owner, u8)],
+    ) -> usize {
+        let Some(set) = self.fog.as_mut() else { return 0 };
+        set.pipelines(device, color_format, depth_format);
+        let set = &*set;
+        let has_stencil = depth_format.has_stencil_aspect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("native fog"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: color,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        // The programs carry the game's viewport in their constants: the
+        // pass covers the whole target, as the world's programs do. The
+        // buffer is the program vertices (the layer-3 programs' own):
+        // clusters' are their placed world positions, and a placement's
+        // unplaced local coordinates, which its rigid program places with
+        // its rows.
+        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        set.draw(&mut pass, color_format, depth_format, selected)
+    }
     /// Draws lights with `set` from now on.
     pub fn set_lights(&mut self, set: LightSet) {
         self.lights = Some(set);

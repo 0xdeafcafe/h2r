@@ -83,6 +83,15 @@ pub struct Ready {
     parts: Arc<PartSet>,
     part_bounds: HashMap<(Owner, u8), native_render::world::Aabb>,
     programs_on: bool,
+    /// The fog of this load (`native_fog_glue`, `impl.render.native_fog`):
+    /// the compiled layer-16 passes, their fog words and the parts the
+    /// fog pass draws. `None` with the fog off.
+    pub(crate) fog: Option<Arc<crate::native_fog_glue::FogView>>,
+    /// The water edge blend of this load (`native_water_glue`,
+    /// `impl.render.native_water`): the compiled layer-6 passes, their
+    /// supplies and the parts the water pass draws. `None` with the
+    /// water off.
+    pub(crate) water: Option<Arc<crate::native_water_glue::WaterData>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`; `None` with them off).
     pub(crate) lights: Option<Arc<crate::native_lights_glue::LightsWorld>>,
@@ -98,6 +107,15 @@ pub struct Ready {
 /// its first play space share `0x800e6010`), so the address alone loaded
 /// the play space's world for the cinematic's BSP.
 pub(crate) type State = Arc<Mutex<(Option<(String, u32, u16)>, Load)>>;
+
+/// Match the guest's active BSP even if it changed before the next layer 3.
+pub(crate) fn current_ready<'a>(state: &'a (Option<(String, u32, u16)>, Load), mem: &dyn GuestMemory) -> Option<&'a Arc<Ready>> {
+    let (Some((map, bsp, index)), Load::Ready(ready)) = state else { return None };
+    (mem.u32(feature::native_world::ACTIVE_BSP).ok() == Some(*bsp)
+        && active_bsp_index(mem) == Some(*index)
+        && crate::health::loaded_map_name(mem).ok().as_ref() == Some(map))
+        .then_some(ready)
+}
 
 pub(crate) enum Load {
     Idle,
@@ -270,6 +288,8 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
         state: Arc::clone(&state),
     }));
     crate::native_transparents_glue::install(device);
+    crate::native_fog_glue::install(device, Arc::clone(&state));
+    crate::native_water_glue::install(device, Arc::clone(&state));
     let gels = crate::native_gels_glue::install(device);
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
@@ -305,7 +325,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
     });
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
-        Stage::Empty | Stage::Lightmap => None,
+        Stage::Empty | Stage::Lightmap | Stage::Engine(_) => None,
     };
     if programs_on {
         // Set even when empty: with programs on, a batch without one is
@@ -317,6 +337,15 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
             set.rigid_len()
         );
         g.set_programs(set);
+    }
+    // The fog set rides the same upload (`native_fog_glue`), after the
+    // world's images are in.
+    if let Some(fog) = ready.fog.as_ref().filter(|f| !f.programs.is_empty()) {
+        crate::native_fog_glue::upload_fog(fog, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+    }
+    // The water set rides the same upload (`native_water_glue`).
+    if let Some(water) = ready.water.as_ref().filter(|w| !w.programs.is_empty()) {
+        crate::native_water_glue::upload_water(water, device, queue, &mut g, &mut stage, &mut |k| lightmaps.get(&k).cloned());
     }
     *gpu = Some(g);
     gpu
@@ -1052,6 +1081,27 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
     };
     // The screen effects are not the world's: `native_post_glue` loads
     // them itself, with or without the native world.
+    // The fog (layer 16), over the whole world before its draws are kept:
+    // a material that stays on the D3D path for layer 3 may still fog
+    // natively.
+    let fog_on = feature::Switches::from_env().is_ok_and(|s| feature::native_fog::on(&s));
+    let fog = if fog_on {
+        Some(crate::native_fog_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
+    } else {
+        None
+    };
+    // The water/camouflage census (`native_water_glue`), read-only: with
+    // the water switch on, before the world's draws are kept.
+    if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+        crate::native_water_glue::census(&mut map, &shaders, &world);
+    }
+    // The water edge blend (layer 6), over the world's transparent parts
+    // before its draws are kept.
+    let water = if feature::Switches::from_env().is_ok_and(|s| feature::native_water::on(&s)) {
+        Some(crate::native_water_glue::load(&mut map, &mut files, &shaders, &world, &lightmaps, &mut stage_images, &mut decoder))
+    } else {
+        None
+    };
     // Draw only a native material's clusters, and its placements with its
     // rigid program: the rest keeps its D3D draws.
     let world = keep_draws(world, &|d| native.contains(&d.material) && drawn_natively(d, &rigid));
@@ -1069,6 +1119,8 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
         })),
         gpu: Mutex::new(None),
         parts: Arc::new(parts),
+        fog,
+        water,
         lights,
         palettes: decoder.used().clone(),
     })

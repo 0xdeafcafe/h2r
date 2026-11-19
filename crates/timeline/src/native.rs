@@ -4,9 +4,9 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels }
+pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water }
 
-const STAGES: [&str; 9] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels"];
+const STAGES: [&str; 11] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water"];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
