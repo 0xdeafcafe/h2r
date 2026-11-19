@@ -1052,3 +1052,14 @@ fn wide_published_text_leaves_room_for_state_facts_and_status() {
     }
     assert!(spec.texts[page_layout::BODY_TEXT].text.ends_with("..."));
 }
+
+#[test]
+fn pack_rows_drop_only_the_repeated_pack_name_and_keep_full_page_titles() {
+    let repo = spec::sample_repo(spec::Sample::Pack);
+    assert_eq!(repo.pack_line(3).as_deref(), Some("Beaver Creek  ★"));
+    repo.press_pack(3);
+    assert_eq!(repo.texts.get(DETAIL_TITLE).as_deref(), Some("Sample Pack Beaver Creek"));
+    let (_, other) = listed(with_pack(), None);
+    other.press_list(1);
+    assert!(other.pack_line(1).unwrap().starts_with("Phantom Ascension"));
+}

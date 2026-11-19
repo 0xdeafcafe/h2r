@@ -1017,7 +1017,15 @@ impl Repo {
         }
         let e = self.pack_entry(row)?;
         let g = self.lock();
-        Some(marked_line(&e.name, &Self::status(&g, &e)))
+        // The pack name is already in the header. Keep a distinctive map
+        // name visible when the publisher prefixed every title with it.
+        let name = g.pack.as_deref()
+            .and_then(|pack| e.name.strip_prefix(pack))
+            .and_then(|suffix| suffix.strip_prefix(' '))
+            .map(str::trim_start)
+            .filter(|suffix| !suffix.is_empty())
+            .unwrap_or(&e.name);
+        Some(marked_line(name, &Self::status(&g, &e)))
     }
 
     /// The pack's list's description of row `row`: the pack's summary on
