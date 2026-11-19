@@ -39,10 +39,10 @@ impl feature::Feature for Conversations {
         let data = b.guest_alloc(0x58, Permissions::RW)?;
         let opcode = u32::from(BUILTINS[0].1);
         b.raw().before(
-            &points::HS_CONVERSATION_EVALUATE,
+            &points::HS_UNUSED_EVALUATOR,
             "converted conversation operations",
             move |call| {
-                if call.arg_u32("opcode") != Some(opcode) {
+                if call.arg_u32("index") != Some(opcode) {
                     return Ok(Flow::Continue);
                 }
                 let converted = {

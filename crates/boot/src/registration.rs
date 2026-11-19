@@ -186,6 +186,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&crate::h1_ai_control::AiControl)
         .map_err(|e| anyhow::anyhow!("Halo 1 AI control: {e}"))?;
+    features
+        .add(&crate::h1_script_builtins::ScriptBuiltins::default())
+        .map_err(|e| anyhow::anyhow!("Halo 1 script builtins: {e}"))?;
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
     // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.

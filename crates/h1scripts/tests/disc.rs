@@ -82,8 +82,14 @@ fn every_campaign_script_decompiles() {
     }
 }
 
+fn h2_disc() -> PathBuf {
+    std::env::var_os("H2_DISC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| disc("H2_ISO", "halo2.iso"))
+}
+
 fn h2() -> h1scripts::translate::Target {
-    let path = std::env::var_os("H2_DISC").map(PathBuf::from).unwrap_or_else(|| disc("H2_ISO", "halo2.iso"));
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -187,7 +193,7 @@ fn translation_coverage() {
 }
 
 fn h2_catalog() -> hs::Catalog {
-    let path = std::env::var_os("H2_DISC").map(PathBuf::from).unwrap_or_else(|| disc("H2_ISO", "halo2.iso"));
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -217,8 +223,9 @@ fn every_campaign_script_compiles_and_round_trips() {
             let s = hs::Scenario::decode(&bytes, BASE).unwrap_or_else(|e| panic!("{name}: {e}"));
             s.verify_codec_symmetry(&bytes, BASE).unwrap();
             assert_eq!(s.nodes().len(), c.nodes.len());
-            assert_eq!(s.scripts().len(), t.scripts.len() + t.commands.lists.len(), "{name}");
-            for (i, def) in s.scripts()[t.scripts.len()..].iter().enumerate() {
+            let first = t.scripts.len();
+            let commands = &s.scripts()[first..first + t.commands.lists.len()];
+            for (i, def) in commands.iter().enumerate() {
                 assert_eq!(def.name().unwrap(), h1ai::h1::command_script_name(i));
                 assert_eq!((def.kind(),def.return_type()),(5,4));
             }
@@ -327,7 +334,7 @@ fn skipped_cutscenes_on_every_level() {
 /// per level, with why it is missing and Halo 1's signature. A wait reads
 /// a stub when its condition (not following script calls) calls one. A
 /// stub is handled when the compiler gives it a value its waits read as
-/// done (`DONE_VALUES`, `ai_status` on `STATUS_LADDER`, or zero where
+/// done (`ai_status` on `STATUS_LADDER`, or zero where
 /// every wait reads zero as done); the rest are listed per level.
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
@@ -343,7 +350,6 @@ fn waits_on_stubs() {
     let handled = |b: &str| {
         b == "ai_status"
             || ZERO_DONE.contains(&b)
-            || h1scripts::compile::DONE_VALUES.iter().any(|d| d.0 == b)
     };
     // builtin -> (level -> (sleep_until count, if count))
     let mut by: BTreeMap<String, BTreeMap<String, [usize; 2]>> = BTreeMap::new();
@@ -484,6 +490,169 @@ fn sound_impulse_time_waits_on_the_playing_sound() {
     assert_eq!(types, ["sound"]);
 }
 
+/// The unit, object and miscellaneous builtins of the units lane carry
+/// over: each identification claims its Halo 2 slot (its evaluator address
+/// pinned here, so a different table revision fails loudly), each rename
+/// reaches a Halo 2 builtin of the same signature, and the one adapter
+/// appends its boolean. Halo 1's own XBE documentation strings name what
+/// the old builtins do (`object_pvs_activate`: "just another (old) name
+/// for object_pvs_set_object").
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn units_and_misc_builtins_translate() {
+    use h1scripts::translate::{Kind, Table};
+    // (Halo 1 name, claimed Halo 2 index, evaluator address.)
+    const IDENTIFIED: &[(&str, u16, u32)] = &[
+        ("inspect", 23, 0x0020_8e10),
+        ("object_destroy_all", 54, 0x002a_1570),
+        ("object_set_ranged_attack_inhibited", 66, 0x002a_1920),
+        ("object_set_melee_attack_inhibited", 67, 0x002a_19a0),
+        ("object_set_collideable", 72, 0x002a_1b50),
+        ("object_beautify", 93, 0x002a_2190),
+        ("breakable_surfaces_enable", 136, 0x002a_2c70),
+        ("breakable_surfaces_reset", 137, 0x002a_2cb0),
+        ("render_lights", 143, 0x002a_2ea0),
+        ("unit_open", 194, 0x002a_32a0),
+        ("unit_close", 195, 0x002a_32e0),
+        ("unit_enter_vehicle", 216, 0x002a_3ad0),
+        ("unit_set_emotion", 218, 0x002a_3b70),
+        ("unit_set_seat", 234, 0x002a_41a0),
+        ("vehicle_riders", 236, 0x002a_4230),
+        ("vehicle_gunner", 238, 0x002a_42c0),
+        ("unit_get_total_grenade_count", 241, 0x002a_4310),
+        ("unit_suspended", 249, 0x002a_4570),
+        ("players_unzoom_all", 473, 0x002a_8e90),
+        ("player_action_test_jump", 480, 0x002a_9040),
+        ("player_action_test_zoom", 484, 0x002a_9100),
+        ("player_action_test_action", 488, 0x002a_91c0),
+        ("player_action_test_look_relative_up", 491, 0x002a_9280),
+        ("player_action_test_look_relative_down", 492, 0x002a_92b0),
+        ("player_action_test_look_relative_left", 493, 0x002a_92e0),
+        ("player_action_test_look_relative_right", 494, 0x002a_9310),
+        ("cinematic_suppress_bsp_object_creation", 562, 0x002a_9910),
+        ("game_safe_to_speak", 586, 0x002a_9bd0),
+        ("game_all_quiet", 587, 0x002a_9c10),
+        ("cls", 644, 0x002a_b130),
+        ("player_effect_set_max_translation", 651, 0x002a_ac10),
+        ("player_effect_set_max_rotation", 652, 0x002a_ac70),
+        ("player_effect_set_max_rumble", 653, 0x002a_ace0),
+        ("player_effect_start", 654, 0x002a_ad30),
+        ("player_effect_stop", 655, 0x002a_adb0),
+        ("cinematic_set_near_clip_distance", 710, 0x002a_b3b0),
+    ];
+    const RENAMED: &[(&str, &str)] = &[
+        ("object_pvs_activate", "pvs_set_object"),
+        ("game_lost", "game_revert"),
+        ("player0_look_invert_pitch", "controller_set_look_invert"),
+        ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+        (
+            "unit_solo_player_integrated_night_vision_is_active",
+            "player_flashlight_on",
+        ),
+        ("player_action_test_back", "player_action_test_cancel"),
+    ];
+    let (catalog, maps) = h1();
+    assert!(catalog.has_unit_pose("ALERT"));
+    assert!(catalog.has_unit_pose("crouch"));
+    assert!(!catalog.has_unit_pose("noncombat"));
+    let target = h2();
+    let table = Table::build(&catalog, &target);
+    let c = h2_catalog();
+    use h1scripts::unit_builtins::RUNTIME_SLOTS;
+    let slots = IDENTIFIED
+        .iter()
+        .copied()
+        .chain(RUNTIME_SLOTS.iter().map(|s| (s.name, s.index, s.evaluate)));
+    for (name, index, evaluate) in slots {
+        let i = catalog.index_of(name).unwrap();
+        let tr = table.builtin(i).unwrap();
+        assert_ne!(tr.kind, Kind::Missing, "{name}: {:?}", tr.reason);
+        let (h2_name, b) = tr.target.as_ref().unwrap();
+        assert_eq!(h2_name.as_str(), name);
+        assert_eq!(b.index, index, "{name}");
+        let f = c.function(index).unwrap();
+        assert_eq!(f.evaluate(), evaluate, "{name}");
+        let f1 = catalog.function(i).unwrap();
+        let sig: Vec<_> = f1
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        println!(
+            "{name} ({}) -> slot {index}, evaluator {evaluate:#x}",
+            sig.join(" ")
+        );
+    }
+    for (from, to) in RENAMED {
+        let i = catalog.index_of(from).unwrap();
+        let tr = table.builtin(i).unwrap();
+        assert_ne!(tr.kind, Kind::Missing, "{from}: {:?}", tr.reason);
+        assert_eq!(tr.target.as_ref().unwrap().0, *to);
+        let f1 = catalog.function(i).unwrap();
+        let b = tr.target.as_ref().unwrap().1.clone();
+        let h2 = c.function(b.index).unwrap();
+        let p1: Vec<_> = f1
+            .parameters
+            .iter()
+            .map(|&p| catalog.type_name(p).unwrap())
+            .collect();
+        let p2: Vec<_> = h2
+            .parameters()
+            .iter()
+            .map(|&p| c.type_name(p).unwrap())
+            .collect();
+        assert_eq!(p1, p2, "{from} -> {to}");
+        assert_eq!(
+            catalog.type_name(f1.return_type).unwrap(),
+            c.type_name(h2.return_type()).unwrap(),
+            "{from} -> {to}"
+        );
+        println!("{from} -> {to} (slot {}, evaluator {:#x})", b.index, h2.evaluate());
+    }
+    // The adapter: player_add_equipment appends Halo 2's give flag.
+    let i = catalog.index_of("player_add_equipment").unwrap();
+    let tr = table.builtin(i).unwrap();
+    assert_eq!(tr.kind, Kind::Adapter, "{:?}", tr.reason);
+    let (name, b) = tr.target.as_ref().unwrap();
+    assert_eq!(name.as_str(), "unit_add_equipment");
+    assert_eq!(b.parameters.len(), 4);
+    assert_eq!(tr.adapter, Some(h1scripts::translate::Adapter::AppendBool(true)));
+
+    let mut used = std::collections::BTreeSet::new();
+    for (level, map) in maps {
+        let tables = Tables::read(&map).unwrap();
+        let compiled = h1scripts::compile::compile(
+            &tables,
+            &catalog,
+            &table,
+            &target,
+            h1scripts::compile::Missing::Stub,
+            &[],
+        )
+        .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let scenario = hs::Scenario::decode(&compiled.scenario_bytes(0x8000_0000), 0x8000_0000)
+            .unwrap_or_else(|e| panic!("{level}: {e}"));
+        let names = scenario.builtin_names().unwrap();
+        for slot in RUNTIME_SLOTS {
+            assert!(
+                !compiled.missing.iter().any(|u| u.name == slot.name),
+                "{level}: {} was compiled as missing",
+                slot.name
+            );
+            if let Some(name) = names.get(&slot.index) {
+                assert_eq!(name, slot.name, "{level}: slot {}", slot.index);
+                used.insert(slot.name);
+            }
+        }
+    }
+    for slot in RUNTIME_SLOTS.iter().filter(|s| {
+        use h1scripts::unit_builtins::RuntimeBuiltin::*;
+        !matches!(s.builtin, MoveAllDirections | CountdownGet | CountdownRestart)
+    }) {
+        assert!(used.contains(slot.name), "no calls emitted for {}", slot.name);
+    }
+}
+
 /// Halo 1's `(sleep -1 [script])` sleeps until woken; Halo 2's `sleep`
 /// ignores a negative duration (E `0x002087e0`), so every one is compiled
 /// as Halo 2's `sleep_forever` (`0x00208750`). On every level: as many
@@ -587,7 +756,7 @@ fn cinematic_calls_keep_halo1_s_ticks() {
         println!("{name}: ({}) both", h1_params.join(" "));
     }
     // Retail Halo 2's literal durations.
-    let path = disc("H2_DISC", "halo2.iso");
+    let path = h2_disc();
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let mut seen: std::collections::BTreeMap<(&str, i16), usize> = Default::default();
     for e in iso

@@ -29,6 +29,28 @@ pub const RENAMES: &[(&str, &str)] = &[
     // script that replays a sound each time the wait ends replayed it every
     // tick. `docs/halo1/scripts.md`.
     ("sound_impulse_time", "sound_impulse_language_time"),
+    // Halo 1's own documentation string: "just another (old) name for
+    // object_pvs_set_object", which renames to this above. Same (object)
+    // -> void on both sides.
+    ("object_pvs_activate", "pvs_set_object"),
+    // Halo 1's documentation: "causes the player to revert to his previous
+    // saved game" — which is Halo 2's game_revert (568, evaluator
+    // 0x2a9a10: sets the three revert flags). a50 and d40's fail cases.
+    ("game_lost", "game_revert"),
+    // The look-inversion pair. Halo 2's take one controller flag instead of
+    // player0; a10's tutorial inverts and reads it back.
+    ("player0_look_invert_pitch", "controller_set_look_invert"),
+    ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+    // Both read player 0's light state through the same one-argument shape
+    // (Halo 1 0x3c030, Halo 2 0x14ed80) and nothing else: Halo 2 has no
+    // night vision, and on a converted dark level the night-vision button
+    // is the flashlight. a30's sniper tutorial waits on it.
+    (
+        "unit_solo_player_integrated_night_vision_is_active",
+        "player_flashlight_on",
+    ),
+    // Use Halo 2's latched dismissal action in the tutorial.
+    ("player_action_test_back", "player_action_test_cancel"),
 ];
 
 /// Halo 1 builtins whose Halo 2 counterpart takes different arguments, and
@@ -54,6 +76,22 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     ("device_group_set", "device_group_set", Adapter::PrependNone),
     // Halo 2's scripts never call `!=`: write `(not (= a b))`.
     ("!=", "=", Adapter::Negate),
+    // Halo 2 (unit_add_equipment, 250) adds a fourth boolean after Halo 1's
+    // reset flag. The fourth reaches the new weapon's flag byte
+    // (0xccde0); every retail Halo 2 script that gives profile equipment
+    // passes true.
+    (
+        "player_add_equipment",
+        "unit_add_equipment",
+        Adapter::AppendBool(true),
+    ),
+    // Slot 843 supplies an extra leading long. The host reads the two
+    // remaining arguments in their original types.
+    (
+        "numeric_countdown_timer_set",
+        "numeric_countdown_timer_set",
+        Adapter::PrependLong(0),
+    ),
 ];
 
 /// A rewrite from a Halo 1 call to a Halo 2 one.
@@ -69,8 +107,12 @@ pub enum Adapter {
     /// Append a `short` literal argument. The literal is a hook too, so the
     /// converter can choose another value.
     AppendShort(i16),
+    /// Append a boolean literal argument.
+    AppendBool(bool),
     /// Insert `none` as the first argument.
     PrependNone,
+    /// Insert a signed integer as the first argument.
+    PrependLong(i32),
     /// Halo 2's last parameter is optional and Halo 1 has no counterpart:
     /// the call keeps Halo 1's arguments, one fewer than Halo 2's table.
     OmitOptional,
@@ -148,6 +190,7 @@ impl Target {
         }
         crate::commands::identify(&mut builtins, c);
         crate::hud::identify(&mut builtins, c);
+        crate::unit_builtins::name_runtime_slots(&mut builtins, c);
         Self {
             overloads,
             builtins,

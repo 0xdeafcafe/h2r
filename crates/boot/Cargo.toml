@@ -26,6 +26,7 @@ hs.workspace = true
 h1scripts = { path = "../h1scripts" }
 h1text = { path = "../h1text" }
 map.workspace = true
+h1convert = { path = "../h1convert" }
 # Our settings (setting_defs, the ui model).
 settings = { path = "../settings" }
 feature = { path = "../feature" }

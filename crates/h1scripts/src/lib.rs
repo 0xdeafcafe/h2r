@@ -25,6 +25,7 @@ pub mod layout;
 pub mod level;
 pub mod seats;
 pub mod translate;
+pub mod unit_builtins;
 
 pub use catalog::Catalog;
 pub use layout::Tables;

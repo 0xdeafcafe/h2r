@@ -1512,3 +1512,202 @@ fn negative_sleeps_become_sleep_forever() {
 
 #[path = "tests/ai_control.rs"]
 mod ai_control;
+/// The string argument of `unit_enter_vehicle` and `unit_set_seat` becomes
+/// a `SEAT_NAME` hook: Halo 2's engine matches the seat's label string ID
+/// exactly, so the converter writes the label the rebuilt vehicle carries,
+/// not the script's Halo 1 spelling. A plain `string_id` argument of any
+/// other builtin stays a plain string hook.
+#[test]
+fn seat_names_are_hooked_with_their_label_role() {
+    const UNIT: u16 = 14;
+    const VEHICLE: u16 = 15;
+    let mut types = h1_types();
+    types.extend(["unit", "vehicle"].map(String::from));
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f(
+                "unit_enter_vehicle",
+                VOID,
+                ORDINARY,
+                &[UNIT, VEHICLE, STRING],
+            ),
+            f("unit_set_seat", VOID, ORDINARY, &[UNIT, STRING]),
+            f("objects_attach", VOID, ORDINARY, &[OBJECT, STRING]),
+        ],
+        types.clone(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types
+        .extend(["unit", "vehicle"].map(String::from));
+    let (h2_unit, h2_vehicle) = (14, 15);
+    for (name, b) in [
+        (
+            "unit_enter_vehicle",
+            H2Builtin {
+                index: 60,
+                return_type: VOID,
+                parameters: vec![h2_unit, h2_vehicle, H2_STRING_ID],
+                special: false,
+            },
+        ),
+        (
+            "unit_set_seat",
+            H2Builtin {
+                index: 61,
+                return_type: VOID,
+                parameters: vec![h2_unit, H2_STRING_ID],
+                special: false,
+            },
+        ),
+    ] {
+        h2.builtins.insert(name.into(), b);
+    }
+    let mut b = Builder::default();
+    let chief = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let jeep = b.atom(VEHICLE, VEHICLE, "jeep", u32::MAX);
+    let seat = b.atom(STRING, STRING, "w-gunner", 0);
+    let enter = b.call(1, VOID, "unit_enter_vehicle", &[chief, jeep, seat]);
+    let chief2 = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let pose = b.atom(STRING, STRING, "alert", 0);
+    let set_seat = b.call(2, VOID, "unit_set_seat", &[chief2, pose]);
+    let obj = b.atom(OBJECT, OBJECT, "obj", u32::MAX);
+    let marker = b.atom(STRING, STRING, "head", 0);
+    let attach = b.call(3, VOID, "objects_attach", &[obj, marker]);
+    let root = b.call(0, VOID, "begin", &[enter, set_seat, attach]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, root)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    let by_type = |ty: &str| -> Vec<&str> {
+        out.hooks
+            .iter()
+            .filter(|h| h.h1_type == ty)
+            .map(|h| h.token.as_str())
+            .collect()
+    };
+    assert_eq!(by_type(crate::compile::SEAT_NAME), ["w-gunner"]);
+    assert_eq!(by_type(crate::compile::SEAT_POSE), ["alert"]);
+    // The marker string of another builtin keeps the plain string role.
+    assert_eq!(by_type("string"), ["head"]);
+}
+
+/// Halo 2's `unit_add_equipment` takes a fourth boolean Halo 1's
+/// `player_add_equipment` has no counterpart for. Keep the starting
+/// profile as a named hook and append `true` as a boolean literal.
+#[test]
+fn player_add_equipment_appends_the_give_flag() {
+    const UNIT: u16 = 14;
+    const STARTING_PROFILE: u16 = 15;
+    let mut types = h1_types();
+    types.extend(["unit", "starting_profile"].map(String::from));
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("print", VOID, ORDINARY, &[STRING]),
+            f(
+                "player_add_equipment",
+                VOID,
+                ORDINARY,
+                &[UNIT, STARTING_PROFILE, BOOL],
+            ),
+        ],
+        types.clone(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.types
+        .extend(["unit", "starting_profile"].map(String::from));
+    let (h2_unit, h2_profile) = (14, 15);
+    h2.builtins.insert(
+        "unit_add_equipment".into(),
+        H2Builtin {
+            index: 70,
+            return_type: VOID,
+            parameters: vec![h2_unit, h2_profile, BOOL, BOOL],
+            special: false,
+        },
+    );
+    let mut b = Builder::default();
+    let chief = b.atom(UNIT, UNIT, "chief", u32::MAX);
+    let profile = b.atom(STARTING_PROFILE, STARTING_PROFILE, "profile_a", u32::MAX);
+    let yes = b.atom(BOOL, BOOL, "true", 1);
+    let add = b.call(2, VOID, "player_add_equipment", &[chief, profile, yes]);
+    let root = b.call(0, VOID, "begin", &[add]);
+    let t = read(&scenario(&b, &[("main", 0, VOID, root)], &[])).unwrap();
+    let table = Table::build(&c, &h2);
+    let tr = table.builtin(2).unwrap();
+    assert_eq!(tr.kind, Kind::Adapter);
+    assert_eq!(tr.adapter, Some(Adapter::AppendBool(true)));
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    let main = s.script("main").unwrap();
+    let begin = s.node(main.root()).unwrap();
+    let head = s.node(Datum(begin.data())).unwrap();
+    let call = s.node(head.next()).unwrap();
+    assert_eq!(call.opcode(), 70);
+    let mut a = s.node(Datum(call.data())).unwrap().next();
+    let mut args = Vec::new();
+    while a != Datum::NULL {
+        let x = *s.node(a).unwrap();
+        args.push(x);
+        a = x.next();
+    }
+    assert_eq!(args.len(), 4);
+    assert_eq!(args[3].value_type(), BOOL);
+    assert_eq!(args[3].data(), 1);
+    assert_eq!(args[1].value_type(), h2_profile);
+    assert!(out.hooks.iter().any(|h| {
+        h.type_name == "starting_profile" && h.token == "profile_a"
+    }));
+}
+
+/// The renames of this round carry Halo 1 builtins to Halo 2 ones of the
+/// same signature: the PVS old name, the fail-and-revert, the look-invert
+/// pair, the night-vision query, the look tests and the back button.
+#[test]
+fn renamed_unit_and_misc_builtins_translate() {
+    let names: &[(&str, &str)] = &[
+        ("object_pvs_activate", "pvs_set_object"),
+        ("game_lost", "game_revert"),
+        ("player0_look_invert_pitch", "controller_set_look_invert"),
+        ("player0_look_pitch_is_inverted", "controller_get_look_invert"),
+        (
+            "unit_solo_player_integrated_night_vision_is_active",
+            "player_flashlight_on",
+        ),
+        ("player_action_test_back", "player_action_test_cancel"),
+    ];
+    let c = Catalog::new(
+        names.iter().map(|&(n, _)| f(n, VOID, ORDINARY, &[])).collect(),
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    for &(_, to) in names {
+        h2.builtins.insert(
+            to.into(),
+            H2Builtin {
+                index: 40,
+                return_type: VOID,
+                parameters: vec![],
+                special: false,
+            },
+        );
+    }
+    let table = Table::build(&c, &h2);
+    for (i, &(from, to)) in names.iter().enumerate() {
+        let tr = table.builtin(i as u16).unwrap();
+        assert_eq!(tr.kind, Kind::Renamed, "{from}");
+        assert_eq!(tr.target.as_ref().unwrap().0, to);
+    }
+}

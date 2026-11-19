@@ -108,15 +108,6 @@ pub const SKIP_GUARD: &str = "cinematic_skip_start";
 /// setup is the path Halo 1 takes in co-op and on other difficulties.
 pub const SHORT_PATHS: &[(&str, &str)] = &[("tutorial_setup", "fast_setup")];
 
-/// What a stubbed status query returns under [`Missing::Stub`] instead of
-/// zero, where zero would hold a `sleep_until` forever. Every use in the
-/// ten levels' scripts reads the value as "done" (docs/halo1/scripts.md):
-/// Both safety queries read true when the target lacks their evaluators.
-pub const DONE_VALUES: &[(&str, i32)] = &[
-    ("game_all_quiet", 1),
-    ("game_safe_to_speak", 1),
-];
-
 /// Halo 1's `ai_status` scale on Halo 2's combat status, highest first:
 /// the Halo 2 engine global a status must reach, and the Halo 1 value.
 /// Halo 1's XBE describes its scale as 0 inactive, 1 noncombat, 2
@@ -140,6 +131,14 @@ pub const STATUS_LADDER: &[(&str, i32)] = &[
 /// string ID of that animation's name in the converted `jmad`
 /// (`h1models::jmad::animation_names`).
 pub const ANIMATION_NAME: &str = "animation_name";
+
+/// A vehicle-seat argument. Its token is resolved to the exact label ID
+/// checked by the Halo 2 seat search at `0x0011ade0`.
+pub const SEAT_NAME: &str = "seat_name";
+
+/// A unit pose argument. Slot 234 writes the converted animation mode,
+/// independently of the vehicle-seat table.
+pub const SEAT_POSE: &str = "seat_pose";
 
 /// Halo 2 value types whose value indexes a scenario block the engine
 /// reads without a check: `none` there reads before the block (b40:
@@ -741,6 +740,22 @@ impl Compiler<'_> {
         Ok(())
     }
 
+    fn mark_seat_name(&mut self, builtin: &str, args: &[Datum]) {
+        let (index, role) = match builtin {
+            "unit_enter_vehicle" => (2, SEAT_NAME),
+            "unit_set_seat" => (1, SEAT_POSE),
+            _ => return,
+        };
+        if let Some(d) = args.get(index)
+            && let Some(hook) = self.out.hooks.last_mut()
+            && hook.slot as usize == d.slot()
+            && hook.type_name == "string_id"
+            && hook.h1_type == "string"
+        {
+            hook.h1_type = role.to_owned();
+        }
+    }
+
     /// The first of `args` that is an atom of an [`INDEXED`] type (or, for
     /// a [`NONE_UNSAFE`] builtin, an object name) which will not resolve:
     /// its Halo 2 type name and token.
@@ -1001,10 +1016,7 @@ impl Compiler<'_> {
                 name: f.name.clone(),
             });
             return match self.policy {
-                Missing::Stub => Ok(match DONE_VALUES.iter().find(|d| d.0 == f.name) {
-                    Some(&(_, v)) => self.number(expected, v),
-                    None => self.default(expected),
-                }),
+                Missing::Stub => Ok(self.default(expected)),
                 Missing::Extension => {
                     let fixed = self.h1.fixed_signature(index);
                     let mut out = Vec::new();
@@ -1054,6 +1066,15 @@ impl Compiler<'_> {
                 let first = self.literal(b.parameters[0], b.parameters[0], NONE, b"none");
                 out.push(first);
             }
+            Some(Adapter::PrependLong(value)) => {
+                let first = self.literal(
+                    b.parameters[0],
+                    h2t::LONG,
+                    value as u32,
+                    value.to_string().as_bytes(),
+                );
+                out.push(first);
+            }
             _ => {}
         }
         let offset = out.len();
@@ -1076,7 +1097,17 @@ impl Compiler<'_> {
             self.hook(d, h2t::SHORT, types::SHORT, &format!("{h2_name}:{v}"));
             out.push(d);
         }
+        if let Some(Adapter::AppendBool(v)) = tr.adapter {
+            let ty = *b
+                .parameters
+                .get(out.len())
+                .ok_or_else(|| invalid("adapter arity"))?;
+            let t: &[u8] = if v { b"true" } else { b"false" };
+            let d = self.literal(ty, h2t::BOOLEAN, u32::from(v), t);
+            out.push(d);
+        }
         self.mark_animation_names(&args, &out[offset..])?;
+        self.mark_seat_name(&h2_name, &out[offset..]);
         let optional = usize::from(tr.adapter == Some(Adapter::OmitOptional));
         if !b.special && out.len() + optional != b.parameters.len() {
             return Err(invalid(format!(

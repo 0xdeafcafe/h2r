@@ -3,7 +3,7 @@
 
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
-use engine::points::{HS_DISCARDED_EVAL, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
+use engine::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
 use feature::{Builder, Flow};
 
 use h1scripts::hud::CONTROL_BUILTINS;
@@ -103,7 +103,7 @@ fn sensor_hidden(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
 
 pub(super) fn register(b: &mut Builder) {
     b.raw().before(
-        &HS_DISCARDED_EVAL,
+        &HS_UNUSED_EVALUATOR,
         "evaluate the scripted HUD controls",
         |c| {
             let sp = c.cpu.esp;

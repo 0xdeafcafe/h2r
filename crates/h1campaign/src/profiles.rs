@@ -98,3 +98,14 @@ pub fn elements(
         })
         .collect()
 }
+
+/// Halo 2's equipment evaluator reads a signed profile index from the
+/// argument's low word and indexes the rebuilt scenario block (`0x0cce00`).
+/// The rebuild keeps the Halo 1 block order.
+pub fn script_index(profiles: &[Profile], name: &str) -> Option<u32> {
+    if name.eq_ignore_ascii_case("none") {
+        return Some(u32::MAX);
+    }
+    let index = profiles.iter().position(|p| p.name.eq_ignore_ascii_case(name))?;
+    Some(u32::from(i16::try_from(index).ok()? as u16))
+}

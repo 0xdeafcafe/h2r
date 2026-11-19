@@ -205,7 +205,7 @@ fn every_campaign_conversation_compiles_with_its_source_sounds() {
         );
         let workers = sc.scripts()[t.scripts.len()..]
             .iter()
-            .filter(|s| s.kind() == 2)
+            .filter(|s| s.kind() == 2 && s.name().unwrap().starts_with("__h1cv"))
             .count();
         assert_eq!(workers, ai.conversations.len(), "{level}");
         assert!(sc.scripts().iter().filter(|s| s.kind() <= 2).count() < 0x140);

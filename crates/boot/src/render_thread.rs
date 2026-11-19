@@ -89,7 +89,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     // render never meets.
     (
         "h1-hud-text",
-        "HS_DISCARDED_EVAL",
+        "HS_UNUSED_EVALUATOR",
         "a script builtin on the simulation thread evaluates its Boolean argument in the guest",
     ),
     ("hud", "GAME_ACTIVATE", AFTER),
