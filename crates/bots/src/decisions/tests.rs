@@ -48,7 +48,12 @@ fn scene(id: u32, tick: u32, players: &[Seen]) -> Perception {
 }
 
 fn brain(seed: u64, board: &Mutex<Radio>) -> Brain {
-    let mut b = Brain::new(Skill::Legendary, seed);
+    let mut b = Brain::new(Skill::Legendary, seed).with_tuning(crate::tuning::Tuning {
+        perception_ticks: Some(0),
+        motor_ticks: Some(0),
+        button_sigma_ms: Some(0.0),
+        ..Default::default()
+    });
     b.epoch = radio::lock(board).epoch;
     b
 }

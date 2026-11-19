@@ -397,7 +397,7 @@ impl Mind {
             .collect()
     }
 
-    fn release(&mut self, tick: u32) {
+    pub(crate) fn release(&mut self, tick: u32) {
         self.follower = None;
         self.target = None;
         self.doing = Doing::Idle;
@@ -1259,8 +1259,7 @@ impl Mind {
         if let Some(b) = spot {
             return Some(Stunt::Bounce(b, None));
         }
-        let mut roll = || self.show_off.uniform();
-        let mac = crate::glitches::plan(crate::glitches::Trick::CrouchJump, self.skill, &mut roll);
+        let mac = crate::glitches::plan(crate::glitches::Trick::CrouchJump);
         Some(Stunt::Hop(crate::glitches::Run::new(mac, tick)))
     }
 

@@ -56,46 +56,32 @@ fn presses(m: &Macro) -> Vec<(Key, u32, u32)> {
     v
 }
 
-fn legendary(trick: Trick) -> Macro {
-    plan(trick, Skill::Legendary, &mut || 0.5)
-}
-
-const ALL: [Trick; 7] = [
-    Trick::Bxr,
-    Trick::Byyr,
-    Trick::Bxb,
-    Trick::DoubleShot,
-    Trick::QuadShot,
-    Trick::SwordFly,
-    Trick::CrouchJump,
-];
-
 #[test]
-fn each_trick_is_the_community_s_presses_on_the_tick_at_legendary() {
+fn each_trick_requests_the_nominal_presses() {
     use Key::*;
     // BXR: melee, the reload as the melee lands, fire.
     assert_eq!(
-        presses(&legendary(Trick::Bxr)),
+        presses(&plan(Trick::Bxr)),
         [(Melee, 0, 2), (Reload, 5, 4), (Fire, 7, 2)]
     );
     // BYYR: two switches in the reload's place.
     assert_eq!(
-        presses(&legendary(Trick::Byyr)),
+        presses(&plan(Trick::Byyr)),
         [(Melee, 0, 2), (Switch, 5, 2), (Switch, 8, 2), (Fire, 10, 2)]
     );
     // BXB: melee, reload, melee.
     assert_eq!(
-        presses(&legendary(Trick::Bxb)),
+        presses(&plan(Trick::Bxb)),
         [(Melee, 0, 2), (Reload, 5, 2), (Melee, 7, 2)]
     );
     // RRX: the second pull as the burst's last round leaves, then X.
     assert_eq!(
-        presses(&legendary(Trick::DoubleShot)),
+        presses(&plan(Trick::DoubleShot)),
         [(Fire, 0, 2), (Fire, 4, 4), (Reload, 6, 2)]
     );
     // RRXYYRRX.
     assert_eq!(
-        presses(&legendary(Trick::QuadShot)),
+        presses(&plan(Trick::QuadShot)),
         [
             (Fire, 0, 2),
             (Fire, 4, 4),
@@ -110,19 +96,19 @@ fn each_trick_is_the_community_s_presses_on_the_tick_at_legendary() {
     // Sword flying: Y and X a tick apart (the thumb's slide), the pull a
     // little slower, A in the lunge for height.
     assert_eq!(
-        presses(&legendary(Trick::SwordFly)),
+        presses(&plan(Trick::SwordFly)),
         [(Switch, 0, 1), (Reload, 1, 1), (Fire, 3, 2), (Jump, 11, 3)]
     );
     // Crouch jump: A, crouch near the top.
     assert_eq!(
-        presses(&legendary(Trick::CrouchJump)),
+        presses(&plan(Trick::CrouchJump)),
         [(Jump, 0, 3), (Crouch, 7, 10)]
     );
 }
 
 #[test]
 fn a_macro_says_what_is_down_on_each_tick_and_ends() {
-    let m = legendary(Trick::Bxr);
+    let m = plan(Trick::Bxr);
     assert_eq!(m.len(), 9);
     let k = |t| m.keys(t);
     assert!(k(0).melee && k(1).melee && !k(2).melee);
@@ -138,59 +124,6 @@ fn a_macro_says_what_is_down_on_each_tick_and_ends() {
     assert_eq!(run.keys(100).map(|k| k.melee), Some(true));
     assert_eq!(run.keys(108).map(|k| k.fire), Some(true));
     assert_eq!(run.keys(109), None, "over");
-}
-
-#[test]
-fn lower_skill_is_late_within_its_slop_and_never_out_of_order() {
-    for skill in Skill::ALL {
-        let (_, hi) = slop(skill);
-        let mut seed = 0x1234_5678u64;
-        let mut roll = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            (seed >> 40) as f32 / (1u64 << 24) as f32
-        };
-        for trick in ALL {
-            let clean = presses(&legendary(trick));
-            for _ in 0..50 {
-                let m = presses(&plan(trick, skill, &mut roll));
-                assert_eq!(m.len(), clean.len(), "{trick:?}");
-                for (i, (got, want)) in m.iter().zip(&clean).enumerate() {
-                    assert_eq!(got.0, want.0, "{trick:?} {skill:?}: the same keys in order");
-                    assert!(got.1 >= want.1, "{trick:?} {skill:?}: never early");
-                    assert!(
-                        got.1 <= want.1 + hi * i as u32,
-                        "{trick:?} {skill:?}: {got:?} against {want:?}"
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn sword_flying_is_clean_at_legendary_and_often_missed_on_easy() {
-    let mut s = 7u64;
-    let mut roll = move || {
-        s = s
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        (s >> 40) as f32 / (1u64 << 24) as f32
-    };
-    let mut clean = |skill| {
-        (0..200)
-            .filter(|_| clean_fly(&plan(Trick::SwordFly, skill, &mut roll)))
-            .count()
-    };
-    assert_eq!(clean(Skill::Legendary), 200);
-    assert_eq!(
-        clean(Skill::Heroic),
-        200,
-        "a tick late is still in the window"
-    );
-    let easy = clean(Skill::Easy);
-    assert!((10..150).contains(&easy), "{easy}");
 }
 
 // ---- when ----
@@ -423,7 +356,7 @@ fn a_trick_stops_when_the_target_is_gone_and_waits_before_the_next() {
     let starts = found.expect("two tricks in some fight");
     let gap = starts[1].0 - starts[0].0;
     assert!(
-        gap >= legendary(Trick::Bxr).len() + crate::weapons::TRICK_COOLDOWN,
+        gap >= plan(Trick::Bxr).len() + crate::weapons::TRICK_COOLDOWN,
         "{starts:?}"
     );
     let mut c = Combo::new(9);

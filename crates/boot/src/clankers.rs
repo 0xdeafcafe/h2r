@@ -591,6 +591,14 @@ struct Clanker {
 }
 
 impl local::PadSource for Clanker {
+    fn reset_input(&mut self) {
+        self.brain.reset_input();
+    }
+
+    fn phantom_latency(&self) -> bots::tuning::PhantomLatency {
+        self.brain.phantom_latency()
+    }
+
     fn pad(&mut self, f: &local::Frame<'_>) -> input::host::HostPadState {
         let want = Skill::ALL[usize::from(self.skill.load(Ordering::Relaxed)).min(3)];
         if self.brain.mind.skill != want {
