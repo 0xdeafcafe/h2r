@@ -43,8 +43,15 @@
 //!   opens the picker first. Another dialog on the way gets A; a players'
 //!   screen in another mode is backed out of and corrected; Live asking
 //!   for a 6-digit code stops the drive;
-//! * the Live menu: from its restored row to row 2, A; the lobby is a Live
-//!   one only once the HLE says `live: session ... advertised`;
+//! * the Live menu: a window 5 `none` screen with list mask `0xf` (the
+//!   main menu's is `0x1`), under the main menu's lobby mode still; the
+//!   main menu is told by its screen address too, learnt when the game
+//!   sets lobby mode -1 (run 20261119-003044 took the Live menu for the
+//!   main menu and went into OptiMatch). One press at a time from the row
+//!   its list value shows to row 2 (Custom Game), A; the lobby is the Live
+//!   custom game only once the HLE says `live: session ... advertised`
+//!   (not since deleted) in lobby mode 2. A lobby in another mode
+//!   (OptiMatch's 3) gets B;
 //! * the lobby: once every local bot is on Xbox Live (`bots: NAME on port
 //!   P is on Xbox Live as ...`), or after [`LOBBY_WAIT_MS`], A on Start
 //!   Game (row 0); again (UP, A) if the phase hasn't left `menu` in
@@ -57,8 +64,21 @@ use crate::coop_drive::{
     MODE_SPLIT, MODE_SYSTEM_LINK, Press, SETTLE_MS, STEP_MS, TRIES, parse_screen,
 };
 
-/// The Xbox Live menu's Custom Game row (retail row 2).
+/// The Xbox Live menu's Custom Game row (retail row 2). The rows, with
+/// ours (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Custom Game,
+/// 3 Custom Game Browser, 4 Co-op Campaign, 5 Content Download.
 pub const CUSTOM_GAME_ROW: u32 = 2;
+/// The Xbox Live menu's last row.
+pub const LIVE_LAST_ROW: u32 = 5;
+/// The Xbox Live menu's list mask on its `ui: screen none` line
+/// (`list [0xf/...]`); the main menu's, the OptiMatch playlists' and the
+/// lobby's are `0x1` (run 20261119-003044).
+pub const LIVE_MENU_MASK: u32 = 0xf;
+/// The lobby mode Custom Game sets (`0x199a03(2)`); OptiMatch's lobby
+/// set 3 in run 20261119-003044.
+pub const CUSTOM_GAME_MODE: u32 = 2;
+/// Presses on the Live menu toward Custom Game before giving up.
+pub const LIVE_MENU_PRESSES: u32 = 10;
 /// The lobby mode the game sets on reaching the main menu (-1).
 pub const MAIN_MENU_MODE: u32 = u32::MAX;
 /// A boot screen (title, profile dialog) held this long gets A.
@@ -86,10 +106,28 @@ pub const START_MS: u64 = 40_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Step {
     Boot,
-    ToLive { at: u64, tries: u32 },
-    Hosting { at: u64, tries: u32 },
-    Lobby { since: u64 },
-    Starting { at: u64, tries: u32 },
+    ToLive {
+        at: u64,
+        tries: u32,
+    },
+    /// On the Live menu: one press at a time to Custom Game, each read
+    /// back off the next `ui: screen` line.
+    ToCustom {
+        at: u64,
+        presses: u32,
+        tries: u32,
+    },
+    Hosting {
+        at: u64,
+        tries: u32,
+    },
+    Lobby {
+        since: u64,
+    },
+    Starting {
+        at: u64,
+        tries: u32,
+    },
     Done,
     Stuck,
 }
@@ -108,6 +146,18 @@ pub struct Driver {
     window: Option<u32>,
     /// A `none` line's first list value.
     list_value: Option<u32>,
+    /// A `none` line's first list mask (`0xf` on the Live menu).
+    list_mask: Option<u32>,
+    /// A `none` line's window's active screen.
+    active: Option<u32>,
+    /// The main menu's screen (its window 5 active address), learnt when
+    /// the game says `coop-live: lobby mode 4294967295`: the Live menu,
+    /// the OptiMatch playlists and the lobby are other window 5 screens
+    /// under that lobby mode.
+    main_screen: Option<u32>,
+    /// The main menu's lobby mode came; its screen is the next window 5
+    /// line's.
+    learn_main: bool,
     /// The top dialog the bots' join gate last named (`dialog 0x14
     /// (window 3, ...)`); `None` for `dialog none`.
     dialog_id: Option<u32>,
@@ -132,7 +182,7 @@ pub struct Driver {
     dialog_presses: u32,
     /// Ports whose bot is on Xbox Live (as an account or a guest).
     on_live: BTreeSet<u8>,
-    /// The HLE advertised a hosted session.
+    /// The HLE advertised a hosted session (and has not deleted it).
     hosting: bool,
     said: BTreeSet<String>,
     out: Vec<String>,
@@ -177,6 +227,42 @@ pub fn none_window(text: &str) -> Option<(u32, Option<u32>)> {
     Some((window, value))
 }
 
+/// A `ui: screen none` line's parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoneLine {
+    pub window: u32,
+    pub active: Option<u32>,
+    pub pending: Option<u32>,
+    pub mask: Option<u32>,
+    pub value: Option<u32>,
+}
+
+fn hex_after(text: &str, key: &str) -> Option<u32> {
+    let (_, r) = text.split_once(key)?;
+    let v = r.trim_start_matches("0x");
+    let end = v.find(|c: char| !c.is_ascii_hexdigit()).unwrap_or(v.len());
+    u32::from_str_radix(&v[..end], 16).ok()
+}
+
+/// A `ui: screen none (slot 4: window W active A pending P list [M/V];
+/// ...)` line: slot 4's part.
+pub fn none_line(text: &str) -> Option<NoneLine> {
+    let (window, value) = none_window(text)?;
+    let slot4 = text.split(';').next().unwrap_or(text);
+    Some(NoneLine {
+        window,
+        active: hex_after(slot4, " active "),
+        pending: hex_after(slot4, " pending "),
+        mask: hex_after(slot4, "list ["),
+        value,
+    })
+}
+
+/// `live: session ID deleted`: the hosted session is gone.
+pub fn deleted(text: &str) -> bool {
+    text.starts_with("live: session ") && text.ends_with(" deleted")
+}
+
 /// A `bots: join gate port P: ..., dialog D, ...` line's dialog: `Some(None)`
 /// for `dialog none`, `Some(Some(id))` for `dialog 0xNN (window ...)`.
 pub fn gate_dialog(text: &str) -> Option<Option<u32>> {
@@ -216,6 +302,10 @@ impl Driver {
             screen_since: 0,
             window: None,
             list_value: None,
+            list_mask: None,
+            active: None,
+            main_screen: None,
+            learn_main: false,
             dialog_id: None,
             picks: 0,
             picker_downs: 0,
@@ -253,19 +343,40 @@ impl Driver {
                 self.ui = text.to_string();
                 self.ui_since = now;
             }
-            let (window, value) = none_window(text).map_or((None, None), |(w, v)| (Some(w), v));
+            let none = none_line(text);
+            let (window, value) = none.map_or((None, None), |n| (Some(n.window), n.value));
             if value != self.list_value || window != self.window {
                 self.picker_downs = 0;
             }
             self.window = window;
             self.list_value = value;
+            self.list_mask = none.and_then(|n| n.mask);
+            self.active = none.and_then(|n| n.active);
             self.mode = mode;
+            if self.learn_main
+                && let Some(n) = none
+                && n.window == 5
+                && n.mask != Some(LIVE_MENU_MASK)
+            {
+                // The main menu on screen, or on its way in (pending).
+                self.main_screen = match n.pending.filter(|p| *p != 0) {
+                    Some(p) => Some(p),
+                    None if n.mask == Some(1) => n.active,
+                    None => None,
+                };
+                self.learn_main = self.main_screen.is_none();
+            }
             if screen != self.screen || screen.is_none() {
                 self.screen = screen;
                 self.screen_since = now;
-                self.cursor =
-                    (screen == Some(LIVE_MENU)).then(|| row.filter(|r| *r <= 5).unwrap_or(0));
             }
+            self.cursor = if screen == Some(LIVE_MENU) {
+                Some(row.filter(|r| *r <= LIVE_LAST_ROW).unwrap_or(0))
+            } else if self.live_menu() {
+                value.map(|v| v & 0xffff).filter(|r| *r <= LIVE_LAST_ROW)
+            } else {
+                None
+            };
             return;
         }
         if let Some(d) = gate_dialog(text) {
@@ -274,9 +385,29 @@ impl Driver {
         }
         if let Some(m) = text.strip_prefix("coop-live: lobby mode ") {
             self.lobby_mode = m.split(' ').next().and_then(|m| m.parse().ok());
+            if self.lobby_mode == Some(MAIN_MENU_MODE) {
+                // The main menu: the window 5 screen now, or the one on
+                // its way in.
+                self.main_screen = None;
+                self.learn_main = true;
+                if self.screen.is_none() && self.window == Some(5) {
+                    let ui = self.ui.clone();
+                    if let Some(n) = none_line(&ui) {
+                        self.main_screen = match n.pending.filter(|p| *p != 0) {
+                            Some(p) => Some(p),
+                            None if n.mask == Some(1) => n.active,
+                            None => None,
+                        };
+                        self.learn_main = self.main_screen.is_none();
+                    }
+                }
+            }
         }
         if advertised(text) {
             self.hosting = true;
+        }
+        if deleted(text) {
+            self.hosting = false;
         }
         if let Some(p) = live_port(text) {
             self.on_live.insert(p);
@@ -290,7 +421,7 @@ impl Driver {
             return;
         }
         match self.step {
-            Step::Hosting { .. } if self.hosting => {
+            Step::Hosting { .. } | Step::ToCustom { .. } if self.hosting_live() => {
                 self.queue.clear();
                 self.step = Step::Lobby { since: now };
                 self.say("in the Live custom game lobby".into());
@@ -415,13 +546,32 @@ impl Driver {
         true
     }
 
-    /// On the main menu: screen 9, or a window 5 `none` screen once the
-    /// game set the main menu's lobby mode.
+    /// Hosting the Live custom game: a session advertised (and not
+    /// deleted) in Custom Game's lobby mode (2). OptiMatch's lobby (mode
+    /// 3) advertises too.
+    fn hosting_live(&self) -> bool {
+        self.hosting && self.lobby_mode == Some(CUSTOM_GAME_MODE)
+    }
+
+    /// On the Xbox Live menu: screen `0xba`, or the window 5 `none` screen
+    /// with the Live menu's list mask.
+    fn live_menu(&self) -> bool {
+        self.screen == Some(LIVE_MENU)
+            || (self.screen.is_none()
+                && self.window == Some(5)
+                && self.list_mask == Some(LIVE_MENU_MASK))
+    }
+
+    /// On the main menu: screen 9, or the window 5 `none` screen the game
+    /// was on when it set the main menu's lobby mode (not the Live menu,
+    /// nor another screen opened from there under that lobby mode).
     fn at_main(&self) -> bool {
         self.screen == Some(MAIN_MENU)
             || (self.screen.is_none()
                 && self.window == Some(5)
-                && self.lobby_mode == Some(MAIN_MENU_MODE))
+                && self.lobby_mode == Some(MAIN_MENU_MODE)
+                && !self.live_menu()
+                && self.main_screen.is_none_or(|m| self.active == Some(m)))
     }
 
     /// The main menu's cursor row, read off its list value.
@@ -501,21 +651,6 @@ impl Driver {
         true
     }
 
-    /// From the Live menu's cursor to `row`, then A.
-    fn to_row(&self, row: u32, what: &str) -> Vec<Press> {
-        let from = self.cursor.unwrap_or(0);
-        let (button, n) = if from <= row {
-            ("down", row - from)
-        } else {
-            ("up", from - row)
-        };
-        let mut v: Vec<Press> = (0..n)
-            .map(|_| press(button, &format!("toward {what} (row {row}, from {from})")))
-            .collect();
-        v.push(press("a", what));
-        v
-    }
-
     /// The next press, if one is due at `now`.
     pub fn poll(&mut self, now: u64) -> Option<Press> {
         if self.done() {
@@ -540,16 +675,80 @@ impl Driver {
         Some(p)
     }
 
-    fn at_live_menu(&mut self, now: u64) {
-        self.queue = self.to_row(CUSTOM_GAME_ROW, "Custom Game");
-        self.step = Step::Hosting { at: now, tries: 0 };
+    fn at_live_menu(&mut self, now: u64, tries: u32) {
+        self.queue.clear();
+        self.step = Step::ToCustom {
+            at: now,
+            presses: 0,
+            tries,
+        };
+        self.to_custom(now, now, 0, tries);
+    }
+
+    /// On the Live menu: the next press toward Custom Game, from the row
+    /// the last line showed.
+    fn to_custom(&mut self, now: u64, at: u64, presses: u32, tries: u32) {
+        if !self.live_menu() {
+            // Something opened without our A (or a line is on its way).
+            if now.saturating_sub(at.max(self.last_press)) > STEP_MS {
+                let ui = self.ui.clone();
+                self.queue = vec![press(
+                    "b",
+                    "back to the Xbox Live menu: off it before Custom Game",
+                )];
+                self.say(format!("left the Xbox Live menu before Custom Game: {ui}"));
+                self.step = Step::ToCustom {
+                    at: now,
+                    presses,
+                    tries,
+                };
+            }
+            return;
+        }
+        if !self.quiet(now, SETTLE_MS) {
+            return;
+        }
+        if presses >= LIVE_MENU_PRESSES {
+            let ui = self.ui.clone();
+            self.give_up(format!(
+                "no Custom Game row after {LIVE_MENU_PRESSES} presses on the Xbox Live menu; \
+                 the last screen: {ui}"
+            ));
+            return;
+        }
+        let from = self.cursor;
+        let (button, why) = match from {
+            None => (
+                "down",
+                "the Xbox Live menu shows no row yet: DOWN".to_string(),
+            ),
+            Some(r) if r < CUSTOM_GAME_ROW => (
+                "down",
+                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
+            ),
+            Some(r) if r > CUSTOM_GAME_ROW => (
+                "up",
+                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
+            ),
+            Some(_) => ("a", "Custom Game".to_string()),
+        };
+        self.queue = vec![press(button, &why)];
+        self.step = if button == "a" {
+            Step::Hosting { at: now, tries }
+        } else {
+            Step::ToCustom {
+                at: now,
+                presses: presses + 1,
+                tries,
+            }
+        };
     }
 
     fn plan(&mut self, now: u64) {
         let screen = self.screen;
         match self.step.clone() {
             Step::Boot => {
-                if self.hosting {
+                if self.hosting_live() {
                     self.step = Step::Lobby { since: now };
                     return;
                 }
@@ -559,9 +758,9 @@ impl Driver {
                     }
                     return;
                 }
-                if screen == Some(LIVE_MENU) {
+                if self.live_menu() {
                     if self.held(now, SETTLE_MS) {
-                        self.at_live_menu(now);
+                        self.at_live_menu(now, 0);
                     }
                     return;
                 }
@@ -593,9 +792,9 @@ impl Driver {
                 self.queue = vec![press("a", &format!("{what}: on to the main menu"))];
             }
             Step::ToLive { at, tries } => {
-                if screen == Some(LIVE_MENU) {
+                if self.live_menu() {
                     if self.held(now, SETTLE_MS) {
-                        self.at_live_menu(now);
+                        self.at_live_menu(now, 0);
                     }
                 } else if self.on_the_way(now) {
                     if !self.queue.is_empty() {
@@ -654,22 +853,51 @@ impl Driver {
                     }
                 }
             }
+            Step::ToCustom { at, presses, tries } => {
+                self.to_custom(now, at, presses, tries);
+            }
             Step::Hosting { at, tries } => {
-                if now.saturating_sub(at) > STEP_MS {
+                if self.hosting_live() {
+                    self.step = Step::Lobby { since: now };
+                    self.say("in the Live custom game lobby".into());
+                } else if now.saturating_sub(at) > STEP_MS {
+                    let other = self
+                        .lobby_mode
+                        .filter(|m| *m != CUSTOM_GAME_MODE && *m != MAIN_MENU_MODE);
                     if tries + 1 >= TRIES {
-                        self.give_up(match self.lobby_mode {
-                            Some(2) => "a custom game lobby opened but the HLE advertised no \
-                                        Live session (not signed in to Xbox Live?)"
-                                .into(),
+                        self.give_up(match (self.lobby_mode, other) {
+                            (Some(CUSTOM_GAME_MODE), _) => {
+                                "a custom game lobby opened but the HLE advertised no Live \
+                                 session (not signed in to Xbox Live?)"
+                                    .into()
+                            }
+                            (_, Some(m)) => format!(
+                                "Custom Game opened lobby mode {m}, not the custom game lobby \
+                                 (mode {CUSTOM_GAME_MODE}; OptiMatch's \
+                                 set 3 in run 20261119-003044)"
+                            ),
                             _ => "Custom Game never opened a Live lobby".into(),
                         });
-                    } else if screen == Some(LIVE_MENU) && self.held(now, SETTLE_MS) {
-                        self.queue = self.to_row(CUSTOM_GAME_ROW, "Custom Game, again");
+                    } else if self.live_menu() && self.held(now, SETTLE_MS) {
+                        self.say("back on the Xbox Live menu; Custom Game again".into());
+                        self.at_live_menu(now, tries + 1);
+                    } else if let Some(m) = other
+                        && !self.live_menu()
+                    {
+                        self.queue = vec![press(
+                            "b",
+                            &format!("a lobby in mode {m}, not Custom Game's: back"),
+                        )];
                         self.step = Step::Hosting {
                             at: now,
                             tries: tries + 1,
                         };
-                    } else if screen.is_some() && screen != Some(LIVE_MENU) {
+                    } else if !self.live_menu()
+                        && (screen.is_some()
+                            || (self.window == Some(5) && self.lobby_mode == Some(MAIN_MENU_MODE)))
+                    {
+                        // A screen, or a window 5 one that is no lobby
+                        // (the OptiMatch playlists in run 3).
                         self.queue = vec![press("b", "back to the Xbox Live menu")];
                         self.step = Step::Hosting {
                             at: now,
@@ -731,7 +959,7 @@ impl Driver {
             p.button,
             show(self.screen)
         );
-        if self.screen == Some(LIVE_MENU)
+        if self.live_menu()
             && let Some(r) = p.row
         {
             s.push_str(&format!(" row {r}"));

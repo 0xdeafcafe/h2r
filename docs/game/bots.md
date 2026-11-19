@@ -2216,7 +2216,7 @@ account making and `input.pad` presses.
 
 ```sh
 h2 bots test [--count 5] [--map lockout] [--keep] [--timeout 360]
-             [--wait-clang] [--settings-from DIR]
+             [--wait-clang] [--settings-from DIR] [--no-drive]
 h2 bots verdict <bots.log>   # the verdict of a log again
 ```
 
@@ -2262,10 +2262,23 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    after A. Another dialog on the way gets A, and a request for the
    account's 6-digit code stops the drive. Then A on the players' screen in
    Xbox Live mode (where the local bots join; any other mode is backed out
-   of), the Live menu's Custom Game row (retail row 2), then the pregame
-   lobby, which counts as a Live one only once the HLE says `live: session
-   ... advertised`: `coop-live: lobby mode 2` is any custom game lobby,
-   Split Screen's too. Once
+   of), then the Xbox Live menu. That is a window 5 `none` screen too, and
+   it comes while the lobby mode is still the main menu's, so the drive
+   tells them apart by the list mask (`list [0xf/...]` on the Live menu,
+   `[0x1/...]` on the main menu) and by the screen address: the main menu
+   is the window 5 screen the game was on, or bringing in (`pending`),
+   when it set lobby mode -1. The third run (20261119-003044) took the
+   Live menu for the main menu, pressed DOWN, A (OptiMatch, row 1), then
+   DOWN, A on a playlist, and landed in OptiMatch's lobby (lobby mode 3,
+   a session advertised). The Live menu's rows, ours included
+   (`boot::custom_games`): 0 Quickmatch, 1 OptiMatch, 2 Custom Game, 3
+   Custom Game Browser, 4 Co-op Campaign, 5 Content Download. The drive
+   moves one row at a time, reading the row back off the list value, and
+   presses A on row 2. The pregame lobby counts as the Live custom game
+   only once a session is advertised (and not deleted) while the lobby
+   mode is 2: `coop-live: lobby mode 2` alone is any custom game lobby,
+   Split Screen's too, and other Live lobbies advertise as well. A lobby
+   in another mode gets B, back to the Live menu and Custom Game again. Once
    every local bot is on Xbox Live, or after 90 s, it presses A on Start
    Game, and again (UP, A) if the phase has not left `menu` within 40 s.
    Each press is a `bots-drive:` line.
@@ -2282,6 +2295,34 @@ h2 bots verdict <bots.log>   # the verdict of a log again
    failed. With `--keep` the game stays open, and the command with it (it
    is the Live server), until the window closes; the data is kept.
 
+**`--no-drive` and `progress.json`.** `--no-drive` launches and watches
+exactly as above but presses nothing: the scripted driver is off, and the
+verdict is the same. At the start it prints the agent socket and a hint
+(`h2 agent --socket <sock> ...`). `--timeout` still counts from `agent:
+listening`; a drive by hand or by a model needs longer, so it defaults to
+900 s with `--no-drive` (360 s otherwise; an explicit `--timeout` wins).
+Either way the run's log directory gets `progress.json`, rewritten
+whenever a check, the status or the last lines change (written through a
+temporary file, so a poll never reads half of it):
+
+```json
+{ "finished": false, "passed": false,
+  "next": { "step": 3, "name": "on Xbox Live ..." },
+  "phase": "menu", "mode": "-", "map": "-",
+  "last_ui": "ui: screen none (slot 4: ...)",
+  "last_bots": "bots: ...",
+  "checks": [ { "step": 1, "name": "...", "state": "pass|pending|fail",
+                "detail": "..." } ] }
+```
+
+`checks` is the 12 checks of the list below; `state` is `pending` while
+the run goes and `fail` for what did not pass once it has ended. `next`
+is the first check not passed. An outside driver loops: read
+`progress.json` (stop on `finished`), `h2 agent --socket <sock> ui` and
+`h2 agent --socket <sock> frame snap 1` to see the screen, then
+`h2 agent --socket <sock> press down` (or `a`, `b`, `up`) as the first
+pending check and `last_ui` call for, and read `progress.json` again.
+
 **The checks**, in the order a run reaches them. Each prints as passed or
 failed with the log lines that show it, and the verdict names the first
 failure:
@@ -2291,7 +2332,7 @@ failure:
 | 1 | Signed in to Xbox Live | `live: playing as Tester` |
 | 2 | Clankers on | `clankers: Clanker P on (...)` for each local port |
 | 3 | On Xbox Live | the players' screen in mode 3 or the Xbox Live menu (`0xba`); a run that ended on the players' screen in Split Screen or System Link fails `not on Xbox Live: ended in Split Screen` |
-| 4 | Hosting a Live custom game | `live: session ... advertised` (the HLE's hosted session); a lobby without it says so |
+| 4 | Hosting a Live custom game | `live: session ... advertised` (not since `deleted`) while the lobby mode is 2 (`coop-live: lobby mode 2`); a lobby without it says so, and so does an advertisement from another lobby mode (OptiMatch's 3) |
 | 5 | Live roster of bot accounts | `clankers: asking Live for N bots for session S`, then `clankers: Live rostered bots for session S` |
 | 6 | Local bots signed in (join gate) | per port, `bots: join gate port P: screen ... : signs in` and `bots: signing ... on port P ...`; it says whether on the players screen or in the lobby |
 | 7 | Local bots on Xbox Live as bot accounts | per port, `clankers: Clanker P is G on Xbox Live (bot account 000b...)` and `bots: G on port P is on Xbox Live as its own bot account` |

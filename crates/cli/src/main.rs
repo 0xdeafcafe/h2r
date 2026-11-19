@@ -19,6 +19,7 @@ mod bitmap;
 mod boot_cmd;
 mod bots_drive;
 mod bots_nav;
+mod bots_progress;
 mod bots_test_cmd;
 mod bots_verdict;
 mod collision;

@@ -31,6 +31,7 @@ fn defaults() {
     assert_eq!(o.map, None);
     assert!(!o.keep && !o.dry_run);
     assert_eq!(o.timeout, Duration::from_secs(360));
+    assert!(!o.no_drive);
     assert_eq!(o.root, PathBuf::from("/tmp/t/h2-bots-test"));
     assert_eq!(o.out, None);
     assert_eq!(o.server_port, 8077);
@@ -225,4 +226,27 @@ fn a_background_build_is_running_while_its_log_changes() {
         still_writing(now + Duration::from_secs(1), now),
         "a clock skew"
     );
+}
+
+#[test]
+fn no_drive_defaults_to_a_long_timeout() {
+    let o = opts(&["test", "--no-drive"]);
+    assert!(o.no_drive);
+    assert_eq!(o.timeout, Duration::from_secs(900));
+    // Either order, an explicit --timeout wins.
+    let o = opts(&["test", "--timeout", "120", "--no-drive"]);
+    assert_eq!(o.timeout, Duration::from_secs(120));
+    let o = opts(&["test", "--no-drive", "--timeout", "1200"]);
+    assert_eq!(o.timeout, Duration::from_secs(1200));
+    // A driven run keeps its default.
+    assert_eq!(
+        opts(&["test", "--timeout", "120"]).timeout,
+        Duration::from_secs(120)
+    );
+}
+
+#[test]
+fn usage_names_no_drive_and_progress() {
+    let u = err(&["test", "--help"]);
+    assert!(u.contains("--no-drive") && u.contains("progress.json") && u.contains("900"));
 }

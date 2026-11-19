@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 
 use crate::bots_drive::Driver;
+use crate::bots_progress;
 use crate::bots_verdict::{self, Plan};
 use crate::coop_test_cmd::{self, Game, Supervisor};
 use crate::coop_verdict::Roles;
@@ -25,7 +26,7 @@ use crate::live_cmd::{Client, LIVE_DIR_ENV};
 const USAGE: &str = "usage:
   h2 bots test [--disc ISO] [--count N] [--map NAME] [--keep] [--timeout SECS]
                [--wait-clang] [--settings-from DIR] [--root DIR] [--out DIR]
-               [--server-port N] [--dry-run]
+               [--server-port N] [--no-drive] [--dry-run]
                [-- <more h2 play arguments>]
   h2 bots verdict <bots.log>
 
@@ -43,9 +44,20 @@ the Cranelift fast tier. The game takes the [graphics] settings (video,
 frame rate, render scale) of --settings-from's settings.toml (the data
 root `h2 play` uses by default), so it renders as your own game does.
 --timeout counts from the game's agent socket coming up, so a build
-before that is not counted.
+before that is not counted. It is 360 s, or 900 s with --no-drive: a
+drive by hand (or by a model) needs longer.
 
-Nobody presses anything: the game prints its menu screen (H2_UI_WATCH=1)
+--no-drive: launches and watches as above but presses nothing; the
+scripted driver is off. It prints the agent socket and a hint at the
+start, and you (or a model over `h2 agent --socket <sock> ui`, `frame
+snap 1`, `press <button>`) drive the menus. The verdict is the same.
+
+Either way <logs>/progress.json is rewritten whenever it changes: the
+checks as pass, pending (fail once the run has ended), the phase, mode
+and map, the last `ui:` line and the last `bots:` or `clankers:` line.
+Poll that one file to know what to do next.
+
+Without --no-drive nobody presses anything: the game prints its menu screen (H2_UI_WATCH=1)
 and this process presses over its agent socket, each press on a screen or
 line it waited for: A through the title screen and the new profile's
 dialogs, Xbox Live from the main menu's row (A on the sign-in's dialogs),
@@ -77,6 +89,8 @@ pub const TAG: &str = "Tester";
 const DEFAULT_COUNT: usize = 5;
 const DEFAULT_SERVER_PORT: u16 = 8077;
 const DEFAULT_TIMEOUT_SECS: u64 = 360;
+/// `--no-drive`'s default: a manual drive takes longer.
+const NO_DRIVE_TIMEOUT_SECS: u64 = 900;
 /// The Clankers page's count range (`clankers.count`).
 const MAX_COUNT: usize = 15;
 
@@ -93,6 +107,8 @@ pub struct Opts {
     pub map: Option<String>,
     pub keep: bool,
     pub timeout: Duration,
+    /// The scripted driver is off: someone else presses.
+    pub no_drive: bool,
     pub root: PathBuf,
     pub out: Option<PathBuf>,
     pub server_port: u16,
@@ -127,7 +143,8 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     let mut count = DEFAULT_COUNT;
     let mut map = None;
     let mut keep = false;
-    let mut timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    let mut timeout = None;
+    let mut no_drive = false;
     let mut root = None;
     let mut out = None;
     let mut server_port = DEFAULT_SERVER_PORT;
@@ -162,7 +179,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .ok()
                     .filter(|s| *s > 0)
                     .with_context(|| format!("--timeout {v}: seconds, more than 0"))?;
-                timeout = Duration::from_secs(secs);
+                timeout = Some(Duration::from_secs(secs));
             }
             "--root" => root = Some(PathBuf::from(value("--root")?)),
             "--out" => out = Some(PathBuf::from(value("--out")?)),
@@ -174,6 +191,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
                     .filter(|p| *p != 0)
                     .with_context(|| format!("--server-port {v}: a port"))?;
             }
+            "--no-drive" => no_drive = true,
             "--dry-run" => dry_run = true,
             "--wait-clang" => wait_clang = true,
             "--settings-from" => settings_from = Some(PathBuf::from(value("--settings-from")?)),
@@ -194,7 +212,14 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         count,
         map,
         keep,
-        timeout,
+        timeout: timeout.unwrap_or_else(|| {
+            Duration::from_secs(if no_drive {
+                NO_DRIVE_TIMEOUT_SECS
+            } else {
+                DEFAULT_TIMEOUT_SECS
+            })
+        }),
+        no_drive,
         root,
         out,
         server_port,
@@ -373,6 +398,18 @@ fn test(opts: Opts) -> Result<()> {
         logs.display(),
         agent.display()
     );
+    if opts.no_drive {
+        eprintln!(
+            "bots test: --no-drive: nothing is pressed. Agent socket: {}",
+            agent.display()
+        );
+        eprintln!(
+            "bots test: drive it yourself: poll {} and use `h2 agent --socket {} ui | frame snap 1 | press <button>`; {} s from the agent coming up",
+            logs.join(bots_progress::FILE).display(),
+            agent.display(),
+            opts.timeout.as_secs()
+        );
+    }
     let roles = Roles {
         host: TAG.into(),
         ..Roles::default()
@@ -383,7 +420,8 @@ fn test(opts: Opts) -> Result<()> {
     sup.note(0, &plan.line())?;
     eprintln!("bots test: the game opens (it builds into --out first if that has none)");
 
-    let mut watch = Watch::new(&plan, &client, &agent);
+    let mut watch = Watch::new(&plan, &client, &agent, !opts.no_drive);
+    let mut progress = String::new();
     let spawned = Instant::now();
     // The timeout counts from the agent socket: a build before is not run
     // time (at most BUILD_LIMIT of it).
@@ -427,7 +465,9 @@ fn test(opts: Opts) -> Result<()> {
             )?;
             break;
         }
-        let all = bots_verdict::verdict(&fs::read_to_string(&merged)?).is_some_and(|v| v.passed());
+        let text = fs::read_to_string(&merged)?;
+        write_progress(&logs, &text, false, &mut progress);
+        let all = bots_verdict::verdict(&text).is_some_and(|v| v.passed());
         match (all, passed_at) {
             (true, None) => passed_at = Some(Instant::now()),
             (true, Some(t)) if t.elapsed() >= SETTLE => break,
@@ -437,6 +477,7 @@ fn test(opts: Opts) -> Result<()> {
     }
     sup.pump(Duration::from_millis(300))?;
     let text = fs::read_to_string(&merged)?;
+    write_progress(&logs, &text, true, &mut progress);
     let verdict = bots_verdict::verdict(&text).context("the merged log lost its plan line")?;
     print!("{}", verdict.render());
     if let Some(why) = ended {
@@ -485,6 +526,21 @@ fn test(opts: Opts) -> Result<()> {
     Ok(())
 }
 
+/// Rewrites progress.json when it differs from `last` (`finished`: the run
+/// is over). A failed write is said once per change, never fatal.
+fn write_progress(logs: &Path, log: &str, finished: bool, last: &mut String) {
+    let Some(text) = bots_progress::render(log, finished) else {
+        return;
+    };
+    if text == *last {
+        return;
+    }
+    if let Err(e) = bots_progress::write(logs, &text) {
+        eprintln!("bots test: progress.json not written: {e:#}");
+    }
+    *last = text;
+}
+
 /// What the harness watches besides the game's lines: the driver, the
 /// agent API's phase and map, and the Live server.
 struct Watch<'a> {
@@ -492,6 +548,8 @@ struct Watch<'a> {
     client: &'a Client,
     agent: &'a Path,
     drive: Driver,
+    /// Whether the scripted driver presses (off with `--no-drive`).
+    driving: bool,
     agent_up: bool,
     #[cfg(unix)]
     conn: Option<agent_proto::Client>,
@@ -507,12 +565,13 @@ struct Watch<'a> {
 }
 
 impl<'a> Watch<'a> {
-    fn new(plan: &'a Plan, client: &'a Client, agent: &'a Path) -> Self {
+    fn new(plan: &'a Plan, client: &'a Client, agent: &'a Path, driving: bool) -> Self {
         Watch {
             plan,
             client,
             agent,
             drive: Driver::new(plan.local()),
+            driving,
             agent_up: false,
             #[cfg(unix)]
             conn: None,
@@ -561,7 +620,7 @@ impl<'a> Watch<'a> {
                 self.drive.status(now, &phase);
             }
         }
-        if self.agent_up {
+        if self.agent_up && self.driving {
             let now = self.now_ms();
             if let Some(p) = self.drive.poll(now) {
                 sup.note(0, &self.drive.press_line(&p))?;
