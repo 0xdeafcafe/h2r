@@ -1164,6 +1164,27 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.sample_depth
     }
 
+    fn prepare_external(
+        &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
+    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        let plan = plan.clone();
+        let ids = textures.map(|t| t.map(|t| t.id));
+        self.call(move |w| {
+            let Some(surfaces) = surfaces.try_map(|s| w.surfaces.get(s).copied()) else { return Ok(None) };
+            let textures = ids.map(|id| id.and_then(|i| w.textures.get(&i)));
+            if (0..4).any(|i| ids[i].is_some() && textures[i].is_none()) { return Ok(None); }
+            w.inner.prepare_external(surfaces, request, textures, &plan, copy, pass)
+        })
+    }
+
+    fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        self.post(move |w| {
+            w.inner.commit_external(recording);
+            Ok(())
+        });
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.external_pass
     }

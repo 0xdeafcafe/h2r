@@ -319,3 +319,77 @@ fn a_colour_only_pass_comes_through_the_render_thread() {
     let Some(b) = backend() else { return };
     colour_only(ThreadedBackend::new(b).unwrap());
 }
+
+fn plan(ranges: usize) -> d3d::ExternalPlan {
+    d3d::ExternalPlan { stage: timeline::native::Stage::World, view: 1, ranges, slots: vec![] }
+}
+
+struct Counting {
+    seen: Arc<Mutex<Vec<d3d::TargetCopy>>>,
+    display_ranges: usize,
+}
+
+impl ExternalPass for Counting {
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+
+    fn encode(&mut self, t: ExternalTarget<'_>) {
+        Probe(Arc::default()).encode(t);
+    }
+
+    fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
+        let copy = t.copy;
+        self.seen.lock().unwrap().push(copy);
+        self.encode(t);
+        if copy == d3d::TargetCopy::Display { self.display_ranges } else { 1 }
+    }
+}
+
+#[test]
+fn refusal_of_the_display_discards_even_the_recorded_reference_clear() {
+    let Some(reference) = backend() else { return };
+    let ctx = &reference.ctx;
+    let display = GfxBackend::new(GfxContext {
+        instance: ctx.instance.clone(), adapter: ctx.adapter.clone(), device: ctx.device.clone(),
+        queue: ctx.queue.clone(), caps: ctx.caps,
+    });
+    let (mut d, mut m) = create(d3d::ScaledBackend::new(reference, display, 2).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let seen = Arc::default();
+    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 0 };
+    assert!(d.prepare_external_pass(&mut m, plan(1), Box::new(pass)).unwrap().is_none());
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
+    let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
+    let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
+    for pixels in [reference, display] { assert_eq!(&pixels[..4], &[0, 255, 0, 255]); }
+    assert_eq!(d.stats().external_passes, 0);
+}
+
+#[test]
+fn cancel_keeps_pixels_and_commit_preserves_the_deferred_display() {
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create_copy_swap(b, UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let pass = || Box::new(Counting { seen: Arc::default(), display_ranges: 1 });
+    drop(d.prepare_external_pass(&mut m, plan(1), pass()).unwrap().unwrap());
+    assert_eq!(&d.backend.read_color(back).unwrap().0[..4], &[0, 255, 0, 255]);
+    d.swap(&mut m, 0).unwrap();
+    let front = d.front_buffer().unwrap();
+    d.prepare_external_pass(&mut m, plan(1), pass()).unwrap().unwrap().commit();
+    assert_eq!(&d.backend.read_color(front).unwrap().0[..4], &[0, 255, 0, 255]);
+    assert_eq!(d.backend.read_color(back).unwrap().0[1], 0, "back was replaced");
+    assert_eq!(d.stats().external_passes, 1);
+}
+
+#[test]
+fn threaded_prepare_waits_for_actual_recording_and_refuses_partial_ranges() {
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let seen = Arc::default();
+    let pass = Counting { seen: Arc::clone(&seen), display_ranges: 2 };
+    assert!(d.prepare_external_pass(&mut m, plan(2), Box::new(pass)).unwrap().is_none());
+    assert_eq!(*seen.lock().unwrap(), [d3d::TargetCopy::Reference]);
+}

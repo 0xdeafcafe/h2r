@@ -1130,21 +1130,29 @@ impl<B: Backend> Device<B> {
     /// (textures over it are read again). Called only once the backend has
     /// drawn: a skipped draw dirties nothing.
     pub(super) fn mark_written(&mut self, writes_depth: bool) {
-        if let Some(t) = self.rtt.get_mut(&self.render_target) {
+        self.mark_color_written(self.render_target);
+        if writes_depth { self.mark_depth_written(); }
+    }
+
+    pub(super) fn mark_color_written(&mut self, header: u32) {
+        if let Some(t) = self.rtt.get_mut(&header) {
             self.rtt_epoch += u64::from(!t.dirty);
             t.dirty = true;
-            self.mirror_supersede(self.render_target);
+            self.mirror_supersede(header);
         }
         // The colour surface over the depth buffer's memory: that memory
         // now holds its pixels (textures over it made before are stale).
         if self
             .depth_color
-            .is_some_and(|c| c.header == self.render_target)
+            .is_some_and(|c| c.header == header)
         {
             self.depth_color_newer = true;
             self.depth_generation += 1;
         }
-        if writes_depth && self.depth_stencil != 0 {
+    }
+
+    pub(super) fn mark_depth_written(&mut self) {
+        if self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
                 self.rtt_epoch += u64::from(!t.dirty);
                 t.dirty = true;

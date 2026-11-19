@@ -1637,6 +1637,40 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         }
     }
 
+    fn prepare_external(
+        &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
+    ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
+        let reference = surfaces.try_map(|s| Some(s.reference)).expect("every surface has a reference");
+        let rt = textures.map(|t| t.map(|t| &t.reference));
+        self.before_shared_write(&surfaces.color);
+        for slot in surfaces.slots.iter().flatten() { self.before_shared_write(slot); }
+        let Some(mut commands) = self.reference.prepare_external(reference, request, rt, plan, copy, pass.clone())? else {
+            return Ok(None);
+        };
+        if self.awake() && (surfaces.color.view.is_some() || surfaces.depth.view.is_some()
+            || surfaces.slots.iter().flatten().any(|s| s.view.is_some())) {
+            let Some(view) = surfaces.try_map(|s| self.live(s.view)) else { return Ok(None) };
+            let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
+            if (0..4).any(|i| textures[i].is_some() && vt[i].is_none()) { return Ok(None); }
+            let Some(display) = self.view.prepare_external(view, request, vt, plan, crate::TargetCopy::Display, pass)? else {
+                return Ok(None);
+            };
+            commands.extend(display);
+        }
+        Ok(Some(commands))
+    }
+
+    fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        match recording.copy {
+            crate::TargetCopy::Reference => self.reference.commit_external(recording),
+            crate::TargetCopy::Display => {
+                self.view.commit_external(recording);
+                self.view_pending = true;
+            }
+        }
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.reference.supports_external_pass()
     }
