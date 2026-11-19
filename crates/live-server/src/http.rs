@@ -359,6 +359,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             axum::routing::put(crate::sim_runs::upload)
                 .layer(DefaultBodyLimit::max(crate::sim_runs::MAX_REPORT)),
         )
+        // dh-api: dedicated host, tunnel and sim host routes.
+        .merge({
+            #[path = "http/hosts.rs"]
+            mod hosts;
+
+            hosts::routes()
+        })
+        .merge(crate::sim_runs::host_routes())
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))

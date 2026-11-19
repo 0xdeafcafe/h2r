@@ -1391,6 +1391,20 @@ port + 4.
   with more than 256 waiting for a slow member, is dropped. The co-op
   protocol repeats what was lost. Nothing is appended to the event log.
 
+## Dedicated hosts
+
+| Route | Auth | Result |
+|---|---|---|
+| `POST /v1/hosts/{lease}/register` | Lease's host bearer, `hosts.register` | Takes a [`HostEndpoint`](dedicated-host-build.md#1-lease-live-proto-owned-by-lane-dh-lease) JSON body up to 8 KiB. Records `HostReady` and returns `200` with the `HostLease`. |
+| `POST /v1/hosts/{lease}/report` | Lease's host bearer, `hosts.report` | Takes `{state, players, reason?}` JSON up to 1 KiB. `state` is `"playing"` or `"ended"`, `players` is the player count and `reason` is an optional `EndReason`. Records `HostPlaying` or `HostEnded` and returns `204`. |
+| `GET /v1/hosts/{lease}` | Roster member or admin with a `read` bearer | Returns `200` with `{lease, state, endpoint}`. The endpoint is available after registration. |
+| `GET /v1/admin/hosts` | Admin with an `admin.read` bearer | Returns `200` with running and recent hosts and their costs. |
+| `POST /v1/admin/hosts/{lease}/stop` | Admin with an `admin.write` bearer | Takes no body, stops the host with reason `stopped` and returns `204`. |
+| `GET /v1/hosts/{lease}/tunnel` | Roster member with a `sessions.relay` bearer on upgrade | Reserved for the [WebSocket datagram tunnel](dedicated-host-build.md#6-tunnel-wire-live-proto-owned-by-dh-tunnel-client). The native stub returns `501`. |
+
+Invalid JSON bodies return `400`. Requests exceeding a body cap return
+`413`. Lease and inventory reads use the shared per-IP API rate limit.
+
 ## Game-invite mailboxes
 
 These are gameplay invitations, separate from the operator's account-registration
