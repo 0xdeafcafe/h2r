@@ -152,7 +152,7 @@ pub struct Plan {
 pub fn target_size(mem: &dyn GuestRead, index: u32) -> Option<(u32, u32)> {
     let at = TARGETS.checked_add(index.checked_mul(TARGET_STRIDE)?)?;
     let surface = mem.read_u32(at + 0x88)?;
-    let hidden = mem.read_u32(at + 0x94)? >> 8 & 0xff != 0;
+    let hidden = (mem.read_u32(at + 0x94)? >> 8) & 0xff != 0;
     if surface != 0 && !hidden {
         return Some((mem.read_u32(at + 0x80)?, mem.read_u32(at + 0x84)?));
     }
@@ -382,7 +382,7 @@ impl GpuGlow {
 
     /// Records `plan`'s draws in order. The stand-ins are the guest sizes
     /// times this copy's scale. Nothing is recorded when it refuses.
-    pub fn encode(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
+    pub fn encode(&mut self, mut t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
         if !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
             return Err(Refused::ColourNotSampled);
         }
@@ -671,7 +671,7 @@ mod tests {
         let mut m = HashMap::new();
         // Top 0, left 0, bottom 480, right 640.
         m.insert(WINDOW, 0);
-        m.insert(WINDOW + 4, 480 | 640 << 16);
+        m.insert(WINDOW + 4, 480 | (640 << 16));
         m.insert(SIGN_CLEAR, (-0.5f32).to_bits());
         m.insert(SIGN_SET, 0.5f32.to_bits());
         m.insert(VIEW_TARGET, 0);
