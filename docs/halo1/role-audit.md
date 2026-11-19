@@ -104,7 +104,7 @@ retail tags the counterparts hold in the slot (Coagulation).
 | Group | Field | What | Lane |
 |---|---|---|---|
 | `weap` | `barrels[].block_e4[]` | firing effects, dry-fire sounds, trigger damage | h1-weap-snd |
-| `weap` | `ref_140` (ready effect, V `needler\ready`), `ref_264` (pickup sound), `ref_26c`, `ref_274` (zoom in, out) | `effe`, `snd!` | h1-weap-snd |
+| `weap` | `ready_effect` (`+0x140`, V `needler\ready`), `pickup_sound` (`+0x264`), `zoom_in_sound`, `zoom_out_sound` (`+0x26c`, `+0x274`) | `effe`, `snd!` | h1-weap-snd |
 | `eqip` | `snd_ref_134` (pickup sound) | `snd!` | h1-weap-snd |
 | `bipd` | `unit.obje.functions` | copied | h1-bipd-colour |
 | `bipd` | `unit.obje.attachments` (shield-down effect, flashlight lights) | `effe`, `ligh` | a bug, after h1-bipd-colour: Halo 1's attachments name the functions that lane owns |
@@ -114,7 +114,7 @@ retail tags the counterparts hold in the slot (Coagulation).
 
 | Group | Field | Was | Now (Halo 1) | Evidence |
 |---|---|---|---|---|
-| `weap` | `ref_16c` overheated effect | the plasma weapons' `overheated` | `weap +0x374`, converted (`Converter::effect`) | V: the slot holds `overheated` on both plasma weapons |
+| `weap` | `overheated_effect` (`+0x16c`) | the plasma weapons' `overheated` | `weap +0x374`, converted (`Converter::weapon_slot`, with the weapon's other effects and sounds) | V: the slot holds `overheated` on both plasma weapons |
 | `weap` | `ref_1bc` melee damage, `ref_1c4` melee response | `smash_melee`/`strike_melee` and responses | `weap +0x394`, `+0x3a4`, converted (`Converter::damage`) | V: 8 of 8 weapons |
 | `proj` | `ref_e8` detonation started | the plasma grenade's `detonation_start` | `proj +0x1f4` | V: the one projectile with it |
 | `proj` | `ref_f0`, `ref_f8` (airborne) detonation | `airborne_detonation`, `detonation`, `standard_detonation` | `proj +0x1ac`, Halo 1's one detonation effect, in both | V: 3 of 3 grenades and needle |
@@ -150,10 +150,10 @@ no bitmap widget is untested in the engine.
 
 | Group | Field | What leaks | Halo 1 source | What it needs |
 |---|---|---|---|---|
-| `eqip` | `item.ref_124` (effe), `item.ref_10c` (jpt!) | the grenades' `airborne_detonation`, `equipment_detonation`, `*_equipment_explosion` | the item's detonation effect (the explosion when a lying grenade is shot) | `h1::Equipment` does not read the item's detonation fields yet: read them (offsets by pairs), then as `proj` |
+| `eqip` | `item.detonation_effect` (`+0x124`, effe), `item.ref_10c` (jpt!) | the grenades' `airborne_detonation`, `equipment_detonation`, `*_equipment_explosion` | the item's detonation effect (the explosion when a lying grenade is shot) | `h1::Equipment` does not read the item's detonation fields yet: read them (offsets by pairs), then as `proj` |
 | `bipd` | `unit.block_e8[].ref_0` | `camera\biped_follow_camera` | the unit's camera track | read the unit's camera tracks; convert as the seats' (`Converter::camera_track`) |
 | `bipd` | `unit.effe_ref_c4` | the Chief's `flashlight` effect | the unit's integrated light toggle | read it, then `Converter::effect` |
-| `weap` | the detonation effect | none on Coagulation's weapons | `weap +0x384` | no retail weapon holds one, so its slot is not named yet |
+| `weap` | the detonation effect | none on Coagulation's weapons | `weap +0x384` | named `detonation_effect` (`+0x17c`) and written from Halo 1 by h1-weap-snd (`arsenal::WEAPON_EFFECTS`) |
 | `deca` | `layer` | the base's majority (5) | the decal's layer (its own enumeration) | Halo 2's layer values named |
 
 **Missing, not leaking.** `jpt!` leaks one word (`+0xa0`, 1.0): the base's

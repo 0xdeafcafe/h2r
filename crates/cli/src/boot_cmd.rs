@@ -23,7 +23,7 @@ const USAGE: &str = "usage:
   tier only; `clang` builds clang's in the foreground, as before tiers.
   `build --background` is that background build: low priority, and gone at
   once when another holds --out.
---data defaults to $TMPDIR/h2boot-data (host root of the hard-disk partitions).
+--data defaults to ~/Library/Application Support/h2recomp/data, or $H2_DATA (host root of the hard-disk partitions).
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
   for frame need it (and must not share a data directory while running).

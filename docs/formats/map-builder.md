@@ -155,7 +155,9 @@ must stay under the per-type cache size limit, and `+0x1c` under
 `max_metadata_size(cache_type)` (the largest retail map of the type on the
 disc), or under the pinned source map's own `+0x1c` if that is larger: the
 map-pack maps `turf` (0x68b000), `gemini` and `triplicate` are above the
-multiplayer bound (0x62c000) as shipped, and load.
+multiplayer bound (0x62c000) as shipped, and load. A map over it is
+`Error::TagMemory`, which says how far over, the metadata's share (built
+and pinned tags apart) and the twelve groups taking the most metadata.
 Slots are capped at `0xffff`. A string ID must be under 128 bytes (its
 fixed slot) and its index under 2^24.
 

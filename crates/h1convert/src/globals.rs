@@ -373,10 +373,47 @@ fn word_at(b: &[u8], at: usize) -> Result<u32> {
         .ok_or(Error::Invalid("the multiplayer globals are too short"))
 }
 
-/// Where the weapon list lies in the `mulg` bytes whose first byte is at
-/// virtual `address`: its first entry's offset and its count.
-fn weapon_list_at(bytes: &[u8], address: u32) -> Result<(usize, usize)> {
-    let outside = Error::Invalid("the weapon list lies outside the multiplayer globals");
+/// Universal `+0x70`: the vehicle list, elements of 8 bytes, each a tag
+/// reference as the weapon list's ([`UNIVERSAL_WEAPONS`]). V, Coagulation:
+/// 11 entries: the warthog, ghost, scorpion, wraith, banshee and spectre,
+/// none, `h_turret_ap`, none, none, `c_turret_ap`. The game variant's
+/// vehicle options swap a netgame vehicle for another of its class
+/// (`0x0015a4d0`, E; docs/halo1/multiplayer.md, "Vehicles"); this is the
+/// only list in the map that names every vehicle a swap can give (S: the
+/// swap reads it, by its shape; its reader is not traced). It is
+/// also what keeps every retail vehicle in a pinned map: the multiplayer
+/// globals are kept whole (`fresh::KEEP_GROUPS`).
+pub const UNIVERSAL_VEHICLES: usize = 0x70;
+
+/// One of the universal element's tag reference lists: the weapons
+/// ([`UNIVERSAL_WEAPONS`]) or the vehicles ([`UNIVERSAL_VEHICLES`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum List {
+    Weapons,
+    Vehicles,
+}
+
+impl List {
+    fn field(self) -> usize {
+        match self {
+            List::Weapons => UNIVERSAL_WEAPONS,
+            List::Vehicles => UNIVERSAL_VEHICLES,
+        }
+    }
+
+    /// The group its entries name.
+    pub fn group(self) -> FourCC {
+        match self {
+            List::Weapons => FourCC(*b"weap"),
+            List::Vehicles => FourCC(*b"vehi"),
+        }
+    }
+}
+
+/// Where `list` lies in the `mulg` bytes whose first byte is at virtual
+/// `address`: its first entry's offset and its count.
+fn list_at(bytes: &[u8], address: u32, list: List) -> Result<(usize, usize)> {
+    let outside = Error::Invalid("a universal list lies outside the multiplayer globals");
     if word_at(bytes, MULG_UNIVERSAL)? == 0 {
         return Err(Error::Invalid("the multiplayer globals have no universal element"));
     }
@@ -384,13 +421,13 @@ fn weapon_list_at(bytes: &[u8], address: u32) -> Result<(usize, usize)> {
         .checked_sub(address)
         .ok_or(Error::Invalid("the universal element lies outside the multiplayer globals"))?
         as usize;
-    let n = word_at(bytes, u + UNIVERSAL_WEAPONS)? as usize;
+    let n = word_at(bytes, u + list.field())? as usize;
     if n == 0 {
         return Ok((0, 0));
     }
-    let first = word_at(bytes, u + UNIVERSAL_WEAPONS + 4)?
+    let first = word_at(bytes, u + list.field() + 4)?
         .checked_sub(address)
-        .ok_or(Error::Invalid("the weapon list lies outside the multiplayer globals"))?
+        .ok_or(Error::Invalid("a universal list lies outside the multiplayer globals"))?
         as usize;
     if first + n * WEAPON_LIST_ENTRY > bytes.len() {
         return Err(outside);
@@ -398,10 +435,10 @@ fn weapon_list_at(bytes: &[u8], address: u32) -> Result<(usize, usize)> {
     Ok((first, n))
 }
 
-/// The weapon list of the `mulg` bytes at virtual `address`: each entry's
-/// datum (`None` for none).
-pub fn weapon_list(bytes: &[u8], address: u32) -> Result<Vec<Option<TagId>>> {
-    let (first, n) = weapon_list_at(bytes, address)?;
+/// `list` of the `mulg` bytes at virtual `address`: each entry's datum
+/// (`None` for none).
+pub fn universal_list(bytes: &[u8], address: u32, list: List) -> Result<Vec<Option<TagId>>> {
+    let (first, n) = list_at(bytes, address, list)?;
     (0..n)
         .map(|i| {
             let d = word_at(bytes, first + i * WEAPON_LIST_ENTRY + 4)?;
@@ -410,24 +447,48 @@ pub fn weapon_list(bytes: &[u8], address: u32) -> Result<Vec<Option<TagId>>> {
         .collect()
 }
 
-/// Points weapon list entries at weapons: each `(entry, weap datum)`.
+/// The weapon list of the `mulg` bytes at virtual `address`: each entry's
+/// datum (`None` for none).
+pub fn weapon_list(bytes: &[u8], address: u32) -> Result<Vec<Option<TagId>>> {
+    universal_list(bytes, address, List::Weapons)
+}
+
+/// Points entries of `list` at tags of its group: each `(entry, datum)`.
 /// Returns how many it wrote; an entry past the list is an error.
-pub fn set_weapon_list_in(bytes: &mut [u8], address: u32, entries: &[(usize, TagId)]) -> Result<usize> {
-    let (first, n) = weapon_list_at(bytes, address)?;
+pub fn set_universal_list_in(
+    bytes: &mut [u8],
+    address: u32,
+    list: List,
+    entries: &[(usize, TagId)],
+) -> Result<usize> {
+    let (first, n) = list_at(bytes, address, list)?;
     for (i, id) in entries {
         if *i >= n {
-            return Err(Error::Invalid("a weapon list entry past the list"));
+            return Err(Error::Invalid(match list {
+                List::Weapons => "a weapon list entry past the list",
+                List::Vehicles => "a vehicle list entry past the list",
+            }));
         }
         let at = first + i * WEAPON_LIST_ENTRY;
-        bytes[at..at + 4].copy_from_slice(&FourCC(*b"weap").as_u32().to_le_bytes());
+        bytes[at..at + 4].copy_from_slice(&list.group().as_u32().to_le_bytes());
         bytes[at + 4..at + 8].copy_from_slice(&id.0.to_le_bytes());
     }
     Ok(entries.len())
 }
 
-/// [`set_weapon_list_in`] on the `mulg` the globals of `set` name (both
-/// pinned, as `TagSet::from_map` leaves them).
-pub fn set_weapon_list(set: &mut TagSet, entries: &[(usize, TagId)]) -> Result<usize> {
+/// Points weapon list entries at weapons: each `(entry, weap datum)`.
+/// Returns how many it wrote; an entry past the list is an error.
+pub fn set_weapon_list_in(bytes: &mut [u8], address: u32, entries: &[(usize, TagId)]) -> Result<usize> {
+    set_universal_list_in(bytes, address, List::Weapons, entries)
+}
+
+/// [`set_universal_list_in`] on the `mulg` the globals of `set` name
+/// (both pinned, as `TagSet::from_map` leaves them).
+pub fn set_universal_list(
+    set: &mut TagSet,
+    list: List,
+    entries: &[(usize, TagId)],
+) -> Result<usize> {
     let globals = set.globals;
     let tag = set
         .tag_mut(globals)
@@ -442,7 +503,12 @@ pub fn set_weapon_list(set: &mut TagSet, entries: &[(usize, TagId)]) -> Result<u
     let TagPayload::Pinned { address, bytes } = &mut tag.payload else {
         return Err(Error::Invalid("the base multiplayer globals should be pinned"));
     };
-    set_weapon_list_in(bytes, *address, entries)
+    set_universal_list_in(bytes, *address, list, entries)
+}
+
+/// [`set_universal_list`] for the weapon list.
+pub fn set_weapon_list(set: &mut TagSet, entries: &[(usize, TagId)]) -> Result<usize> {
+    set_universal_list(set, List::Weapons, entries)
 }
 
 #[cfg(test)]
@@ -609,6 +675,38 @@ mod tests {
         );
         assert_eq!(&b[0x110..0x114], &FourCC(*b"weap").as_u32().to_le_bytes());
         assert!(set_weapon_list_in(&mut b, a, &[(3, TagId(1))]).is_err());
+    }
+
+    /// The vehicle list is the universal element's other list: pointed
+    /// at as the weapon list is, its entries written as `vehi`
+    /// references, the weapon list left alone.
+    #[test]
+    fn vehicle_list_entries_point_at_the_given_vehicles() {
+        let a = 0x8000_2000;
+        let mut b = mulg(a);
+        let put =
+            |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        put(&mut b, 0x40 + UNIVERSAL_VEHICLES, 2);
+        put(&mut b, 0x40 + UNIVERSAL_VEHICLES + 4, a + 0x180);
+        put(&mut b, 0x180, FourCC(*b"vehi").as_u32());
+        put(&mut b, 0x184, 0xe000_0005);
+        put(&mut b, 0x188, u32::MAX);
+        put(&mut b, 0x18c, u32::MAX);
+        assert_eq!(
+            universal_list(&b, a, List::Vehicles).unwrap(),
+            [Some(TagId(0xe000_0005)), None]
+        );
+        set_universal_list_in(&mut b, a, List::Vehicles, &[(0, TagId(0xe042_0009))]).unwrap();
+        assert_eq!(
+            universal_list(&b, a, List::Vehicles).unwrap(),
+            [Some(TagId(0xe042_0009)), None]
+        );
+        assert_eq!(&b[0x180..0x184], &FourCC(*b"vehi").as_u32().to_le_bytes());
+        assert_eq!(
+            weapon_list(&b, a).unwrap(),
+            [Some(TagId(0xe000_0001)), Some(TagId(0xe000_0002)), None]
+        );
+        assert!(set_universal_list_in(&mut b, a, List::Vehicles, &[(2, TagId(1))]).is_err());
     }
 
     /// Every starting weapon byte names a distinct entry.

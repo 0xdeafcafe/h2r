@@ -316,12 +316,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         server_port,
         dry_run,
         wait_clang,
-        settings_from: settings_from.unwrap_or_else(|| {
-            env("TMPDIR")
-                .filter(|t| !t.is_empty())
-                .map_or_else(std::env::temp_dir, PathBuf::from)
-                .join("h2boot-data")
-        }),
+        settings_from: settings_from.unwrap_or_else(content::store::default_data_root),
         play_args,
         clankermatch,
     }))

@@ -724,6 +724,109 @@ and manifest are the same as without it:
 cargo h2 h1 convert disc/halo1.iso bloodgulch --out ~/h2-h1maps [--pinned]
 ```
 
+**Pinned maps drop what nothing reaches** (`h1convert::fresh::prune_pinned`,
+in `Prepared::assemble`, so both the `--pinned` map and the fresh build's
+intermediate). A pinned map keeps the base's metadata where it is and puts
+every built tag after it, so it holds all of Coagulation's retail tags
+(546 effects, 708 bitmaps) beside the conversion's; once the weapons took
+Halo 1's effects and sounds (converter version 97) Blood Gulch's Halo 1
+sandbox was 0x634000 of the multiplayer 0x62c000 (`map::Error::TagMemory`
+names the groups). The fresh build's roots and edits are applied to the
+pinned set: base entries of the scenery, sound scenery, light fixture and
+crate palettes nulled in the pinned scenario's bytes, and in every object
+palette (`tags::object::OBJECT_TYPES`) each base entry no placement names
+(a placement's `+0` short is its palette index; `fresh::null_unplaced`):
+in the Halo 1 sandbox the base's vehicles, bipeds and weapons stay in
+their palettes with nothing placing them, and kept everything they name. its tag list
+(`+0x3d8`) keeping a base tag only when something else reaches it, then
+every pinned base tag not reached from the scenario, the globals,
+`fresh::KEEP_GROUPS`, `fresh::KEEP_PREFIXES`, the precision collections
+and the Halo 2 HUDs is dropped, its slot left empty and its bytes free
+for built tags (`TagSet::reuse_free_space`). What a pinned map holds
+and less (`fresh::pinned_reach`): a pinned tag the schema describes is
+walked from its root through its blocks and names every word of the
+arrays it holds (as the fresh build reads a built tree), so stale words
+no array covers (an emptied block's old elements, a removed
+placement's) keep nothing. Retail shares block data between tags: an
+array it points to can sit in another tag's bytes (V, Coagulation: the
+`c_turret_ap` model's block at `0x804f4164` lies inside the wraith
+model; the compiler shares identical function data, a `jpt!`'s
+`[0x6c, 0x44]`). Such an array keeps the datums in it (its count times
+the element size of the block field pointing at it, and each block
+below it the same way), which the walk has read, and the tag it falls
+in stays whole as its holder (`fresh::Reach::Holds`,
+`Pruned::holders`) without being reached: each word of the holder
+naming a dropped tag is nulled, so its own references keep nothing. A
+holder's blocks in a third tag make that one a holder too; one whose
+root doesn't read by the schema is reached whole. The holder must stay
+a tag: the schema moves a block outside its tag only when it sits
+inside another tag (`tags::schema::walk`). Kept as metadata no tag owns
+instead, the bytes broke the fresh build (1288 references out of bounds
+on every map). Before converter version 97 such an array kept the whole
+tag and every reference in it, and the wraith model kept the wraith.
+A size-0 tag (an alias) reads its root in another tag's bytes, so a
+reached alias makes that tag its holder the same way; otherwise the
+pinned map's alias pointed at freed bytes.
+Every word of a kept pinned tag that names a dropped tag is nulled
+(`Pruned::nulled_words`): stale words no walked array covers keep
+nothing, and the pinned Blood Gulch scenario still named the base's
+dropped powerups, vehicles, ambience, reverbs and decorators through
+them.
+An array below the root that doesn't read (outside the
+metadata, implausibly long) is skipped, and the tag's own words then
+name tags as datums only (`Pruned::partly_walked`). Only a field the
+schema says is a block gives an address. A tag the schema doesn't
+describe (or whose root doesn't read) is read word by word, every word a
+datum and an address: metadata no tag owns that it points into is read
+the same way, and a base tag it points into is kept. A gap nothing
+points into keeps nothing. A built tag names its fixups and words as
+datums only. Before converter version 97 every word of a built tag was
+also an address: the sound gestalt, rebuilt with Halo 1's sounds, holds
+raw offsets (`0x804f3600`, `0x8030a600`, `0x802f3400`) that fall inside
+Coagulation's wraith and warthog models and collision, and that kept
+every retail vehicle (`Pruned::why` named the edge). The scenario's own edits (trigger
+volumes parked, Halo 1's skies and ambience, the base's light fixtures
+and decorators emptied) are made before this, so the base's sky,
+ambience and decorators they replace go too. On the fresh map Blood Gulch drops
+510 of Coagulation's tags (0x74698 bytes, most of it three `jmad`s and
+retail shaders and bitmaps); `sandbox_disc::pinned_bloodgulch_fits_its_tag_memory`
+prints the pinned map's tag memory, the largest base tags kept in the
+metadata with what names each, and checks no kept tag names a dropped
+one. The largest tag under a base name is no base tag: the structure BSP
+is Halo 1's, written into Coagulation's `sbsp` slot (and so under its
+path), and lives in the BSP region, not the metadata.
+
+**The multiplayer globals' vehicle list** (`mulg` universal `+0x70`,
+8-byte tag references like the weapon list at `+0x68`;
+`h1convert::globals::UNIVERSAL_VEHICLES`). V, Coagulation: 11 entries,
+the warthog, ghost, scorpion, wraith, banshee, spectre, none,
+`h_turret_ap`, none, none, `c_turret_ap`. It is the only place that
+names every retail vehicle (S: the swaps a variant's vehicle options
+make take their vehicle from it, by its shape; the reader is not
+traced), and the `mulg` is kept whole, so it kept
+every retail vehicle and all each names (models, collision, physics,
+animations, the warthog's and scorpion's turrets) in a pinned Halo 1
+sandbox map: the chain each kept tag was reached by is
+`fresh::Pruned::why` (`Prepared::build_pruned`), and the pinned test
+prints it for the vehicles. In the Halo 1 sandbox each entry whose
+vehicle the spawns place a Halo 1 vehicle of the same role for
+(`convert::halo1::halo1_vehicle_for`: the warthog's entry the plain
+warthog, not the rocket warthog; a role Halo 1 has no vehicle of takes
+the placed one of its netgame type, so the wraith's entry names the
+scorpion, the other heavy vehicle) now names that vehicle
+(`plan_vehicle_list`, written with `globals::set_universal_list` when the
+map is built, as the weapon list is), so a variant's swap gives a
+Halo 1 vehicle and the retail ones the spawns stand in for are dropped.
+The others keep the base's and are reported: on Blood Gulch the banshee,
+spectre and both turrets. The wraith had to go too: its minigun turret
+names `ai\generic_turret`, which names `ai\generic`, which names every
+retail vehicle (V, Coagulation; read off the disc), so a kept wraith kept
+the warthog, ghost and scorpion the list no longer names. A pinned map
+that is over its tag memory still shows what it keeps and why:
+`Prepared::pinned_set` gives the pruned set before the build, with each
+kept tag's first edge (`Pruned::why`) and the pinned tags read word by
+word (`Pruned::word_read`).
+
 **Ambient sound (Built, `h1convert::ambience`, `h1sounds::looping`).**
 Halo 1 keeps a level's background sounds and sound environments in the
 structure (`sbsp +0x1fc`, `0x74` each, and `+0x208`, `0x50` each; a name

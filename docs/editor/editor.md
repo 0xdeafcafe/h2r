@@ -78,7 +78,7 @@ source (`MapSource::shared`, used by `geometry::shared_sources`), so open
 the Halo 2 disc too for their textures and geometry.
 
 `--data` is the runtime's data root, as `h2 play --data`; the default is
-the runtime's, `$TMPDIR/h2boot-data` (`content::store::default_data_root`).
+the runtime's, `~/Library/Application Support/h2recomp/data` (`content::store::default_data_root`).
 Saved game variants (`U:`) and map packages (`maps/`) go there, so a run
 with the same `--data` finds them. The dock layout persists in
 `<default data root>/h2-editor.ini`, whatever `--data` says (View > Reset

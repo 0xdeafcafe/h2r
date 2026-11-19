@@ -515,8 +515,7 @@ mod tests {
     /// checked in the cli's own test of the same function).
     #[test]
     fn the_default_root_is_the_runtime_data_root() {
-        let data = std::env::temp_dir().join("h2boot-data");
-        assert_eq!(content::store::default_data_root(), data);
+        let data = content::store::default_data_root();
         assert_eq!(
             SaveStore::default_root().unwrap(),
             data.join("disk/Partition1/UDATA/4D530064")

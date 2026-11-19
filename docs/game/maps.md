@@ -1096,7 +1096,7 @@ the package being edited writes its new files, then the manifest by
 rename (the commit point), then removes files only the old manifest named.
 The editor can still write its legacy `active.toml` choices, which the
 game ignores. `store::default_data_root()` is the runtime's default data root,
-`$TMPDIR/h2boot-data`, the one `h2 play` and `h2 run` use without
+`~/Library/Application Support/h2recomp/data`, the one `h2 play` and `h2 run` use without
 `--data` (`vfs::Config::for_title`'s `~/Library/Application
 Support/h2recomp` is not used by any run).
 

@@ -130,6 +130,32 @@ Each step is proven with tests; the user plays the result.
    saved per campaign. **Built** ([campaign-picker.md](campaign-picker.md)),
    confirmed in the game.
 
+### Open work (2026-11-19)
+
+Everything the converter still lacks, each on its own branch
+(`h1-push-<name>`). The branches are written without building; they are
+merged, built and tested together, then played.
+
+| Gap | Branch | Notes |
+|---|---|---|
+| a30 fails to convert at v95: a converted `ctrl` (b30's holo control) keeps a pointer-like word at `+0xb0` the fresh build can't move | `a30convert` | Found 2026-11-19; a30 can't run until it's fixed |
+| Recorded animations and `recording_*`, `vehicle_hover`: the scripted Pelican, dropship, lifepod and banshee flights | `recordings` | Halo 1's recordings rebuilt in Halo 2's format |
+| AI command lists (`ai_command_list*`) | `commandlists` | Halo 2 uses command scripts instead |
+| AI conversations (`ai_conversation*`, `ai_dialogue_triggers`, `unit_set_emotion`) | `conversations` | |
+| Encounter-level AI control (`ai_magically_see_players`, `ai_follow_*`, `ai_retreat`, `ai_go_to_vehicle`, ...) | `aicontrol` | Onto Halo 2 squads, zones and orders |
+| Unit and object builtins (`unit_open`, `unit_close`, `unit_set_seat`, `unit_enter_vehicle`, `object_beautify`, ...) and the rest | `units` | |
+| HUD help and objective text, Halo 1's string lists | `hudtext` | |
+| Sentinels, the crewman, firing positions off the floor, squads with no starting locations | `airoster` | |
+| Over-shield, active camouflage, b30's falling box as Halo 2's own powerup objects; health packs on the Halo 2 multiplayer setting; the lifepod as its own vehicle; a10's cryotube, chairs, fighter-bomber and ring as their own object types | `objects` | Today: missing, or built as turrets |
+| Looping sounds past the file size limit; every other sound left out | `sounds` | The lifepod's loops come with its vehicle (`objects`) |
+| The sniper's scope mask (`wphi +0xac`); the terrain shader's detail blend function and `+0x2c` block | `scopeshader` | |
+| Halo 2 role values where Halo 1 has a value ([role-audit.md](role-audit.md)); the audit over the ten levels | `fullrebuild` | Every tag built from its definition with Halo 1's values |
+| a30's AI behaviour in the game | `h1-a30-ai` | |
+| a30's script flow: cutscenes, titles, checkpoints, missing globals, start-up encounters | `h1-a30-scripts` | Ties the builtin branches together |
+| Multiplayer weapon HUD overlap; zoom only on scoped weapons | `h1-hud-zoom` | Its library tests pass; its disc tests run in the final build |
+
+Not planned: race flags (Halo 2 has no race game type).
+
 ## 4. More than one campaign
 
 **Built, confirmed in the game:** [campaign-picker.md](campaign-picker.md).
@@ -936,7 +962,7 @@ as the game disc) is `halo1: not imported: <why>`.
 By hand, the same import: `cargo h2 import halo1 [disc/halo1.iso]
 [--data DIR] [--disc disc/halo2.iso] [--force] [--dry-run]
 [--copy-source]`. `--data` defaults to the data root `h2 play` uses
-(`$TMPDIR/h2boot-data`); `--disc` (the Halo 2 disc, for the bases) to
+(`~/Library/Application Support/h2recomp/data`); `--disc` (the Halo 2 disc, for the bases) to
 `$H2_DISC`, else `halo2.iso` beside the Halo 1 disc, else
 `disc/halo2.iso`. It exits non-zero when a map failed, after trying every
 map. `--copy-source` also copies the disc's campaign maps unchanged to

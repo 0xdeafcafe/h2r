@@ -237,7 +237,7 @@ from `tags::object` (editor.md, "What the viewport shows").
 
 **Save as package...** writes a map package ([maps.md](../game/maps.md) §1, §8)
 into `<data>/maps/<dir>/`, where `<data>` is the runtime's data root
-(`h2-editor --data`, default `$TMPDIR/h2boot-data`, as `h2 play`). The
+(`h2-editor --data`, default `~/Library/Application Support/h2recomp/data`, as `h2 play`). The
 form asks for a name (required), author, description, an optional image
 (PNG or JPEG, at most 512 KB, checked before anything is written), the
 directory (default `<map>-edit`). The editor can still write its legacy

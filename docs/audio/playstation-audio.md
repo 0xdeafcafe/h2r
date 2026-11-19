@@ -336,7 +336,7 @@ and the store's change callback applies it):
   sent to a HID device that is not there.
 
 **Persistence.** The choice is saved in `settings.toml` in `h2 play`'s data
-root (`--data`, default `$TMPDIR/h2boot-data`), the directory that already
+root (`--data`, default `~/Library/Application Support/h2recomp/data`), the directory that already
 holds the guest's `disk/` tree, but outside that tree:
 
 ```toml

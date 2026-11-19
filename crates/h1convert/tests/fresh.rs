@@ -223,7 +223,21 @@ fn a_multiplayer_map_converts_fresh_with_nothing_pinned() {
             pruned.palette_entries,
             pruned.resource_entries
         );
-        assert!(pruned.tags() > 0, "nothing of the base pruned");
+        // Most go from the pinned map already (fresh::prune_pinned).
+        let early = &r.pinned_pruned;
+        println!(
+            "  pinned map: {} base tags dropped {:?} ({:#x} bytes freed, {} kept for a pointer into them); {} palette entries nulled, {} tag list entries dropped",
+            early.tags(),
+            early.groups,
+            early.freed,
+            early.kept_by_pointer,
+            early.palette_entries,
+            early.resource_entries
+        );
+        assert!(
+            pruned.tags() + early.tags() > 0,
+            "nothing of the base pruned"
+        );
         let mm = Memory::of(&mut m).unwrap();
         let fm = Memory::of(&mut f).unwrap();
         let (mids, fids) = (names(&m), names(&f));
