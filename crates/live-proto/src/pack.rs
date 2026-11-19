@@ -596,8 +596,6 @@ struct Schema {
     cut: bool,
     /// The header carries the cinematic bit (versions 5 and 6).
     cinematic: bool,
-    /// Deltas predict positions from velocities (version 6).
-    predict: bool,
 }
 
 fn schema_of(version: u64) -> Option<Schema> {
@@ -606,24 +604,22 @@ fn schema_of(version: u64) -> Option<Schema> {
         hit: &'static [Field],
         cut: bool,
         cinematic: bool,
-        predict: bool,
     ) -> Schema {
         Schema {
             lists,
             hit,
             cut,
             cinematic,
-            predict,
         }
     }
     Some(match version {
-        1 => schema(&LISTS_V1, HIT_V2, false, false, false),
-        2 => schema(&LISTS_V2, HIT_V2, false, false, false),
-        3 => schema(&LISTS_V3, HIT, true, false, false),
-        V4 => schema(&LISTS_V4, HIT, true, false, false),
-        CINEMATIC_VERSION => schema(&LISTS_V4, HIT, true, true, false),
-        6 => schema(&LISTS, HIT, true, true, true),
-        VERSION => schema(&LISTS, HIT, true, true, false),
+        1 => schema(&LISTS_V1, HIT_V2, false, false),
+        2 => schema(&LISTS_V2, HIT_V2, false, false),
+        3 => schema(&LISTS_V3, HIT, true, false),
+        V4 => schema(&LISTS_V4, HIT, true, false),
+        CINEMATIC_VERSION => schema(&LISTS_V4, HIT, true, true),
+        6 => schema(&LISTS, HIT, true, true),
+        VERSION => schema(&LISTS, HIT, true, true),
         _ => return None,
     })
 }
@@ -1790,6 +1786,78 @@ fn key_of(e: &Entity, first: usize, second: Option<usize>) -> (&Val, Option<&Val
     (&e[first], second.map(|i| &e[i]))
 }
 
+/// A unit's changed-field mask in frequency order. Only the difference
+/// from the preceding edit mask is sent, four bits at a time. Scanning
+/// set bits makes encoding cheap when few fields toggle.
+struct UnitMask {
+    wire_bit: [u32; 21],
+    field_bits: [[u32; 16]; 5],
+}
+
+impl UnitMask {
+    const fn new(order: [usize; 20]) -> Self {
+        let mut wire_bit = [0; 21];
+        let mut field_bits = [[0; 16]; 5];
+        let mut i = 0;
+        while i < 20 {
+            wire_bit[order[i]] = 1 << i;
+            let mut nibble = 0;
+            while nibble < 16 {
+                if nibble & (1 << (i % 4)) != 0 {
+                    field_bits[i / 4][nibble] |= 1 << order[i];
+                }
+                nibble += 1;
+            }
+            i += 1;
+        }
+        Self {
+            wire_bit,
+            field_bits,
+        }
+    }
+
+    fn write(&self, w: &mut BitWriter, mut difference: u32) {
+        let mut wire = 0;
+        while difference != 0 {
+            wire |= self.wire_bit[difference.trailing_zeros() as usize];
+            difference &= difference - 1;
+        }
+        while wire >= 16 {
+            w.bits(u64::from((wire & 15) | 16), 5);
+            wire >>= 4;
+        }
+        w.bits(u64::from(wire), 5);
+    }
+
+    fn read(&self, r: &mut BitReader) -> Result<u32> {
+        let mut mask = 0;
+        for group in &self.field_bits {
+            let value = r.bits(5)? as usize;
+            mask |= group[value & 15];
+            if value < 16 {
+                return Ok(mask);
+            }
+        }
+        Err(PackError::Bad("unit mask too long"))
+    }
+}
+
+fn unit_mask(list: usize) -> Option<&'static UnitMask> {
+    // Fire, shield, yaw and shot count toggle most often in the seeded
+    // match. A unit's velocity, position, aim and actions form group two.
+    static PLAYER_MASK: UnitMask = UnitMask::new([
+        14, 16, 3, 8, 13, 2, 6, 11, 20, 9, 10, 7, 1, 4, 5, 12, 15, 17, 18, 19,
+    ]);
+    static ACTOR_MASK: UnitMask = UnitMask::new([
+        14, 16, 3, 6, 13, 2, 4, 11, 20, 9, 10, 5, 1, 7, 8, 12, 15, 17, 18, 19,
+    ]);
+    match list {
+        0 => Some(&PLAYER_MASK),
+        2 => Some(&ACTOR_MASK),
+        _ => None,
+    }
+}
+
 /// A list against the previous frame's: the count, then until it is
 /// reached either `0` and a run of unchanged entities taken in order from
 /// the previous list, or `1` and one entity: `1`, the previous entity it
@@ -1802,6 +1870,7 @@ fn write_delta(
     prev: &[Entity],
     t: &Table,
     ticks: u64,
+    layout: Option<&UnitMask>,
 ) {
     // Most frames list the same entities in the same order: match by
     // position, and only key a map when that fails.
@@ -1864,15 +1933,19 @@ fn write_delta(
                     .zip(before)
                     .enumerate()
                     .fold(0u32, |mask, (i, (v, p))| mask | (u32::from(v != p) << i));
-                w.bit(mask != last_mask);
-                if mask != last_mask {
-                    for (i, field) in schema.iter().enumerate() {
-                        if !field.key {
-                            w.bit(mask & (1 << i) != 0);
+                if let Some(layout) = layout {
+                    layout.write(w, mask ^ last_mask);
+                } else {
+                    w.bit(mask != last_mask);
+                    if mask != last_mask {
+                        for (i, field) in schema.iter().enumerate() {
+                            if !field.key {
+                                w.bit(mask & (1 << i) != 0);
+                            }
                         }
                     }
-                    last_mask = mask;
                 }
+                last_mask = mask;
                 let mut changed = mask;
                 while changed != 0 {
                     let i = changed.trailing_zeros() as usize;
@@ -1900,10 +1973,19 @@ fn read_delta(
     prev: &mut [Entity],
     strings: &[String],
     dt: u64,
-    predict: bool,
+    list: usize,
 ) -> Result<Vec<Entity>> {
     const HERE: usize = usize::MAX;
-    let motion = motion_fields(schema).filter(|_| predict);
+    let motion = if r.version == 6 {
+        motion_fields(schema)
+    } else {
+        None
+    };
+    let layout = if r.version == VERSION {
+        unit_mask(list)
+    } else {
+        None
+    };
     let n = read_count(r, max)?;
     let mut out: Vec<Entity> = Vec::with_capacity(n);
     // Where each of `prev` was moved to in `out` (HERE: not moved).
@@ -1941,7 +2023,9 @@ fn read_delta(
                 Some(&at) if at != HERE => &out[at],
                 _ => &prev[j],
             };
-            if r.version < VERSION || r.bit()? {
+            if let Some(layout) = layout {
+                last_mask ^= layout.read(r)?;
+            } else if r.version < VERSION || r.bit()? {
                 last_mask = 0;
                 for (idx, f) in schema.iter().enumerate() {
                     if !f.key && r.bit()? {
@@ -2128,7 +2212,15 @@ impl Encoder {
             if key {
                 write_full(&mut w, schema, &lists.lists[n], &table);
             } else {
-                write_delta(&mut w, schema, &lists.lists[n], &state.lists[n], &table, dt);
+                write_delta(
+                    &mut w,
+                    schema,
+                    &lists.lists[n],
+                    &state.lists[n],
+                    &table,
+                    dt,
+                    unit_mask(n),
+                );
             }
         }
         state.seq = seq;
@@ -2248,7 +2340,7 @@ impl Decoder {
                     &mut prev.lists[n],
                     &state.strings,
                     dt,
-                    schema.predict,
+                    n,
                 )?
             };
         }
