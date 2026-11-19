@@ -178,16 +178,36 @@ pub enum Missing {
     /// and 25): they are `screen_gpu`'s, so only a convolution without
     /// its frame misses them.
     StandIns,
+    /// A pass `0x00016610` does not draw (`screen_effect::template_draws`:
+    /// its implementation has no vertex shader, or the template has no
+    /// such pass): `0x0002d140` skips it, strips and convolutions, where
+    /// the plan has it drawn. The game draws what is left on D3D.
+    TemplateSkipped,
 }
 
 impl Missing {
-    pub const ALL: [Missing; 5] = [
+    pub const ALL: [Missing; 6] = [
         Missing::TemplatePass,
         Missing::PassTarget,
         Missing::Blur,
         Missing::Wide,
         Missing::StandIns,
+        Missing::TemplateSkipped,
     ];
+}
+
+/// Whether `0x00016610` draws each of `effect`'s passes (Code,
+/// `0x0002d4b7..0x0002d4be`: a pass it does not draw is skipped whole).
+/// The plan assumes it does; a call where one is skipped keeps its D3D
+/// draws ([`Missing::TemplateSkipped`]), where the swallow would
+/// otherwise wait for strips the game never pushes (the mainmenu A/B:
+/// the next draws were the UI's).
+pub fn templates_draw(mem: &dyn GuestMemory, effect: &Effect) -> bool {
+    effect.passes.iter().all(|p| {
+        let implementation = i32::try_from(p.implementation).unwrap_or(-2);
+        screen_effect::template_draws(mem, effect.shader, screen_effect::TEMPLATE_LAYER, implementation, p.selector)
+            .unwrap_or(false)
+    })
 }
 
 /// Whether the native screen pass draws `p` of egor `egor`: its program
@@ -1124,7 +1144,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let egor = TagId(call.datum);
         let ordered = call_ordered(effects.as_deref(), egor, &effect);
         let frame = quad_frame(&*mem, fp);
-        let m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p), frame.is_some());
+        let mut m = missing(&effect, &|p| ordered && pass_drawable(effects.as_deref(), egor, p), frame.is_some());
+        if !templates_draw(&*mem, &effect) {
+            m.push(Missing::TemplateSkipped);
+        }
         for m in &m {
             refused(*m);
         }
@@ -1448,6 +1471,20 @@ mod tests {
         assert!(!plan.0.contains(&0), "{:?}", plan.0);
         assert_eq!(plan_line(EGOR, false, &plan), "0xe0000001 probe [1:TriangleStripx6 1:TriangleStripx6]");
         assert!(plan_line(EGOR, true, &plan).contains(" drop "));
+    }
+
+    /// A call is armed only when `0x00016610` draws every pass the plan
+    /// has (the gate itself: engine's
+    /// `the_template_pass_draws_only_an_implementation_with_a_vertex_shader`);
+    /// a template that does not read keeps it on D3D.
+    #[test]
+    fn a_call_whose_template_pass_is_skipped_keeps_its_d3d_draws() {
+        use engine::memory::FlatMemory;
+        let m = FlatMemory::new(0x0010_0000, 0x100);
+        let one = Effect { shader: 0xe001_0005, implementations: 1, passes: vec![pass(0, vec![])] };
+        assert!(!templates_draw(&m, &one), "unread: not drawn");
+        assert!(templates_draw(&m, &Effect { passes: vec![], ..one }), "nothing to skip");
+        assert!(Missing::ALL.contains(&Missing::TemplateSkipped));
     }
 
     #[test]
