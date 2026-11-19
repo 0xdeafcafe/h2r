@@ -14,6 +14,45 @@ fn switch_name(platoon: Platoon) -> String {
     format!("h1_maneuver_{}_{}", platoon.encounter, platoon.index)
 }
 
+fn encode_follow_geometry(control: &Control) -> Result<String> {
+    use hs::h1_ai_slots::migration as wire;
+
+    let mut blocks = String::new();
+    let mut directory = String::with_capacity(wire::DIRECTORY);
+    for group in 0..wire::GROUPS {
+        let Some(encounter) = control.automatic_encounters.get(&(group as u16)) else {
+            encode_words(&mut directory, [0; 6]);
+            continue;
+        };
+        let offset = |len: usize| -> Result<[u16; 2]> {
+            let value = u32::try_from(wire::DIRECTORY + len)
+                .map_err(|_| invalid("AI follow coordinates exceed the script string table"))?;
+            Ok([(value >> 16) as u16, value as u16])
+        };
+        let count = |len: usize| -> Result<u16> {
+            u16::try_from(len).map_err(|_| invalid("too many AI follow rows in an encounter"))
+        };
+        let [hi, lo] = offset(blocks.len())?;
+        encode_words(&mut directory, [hi, lo, count(encounter.destinations.len())?]);
+        for d in &encounter.destinations {
+            wire::Route {
+                squad: d.squad.unwrap_or(u16::MAX),
+                orders: d.orders.unwrap_or([u16::MAX; 2]),
+                posture_squad: d.platoon_member.unwrap_or(u16::MAX),
+                defending: d.defending,
+                masks: d.masks,
+            }.append(&mut blocks);
+        }
+        let [hi, lo] = offset(blocks.len())?;
+        encode_words(&mut directory, [hi, lo, count(encounter.firing_positions.len())?]);
+        for &(group, point) in &encounter.firing_positions {
+            wire::point(&mut blocks, group, point);
+        }
+    }
+    directory.push_str(&blocks);
+    Ok(directory)
+}
+
 impl Compiler<'_> {
     pub(super) fn install_maneuver_switches(&mut self) -> Result<()> {
         let Some(control) = self.ai_control else {
@@ -521,15 +560,14 @@ impl Compiler<'_> {
             let base = self.number(h2t::LONG, i32::from(base));
             let root = if operation == RuntimeOperation::FollowTick
                 && let Some(control) = self.ai_control
-                && !control.automatic_destinations.is_empty()
+                && !control.automatic_encounters.is_empty()
             {
-                let mut encoded = String::new();
-                encode_words(&mut encoded, control.automatic_destinations.iter().flat_map(|&(host, order)| [host, order]));
-                if encoded.len() > u16::MAX as usize {
-                    return Err(invalid("too many automatic AI destinations"));
-                }
-                let payload = self.control_string(&format!("{:04x}{encoded}", encoded.len()));
-                self.runtime_control_call(RuntimeOperation::FollowWithDestinations, &[base, payload], h2t::VOID)?
+                let encoded = encode_follow_geometry(control)?;
+                // This is metadata in the script string section. The VM
+                // evaluates its integer offset, never the data as a token.
+                let offset = self.intern(encoded.as_bytes());
+                let payload = self.number(h2t::LONG, offset as i32);
+                self.runtime_control_call(RuntimeOperation::FollowWithSourcePositions, &[base, payload], h2t::VOID)?
             } else {
                 self.runtime_control_call(operation, &[base], h2t::VOID)?
             };
@@ -579,7 +617,12 @@ impl Compiler<'_> {
             return Ok(());
         }
         let rows = control.combat_timers.iter().map(|(&id, timer)| (id, timer.flags, timer.seconds));
-        let words = timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
+        let mut words = timers::build(rows).ok_or_else(|| invalid("too many squads for combat timers"))?;
+        for block in 0..timers::BLOCKS as u16 {
+            let mask = control.guard_baselines.range(block * 32..(block + 1) * 32)
+                .fold(0u32, |mask, index| mask | 1 << (index % 32));
+            words.push(mask);
+        }
         let base = self.out.globals.len();
         if hs::vm::EXTERNAL_GLOBALS + base + words.len() >= 0xc00 {
             return Err(invalid("converted AI timers exceed the Halo 2 global pool"));
@@ -587,7 +630,7 @@ impl Compiler<'_> {
         for (offset, value) in words.into_iter().enumerate() {
             self.declare_state_word(&format!("h1_ai_timer_{offset}"), value)?;
         }
-        self.declare_state_word(timers::GLOBAL, base as u32)?;
+        self.declare_state_word(timers::PHASED_GLOBAL, base as u32)?;
         let name = "h1_ai_timer_tick";
         if self.t.scripts.iter().any(|s| s.name.eq_ignore_ascii_case(name)) {
             return Err(invalid(format!("script name collision: {name}")));

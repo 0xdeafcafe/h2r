@@ -1089,10 +1089,16 @@ pub fn write(
     };
     let ai_options = h1ai::convert::Options::default();
     let mut plan = h1map::phase::time("ai", || h1ai::convert::convert(&ai_src, &ai_options));
-    let mut ai_control = h1ai::control::prepare(&original_ai, &mut plan, &ai_options, &requests);
+    let mut ai_control = if let Some((retained, _)) = &retained {
+        h1ai::control::prepare_with_indices(
+            &original_ai, &mut plan, &ai_options, &requests, retained.squad_indices.clone(),
+        )
+    } else {
+        h1ai::control::prepare(&original_ai, &mut plan, &ai_options, &requests)
+    };
     if let Some((retained, subjects)) = &retained {
         h1ai::control::install_teleport_starts(
-            &original_ai, &plan, &mut ai_control, subjects.teleport_subjects.as_ref(),
+            &original_ai, &mut ai_control, subjects.teleport_subjects.as_ref(),
         );
         h1ai::control::install_automatic_destinations(
             &original_ai, &mut plan, &ai_options, &mut ai_control,

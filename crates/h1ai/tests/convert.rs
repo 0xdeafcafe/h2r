@@ -155,6 +155,36 @@ fn invented() -> H1Ai {
 }
 
 #[test]
+fn automatic_routes_keep_source_ordinals_when_native_names_are_identical() {
+    let mut source = invented();
+    let encounter = &mut source.encounters[0];
+    encounter.name = "the exact same native squad name".into();
+    for (index, squad) in encounter.squads.iter_mut().enumerate() {
+        squad.flags |= 0x20;
+        squad.groups[0] = 1 << index;
+    }
+    let mut retained = source.clone();
+    retained.encounters[0].squads.pop();
+    let opts = Options::default();
+    let mut plan = convert(&retained, &opts);
+    assert_eq!(plan.ai.squads[0].name, plan.ai.squads[1].name);
+    let mut controls = h1ai::control::prepare_with_indices(
+        &source, &mut plan, &opts, &[], vec![vec![Some(0), Some(1), None]],
+    );
+    h1ai::control::install_automatic_destinations(
+        &source, &mut plan, &opts, &mut controls, &[(0, 0)].into_iter().collect(), None,
+    );
+    let routes = &controls.automatic_encounters[&0].destinations;
+    assert_eq!(routes[0].squad, Some(0));
+    assert_eq!(routes[1].squad, Some(1));
+    assert_eq!(routes[0].orders, None);
+    assert_eq!(routes[1].orders, None);
+    assert_eq!(routes[2].squad, Some(0));
+    assert!(routes[2].orders.is_some());
+    assert_eq!(routes.iter().map(|route| route.masks[0]).collect::<Vec<_>>(), [1, 2, 4]);
+}
+
+#[test]
 fn encounters_become_groups_zones_squads_and_orders() {
     let src = invented();
     assert!(src.check_indices().is_empty());

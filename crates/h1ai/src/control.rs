@@ -88,18 +88,36 @@ pub struct CombatTimer {
     pub seconds: f32,
 }
 
+/// A Halo 1 automatic destination and the native orders it can select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutomaticDestination {
+    pub squad: Option<u16>,
+    /// None selects a retained squad's own current order.
+    pub orders: Option<[u16; 2]>,
+    pub platoon_member: Option<u16>,
+    pub defending: bool,
+    pub masks: [u32; 2],
+}
+
+#[derive(Default)]
+pub struct AutomaticEncounter {
+    pub destinations: Vec<AutomaticDestination>,
+    pub firing_positions: Vec<(u16, [f32; 3])>,
+}
+
 #[derive(Default)]
 pub struct Control {
+    squad_indices: Vec<Vec<Option<u16>>>,
     pub actions: BTreeMap<Request, Vec<Action>>,
     pub switches: BTreeSet<Platoon>,
     pub maneuver_requests: BTreeMap<Request, Vec<Platoon>>,
     pub platoon_rules: Vec<PlatoonRule>,
     pub combat_timers: BTreeMap<u16, CombatTimer>,
+    pub guard_baselines: BTreeSet<u16>,
     pub teleport_starts: BTreeMap<u16, Vec<bool>>,
     /// Squads that can participate in follow-driven migration (Halo 1 flag 0x20).
     pub automatic_migration: BTreeSet<u16>,
-    /// Deferred orders on a physical carrier for destinations beyond the native pool.
-    pub automatic_destinations: Vec<(u16, u16)>,
+    pub automatic_encounters: BTreeMap<u16, AutomaticEncounter>,
 }
 
 #[derive(Clone, Copy)]
@@ -227,6 +245,17 @@ fn converted_indices(source: &H1Ai, plan: &Plan) -> Vec<Vec<Option<u16>>> {
 /// kept unresolved because sending its actors elsewhere changes the level.
 pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Request]) -> Control {
     let indices = converted_indices(source, plan);
+    prepare_with_indices(source, plan, opts, requests, indices)
+}
+
+/// Keep source ordinals when a roster selector rebuilt or removed starts.
+pub fn prepare_with_indices(
+    source: &H1Ai,
+    plan: &mut Plan,
+    opts: &Options,
+    requests: &[Request],
+    indices: Vec<Vec<Option<u16>>>,
+) -> Control {
     let mut control = Control::default();
     let mut orders = BTreeMap::new();
     let mut follow_orders = BTreeMap::new();
@@ -341,6 +370,9 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
             let Some(index) = index else {
                 continue;
             };
+            if squad.initial_state == 10 || (squad.initial_state == 0 && squad.return_state == 10) {
+                control.guard_baselines.insert(index);
+            }
             if squad.flags & 0x18 != 0 || squad.delay.is_finite() && squad.delay > 0.0 {
                 control.combat_timers.insert(
                     index,
@@ -363,19 +395,18 @@ pub fn prepare(source: &H1Ai, plan: &mut Plan, opts: &Options, requests: &[Reque
             }
         }
     }
+    control.squad_indices = indices;
     control
 }
 
 /// Preserve flags in native start order. Roster-generated starts are spawn-only.
 pub fn install_teleport_starts(
     source: &H1Ai,
-    plan: &Plan,
     control: &mut Control,
     subjects: Option<&BTreeSet<u32>>,
 ) {
-    let indices = converted_indices(source, plan);
-    for (ei, (encounter, ids)) in source.encounters.iter().zip(indices).enumerate() {
-        for (si, (squad, id)) in encounter.squads.iter().zip(ids).enumerate() {
+    for (ei, (encounter, ids)) in source.encounters.iter().zip(&control.squad_indices).enumerate() {
+        for (si, (squad, &id)) in encounter.squads.iter().zip(ids).enumerate() {
             let Some(id) = id else { continue };
             if squad.starting_locations.is_empty() {
                 continue;
@@ -405,35 +436,63 @@ pub fn install_automatic_destinations(
     hosts: &BTreeMap<u16, u16>,
     followed: Option<&BTreeSet<u16>>,
 ) {
-    let indices = converted_indices(source, plan);
     let mut orders = BTreeMap::new();
-    for (&encounter, &host) in hosts {
+    for (ei, (source, native)) in source.encounters.iter().zip(&controls.squad_indices).enumerate() {
+        let encounter = ei as u16;
         if followed.is_some_and(|groups| !groups.contains(&encounter)) {
             continue;
         }
-        let source = &source.encounters[usize::from(encounter)];
-        for (squad, native) in source.squads.iter().zip(&indices[usize::from(encounter)]) {
-            if native.is_some() || squad.flags & 0x20 == 0 {
+        let mut destinations = Vec::new();
+        for (squad, &id) in source.squads.iter().zip(native) {
+            if squad.flags & 0x20 == 0 {
                 continue;
             }
+            let masks = [
+                squad.groups[..3].iter().fold(0, |mask, &bits| mask | bits),
+                squad.groups[3..6].iter().fold(0, |mask, &bits| mask | bits),
+            ];
             let defending = usize::try_from(squad.platoon).ok()
                 .and_then(|index| source.platoons.get(index))
                 .is_some_and(|platoon| platoon.flags & 4 != 0);
-            let mask = if defending { squad.groups[3] } else { squad.attacking() };
-            let key = (encounter, mask);
-            let order = if let Some(&order) = orders.get(&key) {
-                order
-            } else {
-                let Some(order) = order_from_mask(
-                    plan, opts, encounter, mask, format!("h1_auto_{encounter}_{mask:x}"),
-                ) else {
-                    continue;
+            let host = hosts.get(&encounter).copied();
+            let orders = if id.is_none() {
+                let mut order = |posture: usize| {
+                    let mask = squad.groups[posture * 3];
+                    let key = (encounter, mask, masks[posture]);
+                    if let Some(&existing) = orders.get(&key) {
+                        return existing;
+                    }
+                    let index = order_from_mask(
+                        plan, opts, encounter, mask,
+                        format!("h1_auto_{encounter}_{mask:x}_{:x}", masks[posture]),
+                    ).unwrap_or(u16::MAX);
+                    orders.insert(key, index);
+                    index
                 };
-                orders.insert(key, order);
-                order
+                Some([order(0), order(1)])
+            } else {
+                None
             };
-            controls.automatic_destinations.push((host, order));
+            let platoon_member = (squad.platoon >= 0).then(|| {
+                source.squads.iter().zip(native).find_map(|(q, &id)| {
+                    (q.platoon == squad.platoon).then_some(id).flatten()
+                })
+            }).flatten();
+            destinations.push(AutomaticDestination {
+                squad: id.or(host), orders, platoon_member, defending, masks,
+            });
         }
+        if destinations.is_empty() {
+            continue;
+        }
+        let groups = destinations.iter().fold(0, |mask, d| mask | d.masks[0] | d.masks[1]);
+        let firing_positions = source.firing_positions.iter()
+            .filter(|p| p.group < 26 && groups & (1 << p.group) != 0)
+            .map(|p| (p.group, p.position))
+            .collect();
+        controls.automatic_encounters.insert(encounter, AutomaticEncounter {
+            destinations, firing_positions,
+        });
     }
 }
 

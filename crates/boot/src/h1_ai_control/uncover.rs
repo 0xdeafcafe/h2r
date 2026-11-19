@@ -94,9 +94,11 @@ fn request(actor: u32, stack: u32) -> GuestCall {
     // The native installer initializes and copies the 64-byte behavior
     // record, using the same depth as the native scripted vehicle order.
     let payload = stack.wrapping_sub(BEHAVIOR_SIZE);
-    GuestCall::new(INSTALL_BEHAVIOR)
-        .ebx(1)
-        .args([actor, u32::from(UNCOVER), payload].into_iter().chain([0; 16]))
+    GuestCall::new(INSTALL_BEHAVIOR).ebx(1).args(
+        [actor, u32::from(UNCOVER), payload]
+            .into_iter()
+            .chain([0; 16]),
+    )
 }
 
 #[cfg(test)]

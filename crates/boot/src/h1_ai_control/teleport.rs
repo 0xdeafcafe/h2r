@@ -86,7 +86,9 @@ pub(super) fn register_spawn_hook(builder: &mut Builder<'_>) {
             if let Some(squad) = call.arg_u32("squad") {
                 let mut guest = call.ctx.runtime().memory();
                 let _ = reserve_explicit(
-                    &mut *guest, u32::from(squad as u16), usize::from(call.cpu.ecx as u16),
+                    &mut *guest,
+                    u32::from(squad as u16),
+                    usize::from(call.cpu.ecx as u16),
                 );
             }
             Ok(Flow::Continue)
@@ -140,16 +142,32 @@ fn advance_random(seed: u32) -> u32 {
 }
 
 fn choose(words: &mut [Word], excluded: &[u32], count: usize, seed: u32) -> Option<usize> {
-    let use_preferred = words.iter().zip(excluded).any(|(word, &exclude)| word.preferred & !exclude != 0);
-    if !use_preferred && words.iter().zip(excluded).all(|(word, &exclude)| word.available & !exclude == 0) {
+    let use_preferred = words
+        .iter()
+        .zip(excluded)
+        .any(|(word, &exclude)| word.preferred & !exclude != 0);
+    if !use_preferred
+        && words
+            .iter()
+            .zip(excluded)
+            .all(|(word, &exclude)| word.available & !exclude == 0)
+    {
         for (index, word) in words.iter_mut().enumerate() {
             word.available = u32::MAX >> (32 - (count - 32 * index).min(32));
         }
     }
     let mask = |word: &Word, exclude: u32| {
-        (if use_preferred { word.preferred } else { word.available }) & !exclude
+        (if use_preferred {
+            word.preferred
+        } else {
+            word.available
+        }) & !exclude
     };
-    let options: u32 = words.iter().zip(excluded).map(|(word, &exclude)| mask(word, exclude).count_ones()).sum();
+    let options: u32 = words
+        .iter()
+        .zip(excluded)
+        .map(|(word, &exclude)| mask(word, exclude).count_ones())
+        .sum();
     let mut rank = ((seed >> 16) * options) >> 16;
     for (index, (word, &exclude)) in words.iter_mut().zip(excluded).enumerate() {
         let mut bits = mask(word, exclude);
@@ -182,11 +200,7 @@ impl Pool {
         m.set_u32(at + state::STRIDE, available)
     }
 
-    pub(super) fn reserve(
-        self,
-        m: &mut dyn GuestMemory,
-        native_starts: u32,
-    ) -> R<Option<u32>> {
+    pub(super) fn reserve(self, m: &mut dyn GuestMemory, native_starts: u32) -> R<Option<u32>> {
         self.reserve_excluding(m, native_starts, 0)
     }
 
@@ -204,8 +218,15 @@ impl Pool {
         let mut excluded = Vec::with_capacity(words.capacity());
         for index in 0..self.count.div_ceil(32) {
             let at = self.base + index as u32 * WIDTH * state::STRIDE;
-            words.push(Word { preferred: m.u32(at)?, available: m.u32(at + state::STRIDE)? });
-            excluded.push(if exclusions == 0 { 0 } else { m.u32(exclusions + index as u32 * 4)? });
+            words.push(Word {
+                preferred: m.u32(at)?,
+                available: m.u32(at + state::STRIDE)?,
+            });
+            excluded.push(if exclusions == 0 {
+                0
+            } else {
+                m.u32(exclusions + index as u32 * 4)?
+            });
         }
         let random = advance_random(m.u32(seed)?);
         let Some(selected) = choose(&mut words, &excluded, self.count, random) else {
@@ -228,8 +249,13 @@ mod tests {
 
     #[test]
     fn required_starts_are_consumed_once_and_fallback_recycles_after_exhaustion() {
-        let mut words = [Word { preferred: 0b1010, available: 0b1111 }];
-        let selected: Vec<_> = (0..5).map(|_| choose(&mut words, &[0], 4, 0).unwrap()).collect();
+        let mut words = [Word {
+            preferred: 0b1010,
+            available: 0b1111,
+        }];
+        let selected: Vec<_> = (0..5)
+            .map(|_| choose(&mut words, &[0], 4, 0).unwrap())
+            .collect();
         assert_eq!(selected, [1, 3, 0, 2, 0]);
         assert_eq!(words[0].preferred, 0);
         assert_eq!(words[0].available, 0b1110);
@@ -237,7 +263,10 @@ mod tests {
 
     #[test]
     fn spawn_exclusion_does_not_consume_the_preferred_start_for_teleport() {
-        let mut words = [Word { preferred: 0b100, available: 0b111 }];
+        let mut words = [Word {
+            preferred: 0b100,
+            available: 0b111,
+        }];
         assert_eq!(choose(&mut words, &[0b100], 3, 0), Some(0));
         assert_eq!(choose(&mut words, &[0], 3, 0), Some(2));
     }
@@ -246,7 +275,9 @@ mod tests {
     fn direct_spawn_reserves_its_start_without_advancing_random_selection() {
         let mut guest = FakeGuest::new();
         let base = 0x0080_0100;
-        guest.put_u32(base, 0b11).put_u32(base + state::STRIDE, 0b111);
+        guest
+            .put_u32(base, 0b11)
+            .put_u32(base + state::STRIDE, 0b111);
         let pool = Pool { base, count: 3 };
         pool.consume(&mut guest, 0).unwrap();
         pool.consume(&mut guest, 0).unwrap();
@@ -259,7 +290,8 @@ mod tests {
         let mut guest = FakeGuest::new();
         let base = 0x0080_0100;
         let seed = 0x0080_0200;
-        guest.put_u32(GAMEPLAY_RANDOM_SEED, seed)
+        guest
+            .put_u32(GAMEPLAY_RANDOM_SEED, seed)
             .put_u32(seed, 7)
             .put_u32(base, 4)
             .put_u32(base + state::STRIDE, 7);

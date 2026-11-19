@@ -288,7 +288,7 @@ pub(crate) fn request(
 pub struct RetainedSubjects {
     pub follow_encounters: Option<std::collections::BTreeSet<u16>>,
     pub teleport_subjects: Option<std::collections::BTreeSet<u32>>,
-    pub migration_destinations: std::collections::BTreeSet<String>,
+    pub migration_destinations: std::collections::BTreeSet<(u16, u8)>,
 }
 
 pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> RetainedSubjects {
@@ -330,9 +330,9 @@ pub fn retained_subjects(tables: &crate::Tables, catalog: &crate::Catalog) -> Re
             "ai_migrate" | "ai_migrate_and_speak" | "ai_migrate_by_unit" | "ai_vehicle_encounter" => {
                 if let Some(destination) = first().and_then(|arg| tables.node(arg.next()).ok())
                     .filter(|n| literal_ai(n) && n.data() >> 30 == 2)
-                    && let Ok(name) = tables.string(destination.string_offset())
                 {
-                    retained.migration_destinations.insert(name.to_ascii_lowercase());
+                    let ai = destination.data();
+                    retained.migration_destinations.insert((ai as u16, (ai >> 16) as u8));
                 }
             }
             _ => {}

@@ -12,6 +12,7 @@ use crate::{Result, invalid};
 pub(crate) struct Retained {
     pub generated_starts: BTreeSet<usize>,
     pub overflow_hosts: BTreeMap<u16, u16>,
+    pub squad_indices: Vec<Vec<Option<u16>>>,
 }
 
 pub(crate) fn prepare(
@@ -25,14 +26,25 @@ pub(crate) fn prepare(
     let fits = |count| engine::squad_pool::partition(count, group_count).is_some();
     let name = |encounter: &str, squad: &str| format!("{encounter}/{squad}").to_ascii_lowercase();
     let maneuvers = h1ai::control::maneuver_targets(source, requests);
-    let automatic =
-        h1ai::control::automatic_migration_targets(source, subjects.follow_encounters.as_ref());
-
     let mut selected = BTreeMap::new();
     let mut output = 0;
-    for (ei, e) in roster.encounters.iter_mut().enumerate() {
-        for q in e.squads.drain(..) {
-            selected.insert((ei, q.name.to_ascii_lowercase()), (q, generated.contains(&output)));
+    // The roster selector retains source order. Resolve before conversion,
+    // while full source records can distinguish duplicated or long names.
+    for (ei, (e, original)) in roster.encounters.iter_mut().zip(&source.encounters).enumerate() {
+        let mut next = 0;
+        for mut squad in e.squads.drain(..) {
+            let generated = generated.contains(&output);
+            let starts = generated.then(|| std::mem::take(&mut squad.starting_locations));
+            let candidates = &original.squads[next..];
+            let offset = candidates.iter().position(|original| *original == squad)
+                .or_else(|| candidates.iter().position(|original| original.name == squad.name))
+                .ok_or_else(|| invalid(format!("cannot recover source index for {}/{}", e.name, squad.name)))?;
+            let source_index = next + offset;
+            next = source_index + 1;
+            if let Some(starts) = starts {
+                squad.starting_locations = starts;
+            }
+            selected.insert((ei, source_index), (squad, generated));
             output += 1;
         }
     }
@@ -42,15 +54,17 @@ pub(crate) fn prepare(
     for (ei, encounter) in source.encounters.iter().enumerate() {
         for (si, squad) in encounter.squads.iter().enumerate() {
             let key = name(&encounter.name, &squad.name);
-            let existing = selected.get(&(ei, squad.name.to_ascii_lowercase()));
-            if automatic.contains(&key) {
+            let existing = selected.get(&(ei, si));
+            if squad.flags & 0x20 != 0 && subjects.follow_encounters.as_ref()
+                .is_none_or(|groups| groups.contains(&(ei as u16)))
+            {
                 automatic_rows.entry(ei).or_default().push(si);
             }
             if existing.is_some_and(|(q, _)| !q.starting_locations.is_empty()) {
                 keep.insert((ei, si));
             } else if maneuvers.contains(&key) {
                 optional.push((0, ei, si));
-            } else if subjects.migration_destinations.contains(&key) {
+            } else if subjects.migration_destinations.contains(&(ei as u16, si as u8)) {
                 optional.push((1, ei, si));
             } else if existing.is_some() {
                 optional.push((2, ei, si));
@@ -88,7 +102,10 @@ pub(crate) fn prepare(
         // migrating member is already part of the population that moves as
         // one cohort. Its own order remains a separate candidate.
         if let Some(si) = rows.iter().copied().find(|&si| keep.contains(&(ei, si)))
-            .or_else(|| keep.range((ei, 0)..=(ei, usize::MAX)).next().map(|&(_, si)| si))
+            .or_else(|| {
+                keep.range((ei, 0)..=(ei, usize::MAX))
+                    .find_map(|&(_, si)| priority(ei, si).is_some().then_some(si))
+            })
         {
             carriers.insert(ei, si);
             continue;
@@ -105,23 +122,22 @@ pub(crate) fn prepare(
             keep.remove(&(e, s));
             hidden.insert((ei, overflow));
             carriers.insert(ei, overflow);
-        } else {
-            return Err(invalid(format!(
-                "no native squad can carry automatic AI destinations in {}",
-                source.encounters[ei].name,
-            )));
         }
+        // Encounters with no retained members have no actors to migrate.
+        // The logical routes are still compiled, without a physical host.
     }
     let mut output = 0;
     let mut generated_starts = BTreeSet::new();
     let mut overflow_hosts = BTreeMap::new();
+    let mut squad_indices = Vec::with_capacity(source.encounters.len());
     for (ei, (source, output_encounter)) in source.encounters.iter().zip(&mut roster.encounters).enumerate() {
+        let mut indices = vec![None; source.squads.len()];
         for (si, source_squad) in source.squads.iter().enumerate() {
             let host = carriers.get(&ei) == Some(&si);
             if !host && !keep.contains(&(ei, si)) {
                 continue;
             }
-            let (mut squad, generated) = selected.remove(&(ei, source_squad.name.to_ascii_lowercase()))
+            let (mut squad, generated) = selected.remove(&(ei, si))
                 .unwrap_or_else(|| (source_squad.clone(), false));
             if host {
                 overflow_hosts.insert(ei as u16, output as u16);
@@ -133,12 +149,16 @@ pub(crate) fn prepare(
                 squad.platoon = -1;
                 squad.flags = 0;
                 squad.starting_locations.clear();
-            } else if generated {
-                generated_starts.insert(output);
+            } else {
+                indices[si] = Some(output as u16);
+                if generated {
+                    generated_starts.insert(output);
+                }
             }
             output_encounter.squads.push(squad);
             output += 1;
         }
+        squad_indices.push(indices);
     }
-    Ok(Retained { generated_starts, overflow_hosts })
+    Ok(Retained { generated_starts, overflow_hosts, squad_indices })
 }

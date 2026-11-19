@@ -7,16 +7,19 @@ use engine::{
     DatumHandle,
     entry::Cx,
     memory::{GuestMemory, MemFault},
+    view::{Record, objects},
 };
 use hs::h1_ai_slots::timers::{
-    self, BLOCKS, HEADER, REVEAL_PLAYERS, SQUADS, TIME_UNITS_PER_SECOND,
+    self, BLOCKS, HEADER, REVEAL_PLAYERS, SQUADS, TIME_UNITS_PER_SECOND, UPDATE_TIME,
 };
 
-use super::{NONE, actors, points, squad_control, squads, state};
+use super::{NONE, actors, squad_control, squads, state};
 
 const COMBAT_STATUS: u32 = 0x86;
 const FIRST_ENEMY_NOTICE: u16 = 3;
 const VISIBLE_ENEMY: u16 = 6;
+const INTEREST_CLASS: u32 = 0x328;
+const RELEASE_COMBAT_LEVEL: u16 = 5;
 const THROTTLE: u32 = 0x814;
 
 type R<T> = Result<T, MemFault>;
@@ -39,6 +42,39 @@ fn timer_row(m: &dyn GuestMemory, base: u32, squad: u32) -> R<Option<u32>> {
     state::registry(m, base + HEADER + rank, 1)
 }
 
+fn combat_level(interest: u16) -> u16 {
+    // Halo 2 0x267180 produces the best tracked hostile contact class.
+    // Feed its categories into Halo 1's awareness-to-combat table
+    // (0x1f025c), before Halo 2's orders raise its displayed status.
+    match interest {
+        3 => 1,
+        4 | 5 => 2,
+        6 => 4,
+        7..=10 => 5,
+        11 | 12 => 7,
+        _ => 0,
+    }
+}
+
+fn releases(m: &dyn GuestMemory, actor: actors::Actor, phased: bool) -> R<bool> {
+    if phased {
+        Ok(combat_level(m.u16(actor.at + INTEREST_CLASS)?) >= RELEASE_COMBAT_LEVEL)
+    } else {
+        Ok(m.u16(actor.at + COMBAT_STATUS)? >= VISIBLE_ENEMY)
+    }
+}
+
+fn guard_baseline(m: &dyn GuestMemory, guard_bits: Option<u32>, squad: u32) -> R<u16> {
+    let Some(bits) = guard_bits else {
+        return Ok(0);
+    };
+    if squad >= u32::from(SQUADS) {
+        return Ok(0);
+    }
+    let word = m.u32(bits + (squad / 32) * state::STRIDE)?;
+    Ok(if word & (1 << (squad % 32)) != 0 { 2 } else { 0 })
+}
+
 pub(super) fn hold_movement(m: &mut dyn GuestMemory, handle: u32) -> R<()> {
     let Some(base) = state::timers_base(m)? else {
         return Ok(());
@@ -48,7 +84,7 @@ pub(super) fn hold_movement(m: &mut dyn GuestMemory, handle: u32) -> R<()> {
     };
     if let Some(at) = timer_row(m, base, actor.squad)?
         && timers::active(m.u32(at)?)
-        && m.u16(actor.at + COMBAT_STATUS)? < VISIBLE_ENEMY
+        && !releases(m, actor, state::phased_timers(m)?)?
     {
         m.write(actor.at + THROTTLE, &[0; 12])?;
     }
@@ -79,14 +115,11 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
         let Some(start) = state::registry(m, base, HEADER)? else {
             return Ok(Vec::new());
         };
-        let clock = m.u32(points::GAME_TIME.base)?;
-        if clock == 0 {
+        let Some((tick, rate)) = state::clock(m)? else {
             return Ok(Vec::new());
-        }
-        let rate = u32::from(m.u16(clock + 2)?);
-        let tick = m.u32(clock + 8)?;
+        };
         let previous = m.u32(start)?;
-        if tick == previous || rate == 0 {
+        if tick == previous {
             return Ok(Vec::new());
         }
         let elapsed = if previous == NONE {
@@ -98,20 +131,39 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
         };
         m.set_u32(start, tick)?;
 
+        let phased = state::phased_timers(m)?;
+        let guard_bits = if phased {
+            let last = start + (1 + (BLOCKS - 1) * 2) * state::STRIDE;
+            let rows = m.u32(last + state::STRIDE)? + m.u32(last)?.count_ones();
+            state::registry(m, base + HEADER + rows, BLOCKS)?
+        } else {
+            None
+        };
+        let now = state::authored_tick(tick, rate);
+        let then = (previous != NONE).then(|| state::authored_tick(previous, rate));
         let mut noticed = BTreeSet::new();
-        let mut visible = BTreeSet::new();
+        let mut release = BTreeSet::new();
         for actor in actors::all(m)? {
             if actor.squad == NONE {
                 continue;
             }
-            let status = m.u16(actor.at + COMBAT_STATUS)?;
-            if status >= FIRST_ENEMY_NOTICE
-                && let Some(group) = squad_control::encounter(m, actor.squad)?
-            {
+            let informed = if phased {
+                let Some((_, unit)) = objects::get(m, DatumHandle(actor.unit))? else {
+                    continue;
+                };
+                if unit.damage_flags(m)? & 4 != 0 {
+                    continue;
+                }
+                combat_level(m.u16(actor.at + INTEREST_CLASS)?)
+                    > guard_baseline(m, guard_bits, actor.squad)?
+            } else {
+                m.u16(actor.at + COMBAT_STATUS)? >= FIRST_ENEMY_NOTICE
+            };
+            if informed && let Some(group) = squad_control::encounter(m, actor.squad)? {
                 noticed.insert(group);
             }
-            if status >= VISIBLE_ENEMY {
-                visible.insert(actor.squad);
+            if releases(m, actor, phased)? {
+                release.insert(actor.squad);
             }
         }
 
@@ -131,9 +183,19 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
                 if !timers::active(value) {
                     continue;
                 }
-                let alert = squad_control::encounter(m, squad)?
-                    .is_some_and(|group| noticed.contains(&group));
-                let next = timers::advance(value, elapsed, alert, visible.contains(&squad));
+                let group = squad_control::encounter(m, squad)?;
+                let alert = group.is_some_and(|group| noticed.contains(&group));
+                let contact = release.contains(&squad);
+                let elapsed = if phased {
+                    let steps = group.map_or(0, |group| timers::encounter_updates(then, now, group));
+                    if steps == 0 && !contact {
+                        continue;
+                    }
+                    steps.saturating_mul(UPDATE_TIME)
+                } else {
+                    elapsed
+                };
+                let next = timers::advance(value, elapsed, alert, contact);
                 if next != value {
                     m.set_u32(at, next)?;
                 }
@@ -144,4 +206,25 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
         }
         Ok(revealed)
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lost_contact_starts_the_clock_but_does_not_release_the_hold() {
+        assert_eq!(combat_level(6), 4);
+        assert!(combat_level(6) < RELEASE_COMBAT_LEVEL);
+        assert!(combat_level(7) >= RELEASE_COMBAT_LEVEL);
+        assert_eq!(combat_level(2), 0);
+    }
+
+    #[test]
+    fn the_same_encounter_phase_is_used_at_both_frame_rates() {
+        assert_eq!(state::authored_tick(34, 60), state::authored_tick(17, 30));
+        assert_eq!(timers::encounter_updates(Some(state::authored_tick(33, 60)), state::authored_tick(34, 60), 2), 1);
+        assert_eq!(timers::encounter_updates(Some(state::authored_tick(34, 60)), state::authored_tick(35, 60), 2), 0);
+    }
 }

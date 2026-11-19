@@ -10,6 +10,7 @@ use hs::h1_ai_slots::{self, Operation};
 mod actors;
 mod auto_migration;
 mod follow;
+mod follow_geometry;
 mod platoons;
 mod playfight;
 mod preference;
@@ -376,8 +377,8 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             Operation::AutomaticMigrationTarget => {
                 auto_migration::set(&cx, args[0], args[1] as u8 != 0, args[2])?;
             }
-            Operation::FollowTick | Operation::FollowWithDestinations => {
-                follow::tick(&cx, args[0], args.get(1).copied().unwrap_or(NONE)).await?;
+            Operation::FollowTick | Operation::FollowWithDestinations | Operation::FollowWithSourcePositions => {
+                follow::tick(&cx, op, args[0], args.get(1).copied().unwrap_or(NONE)).await?;
             }
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
             Operation::VehicleEnter => {

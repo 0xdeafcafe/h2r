@@ -8,6 +8,23 @@ const VALUE_START: u32 = 0x41d;
 pub(super) const STRIDE: u32 = 8;
 const VALUE: u32 = 4;
 
+pub(super) fn clock(m: &dyn GuestMemory) -> Result<Option<(u32, u32)>, MemFault> {
+    let clock = m.u32(super::points::GAME_TIME.base)?;
+    if clock == 0 {
+        return Ok(None);
+    }
+    let rate = m.u16(clock + 2)?;
+    if rate == 0 {
+        return Ok(None);
+    }
+    Ok(Some((m.u32(clock + 8)?, u32::from(rate))))
+}
+
+pub(super) fn authored_tick(tick: u32, rate: u32) -> u32 {
+    let hz = u64::from(hs::h1_ai_slots::timers::TICKS_PER_SECOND);
+    (u64::from(tick) * hz / u64::from(rate)) as u32
+}
+
 pub(super) fn addr(m: &dyn GuestMemory, index: u32) -> Result<u32, MemFault> {
     let array = m.u32(GLOBALS)?;
     let data = m.u32(array + GLOBAL_DATA)?;
@@ -53,9 +70,16 @@ pub(super) fn hook_base(
 }
 
 pub(super) fn timers_base(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
-    global_index_from_end(m, hs::h1_ai_slots::timers::GLOBAL, teleport_trailer(m)?)?
-        .map(|index| m.u32(addr(m, index)?))
-        .transpose()
+    let trailing = teleport_trailer(m)?;
+    let index = match global_index_from_end(m, hs::h1_ai_slots::timers::PHASED_GLOBAL, trailing)? {
+        Some(index) => Some(index),
+        None => global_index_from_end(m, hs::h1_ai_slots::timers::GLOBAL, trailing)?,
+    };
+    index.map(|index| m.u32(addr(m, index)?)).transpose()
+}
+
+pub(super) fn phased_timers(m: &dyn GuestMemory) -> Result<bool, MemFault> {
+    Ok(global_index_from_end(m, hs::h1_ai_slots::timers::PHASED_GLOBAL, teleport_trailer(m)?)?.is_some())
 }
 
 fn teleport_trailer(m: &dyn GuestMemory) -> Result<u32, MemFault> {

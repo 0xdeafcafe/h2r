@@ -190,5 +190,5 @@ fn squad_retention_prioritizes_literal_migration_and_follows_only_active_encount
 
     let retained = crate::aicontrol::retained_subjects(&tables, &catalog);
     assert_eq!(retained.follow_encounters.unwrap(), [7].into_iter().collect());
-    assert_eq!(retained.migration_destinations, ["beach/cliff".into()].into_iter().collect());
+    assert_eq!(retained.migration_destinations, [(7, 1)].into_iter().collect());
 }

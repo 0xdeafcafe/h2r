@@ -9,6 +9,7 @@
 mod platoons;
 pub use platoons::{PlatoonRule, PlatoonTrigger, decode_words, encode_words};
 pub mod timers;
+pub mod migration;
 
 use crate::casts::types::{AI, BOOLEAN, LONG, OBJECT, OBJECT_LIST, REAL, SHORT, STRING, VOID};
 
@@ -168,6 +169,7 @@ pub enum Operation {
     FollowWithDestinations = 37,
     TeleportReserved = 38,
     TeleportUnsupportedReserved = 39,
+    FollowWithSourcePositions = 40,
 }
 
 impl Operation {
@@ -218,6 +220,7 @@ impl Operation {
             37 => Self::FollowWithDestinations,
             38 => Self::TeleportReserved,
             39 => Self::TeleportUnsupportedReserved,
+            40 => Self::FollowWithSourcePositions,
             _ => return None,
         })
     }
@@ -288,6 +291,7 @@ impl Operation {
             Self::FollowDistance => &[AI, REAL, LONG],
             Self::FollowTick | Self::TimerTick => &[LONG],
             Self::FollowWithDestinations => &[LONG, STRING],
+            Self::FollowWithSourcePositions => &[LONG, LONG],
             Self::TeleportReserved | Self::TeleportUnsupportedReserved => &[AI, LONG],
             Self::AutomaticMigrationTarget => &[AI, BOOLEAN, LONG],
         }

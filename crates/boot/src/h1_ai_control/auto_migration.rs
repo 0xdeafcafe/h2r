@@ -17,8 +17,8 @@ use super::{
 };
 
 const WORDS: u32 = Registry::Follow.words() as u32;
-const ALLOWED: u32 = FOLLOW_WORDS as u32;
-const ENABLED: u32 = ALLOWED + MIGRATION_WORDS as u32;
+pub(super) const ALLOWED: u32 = FOLLOW_WORDS as u32;
+pub(super) const ENABLED: u32 = ALLOWED + MIGRATION_WORDS as u32;
 
 type R<T> = Result<T, MemFault>;
 
@@ -28,7 +28,7 @@ fn bit(start: u32, section: u32, squad: u32) -> Option<(u32, u32)> {
         .then_some((start + (section + word) * state::STRIDE, 1 << (squad % 32)))
 }
 
-fn has(m: &dyn GuestMemory, start: u32, section: u32, squad: u32) -> R<bool> {
+pub(super) fn has(m: &dyn GuestMemory, start: u32, section: u32, squad: u32) -> R<bool> {
     let Some((at, mask)) = bit(start, section, squad) else {
         return Ok(false);
     };
@@ -40,6 +40,7 @@ pub(super) fn set(cx: &Cx, reference: u32, enabled: bool, base: u32) -> R<()> {
         let Some(start) = state::registry(m, base, WORDS)? else {
             return Ok(());
         };
+        super::follow::set_virtual_destinations(m, start, reference, enabled)?;
         for squad in squads(m, reference)? {
             if let Some((at, mask)) = bit(start, ENABLED, squad) {
                 let old = m.u32(at)?;
@@ -50,11 +51,11 @@ pub(super) fn set(cx: &Cx, reference: u32, enabled: bool, base: u32) -> R<()> {
     })
 }
 
-fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+pub(super) fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     a.into_iter().zip(b).map(|(a, b)| (a - b).powi(2)).sum()
 }
 
-fn anchor(
+pub(super) fn anchor(
     m: &dyn GuestMemory,
     population: &[Actor],
     candidates: &[[f32; 3]],
@@ -81,7 +82,7 @@ fn anchor(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Destination {
     pub squad: u32,
-    order: u16,
+    pub order: u16,
 }
 
 fn nearest_firing_position(
@@ -136,7 +137,7 @@ fn nearest_firing_position(
     Ok(nearest.is_finite().then(|| nearest.sqrt()))
 }
 
-fn destination<T: Copy>(choices: &[(T, f32, bool)], radius: f32) -> Option<T> {
+pub(super) fn destination<T: Copy>(choices: &[(T, f32, bool)], radius: f32) -> Option<T> {
     let &(dest, nearest, _) = choices.iter().min_by(|a, b| a.1.total_cmp(&b.1))?;
     let farthest = choices
         .iter()

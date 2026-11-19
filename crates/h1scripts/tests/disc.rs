@@ -670,7 +670,11 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         let source = h1ai::h1::H1Ai::read(map).unwrap();
         let opts = h1ai::convert::Options::default();
         let mut plan = h1ai::convert::convert(&source, &opts);
-        let controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let mut controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        let subjects = h1scripts::aicontrol::retained_subjects(&tables, &catalog);
+        h1ai::control::install_teleport_starts(
+            &source, &mut controls, subjects.teleport_subjects.as_ref(),
+        );
         if requests
             .iter()
             .any(|r| r.operation == Operation::FollowDistance)
@@ -774,8 +778,8 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         RuntimeOperation::FreeUnits,
         RuntimeOperation::MigrateUnits,
         RuntimeOperation::MigrateSpeak,
-        RuntimeOperation::Teleport,
-        RuntimeOperation::TeleportUnsupported,
+        RuntimeOperation::TeleportReserved,
+        RuntimeOperation::TeleportUnsupportedReserved,
         RuntimeOperation::SetManeuver,
         RuntimeOperation::PlatoonTick,
         RuntimeOperation::VehicleEncounter,

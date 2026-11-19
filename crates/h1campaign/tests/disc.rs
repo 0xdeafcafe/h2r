@@ -876,6 +876,86 @@ fn a30_converts_onto_its_base_and_reads_back() {
 /// string literal where Halo 2 wants a `unit_seat_mapping`: the cast table
 /// has no entry, and the interpreter called address 0. `$H1_LEVELS` (comma
 /// separated) limits the levels.
+fn check_authored_automatic_destinations(
+    level: &str,
+    source: &h1map::H1Map,
+    converted: &hs::Scenario,
+    scenario_tag: &[u8],
+    catalog: &h1scripts::Catalog,
+) {
+    use hs::h1_ai_slots::{Operation, decode_words, migration as wire};
+
+    let count = |offset| {
+        u32::from_le_bytes(scenario_tag[offset..offset + 4].try_into().unwrap()) as usize
+    };
+    let (squads, groups, orders) = (count(0x160), count(0x158), count(0x240));
+    let expected = if level == "a50" { 359 } else { 344 };
+    assert_eq!(squads, expected, "{level}: retained physical squads");
+    assert_eq!(engine::squad_pool::partition(squads, groups), Some((squads, groups)));
+
+    let reachable = converted.reachable(converted.roots()).unwrap();
+    let payload = reachable.into_iter().find_map(|datum| {
+        let node = converted.node(datum).unwrap();
+        if node.atom() || node.opcode() != hs::h1_ai_slots::CONTROL {
+            return None;
+        }
+        let head = converted.node(hs::Datum(node.data())).unwrap();
+        if head.data() != Operation::FollowWithSourcePositions.marker() {
+            return None;
+        }
+        let base = converted.node(head.next()).unwrap();
+        let offset = converted.node(base.next()).unwrap().data() as usize;
+        converted.strings().get(offset..)?.split(|&b| b == 0).next()
+    }).expect("runtime follow geometry");
+    let ai = h1ai::h1::H1Ai::read(source).unwrap();
+    let tables = h1scripts::Tables::read(source).unwrap();
+    let subjects = h1scripts::aicontrol::retained_subjects(&tables, catalog);
+    let mut shared = 0;
+    for (index, encounter) in ai.encounters.iter().enumerate() {
+        let at = index * 2 * wire::HEADER;
+        let entries = wire::Location::decode(&payload[at..at + wire::HEADER]).unwrap();
+        let points = wire::Location::decode(&payload[at + wire::HEADER..at + 2 * wire::HEADER]).unwrap();
+        let expected = subjects.follow_encounters.as_ref()
+            .is_none_or(|groups| groups.contains(&(index as u16)));
+        let source: Vec<_> = encounter.squads.iter()
+            .filter(|squad| expected && squad.flags & 0x20 != 0).collect();
+        assert_eq!(usize::from(entries.rows), source.len(), "{level}: {}", encounter.name);
+        if source.is_empty() {
+            continue;
+        }
+        let at = entries.offset as usize;
+        let size = usize::from(entries.rows) * wire::Route::WIDTH;
+        let rows = decode_words(&payload[at..at + size]).unwrap();
+        let mut groups = 0;
+        for (row, source) in rows.chunks_exact(wire::Route::WIDTH / 4).zip(source) {
+            let route = wire::Route::decode(row).unwrap();
+            assert!(route.squad == u16::MAX || usize::from(route.squad) < squads);
+            for order in route.orders {
+                assert!(order == u16::MAX || usize::from(order) < orders);
+            }
+            if route.squad != u16::MAX && route.orders != [u16::MAX; 2] {
+                shared += 1;
+            }
+            let attacking = source.groups[0] | source.groups[1] | source.groups[2];
+            let defending = source.groups[3] | source.groups[4] | source.groups[5];
+            assert_eq!(route.masks, [attacking, defending]);
+            groups |= attacking | defending;
+        }
+        let at = points.offset as usize;
+        let size = usize::from(points.rows) * wire::POINT_WIDTH;
+        let words = decode_words(&payload[at..at + size]).unwrap();
+        let encoded: Vec<_> = words.chunks_exact(wire::POINT_WIDTH / 4)
+            .map(|row| wire::read_point(row).unwrap()).collect();
+        let original: Vec<_> = encounter.firing_positions.iter()
+            .filter(|point| point.group < 26 && groups & (1 << point.group) != 0)
+            .map(|point| (usize::from(point.group), point.position)).collect();
+        assert_eq!(encoded, original, "{level}: source firing positions for {}", encounter.name);
+    }
+    assert!(shared > 0, "{level}: expected reusable native squads");
+    assert!(converted.globals().iter()
+        .any(|global| global.name().ok() == Some(hs::h1_ai_slots::TELEPORT_STATE)));
+}
+
 #[test]
 #[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
 fn every_level_s_scripts_run_on_the_retail_interpreter() {
@@ -929,6 +1009,9 @@ fn every_level_s_scripts_run_on_the_retail_interpreter() {
         // descriptors keep Halo 1's order and count.
         let scnr = m.scenario().unwrap().clone();
         let bytes = m.read_tag_bytes(scnr.id).unwrap();
+        if matches!(level, "a50" | "b40") {
+            check_authored_automatic_destinations(level, &h1, &sc, &bytes, &s.catalog);
+        }
         let bsps = u32::from_le_bytes(bytes[0x210..0x214].try_into().unwrap());
         assert_eq!(bsps as usize, h1.structure_bsps().unwrap().len());
         // Every reached atom naming a cutscene flag, camera point, title or
