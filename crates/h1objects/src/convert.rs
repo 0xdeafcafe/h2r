@@ -1492,7 +1492,22 @@ impl<'a> Converter<'a> {
                 match self.done.get(&t.id.0) {
                     Some(id) => Some(*id),
                     None => {
-                        let (_, _, conv) = h1models::graph_from_map(self.h1, t, Some(mode_tag))?;
+                        let vehicle =
+                            h1::OBJECT_TYPES.get(obj.object_type as usize) == Some(&b"vehi");
+                        let opts = h1models::jmad::GraphOptions {
+                            mass_point_markers: if vehicle {
+                                self.mass_point_markers(obj)?
+                            } else {
+                                Vec::new()
+                            },
+                        };
+                        let (_, report, conv) =
+                            h1models::graph_from_map_with(self.h1, t, Some(mode_tag), &opts)?;
+                        for a in &report.suspension_without_marker {
+                            rep.no_home.push(format!(
+                                "suspension {a:?}: its mass point has no marker; left out"
+                            ));
+                        }
                         Some(self.cached(t, conv)?)
                     }
                 }
@@ -1751,7 +1766,21 @@ impl<'a> Converter<'a> {
                     }
                 }
             }
-            self.weapon_classes = Some(weapon_classes(votes));
+            let mut classes = weapon_classes(votes);
+            // A label no animation is named for takes the class whose
+            // slot table lists it as a type (V: the warthog's gun, `cg`,
+            // under the warthog's `fixed`; the converted vehicle graph's
+            // aim overlays are found under that class, h1models
+            // `jmad::vehicle_plan`). Until converter version 84 the gun had
+            // no class, and the warthog no aim.
+            for t in self.h1.tags().iter().filter(|t| t.group == antr) {
+                for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
+                    if h1models::names::CLASSES.contains(&class.as_str()) {
+                        classes.entry(kind).or_insert(class);
+                    }
+                }
+            }
+            self.weapon_classes = Some(classes);
         }
         Ok(self
             .weapon_classes
@@ -2364,6 +2393,24 @@ impl<'a> Converter<'a> {
     /// position, `tests/vehicle_rebuild_disc.rs`), so the marker holds the
     /// position in its node's space. The region is the collision region
     /// of the collision node named as the model node, else none.
+    /// Per mass point of a vehicle's Halo 1 physics, the marker its
+    /// converted model holds for it: a powered point's, named as
+    /// [`Self::powered_points`] names it; `None` for the others, and empty
+    /// for an object without physics. A vehicle graph's suspension names
+    /// its mass points by index (V: the warthog's four tire points, the
+    /// scorpion's eight tread points, all powered).
+    fn mass_point_markers(&self, obj: &h1::Object) -> Result<Vec<Option<String>>> {
+        let Some(p) = obj.physics else {
+            return Ok(Vec::new());
+        };
+        let phys = h1::Physics::read(self.h1, self.h1_tag(p)?)?;
+        Ok(phys
+            .mass_points
+            .iter()
+            .map(|m| (m.powered_mass_point >= 0).then(|| crate::coll::sid_name(&m.name)))
+            .collect())
+    }
+
     fn powered_points(
         &self,
         obj: &h1::Object,
