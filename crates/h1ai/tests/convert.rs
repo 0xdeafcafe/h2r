@@ -173,7 +173,7 @@ fn automatic_routes_keep_source_ordinals_when_native_names_are_identical() {
     );
     h1ai::control::install_automatic_destinations(
         &source, &mut plan, &opts, &mut controls, &[(0, 0)].into_iter().collect(), None,
-    );
+    ).unwrap();
     let routes = &controls.automatic_encounters[&0].destinations;
     assert_eq!(routes[0].squad, Some(0));
     assert_eq!(routes[1].squad, Some(1));

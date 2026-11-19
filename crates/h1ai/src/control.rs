@@ -435,7 +435,7 @@ pub fn install_automatic_destinations(
     controls: &mut Control,
     hosts: &BTreeMap<u16, u16>,
     followed: Option<&BTreeSet<u16>>,
-) {
+) -> crate::Result<()> {
     let mut orders = BTreeMap::new();
     for (ei, (source, native)) in source.encounters.iter().zip(&controls.squad_indices).enumerate() {
         let encounter = ei as u16;
@@ -456,20 +456,22 @@ pub fn install_automatic_destinations(
                 .is_some_and(|platoon| platoon.flags & 4 != 0);
             let host = hosts.get(&encounter).copied();
             let orders = if id.is_none() {
-                let mut order = |posture: usize| {
+                let mut order = |posture: usize| -> crate::Result<u16> {
                     let mask = squad.groups[posture * 3];
                     let key = (encounter, mask, masks[posture]);
                     if let Some(&existing) = orders.get(&key) {
-                        return existing;
+                        return Ok(existing);
                     }
                     let index = order_from_mask(
                         plan, opts, encounter, mask,
                         format!("h1_auto_{encounter}_{mask:x}_{:x}", masks[posture]),
-                    ).unwrap_or(u16::MAX);
+                    ).ok_or_else(|| crate::Error::Invalid(
+                        "too many native orders for automatic AI destinations".into(),
+                    ))?;
                     orders.insert(key, index);
-                    index
+                    Ok(index)
                 };
-                Some([order(0), order(1)])
+                Some([order(0)?, order(1)?])
             } else {
                 None
             };
@@ -494,6 +496,7 @@ pub fn install_automatic_destinations(
             destinations, firing_positions,
         });
     }
+    Ok(())
 }
 
 fn prepare_platoon_rules(

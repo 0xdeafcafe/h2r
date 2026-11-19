@@ -19,7 +19,7 @@ pub const SCRIPT_HELD: u32 = 0x0400_0000;
 pub const STARTED: u32 = 0x0800_0000;
 
 pub fn initial(flags: u32, seconds: f32) -> u32 {
-    let ticks = (seconds * TICKS_PER_SECOND as f32) as i16;
+    let ticks = (seconds * TICKS_PER_SECOND as f32).trunc() as i64 as i16;
     let mut value = u32::from(ticks.max(0) as u16) * UNITS_PER_TICK;
     if flags & 0x4 != 0 {
         value |= IMMEDIATE;

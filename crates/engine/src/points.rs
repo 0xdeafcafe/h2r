@@ -245,7 +245,7 @@ points! { ALL;
     /// Choose and reserve an available actor starting location.
     AI_CHOOSE_SQUAD_START @ 0x0020_39d0: [fn(squad: eax, available: stack 0, excluded: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
     /// Spawn an actor using the chosen starting location index.
-    AI_SPAWN_AT_SQUAD_START @ 0x0020_3780: [fn(character: eax, start: ecx, squad: stack 0, flags: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
+    AI_SPAWN_AT_SQUAD_START @ 0x0020_3780: [fn(context: eax, start: ecx, squad: stack 0, flags: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
     AI_SQUADS_INITIALIZE @ 0x0020_0b30: [fn() ret 0]; "docs/halo1/ai.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.

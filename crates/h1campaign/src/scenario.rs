@@ -1103,7 +1103,7 @@ pub fn write(
         h1ai::control::install_automatic_destinations(
             &original_ai, &mut plan, &ai_options, &mut ai_control,
             &retained.overflow_hosts, subjects.follow_encounters.as_ref(),
-        );
+        ).map_err(|error| invalid(format!("AI migration orders: {error}")))?;
     }
     let generated_starts: Vec<_> = match &retained {
         Some((retained, _)) => retained.generated_starts.iter().copied().collect(),
