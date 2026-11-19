@@ -803,6 +803,9 @@ pub struct Converter<'a> {
     hud_bitmaps: HashMap<(u32, u8), TagId>,
     /// Meter copies of Halo 1 bitmaps ([`Self::meter_bitmap`]), by tag.
     meter_bitmaps: HashMap<u32, TagId>,
+    /// Base maps with a reflection mask as their alpha
+    /// ([`Self::masked_bitmap`]), by (base, mask) tag.
+    masked_bitmaps: HashMap<(u32, u32), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -854,6 +857,7 @@ impl<'a> Converter<'a> {
             weapon_hud_skips: HashMap::new(),
             hud_bitmaps: HashMap::new(),
             meter_bitmaps: HashMap::new(),
+            masked_bitmaps: HashMap::new(),
             roles: HashMap::new(),
             item_roles: HashMap::new(),
             vehicle_roles: HashMap::new(),
@@ -1891,9 +1895,22 @@ impl<'a> Converter<'a> {
         if group == "soso" && chosen.layout.stem != h1convert::shad::TEX_BUMP_ENV.stem {
             return None;
         }
+        // On tex_bump_env the base's alpha masks the reflection: a `soso`'s
+        // base takes its multipurpose map's red there (converter version
+        // 80; before, the base's own alpha, 1 on Halo 1's DXT1 weapon
+        // bases, so they reflected everywhere at full strength).
+        let mask = (chosen.layout.stem == h1convert::shad::TEX_BUMP_ENV.stem)
+            .then(|| h1convert::shad::soso_multipurpose(self.h1, tag))
+            .flatten();
         let mut maps = HashMap::new();
         for (role, m) in &chosen.maps {
-            let Some(id) = self.bitmap(m.bitmap) else { continue };
+            let id = match (role, mask) {
+                (h1convert::shad::Role::Base, Some(mask)) => {
+                    self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
+                }
+                _ => self.bitmap(m.bitmap),
+            };
+            let Some(id) = id else { continue };
             maps.insert(
                 *role,
                 h1convert::shad::Bound {
@@ -1926,6 +1943,48 @@ impl<'a> Converter<'a> {
         }
         let (_, conv, _) = h1bitmaps::convert_bitmap(self.h1, tag).ok()?;
         self.cached(tag, conv).ok()
+    }
+
+    /// The Halo 1 base map `base` with the red channel of `mask` (a
+    /// `soso`'s multipurpose map) as its alpha, DXT5
+    /// (`h1bitmaps::mask::red_into_alpha`), `<base name>_reflection_<mask
+    /// leaf>`, built once per pair. `None` when either does not read or
+    /// decode (the caller then takes the base as it is), or for a base of
+    /// more than one image.
+    fn masked_bitmap(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
+        let key = (base.0, mask.0);
+        if let Some(t) = self.masked_bitmaps.get(&key) {
+            return *t;
+        }
+        let out = self.bake_mask(base, mask);
+        self.masked_bitmaps.insert(key, out);
+        out
+    }
+
+    fn bake_mask(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
+        let tag = self.h1.tag(base).ok()?.clone();
+        let mtag = self.h1.tag(mask).ok()?.clone();
+        let bm = h1map::bitmap::Bitmap::read(self.h1, &tag).ok()?;
+        let mm = h1map::bitmap::Bitmap::read(self.h1, &mtag).ok()?;
+        if bm.images.len() != 1 || mm.images.is_empty() {
+            return None;
+        }
+        let (img, px) = h1bitmaps::mask::red_into_alpha(
+            &bm.images[0],
+            bm.pixels(self.h1, 0).ok()?,
+            &mm.images[0],
+            mm.pixels(self.h1, 0).ok()?,
+        )
+        .ok()?;
+        let mut baked = bm.clone();
+        baked.images[0] = img;
+        // Halo 1's format word: compressed with interpolated alpha (DXT5).
+        baked.encoding = h1bitmaps::mask::INTERPOLATED_ALPHA;
+        let mut px = Some(px);
+        let (conv, _) =
+            h1bitmaps::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default())).ok()?;
+        let leaf = mtag.name.rsplit('\\').next().unwrap_or(&mtag.name);
+        Some(self.tree.push(&format!("{}_reflection_{leaf}", tag.name), conv))
     }
 
     /// The Halo 1 bitmap `id` for a HUD element whose colour's alpha is

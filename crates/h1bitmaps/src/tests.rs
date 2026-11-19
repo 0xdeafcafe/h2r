@@ -376,3 +376,93 @@ fn short_pixels_are_refused_and_long_ones_cut() {
     let (_, r) = convert_with(&bm(img), |_| Ok(vec![0; 64])).unwrap();
     assert_eq!((r[0].lod_size, r[0].trimmed), (128, -64));
 }
+
+/// An alpha block keeps its extremes exactly and every texel within half
+/// a step of the 8-value mode, read back with Halo 2's decoder.
+#[test]
+fn an_alpha_block_reads_back_within_half_a_step() {
+    use crate::mask::alpha_block;
+    use gfx::dxt::{BcKind, decode_block};
+    let a: [u8; 16] = std::array::from_fn(|k| (k as u8 * 37) % 200 + 20);
+    let mut block = [0u8; 16];
+    block[..8].copy_from_slice(&alpha_block(&a));
+    let back = decode_block(BcKind::Bc3, &block);
+    let (hi, lo) = (*a.iter().max().unwrap(), *a.iter().min().unwrap());
+    let step = u32::from(hi - lo) / 7 + 1;
+    for (k, px) in back.iter().enumerate() {
+        assert!(u32::from(px[3].abs_diff(a[k])) <= step / 2 + 1, "texel {k}: {} for {}", px[3], a[k]);
+    }
+    assert!(back.iter().any(|p| p[3] == hi) && back.iter().any(|p| p[3] == lo));
+    // One value: both endpoints it, every index 0.
+    assert_eq!(alpha_block(&[9; 16]), [9, 9, 0, 0, 0, 0, 0, 0]);
+}
+
+/// A DXT1 four-colour block decoded and encoded again is the same block
+/// when its endpoints are both among its texels.
+#[test]
+fn a_colour_block_survives_a_round_trip() {
+    use crate::mask::colour_block;
+    use gfx::dxt::{BcKind, decode_block};
+    let mut block = [0u8; 8];
+    block[0..2].copy_from_slice(&0xf81fu16.to_le_bytes());
+    block[2..4].copy_from_slice(&0x07e0u16.to_le_bytes());
+    block[4..8].copy_from_slice(&0x1b4e_e4e4u32.to_le_bytes());
+    let px = decode_block(BcKind::Bc1, &block);
+    let rgb: [[u8; 3]; 16] = std::array::from_fn(|k| [px[k][0], px[k][1], px[k][2]]);
+    assert_eq!(colour_block(&rgb), block);
+    // As DXT5's colour half it reads back the same.
+    let mut full = [0u8; 16];
+    full[8..].copy_from_slice(&colour_block(&rgb));
+    let again = decode_block(BcKind::Bc3, &full);
+    for k in 0..16 {
+        assert_eq!(again[k][..3], px[k][..3], "texel {k}");
+    }
+}
+
+/// A DXT1 base with one mip level and an invented A8R8G8B8 mask: the
+/// result is DXT5 of the same size and chain, its colours the base's, its
+/// alpha the mask's red (level 0 within a DXT5 alpha step; level 1 the
+/// mask sampled at every other texel, within a step).
+#[test]
+fn a_base_takes_its_masks_red_as_alpha() {
+    use crate::decode::texture_desc;
+    use crate::mask::red_into_alpha;
+    let base = image(14, 0, [8, 8, 1], 1, DXT);
+    let mut block = [0u8; 8];
+    block[0..2].copy_from_slice(&0xf800u16.to_le_bytes());
+    block[2..4].copy_from_slice(&0x001fu16.to_le_bytes());
+    block[4..8].copy_from_slice(&0xe4e4_e4e4u32.to_le_bytes());
+    let base_px: Vec<u8> = block.iter().copied().cycle().take(base.pixel_size as usize).collect();
+    let mask = image(11, 0, [8, 8, 1], 0, LIN);
+    let pitch = texture_desc(&mask).unwrap().pitch as usize;
+    let mut mask_px = vec![0u8; mask.pixel_size as usize];
+    for y in 0..8 {
+        for x in 0..8 {
+            // B, G, R, A: red ramps along x, green and blue are noise.
+            mask_px[y * pitch + x * 4..][..4].copy_from_slice(&[0x55, 0xaa, (x * 32) as u8, 0x10]);
+        }
+    }
+    let (img, px) = red_into_alpha(&base, &base_px, &mask, &mask_px).unwrap();
+    assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+    assert_eq!((img.width, img.height, img.mip_count), (8, 8, 1));
+    assert_eq!(img.flags & h1map::bitmap::FLAG_COMPRESSED, h1map::bitmap::FLAG_COMPRESSED);
+    assert_eq!(img.pixel_size as usize, px.len());
+    let want = decode_image(&base, &base_px).unwrap();
+    let got = decode_image(&img, &px).unwrap();
+    assert_eq!(got.len(), 2);
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((g.width, g.height), (w.width, w.height));
+        for t in 0..(g.width * g.height) as usize {
+            assert_eq!(g.rgba[t * 4..t * 4 + 3], w.rgba[t * 4..t * 4 + 3], "level {} texel {t}", g.level);
+            let x = t as u32 % g.width;
+            let red = (x * (8 / g.width) * 32) as u8;
+            let a = g.rgba[t * 4 + 3];
+            // Within half a step of the block's 8-value mode (its range
+            // over 14): 96 over level 0's blocks, 192 over level 1's.
+            let tolerance = if g.width == 8 { 8 } else { 15 };
+            assert!(a.abs_diff(red) <= tolerance, "level {} texel {t}: alpha {a}, red {red}", g.level);
+        }
+    }
+    // The same inputs give the same bytes.
+    assert_eq!(red_into_alpha(&base, &base_px, &mask, &mask_px).unwrap().1, px);
+}

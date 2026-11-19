@@ -1287,18 +1287,26 @@ weapon, vehicle and character shaders) with its cube map and Halo 1's
 tints facing the eye and grazing. Halo 1's weapons take their metal from
 that reflection over dark base maps (the sniper rifle's averages 35 of
 255); the tex_bump copy drew them near black, most visibly in first
-person. Not carried: the `soso` multipurpose map (`+0xbc`), which masks
-the reflection in Halo 1; the reflection is masked by the base map's
-alpha instead (`tests/model_shaders_disc.rs`,
-`bloodgulch_sniper_metal_reflects_its_cube_map`). Every weapon `soso` on
-Blood Gulch has one, and on this (Xbox) disc its mask is the red channel
-(V: the sniper rifle's, DXT1 512x512, is red only, mostly dark: the metal
-reflects in places). The weapons' base maps are DXT1 with no alpha, so
-the converted weapons reflect everywhere at full strength. `tex_bump_env`
-has no mask map of its own: its only mask is the colour pass's alpha
-(base × detail), so carrying the multipurpose map means baking its red
-into the base map's alpha (a new bitmap per base and multipurpose pair,
-in a format with alpha); not done yet. A material with no Halo 1 base map to read names the
+person. **The reflection mask (converter version 80).** Halo 1 masks a
+`soso`'s reflection with its multipurpose map (`+0xbc`): every weapon
+`soso` on Blood Gulch has one, and on this (Xbox) disc the mask is its red
+channel (V: the sniper rifle's, DXT1 512x512, is red only, mostly dark:
+the metal reflects in places). `tex_bump_env` has no mask map of its own:
+the reflection is masked by the colour pass's alpha, the base map's times
+the detail's (`shad::TEX_BUMP_ENV`). Halo 1's weapon bases are DXT1 with
+no alpha, so through version 79 the converted weapons reflected everywhere
+at full strength. Now a `soso` drawn on `tex_bump_env` takes a copy of its
+base whose alpha is the multipurpose map's red
+(`h1bitmaps::mask::red_into_alpha`, `Converter::masked_bitmap`), named
+`<base>_reflection_<multipurpose leaf>` and built once per pair: DXT5, as
+retail's weapon bases are (V: the battle rifle's and sniper rifle's on
+Coagulation, 0x203), the base's colours re-encoded from its decoded
+blocks (exact where a DXT1 block's endpoints are among its texels) and
+its whole mip chain kept, the mask sampled at each level's size (nearest).
+A base or mask that does not decode keeps the plain base. Proof: h1bitmaps
+`a_base_takes_its_masks_red_as_alpha` and the block round trips;
+`tests/model_shaders_disc.rs`, `bloodgulch_sniper_metal_reflects_its_cube_map`
+(the sniper's converted base against its multipurpose red). A material with no Halo 1 base map to read names the
 base's model shader itself; Blood Gulch has none. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The

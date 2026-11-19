@@ -18,6 +18,7 @@
 pub mod atlas;
 pub mod convert;
 pub mod decode;
+pub mod mask;
 
 pub use convert::{LightmapPages, convert_bitmap, lightmap_pages};
 pub use decode::{BitmapExt, Rgba8Image, decode_image, texture_desc};

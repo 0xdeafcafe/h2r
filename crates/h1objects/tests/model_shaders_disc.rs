@@ -123,11 +123,70 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
     );
 }
 
+/// The converted base `name` (in `tree`) is DXT5 of the sniper rifle's
+/// base map's size and chain, its colours the base map's and its alpha the
+/// multipurpose map's red: Halo 1 masks the reflection with that red, and
+/// `tex_bump_env` with the colour pass's alpha (`h1bitmaps::mask`). DXT5's
+/// alpha is within half a step of its block's 8-value mode (a range of
+/// 255 over 14: 19); the colours are re-encoded from Halo 1's DXT1 blocks,
+/// exact but where a block used DXT1's three-colour mode.
+fn sniper_base_alpha_is_its_multipurpose_red(h1: &H1Map, tree: &h1objects::convert::Tree, name: &str) {
+    use h1bitmaps::BitmapExt;
+    let (_, conv) = tree.tags.iter().find(|(n, _)| n == name).expect("the masked base");
+    assert_eq!(conv.group.0, *b"bitm");
+    let images = conv
+        .root
+        .fixups
+        .iter()
+        .find_map(|f| match &f.kind {
+            FixupKind::Block { child, .. } if f.offset == 0x44 => Some(child),
+            _ => None,
+        })
+        .expect("images block");
+    let img = h1map::bitmap::Image::parse(&images.bytes).unwrap();
+    assert_eq!(img.format, h1map::bitmap::PixelFormat::Dxt5);
+    let got = h1bitmaps::decode_image(&img, &conv.raw[0].0).unwrap();
+    let read = |path: &str| {
+        let t = h1
+            .tags()
+            .iter()
+            .find(|t| t.name == path && t.group == Group::new(b"bitm"))
+            .unwrap();
+        h1map::bitmap::Bitmap::read(h1, t).unwrap()
+    };
+    let base = read("weapons\\sniper rifle\\bitmaps\\sniper rifle");
+    let mask = read("weapons\\sniper rifle\\bitmaps\\sniper rifle multipurpose");
+    let b = &base.images[0];
+    assert_eq!((img.width, img.height, img.mip_count), (b.width, b.height, b.mip_count));
+    let colour = base.decode(h1, 0, 0).unwrap();
+    let red = mask.decode(h1, 0, 0).unwrap();
+    assert_eq!((red.width, red.height), (colour.width, colour.height), "same size");
+    let top = got.iter().find(|l| l.level == 0 && l.face == 0).unwrap();
+    let n = (top.width * top.height) as usize;
+    let (mut alpha_off, mut colour_off, mut worst) = (0u64, 0u64, 0u8);
+    for t in 0..n {
+        let d = top.rgba[t * 4 + 3].abs_diff(red.rgba[t * 4]);
+        worst = worst.max(d);
+        alpha_off += u64::from(d);
+        for c in 0..3 {
+            colour_off += u64::from(top.rgba[t * 4 + c].abs_diff(colour.rgba[t * 4 + c]));
+        }
+    }
+    let (alpha_mean, colour_mean) = (alpha_off as f64 / n as f64, colour_off as f64 / (3 * n) as f64);
+    eprintln!(
+        "{name}: alpha off its red by {alpha_mean:.2} on average, {worst} at most; colour by {colour_mean:.2}"
+    );
+    assert!(worst <= 19, "alpha within half a DXT5 step of the red");
+    assert!(alpha_mean < 3.0);
+    assert!(colour_mean < 1.0, "the base's colours");
+}
+
 /// Blood Gulch's sniper rifle (`weap weapons\sniper rifle\sniper rifle`):
 /// its metal `soso` has a reflection cube map, so it is rebuilt on
 /// `tex_bump_env` drawing its own base map and that cube, with Halo 1's
 /// tints, not the tex_bump copy of its dark base map alone (the first
-/// person drew near black). A `soso` without a cube map (the assault
+/// person drew near black); its base map's alpha is its multipurpose
+/// map's red, which masks the reflection. A `soso` without a cube map (the assault
 /// rifle's display) keeps the tex_bump copy.
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
@@ -175,7 +234,11 @@ fn bloodgulch_sniper_metal_reflects_its_cube_map() {
     let names: Vec<&str> = metal.iter().filter_map(|&id| named(id)).collect();
     eprintln!("sniper rifle metal: tree's references {names:?}");
     assert!(metal.contains(&env), "drawn with tex_bump_env");
-    assert!(names.contains(&"weapons\\sniper rifle\\bitmaps\\sniper rifle"), "its base map");
+    // Its base map, with the multipurpose map's red as its alpha
+    // (converter version 80).
+    let masked = "weapons\\sniper rifle\\bitmaps\\sniper rifle_reflection_sniper rifle multipurpose";
+    assert!(names.contains(&masked), "its base map, masked");
+    sniper_base_alpha_is_its_multipurpose_red(&h1, tree, masked);
     assert!(
         names.contains(&"vehicles\\warthog\\bitmaps\\reflection diffuse metal"),
         "its reflection cube"

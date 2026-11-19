@@ -1609,6 +1609,26 @@ pub const SOSO_PARALLEL_BRIGHTNESS: usize = 0x154;
 pub const SOSO_PARALLEL_COLOR: usize = 0x158;
 pub const SOSO_CUBE: usize = 0x164;
 
+/// `soso` multipurpose map (`+0xbc`, a `bitm` reference). On the Xbox disc
+/// its red channel masks the reflection (V: every weapon `soso` on Blood
+/// Gulch names one; the sniper rifle's is red only, dark but for its
+/// metal). [`TEX_BUMP_ENV`] masks the reflection with the colour pass's
+/// alpha (the base map's times the detail's), so a converted `soso` on it
+/// takes a base whose alpha is this map's red
+/// (`h1bitmaps::mask::red_into_alpha`).
+pub const SOSO_MULTIPURPOSE: usize = 0xbc;
+
+/// The `soso` `tag`'s multipurpose map ([`SOSO_MULTIPURPOSE`]), if it names
+/// one that is in the map; `None` for another group.
+pub fn soso_multipurpose(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<h1map::TagId> {
+    if tag.group != h1map::Group::new(b"soso") {
+        return None;
+    }
+    let r = h1map::TagRef::read(h1.tag_data(tag).ok()?, SOSO_MULTIPURPOSE)?;
+    (r.group == h1map::Group::new(b"bitm") && !r.id.is_none() && h1.tag(r.id).is_ok())
+        .then_some(r.id)
+}
+
 /// A `soso`'s reflection for [`TEX_BUMP_ENV`], as [`senv_reflection`]'s:
 /// the tints are Halo 1's colours as they are (a `soso` has no separate
 /// specular brightness).
