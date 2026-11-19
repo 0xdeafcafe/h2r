@@ -230,6 +230,10 @@ points! { ALL;
     AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
     /// Selects the uncover behavior from presearch when a tracked target is available.
     AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], hot; "docs/halo1/ai-control.md";
+    AI_UNCOVER_ENTER @ 0x001b_8540: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_BEGIN @ 0x001b_85a0: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_UPDATE @ 0x001b_89d0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_CONTROL @ 0x001b_8ae0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
     /// Starts a firing burst, setting the actor timer and angular spread.
     AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], hot; "docs/halo1/ai-control.md";
     /// Chooses the pause between bursts and saves it in the actor timer.

@@ -9,7 +9,7 @@ use engine::{
 };
 use feature::{Builder, Flow, points};
 
-use super::{NONE, actors, playfight, preference};
+use super::{NONE, actors, playfight, preference, uncover_targetless};
 
 const UNCOVER: u16 = 35;
 const OBEY: u16 = 4;
@@ -97,7 +97,7 @@ fn request(actor: u32, stack: u32) -> GuestCall {
     GuestCall::new(INSTALL_BEHAVIOR).ebx(1).args(
         [actor, u32::from(UNCOVER), payload]
             .into_iter()
-            .chain([0; 16]),
+            .chain(uncover_targetless::payload()),
     )
 }
 
@@ -181,6 +181,6 @@ mod tests {
         assert_eq!(call.target, INSTALL_BEHAVIOR);
         assert_eq!(call.ebx, Some(1));
         assert_eq!(call.args[..3], [0x8123_0010, 35, 0x8000c0]);
-        assert_eq!(call.args[3..], [0; 16]);
+        assert_eq!(call.args[3..], uncover_targetless::payload());
     }
 }

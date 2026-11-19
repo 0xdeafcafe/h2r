@@ -907,6 +907,13 @@ fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
     let uncover = target.read_u32(0x0046eeb8 + 35 * 4).unwrap();
     assert_eq!(uncover, 0x0047e908);
     assert_eq!(target.read_u32(uncover + 0x18).unwrap(), 0x001b8540);
+    assert_eq!(target.read_u32(uncover + 0x40).unwrap(), 0x001b85a0);
+    assert_eq!(target.read_u32(uncover + 0x44).unwrap(), 0x001b89d0);
+    assert_eq!(target.read_u32(uncover + 0x48).unwrap(), 0x001b8ae0);
+    call(&source, 0x001674be, 0x00165720);
+    call(&source, 0x0016573b, 0x0016e070);
+    call(&target, 0x001b2134, 0x002605d0);
+    call(&target, 0x001b2190, 0x002626b0);
     let presearch = target.read_u32(0x0046eeb8 + 28 * 4).unwrap();
     assert_eq!(target.read_u32(presearch + 0x10).unwrap(), 0x001b44d0);
 }

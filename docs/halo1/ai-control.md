@@ -81,9 +81,13 @@ tests.
 **Built.** Platoon flag `0x1` requests uncover once per actor migration.
 Halo 1 queues it at `0x0014ff6d` and consumes it at `0x001673d0`.
 Halo 2 behavior 35 uses native installer `0x001a80e0` and the uncover
-record at `0x0047e908`. The native initializer requires a tracked
-interest. A targetless Halo 1 request uses the point selector
-`0x0016e070`, which has no equivalent in this initializer.
+record at `0x0047e908`. Halo 1 passes target `NONE` to its point
+selector at `0x0016e070`. The marked Halo 2 uncover record therefore
+uses the non-targeted firing-position planner at `0x001b1f70`. That
+planner searches the active squad areas at `0x002605d0` and installs
+the path at `0x002626b0`. The action follows that path until completion
+and uses the stock uncover continuation at `0x001b8c60`.
+Ordinary uncover retains its tracked-interest inputs.
 
 ## Roster dependency and remaining parity work
 
@@ -106,10 +110,8 @@ unnamed automatic destinations use reusable squad orders and keep their
 source order and masks. Slot 300 marker 40 passes the offset of this data
 in the scenario script section.
 
-- Halo 2 uncover requires a tracked interest at `0x001b8540`. Halo 1
-  can choose a firing position without a tracked enemy at `0x00165720`.
-  Its normal uncover predicate also has actor-definition thresholds absent
-  from the Halo 2 ranker.
+- Halo 1's ordinary uncover predicate has actor-definition thresholds
+  absent from the Halo 2 ranker.
 - Timer scheduling and expiry carry over. Contact derives from Halo 2's
   interest classifier, which differs from Halo 1's property classifier at
   `0x0015080c`. The hold gates native throttle. Halo 1 also checks its

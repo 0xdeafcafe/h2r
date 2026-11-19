@@ -21,6 +21,7 @@ mod state;
 mod teleport;
 mod timers;
 mod uncover;
+mod uncover_targetless;
 mod vehicles;
 
 const NONE: u32 = u32::MAX;
@@ -110,6 +111,7 @@ impl feature::Feature for AiControl {
         );
         playfight::register_firing_hooks(b);
         uncover::register_playfight_hook(b);
+        uncover_targetless::register(b);
         teleport::register_spawn_hook(b);
         b.raw().before(
             &points::AI_SUBMIT_UNIT_CONTROL,
