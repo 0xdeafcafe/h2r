@@ -13,8 +13,9 @@
 //!   record index `<< 8`, read back with `sar 8` and `movsx` of the low
 //!   word at `0x0004cc02`), `+0x10` layer mask.
 //! - Structure and model geometry build with `0x0004cbf0`; its render
-//!   record (`0x004ba138 + 0x20 · index`) has `+4` the object handle, `-1`
-//!   for BSP clusters and instanced geometry.
+//!   record (`0x004ba138 + 0x20 · index`) has `+4` an object's render
+//!   model tag datum, `-1` for BSP clusters and instanced geometry (not the
+//!   object handle: [`crate::objects::record_owner`] finds that).
 
 use crate::camera::{GuestRead, GuestWrite};
 
@@ -48,8 +49,8 @@ pub fn is_structure_item(mem: &dyn GuestRead, item: u32) -> Option<bool> {
     if record < 0 {
         return Some(false);
     }
-    let handle = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32 + 4)?;
-    Some(handle == u32::MAX)
+    let model = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32 + 4)?;
+    Some(model == u32::MAX)
 }
 
 /// Clears `layer`'s bit on every BSP item of the current list whose

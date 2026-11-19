@@ -13,7 +13,10 @@ use feature::native_transparents::{self, Host, NativeTransparents};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::objects::{OBJECTS, ObjectFrame};
+use native_render::objects::{
+    BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, OBJECTS, ObjectFrame, RECORD_LIGHTING, RECORD_MODEL,
+    RENDER_STATE_CACHE,
+};
 use native_render::skip::RENDER_RECORDS;
 use native_render::transparent::{DATA_OFFSET, Entry, GEOMETRY_HANDLER, Run, Source};
 
@@ -87,9 +90,11 @@ fn entry(m: &mut FlatMemory, i: u32, shader: u32) -> u32 {
 const ARRAY: u32 = 0x0058_0000;
 const HEADERS: u32 = 0x0058_1000;
 const BODIES: u32 = 0x0059_0000;
+const CACHE: u32 = 0x0057_0000;
+const CACHE_DATA: u32 = 0x0057_1000;
 
 /// Object `slot` of definition `def` with `nodes` node matrices (node `n`
-/// at x = n); returns its handle.
+/// at x = n), its render-state cache record `slot`; returns its handle.
 fn object(m: &mut FlatMemory, slot: u32, def: u32, nodes: u32) -> u32 {
     m.set_u32(OBJECTS, ARRAY).unwrap();
     m.set_u32(ARRAY + 0x38, 16).unwrap();
@@ -109,13 +114,24 @@ fn object(m: &mut FlatMemory, slot: u32, def: u32, nodes: u32) -> u32 {
             m.set_u32(at + 4 * k as u32, w.to_bits()).unwrap();
         }
     }
-    salt << 16 | slot
+    let handle = salt << 16 | slot;
+    m.set_u32(RENDER_STATE_CACHE, CACHE).unwrap();
+    m.set_u32(CACHE + 0x38, 16).unwrap();
+    m.set_u32(CACHE + 0x44, CACHE_DATA).unwrap();
+    m.set_u32(CACHE_DATA + CACHE_RECORD_SIZE * slot + CACHE_OWNER, handle).unwrap();
+    m.set_u32(body + BODY_RENDER_STATE, (0x4000 + slot) << 16 | slot).unwrap();
+    handle
 }
 
-/// Entry `i` of object `handle` with shader `0xe000_0000 | shader`.
+/// Entry `i` of object `handle` with shader `0xe000_0000 | shader`: its
+/// render record holds a model datum and the object's lighting pointer,
+/// which names the object through its render-state cache record.
 fn object_entry(m: &mut FlatMemory, i: u32, shader: u32, handle: u32) -> u32 {
     let data = entry(m, i, shader);
-    m.set_u32(RENDER_RECORDS + 0x20 * (i + 1) + 4, handle).unwrap();
+    let record = RENDER_RECORDS + 0x20 * (i + 1);
+    m.set_u32(record + RECORD_MODEL, 0xe100_0000 | i).unwrap();
+    let lighting = CACHE_DATA + CACHE_RECORD_SIZE * (handle & 0xffff) + CACHE_LIGHTING;
+    m.set_u32(record + RECORD_LIGHTING, lighting).unwrap();
     data
 }
 

@@ -3,8 +3,11 @@
 //! observers on synthetic guest memory: the objects the host draws lose
 //! layer 3's bit for the base layers' layer 3 and get it back after, with
 //! their node matrices handed to the host; nothing changes without a host,
-//! from another caller, for a shader or an object left to the D3D path,
-//! or when the host cannot draw.
+//! from another caller (first person among them), for a shader or an
+//! object left to the D3D path, or when the host cannot draw. Each item's
+//! object is named as the game names it: the render record's lighting
+//! pointer, the render-state cache record it points into, that record's
+//! owner, confirmed by the owner's cache handle.
 
 use std::sync::{Arc, Mutex};
 
@@ -13,7 +16,10 @@ use feature::native_objects::{self, Host, NativeObjects, NativeSet, Stop};
 use feature::plan::Base;
 use feature::{Registry, Switches};
 use native_render::camera::{RENDER_CAMERA, RenderCamera};
-use native_render::objects::{ObjectFrame, OBJECTS, SCENE_LAYER3_RETURN};
+use native_render::objects::{
+    BODY_RENDER_STATE, CACHE_LIGHTING, CACHE_OWNER, CACHE_RECORD_SIZE, FIRST_PERSON_LAYER3_RETURN, OBJECTS, ObjectFrame,
+    RECORD_LIGHTING, RECORD_MODEL, RENDER_STATE_CACHE, SCENE_LAYER3_RETURN,
+};
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
 
 #[test]
@@ -45,6 +51,8 @@ const LIST: u32 = 0x004c_1a48;
 const ARRAY: u32 = 0x0058_0000;
 const HEADERS: u32 = 0x0058_1000;
 const BODIES: u32 = 0x0059_0000;
+const CACHE: u32 = 0x0057_0000;
+const CACHE_DATA: u32 = 0x0057_1000;
 const ITEMS: u32 = 0x0060_0000;
 const DEF_A: u32 = 0xe000_0100;
 const DEF_B: u32 = 0xe000_0200;
@@ -74,7 +82,7 @@ impl Host for Stub {
 }
 
 /// Object `slot` with definition `def` and `nodes` node matrices (node `n`
-/// at x = n); returns its handle.
+/// at x = n), its render-state cache record `slot + 5`; returns its handle.
 fn object(m: &mut FlatMemory, slot: u32, def: u32, nodes: u32) -> u32 {
     let salt = 0x8000 + slot;
     let header = HEADERS + 0xc * slot;
@@ -91,7 +99,17 @@ fn object(m: &mut FlatMemory, slot: u32, def: u32, nodes: u32) -> u32 {
             m.set_u32(at + 4 * k as u32, w.to_bits()).unwrap();
         }
     }
-    salt << 16 | slot
+    let handle = salt << 16 | slot;
+    let index = slot + 5;
+    m.set_u32(CACHE_DATA + CACHE_RECORD_SIZE * index + CACHE_OWNER, handle).unwrap();
+    m.set_u32(body + BODY_RENDER_STATE, (0x4000 + index) << 16 | index).unwrap();
+    handle
+}
+
+/// The lighting pointer a render record of object `handle` holds: its
+/// render-state cache record's `+0x44`.
+fn lighting(handle: u32) -> u32 {
+    CACHE_DATA + CACHE_RECORD_SIZE * ((handle & 0xffff) + 5) + CACHE_LIGHTING
 }
 
 /// Layer 3 current; items: object A (shader 0x10), A (0x11), object B
@@ -101,6 +119,9 @@ fn guest() -> (FlatMemory, u32, u32) {
     m.set_u32(OBJECTS, ARRAY).unwrap();
     m.set_u32(ARRAY + 0x38, 16).unwrap();
     m.set_u32(ARRAY + 0x44, HEADERS).unwrap();
+    m.set_u32(RENDER_STATE_CACHE, CACHE).unwrap();
+    m.set_u32(CACHE + 0x38, 16).unwrap();
+    m.set_u32(CACHE + 0x44, CACHE_DATA).unwrap();
     let a = object(&mut m, 1, DEF_A, 2);
     let b = object(&mut m, 2, DEF_B, 1);
     m.set_u32(CURRENT_LAYER, 3).unwrap();
@@ -108,7 +129,7 @@ fn guest() -> (FlatMemory, u32, u32) {
     m.set_u32(LIST + 4, 4).unwrap();
     m.set_u32(LIST + 0xc, 0).unwrap();
     m.set_u32(LIST + 0x14, ITEMS).unwrap();
-    for (i, (shader, record, handle)) in [(0x10u32, 1u32, a), (0x11, 2, a), (0x10, 3, b), (0x10, 4, u32::MAX)]
+    for (i, (shader, record, owner)) in [(0x10u32, 1u32, Some(a)), (0x11, 2, Some(a)), (0x10, 3, Some(b)), (0x10, 4, None)]
         .into_iter()
         .enumerate()
     {
@@ -117,7 +138,12 @@ fn guest() -> (FlatMemory, u32, u32) {
         m.set_u32(at + 8, 0xe000_0000 | shader).unwrap();
         m.set_u32(at + 0xc, record << 8).unwrap();
         m.set_u32(at + 0x10, 0b1010).unwrap();
-        m.set_u32(RENDER_RECORDS + 0x20 * record + 4, handle).unwrap();
+        // The record's +4 is the model datum (-1: the BSP), never the
+        // handle; the object comes from the lighting pointer at +0x10.
+        let at = RENDER_RECORDS + 0x20 * record;
+        let (model, light) = owner.map_or((u32::MAX, 0), |h| (0xe100_0000 | record, lighting(h)));
+        m.set_u32(at + RECORD_MODEL, model).unwrap();
+        m.set_u32(at + RECORD_LIGHTING, light).unwrap();
     }
     let c = RENDER_CAMERA;
     for (i, v) in [0.0f32, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0].into_iter().enumerate() {
@@ -152,8 +178,11 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     }
     native_objects::set_host(stub.clone());
 
-    // Another caller of the layer draw (first person, another view kind).
+    // Another caller of the layer draw (another view kind), and the
+    // first-person draw's: both left to D3D.
     native_objects::before_layer(&mut m, 0x0002_afa5);
+    assert_eq!(masks(&m), all);
+    native_objects::before_layer(&mut m, FIRST_PERSON_LAYER3_RETURN);
     assert_eq!(masks(&m), all);
     assert!(stub.drawn.lock().unwrap().is_empty());
 
@@ -192,13 +221,14 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     native_objects::restore_pending(&mut m);
     assert_eq!(masks(&m), all);
 
-    // Where each layer-3 call ended: no host, the wrong caller, drawn
-    // twice, refused once; B wanted once.
+    // Where each layer-3 call ended: no host, the wrong caller, first
+    // person, drawn twice, refused once; B wanted once.
     assert_eq!(native_objects::stop_count(Stop::NoHost), 1);
     assert_eq!(native_objects::stop_count(Stop::WrongCaller), 1);
+    assert_eq!(native_objects::stop_count(Stop::FirstPerson), 1);
     assert_eq!(native_objects::stop_count(Stop::Drawn), 2);
     assert_eq!(native_objects::stop_count(Stop::DrawRefused), 1);
-    assert_eq!(native_objects::diagnostics(), (5, 1));
+    assert_eq!(native_objects::diagnostics(), (6, 1));
     // No model loaded for anything yet: live object items, none accepted;
     // every item of an unknown definition asks (A twice, B once; the host
     // dedupes).
@@ -206,7 +236,7 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(masks(&m), all);
     assert_eq!(native_objects::stop_count(Stop::NoneAccepted), 1);
-    assert_eq!(native_objects::diagnostics(), (6, 4));
+    assert_eq!(native_objects::diagnostics(), (7, 4));
     *stub.set.lock().unwrap() = saved;
     // No live object behind any item: counted apart, so a live run can
     // tell "no models yet" from "no objects found".
@@ -214,7 +244,15 @@ fn objects_skip_layer_3_hand_over_their_nodes_and_get_their_bits_back() {
     native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
     assert_eq!(native_objects::stop_count(Stop::NoObjectItems), 1);
     m.set_u32(OBJECTS, ARRAY).unwrap();
-    assert!(native_objects::summary().contains("drawn 2"), "{}", native_objects::summary());
+    // Nor when the records' lighting pointers lead nowhere (no cache).
+    m.set_u32(RENDER_STATE_CACHE, 0).unwrap();
+    native_objects::before_layer(&mut m, SCENE_LAYER3_RETURN);
+    assert_eq!(native_objects::stop_count(Stop::NoObjectItems), 2);
+    assert_eq!(masks(&m), all);
+    m.set_u32(RENDER_STATE_CACHE, CACHE).unwrap();
+    let summary = native_objects::summary();
+    assert!(summary.contains("drawn 2") && summary.contains("first person 1"), "{summary}");
+    assert!(summary.contains("object records"), "{summary}");
 
     // Another layer: nothing.
     *stub.refuse.lock().unwrap() = false;
