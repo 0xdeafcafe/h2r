@@ -168,3 +168,17 @@ fn numeric_countdown_reads_the_duration_and_start_flag_after_the_extra_argument(
     restored.tick(30 * 3724);
     assert_eq!(restored.remaining, 0);
 }
+
+#[test]
+fn only_the_campaign_authority_dispatches_a_cinematic_tick_request() {
+    let mut g = FakeGuest::new();
+    const SIM: u32 = 0x12000;
+    const CINEMA: u32 = 0x32000;
+    g.put_u32(points::SIM_GLOBALS.base,SIM).put_u32(CINEMATIC_GLOBALS,CINEMA);
+    for (mode,author) in [(1,true),(2,true),(3,false),(4,false),(5,false)] {
+        g.put_u32(SIM+SIM_MODE,mode).put_u8(CINEMA+CINEMATIC_ACTIVE,1);
+        assert_eq!(authoritative_cinematic(&g),Ok(author));
+        g.put_u8(CINEMA+CINEMATIC_ACTIVE,0);
+        assert_eq!(authoritative_cinematic(&g),Ok(false));
+    }
+}

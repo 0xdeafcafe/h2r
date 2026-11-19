@@ -1987,6 +1987,11 @@ fn install_scripts(
     if persistent >= threads as usize {
         return Err(invalid(format!("{persistent} persistent scripts leave no free thread in {threads}")));
     }
+    if let Some(op) = s.catalog.index_of("cinematic_screen_effect_set_video")
+        && t.nodes.iter().any(|n| n.live() && !n.atom() && !n.script_call() && n.opcode() == op)
+    {
+        crate::cutscenes::install_video(h1, set, &mut c)?;
+    }
     let (sounds, sounds_dropped) = install_named_sounds(h1, set, &c, max_sounds)?;
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).

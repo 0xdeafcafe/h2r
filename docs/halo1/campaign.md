@@ -535,26 +535,35 @@ What each layer writes, from the base map up:
 | Sounds | **Built.** Every source looping sound, its tracks and details, and each distinct referenced sound rebuilt in the level's gestalt. All loops survive the fresh-map and pruning passes. Script sounds, object attachments, BSP background palettes and environments resolve by tag. The a30 entry pod plays its Halo 1 lifeboat track. Source inventory and cache evidence are in [sounds.md](sounds.md#campaign-loops-and-cache-slots-built). | End-to-end disc audit and playback pending |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
-### Cutscenes (played on eight levels)
+### Cutscenes on all ten levels
 
-`h1campaign::Options::cutscenes` is `None` by default: each level takes
-its own policy from `h1campaign::cutscenes::LEVELS` (`Some(..)` forces
-one). `Cutscenes::Play` compiles the scripts as written;
-`PlayShortPaths` plays the cinematics but still wakes a10's
-`fast_setup` for `tutorial_setup` (`SHORT_PATHS`: the cryo tutorial
-waits on `player_action_test_look_relative_left`/`_right`, which the
-progression lane maps; until then it would hold input forever); `Skip`
-compiles every call of the level's `cinematic_skip_start` guard as
-`false`, the path Halo 1 takes after a skip (its fade in,
-`cinematic_stop`, control back), and takes the short paths too.
+**Built.** The default policy is `Cutscenes::Play` on every level. The
+compiler preserves Halo 1's skip guards, including a player's deliberate
+skip, and a10 wakes its authored cryo tutorial. Its signed look latches,
+controller layout and pitch settings come from the converted unit builtins.
+An explicit `Options::cutscenes` can still select the shorter diagnostic paths.
 
-| Level | Policy | Why |
-|---|---|---|
-| a10 | `PlayShortPaths` | every cutscene converts; the tutorial is the progression lane's |
-| a30, a50, b30, c20, d20 | `Play` | every cutscene converts |
-| c10, c40 | `Play` | every cutscene converts; the command lists that walk actors through x50 and c40's cinematics are stubbed (they stand) |
-| b40 | `Skip` | at the tag memory bound: converted without level data and graphs (`Lean::LevelData`), so its cinematics would have no camera points, flags or animations |
-| d40 | `Skip` | policy set from the earlier 280 MiB cache measurement. Re-evaluate cinematic playback in the enlarged cache |
+The ordinary fresh writer retains the reachable base tags and resources.
+Generated AI and cinematic globals share identical scalar initializer nodes
+while retaining independent checkpointed cells. Each duplicate removed saves
+one 20-byte syntax node. A full fresh scripted conversion reports a capacity
+error before a fallback can discard content.
+The earlier b40 limit was measured on the pinned base. The version 55
+fresh-assets measurement above used `0x966000` of `0xc24000` bytes with
+Halo 1 assets. Graphs already converted for an object are shared with
+scripts. Recordings, camera points, flags, titles and the remaining graphs
+have their original scenario indices or named tag references. d40 uses the
+native campaign cache expansion on the sounds branch, which raises slots
+4 and 5 up to the header validator's 520 MiB ceiling. The disc readback
+requires the full conversion on both levels. The earlier measurements
+below are historical, not measurements of this change.
+
+**Built.** x50 and c40 actor movement runs through the rebuilt command
+scripts. The disc readback walks each cinematic's original command-list
+calls and compares their targets in order with the emitted
+`cs_run_command_script` calls. On the source disc c10 has ten by-unit
+commands, including Mendoza and Johnson's looks. c40 has twenty, including
+the Monitor's flight and individual orders for four sentinels.
 
 What a cutscene needed (survey `cutscene_survey`, h1campaign
 `tests/cutscenes.rs`, over all ten levels):
@@ -640,8 +649,8 @@ What a cutscene needed (survey `cutscene_survey`, h1campaign
 The [unit builtin mappings](script-builtins.md) cover object beautification
 and PVS activation, emotion and animation modes, the vehicle seat labels,
 near clip distance, dynamic lights, BSP object spawn suppression and camera
-shake. The Halo 1 cinematic screen-effect setters still need the rendering
-work described there.
+shake. The same page describes the rebuilt screen effects, model reflection
+tint, light-cache invalidation and co-op tick authority.
 
 **a10's opening (`x10`), call by call** (2026-11-18, converter version
 67). `x10` calls `autumn_glory_1`, `autumn_glory_2` (space, `a10_space`),
@@ -651,13 +660,10 @@ are the Halo 2 builtins of the same name with the same parameter types,
 so every duration stays a count of ticks (`cinematic_calls_keep_halo1_s_ticks`,
 h1scripts: `fade_in`/`fade_out` `(real real real short)`, `camera_set`
 `(cutscene_camera_point short)`; retail Halo 2's own literals are 15, 30,
-60, 500 ticks). No fade or camera call is mistranslated. Stubbed in `x10`:
-`render_lights` (`hangar_1` turns dynamic lights off, `hangar_2` on),
-`rasterizer_lights_reset_for_new_map` (space), `game_skip_ticks`,
-`object_pvs_activate`, `cinematic_set_near_clip_distance` (0.0625, 0.01
-on the bridge), and the three `cinematic_screen_effect_set_*` calls, while
-`cinematic_screen_effect_start` (705) is kept: the bridge's last second
-starts Halo 2's screen effect with nothing set. The cinematic's
+60, 500 ticks). No fade or camera call is mistranslated. **Built.** The hangar toggles dynamic lights, the space scene invalidates
+cached lighting, and the bridge updates its PVS, clip distance and screen
+effect. Extra cinematic ticks go through the native simulation batch.
+The cinematic's
 "big whirring sound" was a10's continuous `dialog_flavor_captain`
 restarting each tick (scripts.md, Sleeping forever), fixed in version 67.
 The reported flicker has no cause in the script translation; what a run
@@ -709,7 +715,7 @@ load (Objects, above): a10's x10 crew in the space BSP (`keyes_x10_space`,
 `space_crew_1` to `_3`, at about (500, -147, -28)), Keyes and the bridge
 crew, the hangar marines. Skipped cinematics never create them.
 
-**Tag memory and file size.** Graphs put their animation data in the
+**Historical pinned sizes.** Graphs put their animation data in the
 map file (raw, measured here with the retail 280 MiB slot),
 recordings their streams in tag memory, inside the scenario. These
 measurements predate the change to keep recordings on every lean step. The Without column uses `Options::cutscene_data` off.
@@ -739,9 +745,8 @@ ladder (`h1campaign::Lean`) drops the graphs
 the campaign cache's file size is converted again with less music, then
 without the background sounds, then without the graphs (Engine caps, "Music, ambience and the map file"). To play b40's cutscenes, b40 needs
 its level data plus the cinematics' graphs back, which
-is what dropping the base level's unreachable tags (`h1convert::fresh`'s
-prune, for campaign) would free; d40 needs `0x1baa00` bytes of file, which
-the same prune frees from the base's raw.
+is space the fresh writer recovers by dropping the base level's unreachable
+tags. The historical d40 deficit was `0x1baa00` bytes of animation data.
 
 Placed objects Halo 1 leaves to the scripts are not created at load
 (Objects, above): a10's x10 crew in the space BSP, Keyes and the bridge
@@ -882,14 +887,15 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   nodes, as fresh a10's lifepod) gets one, so `vehicle_new` creates it:
   a stand-in sphere in version 38, Halo 1's collision as Havok
   polyhedra since 43 (tag-definitions.md, Physics models from Halo 1).
-- **b40's level data.** b40 is at the tag memory bound. A level over
+- **Historical pinned b40.** The pinned conversion reached the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
   in turn: the seat table (`SeatTable`), Halo 1's textures on object models
   (`ObjectTextures`), the cutscenes' graphs and
   recordings (`CutsceneData`), the level data (`LevelData`). A level
   still over the tag memory bound places fewer devices
   (`Options::devices`): no light fixtures (lamp models that give no
-  light in Halo 2), then none. The older pinned b40 build converted only without its level data (`0xc22000` of `0xc24000`): its
+  light in Halo 2), then none. That pinned build
+  converted only without its level data (`0xc22000` of `0xc24000`): its
   74 calls naming a flag, camera point, title or device group are
   stubbed (the insertion's teleports and camera moves among them), and
   that build omitted its music.

@@ -233,6 +233,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
     ) -> Option<native_render::objects::ClearedObjects> {
         use timeline::native::{Metric, Stage, Timer};
+        // The guest material binder reads the cinematic reflection endpoints per draw.
+        if crate::h1_cinematics::reflection_active(mem) { return None; }
         let planning = Timer::start(Stage::Objects, Metric::PrepareNs);
         let models = {
             let st = self.state.lock().unwrap_or_else(|e| e.into_inner());

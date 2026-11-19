@@ -185,6 +185,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         models: HashMap<u16, u32>,
         masks: ItemMasks,
     ) -> Option<ClearedObjects> {
+        if crate::h1_cinematics::reflection_active(mem) { return None; }
         let gpu = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(

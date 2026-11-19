@@ -126,6 +126,7 @@ pub(crate) const RETAIL_BUILTINS: &[Identified] = &[
 /// Halo 1 behavior supplied by the host in converted campaigns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeBuiltin {
+    ResetLightCaches,
     GameTime,
     GameSpeed,
     GameSkipTicks,
@@ -158,6 +159,14 @@ pub struct RuntimeSlot {
 /// calls, and 729 and 843 for the countdown. The remaining slots have
 /// discarded or constant-returning evaluators.
 pub const RUNTIME_SLOTS: &[RuntimeSlot] = &[
+    RuntimeSlot {
+        builtin: RuntimeBuiltin::ResetLightCaches,
+        name: "rasterizer_lights_reset_for_new_map",
+        index: 687,
+        evaluate: 0x002a_b130,
+        returns: "void",
+        parameters: &[],
+    },
     RuntimeSlot {
         builtin: RuntimeBuiltin::CountdownStop,
         name: "numeric_countdown_timer_stop",

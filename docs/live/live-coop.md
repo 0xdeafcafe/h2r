@@ -2366,6 +2366,22 @@ mode at `+8`):
 `0x00087d00`, field by field), so the `0x4048` passed to the channel is
 a ceiling, not the datagram size.
 
+**Built. Converted Halo 1 cinematic ticks.** `game_skip_ticks` requests
+up to 15 extra ticks. In world modes 1 and 2 the authority dispatches
+the extra native simulation updates after the normal batch while the
+cinematic is active. In mode 2 each tick takes the ordinary sequenced
+`0x27` path, including the joining-view queue. Mode 3 consumes those
+updates through the existing catch-up path. A local script on the follower
+has no authority to schedule an additional batch.
+
+In the host-level protocol, wire version 2 carries a first frame and a
+contiguous window of one-byte cinematic tick counts, with a separate
+cumulative acknowledgement. Both peers use `Peer::begin_cinematic_frame`
+from frame zero, including a zero count on ordinary frames. The first host
+decision for a frame is final. The guest holds until it has that count and
+both pads. Unacknowledged counts travel again with the next datagram.
+The peer test exercises loss, reordering and conflicting guest requests.
+
 ### 15.2 The budget of one press
 
 A guest presses a button; how long until its own screen shows it. Times

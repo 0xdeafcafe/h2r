@@ -18,6 +18,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use crate::cinematic::{CinematicTicks, Stream};
 use crate::link::Link;
 use crate::schedule::{Pad, Schedule};
 use crate::tap::ScheduleTap;
@@ -89,6 +90,9 @@ pub struct Peer<L> {
     compared: u32,
     desync: Option<Desync>,
     stats: Stats,
+    host: bool,
+    cinematic: Stream,
+    ack_cinematic: u32,
 }
 
 impl<L: Link> Peer<L> {
@@ -106,6 +110,9 @@ impl<L: Link> Peer<L> {
             compared: 0,
             desync: None,
             stats: Stats::default(),
+            host: local_port == 0,
+            cinematic: Stream::default(),
+            ack_cinematic: 0,
         }
     }
 
@@ -162,6 +169,16 @@ impl<L: Link> Peer<L> {
     }
 
     fn take(&mut self, d: Datagram) {
+        if self.host && !d.cinematic.is_empty() {
+            self.stats.rejected += 1;
+            return;
+        }
+        if self.host {
+            self.ack_cinematic = self.ack_cinematic.max(d.ack_cinematic.min(self.cinematic.end()));
+            self.cinematic.discard(self.ack_cinematic.min(self.next_frame()));
+        } else {
+            self.cinematic.receive(d.first_cinematic, &d.cinematic);
+        }
         self.stats.received += 1;
         {
             let mut s = self.schedule();
@@ -220,7 +237,10 @@ impl<L: Link> Peer<L> {
             .take(MAX_HASHES)
             .copied()
             .collect();
+        let (first_cinematic, cinematic) = if self.host { self.cinematic.outgoing(MAX_FRAMES) } else { (0, Vec::new()) };
         let d = Datagram {
+            first_cinematic, cinematic,
+            ack_cinematic: if self.host { 0 } else { self.cinematic.end() },
             session: self.session,
             ack_frame,
             ack_tick: self.remote.end(),
@@ -237,9 +257,7 @@ impl<L: Link> Peer<L> {
     /// `local` is this machine's pad now. On a hold nothing changes, and
     /// `local` is not consumed.
     pub fn begin_frame(&mut self, local: Pad) -> Result<u32, Hold> {
-        if let Some(d) = self.desync {
-            return Err(Hold::Desync(d));
-        }
+        if let Some(d) = self.desync { return Err(Hold::Desync(d)); }
         let mut s = self.schedule();
         match s.begin(local) {
             Some(frame) => Ok(frame),
@@ -250,6 +268,23 @@ impl<L: Link> Peer<L> {
                 Err(Hold::Waiting { frame })
             }
         }
+    }
+
+    /// Agree the number of extra simulation ticks before releasing the frame.
+    /// Both peers call this from frame zero, including frames with zero extra ticks.
+    /// A retry repeats the first host decision for that frame.
+    pub fn begin_cinematic_frame(&mut self, local: Pad, requested: CinematicTicks) -> Result<(u32, CinematicTicks), Hold> {
+        if let Some(d) = self.desync { return Err(Hold::Desync(d)); }
+        let frame = self.next_frame();
+        if self.host { self.cinematic.receive(frame, &[requested]); }
+        let Some(ticks) = self.cinematic.at(frame) else {
+            self.stats.holds += 1;
+            return Err(Hold::Waiting { frame });
+        };
+        let frame = self.begin_frame(local)?;
+        let end = if self.host { self.ack_cinematic.min(frame + 1) } else { frame + 1 };
+        self.cinematic.discard(end);
+        Ok((frame, ticks))
     }
 
     /// The hash of this machine's state after `tick`. Ticks are reported in

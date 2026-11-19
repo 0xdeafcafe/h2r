@@ -1,5 +1,6 @@
 //! Synthetic tables only: invented scripts, builtins and types.
 mod commands;
+mod cinematics;
 
 use hs::Datum;
 

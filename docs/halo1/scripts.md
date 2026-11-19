@@ -507,13 +507,13 @@ the calls participate in waits. The clock and danger gates come from the
 unit/miscellaneous builtin family, while the recording, vehicle and HUD
 operations use their respective families. Mission flow adds no builtin slots.
 
-Two presentation calls in the source still need family support. In
-`cutscene_intro`, the lifepod opening requests a convolution effect. In
-`objective_cave`, normal difficulty in single-player shows one of two
-driving hints with `display_scenario_help`, according to controller layout.
-Neither call supplies a mission wait condition. The conversion report names
-each missing builtin and external global alongside its script. The a30 readback
-test flags additional missing calls and checks the authored globals.
+**Built.** In `cutscene_intro`, a30 requests convolution with operands
+`(1, 1, 3.0, 0.0, 7.0)`. The compiler emits the same checkpointed
+parameters and simulation-clock timestamp as on the other levels. The
+renderer reduces the radius from three to zero over 210 simulation ticks.
+The a30 disc test reads those operands from the converted intro. The
+driving hints in `objective_cave` use the HUD text family's
+`display_scenario_help`.
 
 **Checkpoint storage.** At `0x208ff0` retail allocates 320 script threads
 (stride `0x418`) and 3,072 global cells (stride 8) in game state. The

@@ -43,6 +43,7 @@ pub mod h1_options;
 pub mod h1_options_row;
 mod h1_particle_physics;
 mod h1_pools;
+mod h1_cinematics;
 mod h1_script_builtins;
 pub mod h1_variants;
 mod h1_ai_control;

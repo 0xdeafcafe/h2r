@@ -10,11 +10,14 @@
 //! Layout, little endian: magic `h2co`, version (u8), session (u32),
 //! `ack_frame` (u32), `ack_tick` (u32), first frame (u32), frame count (u8),
 //! that many 18-byte pads, first tick (u32), hash count (u8), that many u64.
+//! Version 2 appends the next cinematic frame acknowledged, the first host
+//! decision's frame (both u32), then a u8 count and that many bounded u8 decisions.
 
+use crate::cinematic::CinematicTicks;
 use crate::schedule::{PAD, Pad};
 
 pub const MAGIC: [u8; 4] = *b"h2co";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// Pad frames repeated in one datagram.
 pub const MAX_FRAMES: usize = 32;
 /// Tick hashes repeated in one datagram.
@@ -22,7 +25,7 @@ pub const MAX_HASHES: usize = 32;
 const HEADER: usize = 4 + 1 + 4 + 4 + 4;
 /// The largest datagram [`Datagram::encode`] makes. The relay's size cap
 /// and a UDP payload under the usual MTU both hold it.
-pub const MAX_DATAGRAM: usize = HEADER + 5 + MAX_FRAMES * PAD + 5 + MAX_HASHES * 8;
+pub const MAX_DATAGRAM: usize = HEADER + 5 + MAX_FRAMES * PAD + 5 + MAX_HASHES * 8 + 9 + MAX_FRAMES;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Datagram {
@@ -34,6 +37,9 @@ pub struct Datagram {
     pub ack_tick: u32,
     pub first_frame: u32,
     pub frames: Vec<Pad>,
+    pub ack_cinematic: u32,
+    pub first_cinematic: u32,
+    pub cinematic: Vec<CinematicTicks>,
     pub first_tick: u32,
     pub hashes: Vec<u64>,
 }
@@ -73,6 +79,11 @@ impl Datagram {
         for h in hashes {
             out.extend_from_slice(&h.to_le_bytes());
         }
+        out.extend_from_slice(&self.ack_cinematic.to_le_bytes());
+        out.extend_from_slice(&self.first_cinematic.to_le_bytes());
+        let ticks = &self.cinematic[..self.cinematic.len().min(MAX_FRAMES)];
+        out.push(ticks.len() as u8);
+        out.extend(ticks.iter().map(|t| t.count()));
         out
     }
 
@@ -103,6 +114,12 @@ impl Datagram {
         for _ in 0..n {
             hashes.push(u64::from_le_bytes(r.take(8)?.try_into().expect("8 bytes")));
         }
+        let ack_cinematic = r.u32()?;
+        let first_cinematic = r.u32()?;
+        let n = usize::from(r.u8()?);
+        if n > MAX_FRAMES || first_cinematic.checked_add(n as u32).is_none() { return Err(WireError::Malformed); }
+        let cinematic = r.take(n)?.iter().map(|&value| CinematicTicks::new(value).ok_or(WireError::Malformed))
+            .collect::<Result<_, _>>()?;
         if r.at != bytes.len() {
             return Err(WireError::Malformed);
         }
@@ -112,6 +129,9 @@ impl Datagram {
             ack_tick,
             first_frame,
             frames,
+            ack_cinematic,
+            first_cinematic,
+            cinematic,
             first_tick,
             hashes,
         })
@@ -154,6 +174,9 @@ mod tests {
             first_frame: 9,
             frames: vec![[1; PAD], [2; PAD], [3; PAD]],
             first_tick: 4,
+            ack_cinematic: 3,
+            first_cinematic: 5,
+            cinematic: vec![CinematicTicks::new(15).unwrap()],
             hashes: vec![u64::MAX, 0, 0x0123_4567_89ab_cdef],
         }
     }
@@ -171,6 +194,7 @@ mod tests {
         let d = Datagram {
             frames: vec![[9; PAD]; 100],
             hashes: vec![1; 100],
+            cinematic: vec![CinematicTicks::default(); 100],
             ..sample()
         };
         let bytes = d.encode();
@@ -198,8 +222,11 @@ mod tests {
         long.push(0);
         assert_eq!(Datagram::decode(&long), Err(WireError::Malformed));
         let mut other = good.clone();
-        other[4] = 2;
-        assert_eq!(Datagram::decode(&other), Err(WireError::Version(2)));
+        other[4] = 1;
+        assert_eq!(Datagram::decode(&other), Err(WireError::Version(1)));
+        let mut excessive = good.clone();
+        *excessive.last_mut().unwrap() = 16;
+        assert_eq!(Datagram::decode(&excessive), Err(WireError::Malformed));
         // A frame count over the limit is refused before anything is read.
         let mut many = good;
         many[HEADER + 4] = MAX_FRAMES as u8 + 1;

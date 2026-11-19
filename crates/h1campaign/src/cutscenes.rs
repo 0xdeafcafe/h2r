@@ -22,51 +22,9 @@ use map::build::TagSet;
 use crate::{Options, Result, invalid};
 use h1scripts::compile::Cutscenes;
 
-/// Each level's cutscene policy when [`Options::cutscenes`] is `None`, and
-/// why. A level not listed skips (Halo 1's skip path).
-///
-/// Played: every graph the cutscenes name converts, every recording and
-/// dialogue length is written, and no call left stubbed in a cinematic
-/// holds it (`cutscenes_convert_and_read_back` lists the missing ones).
-pub const LEVELS: &[(&str, Cutscenes, &str)] = &[
-    (
-        "a10",
-        Cutscenes::PlayShortPaths,
-        "cinematics played; the cryo tutorial takes fast_setup pending an integrated tutorial run",
-    ),
-    ("a30", Cutscenes::Play, "every cutscene converts"),
-    ("a50", Cutscenes::Play, "every cutscene converts"),
-    ("b30", Cutscenes::Play, "every cutscene converts"),
-    (
-        "b40",
-        Cutscenes::Skip,
-        "at the tag memory bound: converted without level data and graphs, so its cutscenes would have no camera points, flags or animations",
-    ),
-    (
-        "c10",
-        Cutscenes::Play,
-        "every cutscene converts; the marines' command lists in x50 are stubbed (they stand)",
-    ),
-    ("c20", Cutscenes::Play, "every cutscene converts"),
-    (
-        "c40",
-        Cutscenes::Play,
-        "every cutscene converts; command lists stubbed (actors stand)",
-    ),
-    ("d20", Cutscenes::Play, "every cutscene converts"),
-    (
-        "d40",
-        Cutscenes::Skip,
-        "over the campaign cache's file size with the cutscene graphs (they need 0x1baa00 bytes, 0x7c000 are left), so its characters would not animate",
-    ),
-];
-
-/// The level's own cutscene policy ([`LEVELS`]).
-pub fn default_for(level: &str) -> Cutscenes {
-    LEVELS
-        .iter()
-        .find(|(l, _, _)| l.eq_ignore_ascii_case(level))
-        .map_or(Cutscenes::Skip, |e| e.1)
+/// Every campaign level runs the source cutscene guards and tutorial branches.
+pub fn default_for(_level: &str) -> Cutscenes {
+    Cutscenes::Play
 }
 
 /// The policy a conversion of `level` uses: the caller's, or the level's.
@@ -127,7 +85,11 @@ fn model_by_checksum(h1: &H1Map, checksum: u32) -> Option<&h1map::Tag> {
 /// (`animation_graph` atoms and [`ANIMATION_NAME`] tokens) that `set` does
 /// not hold as a `jmad` of that name yet, and maps the animation names.
 pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Graphs> {
-    install_graph_hooks(h1, set, c.hooks.iter())
+    let graphs = install_graph_hooks(h1, set, c.hooks.iter())?;
+    if !graphs.dropped.is_empty() {
+        return Err(invalid(format!("cinematic animation graphs: {}", graphs.dropped.join(", "))));
+    }
+    Ok(graphs)
 }
 
 /// Install graphs needed by AI even when cinematic graphs are omitted.
@@ -148,6 +110,9 @@ pub(crate) fn install_graph_hooks<'a>(
     }
     let mut out = Graphs::default();
     for name in wanted.into_keys() {
+        if name.is_empty() || name.eq_ignore_ascii_case("none") {
+            continue;
+        }
         let Some(tag) = h1.find(antr, &name) else {
             out.dropped.push(format!("{name}: not in the level"));
             continue;
@@ -189,6 +154,25 @@ pub(crate) fn install_graph_hooks<'a>(
         }
     }
     Ok(out)
+}
+
+/// The two inputs to H1's video combiner (0x61990), rebuilt as local bitmaps.
+pub(crate) fn install_video(h1: &H1Map, set: &mut TagSet, c: &mut Compiled) -> Result<()> {
+    let globals = h1.tags().iter().find(|t| t.group == Group::new(b"matg"))
+        .ok_or_else(|| invalid("missing video rasterizer globals"))?;
+    let rows = h1.tag_space().block_at(h1.tag_data(globals)?, 0x134, 0x13c)?;
+    let raster = rows.first().ok_or_else(|| invalid("missing rasterizer data"))?;
+    for (offset, name) in [0x11c, 0x12c].into_iter().zip(h1scripts::cinematics::VIDEO_BITMAPS) {
+        let reference = h1map::TagRef::read(raster, offset)
+            .filter(|r| r.group == Group::new(b"bitm"))
+            .ok_or_else(|| invalid(format!("missing video bitmap at {offset:#x}")))?;
+        let tag = h1.tag(reference.id)?;
+        let (_, converted, _) = h1bitmaps::convert_bitmap(h1, tag)
+            .map_err(|e| invalid(format!("{}: {e}", tag.name)))?;
+        converted.install(set, name)?;
+        c.references.push((reference.group, name.to_owned()));
+    }
+    Ok(())
 }
 
 /// Halo 1 `scnr` recorded animations block: count, address; `0x40` each.

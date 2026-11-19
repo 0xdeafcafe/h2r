@@ -957,8 +957,7 @@ fn a30_converts_onto_its_base_and_reads_back() {
         if opts.ai {
             let unexpected: Vec<_> = r.missing_builtins.iter().filter(|u| {
                 !matches!((u.definition.as_str(), u.name.as_str()),
-                    ("cutscene_intro", "cinematic_screen_effect_set_convolution")
-                    | ("objective_cave", "display_scenario_help"))
+                    ("objective_cave", "display_scenario_help"))
             }).collect();
             assert!(unexpected.is_empty(), "a30 dropped builtin calls: {unexpected:?}");
             let view = tags::geometry::TagView::new(&bytes, addr);

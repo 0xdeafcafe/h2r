@@ -2090,6 +2090,7 @@ impl<'a> Converter<'a> {
                 },
             );
         }
+        chosen.extras.cinematic_reflection = group == "soso" && env.contains(&chosen.layout.stem);
         let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
         self.cached(
             tag,
