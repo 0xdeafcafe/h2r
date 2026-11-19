@@ -61,6 +61,8 @@ pub mod mod_slots;
 pub mod mods_screen;
 pub mod movies_glue;
 pub mod native_decals_glue;
+pub mod native_first_person_glue;
+pub mod native_first_person_load;
 pub mod native_fog_glue;
 pub mod native_gels_glue;
 mod native_gels_load;

@@ -21,6 +21,7 @@ pub mod install;
 pub mod leaves;
 pub mod locale;
 pub mod native_decals;
+pub mod native_first_person;
 pub mod native_fog;
 pub mod native_gels;
 pub mod native_hud;
