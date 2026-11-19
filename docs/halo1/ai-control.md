@@ -98,7 +98,8 @@ last recorded recognition, when one exists. Damage must meet or exceed the
 authored fraction. The retail a50 actor tags include the 0.5 s and 0.1
 stealth elite pair and the 0 s and 0.1 sword elite pair. Character palette
 entries with different requirements get distinct guest tag IDs even if
-they use the same retail Halo 2 character as a parent. Scenario script
+they share the same retail character payload. The aliases preserve direct
+unit reads at `0x00200d11` as well as inherited properties. Scenario script
 references carry the character IDs through fresh-map relocation.
 
 The native rank, presearch and entry callbacks at `0x001b84a0`,

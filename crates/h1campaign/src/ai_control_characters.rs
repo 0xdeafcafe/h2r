@@ -68,23 +68,13 @@ pub(crate) fn resolve(
             && let Some(existing) = ai_control.uncover.get(&id.0)
             && existing.requirements.map(f32::to_bits) != c.uncover.map(f32::to_bits)
         {
-            // The same retail character can stand in for distinct source
-            // variants. Inherit its native properties with a separate tag
-            // identity so neither variant loses its authored thresholds.
-            let group = FourCC(*b"char");
-            let def = tags::defs::Defs::builtin()
-                .group(group)
-                .expect("char definition");
-            let mut character = tags::defs::default_record(def);
-            character
-                .set("parent", tags::defs::Val::tag(group, id))
-                .map_err(|e| invalid(format!("AI character parent: {e}")))?;
-            let character = tags::defs::to_built(def, &character, &mut |_| None)
-                .map_err(|e| invalid(format!("AI character variant: {e}")))?;
+            // Squad setup reads the character's unit directly (0x200d11).
+            // A second native tag identity shares the entire character
+            // payload, including fields the engine does not inherit.
             Some(set.add_tag(
-                group,
+                FourCC(*b"char"),
                 &format!("h1_ai\\character_{index}"),
-                TagPayload::Built(character),
+                TagPayload::Alias { tag: id, offset: 0 },
             )?)
         } else {
             got

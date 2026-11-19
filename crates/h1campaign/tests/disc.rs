@@ -956,6 +956,7 @@ fn retail_uncover_and_combat_timer_contact_rules() {
     // Native H2 focus assignment, recognition timestamp and damage packet.
     assert_eq!(target.bytes_at(0x267798, 6).unwrap(), [0x89, 0xbe, 0x38, 3, 0, 0]);
     assert_eq!(target.bytes_at(0x1e3531, 5).unwrap(), [0xe8, 0x0a, 0x31, 8, 0]);
+    assert_eq!(target.bytes_at(0x200d11, 3).unwrap(), [0x8b, 0x48, 0x10]);
     assert_eq!(target.bytes_at(0x265006, 3).unwrap(), [0x89, 0x4d, 0x10]);
     assert_eq!(target.bytes_at(0x0d7cfc, 2).unwrap(), [0xf3, 0xab]);
     assert_eq!(target.bytes_at(0x0d8e5e, 5).unwrap(), [0xf3, 0x0f, 0x11, 0x4f, 0x28]);
@@ -998,6 +999,14 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
             .find(|t| t.group == FourCC(*b"char") && t.name.as_deref() == Some(character.as_str()))
             .unwrap();
         assert_eq!(rules[&tag.id], expected, "{level}: {}", variant.name);
+        if character.starts_with("h1_ai\\character_") {
+            assert_eq!(tag.index_size, 0, "{level}: {character} is an alias");
+            assert!(map.tags().iter().any(|original| {
+                original.group == FourCC(*b"char")
+                    && original.index_size != 0
+                    && original.index_address == tag.index_address
+            }), "{level}: {character} keeps its native character payload");
+        }
     }
 }
 
