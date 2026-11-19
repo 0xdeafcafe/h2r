@@ -452,7 +452,7 @@ fn the_list_describes_the_focused_map() {
     let (_, repo) = listed(items, None);
     assert_eq!(
         repo.list_description(0).unwrap(),
-        "On Relic, by Modder\n3.4 MB, 12 downloads\nHas vehicles, scripted events\n\
+        "On Relic, by Modder\n3.4 MB, 12 downloads\nHas vehicles, scripts\n\
          X downloads it, A opens its page"
     );
     assert_eq!(
