@@ -57,6 +57,8 @@ live-proto.workspace = true
 input = { path = "../input", default-features = false }
 # Local bots (docs/game/bots.md).
 bots = { path = "../bots" }
+# Sim mode's match, tuning and report files (docs/runtime/sim.md).
+sim = { path = "../sim" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
 timeline = { path = "../timeline" }
 # The determinism harness (H2_LOCKSTEP, H2_INPUT_RECORD, H2_INPUT_REPLAY).
