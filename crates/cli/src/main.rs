@@ -22,6 +22,7 @@ mod agent_raw;
 mod agent_run;
 mod agent_sim;
 mod sim_cmd;
+mod theater_cmd;
 #[cfg(feature = "desktop")]
 mod anim;
 #[cfg(feature = "desktop")]
@@ -176,6 +177,8 @@ const USAGE: &str = "usage: h2 <command>
   serve <disc> --system-link --host-light
                           run a light host with the agent API
   host run --lease ID ... run a dedicated match for a Live lease
+  theater play FILM --render-every 0
+                          replay a host film headlessly
   sim <run|batch|compare> run or compare bot matches
   agent <call>            call a running game's agent API";
 
@@ -352,7 +355,7 @@ fn main() -> Result<()> {
     // Live presence says which build this is (docs/game/game-options.md 3).
     #[cfg(feature = "desktop")]
     boot::live_glue::set_build(app::BuildInfo::baked().sha);
-    let mut args = std::env::args().skip(1);
+    let mut args = theater_cmd::arguments()?;
     let Some(cmd) = args.next() else {
         bail!("{USAGE}")
     };
@@ -360,6 +363,7 @@ fn main() -> Result<()> {
         "serve" => boot_cmd::run(&cmd, args.collect()),
         "sim" => sim_cmd::run(args.collect()),
         "host" => host_cmd::run(args.collect()),
+        "theater" => theater_cmd::run(args.collect()),
         #[cfg(unix)]
         "agent" => agent_cmd::run(args.collect()),
         #[cfg(not(unix))]

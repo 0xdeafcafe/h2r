@@ -342,7 +342,6 @@ impl Session {
         std::mem::take(&mut self.output)
     }
 
-    #[cfg(test)]
     pub fn game_id(&self) -> Option<&str> {
         self.current.as_ref().map(|m| m.game_id.as_str())
     }

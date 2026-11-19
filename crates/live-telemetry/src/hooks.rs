@@ -64,6 +64,11 @@ impl Telemetry {
         }
     }
 
+    /// The game ID selected by telemetry, after the match-end event was queued.
+    pub fn film_game_id(&self) -> Option<String> {
+        self.pipeline.session().game_id().map(str::to_owned)
+    }
+
     /// Finish the ordinary game stream and wait for Live to store its report.
     pub fn finish_sim(&self, report: serde_json::Value) -> Result<(), String> {
         self.pipeline.push(Work::FinishSim(report))?;

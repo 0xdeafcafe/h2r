@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
-  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
+  h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots] [--film FILE]]] [run's options]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, and the game module).
 --arch selects a single build target and overrides H2_EMIT_TARGET. Use
@@ -85,6 +85,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut system_link = false;
     let mut host_light = false;
     let mut host_bots = false;
+    let mut film = None;
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut stopgaps = true;
@@ -127,6 +128,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
             "--host-light" => host_light = true,
+            "--film" if serve => film = Some(PathBuf::from(val()?)),
             "--host-bots" => host_bots = true,
             "--socket" if serve => socket = Some(PathBuf::from(val()?)),
             "--settings" if cmd != "build" => settings_dir = Some(PathBuf::from(val()?)),
@@ -155,6 +157,11 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     let live = headless_live_config(serve, system_link)?;
     check_host_options(serve, system_link, host_light, host_bots)?;
+    if let Some(path) = film {
+        anyhow::ensure!(host_light, "--film requires a light host");
+        // SAFETY: CLI startup, before signal, agent, or device threads start.
+        unsafe { std::env::set_var("H2_FILM_OUT", path) };
+    }
     if host_light && (!d3d || !bink || !dsound || !xapi) {
         bail!("--host-light needs the guest D3D, Bink, DirectSound and XAPI shims");
     }

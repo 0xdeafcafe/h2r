@@ -10,6 +10,7 @@ path = "src/main.rs"
 required-features = ["host"]
 
 [dependencies]
+film = { path = "../film" }
 # The default data root (`content::store::default_data_root`).
 content.workspace = true
 hs = { workspace = true, optional = true }

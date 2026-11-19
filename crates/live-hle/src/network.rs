@@ -1,5 +1,7 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
+pub(crate) mod film;
+
 // Dedicated host transport selection and channel delivery (contract 6).
 mod tunnel;
 
@@ -189,6 +191,7 @@ struct State {
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
+    pub tap: std::sync::OnceLock<Arc<dyn ::film::tape::Tap>>,
     state: Arc<Mutex<State>>,
     listeners: qos::Listeners,
     pings: qos::Pings,
@@ -213,6 +216,7 @@ impl Network {
     pub fn new(config: NetworkConfig) -> Self {
         Self {
             config,
+            tap: Default::default(),
             state: Arc::new(Mutex::new(State {
                 next: 0x100,
                 ..State::default()
@@ -261,6 +265,9 @@ impl Network {
     /// Starts the QoS responder if the title has not yet (a co-op host
     /// answers its guest's pings from the lobby on).
     pub fn ensure_responder(&self) -> std::io::Result<()> {
+        if self.tap.get().is_some_and(|t| t.replaying()) {
+            return Ok(());
+        }
         let mut s = lock(&self.state);
         if s.responder.is_none() {
             s.responder = Some(qos::Responder::start(
@@ -290,7 +297,10 @@ impl Network {
         lock(&self.state).qos.release(handle)
     }
     pub fn invoke(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> u32 {
-        let result = self.run(op, a, thread, rt);
+        let result = match self.tap.get() {
+            Some(tap) => self.filmed(tap.as_ref(), op, a, thread, rt),
+            None => self.run(op, a, thread, rt),
+        };
         match result {
             Ok(v) => v,
             Err(e) if op.winsock() => {
@@ -1135,11 +1145,13 @@ pub(crate) fn lookup_line(
     format!("live: join: qos lookup: {}", each.join("; "))
 }
 pub(crate) fn random(len: usize) -> Result<Vec<u8>> {
-    let mut bytes = vec![0; len];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .map_err(|_| 10055u32)?;
-    Ok(bytes)
+    film::state_random(len, || {
+        let mut bytes = vec![0; len];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut bytes))
+            .map_err(|_| 10055u32)?;
+        Ok(bytes)
+    })
 }
 fn pointers(rt: &Runtime, p: u32, count: u32) -> Result<Vec<u32>> {
     Ok(read(rt, p, count as usize * 4)?

@@ -1834,3 +1834,33 @@ synthetic packets; nothing here was run against the game):
 - [hs_vm.md](../engine/hs_vm.md)
 - [docs/live](../live/): the Live service, the other reader of
   `live-telemetry`
+
+## Theater transport
+
+The game agent lists the following host methods in `session.methods`.
+In an ordinary CLI-hosted game, `theater.play` with a library ID starts
+an isolated playback process. Subsequent transport requests through that
+game agent go to its player. During startup the caller can retry after a
+temporary unavailable response. The playback process also accepts calls
+directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
+
+| Method | Parameters | Result |
+|---|---|---|
+| `theater.play` | `{"id":"film-id"}` to open, `{}` to resume | `{id, starting:true}` on launch, otherwise transport state |
+| `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
+| `theater.pause` | `{}` | Holds guest execution and reports state |
+| `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
+| `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
+| `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+
+Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
+`seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero
+is boot. A paused seek holds at its target until play. The HLE compares
+the recorded call index and game-thread hash samples during fast-forward.
+
+```sh
+h2 agent theater.state '{}' --socket "$film_run/play.sock"
+h2 agent theater.pause '{}' --socket "$film_run/play.sock"
+h2 agent theater.seek '{"tick":30}' --socket "$film_run/play.sock"
+h2 agent theater.play '{}' --socket "$film_run/play.sock"
+```

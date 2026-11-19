@@ -4,7 +4,8 @@ This is the design for a Halo 3-style Theater in h2recomp: record a game
 as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the
 "event" side: watching a game live as a spectator, with a player list and
-scoreboard. Playback depends on the determinism
+scoreboard. **Tier B has a code-only first slice. Its hash-match experiments
+are pending.** Playback depends on the determinism
 harness from the high-frame-rate work
 ([high-framerate.md](high-framerate.md), phase 1, built) and on
 levels running at a steady 30 fps ([gameplay-budget.md](../perf/gameplay-budget.md)).
@@ -69,7 +70,7 @@ its own.
 | tier | what you get | built from | state |
 |---|---|---|---|
 | **A. Web Theater** | Every Live game, in the browser: a film library, the 3D viewer with a transport, player POVs, camera modes, kill bookmarks, clips with share links | the spectator track the server already archives (v8 telemetry, [replay-fidelity.md](../live/replay-fidelity.md)) and the web viewer (`web/src/viewer`) | building now |
-| **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | sections 2–3 below, cut down to the host case | first slice building now: format, host recorder, exact playback |
+| **B. Host films** | Exact `.h2film` films recorded by dedicated hosts, played back in the game with its own renderer and director cameras | sections 2–3 below, cut down to the host case | first slice implemented on the theater-film lane. Real-host verification pending |
 | **C. Live spectating** | A tier-B film streamed with a 30–120 s delay | section 4B | later |
 
 ### Tier A: Web Theater (simple, now)
@@ -149,6 +150,102 @@ Two experiments decide the rest:
 
 Free camera, follow, orbit and POV come after both experiments pass.
 They use the guest director (section 3, "Free camera").
+
+### Tier B implementation and coordinator runs
+
+A playerless `h2 host run --film FILE` passes the output path to its
+`serve --system-link --host-light` child through `H2_FILM_OUT`. The child
+creates a new file, records from boot, and seals it at the first slice
+after the multiplayer end latch. An orderly earlier exit also seals the
+recording. The recorder never substitutes a return value in a live socket
+call. The host still sends its own packets.
+
+- `HEAD` carries the exact tier's module stamp, XBE digest and title ID,
+  epoch, socket address, scheduler slice budget, feature switches, lobby
+  settings and lease ID. Later header chunks supply the map, variant,
+  roster and scores from the telemetry readers. Ticks count from boot.
+- `DATA` records directories and SHA-256 digests under the guest's
+  `disk/` and `metadata/`. Small files are embedded, up to 1 MiB each
+  and 16 MiB total. For larger files, supply an unchanged initial copy
+  with `--data DIR`. Every playback and seek restores into a fresh
+  private directory. The film supplies no host executable or module path.
+- `NETR` and `RAND` share a monotonically increasing call index. Each
+  entry carries the operation, guest thread, arguments, status/error and
+  output buffers. Receive truncation preserves the partial payload and
+  sender. Select preserves each returned fd set. QoS preserves the
+  allocation and embedded payload pointers. Socket setup, send, close,
+  address translation, last error, connection status, FIONREAD,
+  random bytes and keys all pass through the same HLE dispatcher.
+  Service QoS queries and release, session-id reads and entropy used
+  inside other synchronous Live HLE calls are also taped.
+- Supervisor lobby calls that were accepted by the agent are recorded
+  in `MARK` with the executor boundary that ran them. A state query can
+  itself queue a guest readiness check. The player reissues these
+  calls at the recorded boundaries. A final mark carries the end slice,
+  tick and call count.
+- Every 30th completed tick, `HASH` carries
+  `lockstep::hash_sim(SimRegion::HALO2)` and the call count. A mismatch
+  reports `first divergence at tick T`. A film with no readable arena
+  checkpoints cannot pass verification.
+- All tags use four bytes, a little-endian compressed length and one
+  zstd frame containing a v1 JSON payload. `INDX` ends a finalized
+  file. A scan rebuilds the offsets after interruption and drops an
+  incomplete trailing chunk. Playback of a prefix ends at its last
+  complete checkpoint. `KEYF` is reserved.
+- `film::Library::open(dir)` lists the 25 newest films and any older
+  saved films. Save/unsave persist pins beside the file. Delete resolves
+  the header ID in the library before removing the file. The host UI
+  uses `H2_FILM_DIR` or `<data>/films`.
+
+**Record once.** Use a provisioned human-player lease and a LAN host from
+the combined dedicated-host build. Export its normal supervisor inputs
+(`H2_LEASE`, `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA`).
+Set `H2_DISC` to the same disc and `H2_IMAGE` to the directory with
+the installed module. Keep the same `H2_OPT` and feature switches for
+both playbacks. Use an empty host data directory for this baseline.
+
+```sh
+export H2_OPT=2
+film_run=$(mktemp -d "${TMPDIR%/}/film.XXXXXXXX")
+h2 host run --out "$H2_IMAGE" --data "$film_run/host" --film "$film_run/match.h2film"
+```
+
+Finish the match with remote players. A normal end should produce scores
+and an index. The film stays on disk if the upload fails.
+
+**Experiment 1, original render cadence.** No remote player or running
+Live server is needed for playback. The expected result is status 0 and
+`hashes matched through tick T`. The player checks the final cursors too.
+
+```sh
+h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 0 --speed 1
+```
+
+**Experiment 2, rendered.** Run the same file and image in a window with
+every world frame rendered. Compare the ending tick or retain the first
+divergence and its expected/actual hash and call count. A mismatch in
+experiment 1 must be resolved before attributing one here to render RNG.
+
+```sh
+h2 theater play "$film_run/match.h2film" --disc "$H2_DISC" --out "$H2_IMAGE" --socket "$film_run/play.sock" --render-every 1 --speed 1
+```
+
+During either run the agent exposes `theater.state`, `play`, `pause`,
+`speed`, `seek` and `camera`. Seek restarts the child at boot and removes
+host pacing until the target. It compares hashes throughout. The
+coordinator should also seek backwards across a received packet while
+paused and resume. [Transport parameters](../runtime/agent-api.md#theater-transport)
+
+**Upload contract and integration TODO.** At match end the host worker
+calls `film::upload(live_url, token, game_id, path)` with
+`H2_HOST_LIVE_URL`, `H2_HOST_TOKEN`, and the game ID chosen by telemetry
+(or explicit `H2_FILM_GAME_ID`). The request is
+`POST /v1/games/{id}/film`, bearer authentication, binary body, at most
+64 MiB. The coordinator must wire the route after the lease identity and
+game ownership changes land. Verify `telemetry.ingest` **and** that the
+lease owns this game before storing in the private blob store in both
+homes. Exercise upload and supervisor shutdown together, including a slow
+upload. These checks and both hash experiments still need a real run.
 
 ### UI plan
 

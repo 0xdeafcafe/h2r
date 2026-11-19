@@ -1,0 +1,16 @@
+[package]
+name = "film"
+description = "Append-only Halo 2 host films and the local film library"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zstd = "0.11"
+sha2 = "0.10"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+url = "2"
+live-proto.workspace = true

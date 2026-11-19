@@ -23,6 +23,7 @@ pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;
+pub mod theater;
 pub mod trace;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;

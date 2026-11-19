@@ -114,6 +114,7 @@ pub mod sse;
 pub mod steam_speaker;
 pub mod stopgaps;
 pub mod sweep_diag;
+pub mod theater;
 pub mod theater_ui;
 pub mod tier;
 pub mod touch_glue;
@@ -864,7 +865,7 @@ pub fn run_hosted_with_live(
     host: Host,
     live: &LiveConfig,
 ) -> Result<RunReport> {
-    run_configured(xbe_bytes, dylib, opts, host, live, None)
+    run_configured(xbe_bytes, dylib, opts, host, live, None, None)
 }
 
 /// Runs a prepared headless match, optionally capturing it in Live.
@@ -882,7 +883,23 @@ pub fn run_sim(
         Host::default(),
         &LiveConfig::default(),
         Some((sim, upload)),
+        None,
     )
+}
+
+/// Boots a host film with local HLE responses and an isolated restored disk.
+pub fn run_theater(
+    xbe: &[u8],
+    image: &Path,
+    opts: &RunOpts,
+    host: Host,
+    replay: theater::Replay,
+) -> Result<RunReport> {
+    let lan = LiveConfig {
+        enabled: true,
+        ..LiveConfig::default()
+    };
+    run_configured(xbe, image, opts, host, &lan, None, Some(replay))
 }
 
 fn run_configured(
@@ -892,6 +909,7 @@ fn run_configured(
     mut host: Host,
     live: &LiveConfig,
     sim: Option<(sim_glue::Sim, Option<telemetry::TelemetryConfig>)>,
+    replay: Option<theater::Replay>,
 ) -> Result<RunReport> {
     // H2_SIM and the CLI sim entry share the dedicated profile. The explicit
     // switch off supplies a stock headless control for the same roster.
@@ -902,6 +920,8 @@ fn run_configured(
     let switches = feature::Switches::from_env().map_err(anyhow::Error::msg)?;
     let host_light =
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
+    let replaying = replay.is_some();
+    let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
         anyhow::ensure!(host_light, "H2_HOST_MODULE requires the light host profile");
         anyhow::ensure!(
@@ -918,7 +938,9 @@ fn run_configured(
         );
     }
     #[cfg(feature = "gpu")]
-    let host_graphics = host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread;
+    let host_graphics = (host.gfx.is_some() && !(replaying && render_every != 0))
+        || host.gfx_view.is_some()
+        || host.render_thread;
     #[cfg(not(feature = "gpu"))]
     let host_graphics = false;
     if host_light || sim_mode.is_some() {
@@ -1006,7 +1028,11 @@ fn run_configured(
         .filter(|s| s.matched().distributed())
         .map(|_| sim_glue::hosted::Network::reserve())
         .transpose()?;
-    let _live = if let Some(net) = &sim_network {
+    let _live = if let Some(r) = &replay {
+        let header = film::Reader::open(&r.path)?.header;
+        let network = live_hle::NetworkConfig::new(header.xnet_addr.parse()?);
+        live_glue::install_film(&loaded.runtime, &k, network, header.live_service)?
+    } else if let Some(net) = &sim_network {
         let lan = LiveConfig {
             enabled: true,
             ..Default::default()
@@ -1014,6 +1040,45 @@ fn run_configured(
         live_glue::install_with_network(&loaded.runtime, &k, &lan, net.config.clone(), None)?
     } else {
         live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?
+    };
+    let film_path = std::env::var_os("H2_FILM_OUT")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    let film = if replaying || film_path.is_some() {
+        let stamp = match tier {
+            tier::Tier::Clang => build_stamp(xbe_bytes),
+            tier::Tier::Fast => tier::fast_stamp(xbe_bytes),
+        };
+        let clock = k.clock();
+        let session = match theater::Session::open(
+            film_path,
+            replay,
+            theater::Facts {
+                stamp,
+                title_id: x.certificate.title_id,
+                epoch: clock.system_time() - clock.counter(),
+                light: host_light,
+                bots: host.host_bots,
+                live_service: live.server_url.is_some(),
+                address: _live
+                    .as_ref()
+                    .map_or_else(String::new, |h| h.film_address().to_string()),
+            },
+            xbe_bytes,
+            opts,
+        ) {
+            Err(e) if !replaying => {
+                eprintln!("theater: recording could not start: {e:#}");
+                None
+            }
+            result => result?,
+        };
+        if let (Some(hle), Some(session)) = (&_live, &session) {
+            hle.set_film_tap(session.clone());
+        }
+        session
+    } else {
+        None
     };
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/engine/feature-engine.md).
@@ -1237,6 +1302,13 @@ fn run_configured(
             rt: &loaded.runtime,
             telemetry: match upload {
                 Some(config) => Ok(config),
+                None if replaying => Ok(if film.as_ref().is_some_and(|f| f.has_telemetry()) {
+                    telemetry::TelemetryConfig::file(
+                        opts.data_root.join("replayed-telemetry.jsonl"),
+                    )
+                } else {
+                    telemetry::TelemetryConfig::default()
+                }),
                 None => telemetry::TelemetryConfig::from_live(
                     live.enabled,
                     live.accounts_path.as_deref(),
@@ -1276,6 +1348,9 @@ fn run_configured(
         s.add_bots()?;
     }
     let _telemetry = core.telemetry;
+    if let Some(f) = &film {
+        f.record_telemetry(_telemetry.is_some());
+    }
     if uploading_sim && _telemetry.is_none() {
         anyhow::bail!("sim upload requires the telemetry feature");
     }
@@ -1573,7 +1648,8 @@ fn run_configured(
     if host_light {
         let frame = match &sim_mode {
             Some(sim) => sim.frame().clone(),
-            None => feature::sim_frame::SimFrame::new(0).on_skip(d3d_diag::note_skipped_present),
+            None => feature::sim_frame::SimFrame::new(render_every)
+                .on_skip(d3d_diag::note_skipped_present),
         };
         anyhow::ensure!(
             features.add(&frame).map_err(anyhow::Error::msg)?,
@@ -1598,6 +1674,38 @@ fn run_configured(
             s.add_methods(&a.agent);
         }
     }
+    if let Some(film) = &film {
+        anyhow::ensure!(
+            features
+                .add(&theater::Observer(
+                    film.clone(),
+                    agent.as_ref().map(|a| a.agent.clone())
+                ))
+                .map_err(anyhow::Error::msg)?,
+            "theater-film feature is disabled"
+        );
+        if let Some(a) = &agent {
+            film.add_methods(&a.agent);
+        }
+    }
+    if !replaying && let Some(a) = &agent {
+        let dir = std::env::var_os("H2_FILM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| opts.data_root.join("films"));
+        let parent = dylib.parent().unwrap_or(Path::new("."));
+        let out = if tier == tier::Tier::Fast {
+            parent.parent().unwrap_or(parent)
+        } else {
+            parent
+        };
+        theater::library_methods(
+            &a.agent,
+            dir,
+            opts.disc.clone(),
+            out.to_owned(),
+            opts.data_root.clone(),
+        );
+    }
     // Part of a machine snapshot's build key (snapshot_glue.rs).
     let switch_spec = features.switches().spec();
     let plan = features.build(&feature::Base).map_err(|conflicts| {
@@ -1615,6 +1723,11 @@ fn run_configured(
             anyhow::bail!("host audit needs its feature hooks: {why}");
         }
         audit.installed(&installed);
+    }
+    if film.is_some()
+        && let Some(why) = installed.off_reason("theater-film")
+    {
+        bail!("film observer unavailable: {why}");
     }
     if host_light && let Some(why) = installed.off_reason(feature::sim_frame::ID) {
         anyhow::bail!("light host needs sim-frame: {why}");
@@ -1789,7 +1902,17 @@ fn run_configured(
     if sampling::seconds_from_env().is_some() {
         sampling::set_game_thread();
     }
+    let mut film_slices = 0;
     for slice in 0..opts.max_slices {
+        if let Some(f) = &film {
+            if !f.before_slice(slice, &mut m, agent.as_ref(), &loaded.runtime, || {
+                host.between_slices.as_mut().is_none_or(|check| check(&k))
+            })? {
+                host_stop = true;
+                break;
+            }
+            film_slices = slice + 1;
+        }
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
         }
@@ -1817,7 +1940,7 @@ fn run_configured(
         }
         #[cfg(feature = "perf")]
         sampling::tick();
-        if let Some(pad) = &pad {
+        if !replaying && let Some(pad) = &pad {
             script.step(slice, pad);
         }
         let ran_before = dsound_glue::guest_slices(&m);
@@ -1901,6 +2024,9 @@ fn run_configured(
             host_stop = true;
             break;
         }
+        if let Some(f) = &film {
+            f.finish(film_slices, false, _telemetry.as_ref())?;
+        }
         // Sim mode: the match is over (its end, its limits, match.stop).
         if let Some(s) = &sim_mode
             && !s.keep_running()
@@ -1911,6 +2037,9 @@ fn run_configured(
     }
     if let Some(audit) = &audit {
         audit.finish(&loaded.runtime)?;
+    }
+    if let Some(f) = &film {
+        f.finish(film_slices, true, _telemetry.as_ref())?;
     }
     let sim_upload_result = match &sim_mode {
         Some(s) => match s.finish() {
