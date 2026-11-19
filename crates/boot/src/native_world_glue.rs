@@ -41,7 +41,7 @@ use engine::memory::GuestMemory;
 use feature::native_world::{Host, PartSet};
 use map::{Map, ResourceFile, TagId};
 use native_render::camera::RenderCamera;
-use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport};
+use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassViewport, WorldSelection};
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
@@ -259,6 +259,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let pass = Box::new(WorldPass {
             selected,
+            selection: None,
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
@@ -319,26 +320,23 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
         programs_on,
         stage_images,
     } = cpu;
-    // With programs on, stage 1's groups are never drawn: no copy of the
-    // lightmap pages for them (the programs upload their own).
-    let mut g = GpuWorld::new(device, queue, world, &mut |m| base_maps.remove(&m), &mut |k| {
-        if programs_on { None } else { lightmaps.get(&k).cloned() }
-    });
     let mut stage = |s: Stage| match s {
         Stage::Bitmap { bitmap, image } => stage_images.get(&(bitmap, image)).cloned(),
         Stage::Empty | Stage::Lightmap | Stage::Engine(_) => None,
     };
-    if programs_on {
+    let mut g = if programs_on {
         // Set even when empty: with programs on, a batch without one is
         // never drawn with stage 1's program.
-        let set = ProgramSet::new(device, queue, g.world(), programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
+        let set = ProgramSet::new(device, queue, &world, programs, &mut stage, &mut |k| lightmaps.get(&k).cloned());
         eprintln!(
             "native-world: {} materials draw with their own programs, {} of them their placements with their rigid programs",
             set.len(),
             set.rigid_len()
         );
-        g.set_programs(set);
-    }
+        GpuWorld::with_programs(device, queue, world, set)
+    } else {
+        GpuWorld::new(device, queue, world, &mut |m| base_maps.remove(&m), &mut |k| lightmaps.get(&k).cloned())
+    };
     // The fog set rides the same upload (`native_fog_glue`), after the
     // world's images are in.
     if let Some(fog) = ready.fog.as_ref().filter(|f| !f.programs.is_empty()) {
@@ -355,6 +353,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
 /// One view's world pass.
 struct WorldPass {
     selected: Vec<(Owner, u8)>,
+    selection: Option<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
@@ -434,7 +433,11 @@ impl d3d::ExternalPass for WorldPass {
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
         self.configure(gpu, t);
-        gpu.prepare_parts(t.device, t.color_format, t.depth_format, &self.selected, &self.camera)
+        if self.selection.is_none() {
+            self.selection = gpu.select_parts(&self.selected, &self.camera);
+        }
+        let selection = self.selection.as_ref().ok_or("world part unavailable")?;
+        gpu.prepare_selection(t.device, t.color_format, t.depth_format, selection)
             .then_some(()).ok_or("world part or program binding unavailable")
     }
 
@@ -448,41 +451,21 @@ impl d3d::ExternalPass for WorldPass {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
         self.configure(gpu, &t);
-        if gpu.has_programs() {
-            // The programs read the view from the device's constants: a
-            // pass issued without them draws nothing rather than a world
-            // with last frame's (or no) camera.
-            let Some(constants) = self.view else {
-                if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    eprintln!("native-world: a pass came without the device's view constants; it draws nothing");
-                }
-                return 0;
-            };
-            let view = ViewInputs {
-                constants,
-                guest_size: t.guest_size,
-                size: t.size,
-                z_scale: t.z_scale,
-                w_clip: self.w_clip,
-            };
-            gpu.prepare_programs(&mut t.encoder_uploads(), &view);
-            if let Some(dump) = Diagnostics::get().dump {
-                arm_dump(&self.ready, gpu, &view, dump, self.frame);
-            }
-        }
+        let Some(selection) = &self.selection else { return 0 };
+        let view = self.view.map(|constants| ViewInputs {
+            constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
+        });
         let diag = Diagnostics::get();
-        let full_scale = t.z_scale;
-        let culled = gpu.prepare(
-            &mut t.encoder_uploads(),
-            &self.camera,
-            DepthRule {
-                full_scale,
-                floor: true,
-            },
-        );
+        if gpu.has_programs() && let (Some(view), Some(dump)) = (&view, diag.dump) {
+            arm_dump(&self.ready, gpu, view, dump, self.frame);
+        }
+        let depth = DepthRule { full_scale: t.z_scale, floor: true };
+        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &self.camera, depth) {
+            return 0;
+        }
         let traced = diag.trace
             && !std::mem::replace(&mut self.traced, true)
-            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled, self.frame);
+            && trace(&self.camera, self.view.as_ref(), self.clip, &t, gpu.cull_stats(&self.camera), self.frame);
         if let Some(Probe { at, frames }) = diag.probe {
             // On each traced pass, or on every pass of the frames asked.
             let asked = match frames {
@@ -496,8 +479,7 @@ impl d3d::ExternalPass for WorldPass {
             }
         }
         let [x, y, width, height] = t.viewport;
-        let recorded = gpu.encode_parts(
-            t.device,
+        let recorded = gpu.encode_selection(
             t.encoder,
             t.color,
             t.color_format,
@@ -505,7 +487,7 @@ impl d3d::ExternalPass for WorldPass {
             t.depth_format,
             PassViewport { x, y, width, height },
             t.size,
-            Some(&self.selected),
+            selection,
         );
         let unbound = gpu.unbound_batches();
         if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -846,8 +828,7 @@ pub(crate) fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)>
 
 static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Said once: a pass without view constants, batches left out.
-static NO_VIEW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Said once when a material program could not be bound.
 static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static STENCIL_UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
