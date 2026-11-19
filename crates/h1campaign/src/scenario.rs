@@ -536,9 +536,11 @@ impl std::fmt::Display for ScenarioReport {
                 "    placed at startup ({INITIAL_SCRIPT}): {:?}",
                 s.initial
             )?;
-            for r in &s.recordings_rewritten.stilled {
-                writeln!(f, "    recording held still: {r}")?;
-            }
+            writeln!(
+                f,
+                "    recordings: {}, {} timed mode changes, {} weapon controls",
+                s.recordings, s.recordings_rewritten.animation_events, s.recordings_rewritten.weapon_flags
+            )?;
         }
         Ok(())
     }
@@ -720,6 +722,7 @@ pub fn replaced_fields() -> Vec<u32> {
         STARTING_LOCATIONS,
         crate::profiles::H2.0,
         TRIGGER_VOLUMES,
+        crate::cutscenes::H2_RECORDINGS,
         BSP_SWITCHES,
         BSPS,
         CLUSTER_DATA,
@@ -1157,6 +1160,20 @@ pub fn write(
         }
     }
 
+    // Recordings also drive gameplay outside cinematics, on every lean step.
+    let mut recordings = if opts.cutscene_data {
+        crate::cutscenes::read_recordings(h1)?
+    } else {
+        Vec::new()
+    };
+    let rewritten = crate::recordings::for_halo2(&mut recordings)?;
+    put_block(
+        &mut root,
+        crate::cutscenes::H2_RECORDINGS,
+        crate::cutscenes::H2_RECORDING_LEN,
+        crate::cutscenes::recordings_block(&recordings)?,
+    );
+
     // Scripts.
     match opts.scripts {
         Some(s) => {
@@ -1211,8 +1228,11 @@ pub fn write(
                 } else {
                     music
                 },
-                (!lean.leaves_out(crate::Lean::CutsceneData) && opts.cutscene_data)
-                    .then_some(opts.cutscene_graphs),
+                opts.cutscene_data
+                    && opts.cutscene_graphs
+                    && !lean.leaves_out(crate::Lean::CutsceneData),
+                &recordings,
+                rewritten,
                 crate::cutscenes::policy(opts, &h1.header().name.to_ascii_lowercase()),
                 &aliases,
             )?);
@@ -1784,7 +1804,9 @@ fn install_scripts(
     level_data: bool,
     seat_table: bool,
     music: u64,
-    cutscene_data: Option<bool>,
+    cutscene_graphs: bool,
+    recordings: &[crate::cutscenes::Recording],
+    rewritten: crate::recordings::Report,
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
 ) -> Result<ScriptReport> {
@@ -1843,26 +1865,11 @@ fn install_scripts(
     let (looping, looping_dropped, looping_bytes) = install_looping_sounds(h1, set, &c, music);
     // Animation graphs the cutscenes name, and their animation names
     // (crate::cutscenes).
-    // Recorded animations (Halo 2 `scnr +0x110`), in Halo 1's order. Both
-    // are left out at `Lean::CutsceneData`.
-    // `cutscene_data` is `None` without either, `Some(false)` without the
-    // graphs.
-    let graphs = match cutscene_data {
-        Some(true) => crate::cutscenes::install_graphs(h1, set, &c)?,
-        _ => Default::default(),
+    let graphs = if cutscene_graphs {
+        crate::cutscenes::install_graphs(h1, set, &c)?
+    } else {
+        Default::default()
     };
-    let mut recordings = match cutscene_data {
-        Some(_) => crate::cutscenes::read_recordings(h1)?,
-        None => Vec::new(),
-    };
-    // Halo 1's event streams in Halo 2's encoding (crate::recordings).
-    let rewritten = crate::recordings::for_halo2(&mut recordings);
-    put_block(
-        root,
-        crate::cutscenes::H2_RECORDINGS,
-        crate::cutscenes::H2_RECORDING_LEN,
-        crate::cutscenes::recordings_block(&recordings),
-    );
     let mut interned: HashMap<String, u32> = HashMap::new();
     for h in &c.hooks {
         if h.type_name == "string_id" && !interned.contains_key(&h.token) {
@@ -1905,7 +1912,7 @@ fn install_scripts(
             "sound" => sounds.get(&h.token).map(|id| id.0),
             _ if hook_value(h, targets).is_some() => hook_value(h, targets),
             "unit_seat_mapping" => seats.values.get(&h.token).copied(),
-            "cutscene_recording" => crate::cutscenes::recording_index(&recordings, &h.token),
+            "cutscene_recording" => crate::cutscenes::recording_index(recordings, &h.token),
             // An object definition: the converted tag of that name, or the
             // Halo 2 tag placed instead of it (`crate::h2assets`).
             "object_definition" => {

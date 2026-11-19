@@ -80,6 +80,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
+    features
+        .add(&crate::h1_recordings::Playback)
+        .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
     layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
     map_select::install(rt, features).context("installing the map select")?;

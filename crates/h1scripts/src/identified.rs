@@ -10,7 +10,9 @@
 //! for the recordings, the evaluators of 138, 139 and 140 call one function
 //! (`0x001fb360`) with play flags 0, 8 and 0x10, which bounds the
 //! recording index by `scnr +0x110` and reads `0x34`-byte elements at
-//! `+0x114` (the scenario's recorded animations).
+//! `+0x114` (the scenario's recorded animations). Kill searches by unit at
+//! `0x1fb760`; time queries `0x1fb4c0`. Hover calls the same function
+//! (`0xf0fd0`) as completion of a play-and-hover recording.
 
 use crate::translate::H2Builtin;
 use std::collections::HashMap;
