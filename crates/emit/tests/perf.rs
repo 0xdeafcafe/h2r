@@ -198,13 +198,13 @@ fn compile_module_defines(
     );
     let dylib = dir.join("perf.dylib");
     let probe = r#"#include "h2gen.h"
-uint32_t h2probe_read(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, uint8_t *out) {
+H2_EXPORT uint32_t h2probe_read(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, uint8_t *out) {
     H2FastAccess *f = h2abi_v1_fast_acquire(c);
     uint32_t status = h2_mem_read(f, c, 0, a, n, align, out);
     h2abi_v1_fast_release(c);
     return status;
 }
-uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, const uint8_t *in) {
+H2_EXPORT uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, const uint8_t *in) {
     H2FastAccess *f = h2abi_v1_fast_acquire(c);
     uint32_t status = h2_mem_write(f, c, 0, a, n, align, in);
     h2abi_v1_fast_release(c);

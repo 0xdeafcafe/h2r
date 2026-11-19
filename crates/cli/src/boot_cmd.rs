@@ -8,12 +8,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
-  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang]
+  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check] [--tier fast|clang] [--arch TARGET]
   h2 run   <disc.iso> [--out DIR] [--tier auto|fast|clang] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack] [--no-halo1]
            [--movies DIR | --no-movies] [--settings DIR]
   h2 serve <disc.iso> [--socket PATH] [--system-link [--host-light [--host-bots]]] [run's options]
 
---out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
+--out defaults to $TMPDIR/h2boot (generated C, objects, and the game module).
+--arch selects a single build target and overrides H2_EMIT_TARGET. Use
+  x86_64-linux to cross-build libh2game.so for a Linux dedicated host.
 --tier (or H2_TIER): `build` builds clang's optimised module by default, or
   with `fast` the Cranelift fast tier in --out/fast/ in seconds
   (docs/lifter/cranelift-tier.md). `run` defaults to `auto`: clang's module
@@ -79,6 +81,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut xapi = true;
     let mut fresh = false;
     let mut check = false;
+    let mut build_arch = None;
     let mut no_mappack = false;
     let mut no_halo1 = false;
     let mut tier = None;
@@ -93,6 +96,11 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
             "--check" if cmd == "build" => check = true,
+            "--arch" if cmd == "build" => {
+                let arches = emit::compile::architectures(Some(&val()?))?;
+                let [arch] = arches.as_slice() else { bail!("h2 build --arch requires one target") };
+                build_arch = Some(*arch);
+            }
             "--background" if cmd == "build" => background = true,
             "--tier" => tier = Some(boot::tier::Choice::parse(&val()?)?),
             "--system-link" => system_link = true,
@@ -136,9 +144,18 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     if cmd == "build" {
         // `build` builds one tier: clang's unless asked for the fast one.
         let fast = choice == Choice::Fast;
-        let lib = if fast { boot::tier::fast_dylib(&out) } else { boot::tier::clang_dylib(&out) };
+        let arch = match build_arch {
+            Some(arch) => arch,
+            None => emit::compile::Arch::target()?,
+        };
+        let lib = if fast {
+            boot::tier::check_fast_target(arch)?;
+            boot::tier::fast_dylib(&out)
+        } else {
+            out.join(arch.module_file_name())
+        };
         if check {
-            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current(&xbe, &lib) };
+            let current = if fast { boot::tier::fast_current(&xbe, &lib) } else { boot::dylib_current_for(&xbe, &lib, arch) };
             eprintln!(
                 "h2 build --check: {} is {}",
                 lib.display(),
@@ -147,7 +164,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::process::exit(if current { 0 } else { 3 });
         }
         if fast {
-            boot::tier::build_fast(&xbe, &out, jobs)?;
+            boot::tier::build_fast_for(&xbe, &out, jobs, arch)?;
         } else {
             #[cfg(unix)]
             let _lock = if background {
@@ -163,7 +180,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             };
             #[cfg(not(unix))]
             let _ = background;
-            boot::build(&xbe, &out, jobs)?;
+            boot::build_for(&xbe, &out, jobs, arch)?;
         }
         return Ok(());
     }

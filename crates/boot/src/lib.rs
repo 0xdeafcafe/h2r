@@ -140,11 +140,7 @@ pub const BRIDGE_X87: &str = concat!(
 /// The runtime ABI header, copied next to the generated sources.
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/include/h2abi.h");
 /// File name of the linked module inside the build directory.
-pub const DYLIB: &str = if cfg!(windows) {
-    "h2game.dll"
-} else {
-    "libh2game.dylib"
-};
+pub const DYLIB: &str = emit::compile::Arch::host().module_file_name();
 
 /// Read `default.xbe` from an XISO, a raw XBE, or a directory holding the
 /// disc's files (the tvOS bundle, docs/runtime/tvos.md).
@@ -177,17 +173,23 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
-    match stamp_flags(stamp_target()) {
-        Ok(flags) => stamp_with(
+    build_stamp_for(xbe_bytes, stamp_target())
+}
+
+fn build_stamp_for(xbe_bytes: &[u8], arch: emit::compile::Arch) -> String {
+    match stamp_flags(arch) {
+        Ok(flags) => stamp_for(
             xbe_bytes,
             &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
             &emit::Codegen::from_env().map_or_else(|e| e, |c| format!("{c:?}")),
             &flags,
+            arch,
         ),
         Err(e) => format!("invalid compiler flags: {e}"),
     }
 }
 
+#[cfg(test)]
 fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -> String {
     stamp_for(xbe_bytes, passes, codegen, flags, stamp_target())
 }
@@ -223,6 +225,7 @@ fn stamp_for(
     let target = match target {
         emit::compile::Arch::Arm64Tvos
         | emit::compile::Arch::Arm64Ios
+        | emit::compile::Arch::X86_64Linux
         | emit::compile::Arch::X86_64Windows => {
             format!(" target {}", target.triple())
         }
@@ -244,8 +247,13 @@ fn stamp_path(dylib: &Path) -> PathBuf {
 
 /// Whether `dylib` exists and was built from this image by this generator.
 pub fn dylib_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
+    dylib_current_for(xbe_bytes, dylib, stamp_target())
+}
+
+/// Check a cross-built module using the same target that produced its stamp.
+pub fn dylib_current_for(xbe_bytes: &[u8], dylib: &Path, arch: emit::compile::Arch) -> bool {
     dylib.exists()
-        && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp(xbe_bytes))
+        && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp_for(xbe_bytes, arch))
 }
 
 /// Where [`build`] (and the fallback interpreter at run time) keep
@@ -305,13 +313,15 @@ pub(crate) fn analyze_cached(
     Ok((a, false))
 }
 
-/// Lift, emit and compile the image into `out/libh2game.dylib`.
+/// Lift, emit and compile the image for the target selected by `H2_EMIT_TARGET`.
 pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
+    build_for(xbe_bytes, out, jobs, emit::compile::Arch::target()?)
+}
+
+/// Compile and stamp the image for the explicitly selected target.
+pub fn build_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile::Arch) -> Result<PathBuf> {
     let total = Instant::now();
     let x = xbe::Xbe::parse(xbe_bytes)?;
-    // The host, tvOS with H2_EMIT_TARGET=tvos (docs/runtime/tvos.md), or Windows
-    // with H2_EMIT_TARGET=windows (docs/runtime/windows.md).
-    let arch = emit::compile::Arch::target().map_err(anyhow::Error::msg)?;
     let lib = out.join(arch.module_file_name());
     // A failed build must not leave an old stamp vouching for a new dylib.
     let _ = std::fs::remove_file(stamp_path(&lib));
@@ -399,7 +409,7 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
         t.elapsed().as_secs_f64(),
         lib.display()
     );
-    std::fs::write(stamp_path(&lib), build_stamp(xbe_bytes))
+    std::fs::write(stamp_path(&lib), build_stamp_for(xbe_bytes, arch))
         .with_context(|| format!("stamping {}", lib.display()))?;
     eprintln!("build: {:.1}s", total.elapsed().as_secs_f64());
     Ok(lib)
@@ -459,7 +469,7 @@ unsafe fn open_module(path: &Path) -> Result<libloading::Library> {
     {
         return unsafe { packaged::load(&rel) };
     }
-    Ok(unsafe { libloading::Library::new(path) }?)
+    Ok(unsafe { emit::host::open_library(path) }?)
 }
 
 #[cfg(windows)]

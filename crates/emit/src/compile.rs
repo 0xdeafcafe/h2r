@@ -176,6 +176,8 @@ pub enum Arch {
     /// SDK headers an xwin splat provides ([`XWIN_ENV`]), linked by
     /// `lld-link` ([`windows_tool`]).
     X86_64Windows,
+    /// x86-64 Linux with glibc, using the System V ABI.
+    X86_64Linux,
 }
 
 /// The environment variable naming the xwin splat (the MSVC CRT and Windows
@@ -203,6 +205,7 @@ impl Arch {
             Arch::Arm64Tvos => "arm64-tvos",
             Arch::Arm64Ios => "arm64-ios",
             Arch::X86_64Windows => "x86_64-windows",
+            Arch::X86_64Linux => "x86_64-linux",
         }
     }
 
@@ -215,6 +218,7 @@ impl Arch {
             // Keep in step with IOS_DEPLOYMENT_TARGET.
             Arch::Arm64Ios => "arm64-apple-ios17.0",
             Arch::X86_64Windows => "x86_64-pc-windows-msvc",
+            Arch::X86_64Linux => "x86_64-unknown-linux-gnu",
         }
     }
 
@@ -224,14 +228,20 @@ impl Arch {
         match self {
             Arch::Arm64Tvos => Some("appletvos"),
             Arch::Arm64Ios => Some("iphoneos"),
-            Arch::Arm64 | Arch::X86_64 | Arch::X86_64Windows => None,
+            Arch::Arm64 | Arch::X86_64 | Arch::X86_64Windows | Arch::X86_64Linux => None,
         }
     }
 
     /// The clang arguments that select this target: `-target` and, for a
     /// non-macOS SDK, `-isysroot` (found once with `xcrun`); for Windows,
     /// the DLL C runtime and the xwin splat's headers ([`XWIN_ENV`]).
+    /// Linux uses the native toolchain or the selected Debian sysroot.
     pub fn target_args(self) -> Result<Vec<String>, Error> {
+        if self == Arch::X86_64Linux {
+            let root = std::env::var_os("H2_LINUX_SYSROOT");
+            let root = root.as_deref().map(|r| r.to_str().ok_or_else(|| err("H2_LINUX_SYSROOT must be UTF-8"))).transpose()?;
+            return Ok(linux_target_args(root));
+        }
         let mut v = vec!["-target".to_owned(), self.triple().to_owned()];
         if let Some(sdk) = self.sdk() {
             v.push("-isysroot".into());
@@ -243,35 +253,31 @@ impl Arch {
         Ok(v)
     }
 
-    /// The Mac this crate builds on: [`Arch::host`] unless that is not a
-    /// Mac, then Apple silicon. Only its "not Windows" matters to callers.
-    fn host_macos() -> Arch {
-        match Arch::host() {
-            Arch::X86_64 => Arch::X86_64,
-            _ => Arch::Arm64,
-        }
-    }
-
     /// Whether this is the Windows target: a DLL linked by `lld-link`,
     /// archived by `llvm-ar`.
     pub fn is_windows(self) -> bool {
         self == Arch::X86_64Windows
     }
 
-    /// The file name of the linked game module: `h2game.dll` on Windows,
-    /// `libh2game.dylib` elsewhere.
-    pub fn module_file_name(self) -> &'static str {
-        if self.is_windows() { "h2game.dll" } else { "libh2game.dylib" }
+    /// Name used to publish and locate the game module on this platform.
+    pub const fn module_file_name(self) -> &'static str {
+        match self {
+            Arch::X86_64Windows => "h2game.dll",
+            Arch::X86_64Linux => "libh2game.so",
+            Arch::Arm64 | Arch::X86_64 | Arch::Arm64Ios | Arch::Arm64Tvos => "libh2game.dylib",
+        }
     }
 
     /// The architecture this process runs on.
-    pub fn host() -> Arch {
+    pub const fn host() -> Arch {
         if cfg!(target_os = "tvos") {
             Arch::Arm64Tvos
         } else if cfg!(target_os = "ios") {
             Arch::Arm64Ios
         } else if cfg!(windows) {
             Arch::X86_64Windows
+        } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            Arch::X86_64Linux
         } else if cfg!(target_arch = "x86_64") {
             Arch::X86_64
         } else {
@@ -280,7 +286,7 @@ impl Arch {
     }
 
     /// What `h2 build` (`boot::build`) compiles for: `H2_EMIT_TARGET`
-    /// (`tvos`, `ios`, `windows`, or `host`/`macos`/unset for the host), see
+    /// (`tvos`, `ios`, `windows`, `x86_64-linux`, or `host`/unset for the host), see
     /// [`Arch::target_from`].
     pub fn target() -> Result<Arch, Error> {
         Arch::target_from(std::env::var("H2_EMIT_TARGET").ok().as_deref())
@@ -294,18 +300,20 @@ impl Arch {
             "tvos" => Ok(Arch::Arm64Tvos),
             "ios" => Ok(Arch::Arm64Ios),
             "windows" => Ok(Arch::X86_64Windows),
+            "linux" | "x86_64-linux" => Ok(Arch::X86_64Linux),
             "macos" if Arch::host().is_macos() => Ok(Arch::host()),
-            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos, tvos, ios or windows"))),
+            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos, tvos, ios, windows or x86_64-linux"))),
         }
     }
 
-    /// The `-install_name` of the linked module: its own path for macOS
+    /// The ELF SONAME is the published basename. For Mach-O, the install name is its own path for macOS
     /// (loaded by path from the output directory), and the framework the
     /// tvOS and iOS apps embed it in (platform/tvos, platform/ios), which
     /// it is loaded from.
     pub fn install_name(self, out: &Path) -> OsString {
         match self {
             Arch::Arm64Tvos | Arch::Arm64Ios => "@rpath/h2game.framework/h2game".into(),
+            Arch::X86_64Linux => out.file_name().unwrap_or_default().to_owned(),
             Arch::Arm64 | Arch::X86_64 | Arch::X86_64Windows => out.as_os_str().to_owned(),
         }
     }
@@ -325,7 +333,7 @@ impl Arch {
     pub fn default_opt(self) -> &'static str {
         match self {
             Arch::X86_64Windows => "2",
-            Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => "1",
+            Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios | Arch::X86_64Linux => "1",
         }
     }
 
@@ -347,10 +355,27 @@ impl Arch {
     /// default to `-fno-math-errno`.
     pub fn codegen_flags(self) -> &'static [&'static str] {
         match self {
+            Arch::X86_64Linux => {
+                // Embed the config so the installed host can compute a module stamp.
+                // The file contains one literal compiler option per line.
+                static FLAGS: std::sync::LazyLock<Vec<&str>> = std::sync::LazyLock::new(|| {
+                    include_str!("../configs/x86_64-unknown-linux-gnu-clang.cfg").split_whitespace().collect()
+                });
+                &FLAGS
+            }
             Arch::X86_64Windows => &["-march=x86-64-v3", "-mtune=znver2", "-fno-math-errno"],
             Arch::Arm64 | Arch::X86_64 | Arch::Arm64Tvos | Arch::Arm64Ios => &[],
         }
     }
+}
+
+fn linux_target_args(sysroot: Option<&str>) -> Vec<String> {
+    let mut args = vec!["-target".into(), Arch::X86_64Linux.triple().into()];
+    if let Some(root) = sysroot.filter(|root| !root.is_empty()) {
+        args.push(format!("--sysroot={root}"));
+        args.push(format!("--gcc-toolchain={root}/usr"));
+    }
+    args
 }
 
 /// The xwin splat [`XWIN_ENV`] names, checked to hold the CRT headers.
@@ -421,6 +446,10 @@ const LLVM_TOOL_DIRS: &[&str] = &[
 /// directories in `H2_LLD` and `H2_LLVM` (platform/windows/env.sh), then
 /// `PATH`, then Homebrew's [`LLVM_TOOL_DIRS`].
 pub fn windows_tool(name: &str) -> Result<PathBuf, Error> {
+    llvm_tool(name)
+}
+
+fn llvm_tool(name: &str) -> Result<PathBuf, Error> {
     let env: Vec<OsString> = ["H2_LLD", "H2_LLVM"].iter().filter_map(std::env::var_os).collect();
     let homebrew = std::env::join_paths(LLVM_TOOL_DIRS).ok();
     env.into_iter()
@@ -463,7 +492,8 @@ pub fn architectures(selection: Option<&str>) -> Result<Vec<Arch>, Error> {
         "tvos" => Ok(vec![Arch::Arm64Tvos]),
         "ios" => Ok(vec![Arch::Arm64Ios]),
         "windows" => Ok(vec![Arch::X86_64Windows]),
-        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64, tvos, ios or windows"))),
+        "linux" | "x86_64-linux" => Ok(vec![Arch::X86_64Linux]),
+        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64, tvos, ios, windows or x86_64-linux"))),
     }
 }
 
@@ -788,7 +818,11 @@ pub fn archive_members(lib: &Path) -> Result<Vec<String>, Error> {
 /// [`archive_members`] for `arch`'s archives: `llvm-ar t` for Windows,
 /// whose `llvm-lib` archives name members by the path they were given.
 pub fn archive_members_for(arch: Arch, lib: &Path) -> Result<Vec<String>, Error> {
-    if arch.is_windows() { archive_members_with(&windows_tool("llvm-ar")?, lib) } else { archive_members(lib) }
+    if matches!(arch, Arch::X86_64Windows | Arch::X86_64Linux) {
+        archive_members_with(&llvm_tool("llvm-ar")?, lib)
+    } else {
+        archive_members(lib)
+    }
 }
 
 fn archive_members_with(ar: &Path, lib: &Path) -> Result<Vec<String>, Error> {
@@ -817,11 +851,11 @@ fn archive_matches(arch: Arch, lib: &Path, names: &[String]) -> bool {
 /// Apple's libtool warns about a missing input and still exits 0, so any
 /// diagnostic from it is a failure too. On failure `library` is untouched.
 pub fn archive(library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
-    archive_for(Arch::host_macos(), library, objects)
+    archive_for(Arch::host(), library, objects)
 }
 
 /// [`archive`] for `arch`'s objects: `llvm-lib` for Windows (Apple's
-/// libtool takes only Mach-O), libtool otherwise.
+/// libtool takes only Mach-O), GNU-format llvm-ar for ELF, libtool on Apple targets.
 pub fn archive_for(arch: Arch, library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
     let mut names: Vec<String> = objects.iter().map(|o| o.file_name().unwrap().to_string_lossy().into_owned()).collect();
     names.sort();
@@ -833,6 +867,10 @@ pub fn archive_for(arch: Arch, library: &Path, objects: &[PathBuf]) -> Result<()
         let mut out = OsString::from("/out:");
         out.push(tmp.path());
         Command::new(windows_tool("llvm-lib")?).arg("/nologo").arg(out).args(objects).output()
+    } else if arch == Arch::X86_64Linux {
+        // llvm-ar updates existing archives. Temporary reserves an empty file.
+        std::fs::write(tmp.path(), b"!<arch>\n").map_err(err)?;
+        Command::new(llvm_tool("llvm-ar")?).args(["--format=gnu", "rcs"]).arg(tmp.path()).args(objects).output()
     } else {
         Command::new("libtool").args(["-static", "-no_warning_for_no_symbols", "-o"]).arg(tmp.path()).args(objects).output()
     }
@@ -842,7 +880,7 @@ pub fn archive_for(arch: Arch, library: &Path, objects: &[PathBuf]) -> Result<()
         return Err(err(format!("archiving: {stderr}")));
     }
     if !archive_matches(arch, tmp.path(), &names) {
-        return Err(err(format!("libtool: {} does not hold exactly the {} objects given", tmp.path().display(), names.len())));
+        return Err(err(format!("archive {} does not hold exactly the {} objects given", tmp.path().display(), names.len())));
     }
     tmp.publish(library).map_err(err)
 }
@@ -1072,8 +1110,25 @@ pub fn build_tiered(
     })
 }
 
+/// Link with the published SONAME even though the output is a temporary sibling.
+/// libm supplies fma/sqrt on baseline x86-64.
+fn linux_link_args(out: &Path, temporary: &Path, objects: &[PathBuf]) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        "-fuse-ld=lld", "-shared", "-Wl,-soname", "-Xlinker",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.push(Arch::X86_64Linux.install_name(out));
+    args.push("-o".into());
+    args.push(temporary.as_os_str().to_owned());
+    args.extend(objects.iter().map(|p| p.as_os_str().to_owned()));
+    args.push("-lm".into());
+    args
+}
+
 /// Link a build's objects plus extra C sources (a test bridge providing the
-/// ABI symbols) into a loadable dylib for the host, or a DLL for Windows
+/// ABI symbols) into a Mach-O dylib, an ELF shared object, or a Windows DLL
 /// (`lld-link`, exporting what the sources mark `H2_EXPORT`).
 pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &Path) -> Result<(), Error> {
     let cc = compiler()?;
@@ -1115,6 +1170,12 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     let temporary = Temporary::new(out).map_err(err)?;
     let o = if build.arch.is_windows() {
         Command::new(windows_tool("lld-link")?).args(windows_link_args(&xwin_dir()?, temporary.path(), &args)).output()
+    } else if build.arch == Arch::X86_64Linux {
+        Command::new(&cc)
+            .args(&target)
+            .args(generate.then_some(pgo::GEN_FLAG))
+            .args(linux_link_args(out, temporary.path(), &args))
+            .output()
     } else {
         Command::new(&cc)
             .args(&target)
@@ -1153,11 +1214,11 @@ mod tests {
     }
 
     #[test]
-    fn the_emit_target_is_the_host_unless_tvos_or_ios_is_asked_for() {
+    fn the_emit_target_defaults_to_the_host_and_accepts_apple_devices() {
         assert_eq!(Arch::target_from(None).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("")).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("host")).unwrap(), Arch::host());
-        assert_eq!(Arch::target_from(Some("macos")).unwrap(), Arch::host());
+        assert_eq!(Arch::target_from(Some("macos")).ok(), Arch::host().is_macos().then_some(Arch::host()));
         assert_eq!(Arch::target_from(Some("tvos")).unwrap(), Arch::Arm64Tvos);
         assert_eq!(Arch::target_from(Some("ios")).unwrap(), Arch::Arm64Ios);
         assert!(Arch::target_from(Some("iphoneos")).is_err());
@@ -1218,6 +1279,50 @@ mod tests {
                 "/o/b.o",
             ]
         );
+    }
+
+    #[test]
+    fn linux_selects_the_gnu_target_and_uses_its_own_object_keys() {
+        let linux = Arch::X86_64Linux;
+        assert_eq!(Arch::target_from(Some("x86_64-linux")).unwrap(), linux);
+        assert_eq!(architectures(Some("x86_64-linux")).unwrap(), [linux]);
+        assert_eq!(Arch::host() == linux, cfg!(all(target_os = "linux", target_arch = "x86_64")));
+        assert!(!Arch::ALL.contains(&linux));
+        assert_eq!(linux.name(), "x86_64-linux");
+        assert_eq!(linux.triple(), "x86_64-unknown-linux-gnu");
+        assert_eq!(linux.sdk(), None);
+        let key = |a| common_key(b"h2gen", b"h2abi", a, &[], "toolchain");
+        for other in [Arch::X86_64, Arch::X86_64Windows] {
+            assert_ne!(linux.name(), other.name());
+            assert_ne!(key(linux), key(other));
+        }
+        assert_eq!(linux.module_file_name(), "libh2game.so");
+        assert_eq!(linux.default_opt(), "1");
+    }
+
+    #[test]
+    fn linux_clang_args_select_pic_and_an_optional_debian_sysroot() {
+        let linux = Arch::X86_64Linux;
+        assert_eq!(linux.codegen_flags(), ["-fPIC", "-fvisibility=hidden"]);
+        let flags = cflags_for(linux).unwrap();
+        assert!(flags.windows(2).any(|f| f == linux.codegen_flags()));
+        assert_eq!(linux_target_args(None), ["-target", linux.triple()]);
+        assert_eq!(linux_target_args(Some("")), linux_target_args(None));
+        assert_eq!(linux_target_args(Some("/Debian SDK")),
+            ["-target", linux.triple(), "--sysroot=/Debian SDK", "--gcc-toolchain=/Debian SDK/usr"]);
+        assert_eq!(linux.target_args().unwrap(), linux_target_args(std::env::var("H2_LINUX_SYSROOT").ok().as_deref()));
+    }
+
+    #[test]
+    fn linux_link_uses_the_published_soname_and_links_math_after_objects() {
+        let out = Path::new("/release/libh2game.so");
+        let args = linux_link_args(out, Path::new("/release/.temporary"), &[PathBuf::from("shard.o")]);
+        assert!(args.contains(&OsString::from("-shared")));
+        assert!(args.contains(&OsString::from("-fuse-ld=lld")));
+        let args: Vec<_> = args.iter().map(|a| a.to_str().unwrap()).collect();
+        assert!(args.windows(3).any(|a| a == ["-Wl,-soname", "-Xlinker", "libh2game.so"]));
+        assert!(args.windows(2).any(|a| a == ["-o", "/release/.temporary"]));
+        assert!(args.ends_with(&["shard.o", "-lm"]));
     }
 
     #[test]
@@ -1403,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn only_windows_has_codegen_flags_and_they_follow_cflags() {
+    fn windows_codegen_flags_follow_cflags_and_apple_targets_use_the_defaults() {
         assert_eq!(Arch::X86_64Windows.codegen_flags(), ["-march=x86-64-v3", "-mtune=znver2", "-fno-math-errno"]);
         for arch in [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos, Arch::Arm64Ios] {
             assert!(arch.codegen_flags().is_empty(), "{arch:?}");
@@ -1563,7 +1668,7 @@ mod tests {
         for h in ["h2gen.h", "h2simd.h", "h2x87.h", "h2fastmem.h", "h2abi.h"] {
             std::fs::write(src.join(h), "/* support */\n").unwrap();
         }
-        std::fs::write(src.join("one.c"), "int h2_one(void) { return 1; }\n").unwrap();
+        std::fs::write(src.join("one.c"), "__attribute__((visibility(\"default\"))) int h2_one(void) { return 1; }\n").unwrap();
         src
     }
 
@@ -1671,16 +1776,16 @@ mod tests {
         let first_a = Tiers::new("0", "guest 0x00001000 12").unwrap();
         let first = build(Some(&first_a));
         assert_eq!((first.compiled, first.reused, first.cold), (3, 0, 2));
-        assert!(symbols(&first, "a").contains("_h2_a_optimised"), "{}", symbols(&first, "a"));
-        assert!(symbols(&first, "b").contains("_h2_b_unoptimised"), "{}", symbols(&first, "b"));
+        assert!(symbols(&first, "a").contains("h2_a_optimised"), "{}", symbols(&first, "a"));
+        assert!(symbols(&first, "b").contains("h2_b_unoptimised"), "{}", symbols(&first, "b"));
         let warm = build(Some(&first_a));
         assert_eq!((warm.compiled, warm.reused), (0, 3));
         // b becomes hot and a cold: exactly those two recompile.
         let then_b = Tiers::new("0", "0x2000").unwrap();
         let moved = build(Some(&then_b));
         assert_eq!((moved.compiled, moved.reused, moved.cold), (2, 1, 2));
-        assert!(symbols(&moved, "a").contains("_h2_a_unoptimised"));
-        assert!(symbols(&moved, "b").contains("_h2_b_optimised"));
+        assert!(symbols(&moved, "a").contains("h2_a_unoptimised"));
+        assert!(symbols(&moved, "b").contains("h2_b_optimised"));
         // Without tiers everything is hot: a and b were built hot before,
         // one.c never was.
         let off = build(None);
@@ -1747,7 +1852,7 @@ mod tests {
         std::fs::write(&leaf, "#define VALUE 1\n").unwrap();
         std::fs::write(src.join("nested/outer.h"), "#include <selected.h>\n").unwrap();
         std::fs::write(src.join("h2abi.h"), "#include \"nested/outer.h\"\n").unwrap();
-        std::fs::write(src.join("one.c"), "#include \"h2abi.h\"\nint h2_value(void) { return VALUE; }\n").unwrap();
+        std::fs::write(src.join("one.c"), "#include \"h2abi.h\"\n__attribute__((visibility(\"default\"))) int h2_value(void) { return VALUE; }\n").unwrap();
         std::fs::write(src.join("two.c"), "int h2_two(void) { return 0; }\n").unwrap();
         let wrapper = dir.join("clang");
         std::fs::write(&wrapper, format!("#!/bin/sh\nexec '{}' -I '{}' -isystem '{}' \"$@\"\n", cc.display(), src.display(), external.display())).unwrap();
@@ -1890,7 +1995,7 @@ mod tests {
                 dir.join("configs/flags.cfg")
             };
             std::fs::write(&config, "-DVALUE=1\n").unwrap();
-            std::fs::write(src.join("one.c"), "int h2_value(void) { return VALUE; }\n").unwrap();
+            std::fs::write(src.join("one.c"), "__attribute__((visibility(\"default\"))) int h2_value(void) { return VALUE; }\n").unwrap();
             let options = match mode {
                 "ccc" => format!("export CCC_OVERRIDE_OPTIONS='^--config={}'\nexec '{}' \"$@\"\n", config.display(), cc.display()),
                 "explicit" => format!("unset CCC_OVERRIDE_OPTIONS\nexec '{}' --no-default-config --config '{}' \"$@\"\n", cc.display(), config.display()),
@@ -1983,14 +2088,16 @@ mod tests {
         let object_sentinel = alias("bridge-object", &src.join("bridge.o"));
         let dylib = out.join("host.dylib");
         let dylib_sentinel = alias("dylib", &dylib);
-        host_dylib(&first, &src, &[("bridge.c", "int bridge_marker(void) { return 23; }\n")], &dylib).unwrap();
+        host_dylib(&first, &src, &[("bridge.c", "__attribute__((visibility(\"default\"))) int bridge_marker(void) { return 23; }\n")], &dylib).unwrap();
         assert_eq!(std::fs::read(&source_sentinel).unwrap(), b"sentinel\n");
         assert!(!src.join("bridge.c").exists());
         intact(&object_sentinel, &src.join("bridge.o"));
         intact(&dylib_sentinel, &dylib);
-        let identity = Command::new("otool").arg("-D").arg(&dylib).output().unwrap();
-        assert!(identity.status.success());
-        assert!(String::from_utf8_lossy(&identity.stdout).lines().any(|line| line == dylib.to_string_lossy()), "dylib install name must remain the final output path");
+        if Arch::host().is_macos() {
+            let identity = Command::new("otool").arg("-D").arg(&dylib).output().unwrap();
+            assert!(identity.status.success());
+            assert!(String::from_utf8_lossy(&identity.stdout).lines().any(|line| line == dylib.to_string_lossy()), "dylib install name must remain the final output path");
+        }
         // SAFETY: both signatures and the linked synthetic definitions are
         // known; all calls finish before the library is unloaded.
         unsafe {
@@ -2062,15 +2169,17 @@ mod tests {
         assert!(archive(&a.library, &missing).is_err());
         assert_eq!(std::fs::read(&a.library).unwrap(), before);
         // libtool given a missing input warns and exits 0; that is a failure.
-        let lt = Command::new("libtool")
-            .args(["-static", "-no_warning_for_no_symbols", "-o"])
-            .arg(dir.join("probe.a"))
-            .arg(&a.objects[0])
-            .arg(dir.join("gone.o"))
-            .output()
-            .unwrap();
-        if lt.status.success() {
-            assert!(!lt.stderr.is_empty(), "libtool reports the missing input");
+        if Arch::host().is_macos() {
+            let lt = Command::new("libtool")
+                .args(["-static", "-no_warning_for_no_symbols", "-o"])
+                .arg(dir.join("probe.a"))
+                .arg(&a.objects[0])
+                .arg(dir.join("gone.o"))
+                .output()
+                .unwrap();
+            if lt.status.success() {
+                assert!(!lt.stderr.is_empty(), "libtool reports the missing input");
+            }
         }
         // An empty archive left in place (and the old stamp claiming it
         // is complete) is rebuilt.

@@ -26,6 +26,21 @@ use std::path::Path;
 
 use ir::interp::{FlatMemory, MemFault, Memory};
 
+/// Open a generated shared library. On Linux resolve all relocations before
+/// installing the ABI bridge and keep its symbols local to the module.
+///
+/// # Safety
+/// The caller trusts the module's initializers and termination routines.
+pub unsafe fn open_library(path: &Path) -> Result<libloading::Library, libloading::Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use libloading::os::unix::{Library, RTLD_LOCAL, RTLD_NOW};
+        unsafe { Library::open(Some(path), RTLD_NOW | RTLD_LOCAL) }.map(Into::into)
+    }
+    #[cfg(not(target_os = "linux"))]
+    unsafe { libloading::Library::new(path) }
+}
+
 /// The C bridge source; see `c/bridge.c` and, for the `h2x87_v1_*`
 /// symbols, `c/bridge_x87.c`.
 pub const BRIDGE: &str = concat!(include_str!("../c/bridge.c"), include_str!("../c/bridge_x87.c"));
@@ -701,7 +716,7 @@ impl Generated {
     /// # Safety
     /// The library must be a module produced by this crate for this host.
     pub unsafe fn load(path: &Path) -> Result<Self, String> {
-        let lib = unsafe { libloading::Library::new(path) }.map_err(|e| e.to_string())?;
+        let lib = unsafe { open_library(path) }.map_err(|e| e.to_string())?;
         unsafe {
             let version: libloading::Symbol<unsafe extern "C" fn() -> u32> =
                 lib.get(b"h2gen_module_abi_version").map_err(|e| e.to_string())?;
