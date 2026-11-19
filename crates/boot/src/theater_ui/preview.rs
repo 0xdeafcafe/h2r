@@ -8,7 +8,7 @@ use debug_menu::Tone;
 use super::adapter::{Clip, FilmMeta, Library, Player, Source};
 use super::overlay::Track;
 use super::{Control, DETAIL, Entry, FILMS, Load, OVERLAY, Tab, Theater, pages};
-use crate::ui_kit::input::{Glyph, Input, Prompt};
+use crate::ui_kit::input::Input;
 use crate::ui_kit::page::{Focus, ListEffect, Live, Page};
 use crate::ui_kit::spec::{PaneText, ScreenSpec};
 
@@ -130,13 +130,17 @@ impl Preview {
             return spec;
         }
         let view = track.view(None);
-        for (lines, rect) in [
-            (&view.players, [77, -260, 0, -82]),
-            (&view.top_right, [190, 93, 0, 264]),
-            (&view.bottom, [-56, -168, 0, 230]),
+        // The disc's body font is 19 pixels tall. Leave a gutter between
+        // rows and grow the transport upward when it has a clip or notice.
+        const ROW_STEP: i16 = 22;
+        let transport_top = -208 + view.bottom.len() as i16 * ROW_STEP;
+        for (lines, top, left, right) in [
+            (&view.players, 148, -260, 8),
+            (&view.top_right, 190, 24, 264),
+            (&view.bottom, transport_top, -220, 220),
         ] {
             for (i, line) in lines.iter().enumerate() {
-                let top = rect[0] - i as i16 * 17;
+                let top = top - i as i16 * ROW_STEP;
                 let colour = match line.tone {
                     Tone::Title => [1.0, 0.84, 0.47],
                     Tone::Selected => [1.0, 1.0, 1.0],
@@ -145,7 +149,7 @@ impl Preview {
                 };
                 spec.texts.push(PaneText {
                     id: format!("transport.{}", spec.texts.len()),
-                    rect: [top, rect[1], top - 17, rect[3]],
+                    rect: [top, left, top - ROW_STEP, right],
                     font: 1,
                     right: false,
                     colour,

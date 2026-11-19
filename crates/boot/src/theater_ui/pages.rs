@@ -43,6 +43,14 @@ const FILM_PICTURE: PictureSpec = PictureSpec {
     at: [-258, 46],
     ..lobby::PICTURE
 };
+// The 128-pixel lobby display ends at y=50, just above the film picture.
+const FILM_PANEL_ART: [PictureSpec; 2] = [
+    lobby::NAME_FIELD,
+    PictureSpec {
+        at: [lobby::LOBBY_DISPLAY.at[0], 178],
+        ..lobby::LOBBY_DISPLAY
+    },
+];
 const LIST_STATUS: TextBlock = TextBlock {
     rect: [-147, -245, -169, 245],
     ..lobby::STATUS
@@ -311,7 +319,7 @@ fn film_panel() -> Panel {
     }
     texts.push(panel_cell([-164, -258, -184, 272], false, true));
     Panel {
-        art: lobby::ART.to_vec(),
+        art: FILM_PANEL_ART.to_vec(),
         texts,
     }
 }
@@ -437,7 +445,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
         };
     } else {
         s.style = crate::ui_kit::spec::ValueStyle::Inline;
-        s.panel = lobby::ART
+        s.panel = FILM_PANEL_ART
             .into_iter()
             .zip(lobby::ART_SIZES)
             .map(|(p, size)| art(p, size))
