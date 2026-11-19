@@ -61,7 +61,8 @@ pub mod at {
     pub const P_EFFECTIVE: u32 = 0xa8;
     pub const P_138: u32 = 0x138;
 
-    /// The simulation globals (`*0x4cf77c`): mode, and the player slots.
+    /// The simulation world (`*0x4cf77c`): its mode ([`super::world_mode`],
+    /// not the game's), and the player slots.
     pub const SIM_GLOBALS: u32 = 0x004c_f77c;
     pub const SIM_MODE: u32 = 8;
     pub const SIM_SLOTS: u32 = 0x7c;
@@ -85,10 +86,49 @@ use at::*;
 /// The lobby state, which a running game keeps too (states 6 to 8 tear the
 /// simulation down; docs/game/bots.md §5.1).
 pub const STATE_LIVE: u32 = 5;
-/// The distributed server's simulation mode.
-pub const MODE_DIST_SERVER: u32 = 5;
-/// The local simulation mode (Split Screen and campaign alone).
+/// The game's mode for the distributed server: what `0x6ec80` puts in the
+/// game options (`+4`) and the game globals (`[0x4e6948]+0xc`): 1 local,
+/// 2 synchronous client, 3 synchronous server, 4 distributed client, 5
+/// distributed server.
+pub const GAME_DIST_SERVER: u32 = 5;
+/// The simulation world's mode for the distributed server (`[0x4cf77c]+8`,
+/// what [`host_session`] reads). The world numbers its modes otherwise
+/// than the game: see [`world_mode`].
+pub const WORLD_DIST_SERVER: u32 = 4;
+/// The local mode, 1 in both numberings (Split Screen and campaign alone).
 pub const MODE_LOCAL: u32 = 1;
+
+/// The simulation world's mode for a game mode, as the world's setup
+/// (`0x68c00`) maps it through its jump table at `0x68da8`: 1 → 1, 2 → 3,
+/// 3 → 2, 4 → 5, 5 → 4. So the world's 2 and 4 are the servers and 3 and
+/// 5 the clients. The game's other writers agree: becoming the host
+/// (`0x6aee0`) sets the world's mode 4 and the game's 5 together; becoming
+/// a client (`0x6ae20`) sets the game's 2 or 4 and builds the world anew
+/// through `0x68c00`; the action store (`0x847d0`) takes the local and
+/// synchronous server worlds (1, 2) as authoritative. `None` for none.
+pub fn world_mode(game: u32) -> Option<u32> {
+    match game {
+        1 => Some(1),
+        2 => Some(3),
+        3 => Some(2),
+        4 => Some(5),
+        5 => Some(4),
+        _ => None,
+    }
+}
+
+/// A simulation world mode's name.
+pub fn world_mode_name(world: u32) -> &'static str {
+    match world {
+        0 => "none",
+        1 => "local",
+        2 => "synchronous server",
+        3 => "synchronous client",
+        4 => "distributed server",
+        5 => "distributed client",
+        _ => "unknown",
+    }
+}
 pub const MAX: u32 = 16;
 
 /// Why the host cannot take a phantom now.
@@ -122,12 +162,15 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
         )));
     }
     let shown = |v: Option<u32>| v.map_or_else(|| "?".to_owned(), |v| v.to_string());
+    // The world's mode, not the game's (`world_mode`): the run
+    // 20261119-014620 read 4, the distributed server, and took it for a
+    // client.
     let mode = read(sim + SIM_MODE);
     if mode == Some(MODE_LOCAL) {
         // Split Screen: its session is of the local type (session `+0x18`
         // 0, made by `0x59890(0, …)` from the players screen in mode 1),
-        // which `0x64060` gives protocol 0, and `0x6ec80` simulation mode
-        // 1. No game of it has peers; a hosted System Link or Live game is
+        // which `0x64060` gives protocol 0, and `0x6ec80` game mode 1
+        // (world mode 1). No game of it has peers; a hosted System Link or Live game is
         // distributed (protocol 2 for every shipped engine), one console
         // or many.
         return Err(NotNow::NotHost(
@@ -135,12 +178,13 @@ pub fn host_session(m: &dyn GuestMemory) -> Result<u32, NotNow> {
                 .into(),
         ));
     }
-    if mode != Some(MODE_DIST_SERVER) {
-        // 0x6ec80 made it 4 + (local peer == host peer): say both.
+    if mode != Some(WORLD_DIST_SERVER) {
+        // 0x6ec80 chose from local peer == host peer: say both.
         return Err(NotNow::NotHost(format!(
-            "the simulation is not the distributed server (mode {}, the server's is {MODE_DIST_SERVER}; \
-             session host peer {}, this console's peer {}, peer count {})",
+            "the simulation is not the distributed server (world mode {}, {}; the server's is \
+             {WORLD_DIST_SERVER}; session host peer {}, this console's peer {}, peer count {})",
             shown(mode),
+            mode.map_or("unreadable", world_mode_name),
             shown_index(read(s + HOST_PEER)),
             shown_index(read(s + LOCAL_PEER)),
             shown(read(s + PEER_COUNT)),
@@ -175,8 +219,9 @@ pub const HOST_STATES: std::ops::RangeInclusive<u32> = 5..=8;
 /// The distributed protocol (`+0x4dac`), every shipped multiplayer engine's.
 pub const PROTOCOL_DISTRIBUTED: u32 = 2;
 
-/// What the session game start (`0x6ec80`) reads to choose the simulation
-/// mode, as the bots' hook before it reads them: the mode is 1 for
+/// What the session game start (`0x6ec80`) reads to choose the game mode
+/// (the simulation world's follows from it, [`world_mode`]), as the bots'
+/// hook before it reads them: the game mode is 1 for
 /// protocol 0, `2 + is_host` for 1 and `4 + is_host` for 2, with `is_host`
 /// the local peer (`+0x72d8`) equal to the host peer (`+0x40`,
 /// `0x6ee60..0x6ee71`, `0x6eeba..0x6eecd`).
@@ -213,7 +258,8 @@ impl StartFacts {
         })
     }
 
-    /// The mode `0x6ec80` will choose from these, when it starts the game.
+    /// The game mode `0x6ec80` will choose from these, when it starts the
+    /// game (not the world's: [`world_mode`]).
     pub fn mode(&self) -> Option<u32> {
         let host = u32::from(self.host == self.local);
         match self.protocol {
@@ -245,7 +291,8 @@ pub enum HostFix {
     /// Phantoms are planned and the session is this console's alone, but
     /// its host peer is not its own: make it so (`+0x40` = `local`), as
     /// becoming the host does (`0x61390`), so the game starts as the
-    /// distributed server (mode 5) and phantoms can join.
+    /// distributed server (game mode 5, world mode 4) and phantoms can
+    /// join.
     Host { host: u32, local: u32 },
 }
 
@@ -253,8 +300,10 @@ pub enum HostFix {
 /// Only a distributed session in a host state (5 to 8) with no other
 /// console in it is changed: there the host can only be this console, so
 /// a host peer that is not its own is wrong, and the game would start as
-/// a distributed client of nobody (mode 4). The user's run 20261119-005001:
-/// a Live custom game, one console, `mode 4`.
+/// a distributed client of nobody (game mode 4). Runs 20261119-005001 and
+/// -014620 never needed it: their world mode 4 was the distributed server
+/// all along (see [`world_mode`]); this stays for a session that really
+/// has the wrong host.
 pub fn host_fix(f: &StartFacts, planned: bool) -> HostFix {
     if !planned {
         return HostFix::Keep("no phantoms planned".into());
@@ -315,11 +364,15 @@ pub fn game_start(m: &mut dyn GuestMemory, s: u32, planned: bool) -> Vec<String>
             )];
         }
     };
-    let mode = f
-        .mode()
-        .map_or_else(|| "none".to_owned(), |m| m.to_string());
+    let mode = f.mode().map_or_else(
+        || "none".to_owned(),
+        |g| match world_mode(g) {
+            Some(w) => format!("{g} (simulation world mode {w}, {})", world_mode_name(w)),
+            None => g.to_string(),
+        },
+    );
     let mut log = vec![format!(
-        "bots: game start: {}: simulation mode {mode}",
+        "bots: game start: {}: game mode {mode}",
         f.describe()
     )];
     match host_fix(&f, planned) {
@@ -328,7 +381,8 @@ pub fn game_start(m: &mut dyn GuestMemory, s: u32, planned: bool) -> Vec<String>
             Ok(()) => log.push(format!(
                 "bots: game start: phantoms planned and no other console in the session: \
                  this console hosts it (host peer {} -> {local}), so the game starts as the \
-                 distributed server (mode {MODE_DIST_SERVER})",
+                 distributed server (game mode {GAME_DIST_SERVER}, world mode \
+                 {WORLD_DIST_SERVER})",
                 host as i32
             )),
             Err(e) => log.push(format!(

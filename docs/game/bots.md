@@ -954,49 +954,70 @@ drops the simulation's network state (`0x6b040`). 6 is set after the
 leave message `0xd` (`0x61450`), 7 by `0x614a0` and 8 at `0x61646`. So
 "in a game" is state 5 with a game loaded, never 6 to 8.
 
-**Hosting the game** (traced 2026-11-19, `h2 disasm`). The run
-20261119-005001 had its phantoms wait because the simulation was in mode
-4, not 5. The game start (`0x6ec80`, `SESSION_GAME_START`, EDX the
-session; reached from the in-game life-cycle state's enter, `0x6eb90` →
-`0x6ec10` → `0x6ec80` on the squad session `[0x527364]`) picks the mode
-from the protocol at `S+0x4dac` and whether this console hosts, `is_host
-= [S+0x72d8] == [S+0x40]` (`0x6ee60..0x6ee71`): protocol 0 gives mode 1,
-1 gives 2 + is_host, 2 gives 4 + is_host (`0x6eeba..0x6eecd`). The mode
-goes to the options `+4`, the game globals `+0xc` and the simulation
-globals `[0x4cf77c]+8` (`0x67efd`). The mode names at `0x468c64`: none,
-local, synchronous client, synchronous server, distributed client,
-distributed server. So mode 4 is the distributed client: the session's
-host peer was not this console's peer. **Confirmed**: the formula and the
-fields. `+0x40` is the host peer and `+0x72d8` the local one (the earlier
-notes had them the other way round): a client's join (`0x61050`, from
-`0x5a07d`) puts the host's address in peer 0 and its own XNADDR
-(`0x4cf793`) in peer 1, then sets `+0x40` 0 and `+0x72d8` 1 and state 1;
-the host's create (`0x59d92`, `0x59d95`) sets both 0; entering state 5 as
-the host (`0x61390`) copies `+0x72d8` to `+0x40` (`0x6141a`); `0x58d20`
-(states 5 to 8) is the "this console hosts" test. Other writers of `+0x40`:
-`0x5e507` (handing the session to a sending peer, then state 3 through
-`0x612c0`), `0x5d2dc` (a client's membership update) and `0x5ff7d`
-(removal). **Inferred, not proven**: why a lone host's session had
-`+0x40` ≠ `+0x72d8` in that run. With one peer and state 5 the session
-can only be this console's, so the bots make it so: just before
-`0x6ec80`, with phantoms planned, protocol 2, state 5 to 8, this
-console's peer below the peer count and no other real console in the
-session (phantom peers are not consoles), `+0x40` is set to `+0x72d8`
-(`bots::phantom::session::game_start`), and the game starts as the
-distributed server. Each start logs what it read and what it did:
-`bots: game start: session state 5, protocol 2, peer count 1 (0 other
-consoles), host peer 1, this console's peer 0: simulation mode 4`, then
-either `bots: game start: phantoms planned and no other console in the
-session: this console hosts it (host peer 1 -> 0), so the game starts as
-the distributed server (mode 5)` or `bots: game start: session as it is
-(why)`. The next run's line shows which field was off. A phantom that
-still waits names the mode and both peers: `(mode 4, the server's is 5;
-session host peer 0, this console's peer 0, peer count 1)`.
+**Hosting the game** (traced 2026-11-19, `h2 disasm`). Runs
+20261119-005001 and 20261119-014620 had their phantoms wait on "the
+simulation is not the distributed server (mode 4 ...)". It was: the
+phantom check compared the simulation world's mode with the game's
+number for the distributed server, and the two number their modes
+differently.
+
+- **The game mode.** The game start (`0x6ec80`, `SESSION_GAME_START`, EDX
+  the session; reached from the in-game life-cycle state's enter,
+  `0x6eb90` → `0x6ec10` → `0x6ec80` on the squad session `[0x527364]`)
+  picks it from the protocol at `S+0x4dac` and whether this console
+  hosts, `is_host = [S+0x72d8] == [S+0x40]` (`0x6ee60..0x6ee71`):
+  protocol 0 gives 1, 1 gives 2 + is_host, 2 gives 4 + is_host
+  (`0x6eeba..0x6eecd`). It goes to the options `+4` and the game globals
+  `[0x4e6948]+0xc`: 1 local, 2 synchronous client, 3 synchronous server,
+  4 distributed client, 5 distributed server. **Confirmed.**
+- **The simulation world's mode** (`[0x4cf77c]+8`, what the phantoms
+  check). The new-map callback `0x67ee0` reads the game mode (`0x67efd`)
+  and builds the world through `0x68c00`, whose jump table at `0x68da8`
+  maps game 1, 2, 3, 4, 5 to world 1, 3, 2, 5, 4. So the world's
+  distributed server is **4** and its client 5; its synchronous server 2
+  and client 3. **Confirmed**, and every other writer and reader agrees:
+  becoming the host (`0x6aee0`) sets world 4 and game 5 together;
+  becoming a client (`0x6ae20`) sets game 2 or 4 and rebuilds the world
+  through `0x68c00`; the after-tick step (`0x684e0`) does nothing in
+  world 3 and 5 and sends updates in 2 (`0x69880`) and the distributed
+  view in 4 (`0x69a00`, `0x69b50`); the action store (`0x847d0`) treats
+  world 1 and 2 as authoritative. The names at `0x468c64` are the game's
+  numbering; live-coop.md §1.1 applies them to the world's field, which
+  reads a host as a client (`coop_probe::mode_name`,
+  `agent_proto::sim::SessionKind::from_sim_mode` do the same).
+- So both runs' lone Live host was the distributed server (game mode 5,
+  world mode 4) all along. `bots::phantom::session::host_session` now
+  takes world mode 4 (`WORLD_DIST_SERVER`; `world_mode` is the table), and
+  a phantom that waits names the world mode: `(world mode 5, distributed
+  client; the server's is 4; session host peer 0, this console's peer 0,
+  peer count 1)`.
+- **The session's host peer.** `+0x40` is the host peer and `+0x72d8` the
+  local one (the earlier notes had them the other way round): a client's
+  join (`0x61050`, from `0x5a07d`) puts the host's address in peer 0 and
+  its own XNADDR (`0x4cf793`) in peer 1, then sets `+0x40` 0 and
+  `+0x72d8` 1 and state 1; the host's create (`0x59d92`, `0x59d95`) sets
+  both 0; entering state 5 as the host (`0x61390`) copies `+0x72d8` to
+  `+0x40` (`0x6141a`); `0x58d20` (states 5 to 8) is the "this console
+  hosts" test. Other writers of `+0x40`: `0x5e507` (handing the session to
+  a sending peer, then state 3 through `0x612c0`), `0x5d2dc` (a client's
+  membership update) and `0x5ff7d` (removal).
+- **The start hook.** Before `0x6ec80`, with phantoms planned, protocol
+  2, state 5 to 8, this console's peer below the peer count and no other
+  real console in the session (phantom peers are not consoles), a host
+  peer that is not this console's is set to it
+  (`bots::phantom::session::game_start`). No run has needed it (run
+  -014620 read host peer 0, local 0); it stays for a session that does.
+  Each start logs what it read: `bots: game start: session state 5,
+  protocol 2, peer count 1 (0 other consoles), host peer 0, this
+  console's peer 0: game mode 5 (simulation world mode 4, distributed
+  server)`, then `bots: game start: session as it is (why)` or the line
+  that it made this console the host.
 
 **Recipe on the host, as built** (`bots::phantom::session`): the writes
 the game's own functions make, done from the game thread before each
-`RENDER_FRAME`, only while a multiplayer game runs, the simulation mode is
-5 (distributed server), the session state is 5 and its class 4.
+`RENDER_FRAME`, only while a multiplayer game runs, the simulation world's
+mode is 4 (distributed server; the game's 5), the session state is 5 and
+its class 4.
 
 1. **Peer** (as `0x5fbd0(S, n, &xnaddr, 0, -1, NULL)` and `0x5f900`):
    `S+0x54` + 1; the peer cleared; its MAC (`+0xa`) the phantom's machine
@@ -1850,7 +1871,7 @@ list for the user to play (§11).
        frames of a game), they wait and try again each frame, logged once
        per phantom and reason (`bots: phantom Clanker 4 waits: this
        console is not the game's host yet (the simulation is not the
-       distributed server (mode 4, …))`; `NotNow::NotHost` says which
+       distributed server (world mode 5, …))`; `NotNow::NotHost` says which
        check: no network session, the simulation mode, the session state
        or its class). They used to fail for good (the user's run:
        `phantom Clanker 4 failed: not the host`, logged in the menus
@@ -2022,6 +2043,11 @@ list for the user to play (§11).
      parsing and §9.1's checks; local xuids never an account's.
    - **Built (6c, after run 20261119-005001):** three of five bots in the
      game, the phantoms waiting on simulation mode 4.
+     - Run 20261119-014620 showed why (§5.1, "Hosting the game"): the
+       world's mode 4 is the distributed server (the game numbers it 5),
+       and the phantom check wanted 5. It takes 4 now (`world_mode`,
+       `WORLD_DIST_SERVER`); test `cargo test -p bots --lib
+       phantom::session`.
      - `SESSION_GAME_START` (`0x6ec80`): with phantoms planned and no
        other console in the session, the session's host peer is made this
        console's before the game picks its mode, so a lone Live host runs
@@ -2352,7 +2378,7 @@ list for the user to play (§11).
      mode is 1 (`0x6ec80`, live-coop.md §1.1) and there are no peers to
      be. A hosted System Link or Live custom game is distributed whatever
      its peer count (protocol 2 for every shipped engine, `0x161c90`), so
-     the host is mode 5 there with one console. Phantoms now say so in
+     the host is game mode 5 (world mode 4) there with one console. Phantoms now say so in
      Split Screen (`waits: … (a local game (simulation mode 1, Split
      Screen): phantoms join System Link and Xbox Live games only)`).
      Making Split Screen distributed is not done: it would change every
