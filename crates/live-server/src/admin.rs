@@ -31,9 +31,11 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use live_proto::hopper::clankers::ClankerHoppers;
+use live_proto::hopper::defaults::{self, RETAIL_MAPS};
+use live_proto::hopper::variant::VariantRecord;
 use live_proto::hopper::{
-    Descriptor, HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, HopperText,
-    MAX_RECORDS, Record,
+    Descriptor, Entry, HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, HopperText,
+    MAX_RECORDS, RECORD, Record, VARIANT_AT, check_descriptor, set_slot_entry,
 };
 use live_proto::motd::Motd;
 use live_proto::sign;
@@ -478,12 +480,15 @@ pub async fn put_motd(
 
 // ---------- the hopper (playlist) builder ----------
 
-/// One hopper as JSON, with its records. `type` is the hopper type 1..5.
+/// One hopper as JSON, with its records. `type` is the hopper type 1..5,
+/// or 0 for an unused slot (`unused`: no hopper to the game; create one
+/// with `template` in the PUT body).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HopperDoc {
     pub index: usize,
     #[serde(rename = "type")]
     pub hopper_type: u32,
+    pub unused: bool,
     pub status: u32,
     pub record_count: u32,
     pub name: String,
@@ -505,6 +510,10 @@ pub struct RecordDoc {
     /// What the record's game variant says about itself (read-only).
     #[serde(default)]
     pub variant: Option<VariantDoc>,
+    /// The key of the built-in variant ([`BuiltinVariantDoc`]) whose bytes
+    /// the record's variant is exactly, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<String>,
 }
 
 /// A record's game variant: name, game-engine index, team play.
@@ -515,11 +524,110 @@ pub struct VariantDoc {
     pub team: bool,
 }
 
-/// `GET /v1/titles/{title}/hopper`.
+/// A built-in game variant an entry can be given by `key` (`variant` in a
+/// record of the PUT body): the stock record of its game type with the
+/// default lineup's changes ([`defaults::builtin_variants`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BuiltinVariantDoc {
+    pub key: String,
+    pub name: String,
+    pub engine: u32,
+    pub team: bool,
+}
+
+/// A playlist template (`template` in the PUT body): a default playlist
+/// whose descriptor a new playlist takes ([`defaults::templates`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TemplateDoc {
+    /// The default playlist's id; the new playlist gets a free one.
+    pub id: u32,
+    #[serde(rename = "type")]
+    pub hopper_type: u32,
+    pub title: String,
+    pub description: String,
+    pub min_players: Option<u32>,
+    pub max_players: Option<u32>,
+    /// The descriptor's fields as [`HopperDoc`] has them, so a builder's
+    /// working copy of a new playlist is whole (and sending them back
+    /// changes nothing).
+    pub ranges: [u32; 3],
+    pub dwords: Vec<u32>,
+    /// The template's first entry: a map id and a built-in variant key, a
+    /// valid first entry for a new playlist of this kind.
+    pub entry: TemplateEntryDoc,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TemplateEntryDoc {
+    pub id: u32,
+    pub variant: String,
+}
+
+/// A retail multiplayer map by its entry id ([`RETAIL_MAPS`]): the
+/// builder's map list when the owner's catalog is not there.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MapDoc {
+    pub id: u32,
+    pub name: String,
+}
+
+/// `GET /v1/titles/{title}/hopper`: the hoppers, and what the builder can
+/// pick from without the owner's catalog: the built-in variants, the
+/// playlist templates and the retail maps.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HoppersDoc {
     pub hoppers: Vec<HopperDoc>,
+    pub variants: Vec<BuiltinVariantDoc>,
+    pub templates: Vec<TemplateDoc>,
+    pub maps: Vec<MapDoc>,
     pub position: u64,
+}
+
+/// The built-in variants, as [`HoppersDoc::variants`] lists them.
+pub fn builtin_variant_docs() -> Vec<BuiltinVariantDoc> {
+    defaults::builtin_variants()
+        .into_iter()
+        .map(|(key, v)| BuiltinVariantDoc {
+            key: key.into(),
+            name: v.name(),
+            engine: v.engine(),
+            team: v.team(),
+        })
+        .collect()
+}
+
+/// The playlist templates, as [`HoppersDoc::templates`] lists them.
+pub fn template_docs() -> Vec<TemplateDoc> {
+    let mut scratch = HopperFile::blank();
+    defaults::templates()
+        .into_iter()
+        .filter_map(|t| {
+            let d = t.descriptor();
+            let first = t.entries().into_iter().next()?;
+            scratch.create_from(0, &t).ok()?;
+            let h = scratch.hopper(0).ok()?;
+            Some(TemplateDoc {
+                id: t.playlist_id,
+                hopper_type: d.hopper_type,
+                title: t.title.into(),
+                description: t.description.into(),
+                min_players: d.min_players(),
+                max_players: d.max_players(),
+                ranges: h.ranges,
+                dwords: h.dwords,
+                entry: TemplateEntryDoc {
+                    id: first.map_id,
+                    variant: defaults::builtin_key(&first.variant)?.into(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn record_builtin(file: &HopperFile, i: usize, j: usize) -> Option<String> {
+    let slot = file.slot(i, j).ok()?;
+    let v = VariantRecord::from_bytes(&slot[VARIANT_AT..RECORD])?;
+    defaults::builtin_key(&v).map(String::from)
 }
 
 fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
@@ -544,12 +652,14 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
                             engine: v.engine,
                             team: v.team,
                         }),
+                        builtin: record_builtin(file, i, j),
                     })
                 })
                 .collect::<Result<Vec<_>, ApiError>>()?;
             Ok(HopperDoc {
                 index: i,
                 hopper_type: h.hopper_type,
+                unused: h.hopper_type == 0,
                 status: h.status,
                 record_count: h.record_count,
                 name: h.name,
@@ -563,13 +673,23 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
         .collect::<Result<Vec<_>, ApiError>>()?;
     Ok(HoppersDoc {
         hoppers,
+        variants: builtin_variant_docs(),
+        templates: template_docs(),
+        maps: RETAIL_MAPS
+            .iter()
+            .map(|(id, name)| MapDoc {
+                id: *id,
+                name: (*name).into(),
+            })
+            .collect(),
         position: live.position(),
     })
 }
 
 /// `PUT /v1/titles/{title}/hopper` body: the hoppers to change. Hoppers not
 /// listed keep their bytes; within a listed one, fields left out keep
-/// theirs.
+/// theirs. An unused slot (type 0) is made a playlist with `template`, and
+/// a playlist made an unused slot again with `clear`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HoppersPatch {
     pub hoppers: Vec<HopperPatch>,
@@ -584,8 +704,19 @@ pub struct HoppersPatch {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct HopperPatch {
     pub index: usize,
-    #[serde(default)]
+    /// `type`, as the GET names it (`hopper_type` is read too).
+    #[serde(default, rename = "type", alias = "hopper_type")]
     pub hopper_type: Option<u32>,
+    /// Makes the hopper a playlist of this template's kind first
+    /// ([`TemplateDoc`]; its id): the whole descriptor, with a free
+    /// playlist id. Required to fill an unused slot; the other fields then
+    /// apply on top.
+    #[serde(default)]
+    pub template: Option<u32>,
+    /// Makes the hopper an unused slot (descriptor and entries zeroed).
+    /// Nothing else may be sent with it.
+    #[serde(default)]
+    pub clear: bool,
     #[serde(default)]
     pub status: Option<u32>,
     #[serde(default)]
@@ -621,10 +752,19 @@ pub struct RecordPatch {
     /// is copied from one playlist into another.
     #[serde(default)]
     pub from_hopper: Option<usize>,
+    /// A built-in variant's key ([`BuiltinVariantDoc`]): the entry is
+    /// built afresh from the map id (`id`), the weight (`dwords[0]`) and
+    /// that variant. `string`, `flags` and `dwords[1]` lie inside the
+    /// variant and are ignored; `from` may not be given with it.
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 /// Applies a patch to the parsed file. Pure, so it is easy to test; the
-/// handler publishes the result.
+/// handler publishes the result. This is the one place a hopper edit is
+/// checked, for the native server and the Worker alike (both serve this
+/// crate's router). Hoppers the patch does not name are not checked: an
+/// unused slot stays unused, whatever its zeros.
 pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()> {
     let original = file.clone();
     let mut seen = [false; HOPPERS];
@@ -639,6 +779,39 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
             return Err(invalid(format!("hopper {} appears twice", h.index)));
         }
         seen[h.index] = true;
+        let n = h.index + 1;
+        if h.clear {
+            let other = h.template.is_some()
+                || h.records.is_some()
+                || h.hopper_type.is_some()
+                || h.title.is_some();
+            if other {
+                return Err(invalid(format!(
+                    "playlist {n}: `clear` empties the slot; send nothing else with it"
+                )));
+            }
+            file.clear_hopper(h.index).map_err(hopper_error)?;
+            continue;
+        }
+        // A descriptor the game took before must still be one it takes.
+        let before = original.descriptor(h.index).map_err(hopper_error)?;
+        let mut keep_valid = before.hopper_type != 0 && check_descriptor(&before).is_empty();
+        if let Some(id) = h.template {
+            let t = defaults::template(id).ok_or_else(|| {
+                invalid(format!("playlist {n}: there is no playlist template {id}"))
+            })?;
+            file.create_from(h.index, &t).map_err(hopper_error)?;
+            keep_valid = true;
+            if h.records.is_none() && file.block_record_count(h.index).map_err(hopper_error)? == 0 {
+                return Err(invalid(format!(
+                    "playlist {n}: a new playlist needs at least one entry"
+                )));
+            }
+        } else if file.is_unused(h.index).map_err(hopper_error)? {
+            return Err(invalid(format!(
+                "playlist {n} is an unused slot: create it from a template (`template`) first"
+            )));
+        }
         let current = file.hopper(h.index).map_err(hopper_error)?;
         let mut next = Hopper {
             hopper_type: h.hopper_type.unwrap_or(current.hopper_type),
@@ -667,6 +840,10 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
             // The slots as they stood, so `from` names them.
             let mut bytes = Vec::with_capacity(n);
             for (j, r) in records.iter().enumerate() {
+                if let Some(key) = &r.variant {
+                    bytes.push(builtin_slot(h.index, j, r, key)?);
+                    continue;
+                }
                 let hopper = r.from_hopper.unwrap_or(h.index);
                 if hopper >= HOPPERS {
                     return Err(invalid(format!(
@@ -688,6 +865,11 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
             file.set_record_count(h.index, n as u32)
                 .map_err(hopper_error)?;
             for (j, r) in records.iter().enumerate() {
+                // A built-in variant's entry is whole already: its raw
+                // fields are the variant's own bytes.
+                if r.variant.is_some() {
+                    continue;
+                }
                 file.set_record(
                     h.index,
                     j,
@@ -716,8 +898,46 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
         {
             file.set_record_count(h.index, c).map_err(hopper_error)?;
         }
+        if keep_valid {
+            let d = file.descriptor(h.index).map_err(hopper_error)?;
+            let problems = check_descriptor(&d);
+            if !problems.is_empty() {
+                let what: Vec<String> = problems.into_iter().map(|(_, w)| w).collect();
+                return Err(invalid(format!(
+                    "playlist {n}: the game would not load this playlist: {}",
+                    what.join("; ")
+                )));
+            }
+        }
     }
     Ok(())
+}
+
+/// The 0x37c bytes of entry `j` of hopper `i` built from a built-in
+/// variant: map id, weight and variant, every other byte zero (as the
+/// default set writes its entries).
+fn builtin_slot(i: usize, j: usize, r: &RecordPatch, key: &str) -> ApiResult<Vec<u8>> {
+    let at = || format!("playlist {} entry {}", i + 1, j + 1);
+    if r.from.is_some() || r.from_hopper.is_some() {
+        return Err(invalid(format!(
+            "{}: `variant` builds the entry afresh; `from` cannot be given with it",
+            at()
+        )));
+    }
+    let variant = defaults::builtin_variant(key)
+        .ok_or_else(|| invalid(format!("{}: there is no built-in variant {key:?}", at())))?;
+    let mut slot = vec![0; RECORD];
+    set_slot_entry(
+        &mut slot,
+        &Entry {
+            map_id: r.id,
+            weight: r.dwords[0],
+            map_name: String::new(),
+            variant,
+        },
+    )
+    .map_err(hopper_error)?;
+    Ok(slot)
 }
 
 /// `GET /v1/titles/{title}/hopper`: the playlists as JSON. Halo 2 with no
@@ -1034,6 +1254,8 @@ mod tests {
             hoppers: vec![HopperPatch {
                 index,
                 hopper_type: None,
+                template: None,
+                clear: false,
                 status: None,
                 name: None,
                 title: None,
@@ -1054,6 +1276,7 @@ mod tests {
             dwords: [0, 0],
             from,
             from_hopper: None,
+            variant: None,
         }
     }
 
@@ -1148,6 +1371,8 @@ mod tests {
         let plain = |index: usize| HopperPatch {
             index,
             hopper_type: None,
+            template: None,
+            clear: false,
             status: None,
             name: None,
             title: None,
@@ -1218,6 +1443,7 @@ mod tests {
         let doc = HopperDoc {
             index: 0,
             hopper_type: h.hopper_type,
+            unused: false,
             status: h.status,
             record_count: h.record_count,
             name: h.name.clone(),
@@ -1233,11 +1459,12 @@ mod tests {
                     flags: r.flags,
                     dwords: r.dwords,
                     variant: None,
+                    builtin: None,
                 })
                 .collect(),
         };
         let expected = json!({
-            "index": 0, "type": 4, "status": 1, "record_count": 2,
+            "index": 0, "type": 4, "unused": false, "status": 1, "record_count": 2,
             "name": "Big Team Battle", "title": "Big Team", "description": "",
             "ranges": [1, 8, 6],
             "dwords": serde_json::json!(vec![0x7530_07a4u32; 18]),
@@ -1260,6 +1487,198 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(back.hoppers[0].records.as_ref().unwrap()[1].from, Some(0));
+        // `type` is the field the GET names (the web sends it), and the
+        // older `hopper_type` still reads.
+        assert_eq!(back.hoppers[0].hopper_type, Some(4));
+        let old: HoppersPatch =
+            serde_json::from_value(json!({"hoppers": [{"index": 0, "hopper_type": 2}]})).unwrap();
+        assert_eq!(old.hoppers[0].hopper_type, Some(2));
+    }
+
+    fn record(id: u32, weight: u32, variant: &str) -> RecordPatch {
+        RecordPatch {
+            id,
+            string: String::new(),
+            flags: 0,
+            dwords: [weight, 0],
+            from: None,
+            from_hopper: None,
+            variant: Some(variant.into()),
+        }
+    }
+
+    /// Entry `j` of hopper `i` as it stands, kept in place.
+    fn keep(file: &HopperFile, i: usize, j: usize) -> RecordPatch {
+        let r = file.record(i, j).unwrap();
+        RecordPatch {
+            id: r.id,
+            string: r.string,
+            flags: r.flags,
+            dwords: r.dwords,
+            from: Some(j),
+            from_hopper: None,
+            variant: None,
+        }
+    }
+
+    fn create(index: usize, template: u32, title: &str, records: Vec<RecordPatch>) -> HoppersPatch {
+        let mut p = patch(index, records);
+        p.hoppers[0].template = Some(template);
+        p.hoppers[0].title = Some(title.into());
+        p
+    }
+
+    #[test]
+    fn an_unused_slot_becomes_a_playlist_the_game_loads_from_a_template() {
+        let mut file = HopperFile::default_set();
+        let i = defaults::playlists().len();
+        assert!(file.is_unused(i).unwrap());
+        // Untouched unused slots never block an edit elsewhere.
+        let mut other = patch(0, vec![keep(&file, 0, 0)]);
+        other.hoppers[0].title = Some("Rumble".into());
+        apply_patch(&mut file, &other).unwrap();
+        // Naming an unused slot without a template is refused, clearly.
+        let mut named = patch(i, vec![record(50, 1, "team_slayer")]);
+        named.hoppers[0].title = Some("Modtacular".into());
+        let e = apply_patch(&mut file, &named).unwrap_err();
+        assert!(e.to_string().contains("unused slot"), "{e}");
+        // With a template and no entries: refused, saying so.
+        let mut empty = patch(i, vec![]);
+        empty.hoppers[0].records = None;
+        empty.hoppers[0].template = Some(2);
+        let e = apply_patch(&mut file, &empty).unwrap_err();
+        assert!(e.to_string().contains("at least one entry"), "{e}");
+        // With a template and a built-in variant entry: a playlist the
+        // game's validator takes, with a fresh playlist id.
+        let p = create(
+            i,
+            2,
+            "Modtacular",
+            vec![record(50, 5, "team_slayer"), record(20, 1, "classic_ctf")],
+        );
+        apply_patch(&mut file, &p).unwrap();
+        assert!(!file.is_unused(i).unwrap());
+        let d = file.descriptor(i).unwrap();
+        assert_eq!(check_descriptor(&d), vec![]);
+        assert_eq!(d.hopper_type, 4);
+        assert_eq!(d.playlist_id, 12);
+        assert_eq!(file.text(i).unwrap().title, "Modtacular");
+        let entries = file.entries(i).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[0].map_id, entries[0].weight), (50, 5));
+        assert_eq!(entries[0].variant, defaults::variants::team_slayer());
+        assert_eq!(entries[1].variant, defaults::variants::classic_ctf());
+        assert_eq!(
+            file.problems(&defaults::retail_map_ids()),
+            vec![],
+            "the whole file is one the game loads"
+        );
+        // The GET reads it back as a playlist with built-in keys.
+        let rec_doc = record_builtin(&file, i, 1);
+        assert_eq!(rec_doc.as_deref(), Some("classic_ctf"));
+        // It survives a build and parse.
+        let back = HopperFile::parse(&file.build_checked().unwrap()).unwrap();
+        assert!(back.image() == file.image());
+    }
+
+    #[test]
+    fn entries_take_built_in_variants_and_bad_keys_are_refused() {
+        let mut file = HopperFile::default_set();
+        // Entry 0 keeps its slot; entry 1 becomes Territories on Lockout.
+        let p = patch(0, vec![keep(&file, 0, 0), record(50, 3, "territories")]);
+        let before = file.slot(0, 0).unwrap().to_vec();
+        apply_patch(&mut file, &p).unwrap();
+        assert_eq!(file.slot(0, 0).unwrap(), &before[..]);
+        let e = file.entry(0, 1).unwrap();
+        assert_eq!((e.map_id, e.weight), (50, 3));
+        assert_eq!(e.variant, defaults::variants::territories());
+        // Unknown keys and `from` beside `variant` are refused.
+        let mut bad = patch(0, vec![record(50, 1, "team_swords")]);
+        assert!(apply_patch(&mut file, &bad).is_err());
+        bad = patch(0, vec![record(50, 1, "territories")]);
+        bad.hoppers[0].records.as_mut().unwrap()[0].from = Some(0);
+        assert!(apply_patch(&mut file, &bad).is_err());
+    }
+
+    #[test]
+    fn clearing_a_playlist_leaves_an_unused_slot_and_valid_ones_stay_valid() {
+        let mut file = HopperFile::default_set();
+        let i = defaults::playlists().len();
+        apply_patch(
+            &mut file,
+            &create(i, 1, "Solo", vec![record(10, 1, "rumble_slayer")]),
+        )
+        .unwrap();
+        let mut clear = patch(i, vec![]);
+        clear.hoppers[0].records = None;
+        clear.hoppers[0].clear = true;
+        apply_patch(&mut file, &clear).unwrap();
+        assert!(file.image() == HopperFile::default_set().image());
+        // `clear` with anything else is refused.
+        let mut both = patch(0, vec![keep(&file, 0, 0)]);
+        both.hoppers[0].clear = true;
+        assert!(apply_patch(&mut file, &both).is_err());
+        // A type change that breaks a playlist the game loaded is refused
+        // (Rumble Pit's free-for-all sizes are not team sizes).
+        let mut retype = patch(0, vec![]);
+        retype.hoppers[0].records = None;
+        retype.hoppers[0].hopper_type = Some(4);
+        let e = apply_patch(&mut file, &retype).unwrap_err();
+        assert!(e.to_string().contains("would not load"), "{e}");
+        // An unknown template is refused.
+        let e = apply_patch(
+            &mut file,
+            &create(i, 99, "X", vec![record(10, 1, "oddball")]),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("template 99"), "{e}");
+    }
+
+    #[test]
+    fn the_get_lists_variants_templates_and_maps() {
+        let v = builtin_variant_docs();
+        assert!(
+            v.iter()
+                .any(|d| d.key == "team_slayer" && d.name == "Team Slayer" && d.team)
+        );
+        let t = template_docs();
+        assert_eq!(t.len(), 8);
+        for d in &t {
+            assert!((1..=5).contains(&d.hopper_type), "{}", d.title);
+            assert!(v.iter().any(|b| b.key == d.entry.variant));
+            assert!(RETAIL_MAPS.iter().any(|(id, _)| *id == d.entry.id));
+        }
+        assert_eq!(t[0].title, "Rumble Pit");
+        assert_eq!(t[0].ranges, [4, 8, 0], "fewest and most players");
+        assert_eq!(t[0].dwords.len(), 18);
+        // What the web builder sends for a new playlist: the template and
+        // its own fields back, which change nothing.
+        let mut file = HopperFile::default_set();
+        let i = defaults::playlists().len();
+        for d in &t {
+            let p = HoppersPatch {
+                hoppers: vec![HopperPatch {
+                    index: i,
+                    hopper_type: Some(d.hopper_type),
+                    template: Some(d.id),
+                    clear: false,
+                    status: Some(0),
+                    name: Some(String::new()),
+                    title: Some(d.title.clone()),
+                    description: Some(d.description.clone()),
+                    ranges: Some(d.ranges),
+                    dwords: Some(d.dwords.clone()),
+                    record_count: Some(1),
+                    records: Some(vec![record(d.entry.id, 1, &d.entry.variant)]),
+                }],
+            };
+            apply_patch(&mut file, &p).unwrap();
+            let got = file.descriptor(i).unwrap();
+            assert_eq!(check_descriptor(&got), vec![], "{}", d.title);
+            assert_eq!(got.hopper_type, d.hopper_type);
+            assert_eq!(file.problems(&defaults::retail_map_ids()), vec![]);
+        }
+        assert_eq!((t[0].min_players, t[0].max_players), (Some(4), Some(8)));
     }
 
     // Needs the `Live.admins` and `Policy.admins` wiring (docs/live/live-admin.md,

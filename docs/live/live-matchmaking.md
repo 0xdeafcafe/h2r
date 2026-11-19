@@ -671,6 +671,54 @@ the builder's `PUT` (which then publishes the edited default) all work on
 a fresh server. Nothing is written to the log until someone publishes;
 `h2 live hopper import` still replaces it with the owner's own file.
 
+### 6.10 Building playlists, and custom maps in them
+
+The 16 slots are fixed; a slot of type 0 is no hopper, and the default
+set leaves indexes 11..15 so (playlists 12..16 in the builders). The web builder (`web/src/admin/HopperBuilder.tsx`)
+and the editor's playlist tool (`hopper_edit::model`) work the same way:
+
+- **A new playlist** is made in an unused slot from a template
+  (`defaults::templates`, the eight human playlists of §6.8): its whole
+  descriptor (type, sizes, waits, timeout, skill ceiling, a free playlist
+  id, `HopperFile::create_from`) and one entry, the template's first. The
+  raw fields cannot build a descriptor the validator takes (the skill
+  ceiling and most type parameters are not in them), which is why a title
+  typed into an unused slot used to fail with "type must be 1 to 5" and
+  "1 to 100 entries, got 0". "Change kind" applies another template to a
+  playlist, keeping its text and entries. A playlist can be cleared back to
+  an unused slot (`HopperFile::clear_hopper`).
+- **Only changed playlists are checked**, in both editors and on the
+  server, so untouched unused slots never block a publish; each problem is
+  shown at its playlist with a revert or discard action.
+- **An entry's game variant** is picked per entry: a built-in one
+  (`defaults::builtin_variants`, keyed; the server writes its 0x130 bytes)
+  or one already in the file (its slot is copied with `from`/
+  `from_hopper`). The map is any map of the catalog (or `RETAIL_MAPS`).
+- **Custom maps** are allowed per playlist by pins (`HopperPinsSet`,
+  [maps.md §5](../game/maps.md)); the builder's "Custom maps allowed"
+  section says, for each pinned map, whether the playlist has an entry on
+  its base map and offers to add one.
+
+What a playlist cannot do yet: **make a game play a custom map.** An
+entry is a map id and a variant; the format has no room for a `MapId`, and
+session setup (`0x00192e60`/`0x00192eb0`) picks an entry and loads
+`maps\<base>.map`. A pinned custom map is played only when the host
+already has it installed as that base map's active package (`active.toml`);
+the server then accepts the session's `map_id` (it is pinned), and joiners
+download it through `MapGate`. A host without it plays the base map. For a
+playlist entry to choose a custom map, three pieces are missing:
+
+1. **Data:** a per-entry binding kept by the server beside the file (for
+   example pins extended to `(hopper_id, entry index) -> MapId`, signed
+   and replayed like `HopperPinsSet`), served with the pins.
+2. **Runtime:** a hook at the host's entry pick (after `0x00192eb0`
+   chooses the entry, before the map load) that reads the binding, makes
+   the package ready through `MapGate` (download, base check) and serves it
+   for that load only, rather than the persistent `active.toml` choice.
+3. **Fallback:** what a host that cannot get the package does (play the
+   base, or skip to another entry), and that every peer agrees before the
+   load, since lockstep diverges on any byte.
+
 ## 7. OptiMatch search: procedure 1, decoded
 
 Read statically from the 5849 XBE; nothing was run. The code that applies

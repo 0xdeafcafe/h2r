@@ -677,6 +677,85 @@ fn the_glb_carries_each_look() {
 }
 
 #[test]
+fn a_skys_see_through_layers_keep_their_pictures_where_an_objects_glass_does_not() {
+    // Every sky's layers are `transparent\sky_*` (or `two_alpha_clouds`)
+    // templates: read as an object's glass they lost their pictures and
+    // the viewer drew each sky as a faint dark tint over its fog colour.
+    let dome = || vec![(BitmapRole::Diffuse, Some(flat(2, 2, [40, 90, 200, 255])))];
+    for template in [
+        r"shaders\shader_templates\transparent\sky_one_alpha_env",
+        r"shaders\shader_templates\transparent\sky_two_alpha_clouds",
+        r"shaders\shader_templates\transparent\two_alpha_clouds",
+    ] {
+        let (sky, _) = material_look_for(Surfaces::Sky, "sky_dome", template, dome());
+        assert_eq!(sky.blend, Blend::Alpha, "{template}");
+        assert_eq!(
+            sky.texture,
+            Some(flat(2, 2, [40, 90, 200, 255])),
+            "{template}"
+        );
+        let (glass, _) = material_look_for(Surfaces::Object, "visor", template, dome());
+        assert_eq!(glass.texture, None, "{template}: an object's is glass");
+    }
+    // An additive sky layer glows with its picture, as an object's does.
+    let (glow, _) = material_look_for(
+        Surfaces::Sky,
+        "clouds_below",
+        r"shaders\shader_templates\transparent\sky_one_add_two_plus_two",
+        dome(),
+    );
+    assert_eq!(glow.blend, Blend::Additive);
+    assert!(glow.texture.is_none() && glow.emissive.is_some());
+
+    // In the glb: the picture is the base colour, blended by its alpha;
+    // no glass tint.
+    let mut src = biped_source();
+    let (sky, _) = material_look_for(
+        Surfaces::Sky,
+        "sky_dome",
+        r"shaders\shader_templates\transparent\sky_one_alpha_env",
+        dome(),
+    );
+    src.materials = vec![sky];
+    src.pieces = vec![quad_piece(0, 0.0)];
+    src.change_colour = vec![None];
+    let (doc, _) = parse_glb(&write_glb(&weapon(&src).unwrap()));
+    let m = &doc["materials"][0];
+    assert!(m["pbrMetallicRoughness"]["baseColorTexture"]["index"].is_u64());
+    assert!(m["pbrMetallicRoughness"].get("baseColorFactor").is_none());
+    assert_eq!(m["alphaMode"], "BLEND");
+}
+
+#[test]
+fn a_sky_layer_without_a_base_map_name_draws_its_first_own_picture() {
+    // Invented names. A base-map name is taken by `bitmap_role` first;
+    // this is only the fallback when none reads as one.
+    assert_eq!(
+        sky_picture([
+            r"shaders\default_bitmaps\bitmaps\gray_50_percent",
+            r"scenarios\skies\x\bitmaps\clouds_bump",
+            r"scenarios\skies\x\bitmaps\tether_faded",
+            r"scenarios\skies\x\bitmaps\tether_detail",
+        ]),
+        Some(2)
+    );
+    assert_eq!(
+        sky_picture([r"scenarios\skies\x\bitmaps\moon_illum"]),
+        Some(0),
+        "a moon's one picture, named as a glow"
+    );
+    assert_eq!(
+        sky_picture([
+            r"rasterizer\water\x",
+            r"scenarios\skies\x\bitmaps\cube_maps\sky_cube",
+            r"scenarios\skies\x\bitmaps\ring_cc",
+        ]),
+        None
+    );
+    assert_eq!(sky_picture(Vec::<&str>::new()), None);
+}
+
+#[test]
 fn big_textures_are_halved_to_fit() {
     let img = Image {
         width: 8,

@@ -56,7 +56,7 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 22, so a disc extracted by an older build is extracted again
+key) is 24, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
@@ -69,7 +69,9 @@ reflection tints and shaders whose compiled data another shader shares;
 textures; 21 packing (Brotli and gzip copies, meshopt where it pays), WebP
 pictures and views, surface pictures at the disc's full size; 22 the
 bipeds' strafing, backwards and crouched movement clips, the vehicle seat
-poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
+poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`;
+23 installed mods' art and scripted spawns; 24 the sky's see-through
+layers keep their pictures).
 
 ### `map.glb`
 
@@ -192,7 +194,15 @@ poses `any:seat_<mode>`, the models' `seats` table and `asset.extras.lift`).
   axes), textured, every region's first permutation at the highest detail
   under 30,000 triangles; its `asset.extras.blend` says per material, in
   order, `opaque`, `alpha` or `additive` (from the template's words:
-  `add`; `alpha`, `cloud(s)`).
+  `add`; `alpha`, `cloud(s)`). Nearly every sky layer is a
+  `transparent\sky_*` (or `two_alpha_clouds`) template: the alpha ones
+  carry their picture as `baseColorTexture`, blended by its alpha
+  (`live_models::Surfaces::Sky`), not the glass tint an object's
+  see-through surfaces get; one whose bitmaps' names none read as a base
+  map takes its first own picture (`live_models::sky_picture`). Before
+  extractor 24 every alpha layer was that glass tint (`GLASS`, alpha
+  0.35), so the viewer drew each sky as a faint dark veil over its fog
+  colour, which read as no sky at all.
 - **Weather.** `asset.extras.weather`, when a BSP has any: per weather
   system (per BSP palette entry with a `weat` tag and clusters), `name`
   (the palette entry's), `kind` (`rain`, `snow`, else `motes`, from words
