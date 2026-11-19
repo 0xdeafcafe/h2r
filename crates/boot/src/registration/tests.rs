@@ -40,6 +40,9 @@ pub(crate) struct Case {
     pub lockstep: bool,
     /// `H2_COOP_PROBE`.
     pub coop_probe: bool,
+    /// Signed in to Live: co-op over Live's armed hooks (`coop-live`), as
+    /// boot adds them when there is a Live HLE and no `H2_COOP_PROBE`.
+    pub coop_live: bool,
 }
 
 impl Case {
@@ -54,6 +57,7 @@ impl Case {
             agent: false,
             lockstep: false,
             coop_probe: false,
+            coop_live: false,
         }
     }
 
@@ -137,6 +141,11 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
         },
     )
     .unwrap();
+    // Boot's Live branch (registration.rs): the armed co-op hooks, unless
+    // the probe holds them.
+    if case.coop_live && !case.coop_probe {
+        crate::coop_probe::install_live(&rt, &mut features, nowhere).unwrap();
+    }
     features
 }
 
@@ -182,7 +191,7 @@ fn the_plan_builds_with_every_combination_of_optional_features() {
     let mut failures = Vec::new();
     let world_off = format!("{ALL_ON},{NATIVE_WORLD_OFF}");
     for switches in ["", ALL_ON, world_off.as_str()] {
-        for bits in 0u32..(1 << 8) {
+        for bits in 0u32..(1 << 9) {
             let on = |n: u32| bits & (1 << n) != 0;
             let case = Case {
                 switches: switches.to_owned(),
@@ -194,6 +203,7 @@ fn the_plan_builds_with_every_combination_of_optional_features() {
                 agent: on(5),
                 lockstep: on(6),
                 coop_probe: on(7),
+                coop_live: on(8),
             };
             if let Err(e) = plan(&case) {
                 failures.push(e);

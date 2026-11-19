@@ -663,9 +663,11 @@ impl feature::Feature for Bots {
                     Ok(Flow::Continue)
                 },
             )
-            // The co-op probe's peer-count fix (co-op campaigns only) goes
-            // first; the two never both act on one start.
-            .after_feature(crate::coop_probe::ID);
+            // The co-op probe's peer-count fix (co-op campaigns only, as
+            // `coop-probe` or as Live's armed `coop-live`) goes first; the
+            // two never both act on one start.
+            .after_feature(crate::coop_probe::ID)
+            .after_feature(crate::coop_probe::LIVE_ID);
 
         // Each frame: the pads, then the bots' views out.
         let (local, phantoms, frame, render, map, dir, gates) = (
