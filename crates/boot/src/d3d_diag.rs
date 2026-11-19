@@ -931,6 +931,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        crate::native_residual_glue::backend_draw(draw.entry);
         let r = self.inner.draw(color, depth, draw, inner);
         if crate::native_world_layers_glue::comparing() {
             crate::native_world_layers_glue::compare_draw(
@@ -1065,6 +1066,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         let (target, info) = (draw.target, draw.texture_info);
         let inner: [Option<&B::Texture>; 4] =
             std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        crate::native_residual_glue::backend_draw(draw.entry);
         let (r, spare) = self.inner.draw_owned(color, depth, draw, inner);
         self.tally(&r, &target, &info);
         (r, spare)

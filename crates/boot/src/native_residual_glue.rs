@@ -1,6 +1,7 @@
 //! View-scoped counts of Direct3D entry invocations, before resolution or
 //! any native admission. The agent exposes only completed present windows.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -14,7 +15,25 @@ struct Caller {
     pc: u32,
 }
 
-type Counts = BTreeMap<Caller, u64>;
+#[derive(Default)]
+struct Count {
+    calls: u64,
+    backend_draws: u64,
+}
+
+type Counts = BTreeMap<Caller, Count>;
+
+thread_local! {
+    static ACTIVE: Cell<Option<(u64, Caller)>> = const { Cell::new(None) };
+}
+
+struct Restore(Option<(u64, Caller)>);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        ACTIVE.set(self.0);
+    }
+}
 
 static CENSUS: Mutex<BTreeMap<u64, Counts>> = Mutex::new(BTreeMap::new());
 
@@ -32,19 +51,21 @@ pub(crate) fn install_census(rt: &runtime::Runtime, entries: &[(u32, &'static st
             let name = d.override_name(addr).unwrap_or(entry).to_owned();
             d.register_override(addr, name, move |cpu, ctx, selector| {
                 let frame = crate::d3d_diag::presents() + 1;
-                if frames.contains(&frame) {
-                    let pc = ctx.memory().u32(cpu.esp).unwrap_or(0);
+                let caller = frames.contains(&frame).then(|| Caller {
+                    view: view(),
+                    entry,
+                    pc: ctx.memory().u32(cpu.esp).unwrap_or(0),
+                });
+                if let Some(caller) = caller {
                     let mut census = CENSUS.lock().unwrap_or_else(|e| e.into_inner());
-                    *census
+                    census
                         .entry(frame)
                         .or_default()
-                        .entry(Caller {
-                            view: view(),
-                            entry,
-                            pc,
-                        })
-                        .or_default() += 1;
+                        .entry(caller)
+                        .or_default()
+                        .calls += 1;
                 }
+                let _restore = Restore(ACTIVE.replace(caller.map(|caller| (frame, caller))));
                 Ok(previous.invoke(cpu, ctx, selector))
             });
             if context_only {
@@ -52,6 +73,30 @@ pub(crate) fn install_census(rt: &runtime::Runtime, entries: &[(u32, &'static st
             }
         }
     });
+}
+
+/// Counts only calls that reach the backend draw path. A pushed packet
+/// flushed by a later ABI entry has no original return PC at this point.
+pub(crate) fn backend_draw(entry: &'static str) {
+    let Some((frame, caller)) = ACTIVE.get() else {
+        return;
+    };
+    let caller = if caller.entry == entry {
+        caller
+    } else {
+        Caller {
+            entry,
+            pc: 0,
+            view: caller.view,
+        }
+    };
+    let mut census = CENSUS.lock().unwrap_or_else(|e| e.into_inner());
+    census
+        .entry(frame)
+        .or_default()
+        .entry(caller)
+        .or_default()
+        .backend_draws += 1;
 }
 
 pub(crate) fn census() -> Option<Value> {
@@ -71,21 +116,25 @@ pub(crate) fn census() -> Option<Value> {
 
 fn summarize(frame: u64, counts: Option<&Counts>) -> Value {
     let mut by_view: BTreeMap<ViewScope, Vec<Value>> = BTreeMap::new();
-    let mut totals: BTreeMap<ViewScope, u64> = BTreeMap::new();
-    for (caller, &calls) in counts.into_iter().flatten() {
-        *totals.entry(caller.view).or_default() += calls;
+    let mut totals: BTreeMap<ViewScope, Count> = BTreeMap::new();
+    for (caller, count) in counts.into_iter().flatten() {
+        let total = totals.entry(caller.view).or_default();
+        total.calls += count.calls;
+        total.backend_draws += count.backend_draws;
         by_view.entry(caller.view).or_default().push(json!({
             "entry": caller.entry,
-            "return_pc": format!("{:#010x}", caller.pc),
-            "calls": calls,
+            "return_pc": (caller.pc != 0).then(|| format!("{:#010x}", caller.pc)),
+            "calls": count.calls,
+            "backend_draw_attempts": count.backend_draws,
         }));
     }
     json!({
         "present": frame,
         "views": by_view.into_iter().map(|(view, callers)| json!({
             "view": format!("{view:?}"),
-            "calls": totals[&view],
-            "distinct_callers": callers.len(),
+            "calls": totals[&view].calls,
+            "backend_draw_attempts": totals[&view].backend_draws,
+            "distinct_callers": callers.iter().filter(|row| row["calls"].as_u64().is_some_and(|n| n > 0)).count(),
             "callers": callers,
         })).collect::<Vec<_>>(),
     })
@@ -104,7 +153,10 @@ mod tests {
                     entry: "clear",
                     pc: 100,
                 },
-                4,
+                Count {
+                    calls: 4,
+                    backend_draws: 3,
+                },
             ),
             (
                 Caller {
@@ -112,7 +164,10 @@ mod tests {
                     entry: "clear",
                     pc: 200,
                 },
-                1,
+                Count {
+                    calls: 1,
+                    backend_draws: 0,
+                },
             ),
             (
                 Caller {
@@ -120,7 +175,10 @@ mod tests {
                     entry: "clear",
                     pc: 100,
                 },
-                2,
+                Count {
+                    calls: 2,
+                    backend_draws: 0,
+                },
             ),
         ]);
         let value = summarize(10, Some(&counts));
@@ -128,6 +186,7 @@ mod tests {
         assert_eq!(value["views"][0]["view"], "Alternate");
         assert_eq!(value["views"][0]["distinct_callers"], 1);
         assert_eq!(value["views"][1]["view"], "Scene(1)");
+        assert_eq!(value["views"][1]["backend_draw_attempts"], 3);
         assert_eq!(value["views"][1]["calls"], 5);
         assert_eq!(value["views"][1]["distinct_callers"], 2);
     }
