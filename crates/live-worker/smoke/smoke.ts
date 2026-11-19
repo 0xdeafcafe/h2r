@@ -423,7 +423,7 @@ let archiveGame = "";
       close_ms:closed.ms, close_to_publication_ms:+(publishedAt - closeAt).toFixed(1),
       segment_fetch_and_decode_ms:readMs};
   } catch (e) { fail("archive-alarm", e); }
-  for (const s of [json, packed, game]) s.ws.close();
+  for (const s of [json, packed, causal, game]) s.ws.close();
 }
 
 async function simRun(admin: LocalAccount, other: LocalAccount) {

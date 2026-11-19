@@ -260,11 +260,15 @@ impl FrameClock {
             self.pack.force_keyframe();
             causal.expect("v8 requested")
         };
-        if keyframe || !frame.machine_positions.is_empty() || frame.cut.is_some() {
+        if keyframe || frame.cut.is_some() {
             self.published_positions.clone_from(&self.machine_positions);
+        } else {
+            for m in &frame.machine_positions {
+                self.published_positions.insert(m.i, *m);
+            }
         }
         if keyframe {
-            frame.machine_positions = self.machine_positions.values().copied().collect();
+            frame.machine_positions = self.published_positions.values().copied().collect();
         }
         let live = Arc::new(LiveFrame {
             frame,
@@ -1637,6 +1641,41 @@ mod tests {
         let after_cut = send(&mut clock, cut_tick + 2, 280, &[], None).unwrap();
         assert_eq!(after_cut.frame.cut, Some(4));
         assert_eq!(after_cut.frame.machine_positions, [device(0, 10)]);
+    }
+
+    #[test]
+    fn cold_subscriber_joins_use_the_published_machine_state_for_each_version() {
+        let start = Instant::now();
+        let mut clock = FrameClock::new(start, 0);
+        let next_sid = std::sync::atomic::AtomicU64::new(1);
+        let mut f = frame(0, 0);
+        f.tick = 10;
+        let at = |p| game::MachinePosition { i: 9, p };
+        f.machine_positions.push(at(20));
+        assert!(clock.admit(&mut f, start, true));
+        clock.publish_versions(f, [false, true], &next_sid);
+        assert_eq!(clock.pack.next_seq(), 0, "v8 alone only needs its own writer");
+
+        // The join is at tick 10 while ingest already knows about tick 11.
+        let mut throttled = frame(0, 0);
+        throttled.tick = 11;
+        throttled.machine_positions.push(at(40));
+        assert!(!clock.admit(&mut throttled, start + Duration::from_millis(5), false));
+        for v8 in [false, true] {
+            let mut out = Vec::new();
+            let mut follow = crate::packed::Follow::default();
+            clock.join(v8, &next_sid, &mut follow, &mut out);
+            let records: Vec<_> = pack::records(&out).collect::<Result<_, _>>().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0][0] & 15, if v8 { 8 } else { 7 });
+            let key = pack::Decoder::new().decode(records[0]).unwrap();
+            assert!(key.machine_baseline);
+            assert_eq!(key.frame.tick, 10);
+            assert_eq!(key.frame.machine_positions, [at(20)]);
+            out.clear();
+            clock.join(v8, &next_sid, &mut follow, &mut out);
+            assert!(out.is_empty());
+        }
     }
 
     #[test]
