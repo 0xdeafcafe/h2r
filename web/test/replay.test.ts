@@ -305,7 +305,6 @@ describe("cutscenes (cinematic frames)", () => {
     expect(t.cinematicSpanAt(180)).toBeNull();
     expect(t.cinematicAt(100)).toBe(true);
     expect(t.cinematicAt(185)).toBe(false);
-    expect(t.openTick).toBe(t.endTick);
   });
 
   test("nothing stale or teleported is drawn into or out of one", () => {
@@ -337,12 +336,11 @@ describe("cutscenes (cinematic frames)", () => {
     expect(t.cinematicAt(c.tickAt(5000))).toBe(true);
   });
 
-  test("a game that ends in one opens on the last play before it", () => {
+  test("playback stops at the end when the last stretch is a cutscene", () => {
     resetPos();
     const t = new ReplayTimeline([frame(0, 0), frame(30, 3), cut(60), cut(90)], [ev("GameEnded", "game-g", { tick: 100, reason: "finished" })]);
     expect(t.cinematics).toEqual([{ from: 60, to: 100 }]);
     expect(t.cinematicSpanAt(100)).toEqual({ from: 60, to: 100 });
-    expect(t.openTick).toBe(30);
     const c = new ReplayClock(t);
     c.seek(30, 0);
     c.play(0);

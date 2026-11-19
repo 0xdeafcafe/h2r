@@ -4,6 +4,7 @@ import { ReplayClock, ReplayTimeline } from "../src/state/replay";
 import { TICKS_PER_SECOND, type SampledPlayer } from "../src/state/frames";
 import { applyClock, clockAgrees, isSyncMessage, nextCamera, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
 import { EYE_HEIGHT, FOLLOW_DISTANCE, cameraFit, eyeView, followDistance, markerScale } from "../src/viewer/camera";
+import { ViewerPlayback } from "../src/viewer/playback";
 
 function frames(seconds: number): Frame[] {
   return Array.from({ length: seconds + 1 }, (_, s) => ({
@@ -12,6 +13,96 @@ function frames(seconds: number): Frame[] {
   }));
 }
 const timeline = () => new ReplayTimeline(frames(60), []);
+
+describe("viewer playback", () => {
+  test("the live session survives game state updates and adopts the finished recording in place", async () => {
+    const run = Bun.spawn([process.execPath, "--conditions=browser", `${import.meta.dir}/fixtures/viewer-session.ts`], {
+      stdout: "ignore", stderr: "pipe",
+    });
+    const [exitCode, stderr] = await Promise.all([run.exited, new Response(run.stderr).text()]);
+    if (exitCode !== 0) throw new Error(stderr);
+  });
+
+  test("a finished game opens at time zero and autoplays from its first frame", () => {
+    const recording = new ReplayTimeline(frames(60).slice(10), []);
+    const playback = new ViewerPlayback(false);
+    playback.openRecording(recording, 1000);
+    expect(playback.tickAt(1000, 0) - recording.startTick).toBe(0);
+    expect(playback.playing).toBe(true);
+    expect(playback.tickAt(2000, 0)).toBe(recording.startTick + TICKS_PER_SECOND);
+  });
+
+  test("a time link opens playing at that many seconds into the recording", () => {
+    const recording = new ReplayTimeline(frames(60).slice(10), []);
+    const playback = new ViewerPlayback(false);
+    playback.openRecording(recording, 1000, "12.5");
+    expect(playback.tickAt(1000, 0)).toBe(recording.startTick + 12.5 * TICKS_PER_SECOND);
+    expect(playback.playing).toBe(true);
+    expect(playback.tickAt(2000, 0)).toBe(recording.startTick + 13.5 * TICKS_PER_SECOND);
+  });
+
+  test("an invalid time opens at the start and a time past the end stays at the end", () => {
+    const recording = timeline();
+    for (const [query, tick, playing] of [
+      ["bad", recording.startTick, true],
+      ["-3", recording.startTick, true],
+      ["100", recording.endTick, false],
+    ] as const) {
+      const playback = new ViewerPlayback(false);
+      playback.openRecording(recording, 1000, query);
+      expect(playback.tickAt(1000, 0)).toBe(tick);
+      expect(playback.playing).toBe(playing);
+    }
+  });
+
+  test("live follows arriving frames, scrubbing back holds the position, and Live returns to the edge", () => {
+    const playback = new ViewerPlayback(true);
+    const liveTimeline = (seconds: number) => new ReplayTimeline(frames(seconds), []);
+    playback.updateLive(liveTimeline(10), 1000);
+    expect(playback.followingLive).toBe(true);
+    expect(playback.tickAt(1000, 290)).toBe(290);
+    playback.updateLive(liveTimeline(11), 2000);
+    expect(playback.tickAt(2000, 320)).toBe(320);
+
+    playback.seek(210, 2000);
+    playback.updateLive(liveTimeline(12), 3000);
+    expect(playback.followingLive).toBe(false);
+    expect(playback.playing).toBe(false);
+    expect(playback.tickAt(3000, 350)).toBe(210);
+
+    playback.goLive(3000);
+    expect(playback.followingLive).toBe(true);
+    expect(playback.tickAt(3000, 350)).toBe(350);
+  });
+
+  test("a match ending at the live edge carries the current position and play state into the replay", () => {
+    const playback = new ViewerPlayback(true);
+    playback.updateLive(new ReplayTimeline(frames(10), []), 1000);
+    playback.endLive(1000, 290);
+    expect(playback.followingLive).toBe(false);
+    expect(playback.tickAt(1000, 0)).toBe(290);
+    expect(playback.playing).toBe(true);
+
+    // The buffer can run out while the recording is still loading.
+    expect(playback.tickAt(2000, 0)).toBe(300);
+    playback.openRecording(timeline(), 4000);
+    expect(playback.tickAt(4000, 0)).toBe(300);
+    expect(playback.playing).toBe(true);
+    expect(playback.tickAt(5000, 0)).toBeCloseTo(330);
+  });
+
+  test("ending while paused in the buffer preserves the position through a campaign clock reset", () => {
+    const playback = new ViewerPlayback(true);
+    playback.updateLive(new ReplayTimeline(frames(10), []), 1000);
+    playback.seek(210, 1000);
+    playback.endLive(2000, 300);
+
+    const recording = new ReplayTimeline([...frames(60), ...frames(12)], []);
+    playback.openRecording(recording, 5000);
+    expect(playback.tickAt(5000, 0)).toBe(recording.cuts[0]! + 210);
+    expect(playback.playing).toBe(false);
+  });
+});
 
 describe("timeline sync", () => {
   test("a second clock put into the first one's state shows the same tick from then on", () => {
