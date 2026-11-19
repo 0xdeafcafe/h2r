@@ -760,13 +760,16 @@ fn numbered(
 /// holds this disc's art. Any failure is a warning: the web app keeps its
 /// own art.
 pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
-    let disc = match crate::live_art::Disc::scan(disc) {
+    let data = content::store::default_data_root();
+    let mut disc = match crate::live_art::Disc::scan(disc) {
         Ok(mut d) => {
             // Map pack maps `h2 import-mappack` installed get art too.
-            let data = content::store::default_data_root();
             d.add_maps(crate::live_mappack::installed(&data));
             // And the Halo 1 maps the import converted there.
             d.add_halo1(crate::live_halo1::installed(&data));
+            // And the installed mods, keyed by their MapIds (resolved
+            // only when the art is extracted).
+            d.key_mods(&crate::live_mods::package_ids(&data));
             d
         }
         Err(e) => {
@@ -779,7 +782,14 @@ pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
             "live: extracting game art from the disc into {} (once per disc)",
             dir.display()
         );
-        if let Err(e) = crate::live_art::extract(&disc, dir) {
+        let scratch = dir.with_extension("mods");
+        let _ = std::fs::remove_dir_all(&scratch);
+        for n in disc.add_installed_mods(&data, &scratch) {
+            eprintln!("live: {n}");
+        }
+        let done = crate::live_art::extract(&disc, dir);
+        let _ = std::fs::remove_dir_all(&scratch);
+        if let Err(e) = done {
             eprintln!("live: game art extraction failed ({e:#}); the web app keeps its own art");
             return None;
         }
