@@ -2147,9 +2147,9 @@ impl<B: Backend> Device<B> {
     /// What issuing a pass needs that is checked without touching the
     /// targets: the backend, the bound colour (and depth unless
     /// `colour_only`), the colour's header and the Z scale. The request.
-    fn external_ready(
+    pub fn external_ready(
         &self,
-        mem: &mut dyn GuestMemory,
+        mem: &dyn GuestMemory,
         colour_only: bool,
     ) -> Result<crate::backend::ExternalPassRequest, ExternalRefusal> {
         if !self.backend.supports_external_pass() {

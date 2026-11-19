@@ -223,6 +223,7 @@ fn a_backend_that_cannot_drops_it() {
     let (mut d, mut m) = create(RecordingBackend::default(), UploadPolicy::Always);
     set_states(&mut d, &mut m);
     assert!(!d.can_external_pass());
+    assert_eq!(d.external_ready(&m, false), Err(d3d::ExternalRefusal::Unsupported));
     let got: Got = Arc::default();
     d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
     d.drain_until_callback(&mut m).unwrap();
@@ -253,6 +254,9 @@ fn colour_only<B: Backend>(b: B) {
         .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
         .unwrap();
     d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(d.external_ready(&m, false), Err(d3d::ExternalRefusal::NoDepth));
+    assert!(d.external_ready(&m, true).is_ok());
+    assert_eq!(d.stats().external_passes_dropped, 0, "preflight only reads");
     let needs: Got = Arc::default();
     d.request_external_pass(Box::new(Probe(Arc::clone(&needs))));
     d.drain_until_callback(&mut m).unwrap();
