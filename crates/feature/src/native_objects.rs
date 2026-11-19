@@ -62,10 +62,12 @@ pub struct NativeSet {
     /// Shaders by tag index (the low word of an item's `+8`): the
     /// materials the pass draws; the rest keep their D3D draws.
     pub shaders: HashSet<u16>,
-    /// Definitions with parts drawn through their own programs: an object
-    /// of one is drawn only with its lighting (and the root value inputs
-    /// 40 and 37 read) and its records' node rows copied.
-    pub lit: HashSet<u16>,
+    /// Definitions with parts drawn through their own programs, each with
+    /// the implementations (bit `n`) every such part has: an object of one
+    /// is drawn only with its lighting (and the root value inputs 40 and 37
+    /// read), its records' node rows copied, and each record's
+    /// implementation among those.
+    pub lit: HashMap<u16, u8>,
 }
 
 impl NativeSet {
@@ -77,23 +79,27 @@ impl NativeSet {
         self.definitions.get(&(definition as u16)).copied()
     }
 
-    /// Whether `definition` draws parts through their own programs.
-    pub fn lit(&self, definition: u32) -> bool {
-        self.lit.contains(&(definition as u16))
+    /// The implementations `definition`'s parts drawn through their own
+    /// programs have (bit `n`), when it has such parts.
+    pub fn lit(&self, definition: u32) -> Option<u8> {
+        self.lit.get(&(definition as u16)).copied()
     }
 }
 
 /// Whether frame `f` (of a definition `set` draws) has what its draw
 /// needs, after copying its node rows when it is lit: a lit object needs
-/// its lighting with the root value, and every record's rows.
+/// its lighting with the root value, every record's rows, and every
+/// record's implementation one its lit parts have.
 pub fn ready(m: &dyn GuestRead, set: &NativeSet, cleared: &ClearedObjects, f: &mut ObjectFrame) -> bool {
     if set.node_count(f.definition) != Some(f.nodes.len()) {
         return false;
     }
-    if !set.lit(f.definition) {
+    let Some(implementations) = set.lit(f.definition) else {
         return true;
-    }
-    f.lighting.is_some_and(|l| l.root.is_some()) && objects::attach_node_rows(m, f, cleared).is_ok()
+    };
+    f.lighting.is_some_and(|l| l.root.is_some())
+        && objects::attach_node_rows(m, f, cleared).is_ok()
+        && f.implementations.iter().all(|&(_, i)| i < 8 && implementations & (1 << i) != 0)
 }
 
 /// What draws the objects: boot's glue over the GPU models and the device.

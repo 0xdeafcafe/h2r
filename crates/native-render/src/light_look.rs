@@ -391,7 +391,7 @@ pub fn colour_uniforms(p: &LightProgram, colour_a: [f32; 3], colour_b: [f32; 3])
 }
 
 /// `shaders::psh::argb` undone (its values are multiples of 1/255).
-fn repack(c: [f32; 4]) -> u32 {
+pub(crate) fn repack(c: [f32; 4]) -> u32 {
     let ch = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u32;
     ch(c[3]) << 24 | ch(c[0]) << 16 | ch(c[1]) << 8 | ch(c[2])
 }

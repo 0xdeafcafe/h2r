@@ -20,12 +20,14 @@
 //! - **Lit materials** (docs/graphics/native-renderer.md, "Object
 //!   programs"). A material whose layer-3 pass reads the object's lighting
 //!   is drawn through the game's own vertex program and pixel shader, per
-//!   implementation the build may pick (0 and 1, or 2 where the template
-//!   draws layer 15), its section's streams laid out as the game's
+//!   implementation of its layer-3 pass that compiles (a record picks one
+//!   by its `+0` bits 29..31; an object whose records pick one some lit
+//!   part lacks stays on D3D), its section's streams laid out as the game's
 //!   declaration (the format table read from guest memory when the map is
-//!   first seen) and its per-object constants put in per draw. A material
-//!   with any implementation, section or stage that does not compile or
-//!   decode stays on D3D whole, with the reason; never drawn unlit.
+//!   first seen) and its per-object constants (vertex and combiner) put in
+//!   per draw. A material none of whose implementations compiles for every
+//!   section and stage stays on D3D whole, with the reasons; never drawn
+//!   unlit.
 //! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
 //!   on too). The worker also takes each transparent material with a
 //!   single layer-15 pass, no alpha test and a base map that decodes (S:
@@ -52,7 +54,7 @@ use native_render::model_load;
 use native_render::look;
 use native_render::object_lighting::ShaderValues;
 use native_render::object_nodes::{Compression, decompression_rows};
-use native_render::object_program_gpu::{LitMaterial, LitModelInput, LitObjects, LitSection, lit_model};
+use native_render::object_program_gpu::{LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, lit_model};
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
 use native_render::pass_state::PassState;
@@ -69,6 +71,8 @@ struct CpuModel {
     transparents: Vec<(u16, Image, PassState)>,
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
+    /// The implementations (bit `n`) every lit part has.
+    lit_implementations: u8,
 }
 
 /// One definition's transparent parts the native pass draws.
@@ -315,6 +319,7 @@ fn spawn_worker(
                         let draws = cpu.model.draws.len();
                         let see_through = cpu.model.transparents.len();
                         let lit = cpu.lit.parts.len();
+                        let lit_implementations = cpu.lit_implementations;
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
                         if !transparents.shaders.is_empty() {
                             models
@@ -331,7 +336,7 @@ fn spawn_worker(
                         set.definitions.insert(def as u16, nodes);
                         set.shaders.extend(shaders);
                         if lit > 0 {
-                            set.lit.insert(def as u16);
+                            set.lit.insert(def as u16, lit_implementations);
                         }
                         s.set = Arc::new(set);
                         // No lock held across the print.
@@ -524,21 +529,21 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             table.shaders.entry(shader.0 as u16).or_default().push(m);
         }
     }
-    let lit = if lit_materials.is_empty() {
-        LitModelInput::default()
+    let (lit, lit_implementations) = if lit_materials.is_empty() {
+        (LitModelInput::default(), 0)
     } else {
-        let (lit, taken, refused) = lit_parts(o, &loaded, &lit_materials);
+        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials);
         for (m, why) in refused {
             unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
         }
         shaders.extend(taken.iter().map(|&m| loaded.shaders[usize::from(m)].0 as u16));
-        lit
+        (input, implementations)
     };
     let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
     let model = keep_materials(loaded.model, &base_maps, &kept);
     if model.draws.is_empty() && lit.is_empty() {
         if !unlit.is_empty() {
-            return Err(format!("its materials are lit per object, which the native pass does not apply yet: {}", unlit.join(", ")).into());
+            return Err(format!("its lit materials stay on D3D: {}", unlit.join(", ")).into());
         }
         return Err("no material with a base map".into());
     }
@@ -549,6 +554,7 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             base_maps,
             transparents,
             lit,
+            lit_implementations,
         },
         shaders,
         table,
@@ -557,28 +563,21 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
 
 /// What a material whose layer-3 pass reads the object's lighting draws
 /// with: `None` when it reads none (the base-map path draws it), else the
-/// material, its shader's values (`shad +0x44`, `+0x48`) and whether its
-/// template's first level draws layer 15, or why they do not read.
+/// material and its shader's values (`shad +0x44`, `+0x48`), or why they
+/// do not read.
 fn lit_material(o: &mut Opened, shader: TagId) -> Option<Result<LitMaterial, String>> {
     let material = material(o, shader)?;
     look::object_lighting_input(&material)?;
-    let mut read = || -> Result<LitMaterial, String> {
+    let read = || -> Result<LitMaterial, String> {
         if o.formats.is_none() {
             return Err("the game's stream formats do not read".into());
         }
-        let lib = o.lib.as_mut().and_then(Option::as_mut).ok_or("the shader tags do not read")?;
-        let lod = *lib
-            .template(material.template)
-            .ok()
-            .and_then(|t| t.compiled().ok())
-            .and_then(|c| c.lods.first())
-            .ok_or("its template's levels do not read")?;
+        let lib = o.lib.as_ref().and_then(Option::as_ref).ok_or("the shader tags do not read")?;
         let address = o.map.tag(shader).ok().and_then(|t| t.location).map(|l| l.address).ok_or("its shader tag has no address")?;
         let values = lib.metadata().bytes(address + SHADER_VALUES, 8).map_err(|_| "its shader values do not read")?;
         let word = |k: usize| u32::from_le_bytes([values[k], values[k + 1], values[k + 2], values[k + 3]]);
         Ok(LitMaterial {
             shader: ShaderValues { scalar_21: word(0), vector_24: word(4) },
-            layer_15: lod.layer_mask & 1 << 15 != 0,
             material: material.clone(),
         })
     };
@@ -592,7 +591,7 @@ const SHADER_VALUES: u32 = 0x44;
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
-fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> (LitModelInput, Vec<u16>, Vec<(u16, String)>) {
+fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
     let geo = &loaded.geometry;
     let mut sections = Vec::new();
     for &si in &loaded.sections {
@@ -647,7 +646,10 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         }
     }
     let Some(formats) = o.formats.clone() else {
-        return (LitModelInput::default(), Vec::new(), materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect());
+        return LitBuild {
+            refused: materials.keys().map(|&m| (m, "the game's stream formats do not read".to_string())).collect(),
+            ..LitBuild::default()
+        };
     };
     let mut vertex = |vs: TagId, geometry: u16, influences: u8| {
         programs.get(&(vs, geometry, influences)).cloned().unwrap_or_else(|| Err("its vertex program was not read".into()))

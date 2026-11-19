@@ -852,15 +852,28 @@ synthetic tests:
   The table is read from guest memory when the map is first seen, never
   copied; a section's streams are expanded once per declaration to
   float4s, so the programs see the values the hardware's fetch gives.
-- **The implementation** (`object_implementation`, Code `0x0004cbf0`,
-  `0x0004cd1b`..`0x0004cd41`): 2 when the template's level (taken as the
-  first, S) draws layer 15 (bit 15 of its layer mask), else 1 when the
-  lighting's byte `+0x76` is `0xff`, else 0. Without a lighting the build
-  keeps what `0x00015d70` chose (not traced): such an object stays on D3D.
-  A material is drawn only when every implementation it may draw (0 and 1,
-  or 2) compiles for every section it is in and its stage bitmaps decode
-  (linear textures refused, as the world programs do); otherwise it stays
-  on D3D whole, with the reason logged.
+- **The implementation** (`record_implementation`, Code `0x0004cbf0`).
+  The build of one record's draw switches on its third argument, the
+  draw (the jump table at `0x0004d054`, indexed by the bytes at
+  `0x0004d068` from draw 3). At draw 3, layer 3, it takes the record's
+  `+0` bits 29..31 (`0x0004cc70`, the table at `0x0004d07c`: 0..4 as they
+  are, 5..7 give 3), overriding what `0x00015d70` chose. The lighting's
+  `+0x76` and the template's layer-15 bit (byte `+3` of its level's
+  layer mask) pick the implementation only at draw 18
+  (`0x0004cc9f`..`0x0004cd46`), not at layer 3. The hook copies each
+  section's implementation with its rows. Per material each implementation
+  of its layer-3 pass that compiles for every section it is in, with its
+  stage bitmaps decoded (linear textures refused, as the world programs
+  do), is drawn; one that does not is left out with its reason, and a
+  material with none stays on D3D whole. An object whose records pick an
+  implementation some lit part of its definition lacks stays on D3D.
+- **Combiner constants** (`object_pixel_uniforms`). A lighting vector
+  bound to a pixel combiner constant is packed per object as `0x00019ca0`
+  packs an engine value (`pack_engine_colour`: alpha 0, `(x + 1) / 2`
+  first where the binding halves it, each channel rounded to 8 bits) into
+  the byte lanes the binding keeps, the rest as compiled. A lighting
+  scalar bound there is refused: its binding does not keep the transform
+  `0x00019ca0` applies to scalars.
 - **The node rows at the hook** (`objects::attach_node_rows`). The
   observer copies, for each record a drawn object's items name, the rows
   that record's draw would upload, one set per mode section (two records
