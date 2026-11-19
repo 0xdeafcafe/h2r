@@ -196,6 +196,13 @@ pub enum Doing {
     /// Playing the objective: taking, returning, guarding, hunting the
     /// carrier, escorting, holding the hill.
     Play(Goal),
+    /// Going to get in this vehicle object: a free one to take, or an
+    /// enemy's to board (section 3.9, `mind::ride`).
+    Mount(u32),
+    /// Driving this vehicle (section 3.9).
+    Drive(u32),
+    /// In this vehicle's gunner's or passenger's seat.
+    Ride(u32),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -252,7 +259,29 @@ pub struct Mind {
     navigated: bool,
     /// The teabag layer (§3.5).
     pub emote: crate::emote::Emoter,
+    /// Vehicles (bots.md, Vehicles): what it sees of them, and what it is
+    /// doing with one (`mind::ride`).
+    pub vehicles: crate::vehicle::Memory,
+    /// The Clankers page's Glitches (crate::glitches): the fight tricks go
+    /// through `combo`, the show-offs through `show_off` and `stunt`.
+    pub glitches: crate::glitches::Glitches,
+    /// This map's super bounce spots (crate::glitches::spots).
+    pub bounces: Vec<crate::glitches::Bounce>,
+    show_off: crate::glitches::ShowOff,
+    stunt: Option<Stunt>,
 }
+
+/// A show-off under way (crate::glitches).
+#[derive(Clone, Debug)]
+enum Stunt {
+    /// A crouch jump while roaming, from the tick.
+    Hop(crate::glitches::Run),
+    /// A super bounce: walking to the spot, then the run at it.
+    Bounce(crate::glitches::Bounce, Option<crate::glitches::BounceRun>),
+}
+
+/// A super bounce spot this far away (XY) or nearer is worth walking to.
+pub const BOUNCE_REACH: f32 = 60.0;
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -332,6 +361,11 @@ impl Mind {
             gave_up: false,
             navigated: false,
             emote: crate::emote::Emoter::new(crate::emote::DEFAULT_TAUNT, seed ^ 0x7ea_ba6),
+            vehicles: Default::default(),
+            glitches: crate::glitches::Glitches::Off,
+            bounces: Vec::new(),
+            show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
+            stunt: None,
         }
     }
 
@@ -374,6 +408,9 @@ impl Mind {
         self.grenade.reset();
         self.combo.reset();
         self.left.reset();
+        self.show_off.reset();
+        self.stunt = None;
+        self.vehicles.reset();
         self.tick = None;
     }
 
@@ -516,9 +553,28 @@ impl Mind {
         self.fight
             .signal(me.arms.as_ref(), self.kit, self.recovering, enemy_dist);
 
+        // In a vehicle (bots.md, Vehicles; mind::ride): it drives or
+        // shoots from its seat, and that is the whole pad.
+        if let Some(pad) = self.ride(p, map, &me, chosen, goal, dt) {
+            self.last_pad = pad;
+            return pad;
+        }
         self.choose_activity(p, me, goal, &intent, calm);
+        // A vehicle to take or board (bots.md, Vehicles): boarding in a
+        // fight too, taking only when calm; never carrying.
+        if let Some(id) = self.mount_plan(p, &me, calm, goal) {
+            self.doing = Doing::Mount(id);
+        }
         if !matches!(self.doing, Doing::Rearm(_)) {
             self.take = None;
+        }
+        // Glitches only fighting or roaming on foot, with the setting on;
+        // a show-off only roaming.
+        if !glitch_doing(self.doing) || self.glitches == crate::glitches::Glitches::Off {
+            self.drop_glitches();
+        }
+        if !matches!(self.doing, Doing::Roam) {
+            self.stunt = None;
         }
 
         // Where to look and where to go.
@@ -551,15 +607,21 @@ impl Mind {
                 // speed, the range it shoots at, and head, chest or feet.
                 let held = me.arms.and_then(|a| a.held);
                 let shot = Shot::of(held, me.arms.is_some(), &style, aim.burst, SHOT_SPEED);
+                // Rockets at a vehicle (bots.md, Vehicles; mind::ride): its
+                // middle, no lead, held until locked.
+                let locking = self.lock_on(&o, held, eye, me.aim, p.tick, aim.fire_cone);
                 let clear = |at| map.is_none_or(|m| m.walls.clear(eye, at));
                 let preferred = up(o.position, shot.height);
-                let target = if clear(preferred) {
-                    preferred
-                } else {
-                    up(o.position, CHEST)
+                let target = match locking {
+                    Some((at, _)) => at,
+                    None if clear(preferred) => preferred,
+                    None => up(o.position, CHEST),
                 };
                 let dist = len(sub(target, eye));
-                let vel = self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel);
+                let vel = match locking {
+                    Some(_) => [0.0; 3],
+                    None => self.tracks.get(&o.id).map_or([0.0; 3], |t| t.vel),
+                };
                 let projected = add(target, scale(vel, aim.lead * dist / shot.speed));
                 let led = if clear(projected) { projected } else { target };
                 let reacted = reached(p.tick, ready);
@@ -571,13 +633,37 @@ impl Mind {
                     // Fire while near the target: never dry, only in the
                     // weapon's range.
                     let fired = if shot.in_range(dist) && shot.ready && !melee {
-                        self.fight.trigger(p.tick, shot.pull, off < cone)
+                        let locked = locking.is_none_or(|(_, locked)| locked);
+                        self.fight.trigger(p.tick, shot.pull, off < cone && locked)
                     } else {
                         self.fight.stop_trigger(p.tick);
                         false
                     };
+                    let reach = if blade {
+                        shot.lunge
+                    } else if melee {
+                        MELEE_RANGE * 1.3
+                    } else {
+                        MELEE_RANGE
+                    };
+                    let in_melee = dist < reach && angle_between(sub(target, eye), me.aim) < 0.85;
+                    // Glitches (crate::glitches) only where the fight is not
+                    // obviously lost: not low, not withdrawing, nobody else
+                    // close; a sword fly never into a group.
+                    let oid = o.id;
+                    let others = || seen.iter().filter(move |e| e.id != oid);
+                    let glitch = crate::glitches::Gate {
+                        setting: self.glitches,
+                        carrying,
+                        losing: self.recovering
+                            || self.decisions.posture == Posture::Withdraw
+                            || others().any(|e| dist_xy(e.position, me.position) < 8.0),
+                        in_melee,
+                        crowded: others().any(|e| dist_xy(e.position, o.position) < CLUSTER),
+                    };
                     // Weapon skill (crate::weapons): the noob combo may hold
-                    // or let go the trigger and switch; the melee finish.
+                    // or let go the trigger and switch; the melee finish;
+                    // a glitch's presses.
                     let combo = self.combo.step(
                         &crate::weapons::ComboIn {
                             tick: p.tick,
@@ -588,6 +674,7 @@ impl Mind {
                             held,
                             other: me.arms.and_then(|a| a.other),
                             firing: fired,
+                            glitch,
                         },
                         self.skill,
                     );
@@ -600,6 +687,12 @@ impl Mind {
                     if combo.melee {
                         pad.buttons.set(MELEE, true);
                     }
+                    if combo.reload {
+                        pad.buttons.set(RELOAD, true);
+                    }
+                    if combo.jump {
+                        pad.buttons.set(JUMP, true);
+                    }
                     // Dual wielding: the left trigger fires the left gun.
                     if let Some(l) = me.arms.and_then(|a| a.left) {
                         let (lo, hi) = l.reach().fire;
@@ -608,14 +701,7 @@ impl Mind {
                             pad.left_trigger = 1.0;
                         }
                     }
-                    let reach = if blade {
-                        shot.lunge
-                    } else if melee {
-                        MELEE_RANGE * 1.3
-                    } else {
-                        MELEE_RANGE
-                    };
-                    if dist < reach && angle_between(sub(target, eye), me.aim) < 0.85 {
+                    if in_melee && combo.trick.is_none() {
                         melee_press = Some(Tap::Melee(o.id));
                     }
                     // A grenade: the thrower rolls for it, more often into a
@@ -757,14 +843,35 @@ impl Mind {
                 }
             }
             Doing::Roam => {
-                if self.goal.is_none() || self.follower.as_ref().is_none_or(Follower::done) {
-                    self.goal = self.roam_goal(me.position, p.tick, map, &p.pickups);
-                    self.follower = None;
+                let free = calm && goal.is_none() && !carrying && seen.is_empty();
+                if self.stunt.is_none()
+                    && self.show_off.due(p.tick, self.glitches, self.skill, free)
+                {
+                    self.stunt = self.pick_stunt(me.position, p.tick);
                 }
-                if let Some(g) = self.goal {
-                    walk = self.go(me.position, g, p.tick, map, &mut pad, &bodies);
-                    if walk.is_none() || self.gave_up {
-                        self.goal = None;
+                if !free && matches!(self.stunt, Some(Stunt::Bounce(..))) {
+                    self.stunt = None;
+                }
+                if let Some(Stunt::Bounce(spot, run)) = self.stunt.clone() {
+                    let (w, keep) =
+                        self.bounce(spot, run, me.position, p.tick, map, &mut pad, &bodies);
+                    walk = w;
+                    self.stunt = keep;
+                } else {
+                    walk = self.roam_walk(me.position, p, map, &mut pad, &bodies);
+                    // A crouch jump on the way.
+                    if let Some(Stunt::Hop(run)) = &self.stunt {
+                        match run.keys(p.tick) {
+                            Some(k) => {
+                                if k.jump {
+                                    pad.buttons.set(JUMP, true);
+                                }
+                                if k.crouch {
+                                    pad.buttons.set(CROUCH, true);
+                                }
+                            }
+                            None => self.stunt = None,
+                        }
                     }
                 }
             }
@@ -816,7 +923,13 @@ impl Mind {
                     }
                 }
             }
-            Doing::Idle => {}
+            Doing::Mount(_) => {
+                let (w, l) = self.mount_step(me.position, p.tick, map, &mut pad, &bodies);
+                walk = w;
+                look = l.or(look);
+            }
+            // In a vehicle `ride` made the pad.
+            Doing::Drive(_) | Doing::Ride(_) | Doing::Idle => {}
         }
         // Pre-aim (tactics): chasing, it looks where the enemy went.
         if look.is_none()
@@ -861,7 +974,10 @@ impl Mind {
                 selected: me
                     .arms
                     .and_then(|a| crate::grenades::Kind::from_index(a.selected)),
-                busy: carrying || me.arms.is_some_and(|a| a.left.is_some()),
+                busy: carrying
+                    || me.arms.is_some_and(|a| a.left.is_some())
+                    || self.combo.tricking()
+                    || self.stunt.is_some(),
                 pushing,
             },
             world,
@@ -884,11 +1000,14 @@ impl Mind {
             pad.buttons.set(SWAP_GRENADES, true);
         }
 
-        let tap = melee_press.or(match self.kit {
-            Kit::Reload => Some(Tap::Reload),
-            Kit::Switch => Some(Tap::Switch),
-            _ => None,
-        });
+        // A glitch under way (crate::glitches) presses for itself.
+        let tap = melee_press
+            .or(match self.kit {
+                Kit::Reload => Some(Tap::Reload),
+                Kit::Switch => Some(Tap::Switch),
+                _ => None,
+            })
+            .filter(|_| !self.combo.tricking());
         if let Some(b) = self.buttons.step(
             tap,
             p.tick,
@@ -898,11 +1017,13 @@ impl Mind {
             pad.buttons.set(b, true);
         }
         // A throw, reload, switch or melee lets go of the right trigger;
-        // the left gun's trigger (dual wielding) does not.
+        // the left gun's trigger (dual wielding) does not, nor a glitch's
+        // (it holds R and X together).
         if nade.throw
-            || [RELOAD, SWITCH, MELEE]
-                .into_iter()
-                .any(|b| pad.buttons.contains(b))
+            || (!self.combo.tricking()
+                && [RELOAD, SWITCH, MELEE]
+                    .into_iter()
+                    .any(|b| pad.buttons.contains(b)))
         {
             self.fight.stop_trigger(p.tick);
             pad.right_trigger = 0.0;
@@ -964,7 +1085,9 @@ impl Mind {
         {
             pad.buttons.set(CROUCH, true);
         }
-        let slow = if pad.buttons.contains(CROUCH) && !jump {
+        // A crouch jump's crouch is in the air: no slowing for it.
+        let hop = matches!(self.stunt, Some(Stunt::Hop(_)));
+        let slow = if pad.buttons.contains(CROUCH) && !jump && !hop {
             0.55
         } else {
             1.0
@@ -1083,6 +1206,112 @@ impl Mind {
         })
     }
 
+    /// Stops any glitch under way (crate::glitches): the fight trick in
+    /// the combo and the show-off. A path that makes the whole pad itself
+    /// and returns early (a vehicle's seat) must call this first.
+    pub(crate) fn drop_glitches(&mut self) {
+        self.combo.drop_trick();
+        self.stunt = None;
+    }
+
+    /// Roaming (crate::roam): a new goal when there is none or it is
+    /// reached, and the walk to it.
+    fn roam_walk(
+        &mut self,
+        at: Vec3,
+        p: &Perception,
+        map: Option<&MapData>,
+        pad: &mut HostPadState,
+        bodies: &[Vec3],
+    ) -> Option<Walk> {
+        if self.goal.is_none() || self.follower.as_ref().is_none_or(Follower::done) {
+            self.goal = self.roam_goal(at, p.tick, map, &p.pickups);
+            self.follower = None;
+        }
+        let g = self.goal?;
+        let walk = self.go(at, g, p.tick, map, pad, bodies);
+        if walk.is_none() || self.gave_up {
+            self.goal = None;
+        }
+        walk
+    }
+
+    /// A show-off (crate::glitches): a super bounce at a spot of this
+    /// map's within [`BOUNCE_REACH`], else a crouch jump.
+    fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
+        let spot = self
+            .bounces
+            .iter()
+            .filter(|b| dist_xy(b.stand, at) < BOUNCE_REACH && !self.stuck.blocked(b.stand, tick))
+            .min_by(|a, b| dist_xy(a.stand, at).total_cmp(&dist_xy(b.stand, at)))
+            .copied();
+        if let Some(b) = spot {
+            return Some(Stunt::Bounce(b, None));
+        }
+        let mut roll = || self.show_off.uniform();
+        let mac = crate::glitches::plan(crate::glitches::Trick::CrouchJump, self.skill, &mut roll);
+        Some(Stunt::Hop(crate::glitches::Run::new(mac, tick)))
+    }
+
+    /// A super bounce: the walk to behind the spot along the nav mesh,
+    /// then the run at it ([`crate::glitches::BounceRun`]). The walk this
+    /// tick, and the stunt to keep (`None` when it is over or there is no
+    /// way there).
+    #[allow(clippy::too_many_arguments)]
+    fn bounce(
+        &mut self,
+        spot: crate::glitches::Bounce,
+        run: Option<crate::glitches::BounceRun>,
+        at: Vec3,
+        tick: u32,
+        map: Option<&MapData>,
+        pad: &mut HostPadState,
+        bodies: &[Vec3],
+    ) -> (Option<Walk>, Option<Stunt>) {
+        let mut run = match run {
+            Some(r) => r,
+            None => {
+                let from = spot.from();
+                let walk = self.go(at, from, tick, map, pad, bodies);
+                if self.gave_up {
+                    self.stuck.blacklist(spot.stand, tick);
+                    return (walk, None);
+                }
+                if walk.is_some() && dist_xy(at, from) > 0.3 {
+                    return (walk, Some(Stunt::Bounce(spot, None)));
+                }
+                if dist_xy(at, from) > 1.0 {
+                    // No way there.
+                    self.stuck.blacklist(spot.stand, tick);
+                    return (None, None);
+                }
+                self.follower = None;
+                let seed = u64::from(tick) ^ 0xb0_0b5;
+                crate::glitches::BounceRun::new(spot, self.glitches.bounce_tries(), tick, seed)
+            }
+        };
+        let o = run.step(at, tick);
+        if o.jump {
+            pad.buttons.set(JUMP, true);
+        }
+        // Facing the way it comes in, the stick as the run asks.
+        let face = if spot.drift[0].hypot(spot.drift[1]) > 1e-3 {
+            spot.drift
+        } else {
+            let d = [run.target[0] - at[0], run.target[1] - at[1]];
+            let l = d[0].hypot(d[1]).max(1e-6);
+            [d[0] / l, d[1] / l]
+        };
+        let walk = Walk {
+            walk: o.walk.unwrap_or([0.0, 0.0]),
+            face,
+        };
+        if o.done.is_some() {
+            return (Some(walk), None);
+        }
+        (Some(walk), Some(Stunt::Bounce(spot, Some(run))))
+    }
+
     /// A step away from `from` on the nav mesh (straight back, else to one
     /// side or the other), around bodies.
     fn away(&self, at: Vec3, from: Vec3, map: Option<&MapData>, bodies: &[Vec3]) -> Option<Walk> {
@@ -1132,6 +1361,15 @@ impl Mind {
         self.decisions.map.safe_first(&mut places, tick);
         places.into_iter().map(|(_, at)| at).find(|&at| ok(at))
     }
+}
+
+mod ride;
+/// Whether a glitch (crate::glitches) may run while doing `doing`: only
+/// fighting or roaming on foot. An allowlist, so anything else (a vehicle
+/// to mount, drive or ride in when those land, an objective, a pickup)
+/// never has one.
+pub(crate) fn glitch_doing(doing: Doing) -> bool {
+    matches!(doing, Doing::Fight(_) | Doing::Roam)
 }
 
 fn objective_approach(doing: Doing, at: Vec3) -> bool {

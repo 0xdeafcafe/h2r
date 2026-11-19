@@ -14,6 +14,7 @@ pub mod brain;
 pub mod cache;
 pub mod decisions;
 pub mod emote;
+pub mod glitches;
 pub mod grenades;
 pub mod guest;
 mod incoming;
@@ -29,6 +30,7 @@ pub mod roam;
 mod sound;
 pub mod stuck;
 pub mod tactics;
+pub mod vehicle;
 pub mod weapons;
 
 use decisions::radio;
@@ -61,6 +63,8 @@ pub struct Brain {
     fidget: mind::pad::Fidget,
     seed: u64,
     epoch: u64,
+    /// The map [`Brain::mind`]'s super bounce spots are for.
+    map: String,
 }
 
 impl Brain {
@@ -71,6 +75,7 @@ impl Brain {
             epoch: radio::lock(radio::host()).epoch,
             kills_seen: emote::kills().since(u64::MAX).1,
             fidget: mind::pad::Fidget::new(seed),
+            map: String::new(),
         }
     }
 
@@ -108,8 +113,12 @@ impl Brain {
         };
         if self.epoch != epoch {
             let taunt = self.mind.emote.taunt;
+            let glitches = self.mind.glitches;
+            let bounces = std::mem::take(&mut self.mind.bounces);
             self.mind = mind::Mind::new(self.mind.skill, self.seed);
             self.mind.emote.taunt = taunt;
+            self.mind.glitches = glitches;
+            self.mind.bounces = bounces;
             self.epoch = epoch;
         } else {
             self.mind.hear_deaths(p, kills);
@@ -147,11 +156,23 @@ impl local::PadSource for Brain {
             self.fidget.reset();
             return HostPadState::default();
         };
+        // This map's super bounce spots (crate::glitches::spots).
+        let map = autonav::loaded();
+        if map != self.map {
+            self.mind.bounces = glitches::bounces(&map);
+            self.map = map;
+        }
         let (kills, cursor) = emote::kills().since(self.kills_seen);
         self.kills_seen = cursor;
         // The radio and the deaths every frame, alive or not
         // (crate::decisions); the shots heard only in play.
         let alive = p.me.is_some();
+        // Vehicles are extra: a fault reading them leaves the bot on foot
+        // (docs/game/bots.md, Vehicles).
+        if alive {
+            self.mind
+                .see_vehicles(vehicle::read::sight_in_game(f.guest, who));
+        }
         let shots = if alive {
             sound::recent(p.tick)
         } else {

@@ -1186,3 +1186,90 @@ fn duplicate_input_frames_reuse_the_same_simulation_tick_pad() {
         }
     }
 }
+
+/// Crouch jumps (a jump, then crouch once A is up) a lone bot does over
+/// ten calm minutes with `setting`.
+fn hops(setting: crate::glitches::Glitches) -> usize {
+    let mut m = Mind::new(Skill::Legendary, 11);
+    m.glitches = setting;
+    let mut count = 0;
+    let mut jumped = false;
+    for tick in 0..10 * 60 * 30 {
+        let pad = look(&mut m, X, vec![], tick, None);
+        if pad.buttons.contains(JUMP) {
+            jumped = true;
+        } else if jumped && pad.buttons.contains(CROUCH) {
+            count += 1;
+            jumped = false;
+        }
+    }
+    count
+}
+
+#[test]
+fn glitches_off_never_shows_off_and_lots_crouch_jumps_often_when_calm() {
+    use crate::glitches::Glitches;
+    assert_eq!(hops(Glitches::Off), 0);
+    let lots = hops(Glitches::Lots);
+    assert!(lots >= 20, "{lots}");
+    assert!(hops(Glitches::Some) < lots);
+}
+
+#[test]
+fn glitches_run_only_fighting_or_roaming_on_foot() {
+    use crate::glitches::{Glitches, Run, Trick, plan};
+    // An allowlist: a vehicle's Mount, Drive and Ride (and anything else
+    // added later) are never on it.
+    let goal = crate::objective::Goal::Go([0.0; 3]);
+    for (d, ok) in [
+        (Doing::Fight(1), true),
+        (Doing::Roam, true),
+        (Doing::Idle, false),
+        (Doing::Chase([1.0; 3]), false),
+        (Doing::Support([1.0; 3]), false),
+        (Doing::Supply([1.0; 3]), false),
+        (Doing::Rearm([1.0; 3]), false),
+        (Doing::Recover([1.0; 3]), false),
+        (Doing::Carry([1.0; 3]), false),
+        (Doing::Keep, false),
+        (Doing::Play(goal), false),
+        (Doing::Mount(100), false),
+        (Doing::Drive(100), false),
+        (Doing::Ride(100), false),
+    ] {
+        assert_eq!(glitch_doing(d), ok, "{d:?}");
+    }
+    // A show-off under way stops when the bot turns to something else.
+    let hop = || {
+        Stunt::Hop(Run::new(
+            plan(Trick::CrouchJump, Skill::Legendary, &mut || 0.5),
+            0,
+        ))
+    };
+    let mut m = Mind::new(Skill::Legendary, 4);
+    m.glitches = Glitches::Lots;
+    look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);
+    m.stunt = Some(hop());
+    look(&mut m, X, vec![], 5, None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 3.0, 0.0]));
+    assert!(m.stunt.is_none());
+    // The hook a seat's pad calls stops both kinds.
+    m.stunt = Some(hop());
+    m.drop_glitches();
+    assert!(m.stunt.is_none() && !m.combo.tricking());
+    // In a seat `ride` makes the whole pad, and drops them first.
+    m.stunt = Some(hop());
+    let mut g = crate::vehicle::tests::ghost(100, [0.0; 3]);
+    crate::vehicle::tests::sit(&mut g, 0, 0, 0);
+    m.see_vehicles(crate::vehicle::Sight {
+        riding: Some(crate::vehicle::Riding {
+            vehicle: 100,
+            seat: 0,
+            role: crate::vehicle::SeatRole::Driver,
+        }),
+        vehicles: vec![g],
+    });
+    look(&mut m, X, vec![], 6, None);
+    assert_eq!(m.doing, Doing::Drive(100));
+    assert!(m.stunt.is_none() && !m.combo.tricking());
+}
