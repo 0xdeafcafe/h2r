@@ -1,0 +1,18 @@
+[package]
+name = "host-data"
+description = "The dedicated host's game data: build the owner's bundle from their disc, and fetch, verify and cache it on a host (docs/live/dedicated-host.md, Game data bundle)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+map.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+xiso.workspace = true
+# Match versions already used by the CLI and other workspace crates.
+sha2 = "0.10"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+zstd = "0.11"
