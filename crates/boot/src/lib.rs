@@ -69,6 +69,7 @@ pub mod native_post_glue;
 pub mod native_post_load;
 pub mod native_transparents_glue;
 pub mod native_world_glue;
+mod native_world_layers_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;

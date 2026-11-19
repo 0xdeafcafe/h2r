@@ -971,6 +971,91 @@ vector (`v1`) and view vector (`v0`), and the lightmap (stage 3). Its
 5. The A/B per template, and `native-world` keeps a material native only
    once its template's A/B is clean.
 
+### Native opaque layers
+
+`impl.render.native_world_layers=on` allows the standard geometry
+handler's main-scene indexed ranges in layers 1, 5, 7, 8 and the
+combined materials in layer 3 to record natively. The layer
+hook identifies the scene call and the indexed submission identifies the
+individual cluster, placement or object record. The guest still builds
+and sorts the list and runs its shader and stencil setup and tail. At
+the draw, the native pass reuses the resolved live streams, indices,
+programs, render states, constants and texture views. This preserves
+interleaved D3D draws in their guest order, including subpart slices,
+depth equality, inherited cull and per-record stencil reference.
+
+Layer 1 replaces a draw only while target 1's attachment header is
+bound. Texture inputs must resolve to views the program can sample.
+The two-copy reservation records the entire indexed range on every
+live target copy before replacing the D3D submission. Color and
+depth/stencil writes use the original attachments and feed the usual
+RTT and depth tracking. Alternate views and special handlers remain
+with their own D3D setup.
+
+The layer-3 replacement uses the texture view from the resolved
+D3D draw. It also pins target 1's colour attachment and resolves the
+engine texture 3 header through the RTT path. All three views must
+hold the same GPU texture on each live copy. The guest dimensions
+must agree and the texture must use linear texel addressing. This works
+with either owner of layer 1, because both write the same attachment.
+
+This slice replaces the backend draw. Its CPU cost includes the guest
+setup and D3D resource resolution. Geometry snapshots can reuse native
+GPU buffers, while native shader, pipeline and texture bindings are
+cached per device. Measure before treating this as a performance gain.
+
+### Opaque-layer comparison
+
+`H2_NATIVE_WORLD_LAYERS_COMPARE=2000,3000` prints the indexed D3D
+draws of layers 1, 2, 3, 5, 7 and 8 at those present numbers. It works
+with or without the native stage switches. Take a reference with both
+`impl.render.native_world=off` and `impl.render.native_objects=off`
+to see the guest's complete layer 3. Use the same replay and render
+scale for both comparisons. Each line names the layer's call site and
+its list, the standard geometry handler's owner, render record, part,
+shader, variant and implementation where they resolve, plus the
+indexed call's return site, attachments, clip, W/Z and stencil state.
+Other indexed handlers lack a geometry identity.
+
+Target 1 has two guest headers. The scene's main layer-1 site
+(`0x0002be45`) asks `0x00014bc0` for it before the layer, and
+`0x0001dcf0(1)` gives the attachment header at descriptor `+0x18`
+when the descriptor is enabled and `+0x78` is positive.
+`0x0001dcc0(1)` returns the texture header at `+4`. The line reports
+both headers and the texture's guest size, whether the draw wrote to
+that attachment and which stages bound the texture header. An
+`in_place_sample` line names the actual backend surface and texture ID,
+which can be paired with the indexed draw's `texture_ids`. Equal guest
+dimensions alone do not establish the same target. Native
+`recorded` lines show the replacement recorded on each physical copy.
+The native stage suppression counters show committed draws. Use
+`H2_NATIVE_WORLD_LAYERS_OWNERS=world` or `objects` with the switch on
+to compare mixed ownership. The default is `all`. Frame and pass color
+checks use the agent API (`render.frame` and `render.stats`).
+
+### Scene and exceptional draw sites
+
+The retail return sites distinguish uses of the same layer number.
+
+| Site | Draw calls | State and ownership |
+|---|---|---|
+| Scene kinds 1 and 2 | Layer 1 `0x0002be45`, layer 3 `0x0002bed0`, layer 5 `0x0002bf34`, layer 8 `0x0002bfa5` | Layer 1 binds target 1 and usually clears. Layers 3, 5 and 8 select the scene target at `0x004858b8`. Layers 1 and 3 start with stencil mode 1. Layers 5 and 8 start with mode 0. Layer 8 also requires the byte at `0x004ba022`. |
+| Scene middle | Layer 7 `0x0002c034`, layer 2 `0x0002c05b` | Layer 7 follows `0x000335e0` and precedes the dynamic lights. Layer 2 draws after the lights and after `0x0002c370(1)`. Both take their setup through `0x00044370`. |
+| Alternate scene kinds | Layers 1, 3, 5, 2 at `0x0002bd57`, `0x0002bd6f`, `0x0002bd87`, `0x0002bda3` | All use the general layer begin. The main scene's target-1 and clear sequence is elsewhere. |
+| First person | Layers 1, 3, 8, 7 at `0x000400a6`, `0x00040131`, `0x000401a2`, `0x0004026c` | The first-person list and projection are separate. The two scene calls to this chain straddle the first-person light step. |
+| Sky | `0x0002c0bc` to `0x0003ede0` to `0x0004c690` | The sky has its own setup inside a stencil-mode-2 bracket and its renderer issues an indexed strip at `0x0004c976`, with shader layer 15 and explicit cull disable. This path sits outside the layer loop and the diagnostic labels its indexed draw `Sky`. |
+
+Within the normal geometry handler, the layer-5 object branch at
+`0x0004d22f` can select a subpart mask after resolving the object's
+geometry. The emitter at `0x0004daa0` can issue multiple indexed slices
+from that mask, and layer 5 sorts with `0x0003bbd0`. Preserve both the
+slices and their order. The geometry handler switches stencil immediately
+before the emitter in layers 1 and 3, then runs its stencil tail after
+the emitter. Its prefix also handles per-record fade and geometry state.
+The same layer's entries may use other handlers from the live list, so
+a replacement needs the observed standard geometry call as well as the
+layer ID.
+
 ## Stage 2: objects and skinning (design)
 
 Bipeds, vehicles, weapons, equipment, scenery, machines and crates: every

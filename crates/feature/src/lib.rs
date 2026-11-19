@@ -27,6 +27,7 @@ pub mod native_particles;
 pub mod native_post;
 pub mod native_transparents;
 pub mod native_world;
+pub mod native_world_layers;
 pub mod occlusion;
 pub mod plan;
 pub mod pipeline_render;
