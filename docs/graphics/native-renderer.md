@@ -2292,6 +2292,23 @@ its own thread, and render-timing does not matter (the call runs).
      the switch on: a probe on its first call, its strips dropped for the
      native pass after. The blur (`kind` 1 and a convolution in its first
      pass) stays on D3D.
+   - **Built: passes into target 1** (`screen_gpu::Dest`): a pass of
+     `kind` 1..3 draws into a stand-in for target 1, its guest size the
+     plan's (the window's, a half, a quarter) and its texels that times
+     the copy's render scale, cleared first (S: the strips cover it); a
+     later pass of the call samples it as engine textures 2 and 3, in its
+     texels. Target 1 read before a pass of the call drew it (what the
+     D3D path left there), or by the pass drawing it, is refused
+     (`screen_gpu::check_order`, `native_post_glue::call_ordered`). The
+     swallow sends target 1's strips to slot 1. `PassTarget` stays
+     missing only for a pass into target 1 that is the call's last (the
+     native pass is issued into the target bound at the last strip) or
+     has no size. Nothing more is armed by it: the only egor with such a
+     pass, the blur, still misses its convolution and the stand-ins, and
+     its second pass reads engine pixel constants and engine texture 24.
+     (S: what the D3D side later reads of target 1 is not this call's,
+     since its strips are dropped; target 1 is scratch to the screen
+     effects, as 7 and 8 are to the glow.)
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the
    same shape and gets its own skip point.
 6. **Layer 17** (S: bloom), as stage 1b draws the world's other layers.

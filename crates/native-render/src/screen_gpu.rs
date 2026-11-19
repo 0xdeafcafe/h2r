@@ -1,7 +1,8 @@
 //! Stage 5's screen-effect pass on the GPU (docs/graphics/native-renderer.md,
 //! "Stage 5", "The screen effects"): a translated layer-15 template pass
 //! ([`crate::screen_look::compile_screen`]) drawing the strips
-//! `0x0002d140` pushes by hand into the target bound for the call.
+//! `0x0002d140` pushes by hand, into the target bound for the call or into
+//! target 1.
 //!
 //! What a strip is, from the game (Code, `engine::screen_effect`): per row
 //! of corners one triangle strip (`SET_BEGIN_END` 6), per column the
@@ -9,17 +10,28 @@
 //! position (x and y in the target's pixels, z and w `[0x0045dd40]`) and
 //! attributes 1..4 the four texture coordinates ([`StripVertex`]).
 //!
+//! Where a pass draws ([`Dest`]): `kind` 0 into the bound target, 1..3
+//! into target 1 at the window's size, a half or a quarter (`0x00016610`
+//! binds it through `0x00014bc0(1)` after `0x0001ddd0` sized it). Target 1
+//! is a stand-in here, its guest size the pass's and its texels that times
+//! the copy's render scale, cleared when a pass draws into it (S: the
+//! strips cover the target); what a later pass of the same call samples
+//! of it (engine textures 2 and 3) is what the earlier drew. Target 1
+//! sampled before any pass of the call drew it is refused: its contents
+//! would be the D3D path's.
+//!
 //! The program is the game's: the vertex program translated with the
-//! target's guest size as its surface and the device's depth scale as its
-//! `z_max` ([`screen_vertex`]); the pixel side with each render-target
-//! stage's coordinates scaled by that target's guest size, as a linear
-//! texture is fetched in texels ([`screen_pixel`]). What a stage binds
-//! ([`supplied`]): the shader's own bitmaps, and of the engine textures
-//! only the view's (`5`): a copy of the bound colour taken before the
+//! destination's guest size as its surface and the device's depth scale
+//! as its `z_max` ([`screen_vertex`]); the pixel side with each
+//! render-target stage's coordinates scaled by that target's guest size,
+//! as a linear texture is fetched in texels ([`screen_pixel`]). What a
+//! stage binds ([`bound`]): the shader's own bitmaps; of the engine
+//! textures the view's (`5`), a copy of the bound colour taken before the
 //! draw, since a pass reads the target it draws into (S: that id 5
 //! resolves to the target `kind` 0 draws into, both target 0 through
 //! `0x00014f60` while `[0x004858b8]` is clear, which every drawn call
-//! needs). The rest are refused until their targets have stand-ins.
+//! needs), and target 1's stand-in. The rest are refused until their
+//! targets have stand-ins.
 //!
 //! Colour only, culling nothing (S: the D3D path's cull mode is whatever
 //! the draws before left; the A/B checks the strips' facing), the pass's
@@ -73,10 +85,43 @@ pub fn strip_ranges(strips: &[Vec<StripVertex>]) -> Vec<Range<u32>> {
         .collect()
 }
 
-/// Whether the native pass can bind engine texture `id`: the view's, as
-/// a copy of the bound colour.
+/// An engine texture the native pass supplies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bound {
+    /// The view's (5): a copy of the bound colour.
+    View,
+    /// Target 1 (2 and 3): the stand-in an earlier pass of the call drew.
+    Target1,
+}
+
+/// What engine texture `id` binds in the native pass, `None` when it
+/// does not supply it.
+pub fn bound(id: u8) -> Option<Bound> {
+    match engine_texture(id) {
+        EngineTexture::View => Some(Bound::View),
+        EngineTexture::Target(1) => Some(Bound::Target1),
+        _ => None,
+    }
+}
+
+/// Whether the native pass can bind engine texture `id` ([`bound`]).
 pub fn supplied(id: u8) -> bool {
-    engine_texture(id) == EngineTexture::View
+    bound(id).is_some()
+}
+
+/// Whether `program` samples engine texture `b`.
+pub fn samples(program: &ScreenProgram, b: Bound) -> bool {
+    (0..4).any(|n| program.dims[n].is_some() && matches!(program.stages[n], ScreenStage::Engine(id) if bound(id) == Some(b)))
+}
+
+/// Where a pass draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dest {
+    /// The target bound for the call (`kind` 0).
+    Bound,
+    /// Target 1 at this guest size (`kind` 1..3: the window's, a half, a
+    /// quarter).
+    Target1 { guest: (u32, u32) },
 }
 
 /// Why a screen pass is not drawn.
@@ -88,13 +133,18 @@ pub enum ScreenRefused {
     Unbound(usize),
     /// A stage's bitmap did not decode.
     Bitmap(usize),
-    /// The view's colour is sampled but cannot be copied (or its format is
-    /// not one a texture can take).
+    /// The view's colour is sampled but cannot be copied.
     ColourNotCopyable,
     /// No program for this pass (the load refused it).
     NoProgram,
     /// The strip has fewer than three vertices or the call no strips.
     NoStrips,
+    /// Target 1 sampled before a pass of the call drew it.
+    Target1Unwritten,
+    /// A pass into target 1 that samples it.
+    Target1Feedback,
+    /// A pass into target 1 at an empty size.
+    Target1Size,
 }
 
 /// Whether `program` would draw into `color` (recording nothing): every
@@ -108,25 +158,52 @@ pub fn check(color: &wgpu::TextureView, program: &ScreenProgram) -> Result<(), S
         match program.stages[n] {
             ScreenStage::Empty => return Err(ScreenRefused::Unbound(n)),
             ScreenStage::Bitmap { .. } => {}
-            ScreenStage::Engine(id) if !supplied(id) => return Err(ScreenRefused::EngineTexture(id)),
-            ScreenStage::Engine(_) => {
-                if !color.texture().usage().contains(wgpu::TextureUsages::COPY_SRC) {
-                    return Err(ScreenRefused::ColourNotCopyable);
+            ScreenStage::Engine(id) => match bound(id) {
+                None => return Err(ScreenRefused::EngineTexture(id)),
+                Some(Bound::View) => {
+                    if !color.texture().usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                        return Err(ScreenRefused::ColourNotCopyable);
+                    }
                 }
-            }
+                Some(Bound::Target1) => {}
+            },
         }
     }
     Ok(())
 }
 
-/// Whether `program` samples the view's colour.
-pub fn samples_view(program: &ScreenProgram) -> bool {
-    (0..4).any(|n| program.dims[n].is_some() && matches!(program.stages[n], ScreenStage::Engine(id) if supplied(id)))
+/// Whether passes drawing `programs` into `dests` in order read target 1
+/// only after one drew it, never while drawing it, and draw it at a size.
+pub fn check_order<'a>(passes: impl IntoIterator<Item = (&'a ScreenProgram, Dest)>) -> Result<(), ScreenRefused> {
+    let mut written = false;
+    for (program, dest) in passes {
+        let reads = samples(program, Bound::Target1);
+        if reads && !written {
+            return Err(ScreenRefused::Target1Unwritten);
+        }
+        if let Dest::Target1 { guest } = dest {
+            if reads {
+                return Err(ScreenRefused::Target1Feedback);
+            }
+            if guest.0 == 0 || guest.1 == 0 {
+                return Err(ScreenRefused::Target1Size);
+            }
+            written = true;
+        }
+    }
+    Ok(())
 }
 
-/// The vertex uniforms for a target `guest_size` guest pixels (`size`
-/// texels) with depth scale `z_scale`: the positions are in its pixels,
-/// no W-buffer (the screen passes turn depth off).
+/// `guest` guest pixels in a copy `size` texels for `of` guest pixels:
+/// the stand-in's texels, at least 1x1.
+pub fn host_size(guest: (u32, u32), of: (u32, u32), size: (u32, u32)) -> (u32, u32) {
+    let scale = |n: u32, s: u32, g: u32| ((u64::from(n) * u64::from(s)).div_ceil(u64::from(g.max(1))) as u32).max(1);
+    (scale(guest.0, size.0, of.0), scale(guest.1, size.1, of.1))
+}
+
+/// The vertex uniforms for a destination `guest_size` guest pixels
+/// (`size` texels) with depth scale `z_scale`: the positions are in its
+/// pixels, no W-buffer (the screen passes turn depth off).
 pub fn screen_vertex(base: &VertexUniforms, guest_size: (u32, u32), size: (u32, u32), z_scale: f32) -> VertexUniforms {
     let mut u = base.clone();
     u.surface = [guest_size.0 as f32, guest_size.1 as f32];
@@ -140,12 +217,20 @@ pub fn screen_vertex(base: &VertexUniforms, guest_size: (u32, u32), size: (u32, 
 }
 
 /// The pixel uniforms: each engine stage (a render target, linear) fetched
-/// in its texels, `view` the bound colour's guest size; no fog.
-pub fn screen_pixel(program: &ScreenProgram, view: (u32, u32)) -> PixelUniforms {
+/// in its texels, `view` the bound colour's guest size and `target1`
+/// target 1's; no fog.
+pub fn screen_pixel(program: &ScreenProgram, view: (u32, u32), target1: (u32, u32)) -> PixelUniforms {
     let mut p = PixelUniforms { fog: psh::fog::Fog::OFF.uniform(), ..program.pixel };
+    let texels = |s: (u32, u32)| [1.0 / s.0.max(1) as f32, 1.0 / s.1.max(1) as f32, 1.0, 1.0];
     for n in 0..4 {
-        if program.dims[n].is_some() && matches!(program.stages[n], ScreenStage::Engine(_)) {
-            p.tex_scale[n] = [1.0 / view.0.max(1) as f32, 1.0 / view.1.max(1) as f32, 1.0, 1.0];
+        if program.dims[n].is_none() {
+            continue;
+        }
+        if let ScreenStage::Engine(id) = program.stages[n] {
+            p.tex_scale[n] = match bound(id) {
+                Some(Bound::Target1) => texels(target1),
+                _ => texels(view),
+            };
         }
     }
     p
@@ -305,9 +390,14 @@ impl ScreenGpu {
         })
     }
 
-    /// The texture group, `view` the copy of the bound colour (for a pass
-    /// that samples it).
-    fn textures(&self, device: &wgpu::Device, view: Option<&wgpu::TextureView>) -> Result<wgpu::BindGroup, ScreenRefused> {
+    /// The texture group: `view` the copy of the bound colour, `target1`
+    /// target 1's stand-in (for a pass that samples them).
+    fn textures(
+        &self,
+        device: &wgpu::Device,
+        view: Option<&wgpu::TextureView>,
+        target1: Option<&wgpu::TextureView>,
+    ) -> Result<wgpu::BindGroup, ScreenRefused> {
         let mut views = Vec::new();
         for (n, d) in self.program.dims.iter().enumerate() {
             if d.is_none() {
@@ -316,8 +406,11 @@ impl ScreenGpu {
             let v = match self.program.stages[n] {
                 ScreenStage::Empty => return Err(ScreenRefused::Unbound(n)),
                 ScreenStage::Bitmap { .. } => self.stage_views[n].clone().ok_or(ScreenRefused::Bitmap(n))?,
-                ScreenStage::Engine(id) if !supplied(id) => return Err(ScreenRefused::EngineTexture(id)),
-                ScreenStage::Engine(_) => view.cloned().ok_or(ScreenRefused::ColourNotCopyable)?,
+                ScreenStage::Engine(id) => match bound(id) {
+                    None => return Err(ScreenRefused::EngineTexture(id)),
+                    Some(Bound::View) => view.cloned().ok_or(ScreenRefused::ColourNotCopyable)?,
+                    Some(Bound::Target1) => target1.cloned().ok_or(ScreenRefused::Target1Unwritten)?,
+                },
             };
             views.push((n, v));
         }
@@ -344,19 +437,52 @@ impl ScreenGpu {
 /// pass and the implementation.
 pub type ScreenKey = (u32, usize, usize);
 
-/// One pass of a call: its program and strips, in draw order.
+/// One pass of a call: its program, strips and destination, in draw order.
 pub struct ScreenDraw<'a> {
     pub key: ScreenKey,
     pub program: &'a ScreenProgram,
     pub strips: &'a [Vec<StripVertex>],
+    pub dest: Dest,
 }
 
-/// The screen passes on the GPU, made as calls first need them, and the
-/// copy of the view's colour the passes that sample it read.
+/// A texture the set keeps: its size and format, and a view of it.
+type Kept = (wgpu::Extent3d, wgpu::TextureFormat, wgpu::Texture, wgpu::TextureView);
+
+/// A texture of `extent` and `format` with `usage`, kept in `slot` while
+/// they stay the same.
+fn keep<'s>(
+    slot: &'s mut Option<Kept>,
+    device: &wgpu::Device,
+    extent: wgpu::Extent3d,
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+    label: &str,
+) -> &'s Kept {
+    if slot.as_ref().is_none_or(|(e, f, _, _)| *e != extent || *f != format) {
+        let t = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+        let v = t.create_view(&Default::default());
+        *slot = Some((extent, format, t, v));
+    }
+    slot.as_ref().expect("just made")
+}
+
+/// The screen passes on the GPU, made as calls first need them, the copy
+/// of the view's colour the passes that sample it read, and target 1's
+/// stand-in.
 #[derive(Default)]
 pub struct ScreenSet {
     passes: HashMap<ScreenKey, Result<ScreenGpu, ScreenRefused>>,
-    copy: Option<(wgpu::Extent3d, wgpu::TextureFormat, wgpu::Texture, wgpu::TextureView)>,
+    copy: Option<Kept>,
+    target1: Option<Kept>,
 }
 
 impl ScreenSet {
@@ -369,10 +495,10 @@ impl ScreenSet {
         self.passes.clear();
     }
 
-    /// Records `draws` in order into `t.color`, each in its own render
-    /// pass after a copy of the colour when it samples it (so a later
-    /// pass reads what the earlier drew, as on the D3D path). Nothing is
-    /// recorded when any of them is refused.
+    /// Records `draws` in order, each in its own render pass: into
+    /// `t.color` or target 1's stand-in, after a copy of the colour when
+    /// it samples it (so a later pass reads what the earlier drew, as on
+    /// the D3D path). Nothing is recorded when any of them is refused.
     pub fn encode(
         &mut self,
         t: ScreenTarget<'_>,
@@ -380,6 +506,7 @@ impl ScreenSet {
         stage_image: &mut dyn FnMut(ScreenStage) -> Option<Image>,
     ) -> Result<usize, ScreenRefused> {
         let ScreenTarget { device, queue, encoder, color, color_format, guest_size, size, z_scale } = t;
+        check_order(draws.iter().map(|d| (d.program, d.dest)))?;
         for d in draws {
             check(color, d.program)?;
             if d.strips.is_empty() || d.strips.iter().any(|s| s.len() < 3) {
@@ -398,37 +525,39 @@ impl ScreenSet {
                 None => return Err(ScreenRefused::NoProgram),
             }
         }
-        if draws.iter().any(|d| samples_view(d.program)) {
-            let texture = color.texture();
-            let extent = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
-            if self.copy.as_ref().is_none_or(|(e, f, _, _)| *e != extent || *f != texture.format()) {
-                let copy = device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("native screen view copy"),
-                    size: extent,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: texture.format(),
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
-                let view = copy.create_view(&Default::default());
-                self.copy = Some((extent, texture.format(), copy, view));
-            }
-        }
+        let texture = color.texture();
+        let full = wgpu::Extent3d { width: texture.width(), height: texture.height(), depth_or_array_layers: 1 };
         let mut drawn = 0;
+        // Target 1's guest size, once a pass of this call drew it.
+        let mut target1_guest = None;
         for d in draws {
             let Some(Ok(g)) = self.passes.get(&d.key) else { continue };
-            let view = match (&self.copy, samples_view(d.program)) {
-                (Some((extent, _, copy, view)), true) => {
-                    encoder.copy_texture_to_texture(color.texture().as_image_copy(), copy.as_image_copy(), *extent);
-                    Some(view)
+            let view = if samples(d.program, Bound::View) {
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+                let (extent, _, copy, view) = keep(&mut self.copy, device, full, texture.format(), usage, "native screen view copy");
+                encoder.copy_texture_to_texture(texture.as_image_copy(), copy.as_image_copy(), *extent);
+                Some(view.clone())
+            } else {
+                None
+            };
+            let (dest_view, dest_guest, dest_size, load) = match d.dest {
+                Dest::Bound => (color.clone(), guest_size, size, wgpu::LoadOp::Load),
+                Dest::Target1 { guest } => {
+                    let texels = host_size(guest, guest_size, size);
+                    let extent = wgpu::Extent3d { width: texels.0, height: texels.1, depth_or_array_layers: 1 };
+                    let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+                    let (_, _, _, v) = keep(&mut self.target1, device, extent, color_format, usage, "native screen target 1");
+                    target1_guest = Some(guest);
+                    (v.clone(), guest, texels, wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT))
                 }
+            };
+            let target1 = match (samples(d.program, Bound::Target1), &self.target1) {
+                (true, Some((_, _, _, v))) => Some(v),
                 _ => None,
             };
-            let textures = g.textures(device, view)?;
-            let vertex = screen_vertex(&d.program.vertex, guest_size, size, z_scale).to_bytes();
-            let pixel = screen_pixel(d.program, guest_size).to_bytes();
+            let textures = g.textures(device, view.as_ref(), target1)?;
+            let vertex = screen_vertex(&d.program.vertex, dest_guest, dest_size, z_scale).to_bytes();
+            let pixel = screen_pixel(d.program, guest_size, target1_guest.unwrap_or((1, 1))).to_bytes();
             use wgpu::util::DeviceExt;
             let buffer = |label, contents: &[u8], usage| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents, usage })
@@ -449,17 +578,17 @@ impl ScreenSet {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("native screen effect"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color,
+                    view: &dest_view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_viewport(0.0, 0.0, size.0 as f32, size.1 as f32, 0.0, 1.0);
+            pass.set_viewport(0.0, 0.0, dest_size.0 as f32, dest_size.1 as f32, 0.0, 1.0);
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, &[]);
             pass.set_bind_group(1, &textures, &[]);
@@ -502,6 +631,8 @@ mod tests {
         }
     }
 
+    const E: ScreenStage = ScreenStage::Empty;
+
     #[test]
     fn a_strip_is_the_pushed_words_as_floats() {
         let one = 1.0f32.to_bits();
@@ -524,27 +655,52 @@ mod tests {
     }
 
     #[test]
-    fn only_the_views_engine_texture_is_supplied() {
-        assert!(supplied(5));
-        for id in [1, 2, 3, 4, 9, 13, 24, 25] {
+    fn the_view_and_target_1_are_supplied() {
+        assert_eq!(bound(5), Some(Bound::View));
+        assert_eq!((bound(2), bound(3)), (Some(Bound::Target1), Some(Bound::Target1)));
+        for id in [1, 4, 6, 9, 13, 24, 25] {
             assert!(!supplied(id), "{id}");
         }
         let bitmap = ScreenStage::Bitmap { bitmap: map::TagId(0xe000_0001), image: 0 };
-        let view = program([ScreenStage::Engine(5), bitmap, ScreenStage::Empty, ScreenStage::Empty]);
-        assert!(samples_view(&view));
-        assert!(!samples_view(&program([bitmap, ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty])));
+        let view = program([ScreenStage::Engine(5), bitmap, E, E]);
+        assert!(samples(&view, Bound::View) && !samples(&view, Bound::Target1));
+        assert!(!samples(&program([bitmap, E, E, E]), Bound::View));
+    }
+
+    /// `effects\screen_effects\blur`'s passes: the view copied into target
+    /// 1, then target 1 (with a convolution's result) back over the view.
+    #[test]
+    fn target_1_is_read_only_after_a_pass_drew_it() {
+        let copy = program([ScreenStage::Engine(5), E, E, E]);
+        let back = program([ScreenStage::Engine(3), E, E, E]);
+        let into = Dest::Target1 { guest: (640, 480) };
+        assert_eq!(check_order([(&copy, into), (&back, Dest::Bound)]), Ok(()));
+        assert_eq!(check_order([(&back, Dest::Bound)]), Err(ScreenRefused::Target1Unwritten), "the D3D path's contents");
+        assert_eq!(check_order([(&copy, into), (&back, into)]), Err(ScreenRefused::Target1Feedback));
+        let empty = Dest::Target1 { guest: (0, 240) };
+        assert_eq!(check_order([(&copy, empty)]), Err(ScreenRefused::Target1Size));
+        assert_eq!(check_order([(&copy, Dest::Bound)]), Ok(()), "desaturate's");
+    }
+
+    #[test]
+    fn a_stand_in_is_its_guest_size_at_the_copys_scale() {
+        assert_eq!(host_size((320, 240), (640, 480), (1280, 960)), (640, 480), "a half at 2x");
+        assert_eq!(host_size((160, 120), (640, 480), (640, 480)), (160, 120));
+        assert_eq!(host_size((161, 1), (640, 480), (1000, 750)), (252, 2), "rounded up");
+        assert_eq!(host_size((0, 0), (640, 480), (640, 480)), (1, 1));
     }
 
     #[test]
     fn the_uniforms_are_the_targets() {
-        let p = program([ScreenStage::Engine(5), ScreenStage::Bitmap { bitmap: map::TagId(1), image: 0 }, ScreenStage::Empty, ScreenStage::Empty]);
+        let p = program([ScreenStage::Engine(5), ScreenStage::Bitmap { bitmap: map::TagId(1), image: 0 }, ScreenStage::Engine(3), E]);
         let v = screen_vertex(&p.vertex, (640, 480), (1280, 960), 16_777_215.0);
         assert_eq!((v.surface, v.z_max, v.w_clip), ([640.0, 480.0], 16_777_215.0, None));
         assert_eq!(v.shift, 3.0 / 8.0, "2x: (2 s - 1) / 4 s");
         assert_eq!(screen_vertex(&p.vertex, (640, 480), (640, 480), 1.0).shift, 0.0);
-        let px = screen_pixel(&p, (640, 480));
+        let px = screen_pixel(&p, (640, 480), (320, 240));
         assert_eq!(px.tex_scale[0], [1.0 / 640.0, 1.0 / 480.0, 1.0, 1.0], "the view in texels");
         assert_eq!(px.tex_scale[1], [1.0; 4], "a bitmap normalized");
+        assert_eq!(px.tex_scale[2], [1.0 / 320.0, 1.0 / 240.0, 1.0, 1.0], "target 1 in its texels");
         assert_eq!(px.fog, psh::fog::Fog::OFF.uniform());
         assert_eq!(p.dims[0], Some(TextureDim::D2));
     }
