@@ -446,6 +446,15 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 
 #[test]
 fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::World);
+}
+
+#[test]
+fn shadow_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Shadows);
+}
+
+fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
     struct Retained(Arc<d3d::ResolvedDraw>);
 
     impl ExternalPass for Retained {
@@ -457,13 +466,15 @@ fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
         }
     }
 
-    #[derive(Default)]
-    struct Admission(Mutex<Option<Arc<d3d::ResolvedDraw>>>);
+    struct Admission {
+        stage: timeline::native::Stage,
+        draw: Mutex<Option<Arc<d3d::ResolvedDraw>>>,
+    }
     impl d3d::DrawAdmission for Admission {
         fn admit(&self, s: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
             let draw = Arc::new(s.draw.clone());
-            *self.0.lock().unwrap() = Some(draw.clone());
-            Some((plan(1), Box::new(Retained(draw))))
+            *self.draw.lock().unwrap() = Some(draw.clone());
+            Some((d3d::ExternalPlan { stage: self.stage, ..plan(1) }, Box::new(Retained(draw))))
         }
     }
 
@@ -474,7 +485,7 @@ fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
     set_states(&mut d, &mut m);
     quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
     bind_quad(&mut d, &mut m);
-    let probe = Arc::new(Admission::default());
+    let probe = Arc::new(Admission { stage, draw: Mutex::default() });
     d.add_draw_admission(probe.clone());
     m.write(MISC, &[2, 0, 1, 0, 0, 0]).unwrap();
     let waits = d.backend.waits().reads;
@@ -485,7 +496,7 @@ fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
         assert_eq!(draws.len(), 1);
         draws[0].clone()
     }).unwrap();
-    assert_eq!(probe.0.lock().unwrap().as_deref(), Some(&replay));
+    assert_eq!(probe.draw.lock().unwrap().as_deref(), Some(&replay));
     assert_eq!(d.stats().external_passes, 0);
     assert_eq!(d.stats().external_passes_dropped, 1);
 }
@@ -702,7 +713,6 @@ impl ExternalPass for Paint {
         let scale = t.size.0 / t.guest_size.0;
         self.bundles[usize::from(display)] = Some(d3d::backend::ExternalBundles {
             run: self.run, ranges: 1, scissor: [self.x * scale, 0, 8 * scale, t.size.1],
-            upload: None,
             groups: vec![(self.color, b.finish(&Default::default()))],
         });
         Ok(())

@@ -13,13 +13,14 @@ pub(crate) struct Gpu {
     renderer: Renderer,
     shaders: d3d::Nv2aShaders,
     bits: gfx::depth_bits::DepthBits,
+    defer_uploads: bool,
 }
 
 pub(crate) type SharedGpu = Arc<Mutex<Gpu>>;
 
 /// Called only for a single, retail, 1x backend. The scaled backend has
 /// a separate E3 caster target that a generic external pass cannot name.
-pub(crate) fn new(ctx: GfxContext) -> SharedGpu {
+fn new(ctx: GfxContext, defer_uploads: bool) -> SharedGpu {
     let mut renderer = Renderer::new(&ctx);
     renderer.set_staged_uploads(false);
     let bits = gfx::depth_bits::DepthBits::new(&ctx);
@@ -28,10 +29,29 @@ pub(crate) fn new(ctx: GfxContext) -> SharedGpu {
         renderer,
         shaders: d3d::Nv2aShaders::new(),
         bits,
+        defer_uploads,
     }))
 }
 
+pub(crate) fn for_backend(backend: &mut d3d::GfxBackend) -> SharedGpu {
+    let gpu = new(crate::d3d_glue::share_context(&backend.ctx), true);
+    let uploads = gpu.clone();
+    backend.flush_external_uploads_with(move || {
+        uploads.lock().unwrap_or_else(|e| e.into_inner()).flush_uploads();
+    });
+    let recycle = gpu.clone();
+    backend.observe_submitted_frames(move || {
+        recycle.lock().unwrap_or_else(|e| e.into_inner()).presented();
+    });
+    gpu
+}
+
 impl Gpu {
+    fn flush_uploads(&mut self) {
+        self.renderer.flush_uploads(&self.ctx.queue);
+        self.shaders.flush_uploads(&self.ctx);
+    }
+
     /// Invoked from the physical backend's present hook, after its flush.
     pub(crate) fn presented(&mut self) {
         self.renderer.submitted();
@@ -75,7 +95,7 @@ impl d3d::ExternalPass for Freeze {
 
 pub(crate) struct Range {
     pub(crate) gpu: SharedGpu,
-    pub(crate) draw: ResolvedDraw,
+    pub(crate) draw: Arc<ResolvedDraw>,
     pub(crate) map: Option<(Output, MapKind, u32)>,
     pub(crate) packets: Vec<gfx::RecordedDraw>,
     pub(crate) recorded: Option<Arc<std::sync::atomic::AtomicUsize>>,
@@ -98,6 +118,7 @@ impl Range {
             ctx,
             renderer,
             shaders,
+            defer_uploads,
             ..
         } = &mut *gpu;
         let draw = &self.draw;
@@ -191,8 +212,9 @@ impl Range {
             });
             packets.push(renderer.record(ctx, &target, &d).ok()?);
         }
-        renderer.flush_uploads(&ctx.queue);
-        shaders.flush_uploads(ctx);
+        if !*defer_uploads {
+            gpu.flush_uploads();
+        }
         Some(packets)
     }
 }
@@ -225,6 +247,11 @@ impl d3d::ExternalPass for Range {
             depth_stencil: f.is_some() && (writes_z || writes_s),
         }
     }
+    fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+        // The layer-end probe reads the recorded count on the guest thread.
+        self.recorded.is_none().then(|| Arc::clone(&self.draw))
+    }
+
     fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
         self.packets = self
             .prepare(t)

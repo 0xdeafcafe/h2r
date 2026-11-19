@@ -1024,7 +1024,7 @@ pub struct Device<B: Backend> {
     events: Vec<Event>,
     last_stop: Option<HleStop>,
     stats: Stats,
-    queued_world_stats: Arc<QueuedWorldStats>,
+    queued_external_stats: Arc<QueuedExternalStats>,
     /// `D3DSIMPLERENDERSTATEENCODE`, read from the image at creation.
     encode: Option<SimpleEncode>,
     /// NV2A register state the push buffer has set ([`crate::hw`]).
@@ -1173,7 +1173,7 @@ struct ExternalBinding<S> {
 }
 
 #[derive(Default)]
-struct QueuedWorldStats {
+struct QueuedExternalStats {
     committed: AtomicU64,
     dropped: AtomicU64,
 }
@@ -1183,7 +1183,10 @@ impl<S: Copy + Eq> ExternalBinding<S> {
         self.colors.as_slice() == [(header, color)]
             && self.depth_write == writes_depth
             && self.surfaces.color == color
-            && Some(self.surfaces.depth) == depth
+            && match depth {
+                Some(depth) => self.surfaces.depth == depth,
+                None => !writes_depth && self.surfaces.depth == color,
+            }
     }
 }
 
@@ -1316,7 +1319,7 @@ impl<B: Backend> Device<B> {
             events: Vec::new(),
             last_stop: None,
             stats: Stats::default(),
-            queued_world_stats: Default::default(),
+            queued_external_stats: Default::default(),
             encode: None,
             hw: HwState::default(),
             pending_grid: None,
@@ -1368,8 +1371,8 @@ impl<B: Backend> Device<B> {
     /// Counters.
     pub fn stats(&self) -> Stats {
         let mut stats = self.stats;
-        stats.external_passes += self.queued_world_stats.committed.load(AtomicOrdering::Relaxed);
-        stats.external_passes_dropped += self.queued_world_stats.dropped.load(AtomicOrdering::Relaxed);
+        stats.external_passes += self.queued_external_stats.committed.load(AtomicOrdering::Relaxed);
+        stats.external_passes_dropped += self.queued_external_stats.dropped.load(AtomicOrdering::Relaxed);
         stats
     }
 
@@ -5496,7 +5499,8 @@ impl<B: Backend> Device<B> {
             // Layer-level mask edits and helper scopes need the answer immediately.
             // At a resolved draw the original packet is sufficient for worker fallback
             // when both routes make precisely the same guest-visible writes.
-            let fallback = if plan.stage == timeline::native::Stage::World && scoped.is_none()
+            let fallback = if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Shadows)
+                && scoped.is_none()
                 && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
                 && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
             {
@@ -5506,15 +5510,15 @@ impl<B: Backend> Device<B> {
             };
             let pass = Arc::new(std::sync::Mutex::new(pass));
             if let Some(fallback) = fallback {
-                let stats = Arc::clone(&self.queued_world_stats);
-                let queued = crate::backend::QueuedWorldDraw {
+                let stats = Arc::clone(&self.queued_external_stats);
+                let queued = crate::backend::QueuedExternalDraw {
                     surfaces: binding.surfaces.clone(), request: binding.request, plan: plan.clone(),
-                    pass: pass.clone(), fallback, finished: Box::new(move |fallback| {
+                    pass: pass.clone(), fallback, fallback_depth: depth, finished: Box::new(move |fallback| {
                         let count = if fallback.is_some() { &stats.dropped } else { &stats.committed };
                         count.fetch_add(1, AtomicOrdering::Relaxed);
                     }),
                 };
-                if self.backend.queue_world_draw(queued, textures) {
+                if self.backend.queue_external_draw(queued, textures) {
                     self.mark_written(writes_depth);
                     *streams = draw.streams;
                     return Ok(());
@@ -6344,6 +6348,11 @@ mod depth_write_tests {
         assert!(!binding.same_draw_writes(11, 1, Some(2), true));
         binding.colors.clear();
         assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        binding.colors.push((11, 1));
+        binding.depth_write = false;
+        assert!(!binding.same_draw_writes(11, 1, None, false));
+        binding.surfaces.depth = binding.surfaces.color;
+        assert!(binding.same_draw_writes(11, 1, None, false));
     }
 
     /// Review P3: a stencil test that can store nothing does not change the

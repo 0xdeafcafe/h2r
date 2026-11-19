@@ -297,10 +297,10 @@ pub trait ExternalPass: Send {
 
     /// Fully recorded bundles for an ordered run on the bound attachments.
     /// The per-copy reservation checks their range count before commit.
-    /// Bundle uploads belong in the packet, leaving the encoder untouched.
+    /// Bundle uniforms use the pinned upload arena, leaving the encoder untouched.
     fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
 
-    /// An indexed admission can retain its original, immutable D3D packet for
+    /// A resolved draw admission can retain its original, immutable D3D packet for
     /// ordered fallback on the worker. Guest-mask reservations leave this empty.
     fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
 
@@ -534,18 +534,9 @@ pub struct ExternalRecording {
     pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
-pub struct ExternalBundleUpload {
-    pub source: wgpu::Buffer,
-    pub source_offset: u64,
-    pub destination: wgpu::Buffer,
-    pub destination_offset: u64,
-    pub bytes: u64,
-}
-
 pub struct ExternalBundles {
     pub run: u64,
     pub scissor: [u32; 4],
-    pub upload: Option<ExternalBundleUpload>,
     pub groups: Vec<(wgpu::Color, wgpu::RenderBundle)>,
     pub ranges: usize,
 }
@@ -554,12 +545,6 @@ impl ExternalBundles {
     /// Use identical attachments and dynamic state for validation and final submission.
     pub(crate) fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
         depth: &wgpu::TextureView, stencil: bool, packets: &[Self]) {
-        // Every packet names a distinct uniform region, so these copies can
-        // all precede the render pass without changing any light's inputs.
-        for upload in packets.iter().filter_map(|p| p.upload.as_ref()) {
-            encoder.copy_buffer_to_buffer(&upload.source, upload.source_offset,
-                &upload.destination, upload.destination_offset, upload.bytes);
-        }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native light run"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -597,14 +582,16 @@ pub enum ExternalCommands {
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
 
-/// A resolved world draw whose guest-visible writes agree with its D3D fallback.
+/// A resolved external draw whose guest-visible writes agree with its D3D fallback.
 /// The worker chooses one complete recording or replays the original in this queue slot.
-pub struct QueuedWorldDraw<S> {
+pub struct QueuedExternalDraw<S> {
     pub surfaces: ExternalSurfaces<S>,
     pub request: ExternalPassRequest,
     pub plan: ExternalPlan,
     pub pass: SharedReplacement,
     pub fallback: std::sync::Arc<ResolvedDraw>,
+    /// The original draw's depth. A colour-only native pass has scratch depth.
+    pub fallback_depth: Option<S>,
     /// None on native commit, otherwise the result of the fallback draw.
     pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
 }
@@ -647,8 +634,8 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
     }
     let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
     let mut failure = None;
-    let mut prepared = Vec::with_capacity(targets.len());
-    for target in targets {
+    let mut prepared = [None, None];
+    for (slot, target) in prepared.iter_mut().zip(targets) {
         let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut encoder = target.device.create_command_encoder(&Default::default());
         let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
@@ -657,14 +644,14 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
             failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedInputs });
         } else {
-            prepared.push((target, encoder));
+            *slot = Some((target, encoder));
         }
     }
     if let Some(why) = failure { return refuse(why); }
     drop(preparing);
     let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
-    let mut recordings = Vec::with_capacity(prepared.len());
-    for (target, mut encoder) in prepared {
+    let mut recordings = Vec::with_capacity(targets.len());
+    for (target, mut encoder) in prepared.into_iter().flatten() {
         let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut on_submit = Vec::new();
         let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
@@ -1221,10 +1208,10 @@ pub trait Backend: Send {
         })
     }
 
-    /// Try to enqueue an independently resolved world draw with its exact fallback.
+    /// Try to enqueue an independently resolved draw with its exact fallback.
     /// True guarantees the same Drawn outcome and attachment writes for either route.
-    fn queue_world_draw(
-        &mut self, _candidate: QueuedWorldDraw<Self::Surface>,
+    fn queue_external_draw(
+        &mut self, _candidate: QueuedExternalDraw<Self::Surface>,
         _textures: [Option<&Self::Texture>; 4],
     ) -> bool { false }
 

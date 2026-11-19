@@ -191,7 +191,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         device: ctx.device.clone(),
         queue: ctx.queue.clone(),
         caps: ctx.caps,
-    });
+    }, false);
     for (map, stencil, alpha_test, want) in [
         (&light, 3, false, 255),
         (&blocked, 3, false, 0),
@@ -204,7 +204,7 @@ fn layer11_uses_only_its_map_and_preserves_rgb_stencil_and_alpha_test() {
         d.state.render.alpha_ref = 1;
         let mut range = Range {
             gpu: gpu.clone(),
-            draw: d,
+            draw: Arc::new(d),
             packets: Vec::new(),
             recorded: None,
             map: Some((Arc::new(Mutex::new(Some(map.clone()))), MapKind::Depth, MAP)),
@@ -263,7 +263,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
         return;
     };
     let mut backend = GfxBackend::new(crate::d3d_glue::share_context(&ctx));
-    let gpu = new(crate::d3d_glue::share_context(&ctx));
+    let gpu = for_backend(&mut backend);
     let mut make_source = |value: [f32; 4]| {
         let id = backend
             .create_surface(D3DFormat::LinA8R8G8B8, 1, 1, false)
@@ -308,7 +308,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
             )
             .unwrap();
         let plan = ExternalPlan {
-            stage: timeline::native::Stage::Lights,
+            stage: timeline::native::Stage::Shadows,
             view: 0,
             ranges: 1,
             slots: vec![],
@@ -343,7 +343,7 @@ fn mixed_native_shadow_unshadowed_and_refused_d3d_lights_match_all_d3d() {
                 let output = Arc::new(Mutex::new((i == 0).then(|| map.clone())));
                 let pass = Range {
                     gpu: gpu.clone(),
-                    draw: draw.clone(),
+                    draw: Arc::new(draw.clone()),
                     map: Some((output, MapKind::Depth, MAP)),
                     packets: vec![],
                     recorded: None,

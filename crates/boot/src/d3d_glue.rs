@@ -971,11 +971,11 @@ impl d3d::backend::Backend for Headless {
         self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
     }
 
-    fn queue_world_draw(
-        &mut self, candidate: d3d::backend::QueuedWorldDraw<Self::Surface>,
+    fn queue_external_draw(
+        &mut self, candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
         textures: [Option<&Self::Texture>; 4],
     ) -> bool {
-        self.0.queue_world_draw(candidate, textures)
+        self.0.queue_external_draw(candidate, textures)
     }
 
     fn reusable_external_attachments(&self) -> bool {

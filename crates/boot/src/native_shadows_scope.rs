@@ -151,7 +151,7 @@ impl d3d::DrawAdmission for Gate {
             _ => return None,
         };
         let plan = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Lights,
+            stage: timeline::native::Stage::Shadows,
             view: l.view,
             ranges: draw.clip_rects.len().max(1),
             slots: Vec::new(),
@@ -160,7 +160,7 @@ impl d3d::DrawAdmission for Gate {
             plan,
             Box::new(Range {
                 gpu: Arc::clone(gpu),
-                draw: draw.clone(),
+                draw: Arc::new(draw.clone()),
                 packets: Vec::new(),
                 recorded: call.recorded.clone(),
                 map,
