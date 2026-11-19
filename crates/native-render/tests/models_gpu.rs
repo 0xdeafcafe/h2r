@@ -235,7 +235,7 @@ fn alpha_blended() -> PassState {
 }
 
 #[test]
-fn an_objects_transparent_part_blends_with_the_runs_own_node_copy_and_keeps_depth() {
+fn an_objects_transparent_part_alpha_tests_before_blending_and_keeps_depth() {
     let Ok(ctx) = gfx::GfxContext::headless() else {
         eprintln!("no wgpu adapter; skipping");
         return;
@@ -248,15 +248,15 @@ fn an_objects_transparent_part_blends_with_the_runs_own_node_copy_and_keeps_dept
     };
     let m = gpu.add_model(&ctx.device, &ctx.queue, transparent_model(), &mut |_| None);
     let (dev, q) = (&ctx.device, &ctx.queue);
-    // Refusals: no such model, no transparent part of material 0, an
-    // alpha-tested pass.
     assert_eq!(gpu.set_transparent(dev, q, 9, 1, None, alpha_blended()), Err(TransparentRefusal::NoModel));
     assert_eq!(gpu.set_transparent(dev, q, m, 0, None, alpha_blended()), Err(TransparentRefusal::NoParts));
-    let tested = PassState { alpha_test: Some((wgpu::CompareFunction::Greater, 0x80)), ..alpha_blended() };
-    assert_eq!(gpu.set_transparent(dev, q, m, 1, None, tested), Err(TransparentRefusal::AlphaTest));
     assert!(!gpu.has_transparent(m, 1));
-    let half = Some(Image::solid([200, 100, 50, 128]));
-    assert_eq!(gpu.set_transparent(dev, q, m, 1, half, alpha_blended()), Ok(()));
+    let rejected = PassState {
+        alpha_test: Some((wgpu::CompareFunction::Greater, 128)),
+        ..alpha_blended()
+    };
+    let red = Some(Image::solid([255, 0, 0, 128]));
+    assert_eq!(gpu.set_transparent(dev, q, m, 1, red, rejected), Ok(()));
     assert!(gpu.has_transparent(m, 1));
 
     let target = |format, usage| {
@@ -317,6 +317,25 @@ fn an_objects_transparent_part_blends_with_the_runs_own_node_copy_and_keeps_dept
         width: SIZE as f32,
         height: SIZE as f32,
     };
+    let drawn = gpu.encode_transparents(
+        &ctx.device,
+        &mut enc,
+        &cv,
+        wgpu::TextureFormat::Rgba8Unorm,
+        &dv,
+        wgpu::TextureFormat::Depth32Float,
+        viewport,
+        &camera(),
+        DepthRule::D24,
+        &items,
+    );
+    assert_eq!(drawn, 1, "the wrong node count and the material not taken are left out");
+    let accepted = PassState {
+        alpha_test: Some((wgpu::CompareFunction::Equal, 128)),
+        ..alpha_blended()
+    };
+    let half = Some(Image::solid([200, 100, 50, 128]));
+    assert_eq!(gpu.set_transparent(dev, q, m, 1, half, accepted), Ok(()));
     let drawn = gpu.encode_transparents(
         &ctx.device,
         &mut enc,

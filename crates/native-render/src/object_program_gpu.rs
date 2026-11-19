@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use shaders::psh::PixelUniforms;
-use shaders::vsh::VertexUniforms;
+use shaders::vsh::{self, VertexOptions, VertexUniforms};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::{Image, texture};
@@ -24,7 +24,8 @@ use crate::object_program::{
 use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
 use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::objects::ObjectFrame;
-use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
+use crate::pass_state::{PassState, PipelineState};
+use crate::program::{self, RigidUniforms, ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
 /// One section's vertices through one declaration: per vertex, per
 /// register in `registers` order, its guest bytes in a slot
@@ -52,6 +53,7 @@ pub struct LitProgramInput {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LitPart {
     pub section: u16,
+    pub part: u8,
     pub decompression: [Row; 3],
     /// Its material's shader tag datum (diagnostics).
     pub shader_tag: u32,
@@ -87,6 +89,7 @@ struct LitBuffer {
     indices: wgpu::Buffer,
     registers: Vec<u8>,
     formats: Vec<Attribute>,
+    probe: Option<LitBufferInput>,
 }
 
 struct LitProgram {
@@ -101,7 +104,8 @@ struct LitProgram {
     /// texture accumulation target, whose level is the pass's (made per
     /// encode, [`texture_group`]).
     textures: Option<wgpu::BindGroup>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, PipelineState), wgpu::RenderPipeline>,
+    stage_info: [Option<String>; 4],
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -150,6 +154,7 @@ struct Draw {
     program: usize,
     buffer: usize,
     indices: Range<u32>,
+    state: PassState,
 }
 
 impl LitBufferInput {
@@ -255,6 +260,8 @@ impl LitObjects {
     /// when a program samples the normalization cube and it is not
     /// uploaded (the build refuses such a program without it).
     pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) {
+        let probe = std::env::var_os("H2_NATIVE_TRANSPARENTS_PROBE").is_some()
+            && input.programs.iter().any(|p| p.pass.transparent_state.is_some());
         let buffers = input
             .buffers
             .iter()
@@ -271,6 +278,7 @@ impl LitObjects {
                 }),
                 registers: b.registers.clone(),
                 formats: b.formats.clone(),
+                probe: probe.then(|| b.clone()),
             })
             .collect();
         let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
@@ -288,6 +296,7 @@ impl LitObjects {
         });
         let mut layout_entries = Vec::new();
         let mut views = Vec::new();
+        let mut stage_info = Default::default();
         let samplers: Vec<wgpu::Sampler> = (0..4).map(|n| device.create_sampler(&sampler_descriptor(p.samplers[n].as_ref()))).collect();
         for (n, d) in p.dims.iter().enumerate() {
             if d.is_none() {
@@ -325,6 +334,9 @@ impl LitObjects {
             // Checked at load: every sampled stage has its image.
             let mut image = images[n].take().unwrap_or(Image { width: 1, height: 1, rgba: vec![0, 0, 0, 255], mips: Vec::new(), blocks: None });
             bias_signed(&mut image, p.signed[n]);
+            if pass.transparent_state.is_some() {
+                stage_info[n] = Some(program::describe_image(&image, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)));
+            }
             views.push((n, texture(device, queue, &image, "native object program stage")));
         }
         let textures_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -337,7 +349,7 @@ impl LitObjects {
             bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
-        Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new() })
+        Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new(), stage_info })
     }
 
     /// Whether model `index` has lit parts.
@@ -421,6 +433,82 @@ impl LitObjects {
         out
     }
 
+    /// The translated inputs of exactly one sorted transparent entry.
+    pub fn transparent_uniforms(
+        &self,
+        index: u32,
+        frame: &ObjectFrame,
+        part_index: u8,
+        view: &ViewInputs,
+        incoming: &gfx::state::RenderState,
+    ) -> Option<(RigidUniforms, PassState)> {
+        let m = self.models.get(&index)?;
+        let (i, imp, rows) = frame_parts(frame, &m.parts).into_iter().find(|&(i, _, _)| m.parts[i].part == part_index)?;
+        let part = &m.parts[i];
+        let (program, buffer) = part.implementations[imp]?;
+        let p = &m.programs[program];
+        let pdef = &p.pass.program;
+        let state = p.pass.transparent_state.as_ref()?.resolve(incoming);
+        let (vertex, pixel) = object_blocks(&p.pass, part, frame, rows, view, None)?;
+        let buffer = &m.buffers[buffer];
+        let provided_inputs = buffer.registers.iter().fold(0, |mask, &r| mask | 1 << r);
+        let mut input_fetch = [vsh::InputFetch::Float; 16];
+        for (&r, &f) in buffer.registers.iter().zip(&buffer.formats) {
+            input_fetch[usize::from(r)] = vertex_fetch(f).1;
+        }
+        Some((RigidUniforms {
+            material: part.shader_tag as u16,
+            words: p.pass.words.clone(),
+            vertex,
+            pixel,
+            options: VertexOptions { provided_inputs, input_fetch, ..Default::default() },
+            def: pdef.def.clone(),
+            pixel_options: pdef.pixel_options,
+            samplers: std::array::from_fn(|n| pdef.dims[n].and(pdef.samplers[n].as_ref()).and_then(program::sampler_key)),
+            textures: p.stage_info.clone(),
+            pipeline: program::pipeline_state(Some(&state), None),
+        }, state))
+    }
+
+    /// Project the entry's raw triangles through its current program for
+    /// the optional pixel probe. Returns guest-pixel x/y and view depth.
+    pub fn transparent_triangles(
+        &self,
+        index: u32,
+        frame: &ObjectFrame,
+        part_index: u8,
+        uniforms: &RigidUniforms,
+    ) -> Option<Vec<[(f32, f32, f32); 3]>> {
+        let m = self.models.get(&index)?;
+        let (i, imp, _) = frame_parts(frame, &m.parts).into_iter().find(|&(i, _, _)| m.parts[i].part == part_index)?;
+        let part = &m.parts[i];
+        let (_, buffer) = part.implementations[imp]?;
+        let b = m.buffers[buffer].probe.as_ref()?;
+        let code = vsh::Program::from_words(vsh::ProgramKind::Normal, &uniforms.words).ok()?;
+        let vertex = &uniforms.vertex;
+        let [width, height] = vertex.surface;
+        let project = |i: u32| {
+            let mut inputs = vertex.defaults;
+            if (i as usize) * b.registers.len() >= b.vertices.len() {
+                return None;
+            }
+            for (k, &r) in b.registers.iter().enumerate() {
+                inputs[usize::from(r)] = b.decoded(i as usize, k);
+            }
+            let mut constants = vertex.constants;
+            let out = vsh::interp::run(&code, &inputs, &mut constants);
+            let mut p = vsh::interp::fixup(out.regs[0], vertex.surface, vertex.z_max);
+            if p[3] <= 0.0 || !p.iter().all(|v| v.is_finite()) {
+                return None;
+            }
+            p[0] /= p[3];
+            p[1] /= p[3];
+            Some(((p[0] + 1.0) * 0.5 * width, (1.0 - p[1]) * 0.5 * height, p[3]))
+        };
+        let indices = &b.indices[part.indices.start as usize..part.indices.end as usize];
+        Some(indices.chunks_exact(3).filter_map(|t| Some([project(t[0])?, project(t[1])?, project(t[2])?])).collect())
+    }
+
     /// The sections model `index`'s lit parts come from, each once
     /// (diagnostics).
     pub fn sections(&self, index: u32) -> Vec<u16> {
@@ -451,31 +539,62 @@ impl LitObjects {
         objects: &[(u32, &ObjectFrame)],
         texaccum: Option<Texaccum<'_>>,
     ) -> usize {
+        self.encode_selected(device, queue, encoder, color, color_format, depth, depth_format, target_size, view, objects.iter().map(|&(model, frame)| (model, frame, None)), texaccum, None)
+    }
+
+    /// Draws the entries in sorted order, one exact part per object entry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_transparents(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        objects: &[(u32, &ObjectFrame, u8)],
+        incoming: &gfx::state::RenderState,
+    ) -> usize {
+        self.encode_selected(device, queue, encoder, color, color_format, depth, depth_format, target_size, view, objects.iter().map(|&(model, frame, part)| (model, frame, Some(part))), None, Some(incoming))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode_selected<'a>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::TextureView,
+        color_format: wgpu::TextureFormat,
+        depth: &wgpu::TextureView,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        objects: impl Iterator<Item = (u32, &'a ObjectFrame, Option<u8>)>,
+        texaccum: Option<Texaccum<'_>>,
+        incoming: Option<&gfx::state::RenderState>,
+    ) -> usize {
         let mut draws = Vec::new();
         let mut blocks: Vec<(VertexUniforms, PixelUniforms)> = Vec::new();
-        for &(model, frame) in objects {
+        for (model, frame, selected) in objects {
             let Some(m) = self.models.get(&model) else { continue };
-            let defaults = frame.defaults.unwrap_or_default();
             for (i, imp, rows) in frame_parts(frame, &m.parts) {
                 let part = &m.parts[i];
-                let Some((program, buffer)) = part.implementations[imp] else { continue };
-                let pass = &m.programs[program].pass;
-                let samples_texaccum = pass.texaccum.contains(&true);
-                if samples_texaccum && texaccum.is_none() {
+                if selected.is_some_and(|p| p != part.part) {
                     continue;
                 }
-                let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
-                let base = frame_vertex(&pass.program.vertex, view);
-                let Ok(mut vertex) = object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) else { continue };
-                if let Some(t) = texaccum {
-                    texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
-                }
-                let Ok(mut pixel) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) else { continue };
-                if let Some(t) = texaccum {
-                    texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
-                }
-                blocks.push((vertex, pixel));
-                draws.push(Draw { model, program, buffer, indices: part.indices.clone() });
+                let Some((program, buffer)) = part.implementations[imp] else { continue };
+                let pass = &m.programs[program].pass;
+                let Some(block) = object_blocks(pass, part, frame, rows, view, texaccum) else { continue };
+                let state = match (&pass.transparent_state, incoming) {
+                    (Some(s), Some(incoming)) => s.resolve(incoming),
+                    _ => pass.program.state.expect("an object pass has its state"),
+                };
+                blocks.push(block);
+                draws.push(Draw { model, program, buffer, indices: part.indices.clone(), state });
             }
         }
         if draws.is_empty() {
@@ -486,11 +605,11 @@ impl LitObjects {
             let registers = m.buffers[d.buffer].registers.clone();
             let formats = m.buffers[d.buffer].formats.clone();
             let p = &mut m.programs[d.program];
-            let key = (color_format, depth_format, registers.clone(), formats.clone());
+            let key = (color_format, depth_format, registers.clone(), formats.clone(), d.state.into());
             if p.pipelines.contains_key(&key) {
                 continue;
             }
-            let state = p.pass.program.state.expect("an object pass has its state");
+            let state = d.state;
             let attrs = attributes(&registers, &formats);
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
@@ -596,12 +715,12 @@ impl LitObjects {
             let m = &self.models[&d.model];
             let b = &m.buffers[d.buffer];
             let p = &m.programs[d.program];
-            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone())) else { continue };
+            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state.into())) else { continue };
             let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(d.model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, o);
             pass.set_bind_group(1, textures, &[]);
-            pass.set_blend_constant(p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant));
+            pass.set_blend_constant(d.state.blend_constant);
             pass.set_vertex_buffer(0, b.vertices.slice(..));
             pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(d.indices.clone(), 0, 0..1);
@@ -609,6 +728,30 @@ impl LitObjects {
         }
         drawn
     }
+}
+
+fn object_blocks(
+    pass: &ObjectPass,
+    part: &LitPart,
+    frame: &ObjectFrame,
+    rows: &[Row],
+    view: &ViewInputs,
+    texaccum: Option<Texaccum<'_>>,
+) -> Option<(VertexUniforms, PixelUniforms)> {
+    if pass.texaccum.contains(&true) && texaccum.is_none() {
+        return None;
+    }
+    let view = pass.transparent_state.as_ref().map_or(*view, |s| s.view(view));
+    let defaults = frame.defaults.unwrap_or_default();
+    let input = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
+    let base = frame_vertex(&pass.program.vertex, &view);
+    let mut vertex = object_vertex_uniforms(&base, &pass.implementation, &input, rows, part.decompression).ok()?;
+    let mut pixel = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, &view), &pass.implementation, &input).ok()?;
+    if let Some(t) = texaccum {
+        texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
+        texaccum_scale(&mut pixel, pass.texaccum, t.guest_size);
+    }
+    Some((vertex, pixel))
 }
 
 /// The engine's textures the lit build may bind: whether the vector
@@ -681,7 +824,7 @@ pub struct LitSection<'a> {
     pub decompression: [Row; 3],
     pub streams: Vec<Option<(u8, StreamData<'a>)>>,
     pub vertex_count: usize,
-    pub parts: Vec<(u16, Vec<[u16; 3]>)>,
+    pub parts: Vec<(u8, u16, Vec<[u16; 3]>)>,
 }
 
 /// A material the lit build takes: resolved, and its shader values.
@@ -728,21 +871,44 @@ pub fn lit_model(
     vertex: &mut VertexSource<'_>,
     image: &mut StageSource<'_>,
 ) -> LitBuild {
+    build_model(sections, materials, formats, engine, vertex, image, false)
+}
+
+/// One supported layer-15 pass per material, with exact section/part keys.
+pub fn transparent_model(
+    sections: &[LitSection<'_>],
+    materials: &HashMap<u16, LitMaterial>,
+    formats: &StreamFormats,
+    vertex: &mut VertexSource<'_>,
+    image: &mut StageSource<'_>,
+) -> LitBuild {
+    build_model(sections, materials, formats, &EngineStages::default(), vertex, image, true)
+}
+
+fn build_model(
+    sections: &[LitSection<'_>],
+    materials: &HashMap<u16, LitMaterial>,
+    formats: &StreamFormats,
+    engine: &EngineStages,
+    vertex: &mut VertexSource<'_>,
+    image: &mut StageSource<'_>,
+    transparent: bool,
+) -> LitBuild {
     let mut out = LitBuild { implementations: u8::MAX, ..LitBuild::default() };
     // (section, declaration) -> buffer.
     let mut buffers: HashMap<(u16, Vec<Element>), usize> = HashMap::new();
     // Per section, its lit parts' triangles in one list: (material, range).
-    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u16, Range<u32>)>)> = HashMap::new();
+    let mut lists: HashMap<u16, (Vec<u32>, Vec<(u8, u16, Range<u32>)>)> = HashMap::new();
     for s in sections {
         let mut list = Vec::new();
         let mut ranges = Vec::new();
-        for (material, triangles) in &s.parts {
-            if !materials.contains_key(material) {
+        for (part, material, triangles) in &s.parts {
+            if (transparent && triangles.is_empty()) || !materials.contains_key(material) {
                 continue;
             }
             let start = list.len() as u32;
             list.extend(triangles.iter().flatten().map(|&i| u32::from(i)));
-            ranges.push((*material, start..list.len() as u32));
+            ranges.push((*part, *material, start..list.len() as u32));
         }
         lists.insert(s.index, (list, ranges));
     }
@@ -750,7 +916,17 @@ pub fn lit_model(
     ids.sort_unstable();
     for m in ids {
         let lit = &materials[&m];
-        let pass = match object_layer3(&lit.material) {
+        let pass = if transparent {
+            lit.material.layers.iter().find(|l| l.lod == 0 && l.layer == crate::look::TRANSPARENT_LAYER)
+                .and_then(|l| match l.passes.as_slice() {
+                    [p] if p.implementations.len() == 1 => Some(p),
+                    _ => None,
+                })
+                .ok_or_else(|| "needs one layer-15 pass with one implementation".to_string())
+        } else {
+            object_layer3(&lit.material)
+        };
+        let pass = match pass {
             Ok(p) => p,
             Err(e) => {
                 out.refused.push((m, e));
@@ -758,9 +934,9 @@ pub fn lit_model(
             }
         };
         // The material's parts: (section, index range).
-        let parts: Vec<(&LitSection<'_>, Range<u32>)> = sections
+        let parts: Vec<(&LitSection<'_>, u8, Range<u32>)> = sections
             .iter()
-            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.0 == m).map(move |r| (s, r.1.clone())))
+            .flat_map(|s| lists[&s.index].1.iter().filter(move |r| r.1 == m).map(move |r| (s, r.0, r.2.clone())))
             .collect();
         if parts.is_empty() {
             continue;
@@ -777,7 +953,7 @@ pub fn lit_model(
             let mut compile = || -> Result<Vec<(LitProgramInput, usize)>, String> {
                 let vs = imp.vertex_shader.ok_or_else(|| format!("implementation {n} has no vertex program"))?;
                 let mut got = Vec::new();
-                for (s, _) in &parts {
+                for (s, _, _) in &parts {
                     let mut streams = s
                         .streams
                         .iter()
@@ -791,8 +967,11 @@ pub fn lit_model(
                     }
                     let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
                     let decl = declaration(&semantics, &streams);
-                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
-                        .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
+                    let compiled = if transparent {
+                        crate::object_program::transparent_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl))
+                    } else {
+                        object_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
+                    }.map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
                     let key = (s.index, decl);
                     let buffer = match buffers.get(&key) {
                         Some(&b) => b,
@@ -853,7 +1032,7 @@ pub fn lit_model(
             out.refused.push((m, why));
             continue;
         }
-        for ((s, indices), slots) in parts.into_iter().zip(per) {
+        for ((s, part, indices), slots) in parts.into_iter().zip(per) {
             let mut implementations = [None; IMPLEMENTATIONS];
             for (n, slot) in slots.into_iter().enumerate() {
                 let Some((program, buffer)) = slot else { continue };
@@ -862,6 +1041,7 @@ pub fn lit_model(
             }
             out.input.parts.push(LitPart {
                 section: s.index,
+                part,
                 decompression: s.decompression,
                 shader_tag: lit.material.shader.0,
                 shader: lit.shader,
@@ -874,7 +1054,7 @@ pub fn lit_model(
     }
     if out.taken.is_empty() {
         out.implementations = 0;
-    } else if out.implementations == 0 {
+    } else if !transparent && out.implementations == 0 {
         let taken = std::mem::take(&mut out.taken);
         out.refused.extend(taken.into_iter().map(|m| (m, "the model's lit materials share no implementation".to_string())));
         out.input = LitModelInput::default();
@@ -929,7 +1109,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(0, vec![[0, 1, 2]])],
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -977,7 +1157,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(0, vec![[0, 1, 2]])],
+            parts: vec![(0, 0, vec![[0, 1, 2]])],
         };
         let mut imp = lit();
         imp.render_states = vec![state(RenderStateType::AlphaBlendEnable, 0), state(RenderStateType::ZWriteEnable, 1)];
@@ -1035,6 +1215,83 @@ mod tests {
     }
 
     #[test]
+    fn transparent_objects_keep_raw_fetch_stage_images_and_alpha_test() {
+        use crate::object_program::tests::{lit, rigid_program};
+        use gfx::state::CompareFunc;
+        use tags::material::{StageTexture, TextureSource};
+
+        let size = crate::object_streams::STREAM_FORMAT_SIZE;
+        let mut table = vec![0u8; 2 * size];
+        // Position: normalized shorts, UV: floats, frame: NORMPACKED3.
+        table[size..size + 8].copy_from_slice(&[1, 0, 14, 3, 1, 2, 16, 0xff]);
+        let formats = StreamFormats::from_bytes(&table);
+        let mut bytes = Vec::new();
+        for i in 0..3i16 {
+            for n in [i16::MIN, i, 0] {
+                bytes.extend(n.to_le_bytes());
+            }
+            for n in [0.0f32, 1.0] {
+                bytes.extend(n.to_le_bytes());
+            }
+            bytes.extend(0x400u32.to_le_bytes());
+        }
+        let section = LitSection {
+            index: 7,
+            geometry: 0,
+            influences: 0,
+            decompression: [[1.0; 4]; 3],
+            streams: vec![Some((1, StreamData { bytes: &bytes, stride: 18 }))],
+            vertex_count: 3,
+            parts: vec![(2, 0, vec![[0, 1, 2]]), (8, 0, vec![[2, 1, 0]])],
+        };
+        let mut imp = lit();
+        imp.render_states = vec![
+            state(RenderStateType::AlphaTestEnable, 1),
+            state(RenderStateType::AlphaFunc, CompareFunc::Greater.xbox_value()),
+            state(RenderStateType::AlphaRef, 128),
+        ];
+        let bitmap = map::TagId(0xe000_0100);
+        imp.textures[0] = Some(StageTexture {
+            source: TextureSource::Bitmap { bitmap, image: 2, lod_offset: 0.0 },
+            size: None,
+            stage_size: None,
+        });
+        let (final_inputs_abcd, final_inputs_efg) = shaders::psh::d3d_default_final_combiner(false, false);
+        imp.pixel_shader = shaders::PixelShaderDef {
+            texture_modes: 1,
+            final_inputs_abcd,
+            final_inputs_efg,
+            ..Default::default()
+        }.to_bytes();
+        let mut m = material(vec![imp]);
+        m.layers[0].layer = crate::look::TRANSPARENT_LAYER;
+        let materials = [(0, LitMaterial { material: m, shader: ShaderValues::default() })].into_iter().collect();
+        let bc = Image { width: 4, height: 4, rgba: vec![0; 64], mips: Vec::new(), blocks: None }
+            .with_blocks(wgpu::TextureFormat::Bc1RgbaUnorm, vec![vec![0; 8]]);
+        let built = transparent_model(
+            &[section], &materials, &formats,
+            &mut |_, _, _| Ok((rigid_program(), vec![0, 3, 2])),
+            &mut |stage, tag, ordinal| {
+                assert_eq!((stage, tag, ordinal), (0, bitmap, 2));
+                Some(bc.clone())
+            },
+        );
+        assert_eq!(built.taken, [0], "{:?}", built.refused);
+        let parts = &built.input.parts;
+        assert_eq!((parts[0].section, parts[0].part, parts[0].indices.clone()), (7, 2, 0..3));
+        assert_eq!((parts[1].section, parts[1].part, parts[1].indices.clone()), (7, 8, 3..6));
+        let buffer = &built.input.buffers[0];
+        assert_eq!(buffer.formats, [Attribute::NormShort(3), Attribute::Float(2), Attribute::NormPacked3]);
+        assert_eq!(&buffer.vertices[0][..2], &i16::MIN.to_le_bytes());
+        assert_eq!(&buffer.vertices[2][..4], &0x400u32.to_le_bytes());
+        assert_eq!(vertex_fetch(buffer.formats[0]).0, wgpu::VertexFormat::Snorm16x4);
+        let compiled = &built.input.programs[0];
+        assert_eq!(compiled.pass.program.pixel_options.alpha_test, Some(shaders::psh::AlphaFunc::Greater));
+        assert_eq!(compiled.pass.program.pixel.alpha_ref[0], 128.0);
+        assert_eq!(compiled.images[0], Some(bc));
+    }
+
+    #[test]
     fn a_lit_material_compiles_every_implementation_it_may_draw_over_one_shared_buffer() {
         use crate::object_program::tests::{lit, rigid_program};
         // Three vertices of 32 bytes: position (k, 0, 0), coordinate, normal.
@@ -1051,7 +1308,7 @@ mod tests {
             decompression: [[1.0; 4]; 3],
             streams: vec![Some((1, StreamData { bytes: &bytes, stride: 32 }))],
             vertex_count: 3,
-            parts: vec![(5, vec![[2, 1, 0]]), (0, vec![[0, 1, 2]]), (3, vec![[0, 2, 1]]), (1, vec![[1, 2, 0]])],
+            parts: vec![(0, 5, vec![[2, 1, 0]]), (1, 0, vec![[0, 1, 2]]), (2, 3, vec![[0, 2, 1]]), (3, 1, vec![[1, 2, 0]])],
         };
         // An opaque pass: no blending, depth written (both must be set).
         let opaque = |index: usize| {
@@ -1133,6 +1390,7 @@ mod tests {
     fn part(section: u16, implementations: [Option<(usize, usize)>; IMPLEMENTATIONS]) -> LitPart {
         LitPart {
             section,
+            part: 0,
             decompression: [[0.0; 4]; 3],
             shader_tag: 0,
             shader: ShaderValues::default(),

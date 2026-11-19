@@ -28,14 +28,11 @@
 //!   first seen) and its per-object constants (vertex and combiner) put in
 //!   per draw. A material none of whose implementations compiles for every
 //!   section and stage stays on D3D whole, with the reasons; never drawn
-//!   with the base-map stand-in (that is for transparent parts only).
+//!   with the base-map stand-in.
 //! - **Transparent parts** (stage 3, with `impl.render.native_transparents`
-//!   on too). The worker also takes each transparent material with a
-//!   single layer-15 pass, no alpha test and a base map that decodes (S:
-//!   drawn as the base map with the models' lighting and the pass's blend);
-//!   the definition's node count and its shaders' materials are published
-//!   in [`Models::transparents`] for the transparents' host
-//!   (`native_transparents_glue`), which draws them run by run.
+//!   on too). The worker translates the layer-15 pass over each
+//!   section's guest streams. The transparents host uses the record's
+//!   model, section, part and node rows to draw only that entry.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufReader;
@@ -59,8 +56,8 @@ use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, Texaccum, lit_model, uniform};
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use native_render::objects::ObjectFrame;
-use native_render::pass_state::PassState;
 use native_render::program::ViewInputs;
+use native_render::transparent::Entry;
 
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
 
@@ -69,8 +66,8 @@ struct CpuModel {
     definition: u32,
     model: Model,
     base_maps: HashMap<u16, Image>,
-    /// The transparent materials taken: base map and pass state.
-    transparents: Vec<(u16, Image, PassState)>,
+    /// Layer-15 parts translated over their own raw declarations.
+    transparents: LitModelInput,
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
     /// The implementations (bit `n`) every lit part has.
@@ -79,23 +76,28 @@ struct CpuModel {
     normalization: Option<Arc<LayeredImage>>,
 }
 
-/// One definition's transparent parts the native pass draws.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ObjectTransparents {
-    /// The model's node count (an object with another is not drawn).
-    pub(crate) nodes: usize,
-    /// Shader tag index -> the model-local materials that use it.
-    pub(crate) shaders: HashMap<u16, Vec<u16>>,
+/// One definition's supported layer-15 parts, by section and part index.
+#[derive(Default)]
+struct ObjectTransparents {
+    model: u16,
+    nodes: usize,
+    parts: HashMap<(u16, u8), ObjectTransparentPart>,
+}
+
+struct ObjectTransparentPart {
+    shader: u16,
+    implementation: usize,
+    needs_lighting_root: bool,
 }
 
 impl ObjectTransparents {
-    /// The materials an object's entry with `shader` draws, when its node
-    /// count is the model's.
-    pub(crate) fn materials(&self, nodes: usize, shader: u32) -> Option<&[u16]> {
-        if nodes != self.nodes {
-            return None;
-        }
-        self.shaders.get(&(shader as u16)).map(Vec::as_slice)
+    fn implementation(&self, frame: &ObjectFrame, model: u32, section: u16, entry: &Entry) -> Option<usize> {
+        let part = self.parts.get(&(section, entry.part))?;
+        (model as u16 == self.model
+            && frame.nodes.len() == self.nodes
+            && entry.shader as u16 == part.shader
+            && (!part.needs_lighting_root || frame.lighting.as_ref().and_then(|l| l.root).is_some()))
+        .then_some(part.implementation)
     }
 }
 
@@ -110,7 +112,8 @@ pub(crate) struct Models {
     pub(crate) index: Mutex<HashMap<u16, u32>>,
     /// Definition tag index -> its transparent parts, published after the
     /// model is queued.
-    pub(crate) transparents: Mutex<HashMap<u16, ObjectTransparents>>,
+    transparents: Mutex<HashMap<u16, ObjectTransparents>>,
+    pub(crate) transparent_gpu: Mutex<Option<LitObjects>>,
     /// The device palettes the loads expanded palettized base maps
     /// through, at their stages ([`StageDecoder::used`]): the models draw
     /// only while those stay bound.
@@ -121,10 +124,13 @@ pub(crate) struct Models {
 }
 
 impl Models {
-    /// The materials object `o`'s transparent entry with `shader` draws.
-    pub(crate) fn transparent_materials(&self, o: &ObjectFrame, shader: u32) -> Option<Vec<u16>> {
-        let t = self.transparents.lock().unwrap_or_else(|e| e.into_inner());
-        t.get(&(o.definition as u16))?.materials(o.nodes.len(), shader).map(<[u16]>::to_vec)
+    pub(crate) fn transparent_implementation(&self, o: &ObjectFrame, model: u32, section: u16, entry: &Entry) -> Option<usize> {
+        self.transparents.lock().unwrap_or_else(|e| e.into_inner())
+            .get(&(o.definition as u16))?.implementation(o, model, section, entry)
+    }
+
+    pub(crate) fn transparent_palettes_hold(&self, bound: &dyn Fn(usize) -> Option<Vec<u32>>) -> bool {
+        palettes_hold(&self.palettes.lock().unwrap_or_else(|e| e.into_inner()), bound)
     }
 }
 
@@ -139,6 +145,23 @@ pub(crate) fn current_models() -> Option<Arc<Models>> {
     st.as_ref().map(|s| Arc::clone(&s.models))
 }
 
+pub(crate) fn want_transparent(mem: &dyn GuestMemory, definition: u32) -> Option<Arc<Models>> {
+    let name = crate::health::loaded_map_name(mem).ok()?;
+    let state = CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let mut st = state.lock().unwrap_or_else(|e| e.into_inner());
+    let map = st.as_mut().filter(|s| s.name == name)?;
+    want_model(map, definition);
+    Some(Arc::clone(&map.models))
+}
+
+fn want_model(map: &mut MapState, definition: u32) {
+    if map.tried.insert(definition as u16)
+        && let Some(worker) = &map.worker
+    {
+        let _ = worker.send(definition);
+    }
+}
+
 /// Uploads the queued models (and their transparent materials) on the
 /// render thread; the models' GPU side, locked.
 pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>) -> MutexGuard<'a, Option<GpuModels>> {
@@ -147,6 +170,7 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
     let pending = std::mem::take(&mut *models.pending.lock().unwrap_or_else(|e| e.into_inner()));
     let mut index = models.index.lock().unwrap_or_else(|e| e.into_inner());
     let mut lit_gpu = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let mut transparent_gpu = models.transparent_gpu.lock().unwrap_or_else(|e| e.into_inner());
     for cpu in pending {
         let CpuModel {
             definition,
@@ -165,13 +189,13 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
             }
             l.add_model(t.device, t.queue, i, lit);
         }
-        for (material, image, state) in transparents {
-            // Checked on the worker; a refusal here leaves those parts
-            // undrawn for this model.
-            let _ = gpu.set_transparent(t.device, t.queue, i, material, Some(image), state);
+        if !transparents.is_empty() {
+            transparent_gpu.get_or_insert_with(|| LitObjects::new(t.device))
+                .add_model(t.device, t.queue, i, transparents);
         }
         index.insert(definition as u16, i);
     }
+    drop(transparent_gpu);
     drop(lit_gpu);
     drop(index);
     guard
@@ -245,11 +269,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn want(&self, definition: u32) {
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(s) = st.as_mut() else { return };
-        if s.tried.insert(definition as u16)
-            && let Some(w) = &s.worker
-        {
-            let _ = w.send(definition);
+        if let Some(s) = st.as_mut() {
+            want_model(s, definition);
         }
     }
 
@@ -348,7 +369,7 @@ fn spawn_worker(
                     Ok((cpu, shaders, transparents)) => {
                         let nodes = cpu.model.inverse_binds.len();
                         let draws = cpu.model.draws.len();
-                        let see_through = cpu.model.transparents.len();
+                        let see_through = cpu.transparents.parts.len();
                         let lit = cpu.lit.parts.len();
                         let lit_implementations = cpu.lit_implementations;
                         let texaccum = cpu.lit.samples_texaccum();
@@ -357,7 +378,7 @@ fn spawn_worker(
                             models.texaccum.lock().unwrap_or_else(|e| e.into_inner()).insert(def as u16);
                         }
                         models.pending.lock().unwrap_or_else(|e| e.into_inner()).push(cpu);
-                        if !transparents.shaders.is_empty() {
+                        if !transparents.parts.is_empty() {
                             models
                                 .transparents
                                 .lock()
@@ -415,6 +436,7 @@ struct Opened {
     normalization: Option<Option<Arc<LayeredImage>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
+    transparents_on: bool,
     /// What an object's draw samples for the lightmap (the globals'
     /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
     /// read at the first lit model: the image when uniform, else why not.
@@ -446,6 +468,7 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
         normalization: None,
         lightmap: None,
         formats,
+        transparents_on: feature::Switches::from_env().is_ok_and(|s| feature::native_transparents::on(&s)),
     })
 }
 
@@ -456,42 +479,6 @@ fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
         return Some(t.id);
     }
     map.tags().iter().find(|t| t.id.0 & 0xffff == datum & 0xffff).map(|t| t.id)
-}
-
-/// `shader`'s base map `bitmap` (its first image) as the D3D path samples
-/// it: through the shared stage decoder at the stage its material binds it
-/// ([`base_map_stage`], stage 0 when no layer-3 implementation names it),
-/// so a palettized one (P8, P8 bump) is expanded through that stage's
-/// device palette, not drawn as its index. `None` when the stage cannot
-/// have it (no palette there, or it does not decode).
-fn decoded(o: &mut Opened, shader: TagId, bitmap: TagId) -> Option<Image> {
-    let stage = material(o, shader).and_then(|m| base_map_stage(&m, bitmap)).unwrap_or(0);
-    o.decoder
-        .decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, 0, stage, false)
-        .ok()?;
-    o.images.get(&(bitmap, 0)).cloned()
-}
-
-/// The stage `material`'s layer-3 passes (first level of detail) bind
-/// `bitmap` at, in their first implementation that does.
-fn base_map_stage(material: &tags::material::Material, bitmap: TagId) -> Option<usize> {
-    let stages = material
-        .layers
-        .iter()
-        .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
-        .flat_map(|l| &l.passes)
-        .flat_map(|p| &p.implementations)
-        .map(|i| i.textures.map(|t| match t.map(|t| t.source) {
-            Some(tags::material::TextureSource::Bitmap { bitmap: b, .. }) => Some(b),
-            _ => None,
-        }));
-    first_stage(stages, bitmap)
-}
-
-/// The first stage, over implementations' stage bitmaps in order, that
-/// binds `bitmap`.
-fn first_stage(mut implementations: impl Iterator<Item = [Option<TagId>; 4]>, bitmap: TagId) -> Option<usize> {
-    implementations.find_map(|stages| stages.iter().position(|&s| s == Some(bitmap)))
 }
 
 /// `shader` resolved, through the map's shader library (read once).
@@ -517,24 +504,8 @@ fn program_refusal(o: &mut Opened, shader: TagId) -> Option<String> {
     native_render::object_program::program_refusal(&m)
 }
 
-/// A transparent material the models' pass can stand in for: one layer-15
-/// pass without an alpha test (S), and its shader's base map.
-fn transparent_material(o: &mut Opened, shader: TagId) -> Option<(Image, PassState)> {
-    let material = material(o, shader)?;
-    let state = match look::transparent_passes(&material).ok()?.as_slice() {
-        [one] => one.state,
-        _ => return None,
-    };
-    if state.alpha_test.is_some() {
-        return None;
-    }
-    let bitmap = load::base_map(&mut o.map, shader)?;
-    Some((decoded(o, shader, bitmap)?, state))
-}
-
-/// Loads definition `def`'s model with its base maps; the shader indices
-/// it draws, and its transparent parts the native pass takes. Materials
-/// without a base map leave the model.
+/// Prepares a definition's supported layer-3 and layer-15 programs and
+/// the geometry each replacement may skip.
 fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTransparents), load::Error> {
     let id = tag_of(&o.map, def).ok_or("no such tag")?;
     let loaded = model_load::load_object_model(&mut o.map, &o.ctx, &mut o.raw, id)?;
@@ -559,31 +530,57 @@ fn load_model(o: &mut Opened, def: u32) -> Result<(CpuModel, Vec<u16>, ObjectTra
             Err(why) => unlit.push(format!("{:#010x} {why}", shader.0)),
         }
     }
-    let mut transparents = Vec::new();
     let mut table = ObjectTransparents {
+        model: loaded.mode.0 as u16,
         nodes: loaded.model.inverse_binds.len(),
-        shaders: HashMap::new(),
+        ..Default::default()
     };
-    for m in loaded.model.transparent_materials() {
-        let Some(&shader) = loaded.shaders.get(usize::from(m)) else { continue };
-        if let Some((image, state)) = transparent_material(o, shader) {
-            transparents.push((m, image, state));
-            table.shaders.entry(shader.0 as u16).or_default().push(m);
+    let transparents = if o.transparents_on {
+        let materials: HashMap<_, _> = loaded.lod_sections.iter().filter_map(|&s| loaded.geometry.sections.get(s))
+            .flat_map(|s| &s.geometry.parts)
+            .filter(|p| p.is_drawn() && p.kind == load::PART_TRANSPARENT)
+            .map(|p| p.material)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter_map(|m| {
+                let &shader = loaded.shaders.get(usize::from(m))?;
+                Some((m, lit_material(o, shader).ok()?))
+            })
+            .collect();
+        let built = lit_parts(o, &loaded, &materials, true);
+        for (m, why) in built.refused {
+            eprintln!("native-transparents: object definition {def:#010x} material {m} left to D3D ({why})");
         }
-    }
+        for part in &built.input.parts {
+            if let Some((n, (program, _))) = part.implementations.iter().enumerate().find_map(|(n, p)| p.map(|p| (n, p))) {
+                let imp = &built.input.programs[program].pass.implementation;
+                // These are the lighting sources uniform preparation can
+                // fail to evaluate after the implementation has compiled.
+                let needs_lighting_root = imp.vector_bindings.iter().any(|b| b.source == 40)
+                    || imp.scalar_bindings.iter().any(|b| b.source == 37);
+                table.parts.insert((part.section, part.part), ObjectTransparentPart {
+                    shader: part.shader_tag as u16,
+                    implementation: n,
+                    needs_lighting_root,
+                });
+            }
+        }
+        built.input
+    } else {
+        LitModelInput::default()
+    };
     let (lit, lit_implementations) = if lit_materials.is_empty() {
         (LitModelInput::default(), 0)
     } else {
-        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials);
+        let LitBuild { input, taken, refused, implementations } = lit_parts(o, &loaded, &lit_materials, false);
         for (m, why) in refused {
             unlit.push(format!("{:#010x} {why}", loaded.shaders[usize::from(m)].0));
         }
         shaders.extend(taken.iter().map(|&m| loaded.shaders[usize::from(m)].0 as u16));
         (input, implementations)
     };
-    let kept: HashSet<u16> = transparents.iter().map(|t| t.0).collect();
-    let model = keep_materials(loaded.model, &base_maps, &kept);
-    if model.draws.is_empty() && lit.is_empty() {
+    let model = keep_materials(loaded.model, &base_maps, &HashSet::new());
+    if model.draws.is_empty() && lit.is_empty() && transparents.is_empty() {
         if !unlit.is_empty() {
             return Err(format!("its lit materials stay on D3D: {}", unlit.join(", ")).into());
         }
@@ -631,7 +628,11 @@ const SHADER_VALUES: u32 = 0x44;
 /// The lit parts of `loaded`'s drawn sections for `materials`
 /// ([`lit_model`]): its vertex programs per section classification read
 /// from the shader tags, its stage bitmaps through the stage decoder.
-fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>) -> LitBuild {
+fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashMap<u16, LitMaterial>, transparent: bool) -> LitBuild {
+    if materials.is_empty() {
+        return LitBuild::default();
+    }
+    let layer = if transparent { look::TRANSPARENT_LAYER } else { look::LIGHTMAP_LAYER };
     let geo = &loaded.geometry;
     let mut sections = Vec::new();
     // Every detail level: a distant object's records draw a lower one.
@@ -659,8 +660,9 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
             parts: g
                 .parts
                 .iter()
-                .filter(|p| p.is_drawn() && p.kind != load::PART_TRANSPARENT)
-                .map(|p| (p.material, g.part_triangles(p)))
+                .enumerate()
+                .filter(|(_, p)| p.is_drawn() && (p.kind == load::PART_TRANSPARENT) == transparent)
+                .filter_map(|(i, p)| Some((u8::try_from(i).ok()?, p.material, g.part_triangles(p))))
                 .collect(),
         });
     }
@@ -672,7 +674,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
             .material
             .layers
             .iter()
-            .filter(|l| l.lod == 0 && l.layer == look::LIGHTMAP_LAYER)
+            .filter(|l| l.lod == 0 && l.layer == layer)
             .flat_map(|l| &l.passes)
             .flat_map(|p| &p.implementations)
             .filter_map(|i| i.vertex_shader);
@@ -687,14 +689,14 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         }
     }
     // The normalization cube, as the lights load it (once per map).
-    if o.normalization.is_none() {
+    if !transparent && o.normalization.is_none() {
         let cube = match o.lib.as_ref().and_then(Option::as_ref) {
             Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0.map(Arc::new),
             None => None,
         };
         o.normalization = Some(cube);
     }
-    if o.lightmap.is_none() {
+    if !transparent && o.lightmap.is_none() {
         let l = object_lightmap(o);
         match &l {
             Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
@@ -715,6 +717,9 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
         o.decoder.decode(&mut o.map, &mut o.raw.0, &mut o.images, bitmap, image, stage, true).ok()?;
         o.images.get(&(bitmap, image)).cloned()
     };
+    if transparent {
+        return native_render::object_program_gpu::transparent_model(&sections, materials, &formats, &mut vertex, &mut image);
+    }
     let engine = EngineStages {
         texaccum: true,
         normalization: o.normalization.as_ref().is_some_and(Option::is_some),
@@ -1126,29 +1131,34 @@ mod tests {
     }
 
     #[test]
-    fn an_objects_transparent_entry_names_its_shaders_materials_at_the_models_node_count() {
+    fn an_objects_transparent_entry_matches_its_exact_section_part_and_shader() {
         let t = ObjectTransparents {
+            model: 12,
             nodes: 2,
-            shaders: [(0x42, vec![3, 5])].into_iter().collect(),
+            parts: [
+                ((3, 1), ObjectTransparentPart { shader: 0x42, implementation: 0, needs_lighting_root: false }),
+                ((5, 1), ObjectTransparentPart { shader: 0x42, implementation: 1, needs_lighting_root: true }),
+            ].into_iter().collect(),
         };
-        assert_eq!(t.materials(2, 0xe123_0042), Some(&[3, 5][..]));
-        assert_eq!(t.materials(3, 0xe123_0042), None, "another node count");
-        assert_eq!(t.materials(2, 0xe123_0043), None, "another shader");
-    }
-
-    #[test]
-    fn a_base_map_is_decoded_at_the_stage_its_material_binds_it() {
-        // The stage picks the device palette a palettized base map (P8,
-        // P8 bump) is expanded through: the first implementation that binds
-        // the bitmap names it; one that binds it nowhere has none.
-        let (base, detail) = (TagId(0xe000_0050), TagId(0xe000_0051));
-        let lightmap_only = [None, None, None, None];
-        let first = [Some(detail), None, Some(base), None];
-        let second = [Some(base), None, None, None];
-        assert_eq!(first_stage([lightmap_only, first, second].into_iter(), base), Some(2));
-        assert_eq!(first_stage([second, first].into_iter(), base), Some(0));
-        assert_eq!(first_stage([first].into_iter(), detail), Some(0));
-        assert_eq!(first_stage([lightmap_only].into_iter(), base), None);
-        assert_eq!(first_stage(std::iter::empty(), base), None);
+        let mut frame = ObjectFrame {
+            handle: 1, definition: 2, nodes: vec![native_render::model::NodeMatrix::IDENTITY; 2],
+            sphere: ([0.0; 3], 1.0), lighting: None, defaults: None, node_rows: Vec::new(), implementations: Vec::new(),
+        };
+        let mut entry = Entry {
+            source: native_render::transparent::Source::Object(1),
+            record: 4, part: 1, shader: 0xe123_0042, depth: 0.0, position: [0.0; 3],
+        };
+        assert_eq!(t.implementation(&frame, 12, 3, &entry), Some(0));
+        assert_eq!(t.implementation(&frame, 13, 3, &entry), None, "another render model");
+        assert_eq!(t.implementation(&frame, 12, 4, &entry), None, "another LOD");
+        assert_eq!(t.implementation(&frame, 12, 5, &entry), None, "lighting missing");
+        entry.part = 2;
+        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another part of the same shader");
+        entry.part = 1;
+        entry.shader += 1;
+        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another shader");
+        frame.nodes.pop();
+        entry.shader -= 1;
+        assert_eq!(t.implementation(&frame, 12, 3, &entry), None, "another node count");
     }
 }

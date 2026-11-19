@@ -14,7 +14,8 @@ use tags::shader::StageStates;
 
 use crate::gpu::{Image, texture};
 use crate::look::{PassLook, Stage, WorldPass};
-use crate::pass_state::PassState;
+use crate::pass_state::{PassState, PipelineState};
+use wgpu::util::DeviceExt;
 use crate::world::{LightmapKey, ModelRows, Owner, World, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
@@ -55,7 +56,7 @@ pub const INPUTS: [(u32, u64, wgpu::VertexFormat); 7] = [
     (3, std::mem::offset_of!(WorldVertex, packed) as u64 + 4, wgpu::VertexFormat::Uint32),
     (4, std::mem::offset_of!(WorldVertex, packed) as u64 + 8, wgpu::VertexFormat::Uint32),
     (5, std::mem::offset_of!(WorldVertex, packed) as u64 + 12, wgpu::VertexFormat::Uint32),
-    (6, std::mem::offset_of!(WorldVertex, lightmap_uv) as u64, wgpu::VertexFormat::Float32x2),
+    (6, std::mem::offset_of!(WorldVertex, packed_lightmap_uv) as u64, wgpu::VertexFormat::Snorm16x2),
 ];
 
 /// How a material program's `v` registers arrive ([`INPUTS`]): `v2..v5`
@@ -235,11 +236,16 @@ pub fn compile_rigid(pass: &WorldPass, microcode: &[u8]) -> Result<RigidProgram,
         return Err(format!("rigid vertex program reads c[{c}], which the native pass does not set"));
     }
     let p = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
-    let words = microcode[4..4 + 16 * program.instructions.len()]
-        .chunks_exact(4)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect();
+    let words = instruction_words(microcode, &program);
     Ok(RigidProgram { wgsl: p.wgsl, vertex: p.vertex, inputs: p.inputs, words })
+}
+
+/// The words the device binds, without the file's program header.
+pub fn instruction_words(microcode: &[u8], program: &vsh::Program) -> Vec<u32> {
+    microcode[4..4 + 16 * program.instructions.len()]
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .collect()
 }
 
 /// Whether every instanced-placement part of `material` in `world` can be
@@ -763,14 +769,15 @@ pub(crate) struct Gpu {
     module: wgpu::ShaderModule,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
+    uniforms_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
     pixel_buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
     samplers: [wgpu::Sampler; 4],
     stage_views: [Option<wgpu::TextureView>; 4],
     /// What each stage's bitmap was uploaded as ([`describe_image`]).
-    stage_info: [Option<String>; 4],
-    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    pub(crate) stage_info: [Option<String>; 4],
+    pub(crate) pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, PipelineState), wgpu::RenderPipeline>,
     /// The world's pipelines, by target formats, the stencil state the
     /// layer draws with and the cull ([`ProgramSet::pipelines`]).
     world_pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -893,6 +900,7 @@ impl Gpu {
             module,
             layout,
             textures_layout,
+            uniforms_layout,
             vertex_buffer,
             pixel_buffer,
             uniforms,
@@ -942,19 +950,42 @@ impl Gpu {
         queue.write_buffer(&self.pixel_buffer, 0, &frame_pixel(&self.program.pixel, view).to_bytes());
     }
 
-    /// Makes the pipeline for these target formats: the world's opaque
-    /// state without `state`, a transparent pass's with it.
+    /// Immutable uniforms for a transparent draw; another run in the
+    /// same submission can have different view constants and clip.
+    pub(crate) fn draw_uniforms(
+        &self,
+        device: &wgpu::Device,
+        vertex: &VertexUniforms,
+        pixel: &PixelUniforms,
+    ) -> wgpu::BindGroup {
+        let buffer = |contents: &[u8]| device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("native transparent uniforms"),
+            contents,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let vertex = buffer(&vertex.to_bytes());
+        let pixel = buffer(&pixel.to_bytes());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("native transparent uniforms"),
+            layout: &self.uniforms_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: vertex.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: pixel.as_entire_binding() },
+            ],
+        })
+    }
+
     pub(crate) fn pipeline(
         &mut self,
         device: &wgpu::Device,
         color: wgpu::TextureFormat,
         depth: wgpu::TextureFormat,
-        state: Option<&PassState>,
-    ) {
+        state: PassState,
+    ) -> &wgpu::RenderPipeline {
         let (module, layout) = (&self.module, &self.layout);
-        self.pipelines
-            .entry((color, depth))
-            .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
+        self.pipelines.entry((color, depth, state.into())).or_insert_with(|| {
+            render_pipeline(device, module, layout, color, depth, Some(&state), None, wgpu::StencilState::default())
+        })
     }
 }
 
@@ -1315,7 +1346,8 @@ mod tests {
         let regs: Vec<u32> = INPUTS.iter().map(|i| i.0).collect();
         assert_eq!(regs, (0..7).collect::<Vec<_>>());
         assert_eq!(INPUT_MASK, INPUTS.iter().fold(0, |m, i| m | (1 << i.0)));
-        assert_eq!(INPUTS[6].1, 20, "v6 is the lightmap coordinate, after position and uv");
+        assert_eq!(INPUTS[6], (6, 92, wgpu::VertexFormat::Snorm16x2), "v6 uses the guest's packed lightmap coordinate");
+        assert_eq!(FLOAT_INPUTS[6].1, 20, "the lights still read the float coordinate");
         assert_eq!(INPUTS[5].1, 88, "v5 is the lighting vector's word, the last");
         assert_eq!(FLOAT_INPUTS[5].1, 64, "the float lighting vector, before the words");
         // The packed registers are words, decoded in the shader.
@@ -1325,7 +1357,7 @@ mod tests {
             assert_eq!(WORLD_FETCH[n] == InputFetch::NormPacked3, packed, "v{n}");
         }
         assert_eq!(FLOAT_INPUTS.iter().map(|i| i.0).collect::<Vec<_>>(), regs);
-        assert_eq!(std::mem::size_of::<WorldVertex>(), 92);
+        assert_eq!(std::mem::size_of::<WorldVertex>(), 96);
     }
 
     #[test]
@@ -1821,6 +1853,7 @@ mod tests {
             tangents: vec![[0.0, 1.0, 0.0]; 3],
             lighting: if lighting { vec![[0.0, 0.0, 1.0]; 3] } else { Vec::new() },
             parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2]] }],
+            ..Default::default()
         };
         let mut b = WorldBuilder::new();
         b.add_section(Owner::Cluster(0), &section(1, true, true), &Placement::IDENTITY, Some(page));

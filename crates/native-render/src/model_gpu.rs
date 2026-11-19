@@ -72,6 +72,8 @@ struct TransparentKey {
     color_writes: wgpu::ColorWrites,
     depth_write: bool,
     depth_compare: wgpu::CompareFunction,
+    primitive: wgpu::PrimitiveState,
+    alpha_test: Option<(wgpu::CompareFunction, u8)>,
 }
 
 impl TransparentKey {
@@ -81,6 +83,8 @@ impl TransparentKey {
             color_writes: s.color_writes,
             depth_write: s.depth_write,
             depth_compare: s.depth_compare,
+            primitive: s.primitive,
+            alpha_test: s.alpha_test,
         }
     }
 }
@@ -91,8 +95,6 @@ pub enum TransparentRefusal {
     NoModel,
     /// The model has no transparent part of that material.
     NoParts,
-    /// S: the models' shader does no alpha test yet.
-    AlphaTest,
 }
 
 /// One object's transparent parts of one material, in the run's order,
@@ -121,6 +123,20 @@ fn render_pipeline(
     let attributes = wgpu::vertex_attr_array![
         0 => Float32x3, 1 => Float32x2, 2 => Float32x3, 3 => Uint8x4, 4 => Float32x4
     ];
+    let alpha_constants = key.alpha_test.map(|(func, reference)| {
+        use wgpu::CompareFunction::*;
+        let code = match func {
+            Never => 1,
+            Less => 2,
+            Equal => 3,
+            LessEqual => 4,
+            Greater => 5,
+            NotEqual => 6,
+            GreaterEqual => 7,
+            Always => 0,
+        };
+        [("alpha_func", f64::from(code)), ("alpha_reference", f64::from(reference))]
+    });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("native models"),
         layout: Some(&layout),
@@ -134,12 +150,7 @@ fn render_pipeline(
                 attributes: &attributes,
             })],
         },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            // S: the models' winding is not checked yet; draw both.
-            cull_mode: None,
-            ..Default::default()
-        },
+        primitive: key.primitive,
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth,
             depth_write_enabled: Some(key.depth_write),
@@ -151,7 +162,10 @@ fn render_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: shader,
             entry_point: Some(fragment),
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: alpha_constants.as_ref().map_or(&[], |constants| &constants[..]),
+                ..Default::default()
+            },
             targets: &[Some(wgpu::ColorTargetState {
                 format: color,
                 blend: key.blend,
@@ -419,8 +433,7 @@ impl GpuModels {
 
     /// Takes model `model`'s transparent material `material` (stage 3): its
     /// base map (`None` draws white) and its pass's render states. Refused
-    /// when the model has no transparent part of it, or the pass alpha
-    /// tests (S: the models' shader has no alpha test yet).
+    /// when the model has no transparent part of it.
     pub fn set_transparent(
         &mut self,
         device: &wgpu::Device,
@@ -434,10 +447,7 @@ impl GpuModels {
         if !m.model.transparents.iter().any(|d| d.material == material) {
             return Err(TransparentRefusal::NoParts);
         }
-        if state.alpha_test.is_some() {
-            return Err(TransparentRefusal::AlphaTest);
-        }
-        let view = base_map.map_or_else(|| self.white.clone(), |i| texture(device, queue, &i));
+        let view = base_map.map_or_else(|| self.white.clone(), |i| crate::gpu::texture(device, queue, &i, "native transparent model stage"));
         let group = self.material_group(device, &view);
         self.models[model as usize].transparents.insert(material, TransparentMaterial { group, state });
         Ok(())
@@ -511,6 +521,8 @@ impl GpuModels {
                 color_writes: wgpu::ColorWrites::ALL,
                 depth_write: true,
                 depth_compare: wgpu::CompareFunction::LessEqual,
+                primitive: wgpu::PrimitiveState::default(),
+                alpha_test: None,
             };
             render_pipeline(device, shader, layouts, color, depth, "fs_main", &opaque)
         });
@@ -702,3 +714,12 @@ impl GpuModels {
 
 /// The record layout the shader reads (checked against `models.wgsl`).
 pub const INSTANCE_RECORD_SIZE: usize = std::mem::size_of::<InstanceRecord>();
+
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_models_shader_with_alpha_test_validates() {
+        shaders::validate(super::SHADER).expect("valid models WGSL");
+    }
+}

@@ -45,7 +45,7 @@ use native_render::gpu::{DepthRule, GpuWorld, Image, Owners, PassStencil, PassVi
 use native_render::load::{self, LoadedWorld};
 use native_render::look::{self, Stage};
 use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
-use native_render::transparent_gpu::{TransparentProgram, TransparentSet};
+use native_render::transparent_gpu::{Programs as TransparentPrograms, TransparentSet};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
@@ -75,7 +75,7 @@ pub struct CpuWorld {
     pub stage_images: StageImages,
     /// Transparent materials (`impl.render.native_transparents`): each
     /// one's layer-15 passes, compiled.
-    pub transparents: HashMap<u16, Vec<TransparentProgram>>,
+    pub transparents: TransparentPrograms,
 }
 
 /// One loaded world: CPU data until the first pass uploads it.
@@ -94,7 +94,7 @@ pub struct Ready {
     /// The device palettes the load expanded palettized stage bitmaps
     /// through, at the stages it used them (the rest `None`): each ask
     /// checks they are still bound.
-    palettes: StagePalettes,
+    pub(crate) palettes: StagePalettes,
 }
 
 /// The current (map, BSP) and its world.
@@ -628,6 +628,7 @@ fn arm_dump(ready: &Arc<Ready>, gpu: &GpuWorld, view: &ViewInputs, Dump { instan
                 textures: d.textures,
                 primitive: d.pipeline.0,
                 depth: (d.pipeline.1.0, d.pipeline.1.1, Default::default()),
+                color: None,
                 draws: 4,
             }
         })
@@ -645,7 +646,7 @@ fn parse_inherit_cull(v: Option<&str>) -> (bool, bool) {
     }
 }
 
-fn parse_probe(v: &str) -> Option<(f32, f32)> {
+pub(crate) fn parse_probe(v: &str) -> Option<(f32, f32)> {
     let (x, y) = v.split_once(',')?;
     let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
     (x.is_finite() && y.is_finite()).then_some((x, y))
@@ -701,7 +702,7 @@ fn probe(world: &World, view_proj: &native_render::camera::Mat4, size: (f32, f32
 /// pixel outside its edges: the view depth there (interpolated
 /// perspective-correctly) and the signed distance in pixels to its
 /// nearest edge (negative outside).
-fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
+pub(crate) fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
     let [a, b, c] = [v[0], v[1], v[2]];
     let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
     if area.abs() < 1e-6 {
@@ -778,7 +779,7 @@ pub(crate) fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Optio
 }
 
 /// The hook's guest memory as the device reads it, read-only.
-struct ReadMemory<'a>(&'a dyn GuestMemory);
+pub(crate) struct ReadMemory<'a>(pub(crate) &'a dyn GuestMemory);
 
 impl d3d::GuestMemory for ReadMemory<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
@@ -817,7 +818,7 @@ pub(crate) fn region(f: &MapFile) -> assets::Region {
 /// `0x0011c1b0` and `0x00137d40` index the block with it
 /// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
 /// or unread.
-fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
+pub(crate) fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
     let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
     u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
 }
@@ -1258,6 +1259,8 @@ pub(crate) struct StageDecoder {
     expanded_at: HashMap<(TagId, u32), usize>,
     /// Images that do not decode at any stage.
     failed: HashSet<(TagId, u32)>,
+    /// Cached images whose D3D coordinates are in texels.
+    linear: HashSet<(TagId, u32)>,
 }
 
 impl StageDecoder {
@@ -1290,9 +1293,23 @@ impl StageDecoder {
         stage: usize,
         refuse_linear: bool,
     ) -> Result<bool, String> {
-        self.take(images, (bitmap, image), stage, &mut |palette| {
-            decode_stage(map, files, bitmap, image as usize, stage, palette, refuse_linear)
-        })
+        let key = (bitmap, image);
+        if refuse_linear && self.linear.contains(&key) {
+            return Err(format!("stage {stage} bitmap is a linear texture"));
+        }
+        let mut linear = false;
+        let decoded = self.take(images, key, stage, &mut |palette| {
+            let (image, expanded, layout) = decode_stage(map, files, bitmap, image as usize, stage, palette)?;
+            linear = layout == gfx::format::Layout::Linear;
+            if refuse_linear && linear {
+                return Err(StageRefusal::Here("is a linear texture"));
+            }
+            Ok((image, expanded))
+        });
+        if linear && decoded.is_ok() {
+            self.linear.insert(key);
+        }
+        decoded
     }
 
     /// [`decode`](Self::decode) with the decode itself as `decode` (given
@@ -1348,10 +1365,9 @@ enum StageRefusal {
 
 /// Image `index` of a stage's bitmap at stage `stage`, and whether it was
 /// expanded through the stage's palette; or why the stage cannot have it:
-/// it does not decode, it is a linear texture (addressed in texels on the
-/// D3D path, `tex_scale`, where the programs here take normalised
-/// coordinates; only with `refuse_linear`), or it is palettized and the
-/// stage has no palette for it ([`stage_image`]).
+/// it does not decode, or it is palettized and the stage has no palette
+/// for it ([`stage_image`]). The caller uses the layout to refuse linear
+/// textures where the native path cannot use the D3D texel coordinates.
 fn decode_stage<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
     files: &mut assets::ResourceFiles,
@@ -1359,18 +1375,15 @@ fn decode_stage<R: std::io::Read + std::io::Seek>(
     index: usize,
     stage: usize,
     palette: &Option<Vec<u32>>,
-    refuse_linear: bool,
-) -> Result<(Image, bool), StageRefusal> {
+) -> Result<(Image, bool, gfx::format::Layout), StageRefusal> {
     let tags::TagData::Bitmap(b) = tags::DecodedTag::read(map, id).map_err(|_| StageRefusal::Image("does not read"))?.data else {
         return Err(StageRefusal::Image("is not a bitmap"));
     };
     let image = b.images.get(index).ok_or(StageRefusal::Image("has no such image"))?;
     let (d, blocks) = assets::decode_image_blocks(image, files).map_err(|_| StageRefusal::Image("does not decode"))?;
-    if refuse_linear && d.desc.format.layout() == gfx::format::Layout::Linear {
-        return Err(StageRefusal::Here("is a linear texture"));
-    }
+    let layout = d.desc.format.layout();
     let (image, palettized) = stage_image(image.format, d.levels, stage, palette)?;
-    Ok((with_blocks(image, blocks), palettized))
+    Ok((with_blocks(image, blocks), palettized, layout))
 }
 
 /// `image` with its BC blocks, when the D3D path uploads the bitmap as BC

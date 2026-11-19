@@ -64,6 +64,8 @@ pub enum Source {
 pub struct Entry {
     /// The shader datum (`+0x24`).
     pub shader: u32,
+    /// Render record index encoded alongside the part.
+    pub record: u16,
     /// The part index (the argument's low byte).
     pub part: u8,
     pub source: Source,
@@ -102,6 +104,7 @@ pub fn read_entry(mem: &dyn GuestRead, data: u32) -> Option<Entry> {
     ];
     Some(Entry {
         shader,
+        record: record as u16,
         part: arg as u8,
         source,
         depth: mem.read_f32(entry + 4)?,
@@ -195,6 +198,7 @@ mod tests {
             e,
             Entry {
                 shader: 0xe000_0042,
+                record: 9,
                 part: 2,
                 source: Source::Cluster(37),
                 depth: -12.5,

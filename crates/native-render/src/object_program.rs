@@ -105,6 +105,9 @@ pub fn object_pass_state(imp: &ResolvedImplementation) -> Result<crate::pass_sta
 pub struct ObjectPass {
     pub program: MaterialProgram,
     pub implementation: ResolvedImplementation,
+    /// The original vertex program used to match a D3D comparison draw.
+    pub words: Vec<u32>,
+    pub transparent_state: Option<crate::pass_state::TransparentState>,
     /// The stages that sample the vector normalization cube (empty in
     /// `program.stages`; the host binds the cube).
     pub normalization: [bool; 4],
@@ -126,14 +129,56 @@ pub fn object_pass(
     fetch: [shaders::vsh::InputFetch; 16],
     lightmap: bool,
 ) -> Result<ObjectPass, String> {
-    let state = object_pass_state(imp)?;
+    compile_implementation(pass, imp, microcode, provided, fetch, lightmap, None)
+}
+
+/// A layer-15 program over the object's exact declaration and state.
+pub(crate) fn transparent_pass(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+) -> Result<ObjectPass, String> {
+    if !imp.engine_render_states.is_empty() || !imp.engine_stage_states.is_empty() {
+        return Err("engine-driven render or stage states".into());
+    }
+    let state = crate::pass_state::TransparentState::new(&imp.render_states).map_err(|e| format!("{e:?}"))?;
+    compile_implementation(pass, imp, microcode, provided, fetch, false, Some(state))
+}
+
+fn compile_implementation(
+    pass: map::TagId,
+    imp: &ResolvedImplementation,
+    microcode: &[u8],
+    provided: u16,
+    fetch: [shaders::vsh::InputFetch; 16],
+    lightmap: bool,
+    transparent_state: Option<crate::pass_state::TransparentState>,
+) -> Result<ObjectPass, String> {
+    let state = match &transparent_state {
+        Some(s) => s.resolve(&gfx::state::RenderState::default()),
+        None => object_pass_state(imp)?,
+    };
     let (look, EngineBound { normalization, texaccum }) = object_look_stages(pass, imp)?;
+    if transparent_state.is_some() {
+        if normalization.contains(&true) || texaccum.contains(&true) {
+            return Err("a layer-15 pass samples an engine texture".into());
+        }
+        crate::program::world_parity(&look)?;
+    }
     if !lightmap && look.textures.contains(&crate::look::Stage::Lightmap) {
         return Err("a stage samples the lightmap, and the object's (the globals' default) is not uniform or does not load".into());
     }
     let mut program = compile_object_stages(&look, EngineBound { normalization, texaccum }, microcode, state.alpha_test, provided, fetch)?;
     program.state = Some(state);
-    Ok(ObjectPass { program, implementation: imp.clone(), normalization, texaccum })
+    let words = if transparent_state.is_some() {
+        let parsed = vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
+        crate::program::instruction_words(microcode, &parsed)
+    } else {
+        Vec::new()
+    };
+    Ok(ObjectPass { program, implementation: imp.clone(), words, transparent_state, normalization, texaccum })
 }
 
 /// Why objects' parts with `material` stay on D3D, or `None` when an

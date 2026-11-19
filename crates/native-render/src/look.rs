@@ -223,7 +223,7 @@ pub const TRANSPARENT_LAYER: usize = 15;
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransparentPass {
     pub look: PassLook,
-    pub state: PassState,
+    pub state: crate::pass_state::TransparentState,
 }
 
 /// Why a material's transparent layer stays on the D3D path.
@@ -261,7 +261,11 @@ pub fn transparent_passes(material: &Material) -> Result<Vec<TransparentPass>, T
         if !imp.engine_render_states.is_empty() {
             return Err(TransparentRefusal::EngineRenderStates { pass: n });
         }
-        let state = pass_state(&imp.render_states).map_err(|refusal| TransparentRefusal::State { pass: n, refusal })?;
+        if !imp.engine_stage_states.is_empty() {
+            return Err(TransparentRefusal::Pass { pass: n, refusal: Refusal::EngineStageStates });
+        }
+        let state = crate::pass_state::TransparentState::new(&imp.render_states)
+            .map_err(|refusal| TransparentRefusal::State { pass: n, refusal })?;
         out.push(TransparentPass { look, state });
     }
     Ok(out)
@@ -582,9 +586,10 @@ mod tests {
         let passes = transparent_passes(&m).unwrap();
         assert_eq!(passes.len(), 2);
         assert_eq!(passes[1].look.implementation, 1);
-        let c = passes[0].state.blend.unwrap().color;
+        let state = passes[0].state.resolve(&gfx::state::RenderState::default());
+        let c = state.blend.unwrap().color;
         assert_eq!((c.src_factor, c.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::One));
-        assert!(!passes[0].state.depth_write);
+        assert!(!state.depth_write);
     }
 
     #[test]
@@ -606,10 +611,8 @@ mod tests {
         );
         let mut inherits = lit(0);
         inherits.render_states.clear();
-        assert_eq!(
-            transparent_passes(&material(TRANSPARENT_LAYER, vec![vec![inherits]])),
-            Err(TransparentRefusal::State { pass: 0, refusal: StateRefusal::Unset("ALPHABLENDENABLE") })
-        );
+        let passes = transparent_passes(&material(TRANSPARENT_LAYER, vec![vec![inherits]])).unwrap();
+        assert_eq!(passes[0].state.resolve(&gfx::state::RenderState::default()).alpha_test, None);
     }
 
     #[test]

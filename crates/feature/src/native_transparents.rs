@@ -24,19 +24,14 @@
 //! - an observer before the transparents: forgets the open run, so a run
 //!   never spans two views (or a pass the device dropped).
 //!
-//! Objects' entries (with `impl.render.native_objects` on as well): the
-//! hook copies the object's node matrices and sphere out of guest memory
-//! into the run (`native_render::objects::read_object`), as stage 2 does
-//! at layer 3, so the pass draws the frame's pose. An object's entry
-//! stands for all its parts with that shader (S: which section and part an
-//! object entry names is not read), so a later entry of the same object
-//! and shader in the same view is skipped without drawing again.
+//! Object entries carry the render record and part index. The host
+//! prepares the record's rows and draws that part at the entry's own
+//! sort position. A shader may be shared by several entries.
 //!
 //! Nothing here writes guest memory: there is no restore. The entries are
 //! read from the memory the hook's context sees, which on the render
 //! thread is the render's snapshot of the frame.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -64,10 +59,15 @@ pub trait Host: Send + Sync {
     /// `object`: an object entry's copy of the object (definition, node
     /// matrices, sphere).
     fn accepts(&self, mem: &dyn GuestMemory, entry: &Entry, object: Option<&ObjectFrame>) -> bool;
+    /// Copies any per-record inputs before deciding whether to skip.
+    fn prepare_object(&self, _mem: &dyn GuestMemory, _entry: &Entry, _object: &mut ObjectFrame) -> bool {
+        true
+    }
+
     /// Asks the device for an external pass over `run` with `camera`; the
     /// pass seals the run when the device issues it. `false`: nothing
     /// asked (the entry goes to the D3D path).
-    fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool;
+    fn open(&self, mem: &dyn GuestMemory, camera: &RenderCamera, run: Arc<Run>) -> bool;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -78,8 +78,6 @@ static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static RUNS: AtomicU64 = AtomicU64::new(0);
 /// Objects' entries are considered (the native objects on too).
 static OBJECTS_ON: AtomicBool = AtomicBool::new(false);
-/// (object handle, shader index) drawn natively in this view.
-static OBJECTS_DRAWN: Mutex<Option<HashSet<(u32, u16)>>> = Mutex::new(None);
 
 /// Whether objects' entries are considered (the build sets it: both this
 /// switch and `impl.render.native_objects` on).
@@ -112,7 +110,6 @@ impl GuestRead for Ro<'_> {
 /// The observer before the transparents: no run carries over.
 pub fn new_view() {
     OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
-    OBJECTS_DRAWN.lock().unwrap_or_else(|e| e.into_inner()).take();
 }
 
 /// The handler's `before`, on any guest memory: `data` its argument (the
@@ -125,47 +122,35 @@ pub fn on_entry(mem: &dyn GuestMemory, data: u32) -> bool {
     };
     let m = Ro(mem);
     let Some(entry) = transparent::read_entry(&m, data) else {
-        return false;
+        return fallback();
     };
     let object = match entry.source {
         Source::Object(handle) => {
             if !OBJECTS_ON.load(Ordering::Relaxed) {
-                return false;
+                return fallback();
             }
-            let key = (handle, entry.shader as u16);
-            if OBJECTS_DRAWN
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-                .is_some_and(|d| d.contains(&key))
-            {
-                // Its parts with this shader are in an earlier run.
-                SKIPPED.fetch_add(1, Ordering::Relaxed);
-                return true;
-            }
-            let Some(frame) = objects::read_object(&m, handle) else {
-                return false;
+            let Some(mut frame) = objects::read_object(&m, handle) else {
+                return fallback();
             };
+            if !host.prepare_object(mem, &entry, &mut frame) {
+                return fallback();
+            }
             Some(frame)
         }
         Source::Cluster(_) | Source::Placement(_) => None,
     };
-    if !host.accepts(mem, &entry, object.as_ref()) {
-        return false;
-    }
-    let drawn = object.as_ref().map(|o| (o.handle, entry.shader as u16));
-    if !join(&*host, &m, entry, object) {
-        return false;
-    }
-    if let Some(key) = drawn {
-        OBJECTS_DRAWN
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_or_insert_with(HashSet::new)
-            .insert(key);
+    if !host.accepts(mem, &entry, object.as_ref()) || !join(&*host, &m, entry, object) {
+        return fallback();
     }
     SKIPPED.fetch_add(1, Ordering::Relaxed);
     true
+}
+
+fn fallback() -> bool {
+    // A fallback can return without visiting the device. End the run
+    // even in that case so the next run can take fresh state.
+    OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    false
 }
 
 /// Adds the entry to the open run, or opens one; `false` when no pass
@@ -184,7 +169,7 @@ fn join(host: &dyn Host, m: &Ro<'_>, entry: Entry, object: Option<ObjectFrame>) 
     };
     let run = Arc::new(Run::new());
     run.push(entry, object);
-    let opened = host.open(&camera, Arc::clone(&run));
+    let opened = host.open(m.0, &camera, Arc::clone(&run));
     *OPEN.lock().unwrap_or_else(|e| e.into_inner()) = opened.then_some(run);
     if !opened {
         return false;

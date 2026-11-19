@@ -63,7 +63,7 @@ impl Host for Stub {
         };
         shape && entry.shader as u16 == 0x10
     }
-    fn open(&self, camera: &RenderCamera, run: Arc<Run>) -> bool {
+    fn open(&self, _mem: &dyn GuestMemory, camera: &RenderCamera, run: Arc<Run>) -> bool {
         assert_eq!(camera.far, 1024.0);
         if *self.refuse.lock().unwrap() {
             return false;
@@ -168,17 +168,17 @@ fn native_entries_join_runs_between_the_d3d_draws() {
     assert!(native_transparents::on_entry(&m, a));
     assert!(native_transparents::on_entry(&m, b));
     assert_eq!(stub.runs.lock().unwrap().len(), 1);
-    // A shader the host does not draw: the handler runs, and its draw is
-    // the device's next entry, which issues the pass (seals the run).
+    // A shader the host does not draw ends the run, and its handler
+    // is free to visit the device or return without drawing.
     assert!(!native_transparents::on_entry(&m, d3d));
+    // The fallback can make no device call. C still gets a new run.
+    assert!(native_transparents::on_entry(&m, c));
+    assert_eq!(stub.runs.lock().unwrap().len(), 2);
     let first = stub.runs.lock().unwrap()[0].seal();
     assert_eq!(first.len(), 2);
     assert_eq!(first[0].entry.source, Source::Cluster(20));
     assert_eq!((first[1].entry.source, first[1].entry.part), (Source::Cluster(21), 1));
     assert_eq!(first[0].object, None);
-    // C sorts after the D3D draw: a run of its own.
-    assert!(native_transparents::on_entry(&m, c));
-    assert_eq!(stub.runs.lock().unwrap().len(), 2);
     assert_eq!(stub.runs.lock().unwrap()[1].len(), 1);
 
     // The next view's transparents: the open run is not joined.
@@ -215,14 +215,16 @@ fn native_entries_join_runs_between_the_d3d_draws() {
     let copy = objects[0].object.as_ref().expect("the object's copy");
     assert_eq!((copy.handle, copy.definition, copy.nodes.len()), (h, 0xe000_0100, 2));
     assert_eq!(copy.nodes[1].position, [1.0, 0.0, 0.0]);
-    // The same object and shader again in this view: its parts are drawn
-    // already, so the entry is skipped without a new run.
-    assert!(native_transparents::on_entry(&m, o2));
-    assert_eq!(stub.runs.lock().unwrap().len(), 5);
-    // The next view draws it again.
-    native_transparents::new_view();
+    // Same object and shader, another render record. It has its own
+    // sorted draw rather than being folded into the first one.
     assert!(native_transparents::on_entry(&m, o2));
     assert_eq!(stub.runs.lock().unwrap().len(), 6);
+    let second = stub.runs.lock().unwrap()[5].seal();
+    assert_eq!(second.len(), 1);
+    assert_ne!(objects[0].entry.record, second[0].entry.record);
+    native_transparents::new_view();
+    assert!(native_transparents::on_entry(&m, o2));
+    assert_eq!(stub.runs.lock().unwrap().len(), 7);
     // An object the host does not take (another node count): D3D.
     native_transparents::new_view();
     let h3 = object(&mut m, 3, 0xe000_0100, 3);
@@ -230,5 +232,5 @@ fn native_entries_join_runs_between_the_d3d_draws() {
     assert!(!native_transparents::on_entry(&m, o3));
 
     let (entries, skipped, runs) = native_transparents::counts();
-    assert_eq!((entries, skipped, runs), (14, 8, 6));
+    assert_eq!((entries, skipped, runs), (14, 8, 7));
 }

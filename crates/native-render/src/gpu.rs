@@ -582,7 +582,6 @@ impl GpuWorld {
     pub fn encode_transparents(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
@@ -591,11 +590,17 @@ impl GpuWorld {
         target_size: (u32, u32),
         view: &ViewInputs,
         entries: &[(Owner, u8)],
+        incoming: &gfx::state::RenderState,
     ) -> usize {
         let Some(set) = self.transparents.as_mut() else { return 0 };
-        set.pipelines(device, color_format, depth_format);
-        set.prepare(queue, view);
-        let set = &*set;
+        let entries: Vec<_> = entries.iter().filter_map(|&(owner, part)| {
+            let draw = self.world.transparent(owner, part)?;
+            let passes = set.prepare(device, (color_format, depth_format), &self.world, draw, view, incoming);
+            (!passes.is_empty()).then_some((draw, passes))
+        }).collect();
+        if entries.is_empty() {
+            return 0;
+        }
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native transparents"),
@@ -626,17 +631,14 @@ impl GpuWorld {
         // The programs carry the game's viewport in their constants: the
         // pass covers the whole target, as the world's programs do.
         pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
+        pass.set_vertex_buffer(0, self.program_vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        let mut drawn = 0;
-        for &(owner, part) in entries {
-            if let Some(t) = self.world.transparent(owner, part)
-                && set.draw(&mut pass, t, color_format, depth_format)
-            {
-                drawn += 1;
+        for (entry, passes) in &entries {
+            for draw in passes {
+                draw.encode(&mut pass, entry);
             }
         }
-        drawn
+        entries.len()
     }
 
     /// Draws lights with `set` from now on.
