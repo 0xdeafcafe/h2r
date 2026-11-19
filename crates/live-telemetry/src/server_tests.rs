@@ -363,8 +363,33 @@ fn sim_sink_finishes_live_and_deferred_packed_recordings() {
             .with_sim(&metadata, deferred.then(|| live.dir.join("deferred.lock")));
         let id = start_session(&mut sink, Session::new("test", None).with_sim(metadata));
         let mut live_frames = live.embedded.live.frames();
+        let stopped = game::MachinePosition { i: 7, p: 0 };
         for tick in [4, 6, 8] {
-            sink.frame(frame(&id, tick)).unwrap();
+            let mut f = frame(&id, tick);
+            if tick == 4 {
+                f.cut = Some(2);
+                f.machine_positions.push(stopped);
+            }
+            if tick == 6 && deferred {
+                let capture = sink.sim.as_mut().unwrap().deferred.as_mut().unwrap();
+                capture.encoder.force_keyframe();
+            }
+            sink.frame(f).unwrap();
+            if tick == 6 && deferred {
+                // This sampled frame was quiet. A fresh reader of its queued
+                // keyframe must recover the previous explicit zero.
+                let capture = sink.sim.as_ref().unwrap().deferred.as_ref().unwrap();
+                let Some(super::DeferredItem::Frame(tungstenite::Message::Binary(bytes))) =
+                    capture.items.last()
+                else {
+                    panic!("expected a queued binary frame");
+                };
+                let record = live_proto::pack::records(bytes).next().unwrap().unwrap();
+                let d = live_proto::pack::Decoder::new().decode(record).unwrap();
+                assert!(d.machine_baseline);
+                assert_eq!(d.frame.machine_positions, [stopped]);
+                assert_eq!(d.frame.cut, None);
+            }
         }
         if deferred {
             assert!(live_frames.try_recv().is_err());

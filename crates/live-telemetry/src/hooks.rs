@@ -854,9 +854,12 @@ mod tests {
         assert_eq!(data["vehicles"][0]["occupied"], false);
         // Machines go out in the game's first frame (and then only when they
         // move); the sink may have folded that frame into a later one.
-        let machines = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"]["machines"];
-        assert_eq!(machines[0]["position"], 0.5);
-        assert_eq!(machines[0].get("node"), None, "no name, no node");
+        let frame = &rows.iter().find(|r| r["type"] == "GameFrame").unwrap()["data"];
+        assert_eq!(
+            frame["machine_positions"],
+            serde_json::json!([{ "i": 2, "p": 128 }])
+        );
+        assert_eq!(frame["machines"][0].get("node"), None, "no name, no node");
         assert_eq!(
             data["hits"][0]["from"],
             format!("{:08x}", fixture::object_datum(2))

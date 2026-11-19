@@ -24,7 +24,7 @@
 //! body      the codec's bytes of a container (crate::pack::push_record)
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 
 use serde::{Deserialize, Serialize};
@@ -198,6 +198,17 @@ impl ChunkWriter {
     /// new window (or of another game, or its tick went back). A frame
     /// that does not pack is skipped, as the live stream skips it.
     pub fn push(&mut self, frame: &Frame) -> Option<Chunk> {
+        self.push_with_machine_baseline(frame, None, false)
+    }
+
+    /// Supplies the current travel for any keyframe the encoder writes,
+    /// including an unexpected keyframe when its string table fills up.
+    pub fn push_with_machine_baseline(
+        &mut self,
+        frame: &Frame,
+        baseline: Option<&BTreeMap<u16, crate::game::MachinePosition>>,
+        reset: bool,
+    ) -> Option<Chunk> {
         let closes = self.open.as_ref().is_some_and(|o| self.closes(o, frame));
         let done = if closes { self.finish() } else { None };
         let open = self.open.get_or_insert_with(|| Open {
@@ -215,7 +226,10 @@ impl ChunkWriter {
             hits: 0,
             shots: 0,
         });
-        match open.encoder.encode(frame) {
+        if reset {
+            open.encoder.force_keyframe();
+        }
+        match open.encoder.encode_with_machine_baseline(frame, baseline) {
             Ok((record, _)) => {
                 pack::push_record(&mut open.container, &record);
                 open.versions.insert(record[0] & 0x0f);

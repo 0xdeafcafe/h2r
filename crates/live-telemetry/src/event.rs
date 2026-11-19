@@ -256,7 +256,7 @@ pub struct MachineState {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub up: [f64; 3],
-    /// Device position 0..1, when it reads as one.
+    /// Placed device travel, 0..1, with an active position animation.
     pub position: Option<f64>,
 }
 

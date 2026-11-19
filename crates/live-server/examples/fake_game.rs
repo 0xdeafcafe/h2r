@@ -355,6 +355,7 @@ fn main() {
             bsp: Some(0),
             cut: None,
             cinematic: false,
+            machine_positions: Vec::new(),
             projectiles: Vec::new(),
             items: Vec::new(),
             // A door opening and closing every eight seconds.

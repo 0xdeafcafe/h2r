@@ -266,10 +266,20 @@ async fn stream_test(deferred: bool) {
     );
     let mut encoder = pack::Encoder::new(0, 150);
     let mut body = Vec::new();
+    let stopped = game::MachinePosition { i: 7, p: 0 };
+    let moving = game::MachinePosition { i: 9, p: 192 };
     for tick in [2, 4, 6] {
+        if tick == 4 {
+            encoder.force_keyframe();
+        }
         let frame = Frame {
             game_id: ID.into(),
             tick,
+            machine_positions: match tick {
+                2 => vec![stopped],
+                6 => vec![moving],
+                _ => Vec::new(),
+            },
             players: vec![FramePlayer {
                 index: 0,
                 alive: true,
@@ -312,6 +322,18 @@ async fn stream_test(deferred: bool) {
         archive.iter().map(|f| f.tick).collect::<Vec<_>>(),
         [2, 4, 6]
     );
+    assert_eq!(archive[0].machine_positions, [stopped]);
+    assert!(archive[1].machine_positions.is_empty());
+    assert_eq!(archive[2].machine_positions, [moving]);
+    // The recording consumes the empty replacement once, even while live
+    // fan-out is throttled or disabled for deferred uploads.
+    let chunk = read(&h, &admin, &format!("/v1/games/{ID}/chunks/2")).await;
+    let raw = live_proto::chunk::container(&chunk.body).unwrap();
+    let mut decoder = pack::Decoder::new();
+    let keys: Vec<_> = pack::records(&raw)
+        .map(|r| decoder.decode(r.unwrap()).unwrap().machine_baseline)
+        .collect();
+    assert_eq!(keys, [true, true, false]);
     let finished = read(&h, &admin, RUNS).await.json();
     assert_eq!(finished["items"][0]["status"], "finished");
     for suffix in ["", "/chunks", "/chunks/2", "/frames"] {

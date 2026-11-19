@@ -520,11 +520,16 @@ optional; a frame without them draws as before.
 
 **Machines, teleporters and lifts (optional).** Frames may carry `machines`:
 lift platforms, doors and other big scripted movers, each with the name of
-the map glb's `machines` child it is (`node`), its place, facing and device
-position. A live frame has only the ones that moved, a recorded one all of
-them, so `FrameBuffer` keeps the last word on each and `sampleMachines`
-looks a few frames back (`state/frames.ts`). The 3D view moves the named
-node (`viewer/machines3d.ts`): one with a transform of its own is put where
+the map glb's `machines` child it is (`node`), its place and facing.
+`machine_positions` carries the normalized animation position by scenario
+placement index, as a byte sent on change. Live and replay state retain
+quiet devices and sample between frames at the same render tick as the
+players. The 3D view uses the map glb's device clip to pose its moving
+parts and blends across the seam for looping devices. Older recordings
+and map art without device clips draw with world poses as before.
+
+The 3D view moves a named machine node (`viewer/machines3d.ts`): one with
+a transform of its own is put where
 the frame says; one whose mesh is already in world space is moved by how
 far the machine is from where it was first seen. A machine the glb has no
 node for is drawn from `models.objects.<kind>` when the server has that

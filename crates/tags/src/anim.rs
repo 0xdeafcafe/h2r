@@ -149,13 +149,15 @@ pub struct Action {
     pub animation_index: i16,
 }
 
-/// Weapon type, 52 bytes: a name, an action block, three blocks this reader
-/// only counts, and two int lists (engine: used to preload resources).
+/// Weapon type, 52 bytes: a name, actions and overlays, two blocks this
+/// reader only counts, and two int lists (engine: used to preload resources).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeaponType {
     pub name: StringId,
     pub actions: Vec<Action>,
-    /// Counts of the blocks at +0xc, +0x14 and +0x1c, whose elements are not modelled.
+    /// The overlay block at +0xc, searched by 0x001dbd12.
+    pub overlays: Vec<Action>,
+    /// Counts of the blocks at +0xc, +0x14 and +0x1c.
     pub other_block_counts: [u32; 3],
     /// Resource-index lists at +0x24 and +0x2c (engine: indices into the resource block).
     pub preload_a: Vec<i32>,
@@ -768,14 +770,16 @@ fn decode_mode(e: &[u8], tag: &[u8], base: u32) -> Result<Mode> {
 }
 
 fn decode_type(t: &[u8], tag: &[u8], base: u32) -> Result<WeaponType> {
-    let actions = sub_block(tag, base, t, 4, ACTION_SIZE)?
-        .chunks_exact(ACTION_SIZE)
-        .map(|a| Action {
-            name: StringId(u32_at(a, 0)),
-            graph_index: i16_at(a, 4),
-            animation_index: i16_at(a, 6),
-        })
-        .collect();
+    let actions = |off| -> Result<Vec<Action>> {
+        Ok(sub_block(tag, base, t, off, ACTION_SIZE)?
+            .chunks_exact(ACTION_SIZE)
+            .map(|a| Action {
+                name: StringId(u32_at(a, 0)),
+                graph_index: i16_at(a, 4),
+                animation_index: i16_at(a, 6),
+            })
+            .collect())
+    };
     let ints = |off| -> Result<Vec<i32>> {
         Ok(sub_block(tag, base, t, off, 4)?
             .chunks_exact(4)
@@ -784,7 +788,8 @@ fn decode_type(t: &[u8], tag: &[u8], base: u32) -> Result<WeaponType> {
     };
     Ok(WeaponType {
         name: StringId(u32_at(t, 0)),
-        actions,
+        actions: actions(4)?,
+        overlays: actions(0xc)?,
         other_block_counts: [u32_at(t, 0xc), u32_at(t, 0x14), u32_at(t, 0x1c)],
         preload_a: ints(0x24)?,
         preload_b: ints(0x2c)?,
