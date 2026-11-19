@@ -746,6 +746,86 @@ fn synthetic_model_round_trips_through_the_h2_decoder() {
     assert!(d.max_weight < 3e-3, "{d:?}");
 }
 
+/// A Halo 1 strip behind one repeat of its first index, read with Halo 2's
+/// parity, is the triangles Halo 1's parity reads, in order and wound
+/// alike: across degenerate joins, on a strip of either length parity, and
+/// on the strips `triangles_strip` rebuilds after edge-on triangles drop.
+#[test]
+fn a_halo2_strip_draws_the_halo1_strips_triangles() {
+    for strip in [
+        vec![0u16, 1, 2, 3],
+        vec![0, 1, 2, 3, 4],
+        vec![0, 1, 2, 3, 3, 4, 4, 5, 6, 7],
+        vec![5, 6, 7, 7, 8, 8, 9, 10],
+    ] {
+        let want = h1::strip_triangles(&strip);
+        assert!(!want.is_empty());
+        assert_eq!(
+            tags::geometry::strip_triangles(&h1::h2_strip(&strip)),
+            want,
+            "{strip:?}"
+        );
+        // Halo 2's own parity on the bare strip winds every one the other
+        // way: why the repeat is there.
+        let bare = tags::geometry::strip_triangles(&strip);
+        assert!(bare.iter().zip(&want).all(|(a, b)| a != b), "{strip:?}");
+        let rebuilt = h1::triangles_strip(&want);
+        assert_eq!(
+            tags::geometry::strip_triangles(&h1::h2_strip(&rebuilt)),
+            want
+        );
+    }
+    assert!(h1::h2_strip(&[0, 1]).is_empty());
+    assert!(h1::h2_strip(&[]).is_empty());
+}
+
+/// A sky's model (`ModelOptions::strips`; the sky draw `0x0004c974` draws
+/// every part as a strip whatever its flags) carries no list flag on any
+/// part, keeps retail's empty placeholder subparts, and its strips are
+/// Halo 1's triangles, wound alike (`compare_model`). The list form read as
+/// a strip, as the sky draw reads it, is not.
+#[test]
+fn a_sky_model_draws_its_parts_as_strips() {
+    let (img, at) = synthetic_model();
+    let m = h1::Model::read(&img, at).unwrap();
+    let opts = ModelOptions {
+        strips: true,
+        ..ModelOptions::default()
+    };
+    let out = convert_model(&m, "thing", &opts).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\thing")]);
+    let d = compare_model(&m, bytes.clone(), ids[0]);
+    assert_eq!(d.vertices, 7);
+    assert_eq!(d.triangles, 3);
+    assert!(d.max_position < 5e-5, "{d:?}");
+    let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+    let g = RenderModelGeometry::read(&mut map, ids[0], &mut Raw(bytes)).unwrap();
+    let mut parts = 0;
+    for s in &g.sections {
+        for p in &s.geometry.parts {
+            assert!(!p.is_triangle_list(), "a strip part");
+            parts += 1;
+        }
+        for sp in &s.geometry.subparts {
+            assert_eq!((sp.first_index, sp.index_count), (0, 0), "a placeholder");
+        }
+    }
+    assert_eq!(parts, 2);
+
+    // The list form, drawn as the sky draws it.
+    let list = convert_model(&m, "thing", &ModelOptions::default()).unwrap();
+    let (bytes, ids) = build(vec![(list, "invented\\thing")]);
+    let mut map = Map::from_reader(Cursor::new(bytes.clone())).unwrap();
+    let g = RenderModelGeometry::read(&mut map, ids[0], &mut Raw(bytes)).unwrap();
+    let s = &g.sections[0];
+    let p = &s.geometry.parts[0];
+    assert!(p.is_triangle_list());
+    assert_ne!(
+        tags::geometry::strip_triangles(s.geometry.part_indices(p)),
+        s.geometry.part_triangles(p)
+    );
+}
+
 #[test]
 fn transparent_shaders_make_transparent_parts() {
     let (img, at) = synthetic_model();
