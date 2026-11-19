@@ -1052,7 +1052,14 @@ async fn packed_frames_ingest_stream_and_record() {
     );
     let replay = live_proto::chunk::frames(&bytes).unwrap();
     assert_eq!(replay[0], first);
-    assert_eq!(bytes, live.frame_chunk(&game_id, from).await.unwrap());
+    assert_eq!(
+        bytes.as_slice(),
+        live.frame_chunk(&game_id, from).await.unwrap().as_ref()
+    );
     assert_eq!(replay, json_frames);
-    assert!(index[0].versions.contains(&(live_proto::pack::VERSION as u8)));
+    assert!(
+        index[0]
+            .versions
+            .contains(&(live_proto::pack::VERSION as u8))
+    );
 }
