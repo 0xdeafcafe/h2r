@@ -51,6 +51,7 @@ pub(crate) enum Outcome {
 
 #[derive(Clone)]
 pub(crate) enum Step {
+    RefreshQueue,
     Retry(Vec<Sample>),
     WaitingForHost(Assignment),
     RequeueDedicated,
@@ -344,6 +345,9 @@ impl Search {
     }
 
     pub fn poll(&mut self) -> Result<Option<Outcome>, u32> {
+        if Instant::now() >= self.deadline {
+            return Err(CANNOT_ACCESS_SERVICE);
+        }
         if let Some(pending) = &self.pending {
             let Some(reply) = pending.take() else {
                 return Ok(None);
@@ -373,6 +377,9 @@ impl Search {
                     }));
                 }
                 Reply::Matchmaking(step) => match *step {
+                    Step::RefreshQueue => {
+                        self.after = Instant::now() + Duration::from_secs(1);
+                    }
                     Step::Retry(samples) => {
                         self.waiting = None;
                         self.retry(samples, None);
@@ -400,9 +407,6 @@ impl Search {
                 _ => return Err(INVALID_ARGUMENT),
             }
         } else if Instant::now() >= self.after {
-            if Instant::now() >= self.deadline {
-                return Err(CANNOT_ACCESS_SERVICE);
-            }
             let request = match self.dedicated.take() {
                 Some(join) => MatchRequest::JoinDedicated(join),
                 None => MatchRequest::Queue {

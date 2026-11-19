@@ -992,6 +992,11 @@ impl Worker {
             64 * 1024,
         ) {
             Err(Error::Status(404)) => return Ok(Reply::MatchmakingUnsupported),
+            Err(error) if error.retryable() => {
+                // Allocation may outlast the HTTP timeout. Let the search
+                // resubmit the same ticket with a fresh sessions.write token.
+                return Ok(Reply::Matchmaking(Box::new(Step::RefreshQueue)));
+            }
             other => other?,
         };
         let me = Xuid(user.xuid);
