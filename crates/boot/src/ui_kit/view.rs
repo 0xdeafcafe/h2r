@@ -435,8 +435,12 @@ impl Geometry {
                     .collect(),
                 ..base
             },
+            // Any other skin is `default`'s or a copy of it (`default6`,
+            // skin 22, the value picker's: the same text, bar and cap,
+            // only its scroll arrows elsewhere).
             ListPlace::Moved {
                 anchor,
+                skin,
                 bitmaps_left_of,
                 ..
             } => Geometry {
@@ -446,7 +450,7 @@ impl Geometry {
                 item_colour: [0.560784, 0.694118, 0.811765],
                 label: (rect(28, 20, 8, 210), 1, 0),
                 value: None,
-                skin: 0,
+                skin: if skin == PICKER_SKIN { skin } else { 0 },
                 item_art: vec![
                     ItemArt {
                         index: 0,
@@ -474,6 +478,10 @@ impl Geometry {
         }
     }
 }
+
+/// `default6` (skin 22): `default`'s item with its arrows moved, the value
+/// picker's list skin (`crate::ui_kit::dialog::PICKER_LIST`).
+pub const PICKER_SKIN: i16 = 22;
 
 fn rgb(v: [f32; 3]) -> [u8; 3] {
     v.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8)

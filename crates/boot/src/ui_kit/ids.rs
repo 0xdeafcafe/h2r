@@ -68,6 +68,8 @@ pub const FAMILIES: &[Family] = &[
     Family::new("kit.choices", 0x20ff_c040, 0x40),
     Family::new("kit.dialog", 0x20ff_c080, 0x40),
     Family::new("kit.dialog.large", 0x20ff_c0c0, 0x40),
+    Family::new("kit.picker", 0x20ff_c100, 0x40),
+    Family::new("kit.picker.game", 0x20ff_c140, 0x40),
     Family::new("co-op texts", 0x20ff_d000, 128),
     Family::new("mod texts", 0x20ff_d100, 0x90),
     Family::new("layouts", TABLE, 0x20),

@@ -46,8 +46,9 @@ again, and so a screen can be seen and checked before anyone runs the game.
 
    Row kinds: `Row::action` (A runs it; it returns `Then::Stay(log)`,
    `Then::Open(screen)`, `Then::Close` or `Then::CloseThen(work)`),
-   `Row::value` (left and right step through the values and wrap; A steps
-   right; a toggle is two values), `Row::info` (read-only), and `Row::text`
+   `Row::value` (left and right step through the values and wrap; A opens
+   the value picker on them, retail's `low_level_settings`, see
+   docs/game/ui-builder.md "The value picker"; a toggle is two values), `Row::info` (read-only), and `Row::text`
    (A opens the game's keyboard; the typed text comes back once the keyboard
    closes). `.layout(ListLayout, ValueStyle::Inline)` moves the list onto a
    one-text skin and puts values in the label (`Mythic: < On >`), as the skulls
@@ -70,8 +71,8 @@ again, and so a screen can be seen and checked before anyone runs the game.
    description; its choices come from the setting (a `Kind::Choice`'s
    labels, a `Kind::Int`'s steps or else every number of its range, Off and
    On for a `Kind::Bool`). `ChoiceRow::row(store)` gives the value row:
-   left and right step and wrap, A steps right, and each step is saved in
-   the store at once, so its change callbacks see it. A bots page's Count
+   left and right step and wrap, A opens the value picker, and each change
+   is saved in the store at once, so its change callbacks see it. A bots page's Count
    and Difficulty are two of them:
 
    ```rust

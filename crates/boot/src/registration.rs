@@ -23,7 +23,7 @@ use runtime::Runtime;
 
 use crate::{
     agent_glue, aim_assist, bot_glue, campaign_menu, cheats, clankers, coop_probe, custom_games,
-    h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
+    game_setup_help, h1_options, h1_options_row, health, hud, hud_swap, layout_glue, level_boot, lockstep_glue,
     map_copy, map_select, map_slots, precision, signin_screen, skulls, skulls_custom, skulls_menu,
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_watch, variant_ext, variant_page, xapi_glue,
 };
@@ -97,6 +97,15 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
         features
             .add(&h1_options_row::SetupRow { data_root: i.data_root.to_path_buf() })
             .map_err(|e| anyhow::anyhow!("h1 options row: {e}"))?;
+        // The value picker A opens on a setting row, and our Game Setup
+        // rows' picture and description (docs/game/ui-builder.md).
+        crate::ui_kit::picker::install(features).context("installing the value picker")?;
+        game_setup_help::register(
+            h1_options_row::OPTIONS_ACTION,
+            game_setup_help::image::QUICK_OPTIONS,
+            Arc::new(|_: &mut dyn engine::memory::GuestMemory| Some(h1_options::ROW_HELP_ID)),
+        );
+        game_setup_help::install(features).context("installing the Game Setup help")?;
     }
     // The game variant editor's More Options row and page (our options in
     // the record's extension block; docs/game/game-options.md section 3).

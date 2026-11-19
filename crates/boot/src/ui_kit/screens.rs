@@ -268,7 +268,7 @@ pub fn account_spec(a: &crate::account_screen::AccountScreen, now: i64) -> Scree
 }
 
 /// The screens `h2 ui preview` knows, by name.
-pub const NAMES: [&str; 16] = [
+pub const NAMES: [&str; 18] = [
     "campaigns",
     "skulls",
     "skulls.h1",
@@ -285,6 +285,8 @@ pub const NAMES: [&str; 16] = [
     "kit.dialog",
     "kit.dialog.large",
     "clankers",
+    "kit.picker",
+    "kit.picker.game",
 ];
 
 /// Every named state of screen `name` for the preview sheet: a list's
@@ -326,7 +328,7 @@ pub fn dialog_example(
     use crate::ui_kit::dialog::DialogBase;
     let (feature, name) = match base {
         DialogBase::QuickOptions => ("kit-dialog", "kit.dialog"),
-        DialogBase::Large => ("kit-dialog-large", "kit.dialog.large"),
+        DialogBase::Large | DialogBase::ValuePicker => ("kit-dialog-large", "kit.dialog.large"),
     };
     crate::ui_kit::screen::KitScreen::new(
         feature,
@@ -341,6 +343,24 @@ pub fn dialog_example(
         Prompt::new(&[Glyph::DpadLeft, Glyph::DpadRight], "Change"),
         Prompt::new(&[Glyph::B], "Back"),
     ])
+}
+
+/// The value picker's sample: the kit's Count (nine values, so the list
+/// scrolls past its six), 4 held, over the lobby's Game Setup as the
+/// Clankers page's pickers are.
+pub fn picker_sample() -> crate::ui_kit::picker::Pick {
+    use crate::ui_kit::choice::example::{COUNT, store};
+    let store = store();
+    let values = COUNT.choices().into_iter().map(|(_, n)| n).collect();
+    let current = COUNT.index(&store);
+    crate::ui_kit::picker::Pick::new(
+        COUNT.label,
+        values,
+        current,
+        COUNT.description,
+        Arc::new(move |i| COUNT.set(&store, i)),
+    )
+    .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
 /// The kit's choice rows on a page laid out as Game Options is (the
@@ -504,6 +524,13 @@ pub fn list_page(name: &str) -> Option<ListPage> {
             let store = Arc::new(settings::Store::defaults(&crate::clankers::DEFS));
             let s = Arc::new(crate::clankers::page(store));
             list(ListPage::new(s.class(), described(&s)))
+        }
+        "kit.picker" | "kit.picker.game" => {
+            crate::ui_kit::picker::offer(picker_sample());
+            let p = Arc::new(crate::ui_kit::picker::Picker::new(
+                name == crate::ui_kit::picker::GAME_NAME,
+            ));
+            list(ListPage::new(p.class(), described(&p)))
         }
         _ => None,
     }
@@ -685,7 +712,7 @@ mod tests {
         use crate::ui_kit::layout::Issue;
         matches!(
             (screen, issue),
-            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options", Issue::Contrast { id, .. })
+            ("kit.dialog" | "kit.dialog.large" | "clankers" | "h1-options" | "kit.picker" | "kit.picker.game", Issue::Contrast { id, .. })
                 if id.starts_with("row.")
         )
     }
@@ -773,12 +800,37 @@ mod tests {
         for base in [
             crate::ui_kit::dialog::DialogBase::Large,
             crate::ui_kit::dialog::DialogBase::QuickOptions,
+            crate::ui_kit::dialog::DialogBase::ValuePicker,
         ] {
             assert_eq!(
                 crate::ui_kit::dialog::DialogGeometry::fallback_for(base),
                 disc.dialog_geometry_for(base).unwrap(),
                 "DialogGeometry::fallback_for({base:?}) differs from the disc"
             );
+        }
+        // The value picker's description block and list are
+        // `low_level_settings`' own.
+        {
+            use crate::ui_kit::dialog::{
+                PICKER_ANIMATION, PICKER_HELP_TEXT, PICKER_LIST, PICKER_LIST_ROWS,
+                VALUE_PICKER_SCREEN_ID,
+            };
+            let picker = disc
+                .screen(VALUE_PICKER_SCREEN_ID)
+                .expect("low_level_settings");
+            assert_eq!(picker.header_layout(), 2, "the large dialog's header");
+            let pane = &picker.panes[0];
+            assert_eq!(pane.animation.0, PICKER_ANIMATION);
+            let help = &pane.text_blocks[0];
+            let r = help.rect;
+            assert_eq!([r.top, r.left, r.bottom, r.right], PICKER_HELP_TEXT.rect);
+            assert_eq!(help.font, PICKER_HELP_TEXT.font);
+            assert_eq!(help.text_color, PICKER_HELP_TEXT.colour);
+            assert_eq!(help.animation.0, PICKER_HELP_TEXT.animation);
+            let list = &pane.lists[0];
+            assert_eq!(list.skin, PICKER_LIST.skin);
+            assert_eq!([list.anchor.x, list.anchor.y], PICKER_LIST.anchor);
+            assert_eq!(list.visible_items as usize, PICKER_LIST_ROWS);
         }
         // Quick Options' help line and list, which the Clankers and Halo 1
         // Options pages use, are its tag's own, and those pages are laid out
