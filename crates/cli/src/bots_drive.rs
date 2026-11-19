@@ -59,6 +59,10 @@
 //!   P is on Xbox Live as ...`), or after [`LOBBY_WAIT_MS`], A on Start
 //!   Game (row 0); again (UP, A) if the phase hasn't left `menu` in
 //!   [`START_MS`].
+//!
+//! [`Driver::clankermatch`] takes the same way to the Live menu, then its
+//! Clankermatch row (row 2) and a clanker playlist instead
+//! ([`clankermatch`]).
 
 use std::collections::BTreeSet;
 
@@ -132,8 +136,56 @@ enum Step {
         at: u64,
         tries: u32,
     },
+    /// Clankermatch ([`clankermatch`]): A on the Live menu's Clankermatch
+    /// row went at `at`; on the playlist list that opens, to the planned
+    /// playlist's row (`downs` DOWN presses sent when the row can't be
+    /// read), A.
+    Playlists {
+        at: u64,
+        tries: u32,
+        downs: u32,
+        presses: u32,
+    },
+    /// A on the playlist went at `at`; waiting for the clanker search.
+    Searching {
+        at: u64,
+        tries: u32,
+    },
+    /// The search runs (since `since`); waiting for this console to host
+    /// the clanker playlist's lobby.
+    Matching {
+        since: u64,
+    },
+    /// Hosting the Clankermatch lobby (since `since`): nothing to press,
+    /// the bots fill it and its countdown starts the game.
+    MatchLobby {
+        since: u64,
+    },
+    /// The game runs (`played`: phase gameplay seen); it ends back in the
+    /// menus.
+    Playing {
+        played: bool,
+    },
+    /// The game is over: B (A on a dialog) until this console hosts no
+    /// session, so the fill ends and the bots go. `last_b`: the last press
+    /// was B; `dialogs`: dialogs answered on the way out.
+    Leaving {
+        presses: u32,
+        last_b: bool,
+        dialogs: u32,
+    },
     Done,
     Stuck,
+}
+
+/// What the drive goes for on the Xbox Live menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Custom Game (row 4), Start Game in its lobby.
+    CustomGame,
+    /// Clankermatch (row 2), the clanker playlist on `row` of its list,
+    /// the game, then out again ([`clankermatch`]).
+    Clankermatch { row: u32 },
 }
 
 /// The host's driver (module docs). Time is milliseconds since the run
@@ -142,6 +194,7 @@ enum Step {
 pub struct Driver {
     /// Local bots to wait for in the lobby.
     local: usize,
+    target: Target,
     step: Step,
     /// The screen id (`None` for every `ui: screen none` line).
     screen: Option<u32>,
@@ -198,6 +251,14 @@ pub struct Driver {
     on_live: BTreeSet<u8>,
     /// The HLE advertised a hosted session (and has not deleted it).
     hosting: bool,
+    /// Clankermatch: the HLE's clanker search started
+    /// (`live: clankermatch: searching clanker playlist ...`).
+    cm_search: bool,
+    /// Clankermatch: a human playlist's search line, if one came.
+    human_search: Option<String>,
+    /// Clankermatch: the Clankers driver fills a hosted clanker lobby
+    /// (`clankers: clankermatch: hosting clanker playlist ...`).
+    cm_hosting: bool,
     said: BTreeSet<String>,
     out: Vec<String>,
 }
@@ -311,6 +372,7 @@ impl Driver {
     pub fn new(local: usize) -> Self {
         Driver {
             local,
+            target: Target::CustomGame,
             step: Step::Boot,
             screen: None,
             screen_since: 0,
@@ -339,6 +401,9 @@ impl Driver {
             dialog_presses: 0,
             on_live: BTreeSet::new(),
             hosting: false,
+            cm_search: false,
+            human_search: None,
+            cm_hosting: false,
             said: BTreeSet::new(),
             out: Vec::new(),
         }
@@ -439,6 +504,15 @@ impl Driver {
         if let Some(p) = live_port(text) {
             self.on_live.insert(p);
         }
+        if text.starts_with(clankermatch::SEARCH) {
+            self.cm_search = true;
+        }
+        if text.starts_with(clankermatch::HUMAN_SEARCH) && self.human_search.is_none() {
+            self.human_search = Some(text.to_string());
+        }
+        if text.starts_with(clankermatch::HOSTING) {
+            self.cm_hosting = true;
+        }
         if text.contains("needs a code to sign in") {
             self.give_up(
                 "Xbox Live asks for the account's 6-digit code (the run's Live directory has no \
@@ -448,7 +522,9 @@ impl Driver {
             return;
         }
         match self.step {
-            Step::Hosting { .. } | Step::ToCustom { .. } if self.hosting_live() => {
+            Step::Hosting { .. } | Step::ToCustom { .. }
+                if self.target == Target::CustomGame && self.hosting_live() =>
+            {
                 self.queue.clear();
                 self.step = Step::Lobby { since: now };
                 self.say("in the Live custom game lobby".into());
@@ -461,7 +537,7 @@ impl Driver {
     }
 
     /// The agent API's phase (`session.status`), when it changes.
-    pub fn status(&mut self, _now: u64, phase: &str) {
+    pub fn status(&mut self, now: u64, phase: &str) {
         if self.phase.as_deref() != Some(phase) {
             self.phase = Some(phase.to_string());
         }
@@ -470,6 +546,7 @@ impl Driver {
             self.step = Step::Done;
             self.say(format!("done: the game left the menus (phase {phase})"));
         }
+        self.match_phase(now, phase);
     }
 
     fn say(&mut self, what: String) {
@@ -743,10 +820,11 @@ impl Driver {
         if !self.quiet(now, SETTLE_MS) {
             return;
         }
+        let (target, name) = self.live_row();
         if presses >= LIVE_MENU_PRESSES {
             let ui = self.ui.clone();
             self.give_up(format!(
-                "no Custom Game row after {LIVE_MENU_PRESSES} presses on the Xbox Live menu; \
+                "no {name} row after {LIVE_MENU_PRESSES} presses on the Xbox Live menu; \
                  the last screen: {ui}"
             ));
             return;
@@ -757,19 +835,21 @@ impl Driver {
                 "down",
                 "the Xbox Live menu shows no row yet: DOWN".to_string(),
             ),
-            Some(r) if r < CUSTOM_GAME_ROW => (
-                "down",
-                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
-            ),
-            Some(r) if r > CUSTOM_GAME_ROW => (
-                "up",
-                format!("toward Custom Game (row {CUSTOM_GAME_ROW}, from {r})"),
-            ),
-            Some(_) => ("a", "Custom Game".to_string()),
+            Some(r) if r < target => ("down", format!("toward {name} (row {target}, from {r})")),
+            Some(r) if r > target => ("up", format!("toward {name} (row {target}, from {r})")),
+            Some(_) => ("a", name.to_string()),
         };
         self.queue = vec![press(button, &why)];
         self.step = if button == "a" {
-            Step::Hosting { at: now, tries }
+            match self.target {
+                Target::CustomGame => Step::Hosting { at: now, tries },
+                Target::Clankermatch { .. } => Step::Playlists {
+                    at: now,
+                    tries,
+                    downs: 0,
+                    presses: 0,
+                },
+            }
         } else {
             Step::ToCustom {
                 at: now,
@@ -983,6 +1063,21 @@ impl Driver {
                     }
                 }
             }
+            Step::Playlists {
+                at,
+                tries,
+                downs,
+                presses,
+            } => self.on_playlists(now, at, tries, downs, presses),
+            Step::Searching { at, tries } => self.searching(now, at, tries),
+            Step::Matching { since } => self.matching(now, since),
+            Step::MatchLobby { since } => self.match_lobby(now, since),
+            Step::Playing { .. } => {}
+            Step::Leaving {
+                presses,
+                last_b,
+                dialogs,
+            } => self.leaving(now, presses, last_b, dialogs),
             Step::Done | Step::Stuck => {}
         }
     }
@@ -1006,6 +1101,8 @@ impl Driver {
         s
     }
 }
+
+pub mod clankermatch;
 
 #[cfg(test)]
 mod tests;

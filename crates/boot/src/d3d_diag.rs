@@ -472,6 +472,49 @@ fn probe_draw<S: std::fmt::Debug>(
         program: draw.shader.pixel_shader.is_some(),
         blend: st.blend_enable,
         depth_write: st.depth_write,
+        vs: vertex_name(&draw.shader.vertex),
+        depth_state: Some(depth_record(draw)),
+        constants: Some(draw.shader.constants.clone() as Arc<[[f32; 4]]>),
+    }
+}
+
+/// The vertex side of a draw for `render.frame`: `fvf 0x…`, or `prog
+/// @start n=slots #hash` (the low 32 bits of the words' FNV-1a hash).
+fn vertex_name(v: &d3d::shader::VertexProcessing) -> String {
+    match v {
+        d3d::shader::VertexProcessing::FixedFunction { fvf } => format!("fvf {fvf:#x}"),
+        d3d::shader::VertexProcessing::Program { start, microcode } => format!(
+            "prog @{start} n={} #{:08x}",
+            microcode.len() / 4,
+            microcode.words_hash() as u32
+        ),
+    }
+}
+
+/// A draw's depth state for `render.frame`.
+fn depth_record(draw: &ResolvedDraw) -> agent_proto::DepthRecord {
+    use gfx::state::DepthBufferMode;
+    let st = &draw.state.render;
+    let hw = &draw.hw;
+    agent_proto::DepthRecord {
+        mode: match st.depth_mode {
+            DepthBufferMode::Disabled => "off",
+            DepthBufferMode::Z => "z",
+            DepthBufferMode::W => "w",
+        }
+        .into(),
+        w: d3d::nv2a::w_buffered(draw),
+        func: format!("{:?}", st.depth_func),
+        write: st.depth_write,
+        viewport: [draw.viewport.min_z, draw.viewport.max_z],
+        scale: [hw.viewport_scale[2], hw.viewport_offset[2]],
+        clip: [hw.clip_min, hw.clip_max],
+        full: if draw.target.depth_format.is_some() {
+            gfx::renderer::d3dz_max(draw.target.depth_format)
+        } else {
+            0.0
+        },
+        clamp: d3d::nv2a::draw_clamps_depth(draw),
     }
 }
 
@@ -1306,11 +1349,21 @@ mod tests {
         assert_eq!(ranges(&[1, 2, 4, 6, 7], 2), "1-2, 4, ...");
     }
 
+    /// Held by every test that presents through a [`DiagBackend`]: the
+    /// probe numbers presents by the process-wide count ([`presents`], the
+    /// run's frame clock, one game per process), so another test presenting
+    /// in between moves a frame's numbers. Without it
+    /// `the_agent_probe_records_one_frame_in_passes` saw `present` 4 for
+    /// `from_present` 1 when `the_probe_records_the_constants_asked_for`
+    /// presented on another thread.
+    static PRESENTING: Mutex<()> = Mutex::new(());
+
     /// `render.frame` through the wrapper: clears and copies of one frame,
     /// in passes, between two presents; the presents themselves still
     /// reach the backend.
     #[test]
     fn the_agent_probe_records_one_frame_in_passes() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
         static PROBE: agent::render::FrameProbe = agent::render::FrameProbe::new();
         let (d, _) = DiagBackend::new(d3d::RecordingBackend::new());
         let mut d = d.with_probe(&PROBE);
@@ -1348,6 +1401,143 @@ mod tests {
         assert_eq!(f.passes[0].depth.as_deref(), Some("9"));
         assert_eq!(f.ops[0].detail, "to 3");
         assert!(!PROBE.armed());
+    }
+
+    /// A W-buffered draw of a vertex program to a D24S8 target, depth
+    /// clamped, LessEqual without a depth write.
+    fn depth_draw() -> ResolvedDraw {
+        use gfx::xdk::RenderStateTable;
+        let table = RenderStateTable::default();
+        let mut words = d3d::state::StateWords::defaults(true);
+        let clip_control = table
+            .canonical_to_guest(d3d::nv2a::RS_DEPTHCLIPCONTROL)
+            .expect("DEPTHCLIPCONTROL has a guest slot");
+        words.render[clip_control as usize] = 0x10;
+        let mut state = words.translate(&table);
+        state.render.depth_mode = gfx::state::DepthBufferMode::W;
+        state.render.depth_write = false;
+        let mut constants = [[0.0; 4]; d3d::shader::CONSTANTS];
+        constants[96 - 38] = [0.0, 0.0, 16384.0, 1.0];
+        constants[96 + 58] = [320.0, -240.0, 16777215.0, 0.0];
+        let mut hw = d3d::hw::HwState {
+            control0: Some(0x0010_0001 | d3d::nv2a::CONTROL0_Z_PERSPECTIVE),
+            clip_min: 0.0,
+            clip_max: 16777215.0,
+            ..Default::default()
+        };
+        hw.viewport_scale[2] = 16777215.0;
+        hw.viewport_offset[2] = 0.5;
+        ResolvedDraw {
+            entry: "DrawIndexedVertices",
+            primitive: gfx::vertex::PrimitiveType::TriangleList,
+            vertex_count: 3,
+            layout: gfx::vertex::VertexLayout::default(),
+            streams: Vec::new(),
+            indices: None,
+            state,
+            extras: words.stage_extras(),
+            raw: Arc::new(words),
+            target: TargetInfo {
+                width: 640,
+                height: 480,
+                format: D3DFormat::LinA8R8G8B8,
+                depth_format: Some(D3DFormat::LinD24S8),
+            },
+            texture_info: [None; 4],
+            shader: d3d::shader::ShaderInputs {
+                vertex: d3d::shader::VertexProcessing::Program {
+                    start: 7,
+                    microcode: vec![0u32; 12].into(),
+                },
+                provided_inputs: 1,
+                vertex_defaults: [[0.0, 0.0, 0.0, 1.0]; 16],
+                constants: Arc::new(constants),
+                pixel_shader: None,
+                combiner_state: Arc::new([0; 57]),
+                final_combiner_latch: false,
+                affine_projection: false,
+            },
+            viewport: d3d::backend::Viewport {
+                x: 0,
+                y: 0,
+                width: 640,
+                height: 480,
+                min_z: 0.0,
+                max_z: 1.0,
+            },
+            clip: None,
+            clip_rects: Vec::new(),
+            hw,
+            textures: [None; 4],
+            glyph_cache: 0,
+        }
+    }
+
+    /// `render.frame`'s draw carries the depth state the backend draws
+    /// with, the vertex side, and the constants the probe can pick from.
+    #[test]
+    fn a_probed_draw_says_how_it_tests_and_stores_depth() {
+        let draw = depth_draw();
+        let info = probe_draw(1u32, Some(2u32), &draw, &Ok(DrawOutcome::Drawn));
+        let depth = info.depth_state.expect("depth state");
+        assert_eq!(
+            depth,
+            agent_proto::DepthRecord {
+                mode: "w".into(),
+                w: true,
+                func: "LessEqual".into(),
+                write: false,
+                viewport: [0.0, 1.0],
+                scale: [16777215.0, 0.5],
+                clip: [0.0, 16777215.0],
+                full: 16777215.0,
+                clamp: true,
+            }
+        );
+        let hash = d3d::shader::Microcode::hash_words(&[0; 12]) as u32;
+        assert_eq!(info.vs, format!("prog @7 n=3 #{hash:08x}"));
+        let block = info.constants.expect("constants");
+        assert_eq!(block.len(), d3d::shader::CONSTANTS);
+        assert_eq!(block[96 - 38], [0.0, 0.0, 16384.0, 1.0]);
+
+        // SET_CONTROL0 decides W-buffering once pushed, whatever ZENABLE
+        // says; no depth target, no full scale.
+        let mut draw = depth_draw();
+        draw.hw.control0 = Some(0x0010_0001);
+        draw.target.depth_format = None;
+        draw.shader.vertex = d3d::shader::VertexProcessing::FixedFunction { fvf: 0x152 };
+        let info = probe_draw(1u32, None, &draw, &Ok(DrawOutcome::Drawn));
+        let depth = info.depth_state.expect("depth state");
+        assert_eq!(
+            (depth.mode.as_str(), depth.w, depth.full),
+            ("w", false, 0.0)
+        );
+        assert_eq!(info.vs, "fvf 0x152");
+    }
+
+    /// The constants asked for reach the frame by D3D register number.
+    #[test]
+    fn the_probe_records_the_constants_asked_for() {
+        let _one = PRESENTING.lock().unwrap_or_else(|e| e.into_inner());
+        static PROBE: agent::render::FrameProbe = agent::render::FrameProbe::new();
+        let (d, _) = DiagBackend::new(d3d::RecordingBackend::new());
+        let mut d = d.with_probe(&PROBE);
+        PROBE
+            .arm(&agent_proto::FrameParams {
+                arm: true,
+                draws: true,
+                constants: vec![-38, 58],
+                ..Default::default()
+            })
+            .unwrap();
+        d.present(1, 0).unwrap();
+        let _ = d.draw(1, Some(2), &depth_draw(), [None; 4]);
+        d.present(1, 0).unwrap();
+        let f = PROBE.reply().frame.expect("recorded");
+        let draw = &f.draws[0];
+        assert_eq!(draw.constants[&-38], [0.0, 0.0, 16384.0, 1.0]);
+        assert_eq!(draw.constants[&58], [320.0, -240.0, 16777215.0, 0.0]);
+        assert_eq!(draw.depth.as_ref().map(|d| d.w), Some(true));
     }
 
     /// Every `Backend` method must be forwarded by `DiagBackend`; a missed

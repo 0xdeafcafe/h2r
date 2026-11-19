@@ -1830,7 +1830,8 @@ clankermatch`, `-p live-worker a_clankermatch_game`.
 ### 8.5 Game run (checklist)
 
 `h2 play --live-local` (or a Live server with the new default hoppers),
-signed in on port 0, Clankers page off.
+signed in on port 0, Clankers page off. Steps 4 to 9 run with no one at
+the controller as `h2 bots test --clankermatch` (§13.1).
 
 1. The Xbox Live menu shows seven rows (six without co-op): Quickmatch,
    OptiMatch, Clankermatch, Co-op Campaign, Custom Game, Custom Game
@@ -3744,5 +3745,89 @@ non-zero on a failure).
   own, but a second `h2 bots test` needs another `--server-port` and
   `--root`.
 
+### 13.1 Clankermatch (`h2 bots test --clankermatch`)
+
+The same harness runs §8's Clankermatch end to end, so the §8.5 checklist's
+steps 4 to 9 have a verdict instead of a person at the controller.
+
+```sh
+H2_OPT=2 ~/.cargo/bin/h2 bots test --clankermatch [--playlist slayer|teams|doubles] \
+    --disc disc/halo2.iso --wait-clang [--keep] [--timeout 900] [--no-drive]
+```
+
+`--playlist` implies `--clankermatch` (slayer by default); `--count` and
+`--map` are refused, since the playlist sets both. Everything else
+(`--keep`, `--root`, `--out`, `--server-port`, `--settings-from`,
+`--dry-run`, `--no-drive`, `progress.json`, `h2 bots verdict`) is as
+above; the merged log's plan line is `bots-test: clankermatch plan: ...`,
+which is how `h2 bots verdict` knows which verdict to print.
+
+**Server state.** None to set up: the run's fresh store has no published
+hopper file, so the server serves the built-in lineup
+(`live_server::default_hopper`), whose hoppers 8, 9 and 10 are Clanker
+Slayer, Clanker Teams and Clanker Doubles, marked on
+`GET /v1/hoppers/clankers`. The harness reads the marks before it starts
+the game, checks the playlist asked for is marked and on the row the plan
+expects (the Clankermatch list shows only the clanker hoppers, in index
+order: rows 0, 1, 2), and stops at once if not. The game runs with
+`--set clankers.enabled=false`: the page's Clankers stay off and only the
+fill seats bots. The plan, from the lineup and `max_local`:
+
+| `--playlist` | Hopper | Row | Players | Bots | Local | Phantoms |
+|---|---|---|---|---|---|---|
+| slayer | 8 Clanker Slayer (FFA) | 0 | 2 to 8 | 7 | 3 | 4 |
+| teams | 9 Clanker Teams (2 teams) | 1 | 2 to 8 | 7 | 3 | 4 |
+| doubles | 10 Clanker Doubles (2 teams) | 2 | 2 to 4 | 3 | 1 | 2 |
+
+**The drive** (`crates/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
+and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
+list is the first settled screen after that A; its row is read off its
+list value (or counted from the DOWNs sent, when the value reads as no
+row), and A goes on the playlist's row. Then nothing is pressed: the
+search (4 to 20 s), the lobby this console hosts, the fill and the
+countdown run by themselves. A human playlist's search, no search 15 s
+after A (A again, 4 tries), no hosted lobby 90 s into the search, or a
+lobby that has not started in 180 s stops the drive, saying which. Once
+the game has played and the phase is back in the menus, it leaves: B
+(A on a dialog, and DOWN, A on the next one; A after a B that changed
+nothing, as on the carnage report) until this console hosts no session,
+then waits for the fill to end (30 s, `FILL_GONE`). A game that starts
+again first is waited out. The game runs to its own end: Rumble Slayer's
+6 minutes, Team Slayer's 8, or the score, so the timeout is 900 s
+(1200 with `--no-drive`).
+
+**The checks:**
+
+| # | Check | Passes on |
+|---|---|---|
+| 1 | Signed in to Xbox Live | `live: playing as Tester` |
+| 2 | Clanker hoppers listed (server and game) | `bots-test: server clanker hoppers [8, 9, 10]` and `live: clankermatch: clanker hoppers [8, 9, 10]`, both with the plan's hopper |
+| 3 | The Clankermatch row opened the clanker playlists | `clankermatch: the playlists are the clanker hoppers`, and no `the server named no clanker hoppers: the list is empty` |
+| 4 | The clanker search started | `live: clankermatch: searching clanker playlist H` with the plan's H |
+| 5 | The search ended with this console hosting | `live: session S advertised` after the search, and `clankers: clankermatch: hosting clanker playlist H (session S)` |
+| 6 | Local bots planned for the lobby | `clankers: clankermatch: N local bots join the lobby` with the plan's N |
+| 7 | Local bots seated and signed in, in the lobby | per local port, after the hosting line: `clankers: Clanker P on`, `bots: join gate port P: ...: signs in`, `bots: signing ... on port P ...`; it says whether in the lobby |
+| 8 | Local bots on Xbox Live as bot accounts | per port, `Clanker P is G on Xbox Live (bot account 000b...)` and `G on port P is on Xbox Live as its own bot account` |
+| 9 | The lobby reached the playlist's fewest players | the most filled or joined players the server's session showed between the hosting line and the start |
+| 10 | The countdown ran and the game started | `session.status` phase `loading` or `gameplay` after the hosting line |
+| 11 | Gameplay on a map | phase `gameplay`, not campaign, after the start |
+| 12 | Phantoms joined after the start | `bots: phantom G joins (peer K)` for each phantom, all after the start, none before, and no phantom failure |
+| 13 | Game record: kind clankermatch | the newest `GET /v1/games` record (`bots-test: game ... kind K, playlist P`) has kind `clankermatch` and at least the local bots with `bot: true` |
+| 14 | After the game, the local bots leave | `clankers: clankermatch: the game is over: the bots go` (or `this console hosts another game`) after gameplay, then `clankers: Clanker P off` for each local port |
+
+A failed check says what the log shows instead and the likely cause: for
+2 which side lacks the hopper and the HLE's own line (`no clanker hoppers
+from the server`, `not asked for`); for 3 an empty list or a row never
+pressed; for 4 a human playlist's search or another clanker hopper; for 5
+whether a session was advertised at all (the game kept searching) or only
+the fill missed it (the HLE did not read the advertisement's hopper as a
+clanker one); for 7 the ports never seated (the roster) or seated but not
+signed in (their last join gate lines); for 9 and 10 whether the lobby was
+short of players or full and still not started (the game's matchmaking
+start); for 12 phantoms that joined before the start (a phantom cannot be
+a lobby player, §5.1); for 13 the kind recorded; for 14 that the console
+still hosts the session, or which bots did not sign off.
+
 **Tests:** `cargo test -p cli bots_` (the verdict from log lines, the
-driver's presses, the arguments).
+driver's presses, the arguments; Clankermatch's under `bots_drive::clankermatch`,
+`bots_verdict::clankermatch` and `bots_test_cmd`).

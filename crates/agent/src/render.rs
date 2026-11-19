@@ -12,13 +12,13 @@
 //! new pass.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use agent_proto::{
-    DrawRecord, FrameParams, FrameRecord, FrameReply, OpRecord, PassRecord, RenderStats, RpcError,
-    SnapRecord, code, method,
+    DepthRecord, DrawRecord, FrameParams, FrameRecord, FrameReply, OpRecord, PassRecord,
+    RenderStats, RpcError, SnapRecord, code, method,
 };
 use serde_json::{Map, Value, json};
 
@@ -45,6 +45,14 @@ pub struct DrawInfo {
     pub program: bool,
     pub blend: bool,
     pub depth_write: bool,
+    /// The vertex side, as [`DrawRecord::vs`].
+    pub vs: String,
+    /// How the draw tests and stores depth, as [`DrawRecord::depth`]
+    /// (`depth` here is the depth surface).
+    pub depth_state: Option<DepthRecord>,
+    /// The draw's constant registers, hardware order (D3D register + 96),
+    /// shared with the backend: the probe copies out the ones asked for.
+    pub constants: Option<Arc<[[f32; 4]]>>,
 }
 
 /// What the wrapper should do after telling the probe about a draw or a
@@ -83,6 +91,7 @@ struct Arming {
     draws: bool,
     max_draws: usize,
     snap: BTreeSet<usize>,
+    constants: Vec<i32>,
 }
 
 struct Recording {
@@ -143,6 +152,22 @@ impl FrameProbe {
         if p.snap.len() > FrameParams::MAX_SNAPS {
             return Err(format!("snap at most {} passes", FrameParams::MAX_SNAPS));
         }
+        if p.constants.len() > FrameParams::MAX_CONSTANTS {
+            return Err(format!(
+                "constants: at most {} registers",
+                FrameParams::MAX_CONSTANTS
+            ));
+        }
+        if let Some(r) = p
+            .constants
+            .iter()
+            .find(|r| !FrameParams::CONSTANT_REGISTERS.contains(r))
+        {
+            return Err(format!("constants: c{r} is not a register (-96..=95)"));
+        }
+        if !p.constants.is_empty() && !p.draws {
+            return Err("constants go with draws".into());
+        }
         let mut s = self.lock();
         let seq = s.next_seq;
         s.next_seq += 1;
@@ -153,6 +178,7 @@ impl FrameProbe {
             draws: p.draws,
             max_draws,
             snap: p.snap.iter().copied().collect(),
+            constants: p.constants.clone(),
         });
         s.last = None;
         self.armed.store(true, Ordering::Relaxed);
@@ -220,6 +246,7 @@ impl FrameProbe {
             *t.outcomes.entry(d.outcome.clone()).or_default() += 1;
             if r.arming.draws {
                 if r.rec.draws.len() < r.arming.max_draws {
+                    let constants = picked_constants(&r.arming.constants, d.constants.as_deref());
                     r.rec.draws.push(DrawRecord {
                         index,
                         pass: pass_index,
@@ -232,6 +259,9 @@ impl FrameProbe {
                         program: d.program,
                         blend: d.blend,
                         depth_write: d.depth_write,
+                        vs: d.vs,
+                        depth: d.depth_state,
+                        constants,
                     });
                 } else {
                     r.rec.truncated = true;
@@ -491,10 +521,10 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
                 .arm(&p)
                 .map_err(|e| RpcError::new(code::INVALID_PARAMS, e))?
         } else {
-            if p.draws || p.max_draws.is_some() || !p.snap.is_empty() {
+            if p.draws || p.max_draws.is_some() || !p.snap.is_empty() || !p.constants.is_empty() {
                 return Err(RpcError::new(
                     code::INVALID_PARAMS,
-                    "draws, max_draws and snap go with arm",
+                    "draws, max_draws, snap and constants go with arm",
                 ));
             }
             probe.reply()
@@ -521,6 +551,21 @@ pub fn add_methods(agent: &Agent, probe: &'static FrameProbe, sources: RenderSou
     });
 }
 
+/// The registers `wanted` (D3D numbering) out of a draw's constants
+/// (hardware order): those the block has.
+fn picked_constants(wanted: &[i32], block: Option<&[[f32; 4]]>) -> BTreeMap<i32, [f32; 4]> {
+    let Some(block) = block else {
+        return BTreeMap::new();
+    };
+    wanted
+        .iter()
+        .filter_map(|&r| {
+            let i = usize::try_from(r + 96).ok()?;
+            block.get(i).map(|v| (r, *v))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,6 +584,7 @@ mod tests {
             program: true,
             blend: false,
             depth_write: true,
+            ..DrawInfo::default()
         }
     }
 
@@ -675,6 +721,75 @@ mod tests {
         assert!(p.reply().frame.is_some());
         let r = p.arm(&ok).unwrap();
         assert_eq!((r.seq, r.frame), (Some(2), None));
+    }
+
+    #[test]
+    fn draws_carry_depth_state_and_the_constants_asked_for() {
+        let p = FrameProbe::new();
+        p.arm(&FrameParams {
+            arm: true,
+            draws: true,
+            constants: vec![-96, -38, 95],
+            ..Default::default()
+        })
+        .unwrap();
+        p.present(1);
+        let mut block = vec![[0.0f32; 4]; 192];
+        block[0] = [1.0, 2.0, 3.0, 4.0];
+        block[58] = [0.0, 0.0, 16384.0, 1.0];
+        block[191] = [9.0; 4];
+        let depth = DepthRecord {
+            mode: "w".into(),
+            w: true,
+            func: "LessEqual".into(),
+            write: false,
+            viewport: [0.0, 1.0],
+            scale: [16777215.0, 0.0],
+            clip: [0.0, 16777215.0],
+            full: 16777215.0,
+            clamp: true,
+        };
+        p.draw(DrawInfo {
+            vs: "prog @0 n=4 #00000001".into(),
+            depth_state: Some(depth.clone()),
+            constants: Some(Arc::from(block)),
+            ..draw("main", "drawn", 3)
+        });
+        // A draw with no constant block (fixed function before any
+        // register was set): no constants, no error.
+        p.draw(draw("main", "drawn", 3));
+        p.present(2);
+        let f = p.reply().frame.unwrap();
+        let d = &f.draws[0];
+        assert_eq!(d.vs, "prog @0 n=4 #00000001");
+        assert_eq!(d.depth.as_ref(), Some(&depth));
+        assert_eq!(d.constants.len(), 3);
+        assert_eq!(d.constants[&-96], [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(d.constants[&-38], [0.0, 0.0, 16384.0, 1.0]);
+        assert_eq!(d.constants[&95], [9.0; 4]);
+        assert!(f.draws[1].constants.is_empty());
+        assert!(f.draws[1].depth.is_none());
+    }
+
+    #[test]
+    fn constants_are_checked_when_arming() {
+        let p = FrameProbe::new();
+        let arm = |constants: Vec<i32>, draws: bool| {
+            p.arm(&FrameParams {
+                arm: true,
+                draws,
+                constants,
+                ..Default::default()
+            })
+        };
+        assert!(
+            arm(vec![96], true).is_err(),
+            "c96 is past the last register"
+        );
+        assert!(arm(vec![-97], true).is_err());
+        assert!(arm((0..33).collect(), true).is_err(), "at most 32");
+        assert!(arm(vec![0], false).is_err(), "only on listed draws");
+        assert!(arm(vec![-96, 95], true).is_ok());
     }
 
     #[test]

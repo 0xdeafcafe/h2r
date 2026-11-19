@@ -54,12 +54,19 @@ or a short form:
   sample-status          profile.sample.status
   hostperf               host.perf: the newest host perf line
   ui                     ui.screen: the menu screen player one's input goes to (H2_UI_WATCH=1)
-  frame [draws] [snap N[,M...]]  render.frame: record the next whole frame and
+  frame [draws] [max N] [constants R[..S][,...]] [snap N[,M...]]
+                         render.frame: record the next whole frame and
                          print it: passes (target, clears, draws by outcome,
                          primitive, entry, texture formats), copies and reads,
-                         native render paths; `draws` lists each draw; `snap`
-                         reads passes N... back as PNGs under the cache
-                         directory's frames/ (waits up to 10 s for the frame)
+                         native render paths; `draws` lists each draw (at
+                         most `max`, 2000) with its vertex side and depth
+                         state (mode, W-buffered, func, write, viewport z,
+                         viewport scale/offset z, clip range, full scale,
+                         clamp); `constants` lists those vertex constant
+                         registers (D3D numbering, -96..95, at most 32) on
+                         each draw, and implies `draws`; `snap` reads passes
+                         N... back as PNGs under the cache directory's
+                         frames/ (waits up to 10 s for the frame)
   loads [N]              load.timeline: the last N (8) level loads, BSP
                          switches and stalls: stall and settle times, and the
                          bytes read, uploads and compiles in each; a stall
@@ -329,10 +336,52 @@ fn frame_params(words: &[String]) -> Result<Value> {
                     .with_context(|| format!("snap: pass numbers, not {list}"))?;
                 p["snap"] = json!(passes);
             }
-            other => bail!("frame: unexpected {other} (draws, snap N[,M...])"),
+            "max" => {
+                let n = it.next().context("max needs a draw count, e.g. max 5000")?;
+                let n: u64 = n
+                    .parse()
+                    .with_context(|| format!("max: a draw count, not {n}"))?;
+                p["max_draws"] = json!(n);
+            }
+            "constants" => {
+                let list = it
+                    .next()
+                    .context("constants needs registers, e.g. constants -38..-35,58")?;
+                p["constants"] = json!(constant_registers(list)?);
+                p["draws"] = json!(true);
+            }
+            other => bail!(
+                "frame: unexpected {other} (draws, max N, constants R[..S][,...], snap N[,M...])"
+            ),
         }
     }
     Ok(p)
+}
+
+/// `constants`' registers: `N` or an inclusive range `A..B`, by commas
+/// (`-38..-35,58`).
+fn constant_registers(list: &str) -> Result<Vec<i32>> {
+    let mut regs = Vec::new();
+    for item in list.split(',') {
+        let item = item.trim();
+        let reg = |s: &str| {
+            s.trim()
+                .trim_start_matches('c')
+                .parse::<i32>()
+                .with_context(|| format!("constants: a register number, not {s}"))
+        };
+        match item.split_once("..") {
+            Some((a, b)) => {
+                let (a, b) = (reg(a)?, reg(b)?);
+                if b < a {
+                    bail!("constants: {item} runs backwards");
+                }
+                regs.extend(a..=b);
+            }
+            None => regs.push(reg(item)?),
+        }
+    }
+    Ok(regs)
 }
 
 /// `render.frame`: arms, then reads until the frame it armed is in.
@@ -785,7 +834,24 @@ mod tests {
             frame_params(&words("frame draws snap 0,3")).unwrap(),
             json!({"arm": true, "draws": true, "snap": [0, 3]})
         );
-        for bad in ["frame loud", "frame snap", "frame snap x"] {
+        assert_eq!(
+            frame_params(&words("frame constants -38..-36,c58 max 50")).unwrap(),
+            json!({
+                "arm": true,
+                "draws": true,
+                "constants": [-38, -37, -36, 58],
+                "max_draws": 50
+            })
+        );
+        for bad in [
+            "frame loud",
+            "frame snap",
+            "frame snap x",
+            "frame constants",
+            "frame constants 5..3",
+            "frame constants x",
+            "frame max",
+        ] {
             assert!(frame_params(&words(bad)).is_err(), "{bad}");
         }
     }

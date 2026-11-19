@@ -484,6 +484,24 @@ pub fn strip_triangles(strip: &[u16]) -> Vec<[u16; 3]> {
         .collect()
 }
 
+/// A Halo 1 strip that [`strip_triangles`] reads back as `tris`, in order
+/// and wound as given: each triangle `[a, b, c]` sits at an even window as
+/// `a c b`, and the next one, `[d, e, f]`, follows after `b b d` (every
+/// window across the join repeats an index, so is skipped, and `d f e`
+/// lands on an even window again). For a part some of whose triangles are
+/// dropped.
+pub fn triangles_strip(tris: &[[u16; 3]]) -> Vec<u16> {
+    let mut strip = Vec::with_capacity(tris.len() * 9);
+    for (i, &[a, b, c]) in tris.iter().enumerate() {
+        if i > 0 {
+            let last = strip[strip.len() - 1];
+            strip.extend([last, last, a]);
+        }
+        strip.extend([a, c, b]);
+    }
+    strip
+}
+
 // ---------------------------------------------------------------------------
 // Animation graphs
 // ---------------------------------------------------------------------------

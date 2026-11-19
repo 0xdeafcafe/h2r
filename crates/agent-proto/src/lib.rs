@@ -27,8 +27,8 @@ pub use endpoint::Endpoint;
 pub use load::{LoadParams, LoadRecord, LoadSegment, Loads};
 pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
-    DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord, PassRecord,
-    RenderStats, SnapRecord,
+    DepthRecord, DrawRecord, FrameParams, FrameRecord, FrameReply, FrameTotals, OpRecord,
+    PassRecord, RenderStats, SnapRecord,
 };
 
 use serde::{Deserialize, Serialize};
