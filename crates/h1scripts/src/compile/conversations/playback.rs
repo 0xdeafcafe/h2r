@@ -5,7 +5,7 @@ use h1ai::conversations::Line;
 use super::{staging::Staging, *};
 
 impl Scene<'_, '_, '_, '_> {
-    fn in_status(&self, status: i32) -> Expr {
+    pub(super) fn in_status(&self, status: i32) -> Expr {
         eq(self.status.get(), short(status))
     }
 
@@ -13,7 +13,7 @@ impl Scene<'_, '_, '_, '_> {
         not(eq(self.working.get(), self.request.get()))
     }
 
-    fn active(&self) -> Expr {
+    pub(super) fn active(&self) -> Expr {
         and([
             pred(">", [self.status.get(), short(0)]),
             pred("<", [self.status.get(), short(FAILED)]),
