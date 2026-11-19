@@ -168,3 +168,80 @@ impl UploadRing {
         self.cursor
     }
 }
+
+/// Native views and target copies share a forward-only upload arena until submit.
+/// Return the ring to this pool only after its last command buffer completes.
+#[derive(Clone, Default)]
+pub struct UploadPool(std::sync::Arc<std::sync::Mutex<Vec<UploadRing>>>);
+
+#[derive(Clone)]
+pub struct SubmissionUploads(std::sync::Arc<SubmissionStorage>);
+
+struct SubmissionStorage {
+    pool: UploadPool,
+    ring: std::sync::Mutex<Option<UploadRing>>,
+}
+
+impl Drop for SubmissionStorage {
+    fn drop(&mut self) {
+        let Some(mut ring) = self.ring.get_mut().unwrap_or_else(|e| e.into_inner()).take() else { return };
+        // A cancelled preparation can still have unflushed CPU bytes.
+        ring.staged.clear();
+        ring.reset();
+        self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).push(ring);
+    }
+}
+
+impl UploadPool {
+    pub fn begin(&self) -> SubmissionUploads {
+        SubmissionUploads(std::sync::Arc::new(SubmissionStorage { pool: self.clone(), ring: Default::default() }))
+    }
+}
+
+impl SubmissionUploads {
+    /// Allocate immutable bytes for a run. Returns a COPY_SRC region usable in
+    /// this copy's encoder. A buffer is allocated only when a pass uploads data.
+    pub fn stage(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> (wgpu::Buffer, u64) {
+        let mut guard = self.0.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let ring = guard.get_or_insert_with(|| {
+            self.0.pool.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| {
+                UploadRing::new(device, "native submission uploads", wgpu::BufferUsages::COPY_SRC, 256 << 10)
+            })
+        });
+        ring.push(device, queue, bytes, 4)
+    }
+
+    /// Enqueue the staged bytes ahead of the commands that consume these regions.
+    pub fn flush(&self, queue: &wgpu::Queue) {
+        if let Some(ring) = self.0.ring.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { ring.flush(queue); }
+    }
+
+    pub fn same_submission(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.0, &other.0) }
+}
+
+/// Writes made immediately before a native draw. Only the source allocation is
+/// queue-written. The copies into bound uniforms and indirect args follow draw order.
+pub struct EncoderUploads<'a> {
+    pub arena: &'a SubmissionUploads,
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+}
+
+impl EncoderUploads<'_> {
+    pub fn write(&mut self, dst: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
+        if bytes.is_empty() { return; }
+        let (src, at) = self.arena.stage(self.device, self.queue, bytes);
+        self.encoder.copy_buffer_to_buffer(&src, at, dst, offset, bytes.len() as u64);
+    }
+
+    /// Stage shared view data once and copy it into each placement's block;
+    /// the stable rows in the rest of each block are initialized at map load.
+    pub fn repeat(&mut self, dst: &wgpu::Buffer, first: u64, stride: u64, count: usize, bytes: &[u8]) {
+        if count == 0 || bytes.is_empty() { return; }
+        let (src, at) = self.arena.stage(self.device, self.queue, bytes);
+        for i in 0..count {
+            self.encoder.copy_buffer_to_buffer(&src, at, dst, first + i as u64 * stride, bytes.len() as u64);
+        }
+    }
+}

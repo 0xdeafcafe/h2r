@@ -97,9 +97,11 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn ask(&self, _mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<Arc<PartSet>> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<native_render::skip::Cleared> {
         self.asked.lock().unwrap().push((bsp, *camera, stencil.clone()));
-        Some(Arc::clone(&self.parts))
+        let mut mem = native_world::Mem(mem);
+        let (masks, cleared, _) = native_world::plan_parts(&mem, &self.parts, |_| true)?;
+        masks.apply(&mut mem).then_some(cleared)
     }
 }
 
@@ -150,7 +152,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
 
     let stub = Arc::new(Stub {
         asked: Mutex::default(),
-        parts: Arc::new([((Owner::Cluster(0), 0), 0x10u16)].into_iter().collect()),
+        parts: Arc::new([((Owner::Cluster(0), 0), 0xe000_0010u32)].into_iter().collect()),
     });
     native_world::set_host(stub.clone());
 

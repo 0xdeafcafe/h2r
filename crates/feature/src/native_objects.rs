@@ -164,7 +164,8 @@ pub trait Host: Send + Sync {
     fn want(&self, definition: u32);
     /// Asks the device for the view's pass over `objects`. `false`: not
     /// drawn (the skip is undone).
-    fn draw(&self, camera: &RenderCamera, objects: Vec<ObjectFrame>) -> bool;
+    fn draw(&self, mem: &mut dyn GuestMemory, camera: &RenderCamera, objects: Vec<ObjectFrame>,
+        masks: &native_render::skip::MaskPlan, ranges: usize) -> bool;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -415,10 +416,17 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         }
         false
     };
-    let Some(mut cleared) = objects::clear_objects(&mut m, LIGHTMAP_LAYER, &accept) else {
+    let Some(mut preview) = native_render::skip::MaskPreview::new(&m) else {
         stop(Stop::NoList, || "the current list does not read".to_owned());
         return;
     };
+    let Some(mut cleared) = objects::clear_objects(&mut preview, LIGHTMAP_LAYER, &accept) else {
+        stop(Stop::NoList, || "the current list does not read".to_owned());
+        return;
+    };
+    use timeline::native::{Stage, Metric};
+    Stage::Objects.count(Metric::Examined, cleared.walk.walked as u64);
+    Stage::Objects.count(Metric::RefusedOwnership, (cleared.walk.walked - cleared.walk.accepted) as u64);
     add_walk(&cleared.walk);
     count_implementations(&set.map, &cleared.walk);
     if cleared.items.is_empty() {
@@ -443,7 +451,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     // gets its frames (`NativeSet::shadowed`).
     let drawn: HashSet<u32> = frames.iter().filter(|f| !set.shadowed.contains(&(f.definition as u16))).map(|f| f.handle).collect();
     let accepted = cleared.handles.len();
-    objects::keep_only(&mut m, &mut cleared, &|h: u32| drawn.contains(&h));
+    objects::keep_only(&mut preview, &mut cleared, &|h: u32| drawn.contains(&h));
     if frames.is_empty() {
         stop(Stop::NoneRead, || {
             format!("{accepted} accepted objects, none read with its model's node count (node block at body +0x114/+0x116)")
@@ -451,12 +459,13 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     let count = frames.len() as u64;
-    if !host.draw(&camera, frames) {
+    let Some(masks) = preview.finish() else { return };
+    if !host.draw(m.0, &camera, frames, &masks, cleared.items.len()) {
         stop(Stop::DrawRefused, || "the device cannot take an external pass".to_owned());
-        objects::restore(&mut m, &cleared);
         return;
     }
     stop(Stop::Drawn, || format!("{count} objects, {} items", cleared.items.len()));
+    Stage::Objects.count(Metric::Suppressed, cleared.items.len() as u64);
     DRAWN.fetch_add(1, Ordering::Relaxed);
     OBJECTS.fetch_add(count, Ordering::Relaxed);
     ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);

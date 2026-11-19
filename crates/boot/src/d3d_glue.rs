@@ -948,6 +948,24 @@ impl d3d::backend::Backend for Headless {
     }
     // The native renderer's pass (docs/graphics/native-renderer.md):
     // nothing to draw into headless.
+    fn external_attachments(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
+        copy: d3d::TargetCopy,
+    ) -> Result<Option<Vec<d3d::backend::ExternalAttachments>>, String> {
+        self.0.external_attachments(surfaces, textures, copy)
+    }
+
+    fn prepare_external(
+        &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, request: d3d::ExternalPassRequest,
+        textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
+    ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
+        self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn commit_external(&mut self, recording: d3d::ExternalRecording) {
+        self.0.commit_external(recording);
+    }
+
     fn supports_external_pass(&self) -> bool {
         self.0.supports_external_pass()
     }

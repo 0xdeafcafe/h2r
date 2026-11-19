@@ -118,7 +118,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn ask(&self, mem: &dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<Arc<PartSet>> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, plan: &StencilPlan) -> Option<native_render::skip::Cleared> {
         let name = crate::health::loaded_map_name(mem).ok()?;
         if name.is_empty() || bsp == 0 {
             return None;
@@ -186,7 +186,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         };
         let mut d = self.device.lock().ok()?;
-        if !d.can_external_pass() {
+        if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
         // The programs write w as depth and clip w (`xps_w_depth`): a view
@@ -229,7 +229,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        d.request_external_pass(Box::new(WorldPass {
+        let owners = Diagnostics::get().owners;
+        let (masks, cleared, selected) = feature::native_world::plan_parts(
+            &feature::native_world::Mem(mem), &ready.parts, |owner| owners.keeps(owner),
+        )?;
+        let ranges = selected.len();
+        if ranges == 0 { return None; }
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
+        let pass = Box::new(WorldPass {
+            selected,
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
@@ -238,12 +247,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             traced: false,
             stencil,
             cull,
-        }));
-        let owners = Diagnostics::get().owners;
-        if owners == Owners::All {
-            return Some(Arc::clone(&ready.parts));
+        });
+        let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new()).ok()??;
+        if !masks.apply(&mut feature::native_world::Mem(mem)) {
+            timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
+            return None;
         }
-        Some(Arc::new(ready.parts.iter().filter(|((o, _), _)| owners.keeps(*o)).map(|(&k, &v)| (k, v)).collect()))
+        reservation.commit();
+        timeline::native::Stage::World.count(timeline::native::Metric::Suppressed, ranges as u64);
+        Some(cleared)
     }
 }
 
@@ -314,6 +326,7 @@ pub(crate) fn upload<'a>(ready: &'a Ready, t: &d3d::ExternalTarget<'_>) -> std::
 
 /// One view's world pass.
 struct WorldPass {
+    selected: Vec<(Owner, u8)>,
     ready: Arc<Ready>,
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
@@ -362,9 +375,15 @@ impl d3d::ExternalPass for WorldPass {
         self.clip = Some(clip);
     }
 
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: true }
+    }
+
+    fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
+
+    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
-        let Some(gpu) = gpu.as_mut() else { return };
+        let Some(gpu) = gpu.as_mut() else { return 0 };
         let (placements, clusters) = Diagnostics::get().inherit_cull;
         gpu.set_inherited_cull(native_render::program::InheritedCull {
             device: self.cull,
@@ -379,7 +398,7 @@ impl d3d::ExternalPass for WorldPass {
                 if !NO_VIEW.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     eprintln!("native-world: a pass came without the device's view constants; it draws nothing");
                 }
-                return;
+                return 0;
             };
             let view = ViewInputs {
                 constants,
@@ -388,19 +407,21 @@ impl d3d::ExternalPass for WorldPass {
                 z_scale: t.z_scale,
                 w_clip: self.w_clip,
             };
-            gpu.prepare_programs(t.queue, &view);
+            gpu.prepare_programs(&mut t.encoder_uploads(), &view);
             if let Some(dump) = Diagnostics::get().dump {
                 arm_dump(&self.ready, gpu, &view, dump);
             }
         }
         let diag = Diagnostics::get();
-        gpu.set_cull(!diag.no_cull);
+        // The guest list already did visibility selection for these exact parts.
+        gpu.set_cull(false);
         gpu.set_owners(diag.owners);
+        let full_scale = t.z_scale;
         let culled = gpu.prepare(
-            t.queue,
+            &mut t.encoder_uploads(),
             &self.camera,
             DepthRule {
-                full_scale: t.z_scale,
+                full_scale,
                 floor: true,
             },
         );
@@ -420,7 +441,7 @@ impl d3d::ExternalPass for WorldPass {
         }
         gpu.set_stencil(stencil);
         let [x, y, width, height] = t.viewport;
-        gpu.encode(
+        let recorded = gpu.encode_parts(
             t.device,
             t.encoder,
             t.color,
@@ -429,11 +450,13 @@ impl d3d::ExternalPass for WorldPass {
             t.depth_format,
             PassViewport { x, y, width, height },
             t.size,
+            Some(&self.selected),
         );
         let unbound = gpu.unbound_batches();
         if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
             eprintln!("native-world: {unbound} batch draws left out: their material program could not be bound");
         }
+        recorded
     }
 }
 
@@ -1059,7 +1082,7 @@ fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
     world
         .draws
         .iter()
-        .filter_map(|d| Some(((d.owner, d.part), shaders.get(usize::from(d.material))?.0 as u16)))
+        .filter_map(|d| Some(((d.owner, d.part), shaders.get(usize::from(d.material))?.0)))
         .collect()
 }
 
@@ -1541,7 +1564,7 @@ mod tests {
         let w = keep_draws(world.clone(), &|d| translated.contains(&d.material) && drawn_natively(d, &HashSet::new()));
         assert!(w.draws.iter().all(|d| d.material == 7), "8 and 9 are not drawn natively (no stage 1 look)");
         let parts = part_set(&w, &shaders);
-        let want: PartSet = [((Owner::Cluster(0), 0), 0x107)].into_iter().collect();
+        let want: PartSet = [((Owner::Cluster(0), 0), 0xe000_0107)].into_iter().collect();
         assert_eq!(parts, want, "7's cluster part by owner and index, with its shader; not 9's, which shares it, nor the placement's");
         // Batched again over what is left: one batch, one draw.
         let batches: Vec<_> = w.batches.iter().map(|b| (b.material, b.first_draw, b.draw_count)).collect();
@@ -1552,7 +1575,7 @@ mod tests {
         let rigid: HashSet<u16> = [7].into_iter().collect();
         let w = keep_draws(world, &|d| translated.contains(&d.material) && drawn_natively(d, &rigid));
         let parts = part_set(&w, &shaders);
-        let want: PartSet = [((Owner::Cluster(0), 0), 0x107), ((Owner::Instance(3), 1), 0x107)].into_iter().collect();
+        let want: PartSet = [((Owner::Cluster(0), 0), 0xe000_0107), ((Owner::Instance(3), 1), 0xe000_0107)].into_iter().collect();
         assert_eq!(parts, want);
         let owners: Vec<_> = w.draws.iter().map(|d| (d.owner, d.batch)).collect();
         assert_eq!(owners, vec![(Owner::Cluster(0), 0), (Owner::Instance(3), 0)]);

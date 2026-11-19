@@ -38,9 +38,10 @@ fn camera() -> RenderCamera {
 }
 
 fn read(ctx: &gfx::GfxContext, texture: &wgpu::Texture, aspect: wgpu::TextureAspect) -> Vec<u8> {
+    let (width, height) = (texture.width(), texture.height());
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: u64::from(SIZE * SIZE * 4),
+        size: u64::from(width * height * 4),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -56,13 +57,13 @@ fn read(ctx: &gfx::GfxContext, texture: &wgpu::Texture, aspect: wgpu::TextureAsp
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(SIZE * 4),
-                rows_per_image: Some(SIZE),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
         },
         wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
     );
@@ -141,7 +142,9 @@ fn the_world_draws_lit_with_the_games_w_depth() {
         occlusion_query_set: None,
         multiview_mask: None,
     }));
-    let stats = gpu.prepare(&ctx.queue, &camera(), DepthRule::D24);
+    let arena = gfx::ring::UploadPool::default().begin();
+    let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, encoder: &mut enc, arena: &arena };
+    let stats = gpu.prepare(&mut uploads, &camera(), DepthRule::D24);
     assert_eq!((stats.visible, stats.total), (1, 2));
     let viewport = PassViewport {
         x: 0.0,
@@ -159,6 +162,7 @@ fn the_world_draws_lit_with_the_games_w_depth() {
         viewport,
         (SIZE, SIZE),
     );
+    arena.flush(&ctx.queue);
     ctx.queue.submit([enc.finish()]);
 
     let px = read(&ctx, &color, wgpu::TextureAspect::All);
@@ -187,4 +191,65 @@ fn the_world_draws_lit_with_the_games_w_depth() {
     );
     let corner = f32::from_le_bytes([d[0], d[1], d[2], d[3]]);
     assert_eq!(corner, 1.0);
+}
+
+#[test]
+fn both_cameras_keep_their_uniforms_and_indirect_slots_at_both_scales_in_one_submit() {
+    use wgpu::{TextureFormat as F, TextureUsages as U};
+    let Ok(ctx) = gfx::GfxContext::headless() else { return };
+    let mut b = WorldBuilder::new();
+    let page = Some(LightmapKey { page: 0, palette: 0 });
+    b.add_section(Owner::Cluster(0), &wall(10.0, 0), &Placement::IDENTITY, page);
+    b.add_section(Owner::Cluster(1), &wall(-10.0, 1), &Placement::IDENTITY, page);
+    let mut world = GpuWorld::new(&ctx.device, &ctx.queue, b.finish(), &mut |m| {
+        Some(Image::solid(if m == 0 { [255, 0, 0, 255] } else { [0, 255, 0, 255] }))
+    }, &mut |_| Some(Image::solid([255; 4])));
+    let arena = gfx::ring::UploadPool::default().begin();
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    let mut images = Vec::new();
+    for size in [SIZE, SIZE * 2] {
+        let texture = |format| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: None, size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format,
+            usage: U::RENDER_ATTACHMENT | U::COPY_SRC, view_formats: &[],
+        });
+        let color = texture(F::Rgba8Unorm);
+        let depth = texture(F::Depth32Float);
+        let cv = color.create_view(&Default::default());
+        let dv = depth.create_view(&Default::default());
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &cv, depth_slice: None, resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &dv, stencil_ops: None, depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.), store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+        }));
+        for view in 0..2 {
+            let forward = if view == 0 { [1., 0., 0.] } else { [-1., 0., 0.] };
+            let camera = RenderCamera { forward, ..camera() };
+            let mut uploads = gfx::ring::EncoderUploads { device: &ctx.device, queue: &ctx.queue, arena: &arena, encoder: &mut enc };
+            assert_eq!(world.prepare(&mut uploads, &camera, DepthRule::D24).visible, 1);
+            let half = size as f32 / 2.;
+            let vp = PassViewport { x: view as f32 * half, y: 0., width: half, height: size as f32 };
+            world.encode(&ctx.device, &mut enc, &cv, F::Rgba8Unorm, &dv, F::Depth32Float, vp, (size, size));
+        }
+        images.push(color);
+    }
+    arena.flush(&ctx.queue);
+    ctx.queue.submit([enc.finish()]);
+    ctx.queue.on_submitted_work_done(move || drop(arena));
+    for image in images {
+        let px = read(&ctx, &image, wgpu::TextureAspect::All);
+        let size = image.width() as usize;
+        for (x, wanted) in [(size / 4, [255, 0, 0, 255]), (3 * size / 4, [0, 255, 0, 255])] {
+            let i = 4 * (size / 2 * size + x);
+            assert_eq!(&px[i..i + 4], &wanted, "centre of view at x={x} on {size}px copy");
+        }
+    }
 }
