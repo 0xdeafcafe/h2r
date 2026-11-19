@@ -448,7 +448,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(buttons(&m.pads[0]), ["a"]);
-        assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "a"]);
+        // Row 1 to Co-op Campaign, row 5 (after Clankermatch and the
+        // moved Custom Game rows).
+        assert_eq!(buttons(&m.pads[1]), ["down", "down", "down", "down", "a"]);
     }
 
     #[test]

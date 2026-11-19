@@ -716,7 +716,10 @@ mod books {
         assert_eq!(find_peer(&g, S, mac).unwrap(), Some(1));
         assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 2);
         let cfg = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
-        assert_eq!(g.u16(cfg).unwrap(), u16::from(b'R'));
+        // The bot mark, a space, then the gamertag.
+        assert_eq!(g.u16(cfg).unwrap(), 0x2699);
+        assert_eq!(g.u16(cfg + 2).unwrap(), u16::from(b' '));
+        assert_eq!(g.u16(cfg + 4).unwrap(), u16::from(b'R'));
         assert_eq!(g.u8(cfg + CONFIG_TEAM as u32).unwrap(), 1);
         assert_eq!(
             ph.list()[0].state,
