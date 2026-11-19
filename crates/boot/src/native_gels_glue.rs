@@ -301,12 +301,16 @@ impl<B: d3d::Backend + Send + 'static> Glue<B> {
             .swallow(
                 &mut DeviceMemory(mem),
                 d3d::Swallow {
+                    call: None,
+                    end_returns: Vec::new(),
+                    headers: Vec::new(),
                     targets: vec![1],
                     primitive: gfx::vertex::PrimitiveType::TriangleStrip,
                     vertices: 4,
                     shapes: Vec::new(),
                     drop: false,
                     pass: Box::new(pass),
+                    capture: None,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -548,6 +552,8 @@ struct Pass {
     refused: Arc<AtomicU64>,
     clip_known: bool,
 }
+impl d3d::SwallowPass for Pass {}
+
 impl d3d::ExternalPass for Pass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         if let Ok(mut frame) = self.frame.lock()

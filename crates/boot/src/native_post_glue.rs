@@ -1027,7 +1027,6 @@ fn write(r: &Readback) -> Result<(), String> {
 struct GlowPass {
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
-    capture: Option<CapturePass>,
 }
 
 impl d3d::ExternalPass for GlowPass {
@@ -1036,16 +1035,17 @@ impl d3d::ExternalPass for GlowPass {
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        let Some(view) = slot(&t, 0) else { return 0 };
         let intermediates = [1, 2].map(|i| slot(&t, i).map(|s| &s.attachment));
         let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).encode(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
                 encoder: t.encoder,
-                color: t.color,
+                color: &view.attachment,
                 intermediates,
-                guest_size: t.guest_size,
-                size: t.size,
+                guest_size: view.guest_size,
+                size: view.size,
             },
             &self.plan,
         );
@@ -1073,10 +1073,6 @@ impl d3d::SwallowPass for GlowPass {
             }
         }
         Ok(())
-    }
-
-    fn after_commit(&mut self) -> Option<Box<dyn d3d::ExternalPass>> {
-        self.capture.take().map(|pass| Box::new(pass) as Box<dyn d3d::ExternalPass>)
     }
 }
 
@@ -1138,13 +1134,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let capture = |side: &str| CapturePass(capturing.then(|| format!("{side}-{call:06}")));
         let targets = targets(&plan);
         let pass: Box<dyn d3d::SwallowPass> = if native {
-            Box::new(GlowPass { plan, gpu: Arc::clone(&self.gpu), capture: pumping.then(|| capture("native")) })
+            Box::new(GlowPass { plan, gpu: Arc::clone(&self.gpu) })
         } else {
             Box::new(capture("d3d"))
         };
         let headers = vec![None, target_header(mem, glow::TARGET_DOWN), target_header(mem, glow::TARGET_OTHER)];
+        let capture = (native && pumping).then(|| Box::new(capture("native")) as Box<dyn d3d::ExternalPass>);
         self.arm(mem, d3d::Swallow {
-            call: swallow_call(site),
+            call: Some(swallow_call(site)),
             end_returns: Vec::new(),
             headers,
             targets,
@@ -1153,6 +1150,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             shapes: Vec::new(),
             drop: native,
             pass,
+            capture,
         })
     }
 
@@ -1350,7 +1348,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .map(|index| index.and_then(|index| target_header(mem, index))).to_vec();
         let pass = Box::new(ScreenPass { effects, call, screens: Arc::clone(&self.screens) });
         self.arm(mem, d3d::Swallow {
-            call: swallow_call(site), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass,
+            call: Some(swallow_call(site)), end_returns, headers, targets, primitive, vertices, shapes, drop: true, pass, capture: None,
         })
 
     }
@@ -1961,7 +1959,6 @@ mod tests {
         let glow = GlowPass {
             plan: plan.clone(),
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
-            capture: None,
         };
         assert!(glow.colour_only(), "the composite binds no depth");
         assert!(CapturePass(None).colour_only());

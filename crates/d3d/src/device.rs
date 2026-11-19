@@ -752,16 +752,15 @@ pub trait SwallowPass: crate::backend::ExternalPass {
     fn validate(&self, _originals: &[SwallowOriginal<'_>], _slots: &[Option<SwallowTarget>]) -> Result<(), String> {
         Ok(())
     }
-
-    fn after_commit(&mut self) -> Option<Box<dyn crate::backend::ExternalPass>> {
-        None
-    }
 }
 
 /// A pass whose draws the host draws itself ([`Device::swallow`]): the
-/// game's own code runs. Matching draws are retained until its return.
+/// game's own code runs. A replacement retains matched draws until the
+/// return. An observer submits the guest draws as it matches them.
 pub struct Swallow {
-    pub call: SwallowCall,
+    /// Post call owner. A read-only observer may omit this and issue its
+    /// pass immediately after the last matched guest draw.
+    pub call: Option<SwallowCall>,
     /// For each draw, the D3DDevice_End return address, or `None` for a
     /// pushed primitive. Unlisted draws must be pushed.
     pub end_returns: Vec<Option<u32>>,
@@ -783,8 +782,11 @@ pub struct Swallow {
     pub shapes: Vec<(PrimitiveType, usize)>,
     /// Replace the draws; `false` observes them for a D3D capture.
     pub drop: bool,
-    /// Issued at return, with the last draw's target and the live slots.
+    /// Issued at return for an owned call, or after the final matched
+    /// draw for an unscoped observer.
     pub pass: Box<dyn SwallowPass>,
+    /// Optional capture of a successfully committed native replacement.
+    pub capture: Option<Box<dyn crate::backend::ExternalPass>>,
 }
 
 /// What the device saw while tracing ([`Device::trace`]): a runtime
@@ -2055,6 +2057,7 @@ impl<B: Backend> Device<B> {
 
     /// Drain preceding work before a stage reads inherited state or snapshots its list.
     pub fn begin_external_boundary(&mut self, mem: &mut dyn GuestMemory) -> Result<bool, D3dError> {
+        self.swallow_external_boundary()?;
         self.live("external pass")?;
         if let Some(cb) = self.drain_until_callback(mem)? {
             self.undelivered = Some(cb);
@@ -2125,6 +2128,7 @@ impl<B: Backend> Device<B> {
         &mut self, mem: &mut dyn GuestMemory, plan: crate::ExternalPlan, mut pass: Box<dyn crate::ExternalPass>,
         slots: Option<Vec<Option<B::Surface>>>, rect: Option<(u32, u32, u32, u32)>,
     ) -> Result<Option<PreparedExternal<'_, B>>, D3dError> {
+        self.swallow_external_boundary()?;
         let items = pass.items(plan.ranges) as u64;
         let mut binding = match self.external_binding(mem, &plan, &mut *pass, slots.as_deref()) {
             Ok(b) => b,
@@ -2248,6 +2252,12 @@ impl<B: Backend> Device<B> {
     /// mismatch, or a conflicting operation ends the transaction.
     pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
         self.live("swallow")?;
+        if s.call.is_none() {
+            let writes = s.pass.writes();
+            if s.drop || writes.color || writes.depth_stencil {
+                return Err(D3dError::invalid("swallow", "an unscoped observer must be read-only"));
+            }
+        }
         self.interrupt_swallow()?;
         self.traced(|| Traced::Arming);
         if let Some(cb) = self.drain_until_callback(mem)? {
@@ -2277,9 +2287,6 @@ impl<B: Backend> Device<B> {
         self.swallow_mismatch = None;
         self.traced(|| Traced::Armed { draws: s.targets.len() });
         self.stats.swallow_calls += u64::from(s.drop);
-        if s.drop {
-            timeline::native::Stage::Post.count(timeline::native::Metric::Examined, s.targets.len() as u64);
-        }
         self.swallowing = Some(Swallowing {
             next: 0,
             headers,
@@ -2303,7 +2310,9 @@ impl<B: Backend> Device<B> {
     /// Finishes a post call before its caller runs another command. A
     /// final pushed draw may still be queued at the guest return.
     pub fn finish_swallow(&mut self, mem: &mut dyn GuestMemory, entry: u32, esp: u32) -> Result<(), D3dError> {
-        if !self.swallowing.as_ref().is_some_and(|s| s.plan.call.entry == entry && s.plan.call.esp == esp) {
+        if !self.swallowing.as_ref().and_then(|s| s.plan.call)
+            .is_some_and(|call| call.entry == entry && call.esp == esp)
+        {
             return Ok(());
         }
         match self.drain_until_callback(mem) {
@@ -2399,12 +2408,13 @@ impl<B: Backend> Device<B> {
         has_return_hook: impl FnOnce(u32) -> bool,
     ) -> Result<(), D3dError> {
         let Some(s) = self.swallowing.as_mut() else { return Ok(()) };
-        let cookie = mem.read_u32(s.plan.call.esp).ok();
+        let Some(call) = s.plan.call else { return Ok(()) };
+        let cookie = mem.read_u32(call.esp).ok();
         let owns_call = match s.return_cookie {
             Some(saved) => cookie == Some(saved),
             None => cookie.is_some_and(has_return_hook),
         };
-        if esp >= s.plan.call.esp || ret == s.plan.call.ret || !owns_call {
+        if esp >= call.esp || ret == call.ret || !owns_call {
             return self.swallow_abort(SwallowRefusal::CallBoundary, || format!("D3D caller {ret:#010x} left the post call"));
         }
         s.return_cookie = cookie;
@@ -2436,6 +2446,10 @@ impl<B: Backend> Device<B> {
         self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} is a post transaction boundary"))
     }
 
+    fn swallow_external_boundary(&mut self) -> Result<(), D3dError> {
+        self.swallow_abort(SwallowRefusal::Dependency, || "external boundary inside the post call".into())
+    }
+
     pub(crate) fn swallow_entry_failed(&mut self, entry: &'static str) {
         if let Err(error) = self.swallow_abort(SwallowRefusal::Dependency, || format!("{entry} failed during the post call")) {
             eprintln!("d3d: replaying the post originals after {entry} failed: {error}");
@@ -2456,7 +2470,8 @@ impl<B: Backend> Device<B> {
         };
         let (primitive, vertices) = s.plan.shapes.get(s.next).copied().unwrap_or((s.plan.primitive, s.plan.vertices));
         let end = s.plan.end_returns.get(s.next).copied().flatten();
-        let origin = if push { end.is_none() } else { end.is_some() && end == s.end_return };
+        let origin = s.plan.call.is_none()
+            || if push { end.is_none() } else { end.is_some() && end == s.end_return };
         if !origin || !into || !d.inline.is_empty() || d.primitive != primitive || d.vertices.len() != vertices {
             let detail = format!(
                 "draw {} of {}: planned {primitive:?} x{vertices} into slot {slot}, got {:?} x{}{}{}",
@@ -2480,6 +2495,7 @@ impl<B: Backend> Device<B> {
         let metric = match reason {
             SwallowRefusal::CallBoundary => Metric::RefusedOwnership,
             SwallowRefusal::Shape => Metric::RefusedRanges,
+            SwallowRefusal::Encode => return,
             _ => Metric::RefusedResources,
         };
         Stage::Post.count(metric, 1);
@@ -2491,7 +2507,7 @@ impl<B: Backend> Device<B> {
             self.stats.swallow_mismatches += 1;
         }
         let detail = detail();
-        self.traced(|| Traced::Note(format!("post {:?} returned to {:#010x}: {reason:?}: {detail}", s.plan.call, s.plan.call.ret)));
+        self.traced(|| Traced::Note(format!("swallow {:?}: {reason:?}: {detail}", s.plan.call)));
         self.swallow_mismatch = Some(detail);
         self.swallow_refused(reason);
         self.swallow_replay(s.packets)
@@ -2651,7 +2667,7 @@ impl<B: Backend> Device<B> {
     /// guest's tail has since restored other targets or viewport state.
     fn swallow_commit(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         use crate::{ExternalPlan, ExternalSlot, ExternalSurfaces, TargetCopy};
-        use timeline::native::{Metric, Stage};
+        use timeline::native::Stage;
 
         let s = self.swallowing.as_ref().expect("post call at return");
         if s.last.is_none() || (s.plan.drop && s.packets.len() != s.plan.targets.len()) {
@@ -2679,8 +2695,7 @@ impl<B: Backend> Device<B> {
                 return self.swallow_abort(SwallowRefusal::Resource, || detail);
             }
         }
-        let mut s = self.swallowing.take().expect("post call");
-        let capture = s.plan.pass.after_commit();
+        let s = self.swallowing.take().expect("post call");
         let (color, request) = s.last.expect("the matched call drew");
         let mut pass: Box<dyn crate::backend::ExternalPass> = s.plan.pass;
         pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
@@ -2716,14 +2731,12 @@ impl<B: Backend> Device<B> {
             && complete_recordings(&plan, &recordings)
         {
             for recording in recordings {
-                Stage::Post.recorded(plan.view, recording.copy == TargetCopy::Display, recording.ranges);
                 self.backend.commit_external(recording);
             }
-            Stage::Post.count(Metric::Suppressed, plan.ranges as u64);
             self.stats.swallow_draws_dropped += plan.ranges as u64;
             self.stats.swallow_commits += 1;
             self.stats.external_passes += 1;
-            if let Some(capture) = capture {
+            if let Some(capture) = s.plan.capture {
                 let _ = self.backend.external_pass(color, color, Vec::new(), request, capture);
             }
             self.traced(|| Traced::Note(format!("post {:?}: committed {} draws", s.plan.call, plan.ranges)));
@@ -5304,7 +5317,7 @@ impl<B: Backend> Device<B> {
             texture_info,
             glyph_cache,
         };
-        let (draw, snapshots) = if self.swallowing.is_some() {
+        let (draw, snapshots) = if self.swallowing.as_ref().is_some_and(|s| s.plan.call.is_some()) {
             let packet = SwallowPacket {
                 color, depth, draw, snapshots, keys, cached: HashMap::default(),
                 source_data: [None; 4], sampled,
@@ -5765,6 +5778,10 @@ impl<B: Backend> Device<B> {
             && fate != Fate::Drawn
         {
             s.next += 1;
+            if s.plan.call.is_none() && s.next == s.plan.targets.len() {
+                let observer = self.swallowing.take().expect("matched observer");
+                self.issue_external_pass(mem, observer.plan.pass);
+            }
         }
         Ok(fate != Fate::Held || self.swallowing.is_none())
     }

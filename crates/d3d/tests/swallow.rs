@@ -86,7 +86,7 @@ impl SwallowPass for Capture {}
 
 fn plan(drop: bool, pass: impl SwallowPass + 'static) -> Swallow {
     Swallow {
-        call: CALL,
+        call: Some(CALL),
         end_returns: Vec::new(),
         headers: vec![None, Some(LEVEL_A)],
         targets: vec![1, 1, 0],
@@ -95,6 +95,7 @@ fn plan(drop: bool, pass: impl SwallowPass + 'static) -> Swallow {
         shapes: Vec::new(),
         drop,
         pass: Box::new(pass),
+        capture: None,
     }
 }
 
@@ -276,6 +277,24 @@ fn observing_draws_everything_and_places_the_capture_at_return() {
 }
 
 #[test]
+fn an_unscoped_observer_issues_after_the_matched_end() {
+    let (mut d, mut m, _) = setup(recorder());
+    assert!(d.swallow(&mut m, Swallow {
+        call: None,
+        end_returns: Vec::new(),
+        targets: vec![0],
+        ..strips_plan(false)
+    }).unwrap());
+    let back = d.back_buffer().unwrap();
+    d.swallow_caller(&m, CALL.esp, CALL.ret, |_| panic!("an observer needs no return hook")).unwrap();
+    strip(&mut d, &mut m, 0.0);
+    assert!(!d.swallowing());
+    assert_eq!(d.backend.external, [(back, back)]);
+    assert_eq!(draws(&d).len(), 1);
+    assert_eq!(d.stats().swallow_commits, 0);
+}
+
+#[test]
 fn a_pass_that_cannot_be_issued_holds_nothing() {
     let (mut d, mut m, back) = setup(RecordingBackend::new());
     assert!(!d.swallow(&mut m, plan(true, Capture)).unwrap());
@@ -287,7 +306,7 @@ fn a_pass_that_cannot_be_issued_holds_nothing() {
 
 struct Encode {
     attempts: Arc<AtomicU32>,
-    complete: bool,
+    ranges: usize,
 }
 
 impl ExternalPass for Encode {
@@ -314,7 +333,7 @@ impl ExternalPass for Encode {
                 multiview_mask: None,
             }));
         }
-        if self.complete { 3 } else { 1 }
+        self.ranges
     }
 }
 
@@ -349,7 +368,7 @@ fn a_failed_native_encode_replays_originals_on_both_attachments() {
 
     let (mut d, mut m, back) = setup(second);
     let attempts = Arc::new(AtomicU32::new(0));
-    assert!(d.swallow(&mut m, plan(true, Encode { attempts: Arc::clone(&attempts), complete: false })).unwrap());
+    assert!(d.swallow(&mut m, plan(true, Encode { attempts: Arc::clone(&attempts), ranges: 1 })).unwrap());
     quads(&mut d, &mut m, back);
     assert_eq!(d.stats().draws, 0);
     finish(&mut d, &mut m);
@@ -361,11 +380,50 @@ fn a_failed_native_encode_replays_originals_on_both_attachments() {
 }
 
 #[test]
+fn preparing_a_bound_external_pass_replays_held_quads_before_its_commit() {
+    let Some(gpu) = gpu() else { return };
+    let (mut d, mut m, back_header) = setup(gpu);
+    let back = d.back_buffer().unwrap();
+    assert!(d.swallow(&mut m, Swallow {
+        headers: Vec::new(),
+        targets: vec![0, 0, 0],
+        ..plan(true, Capture)
+    }).unwrap());
+    quad(&mut m, 0);
+    quad(&mut m, 1);
+    d.drain_until_callback(&mut m).unwrap();
+    assert_eq!(d.stats().swallowed_draws, 2);
+    assert_eq!(d.stats().draws, 0);
+
+    let external = d3d::ExternalPlan {
+        stage: timeline::native::Stage::Objects,
+        view: 0,
+        ranges: 1,
+        slots: vec![Some(d3d::ExternalSlot { header: back_header, written: true })],
+    };
+    let attempts = Arc::new(AtomicU32::new(0));
+    let pass = Encode { attempts: Arc::clone(&attempts), ranges: 1 };
+    d.prepare_external_bound(&mut m, external, Box::new(pass), vec![Some(back)])
+        .unwrap()
+        .unwrap()
+        .commit();
+    assert_eq!(attempts.load(Ordering::Relaxed), 1);
+    assert_eq!(d.stats().swallow_draws_replayed, 2);
+    assert_eq!(d.stats().swallow_reasons[SwallowRefusal::Dependency.index()], 1);
+    assert!(!d.swallowing());
+
+    // The committed clear covered both replayed quads. Reversing the
+    // command order would leave their colours over the green clear.
+    let (pixels, _) = d.backend.read_color(back).unwrap();
+    assert!(pixels.chunks_exact(4).all(|p| p == [0, 255, 0, 255]));
+}
+
+#[test]
 fn only_the_return_commits_a_complete_replacement_and_marks_intermediates_written() {
     let Some(gpu) = gpu() else { return };
     let (mut d, mut m, back) = setup(gpu);
     let attempts = Arc::new(AtomicU32::new(0));
-    assert!(d.swallow(&mut m, plan(true, Encode { attempts: Arc::clone(&attempts), complete: true })).unwrap());
+    assert!(d.swallow(&mut m, plan(true, Encode { attempts: Arc::clone(&attempts), ranges: 3 })).unwrap());
     quads(&mut d, &mut m, back);
     assert_eq!(attempts.load(Ordering::Relaxed), 0);
     assert_eq!(d.stats().swallow_draws_dropped, 0);

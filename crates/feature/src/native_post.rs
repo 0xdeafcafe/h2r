@@ -304,7 +304,7 @@ impl Feature for NativePost {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         let native = on(b.switches());
-        if !native && !CAPTURE.load(Ordering::Relaxed) && trace_spec().is_none() {
+        if !native && !CAPTURE.load(Ordering::Relaxed) {
             return Ok(());
         }
         b.raw()

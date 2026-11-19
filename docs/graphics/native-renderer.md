@@ -2430,7 +2430,10 @@ uses D3D for that call.
    resource identity. Target switches and direct RTT samples can
    proceed while their bindings preserve access to the held
    surfaces. Pixel observations or resource operations that depend
-   on those writes trigger replay before the operation.
+   on those writes trigger replay before the operation. A competing
+   external stage or draw scope also triggers replay before it prepares
+   its own recording. Gel comparison uses a read-only observer that
+   runs after the last matched guest draw.
 
    The return continuation drains any remaining pushed draws from
    the call and requires the full planned sequence. A mismatch,
