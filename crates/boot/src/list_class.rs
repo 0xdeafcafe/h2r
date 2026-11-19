@@ -162,6 +162,10 @@ pub trait Rows: Send + Sync {
     fn picture(&self, _row: i16) -> Option<u32> {
         None
     }
+    /// Restore the picture block's original bitmap when a row has no picture.
+    fn restore_missing_picture(&self) -> bool {
+        false
+    }
     /// The image of its bitmap the picture shows, set once as the screen
     /// opens ([`set_image`]), for a class with a picture
     /// ([`ListClass::picture`]): a page's own icon in Quick Options'
@@ -815,7 +819,7 @@ pub struct Shown(Mutex<Vec<ShownEntry>>);
 struct ShownEntry {
     screen: u32,
     widget: u32,
-    picture: Option<u32>,
+    picture: Option<(u32, u32)>, // widget and original bitmap datum
     row: Option<i16>,
     /// The panel texts' widgets, in [`ListClass::panel`]'s order (0 for
     /// one that could not be made).
@@ -847,9 +851,9 @@ impl Shown {
     }
     /// Screen `screen`'s picture widget is `widget` (after its description
     /// widget was set).
-    pub fn set_picture(&self, screen: u32, widget: u32) {
+    fn set_picture(&self, screen: u32, widget: u32, original: u32) {
         if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
-            e.picture = Some(widget);
+            e.picture = Some((widget, original));
         }
     }
     /// Screen `screen`'s panel text widgets are `widgets`.
@@ -868,6 +872,9 @@ impl Shown {
     }
     /// Screen `screen`'s picture widget.
     pub fn picture(&self, screen: u32) -> Option<u32> {
+        self.picture_block(screen).map(|(widget, _)| widget)
+    }
+    fn picture_block(&self, screen: u32) -> Option<(u32, u32)> {
         self.lock()
             .iter()
             .find(|e| e.screen == screen)
@@ -1574,12 +1581,12 @@ pub async fn row_text(
             ) {
                 cx.write(|m| set_tint(m, picture, tint))?;
             }
-            if let (Some(picture), Some(datum), Some(_)) = (
-                shown.picture(screen),
-                focused.and_then(|r| rows.picture(r)),
-                moved,
-            ) {
-                cx.write(|m| set_picture(m, picture, datum))?;
+            if let Some((picture, original)) = shown.picture_block(screen) {
+                let datum = focused.and_then(|r| rows.picture(r))
+                    .or_else(|| rows.restore_missing_picture().then_some(original));
+                if let Some(datum) = datum {
+                    cx.write(|m| set_picture(m, picture, datum))?;
+                }
             }
         }
     }
@@ -1977,7 +1984,8 @@ async fn add_picture(
             &format!("{name}: no picture (no memory for the widget)"),
         );
     } else if let Some(shown) = shown {
-        shown.set_picture(screen, widget);
+        let original = u32::from_le_bytes(block[BITMAP_HANDLE..BITMAP_HANDLE + 4].try_into().unwrap());
+        shown.set_picture(screen, widget, original);
     }
     Ok(())
 }
@@ -3502,7 +3510,7 @@ mod tests {
         let list = SCREEN + ui::LIST;
         let shown = Arc::new(Shown::default());
         shown.set_widget(SCREEN, 0x9000);
-        shown.set_picture(SCREEN, PICTURE);
+        shown.set_picture(SCREEN, PICTURE, 0xe58c_036c);
         let mut g = guest();
         g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
         const BLOCK: u32 = 0x0062_0000;

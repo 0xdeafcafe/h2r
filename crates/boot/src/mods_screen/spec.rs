@@ -137,7 +137,7 @@ pub fn list_spec(repo: &Repo) -> ScreenSpec {
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
         art(
-            crate::campaign_menu::PICTURE,
+            super::LIST_PICTURE,
             crate::campaign_menu::PICTURE_SIZE,
         ),
     ];
@@ -174,7 +174,7 @@ pub fn pack_spec(repo: &Repo) -> ScreenSpec {
     s.art = vec![
         art(crate::skulls_menu::FRAME, crate::skulls_menu::FRAME_SIZE),
         art(
-            crate::campaign_menu::PICTURE,
+            super::LIST_PICTURE,
             crate::campaign_menu::PICTURE_SIZE,
         ),
     ];

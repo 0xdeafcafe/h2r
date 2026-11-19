@@ -73,6 +73,12 @@ pub const SCREEN: &str = "mods";
 pub const DETAIL: &str = "mods.detail";
 /// A map pack's own list: its maps, and Download All.
 pub const PACK: &str = "mods.pack";
+/// The lobby's neutral map picture at the level select's picture position.
+const LIST_PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
+    at: crate::campaign_menu::PICTURE.at,
+    animation: crate::campaign_menu::PICTURE.animation,
+    ..page_layout::PICTURE
+};
 /// The feature id of the texts (`H2_FEATURES=-mods-screens`).
 pub const FEATURE: &str = "mods-screens";
 /// What a list asks for: the newest this many.
@@ -1597,6 +1603,7 @@ impl ListRows {
 }
 
 impl Rows for ListRows {
+    fn restore_missing_picture(&self) -> bool { true }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(SCREEN, row))
     }
@@ -1672,6 +1679,7 @@ impl PackRows {
 }
 
 impl Rows for PackRows {
+    fn restore_missing_picture(&self) -> bool { true }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(PACK, row))
     }
@@ -1744,6 +1752,7 @@ impl DetailRows {
 }
 
 impl Rows for DetailRows {
+    fn restore_missing_picture(&self) -> bool { true }
     fn focused_footer(&self, row: Option<i16>) -> Option<u32> {
         Some(self.0.footer(DETAIL, row))
     }
@@ -1906,7 +1915,7 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
         .layout(crate::skulls_menu::LIST_LAYOUT)
         .description(crate::skulls_menu::DESCRIPTION_TEXT)
         .frame(crate::skulls_menu::FRAME)
-        .picture(crate::campaign_menu::PICTURE)
+        .picture(LIST_PICTURE)
         .action_buttons(&X_ONLY)
         .action(list_action(repo))
         .on_free({
@@ -1921,7 +1930,7 @@ pub fn classes(repo: &Arc<Repo>) -> [ListClass; 3] {
             .layout(crate::skulls_menu::LIST_LAYOUT)
             .description(crate::skulls_menu::DESCRIPTION_TEXT)
             .frame(crate::skulls_menu::FRAME)
-            .picture(crate::campaign_menu::PICTURE)
+            .picture(LIST_PICTURE)
             .action_buttons(&X_ONLY)
             .action(pack_action(repo))
             .footer(Slots::id(PACK_FOOTER)),

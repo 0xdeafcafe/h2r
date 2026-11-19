@@ -464,6 +464,10 @@ fn the_list_describes_the_focused_map() {
     // The picture is the base map's slot's, once read.
     let rows = ListRows::new(Arc::clone(&repo));
     assert_eq!(rows.picture(0), None, "not read yet");
+    assert!(rows.restore_missing_picture());
+    assert_eq!(LIST_PICTURE.screen_id, page_layout::LOBBY_SCREEN_ID);
+    assert_eq!(LIST_PICTURE.bitmap, page_layout::PICTURE.bitmap);
+    assert_eq!(LIST_PICTURE.at, crate::campaign_menu::PICTURE.at);
     repo.set_pictures(BTreeMap::from([
         ("dune".to_string(), 0xe100_0010),
         ("lockout".to_string(), 0xe100_0020),
