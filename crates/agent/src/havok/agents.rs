@@ -110,7 +110,10 @@ mod tests {
         assert_eq!(value["other"]["object"], "vehicle.00000007");
         assert_eq!(value["cache"]["base"], "00008300");
         assert_eq!(value["cache"]["hex"], "3412aa");
-        assert_eq!(serde_json::from_value::<CollisionAgent>(value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<CollisionAgent>(value).unwrap(),
+            wire
+        );
     }
 
     #[test]

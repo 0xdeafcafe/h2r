@@ -132,11 +132,7 @@ pub(crate) fn span(base: u32, size: u32) -> Result<(), MemFault> {
 }
 
 /// A Havok array's pointer and count at `at`, the count checked.
-pub(crate) fn array(
-    m: &dyn GuestMemory,
-    at: u32,
-    cap: u32,
-) -> Result<(u32, u32), MemFault> {
+pub(crate) fn array(m: &dyn GuestMemory, at: u32, cap: u32) -> Result<(u32, u32), MemFault> {
     span(at, 8)?;
     let ptr = m.u32(at)?;
     let count = m.u32(at + 4)?;
@@ -160,10 +156,7 @@ fn world(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
 }
 
 /// The islands, each with its state: active, inactive, then fixed.
-pub(crate) fn islands(
-    m: &dyn GuestMemory,
-    w: u32,
-) -> Result<Vec<(u32, IslandState)>, MemFault> {
+pub(crate) fn islands(m: &dyn GuestMemory, w: u32) -> Result<Vec<(u32, IslandState)>, MemFault> {
     span(w, layout::WORLD_FIXED_ISLAND + 4)?;
     let mut out = Vec::new();
     for (at, state) in [

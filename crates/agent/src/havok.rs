@@ -519,7 +519,10 @@ mod tests {
         }
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(method::ALL.iter().all(|name| line.contains(*name)), "{line}");
+        assert!(
+            method::ALL.iter().all(|name| line.contains(*name)),
+            "{line}"
+        );
         // Without guest memory the reads are unavailable, not a panic.
         a.submit(
             conn,

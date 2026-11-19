@@ -39,10 +39,18 @@ fn scene() -> (FakeGuest, u32) {
     list(&mut m, COMPONENT + layout::COMPONENT_BODIES, rigids, 2);
     // Only the second body has a pair.
     m.put_u32(rigids + layout::COMPONENT_BODY_RIGID, ENTITY + 0x800);
-    m.put_u32(rigids + layout::COMPONENT_BODY_SIZE + layout::COMPONENT_BODY_RIGID, ENTITY);
+    m.put_u32(
+        rigids + layout::COMPONENT_BODY_SIZE + layout::COMPONENT_BODY_RIGID,
+        ENTITY,
+    );
 
     m.put_u32(layout::HAVOK_WORLD_PTR, WORLD);
-    list(&mut m, WORLD + layout::WORLD_INACTIVE_ISLANDS, WORLD + 0x200, 1);
+    list(
+        &mut m,
+        WORLD + layout::WORLD_INACTIVE_ISLANDS,
+        WORLD + 0x200,
+        1,
+    );
     m.put_u32(WORLD + 0x200, ISLAND);
     m.put_u32(WORLD + layout::WORLD_FIXED_ISLAND, FIXED);
     m.map(FIXED, 0xb0);
@@ -155,7 +163,10 @@ fn rejects_bad_counts_sizes_and_wrapping_ranges() {
     m.put_u32(LEAF + 0x18, 5);
     assert!(agents(&m, datum).is_err());
     list(&mut m, ISLAND + ISLAND_PAIRS, PAIRS, MAX_PAIRS + 1);
-    assert_eq!(agents(&m, datum).unwrap_err().addr, ISLAND + ISLAND_PAIRS + 4);
+    assert_eq!(
+        agents(&m, datum).unwrap_err().addr,
+        ISLAND + ISLAND_PAIRS + 4
+    );
 }
 
 #[test]
@@ -179,7 +190,10 @@ fn nonfixed_peer_resolves_through_its_own_component() {
     m.put_u32(props, layout::PROPERTY_PHYSICS_COMPONENT);
     m.put_u32(props + 4, 0xcafe_0001);
     let peer = 0xfeed_0042;
-    m.put_u32(COMPONENT + layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_OBJECT, peer);
+    m.put_u32(
+        COMPONENT + layout::PHYSICS_COMPONENT_SIZE + layout::COMPONENT_OBJECT,
+        peer,
+    );
     m.put_u32(LEVEL + 0x44, ISLAND);
     let p = agents(&m, datum).unwrap().pop().unwrap();
     assert_eq!(p.other_datum, Some(peer));
@@ -195,7 +209,11 @@ fn retail_welded_tree_uses_its_wrapped_structure_in_both_orders() {
     m.put_u32(wrapper + 0x0c, SHAPE);
     m.put_u32(CHILDREN + 4, 0x1122_3344);
     for (vtable, tree_first) in [(0x0041_2f7c, true), (0x0041_2f5c, false)] {
-        let sides = if tree_first { [LEVEL, ENTITY] } else { [ENTITY, LEVEL] };
+        let sides = if tree_first {
+            [LEVEL, ENTITY]
+        } else {
+            [ENTITY, LEVEL]
+        };
         m.put_u32(AGENT, vtable);
         m.put_u32(PAIRS + 0x20, sides[0] + HANDLE_IN_ENTITY);
         m.put_u32(PAIRS + 0x24, sides[1] + HANDLE_IN_ENTITY);
