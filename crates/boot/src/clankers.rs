@@ -1271,6 +1271,15 @@ impl Driver {
                             String::new()
                         }
                     ));
+                    // Said so a run shows why the lobby stays empty
+                    // (docs/game/bots.md §8.4): the bots are on the
+                    // phantom books, and a phantom enters the session
+                    // only once a game runs (§5.1).
+                    log.push(
+                        "clankermatch: the bots are phantoms: they enter the session when a game \
+                         starts, not the lobby (\"bots: phantom ... joins\" says when)"
+                            .into(),
+                    );
                     *fill = Some(Fill {
                         hopper: mark.hopper_id,
                         bots,

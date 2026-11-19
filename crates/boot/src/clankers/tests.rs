@@ -742,6 +742,12 @@ fn a_clankermatch_lobby_fills_with_phantoms_one_at_a_time_on_balanced_teams() {
     let t0 = Instant::now();
     let log = d.tick_match(t0);
     assert!(log.iter().any(|l| l.contains("7 bots join")), "{log:?}");
+    // The run says why the lobby itself shows no bot yet.
+    assert!(
+        log.iter()
+            .any(|l| l.contains("they enter the session when a game starts")),
+        "{log:?}"
+    );
     assert!(d.on(), "the nav mesh is wanted");
     // One roster for the whole lobby, for the playlist, its skill the
     // server's (from the human's level), with teams.
