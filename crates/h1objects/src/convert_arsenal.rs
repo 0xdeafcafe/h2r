@@ -147,20 +147,27 @@ impl Converter<'_> {
     pub fn first_person_arms(&mut self, id: h1map::TagId) -> Result<TagId> {
         let t = self.h1_tag(id)?;
         let mut rep = Self::report(t, "none: a render model on its own");
-        let out = self.render_model(&mut rep, id);
+        let out = self.render_model(&mut rep, id, None);
         self.tree.reports.push(rep);
         out
     }
 
     /// A converted render model on its own (the first-person model), with
-    /// its shaders, once.
-    fn render_model(&mut self, rep: &mut ObjectReport, id: h1map::TagId) -> Result<TagId> {
+    /// its shaders, once. `rounds`: the weapon's, when its counters count
+    /// its rounds ([`crate::h1::Weapon::rounds_counter`]).
+    fn render_model(
+        &mut self,
+        rep: &mut ObjectReport,
+        id: h1map::TagId,
+        rounds: Option<i16>,
+    ) -> Result<TagId> {
         let t = self.h1_tag(id)?;
-        if let Some(d) = self.done.get(&t.id.0) {
-            return Ok(*d);
+        let key = (id, rounds);
+        if let Some(&mode) = self.render_models.get(&key) {
+            return Ok(mode);
         }
         let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
-        let shaders = self.model_shaders(rep, &h1_model);
+        let shaders = self.model_shaders(rep, &h1_model, rounds);
         let mut padded = shaders.clone();
         padded.resize(h1_model.shaders.len(), TagId::NULL);
         let mut mode = h1models::mode::convert_model(
@@ -172,7 +179,9 @@ impl Converter<'_> {
             },
         )?;
         crate::rebuild::mode_materials(&mut mode.root, &padded)?;
-        self.cached(t, mode)
+        let mode = self.tree.push(&t.name, mode);
+        self.render_models.insert(key, mode);
+        Ok(mode)
     }
 
     /// A converted animation graph, once.
@@ -228,8 +237,9 @@ impl Converter<'_> {
         let cp = self.counterpart(b"weap", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt weapons borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true)?;
-        let predicted = self.predicted(&w.object)?;
+        let rounds = w.rounds_counter();
+        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true, rounds)?;
+        let predicted = self.predicted(hlmt);
         let d = Defs::builtin().group(FourCC(*b"weap")).expect("weap");
         let bd = d.child("barrels").expect("barrels");
         let fd = d.child("barrels.block_e4").expect("firing effects");
@@ -287,7 +297,7 @@ impl Converter<'_> {
             parts.projectiles.push(p);
         }
         let fp_model = match w.first_person_model {
-            Some(m) => Some(self.render_model(&mut rep, m)?),
+            Some(m) => Some(self.render_model(&mut rep, m, rounds)?),
             None => None,
         };
         let fp_anim = match w.first_person_animations {
@@ -382,7 +392,7 @@ impl Converter<'_> {
             .or_else(|| self.counterpart(b"proj", &tag.name));
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt projectiles borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true, None)?;
         let impact_damage = match p.impact_damage {
             Some(j) => Some(self.damage(j)?),
             None => None,
@@ -479,8 +489,8 @@ impl Converter<'_> {
         let cp = self.counterpart(b"eqip", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt equipment borrows no phmo)".into());
-        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true)?;
-        let predicted = self.predicted(&e.object)?;
+        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true, None)?;
+        let predicted = self.predicted(hlmt);
         let mut parts = arsenal::EquipmentParts {
             hlmt,
             predicted,
