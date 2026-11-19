@@ -183,12 +183,7 @@ impl Sim {
         match e.bot {
             Bot::Local { port } => {
                 let port = self.bots.placed_port(port)?;
-                objects
-                    .iter()
-                    .filter(|o| o.kind == Kind::Player)
-                    .find(|o| o.local_user.map(u32::from) == Some(port))
-                    .and_then(|o| ObjectId::parse(&o.id))
-                    .map(|id| id.key)
+                local_player(port, objects)
             }
             Bot::Phantom { handle } => self.bots.phantom_player(handle),
         }
@@ -209,6 +204,7 @@ impl Sim {
             },
             identity: e.identity.clone(),
             player: self.game_player(e, objects).map(|i| format!("player.{i}")),
+            brain: self.bots.brain_view(e.bot),
         }
     }
 
@@ -340,7 +336,13 @@ impl Sim {
 
     fn player_list(&mut self, _: Value, ctx: &mut GameCtx<'_>) -> R {
         let objects = ctx.reader.objects().unwrap_or_default();
-        Ok(json!({ "players": self.players_json(&objects) }))
+        let mut clankers = self.bots.clankers();
+        for bot in &mut clankers {
+            if let Some(port) = bot.port {
+                bot.player = local_player(port, &objects).map(|i| format!("player.{i}"));
+            }
+        }
+        Ok(json!({ "players": self.players_json(&objects), "clankers": clankers }))
     }
 
     fn player_pad(&mut self, v: Value, ctx: &mut GameCtx<'_>) -> R {
@@ -707,6 +709,14 @@ impl Sim {
         }
         Ok(Value::Object(out))
     }
+}
+
+fn local_player(port: u32, objects: &[Object]) -> Option<u32> {
+    objects
+        .iter()
+        .find(|o| o.kind == Kind::Player && o.local_user.map(u32::from) == Some(port))
+        .and_then(|o| ObjectId::parse(&o.id))
+        .map(|id| id.key)
 }
 
 #[cfg(test)]

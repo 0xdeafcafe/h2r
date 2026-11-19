@@ -283,3 +283,26 @@ fn the_mind_crouches_over_a_body_and_stands_still() {
         ((0.0, 0.0), (0.0, 0.0), 0.0)
     );
 }
+
+#[test]
+fn temperament_showboating_raises_own_kill_taunts_behind_the_same_gates() {
+    let k = kill(Some(1), 2, false, HERE, 0);
+    let count = |taunt, weight| {
+        (0..512)
+            .filter(|&seed| {
+                let mut e = Emoter::new(taunt, seed);
+                e.hear_with_style(&[k], Some(1), weight);
+                assert_eq!(e.step(HERE, false, true, 1), None);
+                e.step(HERE, false, false, 2).is_some()
+            })
+            .count()
+    };
+    assert_eq!(count(0.0, 2.0), 0);
+    assert!(count(0.5, 1.8) > count(0.5, 0.4) * 2);
+
+    let mut e = armed(0);
+    assert_eq!(e.step(HERE, false, false, 1), Some(true));
+    e.taunt = 0.0;
+    assert_eq!(e.step(HERE, false, false, 2), None);
+    assert!(!e.busy());
+}

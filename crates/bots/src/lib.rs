@@ -92,7 +92,55 @@ struct Observation {
     supply_calls: Vec<radio::SupplyCall>,
 }
 
+/// Read-only state shared by local, phantom and simulated bot views.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrainView {
+    pub skill: mind::Skill,
+    pub personality: decisions::Personality,
+    pub mood: decisions::MoodView,
+}
+
 impl Brain {
+    pub fn view(&self) -> BrainView {
+        BrainView {
+            skill: self.mind.skill,
+            personality: self.mind.decisions.personality,
+            mood: self.mind.decisions.mood(),
+        }
+    }
+
+    pub fn set_skill(&mut self, skill: mind::Skill) {
+        if self.mind.skill != skill {
+            self.mind.skill = skill;
+            self.mind.decisions.personality = decisions::Personality::for_skill(self.seed, skill);
+            self.retune();
+        }
+    }
+
+    pub fn set_identity_seed(&mut self, seed: u64) {
+        if self.seed != seed {
+            self.seed = seed;
+            self.kills_seen = emote::kills().since(u64::MAX).1;
+            self.reset_mind();
+        }
+    }
+
+    fn reset_mind(&mut self) {
+        let taunt = self.mind.emote.taunt;
+        let glitches = self.mind.glitches;
+        let bounces = std::mem::take(&mut self.mind.bounces);
+        self.mind = mind::Mind::new(self.mind.skill, self.seed);
+        self.mind.experience.enter(&self.map);
+        self.mind.emote.taunt = taunt;
+        self.mind.glitches = glitches;
+        self.mind.bounces = bounces;
+        self.retune();
+        self.controller = human_input::Controller::new(self.seed);
+        self.observations.clear();
+        self.sampled = None;
+        self.pending_kills.clear();
+    }
+
     pub fn new(skill: mind::Skill, seed: u64) -> Self {
         Brain {
             mind: mind::Mind::new(skill, seed),
@@ -173,22 +221,11 @@ impl Brain {
             board.epoch
         };
         if self.epoch != epoch {
-            let taunt = self.mind.emote.taunt;
-            let glitches = self.mind.glitches;
-            let bounces = std::mem::take(&mut self.mind.bounces);
             let mut experience = std::mem::take(&mut self.mind.experience);
             experience.new_life();
-            self.mind = mind::Mind::new(self.mind.skill, self.seed);
+            self.reset_mind();
             self.mind.experience = experience;
-            self.mind.emote.taunt = taunt;
-            self.mind.glitches = glitches;
-            self.mind.bounces = bounces;
             self.epoch = epoch;
-            self.retune();
-            self.controller = human_input::Controller::new(self.seed);
-            self.observations.clear();
-            self.sampled = None;
-            self.pending_kills.clear();
             observation.kills.clear();
         }
 
@@ -200,7 +237,12 @@ impl Brain {
             .sampled
             .is_some_and(|(_, was_alive)| was_alive != alive)
         {
-            self.observations.clear();
+            // Visual samples are for the previous life. Preserve their
+            // kill feed in order so a quick death cannot swallow a kill.
+            let current_kills = std::mem::take(&mut self.pending_kills);
+            self.pending_kills
+                .extend(self.observations.drain(..).flat_map(|o| o.kills));
+            self.pending_kills.extend(current_kills);
             self.controller.discard_pending();
         }
         self.sampled = Some((tick, alive));
@@ -251,7 +293,10 @@ impl Brain {
         self.mind
             .decisions
             .hear_supplies(&supply_calls, perception.tick);
-        self.mind.emote.hear(&kills);
+        if let Some((id, _)) = perception.observations.player {
+            let weight = self.mind.decisions.behavior().taunt_weight();
+            self.mind.emote.hear_with_style(&kills, Some(id), weight);
+        }
         self.mind.decisions.inbox = inbox;
         self.mind.see_vehicles(vehicles);
         let pad = tuning::with(self.tuning, || {
@@ -282,6 +327,10 @@ impl Default for Brain {
 }
 
 impl local::PadSource for Brain {
+    fn brain_view(&self) -> Option<BrainView> {
+        Some(self.view())
+    }
+
     fn reset_input(&mut self) {
         if let Some((tick, _)) = self.sampled.take() {
             self.mind.release(tick);
@@ -474,5 +523,45 @@ mod tests {
             moved |= pad.right_stick != (0.0, 0.0);
         }
         assert!(moved);
+    }
+
+    #[test]
+    fn temperament_survives_a_round_reset_while_mood_clears() {
+        let board = std::sync::Mutex::new(radio::Radio::default());
+        let mut bot = Brain::new(mind::Skill::Easy, 42);
+        bot.epoch = radio::lock(&board).epoch;
+        let first = bot.view().personality;
+        let mut p = brain::Perception {
+            observations: brain::Observations {
+                player: Some((1, 0)),
+                ..Default::default()
+            },
+            tick: 25,
+            ..Default::default()
+        };
+        bot.play(
+            &p,
+            None,
+            &[emote::Kill {
+                seq: 1,
+                tick: p.tick,
+                victim: 1,
+                attacker: Some(2),
+                betrayal: false,
+                at: None,
+            }],
+            &board,
+        );
+        assert!(bot.view().mood.tilt > 0.0);
+        bot.set_skill(mind::Skill::Legendary);
+        let legendary = bot.view().personality;
+        assert_ne!(legendary, first);
+        assert_eq!(legendary.favorite_weapon, first.favorite_weapon);
+        assert!(bot.view().mood.tilt > 0.0);
+        radio::lock(&board).reset();
+        p.tick = 1;
+        bot.play(&p, None, &[], &board);
+        assert_eq!(bot.view().mood, decisions::MoodView::default());
+        assert_eq!(bot.view().personality, legendary);
     }
 }

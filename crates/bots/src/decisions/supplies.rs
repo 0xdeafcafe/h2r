@@ -25,14 +25,17 @@ pub struct Supply {
     pub respawn: Option<u32>,
     /// The placed weapon starts timing on use or movement (mode zero).
     pub on_disturbance: bool,
+    pub role: crate::arms::Role,
     /// Respawn disabled in the public match settings or placement.
     pub disabled: bool,
     /// Equipment taken by walking over it (overshield or active camouflage).
     pub powerup: Option<Powerup>,
 }
 
+/// Guest timing oracle for the placement-service trace.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Clock {
+pub(crate) enum Clock {
     /// No countdown yet. The host will test the respawn condition at this tick.
     Idle {
         service: u32,
@@ -194,6 +197,7 @@ impl Timers {
                 at: pad.at,
                 respawn: pad.period,
                 powerup: pad.powerup,
+                role: pad.role,
                 on_disturbance: false,
                 disabled: false,
                 object: u32::MAX,
@@ -484,6 +488,7 @@ impl Timers {
         me: Me,
         tick: u32,
         skill: Skill,
+        personality: super::Personality,
         trip: Trip,
         position_value: impl Fn(Vec3) -> Option<f32>,
     ) -> Option<Vec3> {
@@ -509,6 +514,13 @@ impl Timers {
                 if dist > 9.0 + 25.0 * sense {
                     return None;
                 }
+                let patience = personality.wait_weight();
+                let wait = (8.0 + 24.0 * patience) * sense;
+                let interest = if s.powerup.is_none() {
+                    personality.weapon_interest(s.role)
+                } else {
+                    0.0
+                };
                 let strength = position_value(dest)? * sense;
                 if s.disabled && !site.present {
                     return None;
@@ -518,11 +530,14 @@ impl Timers {
                     let left = return_tick.wrapping_sub(tick) as i32;
                     // Lead the expected service, then hold for a short grace
                     // period while contesting. Only sight confirms the return.
-                    if left > 0 && left as f32 > (dist * 12.0 + 20.0) * sense {
+                    if left > 0 && left as f32 > dist * 12.0 * sense + wait {
                         return None;
                     }
-                    if left >= -20 {
-                        return Some((dist + left.max(0) as f32 / 12.0 - 8.0 * strength, dest));
+                    if left >= -(wait.round() as i32) {
+                        return Some((
+                            dist + left.max(0) as f32 / 12.0 - 8.0 * strength - 5.0 * interest,
+                            dest,
+                        ));
                     }
                 }
                 if trip == Trip::Contest
@@ -534,8 +549,10 @@ impl Timers {
                     return None;
                 }
                 let chance = site.probability(tick, dist * 6.0, sense);
-                (chance + 0.14 * strength >= 0.56)
-                    .then_some((dist + 18.0 * (1.0 - chance) - 8.0 * strength, dest))
+                (chance + 0.14 * strength + 0.06 * interest >= 0.56).then_some((
+                    dist + 18.0 * (1.0 - chance) - 8.0 * strength - 5.0 * interest,
+                    dest,
+                ))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, p)| p)

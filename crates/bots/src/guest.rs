@@ -828,6 +828,10 @@ pub const VARIANT_FLAGS: u32 = 0x134 + 0x48;
 pub const GAME_TIME_TICK: u32 = 8;
 /// Unit `+0x168`: the aim, a world-space unit vector.
 pub const UNIT_AIM: u32 = 0x168;
+/// Crouch request bit on a biped (docs/live/live-gamestate.md).
+const BIPED_UNIT_FLAGS: u32 = 0x134;
+const BIPED_CROUCH_REQUEST: u32 = 1 << 23;
+
 /// Object body damage flags bit 2: the body is depleted (dead).
 pub const BODY_DEPLETED: u16 = 1 << 2;
 
@@ -1015,6 +1019,9 @@ fn perception(
                 // These cues require a visible effect or reload animation.
                 shield: None,
                 empty_magazine: false,
+                crouching: m
+                    .u32(body.addr + BIPED_UNIT_FLAGS)
+                    .is_ok_and(|flags| flags & BIPED_CROUCH_REQUEST != 0),
             });
             out.others.push(Seen { id, position, team });
         }

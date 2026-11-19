@@ -1,5 +1,6 @@
 //! Familiar power-item placements, independent of which objects exist in
 //! this match. Unknown/modded collections can still be learned by sight.
+use crate::arms::Role;
 use crate::decisions::supplies::Powerup;
 use crate::places::PowerPad;
 use map::{FourCC, Map, TagId};
@@ -13,7 +14,7 @@ fn word(b: &[u8], at: usize) -> u32 {
 fn collection<R: Read + Seek>(
     map: &mut Map<R>,
     id: TagId,
-) -> Option<(Option<Powerup>, Option<u32>, i16)> {
+) -> Option<(Option<Powerup>, Option<u32>, Role, i16)> {
     let tag = map.tag(id).ok()?;
     if tag.group != FourCC(*b"itmc") {
         return None;
@@ -23,6 +24,7 @@ fn collection<R: Read + Seek>(
     let view = TagView::new(&b, addr);
     let period = i16::from_le_bytes(view.at(8, 2).ok()?.try_into().ok()?);
     let mut models = Vec::new();
+    let mut roles = Vec::new();
     let mut powerup: Option<Option<Powerup>> = None;
     for e in view.block(&b, 0, 0x10).ok()? {
         let object = map.tag(TagId(word(e, 8))).ok()?;
@@ -33,18 +35,22 @@ fn collection<R: Read + Seek>(
             .next()?
             .to_ascii_lowercase()
             .replace(' ', "_");
-        let equipment = match (&object.group.0, name.as_str()) {
-            (
-                b"weap",
-                "shotgun" | "energy_sword" | "sniper_rifle" | "beam_rifle" | "rocket_launcher"
-                | "fuel_rod_gun" | "brute_shot" | "flak_cannon",
-            ) => None,
-            (b"eqip", "powerup_invisibility" | "active_camouflage") => Some(Powerup::Camo),
+        let (equipment, role) = match (&object.group.0, name.as_str()) {
+            (b"weap", "shotgun") => (None, Role::Scatter),
+            (b"weap", "energy_sword") => (None, Role::Blade),
+            (b"weap", "sniper_rifle" | "beam_rifle") => (None, Role::Sniper),
+            (b"weap", "rocket_launcher" | "fuel_rod_gun" | "brute_shot" | "flak_cannon") => {
+                (None, Role::Blast)
+            }
+            (b"eqip", "powerup_invisibility" | "active_camouflage") => {
+                (Some(Powerup::Camo), Role::Unknown)
+            }
             (b"eqip", "powerup_super_shield" | "overshield" | "over_shield") => {
-                Some(Powerup::Overshield)
+                (Some(Powerup::Overshield), Role::Unknown)
             }
             _ => return None,
         };
+        roles.push(role);
         powerup = Some(match powerup {
             Some(previous) if previous != equipment => {
                 if previous.is_none() || equipment.is_none() {
@@ -60,6 +66,11 @@ fn collection<R: Read + Seek>(
     Some((
         powerup?,
         models.iter().all(|&id| id == first).then_some(first),
+        roles
+            .first()
+            .copied()
+            .filter(|r| roles.iter().all(|p| p == r))
+            .unwrap_or(Role::Unknown),
         period,
     ))
 }
@@ -78,7 +89,7 @@ pub(super) fn read<R: Read + Seek>(
         .enumerate()
     {
         let id = TagId(word(e, 0x5c));
-        let Some((powerup, model, default)) =
+        let Some((powerup, model, role, default)) =
             *collections.entry(id).or_insert_with(|| collection(map, id))
         else {
             continue;
@@ -94,6 +105,7 @@ pub(super) fn read<R: Read + Seek>(
             at,
             period: (seconds > 0).then(|| seconds as u32 * 30),
             powerup,
+            role,
             model,
         });
     }

@@ -316,6 +316,7 @@ fn a_due_powerup_stays_the_destination_during_a_fight() {
         spawn: site,
         at: site,
         disabled: false,
+        role: crate::arms::Role::Unknown,
         on_disturbance: true,
         respawn: Some(30),
         powerup: Some(Powerup::Camo),

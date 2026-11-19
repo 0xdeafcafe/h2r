@@ -1267,6 +1267,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
         (Doing::Roam, true),
         (Doing::Idle, false),
         (Doing::Chase([1.0; 3]), false),
+        (Doing::HoldAngle([1.0; 3]), false),
         (Doing::Support([1.0; 3]), false),
         (Doing::Supply([1.0; 3]), false),
         (Doing::Rearm([1.0; 3]), false),
@@ -1287,7 +1288,7 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
     look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);
     m.stunt = Some(hop());
     look(&mut m, X, vec![], 5, None);
-    assert_eq!(m.doing, Doing::Chase([6.0, 3.0, 0.0]));
+    assert_eq!(m.doing, Doing::HoldAngle([6.0, 3.0, 0.0]));
     assert!(m.stunt.is_none());
     // The hook a seat's pad calls stops both kinds.
     m.stunt = Some(hop());
@@ -1308,4 +1309,27 @@ fn glitches_run_only_fighting_or_roaming_on_foot() {
     look(&mut m, X, vec![], 6, None);
     assert_eq!(m.doing, Doing::Drive(100));
     assert!(m.stunt.is_none() && !m.combo.tricking());
+}
+
+#[test]
+fn temperament_showboats_attempt_risky_melee_but_still_reach_for_the_button() {
+    let mut careful = Mind::new(Skill::Legendary, 1);
+    careful.decisions.personality.showboating = 0.15;
+    let mut showboat = careful.clone();
+    showboat.decisions.personality.showboating = 0.9;
+    let foe = || vec![enemy(1, [1.0, 0.0, 0.0])];
+    let mut first = None;
+    for tick in 0..30 {
+        let pad = look(&mut showboat, X, foe(), tick, None);
+        assert!(
+            !look(&mut careful, X, foe(), tick, None)
+                .buttons
+                .contains(MELEE)
+        );
+        if pad.buttons.contains(MELEE) {
+            first.get_or_insert(tick);
+            assert_eq!(pad.right_trigger, 0.0);
+        }
+    }
+    assert!((3..30).contains(&first.expect("showboat tries the melee")));
 }

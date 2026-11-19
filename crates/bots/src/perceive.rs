@@ -309,6 +309,7 @@ pub(crate) mod honesty {
                             powerup: Some(crate::decisions::supplies::Powerup::Camo),
                             on_disturbance: true,
                             disabled: false,
+                            role: crate::arms::Role::Unknown,
                         });
                     }
                     (a, b)

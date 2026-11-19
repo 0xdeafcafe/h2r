@@ -17,6 +17,14 @@ const RIGHT_THUMB_BUTTONS: u16 = (1 << HostButton::South as u8)
     | (1 << HostButton::LeftBumper as u8)
     | (1 << HostButton::RightBumper as u8);
 const RIGHT_CLICK: u16 = 1 << HostButton::RightStick as u8;
+const MAX_TRACKING_NOISE_EXTRA: f32 = 0.10;
+
+/// Mood may add a little noise to tracking. The base aim model supplies
+/// the noise, and the controller still limits the resulting pad request.
+pub(crate) fn tracking_noise(noise: [f32; 2], extra: f32) -> [f32; 2] {
+    let scale = 1.0 + axis(extra, 0.0).min(MAX_TRACKING_NOISE_EXTRA);
+    noise.map(|n| n * scale)
+}
 
 /// Stochastic rounding shares a sub-tick timing error between the adjacent
 /// report boundaries. A 6 ms error crosses a boundary about 18% of the time.

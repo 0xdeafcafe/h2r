@@ -30,7 +30,7 @@ pub(crate) fn equipment(m: &dyn GuestMemory, object: DatumHandle, addr: u32) -> 
         3 => Powerup::Camo,
         _ => return Ok(None),
     };
-    supply(m, object, body, Some(kind))
+    supply(m, object, body, Some(kind), crate::arms::Role::Unknown)
 }
 
 /// Correlate an object's signed placement index with the nearby scenario pad.
@@ -82,6 +82,7 @@ pub(crate) fn supply(
     object: DatumHandle,
     body: objects::Body,
     powerup: Option<Powerup>,
+    role: crate::arms::Role,
 ) -> R<Option<Supply>> {
     let Some(p) = Placement::read(m, body)? else {
         return Ok(None);
@@ -141,6 +142,7 @@ pub(crate) fn supply(
         at,
         respawn: (period > 0).then(|| (period as u32).saturating_mul(u32::from(rate))),
         disabled: period < 0,
+        role,
         on_disturbance: m.u16(rec + 0x12)? == 0,
         powerup,
     }))

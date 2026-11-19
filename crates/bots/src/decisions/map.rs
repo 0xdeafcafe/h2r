@@ -2,7 +2,7 @@
 use super::{distance, supplies::Timers};
 use crate::brain::{Me, Perception, Vec3};
 use crate::cache::MapData;
-use crate::mind::{CHEST, EYE, Skill};
+use crate::mind::{CHEST, EYE};
 use crate::nav::{Edge, NavMesh, Waypoint};
 use crate::stuck::Stuck;
 
@@ -92,16 +92,22 @@ impl MapMemory {
         &self,
         me: Me,
         tick: u32,
-        skill: Skill,
-        stuck: &Stuck,
+        mind: &crate::mind::Mind,
         map: Option<&MapData>,
-        experience: &crate::experience::Experience,
         trip: super::supplies::Trip,
     ) -> Option<Vec3> {
-        self.timers.due(me, tick, skill, trip, |at| {
-            (!self.hot(at, tick, 3.0) && !stuck.blocked(at, tick))
-                .then(|| map.map_or(0., |m| m.places.strength(at)) + 0.3 * experience.success(at))
-        })
+        self.timers.due(
+            me,
+            tick,
+            mind.skill,
+            mind.decisions.personality,
+            trip,
+            |at| {
+                (!self.hot(at, tick, 3.0) && !mind.stuck.blocked(at, tick)).then(|| {
+                    map.map_or(0., |m| m.places.strength(at)) + 0.3 * mind.experience.success(at)
+                })
+            },
+        )
     }
 
     pub(crate) fn hot(&self, at: Vec3, tick: u32, radius: f32) -> bool {

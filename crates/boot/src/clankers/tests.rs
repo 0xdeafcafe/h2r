@@ -1072,3 +1072,27 @@ fn the_page_has_quick_options_header() {
     let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
     assert!(crate::ui_kit::spec::fallback::width(HEADER_HELP) <= room);
 }
+
+#[test]
+fn temperament_local_roster_bots_use_the_server_seed_and_restore_the_port_seed() {
+    let local = Local::default();
+    let driver = Driver::new(local.clone());
+    let k = Skill::Heroic;
+    let (source, _) = driver.clanker(k, 12, 0.3);
+    let h = local.add(1, "Clanker 1", Box::new(source)).unwrap();
+    let offline = local.brain_view(h).unwrap();
+    let account = bots::guest::BotAccount {
+        xuid: 9,
+        gamertag: "Persistent".into(),
+    };
+    local
+        .set_roster_account(h, Some(account), Some((99, 0.4)))
+        .unwrap();
+    assert_eq!(local.brain_view(h).unwrap(), bots::Brain::new(k, 99).view());
+    assert_ne!(
+        local.brain_view(h).unwrap().personality,
+        offline.personality
+    );
+    local.set_roster_account(h, None, None).unwrap();
+    assert_eq!(local.brain_view(h), Some(offline));
+}

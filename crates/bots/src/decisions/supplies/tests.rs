@@ -9,9 +9,18 @@ const SUPPLY: Supply = Supply {
     at: [10.4, 0.0, 0.0],
     disabled: false,
     on_disturbance: true,
+    role: crate::arms::Role::Sniper,
     respawn: Some(300),
     powerup: None,
 };
+
+fn neutral() -> crate::decisions::Personality {
+    crate::decisions::Personality {
+        patience: 0.5,
+        weapon_loyalty: 0.,
+        ..crate::decisions::Personality::seeded(5)
+    }
+}
 
 fn bot() -> Me {
     Me {
@@ -70,38 +79,79 @@ fn a_witnessed_pickup_starts_a_skill_scaled_trip() {
     let mut t = Timers::default();
     check(&mut t, 0, &[SUPPLY]);
     assert_eq!(
-        t.due(bot(), 0, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(bot(), 0, Skill::Legendary, neutral(), Trip::Search, |_| {
+            Some(0.)
+        }),
         None,
         "arms chooses guns on the floor"
     );
     check(&mut t, 1, &[]);
     assert_eq!(
-        t.due(bot(), 120, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            120,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         None
     );
     assert_eq!(
-        t.due(bot(), 240, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            240,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(PAD)
     );
     assert_eq!(
-        t.due(bot(), 240, Skill::Easy, Trip::Search, |_| Some(0.)),
+        t.due(bot(), 240, Skill::Easy, neutral(), Trip::Search, |_| Some(
+            0.
+        )),
         None
     );
     assert_eq!(
-        t.due(bot(), 360, Skill::Easy, Trip::Search, |_| Some(0.)),
+        t.due(bot(), 360, Skill::Easy, neutral(), Trip::Search, |_| Some(
+            0.
+        )),
         Some(PAD)
     );
     assert_eq!(
-        t.due(armed(), 296, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            armed(),
+            296,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         None
     );
     assert_eq!(
-        t.due(bot(), 296, Skill::Legendary, Trip::Search, |_| None),
+        t.due(
+            bot(),
+            296,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| None
+        ),
         None,
         "hot placement"
     );
     assert_eq!(
-        t.due(bot(), 365, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            365,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(PAD)
     );
 }
@@ -115,21 +165,49 @@ fn powerups_draw_an_armed_bot_to_the_item_and_later_to_the_placement() {
     let mut t = Timers::default();
     check(&mut t, 5, &[item]);
     assert_eq!(
-        t.due(armed(), 5, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            armed(),
+            5,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(item.at)
     );
     check(&mut t, 6, &[]);
     assert_eq!(
-        t.due(armed(), 7, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            armed(),
+            7,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         None
     );
     assert_eq!(
-        t.due(armed(), 300, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            armed(),
+            300,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(item.spawn)
     );
     check(&mut t, 306, &[item]);
     assert_eq!(
-        t.due(armed(), 306, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            armed(),
+            306,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(item.at)
     );
 }
@@ -147,9 +225,14 @@ fn missing_scans_hidden_pads_and_long_gaps_do_not_date_a_pickup() {
         let removed = if gap == 2 { 80 } else { 2 };
         check(&mut t, removed, &[]);
         assert_eq!(
-            t.due(bot(), removed + 300, Skill::Legendary, Trip::Search, |_| {
-                Some(0.)
-            }),
+            t.due(
+                bot(),
+                removed + 300,
+                Skill::Legendary,
+                neutral(),
+                Trip::Search,
+                |_| { Some(0.) }
+            ),
             Some(PAD),
             "a missed pickup still leaves an empty-pad estimate, gap {gap}"
         );
@@ -183,7 +266,14 @@ fn unknown_respawn_period_is_learned_only_from_a_watched_cycle() {
         check(&mut t, 111, &[Supply { object: 90, ..item }]);
         check(&mut t, 112, &[]);
         assert_eq!(
-            t.due(bot(), 210, Skill::Normal, Trip::Search, |_| Some(0.)),
+            t.due(
+                bot(),
+                210,
+                Skill::Normal,
+                neutral(),
+                Trip::Search,
+                |_| Some(0.)
+            ),
             (!interrupted).then_some(PAD)
         );
     }
@@ -205,12 +295,26 @@ fn two_identical_items_keep_independent_clocks() {
     }
     check(&mut t, 103, &[]);
     assert_eq!(
-        t.due(bot(), 260, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            260,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(PAD)
     );
     t.observe(390, Some(&[SUPPLY]), |at| at == PAD || at == SUPPLY.at);
     assert_eq!(
-        t.due(bot(), 390, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            390,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(other.spawn)
     );
 }
@@ -230,7 +334,14 @@ fn bringing_the_same_gun_back_does_not_teach_a_respawn_period() {
     check(&mut t, 101, &[gun]);
     check(&mut t, 102, &[]);
     assert_eq!(
-        t.due(bot(), 201, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            201,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         None
     );
 }
@@ -373,6 +484,7 @@ fn a_visible_carrier_is_weak_evidence_for_a_unique_known_pad() {
         weapon: Some(3),
         shield: None,
         empty_magazine: false,
+        crouching: false,
     });
     t.carriers(&p, bot());
     assert!(t.sites[0].probability(50, 0., 1.) < 0.3);
@@ -390,24 +502,39 @@ fn an_unvisited_power_pad_can_be_worth_the_trip_and_a_visible_empty_one_is_not()
                 at: [x, 0., 0.],
                 period: Some(1500),
                 powerup: Some(Powerup::Overshield),
+                role: crate::arms::Role::Unknown,
                 model: None,
             },
             0,
         );
     }
     assert_eq!(
-        timers.due(armed(), 0, Skill::Legendary, Trip::Search, |p| Some(
-            if p[0] == 10. { 0.8 } else { 0. }
-        )),
+        timers.due(armed(), 0, Skill::Legendary, neutral(), Trip::Search, |p| {
+            Some(if p[0] == 10. { 0.8 } else { 0. })
+        }),
         Some([10., 0., 0.])
     );
     assert_eq!(
-        timers.due(armed(), 0, Skill::Legendary, Trip::Contest, |_| Some(1.)),
+        timers.due(
+            armed(),
+            0,
+            Skill::Legendary,
+            neutral(),
+            Trip::Contest,
+            |_| Some(1.)
+        ),
         None
     );
     timers.observe(1, Some(&[]), |_| true);
     assert_eq!(
-        timers.due(armed(), 1, Skill::Legendary, Trip::Search, |_| Some(1.)),
+        timers.due(
+            armed(),
+            1,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(1.)
+        ),
         None
     );
 }
@@ -429,11 +556,20 @@ fn a_witnessed_power_weapon_uses_estimated_service_and_remembers_its_wielder() {
     assert_eq!(t.sites[0].expected_return, Some(274));
     assert!(t.holder(2));
     assert_eq!(
-        t.due(bot(), 1, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(bot(), 1, Skill::Legendary, neutral(), Trip::Search, |_| {
+            Some(0.)
+        }),
         None
     );
     assert_eq!(
-        t.due(bot(), 250, Skill::Legendary, Trip::Search, |_| Some(0.)),
+        t.due(
+            bot(),
+            250,
+            Skill::Legendary,
+            neutral(),
+            Trip::Search,
+            |_| Some(0.)
+        ),
         Some(PAD)
     );
     update(&mut t, 71, None, &[], &[], &[], |_| false);
@@ -509,7 +645,10 @@ fn a_timed_trip_reaches_the_pad_before_the_spawn_and_waits_there() {
     let expected = t.sites[0].expected_return.unwrap();
     let mut arrived = None;
     for tick in 2..=expected {
-        if t.due(me, tick, Skill::Legendary, Trip::Search, |_| Some(0.)) == Some(PAD) {
+        if t.due(me, tick, Skill::Legendary, neutral(), Trip::Search, |_| {
+            Some(0.)
+        }) == Some(PAD)
+        {
             me.position[0] = (me.position[0] + 1.0 / 12.0).min(PAD[0]);
             if me.position == PAD {
                 arrived.get_or_insert(tick);
@@ -548,8 +687,15 @@ fn only_an_eligible_witnessed_removal_projects_a_service() {
         assert_eq!(t.sites[0].expected_return, expected);
         if disabled {
             assert!(
-                t.due(bot(), 295, Skill::Legendary, Trip::Search, |_| Some(0.))
-                    .is_none()
+                t.due(
+                    bot(),
+                    295,
+                    Skill::Legendary,
+                    neutral(),
+                    Trip::Search,
+                    |_| Some(0.)
+                )
+                .is_none()
             );
         }
     }
@@ -677,5 +823,54 @@ fn a_witnessed_success_dates_the_pickup_between_scans_and_identifies_the_recipie
         assert_eq!(t.sites[0].taken, when);
         assert_eq!(t.holder(b.id), known);
         assert!(!t.holder(a.id));
+    }
+}
+
+#[test]
+fn patience_changes_the_wait_window_and_favorites_break_pad_ties() {
+    use crate::arms::Role;
+    let mut t = Timers::default();
+    let impatient = crate::decisions::Personality {
+        patience: 0.,
+        ..neutral()
+    };
+    let patient = crate::decisions::Personality {
+        patience: 1.,
+        ..neutral()
+    };
+    check(&mut t, 0, &[SUPPLY]);
+    check(&mut t, 1, &[]);
+    update(&mut t, 1, Some(30), &[], &[], &[], |_| true);
+    let when = t.sites[0].expected_return.unwrap() - 145;
+    let trip = |p| t.due(bot(), when, Skill::Legendary, p, Trip::Search, |_| Some(0.));
+    assert_eq!(trip(impatient), None);
+    assert_eq!(trip(patient), Some(PAD));
+
+    let mut t = Timers::default();
+    for (site, x, role) in [(1, 8., Role::Blast), (2, 10., Role::Sniper)] {
+        t.familiar(
+            crate::places::PowerPad {
+                site,
+                at: [x, 0., 0.],
+                period: Some(900),
+                powerup: None,
+                model: None,
+                role,
+            },
+            0,
+        );
+    }
+    for (role, expected) in [(Role::Blast, 8.), (Role::Sniper, 10.)] {
+        let traits = crate::decisions::Personality {
+            favorite_weapon: role,
+            weapon_loyalty: 1.,
+            ..neutral()
+        };
+        assert_eq!(
+            t.due(bot(), 0, Skill::Legendary, traits, Trip::Search, |_| Some(
+                0.
+            )),
+            Some([expected, 0., 0.])
+        );
     }
 }

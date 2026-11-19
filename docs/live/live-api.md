@@ -438,6 +438,46 @@ death to a bot a career death. The game record keeps every one of them.
 and at most 30 days back. There are no headshots or medals: the events do
 not carry them (the web app derives medals itself).
 
+## Clanker Training
+
+Simulation runs use the normal game stream, ingest socket and replay archive.
+The native server uses its private blob store. The Worker uses its private
+`BLOBS` R2 binding for the packed recording and the JSON report.
+
+| Endpoint | Token | Contract |
+|---|---|---|
+| `POST /v1/admin/sim-runs` | `games.write` | Admin starts a game with the normal game-start body and a required `sim` object. Returns `201` and `{game_id, position}`. The same host and start body can retry the same run ID. |
+| `GET /v1/admin/sim-runs` | `read` | Lists runs newest first, 50 per page. Accepts `map`, `tuning` (case-insensitive arm or parameter text), `batch` and `before` (the previous page's `next`). |
+| `GET /v1/admin/sim-runs/{game_id}` | `read` | Returns `{run, game, report}`. `game` is the normal game detail and `report` is the original JSON or null while the upload is pending. |
+| `PUT /v1/admin/sim-runs/{game_id}/report` | `games.write` | The admin who hosted the ended recording stores its `h2-sim-report/1` JSON. Returns `204`. An identical retry succeeds. A different report for that run returns `409`. |
+
+The `sim` object carries `run_id`, optional `batch_id`, `seed` as a decimal
+string (all 64 bits), `gametype`, `pace`, resolved `bots` including tuning,
+and `deferred`. The game ID is `sim-<run_id>`. The list includes the game
+summary, current scoreboard, tick count, measured speed, report result and
+optional determinism data. The run status is `running`, `finished`, or
+`interrupted` for a lost recording with no report.
+
+For a live viewer, open the normal `/v1/stream` with `auth=1`,
+`frames=packed`, `games=<game_id>` and `stream=game-<game_id>`. The first
+message carries an admin's `read` token. Scoped sim streams close when the
+token expires, so reconnect with a fresh token. Replay frame and event reads
+use the standard game-specific endpoints with an admin `read` token.
+General game lists, dashboard snapshots and streams, stats and ranks
+exclude sim runs. Sim-specific requests from signed-in non-admins are
+refused. Anonymous and non-admin replay requests see no such game.
+
+The archive captures frames on game time (up to one frame every two ticks).
+Live fan-out keeps the ordinary 15 Hz wall-clock limit. A deferred run
+accepts packed frames at completion and has no live fan-out.
+
+Reports are capped at 512 KiB. Simulation recordings have an in-game hour
+limit and an archive cap of 32 MiB per run. The list and detail set
+`recording_limited` when the archive hits its byte limit. The client also
+bounds each deferred recording's local buffer at 32 MiB. Reports are stored
+under `sim/<game_id>/` and frames under `frames/<game_id>/` in the private
+store. These limits apply in both Live homes.
+
 ## Usage
 
 The Live admin's usage screens (`/dash/admin/usage`,
@@ -1397,8 +1437,8 @@ are small). Without it, frames for every live game are sent.
 for it), and the stream then sends what that account may see: the events
 and frames of a friends-only or invite-only co-op game or session go only to
 readers allowed to see it ([Co-op games](#co-op-games)). On a public server
-the token's expiry does not close the socket. Without `auth`, a public
-stream is anonymous and leaves those events out.
+the token's expiry closes only explicitly scoped [sim streams](#clanker-training).
+Without `auth`, a public stream is anonymous and leaves those events out.
 
 `?frames=packed` sends frames as binary messages instead: each a container
 of packed frame records (docs/live/live-telemetry.md, "Packed frames"), one

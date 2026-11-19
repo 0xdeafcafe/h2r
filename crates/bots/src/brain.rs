@@ -88,9 +88,11 @@ pub struct Contact {
     pub id: u32,
     pub aim: Vec3,
     pub shield: Option<f32>,
-    /// Empty magazine with rounds in reserve. A window to push, inferred
-    /// from the held weapon rather than a reload animation.
+    /// A visible reload can create a window to push. The guest observer
+    /// leaves this false until it can recognize the animation.
     pub empty_magazine: bool,
+    /// The biped is requesting crouch this tick.
+    pub crouching: bool,
 }
 
 /// What the bot knows this tick.

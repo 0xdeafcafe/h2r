@@ -391,3 +391,130 @@ fn the_super_bounce_requests_a_three_tick_jump_after_settling() {
         assert!((nominal - 1..=nominal + 1).contains(&reported.unwrap()));
     }
 }
+
+#[test]
+fn temperament_tracking_noise_and_match_pads_obey_human_limits() {
+    use crate::emote::Kill;
+
+    assert_eq!(tracking_noise([1.0, -1.0], 0.08), [1.08, -1.08]);
+    assert_eq!(tracking_noise([1.0, -1.0], 1.0), [1.10, -1.10]);
+    assert_eq!(tracking_noise([1.0, -1.0], -1.0), [1.0, -1.0]);
+
+    for skill in Skill::ALL {
+        let mut bot = Brain::new(skill, 7);
+        let board = Mutex::new(Radio::default());
+        bot.epoch = 0;
+        bot.mind.decisions.personality.composure = 0.0;
+        bot.mind.decisions.personality.showboating = 1.0;
+        let limits = Tuning::default().input_limits(skill);
+        let mut previous = HostPadState::default();
+        let mut last_face = None;
+        let mut last_look = None;
+        for tick in 0..140 {
+            let died = matches!(tick, 0 | 4 | 8);
+            let p = Perception {
+                me: (!died).then(|| Me {
+                    aim: if tick % 30 < 18 {
+                        [1.0, 0.0, 0.0]
+                    } else {
+                        [0.0, -1.0, 0.0]
+                    },
+                    ..Me::default()
+                }),
+                tick,
+                observations: Observations {
+                    player: Some((0, 0)),
+                    ..Default::default()
+                },
+                others: vec![Seen {
+                    id: 1,
+                    position: [0.9, 0.2, 0.0],
+                    team: 1,
+                }],
+                ..Default::default()
+            };
+            let death = Kill {
+                seq: u64::from(tick),
+                tick,
+                victim: 0,
+                attacker: Some(1),
+                betrayal: false,
+                at: None,
+            };
+            let kills = if died {
+                std::slice::from_ref(&death)
+            } else {
+                &[]
+            };
+            let pad = bot.play(&p, None, kills, &board);
+            if tick == 8 {
+                assert_eq!(bot.view().mood.tilt, 1.0);
+            }
+            assert_stick_limit(previous.left_stick, pad.left_stick, limits.stick_step);
+            assert_stick_limit(previous.right_stick, pad.right_stick, limits.stick_step);
+            assert!((0.0..=1.0).contains(&pad.left_trigger));
+            assert!((0.0..=1.0).contains(&pad.right_trigger));
+            let face = pad.buttons.bits() & RIGHT_THUMB_BUTTONS;
+            let look = pad.right_stick != (0.0, 0.0) || pad.buttons.bits() & RIGHT_CLICK != 0;
+            assert!(face.count_ones() <= 1);
+            assert!(face == 0 || !look);
+            if face != 0 {
+                assert!(last_look.is_none_or(|t| tick - t >= limits.thumb_switch_ticks));
+                last_face = Some(tick);
+            }
+            if look {
+                assert!(last_face.is_none_or(|t| tick - t >= limits.thumb_switch_ticks));
+                last_look = Some(tick);
+            }
+            previous = pad;
+        }
+        assert!(last_look.is_some(), "{skill:?}: the tilted brain turned");
+    }
+}
+
+#[test]
+fn temperament_perception_delay_preserves_kills_across_a_death() {
+    use crate::emote::Kill;
+
+    let board = Mutex::new(Radio::default());
+    let mut brain = Brain::new(Skill::Normal, 7).with_tuning(Tuning {
+        perception_ticks: Some(3),
+        ..Default::default()
+    });
+    brain.epoch = 0;
+    let mut p = Perception {
+        me: Some(Me::default()),
+        tick: 1,
+        observations: Observations {
+            player: Some((0, 0)),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let enemy_down = Kill {
+        seq: 1,
+        tick: 1,
+        victim: 1,
+        attacker: Some(0),
+        betrayal: false,
+        at: None,
+    };
+    brain.play(&p, None, &[enemy_down], &board);
+    assert_eq!(brain.view().mood.streak, 0, "the kill is still queued");
+
+    p.me = None;
+    p.tick = 2;
+    let death = Kill {
+        seq: 2,
+        tick: 2,
+        victim: 0,
+        attacker: Some(2),
+        ..enemy_down
+    };
+    brain.play(&p, None, &[death], &board);
+    let mood = brain.view().mood;
+    assert!(mood.confidence > 0.0, "the buffered kill contributed first");
+    assert!(mood.tilt > 0.0, "the death counted");
+    assert_eq!(mood.streak, 0);
+    assert_eq!(mood.revenge_target, Some(2));
+}

@@ -49,15 +49,7 @@ impl Mind {
             && intent.chosen.is_some()
             && !self.recovering
             && self.decisions.posture != Posture::Withdraw
-            && let Some(pad) = self.decisions.map.due(
-                me,
-                p.tick,
-                self.skill,
-                &self.stuck,
-                map,
-                &self.experience,
-                Trip::Contest,
-            )
+            && let Some(pad) = self.decisions.map.due(me, p.tick, self, map, Trip::Contest)
         {
             intent.anchor = Some((pad, crate::nav::REACHED));
         }
@@ -105,24 +97,23 @@ impl Mind {
         if let Some(at) = support.filter(|at| !self.stuck.blocked(*at, p.tick)) {
             return Doing::Support(at);
         }
-        if self.decisions.disengaging(p.tick)
+        let behavior = self.decisions.behavior();
+        if (self.decisions.disengaging(p.tick) || behavior.fear() > 0.28)
             && let Some(at) = last
         {
             return Doing::Recover(at);
         }
         if calm
             && self.kit == Kit::Fine
-            && let Some(at) = self.decisions.map.due(
-                me,
-                p.tick,
-                self.skill,
-                &self.stuck,
-                map,
-                &self.experience,
-                Trip::Search,
-            )
+            && let Some(at) = self.decisions.map.due(me, p.tick, self, map, Trip::Search)
         {
             return Doing::Supply(at);
+        }
+        if let Some((id, at, tick)) = self.last_seen
+            && !behavior.wants_revenge(id)
+            && p.tick.wrapping_sub(tick) < behavior.hold_ticks()
+        {
+            return Doing::HoldAngle(at);
         }
         if let Some((_, at, seen)) = self.last_seen {
             // A distant, old sighting is less likely to pay for a long chase.
@@ -150,10 +141,18 @@ impl Mind {
             let sense = crate::decisions::awareness(self.skill);
             let long = matches!(range, Some(arms::Role::Sniper | arms::Role::Precise));
             if long || p.observations.ahead {
-                let reach = if long { 8.0 + 45.0 * sense } else { 7.0 };
+                let personality = self.decisions.personality;
+                let interest = range.map_or(0., |role| personality.weapon_interest(role));
+                let reach = if long {
+                    8.0 + (40.0 + 10.0 * interest) * sense
+                } else {
+                    7.0
+                };
+                let position_weight =
+                    10.0 + 16.0 * sense + 5.0 * interest + 4.0 * personality.wait_weight();
                 let known = (map.places.vantages.len() as f32 * sense).ceil() as usize;
                 let worth = |v: &crate::places::Vantage| {
-                    (v.score + 0.2 * self.experience.firing_position(v.at)) * (10.0 + 16.0 * sense)
+                    (v.score + 0.2 * self.experience.firing_position(v.at)) * position_weight
                         - len(sub(v.at, me.position))
                             * (1.0 - 0.4 * self.decisions.personality.caution)
                 };

@@ -6,6 +6,7 @@ use super::supplies::Supply;
 use crate::brain::{Perception, Vec3};
 
 const CALL_TICKS: u32 = 75;
+pub(super) const MAX_REPORT_INTERVAL: u32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Call {
@@ -24,6 +25,28 @@ pub(crate) struct SupplyCall {
     pub item: Supply,
     pub present: bool,
     pub tick: u32,
+}
+
+/// Rate-limit repeat sightings. New targets and urgent help go out immediately.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Voice(Option<Call>);
+
+impl Voice {
+    pub fn report(&mut self, call: Option<Call>, interval: u32) -> Option<Call> {
+        let Some(call) = call else {
+            self.0 = None;
+            return None;
+        };
+        if self.0.is_some_and(|old| {
+            old.target == call.target
+                && (!call.help || old.help)
+                && call.tick.wrapping_sub(old.tick) < interval
+        }) {
+            return None;
+        }
+        self.0 = Some(call);
+        Some(call)
+    }
 }
 
 #[derive(Default)]

@@ -1,5 +1,6 @@
 //! Static map knowledge. Traffic is a proxy: how often a polygon lies on
 //! shortest (fewest portals) paths across the mesh from sampled origins.
+use crate::arms::Role;
 use crate::brain::Vec3;
 use crate::decisions::{distance, supplies::Powerup};
 use crate::los::Walls;
@@ -21,6 +22,7 @@ pub struct PowerPad {
     pub period: Option<u32>,
     pub powerup: Option<Powerup>,
     pub model: Option<u32>,
+    pub role: Role,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -202,7 +204,15 @@ impl Places {
             for w in [
                 u32::from(p.site),
                 match p.powerup {
-                    None => 0,
+                    None => match p.role {
+                        Role::Unknown => 0,
+                        Role::Sniper => 4,
+                        Role::Blast => 5,
+                        Role::Scatter => 6,
+                        Role::Blade => 7,
+                        Role::Spray => 8,
+                        Role::Precise => 9,
+                    },
                     Some(Powerup::Overshield) => 1,
                     Some(Powerup::Camo) => 2,
                     Some(Powerup::Mixed) => 3,
@@ -260,11 +270,17 @@ impl Places {
                     return None;
                 }
                 let site = u8::try_from(word()?).ok()?;
-                let powerup = match word()? {
-                    0 => None,
-                    1 => Some(Powerup::Overshield),
-                    2 => Some(Powerup::Camo),
-                    3 => Some(Powerup::Mixed),
+                let (powerup, role) = match word()? {
+                    0 => (None, Role::Unknown),
+                    1 => (Some(Powerup::Overshield), Role::Unknown),
+                    2 => (Some(Powerup::Camo), Role::Unknown),
+                    3 => (Some(Powerup::Mixed), Role::Unknown),
+                    4 => (None, Role::Sniper),
+                    5 => (None, Role::Blast),
+                    6 => (None, Role::Scatter),
+                    7 => (None, Role::Blade),
+                    8 => (None, Role::Spray),
+                    9 => (None, Role::Precise),
                     _ => return None,
                 };
                 let p = word()?;
@@ -273,6 +289,7 @@ impl Places {
                     site,
                     at,
                     powerup,
+                    role,
                     period: (p != 0).then_some(p),
                     model: (m != u32::MAX).then_some(m),
                 })
@@ -337,7 +354,15 @@ mod tests {
 
     #[test]
     fn open_h1_valley_keeps_opposite_flanks_and_round_trips_the_cache() {
-        let map = valley();
+        let mut map = valley();
+        map.places.pads.push(PowerPad {
+            site: 4,
+            at: [4., 12., 0.],
+            period: Some(3600),
+            powerup: None,
+            model: Some(7),
+            role: Role::Sniper,
+        });
         let vs = &map.places.vantages;
         assert!(vs.iter().any(|v| v.at[1] < 8.));
         assert!(vs.iter().any(|v| v.at[1] > 16.));
@@ -365,6 +390,52 @@ mod tests {
         let pad = mind.step(&p, Some(&map));
         assert_eq!(mind.doing, Doing::Vantage(v));
         assert_eq!(pad.left_stick, (0., 0.));
+    }
+
+    #[test]
+    fn a_patient_sniper_will_travel_farther_for_a_better_firing_position() {
+        use crate::arms::{Ammo, Arms, Gun, Profile, Trigger};
+        let mut map = valley();
+        let near = Vantage {
+            at: [4., 12., 0.],
+            watches: [40., 12., 0.],
+            score: 0.3,
+        };
+        let far = Vantage {
+            at: [13., 12., 0.],
+            score: 0.6,
+            ..near
+        };
+        map.places.vantages = vec![far, near];
+        let p = Perception {
+            me: Some(Me {
+                position: near.at,
+                arms: Some(Arms {
+                    held: Some(Gun {
+                        profile: Profile {
+                            trigger: Trigger::Single,
+                            zoom: 2,
+                            ..Default::default()
+                        },
+                        ammo: Ammo::Battery(1.),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for (weight, expected) in [(0., near), (1., far)] {
+            let mut mind = Mind::new(Skill::Legendary, 41);
+            let traits = &mut mind.decisions.personality;
+            traits.favorite_weapon = Role::Sniper;
+            traits.caution = 0.;
+            traits.weapon_loyalty = weight;
+            traits.patience = weight;
+            mind.step(&p, Some(&map));
+            assert_eq!(mind.doing, Doing::Vantage(expected));
+        }
     }
 
     #[test]
@@ -405,6 +476,7 @@ mod tests {
                 powerup: None,
                 on_disturbance: true,
                 disabled: false,
+                role: Role::Sniper,
             });
         paired_worlds(Some(&map), [(a, b)]);
     }
