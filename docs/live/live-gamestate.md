@@ -411,7 +411,7 @@ Standard four-argument stack convention, callee pops 16 bytes:
 |---|---:|---|---|
 | attacker player datum | `[esp+0x04]` | `u32` | Finally attributed killer; `0xffffffff` for none |
 | victim player datum | `[esp+0x08]` | `u32` | Victim player |
-| betrayal flag | `[esp+0x0c]` | `u32`/`bool` | Friendly-fire/betrayal classification |
+| unknown flag | `[esp+0x0c]` | `u32` | **Not** a betrayal flag: it is set for free-for-all kills between enemies too (seen 2026-11-19, a Clankers free-for-all whose every kill was sent as a betrayal). Nothing reads it; a betrayal is a teammate killed in a team game (`live_proto::game::is_betrayal`). |
 | packed damage code | `[esp+0x10]` | `u8` in low byte | Low 6 bits damage type, high 2 bits modifier |
 
 The direct call is at `0x001ea460` inside attribution routine `0x001e9fa0`. It follows recent-damage attribution, so the killer is final. It is not universal for campaign AI or arbitrary units: a game engine/statborg and a victim player index are required.
