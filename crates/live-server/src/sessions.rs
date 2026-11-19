@@ -464,10 +464,13 @@ impl Live {
 /// Whether `viewer` may read a log event (`GET /v1/events`, `/v1/stream`):
 /// a game's events follow [`crate::model::Game::shows_to`], a session's
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
-/// in it counts), and every other event is public.
+/// in it counts). Only admins and the operator can read host lifecycle events.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
     if viewer.is_admin() {
         return true;
+    }
+    if stream == live_proto::hosts::STREAM {
+        return false;
     }
     if let Some(id) = stream.strip_prefix("game-") {
         return game_shows_to(s, id, viewer);

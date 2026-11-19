@@ -224,6 +224,9 @@ private for the lifetime of the lease.
 A dedicated session carries the service subject in `host` and zero in the
 legacy `host_xuid` field. Host heartbeats refresh its advertisement, and
 only player XUIDs populate presence, session membership and Ranked results.
+Raw events on the `hosts` stream are visible only to admins and the
+operator. Roster members read their lease endpoint through
+`GET /v1/hosts/{lease}`.
 [Ranked admission](dedicated-host.md#routing-assignment-and-arbitration)
 
 ## 4. Base URL and discovery

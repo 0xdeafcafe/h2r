@@ -103,6 +103,47 @@ async fn record(live: &Live, events: Vec<NewEvent>) {
         .unwrap();
 }
 
+#[tokio::test]
+async fn host_lifecycle_events_are_admin_only_in_feed_and_stream() {
+    use crate::{sessions::Viewer, store::Query};
+    use live_proto::hosts::{HOST_REQUESTED, STREAM};
+
+    let live = live().await;
+    let lease = lease();
+    let roster_member = lease.roster[0];
+    let requested = live.server_event(STREAM.into(), HOST_REQUESTED, json!({ "lease": lease }));
+    let rows = live.store.append(vec![requested], &[]).await.unwrap();
+    let event = &rows[0];
+    live.wait_applied(event.position).await.unwrap();
+
+    for (viewer, visible) in [
+        (Viewer::Anonymous, false),
+        (Viewer::Account(roster_member), false),
+        (Viewer::Account(Xuid(99)), false),
+        (Viewer::Admin, true),
+        (Viewer::Operator, true),
+    ] {
+        assert_eq!(
+            live.wire_for(event, viewer).is_some(),
+            visible,
+            "{viewer:?} WebSocket"
+        );
+        for filter in [None, Some(STREAM.to_owned())] {
+            let query = Query {
+                stream: filter,
+                ..Query::after(event.position - 1, 1)
+            };
+            let page = live.events_for(&query, viewer).await.unwrap();
+            assert_eq!(
+                page.items.iter().any(|e| e.position == event.position),
+                visible,
+                "{viewer:?} event feed"
+            );
+            assert_eq!(page.next, Some(event.position.to_string()));
+        }
+    }
+}
+
 fn ad() -> NewSession {
     serde_json::from_value(json!({
         "port":3074, "host_address":vec![0; 36],
