@@ -466,6 +466,12 @@ that the host registers, a rostered client can exchange binary datagrams,
 and a different account receives 403. End one lease through a normal match
 and stop another from the admin page. Confirm each instance stops in
 Cloudflare and that a subsequent tunnel request leaves it stopped.
+
+To check the first boot alarm, use a staging host that starts but withholds
+registration. After the cohort forms and the queue responds, stop all client
+polls. Once the 60-second boot deadline has passed, check the host log for
+`HostEnded` with reason `boot_timeout` and confirm the container stopped.
+The event timestamp should precede the first verification request.
 [Coordinator integration pass](dedicated-host-build.md#coordinators-integration-pass)
 
 ## Cost of the relay

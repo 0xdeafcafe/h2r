@@ -309,15 +309,15 @@ impl LiveHub {
         )
         .await
         .map_err(|e| rust_error(format!("{e:#}")))?;
+        live.set_blobs(Blobs {
+            private,
+            public: None,
+        });
         // Dedicated host leases use this environment's private container namespace.
         live.set_host_config(live_server::hosts::HostConfig::from_env(&|name| {
             self.setting(name)
         }));
         live.set_host_provider(Arc::new(hostroom::CloudflareProvider::new(self.env.clone())));
-        live.set_blobs(Blobs {
-            private,
-            public: None,
-        });
         Ok((live, js_sys::Date::now() - started, head))
     }
 }
