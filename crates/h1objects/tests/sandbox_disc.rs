@@ -1695,6 +1695,10 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
                             at = *by;
                             format!("address {word:#x} in {}", label(*by))
                         }
+                        Some(h1convert::fresh::Reach::Holds { by, block }) => {
+                            at = *by;
+                            format!("holds the block at {block:#x} of {}", label(*by))
+                        }
                         Some(h1convert::fresh::Reach::Gap { by, gap }) => {
                             at = *by;
                             format!(
@@ -1719,17 +1723,14 @@ fn pinned_bloodgulch_fits_its_tag_memory() {
                 pruned.freed,
                 pruned.kept_by_pointer
             );
-            // Retail block data shared between tags: a kept tag's array
-            // in a dropped tag's bytes, kept as metadata no tag owns.
-            for r in &pruned.shared {
-                eprintln!(
-                    "{sandbox:?}: kept {:#x}..{:#x} of dropped {} for {}",
-                    r.start,
-                    r.end,
-                    label(r.owner),
-                    label(r.by)
-                );
-            }
+            // Retail block data shared between tags: the tags kept only
+            // because a kept tag's block sits in their bytes.
+            let holders: Vec<String> = pruned.holders.iter().map(|id| label(*id)).collect();
+            eprintln!(
+                "{sandbox:?}: {} holders of shared blocks ({} words naming dropped tags nulled): {holders:?}",
+                holders.len(),
+                pruned.holder_words
+            );
         }
         let (done, _) = p
             .build_pruned(&mut base, &mopp)

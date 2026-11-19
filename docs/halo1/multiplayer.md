@@ -669,14 +669,21 @@ no array covers (an emptied block's old elements, a removed
 placement's) keep nothing. Retail shares block data between tags: an
 array it points to can sit in another tag's bytes (V, Coagulation: the
 `c_turret_ap` model's block at `0x804f4164` lies inside the wraith
-model). Such an array keeps its own bytes (its count times the element
-size of the block field pointing at it, and each block below it the same
-way) and the datums in them, which the walk has read, not the tag it
-falls in: if nothing else reaches that tag it is dropped, and the
-array's bytes stay in place as metadata no tag owns
-(`PinnedImage::unowned`, listed in `Pruned::shared`). Until converter
-version 92 such an array kept the whole tag and every reference in it,
-and the wraith model kept the wraith. An array below the root that doesn't read (outside the
+model; the compiler shares identical function data, a `jpt!`'s
+`[0x6c, 0x44]`). Such an array keeps the datums in it (its count times
+the element size of the block field pointing at it, and each block
+below it the same way), which the walk has read, and the tag it falls
+in stays whole as its holder (`fresh::Reach::Holds`,
+`Pruned::holders`) without being reached: each word of the holder
+naming a dropped tag is nulled, so its own references keep nothing. A
+holder's blocks in a third tag make that one a holder too; one whose
+root doesn't read by the schema is reached whole. The holder must stay
+a tag: the schema moves a block outside its tag only when it sits
+inside another tag (`tags::schema::walk`). Kept as metadata no tag owns
+instead, the bytes broke the fresh build (1288 references out of bounds
+on every map). Before converter version 92 such an array kept the whole
+tag and every reference in it, and the wraith model kept the wraith.
+An array below the root that doesn't read (outside the
 metadata, implausibly long) is skipped, and the tag's own words then
 name tags as datums only (`Pruned::partly_walked`). Only a field the
 schema says is a block gives an address. A tag the schema doesn't
