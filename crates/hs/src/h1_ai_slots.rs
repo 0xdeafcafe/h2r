@@ -18,6 +18,7 @@ pub const SEE_OBJECT: u16 = 305;
 const UNIT: u16 = 51;
 const TEAM: u16 = 45;
 pub const ACTOR_TYPE: u16 = 46;
+const UNIT_SEAT_MAPPING: u16 = 12;
 
 pub const VEHICLE_ROWS: u16 = 96;
 pub const VEHICLE_WIDTH: u16 = 11;
@@ -160,6 +161,7 @@ pub enum Operation {
     SetManeuver = 33,
     TimerTick = 34,
     ExpireSquadTimers = 35,
+    VehicleEnter = 36,
 }
 
 impl Operation {
@@ -206,6 +208,7 @@ impl Operation {
             33 => Self::SetManeuver,
             34 => Self::TimerTick,
             35 => Self::ExpireSquadTimers,
+            36 => Self::VehicleEnter,
             _ => return None,
         })
     }
@@ -260,6 +263,7 @@ impl Operation {
             Self::VehicleDisable => &[UNIT, LONG],
             Self::VehicleTick => &[LONG],
             Self::VehicleCount => &[UNIT],
+            Self::VehicleEnter => &[AI, UNIT, UNIT_SEAT_MAPPING],
             Self::AttachFree => &[UNIT, LONG],
             Self::TimerExpire => &[AI, BOOLEAN],
             Self::LinkActivation => &[AI, AI, LONG],

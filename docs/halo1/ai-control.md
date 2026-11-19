@@ -32,7 +32,7 @@ and translation. Runtime behavior still needs the integration build.
 | `ai_teleport_to_starting_location` and its unsupported-only form | Select a starting pose in the actor's current squad and set the unit's transform with Halo 2 `0x000b7430`, then wake physics at `0x000b7360`. Halo 1 `0x00141510` checks support before the conditional move. The port uses Halo 2's biped support flag and seat attachment. When a start has no name, it selects the nearest available start in the squad. |
 | `ai_grenades` | Binds native 280. Halo 2 `0x002a4da1` writes the boolean at AI globals `+0x340`, read by grenade logic at `0x001ae48b` and `0x001e2d69`. Halo 1 `0x000f086d` writes its AI grenade gate. |
 | `ai_spawn_actor` | Calls the two-argument overload of `ai_place` (291, `0x002a5010`) with count 1. For a literal platoon, the first member is selected as in Halo 1 `0x001422c0`. Ordinary `ai_place` uses the one-argument overload (290). |
-| `ai_go_to_vehicle` | Calls the seat-specific form of Halo 2's `ai_vehicle_enter` (343, `0x002a5ec0`), with native pathing and seat assignment through `0x00274a50`. A string literal resolves through the existing scenario seat mapping. Rebuilt transport labels such as `p_riderlm` keep their row and side. The two-argument overload (344) selects seats without the mapping. |
+| `ai_go_to_vehicle`, `ai_go_to_vehicle_override` | Both use Halo 2's native pathing and seat assignment at `0x00274a50`. Normal entry excludes actors already queued to board, matching Halo 1 `0x00141819`. Override uses retail 343, which writes the new transport command into slot 1 via `0x001a80e0` and invalidates the commands it replaces. The scenario seat mapping preserves labels such as the transport seat `p_riderlm`. |
 | `ai_vehicle_encounter`, `ai_vehicle_enterable_*`, `ai_going_to_vehicle` | Use salted vehicle handles and persistent HaloScript globals for the registry. Halo 1 `0x00140e70` assigns the vehicle and moves its occupants. Halo 1 `0x0013f2d0` defaults boarding distance to 8 m and the setters add team, actor-type or squad criteria. The continuous control uses Halo 2 `0x00274a50` to pick seats and request native boarding. It moves riders to the assigned squad with `0x001e3400`. The count reads queued type `0x4c` commands and their vehicle dwords as written at `0x00274d47` and copied to the actor queue at `0x001a81de`. The converted registry holds 96 simultaneous vehicle records on maps using the setters. |
 | `ai_link_activation` | Links the encounter groups by direction. A continuous HaloScript call reads each native squad's active bit (`0x00203ca4`), follows links starting from active encounters and calls the native activator `0x00203bf0` for linked squads. The Halo 1 setter `0x0013a680` permits three links per source. |
 | `ai_try_to_fight`, `ai_try_to_fight_player`, `ai_try_to_fight_nothing` | A salted actor handle owns the saved preference, following Halo 1 `0x0013f710`–`0x0013f7c9`. It adds the stock 10-point preferred-target bonus to eligible candidates in Halo 2's scorer `0x00265d30`. Clearing the preference returns the actor to ordinary target selection. |
@@ -73,8 +73,8 @@ or Agent API method.
 The source playfight exception to the character behavior predicate at
 `0x00163c8c` still needs a Halo 2 equivalent. Timer release uses the
 Halo 2 active/visible perception states, and movement holds leave the
-Halo 2 behavior evaluator running. The aim/movement-state override on Halo 1 platoon flag `0x1` and
-`ai_go_to_vehicle_override` remain open. The converter reserves space for
+Halo 2 behavior evaluator running. The aim/movement-state override on
+Halo 1 platoon flag `0x1` remains open. The converter reserves space for
 migration destinations first. A lean rebuild that removes empty squads
 can still remove a destination. The dynamic area collector requires the
 following squad to have an order.

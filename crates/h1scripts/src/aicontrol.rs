@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 pub(crate) const RENAMES: &[(&str, &str)] = &[
     ("ai_magically_see_unit", "ai_magically_see_object"),
-    ("ai_go_to_vehicle", "ai_vehicle_enter"),
+    ("ai_go_to_vehicle_override", "ai_vehicle_enter"),
     ("ai_dialogue_triggers", "ai_dialogue_enable"),
 ];
 
@@ -163,6 +163,7 @@ pub(crate) fn runtime_operation(name: &str) -> Option<hs::h1_ai_slots::Operation
 
     match name {
         "ai_magically_see_players" => Some(RuntimeOperation::SeePlayers),
+        "ai_go_to_vehicle" => Some(RuntimeOperation::VehicleEnter),
         "ai_vehicle_encounter" => Some(RuntimeOperation::VehicleEncounter),
         "ai_vehicle_enterable_distance" => Some(RuntimeOperation::VehicleDistance),
         "ai_vehicle_enterable_actor_type" => Some(RuntimeOperation::VehicleActorType),

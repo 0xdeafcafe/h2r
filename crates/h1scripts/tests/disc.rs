@@ -716,6 +716,13 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
                     let head = scenario.node(hs::Datum(node.data())).unwrap();
                     let operation = RuntimeOperation::from_marker(head.data()).unwrap();
                     runtime_operations.insert(operation as u16);
+                    if operation == RuntimeOperation::VehicleEnter {
+                        vehicle += 1;
+                        let seat = scenario
+                            .node(scenario.node(first().next()).unwrap().next())
+                            .unwrap();
+                        assert_eq!(descriptors.type_name(seat.value_type()).unwrap(), "unit_seat_mapping");
+                    }
                 }
                 280 => grenades = true,
                 291 => {
@@ -777,6 +784,7 @@ fn encounter_controls_emit_live_evaluators_and_native_orders() {
         RuntimeOperation::VehicleDisable,
         RuntimeOperation::VehicleTick,
         RuntimeOperation::VehicleCount,
+        RuntimeOperation::VehicleEnter,
         RuntimeOperation::FollowPlayers,
         RuntimeOperation::FollowAi,
         RuntimeOperation::FollowDisable,

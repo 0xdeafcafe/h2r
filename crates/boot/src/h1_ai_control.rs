@@ -368,6 +368,9 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
             }
             Operation::FollowTick => follow::tick(&cx, args[0]).await?,
             Operation::VehicleTick => vehicles::tick(&cx, args[0]).await?,
+            Operation::VehicleEnter => {
+                vehicles::enter_if_unassigned(&cx, args[0], args[1], args[2]).await?;
+            }
             Operation::VehicleCount => value = cx.read(|m| vehicles::count(m, args[0]))?,
             operation if operation.registry() == Some(hs::h1_ai_slots::Registry::Vehicles) => {
                 vehicles::configure(&cx, operation, &args)?;
