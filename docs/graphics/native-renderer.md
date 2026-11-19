@@ -108,7 +108,11 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   line per pass (the first 8, then every 250th: the clip, whether draws
   are W-buffered, the render camera and its view-projection beside the
   constants `c[0..3]`, the cull's count), and `H2_NATIVE_WORLD_NO_CULL=1`
-  draws every part without the CPU cull. A view whose draws are not
+  draws every part without the CPU cull. With the trace,
+  `H2_NATIVE_WORLD_PROBE=x,y` adds, on each traced pass, the parts whose
+  triangles cover that guest pixel through the render camera, nearest
+  first: owner (cluster or placement), part, material, view depth and the
+  distance to the triangle's nearest edge (under a pixel: an edge tie). A view whose draws are not
   W-buffered (`SET_CONTROL0` without z-perspective) is left to the D3D
   path (counted in the log): the programs write and clip w. The trace
   found it: every cinematic pass culled 0 of 1449 draws (and drawing

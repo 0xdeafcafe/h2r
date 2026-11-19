@@ -367,8 +367,14 @@ impl d3d::ExternalPass for WorldPass {
                 floor: true,
             },
         );
-        if diag.trace && !std::mem::replace(&mut self.traced, true) {
-            trace(&self.camera, self.view.as_ref(), self.clip, &t, culled);
+        if diag.trace
+            && !std::mem::replace(&mut self.traced, true)
+            && trace(&self.camera, self.view.as_ref(), self.clip, &t, culled)
+            && let Some(at) = diag.probe
+        {
+            let [_, _, width, height] = t.viewport;
+            let hits = probe(gpu.world(), &self.camera.view_projection(), (width, height), at);
+            eprintln!("native-world probe at {at:?}: {} parts: {hits:?}", hits.len());
         }
         let (state, marked) = &self.stencil;
         let mut stencil = PassStencil::from_device(state, t.depth_format);
@@ -405,6 +411,10 @@ impl d3d::ExternalPass for WorldPass {
 struct Diagnostics {
     trace: bool,
     no_cull: bool,
+    /// `H2_NATIVE_WORLD_PROBE=x,y` (guest pixels, with the trace on): the
+    /// parts whose triangles cover that pixel, on each traced pass
+    /// ([`probe`]).
+    probe: Option<(f32, f32)>,
 }
 
 impl Diagnostics {
@@ -415,6 +425,7 @@ impl Diagnostics {
             let d = Diagnostics {
                 trace: on("H2_NATIVE_WORLD_TRACE"),
                 no_cull: on("H2_NATIVE_WORLD_NO_CULL"),
+                probe: std::env::var("H2_NATIVE_WORLD_PROBE").ok().and_then(|v| parse_probe(&v)),
             };
             if d.trace || d.no_cull {
                 eprintln!("native-world: diagnostics {d:?}");
@@ -441,10 +452,10 @@ fn trace(
     clip: Option<d3d::DepthClip>,
     t: &d3d::ExternalTarget<'_>,
     culled: native_render::cull::CullStats,
-) {
+) -> bool {
     let n = TRACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if n >= TRACE_FIRST && n % TRACE_EVERY != 0 {
-        return;
+        return false;
     }
     let vp = camera.view_projection();
     let constants = view.map(|c| [c[0], c[1], c[2], c[3]]);
@@ -465,6 +476,88 @@ fn trace(
         culled.visible,
         culled.total,
     );
+    true
+}
+
+/// `"x,y"` as a probe pixel.
+fn parse_probe(v: &str) -> Option<(f32, f32)> {
+    let (x, y) = v.split_once(',')?;
+    let (x, y) = (x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?);
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+/// One part under a probed pixel ([`probe`]).
+#[derive(Clone, Debug, PartialEq)]
+struct ProbeHit {
+    owner: Owner,
+    part: u8,
+    material: u16,
+    /// The view depth (clip `w`) of the nearest covering triangle there.
+    depth: f32,
+    /// Pixels from the pixel to that triangle's nearest edge: under about
+    /// one, the pixel is on an edge (a rasterization tie can differ).
+    edge: f32,
+}
+
+/// The world's parts whose triangles cover pixel `at` (pixel centres at
+/// `+0.5`, y down, in a `size` viewport) through `view_proj` (the render
+/// camera's, the CPU cull's: within a pixel of the programs'), nearest
+/// first: which part a differing pixel belongs to (a cluster or a
+/// placement), how deep, and whether it lies on an edge. A triangle with a
+/// vertex behind the eye is skipped (S: not clipped here).
+fn probe(world: &World, view_proj: &native_render::camera::Mat4, size: (f32, f32), at: (f32, f32)) -> Vec<ProbeHit> {
+    let screen = |p: [f32; 3]| {
+        let c = native_render::camera::transform(view_proj, [p[0], p[1], p[2], 1.0]);
+        (c[3] > 0.0).then(|| ((c[0] / c[3] + 1.0) * 0.5 * size.0, (1.0 - c[1] / c[3]) * 0.5 * size.1, c[3]))
+    };
+    let (px, py) = (at.0 + 0.5, at.1 + 0.5);
+    let mut hits: Vec<ProbeHit> = Vec::new();
+    for d in &world.draws {
+        let mut best: Option<(f32, f32)> = None;
+        let range = d.first_index as usize..(d.first_index + d.index_count) as usize;
+        for tri in world.indices[range].chunks_exact(3) {
+            let v: Option<Vec<(f32, f32, f32)>> = tri.iter().map(|&i| screen(world.vertices[i as usize].position)).collect();
+            let Some(v) = v else { continue };
+            let Some((depth, edge)) = covers(&v, (px, py)) else { continue };
+            if best.is_none_or(|(b, _)| depth < b) {
+                best = Some((depth, edge));
+            }
+        }
+        if let Some((depth, edge)) = best {
+            hits.push(ProbeHit { owner: d.owner, part: d.part, material: d.material, depth, edge });
+        }
+    }
+    hits.sort_by(|a, b| a.depth.total_cmp(&b.depth));
+    hits.truncate(8);
+    hits
+}
+
+/// Whether screen triangle `v` (x, y, view depth) covers `p`, within one
+/// pixel outside its edges: the view depth there (interpolated
+/// perspective-correctly) and the signed distance in pixels to its
+/// nearest edge (negative outside).
+fn covers(v: &[(f32, f32, f32)], p: (f32, f32)) -> Option<(f32, f32)> {
+    let [a, b, c] = [v[0], v[1], v[2]];
+    let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+    if area.abs() < 1e-6 {
+        return None;
+    }
+    let sign = area.signum();
+    let edge = |s: (f32, f32, f32), e: (f32, f32, f32)| {
+        let len = ((e.0 - s.0).powi(2) + (e.1 - s.1).powi(2)).sqrt();
+        sign * ((e.0 - s.0) * (p.1 - s.1) - (e.1 - s.1) * (p.0 - s.0)) / len
+    };
+    let (ea, eb, ec) = (edge(b, c), edge(c, a), edge(a, b));
+    let nearest = ea.min(eb).min(ec);
+    if nearest < -1.0 {
+        return None;
+    }
+    // Barycentrics (screen space), then perspective-correct depth.
+    let wa = sign * ((b.0 - p.0) * (c.1 - p.1) - (b.1 - p.1) * (c.0 - p.0)) / area.abs();
+    let wb = sign * ((c.0 - p.0) * (a.1 - p.1) - (c.1 - p.1) * (a.0 - p.0)) / area.abs();
+    let wc = 1.0 - wa - wb;
+    let inv = wa / a.2 + wb / b.2 + wc / c.2;
+    (inv > 0.0).then(|| (1.0 / inv, nearest))
 }
 
 static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1288,6 +1381,27 @@ mod tests {
         assert_eq!(active_scenario_bsp(&addresses, 2, at), None, "loads elsewhere");
         assert_eq!(active_scenario_bsp(&addresses, 3, at), None, "no location");
         assert_eq!(active_scenario_bsp(&addresses, 4, at), None, "past the block");
+    }
+
+    #[test]
+    fn the_probe_finds_the_covering_triangle_its_depth_and_edge() {
+        assert_eq!(parse_probe("520, 80"), Some((520.0, 80.0)));
+        assert_eq!(parse_probe("520"), None);
+        assert_eq!(parse_probe("x,1"), None);
+        // A screen triangle (0,0) (10,0) (0,10), view depths 2, 4, 4; both
+        // windings.
+        let t = [(0.0, 0.0, 2.0), (10.0, 0.0, 4.0), (0.0, 10.0, 4.0)];
+        let (depth, edge) = covers(&t, (2.0, 2.0)).unwrap();
+        assert!((edge - 2.0).abs() < 1e-4, "2 px from the x and y edges: {edge}");
+        // Screen barycentrics (0.6, 0.2, 0.2): 1 / (0.6/2 + 0.2/4 + 0.2/4).
+        assert!((depth - 2.5).abs() < 1e-4, "{depth}");
+        let r = [t[0], t[2], t[1]];
+        assert_eq!(covers(&r, (2.0, 2.0)).map(|(d, e)| ((d * 1e3).round(), (e * 1e3).round())), Some((2500.0, 2000.0)));
+        let (_, edge) = covers(&t, (5.0, 5.0)).unwrap();
+        assert!(edge.abs() < 1e-4, "on the hypotenuse");
+        assert!(covers(&t, (-0.5, 3.0)).unwrap().1 < 0.0, "half a pixel outside: kept, negative");
+        assert_eq!(covers(&t, (-2.0, 3.0)), None, "past a pixel outside");
+        assert_eq!(covers(&[(0.0, 0.0, 1.0), (1.0, 1.0, 1.0), (2.0, 2.0, 1.0)], (1.0, 1.0)), None, "degenerate");
     }
 
     #[test]
