@@ -1214,3 +1214,44 @@ fn glitches_off_never_shows_off_and_lots_crouch_jumps_often_when_calm() {
     assert!(lots >= 20, "{lots}");
     assert!(hops(Glitches::Some) < lots);
 }
+
+#[test]
+fn glitches_run_only_fighting_or_roaming_on_foot() {
+    use crate::glitches::{Glitches, Run, Trick, plan};
+    // An allowlist: a vehicle's Mount, Drive and Ride (and anything else
+    // added later) are never on it.
+    let goal = crate::objective::Goal::Go([0.0; 3]);
+    for (d, ok) in [
+        (Doing::Fight(1), true),
+        (Doing::Roam, true),
+        (Doing::Idle, false),
+        (Doing::Chase([1.0; 3]), false),
+        (Doing::Support([1.0; 3]), false),
+        (Doing::Supply([1.0; 3]), false),
+        (Doing::Rearm([1.0; 3]), false),
+        (Doing::Recover([1.0; 3]), false),
+        (Doing::Carry([1.0; 3]), false),
+        (Doing::Keep, false),
+        (Doing::Play(goal), false),
+    ] {
+        assert_eq!(glitch_doing(d), ok, "{d:?}");
+    }
+    // A show-off under way stops when the bot turns to something else.
+    let hop = || {
+        Stunt::Hop(Run::new(
+            plan(Trick::CrouchJump, Skill::Legendary, &mut || 0.5),
+            0,
+        ))
+    };
+    let mut m = Mind::new(Skill::Legendary, 4);
+    m.glitches = Glitches::Lots;
+    look(&mut m, X, vec![enemy(1, [6.0, 3.0, 0.0])], 0, None);
+    m.stunt = Some(hop());
+    look(&mut m, X, vec![], 5, None);
+    assert_eq!(m.doing, Doing::Chase([6.0, 3.0, 0.0]));
+    assert!(m.stunt.is_none());
+    // The hook a seat's pad calls stops both kinds.
+    m.stunt = Some(hop());
+    m.drop_glitches();
+    assert!(m.stunt.is_none() && !m.combo.tricking());
+}

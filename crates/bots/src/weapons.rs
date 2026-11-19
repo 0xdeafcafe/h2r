@@ -333,6 +333,12 @@ impl Combo {
         self.trick.is_some()
     }
 
+    /// Stops a glitch under way (the bot got in a vehicle, or the setting
+    /// went off).
+    pub fn drop_trick(&mut self) {
+        self.trick = None;
+    }
+
     /// The glitch's presses this tick, or `None` when there is none (and
     /// one that has finished is put away).
     fn trick_keys(&mut self, t: u32) -> Option<ComboOut> {

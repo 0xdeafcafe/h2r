@@ -803,6 +803,10 @@ gets 3 tries on Some and 8 on Lots, then the bot gives the spot up.
   or another enemy within 8 units; a sword fly never at a target with
   another enemy within 2.5;
 - before its reaction to the target has passed;
+- doing anything but fighting or roaming on foot (`mind::glitch_doing`,
+  an allowlist: getting in, driving or riding a vehicle is never on it).
+  The vehicle work's seat pad returns before the fight and roam code, so
+  it must call `Mind::drop_glitches` first;
 - a show-off with anyone in view, or within 1.5 s of seeing someone.
 
 While a trick runs the mind's own melee, reload, switch and grenades

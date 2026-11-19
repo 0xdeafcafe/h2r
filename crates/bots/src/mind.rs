@@ -545,8 +545,12 @@ impl Mind {
         if !matches!(self.doing, Doing::Rearm(_)) {
             self.take = None;
         }
-        // A show-off is for roaming only, with the setting on.
-        if !matches!(self.doing, Doing::Roam) || self.glitches == crate::glitches::Glitches::Off {
+        // Glitches only fighting or roaming on foot, with the setting on;
+        // a show-off only roaming.
+        if !glitch_doing(self.doing) || self.glitches == crate::glitches::Glitches::Off {
+            self.drop_glitches();
+        }
+        if !matches!(self.doing, Doing::Roam) {
             self.stunt = None;
         }
 
@@ -1166,6 +1170,14 @@ impl Mind {
         })
     }
 
+    /// Stops any glitch under way (crate::glitches): the fight trick in
+    /// the combo and the show-off. A path that makes the whole pad itself
+    /// and returns early (a vehicle's seat) must call this first.
+    pub(crate) fn drop_glitches(&mut self) {
+        self.combo.drop_trick();
+        self.stunt = None;
+    }
+
     /// Roaming (crate::roam): a new goal when there is none or it is
     /// reached, and the walk to it.
     fn roam_walk(
@@ -1313,6 +1325,14 @@ impl Mind {
         self.decisions.map.safe_first(&mut places, tick);
         places.into_iter().map(|(_, at)| at).find(|&at| ok(at))
     }
+}
+
+/// Whether a glitch (crate::glitches) may run while doing `doing`: only
+/// fighting or roaming on foot. An allowlist, so anything else (a vehicle
+/// to mount, drive or ride in when those land, an objective, a pickup)
+/// never has one.
+pub(crate) fn glitch_doing(doing: Doing) -> bool {
+    matches!(doing, Doing::Fight(_) | Doing::Roam)
 }
 
 fn objective_approach(doing: Doing, at: Vec3) -> bool {
