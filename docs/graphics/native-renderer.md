@@ -1307,30 +1307,19 @@ frame.
   colour pass and the screen effects see the scene only, and the fade
   and the HUD go over them.
 
-### Skip point and order
+### Hook point and order
 
-One `before` on `RENDER_SCREEN_EFFECTS`, context-only:
-`feature::native_post`, with what the call was asked to draw read by
-`native_render::post::PostFrame` (the two stack bytes, the view kind,
-the scenario's screen-effect count and the loop's gates other than
-`0x00022710`). When the host draws the call, the hook answers `ret 8` in
-place of it. The host asks the device for an external pass, as stages 3
-and 4 do, and the device issues it at its next entry. That is the first
-device call after the scene passes return: the exit's target change for
-a view drawn into its own target, otherwise the fade or the UI and HUD.
-So the native post lands after layer 17 and before the fade and the
-HUD, once per view, in the game's order.
+The calls run; their draws are what the native renderer takes over.
+For the colour pass (the only part native so far), one context-only
+`before` on `COLOUR_PASS` (`0x000214f0`) arms the device to drop the
+pass's own quads and to draw the native glow in place of the last
+(order of work, item 2). So the glow lands where the game's composite
+did: after layer 17, before the screen effects, `0x0002df00`, the fade
+and the HUD, once per view, in the game's order; and the game's code
+leaves every state, register and guest word as it always does.
 
 The hook has nothing after its body, so the pipelined render runs it on
-its own thread. With `render-timing` on the feature places nothing: the
-timer it puts on the scene's callees, `0x00013870` among them, needs the
-call's end, which a skipped call never reaches.
-
-A skipped call must still leave what its prologue leaves. A host
-accepts a call only once it does that (item 2 below). Until then boot
-installs no host, the hook only counts (`native_post::counts`: calls,
-colour pass, late pass, screen effects possible), and every call keeps
-its D3D passes.
+its own thread, and render-timing does not matter (the call runs).
 
 ### What the native post draws
 
@@ -1384,36 +1373,40 @@ its D3D passes.
 
 ### Order of work
 
-1. **The skip and its order** (built: `feature::native_post`,
-   `native_render::post`, `impl.render.native_post`, off by default;
-   point `RENDER_SCREEN_EFFECTS`). Boot's host (`native_post_glue`)
-   accepts no call yet, so nothing is skipped, and the periodic line says
-   what 03a's calls ask for.
-2. **The prologue of a skipped call** (built). Code: the reset
-   `0x00016b10` on `0x00485b48` runs `0x00018900` over its last pass's
-   restore list (`[+0x24] + 0x11c`: a word, count in bits 9 and up,
-   first entry in bits 0 to 8; five-byte entries, state then value, from
-   `[[+0x20] + 0x14]`), each entry the inlined `SetRenderState`
-   (`SetRenderState_Simple` with the image's header below `0x5c`, the
-   deferred dirty bits below `0x88`, the setter from the table at
-   `0x004038d8` above), then stores its words. `0x000245c0` with EBX 0
-   stores the screen record's words and runs `0x00024ee0(0)`, which
-   computes its `pow` curve into its own stack only: the six tables
-   (`0x004b9370`, `0x004b9470`, `0x004b9570`, set `0x300` apart chosen
-   by the clamped word `[0x00485600]`) get the identity bytes, and its
-   record (`0x004b5444`, or address 0 as the game does without
-   `[0x004b54c8]`) two words. So the prologue is guest stores plus the
-   list's states. `native_render::post::Prologue` reads both;
-   `feature::native_post::redo_prologue` checks every store's target,
-   asks the host for the states (`Host::prologue`,
-   `d3d::Device::set_render_states_inline`, which checks every entry
-   before setting any), then stores, before the pass is asked for. A
-   call that cannot be redone runs (`native_post::counts().prologue_refused`).
-   Tests: feature's `a_skipped_prologue_leaves_memory_as_the_games_does`
-   (an instruction-by-instruction transcription side by side),
-   `a_prologue_that_cannot_be_redone_sets_nothing`; d3d's
-   `inline_states` (the game's loop through the entries side by side
-   with the device's method).
+1. **The hook and its order** (built: `feature::native_post`,
+   `impl.render.native_post`, off by default; point `COLOUR_PASS`,
+   `0x000214f0`). The first design skipped `render_screen_effects`
+   whole and redid what it leaves (its prologue first); it is replaced
+   by the swallow below, under which the game's code runs and leaves
+   every state itself, so nothing is redone. `native_render::post`'s
+   `PostFrame` (the call's gates) stays for the screen effects.
+2. **The swallow** (built: `d3d::Device::swallow`). At the colour
+   pass's entry a context-only `before` (nothing after its body, so the
+   pipelined render runs it on its own thread; fine with render-timing,
+   since the call runs) hands the host the call's seven stack words and
+   the caller's MXCSR and x87 control word. The host plans the glow
+   (`boot::native_post_glue::plan`: `colour_pass::parameters` on those
+   words, then `glow::pass_a`, `blur_combiner`, `blur` and `pass_b`) and
+   arms the device with one entry per quad (`targets`): the view's
+   target (slot 0, the one bound at the entry), target 7 (1) or 8 (2).
+   Arming drains what is queued first, so only quads the pass pushes
+   count. Each must be the next planned: an inline `Begin(7)`/`End`
+   (a four-vertex fan, `0x00034420`), no other draw since the last, into
+   its slot's target (a slot's first quad fixes its target; slots
+   differ). Each is dropped; the native glow is issued in place of the
+   last, into the targets bound then (the composite's: the view). Any
+   other draw ends the swallow (`Stats::swallow_mismatches`): it and
+   every draw after it are drawn by the D3D path and the glow is not;
+   the host logs it and keeps every later call on the D3D path. The
+   quads already dropped stay dropped (S: one frame without its glow or
+   with a composite over stale 7 and 8; the plan matches the game's
+   control flow bit for bit, so this takes a port that is wrong). A call
+   the host cannot plan (a copy after the blur, a target it does not
+   know) is not armed. Tests: d3d `swallow` (exactly the plan's quads
+   dropped and nothing after, the pass placed after the last; a missing
+   or extra quad, another draw or another shape ends it; an unfinished
+   swallow; through the render thread), boot
+   `native_post_glue::tests`, feature `native_post`.
 3. **The colour pass.** Its numbers are built: `engine::colour_pass`
    (`arguments`: the caller's half with `0x000137a0`'s curves;
    `parameters`: the callee's override record and clamps;
@@ -1422,8 +1415,8 @@ its D3D passes.
    (`engine/tests/colour_pass_differential.rs`), and the glow's:
    `engine::glow` (`engine/tests/glow_differential.rs`: the three
    combiner blocks, and the blur's steps with the device calls stubbed).
-   The host (`boot::native_post_glue::refusal`) refuses every call that
-   draws, logging each reason once. Next, in order:
+   The host (`boot::native_post_glue`) uses them through the swallow
+   (item 2).
    1. **The quad, traced** (Code). `0x0001c590` loads the vertex shader
       the rasterizer globals name for screen quads
       (`[[0x00485a80] + 0x5c] + 0x64`, entry 0; `LoadVertexShaderProgram`
@@ -1436,7 +1429,7 @@ its D3D passes.
       commits the textures (`0x0001cf50`: `SetTexture` for each stage
       whose `0x0051f3d8` word differs from `0x0051f3c8`'s, which it
       updates), the vertex input (`0x0001c710`) and the deferred state
-      (`0x00400fa0`), then emits one `D3DPT_QUADLIST` with corners
+      (`0x00400fa0`), then emits one four-vertex fan (`Begin(7)`) with corners
       `(0, 0)`, `(0, 1)`, `(1, 1)`, `(1, 0)`, attributes 15 down to 0 from
       the callback as inline `SET_VERTEX_DATA4F`. The callback: attribute
       0 is the rectangle's lerp (`0x000350e0`, z and w from the near and
@@ -1458,7 +1451,7 @@ its D3D passes.
       level. `0x00014f60` binds a target to a stage: its size into
       `0x00485af4`/`0x00485b04` and its texture into `0x0051f3d8`
       (through the jump table at `0x00015114` by the target's kind).
-   2. **The native glow** (built, unused): `native_render::glow`.
+   2. **The native glow** (built): `native_render::glow`.
       `read_frame` reads the window, the tap signs and the sizes;
       `Plan::quad` gives each quad its corners and per-stage offsets and
       scales; `VERTEX` is the screen shader for them; `program` compiles
@@ -1470,36 +1463,36 @@ its D3D passes.
       `TEXTURE_BINDING`), the composite with the blend of
       `0x000222d0`'s states (`Blend`: source `ONE` or
       `INVDESTCOLOR` by the sixth argument, destination `ONE` unless
-      the seventh's byte is set, alpha alike). S: the down-sample and
-      blur draw with blending off, and the D3D path's pixel centres
+      the seventh's byte is set, alpha alike). The down-sample and
+      blur draw with blending off (item 3), and S: the D3D path's pixel centres
       match a quad whose corners are the window's (the frame A/B shows
-      both). Tests: `glow::tests` (the taps of the down-sample and the
+      it). Tests: `glow::tests` (the taps of the down-sample and the
       composite, the blend, a block's module, the frame's words).
-   3. The leftovers, side by side as the prologue's: the texture-stage
-      words and dirty bits (including `0x000214f0` writing back the dirty
-      word it read before its binds), the block (`pass_b`'s), the quad
-      draw's states and Halo's state cache (`0x004b82e0..`), the
-      selected combiner and the target set back (`0x00014bc0`).
-   4. The host accepts calls with `colour` set, `late` clear and no
-      screen effect that would draw, after the frame A/B below.
+   3. **The leftovers**: none to redo. The game's code runs; only its
+      quads are dropped (item 2). `0x00034a90`'s `0x000142f0(10)` sets
+      `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for the down-sample
+      and the blur (Code), so they draw unblended, as `GpuGlow` does.
+   4. The switch on draws the glow natively; after the frame A/B below
+      it can become the default.
 
    **The frame A/B** for the glow: the same frame (a fixed save, view
    and time, `H2_FEATURES` differing only in `impl.render.native_post`)
-   captured with the D3D path and the native one, compared:
-   - the view's colour target after `render_screen_effects` (before the
-     fade and the HUD), per pixel, within a small tolerance for filtering
-     (report max and mean error and the count over it);
-   - targets 7 and 8 after the down-sample and after each blur step,
-     when the capture can read them, to place a difference in a stage;
-   - the guest words the call leaves (the block at `0x00484f68`,
-     `D3D__TextureState`, `D3D__DirtyFlags`, `D3D__RenderState`, Halo's
-     state cache) and the device's bound target and states at the next
-     entry: equal, not within a tolerance;
-   - the frame's next draws (the fade and the HUD) as d3d records them:
-     equal;
-   - the counts: `external_passes_dropped` steady, the refusals and
-     `prologue_refused` at 0 on the scene, and the ms of
-     `render_screen_effects`.
+   captured with the D3D path and the native one. `H2_POST_AB=<dir>`
+   (`native_post_glue::Ab`) captures the view's colour where the glow
+   lands (after the composite; before the screen effects, the fade and
+   the HUD) for the calls numbered `H2_POST_AB_AT` (default 600) and on,
+   `H2_POST_AB_COUNT` of them (default 1), into
+   `<dir>/<native|d3d>-<call>-<w>x<h>.png`, one per copy of the target
+   under the render scale. With the switch off the hook is placed for it
+   and observes the same quads, dropping none, so the D3D side is
+   captured at the same draw. Compare:
+   - the two captures per pixel, within a small tolerance for filtering
+     (max and mean error and the count over it);
+   - `swallow_mismatches` 0 and `swallowed_draws` the quads planned on
+     both sides, `external_passes_dropped` steady;
+   - the frame's next draws (the screen effects, the fade, the HUD) as
+     d3d records them: equal (the game's code left the same states);
+   - the ms of `render_screen_effects`.
 4. **The screen effects** (`0x0002d140`; 03a's blur first), with their
    function values (`0x00134fc0`) read at the call.
 5. **`0x0002df00`, and `0x0002dd30`** before layer 17, which has the

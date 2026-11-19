@@ -299,6 +299,12 @@ points! { ALL;
     /// per entry) and `0x0002df00` (when `late` is set). Stack `(late byte,
     /// colour byte)`, `ret 8`.
     RENDER_SCREEN_EFFECTS @ 0x0001_3870: [fn(late: stack 0, colour: stack 1) ret 8]; "docs/graphics/native-renderer.md";
+    /// `render_screen_effects`' colour pass, a glow (`0x000214f0`): the
+    /// view's target down-sampled into target 7, blurred between 7 and 8
+    /// (`0x000211a0`) and blended back. Stack: the seven words
+    /// `0x000138b3`..`0x000139b5` push (`engine::colour_pass::Arguments`),
+    /// `ret 0x1c`.
+    COLOUR_PASS @ 0x0002_14f0: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3, a4: stack 4, a5: stack 5, a6: stack 6) ret 28]; "docs/graphics/native-renderer.md";
     /// Draws the current layer (`[0x00467130]`) of the current list: layer
     /// setup, then `LAYER_ENTRIES` for the layers in its mask.
     LAYER_DRAW @ 0x0004_4550: [opaque]; "docs/graphics/layer-draw.md";

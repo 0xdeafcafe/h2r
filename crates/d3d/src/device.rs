@@ -109,15 +109,6 @@ pub const COPY_SWAP_FLAG: u32 = 0x4000;
 pub const COMMIT_KEEPS: u32 = 0xC000_0070;
 /// Most vertices one draw may use (the NV2A index range is 2^20).
 pub const MAX_VERTICES: u32 = 1 << 20;
-/// The inlined `D3DDevice_SetRenderState` (`0x00018900`'s loop, and
-/// `0x0001828e`'s): states below this one, and not simple, are deferred.
-pub const DEFERRED_STATES_END: u32 = 0x88;
-/// Image table, by render state: the `D3D__DirtyFlags` bits a deferred
-/// state sets (`0x0001895a`).
-pub const DEFERRED_DIRTY_BITS: u32 = 0x0043_E4D0;
-/// Image table, by render state: the `SetRenderState_*` setter the inlined
-/// code calls for a state from [`DEFERRED_STATES_END`] up (`0x00018979`).
-pub const RENDER_STATE_FUNCTIONS: u32 = 0x0040_38D8;
 
 /// Vertex programs [`Device::microcode`] keeps so a program the game
 /// switches back to gets its earlier shared copy.
@@ -329,6 +320,11 @@ pub struct Stats {
     /// External passes dropped (no colour or depth bound, the backend
     /// refused).
     pub external_passes_dropped: u64,
+    /// Draws a [`Swallow`] dropped (or, observing, matched).
+    pub swallowed_draws: u64,
+    /// Swallows ended early: a draw that is not the next one planned, or
+    /// one armed over another not finished ([`Device::swallow`]).
+    pub swallow_mismatches: u64,
     /// Draws handed to the backend (including skipped ones).
     pub draws: u64,
     /// Inline (push-buffer) immediate draws among them.
@@ -688,6 +684,49 @@ pub struct DepthScale {
 pub type OcclusionSink =
     std::sync::Arc<dyn Fn(crate::backend::DepthGridResult, DepthScale) + Send + Sync>;
 
+/// A pass whose draws the host draws itself ([`Device::swallow`]): the
+/// game's own code runs, so it leaves every state, and only its draws are
+/// dropped.
+pub struct Swallow {
+    /// Per draw, in order, the slot of the colour target it draws into:
+    /// 0 the target bound when armed; another slot the target its first
+    /// draw finds, the same for each of its draws and distinct from every
+    /// other slot's.
+    pub targets: Vec<u8>,
+    /// Every draw's primitive and vertex count.
+    pub primitive: PrimitiveType,
+    pub vertices: usize,
+    /// Drop the draws; `false` draws them and only places `pass` (a
+    /// capture of what the game drew).
+    pub drop: bool,
+    /// Issued after the last draw, into the targets bound then.
+    pub pass: Box<dyn crate::backend::ExternalPass>,
+}
+
+struct Swallowing {
+    targets: Vec<u8>,
+    next: usize,
+    headers: Vec<Option<u32>>,
+    primitive: PrimitiveType,
+    vertices: usize,
+    drop: bool,
+    /// `Stats::draws` when the next planned draw comes: no other draw in
+    /// between.
+    draws: u64,
+    pass: Option<Box<dyn crate::backend::ExternalPass>>,
+}
+
+/// What becomes of an inline draw under a swallow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    /// Not the pass's (or nothing armed): drawn.
+    Drawn,
+    /// The pass's, dropped.
+    Dropped,
+    /// The pass's, drawn (observing).
+    Observed,
+}
+
 struct GridAsk {
     tag: u64,
     width: u32,
@@ -795,6 +834,8 @@ pub struct Device<B: Backend> {
     /// An external pass asked for ([`Device::request_external_pass`]),
     /// issued after the next drain.
     pending_external: Option<Box<dyn crate::backend::ExternalPass>>,
+    /// The draws of a pass being swallowed ([`Device::swallow`]).
+    swallowing: Option<Swallowing>,
     /// Display state: flicker filter, persisted surface, vertical blank.
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
@@ -980,6 +1021,7 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             pending_grid: None,
             pending_external: None,
+            swallowing: None,
             display: display::Display::default(),
             rtt: HashMap::default(),
             rtt_epoch: 0,
@@ -1695,75 +1737,6 @@ impl<B: Backend> Device<B> {
         Ok(true)
     }
 
-    /// Render states as Halo's inlined `D3DDevice_SetRenderState` sets them
-    /// (the loop of `0x00018900`, which the shader draw-state reset
-    /// `0x00016b10` runs over the last pass's restore list), for the
-    /// prologue of a `render_screen_effects` the native renderer draws in
-    /// place of the game (docs/graphics/native-renderer.md, stage 5). Each
-    /// `(state, value)` in order: below `0x5C`, `SetRenderState_Simple`
-    /// with the image's `D3DSIMPLERENDERSTATEENCODE[state]` as the header,
-    /// then the value into `D3D__RenderState[state]`; below `0x88`, the
-    /// state's bits of the deferred dirty table ([`DEFERRED_DIRTY_BITS`])
-    /// into `D3D__DirtyFlags`, then the value; otherwise the setter the
-    /// image's function table ([`RENDER_STATE_FUNCTIONS`]) holds for the
-    /// state, which must be the `SetRenderState_*` setter of that slot.
-    /// What is queued drains first, as before any entry.
-    ///
-    /// `Ok(false)` with nothing set when a push-buffer callback is queued
-    /// first (kept for the next entry, as in
-    /// [`light_passes_tail`](Self::light_passes_tail)), or when an entry
-    /// cannot be set as the game would (a state past the slots, a header
-    /// the device does not know, a function that is not the slot's
-    /// setter): the caller keeps the D3D path.
-    pub fn set_render_states_inline(
-        &mut self,
-        mem: &mut dyn GuestMemory,
-        states: &[(u32, u32)],
-    ) -> Result<bool, D3dError> {
-        const E: &str = "inlined D3DDevice_SetRenderState";
-        self.live(E)?;
-        let layout = self.cfg.layout;
-        // Everything checked before anything is set.
-        for &(state, _) in states {
-            if state as usize >= RENDER_STATE_SLOTS {
-                return Ok(false);
-            }
-            if (state as usize) < pushbuf::SIMPLE_ENCODE_SLOTS {
-                let header = mem.read_u32(layout.simple_encode + 4 * state)?;
-                if header >> 18 != 1 || self.mirror_slot(header & 0x3_FFFF).is_none() {
-                    return Ok(false);
-                }
-            } else if state < DEFERRED_STATES_END {
-                mem.read_u32(DEFERRED_DIRTY_BITS + 4 * state)?;
-            } else {
-                let f = mem.read_u32(RENDER_STATE_FUNCTIONS + 4 * state)?;
-                if !crate::abi::RENDER_STATE_SETTERS.iter().any(|&(a, _, s)| a == f && s == state) {
-                    return Ok(false);
-                }
-            }
-        }
-        if let Some(cb) = self.drain_until_callback(mem)? {
-            self.undelivered = Some(cb);
-            return Ok(false);
-        }
-        for &(state, value) in states {
-            if (state as usize) < pushbuf::SIMPLE_ENCODE_SLOTS {
-                let header = mem.read_u32(layout.simple_encode + 4 * state)?;
-                self.set_render_state_simple(mem, header, value)?;
-            } else if state < DEFERRED_STATES_END {
-                let bits = mem.read_u32(DEFERRED_DIRTY_BITS + 4 * state)?;
-                let dirty = mem.read_u32(layout.dirty_flags)?;
-                mem.write_u32(layout.dirty_flags, dirty | bits)?;
-            } else {
-                // The setter stores the slot itself.
-                self.set_render_state(mem, state, value)?;
-                continue;
-            }
-            mem.write_u32(layout.render_state_slot(state), value)?;
-        }
-        Ok(true)
-    }
-
     /// Whether the backend can draw an external pass: asked before the
     /// guest skips work the pass replaces.
     pub fn can_external_pass(&self) -> bool {
@@ -1779,6 +1752,99 @@ impl<B: Backend> Device<B> {
     pub fn request_external_pass(&mut self, pass: Box<dyn crate::backend::ExternalPass>) {
         if self.pending_external.replace(pass).is_some() {
             self.stats.external_passes_dropped += 1;
+        }
+    }
+
+    /// Arms `s` (docs/graphics/native-renderer.md, stage 5): the next
+    /// inline draws, one per entry of [`Swallow::targets`], are the pass's.
+    /// What is queued drains first, as before any entry, so only draws
+    /// pushed after this call count. Each must be the next one planned:
+    /// an inline `Begin`/`End` of [`Swallow::primitive`] with
+    /// [`Swallow::vertices`] vertices, no other draw since the last, into
+    /// its slot's colour target (slot 0 the one bound now; another slot the
+    /// target its first draw finds, each slot its own target). With
+    /// [`Swallow::drop`] each is dropped, else drawn. After the last,
+    /// [`Swallow::pass`] is issued into the targets bound then, in its
+    /// place. A draw that is not the next planned ends the swallow
+    /// ([`Stats::swallow_mismatches`]): it and every draw after it are
+    /// drawn, and the pass is not issued. Draws already dropped stay
+    /// dropped.
+    ///
+    /// `Ok(false)` with nothing armed when a push-buffer callback is
+    /// queued first (kept for the next entry), no colour target is bound,
+    /// or the plan is empty. Arming over a swallow not finished ends that
+    /// one as a mismatch.
+    pub fn swallow(&mut self, mem: &mut dyn GuestMemory, s: Swallow) -> Result<bool, D3dError> {
+        const E: &str = "swallow";
+        self.live(E)?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        if self.swallowing.take().is_some() {
+            self.stats.swallow_mismatches += 1;
+        }
+        if s.targets.is_empty() || self.render_target == 0 {
+            return Ok(false);
+        }
+        let slots = s.targets.iter().map(|&t| usize::from(t)).max().unwrap_or(0) + 1;
+        let mut headers = vec![None; slots];
+        headers[0] = Some(self.render_target);
+        self.swallowing = Some(Swallowing {
+            targets: s.targets,
+            next: 0,
+            headers,
+            primitive: s.primitive,
+            vertices: s.vertices,
+            drop: s.drop,
+            draws: self.stats.draws,
+            pass: Some(s.pass),
+        });
+        Ok(true)
+    }
+
+    /// Whether a swallow is armed.
+    pub fn swallowing(&self) -> bool {
+        self.swallowing.is_some()
+    }
+
+    /// What becomes of inline draw `d` under the armed swallow.
+    fn swallow_fate(&mut self, d: &ImmediateDraw) -> Fate {
+        let Some(s) = self.swallowing.as_mut() else { return Fate::Drawn };
+        let target = self.render_target;
+        let slot = usize::from(s.targets[s.next]);
+        let into = match s.headers[slot] {
+            Some(h) => h == target,
+            None => target != 0 && !s.headers.contains(&Some(target)),
+        };
+        let fits = d.inline.is_empty()
+            && d.primitive == s.primitive
+            && d.vertices.len() == s.vertices
+            && self.stats.draws == s.draws
+            && into;
+        if !fits {
+            self.swallowing = None;
+            self.stats.swallow_mismatches += 1;
+            return Fate::Drawn;
+        }
+        s.headers[slot] = Some(target);
+        self.stats.swallowed_draws += 1;
+        if s.drop { Fate::Dropped } else { Fate::Observed }
+    }
+
+    /// After a swallowed draw (dropped, or drawn when observing): the next
+    /// planned, or the pass in place of the last.
+    fn swallow_advance(&mut self, mem: &mut dyn GuestMemory) {
+        let Some(s) = self.swallowing.as_mut() else { return };
+        s.next += 1;
+        s.draws = self.stats.draws;
+        if s.next < s.targets.len() {
+            return;
+        }
+        let pass = s.pass.take();
+        self.swallowing = None;
+        if let Some(pass) = pass {
+            self.issue_external_pass(mem, pass);
         }
     }
 
@@ -1957,8 +2023,14 @@ impl<B: Backend> Device<B> {
                     }
                     match self.immediate.apply(c.at, m, w)? {
                         Some(Effect::Draw(d)) => {
-                            self.stats.inline_draws += 1;
-                            self.immediate_draw(mem, "inline Begin/End", d)?;
+                            let fate = self.swallow_fate(&d);
+                            if fate != Fate::Dropped {
+                                self.stats.inline_draws += 1;
+                                self.immediate_draw(mem, "inline Begin/End", d)?;
+                            }
+                            if fate != Fate::Drawn {
+                                self.swallow_advance(mem);
+                            }
                         }
                         Some(Effect::None) => {}
                         None if self.mirror_slot(m).is_some() => {

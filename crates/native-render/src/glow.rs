@@ -11,7 +11,7 @@
 //!   name for screen quads (`0x0001c590`), which passes every input
 //!   through (`oPos = v0`, `oT0..oT3 = v1..v4`, `oD0`, `oD1 = v5`, `v6`):
 //!   the position is in the target's pixels.
-//! - `0x00034420` emits one quad (`D3DPT_QUADLIST`), corners `(0, 0)`,
+//! - `0x00034420` emits one quad (`Begin(7)`, a four-vertex fan), corners `(0, 0)`,
 //!   `(0, 1)`, `(1, 1)`, `(1, 0)`, each attribute from `0x00034100`.
 //!   With the quad draw's tenth argument clear (all three passes), the
 //!   rectangle is Halo's window `0x004b9dd0` (top, left, bottom, right

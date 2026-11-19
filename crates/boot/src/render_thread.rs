@@ -206,7 +206,7 @@ mod tests {
             "TRANSPARENT_GEOMETRY",
             "RENDER_LIGHT_PASSES",
             "RENDER_DYNAMIC_LIGHTS",
-            "RENDER_SCREEN_EFFECTS",
+            "COLOUR_PASS",
         ] {
             assert!(safe.contains(&p), "{p} runs on the render thread");
         }
