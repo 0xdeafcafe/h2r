@@ -100,9 +100,11 @@ lightmap `0x004e0344`, [structure-bsp.md](../formats/structure-bsp.md)):
   `D3DRS_DEPTHCLIPCONTROL`'s clamp, which the game sets per view
   (`0x00015720`). The device now gives the pass both at issue
   (`ExternalPass::depth_clip`, `Device::depth_clip`) and the world's
-  programs draw with them (`ViewInputs::w_clip`). The objects',
-  transparents' and lights' passes still take the whole range (S: the
-  same gap for anything far in a cinematic). That did not close the
+  programs draw with them (`ViewInputs::w_clip`), as the objects' lit
+  parts now do (`ObjectsPass::depth_clip`; 03a's near is 256 depth
+  units, which the objects clipped at 0). The transparents' and lights'
+  passes still take the whole range (S: the same gap for anything far in
+  a cinematic, or nearer than the view's near). That did not close the
   02000 slivers either (the 2026-11-19 A/B: 1490 px, max 87, unchanged).
   To tell the remaining causes apart, `H2_NATIVE_WORLD_TRACE=1` prints a
   line per pass (the first 8, then every 250th: the clip, whether draws
@@ -1054,7 +1056,14 @@ implementation samples engine texture 3.
   the (section, implementation) its records draw, the sections its native
   parts come from, whether it samples the texture accumulation target,
   and the level's size. A section in the first list but not the second
-  is drawn by nothing.
+  is drawn by nothing. Then, per lit part of each such object, how the
+  pass draws it (`LitObjects::describe_parts`): its section and shader,
+  the implementation its records pick and that program's depth, blend,
+  alpha test, cull and colour writes, and for a part sampling the texture
+  accumulation target its stages, the level's guest size and the size
+  constants it gets; or why it is not drawn.
+  `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...` leaves those definitions to
+  D3D (the load refuses them), to tell which one a difference is.
 
 - **The vertex block.** What the game's upload would hold for one drawn
   object: `c[0..18]` the view's; `c[18 + i]` the implementation's

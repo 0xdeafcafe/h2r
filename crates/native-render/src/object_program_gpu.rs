@@ -49,6 +49,8 @@ pub struct LitProgramInput {
 pub struct LitPart {
     pub section: u16,
     pub decompression: [Row; 3],
+    /// Its material's shader tag datum (diagnostics).
+    pub shader_tag: u32,
     pub shader: ShaderValues,
     pub indices: Range<u32>,
     pub implementations: [Option<(usize, usize)>; IMPLEMENTATIONS],
@@ -280,6 +282,82 @@ impl LitObjects {
     /// Whether model `index` has lit parts.
     pub fn has(&self, index: u32) -> bool {
         self.models.contains_key(&index)
+    }
+
+    /// Per lit part of model `index`, one line saying how `frame` draws it
+    /// with `view` and `texaccum` (as [`Self::encode`] would): its section
+    /// and shader, the implementation its records pick and that program's
+    /// states, the texture accumulation stages with the constants and
+    /// scale they get, or why it is not drawn (diagnostics: the objects'
+    /// probe).
+    pub fn describe_parts(&self, index: u32, frame: &ObjectFrame, view: &ViewInputs, texaccum: Option<Texaccum<'_>>) -> Vec<String> {
+        let Some(m) = self.models.get(&index) else { return vec!["no lit model".into()] };
+        let drawn: HashMap<usize, (usize, &[Row])> = frame_parts(frame, &m.parts).into_iter().map(|(i, imp, rows)| (i, (imp, rows))).collect();
+        let defaults = frame.defaults.unwrap_or_default();
+        let mut out = Vec::new();
+        for (i, part) in m.parts.iter().enumerate() {
+            let head = format!(
+                "part {i} section {} shader {:#010x} indices {:?} implementations {:?}",
+                part.section,
+                part.shader_tag,
+                part.indices,
+                part.implementations.iter().map(Option::is_some).collect::<Vec<_>>()
+            );
+            let Some(&(imp, rows)) = drawn.get(&i) else {
+                out.push(format!("{head}: not drawn (no record of its section, or its records' implementation is not one it has)"));
+                continue;
+            };
+            let Some((program, _)) = part.implementations[imp] else { continue };
+            let pass = &m.programs[program].pass;
+            let state = pass.program.state.as_ref().map(|s| {
+                format!(
+                    "depth {:?} write {} blend {} alpha test {:?} cull {:?} writes {:?}",
+                    s.depth_compare,
+                    s.depth_write,
+                    s.blend.is_some(),
+                    s.alpha_test,
+                    s.primitive.cull_mode,
+                    s.color_writes
+                )
+            });
+            let samples = pass.texaccum.contains(&true);
+            if samples && texaccum.is_none() {
+                out.push(format!("{head}: implementation {imp}, state {state:?}: not drawn (it samples the texture accumulation target and the pass has no level)"));
+                continue;
+            }
+            let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: part.shader };
+            let base = frame_vertex(&pass.program.vertex, view);
+            let mut vertex = match object_vertex_uniforms(&base, &pass.implementation, &inputs, rows, part.decompression) {
+                Ok(v) => v,
+                Err(e) => {
+                    out.push(format!("{head}: implementation {imp}: not drawn (vertex inputs: {e})"));
+                    continue;
+                }
+            };
+            if let Err(e) = object_pixel_uniforms(&frame_pixel(&pass.program.pixel, view), &pass.implementation, &inputs) {
+                out.push(format!("{head}: implementation {imp}: not drawn (pixel inputs: {e})"));
+                continue;
+            }
+            let mut texaccum_text = String::new();
+            if samples && let Some(t) = texaccum {
+                texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
+                let rows: Vec<_> = pass
+                    .implementation
+                    .dimension_bindings
+                    .iter()
+                    .map(|c| {
+                        let row = if c.bank == 1 { vertex.constants.get(18 + usize::from(c.reg)) } else { vertex.defaults.get(usize::from(c.reg)) };
+                        (c.bank, c.reg, c.mode, c.stage, row.copied())
+                    })
+                    .collect();
+                texaccum_text = format!(
+                    "; texture accumulation stages {:?} level {:?} guest texels, size constants (bank, reg, mode, stage, row) {rows:?}",
+                    pass.texaccum, t.guest_size
+                );
+            }
+            out.push(format!("{head}: drawn with implementation {imp}, rows {}, state {state:?}{texaccum_text}", rows.len()));
+        }
+        out
     }
 
     /// The sections model `index`'s lit parts come from, each once
@@ -722,6 +800,7 @@ pub fn lit_model(
             out.input.parts.push(LitPart {
                 section: s.index,
                 decompression: s.decompression,
+                shader_tag: lit.material.shader.0,
                 shader: lit.shader,
                 indices,
                 implementations,
@@ -974,6 +1053,7 @@ mod tests {
         LitPart {
             section,
             decompression: [[0.0; 4]; 3],
+            shader_tag: 0,
             shader: ShaderValues::default(),
             indices: 0..3,
             implementations,

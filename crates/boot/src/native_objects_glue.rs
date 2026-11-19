@@ -285,6 +285,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             objects,
             view: None,
             texaccum,
+            w_clip: None,
         }));
         true
     }
@@ -333,6 +334,11 @@ fn spawn_worker(
             };
             let (mut loaded, mut refused) = (0u32, 0u32);
             while let Ok(def) = rx.recv() {
+                if excepted(def) {
+                    refused += 1;
+                    eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    continue;
+                }
                 let t0 = std::time::Instant::now();
                 let result = load_model(&mut opened, def);
                 // Before the model is queued: a pass that draws it checks
@@ -773,11 +779,21 @@ struct ObjectsPass {
     /// Whether a drawn object's lit parts sample the texture accumulation
     /// target ([`native_render::object_program::TEXACCUM_HEADER`]).
     texaccum: bool,
+    /// The device's W-buffer clip at the pass (`d3d::DepthClip`), as the
+    /// world's: the range and clamp the D3D path draws the layer with.
+    /// Without it the programs clipped w at 0, not at the view's near
+    /// (03a: 256 depth units), and drew the part of an object nearer
+    /// than that, which the D3D path culls.
+    w_clip: Option<([f32; 2], bool)>,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
+    }
+
+    fn depth_clip(&mut self, clip: d3d::DepthClip) {
+        self.w_clip = Some((clip.range, clip.clamp));
     }
 
     fn sampled(&self) -> Vec<u32> {
@@ -832,8 +848,9 @@ impl d3d::ExternalPass for ObjectsPass {
                 lit.has(i).then_some((i, o))
             })
             .collect();
+        let probing = probe_at().is_some() && probe_due();
         if let Some(at) = probe_at()
-            && probe_due()
+            && probing
         {
             let vp = self.camera.view_projection();
             let size = (t.guest_size.0 as f32, t.guest_size.1 as f32);
@@ -874,13 +891,21 @@ impl d3d::ExternalPass for ObjectsPass {
                 "native-objects: the texture accumulation target was bound at the hook but the device gave no level for it; parts sampling it go undrawn this view (logged once, counted)"
             );
         }
-        let view = ViewInputs {
-            constants,
-            guest_size: t.guest_size,
-            size: t.size,
-            z_scale: t.z_scale,
-            w_clip: None,
-        };
+        let view = self.view_inputs(constants, &t);
+        if let Some(at) = probe_at()
+            && probing
+        {
+            let vp = self.camera.view_projection();
+            let size = (t.guest_size.0 as f32, t.guest_size.1 as f32);
+            for &(model, o) in &objects {
+                if sphere_covers(&vp, o.sphere, size, at).is_none() {
+                    continue;
+                }
+                for line in lit.describe_parts(model, o, &view, texaccum) {
+                    eprintln!("native-objects probe at {at:?}: definition {:#010x} handle {:#010x}: {line}", o.definition, o.handle);
+                }
+            }
+        }
         lit.encode(
             t.device,
             t.queue,
@@ -910,6 +935,42 @@ fn probe_at() -> Option<(f32, f32)> {
         }
         at
     })
+}
+
+impl ObjectsPass {
+    /// The view the lit parts' programs draw with: the device's constants,
+    /// the target's sizes, and its W-buffer clip.
+    fn view_inputs(&self, constants: [[f32; 4]; d3d::VIEW_CONSTANTS], t: &d3d::ExternalTarget<'_>) -> ViewInputs {
+        ViewInputs {
+            constants,
+            guest_size: t.guest_size,
+            size: t.size,
+            z_scale: t.z_scale,
+            w_clip: self.w_clip,
+        }
+    }
+}
+
+/// `H2_NATIVE_OBJECTS_EXCEPT=0xe92207ad,...`: definitions (tag datums,
+/// or their low words) left to the D3D path, to tell which object a
+/// difference belongs to.
+fn excepted(definition: u32) -> bool {
+    static EXCEPT: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    EXCEPT
+        .get_or_init(|| std::env::var("H2_NATIVE_OBJECTS_EXCEPT").map(|v| parse_definitions(&v)).unwrap_or_default())
+        .contains(&(definition as u16))
+}
+
+/// A comma-separated list of definitions, hex (`0x` optional) datums or
+/// tag indices: their tag indices.
+fn parse_definitions(v: &str) -> Vec<u16> {
+    v.split(',')
+        .filter_map(|d| {
+            let d = d.trim();
+            let d = d.strip_prefix("0x").or_else(|| d.strip_prefix("0X")).unwrap_or(d);
+            u32::from_str_radix(d, 16).ok().map(|x| x as u16)
+        })
+        .collect()
 }
 
 fn probe_due() -> bool {
@@ -980,6 +1041,44 @@ fn guest_texels(texels: (u32, u32), guest: (u32, u32), size: (u32, u32)) -> (u32
 mod tests {
     use super::*;
     use native_render::model::{ModelDraw, NodeMatrix};
+
+    /// The lit parts are W-buffered programs as the world's: they clip w
+    /// to the range the device draws the layer with, not from 0, or an
+    /// object nearer than the view's near is drawn where the D3D path
+    /// culls it.
+    #[test]
+    fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
+        use d3d::ExternalPass;
+        let camera = RenderCamera {
+            position: [0.0; 3],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov: 1.0,
+            viewport: [0, 0, 480, 640],
+            near: 0.01,
+            far: 100.0,
+        };
+        let mut pass = ObjectsPass {
+            models: Arc::new(Models::default()),
+            camera,
+            objects: Vec::new(),
+            view: None,
+            texaccum: false,
+            w_clip: None,
+        };
+        pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
+        assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
+        let constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
+        let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
+        let u = native_render::program::frame_vertex(&Default::default(), &view);
+        assert_eq!(u.w_clip, Some([256.0, 16_777_215.0]), "near at the device's 256, not 0");
+    }
+
+    #[test]
+    fn excepted_definitions_parse_as_tag_indices() {
+        assert_eq!(parse_definitions("0xe92207ad, e703058e,zz,0X07FF"), vec![0x07ad, 0x058e, 0x07ff]);
+        assert!(parse_definitions("").is_empty());
+    }
 
     #[test]
     fn the_probe_names_the_objects_whose_sphere_covers_its_pixel() {
