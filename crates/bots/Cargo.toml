@@ -15,3 +15,6 @@ tags = { path = "../tags" }
 # (bots::autonav).
 map = { path = "../map" }
 pathfind = { path = "../pathfind" }
+
+[dev-dependencies]
+xiso = { path = "../xiso" }
