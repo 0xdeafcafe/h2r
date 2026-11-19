@@ -231,7 +231,8 @@ impl Converter<'_> {
         let cp = self.counterpart(b"weap", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt weapons borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true)?;
+        let rounds = w.rounds_counter();
+        let hlmt = self.model(&mut rep, &w.object, None, &tag.name, true, rounds)?;
         let predicted = self.predicted(&w.object)?;
         let d = Defs::builtin().group(FourCC(*b"weap")).expect("weap");
         let bd = d.child("barrels").expect("barrels");
@@ -290,7 +291,7 @@ impl Converter<'_> {
             parts.projectiles.push(p);
         }
         let fp_model = match w.first_person_model {
-            Some(m) => Some(self.render_model(&mut rep, m, w.rounds_counter())?),
+            Some(m) => Some(self.render_model(&mut rep, m, rounds)?),
             None => None,
         };
         let fp_anim = match w.first_person_animations {
@@ -385,7 +386,7 @@ impl Converter<'_> {
             .or_else(|| self.counterpart(b"proj", &tag.name));
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt projectiles borrow no phmo)".into());
-        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &p.object, None, &tag.name, true, None)?;
         let impact_damage = match p.impact_damage {
             Some(j) => Some(self.damage(j)?),
             None => None,
@@ -482,7 +483,7 @@ impl Converter<'_> {
         let cp = self.counterpart(b"eqip", &tag.name);
         let mut rep = Self::rebuilt_report(tag, cp.as_ref().map(|c| c.0), self.base);
         rep.physics = Some("none (rebuilt equipment borrows no phmo)".into());
-        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &e.object, None, &tag.name, true, None)?;
         let predicted = self.predicted(&e.object)?;
         let mut parts = arsenal::EquipmentParts {
             hlmt,

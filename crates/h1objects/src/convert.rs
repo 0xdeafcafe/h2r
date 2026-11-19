@@ -843,8 +843,8 @@ pub struct Converter<'a> {
     /// (multipurpose map, Halo 2 slot).
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
-    /// `schi`, permutation).
-    counter_shaders: HashMap<(u32, i16), Option<TagId>>,
+    /// `schi`, permutation, loaded maximum).
+    counter_shaders: HashMap<(u32, i16, i16), Option<TagId>>,
     /// Biped role words, per role ([`Self::biped_role`]).
     roles: HashMap<crate::rebuild::BipedRole, Option<crate::rebuild::RoleWords>>,
     /// Weapon, equipment, projectile and damage role words, per group
@@ -1459,7 +1459,7 @@ impl<'a> Converter<'a> {
         // The converted model has no variants; the engine then uses none.
         root.bytes[h2::DEFAULT_VARIANT..h2::DEFAULT_VARIANT + 4].fill(0);
         let template_hlmt = self.base.reference(&root.bytes, h2::MODEL);
-        let hlmt = self.model(rep, obj, template_hlmt, name, false)?;
+        let hlmt = self.model(rep, obj, template_hlmt, name, false, None)?;
         root.tag_ref(h2::MODEL as u32, hlmt.unwrap_or(TagId::NULL));
         if obj.physics.is_some() {
             rep.no_home.push(
@@ -1473,6 +1473,8 @@ impl<'a> Converter<'a> {
     /// The `hlmt` and the converted tags under it. `None` when the Halo 1
     /// object has no render model. `rebuild`: the `hlmt` and the `mode`'s
     /// materials from the definitions ([`crate::rebuild`]), no template.
+    /// `rounds` is the weapon's loaded maximum when its counters count
+    /// the rounds loaded ([`h1::Weapon::rounds_counter`]).
     fn model(
         &mut self,
         rep: &mut ObjectReport,
@@ -1480,6 +1482,7 @@ impl<'a> Converter<'a> {
         template_hlmt: Option<TagId>,
         name: &str,
         rebuild: bool,
+        rounds: Option<i16>,
     ) -> Result<Option<TagId>> {
         let Some(mode_id) = obj.model else {
             return Ok(None);
@@ -1499,7 +1502,7 @@ impl<'a> Converter<'a> {
                     let points = self.powered_points(obj, &h1_model)?;
                     add_point_markers(&mut h1_model, &points);
                 }
-                let mut shaders = self.model_shaders(rep, &h1_model, None);
+                let mut shaders = self.model_shaders(rep, &h1_model, rounds);
                 // A player biped's body carries the player's emblem, as the
                 // Chief's does (h1models::emblem); after model_shaders, so
                 // its shader entry (no Halo 1 tag) is not looked up there.
@@ -1793,7 +1796,7 @@ impl<'a> Converter<'a> {
         let mut object = h1::Object::read(self.h1, self.h1.tag_data(tag)?)?;
         self.halo2_change_colours(&mut object);
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &object, None, &tag.name, true, None)?;
         rep.physics = Some(match object.collision {
             Some(_) => "none: the coll's BSP physics slots (no solid Halo 1 collision, or no retail scenery phmo on the base)".into(),
             None => "none (no Halo 1 collision)".into(),
@@ -2215,7 +2218,7 @@ impl<'a> Converter<'a> {
         permutation: i16,
         loaded: i16,
     ) -> Option<TagId> {
-        let key = (id.0, permutation);
+        let key = (id.0, permutation, loaded);
         if let Some(t) = self.counter_shaders.get(&key) {
             return *t;
         }
@@ -2534,7 +2537,7 @@ impl<'a> Converter<'a> {
             b"mach"
         };
         let mut rep = Self::report(tag, "none: rebuilt from tags::defs");
-        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &dev.object, None, &tag.name, true, None)?;
         rep.physics = Some("none (no Halo 1 collision to build from)".into());
         self.object_physics(&mut rep, hlmt, &dev.object, &tag.name, PhysicsKind::Device)?;
         let predicted = self.predicted(&dev.object)?;
@@ -2599,7 +2602,7 @@ impl<'a> Converter<'a> {
                 ),
             },
         );
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let wheels = role.as_ref().is_some_and(|r| r.wheel_shapes);
         self.object_physics(
             &mut rep,
@@ -2966,7 +2969,7 @@ impl<'a> Converter<'a> {
             .group(FourCC(*b"bipd"))
             .ok_or_else(|| Error::Invalid("no bipd definition".into()))?;
         let counterpart = self.base.record(bipd_def, cid)?;
-        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true)?;
+        let hlmt = self.model(&mut rep, &u.object, None, &tag.name, true, None)?;
         let counterpart_hlmt = self.base.reference(&self.base.root(cid)?, h2::MODEL);
         // Halo 1's dialogue: the first `udlg` the unit names (its
         // dialogue variants block), in place of the counterpart's. V:
