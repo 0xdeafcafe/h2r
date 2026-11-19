@@ -60,9 +60,6 @@ fn regs(cpu: &CpuAbi) -> Regs {
 }
 
 fn fault(e: EntryError, at: u32) -> GuestFault {
-    if let EntryError::IsolatedCall(message) = &e {
-        eprintln!("guest entry {at:#x}: {message}");
-    }
     match e {
         EntryError::Fault(m) => GuestFault {
             addr: m.addr,

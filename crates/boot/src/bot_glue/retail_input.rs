@@ -5,7 +5,7 @@ use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
 use runtime::{CpuAbi, Runtime, executor::SecondExecutor};
 use std::collections::BTreeMap;
 
-pub(super) const WORK_BYTES: u32 = 0x10000;
+pub(super) const WORK_BYTES: u32 = 0x1000;
 const RAW: u32 = 0x4e61dc;
 const OBSERVER: u32 = 0x4e9c8c;
 const DIRECTOR: u32 = 0x4e8c44;
@@ -103,7 +103,9 @@ impl Builder {
                 m.set_u32(ctrl, u32::MAX)?;
             }
         }
-        let stack = work + WORK_BYTES - 16;
+        // The COW view includes the calling game thread's stack and FS. The
+        // guest calls can push below the gather frame without touching it.
+        let stack = cpu.esp;
         let call = |exec: &mut SecondExecutor, addr, eax, ecx, args: &[u32]| -> Result<u32> {
             let mut regs = CpuAbi {
                 esp: stack,
@@ -231,7 +233,16 @@ mod tests {
                 reset,
             };
             assert_eq!(
-                builder.action(&main, CpuAbi::default(), seat).unwrap(),
+                builder
+                    .action(
+                        &main,
+                        CpuAbi {
+                            esp: WORK + 0xffff - 15,
+                            ..Default::default()
+                        },
+                        seat
+                    )
+                    .unwrap(),
                 [count; ACTION_SIZE]
             );
         }
@@ -248,12 +259,15 @@ mod tests {
 #[test]
 #[ignore = "requires a built retail module and a local multiplayer checkpoint with an opponent under the reticle"]
 fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
-    use std::path::PathBuf;
-    use runtime::guest::Permissions;
     use engine::DatumHandle;
+    use runtime::guest::Permissions;
+    use std::path::PathBuf;
 
-    let file = |key| std::env::var_os(key).map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("missing {key}"));
+    let file = |key| {
+        std::env::var_os(key)
+            .map(PathBuf::from)
+            .ok_or_else(|| anyhow::anyhow!("missing {key}"))
+    };
     let xbe = crate::read_xbe(&file("H2_DISC")?)?;
     let module = file("H2_RETAIL_MODULE")?;
     let bytes = std::fs::read(file("H2_PAD_CHECKPOINT")?)?;
@@ -263,81 +277,122 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
     let kernel = kernel::Kernel::for_image(&mut loaded)?;
     let main = &loaded.runtime;
     // SAFETY: H2_RETAIL_MODULE is the coordinator's generated module for this XBE.
-    let _module = unsafe {crate::load_module(&module, main, &xbe)?};
-    snapshot::guest::load_guest(&saved,&mut main.memory(),None)?;
-    const WORK:u32 = 0xa3fe0000;
-    let (player,player_addr,unit) = {
+    let _module = unsafe { crate::load_module(&module, main, &xbe)? };
+    snapshot::guest::load_guest(&saved, &mut main.memory(), None)?;
+    const WORK: u32 = 0xa3fe0000;
+    let (player, player_addr, unit) = {
         let mut m = main.memory();
-        m.map_zeroed(WORK,WORK_BYTES,Permissions::RW)?;
-        let user=m.u32(0x4e8c20)?;
-        let player=DatumHandle(m.u32(user+12)?);
-        anyhow::ensure!(!player.is_none(),"fixture needs local user zero");
-        let array=m.u32(0x4e8c24)?;
-        let addr=m.u32(array+0x44)?+0x21c*u32::from(player.index());
-        let unit=DatumHandle(m.u32(addr+0x2c)?);
-        anyhow::ensure!(m.u32(addr+0x24)?==0 && !unit.is_none(),"fixture needs a spawned player on controller zero");
-        m.write(RAW,[0;0x48])?;
-        m.write(0x51ea88,[0;0x50])?;
-        m.set_u8(0x51ebcc,0)?;
-        let controls=m.u32(0x4ed284)?;
-        m.set_u32(controls+0x14,u32::MAX)?;
-        m.write(0x54e9f4,[0,0,0,0,0,0,bots::guest::BOT_SENSITIVITY])?;
-        (player,addr,unit)
+        m.map_zeroed(WORK, 0x10000, Permissions::RW)?;
+        let user = m.u32(0x4e8c20)?;
+        let player = DatumHandle(m.u32(user + 12)?);
+        anyhow::ensure!(!player.is_none(), "fixture needs local user zero");
+        let array = m.u32(0x4e8c24)?;
+        let addr = m.u32(array + 0x44)? + 0x21c * u32::from(player.index());
+        let unit = DatumHandle(m.u32(addr + 0x2c)?);
+        anyhow::ensure!(
+            m.u32(addr + 0x24)? == 0 && !unit.is_none(),
+            "fixture needs a spawned player on controller zero"
+        );
+        m.write(RAW, [0; 0x48])?;
+        m.write(0x51ea88, [0; 0x50])?;
+        m.set_u8(0x51ebcc, 0)?;
+        let controls = m.u32(0x4ed284)?;
+        m.set_u32(controls + 0x14, u32::MAX)?;
+        m.write(0x54e9f4, [0, 0, 0, 0, 0, 0, bots::guest::BOT_SENSITIVITY])?;
+        (player, addr, unit)
     };
-    let cpu=CpuAbi {fs_base:kernel.kpcr(),..CpuAbi::xbox_thread()};
-    let mut local=SecondExecutor::new(main,|_,_|false);
+    let cpu = CpuAbi {
+        esp: WORK + 0xfff0,
+        fs_base: kernel.kpcr(),
+        ..CpuAbi::xbox_thread()
+    };
+    let mut local = SecondExecutor::new(main, |_, _| false);
     local.runtime().edit_dispatch(|d| {
         d.prefer_generated();
-        d.register_override(xapi::register::addr::XINPUT_GET_STATE,"fixture controller",|cpu,ctx,_| {
-            let mut m=ctx.memory();
-            let report=m.read::<{input::State::SIZE}>(WORK)?;
-            let dest=m.u32(cpu.esp+8)?;
-            m.write(dest,report)?;
-            cpu.eax=0;
-            m.ret(cpu,8)
-        });
+        d.register_override(
+            xapi::register::addr::XINPUT_GET_STATE,
+            "fixture controller",
+            |cpu, ctx, _| {
+                let mut m = ctx.memory();
+                let report = m.read::<{ input::State::SIZE }>(WORK)?;
+                let dest = m.u32(cpu.esp + 8)?;
+                m.write(dest, report)?;
+                cpu.eax = 0;
+                m.ret(cpu, 8)
+            },
+        );
     });
     local.snapshot(main);
     // The reference retains the game's actual local tables. The other side
     // must bind this same world actor starting from a remote player record.
     {
-        let mut m=main.memory();
-        m.set_u32(player_addr+0x24,u32::MAX)?;
-        m.set_u16(player_addr+0x28,u16::MAX)?;
-        let users=m.u32(0x4e8c20)?;
-        m.set_u32(users+12,u32::MAX)?;
-        m.set_u32(users+0x1c,u32::MAX)?;
+        let mut m = main.memory();
+        m.set_u32(player_addr + 0x24, u32::MAX)?;
+        m.set_u16(player_addr + 0x28, u16::MAX)?;
+        let users = m.u32(0x4e8c20)?;
+        m.set_u32(users + 12, u32::MAX)?;
+        m.set_u32(users + 0x1c, u32::MAX)?;
     }
-    let mut remote=Builder::new(main,WORK);
-    let dt=1.0f32/30.0;
-    let mut acquired=false;
-    let mut fired=false;
-    let mut angles=Vec::new();
+    let mut remote = Builder::new(main, WORK);
+    let dt = 1.0f32 / 30.0;
+    let mut acquired = false;
+    let mut fired = false;
+    let mut angles = Vec::new();
     for tick in 0..30 {
-        let mut pad=input::State {packet_number:tick,..Default::default()};
-        pad.gamepad.thumb_rx=if tick<10 {0} else if tick<22 {19000} else {-22000};
-        pad.gamepad.thumb_ry=if tick<10 {0} else {11000};
-        pad.gamepad.analog[input::AnalogButton::RightTrigger as usize]=if tick%6<3 {255} else {0};
-        local.runtime().memory().write(WORK,pad.to_bytes())?;
-        let mut call=|pc,eax,ecx,args:&[u32]| -> Result<()> {
-            local.call(&mut CpuAbi {esp:WORK+WORK_BYTES-16,eax,ecx,..cpu},pc,args)?;
+        let mut pad = input::State {
+            packet_number: tick,
+            ..Default::default()
+        };
+        pad.gamepad.thumb_rx = if tick < 10 {
+            0
+        } else if tick < 22 {
+            19000
+        } else {
+            -22000
+        };
+        pad.gamepad.thumb_ry = if tick < 10 { 0 } else { 11000 };
+        pad.gamepad.analog[input::AnalogButton::RightTrigger as usize] =
+            if tick % 6 < 3 { 255 } else { 0 };
+        local.runtime().memory().write(WORK, pad.to_bytes())?;
+        let mut call = |pc, eax, ecx, args: &[u32]| -> Result<()> {
+            local.call(&mut CpuAbi { eax, ecx, ..cpu }, pc, args)?;
             Ok(())
         };
-        if tick==0 {
-            call(0x1872d0,0,unit.raw(),&[])?;
-            call(0x190c34,0,0,&[])?;
+        if tick == 0 {
+            call(0x1872d0, 0, unit.raw(), &[])?;
+            call(0x190c34, 0, 0, &[])?;
         }
-        call(0x124c00,0,0,&[if tick%3==1 {34} else {33}])?;
-        call(0x217c40,0,0,&[])?;
-        call(0x186ab0,0,0,&[player.raw(),dt.to_bits(),dt.to_bits(),WORK+0x40])?;
-        let expected=local.runtime().memory().read::<ACTION_SIZE>(WORK+0x40)?;
-        let action=remote.action(main,cpu,SeatInput {player,player_addr,unit,tick,dt,pad,reset:tick==0})?;
-        assert_eq!(action,expected,"retail action at sample {tick}");
+        call(0x124c00, 0, 0, &[if tick % 3 == 1 { 34 } else { 33 }])?;
+        call(0x217c40, 0, 0, &[])?;
+        call(
+            0x186ab0,
+            0,
+            0,
+            &[player.raw(), dt.to_bits(), dt.to_bits(), WORK + 0x40],
+        )?;
+        let expected = local.runtime().memory().read::<ACTION_SIZE>(WORK + 0x40)?;
+        let action = remote.action(
+            main,
+            cpu,
+            SeatInput {
+                player,
+                player_addr,
+                unit,
+                tick,
+                dt,
+                pad,
+                reset: tick == 0,
+            },
+        )?;
+        assert_eq!(action, expected, "retail action at sample {tick}");
         acquired |= action[0x3c..0x40] != u32::MAX.to_le_bytes();
         fired |= action[0] & 0x40 != 0;
         angles.push(action[4..12].to_vec());
     }
-    assert!(fired && angles.windows(2).any(|p|p[0]!=p[1]));
-    assert!(acquired,"fixture needs a visible opposing player within weapon assist range");
+    assert!(fired && angles.windows(2).any(|p| p[0] != p[1]));
+    assert!(
+        acquired,
+        "fixture needs a visible opposing player within weapon assist range"
+    );
     Ok(())
 }

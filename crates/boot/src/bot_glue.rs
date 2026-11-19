@@ -747,12 +747,19 @@ impl feature::Feature for Bots {
                 let cpu = *c.cpu;
                 c.answer_async(move |cx| {
                     Box::pin(async move {
-                        phantoms.slot_action(cx, slot, |sample| {
-                            let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
-                            guard.get_or_insert_with(|| retail_input::Builder::new(&rt, workspace))
-                                .action(&rt, cpu, sample)
-                                .map_err(|e| engine::entry::EntryError::IsolatedCall(format!("phantom player {}: {e:#}", sample.player.index())))
-                        }).await
+                        phantoms
+                            .slot_action(cx, slot, |sample| {
+                                let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
+                                let builder = guard.get_or_insert_with(|| {
+                                    retail_input::Builder::new(&rt, workspace)
+                                });
+                                builder.action(&rt, cpu, sample).map_err(|e| {
+                                    engine::entry::EntryError::IsolatedCall(format!(
+                                        "phantom player {}: {e:#}", sample.player.index()
+                                    ))
+                                })
+                            })
+                            .await
                     })
                 })
             },
