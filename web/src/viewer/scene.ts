@@ -1554,7 +1554,7 @@ export class ViewerScene {
 
     // Vehicles first: whoever is in one is drawn as the vehicle. A turret
     // is drawn as part of the vehicle it is mounted on, aimed.
-    smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });
+    smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap, exact: true });
     const mounts = mountedTurrets(this.shownVehicles.values(), this.shown.values());
     const hullOf = (id: string | null) => (id ? mounts.hullOf.get(id) ?? id : null);
     for (const [id, v] of this.shownVehicles) {

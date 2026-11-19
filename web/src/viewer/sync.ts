@@ -149,10 +149,13 @@ export function smoothPlayers(
 
 /** Eases shown vehicles towards the sampled ones, the way players are:
  *  place and both axes glide, a big jump or `snap` moves at once, and a
- *  vehicle no longer sampled (everyone got out) is dropped. */
+ *  vehicle no longer sampled (everyone got out) is dropped. `exact`: the
+ *  place is taken as sampled (already on a curve, frames.ts
+ *  `vehiclePath`: easing it would only leave the vehicle behind where the
+ *  game had it, and behind its hits); the axes still glide. */
 export function smoothVehicles<T extends { id: string; x: number; y: number; z: number; forward: Aim; up: Aim }>(
   shown: Map<string, T>, sampled: readonly T[], dtMs: number,
-  opts: { rate?: number; snap?: boolean } = {},
+  opts: { rate?: number; snap?: boolean; exact?: boolean } = {},
 ): void {
   const t = opts.snap ? 1 : 1 - Math.exp(-(opts.rate ?? 18) * Math.max(0, dtMs) / 1000);
   const seen = new Set<string>();
@@ -162,9 +165,10 @@ export function smoothVehicles<T extends { id: string; x: number; y: number; z: 
     if (!s) { shown.set(v.id, { ...v }); continue; }
     const far = (v.x - s.x) ** 2 + (v.y - s.y) ** 2 + (v.z - s.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE;
     const k = far ? 1 : t;
-    s.x += (v.x - s.x) * k;
-    s.y += (v.y - s.y) * k;
-    s.z += (v.z - s.z) * k;
+    const kp = opts.exact ? 1 : k;
+    s.x += (v.x - s.x) * kp;
+    s.y += (v.y - s.y) * kp;
+    s.z += (v.z - s.z) * kp;
     const forward = k >= 1 ? v.forward : nlerpAim(s.forward, v.forward, k);
     const up = k >= 1 ? v.up : nlerpAim(s.up, v.up, k);
     // Everything else (its kind, whether anyone is in it) is simply the newest.
