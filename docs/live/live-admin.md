@@ -117,14 +117,37 @@ within the hopper, the first `record_count` of them):
 
 ```json
 { "hoppers": [ {
-    "index": 0, "type": 4, "status": 1, "record_count": 2,
+    "index": 0, "type": 4, "unused": false, "status": 1, "record_count": 2,
     "name": "", "title": "Big Team Battle",
     "description": "Join alone or as a party…", "ranges": [1, 8, 6],
     "dwords": [ …18 numbers… ],
     "records": [ { "id": 1, "string": "", "flags": 1, "dwords": [1, 0],
-                   "variant": { "name": "Team Slayer", "engine": 2, "team": true } } ]
-  }, … ], "position": 1042 }
+                   "variant": { "name": "Team Slayer", "engine": 2, "team": true },
+                   "builtin": "team_slayer" } ]
+  }, … ],
+  "variants": [ { "key": "team_slayer", "name": "Team Slayer", "engine": 2, "team": true }, … ],
+  "templates": [ { "id": 2, "type": 4, "title": "Team Slayer", "description": "…",
+                   "min_players": 6, "max_players": 8, "ranges": [2, 3, 4],
+                   "dwords": [ …18… ], "entry": { "id": 50, "variant": "team_slayer" } }, … ],
+  "maps": [ { "id": 50, "name": "Lockout" }, … ],
+  "position": 1042 }
 ```
+
+- `unused`: the slot is type 0, which the game reads as no hopper. The file
+  always has 16 slots; the built-in lineup fills 11 and leaves 12..16
+  unused. Its records are empty.
+- `variants`: the built-in game variants the server can write into an
+  entry by key (the stock record of a game type with the default lineup's
+  changes, built from numbers in `live_proto::hopper::defaults`, never a
+  disc). `builtin` on a record names the one its variant is byte for byte,
+  if any.
+- `templates`: the default lineup's human playlists, each a kind of
+  playlist a new one is made from: its type, sizes, waits and skill table
+  (the descriptor the game's validator wants, which the JSON fields alone
+  cannot build) and a first entry that suits it. `ranges` and `dwords` are
+  that descriptor's, so a builder's copy of a new playlist is whole.
+- `maps`: the retail multiplayer maps by entry id, the map list when the
+  owner's catalog (below) is not there.
 
 For Halo 2, a server with nothing published serves the built-in lineup
 ([live-matchmaking.md §6.8](live-matchmaking.md)) here and from the file
@@ -180,6 +203,10 @@ the fields given change:
     ] } ] }
 ```
 
+`type` is the field's name, as the GET has it (`hopper_type` is read
+too; before this the server read only `hopper_type`, so a type edit from
+the builder was silently dropped).
+
 `records`, when present, replaces the whole list (1..100 entries;
 `record_count` must then match or be left out). Each entry keeps its
 unknown bytes — the template blobs the game fills in — from the slot named
@@ -193,6 +220,40 @@ like every other field. Nothing the builder cannot edit is ever lost, and the
 published file re-inflates to the same 0x162cc0 image with the edits
 applied. The reply is `{"published": …, "hoppers": …, "position": …}`, the
 fresh state.
+
+New playlists, removals and built-in variants:
+
+```json
+{ "hoppers": [
+    { "index": 11, "template": 2, "title": "Modtacular",
+      "records": [ { "id": 50, "string": "", "flags": 0, "dwords": [5, 0], "variant": "team_slayer" },
+                   { "id": 20, "string": "", "flags": 0, "dwords": [1, 0], "variant": "classic_ctf" } ] },
+    { "index": 10, "clear": true } ] }
+```
+
+- `template` (an id from the GET's `templates`) writes that template's
+  whole descriptor first, with the lowest playlist id (1..100) no other
+  playlist has, then the other fields on top. It is how an unused slot
+  becomes a playlist: a patch naming an unused slot without one is refused
+  ("an unused slot: create it from a template first"), and so is a new
+  playlist with no entries. On a playlist it changes its kind.
+- `clear: true` zeroes the hopper's descriptor and entries, making it an
+  unused slot; nothing else may be sent with it. Pins on that index stay
+  (they are the server's, by index) until changed.
+- A record's `variant` (a key from `variants`) builds the entry afresh: the
+  map `id`, the weight `dwords[0]`, that variant, every other byte zero, as
+  the built-in lineup writes its entries. `string`, `flags` and
+  `dwords[1]` lie inside the variant and are ignored; `from` may not be
+  given with it.
+- A playlist the game's validator took before the patch (or one made from
+  a template) must still pass it after (`check_descriptor`: type, sizes,
+  skill table, playlist id), so a raw `type` that does not fit the range
+  fields is refused with the validator's reasons.
+- Only the hoppers named are checked: unused slots elsewhere never block a
+  publish.
+
+This is `apply_patch` in `crates/live-server/src/admin.rs`; the Worker
+serves the same router, so both homes check the same way.
 
 ### Importing the base image
 
@@ -328,7 +389,8 @@ file. A map resolves by display name to its id. A game variant cannot be
 authored (its 0x130 bytes are settings the builder does not model), so
 each entry copies a whole published entry that plays the same game type
 — preferring the named variant, then the same team play — with
-`from`/`from_hopper`. Whatever does not resolve (a map the game does not
+`from`/`from_hopper` (the builder's per-entry variant list also offers
+the server's built-in variants, which a preset does not use yet). Whatever does not resolve (a map the game does not
 have, a game type no published entry plays, no catalog at all) is listed
 as unavailable and left out; a preset with nothing resolved changes
 nothing. So a preset can set: the title and description, the range
@@ -579,7 +641,8 @@ on `hopper-<id>`. All of it replays from the log, so it survives restarts.
 **Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
 beside it, keyed by the `hopper_id` sessions advertise. A session with
 `hopper` or `ranked` flags may only advertise a retail map or one pinned on
-its hopper.
+its hopper. A pin allows a custom map; it does not make a playlist play
+it (live-matchmaking.md §6.10).
 
 **The retail list.** `<data>/retail-maps.sha256` (next to the server's key)
 holds the hashes of retail maps, in `sha256sum` output form:

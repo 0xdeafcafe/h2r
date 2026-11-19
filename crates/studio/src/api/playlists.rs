@@ -4,7 +4,7 @@
 
 use agent_proto::RpcError;
 use hopper_edit::model;
-use live_proto::hopper::HOPPERS;
+use live_proto::hopper::{HOPPERS, defaults};
 use serde_json::json;
 use studio_proto::{code, method as m};
 
@@ -52,6 +52,10 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                 "dirty": app.hoppers.is_dirty(),
                 "playlists": hs.iter().enumerate().map(|(i, h)| json!({
                     "playlist": i, "title": h.title, "type": h.hopper_type, "entries": h.records.len(),
+                    "unused": model::is_unused(h),
+                })).collect::<Vec<_>>(),
+                "templates": defaults::templates().iter().map(|t| json!({
+                    "template": t.playlist_id, "title": t.title, "type": t.rules.hopper_type().raw(),
                 })).collect::<Vec<_>>(),
                 "errors": app.hoppers.errors(),
             }))
@@ -91,10 +95,24 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
                     text: t.to_owned(),
                 });
             }
+            // The kind goes first, so a new playlist's text can be set in
+            // the same call.
+            if let Some(t) = p.opt_u64("template")? {
+                edits.insert(
+                    0,
+                    PlaylistEdit::Kind {
+                        playlist,
+                        template: u32::try_from(t).unwrap_or(u32::MAX),
+                    },
+                );
+            }
+            if p.get("clear").is_some() && p.bool("clear")? {
+                edits = vec![PlaylistEdit::Clear { playlist }];
+            }
             if edits.is_empty() {
                 return Err(err(
                     code::INVALID_PARAMS,
-                    "playlist.set takes title or description",
+                    "playlist.set takes title, description, template (a playlist.list template) or clear",
                 ));
             }
             for e in edits {

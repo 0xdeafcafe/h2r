@@ -8,6 +8,7 @@
 //! [`App::perform`]s them. Both reach [`App::run`], so nothing the window
 //! edits is out of the API's reach.
 use hopper_edit::model::{self, EditHopper, MAX_WEIGHT};
+use live_proto::hopper::defaults;
 use live_proto::hopper::{MAX_DESCRIPTION, MAX_RECORDS, MAX_TITLE};
 use scenario_edit::layout::{self, Role};
 use scenario_edit::{BlockKind, Command, Value};
@@ -51,6 +52,18 @@ pub enum PlaylistEdit {
     Add {
         playlist: usize,
     },
+    /// Make the playlist one of a template's kind
+    /// ([`live_proto::hopper::defaults::templates`], by default playlist
+    /// id): an unused slot becomes a playlist with one entry; a playlist
+    /// keeps its text and entries.
+    Kind {
+        playlist: usize,
+        template: u32,
+    },
+    /// Make the playlist an unused slot.
+    Clear {
+        playlist: usize,
+    },
 }
 
 impl PlaylistEdit {
@@ -62,7 +75,9 @@ impl PlaylistEdit {
             | PlaylistEdit::Move { playlist, .. }
             | PlaylistEdit::Duplicate { playlist, .. }
             | PlaylistEdit::Remove { playlist, .. }
-            | PlaylistEdit::Add { playlist } => *playlist,
+            | PlaylistEdit::Add { playlist }
+            | PlaylistEdit::Kind { playlist, .. }
+            | PlaylistEdit::Clear { playlist } => *playlist,
         }
     }
 
@@ -123,6 +138,16 @@ impl PlaylistEdit {
                     return Err(format!("a playlist holds at most {MAX_RECORDS} entries"));
                 }
                 model::add_record(h)
+            }
+            PlaylistEdit::Kind { template, .. } => {
+                if defaults::template(*template).is_none() {
+                    return Err(format!("no playlist template {template}"));
+                }
+                model::create_playlist(h, *template)
+            }
+            PlaylistEdit::Clear { .. } => {
+                model::clear_playlist(h);
+                true
             }
         };
         if done || matches!(self, PlaylistEdit::Move { entry, to, .. } if entry == to) {
