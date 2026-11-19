@@ -236,6 +236,31 @@ fn snapshot(live: &Live, id: &str, expected: Option<u64>) -> Result<Recording, A
     Ok(g.recording.clone())
 }
 
+/// Native ingest and HTTP run on Tokio. Column prediction, Brotli and exact
+/// comparison belong on the blocking pool. Workerd has one thread and the
+/// alarm or admin request processes just this bounded segment.
+async fn checked_payload(
+    source: Vec<game::Frame>,
+    existing: Option<Bytes>,
+) -> Result<Bytes, ApiError> {
+    let work = move || {
+        let stored = match existing {
+            Some(bytes) => bytes,
+            None => Bytes::from(archive::encode(&source).map_err(|e| invalid(e.to_string()))?),
+        };
+        archive::verify(&source, &stored).map_err(|e| invalid(e.to_string()))?;
+        Ok(stored)
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tokio::task::spawn_blocking(work)
+            .await
+            .map_err(|e| failure(e.to_string()))?
+    }
+    #[cfg(target_arch = "wasm32")]
+    work()
+}
+
 pub(crate) async fn step<'a>(
     live: &Live,
     id: &'a str,
@@ -301,24 +326,35 @@ pub(crate) async fn step<'a>(
         return page(id, "empty", &p, true, None, 0);
     }
 
-    let stored = if mode == Mode::Verify {
-        let part = r
-            .parts
-            .get(i)
-            .ok_or_else(|| conflict("published segment is missing"))?;
-        read_blob(live, ARCHIVE, &part.segment.sha256).await?
+    let published = if mode == Mode::Verify {
+        Some(
+            r.parts
+                .get(i)
+                .ok_or_else(|| conflict("published segment is missing"))?,
+        )
     } else {
-        archive::encode(&batch.frames)
-            .map_err(|e| invalid(e.to_string()))?
-            .into()
+        None
     };
-    archive::verify(&batch.frames, &stored).map_err(|e| invalid(e.to_string()))?;
+    let existing = match published {
+        Some(part) => Some(read_blob(live, ARCHIVE, &part.segment.sha256).await?),
+        None => None,
+    };
+    let from_tick = batch.frames[0].tick;
+    let to_tick = batch.frames.last().unwrap().tick;
+    let frames = batch.frames.len();
+    let stored = checked_payload(batch.frames, existing).await?;
+    let bytes_count = stored.len() as u64;
+    let sha256 = match published {
+        // Already checked by read_blob. Index comparison below covers its metadata.
+        Some(part) => part.segment.sha256.clone(),
+        None => blob(live, ARCHIVE, stored, mode).await?,
+    };
     let seg = Segment {
-        from_tick: batch.frames[0].tick,
-        to_tick: batch.frames.last().unwrap().tick,
-        bytes: stored.len() as u64,
-        frames: batch.frames.len(),
-        sha256: blob(live, ARCHIVE, stored, mode).await?,
+        from_tick,
+        to_tick,
+        frames,
+        bytes: bytes_count,
+        sha256,
         keyframes: batch.keyframes,
     };
     let mut rows = Vec::with_capacity(batch.originals.len());
