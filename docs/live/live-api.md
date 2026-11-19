@@ -1673,3 +1673,26 @@ event signals that the finished recording can switch to the archive.
 The original chunk index remains available without the format parameter.
 Historical game inventory, dry run, verification, backup and rollback use
 the separate admin API. [Replay migration](replay-migration.md)
+
+#### Admin archive operations
+
+| Method and path | Token scope | Result |
+|---|---|---|
+| `GET /v1/admin/replay-archives?limit=32&cursor=…` | `admin.read` | Inventory page with `items`, `next` and log `position`. The limit is 1–100. |
+| `GET /v1/admin/replay-archives/{id}` | `admin.read` | Current state, sealed source position, original chunk and legacy frame counts, cumulative totals and both committed hashes. |
+| `POST /v1/admin/replay-archives/{id}/step` | `admin.write` | Process one segment of a sealed game. |
+| `POST /v1/admin/replay-archives/{id}/rollback` | `admin.write` | Check both supplied hashes and return the updated inventory record with HTTP 200 and state `rolled_back`. |
+
+A step body contains `mode` (`dry_run`, `apply` or `verify`), the inventory’s
+`source_position`, and the preceding receipt’s opaque `next` value as
+`cursor`. Omit the cursor on the first request. Dry runs write no objects
+or events. Apply can resume durable progress. Verify checks each published
+segment, immutable index node and original backup against the retained
+source. The final receipt includes `done: true`, the archive and backup
+SHA-256 values, and cumulative totals for `frames`, `segments`,
+`source_bytes`, `archive_bytes` and `index_bytes`. Rollback takes both
+`archive_sha256` and `backup_sha256` from that receipt.
+
+An incorrect revision or pointer returns 409. A broken recording fails the
+affected game, while a storage-service failure returns 503. A retry with
+the same cursor returns the same cumulative counts.
