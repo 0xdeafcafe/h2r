@@ -876,6 +876,38 @@ fn a30_converts_onto_its_base_and_reads_back() {
 /// string literal where Halo 2 wants a `unit_seat_mapping`: the cast table
 /// has no entry, and the interpreter called address 0. `$H1_LEVELS` (comma
 /// separated) limits the levels.
+#[test]
+#[ignore = "reads disc/halo1.iso and disc/halo2.iso"]
+fn retail_ai_control_hooks_match_spawn_follow_and_uncover_paths() {
+    let mut source = h1_iso();
+    let entry = source.find("/default.xbe").unwrap();
+    let source = source.read(&entry).unwrap();
+    let source = xbe::Xbe::parse(&source).unwrap();
+    let mut target = h2_iso();
+    let entry = target.find("default.xbe").unwrap();
+    let target = target.read(&entry).unwrap();
+    let target = xbe::Xbe::parse(&target).unwrap();
+    let call = |image: &xbe::Xbe<'_>, at: u32, expected| {
+        let bytes = image.bytes_at(at, 5).unwrap();
+        assert_eq!(bytes[0], 0xe8);
+        let displacement = u32::from_le_bytes(bytes[1..].try_into().unwrap());
+        assert_eq!(at.wrapping_add(5).wrapping_add(displacement), expected);
+    };
+    call(&source, 0x001415af, 0x0013b270);
+    call(&source, 0x0013e381, 0x0013b270);
+    call(&source, 0x0013bd1f, 0x0013b500);
+    call(&source, 0x0013eb01, 0x0013e280);
+    call(&source, 0x0013eb0d, 0x0013c910);
+    call(&target, 0x002016ab, 0x002039d0);
+    call(&target, 0x00201912, 0x00203780);
+    call(&target, 0x00274d61, 0x001a80e0);
+    let uncover = target.read_u32(0x0046eeb8 + 35 * 4).unwrap();
+    assert_eq!(uncover, 0x0047e908);
+    assert_eq!(target.read_u32(uncover + 0x18).unwrap(), 0x001b8540);
+    let presearch = target.read_u32(0x0046eeb8 + 28 * 4).unwrap();
+    assert_eq!(target.read_u32(presearch + 0x10).unwrap(), 0x001b44d0);
+}
+
 fn check_authored_automatic_destinations(
     level: &str,
     source: &h1map::H1Map,

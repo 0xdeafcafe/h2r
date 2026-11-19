@@ -106,6 +106,76 @@ mod tests {
     use super::*;
 
     #[test]
+    fn playfight_exception_keeps_the_salted_target_and_command_checks() {
+        use engine::{datum::layout, testing::FakeGuest};
+
+        const SCENARIO: u32 = 0x0080_0000;
+        const DEFINITIONS: u32 = 0x0081_0000;
+        const SQUADS: u32 = 0x0082_0000;
+        const GROUPS: u32 = 0x0083_0000;
+        const ACTOR: u32 = 0x0085_0000;
+        const INTEREST: u32 = 0x0087_0000;
+        const TRACKING: u32 = 0x0089_0000;
+        const OBJECT: u32 = 0x008b_0000;
+        const BODY: u32 = 0x008c_0000;
+        const VM: u32 = 0x008d_0000;
+        const GLOBALS: u32 = 0x008e_0000;
+        const VALUES: u32 = GLOBALS + 0x41d * 8 + 4;
+        const WORDS: u32 = hs::h1_ai_slots::Registry::Playfight.words() as u32;
+        const ACTOR_HANDLE: u32 = 0x8100_0000;
+        const INTEREST_HANDLE: u32 = 0x8200_0000;
+        const TRACKING_HANDLE: u32 = 0x8300_0000;
+        const OBJECT_HANDLE: u32 = 0x8400_0000;
+        let mut guest = FakeGuest::new();
+        for (global, row, handle) in [
+            (actors::ACTORS, ACTOR, ACTOR_HANDLE),
+            (preference::INTEREST, INTEREST, INTEREST_HANDLE),
+            (preference::TRACKING, TRACKING, TRACKING_HANDLE),
+            (points::OBJECTS.base, OBJECT, OBJECT_HANDLE),
+        ] {
+            let pool = row - 0x10000;
+            guest
+                .put_u32(global, pool)
+                .put_u32(pool + layout::DATA, row)
+                .put_u32(pool + layout::HIGH_WATER, 1)
+                .put_u16(row, (handle >> 16) as u16);
+        }
+        guest
+            .put_u32(points::SCENARIO.base, SCENARIO)
+            .put_u32(SCENARIO + 0x1c0, WORDS + 1)
+            .put_u32(SCENARIO + 0x1c4, DEFINITIONS)
+            .put(
+                DEFINITIONS + WORDS * 40,
+                hs::h1_ai_slots::HOOK_STATE.as_bytes(),
+            )
+            .put_u32(SCENARIO + 0x158, 1)
+            .put_u32(SCENARIO + 0x15c, GROUPS)
+            .put_u32(SCENARIO + 0x160, 1)
+            .put_u32(SCENARIO + 0x164, SQUADS)
+            .put_u16(SQUADS + 0x26, 0)
+            .put_u16(GROUPS + 0x20, u16::MAX)
+            .put_u32(0x004f_9380, VM)
+            .put_u32(VM + layout::DATA, GLOBALS)
+            .put_u32(VALUES + WORDS * 8, 0xffff_0000)
+            .put_u32(VALUES, 1)
+            .put_u32(ACTOR + 0x18, OBJECT_HANDLE)
+            .put_u32(ACTOR + 0x30, 0)
+            .put_u32(ACTOR + CURRENT_INTEREST, INTEREST_HANDLE)
+            .put_u32(INTEREST + 0x14, TRACKING_HANDLE)
+            .put_u32(OBJECT + 8, BODY)
+            .put_u16(BODY + 0x10a, 0);
+        assert_eq!(playfight_exception(&guest, ACTOR_HANDLE), Ok(true));
+        guest.put_u16(ACTOR + BEHAVIOR_START, OBEY);
+        assert_eq!(playfight_exception(&guest, ACTOR_HANDLE), Ok(false));
+        guest
+            .put_u16(ACTOR + BEHAVIOR_START, 0)
+            .put_u16(TRACKING, 0x8500);
+        assert_eq!(playfight_exception(&guest, ACTOR_HANDLE), Ok(false));
+        guest.put_u16(TRACKING, 0x8300).put_u32(VALUES, 0);
+        assert_eq!(playfight_exception(&guest, ACTOR_HANDLE), Ok(false));
+    }
+
+    #[test]
     fn maneuver_requests_one_native_uncover_action() {
         let call = request(0x8123_0010, 0x800100);
         assert_eq!(call.target, INSTALL_BEHAVIOR);
