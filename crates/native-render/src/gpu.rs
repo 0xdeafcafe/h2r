@@ -967,7 +967,7 @@ impl GpuWorld {
 
 #[cfg(test)]
 mod tests {
-    use super::{Image, PassStencil};
+    use super::{Blocks, Image, PassStencil, block_bytes};
 
     #[test]
     fn the_pass_takes_the_devices_stencil_as_the_d3d_path_does() {
