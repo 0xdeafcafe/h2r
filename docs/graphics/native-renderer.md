@@ -1125,8 +1125,17 @@ implementation samples engine texture 3.
   the Xbox vertex types in order (float 1..4, packed bytes 1..4, shorts
   1..4, normalised shorts 1..4, normalised packed 11:11:10, `D3DCOLOR`).
   The table is read from guest memory when the map is first seen, never
-  copied; a section's streams are expanded once per declaration to
-  float4s, so the programs see the values the hardware's fetch gives.
+  copied. A section's streams are gathered once per declaration, each
+  register's guest bytes in a 16-byte slot (`object_streams::gather`),
+  and the vertex unit converts them with the formats and shader fetch the
+  D3D path's default (GPU) fetch uses (`object_program_gpu::vertex_fetch`,
+  `input_fetch`; `NORMSHORT3` as `snorm16x4` read `(x, y, z, 1)`, and so
+  on). They were expanded to floats on the CPU before, and a CPU division
+  can round another way than the GPU's normalised conversion: a part
+  whose layer-3 pass tests depth `Equal` against the depth its D3D pass
+  wrote with the same program (03a's `concrete_rebar`, part 2 of
+  `concrete_chunk_j`, at frames 3000 and 4000) then failed wherever w
+  differed in the last bit, as the world's packed normals did.
 - **The implementation** (`record_implementation`, Code `0x0004cbf0`).
   The build of one record's draw switches on its third argument, the
   draw (the jump table at `0x0004d054`, indexed by the bytes at

@@ -22,16 +22,20 @@ use crate::object_program::{
     IMPLEMENTATIONS, ObjectInputs, ObjectPass, Row, object_layer3, object_pass, object_pixel_uniforms, object_vertex_uniforms,
 };
 use crate::object_program::{LIGHTMAP_STREAM, texaccum_dimensions};
-use crate::object_streams::{Element, StreamData, StreamFormats, declaration, expand, registers};
+use crate::object_streams::{Attribute, Element, SLOT, StreamData, StreamFormats, declaration, gather, registers};
 use crate::objects::ObjectFrame;
 use crate::program::{ViewInputs, bias_signed, frame_pixel, frame_vertex, sampler_descriptor};
 
-/// One section's vertices through one declaration: float4 per register,
-/// `registers` in order, and the section's index list.
+/// One section's vertices through one declaration: per vertex, per
+/// register in `registers` order, its guest bytes in a slot
+/// ([`crate::object_streams::gather`]) of the guest format in `formats`,
+/// which the vertex unit converts as the D3D path's fetch does
+/// ([`vertex_fetch`]); and the section's index list.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LitBufferInput {
     pub registers: Vec<u8>,
-    pub vertices: Vec<[f32; 4]>,
+    pub formats: Vec<Attribute>,
+    pub vertices: Vec<[u8; SLOT]>,
     pub indices: Vec<u32>,
 }
 
@@ -82,6 +86,7 @@ struct LitBuffer {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     registers: Vec<u8>,
+    formats: Vec<Attribute>,
 }
 
 struct LitProgram {
@@ -96,7 +101,7 @@ struct LitProgram {
     /// texture accumulation target, whose level is the pass's (made per
     /// encode, [`texture_group`]).
     textures: Option<wgpu::BindGroup>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>), wgpu::RenderPipeline>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>), wgpu::RenderPipeline>,
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -147,14 +152,69 @@ struct Draw {
     indices: Range<u32>,
 }
 
-/// The vertex attributes of a buffer holding `registers` as float4s.
-pub fn attributes(registers: &[u8]) -> Vec<wgpu::VertexAttribute> {
+impl LitBufferInput {
+    /// Vertex `v`'s register `k` (in `registers` order) as the vertex unit
+    /// reads it (the CPU's decode, for tests).
+    pub fn decoded(&self, v: usize, k: usize) -> [f32; 4] {
+        self.formats[k].decode(&self.vertices[v * self.registers.len() + k])
+    }
+}
+
+/// The vertex format and shader fetch a guest attribute is read with, as
+/// the D3D path reads it with its default (GPU) fetch
+/// (`gfx::repack::AttributeFetch::raw`, `d3d::nv2a::input_fetch`): the
+/// guest bytes as they are, converted by the vertex unit. Converted on
+/// the CPU instead, normalised shorts can round another way than the
+/// GPU's conversion, and a depth-equal pass (the third pass of 03a's
+/// rebar, over the depth its D3D pass wrote) fails where w differs in the
+/// last bit, as the world's packed normals did.
+pub fn vertex_fetch(a: Attribute) -> (wgpu::VertexFormat, shaders::vsh::InputFetch) {
+    use shaders::vsh::InputFetch as I;
+    use wgpu::VertexFormat as F;
+    match a {
+        Attribute::Float(1) => (F::Float32, I::Float),
+        Attribute::Float(2) => (F::Float32x2, I::Float),
+        Attribute::Float(3) => (F::Float32x3, I::Float),
+        Attribute::Float(_) => (F::Float32x4, I::Float),
+        Attribute::PByte(1) => (F::Unorm8, I::Float),
+        Attribute::PByte(2) => (F::Unorm8x2, I::Float),
+        Attribute::PByte(3) => (F::Unorm8x4, I::Xyz1),
+        Attribute::PByte(_) => (F::Unorm8x4, I::Float),
+        Attribute::Short(1) => (F::Sint16, I::Int),
+        Attribute::Short(2) => (F::Sint16x2, I::Int),
+        Attribute::Short(3) => (F::Sint16x4, I::IntXyz1),
+        Attribute::Short(_) => (F::Sint16x4, I::Int),
+        Attribute::NormShort(1) => (F::Snorm16, I::Float),
+        Attribute::NormShort(2) => (F::Snorm16x2, I::Float),
+        Attribute::NormShort(3) => (F::Snorm16x4, I::Xyz1),
+        Attribute::NormShort(_) => (F::Snorm16x4, I::Float),
+        Attribute::NormPacked3 => (F::Uint32, I::NormPacked3),
+        Attribute::Colour => (F::Unorm8x4Bgra, I::Float),
+    }
+}
+
+/// The shader fetch of each register `declaration` supplies
+/// ([`vertex_fetch`]); the rest are floats.
+pub fn input_fetch(declaration: &[Element]) -> [shaders::vsh::InputFetch; 16] {
+    let mut out = [shaders::vsh::InputFetch::Float; 16];
+    for e in declaration {
+        if let Some(f) = out.get_mut(usize::from(e.register)) {
+            *f = vertex_fetch(e.format).1;
+        }
+    }
+    out
+}
+
+/// The vertex attributes of a buffer holding `registers` of `formats`,
+/// each in a [`SLOT`].
+pub fn attributes(registers: &[u8], formats: &[Attribute]) -> Vec<wgpu::VertexAttribute> {
     registers
         .iter()
+        .zip(formats)
         .enumerate()
-        .map(|(k, &r)| wgpu::VertexAttribute {
-            format: wgpu::VertexFormat::Float32x4,
-            offset: 16 * k as u64,
+        .map(|(k, (&r, &f))| wgpu::VertexAttribute {
+            format: vertex_fetch(f).0,
+            offset: (SLOT * k) as u64,
             shader_location: u32::from(r),
         })
         .collect()
@@ -210,6 +270,7 @@ impl LitObjects {
                     usage: wgpu::BufferUsages::INDEX,
                 }),
                 registers: b.registers.clone(),
+                formats: b.formats.clone(),
             })
             .collect();
         let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
@@ -423,13 +484,14 @@ impl LitObjects {
         for d in &draws {
             let m = self.models.get_mut(&d.model).expect("drawn model");
             let registers = m.buffers[d.buffer].registers.clone();
+            let formats = m.buffers[d.buffer].formats.clone();
             let p = &mut m.programs[d.program];
-            let key = (color_format, depth_format, registers.clone());
+            let key = (color_format, depth_format, registers.clone(), formats.clone());
             if p.pipelines.contains_key(&key) {
                 continue;
             }
             let state = p.pass.program.state.expect("an object pass has its state");
-            let attrs = attributes(&registers);
+            let attrs = attributes(&registers, &formats);
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
                 layout: Some(&p.layout),
@@ -438,7 +500,7 @@ impl LitObjects {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: 16 * registers.len() as u64,
+                        array_stride: (SLOT * registers.len()) as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -534,7 +596,7 @@ impl LitObjects {
             let m = &self.models[&d.model];
             let b = &m.buffers[d.buffer];
             let p = &m.programs[d.program];
-            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone())) else { continue };
+            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone())) else { continue };
             let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(d.model, d.program))) else { continue };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &uniforms, o);
@@ -729,15 +791,16 @@ pub fn lit_model(
                     }
                     let (microcode, semantics) = vertex(vs, s.geometry, s.influences).map_err(|e| format!("section {}: {e}", s.index))?;
                     let decl = declaration(&semantics, &streams);
-                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl), engine.lightmap.is_some())
+                    let compiled = object_pass(pass.pass, imp, &microcode, registers(&decl), input_fetch(&decl), engine.lightmap.is_some())
                         .map_err(|e| format!("section {} implementation {n}: {e}", s.index))?;
                     let key = (s.index, decl);
                     let buffer = match buffers.get(&key) {
                         Some(&b) => b,
                         None => {
-                            let vertices = expand(&key.1, &data, s.vertex_count).map_err(|e| format!("section {}: {e}", s.index))?;
+                            let vertices = gather(&key.1, &data, s.vertex_count).map_err(|e| format!("section {}: {e}", s.index))?;
                             out.input.buffers.push(LitBufferInput {
                                 registers: key.1.iter().map(|e| e.register).collect(),
+                                formats: key.1.iter().map(|e| e.format).collect(),
                                 vertices,
                                 indices: lists[&s.index].0.clone(),
                             });
@@ -893,8 +956,8 @@ mod tests {
         assert_eq!(with.input.programs[0].images[3], Some(grey), "stage 3 binds the object's lightmap");
         let b = &with.input.buffers[0];
         assert_eq!(b.registers, vec![0, 1, 2]);
-        assert_eq!(b.vertices[1], [0.0, 0.0, 0.0, 1.0], "v1, the lightmap coordinates, zero");
-        assert_eq!(b.vertices[3], [1.0, 0.0, 0.0, 1.0], "vertex 1's position from the section");
+        assert_eq!(b.decoded(0, 1), [0.0, 0.0, 0.0, 1.0], "v1, the lightmap coordinates, zero");
+        assert_eq!(b.decoded(1, 0), [1.0, 0.0, 0.0, 1.0], "vertex 1's position from the section");
     }
 
     #[test]
@@ -1027,8 +1090,8 @@ mod tests {
         assert_eq!(input.buffers.len(), 1, "both implementations read v0..v2 the same way");
         let b = &input.buffers[0];
         assert_eq!(b.registers, vec![0, 1, 2]);
-        assert_eq!(b.vertices[3], [1.0, 0.0, 0.0, 1.0], "vertex 1's position");
-        assert_eq!(b.vertices[4], [0.5, 0.5, 0.0, 1.0]);
+        assert_eq!(b.decoded(1, 0), [1.0, 0.0, 0.0, 1.0], "vertex 1's position");
+        assert_eq!(b.decoded(1, 1), [0.5, 0.5, 0.0, 1.0]);
         assert_eq!(b.indices, vec![0, 1, 2, 0, 2, 1, 1, 2, 0], "material 5 is not lit here");
         assert_eq!(input.parts.len(), 2);
         let p = &input.parts[0];
@@ -1042,11 +1105,29 @@ mod tests {
     }
 
     #[test]
-    fn a_buffers_registers_are_float4s_in_order() {
-        let a = attributes(&[0, 3, 9]);
-        let got: Vec<(u64, u32)> = a.iter().map(|x| (x.offset, x.shader_location)).collect();
-        assert_eq!(got, vec![(0, 0), (16, 3), (32, 9)]);
-        assert!(a.iter().all(|x| x.format == wgpu::VertexFormat::Float32x4));
+    fn a_buffers_registers_are_slots_in_order_read_as_the_d3d_path_fetches_them() {
+        let formats = [Attribute::NormShort(3), Attribute::Float(2), Attribute::NormPacked3];
+        let a = attributes(&[0, 3, 9], &formats);
+        let got: Vec<(u64, u32, wgpu::VertexFormat)> = a.iter().map(|x| (x.offset, x.shader_location, x.format)).collect();
+        assert_eq!(
+            got,
+            vec![(0, 0, wgpu::VertexFormat::Snorm16x4), (16, 3, wgpu::VertexFormat::Float32x2), (32, 9, wgpu::VertexFormat::Uint32)]
+        );
+        let decl = [
+            Element { register: 0, stream: 0, offset: 0, format: Attribute::NormShort(3) },
+            Element { register: 3, stream: 0, offset: 8, format: Attribute::Float(2) },
+            Element { register: 9, stream: 0, offset: 16, format: Attribute::NormPacked3 },
+        ];
+        let fetch = input_fetch(&decl);
+        use shaders::vsh::InputFetch as I;
+        assert_eq!((fetch[0], fetch[3], fetch[9], fetch[1]), (I::Xyz1, I::Float, I::NormPacked3, I::Float));
+        // Every guest format, as the D3D path's raw fetch reads it.
+        for code in 0..=17u8 {
+            let f = Attribute::from_code(code).unwrap();
+            let (format, _) = vertex_fetch(f);
+            assert!(format.size() as usize <= SLOT, "{f:?}");
+            assert!(format.size() as usize >= f.size(), "{f:?} reads its bytes");
+        }
     }
 
     fn part(section: u16, implementations: [Option<(usize, usize)>; IMPLEMENTATIONS]) -> LitPart {
