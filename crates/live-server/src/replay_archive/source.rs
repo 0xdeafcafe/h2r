@@ -59,12 +59,13 @@ impl Batch {
                     .as_str()
                     .ok_or_else(|| invalid("invalid recorded keyframe"))?;
                 let bytes = pack::from_base64(text).map_err(|e| invalid(e.to_string()))?;
-                let frame = pack::decode_keyframe(&bytes).map_err(|e| invalid(e.to_string()))?;
-                (
-                    frame,
-                    bytes.len(),
-                    bytes.first().is_some_and(|b| b & 15 == 7),
-                )
+                let d = pack::Decoder::new()
+                    .decode(&bytes)
+                    .map_err(|e| invalid(e.to_string()))?;
+                if !d.keyframe {
+                    return Err(invalid("expected recorded keyframe"));
+                }
+                (d.frame, bytes.len(), d.machine_baseline)
             }
             None => {
                 let frame = serde_json::from_value(row.body.data.clone())

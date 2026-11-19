@@ -70,6 +70,15 @@ async fn archive_inventory_is_admin_only_paged_and_tracks_sealed_games() {
 
 #[tokio::test]
 async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
+    check_signed_sources(7).await;
+}
+
+#[tokio::test]
+async fn v8_signed_keys_reset_the_archived_machine_baseline() {
+    check_signed_sources(8).await;
+}
+
+async fn check_signed_sources(version: u8) {
     use live_proto::{game, pack, sign::EventBody};
     use live_server::store::NewEvent;
     let h = start(
@@ -116,7 +125,11 @@ async fn dry_run_apply_verify_and_rollback_keep_legacy_sources_exact() {
         }],
         ..Default::default()
     });
-    let packed = pack::encode_keyframe(&frames[3]).unwrap();
+    let packed = pack::Encoder::with_version(0, 1, version)
+        .unwrap()
+        .encode(&frames[3])
+        .unwrap()
+        .0;
     let data = [
         (game::GAME_FRAME, serde_json::to_value(&frames[0]).unwrap()),
         (game::GAME_FRAME, serde_json::to_value(&frames[1]).unwrap()),
