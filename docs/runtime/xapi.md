@@ -206,6 +206,33 @@ HalBootSMCVideoMode; XGetGameRegion at `00331385` queries index 0x104 and
 XGetParentalControlSetting at `002d5813` queries index 10. These derivations
 remain in the generated originals; Config has no competing locale/video fields.
 
+### Profile creation errors (read 2026-11-19, static)
+
+The saved-game files code leaves an error in `[0x55c154]` and `0x148ca8`
+shows it as a ui error (the `wigl` error table): 1 → `0x4a` (OUT OF BLOCKS,
+"no free slots"), 2 → `0x4e` (OUT OF BLOCKS, "need more space"), 4 → `0xc`
+(CAN'T CREATE PROFILE, whose text is "You have reached the maximum number
+of profiles..."). So that dialog is error 4, not a count:
+
+- Error 1 is a count: `0x215f40` probes `Profile: Halo%04d` names with
+  XCreateSaveGame OPEN_EXISTING up to 0x1000, and `0x215c00` refuses when
+  the saves counted by `0x217590` (XFindFirst/NextSaveGame) or the cached
+  list (`[0x51ea14]+0xbef8`) reach 0x1000.
+- Error 4 is a failed file call with free space left. `0x215c00` creates
+  the save (XCreateSaveGame CREATE_NEW at `0x215cde`, then the content
+  file with CreateFile CREATE_ALWAYS through `0x1367d0`); on a failure it
+  deletes the save again and asks `0x216ce0` (GetDiskFreeSpaceEx) whether
+  0x1e0 blocks fit: yes gives 4, no gives 2. The new profile's first write
+  (`0x1a0511` → `0x216240` → the task at `0x2acde0`, `0x2ae090`) opens the
+  content file OPEN_EXISTING, GENERIC_WRITE, share 0 (`0x136970`); failing
+  that open leaves 4 too, and `0x1a051c` deletes the save.
+
+`H2_SAVE_TRACE=1` prints every kernel file call on `U:` (open name,
+access, share, disposition, options, status, IOSB information, and the
+return addresses on the guest stack; calls on a handle opened there, reads
+and writes only when they fail), so one run names the call behind an
+error 4 (`crates/kernel/src/files/save_trace.rs`).
+
 ## Opt-in native save games
 
 `Config::save_games` (default false) makes `register` also install four
