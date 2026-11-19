@@ -18,7 +18,7 @@ mod session;
 mod sink;
 mod tags;
 
-pub use config::{TelemetryAccount, TelemetryConfig, TelemetrySinkConfig};
+pub use config::{HostToken, TelemetryAccount, TelemetryConfig, TelemetrySinkConfig};
 pub use event::{
     ActorState, Appearance, CharacterContact, GameEvent, GameInfo, HitRecord, MachineState, Motion,
     ObjectState, PlayerState, PlayerStats, Shots, Snapshot, Support, VehicleState, Weapon, World,

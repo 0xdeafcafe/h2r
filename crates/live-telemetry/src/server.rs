@@ -31,7 +31,7 @@ use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
-use crate::config::TelemetryAccount;
+use crate::config::{HostToken, TelemetryAccount};
 use crate::event::GameEvent;
 use crate::sink::Sink;
 
@@ -173,9 +173,27 @@ enum Answer {
     Refused(ErrorCode, String),
 }
 
+enum Uploader {
+    Account(live_proto::Xuid),
+    Host {
+        token: HostToken,
+        subject: String,
+        audience: String,
+    },
+}
+
+impl Uploader {
+    fn author(&self, server: &str) -> String {
+        match self {
+            Self::Account(xuid) => format!("acct:{xuid}@{server}"),
+            Self::Host { subject, .. } => subject.clone(),
+        }
+    }
+}
+
 pub struct ServerSink {
     base_url: String,
-    account: TelemetryAccount,
+    uploader: Uploader,
     key: KeyPair,
     connection: Option<Connection>,
     /// The last discovery; its id names the server in tokens and authors.
@@ -205,19 +223,48 @@ pub struct ServerSink {
 
 impl ServerSink {
     pub fn new(base_url: String, account: TelemetryAccount) -> Result<Self, String> {
+        let key = KeyPair::from_private_jwk(&account.key)
+            .map_err(|e| format!("telemetry account key: {e}"))?;
+        let xuid = live_proto::Xuid::parse(&account.xuid)
+            .map_err(|e| format!("telemetry account XUID: {e}"))?;
+        Self::with_uploader(base_url, Uploader::Account(xuid), key)
+    }
+
+    pub(crate) fn for_host(base_url: String, token: HostToken) -> Result<Self, String> {
+        use live_proto::sign::{Jws, TYP_TOKEN};
+
+        #[derive(serde::Deserialize)]
+        struct Claims {
+            sub: String,
+            aud: String,
+            event_key: String,
+        }
+
+        let bad = || "invalid host telemetry credential".to_owned();
+        let jws = Jws::parse(&token.0).map_err(|_| bad())?;
+        let payload = jws.json_payload(TYP_TOKEN).map_err(|_| bad())?;
+        let claims: Claims = serde_json::from_value(payload).map_err(|_| bad())?;
+        let id = claims.sub.strip_prefix("host:").ok_or_else(bad)?;
+        if !id.starts_with("hl-") || !game::valid_id(id) {
+            return Err(bad());
+        }
+        let key = KeyPair::from_secret_b64(&claims.event_key).map_err(|_| bad())?;
+        let uploader = Uploader::Host {
+            token,
+            subject: claims.sub,
+            audience: claims.aud,
+        };
+        Self::with_uploader(base_url, uploader, key)
+    }
+
+    fn with_uploader(base_url: String, uploader: Uploader, key: KeyPair) -> Result<Self, String> {
         if !live_proto::bearer_allowed(&base_url) {
             return Err("server credentials require HTTPS or a loopback URL".into());
         }
-        let key = KeyPair::from_private_jwk(&account.key)
-            .map_err(|e| format!("telemetry account key: {e}"))?;
-        let mut account = account;
-        account.xuid = live_proto::Xuid::parse(&account.xuid)
-            .map_err(|e| format!("telemetry account XUID: {e}"))?
-            .to_string();
         let timing = Timing::default();
         Ok(Self {
             base_url,
-            account,
+            uploader,
             key,
             connection: None,
             discovery: None,
@@ -274,17 +321,50 @@ impl ServerSink {
             .build()
     }
 
-    fn discover(&self) -> Result<Discovery, String> {
+    fn discover(&self) -> Result<Discovery, Failure> {
         let url = format!(
             "{}/.well-known/h2live.json",
             self.base_url.trim_end_matches('/')
         );
-        Self::agent()
+        let discovery = Self::agent()
             .get(&url)
             .call()
-            .map_err(|e| format!("telemetry discovery: {e}"))?
+            .map_err(|e| Failure::Transport(format!("telemetry discovery: {e}")))?
             .into_json::<Discovery>()
-            .map_err(|e| format!("telemetry discovery JSON: {e}"))
+            .map_err(|e| Failure::Transport(format!("telemetry discovery JSON: {e}")))?;
+        self.check_host_destination(&discovery)
+            .map_err(Failure::Fatal)?;
+        Ok(discovery)
+    }
+
+    /// A host bearer can authorize a whole match. Check the issuer and keep
+    /// it on the configured origin before sending it, including on reconnect.
+    fn check_host_destination(&self, discovery: &Discovery) -> Result<(), String> {
+        use live_proto::sign::{Jws, PublicKey};
+        use tungstenite::http::Uri;
+
+        let Uploader::Host {
+            token, audience, ..
+        } = &self.uploader else {
+            return Ok(());
+        };
+        let bad = || "telemetry discovery does not match the host credential".to_owned();
+        let base = self.base_url.parse::<Uri>().map_err(|_| bad())?;
+        let api = resolve_api(&self.base_url, &discovery.api);
+        let target = api.parse::<Uri>().map_err(|_| bad())?;
+        let jws = Jws::parse(&token.0).map_err(|_| bad())?;
+        let issuer_matches = discovery.keys.iter()
+            .filter_map(|jwk| PublicKey::from_jwk(jwk).ok())
+            .any(|key| jws.verify(&key).is_ok());
+        if &discovery.id != audience
+            || base.scheme() != target.scheme()
+            || base.authority() != target.authority()
+            || api.contains('\\')
+            || !issuer_matches
+        {
+            return Err(bad());
+        }
+        Ok(())
     }
 
     fn discovery(&self) -> &Discovery {
@@ -292,8 +372,11 @@ impl ServerSink {
     }
 
     fn token(&self) -> String {
+        if let Uploader::Host { token, .. } = &self.uploader {
+            return token.0.clone();
+        }
         let server_id = &self.discovery().id;
-        let author = format!("acct:{}@{server_id}", self.account.xuid);
+        let author = self.uploader.author(server_id);
         issue_token(
             &self.key,
             &author,
@@ -316,7 +399,7 @@ impl ServerSink {
         if self.connection.is_some() {
             return Ok(());
         }
-        let discovery = self.discover().map_err(Failure::Transport)?;
+        let discovery = self.discover()?;
         let api = resolve_api(&self.base_url, &discovery.api);
         let ingest = format!("{}/ingest", api.trim_end_matches('/'));
         let socket_url = ingest
@@ -356,10 +439,10 @@ impl ServerSink {
 
     /// A fresh token before the last one runs out.
     fn refresh_auth(&mut self) -> Result<(), Failure> {
-        if self
-            .connection
-            .as_ref()
-            .is_some_and(|c| c.last_auth.elapsed() >= Duration::from_secs(45))
+        // The fixed lease bearer lasts through the match and cannot be renewed.
+        if matches!(self.uploader, Uploader::Account(_))
+            && self.connection.as_ref()
+                .is_some_and(|c| c.last_auth.elapsed() >= Duration::from_secs(45))
         {
             self.authenticate()?;
         }
@@ -526,7 +609,7 @@ impl ServerSink {
     fn deliver_start(&mut self) -> Result<(), Failure> {
         if self.sim.as_ref().is_some_and(|sim| sim.deferred.is_some()) {
             if self.discovery.is_none() {
-                let discovery = self.discover().map_err(Failure::Transport)?;
+                let discovery = self.discover()?;
                 if let Some(deferred) = self.sim.as_mut().and_then(|sim| sim.deferred.as_mut()) {
                     deferred.encoder = ingest_frames(&discovery, SIM_KEYFRAME_EVERY);
                 }
@@ -645,7 +728,7 @@ impl ServerSink {
 
     fn sign(&self, server_id: String, events: Vec<GameEvent>) -> Result<Batch, Failure> {
         let now = OffsetDateTime::now_utc();
-        let author = format!("acct:{}@{}", self.account.xuid, self.discovery().id);
+        let author = self.uploader.author(&self.discovery().id);
         let message = signed_events_message(&self.key, &author, &server_id, &events, now)
             .map_err(Failure::Fatal)?;
         Ok(Batch {
@@ -1323,6 +1406,52 @@ mod tests {
     }
 
     #[test]
+    fn host_telemetry_uses_the_lease_bearer_and_batch_key() {
+        let issuer = KeyPair::from_secret([8; 32]);
+        let key = KeyPair::from_secret([9; 32]);
+        let subject = "host:hl-abc";
+        let raw = issuer.sign_json(live_proto::sign::TYP_TOKEN, &serde_json::json!({
+            "sub": subject, "aud": "local", "event_key": key.secret_b64(),
+        }));
+        let mut sink =
+            ServerSink::for_host("http://localhost:8074".into(), HostToken(raw.clone())).unwrap();
+        let mut discovery = Discovery {
+            id: "local".into(),
+            api: "/v1".into(),
+            keys: vec![issuer.public().jwk()],
+            software: "test".into(),
+            federation: false,
+            url: None,
+            ingest_frame_versions: vec![],
+        };
+        assert!(sink.check_host_destination(&discovery).is_ok());
+        discovery.api = "https://other.example/v1".into();
+        assert!(sink.check_host_destination(&discovery).is_err());
+        discovery.api = "/v1".into();
+        discovery.id = "wrong".into();
+        assert!(sink.check_host_destination(&discovery).is_err());
+        discovery.id = "local".into();
+        discovery.keys = vec![key.public().jwk()];
+        assert!(sink.check_host_destination(&discovery).is_err());
+        discovery.keys = vec![issuer.public().jwk()];
+        sink.discovery = Some(discovery);
+
+        assert!(sink.token() == raw);
+        let event = GameEvent::new("local", game::GAME_ENDED, serde_json::json!({
+            "tick": 1800, "reason": "finished", "players": [],
+        }));
+        let batch = sink.sign("leased-game".into(), vec![event]).unwrap();
+        let ClientMessage::Events { jws, .. } = serde_json::from_str(&batch.text).unwrap() else {
+            panic!("expected an event batch")
+        };
+        let (signed, bodies) = SignedEvent::open_batch(&jws).unwrap();
+        signed.verify(key.public()).unwrap();
+        assert!(signed.verify(issuer.public()).is_err());
+        assert_eq!(bodies[0].author, subject);
+        assert_eq!(bodies[0].stream, game::stream("leased-game"));
+    }
+
+    #[test]
     fn frames_go_as_packed_records_the_server_decodes() {
         let mut frames = pack::Encoder::new(0, FRAME_KEYFRAME_EVERY);
         let mut decoder = pack::Decoder::new();
@@ -1377,7 +1506,10 @@ mod tests {
             key: KeyPair::from_secret([3; 32]).private_jwk(),
         };
         let sink = ServerSink::new("http://localhost:8074".into(), account).unwrap();
-        assert_eq!(sink.account.xuid, "0009a1b2c3d4e5f6");
+        assert_eq!(
+            sink.uploader.author("localhost"),
+            "acct:0009a1b2c3d4e5f6@localhost"
+        );
     }
 
     #[test]
