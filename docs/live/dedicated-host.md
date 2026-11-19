@@ -236,6 +236,46 @@ lockstep. The hash also includes guest texture and sample buffers. Compare
 repeat runs from a clean seed and use the same hash to gate each candidate
 prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.md#first-runs).
 
+## Lifecycle
+
+Live requests one host per match. Before asking a provider to start it, Live
+checks the monthly budget and counts hosts that are starting, serving a
+match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4. A refused request leaves matchmaking
+free to use a peer host.
+
+| Event on the `hosts` stream | What Live records |
+|---|---|
+| `HostRequested` | The lease, roster, provider, and time limits. The lease now occupies a slot. |
+| `HostBooting` | The provider reference used to check or stop this instance. |
+| `HostReady` | The endpoint registered with the lease's own credential and the time from request to registration. Clients can now join. |
+| `HostPlaying` | The current player count. Live keeps the highest count for the match. |
+| `HostEnded` | The reason, elapsed time and peak players. A boot timeout or crash leaves the lease in `Failed`. |
+
+On startup Live replays these server-signed events before it serves requests.
+The host token and signed game-data URL are passed directly to the provider.
+The boot deadline is 60 seconds from the request. After registration, the
+idle timeout defaults to 120 seconds and the hard limit to 1,800 seconds from
+the request. An occupied, playing host can run through to the hard limit.
+When a supervisor reports the match ended, it has five seconds to exit.
+Live then checks the provider and stops a lingering instance before releasing
+its slot. A stored cursor lets cleanup resume after a restart.
+
+Set `LIVE_HOST_DATA_URL` to the signed URL for the owner's bundle and
+`LIVE_HOST_DATA_SHA256` to its 64-character SHA-256 digest. Set
+`LIVE_HOST_LIVE_URL` to the Live base URL reachable from the host when it
+differs from the server's public URL. This includes local servers listening
+on a port other than the default 8074 without a public URL.
+
+Locally the server launches `h2 host run` with a writable directory under
+`<server-data>/hosts/<lease-id>`. A standalone `h2-live-server` deployment
+sets `LIVE_HOST_BIN` to the host-capable `h2` binary. Otherwise the provider
+uses the current executable. The supervisor receives the full lease in
+`H2_HOST_LEASE_JSON` and checks that its ID matches `--lease` before
+provisioning. Concurrent local hosts use separate seven-port UDP ranges,
+starting at `H2_BASE_PORT` (default 31000). Each tunnel host also gets a
+separate TCP listener. On Unix, Live starts the supervisor in its own
+process group so an operator stop reaches both the supervisor and its game.
+
 ## Routing, assignment and arbitration
 
 **Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live-server/src/relay.rs) · [Worker counterpart](../../crates/live-worker/src/relayroom.rs)

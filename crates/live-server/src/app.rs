@@ -179,6 +179,8 @@ pub struct Live {
     team_writes: tokio::sync::Mutex<()>,
     pub(crate) sim_writes: tokio::sync::Mutex<()>,
     pub(crate) session_writes: tokio::sync::Mutex<()>,
+    // Dedicated hosts share one replayed registry on both homes.
+    pub(crate) hosts: Arc<crate::hosts::Hosts>,
     pub(crate) matchmaking: std::sync::Mutex<crate::matchmaking::Matchmaker>,
     /// Serializes ranking, so a game is ranked once.
     pub(crate) rank_writes: tokio::sync::Mutex<()>,
@@ -264,7 +266,9 @@ fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
             && stream.starts_with("mailbox-")
             && live_proto::mailbox::is_kind(kind);
     }
-    if stream.starts_with("session-")
+    if stream == live_proto::hosts::STREAM
+        || live_proto::hosts::KINDS.contains(&kind)
+        || stream.starts_with("session-")
         || stream.starts_with("reports-")
         || stream.starts_with("rank-")
         || stream.starts_with("round-")
@@ -493,6 +497,22 @@ impl Live {
         policy: Policy,
         timers: Timers,
     ) -> anyhow::Result<Arc<Self>> {
+        let costs = crate::host_costs::HostCosts::configured(
+            std::env::var("LIVE_HOST_PRICES").ok().as_deref(),
+            std::env::var("LIVE_HOST_BUDGET_USD_MONTH").ok().as_deref(),
+        )?;
+        Self::start_with_host_costs(store, identity, policy, timers, costs).await
+    }
+
+    /// Starts Live with prices and budget from the deployment's bindings.
+    /// The cost projection observes the complete log before the first allocation.
+    pub async fn start_with_host_costs(
+        store: Arc<dyn EventStore>,
+        identity: ServerIdentity,
+        policy: Policy,
+        timers: Timers,
+        costs: crate::host_costs::HostCosts,
+    ) -> anyhow::Result<Arc<Self>> {
         let held = Arc::new(crate::hold::HeldStore::open(store).await?);
         let store: Arc<dyn EventStore> = held.clone();
         let model = Arc::new(Model::default());
@@ -526,6 +546,9 @@ impl Live {
         let usage = Arc::new(crate::usage::Usage::default());
         usage.load(&store.usage().await?);
         dispatcher.subscribe(usage.clone());
+        let hosts =
+            crate::hosts::Hosts::subscribe(&mut dispatcher, policy.write_rate, store.as_ref(), costs)
+                .await?;
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -551,6 +574,7 @@ impl Live {
             team_writes: Default::default(),
             sim_writes: Default::default(),
             session_writes: Default::default(),
+            hosts,
             matchmaking: Default::default(),
             rank_writes: Default::default(),
             round_writes: Default::default(),
@@ -582,6 +606,7 @@ impl Live {
         applied.wait_for(|p| *p >= head).await?;
         live.model.renew_deadlines(now());
         let live = Arc::new(live);
+        live.hosts.attach(&live);
         if timers == Timers::Driven {
             return Ok(live);
         }
@@ -592,7 +617,7 @@ impl Live {
             loop {
                 crate::rt::sleep(every).await;
                 let Some(live) = weak.upgrade() else { return };
-                live.sweep().await;
+                live.sweep_with_hosts().await;
             }
         });
         // Packed readers' batches, a tick at a time.
@@ -624,7 +649,10 @@ impl Live {
     /// Records where the server keeps its key and log, for the admin
     /// status (shown only to callers on this machine). Set once.
     pub fn set_data_dir(&self, dir: &std::path::Path) {
-        let _ = self.data_dir.set(dir.to_path_buf());
+        if self.data_dir.set(dir.to_path_buf()).is_ok() {
+            #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+            self.install_native_host_provider(dir);
+        }
         #[cfg(feature = "native")]
         if self.blobs.get().is_none() {
             match crate::blobs::Blobs::dir(dir) {

@@ -46,7 +46,9 @@ pub mod filestore;
 pub mod games;
 pub mod guard;
 pub mod hold;
-pub mod host_costs; // dh-cost
+// Dedicated host lifecycle and billing.
+pub mod host_costs;
+pub mod hosts;
 pub mod http;
 #[cfg(feature = "native")]
 pub mod httpstore;
