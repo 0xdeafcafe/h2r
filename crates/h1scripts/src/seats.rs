@@ -126,6 +126,12 @@ pub fn h2_label_matches(token: &str, label: &str) -> bool {
     if l == t {
         return true;
     }
+    // Rebuilt aerial transports can retain a distinct Halo 1 seat mode
+    // for each position, such as p_riderlm. A substring call for that
+    // position must not pick other rows on the same side.
+    if t.starts_with("rider") && l.strip_prefix("p_") == Some(t.as_str()) {
+        return true;
+    }
     // A vehicle rebuilt from its definition labels each seat with the
     // rider's mode, Halo 1's label as the converted biped graphs name it
     // (`W-driver` is `warthog_d`, `GT-gunner` `guntower_d`, `pchair-driver`
@@ -150,7 +156,7 @@ pub fn h2_label_matches(token: &str, label: &str) -> bool {
     if t.contains("driver") {
         !boarding && l.ends_with("_d")
     } else if t.contains("gunner") {
-        !boarding && (l.ends_with("_g") || l.contains("_g_"))
+        !boarding && (l.ends_with("_g") || l.contains("_g_") || l == "guntower_d")
     } else if t.contains("rider") || t.contains("passenger") {
         if boarding || !(l.ends_with("_p") || l.contains("_p_")) {
             return false;

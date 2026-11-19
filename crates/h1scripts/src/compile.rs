@@ -18,6 +18,9 @@ use crate::layout::Tables;
 use crate::translate::{Adapter, Kind, Table, Target};
 use crate::{Result, invalid};
 
+#[path = "aicontrol_compile.rs"]
+mod aicontrol_compile;
+
 /// Halo 2 scenario fields the tables go in (docs/formats/haloscript.md).
 pub mod field {
     /// Script string data (byte count, address).
@@ -295,6 +298,33 @@ pub fn compile_with(
     resolves: &dyn Fn(&str, &str) -> bool,
     reference_names: &[String],
 ) -> Result<Compiled> {
+    compile_with_ai(
+        t,
+        h1,
+        table,
+        h2,
+        policy,
+        cutscenes,
+        resolves,
+        reference_names,
+        None,
+    )
+}
+
+/// Compile with the converted scenario's platoon controls and their
+/// indexed orders and squads.
+#[allow(clippy::too_many_arguments)]
+pub fn compile_with_ai(
+    t: &Tables,
+    h1: &Catalog,
+    table: &Table,
+    h2: &Target,
+    policy: Missing,
+    cutscenes: Cutscenes,
+    resolves: &dyn Fn(&str, &str) -> bool,
+    reference_names: &[String],
+    ai_control: Option<&h1ai::control::Control>,
+) -> Result<Compiled> {
     let mut c = Compiler {
         t,
         h1,
@@ -303,6 +333,10 @@ pub fn compile_with(
         policy,
         cutscenes,
         resolves,
+        ai_control,
+        maneuver_switches: Default::default(),
+        ai_scripts: Default::default(),
+        ai_definitions: Vec::new(),
         out: Compiled::default(),
         interned: HashMap::new(),
         definition: String::new(),
@@ -313,6 +347,7 @@ pub fn compile_with(
         let root = c.expr(g.root, ty)?;
         c.out.globals.push(definition(&g.name, ty, 0, root, i)?);
     }
+    c.install_maneuver_switches()?;
     for (i, s) in t.scripts.iter().enumerate() {
         c.definition = s.name.clone();
         let ty = c.ty(s.return_type)?;
@@ -321,6 +356,7 @@ pub fn compile_with(
             .scripts
             .push(definition(&s.name, s.kind, ty, root, i)?);
     }
+    c.out.scripts.append(&mut c.ai_definitions);
     c.out.references = t
         .references
         .iter()
@@ -444,6 +480,10 @@ struct Compiler<'a> {
     policy: Missing,
     cutscenes: Cutscenes,
     resolves: &'a dyn Fn(&str, &str) -> bool,
+    ai_control: Option<&'a h1ai::control::Control>,
+    maneuver_switches: std::collections::BTreeMap<h1ai::control::Platoon, u16>,
+    ai_scripts: std::collections::BTreeMap<h1ai::control::Request, (u16, String)>,
+    ai_definitions: Vec<[u8; 40]>,
     out: Compiled,
     interned: HashMap<Vec<u8>, u32>,
     definition: String,
@@ -857,6 +897,9 @@ impl Compiler<'_> {
         {
             return Ok(d);
         }
+        if let Some(call) = self.ai_control(&f.name, &args, expected)? {
+            return Ok(call);
+        }
         if f.name == "sleep"
             && let Some(d) = self.sleep_forever(&args, expected)?
         {
@@ -951,7 +994,8 @@ impl Compiler<'_> {
                 out.len()
             )));
         }
-        let call = self.call(b.index, CALL, expected, h2_name.as_bytes(), &out);
+        let name = crate::aicontrol::retail_name(&h2_name);
+        let call = self.call(b.index, CALL, expected, name.as_bytes(), &out);
         if NONE_UNSAFE.contains(&h2_name.as_str())
             && let &[arg] = &args[..]
             && let Some(guard) = self.none_guard(arg)?

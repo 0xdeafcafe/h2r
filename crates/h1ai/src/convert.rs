@@ -304,6 +304,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     flags: 0,
                     force_combat_status: 0,
                     entry_script: String::new(),
+                    entry_script_index: -1,
                     follow_squad: -1,
                     follow_radius: 0.0,
                     primary_areas: set,
@@ -383,6 +384,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             flags: 0,
             force_combat_status: 0,
             entry_script: String::new(),
+            entry_script_index: -1,
             follow_squad: -1,
             follow_radius: 0.0,
             primary_areas: Vec::new(),
@@ -649,8 +651,8 @@ impl Plan {
                     e.put_u32(0x24, o.flags);
                     e.put_u16(0x28, o.force_combat_status);
                     put_name(&mut e, 0x2c, &o.entry_script);
-                    put_i16(&mut e, 0x4c, o.follow_squad);
-                    put_i16(&mut e, 0x4e, -1);
+                    put_i16(&mut e, 0x4c, o.entry_script_index);
+                    put_i16(&mut e, 0x4e, o.follow_squad);
                     e.put_f32(0x50, o.follow_radius);
                     child(&mut e, l::ORDER_PRIMARY_AREAS, area_refs(&o.primary_areas));
                     child(

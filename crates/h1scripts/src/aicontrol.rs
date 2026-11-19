@@ -1,0 +1,307 @@
+//! Halo 1 encounter script operations and their Halo 2 evaluator bindings.
+//! Addresses are from the retail Xbox executables (docs/halo1/ai-control.md).
+
+use crate::translate::{H2Builtin, Target};
+use std::collections::HashMap;
+
+pub(crate) const RENAMES: &[(&str, &str)] = &[
+    ("ai_magically_see_unit", "ai_magically_see_object"),
+    ("ai_go_to_vehicle", "ai_vehicle_enter"),
+    ("ai_dialogue_triggers", "ai_dialogue_enable"),
+];
+
+/// An evaluator whose name cannot be learned from retail script nodes.
+/// We require the evaluator and signature as well as its index. Several
+/// nearby descriptors have the same signature and are retail no-ops.
+pub struct Binding {
+    pub name: &'static str,
+    pub index: u16,
+    pub evaluator: u32,
+    pub returns: &'static str,
+    pub arguments: &'static [&'static str],
+}
+
+pub const BINDINGS: &[Binding] = &[
+    Binding {
+        name: "ai_detach",
+        index: 288,
+        evaluator: 0x002a_4f20,
+        returns: "void",
+        arguments: &["unit"],
+    },
+    Binding {
+        // Retail's one-argument overload places both squads and groups.
+        name: "ai_place",
+        index: 290,
+        evaluator: 0x002a_4fd0,
+        returns: "void",
+        arguments: &["ai"],
+    },
+    Binding {
+        // Halo 2 has overloads of ai_place. The counted one (291) is
+        // needed here even on discs where scripts only call 290 by name.
+        name: "ai_place_counted",
+        index: 291,
+        evaluator: 0x002a_5010,
+        returns: "void",
+        arguments: &["ai", "short"],
+    },
+    Binding {
+        // The reserved (ai) slot shares the retail discarded evaluator.
+        // boot::h1_ai_control supplies its body on converted campaign maps.
+        name: "ai_magically_see_players",
+        index: 300,
+        evaluator: 0x002a_b6c0,
+        returns: "void",
+        arguments: &["ai"],
+    },
+    Binding {
+        name: "ai_allegiance_remove",
+        index: 310,
+        evaluator: 0x002a_5540,
+        returns: "void",
+        arguments: &["team", "team"],
+    },
+    Binding {
+        name: "ai_braindead_by_unit",
+        index: 312,
+        evaluator: 0x002a_55f0,
+        returns: "void",
+        arguments: &["object_list", "boolean"],
+    },
+    Binding {
+        name: "ai_force_active",
+        index: 317,
+        evaluator: 0x002a_5760,
+        returns: "void",
+        arguments: &["ai", "boolean"],
+    },
+    Binding {
+        name: "ai_force_active_by_unit",
+        index: 318,
+        evaluator: 0x002a_57b0,
+        returns: "void",
+        arguments: &["unit", "boolean"],
+    },
+    Binding {
+        name: "ai_set_team",
+        index: 322,
+        evaluator: 0x002a_5850,
+        returns: "void",
+        arguments: &["ai", "team"],
+    },
+    Binding {
+        name: "ai_living_fraction",
+        index: 327,
+        evaluator: 0x002a_59a0,
+        returns: "real",
+        arguments: &["ai"],
+    },
+    Binding {
+        name: "ai_allegiance_broken",
+        index: 332,
+        evaluator: 0x002a_5b70,
+        returns: "boolean",
+        arguments: &["team", "team"],
+    },
+    Binding {
+        // Retail also calls 344 as ai_vehicle_enter. Keep the seat mapping
+        // overload by name even when the two-argument overload was seen last.
+        name: "ai_vehicle_enter",
+        index: 343,
+        evaluator: 0x002a_5ec0,
+        returns: "void",
+        arguments: &["ai", "unit", "unit_seat_mapping"],
+    },
+];
+
+pub(crate) fn bind(builtins: &mut HashMap<String, H2Builtin>, catalog: &hs::Catalog) {
+    for entry in BINDINGS {
+        let Ok(function) = catalog.function(entry.index) else {
+            continue;
+        };
+        if function.evaluate() != entry.evaluator
+            || function.flags() & 2 != 0
+            || catalog.type_name(function.return_type()).ok() != Some(entry.returns)
+            || !function
+                .parameters()
+                .iter()
+                .map(|&p| catalog.type_name(p).ok())
+                .eq(entry.arguments.iter().copied().map(Some))
+        {
+            continue;
+        }
+        builtins.insert(
+            entry.name.to_owned(),
+            H2Builtin {
+                index: entry.index,
+                return_type: function.return_type(),
+                parameters: function.parameters().to_vec(),
+                special: false,
+            },
+        );
+    }
+}
+
+pub(crate) fn status_supported(target: &Target) -> bool {
+    ["ai_combat_status", "if", ">="]
+        .iter()
+        .all(|name| target.builtins.contains_key(*name))
+        && crate::compile::STATUS_LADDER
+            .iter()
+            .all(|(name, _)| target.externals.contains_key(*name))
+}
+
+/// The lookup key distinguishes the overload. The expression carries its
+/// retail name so an observed Halo 2 catalog can validate both maps.
+pub(crate) fn retail_name(name: &str) -> &str {
+    match name {
+        "ai_place_counted" => "ai_place",
+        _ => name,
+    }
+}
+
+pub(crate) fn operation(name: &str) -> Option<h1ai::control::Operation> {
+    use h1ai::control::Operation::*;
+    Some(match name {
+        "ai_attack" => Attack,
+        "ai_defend" => Defend,
+        "ai_retreat" | "ai_maneuver" => Maneuver,
+        "ai_maneuver_enable" => ManeuverEnable,
+        "ai_spawn_actor" => Spawn,
+        "ai_follow_target_players" => FollowPlayers,
+        "ai_follow_target_ai" => FollowAi,
+        "ai_follow_target_disable" => FollowDisable,
+        "ai_follow_distance" => FollowDistance,
+        "ai_migrate" => Migrate,
+        _ => return None,
+    })
+}
+
+pub(crate) fn request(
+    name: &str,
+    arg: &hs::Node,
+    tables: &crate::Tables,
+) -> Option<h1ai::control::Request> {
+    use h1ai::control::Operation;
+    let ai = |node: &hs::Node| {
+        (node.atom() && !node.global() && node.opcode() == crate::catalog::types::AI)
+            .then_some(node.data())
+    };
+    let operation = operation(name)?;
+    let target = match operation {
+        Operation::FollowAi | Operation::Migrate => Some(ai(tables.node(arg.next()).ok()?)?),
+        Operation::FollowDistance => {
+            let radius = tables.node(arg.next()).ok()?;
+            let value = f32::from_bits(radius.data());
+            if !radius.atom()
+                || radius.global()
+                || radius.opcode() != crate::catalog::types::REAL
+                || !value.is_finite()
+                || value < 0.0
+            {
+                return None;
+            }
+            Some(radius.data())
+        }
+        _ => None,
+    };
+    Some(h1ai::control::Request {
+        operation,
+        reference: ai(arg)?,
+        target,
+    })
+}
+
+/// Level data has to be built from the original squad and platoon indices
+/// before the converter drops unused squads. Only direct AI literals name
+/// a stable source index.
+pub fn requests(tables: &crate::Tables, catalog: &crate::Catalog) -> Vec<h1ai::control::Request> {
+    use h1ai::control::Operation::*;
+    use hs::Datum;
+    let mut out = Vec::new();
+    let mut dynamic_follow = false;
+    let mut begins = Vec::new();
+    for (slot, node) in tables.nodes.iter().enumerate() {
+        if !node.live() || node.atom() || node.script_call() {
+            continue;
+        }
+        let Ok(function) = catalog.function(node.opcode()) else {
+            continue;
+        };
+        let call = Datum(u32::from(node.salt()) << 16 | slot as u32);
+        if function.name == "begin" {
+            begins.push(call);
+            continue;
+        }
+        let Some(operation) = operation(&function.name) else {
+            dynamic_follow |= function.name == "ai_follow_target_unit";
+            continue;
+        };
+        let request = tables
+            .node(Datum(node.data()))
+            .ok()
+            .and_then(|head| tables.node(head.next()).ok())
+            .and_then(|arg| request(&function.name, arg, tables));
+        if let Some(request) = request {
+            out.push((call, request));
+        } else if matches!(operation, FollowDistance | FollowPlayers | FollowAi) {
+            dynamic_follow = true;
+        }
+    }
+    out.iter()
+        .filter_map(|&(call, request)| {
+            if request.operation != FollowDistance {
+                return Some(request);
+            }
+            if dynamic_follow {
+                return None;
+            }
+            let same_encounter =
+                |other: &h1ai::control::Request| other.reference as u16 == request.reference as u16;
+            // A literal distance can move into an order when there is exactly
+            // one setter and one following operation, and their shared begin
+            // runs the setter first. Actors can't observe the radius before
+            // the only operation that makes them follow. c20 uses this form.
+            let mut controls = out.iter().filter(|(_, other)| {
+                same_encounter(other)
+                    && matches!(other.operation, FollowDistance | FollowPlayers | FollowAi)
+            });
+            if controls.clone().count() != 2 {
+                return None;
+            }
+            let &(follow, _) = controls.find(|(_, r)| r.operation == FollowPlayers)?;
+            begins
+                .iter()
+                .any(|&parent| ordered_children(tables, parent, call, follow))
+                .then_some(request)
+        })
+        .collect()
+}
+
+fn ordered_children(
+    tables: &crate::Tables,
+    parent: hs::Datum,
+    before: hs::Datum,
+    after: hs::Datum,
+) -> bool {
+    let Ok(head) = tables
+        .node(parent)
+        .and_then(|node| tables.node(hs::Datum(node.data())))
+    else {
+        return false;
+    };
+    let mut next = head.next();
+    let mut seen = false;
+    for _ in 0..tables.nodes.len() {
+        if next == after {
+            return seen;
+        }
+        seen |= next == before;
+        let Ok(arg) = tables.node(next) else {
+            break;
+        };
+        next = arg.next();
+    }
+    false
+}

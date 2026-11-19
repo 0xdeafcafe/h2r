@@ -1054,10 +1054,18 @@ pub fn write(
     put_block(&mut root, BSP_SWITCHES, BSP_SWITCH, switches);
 
     // AI.
-    let mut ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let ai_src = h1ai::h1::H1Ai::read(h1).map_err(|e| invalid(format!("ai: {e}")))?;
+    let tables = h1scripts::Tables::read(h1).ok();
+    let requests = match (tables.as_ref(), opts.scripts) {
+        (Some(tables), Some(scripts)) if opts.ai => {
+            h1scripts::aicontrol::requests(tables, &scripts.catalog)
+        }
+        _ => Vec::new(),
+    };
     // h1ai keeps squads with no starting locations (empty) so scripts can
     // name them; only those the scripts name are worth their room.
-    let named = h1scripts::Tables::read(h1)
+    let mut named = tables
+        .as_ref()
         .map(|t| t.atom_tokens(h1scripts::catalog::types::AI))
         .unwrap_or_default()
         .into_iter()
@@ -1066,6 +1074,7 @@ pub fn write(
     // They go first when the level would pass the engine's squad cap
     // ([`MAX_SQUADS`]; a50 and b40 would): the scripts then name the
     // squad's encounter, its squad group ([`hook_value`]).
+    named.extend(h1ai::control::maneuver_targets(&ai_src, &requests));
     let empty_named = |e: &h1ai::h1::Encounter, q: &h1ai::h1::Squad| {
         q.starting_locations.is_empty()
             && named.contains(&format!("{}/{}", e.name, q.name).to_ascii_lowercase())
@@ -1088,7 +1097,8 @@ pub fn write(
             "ai: {empty} empty squads the scripts name left out ({placed} placed; cap {MAX_SQUADS}); the scripts name their squad groups"
         ));
     }
-    for e in &mut ai_src.encounters {
+    let mut retained = ai_src.clone();
+    for e in &mut retained.encounters {
         let encounter = e.name.clone();
         e.squads.retain(|q| {
             !q.starting_locations.is_empty()
@@ -1096,9 +1106,9 @@ pub fn write(
                     && named.contains(&format!("{encounter}/{}", q.name).to_ascii_lowercase()))
         });
     }
-    let plan = h1map::phase::time("ai", || {
-        h1ai::convert::convert(&ai_src, &Default::default())
-    });
+    let ai_options = h1ai::convert::Options::default();
+    let mut plan = h1map::phase::time("ai", || h1ai::convert::convert(&retained, &ai_options));
+    let ai_control = h1ai::control::prepare(&ai_src, &mut plan, &ai_options, &requests);
     if plan.ai.squads.len() > MAX_SQUADS || plan.ai.squad_groups.len() > MAX_SQUAD_GROUPS {
         return Err(invalid(format!(
             "ai: {} squads and {} squad groups, the engine holds {MAX_SQUADS} and {MAX_SQUAD_GROUPS}",
@@ -1203,6 +1213,7 @@ pub fn write(
                     groups: &groups,
                 },
                 &initial,
+                &ai_control,
                 opts.sounds,
                 !lean.leaves_out(crate::Lean::LevelData),
                 !lean.leaves_out(crate::Lean::SeatTable),
@@ -1780,6 +1791,7 @@ fn install_scripts(
     root: &mut Block,
     targets: &Targets,
     initial: &[String],
+    ai_control: &h1ai::control::Control,
     max_sounds: usize,
     level_data: bool,
     seat_table: bool,
@@ -1788,7 +1800,7 @@ fn install_scripts(
     cutscenes: h1scripts::compile::Cutscenes,
     aliases: &crate::h2assets::Aliases,
 ) -> Result<ScriptReport> {
-    use h1scripts::compile::{Missing, compile_with};
+    use h1scripts::compile::{Missing, compile_with_ai};
     let t = h1scripts::Tables::read(h1).map_err(|e| invalid(format!("scripts: {e}")))?;
     let refs: Vec<String> = t
         .references
@@ -1824,7 +1836,7 @@ fn install_scripts(
             })
             .is_some()
     };
-    let mut c = compile_with(
+    let mut c = compile_with_ai(
         &t,
         &s.catalog,
         &s.table,
@@ -1833,6 +1845,7 @@ fn install_scripts(
         cutscenes,
         &resolves,
         &refs,
+        Some(ai_control),
     )
     .map_err(|e| invalid(format!("scripts: {e}")))?;
     h1scripts::compile::add_startup_placements(&mut c, &s.target, INITIAL_SCRIPT, initial)

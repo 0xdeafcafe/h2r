@@ -216,7 +216,9 @@ pub struct Order {
     pub force_combat_status: u16,
     /// Entry script name (32 characters, `+0x2c`).
     pub entry_script: String,
-    /// Squad to follow, `-1` none (`i16 +0x4c`).
+    /// Static entry script index, or -1 (i16 +0x4c).
+    pub entry_script_index: i16,
+    /// Squad whose orders this one follows, or -1 (i16 +0x4e).
     pub follow_squad: i16,
     /// Follow radius (`f32 +0x50`).
     pub follow_radius: f32,
@@ -412,7 +414,8 @@ impl ScenarioAi {
                     flags: u32_at(e, 0x24),
                     force_combat_status: u16_at(e, 0x28),
                     entry_script: name32(e, 0x2c),
-                    follow_squad: i16_at(e, 0x4c),
+                    entry_script_index: i16_at(e, 0x4c),
+                    follow_squad: i16_at(e, 0x4e),
                     follow_radius: f32_at(e, 0x50),
                     primary_areas: area_refs(v, e, layout::ORDER_PRIMARY_AREAS)?,
                     secondary_areas: area_refs(v, e, layout::ORDER_SECONDARY_AREAS)?,

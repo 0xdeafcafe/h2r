@@ -1,16 +1,25 @@
 //! Opt-in checks against the owner's discs. Set `H1_ISO` (default
-//! `disc/halo1.iso`) and `H2_ISO` (default `disc/halo2.iso`). Nothing read
+//! `disc/halo1.iso`) and `H2_DISC` (default `disc/halo2.iso`). Nothing read
 //! here is written to the repository; summaries go to stdout.
 use std::{fs::File, io::BufReader, path::PathBuf};
 
 use h1scripts::{Catalog, Tables, decompile::decompile};
 
 fn disc(var: &str, name: &str) -> PathBuf {
-    std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../disc")
-            .join(name)
-    })
+    std::env::var_os(var)
+        .or_else(|| {
+            if var == "H2_DISC" {
+                std::env::var_os("H2_ISO")
+            } else {
+                None
+            }
+        })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../disc")
+                .join(name)
+        })
 }
 
 fn h1() -> (Catalog, Vec<(String, h1map::H1Map)>) {
@@ -74,7 +83,7 @@ fn every_campaign_script_decompiles() {
 }
 
 fn h2() -> h1scripts::translate::Target {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = disc("H2_DISC", "halo2.iso");
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -178,7 +187,7 @@ fn translation_coverage() {
 }
 
 fn h2_catalog() -> hs::Catalog {
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = disc("H2_DISC", "halo2.iso");
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let e = iso.find("default.xbe").unwrap();
     let bytes = iso.read(&e).unwrap();
@@ -573,7 +582,7 @@ fn cinematic_calls_keep_halo1_s_ticks() {
         println!("{name}: ({}) both", h1_params.join(" "));
     }
     // Retail Halo 2's literal durations.
-    let path = disc("H2_ISO", "halo2.iso");
+    let path = disc("H2_DISC", "halo2.iso");
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(&path).unwrap())).unwrap();
     let mut seen: std::collections::BTreeMap<(&str, i16), usize> = Default::default();
     for e in iso
@@ -628,4 +637,121 @@ fn cinematic_calls_keep_halo1_s_ticks() {
         println!("retail {call} durations: {}", top.join(", "));
         assert!(v.iter().take(3).all(|((_, d), _)| d % 5 == 0), "{call}");
     }
+}
+
+#[test]
+#[ignore = "reads H1_ISO and H2_DISC"]
+fn encounter_controls_emit_live_evaluators_and_native_orders() {
+    use h1ai::control::Operation;
+    use h1scripts::compile::{Cutscenes, Missing, compile_with_ai};
+
+    let (catalog, maps) = h1();
+    let target = h2();
+    let descriptors = h2_catalog();
+    let translations = h1scripts::translate::Table::build(&catalog, &target);
+    for binding in h1scripts::aicontrol::BINDINGS {
+        let builtin = descriptors.function(binding.index).unwrap();
+        assert_eq!(builtin.evaluate(), binding.evaluator, "{}", binding.name);
+        assert_eq!(target.builtins[binding.name].index, binding.index);
+    }
+    let mut installed_operations = std::collections::BTreeSet::new();
+    let mut magic = 0;
+    let mut counted_spawn = 0;
+    let mut vehicle = 0;
+    let mut by_unit = 0;
+    let mut explicit_distance = false;
+    for (name, map) in &maps {
+        let tables = Tables::read(map).unwrap();
+        let requests = h1scripts::aicontrol::requests(&tables, &catalog);
+        let source = h1ai::h1::H1Ai::read(map).unwrap();
+        let opts = h1ai::convert::Options::default();
+        let mut plan = h1ai::convert::convert(&source, &opts);
+        let controls = h1ai::control::prepare(&source, &mut plan, &opts, &requests);
+        if requests
+            .iter()
+            .any(|r| r.operation == Operation::FollowDistance)
+        {
+            explicit_distance |= plan.ai.orders.iter().any(|o| o.follow_radius == 5.0);
+        }
+        installed_operations.extend(
+            controls
+                .actions
+                .iter()
+                .filter(|(_, actions)| !actions.is_empty())
+                .map(|(request, _)| request.operation),
+        );
+        let compiled = compile_with_ai(
+            &tables,
+            &catalog,
+            &translations,
+            &target,
+            Missing::Stub,
+            Cutscenes::Play,
+            &|_, _| true,
+            &[],
+            Some(&controls),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        const BASE: u32 = 0x8010_0000;
+        let scenario = hs::Scenario::decode(&compiled.scenario_bytes(BASE), BASE).unwrap();
+        scenario
+            .validate(&descriptors)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        for node in scenario
+            .nodes()
+            .iter()
+            .filter(|n| !n.atom() && !n.script_call())
+        {
+            let first = || {
+                scenario
+                    .node(scenario.node(hs::Datum(node.data())).unwrap().next())
+                    .unwrap()
+            };
+            match node.opcode() {
+                300 => magic += 1,
+                291 => {
+                    counted_spawn += 1;
+                    let count = scenario.node(first().next()).unwrap();
+                    assert_eq!((count.value_type(), count.data()), (7, 1));
+                }
+                333 => {
+                    let order = scenario.node(first().next()).unwrap().data() as u16;
+                    assert!(
+                        usize::from(order) < plan.ai.orders.len(),
+                        "{name}: order {order}"
+                    );
+                    assert!((first().data() as usize) < plan.ai.squads.len());
+                }
+                335 => by_unit += 1,
+                343 => {
+                    vehicle += 1;
+                    let seat = scenario
+                        .node(scenario.node(first().next()).unwrap().next())
+                        .unwrap();
+                    assert_eq!(
+                        descriptors.type_name(seat.value_type()).unwrap(),
+                        "unit_seat_mapping"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    for operation in [
+        Operation::Attack,
+        Operation::Defend,
+        Operation::Maneuver,
+        Operation::ManeuverEnable,
+        Operation::Spawn,
+        Operation::FollowPlayers,
+        Operation::FollowAi,
+        Operation::FollowDisable,
+        Operation::Migrate,
+    ] {
+        assert!(installed_operations.contains(&operation), "{operation:?}");
+    }
+    // A missing parent call can remove a translated descendant. These
+    // assertions check that the converted graphs still reach each family.
+    assert!(magic > 0 && counted_spawn > 0 && vehicle > 0 && by_unit > 0);
+    assert!(explicit_distance);
 }

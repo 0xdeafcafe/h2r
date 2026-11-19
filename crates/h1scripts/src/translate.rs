@@ -20,10 +20,6 @@ pub const RENAMES: &[(&str, &str)] = &[
     ("ai_exit_vehicle", "ai_vehicle_exit"),
     ("object_pvs_set_object", "pvs_set_object"),
     ("object_pvs_clear", "pvs_clear"),
-    // Halo 2 has no living fraction its scripts call; its strength is the
-    // squad's remaining vitality, 0 when all are dead (a30's waits on
-    // `(> 0.3 (ai_living_fraction x))` and `(= 0.0 ...)`).
-    ("ai_living_fraction", "ai_strength"),
     // The ticks left of a playing impulse sound (0 once it ends), as Halo
     // 1's. Halo 2's evaluator 0x2a9fe0 finds the sound among the 16 script
     // impulses and returns its permutation's length less the time played,
@@ -41,6 +37,7 @@ pub const ADAPTERS: &[(&str, &str, Adapter)] = &[
     // 1309 of 2100 calls and never pass 0 (`ai_place_counts` in
     // h1campaign's survey), so the call keeps Halo 1's one argument.
     ("ai_place", "ai_place", Adapter::OmitOptional),
+    ("ai_spawn_actor", "ai_place_counted", Adapter::AppendShort(1)),
     // Halo 2 adds an exit mode; every retail Halo 2 call passes 1.
     (
         "unit_exit_vehicle",
@@ -71,6 +68,8 @@ pub enum Adapter {
     OmitOptional,
     /// Call the target (a comparison) inside `not`.
     Negate,
+    /// Use Halo 2's combat status and its ordered thresholds.
+    CombatStatus,
 }
 
 /// One Halo 2 builtin as the translation needs it.
@@ -118,6 +117,7 @@ impl Target {
             })
             .collect();
         crate::identified::name_unnamed(&mut builtins, c);
+        crate::aicontrol::bind(&mut builtins, c);
         Self {
             builtins,
             types: c.types().to_vec(),
@@ -190,7 +190,11 @@ impl Table {
     pub fn build(h1: &Catalog, h2: &Target) -> Self {
         let types: Vec<Option<u16>> = h1.types().iter().map(|t| h2.type_index(t)).collect();
         let map_ty = |t: u16| types.get(t as usize).copied().flatten();
-        let renames: HashMap<&str, &str> = RENAMES.iter().copied().collect();
+        let renames: HashMap<&str, &str> = RENAMES
+            .iter()
+            .chain(crate::aicontrol::RENAMES)
+            .copied()
+            .collect();
         let adapters: HashMap<&str, (&str, Adapter)> =
             ADAPTERS.iter().map(|&(a, b, k)| (a, (b, k))).collect();
         let builtins = h1
@@ -205,7 +209,12 @@ impl Table {
                     adapter: None,
                     reason: Some(reason),
                 };
-                if let Some(&(h2_name, adapter)) = adapters.get(f.name.as_str()) {
+                if let Some(&(h2_name, adapter)) = adapters.get(f.name.as_str())
+                    && !(adapter == Adapter::OmitOptional
+                        && h2.builtins.get(h2_name).is_some_and(|b| {
+                            b.parameters.len() == f.parameters.len()
+                        }))
+                {
                     let Some(b) = h2.builtins.get(h2_name) else {
                         return missing("adapter target not called by Halo 2 scripts");
                     };
@@ -214,6 +223,18 @@ impl Table {
                         kind: Kind::Adapter,
                         target: Some((h2_name.to_owned(), b.clone())),
                         adapter: Some(adapter),
+                        reason: None,
+                    };
+                }
+                if f.name == "ai_status"
+                    && crate::aicontrol::status_supported(h2)
+                    && let Some(b) = h2.builtins.get("ai_combat_status")
+                {
+                    return Translation {
+                        name: f.name.clone(),
+                        kind: Kind::Adapter,
+                        target: Some(("ai_combat_status".to_owned(), b.clone())),
+                        adapter: Some(Adapter::CombatStatus),
                         reason: None,
                     };
                 }
