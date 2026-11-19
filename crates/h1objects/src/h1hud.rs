@@ -2181,6 +2181,28 @@ mod tests {
         assert!(kinds.contains(&(0x00, FixupKind::StringId("h1_grenade_count_1".into()))));
     }
 
+    /// A weapon HUD chain with no element (the multiplayer maps'
+    /// flamethrower) is an `nhdt` with no widget: an empty bitmap widget
+    /// block and no text block, the tag Halo 1's empty HUD becomes.
+    #[test]
+    fn a_weapon_hud_with_no_element_is_an_nhdt_with_no_widget() {
+        let root = nhdt(&[], &[]);
+        assert_eq!(root.bytes.len(), NHDT_ROOT);
+        assert_eq!(
+            &root.bytes[0..4],
+            &u32::from_be_bytes(*b"nhdt").to_le_bytes()
+        );
+        let blocks: Vec<_> = root
+            .fixups
+            .iter()
+            .filter_map(|f| match &f.kind {
+                FixupKind::Block { count, child } => Some((f.offset, *count, child.bytes.len())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(blocks, [(NHDT_BITMAP_WIDGETS as u32, 0, 0)]);
+    }
+
     #[test]
     fn the_motion_sensor_centre_is_halo1s_placement_up_from_the_bottom_left() {
         let mut b = vec![0u8; unhi::SIZE];

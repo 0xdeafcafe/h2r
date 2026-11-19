@@ -1822,7 +1822,9 @@ impl<'a> Converter<'a> {
             // under the warthog's `fixed`; the converted vehicle graph's
             // aim overlays are found under that class, h1models
             // `jmad::vehicle_plan`). Until converter version 84 the gun had
-            // no class, and the warthog no aim.
+            // no class, and the warthog no aim. Vehicle graphs' tables only
+            // (`h1models::h1::weapon_types`): a biped's converted graph holds
+            // just the types its animation names hold.
             for t in self.h1.tags().iter().filter(|t| t.group == antr) {
                 for (kind, class) in h1models::graph_weapon_types(self.h1, t)? {
                     if h1models::names::CLASSES.contains(&class.as_str()) {
@@ -3231,6 +3233,14 @@ impl Converter<'_> {
     /// `wphi`: the weapons' part of Halo 1's HUD, for whoever builds the
     /// `weap` to name at `+0x2b0`. Returns the tag and, per entry with no
     /// widget, why.
+    ///
+    /// A chain with no element at all draws nothing in Halo 1 and gets an
+    /// `nhdt` with no widget (V: the flamethrower's on the multiplayer
+    /// maps, `weapons\flamethrower\flame thrower` and its child `ui\hud\master
+    /// fuel`, list no static, meter, number, crosshair or overlay). Until
+    /// converter version 87 it was refused, and the converted flamethrower
+    /// kept the shotgun's Halo 2 HUD (`ui\hud\shotgun`, `role_audit_disc`).
+    /// A chain whose elements all fail to convert is still refused.
     pub fn weapon_hud(&mut self, wphi: h1map::TagId) -> Result<(TagId, Vec<String>)> {
         use crate::h1hud;
         let tag = self.h1.tag(wphi)?.clone();
@@ -3302,7 +3312,7 @@ impl Converter<'_> {
                 Err(why) => skipped.push(format!("{:?}: {why:?}", e.kind)),
             }
         }
-        if widgets.is_empty() && texts.is_empty() {
+        if widgets.is_empty() && texts.is_empty() && !entries.is_empty() {
             return Err(Error::Invalid(format!("{}: no drawable element", tag.name)));
         }
         let id = self.tree.push(

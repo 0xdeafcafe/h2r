@@ -938,10 +938,23 @@ fn read_units<M: Memory + ?Sized>(m: &M, h: &[u8]) -> Result<Vec<UnitSlots>> {
         .collect()
 }
 
-/// Every weapon type the units' classes of the graph at `address` list,
-/// `(type label, class label)`, without the animations.
+/// Every weapon type the units' classes of the vehicle graph at `address`
+/// list, `(type label, class label)`, without the animations; none for a
+/// graph without a vehicles element.
+///
+/// Only a vehicle graph's converted form holds these pairs (its weapon
+/// pairs, `jmad +0x54`, and aim overlays, `jmad::vehicle_plan`); a
+/// biped's is built from its animation names alone, so a type its class
+/// lists without an animation named for it has no path there. Derelict's
+/// flamethrower, `ft`, which no Halo 1 animation name holds, took
+/// (`rifle`, `ft`) from a biped graph's lists from converter version 84
+/// to 86, a path the converted player graph does not find (`sandbox_disc`
+/// `every_halo1_weapon_is_held_by_the_halo1_player_graph`).
 pub fn weapon_types<M: Memory + ?Sized>(m: &M, address: u32) -> Result<Vec<(String, String)>> {
     let h = m.read(address, ANTR_HEADER)?;
+    if u32_at(h, ANTR_VEHICLES) == 0 {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     for u in read_units(m, h)? {
         for c in u.classes {

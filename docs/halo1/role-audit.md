@@ -6,8 +6,9 @@ noted, 3,169 leaks over 426 (group, field, kind) rows; 24 rows were
 unclassified and are now in the rule lists. Since v86 the weapons'
 overheated effect and melee damage, the projectiles' detonation effects
 and flyby sound, and the items' and projectiles' material effects are
-Halo 1's (below, "Fixed"). The v86 run, and every other multiplayer map
-(`H1_MAPS=all`), are not run yet.
+Halo 1's (below, "Fixed"). The v86 run passes on Blood Gulch; on every
+multiplayer map (`H1_MAPS=all`) it left one row, the flamethrower's HUD,
+fixed in v87 with the flamethrower's weapon class.
 
 ## Why
 
@@ -133,6 +134,18 @@ An object whose conversion reaches itself (a projectile whose detonation
 effect creates it) is now refused at that point instead of recursed into
 (`Converter::objects_open`); the effect part is left out and reported.
 
+### Fixed (v87)
+
+| Group | Field | Was | Now (Halo 1) | Evidence |
+|---|---|---|---|---|
+| `weap` | `hud` (`+0x2b0`), the flamethrower's | `ui\hud\shotgun`, its counterpart's | an `nhdt` with no widget (`Converter::weapon_hud`) | V: Halo 1's `weapons\flamethrower\flame thrower` and its child `ui\hud\master fuel` list no static, meter, number, crosshair or overlay, so Halo 1 draws nothing for it; `weapon_hud` refused a chain with no element, and the counterpart's HUD stayed. The shotgun's is still the Halo 2 side of its HUD swap |
+| `weap` | class and type (`+0x288`, `+0x28c`), the flamethrower's | (`rifle`, `ft`) | none | `ft` is in no Halo 1 animation name. Since v84 a label no name holds took a class from any graph's slot tables, a biped's included; the converted cyborg graph has no `combat:rifle:ft` (`sandbox_disc` `every_halo1_weapon_is_held_by_the_halo1_player_graph` failed on Derelict, master too). Now vehicle graphs' tables only (`h1models::h1::weapon_types`), the ones whose converted graph holds the pairs (the warthog's `cg` under `fixed`) |
+
+Both proven by unit tests (`a_weapon_hud_with_no_element_is_an_nhdt_with_no_widget`,
+`reads_a_vehicle_graph_s_tables`) and, once run, by the all-maps audit and
+the sandbox test; neither is seen in a game. A Halo 2 weapon whose HUD has
+no bitmap widget is untested in the engine.
+
 ### Bugs (b) not fixed
 
 | Group | Field | What leaks | Halo 1 source | What it needs |
@@ -196,5 +209,10 @@ First run, Blood Gulch on Coagulation, converter v85 (the tables
 `vehi` 195 rows (all h1-veh-phys's), `weap` 76, `bipd` 71, `proj` 19,
 `eqip` 19, `scen` 9, `prt3` 8, `ligh` 7, `hlmt` 7, `shad` 4, `effe` 4,
 `deca` 3, `nhdt` 3, `jpt!` 1. Each row is classified above. The rows the
-v86 fixes remove are under "Fixed"; the run after them, and the other
-twelve multiplayer maps, are still to do (`H1_MAPS=all`).
+v86 fixes remove are under "Fixed".
+
+v86, `H1_MAPS=all`: the thirteen multiplayer maps on this disc (the PC
+maps are not on it), eleven on Beaver Creek and two on Coagulation, from
+393 to 603 tags and 2,104 to 3,541 leaks each. Every row but one was
+classified by the Blood Gulch rules: Derelict's (`carousel`) flamethrower
+named the shotgun's HUD, fixed in v87 (above).
