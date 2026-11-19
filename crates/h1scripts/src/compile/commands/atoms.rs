@@ -30,58 +30,35 @@ fn relative(mode: i16) -> Expr {
 /// argument and its facing class. The engine handles the reserved bearings
 /// only inside our generated command scripts (boot::h1_command_atoms).
 fn native(kind: u16, arg: u16, amount: f32, mode: i16) -> Expr {
+    native_amount(kind, arg, real(amount), mode)
+}
+
+fn native_amount(kind: u16, arg: u16, amount: Expr, mode: i16) -> Expr {
     let bearing = -((u32::from(kind + 1) * 65536 + u32::from(arg)) as f32);
     call(
         "cs_move_in_direction",
-        [real(bearing), real(amount), relative(mode)],
+        [real(bearing), amount, relative(mode)],
     )
 }
 
 fn look(which: u16, modifier: i16, target: Option<Expr>, seconds: Expr) -> Expr {
-    let (look, aim, face) = match which {
-        24 => ("cs_look_player", "cs_aim_player", "cs_face_player"),
-        25 => ("cs_look_object", "cs_aim_object", "cs_face_object"),
-        _ => ("cs_look", "cs_aim", "cs_face"),
+    let select = match which {
+        24 => call("cs_look_player", [boolean(true)]),
+        25 => call("cs_look_object", [boolean(true), target.expect("named unit")]),
+        _ => call("cs_look", [boolean(true), target.expect("point")]),
     };
-    let turn = |action: &'static str, enable: bool| match &target {
-        Some(_) if !enable => call(
-            action,
-            [
-                boolean(false),
-                if which == 25 {
-                    lit(OBJECT, NONE, "none")
-                } else {
-                    lit(POINT, NONE, "none")
-                },
-            ],
-        ),
-        Some(t) => call(action, [boolean(enable), t.clone()]),
-        None => call(action, [boolean(enable)]),
-    };
-    // H1 0x16b68f selects gaze strengths 5, 2, 8 and 7 for
-    // modifiers 1..4. Strength 2 only turns the head. At 7 the
-    // actor tracks the point with its body and weapon (0x15d157).
-    let strong = |enable| begin(vec![turn(face, enable), turn(aim, enable)]);
-    let (start, stop) = match modifier {
-        1 => (turn(aim, true), turn(aim, false)),
-        2 => (turn(look, true), turn(look, false)),
-        3 | 4 => (strong(true), strong(false)),
-        _ => {
-            // The H1 default uses its lighter look while fighting. Choose
-            // once and clear both controls if combat changes during the wait.
-            let fighting = cmp(
-                ">=",
-                SHORT,
-                call("ai_combat_status", [current()]),
-                var("ai_combat_status_active"),
-            );
-            (
-                call("if", [fighting, turn(look, true), strong(true)]),
-                begin(vec![turn(look, false), strong(false)]),
-            )
-        }
-    };
-    begin(vec![start, pause(seconds), stop])
+    begin(vec![select, native_amount(4, modifier as u16, seconds, 0)])
+}
+
+fn animation(modifier: i16, graph: Expr, name: Expr) -> Expr {
+    let blend = !(3..=5).contains(&modifier);
+    call(
+        "if",
+        [
+            call("custom_animation", [unit(), graph, name, boolean(blend)]),
+            native(13, modifier as u16, 0.0, 0),
+        ],
+    )
 }
 
 fn sound_for_slot<'a>(
@@ -179,10 +156,10 @@ fn atom(
         2 => {
             return Ok(p.map(|p| match q {
                 None => go(p),
-                Some(q) if !dynamic_radius && radius.is_none() => call("cs_go_to_and_face", [p, q]),
                 Some(q) => begin(vec![
                     call("cs_face", [boolean(true), q.clone()]),
                     go(p),
+                    native(2, a.points[1] as u16, 0.0, 0),
                     call("cs_face", [boolean(false), q]),
                 ]),
             }));
@@ -220,28 +197,12 @@ fn atom(
         6 => call("cs_crouch", [boolean(m == 1)]),
         7 => {
             return Ok(p.map(|p| {
-                let mut burst = vec![
-                    call("cs_aim", [boolean(true), p.clone()]),
-                    native(7, a.points[0] as u16, 0.0, 0),
+                begin(vec![
                     call("cs_shoot_point", [boolean(true), p.clone()]),
-                    pause(real(x)),
+                    native(7, a.points[0] as u16, x, 0),
                     call("cs_shoot_point", [boolean(false), p.clone()]),
                     call("cs_aim", [boolean(false), p]),
-                ];
-                // H1 uses +4 as the requested firing burst (0x1623ba) and
-                // waits at least two seconds after acquiring its point (0x16af80).
-                if !t.commands.timing.is_empty() {
-                    burst.extend([
-                        set("h1_cmd_timing_unit", unit()),
-                        pause(call(
-                            "max",
-                            [real(0.0), call("-", [var("h1_cmd_recovery"), real(x)])],
-                        )),
-                    ]);
-                } else if x < 2.0 {
-                    burst.push(pause(real(2.0 - x)));
-                }
-                begin(burst)
+                ])
             }));
         }
         8 => return Ok(p.map(|p| call("cs_grenade", [p, short(m)]))),
@@ -294,32 +255,7 @@ fn atom(
                 }
                 (var("h1_cmd_unit_graph"), name)
             };
-            let play = if m == 2 || m == 5 {
-                let play = call(
-                    "custom_animation_loop",
-                    [unit(), graph, name, boolean(m == 2)],
-                );
-                begin(vec![
-                    play,
-                    call(
-                        "sleep_until",
-                        [
-                            cmp(
-                                "<=",
-                                SHORT,
-                                call("unit_get_custom_animation_time", [unit()]),
-                                short(0),
-                            ),
-                            short(1),
-                        ],
-                    ),
-                ])
-            } else {
-                call(
-                    "cs_custom_animation",
-                    [graph, name, real(1.0), boolean(m < 3)],
-                )
-            };
+            let play = animation(m, graph, name);
             if anim.graph.is_none() {
                 begin(vec![set("h1_cmd_graph_unit", unit()), play])
             } else {
@@ -604,6 +540,19 @@ pub(super) fn body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_animation_modifiers_gate_the_wait_on_one_successful_play() {
+        for modifier in 0..6 {
+            let Call("if", args) = animation(modifier, var("graph"), var("name")) else { panic!("conditional play") };
+            let [Call("custom_animation", play), Call("cs_move_in_direction", wait)] = args.as_slice() else {
+                panic!("expected one play then a blocking command");
+            };
+            assert!(matches!(&play[3], Literal(BOOL, bits, _) if *bits == u32::from(modifier < 3)));
+            let expected = -((14 * 65536 + i32::from(modifier)) as f32);
+            assert!(matches!(&wait[0], Literal(REAL, bits, _) if *bits == expected.to_bits()));
+        }
+    }
 
     #[test]
     fn voice_uses_the_authored_slot_then_the_source_fallback_chain() {

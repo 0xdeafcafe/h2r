@@ -18,7 +18,7 @@ fn command_roots_keep_indices_points_and_blocking_order() {
         offset
     };
     let lists = block(0x438, 2, 0x60);
-    let atoms = block(lists + 0x60 + 0x30, 2, 0x20);
+    let atoms = block(lists + 0x60 + 0x30, 4, 0x20);
     block(lists + 0x60 + 0x3c, 2, 0x14);
     for i in 0..2 {
         let at = lists + i * 0x60;
@@ -29,6 +29,12 @@ fn command_roots_keep_indices_points_and_blocking_order() {
     bytes[atoms + 12..atoms + 14].copy_from_slice(&1u16.to_le_bytes());
     bytes[atoms + 0x24..atoms + 0x28].copy_from_slice(&1.25f32.to_le_bytes());
 
+    bytes[atoms + 0x40..atoms + 0x42].copy_from_slice(&4u16.to_le_bytes());
+    bytes[atoms + 0x42..atoms + 0x44].copy_from_slice(&3i16.to_le_bytes());
+    bytes[atoms + 0x44..atoms + 0x48].copy_from_slice(&0.125f32.to_le_bytes());
+    bytes[atoms + 0x60..atoms + 0x62].copy_from_slice(&7u16.to_le_bytes());
+    bytes[atoms + 0x64..atoms + 0x68].copy_from_slice(&0.75f32.to_le_bytes());
+    bytes[atoms + 0x6c..atoms + 0x6e].copy_from_slice(&1i16.to_le_bytes());
     let t = read(&bytes).unwrap();
     let mut types = h1_types();
     types.push("ai_command_list".into());
@@ -48,6 +54,10 @@ fn command_roots_keep_indices_points_and_blocking_order() {
         ("cs_run_command_script", 365, vec![19, 21]),
         ("cs_go_to", 384, vec![28]),
         ("cs_pause", 402, vec![6]),
+        ("cs_look", 392, vec![5, 28]),
+        ("cs_aim", 395, vec![5, 28]),
+        ("cs_move_in_direction", 401, vec![6, 6, 6]),
+        ("cs_shoot_point", 405, vec![5, 28]),
         ("cs_abort_on_alert", 438, vec![5]),
         ("cs_enable_targeting", 441, vec![5]),
         ("cs_enable_looking", 442, vec![5]),
@@ -90,8 +100,9 @@ fn command_roots_keep_indices_points_and_blocking_order() {
         .iter()
         .map(|&a| s.node(a).unwrap().opcode())
         .collect();
-    assert!(ops.ends_with(&[384, 402]));
-    let last = actions.len() - 1;
+    let walk = actions.len() - 4;
+    assert_eq!(ops[walk..walk + 2], [384, 402]);
+    let last = walk + 1;
     assert_eq!(
         s.node(args(actions[last - 1])[0]).unwrap().data(),
         0x0001_0001
@@ -100,4 +111,17 @@ fn command_roots_keep_indices_points_and_blocking_order() {
         s.node(args(actions[last])[0]).unwrap().data(),
         1.25f32.to_bits()
     );
+    let gaze = args(actions[walk + 2]);
+    let shot = args(actions[walk + 3]);
+    let ops = |nodes: &[Datum]| nodes.iter().map(|d| s.node(*d).unwrap().opcode()).collect::<Vec<_>>();
+    assert_eq!(ops(&gaze), [392, 401]);
+    assert_eq!(ops(&shot), [405, 401, 405, 395]);
+    let data = |d: Datum, i: usize| s.node(args(d)[i]).unwrap().data();
+    assert_eq!(data(gaze[1], 0), (-327683.0f32).to_bits());
+    assert_eq!(data(gaze[1], 1), 0.125f32.to_bits());
+    assert_eq!(data(shot[0], 0), 1);
+    assert_eq!(data(shot[1], 0), (-524289.0f32).to_bits());
+    assert_eq!(data(shot[1], 1), 0.75f32.to_bits());
+    assert_eq!(data(shot[2], 0), 0);
+    assert_eq!(data(shot[0], 1), data(shot[2], 1));
 }
