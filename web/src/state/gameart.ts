@@ -113,6 +113,7 @@ export async function loadServerArt(base: string, load: Loaders): Promise<void> 
       if (load.current() !== base) return;
       if (!a) miss("game-art", base);
       setArt(a);
+      setReady(true);
     }),
     missed("catalog", base) ? null : load.catalog(base).then((c) => {
       if (load.current() !== base) return;

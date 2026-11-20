@@ -39,7 +39,9 @@ import "../theater/theater.css";
 
 export default function Game() {
   const params = useParams<{ id: string; clip?: string }>();
-  const route = createMemo(() => ({ id: params.id, clip: params.clip, api: live.server().api, reader: identity.me()?.xuid }));
+  const route = createMemo(() => ({ id: params.id, clip: params.clip, api: live.server().api, reader: identity.me()?.xuid }), undefined, {
+    equals: (a, b) => a.id === b.id && a.clip === b.clip && a.api === b.api && a.reader === b.reader,
+  });
   return <Show when={route()} keyed>{(r) => <GameDetails id={r.id} clipId={r.clip} />}</Show>;
 }
 
