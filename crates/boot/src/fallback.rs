@@ -43,7 +43,7 @@ pub(crate) fn register_cold(
     dispatch: &mut runtime::Dispatch,
     routes: ColdRoutes<'_>,
     interpret: fn(&mut CpuAbi, &mut ExecCtx, u32, u32) -> TransferAbi,
-) -> Result<(), runtime::RegistrationError> {
+) -> Result<(), runtime::dispatch::RegistrationError> {
     for &[pc, owner] in routes.entries {
         dispatch.register_generated_rust(pc, move |cpu, ctx, selector| {
             Ok(interpret(cpu, ctx, owner, selector))
