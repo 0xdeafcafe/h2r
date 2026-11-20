@@ -4,6 +4,8 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 description = "Hand-written Rust replacements for Halo 2 engine functions, over guest memory"
+# The test files build as one binary, tests/it.rs (docs/dev/build-speed.md).
+autotests = false
 
 [dependencies]
 # Field names for the accessors `record!` generates (src/view.rs).
@@ -26,3 +28,7 @@ lift = { workspace = true, optional = true }
 runtime-glue = ["dep:runtime", "dep:mopp"]
 # Seeded differential test against the lifted original (tests/differential.rs).
 differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
+
+[[test]]
+name = "it"
+path = "tests/it.rs"

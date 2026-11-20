@@ -19,7 +19,7 @@
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
-//!     --test scene_differential -- --nocapture
+//!     --test it scene_differential:: -- --nocapture
 //! ```
 
 #![cfg(feature = "differential")]

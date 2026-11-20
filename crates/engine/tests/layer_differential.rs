@@ -17,7 +17,7 @@
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
-//!     --test layer_differential -- --nocapture
+//!     --test it layer_differential:: -- --nocapture
 //! ```
 
 #![cfg(feature = "differential")]
