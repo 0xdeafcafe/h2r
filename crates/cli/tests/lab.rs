@@ -43,7 +43,7 @@ if [ "$cmd" = agent ]; then
     counters) echo '{"draws":100}';;
     fail) echo '{"code":3,"message":"nope"}' >&2; exit 2;;
     -) while read -r line; do echo "script: $line"; done;;
-    *) echo "{\"method\":\"$1\",\"params\":\"$2\"}";;
+    *) p=$(printf '%s' "$2" | sed 's/[\\"]/\\&/g'); printf '{"method":"%s","params":"%s"}\n' "$1" "$p";;
   esac
   exit 0
 fi
