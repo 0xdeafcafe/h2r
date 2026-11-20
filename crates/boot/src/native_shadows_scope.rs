@@ -15,7 +15,6 @@ pub(super) struct Call {
     pub layer: Layer,
     pub kind: MapKind,
     pub header: u32,
-    pub recorded: Option<Arc<std::sync::atomic::AtomicUsize>>,
     pub output: Output,
 }
 impl Call {
@@ -41,7 +40,6 @@ pub(super) struct State {
 pub(super) struct Gate {
     pub state: Mutex<State>,
     pub gpu: Option<SharedGpu>,
-    pub compare: bool,
 }
 impl d3d::DrawAdmission for Gate {
     fn admit(
@@ -61,35 +59,6 @@ impl d3d::DrawAdmission for Gate {
             .flatten()
             .map(|v| v.to_bits())
             .eq(l.projection);
-        if self.compare {
-            let rs = &draw.state.render;
-            eprintln!(
-                "native-shadows frame={} seq={} layer={} item={} impl={} projection_match={} target={:?} clip={:?}/{:?} depth_clip={:?} clamp={} viewport={:?} bias={:?} stencil={:?} writes={:?} alpha={:?} blend={:?} stages={:?}",
-                call.frame,
-                call.seq,
-                l.layer,
-                e.index,
-                e.implementation,
-                exact_projection,
-                draw.target,
-                draw.clip,
-                draw.clip_rects,
-                [draw.hw.clip_min, draw.hw.clip_max],
-                rs.depth_clamp,
-                draw.viewport,
-                (
-                    rs.solid_offset_enable,
-                    rs.depth_bias,
-                    rs.depth_bias_slope_scale
-                ),
-                rs.stencil,
-                rs.color_write,
-                (rs.alpha_test_enable, rs.alpha_func, rs.alpha_ref),
-                (rs.blend_enable, rs.src_blend, rs.dst_blend),
-                draw.texture_info
-            );
-            return None;
-        }
         let gpu = self.gpu.as_ref()?;
         if (!exact_projection && l.layer != 14)
             || draw.clip.is_none()
@@ -161,7 +130,6 @@ impl d3d::DrawAdmission for Gate {
             Box::new(Range {
                 gpu: Arc::clone(gpu),
                 draw: Arc::new(draw.clone()),
-                recorded: call.recorded.clone(),
                 map,
             }),
         ))
@@ -190,7 +158,6 @@ mod tests {
             kind: MapKind::Depth,
             header: 9,
             output: Default::default(),
-            recorded: None,
         }
     }
 

@@ -98,7 +98,6 @@ pub(crate) struct Range {
     pub(crate) gpu: SharedGpu,
     pub(crate) draw: Arc<ResolvedDraw>,
     pub(crate) map: Option<(Output, MapKind, u32)>,
-    pub(crate) recorded: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl Range {
@@ -259,8 +258,7 @@ impl d3d::ExternalPass for Range {
         }
     }
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        // The layer-end probe reads the recorded count on the guest thread.
-        self.recorded.is_none().then(|| Arc::clone(&self.draw))
+        Some(Arc::clone(&self.draw))
     }
 
     fn record_draws(
@@ -282,9 +280,6 @@ impl d3d::ExternalPass for Range {
         ) else {
             return Some(Err("shadow resources or shader unavailable"));
         };
-        if let Some(count) = &self.recorded {
-            count.fetch_add(packets.len(), std::sync::atomic::Ordering::Relaxed);
-        }
         Some(Ok(ExternalDraws { ranges: packets.len(), packets, discards }))
     }
 }

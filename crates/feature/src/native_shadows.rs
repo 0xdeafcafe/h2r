@@ -1,4 +1,5 @@
-//! Layer boundaries for the shadow-map differential. No observer mutates
+//! Layer boundaries for the native shadow maps, on with the native
+//! renderer (`impl.render.native`, on by default). No observer mutates
 //! guest state, including on a malformed or partially readable list.
 
 use crate::{BuildError, Builder, Feature, Manifest, native_world::Mem};
@@ -9,15 +10,10 @@ use native_render::{
 };
 use std::sync::{Arc, Mutex};
 
-pub const SWITCH: &str = "impl.render.native_shadows";
 pub const ID: &str = "native-shadows";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_stage_on(switches, SWITCH)
-}
-
-pub fn comparing() -> bool {
-    std::env::var("H2_NATIVE_SHADOWS_COMPARE").is_ok_and(|v| v == "1")
+    crate::switches::native_render_on(switches)
 }
 
 #[derive(Debug)]
@@ -179,7 +175,6 @@ impl Feature for NativeShadows {
             let matched = index.is_some() && m.u32(esp).ok() == Some(0x0003_364c)
                 && m.u8(0x0050_9413).ok() == Some(1) && m.u8(0x0048_5a46).ok() == Some(1)
                 && args.iter().all(Option::is_some) && args == [m.u32(address).ok(), m.u32(address.wrapping_add(4)).ok()];
-            if comparing() { eprintln!("native-shadows object candidate={index:?} remaining={} args={args:x?} chain_match={matched}", o.cpu.edi); }
             if let Some(h) = host() { h.parent(matched.then_some(Site::Object), args[0].zip(args[1]).map(|(a,b)| [a,b])); }
         }).context_only();
         b.raw()
@@ -218,7 +213,6 @@ impl Feature for NativeShadows {
                     host.begin(&mut *mem, data);
                 } else {
                     host.parent(None, None);
-                    if comparing() { eprintln!("native-shadows {site:?} layer={layer} refused: list, target or projection"); }
                 }
             }
         }).context_only();

@@ -565,7 +565,6 @@ impl Feature for NativeLightWalk {
 
     fn build(&self, b: &mut Builder) -> std::result::Result<(), BuildError> {
         if on(b.switches()) && !b.switches().feature(crate::render_timing::ID, false)
-            && !crate::native_shadows::comparing()
             && std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() != Ok("1") {
             install(b);
             b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
