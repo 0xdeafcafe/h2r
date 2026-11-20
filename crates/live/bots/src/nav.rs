@@ -1021,6 +1021,14 @@ impl Follower {
                 .is_some_and(|w| w.kind == Kind::CrouchJump)
     }
 
+    /// The current waypoint is across an intentional drop or jump. Links
+    /// with separate entry and landing points steer their own traversal.
+    pub(crate) fn stepping_off(&self) -> bool {
+        self.path
+            .get(self.next)
+            .is_some_and(|w| matches!(w.kind, Kind::Drop | Kind::Jump))
+    }
+
     pub(crate) fn pace(&self, at: V3) -> f32 {
         let Some(w) = self.path.get(self.next) else {
             return 0.0;
@@ -1043,14 +1051,14 @@ impl Follower {
     }
 
     pub fn steer(&mut self, at: V3, frame: u64) -> Steer {
-        self.steer_with_clearance(at, frame, |_| true)
+        self.steer_with_clearance(at, frame, |_, _| true)
     }
 
     pub(crate) fn steer_with_clearance(
         &mut self,
         at: V3,
         frame: u64,
-        clear: impl FnOnce([f32; 2]) -> bool,
+        clear: impl FnOnce([f32; 2], f32) -> bool,
     ) -> Steer {
         while let Some(w) = self.path.get(self.next).copied() {
             if w.kind.traversal() {
@@ -1132,7 +1140,7 @@ impl Follower {
             let bl = (b[0] * b[0] + b[1] * b[1]).sqrt();
             if bl > 1e-3 {
                 let bend = [b[0] / bl, b[1] / bl];
-                if clear(bend) {
+                if clear(bend, d) {
                     dir = bend;
                 }
             }

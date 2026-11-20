@@ -13,10 +13,12 @@
 //! - **Retreat and reload**: backs away to a spot the enemy cannot see
 //!   ([`cover`], a ray against the walls), else straight back; never
 //!   stands still to reload.
-//! - **Footing**: every step is checked on the nav mesh ahead: no strafing
-//!   off a ledge or into a wall; the other way, or forward, or back.
-//! - **Stuck in a fight**: pushing a direction without moving flips the
-//!   strafe and jumps.
+//! - **Footing** checks the nav mesh and walls ahead of the intended
+//!   step. A blocked strafe tries the other side, then forward or back.
+//!   A turn around a body also needs clearance.
+//! - **Hops** check footing out to 1.6 world units along the final walk
+//!   direction. Stalling reverses the strafe and requests a recovery hop
+//!   subject to the same footing check.
 
 use crate::brain::{Me, Vec3};
 use crate::cache::MapData;
@@ -139,9 +141,11 @@ pub const FIGHT_PROGRESS: f32 = 0.15;
 pub const COVER_TICKS: u32 = 15;
 /// Cover is looked for this far away (world units).
 pub const COVER_RADII: [f32; 2] = [1.5, 3.0];
-/// A step is checked this far ahead...
+/// Distances at which a walk checks its footing.
 pub const PROBES: [f32; 2] = [0.5, 1.0];
-/// ...and refused down a drop deeper than this, or up one higher.
+/// A running hop carries past the walk probes.
+const JUMP_PROBES: [f32; 3] = [0.5, 1.0, 1.6];
+/// Maximum height change between footing probes.
 pub const LEDGE: f32 = 0.5;
 /// Walls are checked at this height over the floor.
 pub const KNEE: f32 = 0.35;
@@ -370,11 +374,22 @@ impl Moves {
             }
         }
 
-        // A discretionary combat hop uses the same jump recovery as
-        // unsticking. Only try on a moving, clear strafe outside cover.
-        if new_strafe && !i.retreat && !i.reloading && self.side != 0.0
-            && reached(t, self.jump_ready) && st.jump > 0.0 && self.uniform() < st.jump
-            && standable(m, i.at, d)
+        let l = norm2(d);
+        if l > 1.0 {
+            d = [d[0] / l, d[1] / l];
+        }
+        out.walk = around_bodies_safe(Some(m), i.at, d, bodies);
+
+        // A hop checks the direction sent to the pad, including any turn
+        // around a body.
+        if new_strafe
+            && !i.retreat
+            && !i.reloading
+            && self.side != 0.0
+            && reached(t, self.jump_ready)
+            && st.jump > 0.0
+            && self.uniform() < st.jump
+            && jumpable(m, i.at, out.walk)
             && m.walls.clear(
                 [i.at[0], i.at[1], i.at[2] + EYE],
                 [i.at[0], i.at[1], i.at[2] + EYE + 0.7],
@@ -392,7 +407,7 @@ impl Moves {
                 self.anchor = Some((i.at, t));
                 self.side = if self.side == 0.0 { 1.0 } else { -self.side };
                 self.until = t.wrapping_add(st.strafe.0);
-                if reached(t, self.jump_ready) {
+                if reached(t, self.jump_ready) && jumpable(m, i.at, out.walk) {
                     self.jump_until = t.wrapping_add(JUMP_TICKS);
                     self.jump_ready = t.wrapping_add(JUMP_COOLDOWN);
                 }
@@ -401,11 +416,6 @@ impl Moves {
             self.anchor = None;
         }
 
-        let l = norm2(d);
-        if l > 1.0 {
-            d = [d[0] / l, d[1] / l];
-        }
-        out.walk = around_bodies(i.at, d, bodies);
         out.jump = !reached(t, self.jump_until);
         out.crouch = !out.jump && !reached(t, self.crouch_until);
         out
@@ -439,6 +449,49 @@ fn step_floor(m: &MapData, q: [f32; 2], from_z: f32) -> Option<f32> {
 /// it), only that the point ahead is on it.
 pub fn standable(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
     step_clear(m, at, d, &PROBES)
+}
+
+/// Checks the approach to a walking waypoint. A start off the mesh can
+/// still walk toward the point the route snaps it to.
+pub(crate) fn standable_within(m: &MapData, at: Vec3, d: [f32; 2], reach: f32) -> bool {
+    let l = norm2(d);
+    if l < 1e-3 {
+        return true;
+    }
+    let Some(here) = floor(m, at) else {
+        return headroom(m, at, d);
+    };
+    // A drop or jump can start on a polygon boundary. Sample just
+    // inside the approach because point-in-polygon excludes some edges.
+    let reach = (reach - 1e-4).max(0.0);
+    let probes = PROBES.map(|p| p.min(reach));
+    ground_step_clear(m, at, [d[0] / l, d[1] / l], here, &probes)
+}
+
+/// Samples footing out to a running hop's carry. Callers handle obstacle
+/// clearance so a recovery hop can still clear an obstruction.
+pub(crate) fn jumpable(m: &MapData, at: Vec3, d: [f32; 2]) -> bool {
+    let l = norm2(d);
+    l >= 1e-3
+        && floor(m, at).is_some_and(|here| {
+            ground_ahead(m, at, [d[0] / l, d[1] / l], here, &JUMP_PROBES, |_| true)
+        })
+}
+
+/// Keeps the original direction if the turn around a body fails its
+/// footing check.
+pub(crate) fn around_bodies_safe(
+    map: Option<&MapData>,
+    at: Vec3,
+    d: [f32; 2],
+    bodies: &[Vec3],
+) -> [f32; 2] {
+    let w = around_bodies(at, d, bodies);
+    if w != d && map.is_some_and(|m| !standable(m, at, w)) {
+        d
+    } else {
+        w
+    }
 }
 
 /// Shorter check for a bend just before a cleared corner. Long probes
@@ -477,19 +530,31 @@ fn step_clear(m: &MapData, at: Vec3, d: [f32; 2], probes: &[f32]) -> bool {
             .locate([at[0] + u[0] * 0.6, at[1] + u[1] * 0.6, at[2]], 1.0)
             .is_some();
     };
-    if !headroom(m, at, u) {
-        return false;
-    }
-    let mut prev = here;
+    ground_step_clear(m, at, u, here, probes)
+}
+
+fn ground_step_clear(m: &MapData, at: Vec3, u: [f32; 2], here: f32, probes: &[f32]) -> bool {
+    headroom(m, at, u)
+        && ground_ahead(m, at, u, here, probes, |q| {
+            m.walls
+                .clear([at[0], at[1], here + KNEE], [q[0], q[1], q[2] + KNEE])
+        })
+}
+
+fn ground_ahead(
+    m: &MapData,
+    at: Vec3,
+    u: [f32; 2],
+    mut prev: f32,
+    probes: &[f32],
+    clear: impl Fn(Vec3) -> bool,
+) -> bool {
     for &s in probes {
         let q = [at[0] + u[0] * s, at[1] + u[1] * s];
         let Some(z) = step_floor(m, q, prev) else {
             return false;
         };
-        if !m
-            .walls
-            .clear([at[0], at[1], here + KNEE], [q[0], q[1], z + KNEE])
-        {
+        if !clear([q[0], q[1], z]) {
             return false;
         }
         prev = z;

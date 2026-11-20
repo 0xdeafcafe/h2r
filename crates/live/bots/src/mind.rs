@@ -17,7 +17,7 @@ use crate::incoming::{Evasion, Grenade};
 use crate::nav::Follower;
 use crate::objective::{self, Goal};
 use crate::sound::ShotSound;
-use crate::stuck::{Stuck, around_bodies};
+use crate::stuck::Stuck;
 use crate::tactics::{self, Shot, Style, Tactics};
 
 pub(crate) mod feel;
@@ -1090,24 +1090,7 @@ impl Mind {
             Doing::Recover(from) => {
                 // Back away from it, facing it, while the shields come back.
                 look = Some(up(from, CHEST));
-                let away = sub(me.position, from);
-                let flat = (away[0] * away[0] + away[1] * away[1]).sqrt().max(1e-6);
-                let d = [away[0] / flat, away[1] / flat];
-                let on_mesh = |d: [f32; 2]| {
-                    map.is_none_or(|m| {
-                        m.nav
-                            .locate(add(me.position, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
-                            .is_some()
-                    })
-                };
-                let side = [-d[1], d[0]];
-                let pick = [d, side, [-side[0], -side[1]]]
-                    .into_iter()
-                    .find(|&d| on_mesh(d));
-                if let Some(d) = pick {
-                    let d = around_bodies(me.position, d, bodies);
-                    walk = Some(Walk { walk: d, face: d });
-                }
+                walk = self.away(me.position, from, map, bodies);
                 self.follower = None;
             }
             Doing::Rearm(at) => {
@@ -1534,7 +1517,7 @@ impl Mind {
         bodies: &[Vec3],
     ) -> Option<Walk> {
         self.navigated = true;
-        let (dir, waypoint, pace) = match map {
+        let (dir, waypoint, pace, follower_jump) = match map {
             None => {
                 let d = [goal[0] - at[0], goal[1] - at[1]];
                 let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
@@ -1545,6 +1528,7 @@ impl Mind {
                     [d[0] / l, d[1] / l],
                     Some(goal),
                     crate::nav::approach_pace(l),
+                    false,
                 )
             }
             Some(m) => {
@@ -1583,8 +1567,8 @@ impl Mind {
                     self.foot_plan.idle();
                 }
                 let f = self.follower.as_mut()?;
-                let s = f.steer_with_clearance(at, u64::from(tick), |d| {
-                    crate::moves::bend_clear(m, at, d)
+                let s = f.steer_with_clearance(at, u64::from(tick), |d, reach| {
+                    crate::moves::standable_within(m, at, d, reach)
                 });
                 if s.replan {
                     let done = f.done();
@@ -1597,13 +1581,13 @@ impl Mind {
                     self.follower = None;
                     return (!done).then_some(Walk::straight([0.0, 0.0]));
                 }
-                if s.jump {
-                    pad.buttons.set(JUMP, true);
-                }
                 if s.crouch {
                     pad.buttons.set(CROUCH, true);
                 }
                 if s.traversing {
+                    if s.jump {
+                        pad.buttons.set(JUMP, true);
+                    }
                     self.stuck.reset();
                     let dir = if f.committed() || crate::moves::headroom(m, at, s.dir) {
                         s.dir
@@ -1612,7 +1596,7 @@ impl Mind {
                     };
                     return Some(Walk::straight(dir));
                 }
-                (s.dir, f.waypoint(), f.pace(at))
+                (s.dir, f.waypoint(), f.pace(at), s.jump)
             }
         };
         let u = self.stuck.step(tick, at, Some(dir), waypoint, Some(goal));
@@ -1621,28 +1605,63 @@ impl Mind {
             self.gave_up = true;
             return Some(Walk::straight([0.0, 0.0]));
         }
-        if u.jump {
-            pad.buttons.set(JUMP, true);
-        }
         if u.crouch {
             pad.buttons.set(CROUCH, true);
         }
-        let walk = around_bodies(at, u.dir.unwrap_or(dir), bodies);
-        let walk = if !pad.buttons.contains(JUMP)
-            && map.is_some_and(|m| !crate::moves::headroom(m, at, walk))
-        {
-            [0.0; 2]
-        } else {
-            walk
+        let planned_step = map.is_some() && self.follower.as_ref().is_some_and(Follower::stepping_off);
+        // Try the other side if an unstick sidestep is blocked, then
+        // fall back to the path direction. The path steers planned jumps
+        // and drops directly toward their next waypoint.
+        let sidestep = match (map, u.dir) {
+            _ if planned_step => None,
+            (Some(m), Some(d)) if !crate::moves::standable(m, at, d) => {
+                let mirrored = Self::mirror_across(d, dir);
+                crate::moves::standable(m, at, mirrored).then_some(mirrored)
+            }
+            (_, d) => d,
         };
+        let mut walk = if planned_step {
+            dir
+        } else {
+            crate::moves::around_bodies_safe(map, at, sidestep.unwrap_or(dir), bodies)
+        };
+        let wants_jump = follower_jump || u.jump;
+        let already_jumping = pad.buttons.contains(JUMP);
+        let jumping = (wants_jump || already_jumping)
+            && map.is_none_or(|m| planned_step || crate::moves::jumpable(m, at, walk));
+        if wants_jump && jumping {
+            pad.buttons.set(JUMP, true);
+        }
+        if !jumping
+            && (already_jumping
+                || map.is_some_and(|m| {
+                    if planned_step {
+                        !crate::moves::headroom(m, at, walk)
+                    } else {
+                        let reach = waypoint.map_or(1.0, |w| dist_xy(w, at));
+                        !crate::moves::standable_within(m, at, walk, reach)
+                    }
+                }))
+        {
+            walk = [0.0; 2];
+        }
         Some(Walk {
-            walk: if u.dir.is_some() || pad.buttons.contains(JUMP) {
+            walk: if sidestep.is_some() || jumping {
                 walk
             } else {
                 walk.map(|c| c * pace)
             },
             face: dir,
         })
+    }
+
+    /// `d` mirrored across the line of `axis` (its forward part kept, its
+    /// side flipped).
+    fn mirror_across(d: [f32; 2], axis: [f32; 2]) -> [f32; 2] {
+        let l = axis[0].hypot(axis[1]).max(1e-6);
+        let u = [axis[0] / l, axis[1] / l];
+        let along = d[0] * u[0] + d[1] * u[1];
+        [2.0 * along * u[0] - d[0], 2.0 * along * u[1] - d[1]]
     }
 
     /// Stops any glitch under way (crate::glitches): the fight trick in
@@ -1751,23 +1770,17 @@ impl Mind {
     }
 
     /// A step away from `from` on the nav mesh (straight back, else to one
-    /// side or the other), around bodies.
+    /// side or the other), with footing checks for turns around bodies.
     fn away(&self, at: Vec3, from: Vec3, map: Option<&MapData>, bodies: &[Vec3]) -> Option<Walk> {
         let a = sub(at, from);
         let flat = (a[0] * a[0] + a[1] * a[1]).sqrt().max(1e-6);
         let d = [a[0] / flat, a[1] / flat];
-        let on_mesh = |d: [f32; 2]| {
-            map.is_none_or(|m| {
-                m.nav
-                    .locate(add(at, [d[0] * 0.6, d[1] * 0.6, 0.0]), 1.0)
-                    .is_some()
-            })
-        };
+        let on_mesh = |d: [f32; 2]| map.is_none_or(|m| crate::moves::standable(m, at, d));
         let side = [-d[1], d[0]];
         [d, side, [-side[0], -side[1]]]
             .into_iter()
             .find(|&d| on_mesh(d))
-            .map(|d| Walk::straight(around_bodies(at, d, bodies)))
+            .map(|d| Walk::straight(crate::moves::around_bodies_safe(map, at, d, bodies)))
     }
 
     /// Somewhere to roam to (crate::roam): where enemies were seen

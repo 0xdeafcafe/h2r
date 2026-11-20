@@ -639,7 +639,7 @@ since the start of a window. A window of 20 ticks (2/3 s) with less than
 
 | Step | What the bot does for its window |
 |---|---|
-| sidestep | strafes to one side (alternating) and backs off a little, still facing the way it wanted to go |
+| sidestep | backs off and strafes to one side while facing the intended route. If the step is blocked, it tries the other side, then resumes the route. |
 | jump | walks on and presses jump (A) for 3 ticks |
 | crouch-jump | jumps, then holds crouch from the third tick (the jump's higher clearance) |
 | repath | the waypoint it was walking to is blacklisted; the path and (for roaming) the goal are dropped; it plans again |
@@ -665,10 +665,13 @@ sought. A pickup it holds the action button on for 1 s without getting it
 **Bodies.** Someone within 0.8 world units ahead of the walk direction and
 within 0.35 of its line (not on another floor) turns the walk away from
 them, keeping its speed. In a fight the target itself is not avoided.
+`moves::around_bodies_safe` keeps the original direction if the turn
+fails its footing or clearance check.
 
 The follower's own stall check (`nav::Follower`, a jump after 30 frames
-without getting closer to the waypoint, then a fresh path) still runs
-under this; the state machine is what escalates and blacklists.
+without getting closer to the waypoint, then a fresh path) runs alongside
+the state machine. Both limit recovery hops on walking legs to directions
+with footing out to 1.6 world units.
 
 **Corners and doorways** (`nav::NavMesh::portal`, built). A path never
 aims at a wall corner itself: each portal end that is a corner of the
@@ -679,8 +682,11 @@ the builder made between surfaces that do not share an edge (a doorway
 off a long wall) spans the near polygon's whole side; the portal is cut
 to the part the far polygon lies along, so the path goes through the
 door and not through the wall beside it. Nearing a corner (0.8) the
-follower bends toward the next leg, so a turn is a curve, not a stop
-and a pivot (never into a jump or a drop, which start at their edge).
+follower bends toward the next leg when both legs are walks and the bend
+has footing. `mind::Mind::go` checks walking and cornering directions up
+to the current waypoint. A step across a planned drop or jump follows
+the route directly. Traversal links with separate entry and landing
+points control the approach and crossing themselves.
 
 **Off the mesh** (`nav::NavMesh::nearest`, built). A start or goal no
 polygon is under (a bot on a crate or knocked off an edge, someone seen
@@ -704,8 +710,8 @@ fight, apart from the aim:
 | backs off to cover | no (straight back) | yes | yes | yes |
 
 - A hit is a shield drop of more than 0.03 in a tick, with one
-  footwork reaction at most every 20 ticks. Jumping is reserved for
-  navigation, getting unstuck, and visible grenade threats.
+  footwork reaction at most every 20 ticks. A bot can also hop when it
+  starts a new strafe, according to its name profile's jump chance.
 - **Range**: closes in beyond the far end of its range and backs off
   inside the near end. The range comes from `moves::preferred_range`,
   today 2.5 to 8 for every weapon: the seam for the weapons decision to
@@ -716,12 +722,18 @@ fight, apart from the aim:
   enemy's eye cannot see its chest through the walls (`los::Walls`), and
   goes to the nearest such, favouring ones away from the enemy; with none,
   straight back.
-- **Footing**: every step is checked 0.5 and 1 ahead on the nav mesh:
-  no drop or rise over 0.5 (no strafing off a bridge) and no wall at
-  knee height. Blocked, it strafes the other way, else steps forward or
-  back, else stands.
-- **Stuck in a fight**: pushing a way for 15 ticks without moving 0.15
-  reverses the strafe and jumps.
+- **Footing** checks the nav mesh 0.5 and 1 world unit ahead for support,
+  allowing a rise or drop of up to 0.5 between probes. It also checks for
+  knee-height walls and standing clearance. A blocked strafe tries the
+  other side, then forward or back. Backing away to recover shields uses
+  the same checks.
+- **Hops** check footing along the final walk direction, including any
+  turn around a body, out to 1.6 world units. A grenade dodge
+  (`crates/live/bots/src/incoming.rs`) uses the same distances and checks
+  overhead clearance before jumping.
+- **Stuck in a fight** reverses the strafe after 15 ticks of pushing
+  without moving 0.15 world units. It requests a recovery hop when the
+  footing check passes.
 
 **Roaming** (`crates/live/bots/src/roam.rs`, built). With nobody to fight or
 chase, a bot goes to likely places: each candidate is scored, the best
@@ -5179,8 +5191,8 @@ game checks.
      checks the corner cut for footing and keeps gap approaches at pace.
    - Bots crouch-walk on quiet objective approaches. Hits alone can
      change the strafe or start a crouch at range. Jumps are single
-     short presses at gaps, during stuck recovery, or on a clear
-     escape line from a visible nearby grenade.
+     short presses on planned routes, during stuck recovery, at the
+     start of a strafe, or while escaping a visible nearby grenade.
    - Weapon taps have a short intent delay, a hold and a release gap.
      Melee needs a sustained chance in front of the bot. Semi-auto
      pulls vary within the weapon's cadence and bursts start when the

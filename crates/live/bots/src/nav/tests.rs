@@ -623,12 +623,13 @@ fn the_follower_previews_a_turn_and_checks_the_foot_line() {
     let at = [1.6, 0.0, 0.0];
     assert_eq!(follower.corner(at), Some([2.0, 2.0, 0.0]));
     assert!(follower.pace(at) < follower.pace([0.0; 3]));
-    let blocked = follower.steer_with_clearance(at, 1, |d| {
+    let blocked = follower.steer_with_clearance(at, 1, |d, reach| {
         assert!(d[1] > 0.1, "{d:?}");
+        assert!((reach - 0.4).abs() < 1e-4);
         false
     });
     assert_eq!(blocked.dir, [1.0, 0.0]);
-    let clear = follower.steer_with_clearance(at, 2, |_| true);
+    let clear = follower.steer_with_clearance(at, 2, |_, _| true);
     assert!(clear.dir[1] > 0.1);
     let mut gap = Follower::new(
         vec![
@@ -643,7 +644,7 @@ fn the_follower_previews_a_turn_and_checks_the_foot_line() {
     assert_eq!(gap.corner(at), None);
     assert_eq!(gap.pace(at), 1.0);
     assert_eq!(
-        gap.steer_with_clearance(at, 1, |_| panic!("no blend into a jump"))
+        gap.steer_with_clearance(at, 1, |_, _| panic!("no blend into a jump"))
             .dir,
         [1.0, 0.0]
     );
@@ -844,5 +845,112 @@ fn a_vehicle_uses_the_wide_route_around_a_pedestrian_gap() {
             &m, spec, start, to
         )),
         Some([2.0, 4.0, 0.0])
+    );
+}
+
+/// Two platforms joined by a narrow bridge over a gap.
+fn gap_mesh() -> NavMesh {
+    let quad = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        Poly::new(vec![
+            [x0, y0, 0.0],
+            [x1, y0, 0.0],
+            [x1, y1, 0.0],
+            [x0, y1, 0.0],
+        ])
+    };
+    let mut edges = Vec::new();
+    let mut both = |from: u32, to: u32, a: V3, b: V3| {
+        for (f, t) in [(from, to), (to, from)] {
+            edges.push(Edge {
+                from: f,
+                to: t,
+                a,
+                b,
+                kind: Kind::Walk,
+            });
+        }
+    };
+    both(0, 1, [4.0, 3.0, 0.0], [4.0, 4.0, 0.0]);
+    both(1, 2, [6.0, 3.0, 0.0], [6.0, 4.0, 0.0]);
+    NavMesh::new(
+        vec![
+            quad(0.0, 0.0, 4.0, 4.0),
+            quad(4.0, 3.0, 6.0, 4.0),
+            quad(6.0, 0.0, 10.0, 4.0),
+        ],
+        edges,
+    )
+}
+
+#[test]
+fn a_detour_around_a_gap_never_shortcuts_over_it() {
+    let m = gap_mesh();
+    let from = [1.0, 1.0, 0.0];
+    let to = [9.0, 1.0, 0.0];
+    let path = m.path(from, to).unwrap();
+    assert_eq!(path.last().unwrap().at, to);
+    assert!(path.len() >= 3, "{path:?}");
+    // Every corner over the gap's X span is on the bridge (Y 3 to 4), and
+    // so is every step of the walk between them.
+    for w in &path {
+        assert!(
+            !(3.9..6.1).contains(&w.at[0]) || w.at[1] > 2.9,
+            "corner off the bridge: {w:?}"
+        );
+    }
+    let walk = std::iter::once(&from)
+        .chain(path.iter().map(|w| &w.at))
+        .collect::<Vec<_>>();
+    for s in walk.windows(2) {
+        for k in 0..=20 {
+            let t = k as f32 / 20.0;
+            let (x, y) = (
+                s[0][0] + (s[1][0] - s[0][0]) * t,
+                s[0][1] + (s[1][1] - s[0][1]) * t,
+            );
+            assert!(
+                !(3.9..6.1).contains(&x) || y > 2.9,
+                "cutting the gap at ({x}, {y}): {path:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_path_over_a_drop_goes_to_its_edge_then_down() {
+    let high = Poly::new(vec![
+        [0.0, 0.0, 1.2],
+        [4.0, 0.0, 1.2],
+        [4.0, 4.0, 1.2],
+        [0.0, 4.0, 1.2],
+    ]);
+    let low = Poly::new(vec![
+        [4.0, 0.0, 0.0],
+        [8.0, 0.0, 0.0],
+        [8.0, 4.0, 0.0],
+        [4.0, 4.0, 0.0],
+    ]);
+    let m = NavMesh::new(
+        vec![high, low],
+        vec![Edge {
+            from: 0,
+            to: 1,
+            a: [4.0, 0.0, 1.2],
+            b: [4.0, 4.0, 1.2],
+            kind: Kind::Drop,
+        }],
+    );
+    let path = m.path([1.0, 2.0, 1.2], [7.0, 2.0, 0.0]).unwrap();
+    assert_eq!(path.len(), 2, "{path:?}");
+    // First the edge point, on foot; then the floor below, stepping off.
+    assert_eq!(path[0].kind, Kind::Walk);
+    assert!((path[0].at[0] - 4.0).abs() < 1e-4, "{path:?}");
+    assert!((path[0].at[2] - 1.2).abs() < 1e-4, "{path:?}");
+    assert_eq!(
+        path[1],
+        Waypoint {
+            at: [7.0, 2.0, 0.0],
+            kind: Kind::Drop,
+        }
     );
 }
