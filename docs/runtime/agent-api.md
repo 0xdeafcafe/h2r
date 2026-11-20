@@ -1064,7 +1064,7 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each UI update, including during a campaign pause
   (`game::ui_watch`): `{screen, window, slot, class?, live_menu_row, mode,
-  dialog, age_ms}`, or `UNAVAILABLE` before the first read. `class` names
+  dialog, age_ms, layout_findings}`, or `UNAVAILABLE` before the first read. `class` names
   a Rust list screen whose numeric ID identifies its retail skin.
   The pause Settings lists report `pause-settings` or `mp-pause-settings`.
   Video and Voice report `video` and `voice`. All four use screen 200 in
@@ -1086,6 +1086,13 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   `"screen": null`, so this
   is how a driver tells one from another. The `ui: screen none` log line
   names it the same way ([live-coop.md](../live/live-coop.md), 12.6).
+  `layout_findings` contains visible text and row rectangles outside the
+  title-safe area or their container. Each entry has `screen`, `widget`,
+  `rect` ([top, left, bottom, right] in UI units), `text` when readable,
+  and an `issue` with a `kind` (`unsafe`, `outside_panel` or
+  `outside_container`). It samples the input screen and the active dialog.
+  The [UI builder](../game/ui-builder.md#the-checks) also measures glyphs
+  offline to check whether the text fits inside its rectangle.
 - **`ui.stack`** (`h2 agent ui.stack`, no parameters): a tick-boundary
   read of the occupied channels, their active, pending and outgoing
   screen instances, and the game-shell channel's saved screen IDs

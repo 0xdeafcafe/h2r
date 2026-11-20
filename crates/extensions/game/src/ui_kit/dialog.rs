@@ -73,6 +73,15 @@ impl DialogBase {
             DialogBase::ValuePicker => VALUE_PICKER_SCREEN_ID,
         }
     }
+    /// Usable content inside the frame. The backing textures include
+    /// transparent padding beyond the visible panel.
+    pub(crate) fn content_area(self) -> Rect {
+        match self {
+            Self::QuickOptions => rect(200, -272, LAYOUT1_FOOTER.bottom, 272),
+            Self::Large | Self::ValuePicker => rect(109, -272, LARGE_FOOTER.bottom, 272),
+        }
+    }
+
     /// Where a row's value goes: alone in the value column of Quick
     /// Options' settings skin (`setting_lists`: a label and a value text
     /// per row, `Score to Win  50`, no arrows), after the label on the
@@ -217,6 +226,7 @@ pub const STATUS: Rect = rect(-51, -243, -80, 255);
 /// `wigl` has them.
 pub const LAYOUT1_HEADER: Rect = rect(190, -253, 170, 30);
 pub const LAYOUT1_FOOTER: Rect = rect(-178, -200, -198, 259);
+const LARGE_FOOTER: Rect = rect(-83, -243, -103, 240);
 /// `quick_options`' help line, above its list: where a settings dialog's
 /// description goes.
 pub const QUICK_HELP: Rect = rect(143, -224, 123, 270);
@@ -467,7 +477,7 @@ impl DialogGeometry {
             header: rect(93, -243, 73, 255),
             header_font: 2,
             header_colour: [0.678431, 0.764706, 0.847059],
-            footer: rect(-83, -243, -103, 240),
+            footer: LARGE_FOOTER,
             panel: vec![
                 panel(FRAME_CORNERS[0], [-273, 109], FRAME_CORNER_SIZE),
                 panel(FRAME_CORNERS[1], [203, -33], FRAME_CORNER_SIZE),
@@ -620,10 +630,13 @@ fn row_widgets(s: &ScreenSpec, d: &DialogSpec, g: &DialogGeometry, m: &dyn Metri
     if d.rows.is_empty() {
         return Vec::new();
     }
-    // The tag copy's list shows every row (its visible count is set to
-    // them, `dialog_tag::write_base_tag`); the panel check says when they
-    // don't fit.
-    let shown = d.rows.len();
+    // The tag copy shows the whole list for fixed dialogs, or the list
+    // viewport for a scrollable dialog such as the value picker.
+    let shown = if s.scrolls {
+        g.rows.visible.min(d.rows.len())
+    } else {
+        d.rows.len()
+    };
     let mut list = ScreenSpec::new(&s.name, &s.title);
     list.rows = d.rows.clone();
     list.focus = s.focus;

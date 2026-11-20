@@ -242,6 +242,101 @@ impl Widget {
     }
 }
 
+/// In UI units, after the list has placed its widgets (0x2bacbc).
+fn rect(m: &dyn GuestMemory, widget: u32) -> Option<tags::ui::Rect> {
+    let at = widget.checked_add(0x20)?;
+    let r = tags::ui::Rect {
+        top: m.u16(at).ok()? as i16,
+        left: m.u16(at + 2).ok()? as i16,
+        bottom: m.u16(at + 4).ok()? as i16,
+        right: m.u16(at + 6).ok()? as i16,
+    };
+    (r.width() > 0 && r.height() > 0).then_some(r)
+}
+
+/// Bounds for the active UI tree, sampled at the end of its update.
+pub(crate) fn layout_findings(m: &dyn GuestMemory, screen: u32, id: Option<u32>) -> Vec<Value> {
+    use crate::ui_kit::layout::{SAFE, bounds_issues};
+
+    struct Check<'a> {
+        m: &'a dyn GuestMemory,
+        screen: u32,
+        id: Option<u32>,
+        panel: Option<tags::ui::Rect>,
+        out: Vec<Value>,
+    }
+
+    impl Check<'_> {
+        fn visit(&mut self, node: &Widget, parent: Option<&Widget>) {
+            if !node.enabled {
+                return;
+            }
+            if node.kind == ITEM && self.m.u32(node.at + 0x70).ok() == Some(u32::MAX) {
+                return; // An unbound slot in the reusable widget pool.
+            }
+            if matches!(node.kind, TEXT | BUTTON | ITEM)
+                && let Some(r) = rect(self.m, node.at)
+            {
+                let lobby = (self.id == Some(crate::lobby_options::SCREEN))
+                    .then(|| crate::lobby_options::container(self.m, self.screen, node.at))
+                    .flatten();
+                let panel = self.panel.map(|p| ("modal panel", p));
+                let parent_box = parent.and_then(|p| {
+                    let name = match (node.kind, p.kind) {
+                        (ITEM, LIST) => "list",
+                        (TEXT, ITEM | BUTTON) => "row",
+                        _ => return None,
+                    };
+                    Some((name, rect(self.m, p.at)?))
+                });
+                for issue in bounds_issues(
+                    || format!("widget.{:x}", node.at),
+                    r,
+                    SAFE,
+                    lobby.into_iter().chain(panel).chain(parent_box),
+                ) {
+                    let text = if matches!(node.kind, TEXT | BUTTON) {
+                        label(self.m, node)["text"].clone()
+                    } else {
+                        Value::Null
+                    };
+                    if text.as_str().is_some_and(|s| s.trim().is_empty()) {
+                        continue;
+                    }
+                    self.out.push(json!({
+                        "issue": issue,
+                        "screen": self.id,
+                        "widget": node.at,
+                        "rect": [r.top, r.left, r.bottom, r.right],
+                        "text": text,
+                    }));
+                }
+            }
+            for child in &node.children {
+                if node.kind != TABS || ptr(self.m, node.at, 0x70) == Some(child.at) {
+                    self.visit(child, Some(node));
+                }
+            }
+        }
+    }
+
+    let Some(tree) = Widget::read(m, screen, &mut HashSet::new(), 0, true) else {
+        return Vec::new();
+    };
+    let mut check = Check {
+        m,
+        screen,
+        id,
+        panel: m.u32(screen)
+            .ok()
+            .and_then(dialog_tag::by_vtable)
+            .map(|d| d.base.content_area()),
+        out: Vec::new(),
+    };
+    check.visit(&tree, None);
+    check.out
+}
+
 // 0x253b1a resolves the id into a temporary then calls the text
 // interface's setter. 0x22f50d and 0x22f545 copy it to interface +0x44.
 fn label(m: &dyn GuestMemory, widget: &Widget) -> Value {
@@ -657,6 +752,32 @@ mod tests {
             }
             m.put_u32(link, addr);
         }
+    }
+
+    #[test]
+    fn layout_findings_report_live_rows_and_their_container() {
+        let mut m = FakeGuest::new();
+        widget(&mut m, SCREEN, 0, 0);
+        widget(&mut m, LIST_AT, LIST, SCREEN);
+        widget(&mut m, ITEM_AT, ITEM, LIST_AT);
+        widget(&mut m, LABEL_AT, TEXT, ITEM_AT);
+        let place = |m: &mut FakeGuest, at, bounds: [i16; 4]| {
+            for (i, edge) in bounds.into_iter().enumerate() {
+                m.put_u16(at + 0x20 + i as u32 * 2, edge as u16);
+            }
+        };
+        place(&mut m, LIST_AT, [100, -200, -160, 200]);
+        place(&mut m, ITEM_AT, [-145, -180, -170, 180]);
+        place(&mut m, LABEL_AT, [-146, -172, -164, 278]);
+        let findings = layout_findings(&m, SCREEN, Some(80));
+        assert_eq!(findings.len(), 3);
+        assert_eq!(findings[0]["issue"]["container"], "list");
+        assert_eq!(findings[0]["widget"], ITEM_AT);
+        assert_eq!(findings[1]["issue"]["kind"], "unsafe");
+        assert_eq!(findings[1]["widget"], LABEL_AT);
+        assert_eq!(findings[2]["issue"]["container"], "row");
+        m.put_u8(ITEM_AT + 0x6e, 0);
+        assert!(layout_findings(&m, SCREEN, Some(80)).is_empty());
     }
 
     fn channel(m: &mut FakeGuest, window: u32, slot: u32, screen: u32, leaf: u32) {

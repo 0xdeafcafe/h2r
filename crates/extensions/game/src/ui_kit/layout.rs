@@ -33,6 +33,8 @@
 
 use std::fmt;
 
+use serde::Serialize;
+
 use tags::ui::Rect;
 
 use crate::ui_kit::input::Input;
@@ -61,7 +63,7 @@ pub struct Rules {
     pub max_covered: usize,
     /// The screen takes inputs past up, down, A and B.
     pub needs_legend: bool,
-    /// A modal's panel ([`crate::ui_kit::dialog::DialogGeometry::area`]):
+    /// A modal's panel ([`crate::ui_kit::dialog::DialogBase::content_area`]):
     /// its content stays inside, and what it covers of a reserved area is
     /// not held against it.
     pub panel: Option<Rect>,
@@ -99,13 +101,14 @@ impl Rules {
             panel: s
                 .dialog
                 .as_ref()
-                .map(|d| crate::ui_kit::dialog::DialogGeometry::fallback_for(d.base).area()),
+                .map(|d| d.base.content_area()),
             ..Rules::default()
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Issue {
     Fit {
         id: String,
@@ -141,6 +144,10 @@ pub enum Issue {
     OutsidePanel {
         id: String,
     },
+    OutsideContainer {
+        id: String,
+        container: String,
+    },
     Placement {
         id: String,
         rule: &'static str,
@@ -166,6 +173,7 @@ impl Issue {
             | Issue::Unsafe { id }
             | Issue::Reserved { id, .. }
             | Issue::OutsidePanel { id }
+            | Issue::OutsideContainer { id, .. }
             | Issue::Placement { id, .. }
             | Issue::Contrast { id, .. }
             | Issue::FocusHidden { id }
@@ -200,6 +208,7 @@ impl fmt::Display for Issue {
             Issue::Unsafe { id } => write!(f, "{id}: outside the title-safe area"),
             Issue::Reserved { id, area } => write!(f, "{id}: over {area}"),
             Issue::OutsidePanel { id } => write!(f, "{id}: outside the modal's panel"),
+            Issue::OutsideContainer { id, container } => write!(f, "{id}: outside {container}"),
             Issue::Placement { id, rule } => write!(f, "{id}: {rule}"),
             Issue::Contrast { id, ratio } => {
                 write!(f, "{id}: contrast {ratio:.2} against what is under it")
@@ -271,6 +280,52 @@ fn inside(inner: Rect, outer: Rect) -> bool {
         && inner.bottom >= outer.bottom
         && inner.left >= outer.left
         && inner.right <= outer.right
+}
+
+/// Shared limits for authored and instantiated widget rectangles.
+pub(crate) fn bounds_issues<'a>(
+    id: impl Fn() -> String,
+    rect: Rect,
+    safe: Rect,
+    containers: impl IntoIterator<Item = (&'a str, Rect)>,
+) -> impl Iterator<Item = Issue> {
+    let outside_safe = (!inside(rect, safe)).then(|| Issue::Unsafe { id: id() });
+    let outside_container = containers
+        .into_iter()
+        .filter(move |(_, bounds)| !inside(rect, *bounds))
+        .map(move |(name, _)| {
+            if name == "modal panel" {
+                Issue::OutsidePanel { id: id() }
+            } else {
+                Issue::OutsideContainer {
+                    id: id(),
+                    container: name.into(),
+                }
+            }
+        });
+    outside_safe.into_iter().chain(outside_container)
+}
+
+/// The geometry checks need only text metrics. Page tests can run them
+/// after each input without rendering the page.
+pub fn check_bounds(v: &View, metrics: &dyn Metrics, rules: &Rules) -> Vec<Issue> {
+    let mut issues = Vec::new();
+    for w in v.widgets.iter().filter(|w| w.alpha > 0) {
+        let checked = w.layer == Layer::Under || w.text().is_some_and(|t| !t.is_empty());
+        if !checked {
+            continue;
+        }
+        if overflows(w, metrics) {
+            issues.push(Issue::Fit { id: w.id.clone() });
+        }
+        issues.extend(bounds_issues(
+            || w.id.clone(),
+            w.rect(),
+            rules.safe,
+            rules.panel.map(|p| ("modal panel", p)),
+        ));
+    }
+    issues
 }
 
 /// Where a text widget's ink is: each line's width at its justification,
@@ -425,11 +480,7 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
         .filter(|w| matches!(w.kind, Kind::Art { .. }))
         .collect();
 
-    for w in &shown {
-        if overflows(w, src) {
-            rep.issues.push(Issue::Fit { id: w.id.clone() });
-        }
-    }
+    rep.issues = check_bounds(v, src, rules);
     for (i, (a, ra)) in texts.iter().enumerate() {
         for (b, rb) in &texts[i + 1..] {
             if area(intersect(*ra, *rb)) > 0 {
@@ -549,20 +600,9 @@ pub fn check(v: &View, src: &dyn Source, rules: &Rules) -> Report {
         }
     }
 
-    for (w, r) in &texts {
-        if !inside(*r, rules.safe) {
-            rep.issues.push(Issue::Unsafe { id: w.id.clone() });
-        }
-    }
-    for w in arts.iter().filter(|w| w.layer == Layer::Under) {
-        if !inside(w.rect(), rules.safe) {
-            rep.issues.push(Issue::Unsafe { id: w.id.clone() });
-        }
-    }
     if let Some(p) = rules.panel {
-        for w in shown.iter().filter(|w| w.layer != Layer::Panel) {
-            let r = ink(w, src).unwrap_or(w.rect());
-            if !inside(r, p) {
+        for w in arts.iter().filter(|w| w.layer == Layer::Frame) {
+            if !inside(w.rect(), p) {
                 rep.issues.push(Issue::OutsidePanel { id: w.id.clone() });
             }
         }
@@ -798,6 +838,26 @@ mod tests {
             r.issues
                 .contains(&Issue::FocusNotBrighter { id: "row.0".into() })
         );
+    }
+
+    #[test]
+    fn widget_bounds_fail_even_when_ink_fits() {
+        let s = spec(1);
+        let mut v = view_of(&s, &Geometry::fallback(s.list), &SyntheticSource, "t");
+        let title = v.widgets.iter_mut().find(|w| w.id == "title").unwrap();
+        title.rect[3] = SAFE.right + 1;
+        let row = v.widgets.iter_mut().find(|w| w.id == "row.0.art.0").unwrap();
+        row.rect[2] = SAFE.bottom - 1;
+        let rules = Rules {
+            panel: Some(Rect { right: 260, ..SAFE }),
+            ..Rules::default()
+        };
+        let issues = check_bounds(&v, &SyntheticSource, &rules);
+        for id in ["title", "row.0.art.0"] {
+            assert!(issues.contains(&Issue::Unsafe { id: id.into() }));
+            assert!(issues.contains(&Issue::OutsidePanel { id: id.into() }));
+        }
+        assert!(!issues.iter().any(|i| matches!(i, Issue::Fit { .. })));
     }
 
     /// A source whose every art is a solid square of its declared size,

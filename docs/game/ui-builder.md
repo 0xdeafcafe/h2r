@@ -170,7 +170,8 @@ state.
 | covered (art) | frame art from a screen without a list is covered by other art or text over at most 24 visible pixels (alpha at least 24) |
 | off screen (art) | no art's visible pixels fall past the screen edge |
 | reserved | nothing overlaps the reserved areas of the screen beneath (its logo and header), unless the screen is `Own`; a modal may cover them with its panel, but everything in it stays inside the panel |
-| safe area | texts and row art stay inside the title-safe area: x ±272, y 204 down to -211 (the middle 85%, down to the bottom of retail's footer rectangle, where the game's own legends sit); frame art is exempt |
+| safe area | the full rectangles of visible texts and rows stay within x ±272, y 204 down to -211, including the footer |
+| container | modal text and rows stay inside the usable panel. Bitmap padding does not extend that area. |
 | over the opener (modals, flagged only) | a dialog text whose ink meets a text of the screen that opened it is a `Note::OverOpener` in `Report::notes`, never an issue: retail's dialogs sit over their opener as it is, texts included |
 | contrast | every text against what is drawn under it (the view rendered without its texts), WCAG ratio at least 2.5 |
 | legend | a screen that takes inputs past up, down, A and B shows a button legend (a text with a button glyph) |
@@ -183,7 +184,11 @@ them, and says so (`Report::skipped`). The provenance check runs without a
 disc for the screens our art comes from (Controls 39, level select 11).
 
 The checks are `ui_kit::layout::check(view, source, rules)`, and
-`h2 ui preview` prints them per state. The tests:
+`h2 ui preview` prints them per state. Page-model tests check bounds
+after every input from every named state, including the visible window
+of a scrolling dialog. The agent's `ui.screen` applies the same
+rectangle checks to instantiated widgets. The builder also uses font
+metrics to catch text that exceeds its text box. The tests:
 
 - unit tests with synthetic metrics, plus one with a solid-image source
   for the two pixel checks;
@@ -785,10 +790,11 @@ between empty and ours.
 The custom game information panel on Xbox Live, System Link and Split
 Screen uses pane 0 of screen 14 (`pregame_lobby`). In the lobby update,
 `LOBBY_VARIANT_PANEL` (`0x2501c0`) calls the formatter at `0x25092c` for
-five retail option rows. Text widgets 6 through 10 use the pane's text
-blocks 4 through 8. Text block 9 gives the panel a sixth row with the
-same font, colour, animation and 19-unit spacing. The last row ends at
-y −190.
+five option rows. Text widgets 6 through 10 use the pane's text blocks
+4 through 8. The last of these rows ends at y −171, above the footer.
+The next widget sits below the Quick Options box and is excluded from
+the summary. `ui.screen` checks both the five rows and the spare widget
+against the Quick Options box when they are visible.
 
 `crates/extensions/game/src/lobby_options.rs` adds the enabled options in
 this order: Clankers with the configured count and difficulty on the
@@ -797,9 +803,8 @@ Halo 1 on a converted map, and the multiplayer skull count. Hosted games
 use the signed-in profiles' skull choices. Xbox Live guests read the last
 cached host advertisement for skulls.
 
-The enabled lines follow the retail options that fit. With all five
-retail rows filled, one extra line uses the spare sixth row and each
-further line replaces a bottom retail option. The hook sets each extra
+The enabled lines follow the retail options that fit. When all five
+rows are filled, each enabled line replaces a bottom retail option. The hook sets each extra
 text widget through `TEXT_SET` and the shared locale table
 (`layout_glue::StringsFeature`, IDs from `ui_kit::ids`). The read-only
 [`ui.lobby_options` agent method](../runtime/agent-api.md#ui-what-the-menus-show)
