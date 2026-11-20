@@ -56,15 +56,28 @@ unsafe impl Send for Ram {}
 unsafe impl Sync for Ram {}
 
 impl Ram {
-    /// The live, initially zero physical store.
+    /// The live, initially zero physical store; aliasable when flat RAM
+    /// is selected (`H2_FLAT_RAM=1`).
     pub(crate) fn zeroed(len: usize) -> Self {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        let aliasable = crate::flat::enabled();
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let aliasable = false;
+        Self::zeroed_with(len, aliasable)
+    }
+    /// The live, initially zero physical store. `aliasable` asks for a
+    /// backing that [`Ram::alias`] can map into a window (a shared memfd on
+    /// Linux, a dedicated mapping on macOS); elsewhere it is ignored.
+    pub(crate) fn zeroed_with(len: usize, aliasable: bool) -> Self {
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
-            linux::reserve(len, linux::PREFERRED_BASE, crate::flat::enabled())
+            linux::reserve(len, linux::PREFERRED_BASE, aliasable)
                 .expect("reserve guarded guest physical RAM")
         }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
+        let _ = aliasable;
         #[cfg(target_os = "macos")]
-        if crate::flat::enabled() {
+        if aliasable {
             // A dedicated mapping guarantees host-page alignment for shared
             // aliases, independent of the selected global allocator.
             let p = unsafe {

@@ -37,6 +37,8 @@ pub mod services;
 pub mod trap;
 pub mod tsc;
 pub mod watch;
+#[allow(unsafe_code)]
+pub mod window;
 
 pub use abi::{GuestFn, TransferAbi};
 pub use continuation::{
@@ -55,3 +57,4 @@ pub use interrupt::{CallConvention, GuestInterrupt, Raise};
 pub use loader::{LoadedImage, load_xbe, load_xbe_with};
 pub use trap::{HleCall, LineRec, TrapHit, TrapLog};
 pub use watch::{DirtyRange, WatchError, WatchId};
+pub use window::{WindowStats, process_stats as window_process_stats};

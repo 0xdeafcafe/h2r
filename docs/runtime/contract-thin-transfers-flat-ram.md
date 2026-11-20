@@ -1,7 +1,9 @@
 # Contract change 1: thin transfers and flat RAM
 
-Written 2026-11-20. Slices T1, F1, T2 and T3 are built (section 6);
-none has been measured yet. This is the spec for
+Written 2026-11-20. Slices T1, F1, T2 and T3 are built (section 6), and
+F2 except its first bullet: deleting the opt-in flat RAM waits for M0,
+which has not been taken. The F2 counters are on the agent API, not yet in
+the sim report. None has been measured yet. This is the spec for
 decision 7 of [sim-rewrite.md](../engine/sim-rewrite.md) section 8: change
 the recompiler contract, starting with two items of
 [2026-11-20-architecture.md](../reviews/2026-11-20-architecture.md):
@@ -238,10 +240,14 @@ windows. The target design has one window and no mirror.
 ### 4.1 Memory
 
 **One window, stable for the life of the `Runtime`.** `Memory`
-(`ffi/memory.rs:52`) owns a guarded 4 GiB reservation, not `Guest`.
-Replacing or restoring the `Guest` re-aliases RAM into the same window.
-`base` (the host address of guest address 0) never changes, so generated
-code may keep it in a register for a whole handler and across calls.
+(`ffi/memory.rs:52`) owns a guarded 4 GiB reservation, not `Guest`
+(`crates/runtime/runtime/src/window.rs`). Replacing or restoring the
+`Guest` re-aliases RAM into the same window. `base`
+(`Runtime::flat_base`, the host address of guest address 0) never
+changes, so generated code may keep it in a register for a whole handler
+and across calls. Which pages the window holds is kept whatever RAM's
+backing; RAM itself is aliased in only when its backing allows, which is
+while flat RAM is selected.
 
 **An access is one host instruction.** `H2_LD` and `H2_ST` become an
 `asm goto` statement: one load or store at `base + (uint64_t)addr`, with
@@ -301,12 +307,17 @@ armed, and non-congruent pages. A guarded page is **slow, not wrong**:
 every access faults, takes the fixup and goes through the helper.
 
 **Congruent physical allocation.** The three shifted windows go.
-`Guest::fresh_physical` (`guest.rs:406`) and `find_free_physical` take the
+`Guest::fresh_physical` and `Guest::find_free_physical_for` take the
 virtual address and return a physical address with
-`physical % 16384 == virtual % 16384`. The rule is 16 KiB on every host,
-so a snapshot's layout does not depend on where it was made. Contiguous
-memory at `0x80000000 + physical` is congruent already. The cost is up to
-12 KiB of skipped physical RAM per allocation whose residue differs.
+`physical % 16384 == virtual % 16384` (`window::CONGRUENCE`). The rule is
+16 KiB on every host, so a snapshot's layout does not depend on where it
+was made. Contiguous memory at `0x80000000 + physical` is congruent
+already, and keeps `find_free_physical`. The kernel's virtual allocations
+place each page with `find_free_physical_for`
+(`crates/runtime/kernel/src/memory.rs`, `physical_pages`). The cost is up
+to 12 KiB of skipped physical RAM per allocation whose residue differs.
+When no congruent space is left, a reused gap of any residue is taken:
+slow through the window, not wrong, and counted.
 
 **Permissions at host-page grain.** On a 16 KiB host a read-only guest
 page next to a writable one is writable through the window, and an
@@ -350,6 +361,10 @@ What replaces the gate:
   end the slice and does not take a transfer from the budget. The loop
   exit and re-entry it causes are an ordinary `JUMP`/`RESUME`, with no
   guest-visible effect.
+- The runtime uses the state word only once `Runtime::enable_parking` is
+  called, which the flat model does. A paged image keeps the gate, and no
+  guard sets `PARK` (`crates/runtime/runtime/src/ffi/memory.rs`, module
+  docs).
 
 A guard no longer drains anything or republishes pointers.
 

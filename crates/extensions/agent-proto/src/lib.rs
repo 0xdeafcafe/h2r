@@ -161,6 +161,10 @@ pub mod method {
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
+    /// The flat RAM window's counters (`runtime::window`): fixups taken,
+    /// mapped pages outside the window, bytes the congruent allocator
+    /// skipped; where a slow page shows.
+    pub const PROFILE_MEMORY: &str = "profile.memory";
     /// The menu screen player one's input goes to (`H2_UI_WATCH=1`,
     /// `boot::ui_watch`): `{"screen", "window", "slot", "live_menu_row",
     /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows

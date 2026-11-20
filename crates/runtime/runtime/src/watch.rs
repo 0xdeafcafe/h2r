@@ -5,6 +5,9 @@
 //! Runtime memory guard publishes them through this same watch before HLE
 //! can observe or change subscriptions. The optional flat alias instead
 //! publishes the same physical pages from first-write protection faults.
+//! The flat RAM window's cards ([`crate::window`]) are folded into the same
+//! notes (`Guest::fold_cards`) before any subscription, mute or drain, and
+//! before a mapping changes; [`Guest::has_dirty`] reads them unfolded.
 //! Pages are physical, so every virtual alias of a page dirties the same bit;
 //! ranges are reported in the contiguous view `0x80000000 | pa`.
 use crate::Guest;
@@ -194,6 +197,7 @@ impl Guest {
     /// Start a write-watch consumer with no watched pages. Each subscriber
     /// has its own watched and dirty sets; draining one never affects another.
     pub fn subscribe_writes(&mut self, owner: &'static str) -> WatchId {
+        self.fold_cards();
         let w = &mut self.watch;
         let id = WatchId(w.next_id);
         w.next_id += 1;
@@ -211,6 +215,7 @@ impl Guest {
     }
     /// Drop a subscriber and its undrained dirty pages. False if unknown.
     pub fn unsubscribe_writes(&mut self, id: WatchId) -> bool {
+        self.fold_cards();
         let before = self.watch.subscribers.len();
         self.watch.subscribers.retain(|s| s.id != id);
         self.watch.refresh();
@@ -229,6 +234,7 @@ impl Guest {
     /// after this call are reported; it does not mark anything dirty.
     pub fn watch_writes(&mut self, id: WatchId, addr: u32, len: u32) -> Result<(), WatchError> {
         let (first, last) = pages(addr, len)?;
+        self.fold_cards();
         let s = self.watch.get(id)?;
         let mut changed = false;
         for (w, mask) in words(first, last) {
@@ -244,6 +250,7 @@ impl Guest {
     /// discard their undrained dirty bits.
     pub fn unwatch_writes(&mut self, id: WatchId, addr: u32, len: u32) -> Result<(), WatchError> {
         let (first, last) = pages(addr, len)?;
+        self.fold_cards();
         let s = self.watch.get(id)?;
         for (w, mask) in words(first, last) {
             s.watched[w] &= !mask;
@@ -253,16 +260,21 @@ impl Guest {
         self.watch.refresh();
         Ok(())
     }
-    /// True if a watched page changed since the last drain. O(1).
+    /// True if a watched page changed since the last drain: O(1), or a
+    /// walk of the written flat RAM cards when there are some (they are
+    /// folded at the next drain, `Guest::fold_cards`).
     pub fn has_dirty(&self, id: WatchId) -> bool {
-        self.watch
-            .subscribers
-            .iter()
-            .any(|s| s.id == id && s.any_dirty)
+        self.watch.subscribers.iter().any(|s| {
+            s.id == id
+                && (s.any_dirty
+                    || (!s.muted
+                        && self.cards_reach(|page| s.watched[page / 64] & (1 << (page % 64)) != 0)))
+        })
     }
     /// Return and clear the dirty pages, coalesced into ascending, disjoint,
     /// non-adjacent runs in the folded view. Empty when nothing changed.
     pub fn take_dirty(&mut self, id: WatchId) -> Result<Vec<DirtyRange>, WatchError> {
+        self.fold_cards();
         let s = self.watch.get(id)?;
         let range = |(a, b): (usize, usize)| DirtyRange {
             addr: CONTIGUOUS_BASE | ((a as u32) << PAGE_SHIFT),
@@ -321,9 +333,13 @@ impl Guest {
         id: WatchId,
         f: impl FnOnce(&mut Guest) -> R,
     ) -> Result<R, WatchError> {
+        self.watch.get(id)?;
+        // Stores before the mute are reported to `id`, those inside it not.
+        self.fold_cards();
         let previous = std::mem::replace(&mut self.watch.get(id)?.muted, true);
         self.watch.refresh_active();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        self.fold_cards();
         if let Ok(s) = self.watch.get(id) {
             s.muted = previous;
         }
@@ -343,6 +359,8 @@ impl Guest {
     /// and the view's own. Returns how many subscriptions matched. An id
     /// this Guest already uses for another owner is left alone.
     pub fn adopt_watch(&mut self, source: &mut Guest, owner: &str) -> usize {
+        self.fold_cards();
+        source.fold_cards();
         let mut n = 0;
         for s in source
             .watch

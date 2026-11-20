@@ -30,7 +30,7 @@ connection to hold `session.claim`.
 | `world.raw` | read | [`world.raw`](#worldraw-an-objects-bytes-before-and-after) |
 | `world.poke` | claim | [`world.poke`](#worldpoke-replace-bytes-in-one-object-part) |
 | `havok.bodies`, `havok.agents`, `havok.contacts` | read | [`havok`](#havok-the-physics-world) |
-| `profile.counters`, `profile.capture`, `profile.fallbacks` | read | [`profile`](#profile-where-a-frame-goes) |
+| `profile.counters`, `profile.capture`, `profile.fallbacks`, `profile.memory` | read | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.start`, `profile.sample.stop` | act | [`profile`](#profile-where-a-frame-goes) |
 | `profile.sample.status` | read | [`profile`](#profile-where-a-frame-goes) |
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
@@ -443,6 +443,7 @@ empty manifold is still a candidate in the query box.
 | `profile.counters` | none | the frame-stats rolling window (`timeline::phase`), the numbers `H2_FRAME_STATS` prints: `frames`, `fps`, frame ms, `phase_ms`, `counts`. When nothing else collects them the glue starts a quiet 5 s window |
 | `profile.capture` | `{ticks \| ms, budget_ms?, spikes?, sample?}` | percentiles, phases, counters and spikes over a window (below) |
 | `profile.fallbacks` | `{top?}` | where the fallback interpreter runs |
+| `profile.memory` | none | the flat RAM window's counters (below) |
 | `profile.sample.start`, `.stop`, `.status` | `{hz?}`, `{inline?}`, none | the in-process sampler |
 
 ```sh
@@ -450,6 +451,7 @@ h2 agent counters
 h2 agent capture 900                 # 900 game ticks, about 30 s
 h2 agent capture 10000ms sample      # h2 built --features perf
 h2 agent fallbacks 20
+h2 agent flatmem
 ```
 
 - **`profile.capture`** keeps every frame-stats row over the window and
@@ -501,6 +503,20 @@ h2 agent fallbacks 20
   modules also report `cold_entries` (interpreter invocations for omitted
   owners) and `cold_sites` (distinct owner/selector pairs); the boot log
   names each pair on first use.
+- **Flat RAM window.** `profile.memory` answers the counters of every
+  runtime's flat RAM window in the process, summed
+  (`runtime::window::process_stats`, answered by boot's agent glue;
+  [contract-thin-transfers-flat-ram.md](contract-thin-transfers-flat-ram.md),
+  section 4.1). They are always on. `windows` is how many there are and
+  `aliased` how many hold RAM (guest RAM is aliasable only while flat RAM
+  is selected). `fixups` counts faulting accesses sent to their slow
+  path. `pages_outside` counts mapped guest pages the window does not
+  hold: non-congruent with their backing, sharing a host page with one,
+  byte-granular or armed by the access trap. Each costs a fault and the
+  helper per access once flat accesses are emitted. `congruence_skipped`
+  is the physical RAM, in bytes, the congruent allocator jumped over to
+  give a fresh allocation the residue of its address. A slow page shows as
+  `fixups` rising or `pages_outside` above zero.
 - **Sampling.** `sample: true` also runs the in-process sampler
   (`profile.sample.*`, `boot::sampling`) over the window, and `sampling` is
   what `profile.sample.stop` answers: the module-relative dump

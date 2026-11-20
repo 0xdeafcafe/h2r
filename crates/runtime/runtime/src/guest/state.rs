@@ -231,6 +231,7 @@ impl Guest {
     }
 
     fn adopt(&mut self, layout: &GuestLayout) {
+        self.fold_cards();
         self.code_moved();
         self.mappings = layout.mappings.clone();
         self.next_physical = layout.next_physical;
