@@ -222,7 +222,7 @@ the last quarter of the 2n folded output (i >= 3n/2) when saving overlap
 (`fchs` at `0x38d918`). That broke time-domain aliasing cancellation in the
 second half of every following block.
 
-An ignored test, `crates/recompiler/oracle/tests/wma_disc.rs`, reruns 128 kbps stream 0
+An ignored test, `crates/platform/wma/tests/oracle_disc.rs`, reruns 128 kbps stream 0
 (the shortest of 0 to 4; about 25 s in release) and 96 kbps streams 5, 38, 154 and 226
 against the guest decoder and requires at most 1 LSB. It reads the disc
 by absolute path:

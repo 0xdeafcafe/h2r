@@ -9,8 +9,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use live_proto::hosts::{EndReason, HostLease, HostState};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use sim::batch::{Admission, CloudProvider, Schedule, dollars, estimate_microusd};
-use sim::config::{Batch, MatchConfig};
+use sim_bench::batch::{Admission, CloudProvider, Schedule, dollars, estimate_microusd};
+use sim_bench::config::{Batch, MatchConfig};
 
 use super::RunDir;
 
@@ -220,10 +220,10 @@ impl Failure {
 }
 
 pub(super) fn save_report(dir: &RunDir, report: &Value) -> Result<()> {
-    if report["format"].as_str() != Some(sim::metrics::FORMAT) {
+    if report["format"].as_str() != Some(sim_bench::metrics::FORMAT) {
         bail!("Live returned an unsupported sim report");
     }
-    serde_json::from_value::<sim::metrics::Report>(report.clone())
+    serde_json::from_value::<sim_bench::metrics::Report>(report.clone())
         .context("reading the host's sim report")?;
     let path = dir.report();
     let staging = path.with_extension("json.part");
