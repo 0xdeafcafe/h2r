@@ -170,7 +170,12 @@ pub(crate) fn install_video(h1: &H1Map, set: &mut TagSet, c: &mut Compiled) -> R
         let (_, converted, _) = h1bitmaps::convert_bitmap(h1, tag)
             .map_err(|e| invalid(format!("{}: {e}", tag.name)))?;
         converted.install(set, name)?;
-        c.references.push((reference.group, name.to_owned()));
+        // At the front: the perception table's weapon and character rows
+        // are the last references (`install_perception_state`), and the
+        // runtime finds them by their place from the end. Appended here,
+        // c10's video bitmaps pushed two character rows into the weapon
+        // section.
+        c.references.insert(0, (reference.group, name.to_owned()));
     }
     Ok(())
 }

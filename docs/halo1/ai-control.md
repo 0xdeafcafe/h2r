@@ -174,6 +174,12 @@ path with its model and animation graph. By name alone, a10's weapon
 rows named the graph. The rows sit at the end of the references, so a
 weapon row that does not resolve is a conversion error ("missing AI
 weapon reference"). Dropping it would shift every row after it.
+Built: references added after the script compile go in front of the
+perception rows. c10's video mask and noise bitmaps
+(`cutscenes::install_video`) were appended after them, which moved two
+character rows into the weapon section. The disc check
+`every_level_s_scripts_run_on_the_retail_interpreter` reads each
+weapon row's reference group.
 
 **Built — the hold at behaviour sites.** Halo 1 checks the combat-timer
 hold at the individual behaviour call sites, so a held actor does not
