@@ -70,9 +70,12 @@ pub enum Decline {
     /// The kernel declined: an unknown codec, a key past the blob, the
     /// broken evaluator pair, a misaligned float key.
     Kernel,
+    /// The element's node count exceeds the view's, so the guest's walk
+    /// would read flag bits past the view's nodes.
+    Nodes,
 }
 
-const DECLINES: usize = 8;
+const DECLINES: usize = 9;
 
 /// Call counts since start, for timing and the fallback rate.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -282,6 +285,9 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
     if has_animated && mode == Mode::Replace && read(g.u32(element.wrapping_add(0x64)))? as i32 > 0
     {
         return Err(Decline::DirectTest);
+    }
+    if count > i32::from(view_nodes) {
+        return Err(Decline::Nodes);
     }
     let shape = Shape {
         sizes,
