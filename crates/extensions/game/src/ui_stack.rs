@@ -159,12 +159,19 @@ fn screen_view(
     let mode = nav.maps.mode_of(list);
     let setup = nav.setup_parent(screen).map(|_| json!({"id": GAME_SETUP_ID}));
     let parent = match mode {
+        Some(Mode::Pack(_)) => json!({"id": SELECT_MAP_ID, "mode":"maps", "folder":"Mods",
+            "parent":{"id": SELECT_MAP_ID, "mode":"folders", "parent":setup}}),
         Some(Mode::Maps(_)) => json!({"id": SELECT_MAP_ID, "mode": "folders", "parent": setup}),
         _ => setup.or_else(|| native_parent.map(|id| json!({"id": id}))).unwrap_or(Value::Null),
     };
+    let pack_name = mode.and_then(|mode| match mode {
+        Mode::Pack(id) => crate::map_select::opened_pack_name(id),
+        _ => None,
+    });
     let (mode, folder) = match mode {
         Some(Mode::Categories) => (Some("folders"), None),
         Some(Mode::Maps(category)) => (Some("maps"), Some(category.label())),
+        Some(Mode::Pack(_)) => (Some("pack"), pack_name.as_deref()),
         None => (None, None),
     };
     let focused_row = (mode.is_some() && screen == ch.active)
@@ -254,6 +261,13 @@ mod tests {
         assert_eq!(answer["back"]["instance"], SCREEN);
         assert_eq!(answer["back"]["parent"]["mode"], "folders");
         assert_eq!(answer["back"]["action"], "reopen");
+
+        nav.maps.built(SCREEN + SCREEN_LIST, Mode::Pack(17), None);
+        let answer = inspect(&m, &nav);
+        assert_eq!(answer["channels"][0]["active"]["mode"], "pack");
+        assert_eq!(answer["back"]["action"], "reopen");
+        assert_eq!(answer["back"]["parent"]["folder"], "Mods");
+        assert_eq!(answer["back"]["parent"]["parent"]["mode"], "folders");
 
         nav.maps.built(SCREEN + SCREEN_LIST, Mode::Categories, None);
         let answer = inspect(&m, &nav);

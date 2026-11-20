@@ -550,6 +550,18 @@ pub(crate) fn publish(
     category: Option<String>,
     source_url: Option<String>,
 ) -> Result<MapAnswer> {
+    let me = pick_account(client, accounts, as_tag)?;
+    publish_member(client, &me, dir, category, source_url, None)
+}
+
+pub(crate) fn publish_member(
+    client: &Client,
+    me: &live_accounts::LocalAccount,
+    dir: &Path,
+    category: Option<String>,
+    source_url: Option<String>,
+    pack: Option<&str>,
+) -> Result<MapAnswer> {
     let path = dir.join(MANIFEST_FILE);
     let text =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -559,6 +571,7 @@ pub(crate) fn publish(
         .with_context(|| path.display().to_string())?;
     let extras = extras_in(dir)?;
     let mut doc = MapDocument::new(manifest.clone(), None);
+    doc.staged_for = pack.map(str::to_owned);
     doc.category = category.or(extras.category);
     doc.source_url = source_url.or(extras.source_url);
     doc.credit = extras.credit;
@@ -566,7 +579,6 @@ pub(crate) fn publish(
     // refuses a document with them: publish those once it is updated).
     crate::live_mod_import::PageExtras::read(dir)?.apply(&mut doc);
     doc.validate_extras().map_err(|e| anyhow::anyhow!(e))?;
-    let me = pick_account(client, accounts, as_tag)?;
     let key = me.key_pair()?;
     let author = me
         .id
@@ -597,8 +609,11 @@ pub(crate) fn publish(
             .agent
             .put(&client.url(&format!("/content/{sha}")))
             .set("content-type", "application/octet-stream");
-        let req = client.authorized(req, token(lxm::CONTENT_WRITE))?;
-        call(req, Some(&bytes)).with_context(|| format!("uploading {file}"))?;
+        write_package_request(pack.is_some(), || {
+            let req = client.authorized(req.clone(), token(lxm::CONTENT_WRITE))?;
+            call(req, Some(&bytes))
+        })
+        .with_context(|| format!("uploading {file}"))?;
     }
 
     let id = MapId::of(&manifest);
@@ -616,9 +631,29 @@ pub(crate) fn publish(
         .agent
         .put(&client.url("/maps"))
         .set("content-type", "application/jose");
-    let req = client.authorized(req, token(lxm::CONTENT_WRITE))?;
-    let text = call(req, Some(jws.as_bytes())).context("publishing the manifest")?;
+    let text = write_package_request(pack.is_some(), || {
+        let req = client.authorized(req.clone(), token(lxm::CONTENT_WRITE))?;
+        call(req, Some(jws.as_bytes()))
+    })
+    .context("publishing the manifest")?;
     serde_json::from_str(&text).context("the server's answer to the publish")
+}
+
+// A pack can use the server's account burst allowance in a single upload.
+// Retry only the idempotent write that was throttled, with a fresh token.
+pub(crate) fn write_package_request<T>(
+    bulk: bool,
+    mut write: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    for _ in 0..6 {
+        match write() {
+            Err(e) if bulk && crate::live_cmd::status_of(&e) == Some(429) => {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            result => return result,
+        }
+    }
+    write()
 }
 
 #[cfg(test)]

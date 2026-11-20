@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use dsound::{DirectSound, Hle, Layout};
 
+pub use crate::audio_loop_agent::install as add_loop_agent_method;
+
 /// Read-only routing view for comparing one emitter at several distances.
 #[cfg(feature = "local-io")]
 pub fn add_agent_methods(agent: &agent::Agent, mixer: Arc<Mutex<audio::Mixer>>) {

@@ -86,6 +86,26 @@ crate::globals! { GLOBALS;
     /// Pointer to sound state. The four local-user listeners start at
     /// `+0x88` and have stride `0x48`.
     SOUND_GLOBALS @ 0x004e_6380; "docs/audio/dsound.md";
+    /// UI elapsed milliseconds, accumulated by the UI frame service.
+    UI_CLOCK @ 0x0054_d5b8; "docs/audio/bink-hle.md";
+    /// UI-clock milliseconds of the last input that resets the idle timer.
+    UI_LAST_INPUT @ 0x0054_d5bc; "docs/audio/bink-hle.md";
+    /// UI-clock origin set by the title menu and movie wrapper.
+    UI_ATTRACT_RESET @ 0x0051_ebec; "docs/audio/bink-hle.md";
+    /// Byte the attract timer clears to request a music fade.
+    UI_MUSIC_GATE @ 0x0047_01b8; "docs/audio/bink-hle.md";
+    /// Attract movie timeout, in UI-clock milliseconds.
+    UI_ATTRACT_TIMEOUT @ 0x0047_01bc; "docs/audio/bink-hle.md";
+    /// The menu music controller's current and requested modes (+0 and +4).
+    UI_MUSIC_STATE @ 0x0054_e7e0; "docs/audio/bink-hle.md";
+    /// Pointer to the active looping-sound datum array (0x21a0d6).
+    LOOPING_SOUNDS @ 0x0050_2110; "docs/runtime/agent-api.md";
+    /// Pointer to the sound instance datum array (0x1254c3).
+    SOUND_INSTANCES @ 0x004e_637c; "docs/runtime/agent-api.md";
+    /// Pointer to the sound-channel records (0x129f20).
+    SOUND_CHANNELS @ 0x004e_6378; "docs/runtime/agent-api.md";
+    /// Pointer to the sound-driver globals, which hold its stream records (0x21f8a0).
+    SOUND_DRIVER @ 0x0051_ebe4; "docs/runtime/agent-api.md";
     /// The loaded map's short name in the cache header (`lockout`), 32
     /// bytes, NUL-terminated.
     CACHE_MAP_NAME @ 0x0054_7898; "docs/live/live-gamestate.md";

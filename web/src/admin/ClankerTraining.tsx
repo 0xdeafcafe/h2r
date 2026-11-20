@@ -1,16 +1,17 @@
 import { A, useSearchParams } from "@solidjs/router";
-import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
 import { wsUrl } from "../api/server";
 import type { PlayerKilled } from "../api/types";
 import { GameView } from "../stats/Game";
 import { Panel } from "../stats/Layout";
 import { usDateTime } from "../stats/fmt";
 import { identity } from "../state/identity";
+import { mapTitle } from "../state/gameart";
 import { frameHub, live } from "../state/live";
 import { applyGameSnapshot, initialState } from "../state/reducer";
 import { StreamClient } from "../state/stream";
 import {
-  comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
+  TRAINING_BATCH_COMMAND, comparisonRows, determinismLabel, resultLabel, runsByBatch, scoreLabel, speedLabel, trainingHref, tuningLabel,
   type SimCombat, type SimDetail, type SimFilter, type SimPlayer, type SimRun,
 } from "./simRuns";
 
@@ -53,19 +54,28 @@ function RunList(props: { batch: () => string | undefined }) {
   const [filters, setFilters] = createSignal<SimFilter>({});
   const [cursors, setCursors] = createSignal<string[]>([]);
   const [selection, setSelection] = createSignal<SimRun[]>([]);
+  const activeBatch = () => filters().batch ?? props.batch() ?? "";
   const [runs, { refetch }] = createResource(
-    () => ({ ...filters(), batch: filters().batch ?? props.batch(), before: cursors().at(-1) }),
+    (): SimFilter => ({ ...filters(), batch: activeBatch(), before: cursors().at(-1), include_options: 1 }),
     (query) => load(() => live.api().simRuns(query)),
   );
   refreshVisible(() => { if (!runs.loading) void refetch(); });
-  createEffect(on(props.batch, () => { setFilters({}); setCursors([]); }, { defer: true }));
-  function filter(event: SubmitEvent) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget as HTMLFormElement);
-    const field = (name: string) => String(data.get(name) ?? "").trim();
-    setCursors([]);
-    setFilters({ map: field("map"), tuning: field("tuning"), batch: field("batch") });
+  createEffect(on(props.batch, () => updateFilters({}), { defer: true }));
+
+  function updateFilters(next: SimFilter) {
+    batch(() => {
+      setCursors([]);
+      setFilters(next);
+    });
   }
+
+  const options = () => runs.latest?.data?.options;
+  const hasFilters = () => !!(filters().map || filters().tuning_choice || activeBatch());
+  const hasRuns = () => {
+    const available = options();
+    return available ? available.maps.length > 0 : !!(runs.latest?.data?.items.length || hasFilters() || cursors().length);
+  };
+
   function pick(run: SimRun) {
     setSelection((old) => old.some((r) => r.game_id === run.game_id)
       ? old.filter((r) => r.game_id !== run.game_id)
@@ -76,17 +86,44 @@ function RunList(props: { batch: () => string | undefined }) {
   return (
     <>
       <Panel title="Clanker Training" right={<button class="s-btn" onClick={() => void refetch()}>Refresh</button>}>
-        <form class="adm-row" onSubmit={filter}>
-          <label class="adm-field"><span>Map</span><input name="map" /></label>
-          <label class="adm-field"><span>Tuning</span><input name="tuning" /></label>
-          <label class="adm-field"><span>Batch</span><input name="batch" value={props.batch() ?? ""} /></label>
-          <button class="s-btn" type="submit">Filter</button>
-        </form>
+        <Show when={hasRuns() && options()}>{(available) => (
+          <div class="adm-row" role="group" aria-label="Filter training runs">
+            <label class="adm-field">
+              <span>Map</span>
+              <select value={filters().map ?? ""} onChange={(e) => updateFilters({ ...filters(), map: e.currentTarget.value })}>
+                <option value="">All maps</option>
+                <For each={available().maps}>{(map) => <option value={map} selected={filters().map === map}>{mapTitle(map)}</option>}</For>
+              </select>
+            </label>
+            <label class="adm-field">
+              <span>Tuning</span>
+              <select value={filters().tuning_choice ?? ""} onChange={(e) => updateFilters({ ...filters(), tuning_choice: e.currentTarget.value })}>
+                <option value="">All tuning</option>
+                <Show when={available().default_tuning}><option value="default">Default tuning</option></Show>
+                <Show when={available().custom_tuning}><option value="custom">Custom tuning</option></Show>
+                <For each={available().arms}>{(arm) => <option value={`arm:${arm}`} selected={filters().tuning_choice === `arm:${arm}`}>{arm}</option>}</For>
+              </select>
+            </label>
+            <label class="adm-field">
+              <span>Batch</span>
+              <select value={activeBatch()} onChange={(e) => updateFilters({ ...filters(), batch: e.currentTarget.value })}>
+                <option value="">All runs</option>
+                <Show when={activeBatch() && !available().batches.includes(activeBatch())}>
+                  <option value={activeBatch()} selected>{activeBatch()}</option>
+                </Show>
+                <For each={available().batches}>{(id) => <option value={id} selected={activeBatch() === id}>{id}</option>}</For>
+              </select>
+            </label>
+            <button class="s-btn" disabled={!hasFilters()} onClick={() => updateFilters({ batch: "" })}>Clear filters</button>
+          </div>
+        )}</Show>
         <Show when={runs.latest?.error}>{(message) => <p class="s-bad" role="alert">{message()}</p>}</Show>
         <Show when={runs.latest?.data} fallback={<Show when={runs.loading}><p>Loading sim runs…</p></Show>}>
           {(page) => (
             <>
-              <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} />
+              <Show when={hasRuns()} fallback={<TrainingEmpty />}>
+                <TrainingRuns runs={page().items} selected={selection().map((run) => run.game_id)} onSelect={pick} />
+              </Show>
               <Show when={selection().length > 0}>
                 <button class="s-btn" onClick={() => setSelection([])}>Clear comparison</button>
               </Show>
@@ -104,6 +141,17 @@ function RunList(props: { batch: () => string | undefined }) {
         <RunComparison left={compared()[0]!} right={compared()[1]!} />
       </Show>
     </>
+  );
+}
+
+export function TrainingEmpty() {
+  return (
+    <div class="adm-sim-empty">
+      <h3>No sim runs have been uploaded yet.</h3>
+      <p>From the h2recomp checkout, start a training batch using an admin account on this server.</p>
+      <pre><code>{TRAINING_BATCH_COMMAND}</code></pre>
+      <p>Uploaded runs show match results, simulation speed and per-bot stats. Open a run to watch it live or replay it, or select two runs to compare their tuning and results.</p>
+    </div>
   );
 }
 
@@ -128,7 +176,7 @@ export function TrainingRuns(props: { runs: SimRun[]; selected: string[]; onSele
                 <tbody><For each={group.runs}>{(run) => (
                   <tr>
                     <td>
-                      <A href={trainingHref(run.game_id, group.id ?? undefined)}>{run.map} · {run.sim.gametype}</A>
+                      <A href={trainingHref(run.game_id, group.id ?? undefined)}>{mapTitle(run.map)} · {run.sim.gametype}</A>
                       <small>{usDateTime(run.started_at)}</small>
                       <RunStatus run={run} />
                     </td>
@@ -260,7 +308,7 @@ function RunDetail(props: { id: string }) {
 export function RunReport(props: { detail: SimDetail }) {
   const run = () => props.detail.run;
   return (
-    <Panel title={`${run().map} · ${run().sim.gametype}`} right={<RunStatus run={run()} />}>
+    <Panel title={`${mapTitle(run().map)} · ${run().sim.gametype}`} right={<RunStatus run={run()} />}>
       <dl class="adm-sim-facts">
         <div><dt>Started</dt><dd>{usDateTime(run().started_at)}</dd></div>
         <div><dt>Run ID</dt><dd>{run().sim.run_id}</dd></div>

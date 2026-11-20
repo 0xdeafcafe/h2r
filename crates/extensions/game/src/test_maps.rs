@@ -366,6 +366,56 @@ fn check_name(name: &str) -> Result<(), RpcError> {
     }
 }
 
+fn queue_load(
+    ctx: &mut GameCtx<'_>,
+    calls: Option<&calls::Shared>,
+    name: String,
+    listed: Listed,
+    expect: Vec<Value>,
+) -> Result<Value, RpcError> {
+    let steps = game_steps(&request(&name, &listed))
+        .ok_or_else(|| invalid(format!("{}: the path is longer than the options hold", listed.path)))?;
+    let q = calls.cloned().ok_or_else(|| {
+        unavailable(
+            "the game's own functions aren't reachable here: the agent-calls feature isn't \
+             installed",
+        )
+    })?;
+    let ticket = calls::lock(&q)
+        .submit(Call::QueueGame { steps })
+        .map_err(unavailable)?;
+    eprintln!("maps: queueing {name} ({}, map {:#x})", listed.path, listed.id);
+    ctx.defer(
+        CALL_TICKS,
+        Box::new(move |_: &mut GameCtx<'_>| {
+            let out = calls::lock(&q).take(ticket)?;
+            Some(out.map_err(unavailable).map(|v| {
+                json!(LoadResult {
+                    name: name.clone(),
+                    map: listed.clone(),
+                    check: v["check"].as_bool().unwrap_or(false),
+                    queued: v["queued"].as_bool().unwrap_or(false),
+                    expect: expect.clone(),
+                })
+            }))
+        }),
+    );
+    Ok(Value::Null)
+}
+
+/// The loaded path must resolve to the complete package hash. Two packages
+/// on the same base can have the same display name.
+fn listed_package(
+    cat: &crate::map_select::Catalogue,
+    id: content::MapId,
+    mut identify: impl FnMut(&str) -> Option<content::MapId>,
+) -> Option<Listed> {
+    cat.all().find_map(|map| {
+        let path = crate::map_slots::slot_file(&format!("{}.map", map.path))?;
+        (identify(&path) == Some(id)).then(|| Listed { id: map.id, path: map.path.clone() })
+    })
+}
+
 /// Registers `maps.test.list`, `create`, `load` and `remove` on `agent`.
 /// `calls` is the agent's guest-call queue; without it `load` answers
 /// unavailable. `recipes` builds the maps.
@@ -466,6 +516,22 @@ pub fn install(
         }))
     });
 
+    let root = paths.content_root();
+    let (package_vfs, package_calls) = (vfs.clone(), calls.clone());
+    agent.add_game_method(method::MAPS_LOAD, Access::Act, move |v, ctx| {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Load { map_id: content::MapId }
+        let Load { map_id } = params(v)?;
+        let vfs = package_vfs.as_ref().ok_or_else(|| unavailable("no game VFS"))?;
+        let catalogue = crate::map_select::read(&[], &root);
+        let mut vfs = vfs.lock().unwrap_or_else(|e| e.into_inner());
+        let listed = listed_package(&catalogue, map_id, |path| vfs.map_id(path))
+            .ok_or_else(|| unavailable(format!("no installed multiplayer slot for {map_id}")))?;
+        drop(vfs);
+        queue_load(ctx, package_calls.as_ref(), map_id.to_string(), listed, vec![])
+    });
+
     let (p, j) = (paths.clone(), jobs.clone());
     agent.add_game_method(method::MAPS_TEST_LOAD, Access::Act, move |v, ctx| {
         let NameParams { name } = params(v)?;
@@ -492,17 +558,6 @@ pub fn install(
                  docs/game/maps.md §4); remove other packages or test maps"
             ))
         })?;
-        let steps = game_steps(&request(&name, &listed))
-            .ok_or_else(|| invalid(format!("{}: the path is longer than the options hold", listed.path)))?;
-        let q = calls.clone().ok_or_else(|| {
-            unavailable(
-                "the game's own functions aren't reachable here: the agent-calls feature isn't \
-                 installed",
-            )
-        })?;
-        let ticket = calls::lock(&q)
-            .submit(Call::QueueGame { steps })
-            .map_err(unavailable)?;
         let expect: Vec<Value> = m
             .built
             .as_ref()
@@ -510,23 +565,7 @@ pub fn install(
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        eprintln!("test maps: queueing {name} ({}, map {:#x})", listed.path, listed.id);
-        ctx.defer(
-            CALL_TICKS,
-            Box::new(move |_: &mut GameCtx<'_>| {
-                let out = calls::lock(&q).take(ticket)?;
-                Some(out.map_err(unavailable).map(|v| {
-                    json!(LoadResult {
-                        name: name.clone(),
-                        map: listed.clone(),
-                        check: v["check"].as_bool().unwrap_or(false),
-                        queued: v["queued"].as_bool().unwrap_or(false),
-                        expect: expect.clone(),
-                    })
-                }))
-            }),
-        );
-        Ok(Value::Null)
+        queue_load(ctx, calls.as_ref(), name, listed, expect)
     });
 
     let (p, j) = (paths, jobs);

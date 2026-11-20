@@ -1,0 +1,4 @@
+.mod-picture { position: relative; display: grid; width: 100%; height: 100%; place-items: center; background: #111821; overflow: hidden; }
+.mod-picture img { width: 100%; height: 100%; object-fit: cover; }
+.mod-picture-label, .mod-picture-empty { color: #d1d8e2; font: 11px/1.3 var(--font-ui, sans-serif); text-align: center; }
+.mod-picture-label { position: absolute; inset: auto 0 0; background: #101722e8; padding: 2px; }

@@ -1217,3 +1217,143 @@ fn the_gizmo_and_the_text_fields_go_through_the_api_commands() {
     let d = &ui.hoppers.hoppers().unwrap()[2].description;
     assert!(d.len() < 200, "{}", d.len());
 }
+
+#[test]
+fn placement_chain_uses_the_current_tag_document_and_stops_at_cycles() {
+    let t = Temp::new("placement-chain");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    let placement = json!({"block": "weapons", "index": 0});
+    let chain = call(&mut api, &mut app, m::TAG_CHAIN, placement.clone());
+    let object = &chain["root"];
+    assert_eq!(object["group"], "weap");
+    let model = &object["children"][0];
+    assert_eq!(model["group"], "hlmt");
+    assert_eq!(model["via"], "model");
+    let render = &model["children"][0];
+    assert_eq!(render["group"], "mode");
+    assert_eq!(render["via"], "render_model");
+    assert_eq!(render["children"][0]["tag"], object["tag"]);
+    assert_eq!(render["children"][0]["cycle"], true);
+    assert_eq!(render["children"][0]["children"], json!([]));
+    assert_eq!(object["children"][1]["via"], "parts[0].item");
+    assert_eq!(object["children"][1]["label"], Value::Null);
+
+    let shallow = call(&mut api, &mut app, m::TAG_CHAIN, json!({"tag":"weap", "depth":0}));
+    assert_eq!(shallow["root"]["tag"], object["tag"]);
+    assert_eq!(shallow["root"]["children"], json!([]));
+    let spawn = call(&mut api, &mut app, m::TAG_CHAIN, json!({"block":"starting_locations", "index":0}));
+    assert!(spawn["root"].is_null());
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag":"hlmt", "path":"render_model", "value":null}));
+    let edited = call(&mut api, &mut app, m::TAG_CHAIN, placement);
+    assert_eq!(edited["root"]["children"][0]["children"], json!([]));
+    assert_eq!(
+        code_of(api.call(&mut app, m::TAG_CHAIN, json!({"block":"weapons", "tag":"weap"}))),
+        code::INVALID_PARAMS
+    );
+}
+
+#[test]
+fn placement_inspector_and_tag_set_make_identical_documents_and_saves() {
+    let window = Temp::new("inspector-tag");
+    let socket = Temp::new("inspector-api");
+    let mut ui = crate::app::tag_tests::placement_app(&window.0);
+    let mut agent = crate::app::tag_tests::placement_app(&socket.0);
+    let mut api = Api::new();
+    ui.dispatch(Action::Select(Some((BlockKind::Weapons, 0))));
+    let scenario = ui.session.scenario().unwrap();
+    let root = crate::app::tag_api::placement_root(scenario, BlockKind::Weapons, 0).unwrap().0;
+    // The same byte write the speed widget emits at the end of a drag.
+    let t = ui.tags.tag(root).unwrap();
+    let f = &ui.tags.layout(root).unwrap().fields[0];
+    let action = crate::fields::write_action(root, t.address + f.offset, 4.25f32.to_le_bytes().to_vec(), &f.name);
+    ui.dispatch(crate::ui::inspector::tag_action(action));
+    ui.dispatch(crate::ui::inspector::tag_action(Action::Tag(crate::app::TagAction::Seal)));
+    call(&mut api, &mut agent, m::TAG_SET, json!({"tag":"weap", "path":"speed", "value":4.25}));
+
+    assert_eq!(ui.tags.patches(), agent.tags.patches());
+    assert!(!ui.tags.patches().is_empty());
+    assert_eq!(ui.session.scenario().unwrap().changes(), agent.session.scenario().unwrap().changes());
+    let window_save = window.path("edited.map");
+    let socket_save = socket.path("edited.map");
+    ui.perform(Action::SaveMapAs(window_save.clone()), false).unwrap();
+    call(&mut api, &mut agent, m::DOC_SAVE_AS, json!({"doc":"map", "path":socket_save}));
+    assert_eq!(std::fs::read(window_save).unwrap(), std::fs::read(socket_save).unwrap());
+}
+
+#[test]
+fn reference_jump_and_history_restore_the_tag_and_field() {
+    let t = Temp::new("inspector-nav");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    let weapon = fixture::id(2);
+    let model = fixture::id(4);
+    let render = fixture::id(5);
+    let pick = json!({"block":"weapons", "index":0});
+    let before = call(&mut api, &mut app, m::SCENARIO_SELECT, pick.clone());
+    assert_eq!(before["selected"], pick);
+
+    let jump = crate::fields::reference_action(Some(&[weapon]), "", "model", model);
+    app.perform(crate::ui::inspector::tag_action(jump), false).unwrap();
+    let arrived = call(&mut api, &mut app, m::NAV_STATUS, json!({}));
+    assert_eq!(arrived["selected"], pick);
+    assert_eq!(arrived["tag"], scenario::tag_id(model));
+    assert_eq!(arrived["breadcrumbs"][1]["tag"], scenario::tag_id(weapon));
+    assert_eq!(arrived["breadcrumbs"][2]["tag"], scenario::tag_id(model));
+
+    let back = call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    assert_eq!(back["tag"], scenario::tag_id(weapon));
+    assert_eq!(back["path"], "model");
+    assert!(back["can_forward"].as_bool().unwrap());
+    assert_eq!(call(&mut api, &mut app, m::NAV_FORWARD, json!({})), arrived);
+    assert_eq!(app.session.selected(), Some((BlockKind::Weapons, 0)));
+
+    let to_render = call(&mut api, &mut app, m::NAV_GO, json!({
+        "tag": "mode", "path": "example_back_reference"
+    }));
+    assert_eq!(to_render["tag"], scenario::tag_id(render));
+    assert_eq!(to_render["breadcrumbs"].as_array().unwrap().len(), 4);
+    let block_field = call(&mut api, &mut app, m::NAV_GO, json!({
+        "tag": "weap", "path": "parts[1].value"
+    }));
+    assert_eq!(block_field["path"], "parts[1].value");
+    call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    assert_eq!(call(&mut api, &mut app, m::NAV_FORWARD, json!({})), block_field);
+    let focus = crate::app::tag_api::field_focus(&app.tags, weapon, "parts[1].value").unwrap();
+    assert_eq!(focus.blocks.len(), 1);
+    assert_eq!(focus.blocks[0].1, 1);
+
+    call(&mut api, &mut app, m::TAG_SET, json!({"tag":"weap", "path":"speed", "value":8}));
+    call(&mut api, &mut app, m::DOC_UNDO, json!({"doc":"tags"}));
+    assert_eq!(call(&mut api, &mut app, m::NAV_STATUS, json!({})), block_field);
+
+    assert_eq!(
+        code_of(api.call(&mut app, m::NAV_GO, json!({"tag":"weap", "path":"parts[2].value"}))),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(call(&mut api, &mut app, m::NAV_STATUS, json!({})), block_field);
+}
+
+#[test]
+fn viewport_pick_pushes_one_history_entry() {
+    let t = Temp::new("pick-history");
+    let mut app = crate::app::tag_tests::placement_app(&t.0);
+    let mut api = Api::new();
+    call(&mut api, &mut app, m::SCENARIO_SELECT, json!({"tag":"mode"}));
+    let before = call(&mut api, &mut app, m::NAV_STATUS, json!({}));
+    let ray = scenario_edit::geometry::Ray {
+        origin: [0.0, 1.0, 12.0],
+        dir: [0.0, 0.0, -1.0],
+    };
+    let pick = crate::viewport::pick_action(&app.session, &ray, false).unwrap();
+    assert_eq!(pick, Action::Select(Some((BlockKind::Weapons, 0))));
+    app.dispatch(pick.clone());
+    let after = call(&mut api, &mut app, m::NAV_STATUS, json!({}));
+    assert_eq!(after["selected"], json!({"block":"weapons", "index":0}));
+    app.dispatch(pick);
+    let mut back = call(&mut api, &mut app, m::NAV_BACK, json!({}));
+    assert_eq!(back["can_forward"], true);
+    back["can_forward"] = json!(false);
+    assert_eq!(back, before);
+    assert_eq!(call(&mut api, &mut app, m::NAV_FORWARD, json!({})), after);
+}

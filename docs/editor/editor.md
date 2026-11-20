@@ -148,6 +148,19 @@ boxes and numbers are drawn by the headless renderer's `--callout`.*
   whose values differ is marked `*`, and an edit (one component, one bit
   or the whole value) applies to all of them as one undo step
   (`Session::edit_selection`).
+  For one placement with an object or item reference, **Tags** shows the
+  tag chain from that placement. Open a tag node to edit its fields with
+  the Tags tool's panel (`fields::panel`). Named links lead to the object
+  model and other dependencies, with other links under **All references**.
+  The **Show in** button opens a tag whose metadata lives in a shared cache
+  in the Tags tool, read-only. An edit affects every use of the tag. Use
+  **Undo tag edit** and **Redo tag edit** for the tag history. The map
+  save includes the tag edits alongside the placement edits.
+  A reference field's **Show this tag** button focuses the target in the
+  inspector and keeps the placement selected. Breadcrumbs lead back to
+  any ancestor. **Back** and **Forward**, Alt+Left and Alt+Right, and the
+  mouse's back and forward buttons step through tag and placement
+  history. Returning to a field opens its block and scrolls to it.
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, a summary of what is
   open, the camera's fly speed, frame rate.
@@ -699,15 +712,15 @@ game running, once per socket (`Play::auto_tried`), so Unpair sticks. An
 empty path pairs with the default socket. The game is then taken to hold
 the map as the editor shows it at that moment.
 
-While paired (`play::Play`, on a link thread that polls `session.status`
-and `world.query` four times a second):
+While paired, `play::Play` keeps a control connection for commands and
+status, and a second connection for the binary live mirror.
 
 - **Status chip** in the status bar: the connection, the game's map, its
   phase (playing, paused, loading, menu, cinematic) and tick.
-- **Live objects** drawn over the viewport: players (green, with names),
-  AI (red), vehicles (blue), machines and bodies, each with a facing
-  line. Turrets, whose positions are relative to their vehicle, are left
-  out.
+- **Live objects** use their definition's model in the bind pose.
+  Player labels show the name and team, and an aim line follows the
+  unit's targeting vector. The viewport interpolates streamed transforms
+  between game ticks ([live-mirror.md](live-mirror.md)).
 - **Edits sent live.** Every 200 ms the editor compares the placements
   with what the game is taken to hold (`sync::Baseline`) and sends each
   changed field of a placement with `edit.set` on the game's `scnr`,
@@ -737,7 +750,7 @@ and `world.query` four times a second):
   machine desyncs the others.
 
 Tests (`play::tests`, against the agent crate's server and executor with
-an invented game behind them, no game data): pairing and the polled
+an invented game behind them, no game data): pairing and streamed
 objects, Go to player, a moved placement as one `edit.set` with its path
 and bytes, the warning when the game's copy differed, undo, an added
 entry as a reload, teleport and the spawn, no writes in co-op or with

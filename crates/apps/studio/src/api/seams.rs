@@ -49,10 +49,12 @@ pub trait Provider {
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    api.register(Box::new(super::nav::Navigation));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
     api.register(Box::new(super::tag_io::TagIo));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
     // pair.*: the window's pairing with a running game (play::pair).
     api.register(Box::new(super::pair::Pair));
+    api.register(Box::new(super::mirror::Mirror));
 }

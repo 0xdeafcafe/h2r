@@ -124,6 +124,26 @@ pub fn object<M: Mem + ?Sized>(m: &M, id: ObjectId) -> Result<Option<ObjectView<
     Ok(pool.resolve(m, id.datum())?.map(|obj| ObjectView { m, pool, obj }))
 }
 
+/// Visit the listed players in slot order, including players between lives.
+pub fn visit_players(
+    m: &dyn guest_layout::GuestMemory,
+    mut visit: impl FnMut(u16, guest_layout::Player) -> Result<(), Fault>,
+) -> Result<(), Fault> {
+    use guest_layout::view::players;
+
+    if let Some(array) = players::array(m)? {
+        for row in array.live_iter(m, 16)? {
+            let (handle, slot) = row?;
+            let player = guest_layout::Player::at(slot.addr);
+            // live_iter already excludes free slots.
+            if player.flags(m)? & guest_layout::player::LEAVING == 0 {
+                visit(handle.index(), player)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One event of the tick: `ObjectDeleted` from finalize's delete pass,
 /// [`Damage`] from the damage report, [`Kill`] from the kill credit.
 pub use sim_objects::{Damage, Kill, SimEvent};
@@ -174,13 +194,27 @@ impl<'a, M: Mem + ?Sized> ObjectView<'a, M> {
         self.obj.handle.into()
     }
 
+    /// The header type byte, including values outside the known type table.
+    pub fn kind_byte(&self) -> Result<u8, Fault> {
+        self.obj.header.kind(self.m)
+    }
+
     /// The kind, `None` for a value outside the type table.
     pub fn kind(&self) -> Result<Option<ObjectKind>, Fault> {
         self.obj.kind(self.m)
     }
 
+    pub fn flag_bits(&self) -> Result<u8, Fault> {
+        self.obj.flags(self.m)
+    }
+
     pub fn flags(&self) -> Result<ObjectFlags, Fault> {
-        self.obj.flags(self.m).map(ObjectFlags::from_bits)
+        self.flag_bits().map(ObjectFlags::from_bits)
+    }
+
+    /// The index in this kind's scenario placement block.
+    pub fn placement(&self) -> Result<Option<u16>, Fault> {
+        Ok(u16::try_from(self.obj.body.placement_index(self.m)?).ok())
     }
 
     /// The definition tag.

@@ -1,8 +1,8 @@
 # Live mirror: the running game in the editor, and edits back into it
 
-Status: Design. Nothing here is built; "What exists" lists the built parts it stands on.
-Code: none yet. It adds `crates/tools/live-mirror` and `agent_proto::live`, and changes `crates/extensions/agent`, `crates/rewrites/sim-state`, `crates/extensions/hot-tags`, `crates/apps/studio/src/play` and `crates/tools/scenario-edit/src/render.rs`; each slice names its files and tests.
-Switch: none. A game with no subscriber pays one relaxed load a tick.
+Status: M1 is implemented. M2 through M11 are design. The real-game parity and cost checks are pending.
+Code: `crates/extensions/agent-proto/src/live` (wire format), `crates/extensions/agent/src/live` (capture and stream), `crates/tools/live-mirror` (editor store), `crates/apps/studio/src/play` and `crates/tools/scenario-edit` (pairing and viewport).
+Switch: none. With no subscriber the tick observer skips capture and no stream worker runs.
 
 A paired editor shows the game as it runs: players, bipeds, vehicles,
 weapons, projectiles and their arcs, machines, effects, each object posed
@@ -22,7 +22,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Part | State | Where |
 |---|---|---|
 | Pairing, auto-pair, the status chip | Built | `studio::play` (`play.rs`, `play/pair.rs`), `pair.*` ([agent-api.md](agent-api.md)) |
-| Live objects as markers | Built: `session.status` and `world.query` polled four times a second, at most 300 objects, a marker and a facing line each | `play/link.rs` (`POLL`, `OBJECTS`), `ui/play.rs` |
+| Live objects and players | Built: a binary stream on a second connection, interpolated bind-pose models and player overlays | `agent_proto::live`, `live_mirror::Store`, `studio::play` |
 | Pause, step, resume, go to player, teleport | Built | `play.rs`; `session.claim`, `pause`, `step`, `sim.state.set` |
 | Placement field edits sent live | Built: a diff against `sync::Baseline` every 200 ms, each field as one `edit.set` raw path on the game's `scnr`; shows when the object is next made | `play/sync.rs` |
 | Tag field writes in the game | Built: `edit.get`, `edit.set`, a journal and `edit.revert`; no editor UI sends them | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
@@ -35,8 +35,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Models in the viewport | Built in the bind pose, first permutation, instanced per model | `scenario_edit::render::Viewport`, [editor.md](editor.md), "What the viewport shows" |
 | Map save, packages, play copy | Built | `scenario_edit::save`, `MapEditor`, [scenario-editor.md](scenario-editor.md) section 5 |
 
-New here: the stream and its wire format, the capture, the editor's
-store, interpolation, timeline and recordings, posed models, projectile
+Later slices add the timeline and recordings, skinned models, projectile
 arcs, the device, effect and animation reads, tag pokes from the editor
 with apply classes, moving and making live objects, the reload path and
 the overlays.
@@ -67,7 +66,7 @@ reader skips a layer it does not know. The types and both codecs are
 
 | Layer | Carries | Source |
 |---|---|---|
-| `objects` | per live object: slot and salt, definition tag, type, header flags, parent, position, forward, up, scale, velocity, body and shield vitality, the placement that made it | `sim_state::ObjectView`; `placement` moves from `live_telemetry::memory` to a `guest-layout` field |
+| `objects` | per live object: slot and salt, definition tag, type, header flags, parent, position, forward, up, scale, velocity, body and shield vitality, the placement that made it | `sim_state::ObjectView`; `placement` comes from the existing `guest_layout::Object::PLACEMENT_INDEX` field |
 | `players` | per player: index, name (key frames only), team, unit, held weapon, aim vector, local user | `UnitView`, the player reads `world.query` uses |
 | `poses` | per posed object: its node matrices, 13 floats a node, world space | `ObjectView::nodes` |
 | `anim` | per animated object: the animation graph tag, the animation and frame each channel plays | new `sim_state::AnimationView` over `Object::ANIMATION_MANAGER` |
@@ -396,7 +395,7 @@ by `session.methods`, documented in
 | `live.subscribe` | read | `{layers: [name], every?, key_every?, poses?: {every?, near?: {point, radius}}}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch}, layers: [name], refused: {name: reason}}`, then binary frames on this connection |
 | `live.update` | read | `{stream, layers?, every?, poses?}` | the stream's settings; the next frame is a key frame |
 | `live.key` | read | `{stream}` | `{at, seq}`: the next frame is a key frame, taken now when paused |
-| `live.status` | read | none | `{streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
+| `live.status` | read | none | `{map: {name, checksum, epoch}, streams: [{stream, layers, every, frames, bytes, dropped, skipped, queue}], capture_us: {p50, p99, budget}, shed: [name]}` |
 | `live.close` | read | `{stream}` | `{closed}`; closing the stream's connection does the same |
 | `edit.map` | read | none | `{at, name, file, checksum, scenario, epoch, session}` |
 | `edit.batch` | act | `{writes: [{tag, group?, path, value, was?}], label?}` | `{id, applied, changes}`: all written at one tick boundary as one journal entry, or none, with `MISMATCH` and `data.fields` (`path`, `was`, `holds`) |
@@ -446,7 +445,7 @@ with an invented game behind it, as `play::tests` use; no game data.
 
 | Slice | Ships | Acceptance |
 |---|---|---|
-| **M1** See players and objects move | `agent_proto::live` (frames, `objects` and `players`); the capture, worker and `live.subscribe`, `live.status`, `live.close`; `live_mirror::Store`, the editor's stream thread and interpolation; live objects drawn with their models in the bind pose, players with name, team and aim line; the 4 Hz poll's markers removed | codec round trip and delta tests in `agent-proto`; capture of a synthetic pool equals `sim.objects` of the same pool; a full queue drops and re-keys and never blocks the capture; fake game: a moved object moves in `mirror.objects` within two frames; with the real game, `mirror.objects` at a tick equals `sim.objects` at that tick, `sim.hashes` are equal with and without a subscriber on one input replay, and the note records bytes a second and `capture_us` |
+| **M1** See players and objects move (implemented) | `agent_proto::live` (frames, `objects` and `players`); the capture, worker and `live.subscribe`, `live.status`, `live.close`; `live_mirror::Store`, the editor's stream thread and interpolation; live objects drawn with their models in the bind pose, players with name, team and aim line; the 4 Hz poll's markers removed | codec round trip and delta tests in `agent-proto`; capture of a synthetic pool equals `sim.objects` of the same pool; a full queue drops and re-keys and never blocks the capture; fake game: a moved object moves in `mirror.objects` within two frames; with the real game, `mirror.objects` at a tick equals `sim.objects` at that tick, `sim.hashes` are equal with and without a subscriber on one input replay, and the note records bytes a second and `capture_us` |
 | **M2** Cameras and controls | the `camera` layer from the sealed scene; frustums; Follow, Through its eyes, Game camera; `mirror.camera`, `mirror.control`; a frame per step; `Play` on the `App`, `mirror.*` headless | fake game with a scene source: the Game camera's view matrix equals the scene's; no source lists `camera` under `refused`; a step of one tick advances `mirror.status.tick` by one |
 | **M3** Timeline and recordings | the ring, the scrubber, `mirror.seek`, `mirror.record`, `mirror.open`, the `.h2mirror` file | a recording saved and opened shows the same `mirror.objects` at each tick; the ring stays under its bound and drops whole key intervals; saving into a Git checkout is refused |
 | **M4** Poses and animation | the `poses` layer with its interest sphere; a skinned pipeline in `scenario_edit::render`; `sim_state::AnimationView` and the `anim` layer; the shed rule | synthetic model: node matrices in, skinned vertices out match a reference; fake game: a pose change shows in `view.snapshot`; over budget, `poses` is shed and a notice sent |

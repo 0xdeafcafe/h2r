@@ -52,6 +52,9 @@ serde_json.workspace = true
 
 # Play and pair (src/play.rs): the agent API's wire types and client.
 agent-proto = { path = "../../extensions/agent-proto" }
+live-mirror = { path = "../../tools/live-mirror" }
+guest-layout = { path = "../../hooking/guest-layout" }
+ab_glyph = "0.2"
 # The agent API (src/api): method names, short forms and the client.
 studio-proto = { path = "../studio-proto" }
 

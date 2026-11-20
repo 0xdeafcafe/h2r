@@ -25,6 +25,29 @@ pub trait Reader {
     fn status(&mut self) -> GameStatus;
     /// Every object the API lists, unfiltered. Called per world request.
     fn objects(&mut self) -> Result<Vec<Object>, String>;
+    /// Fill a recycled mirror buffer at this tick boundary.
+    fn live_capture(&mut self, layers: agent_proto::live::Layers, out: &mut agent_proto::live::World) -> bool {
+        let mut ok = false;
+        self.with_guest(&mut |m| ok = crate::live::capture::read(m, layers, out).is_ok());
+        ok
+    }
+
+    /// Subscription metadata from the current game options and loaded cache header.
+    fn live_metadata(&mut self) -> (u16, Option<u32>) {
+        let mut rate = 30;
+        let mut checksum = None;
+        self.with_guest(&mut |m| {
+            if let Ok(Some(g)) = guest_layout::game::GameGlobals::current(m)
+                && let Ok(hz) = g.options().tick_rate(m)
+                && hz > 0
+            {
+                rate = hz;
+            }
+            checksum = guest_layout::game::cache_checksum(m).ok();
+        });
+        (rate, checksum)
+    }
+
     /// Runs `f` on guest memory, for the `sim.*` methods' own reads and
     /// their host writes (at a tick boundary). False where there is no
     /// guest (the default).

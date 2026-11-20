@@ -22,8 +22,10 @@ its router with a Durable Object event log and R2 blobs.
   and rules. The web Ranked page shows standings, levels, XP and bot
   marks. Game results use the server's arbitration rules.
   [Matchmaking](live-matchmaking.md#8-ranks-what-the-game-does-and-what-the-server-does)
-- **Mods.** Installed mods get their own map slots. The lobby advertises
-  the exact package ID and joining consoles fetch missing layers.
+- **Mods.** Browse releases by pack, expand their maps and install them
+  together. Choosing a map in a pack selects its installed map slot. The
+  lobby advertises the member's exact package ID so joining consoles
+  can fetch its missing layers.
   [Maps](../game/maps.md#5-sharing-live)
 - **Spectating and replays.** Live ingest negotiates v8 in discovery.
   V7 readers and recordings remain supported. The viewer opens the
@@ -174,6 +176,8 @@ h2 live hopper defaults --out FILE [--raw] [--force]
 h2 live friend add|accept|decline|remove|list ...
 h2 live team ...
 h2 live maps publish|list ...
+h2 live mods import INPUT --pack NAME --author NAME --source-url URL
+h2 live mods capture PACK_OR_MAP_ID
 h2 live assets extract [--disc PATH] [--out DIR] [--mappack ISO] [--installed DATA]
 h2 live assets check [--out DIR]
 h2 live store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC]

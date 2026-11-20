@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { plugin } from "bun";
 import type { JSX } from "solid-js";
 import { api } from "../src/api/http";
@@ -51,6 +51,45 @@ beforeAll(async () => {
     url: trainingHref(),
     get children() { return component(Route, { path: "/games/halo2/admin", component: content }); },
   }));
+});
+
+test("the empty state shows the upload command and previews the results", () => {
+  const html = render(() => component(page.TrainingEmpty, {}));
+  for (const expected of [
+    "No sim runs have been uploaded yet.",
+    "h2 sim batch docs/runtime/sim-examples/batch.toml --parallel 4 --upload",
+    "match results, simulation speed and per-bot stats",
+    "select two runs",
+  ]) {
+    expect(html).toContain(expected);
+  }
+});
+
+test("reads the signed training list and detail routes using the uploader's simulation game ID", async () => {
+  const uploaded = run("one", { status: "finished", has_report: true });
+  const detail: SimDetail = { run: uploaded, game: uploaded, report: { format: "h2-sim-report/1", players: [] } };
+  const options = { maps: ["lockout"], arms: ["aggressive"], batches: ["a-batch"], custom_tuning: false, default_tuning: false };
+  const calls: { url: URL; headers: Headers }[] = [];
+  const mocked = spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    calls.push({ url, headers: new Headers(init?.headers) });
+    return Response.json(url.pathname.endsWith("/sim-one") ? detail : {
+      items: [uploaded], next: "42", position: 43, options,
+    });
+  });
+  try {
+    const client = api(targetFor("http://127.0.0.1:8074"), async () => "read-token");
+    const list = await client.simRuns({ map: "lockout", tuning_choice: "arm:aggressive", batch: "a-batch", before: "44", include_options: 1 });
+    expect(list).toEqual({ items: [uploaded], next: "42", position: 43, options });
+    expect(await client.simRun(list.items[0]!.game_id)).toEqual(detail);
+    expect(calls.map(({ url }) => url.pathname)).toEqual(["/v1/admin/sim-runs", "/v1/admin/sim-runs/sim-one"]);
+    expect(Object.fromEntries(calls[0]!.url.searchParams)).toEqual({
+      map: "lockout", tuning_choice: "arm:aggressive", batch: "a-batch", before: "44", include_options: "1", auth: "1",
+    });
+    expect(calls.every(({ headers }) => headers.get("authorization") === "Bearer read-token")).toBe(true);
+  } finally {
+    mocked.mockRestore();
+  }
 });
 
 test("groups batch matches and shows their running or finished state", () => {

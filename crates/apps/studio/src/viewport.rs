@@ -6,11 +6,14 @@
 //! game-editor camera of [`crate::camera`], an ImGuizmo move, rotate or
 //! scale gizmo on the selection with grid and angle snapping, and placing
 //! a new entry where the cursor meets the level.
+pub(crate) mod mirror;
+
+use std::collections::BTreeSet;
 use dear_imgui_rs::{Key, MouseButton, TextureId, Ui};
 use dear_imgui_wgpu::{ExternalTextureId, WgpuRenderer};
 use dear_imguizmo::{GuizmoExt, Mode, Operation};
 use scenario_edit::render::{self, Viewport};
-use scenario_edit::{BlockKind, geometry};
+use scenario_edit::{BlockKind, Session, geometry};
 
 use crate::app::{Action, App};
 use crate::camera;
@@ -97,6 +100,7 @@ pub struct ViewportView {
     texture: Option<ExternalTextureId>,
     world_rev: Option<u64>,
     markers_rev: Option<u64>,
+    linked: BTreeSet<(BlockKind, usize)>,
     overlay_rev: Option<u64>,
     pub op: GizmoOp,
     /// Gizmo axes follow the placement (local) or the world.
@@ -131,6 +135,7 @@ impl ViewportView {
             texture: None,
             world_rev: None,
             markers_rev: None,
+            linked: BTreeSet::new(),
             overlay_rev: None,
             op: GizmoOp::Translate,
             local: false,
@@ -162,7 +167,7 @@ impl ViewportView {
     }
 
     /// Render the scene at `size_px` and return the ImGui texture showing it.
-    fn prepare(&mut self, gpu: &mut Gpu<'_>, app: &App, size_px: [u32; 2]) -> Option<TextureId> {
+    fn prepare(&mut self, gpu: &mut Gpu<'_>, app: &App, live: &mirror::Scene, size_px: [u32; 2]) -> Option<TextureId> {
         let vp = self.vp.get_or_insert_with(|| Viewport::new(gpu.device));
         let session = &app.session;
         // The map's textured world and models when it has them (built once
@@ -176,17 +181,19 @@ impl ViewportView {
             }
             self.world_rev = Some(session.world_rev());
         }
-        if world_changed || self.markers_rev != Some(session.markers_rev()) {
+        if world_changed || self.markers_rev != Some(session.markers_rev()) || self.linked != live.linked {
             let selected = session.selection();
             match session.scene() {
-                Some(scene) => vp.set_placements(gpu.device, scene, session.markers(), &selected),
+                Some(scene) => vp.set_linked_placements(gpu.device, scene, session.markers(), &selected, &live.linked),
                 None => vp.set_markers(
                     gpu.device,
                     &render::marker_vertices(session.markers(), &selected),
                 ),
             }
             self.markers_rev = Some(session.markers_rev());
+            self.linked.clone_from(&live.linked);
         }
+        vp.set_live_instances(gpu.device, gpu.queue, session.source(), &live.instances);
         if self.overlay_rev != Some(app.overlay_rev()) {
             vp.set_overlay(gpu.device, &overlay_vertices(app));
             self.overlay_rev = Some(app.overlay_rev());
@@ -222,12 +229,15 @@ impl ViewportView {
             (size[1] * scale[1]).round() as u32,
         ];
         let origin = ui.cursor_screen_pos();
-        let Some(texture) = self.prepare(gpu, app, px) else {
+        let live = mirror::Scene::shown(app);
+        let Some(texture) = self.prepare(gpu, app, &live, px) else {
             ui.text_disabled("The viewport could not create its render target.");
             return;
         };
         ui.image(texture, size);
-        self.shown = Some([origin[0], origin[1], size[0], size[1]]);
+        let rect = [origin[0], origin[1], size[0], size[1]];
+        self.shown = Some(rect);
+        live.overlay(ui, app.session.camera(), rect);
         let hovered = ui.is_item_hovered();
         let aspect = size[0] / size[1].max(1.0);
 
@@ -343,13 +353,8 @@ impl ViewportView {
         }
         // Left click picks; with Ctrl/Cmd it adds to or takes from the
         // selection.
-        if clicked {
-            let hit = app.session.pick(&ray);
-            match (cmd, hit) {
-                (true, Some(e)) => actions.push(Action::ToggleSelect(e)),
-                (true, None) => {}
-                (false, hit) => actions.push(Action::Select(hit)),
-            }
+        if clicked && let Some(action) = pick_action(&app.session, &ray, cmd) {
+            actions.push(action);
         }
     }
 
@@ -429,6 +434,15 @@ impl ViewportView {
             app.info(format!("{verb} {what}"));
         }
         (over, using)
+    }
+}
+
+pub(crate) fn pick_action(session: &Session, ray: &geometry::Ray, extend: bool) -> Option<Action> {
+    let hit = session.pick(ray);
+    if extend {
+        hit.map(Action::ToggleSelect)
+    } else {
+        Some(Action::Select(hit))
     }
 }
 

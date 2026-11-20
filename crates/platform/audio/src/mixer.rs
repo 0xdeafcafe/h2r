@@ -317,6 +317,9 @@ impl Mixer {
     pub fn buffer_mut(&mut self, id: BufferId) -> Option<&mut SoundBuffer> {
         self.buffers.get_mut(&id)
     }
+    pub fn stream(&self, id: StreamId) -> Option<&Stream> {
+        self.streams.get(&id)
+    }
     pub fn stream_mut(&mut self, id: StreamId) -> Option<&mut Stream> {
         self.streams.get_mut(&id)
     }

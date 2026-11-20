@@ -1,5 +1,5 @@
 //! The playlists served when no `multiplayer_hopper.dat` was ever published
-//! for Halo 2 (docs/live/live-admin.md, "Hoppers"): the built-in lineup from
+//! for Halo 2 (docs/live/live-admin.md §2): the built-in lineup from
 //! [`HopperFile::default_set`], built from the format alone, so a server
 //! offers matchmaking with no imported file.
 //!

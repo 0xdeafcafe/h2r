@@ -80,6 +80,7 @@ pub mod method {
     pub const TAG_LIST: &str = "tag.list";
     pub const TAG_READ: &str = "tag.read";
     pub const TAG_REFS: &str = "tag.refs";
+    pub const TAG_CHAIN: &str = "tag.chain";
     pub const TAG_FOLLOW: &str = "tag.follow";
     pub const TAG_SET: &str = "tag.set";
     pub const TAG_BLOCK_ADD: &str = "tag.block.add";
@@ -99,6 +100,10 @@ pub mod method {
     pub const SCENARIO_DELETE: &str = "scenario.delete";
     pub const SCENARIO_DUPLICATE: &str = "scenario.duplicate";
     pub const SCENARIO_SELECT: &str = "scenario.select";
+    pub const NAV_STATUS: &str = "nav.status";
+    pub const NAV_BACK: &str = "nav.back";
+    pub const NAV_FORWARD: &str = "nav.forward";
+    pub const NAV_GO: &str = "nav.go";
 
     pub const VARIANT_LIST: &str = "variant.list";
     pub const VARIANT_OPEN: &str = "variant.open";
@@ -129,6 +134,9 @@ pub mod method {
     pub const PAIR_CONNECT: &str = "pair.connect";
     pub const PAIR_DISCONNECT: &str = "pair.disconnect";
     pub const PAIR_AUTO: &str = "pair.auto";
+
+    pub const MIRROR_STATUS: &str = "mirror.status";
+    pub const MIRROR_OBJECTS: &str = "mirror.objects";
 
     pub const VIEW_CAMERA: &str = "view.camera";
     pub const VIEW_SNAPSHOT: &str = "view.snapshot";

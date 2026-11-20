@@ -562,6 +562,7 @@ fn the_mod_list_reads_published_maps_newest_first() {
         }];
         let id = MapId::of(&m);
         let doc = MapDocument {
+            staged_for: None,
             manifest: m,
             image: None,
             features: vec![],

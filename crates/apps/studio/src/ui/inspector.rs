@@ -17,17 +17,25 @@
 use std::hash::{Hash, Hasher};
 
 use dear_imgui_rs::{Drag, Ui};
+use map::TagId;
 use scenario_edit::layout::{FieldDef, FieldType, Role};
 use scenario_edit::session::FieldEdit;
 use scenario_edit::{BlockKind, Scenario, TagRef, Value};
 
-use crate::app::{Action, App};
+use crate::app::tag_api::{self, Chain, Node};
+use crate::app::tag_doc::Access;
+use crate::app::{Action, App, NavAction, NavLocation, Selection, TagDoc, ToolKind};
+use crate::fields;
 use crate::theme::{self, icon};
 
 /// Text typed into the searchable combos.
 #[derive(Default)]
 pub struct InspectorState {
     search: String,
+    tag_panel: fields::PanelState,
+    chain: Option<(u64, TagId, &'static str, Chain)>,
+    tag_world: Option<u64>,
+    focus: Option<(TagId, String)>,
 }
 
 /// Netgame flag types the community's enum names (see the module docs).
@@ -79,12 +87,22 @@ fn merge_key(selection: &[(BlockKind, usize)], field: &str) -> u64 {
 
 /// Draw the inspector for the selection and apply its edits.
 pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut InspectorState) {
-    let selection = app.session.selection();
-    let Some(&(kind, index)) = selection.first() else {
-        ui.text_disabled("Select a placement in the outliner or the viewport.");
-        ui.text_disabled("Ctrl/Cmd+click adds to the selection, Shift+click a run.");
-        return;
+    let location = app.nav_location();
+    let (kind, index) = match location.selection() {
+        Some(Selection::Placement(kind, index)) => (kind, index),
+        Some(Selection::Tag(_)) => {
+            tags(ui, app, state, &location, None);
+            return;
+        }
+        None => {
+            state.focus = None;
+            state.tag_panel.clear_field_focus();
+            ui.text_disabled("Select a placement in the outliner or the viewport.");
+            ui.text_disabled("Ctrl/Cmd+click adds to the selection, Shift+click a run.");
+            return;
+        }
     };
+    let selection = app.session.selection();
     let Some(scenario) = app.session.scenario() else {
         return;
     };
@@ -171,6 +189,208 @@ pub fn draw(ui: &Ui, bold: dear_imgui_rs::FontId, app: &mut App, state: &mut Ins
     if done {
         app.dispatch(Action::SealEdit);
     }
+    if selection.len() == 1 || location.tag().is_some() {
+        let root = app.session.scenario().and_then(|s| tag_api::placement_root(s, kind, index));
+        tags(ui, app, state, &location, root);
+    }
+}
+
+/// Route the field panel's commands to the open map, even when the separate
+/// Tags tool has a read-only browse open.
+pub(crate) fn tag_action(action: Action) -> Action {
+    match action {
+        Action::Tag(action) => Action::InspectorTag(action),
+        action => action,
+    }
+}
+
+fn tags(
+    ui: &Ui,
+    app: &mut App,
+    state: &mut InspectorState,
+    location: &NavLocation,
+    placement_root: Option<(TagId, &'static str)>,
+) {
+    let root = location.tag().map(|id| (id, "")).or(placement_root);
+    let Some((tag, via)) = root else {
+        state.focus = None;
+        state.tag_panel.clear_field_focus();
+        return;
+    };
+    app.sync_tags();
+    ui.separator_with_text("Tags");
+    let doc = &app.tags;
+    if let Some(error) = &doc.error {
+        ui.text_colored(theme::ERROR, error);
+        return;
+    }
+    if state.tag_world != doc.for_rev {
+        state.tag_world = doc.for_rev;
+        state.tag_panel = fields::PanelState::default();
+        state.focus = None;
+    }
+    let focus = location.tag().zip(location.path.clone());
+    if state.focus != focus {
+        state.tag_panel.clear_field_focus();
+        if let Some((tag, path)) = &focus
+            && let Ok(field) = tag_api::field_focus(doc, *tag, path)
+        {
+            state.tag_panel.focus_field(*tag, field);
+        }
+        state.focus = focus;
+    }
+    let mut actions = Vec::new();
+    breadcrumbs(ui, app, location, &mut actions);
+    let undo = ui.begin_disabled_with_cond(!doc.can_undo());
+    if ui.small_button("Undo tag edit") {
+        actions.push(Action::UndoIn(ToolKind::Tags));
+    }
+    undo.end();
+    ui.same_line();
+    let redo = ui.begin_disabled_with_cond(!doc.can_redo());
+    if ui.small_button("Redo tag edit") {
+        actions.push(Action::RedoIn(ToolKind::Tags));
+    }
+    redo.end();
+    let rev = doc.rev();
+    if !state.chain.as_ref().is_some_and(|(r, t, v, _)| (*r, *t, *v) == (rev, tag, via)) {
+        state.chain = Some((rev, tag, via, tag_api::chain(doc, root, tag_api::DEFAULT_DEPTH)));
+    }
+    if let Some((_, _, _, chain)) = &state.chain {
+        if let Some(node) = &chain.root {
+            let mut trail = location.trail.clone();
+            // tag_node appends its own ID.
+            trail.pop();
+            if state.tag_panel.has_field_focus(tag) {
+                ui.set_next_item_open(true);
+            }
+            tag_node(ui, doc, node, &mut trail, &mut state.tag_panel, &mut actions);
+        }
+        if chain.truncated {
+            ui.text_disabled("Tag chain limited to the first references.");
+        }
+    }
+    for action in actions {
+        app.dispatch(tag_action(action));
+    }
+}
+
+fn breadcrumbs(ui: &Ui, app: &App, location: &NavLocation, actions: &mut Vec<Action>) {
+    for (label, forward, action) in [
+        ("Back", false, NavAction::Back),
+        ("Forward", true, NavAction::Forward),
+    ] {
+        let _disabled = ui.begin_disabled_with_cond(!app.can_navigate(forward));
+        if ui.small_button(label) {
+            actions.push(Action::Navigate(action));
+        }
+        ui.same_line();
+    }
+    if location.trail.is_empty() {
+        ui.new_line();
+        return;
+    }
+    if matches!(location.selection(), Some(Selection::Placement(..))) {
+        if ui.small_button("Placement") {
+            actions.push(Action::Navigate(NavAction::Open(Vec::new())));
+        }
+        ui.same_line();
+    }
+    for (i, &tag) in location.trail.iter().enumerate() {
+        let _id = ui.push_id(i);
+        let label = app.tags.tag(tag).map_or_else(
+            || format!("{:#010x}", tag.0),
+            |t| {
+                let name = t.name.rsplit('\\').next().unwrap_or(&t.name);
+                format!("{name}.{}", tags::defs::fourcc_text(t.group))
+            },
+        );
+        if ui.small_button(label) {
+            actions.push(Action::Navigate(NavAction::Open(location.trail[..=i].to_vec())));
+        }
+        if i + 1 < location.trail.len() {
+            ui.same_line();
+            ui.text_disabled(">");
+            ui.same_line();
+        }
+    }
+    if let Some(path) = &location.path {
+        ui.text_disabled(path);
+    }
+}
+
+fn tag_node(
+    ui: &Ui,
+    doc: &TagDoc,
+    node: &Node,
+    trail: &mut Vec<TagId>,
+    panel: &mut fields::PanelState,
+    actions: &mut Vec<Action>,
+) {
+    let _id = ui.push_id(node.via.as_str());
+    let id = node.tag;
+    let Some(t) = doc.tag(id) else {
+        ui.text_disabled(format!("{} references missing tag {:#010x}", node.via, id.0));
+        return;
+    };
+    let label = doc.tag_label(id.0);
+    let label = if t.elsewhere.is_some() {
+        format!("{label} (in shared)")
+    } else {
+        label
+    };
+    let label = match node.shortcut {
+        Some(role) => format!("{role} · {label}"),
+        None => label,
+    };
+    let item = ui.tree_node_config(format!("tag{:08x}", id.0))
+        .label(label)
+        .default_open(node.via.is_empty())
+        .span_avail_width(true)
+        .push();
+    if !node.via.is_empty() && ui.is_item_hovered() {
+        ui.set_item_tooltip(&node.via);
+    }
+    let Some(_node) = item else { return };
+    match &t.access {
+        Access::Edit => {
+            ui.text_disabled("Edits affect every placement and tag that uses this tag.");
+        }
+        Access::Read(why) | Access::None(why) => ui.text_disabled(why),
+    }
+    if let Some(cache) = &t.elsewhere {
+        if ui.small_button(format!("Show in {cache}")) {
+            actions.push(Action::BrowseSharedTag(id));
+        }
+        return;
+    }
+    trail.push(id);
+    if !node.via.is_empty() && ui.small_button("Focus tag") {
+        let end = trail.iter().position(|&tag| tag == id).unwrap() + 1;
+        actions.push(Action::Navigate(NavAction::Open(trail[..end].to_vec())));
+    }
+    if let Some(variant) = &node.variant {
+        ui.text_disabled(format!("Variant {variant}"));
+    }
+    if !matches!(t.access, Access::None(_))
+        && doc.layout(id).is_some_and(|layout| layout.size <= t.size)
+    {
+        if let Some(problem) = &panel.problem {
+            ui.text_colored(theme::ERROR, problem);
+        }
+        fields::inspector_panel(ui, doc, id, trail, panel, actions);
+    }
+    for child in node.children.iter().filter(|child| child.shortcut.is_some()) {
+        tag_node(ui, doc, child, trail, panel, actions);
+    }
+    if node.children.iter().any(|child| child.shortcut.is_none())
+        && let Some(_refs) = ui.tree_node("All references")
+    {
+        for child in node.children.iter().filter(|child| child.shortcut.is_none()) {
+            tag_node(ui, doc, child, trail, panel, actions);
+        }
+    }
+    trail.pop();
 }
 
 /// The label column's width.

@@ -8,7 +8,7 @@ An agent, a script or a test reads and drives a running Halo 2 through one
 JSON-RPC interface: what is in the level, where frame time goes, what the
 menus show, how to put the game in a state and act in it. It replaces
 screenshots, pasted logs and environment variables read at launch. The
-front end is the `h2 agent` CLI; there is no other client.
+command-line client is `h2 agent`. The editor connects to the same endpoint.
 
 The rule that must hold: every answer is read at one tick boundary on the
 game's thread, and says which moment it describes (the `at` stamp).
@@ -24,6 +24,7 @@ connection to hold `session.claim`.
 | Method | Access | Section |
 |---|---|---|
 | `session.status`, `methods`, `claim`, `release`, `wait`, `subscribe` | read | [`session`](#session-what-is-running-and-its-clock) |
+| `live.subscribe`, `live.status`, `live.close` | read | [Live mirror](#live-mirror) |
 | `session.pause`, `resume`, `step` | claim | [Control](#control) |
 | `world.count`, `world.query`, `world.object` | read | [`world`](#world-what-is-in-the-level) |
 | `world.ai` | read | [`world.ai`](#worldai) |
@@ -36,6 +37,7 @@ connection to hold `session.claim`.
 | `render.frame`, `render.stats` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.coop_look` | read | [`render`](#render-the-frame-and-the-pipeline) |
 | `render.compare`, `render.capture`, `render.scene`, `sim.hashes` | read | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
+| `render.spawn_view` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -48,7 +50,7 @@ connection to hold `session.claim`.
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
 | `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
-| `audio.voices` | read | [`audio`](#audio-voice-routing) |
+| `audio.voices`, `audio.listeners`, `audio.loops` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](#input-act-like-a-player) |
@@ -61,7 +63,7 @@ connection to hold `session.claim`.
 | `collision.stats` | read | [`collision`](#collision-the-native-collision-world) |
 | `trace.*`, `flight.*` | read | [Tick traces and the flight recorder](#tick-traces-and-the-flight-recorder) |
 | `shadow.enable`, `shadow.disable`, `shadow.status` | act, act, read | [Shadow checks](#shadow-checks) |
-| `maps.test.list`, `create`, `load`, `remove` | read, act, act, act | [Test maps](#test-maps) |
+| `maps.load`, `maps.test.list`, `create`, `load`, `remove` | act, read, act, act, act | [Test maps](#test-maps) |
 
 A new method gets a row here and a section for its domain. The names
 live in `crates/extensions/agent-proto/src` (`method::ALL`, `hot::method::ALL`,
@@ -97,19 +99,6 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   control"). TCP has no authentication; Unix sockets are Unix only.
   `h2 serve` removes its socket on Ctrl-C or SIGTERM. A Unix socket is
   created with mode 0600.
-- **Finding a game.** `h2 play` with `H2_AGENT` unset opens its own socket,
-  `<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
-  directory is mode 0700, so only the user can connect; set in `boot`'s
-  agent source from `Host::discoverable_agent`). A game started any other
-  way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
-  `H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
-  opening one ([switches.md](switches.md)). A client lists the directory
-  and asks each socket `session.status` (`discover::scan`); a file nothing
-  answers on, left by a game that was killed, is removed. `h2 agent games`
-  prints each game's socket, pid, map and phase, and `h2 agent <call>` with
-  no socket named, no `$H2_AGENT` and nothing at the default socket uses
-  the one game in the directory. The editor pairs with these games
-  ([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 - **Another Mac.** `h2 lab agent --host H <run id> <call>` runs `h2 agent
   <call>` against that run's socket; `h2 lab bench` does a wait, capture,
   `render` and `counters` in one command ([lab.md](lab.md#driving-a-run-the-agent-api)).
@@ -130,6 +119,22 @@ printf 'claim\npause\nstep 30\ncount\nresume\n' | h2 agent -
   dispatch transfers as `lockstep`'s does: compare runs that all have it,
   or all lack it. With `H2_FEATURES=-agent` requests are answered only
   between slices, and pause and step are refused.
+
+### Finding a game
+
+`h2 play` with `H2_AGENT` unset opens its own socket,
+`<cache>/h2recomp/agents/<pid>.sock` (`agent_proto::discover`; the
+directory is mode 0700, so only the user can connect; set in `boot`'s
+agent source from `Host::discoverable_agent`). A game started any other
+way (`h2 serve`, `h2 run`, the Xbox app) opens a socket only where
+`H2_AGENT` or `--socket` says. `H2_AGENT=off` keeps `h2 play` from
+opening one ([switches.md](switches.md)). A client lists the directory
+and asks each socket `session.status` (`discover::scan`); a file nothing
+answers on, left by a game that was killed, is removed. `h2 agent games`
+prints each game's socket, pid, map and phase, and `h2 agent <call>` with
+no socket named, no `$H2_AGENT` and nothing at the default socket uses
+the one game in the directory. The editor pairs with these games
+([editor-guide.md](../editor/editor-guide.md), "Play from the editor").
 
 ## Wire
 
@@ -188,6 +193,47 @@ Access::Read | Act | Claimed, f)` (answered between slices too, where the
 method does not read guest memory) or `Agent::add_game_method` (answered
 on the game's thread with guest memory at hand, at a tick boundary while
 the game ticks).
+
+## Live mirror
+
+The editor opens a second connection to the same Unix or TCP endpoint.
+It calls `live.subscribe` there and reads the JSON reply line before
+switching to length-prefixed binary frames. Keep the original JSON
+connection for control calls. The stream reads the game at tick boundaries.
+
+| Method | Params | Result |
+|---|---|---|
+| `live.subscribe` | `{layers: ["objects", "players"], every?, key_every?}` | `{at, stream, protocol: "h2-live-mirror/1", tick_rate, map: {name, checksum, epoch}, layers, refused}`. The stream id is numeric. An unavailable checksum is null. Each unsupported layer has a reason under `refused`. |
+| `live.status` | none | `{map: {name, checksum, epoch}, streams, capture_us: {p50, p99, budget}, shed}`. Stream fields are `stream`, `layers`, `every`, `frames`, `bytes`, `queue`, `dropped` and `skipped`. Frames and bytes count complete writes, including the length prefix. |
+| `live.close` | `{stream}` | `{closed: true}` if the stream existed. Disconnecting the binary socket also ends its subscription. |
+
+`every` samples one tick in 1–30 (default 1). `key_every` requests a
+full frame at least every specified number of game ticks (default 150).
+An empty accepted layer set yields header-only frames. The first frame and frames after a cut or a dropped sample are keys.
+Deltas identify records by salted object handle or player index and carry
+field masks and removals. A player joining or changing name requires a
+key. The length on each layer lets readers skip unknown layers. The
+binary layout and blocking decoder are in `agent_proto::live`. A frame
+starts with a little-endian u32 payload length, capped at 8 MiB. The
+payload starts with a kind byte, three u64s (sequence, game tick, map
+epoch) and a flags byte (paused, cut). Each section has a u8 layer id
+and a u32 byte length.
+
+Objects carry their definition, type, header flags, parent, transform,
+velocity, vitality and scenario placement index. A child's transform is
+relative to its parent, as in `sim.objects`. Players carry their name,
+team, unit, held weapon, aim and local user. The game thread fills reusable
+buffers. A worker diffs and encodes them and each socket has a bounded
+writer queue. `skipped` counts missed captures and `dropped` counts
+frames lost on the way to the writer. Capture percentiles are in
+microseconds over the last 150 successful captures, against a 150 µs budget. They are null before the first capture.
+
+A game in a remote Live match refuses a subscription and closes an
+existing one on entry. The embedded service used by `--live-local`
+supports the mirror. For exact-tick comparison and a replay with and
+without a subscriber, use `scripts/check-live-mirror.py` with a gameplay
+snapshot and its matching input log. It prints the hash comparison,
+object count, byte rate and capture timings.
 
 ## `session`: what is running and its clock
 
@@ -694,6 +740,9 @@ sim report's tally.
 
 ```sh
 h2 agent frame compare off/frame-03000.png on/frame-03000.png --diff d.png  # no game
+h2 agent render.spawn_view '{"index": 0}'
+h2 agent render.capture '{}'
+h2 agent render.spawn_view '{"reset": true}'
 h2 agent render.capture '{"tick": 9000}'
 h2 agent render.capture '{"pass": 3}'          # the next tick's frame, pass 3
 h2 agent render.scene '{"dump": true}'
@@ -704,6 +753,7 @@ h2 agent render.parity '{"arm": true}'
 | Method | Access | Params | Result |
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
+| `render.spawn_view` | act | `{index, yaw_offset?}` or `{reset: true}` | `{index, count, position: [x,y,z], yaw}` or `{reset: true}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
 | `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, carried?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
@@ -725,6 +775,18 @@ h2 agent render.parity '{"arm": true}'
   `data.path`). The decode runs on the game thread; `h2 agent frame
   compare A B [--diff D]` runs the same function in the CLI with no
   socket and exits 1 outside the bar.
+- **`render.spawn_view`.** Selects a player starting location from the
+  loaded scenario by its zero-based index. The eye is 0.64 world units
+  above the start, looking along its facing. `yaw_offset` turns it in
+  radians. The reply includes the number of starts and the eye position
+  and heading used for the picture. The method answers when the world
+  renderer accepts the private view. A following `render.capture {}`
+  takes the next tick's frame. The camera stays selected until reset or
+  the next game activation. A new selection interrupts a pending request.
+  An invalid index gives `INVALID_PARAMS`, a missing or unreadable start
+  gives `UNAVAILABLE`, and a session that draws no world frames times out.
+  `crates/extensions/game/src/agent_spawn_view.rs` shares Theater's
+  playerless world view in `spectator_view.rs`.
 - **`render.capture`.** The frame of game tick `tick` (as `at.tick`
   counts it; default the next one, at most 240 ahead). On the D3D path
   the frame of a tick is the present that follows it: the first guest
@@ -734,7 +796,7 @@ h2 agent render.parity '{"arm": true}'
   `render.frame` and `H2_BOOT_GFX`'s `frame-N.png` do. Without `pass`,
   the image is the presented frame at the render scale, the same image
   `H2_BOOT_GFX` writes as `frame-N.png`, written as
-  `frames/capture-<seq>-tick-<tick>.png` under the cache directory. That
+  `frames/capture-<pid>-<seq>-tick-<tick>.png` under the cache directory. That
   needs a run that renders on the GPU with `H2_BOOT_GFX` (use
   `H2_BOOT_GFX_EVERY=never` to write nothing else); without it the answer
   is `UNAVAILABLE`, and under `H2_BOOT_GFX_LIGHTING_AB` too. With `pass`,
@@ -1015,9 +1077,9 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   screen instances, and the game-shell channel's saved screen IDs
   (`history`, nearest parent first). Each screen has `id`, `instance`
   (a guest address valid for that screen's lifetime), and `parent` where
-  a return is known. The two map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`), with the open `folder`
-  named on the maps stage and the active picker row in `focused_row`
+  a return is known. The map picker stages share an ID and have
+  distinct `mode` values (`folders`, `maps`, `pack`), with the open
+  category or pack named in `folder`. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). `input` identifies the screen taking player one's menu
   input. `back` gives the instance that closes and its parent where
   known, with action `close`, `reopen` (recreate a parent), or `wait`
@@ -1189,6 +1251,49 @@ and path gain. These are routing settings before spatial panning, master
 gain and the reverb return. A disabled environment or unconnected bus can
 have a configured send gain and deliver silence. Plain stereo routing has
 `bins: null`.
+
+### `audio.loops`
+
+`h2 agent audio.loops` takes no parameters. With DirectSound installed it
+reports the guest's active looping sounds and the host's playout health.
+Each row in `loops` gives the salted `loop_datum`, `tag_datum`, resolved
+`tag_name` when the map names the tag, zero-based `track`, `segment`,
+`sound_instance` and `sound_datum`. `segment` is `in`, `loop`, `out`, `alt`,
+`alt_in`, `alt_transition_out`, `alt_out` or `unknown`. Overlapping instances
+of a track get separate rows. `pitch_range`, `permutation` and `chunk` come
+from the engine's source state. `play_packet` and `play_position_frames`
+give the DirectSound stream's current packet and its source-frame offset.
+They are null while no queued stream packet can be resolved. The playback
+cursor is at the mixer. The guest can select the next segment while PCM
+from its predecessor is still queued.
+
+`transitions` keeps the last 64 changes in starts, stops, segments and
+permutation selection, sampled after the sound frame service. A null
+`from` denotes a start and a null `to` denotes a stop. The stamp includes
+the retail `tick` when available, the guest `present` counter,
+`logical_100ns` and `elapsed_us`. The last field uses a monotonic wall clock
+from audio-output creation. History starts over with a new map or a
+rewound guest clock. `records_transitions` says whether the observer runs.
+
+In the main menu, `menu` gives `ui_ms`, `idle_ms`, the music gate and
+requested and applied music state, the attract timeout, the music stop
+threshold from the current map, and whether a movie is active.
+`menu_changes` keeps the last 64 changes in the gate, music state, movie
+state or timer reset. The threshold applies on the screens eligible for
+the attract movie. See [the attract timer](../audio/bink-hle.md#attract-timer).
+
+`output` reports cumulative sink underruns and silent frames, playout
+starves, dropped frames and mixer stream starves. Their last-change times
+use the same `elapsed_us` clock as the transitions. The output thread
+samples the sink counters as it services the device. Stream starves are
+counted when a dry stream receives data again. Optional WMA counters show
+codec restarts, errors and dropped partials. The playout fill and target
+give the approximate delay between the mixer and the device.
+
+Sample the main menu before and after an audible change. Compare present
+numbers in `transitions` and `menu_changes` with the output counters and
+their last-change times to identify the selection change, idle-triggered
+restart or gap at the device.
 
 ## HaloScript state
 
@@ -1939,6 +2044,7 @@ rigs: [test-maps.md](../game/test-maps.md). Host methods registered by
 
 | Method | Access | Params and result |
 |---|---|---|
+| `maps.load` | act | `{map_id}` → `{name, map {id, path}, check, queued, expect}`. Queues a local Slayer game on the installed multiplayer package with this full hash. The VFS verifies the list slot's package identity. Wait for gameplay on the basename of the returned path before driving the camera. |
 | `maps.test.list` | read | `{name?}` → `{recipes, maps}`: the built-in recipes (`name`, `title`, `base`, `fidelity`, `purpose`, `note`) and each test map (`name`, `base`, `state` `building`/`ready`/`failed`, `dir`, `error`, `map_id`, `listed {id, path}` once it has a multiplayer slot, `built`: the build report with `anchor`, `placed`, `counts`, `notes`, `expect`) |
 | `maps.test.create` | act | `{recipe: <built-in name> \| <recipe object>, base?, replace?}` → `{name, state: "building", dir}` at once; the build runs on its own thread, then the offers are installed again. `base` builds on another disc map (`<recipe>-<base>`) |
 | `maps.test.load` | act | `{name}` → after the next tick, `{name, map {id, path}, check, queued, expect}`: a local Slayer game on the map is queued through the `agent-calls` feature (`Call::QueueGame`, the level boot's steps). Wait for it with `session.wait` or `h2 agent maps load` |
