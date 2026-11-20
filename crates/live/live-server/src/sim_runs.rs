@@ -415,7 +415,7 @@ fn private_json<T: Serialize>(status: StatusCode, body: &T) -> Response {
     let mut reply = json(status, body);
     reply
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     reply
 }
 

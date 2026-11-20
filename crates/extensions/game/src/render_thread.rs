@@ -228,6 +228,11 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ),
     (
         "bots",
+        "WEAPON_STAT_BUCKET",
+        "credits phantom shots by weapon and range into the bots' game-thread tallies",
+    ),
+    (
+        "bots",
         "PARTY_LEAVE",
         "retires the departing lobby's Clankers through guest session calls on the game thread",
     ),
