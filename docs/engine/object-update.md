@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's and slice 3's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours. Slices 4 to 13 of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1 and slice 3 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the item, scenery, device, machine, crate, creature and projectile updates (the projectile step `f8eb0` stays a callout). The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms)), `crates/hooking/hooks/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/hooking/hooks/src/sim_objects.rs` (the installer), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3 and slice 11 root, feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -112,8 +112,23 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `c3220` | none yet | `(light: eax)`, light array `[4e030c]`, stride `110`; `ret` | segment |
 | `c3260` | none yet | `(stack 0, stack 1)`; `ret 8` | segment |
 
-Slices 6 to 11 (unit, biped, damage, weapon, vehicle, small types) add
-one block each here, in the same shape.
+### Slice 11: small types
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `10b4d0` | `ITEM_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `item`; weapons, equipment and garbage inherit it | segment |
+| `10a2f0` | `SCENERY_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `scen` | segment |
+| `106790` | `DEVICE_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `devi`; machines, controls and light fixtures inherit it | segment |
+| `1152e0` | `MACHINE_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `mach` | segment |
+| `115a40` | `MACHINE_SLOT_48` | `(object: stack 0, bits: stack 1, out: stack 2) -> al`; `ret 0c`. Slot `+48` of `mach`; no dispatcher in slice 1 calls it | leaf |
+| `f8de0` | `PROJECTILE_UPDATE` | `(object: stack 0) -> al`, always 1; `ret 4`. Slot `+40` of `proj` | segment |
+| `11bce0` | `CRATE_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `bloc` | segment |
+| `118700` | `CREATURE_UPDATE` | `(object: stack 0) -> al`; `ret 4`. Slot `+40` of `crea` | segment |
+| `118b80` | `CREATURE_POST_UPDATE` | `(object: stack 0)`; `ret 4`. Slot `+44` of `crea` | segment |
+| `f8eb0` | none yet | `(object: stack 0, velocity: stack 1)`; `ret 8`. The projectile step | callout (below) |
+
+Slices 6 to 10 (unit, biped, damage, weapon, vehicle) add one block each
+here, in the same shape.
 
 ### Callouts that stay guest in this phase
 
@@ -452,6 +467,85 @@ the design) only when every callee it can reach is Rust. Function
 lookups `13bb90`, the scripted override `10aac0`, the colour
 interpolation `131c20`, and the type handlers' callees above are still
 guest code, so every slice 3 body is a segment.
+## Slice 11 bodies
+
+Each is **C** for its control flow and accesses: read at its address
+with `h2 disasm`, and compared with the lifted original by
+`tests/sim_objects_differential.rs` (the roots below, and the type
+dispatchers and walks, which reach every one of them through the
+descriptors' slots). Field names are ours and **L**. Each body file's
+header records its frame, the registers it keeps across calls and the
+order of its calls; this section records what a caller or a later slice
+relies on.
+
+**Shared rules.** The bodies keep the `xmm` registers, MXCSR and x87
+state as retail leaves them, as well as the eight integer registers:
+float arithmetic goes through `sim_objects::sse` (the `simd` model, or
+the host's binary32 operation when MXCSR rounds to nearest with PE
+sticky and both operands are ordinary), x87 sequences through
+`x87::abi` on the guest's x87 state. A body stores into its caller's
+argument slots where retail does: `f8de0` replaces the low byte of its
+object argument with the mover flag and pushes the whole dword,
+`118b80` replaces it with `118b10`'s `al`, `115a40` stores the record
+base over it. Flags are reproduced at every transfer from the last
+instruction that sets them; where that is a shift by more than one, OF
+and AF are left undefined, as the IR does.
+
+**Item `10b4d0`.** The early-mover follow for items woken by a mover
+(body `+c1` bit 0), the fall and damping of body `+94..+9c`, the wake
+for post (`bba20`, fused), and the garbage timer at body `+12e`: when it
+reaches 0 outside network mode 4 the item deletes itself (`bc190`, an
+effect when definition `+110` is set, `176780`, then `OBJECT_DELETE`
+`b8540` on its own handle). The deletion is a callout in retail order;
+the walk's slot scan reads the freed slot afterwards as retail does.
+Every object then calls `10b850(object)`, which reads the early mover's
+record ("Who reads it, and when" above).
+
+**Scenery `10a2f0`.** Advances the animation block at body `+12a`
+(`1cb710`) and, when the block's animation has more than one frame
+(`1daea0`'s answer `+14`), wakes the scenery for the post walk.
+
+**Device `106790`, machine `1152e0`, `115a40`.** The device update
+moves the power (`+140`) and position (`+134`) toward their targets or
+groups (`[4e0328]`, `c` bytes a group) and wakes the machine through
+`bd020` and `115b10`; the machine update runs after it for machines
+(type ancestry `obje`, `devi`, `mach`): a cycling machine's position
+(x87 rate, `fstp` spill), a door's blocking test (the spatial visit
+`bb050(1, 3, ..)` into a `10`-entry buffer, then `b8d30`/`b9fc0` per
+result) and its cluster bit words. `115a40` is a leaf: exit `eax`,
+`ecx` (the range end), `edx` and the flags as retail's.
+
+**Crate `11bce0`.** With body `+c0` bit 12 and a physics component,
+`1d24a0(component record, 1.0)`; unless body `+c1` bit 0, the tick
+count into body `+bc`.
+
+**Creature `118700`, `118b80`.** The AI calls stay callouts in retail
+order (`1e5bb0` with 21 arguments, `1e6360`, `1e5af0`, `1e6120`,
+`1e55d0`; after physics `1ec500`, `1e68a0`, `1e5a60`). `118700` keeps
+`fld`/`fistp` for the timer at body `+204` on the guest's x87 state.
+
+**Projectile `f8de0`.** Asks the waking mover for its displacement
+(`109a00`, `ebx` = the velocity copy), runs the step `f8eb0`, and adds
+the displacement to body `+88` when `109a00` answered. `f8eb0` stays a
+guest callout: it is `1247` bytes with 39 calls, loops over sub-steps,
+uses `fsin`, `fcos` and `fsqrt`, keeps `st(0)` live across `24590` and
+`xmm0`/`xmm1` across `30bf0`, `faa30` and `1e9700`, and deletes objects
+(`b8540`). A body for it needs the harness to compare x87 and `xmm`
+state at callouts first (below).
+
+### Not verified for slice 11
+
+- Captures from campaign (the slice's testable result): registers and
+  RAM at the n-th call of each slice 11 point, on a level with machines
+  and doors, creatures, scenery animations, crates, and items that reach
+  their garbage timer, compared with `impl.sim.native.objects` off. The
+  harness covers synthetic pools only.
+- The harness compares the eight integer registers, the flags and
+  memory at callouts, not `xmm` or x87 state. Callees that take or
+  return floats in registers (`1e6360` and `1e6120` take `xmm0`; `176780`
+  is called with `xmm0` zero) are checked only through what they store.
+- Callee `ret` sizes for `1d24a0` and `1c6620` are read from their tails
+  (`1c6620` jumps to `1c6560`, `ret 4`); the rest from their first `ret`.
 
 ## Register liveness
 

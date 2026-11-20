@@ -1206,6 +1206,25 @@ points! { ALL;
     /// (once a frame, at `0x1639bd`), the main loop `0x12b450` and the
     /// flush loop `0x213fa0` (back to back, nothing drawn).
     CACHE_COPY_STEP @ 0x0021_41f0: [fn() -> al ret 0]; "docs/runtime/cache-slots.md";
+    // Slice 11 of docs/engine/sim-rewrite-objects.md: the small type updates.
+    /// Item update: slot `+40` of `item` (weapons, equipment and garbage inherit it).
+    ITEM_UPDATE @ 0x0010_b4d0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Scenery update: slot `+40` of `scen`.
+    SCENERY_UPDATE @ 0x0010_a2f0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Device update: slot `+40` of `devi` (machines, controls and light fixtures inherit it).
+    DEVICE_UPDATE @ 0x0010_6790: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Machine update: slot `+40` of `mach`.
+    MACHINE_UPDATE @ 0x0011_52e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Machine slot `+48`: whether any of the machine's entries has its bit set in `bits`; 1 to `[out]` on a hit.
+    MACHINE_SLOT_48 @ 0x0011_5a40: [fn(object: stack 0, bits: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/object-update.md";
+    /// Projectile update: slot `+40` of `proj`; calls the projectile step `0xf8eb0`.
+    PROJECTILE_UPDATE @ 0x000f_8de0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Crate update: slot `+40` of `bloc`.
+    CRATE_UPDATE @ 0x0011_bce0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Creature update: slot `+40` of `crea`.
+    CREATURE_UPDATE @ 0x0011_8700: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Creature post-physics update: slot `+44` of `crea`.
+    CREATURE_POST_UPDATE @ 0x0011_8b80: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
