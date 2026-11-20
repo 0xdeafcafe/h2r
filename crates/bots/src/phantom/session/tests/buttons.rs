@@ -151,6 +151,143 @@ pub(super) fn gather(ph: &Phantoms, g: FakeGuest, slot: u32) -> FakeGuest {
     g
 }
 
+fn active_pad() -> HostPadState {
+    let mut pad = pad(HostButton::South);
+    pad.buttons.set(HostButton::Start, true);
+    pad.left_stick = (0.75, -0.5);
+    pad.right_stick = (-0.75, 0.5);
+    pad.left_trigger = 0.75;
+    pad.right_trigger = 1.0;
+    pad
+}
+
+#[test]
+fn match_opening_waits_for_host_opacity_and_uses_the_first_open_sample() {
+    const PLAYER_GLOBALS: u32 = 0x0077_0000;
+    const GAME_ENGINE: u32 = 0x0077_1000;
+    let (ph, mut g, slot) = game_with_latency(
+        |f| {
+            let tick = f.tick.unwrap();
+            assert_eq!(
+                f.frame,
+                u64::from(tick - 54),
+                "the brain sampled during the fade"
+            );
+            if tick < 57 {
+                pad(HostButton::East)
+            } else {
+                active_pad()
+            }
+        },
+        PhantomLatency {
+            ping_ms: Some(80.0),
+            jitter_ms: 0.0,
+        },
+    );
+    g.put_u32(points::PLAYER_GLOBALS.base, PLAYER_GLOBALS)
+        .put_u32(points::GAME_ENGINE.base, GAME_ENGINE)
+        .put_u32(
+            PLAYER_GLOBALS + guest::LOCAL_MAP,
+            DatumHandle::new(0xe000, 0).raw(),
+        );
+    for user in 1..guest::LOCAL_USER_COUNT {
+        g.put_u32(PLAYER_GLOBALS + guest::LOCAL_MAP + 4 * user, u32::MAX);
+    }
+    for (tick, opacity) in [(54, 0.5), (55, 0.25), (56, 0.125), (57, 0.0)] {
+        at_tick(&mut g, tick);
+        g.put_f32(GAME_ENGINE + guest::LOCAL_BLACK_OPACITY, opacity);
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |sample| {
+                let expected = if sample.tick == 57 {
+                    active_pad().to_gamepad(&Default::default(), false)
+                } else {
+                    input::Gamepad::default()
+                };
+                assert_eq!(sample.pad.gamepad, expected);
+                Some(fixture_record(sample.pad.gamepad))
+            },
+            guest_query,
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        g = run.guest;
+    }
+
+    // Another fade on the host's own seat is independent once play starts.
+    at_tick(&mut g, 58);
+    g.put_f32(GAME_ENGINE + guest::LOCAL_BLACK_OPACITY, 1.0);
+    let g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+}
+
+#[test]
+fn dedicated_match_follows_the_retail_opening_clock() {
+    let (ph, mut g, slot) = game(|_| active_pad());
+    for (tick, trigger) in [(55, 0.0), (56, 1.0)] {
+        at_tick(&mut g, tick);
+        g = gather(&ph, g, slot);
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), trigger);
+    }
+}
+
+#[test]
+fn a_phantom_respawn_gates_only_its_own_pad_until_the_fade_ends() {
+    let (ph, mut g, slot) = game(|_| active_pad());
+    let other = ph
+        .add(
+            Identity {
+                gamertag: "Clanker Two".into(),
+                xuid: 2,
+            },
+            None,
+            Box::new(TimedSource(
+                |_: &Frame<'_>| active_pad(),
+                PhantomLatency {
+                    ping_ms: Some(0.0),
+                    jitter_ms: 0.0,
+                },
+            )),
+        )
+        .unwrap();
+    ph.tick(&mut g, 2).unwrap();
+    game_makes(&mut g, 2, machine_id(other), [1., 0., 0.]);
+    ph.tick(&mut g, 3).unwrap();
+    let other_slot = slot_of(&g, machine_id(other)).unwrap().unwrap();
+    g = gather(&ph, g, slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+    g = gather(&ph, g, other_slot);
+    assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+
+    let player = PLAYERS_DATA + 0x21c;
+    let unit = DatumHandle::new(0xb101, 1);
+    g.put_u32(player + 0x2c, unit.raw())
+        .put_u16(OBJECTS_DATA + 0xc, unit.salt());
+    for age in 1..=10 {
+        at_tick(&mut g, 100 + age);
+        g.put_u32(player + guest::PLAYER_SPAWN_GRACE, 30 - age);
+        let run = call_with_builder(
+            &ph,
+            g,
+            slot,
+            |sample| {
+                let expected = if sample.tick == 110 {
+                    active_pad().to_gamepad(&Default::default(), false)
+                } else {
+                    input::Gamepad::default()
+                };
+                assert_eq!(sample.pad.gamepad, expected);
+                Some(fixture_record(sample.pad.gamepad))
+            },
+            guest_query,
+        );
+        assert_eq!(run.result, Ok(Ret::new(1, 8)));
+        g = gather(&ph, run.guest, other_slot);
+        assert_eq!(g.f32(OUT + 0x14).unwrap(), 1.0);
+    }
+}
+
 #[test]
 fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
     use crate::{

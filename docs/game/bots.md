@@ -2760,6 +2760,31 @@ director; its view is skipped. A phantom costs one more remote player's
 distributed updates to each client. That is the real ceiling, and it is the
 same as a full human lobby. Measure in a run (§11).
 
+### 5.4 Waiting for the black screen
+
+Phantoms send a neutral pad while the opening screen fades in and each
+time they respawn. Their brains still observe and plan on every gathered
+tick. The gather drops queued input while the fade is active and publishes
+the current pad on the first clear tick. Configured ping and jitter resume
+on the following tick.
+
+At match opening, the host reads the black overlay's opacity for each
+mapped local user from `[GAME_ENGINE] + 0xe4 + 4 * user`. Map activation
+sets it to 1 (`0x1585a4`), and the renderer draws the overlay while it is
+positive (`0x1599b0`). The opening gate clears once all those views are
+clear. Later spawns use each phantom's own clock.
+
+Retail keeps opacity for local users. A phantom uses its own spawn age
+from the player record at `+0x194`, which starts at the guest tick rate
+(`0x14f68e`) and counts down by one per player update (`0x15bb4f`).
+It models the black fade retail starts at 1 on a local spawn
+(`0x1584e6`) and reduces by `3 / tick_rate` per simulation tick, down
+to zero (`0x15c4d6..0x15c4f9`). At 30 Hz this takes ten updates.
+A dedicated host has no local views, so its opening gate also applies the
+retail hold through `round(1.5 * tick_rate)` (`0x15c4c6`). Since action
+gather precedes the update, that opens at tick 56 at 30 Hz if the phantom's
+own fade has already cleared.
+
 ## 6. Shared and different
 
 | | Local slot | Phantom peer |

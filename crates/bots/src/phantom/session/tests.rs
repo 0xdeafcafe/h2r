@@ -55,8 +55,10 @@ fn hosted() -> FakeGuest {
     g.map(points::GAME_TIME.base & !0xfff, 0x1000)
         .put_u32(points::GAME_TIME.base, TIME)
         .map(TIME, 0x10)
+        .put_u16(TIME + guest::GAME_TIME_RATE, 30)
         .put_f32(TIME + 4, 1.0 / 30.0)
         .put_u32(TIME + guest::GAME_TIME_TICK, 100);
+    g.put_u32(points::GAME_ENGINE.base, 0);
     // Players: the host at 0; room for phantoms.
     g.map(points::PLAYERS.base & !0xfff, 0x1000)
         .put_u32(points::PLAYERS.base, PLAYERS_HEADER)
