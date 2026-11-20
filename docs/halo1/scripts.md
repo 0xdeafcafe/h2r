@@ -210,6 +210,11 @@ squads in another lane.
 The later [encounter control pass](ai-control.md) binds the counted
 `ai_place` overload and Halo 2's `ai_living_fraction` evaluator. It also
 lowers scenario-specific controls into native orders and migrations.
+**Built:** it binds Halo 1's global switch `ai` to Halo 2's unnamed 278,
+whose evaluator writes the same AI globals byte that `ai_update` checks
+(evidence in [ai-control.md](ai-control.md)). A scan of the call nodes in
+all 23 retail Halo 1 maps found no other called builtin without a binding,
+rename, adapter or compiler lowering.
 
 Historical coverage, share of builtin calls (`translation_coverage`):
 

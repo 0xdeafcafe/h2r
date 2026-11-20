@@ -1114,6 +1114,64 @@ fn calls_naming_an_unresolved_flag_are_stubbed() {
     assert!(body[1].atom() && body[1].opcode() == VOID);
 }
 
+/// `(ai false)` and `(ai true)` call Halo 2's AI switch (builtin 278) with
+/// the boolean unchanged, as a direct translation.
+#[test]
+fn ai_switches_all_ai_through_halo2_s_enable_builtin() {
+    use crate::aicontrol::AI_ENABLE;
+    let c = Catalog::new(
+        vec![
+            f("begin", PASS, 0x2000, &[]),
+            f("ai", VOID, ORDINARY, &[BOOL]),
+            // The commonest parse marks fixed signatures.
+            f("print", VOID, ORDINARY, &[STRING]),
+        ],
+        h1_types(),
+        ["startup", "dormant", "continuous", "static", "stub"]
+            .map(String::from)
+            .to_vec(),
+    )
+    .unwrap();
+    let mut h2 = h2_target();
+    h2.builtins.insert(
+        "ai".into(),
+        H2Builtin {
+            index: AI_ENABLE,
+            return_type: VOID,
+            parameters: vec![BOOL],
+            special: false,
+        },
+    );
+    let table = Table::build(&c, &h2);
+    let tr = table.builtin(1).unwrap();
+    assert_eq!(tr.kind, Kind::Direct);
+    assert_eq!(tr.target.as_ref().map(|(_, b)| b.index), Some(AI_ENABLE));
+    let mut bl = Builder::default();
+    let off = bl.atom(BOOL, BOOL, "false", 0);
+    let off = bl.call(1, VOID, "ai", &[off]);
+    let on = bl.atom(BOOL, BOOL, "true", 1);
+    let on = bl.call(1, VOID, "ai", &[on]);
+    let main = bl.call(0, VOID, "begin", &[off, on]);
+    let t = read(&scenario(&bl, &[("main", 0, VOID, main)], &[])).unwrap();
+    let out = compile(&t, &c, &table, &h2, Missing::Stub, &[]).unwrap();
+    assert!(out.missing.is_empty(), "{:?}", out.missing);
+    let s = hs::Scenario::decode(&out.scenario_bytes(BASE), BASE).unwrap();
+    assert_eq!(s.reachable(s.roots()).unwrap().len(), out.nodes.len());
+    let body = main_body(&s);
+    assert_eq!(body.len(), 2);
+    for (call, value) in body.iter().zip([0, 1]) {
+        assert!(!call.atom() && !call.script_call());
+        assert_eq!(call.opcode(), AI_ENABLE);
+        let head = s.node(Datum(call.data())).unwrap();
+        assert_eq!(s.string(head.string_offset()).unwrap(), "ai");
+        let arg = s.node(head.next()).unwrap();
+        assert!(arg.atom() && !arg.global());
+        assert_eq!(arg.value_type(), BOOL);
+        assert_eq!(arg.data() & 0xff, value);
+        assert_eq!(arg.next(), Datum::NULL);
+    }
+}
+
 /// `(ai_status squad_a)` becomes a ladder of `if`s on Halo 2's
 /// `ai_combat_status` and its engine globals, giving Halo 1's scale.
 #[test]
