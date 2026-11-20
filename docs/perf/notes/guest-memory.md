@@ -507,7 +507,7 @@ at `-O1` does not point at.
 ## Guest CPU: SSE, REP copies and D3D entry (2026-11-15)
 
 `H2_SSE_NATIVE` (on by default; `0` disables it) enables guarded native binary32 arithmetic with observable
-MXCSR preserved; [sse-native.md](../lifter/sse-native.md) gives the proof and escape
+MXCSR preserved; [sse-native.md](../../lifter/sse-native.md) gives the proof and escape
 hatch. The runtime ABI and Rust integer authority are unchanged.
 
 The per-access `h2_fast_copy` already used host `memcpy`; switching its
