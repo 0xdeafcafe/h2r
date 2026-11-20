@@ -449,10 +449,14 @@ fn object_cases(o: &mut Oracle<'_>) {
             |_, m| {
                 objects(m);
                 m.word(STACK + 4, HANDLE);
+                // Keep the original case 1 and 2 inputs: words starting at
+                // ModR/M are ordinary names. Also exercise both real names.
                 let key = match n % 4 {
                     0 => 0,
-                    1 => image_word(m, sim::object::NAME_ONE),
-                    2 => image_word(m, sim::object::NAME_ZERO),
+                    1 if n == 1 => image_word(m, 0x000b_abaa),
+                    2 if n == 2 => image_word(m, 0x000b_abb6),
+                    1 => image_word(m, 0x000b_abab),
+                    2 => image_word(m, 0x000b_abb7),
                     3 if n % 12 == 11 => image_word(m, 0x000b_cdb3),
                     _ => 13,
                 };

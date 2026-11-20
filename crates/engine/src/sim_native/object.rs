@@ -3,8 +3,9 @@ use crate::function_eval::constant::ONE;
 use crate::points::OBJECTS;
 
 pub const DESCRIPTORS: u32 = 0x0046_8630;
-pub const NAME_ONE: u32 = 0x000b_abaa;
-pub const NAME_ZERO: u32 = 0x000b_abb6;
+// The imm32 follows the opcode and ModR/M byte in both CMP EDI instructions.
+pub const NAME_ONE: u32 = 0x000b_abab;
+pub const NAME_ZERO: u32 = 0x000b_abb7;
 const OVERRIDE_VALUE: u32 = 0x0010_aac0;
 const AFTER_OVERRIDE: u32 = 0x000b_ab93;
 const AFTER_IMPORT: u32 = 0x000b_abe2;
