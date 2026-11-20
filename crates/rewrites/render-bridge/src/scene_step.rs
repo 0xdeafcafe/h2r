@@ -53,6 +53,9 @@ impl GuestRead for Ro<'_> {
 
 #[derive(Default)]
 struct Step {
+    // SceneId can repeat after a snapshot load. A present belongs to one
+    // particular begin/seal interval, even when guest frame numbers repeat.
+    sequence: u64,
     builder: SceneBuilder,
     /// The tick of the scene sealed last.
     tick: Option<u32>,
@@ -136,6 +139,7 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     if step.builder.is_building() {
         UNSEALED.fetch_add(1, Ordering::Relaxed);
     }
+    step.sequence = step.sequence.wrapping_add(1);
     step.builder.begin(id(m));
     step.light_open = false;
     step.shadow_open = false;
@@ -526,6 +530,26 @@ pub fn with_open<R>(f: impl FnOnce(Option<(&FrameScene, &View)>) -> R) -> R {
     with_step(|step| f(step.builder.open()))
 }
 
+/// A host which joins the typed scene to the owned device work seen
+/// during the same begin/seal interval. Invoked without the builder lock.
+#[derive(Clone, Copy)]
+pub struct SealObserver {
+    pub sealed: fn(u64, Arc<FrameScene>),
+    pub reset: fn(),
+}
+
+static OBSERVER: Mutex<Option<SealObserver>> = Mutex::new(None);
+
+pub fn set_seal_observer(observer: Option<SealObserver>) {
+    *OBSERVER.lock().unwrap_or_else(|e| e.into_inner()) = observer;
+}
+
+/// Identifies the scene being built at a guest Swap. A present outside a
+/// render frame cannot be joined to the last scene by tick number alone.
+pub fn open_identity() -> Option<(u64, SceneId)> {
+    with_step(|step| Some((step.sequence, step.builder.scene()?.id)))
+}
+
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
     let sealed = with_step(|step| {
@@ -533,10 +557,14 @@ pub fn seal() {
         let ticks_run = step.tick.map_or(0, |t| tick.wrapping_sub(t).min(u32::from(u8::MAX)) as u8);
         let scene = step.builder.seal(Stamp { published: Some(Instant::now()), ticks_run })?;
         step.tick = Some(tick);
-        Some((scene, step.builder.free_list().clone()))
+        Some((step.sequence, scene, step.builder.free_list().clone()))
     });
-    let Some((scene, free)) = sealed else { return };
+    let Some((sequence, scene, free)) = sealed else { return };
     SEALED.fetch_add(1, Ordering::Relaxed);
+    let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = observer {
+        (o.sealed)(sequence, Arc::clone(&scene));
+    }
     let old = LAST.lock().unwrap_or_else(|e| e.into_inner()).replace(scene);
     if let Some(old) = old {
         free.recycle(old);
@@ -547,6 +575,10 @@ pub fn seal() {
 /// dropped at the next begin.
 pub fn forget() {
     with_step(|step| step.builder.cut(Cut::LOAD));
+    let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(o) = observer {
+        (o.reset)();
+    }
     crate::entry_census::forget();
     crate::carried_slots::forget();
 }

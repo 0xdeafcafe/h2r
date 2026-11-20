@@ -140,6 +140,12 @@ pub mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 pub mod opaque_streams;
 #[cfg(feature = "gpu")]
+pub mod frame_cutover;
+#[cfg(feature = "gpu")]
+pub mod frame_owner;
+#[cfg(feature = "gpu")]
+pub mod frame_parity;
+#[cfg(feature = "gpu")]
 pub mod scene_glue;
 pub mod new_maps;
 #[cfg(feature = "test-maps")]
