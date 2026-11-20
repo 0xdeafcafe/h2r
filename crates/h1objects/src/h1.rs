@@ -1543,3 +1543,117 @@ impl Foot {
         Ok(Self { kinds })
     }
 }
+
+/// H1 0x45880 and 0x4592e address the powered-seat array with stride
+/// 0x44. The two transition times are authored in seconds.
+pub fn powered_seats(map: &H1Map, root: &[u8]) -> Result<Vec<[f32; 2]>> {
+    elements(map, root, 0x2cc, 0x44)?
+        .into_iter()
+        .map(|p| {
+            let times = [f32_at(p, 4), f32_at(p, 8)];
+            if times.iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err(Error::Invalid(format!(
+                    "invalid powered-seat times {times:?}"
+                )));
+            }
+            Ok(times)
+        })
+        .collect()
+}
+
+/// H1 0x83cbf..0x83f9f. Ignore nonpositive multipliers, as the source
+/// solver does. Two source materials can share a destination index only
+/// when their responses agree.
+#[derive(Debug)]
+pub struct GroundContacts {
+    pub wheels: Vec<(String, tags::object::direct_drive::WheelDrag)>,
+    pub surfaces: Vec<(u16, [f32; 5])>,
+    pub equal_slopes: bool,
+}
+
+impl GroundContacts {
+    pub fn read(map: &H1Map, physics: &[u8], materials: &[String]) -> Result<Self> {
+        use tags::object::direct_drive::WheelDrag;
+        let groups = elements(map, physics, 0x68, 0x80)?;
+        let mass = f32_at(physics, 8);
+        let mut wheels = Vec::new();
+        for p in elements(map, physics, 0x74, 0x80)? {
+            let group = i16_at(p, 0x20);
+            if group < 0 {
+                continue;
+            }
+            let name = name32(p, 0);
+            let flags = groups.get(group as usize).ok_or_else(|| {
+                Error::Invalid(format!("wheel {name} has missing powered group {group}"))
+            })?;
+            let axis = u16_at(p, 0x5c);
+            if axis > 3 || vec3(p, 0x44) != [1.0, 0.0, 0.0] || vec3(p, 0x50) != [0.0, 0.0, 1.0] {
+                return Err(Error::Invalid(format!(
+                    "wheel {name} has unsupported friction frame or axis {axis}"
+                )));
+            }
+            if !(mass.is_finite() && mass > 0.0) {
+                return Err(Error::Invalid(format!(
+                    "wheel {name} has invalid vehicle mass {mass}"
+                )));
+            }
+            let rate = 30.0 * f32_at(physics, 0x20) * (f32_at(p, 0x2c) / mass);
+            wheels.push((
+                crate::coll::sid_name(&name),
+                WheelDrag {
+                    mode: u32::from(axis) | ((u32_at(flags, 0x20) & 1) << 2),
+                    rate,
+                    parallel: f32_at(p, 0x60),
+                    perpendicular: f32_at(p, 0x64),
+                },
+            ));
+        }
+        let globals = map
+            .find(Group::new(b"matg"), r"globals\globals")
+            .ok_or_else(|| Error::Invalid("missing globals material responses".into()))?;
+        let mut mapped = std::collections::BTreeMap::new();
+        for (i, bytes) in elements(map, map.tag_data(globals)?, 0x194, 0x374)?
+            .into_iter()
+            .enumerate()
+        {
+            let mut factors = [0x94, 0x98, 0x9c, 0xa0, 0xa4].map(|offset| {
+                let value = f32_at(bytes, offset);
+                if value > 0.0 { value } else { 1.0 }
+            });
+            // 0x83d26 compares the source phys mass. 0x83d31 skips the
+            // multiplier above 7500 (unordered values cannot occur here).
+            if mass > 7500.0 {
+                factors[0] = 1.0;
+            }
+            let (_, global) = h1convert::materials::MATERIALS
+                .get(i)
+                .ok_or_else(|| Error::Invalid(format!("unknown ground material {i}")))?;
+            let mut indices = materials
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| name.as_str() == *global)
+                .peekable();
+            if indices.peek().is_none() && factors != [1.0; 5] {
+                return Err(Error::Invalid(format!(
+                    "no target ground material {global}"
+                )));
+            }
+            for (index, _) in indices {
+                let index = u16::try_from(index)
+                    .map_err(|_| Error::Invalid(format!("ground material index {index}")))?;
+                if let Some(old) = mapped.insert(index, factors)
+                    && old != factors
+                {
+                    return Err(Error::Invalid(format!(
+                        "ambiguous ground response for {global}"
+                    )));
+                }
+            }
+        }
+        Ok(Self {
+            wheels,
+            surfaces: mapped.into_iter().filter(|(_, v)| *v != [1.0; 5]).collect(),
+            equal_slopes: f32_at(physics, 0x2c) == f32_at(physics, 0x30),
+        })
+    }
+}

@@ -117,19 +117,7 @@ const ALLOWED: &[Rule] = &[
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
-    ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
-    ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
     ("vehi", "block_2f8[]*", "value", "native vehicle phantom"),
-    ("vehi", "unknown_218", "value", "aircraft controller subtype"),
-    ("vehi", "unknown_244", "value", "vehicle priority comparison at 0x1ab48a"),
-    ("vehi", "unknown_25c", "value", "native vehicle controller coefficient at +0x25c"),
-    ("vehi", "unknown_270", "value", "native vehicle controller coefficient at +0x270"),
-    ("vehi", "unknown_274", "value", "native vehicle controller coefficient at +0x274"),
-    ("vehi", "unknown_278", "value", "native vehicle controller coefficient at +0x278"),
-    ("vehi", "unknown_27c", "value", "native vehicle controller coefficient at +0x27c"),
-    ("vehi", "unknown_280", "value", "native vehicle controller coefficient at +0x280"),
-    ("vehi", "unknown_2b0", "value", "native vehicle controller coefficient at +0x2b0"),
-    ("vehi", "unknown_2bc", "value", "native vehicle controller coefficient at +0x2bc"),
 ];
 
 /// One field still holding a role's value or a retail reference.

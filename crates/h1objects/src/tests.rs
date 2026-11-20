@@ -754,7 +754,8 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         vehicle_type: ROLE_VEHICLE_TYPE as u16,
         flags: 0xdead_00c0,
         weapons: &[weapon],
-        role: None,
+        contacts: None,
+        seat_power: &[],
         points: &[],
         attachments: &[],
         functions: &[],
@@ -785,6 +786,7 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
         },
     )
     .unwrap();
+    want.set("unknown_25c", word(30f32.to_bits())).unwrap();
     want.set("vehicle_type", Val::Enum(ROLE_VEHICLE_TYPE))
         .unwrap();
     let mut s = defs::default_record(def.child(VEHI_SEATS).unwrap());
@@ -851,12 +853,10 @@ fn rebuilt_vehicle_is_the_definition_with_seats_and_the_turret_role() {
     }
 }
 
-/// A vehicle with a role: the role's root, block and seat words, its
-/// flags' high half under Halo 1's low half, and Halo 1's type over the
-/// role's.
+/// The authored wheel frame, per-second drag and material scale survive encoding.
 #[test]
-fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
-    use crate::rebuild::{VehicleRole, VehicleSpec};
+fn rebuilt_vehicle_keeps_source_drag_and_direction_records() {
+    use crate::rebuild::VehicleSpec;
     use tags::defs::{self, Defs, Target, Val};
     let obj = crate::h1::Object {
         texture_override: 0,
@@ -874,16 +874,6 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         attachments: Vec::new(),
         widgets: Vec::new(),
         change_colours: Vec::new(),
-    };
-    let role = VehicleRole {
-        member: "jeep".to_owned(),
-        controller: vec![("unknown_2b0".into(), 1.5f32.to_bits())],
-        friction: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x32)]),
-        friction_steered: Some(vec![("unknown_8".into(), 0x4160_0000), ("unknown_4".into(), 0x26)]),
-        hover: None,
-        hover_each: Vec::new(),
-        hover_at: Vec::new(),
-        wheel_shapes: false,
     };
     let points = [
         crate::rebuild::Point {
@@ -903,6 +893,24 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
             steered: false,
         },
     ];
+    let contacts = crate::h1::GroundContacts {
+        wheels: points
+            .iter()
+            .map(|p| {
+                (
+                    p.marker.clone(),
+                    tags::object::direct_drive::WheelDrag {
+                        mode: 5,
+                        rate: 2.0,
+                        parallel: 0.75,
+                        perpendicular: 0.45,
+                    },
+                )
+            })
+            .collect(),
+        surfaces: vec![(19, [0.125, 1.0, 1.0, 1.0, 1.0])],
+        equal_slopes: true,
+    };
     let seat = crate::h1::Seat {
         camera_angles: [0; 5],
         flags: 0x14,
@@ -941,7 +949,8 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         vehicle_type: 1,
         flags: 0x0000_0cd1,
         weapons: &[],
-        role: Some(&role),
+        contacts: Some(&contacts),
+        seat_power: &[],
         points: &points,
         attachments: &[],
         functions: &[],
@@ -953,7 +962,19 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
     let word = |w: u32| Some(Val::Bytes(w.to_le_bytes().to_vec()));
     assert_eq!(got.at("vehicle_type"), Some(&Val::Enum(1)));
     assert_eq!(got.at("vehicle_flags"), Some(&Val::Int(0xcd1)));
-    assert_eq!(got.at("unknown_2b0").cloned(), word(1.5f32.to_bits()));
+    use tags::object::direct_drive::{CONTACT_DATA, CONTACT_HEADER, CONTACT_MAGIC, WHEEL_BYTES};
+    let meta = |offset| got.at(&format!("block_2f8[0].unknown_{offset:x}")).cloned();
+    let wheel = CONTACT_DATA + CONTACT_HEADER;
+    let ice = wheel + 2 * WHEEL_BYTES;
+    assert_eq!(meta(CONTACT_DATA), word(CONTACT_MAGIC));
+    assert_eq!(meta(CONTACT_DATA + 4), word(0x10102));
+    assert_eq!(meta(wheel), word(5));
+    assert_eq!(meta(wheel + 4), word(2f32.to_bits()));
+    assert_eq!(meta(wheel + 8), word(0.75f32.to_bits()));
+    assert_eq!(meta(wheel + 12), word(0.45f32.to_bits()));
+    assert_eq!(meta(ice), word(19));
+    assert_eq!(meta(ice + 4), word(0.125f32.to_bits()));
+    assert_eq!(got.at("unknown_2b0").cloned(), word(0));
     assert_eq!(
         got.at("block_2f8[0].unknown_48").cloned(),
         word(0.5_f32.to_bits())
@@ -992,8 +1013,7 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         got.at("block_1c8[0].label"),
         Some(&Val::text("warthog_d"))
     );
-    // Halo 1's powered points as friction points with the role's words;
-    // the role's gear, its curve pointer kept as a word.
+    // The contact marker and region come from the source powered point.
     assert_eq!(
         got.at("block_2f0[0].string_0"),
         Some(&Val::text("tire_front_left"))
@@ -1002,22 +1022,21 @@ fn rebuilt_vehicle_takes_its_types_role_and_halo_1s_type() {
         got.at("block_2f0[0].string_44"),
         Some(&Val::text("left_front_tire"))
     );
-    assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0x4160_0000));
+    assert_eq!(got.at("block_2f0[1].unknown_8").cloned(), word(0));
     // Each point's region index is its own, never the role's: the front
     // point's region is the model's third, the back point names none.
     assert_eq!(got.at("block_2f0[0].unknown_48").cloned(), word(2));
     assert_eq!(got.at("block_2f0[1].unknown_48").cloned(), word(0xffff_ffff));
     assert_eq!(got.at("unknown_1f2"), Some(&Val::Bytes(vec![0, 0])));
-    // The front point steers with the role's steering words, the back one
-    // takes the others.
-    assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(0x26));
-    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(0x3a));
+    // Halo 1 countersteers the second powered group.
+    assert_eq!(got.at("block_2f0[0].unknown_4").cloned(), word(6));
+    assert_eq!(got.at("block_2f0[1].unknown_4").cloned(), word(10));
     assert!(matches!(got.at("block_2e8"), Some(Val::Block(b)) if b.is_empty()));
     assert_eq!(got.at("block_268[0].speed_ratio"), Some(&Val::Float(-1.0)));
     assert_eq!(got.at("block_268[1].speed_ratio"), Some(&Val::Float(1.0)));
     let again = defs::to_built(def, &got, &mut |_| None).unwrap();
     assert_eq!(defs::from_built(def, &again).unwrap(), got);
-    // Turret words stay off a vehicle with its own role.
+    // This ground vehicle has no vertical speed.
     assert_eq!(got.at("unknown_23c").cloned(), word(0));
     // The driver's seat names its camera track; the passenger's names
     // none (the engine's default unit track).
@@ -2398,35 +2417,6 @@ fn wheel_nodes_are_the_gripping_points_nodes_and_below() {
     assert!(wheel_nodes(&root, &nodes).is_empty());
 }
 
-/// Each phantom sphere takes the nearest friction point left: Halo 1's
-/// back-first warthog tires come out in the spheres' front-first order,
-/// and points past the last sphere keep their own order.
-#[test]
-fn friction_points_follow_the_phantom_spheres() {
-    use crate::convert::sphere_order;
-    // Halo 1's order: back left, back right, front left, front right.
-    let points = [
-        [-0.6, 0.4, 0.0],
-        [-0.6, -0.4, 0.0],
-        [0.7, 0.4, 0.0],
-        [0.7, -0.4, 0.0],
-    ];
-    // The spheres' order: front left, front right, back left, back right.
-    let spheres = [
-        [0.67, 0.388, 0.19],
-        [0.67, -0.388, 0.19],
-        [-0.63, 0.388, 0.19],
-        [-0.63, -0.388, 0.19],
-    ];
-    assert_eq!(sphere_order(&points, &spheres), vec![2, 3, 0, 1]);
-    // Fewer spheres than points: the rest follow in order.
-    assert_eq!(sphere_order(&points, &spheres[..1]), vec![2, 0, 1, 3]);
-    // No spheres (a hover vehicle): Halo 1's order.
-    assert_eq!(sphere_order(&points, &[]), vec![0, 1, 2, 3]);
-    // More spheres than points: each point once.
-    assert_eq!(sphere_order(&points[..2], &spheres), vec![0, 1]);
-}
-
 /// A weapon fires Halo 1's effects: each barrel takes its own trigger's
 /// firing effects (firing, misfire, empty) in order, with the damage the
 /// parts give, and a barrel whose trigger has none gets none (before
@@ -2522,28 +2512,10 @@ fn a_weapon_fires_and_reloads_with_halo1_s_effects() {
     assert_eq!(target(&r, "pickup_sound"), None);
 }
 
-/// A vehicle's role is taken over the base vehicles of its type whose
-/// friction and hover points are nearest Halo 1's powered points: the
-/// ghost's three against Coagulation's ghost (3), spectre (4) and wraith
-/// (6) is the ghost alone; a tie keeps every member it ties.
+/// Each hover marker keeps its authored lift law in either array order.
 #[test]
-fn vehicle_role_takes_the_members_nearest_halo_1s_points() {
-    use crate::rebuild::nearest_members;
-    assert_eq!(nearest_members(&[3, 4, 6], 3), vec![0]);
-    assert_eq!(nearest_members(&[3, 4, 6], 5), vec![1, 2]);
-    assert_eq!(nearest_members(&[3, 4, 6], 9), vec![2]);
-    assert_eq!(nearest_members(&[0, 0], 0), vec![0, 1]);
-    assert_eq!(nearest_members(&[4], 8), vec![0]);
-    assert!(nearest_members(&[], 3).is_empty());
-}
-
-/// With a one-member role whose hover points match the vehicle's in
-/// number, point `i` takes the member's hover point `i`'s own words (the
-/// retail ghost's back point is stronger than its front pair); with a
-/// count that differs, every point takes the majority.
-#[test]
-fn hover_points_take_their_paired_points_words() {
-    use crate::rebuild::{VEHI_HOVER, VehicleRole, VehicleSpec};
+fn hover_points_keep_their_source_lift() {
+    use crate::rebuild::{VEHI_HOVER, VehicleSpec};
     use tags::defs::{self, Defs, Val};
     let obj = crate::h1::Object {
         texture_override: 0,
@@ -2563,22 +2535,9 @@ fn hover_points_take_their_paired_points_words() {
         change_colours: Vec::new(),
     };
     let f = |v: f32| v.to_bits();
-    let role = VehicleRole {
-        hover: Some(vec![("unknown_8".into(), f(1.85))]),
-        hover_each: vec![
-            vec![("unknown_8".into(), f(3.75))],
-            vec![("unknown_8".into(), f(1.85))],
-            vec![
-                ("unknown_8".into(), f(1.85)),
-                ("unknown_10".into(), f(0.45)),
-            ],
-        ],
-        hover_at: vec![[-0.4, 0.0, 0.0], [0.3, 0.3, 0.0], [0.3, -0.3, 0.0]],
-        ..Default::default()
-    };
-    let point = |m: &str| crate::rebuild::Point {
-            sphere: [0.75, 0.0, 0.125, 0.25],
-            antigravity: None,
+    let point = |m: &str, lift, height| crate::rebuild::Point {
+        sphere: [0.75, 0.0, 0.125, 0.25],
+        antigravity: Some([lift, 0.0, height, 0.01, 0.7, 0.5]),
         marker: m.into(),
         region: String::new(),
         region_index: -1,
@@ -2599,7 +2558,8 @@ fn hover_points_take_their_paired_points_words() {
             vehicle_type: 4,
             flags: 0,
             weapons: &[],
-            role: Some(&role),
+            contacts: None,
+            seat_power: &[],
             points,
             attachments: &[],
             functions: &[],
@@ -2609,15 +2569,20 @@ fn hover_points_take_their_paired_points_words() {
         defs::from_built(def, &root).unwrap()
     };
     let word = |w: f32| Some(Val::Bytes(f(w).to_le_bytes().to_vec()));
-    let got = build(&[point("hull"), point("left"), point("right")]);
+    use tags::object::direct_drive::GRAVITY_RATIO;
+    let got = build(&[
+        point("hull", 3.75, 0.0),
+        point("left", 1.85, 0.0),
+        point("right", 1.85, 0.45),
+    ]);
     let at = |r: &defs::Record, i: usize, k: &str| r.at(&format!("{VEHI_HOVER}[{i}].{k}")).cloned();
-    assert_eq!(at(&got, 0, "unknown_8"), word(3.75));
-    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
+    assert_eq!(at(&got, 0, "unknown_8"), word(3.75 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85 * GRAVITY_RATIO));
     assert_eq!(at(&got, 2, "unknown_10"), word(0.45));
     assert_eq!(at(&got, 1, "unknown_10"), word(0.0));
-    let got = build(&[point("a"), point("b")]);
-    assert_eq!(at(&got, 0, "unknown_8"), word(1.85));
-    assert_eq!(at(&got, 1, "unknown_8"), word(1.85));
+    let got = build(&[point("a", 1.85, 0.45), point("b", 1.85, 0.0)]);
+    assert_eq!(at(&got, 0, "unknown_8"), word(1.85 * GRAVITY_RATIO));
+    assert_eq!(at(&got, 1, "unknown_8"), word(1.85 * GRAVITY_RATIO));
 }
 
 /// A wheel's pieces are cut at the hull's lowest point and what is left

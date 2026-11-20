@@ -47,26 +47,47 @@ integration run. There is no new pass count or play result yet.
   both engines uses gravity times penetration divided by depth, minus
   damping times normal velocity (`0x83df4`, `0x2069b6`). Converting the
   velocities and force units multiplies the damping coefficient by 30.
-- The remaining native root values are the vehicle priority compared at
-  `0x1ab48a` (`+0x244`), the unit input activation rate at `0xf045b`
-  (`+0x25c`), the two impulse gains selected at `0xe538c`
-  (`+0x274/+0x278`), and the contact friction coefficients
-  (`+0x2b0/+0x2bc`). H2 switches tire friction laws at a per-point slip
-  threshold, using a square-root coefficient and normal load at
-  `0x207017` and `0x2070e8`. H1 applies longitudinal and transverse drag
-  at `0x80f80` and `0x83e30`. The speed ramps do not determine those
-  gains or the native tire slip and material response. For example, the
-  Coagulation Warthog's first tire has gain 14 at `+0x08` and a slip
-  threshold of 7 at `+0x18`. The Scorpion's are 40 and 200. Blood
-  Gulch's Warthog instead has two directional drag factors per point,
-  0.45/0.65 at the rear and 0.75/0.45 at the front. The Scorpion has
-  1/1 on its tracks. Aircraft retain
-  their subtype and flight gains (`+0x218/+0x270/+0x27c/+0x280`).
-  The dispatch table at `0xf069c` selects their controllers, which use
-  those terms for flight at `0xf23b9`, `0xf2875`, `0xf2aab` and
-  `0xf5a89`. The seat entry test needs positive distance and angle
-  limits (`0xc9040`). `+0x258` and `+0x2e4` keep their definition defaults.
-  Neither has an identified read in the ground or hover drive equations.
+  H1 gravity is 0.0035651792 units/tick² at `0x1fb648`, or 3.20866
+  units/s². H2 initializes gravity to 4.17126 at `0x1eb584`. The ratio
+  scales hover strength and inversely scales hover damping and ground
+  spring depth, preserving each force at the same height and velocity.
+  The converted vehicle's gravity step uses its source physics multiplier
+  even with empty seats (H1 `0x8399d`, H2 `0x1ced8d`).
+- **Built. Tire drag and materials.** H1 projects relative point velocity and
+  commanded wheel speed into the contact plane at `0x83e30..0x83f9f`.
+  `0x80f80` applies separate drag factors along and across the friction axis.
+  Point mass, ground friction, slope and wheel alignment scale the result.
+  The Warthog's rear tires use 0.45/0.65 and its front tires use 0.75/0.45.
+  H1 globals supply five surface modifiers. The first applies to masses up to
+  7,500 at `0x83d26`, so ice scales the Warthog's drag by 0.125 and leaves
+  the Scorpion's unchanged. The H2 wheel gains are zero. The engine adds
+  H1 force and moment after `0x206090` computes the contact frame and spring
+  and before `0x205757` consumes them. Converted rigid bodies carry the H1
+  center of mass and inertia tensor.
+- **Built. Controls and impulses.** H1 samples crouch in one tick at
+  `0x394be`. H2 reads a rate at `+0x25c` and multiplies by the tick
+  duration at `0xf045b`, giving 30/s at H1's 30 Hz. Driver and gunner
+  power rise and fall separately using the two times in each H1 powered-seat
+  record (`0x45880`, `0x4592e`). H1 clears attached vehicles' velocities
+  at `0x394a1`. Both extra rider impulse gains at H2 `0xe538c` are zero.
+- **Built. Vehicle priority.** H2's AI ram decision compares two vehicle
+  ranks at `0x1ab48a`. The H1 driving decisions at `0x16f954` and
+  `0x16fbc1` read distances from the acting vehicle. The converter gives
+  every vehicle equal rank. This is a translation of the priority comparison.
+  The H2 AI still chooses when to ram.
+- **Built. Aircraft.** The source type, physics radius and powered-group
+  count select the motor. H1 `0x38ac0` drives dropship collective and
+  forward thrust, `0x37760` drives the positive-radius lifepod, and
+  `0x37ab0` banks the Banshee and uses the acceleration bound at
+  `0x35fb0`. A scripted dropship hover suspends the motor and preserves
+  the rotor setting (H1 `0x38b14`, H2 hold flag at `0xf0ffe`).
+  A source vehicle without physics skips the dispatch at
+  `0x398ea`. Converted aircraft supply the resulting forces and moments
+  before the H2 contact solve. H2 supplies the contact geometry and rigid-body
+  integration.
+- The seat entry test needs positive distance and angle limits (`0xc9040`).
+  `+0x258` and `+0x2e4` keep their definition defaults. Neither has an
+  identified read in the ground or hover drive equations.
 - Biped models other than the Halo 1 player keep the native damage section array that `object_new`
   indexes at damage info `+0xbc`, and native overshield shaders at `+0xe8/+0xf0`. The source modifier supplies both ordinary shield views at `+0x7c/+0x84`. The per-model camouflage shader is
   H2-specific. Halo 1 implements camouflage through its globals.
@@ -255,6 +276,41 @@ placement errors cannot install an incomplete map. The campaign lean
 ladder keeps model materials at every step. The audit accepts the native
 player emblem added by the converter only in an appended slot. Each original slot must name its
 converted H1 shader or a permutation-specific numeric shader in the same tree.
+
+### Retail vehicle scan
+
+**Built.** An offline scan of both Xbox discs found no inputs that trigger
+the vehicle-drive conversion errors on the ten campaign or thirteen
+multiplayer maps.
+It read every `vehi` entry, including vehicles with no placements. Counts
+are per map, so a vehicle present on two maps counts twice.
+
+| Source maps | Maps | Vehicle tags | Drive entries | Friction points | Hover points | Powered-seat records |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Campaign | 10 | 57 | 55 | 66 | 51 | 58 |
+| Multiplayer | 13 | 39 | 39 | 156 | 39 | 39 |
+
+The two redirected tags are a10’s Halo ring (scenery) and b30’s falling
+box (crate). c20 has no vehicle tags. Of the 94 vehicle entries, 90 have
+a positive-volume solid collision cell. The other four supply 18 or 19
+positive-radius mass points each. All 89 vehicle physics tags have inertia
+data. The five vehicles without a physics tag have collision hulls.
+
+All 222 friction points use the supported forward/up frame. Their axis is
+0 on 146 points and 1 on 76. Powered groups and normalized marker names
+are consistent on every vehicle. The maximum is eight friction contacts
+per vehicle (limit 16) and 136 bytes of wheel and surface data (limit 264).
+Every vehicle fits the two seat-power channels.
+
+Each source map has 32 material responses. The scan applied the source
+mass threshold and resolved the responses for all 41 ground-vehicle
+entries against each of the three destination globals tables. Each table
+contains 182 materials, with ice at index 101. No response was missing
+or conflicted with another response at the same destination index.
+
+The ignored `retail_vehicle_drive_laws_round_trip` regression reads the
+map directory, selects each map’s conversion base, and rebuilds the drive
+record separately from its attachments.
 
 ## Retail fallback inventory
 
