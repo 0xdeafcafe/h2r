@@ -321,6 +321,7 @@ impl Dispatch {
     /// and otherwise replaced by `refuse(addr, name)` (enabled).
     pub(crate) fn fork(
         &self,
+        context_only: bool,
         keep: impl Fn(u32, &str) -> bool,
         refuse: impl Fn(u32, &str) -> Handler,
     ) -> Dispatch {
@@ -328,7 +329,7 @@ impl Dispatch {
             .overrides
             .iter()
             .map(|(&addr, o)| {
-                let o = if o.context_only || keep(addr, &o.name) {
+                let o = if (context_only && o.context_only) || keep(addr, &o.name) {
                     o.clone()
                 } else {
                     Override {

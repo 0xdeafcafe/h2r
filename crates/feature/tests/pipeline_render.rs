@@ -198,6 +198,7 @@ static ADDRS: Addrs = Addrs {
         record_len: CACHE_RECORD,
         owner: 4,
     }],
+    scene: None,
     draw_boundary: None,
 };
 

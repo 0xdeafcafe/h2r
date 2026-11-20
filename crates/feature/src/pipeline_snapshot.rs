@@ -42,6 +42,18 @@ impl Footprint {
         }
     }
 
+    /// A prepared scene has yet to publish any live side effects. Its
+    /// owner can retry it if another thread changed an observed page.
+    pub(super) fn still_current(&self, live: &Guest, base: &runtime::guest::FrozenRam) -> bool {
+        self.dropped == 0
+            && self.changed_page(live).is_none()
+            && self
+                .layouts
+                .values()
+                .flatten()
+                .all(|part| live.changed_lines(base, part.physical_start) == 0)
+    }
+
     fn changed_page(&self, live: &Guest) -> Option<u32> {
         self.layouts.iter().find_map(|(&addr, expected)| {
             layout(live, addr).ne(expected.iter().cloned()).then_some(addr)
@@ -145,6 +157,10 @@ mod tests {
         assert_eq!(view.u64(0x1ffc).unwrap(), 42);
         assert_eq!(view.u64(0x8000_0ffc).unwrap(), 42);
         let footprint = Footprint::take(&mut view);
+        let frozen = view.freeze_ram().0;
+        assert!(!footprint.still_current(&live, &frozen));
+        live.set_u64(0x8000_0ffc, 42).unwrap();
+        assert!(footprint.still_current(&live, &frozen));
         assert_eq!(
             footprint.layouts.keys().copied().collect::<Vec<_>>(),
             [0x1000, 0x2000, 0x8000_0000, 0x8000_1000]

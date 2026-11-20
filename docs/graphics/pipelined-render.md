@@ -6,26 +6,34 @@ switch is unset. The switch is independent of `impl.render.native`.
 
 ## Tick ordering and hash parity
 
-For an eligible world frame, the game thread runs the original view loop
-on live RAM. This includes the scene draws, first-person effects, HUD and
-alternate views. At the call to `render_loop::views::END_A`, the last view
-has returned. The game thread runs the frame wait once and snapshots the
-nested guest stack and RAM. The render worker enters that callee and
-finishes the frame-end effects, device work and present. The game thread
-can enter tick N+1 while this suffix of frame N is executing.
+For an eligible world frame, the game thread drives the view loop and hands
+generated scene traversals to the render worker during preparation. Candidates
+include the game and alternate views, scene passes and graph animation data
+resolution inside HUD or UI calls. Existing native entry hooks run on their
+original thread. At `render_loop::views::END_A`, the game thread runs the
+frame wait once and launches the frame-end effects, device work and present
+on the worker. Tick N+1 can run during that final submission.
 
 | Tick-visible state | Publication before tick N+1 |
 |---|---|
 | Particles and effects | The original per-view update at `0x00174420` writes system visibility and location frame stamps on live RAM. Split-screen, culling and repeated visits retain their guest order. |
 | RNG | Particle draws advance the effects word and object updates advance the game word in the live traversal. The tick starts with both seeds left by the last view. |
-| Animation cache | Each `animation_resource_get` runs on the game thread, including the slot use stamp at `+0x14`, eviction, handle allocation, read submission and any wait for a pending payload. A later view or the next tick sees the resulting residency and ages immediately. The worker has the completed bytes in its COW snapshot. |
+| Animation cache | A settled hit runs against frozen payloads. The game thread replays its use stamp at slot offset `+0x14`. Missing or pending payloads go through the original game-thread getter, including eviction, I/O and completion. |
 | View and object state | View frame counters, visit marks and per-object lighting allocations occur during traversal. The live current-view context is cleared before the tick. |
 
-This boundary preserves late animation requests made during HUD and UI
-draws. It leaves the scene front-end on the game thread. There is no
-worker-side animation request queue in this implementation. Moving scene
-draws to the worker would require collecting their animation uses before
-launch and binding each draw to its resolved payload.
+The worker queues settled uses in visit order, including repeated uses of
+the same slot. A miss ends the batch with the getter's registers and its
+original stack argument. Before issuing that call the game thread publishes
+the prefix and replays its stamp writes. The worker takes a fresh COW view
+after the live getter returns. An entry with an outstanding I/O handle takes
+this path even when its completion byte is set, because the getter still
+has cleanup to do. A batch holds at most 256 settled uses.
+
+A scene stops at a host override, particle update or cache-owner entry and
+returns control to the game thread at that call. A changed observed page or
+incomplete footprint discards the unpublished segment and finishes the frame
+serially. The game thread waits for each scene segment during preparation.
+Tick overlap begins when the prepared frame reaches the final submission.
 
 The boot test `ordered_frame_owners_match_the_serial_tick_hash_while_drawing`
 holds a worker draw open while a synthetic tick consumes particle state,
@@ -52,6 +60,9 @@ callee on live memory. Preparation, requests and the wait each run once.
 
 `render.stats.pipeline` reports serial reasons, launches, completions and
 `overlap_ms`, the cumulative worker time before the game thread joins.
+`animation_uses` counts settled stamps published in batches,
+`animation_owner_calls` counts suspended gets serviced on the game thread
+and `scene_retries` counts discarded scene segments.
 `sim_joins` is retained for telemetry compatibility and stays zero. A
 game-thread device call or the next frame still joins when required.
 Overlap can include time when the game thread is descheduled. The current

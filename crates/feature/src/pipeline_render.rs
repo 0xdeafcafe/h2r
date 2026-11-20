@@ -2,8 +2,9 @@
 //! advances. Enable with `impl.render.pipelined_frame=on`.
 //!
 //! The game thread joins the previous frame at the next render or at a
-//! device dependency. It runs every view up to [`Addrs::draw_boundary`]
-//! against live memory, including culling, RNG draws and resource gets.
+//! device dependency. Before [`Addrs::draw_boundary`] it drives the view
+//! loop and publishes worker scene segments and their ordered animation
+//! requests. Particle updates and cache residency belong to the game thread.
 //! The worker inherits the nested guest stack in a COW snapshot and
 //! returns through the original frame-end and present code. The frame
 //! wait runs once on the game thread. See docs/graphics/pipelined-render.md.
@@ -28,6 +29,7 @@ use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 #[path = "pipeline_snapshot.rs"]
 mod snapshot;
+pub use scene::{ResidentCache, SceneTraversal};
 
 use snapshot::Footprint;
 
@@ -207,6 +209,8 @@ pub struct Addrs {
     /// particle visits and animation requests. A synthetic renderer with
     /// no preparation can start at frame entry.
     pub draw_boundary: Option<DrawBoundary>,
+    /// Generated scene scopes whose resource requests can be published before the tick.
+    pub scene: Option<SceneTraversal>,
 }
 
 /// The call to the draw tail, identified by its callee and caller's return PC.
@@ -379,6 +383,7 @@ impl Addrs {
         random: Some((0x004e_7408, &[0, 4])),
         // Object lighting records are allocated during the live view pass.
         shared_caches: &[],
+        scene: Some(SceneTraversal::HALO2),
         draw_boundary: Some(DrawBoundary {
             entry: engine::render_loop::views::END_A,
             // render_views has exhausted its per-view loop.
@@ -481,6 +486,11 @@ pub struct Stats {
     pub new_snapshot_pages: u64,
     /// Faults on the worker from unmapped or protected addresses.
     pub snapshot_faults: u64,
+    /// Settled animation uses replayed in order from a prepared scene.
+    pub animation_uses: u64,
+    /// Suspended lookups replayed by the scheduled cache owner.
+    pub animation_owner_calls: u64,
+    pub scene_retries: u64,
     pub hand_back: Duration,
     pub snapshot: Duration,
     pub render: Duration,
@@ -557,6 +567,9 @@ impl Stats {
             overlap: self.overlap - then.overlap,
             new_snapshot_pages: self.new_snapshot_pages - then.new_snapshot_pages,
             snapshot_faults: self.snapshot_faults - then.snapshot_faults,
+            animation_uses: self.animation_uses - then.animation_uses,
+            animation_owner_calls: self.animation_owner_calls - then.animation_owner_calls,
+            scene_retries: self.scene_retries - then.scene_retries,
             hand_back: self.hand_back - then.hand_back,
             snapshot: self.snapshot - then.snapshot,
             render: self.render - then.render,
@@ -663,6 +676,11 @@ struct Done {
     footprint: Option<Footprint>,
 }
 
+enum Work {
+    Draw(Job),
+    Scene(scene::Job),
+}
+
 struct Job {
     exec: Box<SecondExecutor>,
     cpu: CpuAbi,
@@ -681,6 +699,7 @@ enum JobStart {
 struct Preparing {
     token: u32,
     continuations: usize,
+    scene_retry: bool,
     tail: Option<CpuAbi>,
 }
 
@@ -694,7 +713,9 @@ struct Flight {
 
 /// Built once, at the first frame that pipelines.
 struct Setup {
-    jobs: SyncSender<Job>,
+    jobs: SyncSender<Work>,
+    scene: Option<Box<SecondExecutor>>,
+    scene_dispatch_generation: u64,
     original: Arc<runtime::exec::OriginalHandler>,
     /// Physical pages of the render stack, sorted.
     stack_pages: Vec<u32>,
@@ -1289,6 +1310,13 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         .map(|c| rt.resolve_original(c.entry))
         .collect();
     let boundary = a.draw_boundary.map(|b| (b, rt.resolve_original(b.entry)));
+    let scene_exec = a.scene.map(|layout| scene::executor(&rt, layout));
+    let scene_entries: Vec<_> = a
+        .scene
+        .into_iter()
+        .flat_map(|s| s.entries)
+        .filter_map(|&entry| rt.resolve_original(entry).map(|original| (entry, original)))
+        .collect();
     rt.edit_dispatch(|d| {
         // A pool wait on the game thread while a render that has used the
         // pool is in flight joins it first: the render's deferred pool
@@ -1423,6 +1451,9 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
                 )
             });
         }
+        if let Some(layout) = a.scene {
+            scene::install(d, me, scene_entries, layout);
+        }
         if let Some((b, generated)) = boundary
             && let Some(original) = d.override_handler(b.entry).or(generated)
         {
@@ -1489,7 +1520,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         v.sort_unstable();
         v
     };
-    let (jobs, rx) = sync_channel::<Job>(1);
+    let (jobs, rx) = sync_channel::<Work>(1);
     let me_t = Arc::clone(me);
     std::thread::Builder::new()
         .name("h2-pipeline-render".into())
@@ -1497,7 +1528,14 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
         // thread is the process's main thread (8 MB). Reserved, not touched.
         .stack_size(64 << 20)
         .spawn(move || {
-            while let Ok(mut job) = rx.recv() {
+            while let Ok(work) = rx.recv() {
+                let mut job = match work {
+                    Work::Draw(job) => job,
+                    Work::Scene(job) => {
+                        scene::run(job);
+                        continue;
+                    }
+                };
                 if me_t.check_snapshot {
                     snapshot::arm(&mut job.exec.runtime().memory());
                 }
@@ -1532,6 +1570,8 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     inner.exec = Some(Box::new(exec));
     inner.setup = Some(Setup {
         jobs,
+        scene: scene_exec,
+        scene_dispatch_generation: rt.dispatch_generation(),
         original: Arc::new(original),
         stack_pages,
     });
@@ -2189,12 +2229,12 @@ fn carry_on(
     let jobs = me.lock().setup.as_ref().map(|s| s.jobs.clone());
     let (tx, rx) = sync_channel(1);
     let sent = jobs.is_some_and(|j| {
-        j.send(Job {
+        j.send(Work::Draw(Job {
             exec,
             cpu: r,
             start: JobStart::Resume,
             reply: tx,
-        })
+        }))
         .is_ok()
     });
     let t = Instant::now();
@@ -2670,6 +2710,7 @@ fn prepare_frame(
     me.lock().preparing = Some(Preparing {
         token: call.resume_pc,
         continuations: ctx.live_continuations().len(),
+        scene_retry: false,
         tail: None,
     });
     Ok(original.invoke(cpu, ctx, addr))
@@ -2683,7 +2724,10 @@ fn prepared_tail(
 ) -> Option<TransferAbi> {
     let mut inner = me.lock();
     let preparing = inner.preparing.as_mut()?;
-    if preparing.tail.is_some() || preparing.continuations != ctx.live_continuations().len() {
+    if preparing.scene_retry
+        || preparing.tail.is_some()
+        || preparing.continuations != ctx.live_continuations().len()
+    {
         return None;
     }
     preparing.tail = Some(CpuAbi { eip: entry, ..*cpu });
@@ -2911,12 +2955,12 @@ fn launch(
     me.in_flight.store(true, Ordering::Release);
     drop(inner);
     if jobs
-        .send(Job {
+        .send(Work::Draw(Job {
             exec,
             cpu: render_cpu,
             start,
             reply: tx,
-        })
+        }))
         .is_err()
     {
         me.in_flight.store(false, Ordering::Release);
