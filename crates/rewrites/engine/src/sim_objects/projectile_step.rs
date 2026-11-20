@@ -215,8 +215,9 @@ pub(super) fn projectile_step(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     if pc != ENTRY && !STEP_SITES.contains(&pc) {
         return Err(unowned(pc));
     }
-    let mut next = pc;
+    let (mut next, mut blocks) = (pc, 0);
     loop {
+        super::progress(&mut blocks, ENTRY, next);
         next = match next {
             ENTRY => {
                 let v = c.esp;

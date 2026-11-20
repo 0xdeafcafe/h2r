@@ -296,6 +296,24 @@ pub fn supported(cpu: &CpuAbi) -> bool {
 /// denormals are zero (6).
 const MXCSR_MODES: u32 = 0xe040;
 
+/// How many blocks a body's segment loop, or transfers [`drive`]'s loop,
+/// may run without leaving to the guest before a test build gives up.
+/// Far above any real segment: the longest makes a few hundred.
+const PROGRESS_CAP: u32 = 1 << 20;
+
+/// One more block (or fused transfer) at `pc` since the body at `entry`
+/// last left. In the unit tests and the differential harness, a loop
+/// that never reaches a transfer (a `next` that maps back to itself, a
+/// misread jump) fails here with the pc instead of hanging; elsewhere
+/// this is nothing.
+#[inline(always)]
+fn progress(n: &mut u32, entry: u32, pc: u32) {
+    if cfg!(any(test, feature = "differential")) {
+        *n += 1;
+        assert!(*n < PROGRESS_CAP, "body {entry:#x}: no transfer to the guest in {PROGRESS_CAP} steps, at {pc:#x}");
+    }
+}
+
 fn unowned(pc: u32) -> GuestFault {
     GuestFault {
         addr: pc,
@@ -317,7 +335,9 @@ fn unowned(pc: u32) -> GuestFault {
 /// No yield point is added: the scheduler gets control at true callouts,
 /// as it does inside a lifted function.
 pub fn drive(cpu: &mut CpuAbi, g: &mut Guest, table: &Table, mut pc: u32) -> Result<TransferAbi> {
+    let (first, mut fused) = (pc, 0);
     loop {
+        progress(&mut fused, first, pc);
         let (body, _) = table.at(pc).ok_or_else(|| unowned(pc))?;
         let next = (body.run)(&mut Cx { cpu: &mut *cpu, g: &mut *g }, pc)?;
         match next {
