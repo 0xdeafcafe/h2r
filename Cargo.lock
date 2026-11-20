@@ -1908,6 +1908,7 @@ dependencies = [
  "analyze",
  "ir",
  "lift",
+ "mopp",
  "paste",
  "runtime",
  "simd",
