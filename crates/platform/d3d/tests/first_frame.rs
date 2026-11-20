@@ -23,7 +23,7 @@ fn parity_observes_only_guest_swaps_even_when_the_view_sleeps() {
     let observed = Arc::new(Mutex::new(Vec::new()));
     let out = Arc::clone(&observed);
     let mut view = GfxBackend::new(ctx);
-    view.observe_guest_present(move |ordinal, _, store, surface| {
+    view.observe_guest_present(move |ordinal, _, store, surface, _| {
         let d = store.get(surface).unwrap().desc();
         out.lock().unwrap().push((ordinal, d.width, d.height));
     });

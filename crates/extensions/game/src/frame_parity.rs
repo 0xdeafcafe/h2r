@@ -182,9 +182,9 @@ pub fn wanted(present: u64) -> bool {
 
 /// On the render thread, in the D3D display's ordinary guest present
 /// hook. Its store holds pre-gamma pixels at the actual display scale.
-pub fn reference_observer() -> impl Fn(u64, &gfx::GfxContext, &gfx::surface::SurfaceStore, gfx::surface::SurfaceId) + Send {
+pub fn reference_observer() -> impl Fn(u64, &gfx::GfxContext, &gfx::surface::SurfaceStore, gfx::surface::SurfaceId, d3d::Lighting) + Send {
     let session = state().session;
-    move |present, ctx, store, id| {
+    move |present, ctx, store, id, lighting| {
         if !wanted(present) {
             return;
         }
@@ -195,6 +195,13 @@ pub fn reference_observer() -> impl Fn(u64, &gfx::GfxContext, &gfx::surface::Sur
             }
             s.sequence
         };
+        // The legacy E3 display scales shadow maps and sharpens their lookup.
+        // The private graph's L3 E3 passes only measure work. A Retail baseline
+        // is the policy both renderers can reproduce for this gate.
+        if lighting != d3d::Lighting::Retail {
+            complete(present, Side::Reference, Err("parity requires Retail display lighting".into()), Some(sequence));
+            return;
+        }
         let image = crate::d3d_glue::read_rgba(ctx, store, id)
             .map(|(pixels, width, height)| Rgba { width, height, pixels })
             .map_err(|e| e.to_string());
@@ -322,17 +329,26 @@ mod tests {
                 frames.send(frame).unwrap();
             });
         let target = sink.create_surface(D3DFormat::LinA8R8G8B8, 8, 4, false).unwrap();
-        for n in 1..=2 {
+        for n in 1..=3 {
             let request = json!({"jsonrpc":"2.0","id":n,"method":"render.parity","params":{"arm":true}});
             agent.submit(conn, &request.to_string());
             agent.on_tick(&mut Reader(40 + n));
             assert!(armed());
 
             let clear = Clear { color: Some([1., 0., 0., 1.]), ..Clear::NONE };
+            sink.inner_mut().set_hard_shadows(n == 3);
             sink.clear(target, None, clear).unwrap();
             sink.present(target, 0).unwrap();
             let mut frame = replayed.try_recv().unwrap();
             assert_eq!(frame.present, n);
+            if n == 3 {
+                assert!(!wanted(n));
+                agent.on_tick(&mut Reader(41 + n));
+                let reply: Value = serde_json::from_str(&replies.try_recv().unwrap()).unwrap();
+                assert_eq!(reply["error"]["code"], code::UNAVAILABLE);
+                assert!(reply["error"]["message"].as_str().unwrap().contains("Retail display lighting"));
+                continue;
+            }
             assert!(wanted(n));
             assert!(replies.try_recv().is_err(), "the private draw still owes its pixels");
             if n == 2 {

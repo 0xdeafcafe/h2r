@@ -92,7 +92,7 @@ pub type PresentHook =
 
 /// Observes the dispatched guest present, including a sleeping scaled view
 /// showing a surface from its reference store.
-type GuestPresentObserver = Box<dyn FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId) + Send>;
+type GuestPresentObserver = Box<dyn FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send>;
 
 /// Inspects a completed batch in encoder order while its upload ranges
 /// and texture bindings still name this batch's data.
@@ -154,6 +154,7 @@ pub struct GfxBackend {
     /// The draw path.
     pub renderer: Renderer,
     shaders: Option<Box<dyn ShaderProvider>>,
+    lighting: crate::Lighting,
     presented: Option<SurfaceId>,
     /// Last scene-owned display target, retained through the next display swap.
     scene_presented: Option<SurfaceId>,
@@ -307,6 +308,7 @@ impl GfxBackend {
     /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
     /// sets it (`crate::scaled`); the backend the guest reads stays retail.
     pub fn set_hard_shadows(&mut self, on: bool) {
+        self.lighting = if on { crate::Lighting::E3 } else { crate::Lighting::Retail };
         if let Some(s) = self.shaders.as_mut() {
             s.set_hard_shadows(on);
         }
@@ -331,6 +333,7 @@ impl GfxBackend {
             store,
             renderer,
             shaders: Some(Box::new(Nv2aShaders::new())),
+            lighting: crate::Lighting::Retail,
             presented: None,
             scene_presented: None,
             scene_uploads: Default::default(),
@@ -508,10 +511,11 @@ impl GfxBackend {
     }
 
     /// Observe the guest swaps on this backend. A host-only interpolated
-    /// present does not consume a number or notify this observer.
+    /// present does not consume a number or notify this observer. The lighting
+    /// mode is the view policy in effect for this swap, before retargeting.
     pub fn observe_guest_present(
         &mut self,
-        observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId) + Send + 'static,
+        observer: impl FnMut(u64, &GfxContext, &SurfaceStore, SurfaceId, crate::Lighting) + Send + 'static,
     ) {
         self.guest_present_observer = Some(Box::new(observer));
     }
@@ -1130,7 +1134,7 @@ impl GfxBackend {
             None => (&self.ctx, &self.store),
         };
         if let Some(observer) = &mut self.guest_present_observer {
-            observer(self.frame - 1, ctx, store, surface);
+            observer(self.frame - 1, ctx, store, surface, self.lighting);
         }
         if let Some(hook) = &mut self.present_hook {
             hook(ctx, store, surface, flags, gamma);
@@ -2386,7 +2390,7 @@ mod tests {
         let back = reference.create_surface(gfx::D3DFormat::LinA8R8G8B8, 8, 8, false).unwrap();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let ordinals = Arc::clone(&observed);
-        display.observe_guest_present(move |n, _, _, _| ordinals.lock().unwrap().push(n));
+        display.observe_guest_present(move |n, _, _, _, _| ordinals.lock().unwrap().push(n));
 
         // A failed view may still show the reference under the same number.
         display.external_ordering_error = Some("failed scaled view".into());
