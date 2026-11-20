@@ -35,13 +35,13 @@ pub(crate) fn register_viewer_skips(
 ) -> anyhow::Result<()> {
     if host_light {
         features
-            .add(&hooks::sim_static_light::StaticLight)
+            .add(&sim_bridge::sim_static_light::StaticLight)
             .map_err(anyhow::Error::msg)?;
         features
-            .add(&hooks::sim_observer::ObserverResources)
+            .add(&sim_bridge::sim_observer::ObserverResources)
             .map_err(anyhow::Error::msg)?;
         features
-            .add(&hooks::sim_submix::SimSubmix)
+            .add(&sim_bridge::sim_submix::SimSubmix)
             .map_err(anyhow::Error::msg)?;
     }
     Ok(())
@@ -417,7 +417,7 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
-    features.add(&hooks::sim_physics::NativePhysics)
+    features.add(&sim_bridge::sim_physics::NativePhysics)
         .map_err(|e| anyhow::anyhow!("simulation physics: {e}"))?;
     // Render front-end time in the frame stats, when H2_FEATURES has
     // render-timing (off by default).

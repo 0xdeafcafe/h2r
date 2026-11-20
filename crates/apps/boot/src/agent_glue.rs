@@ -28,7 +28,7 @@
 //! (`hot_glue::map_tags`, set once the runtime is up).
 //!
 //! `shadow.*` checks the native sim ports against the lifted original
-//! (crates/extensions/agent's `shadow`, over `hooks::shadow`; the image comes from
+//! (crates/extensions/agent's `shadow`, over `sim_bridge::shadow`; the image comes from
 //! [`crate::fallback`]).
 //!
 //! `state.*` (machine snapshots) is the boot loop's: it installs the store

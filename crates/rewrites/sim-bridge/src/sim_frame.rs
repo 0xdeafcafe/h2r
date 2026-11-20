@@ -4,7 +4,7 @@
 //! At `render_frame_and_present` (`0x00223240`) on the game thread:
 //!
 //! 1. **Decide** as the pipelined render does
-//!    ([`pipeline_render`](crate::pipeline_render), `serial_reason`): a
+//!    ([`pipeline_render`](hooks::pipeline_render), `serial_reason`): a
 //!    world frame is the world path taken (engine globals active, not the
 //!    UI's world skip) with both resource-cache countdowns at or below 0.
 //!    Menus, loading screens and Bink run the original, so loading drives
@@ -28,13 +28,13 @@ use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
-use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 pub const ID: &str = "sim-frame";
 
 /// The guest addresses the skip reads and writes; [`Addrs::HALO2`] for the
 /// game, anything for a synthetic test. The same words as
-/// [`pipeline_render::Addrs`](crate::pipeline_render::Addrs).
+/// [`pipeline_render::Addrs`](hooks::pipeline_render::Addrs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addrs {
     /// The engine frame wait, run on the game thread at a skipped frame.
@@ -428,9 +428,9 @@ mod tests {
     #[test]
     fn restoring_a_world_frame_cursor_resumes_on_the_same_render() {
         let plan = |f: &SimFrame| {
-            let mut registry = crate::Registry::new(crate::Switches::default());
+            let mut registry = hooks::Registry::new(hooks::Switches::default());
             registry.add(f).unwrap();
-            registry.build(&crate::Base).unwrap()
+            registry.build(&hooks::Base).unwrap()
         };
         let g = world();
         let original = SimFrame::with(A, 3);

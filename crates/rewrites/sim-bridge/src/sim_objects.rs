@@ -12,20 +12,20 @@
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change.
-use crate::Builder;
+use hooks::Builder;
 use engine::sim_objects::{self as objects, Table};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix.
 pub const OBJECTS: &str = "sim.native.objects";
 
-pub fn on(switches: &crate::Switches) -> bool {
+pub fn on(switches: &hooks::Switches) -> bool {
     switches.implementation(OBJECTS, false)
 }
 
 /// Whether the per-function port at `addr` stands down: the switch is on
 /// and a body owns the point.
-pub fn owns(switches: &crate::Switches, addr: u32) -> bool {
+pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
     owns_in(on(switches), &objects::TABLE, addr)
 }
 
@@ -74,7 +74,7 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<
 mod tests {
     use super::*;
     use crate::sim_native::SimNative;
-    use crate::{Base, Registry, Switches};
+    use hooks::{Base, Registry, Switches};
     use engine::points::{self, Point};
     use engine::sim_objects::{Body, Cx, Next};
 
@@ -147,12 +147,12 @@ mod tests {
     /// before slice 1 adds a body to `BODIES`.
     struct Installs(&'static Table);
 
-    impl crate::Feature for Installs {
-        fn manifest(&self) -> crate::Manifest {
-            crate::Manifest::new("sim-objects-test", "test bodies")
+    impl hooks::Feature for Installs {
+        fn manifest(&self) -> hooks::Manifest {
+            hooks::Manifest::new("sim-objects-test", "test bodies")
         }
-        fn build(&self, b: &mut Builder) -> Result<(), crate::BuildError> {
-            b.snapshot(crate::SnapshotPolicy::Stateless);
+        fn build(&self, b: &mut Builder) -> Result<(), hooks::BuildError> {
+            b.snapshot(hooks::SnapshotPolicy::Stateless);
             install_table(b, self.0);
             Ok(())
         }
