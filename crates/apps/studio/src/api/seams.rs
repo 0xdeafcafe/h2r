@@ -18,6 +18,10 @@
 //!   tag document's actions. Return `None` for the scenario tag's
 //!   placement blocks (paths `<block>[<i>].<field>`): the built-in methods
 //!   route those to the scenario's own commands.
+//! - **tag browsing and bundles**: `tag.list` over the document the Tags
+//!   tool shows, `tag.browse`, `tag.resources`, `tag.export` and
+//!   `tag.import` through `Action::BrowseTags`, `Action::TagExport` and
+//!   `Action::TagImport` ([`super::tag_io`]).
 //! - **studio-hud** (the HUD editor): `hud.list`, `hud.read`, `hud.set`,
 //!   `hud.move`, `hud.render`, `hud.check` and `hud.save_as` through the
 //!   HUD tool's `Action::Hud*` ([`super::hud`]).
@@ -45,6 +49,8 @@ pub trait Provider {
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    // The Tags tool's browsing (shared caches), resources and tag bundles.
+    api.register(Box::new(super::tag_io::TagIo));
     // studio-hud: the HUD tool's HUDs, widgets, picture, checks and save.
     api.register(Box::new(super::hud::Hud));
 }

@@ -5,6 +5,8 @@ tools:
 
 - `source`: map sources (a disc image, a loose `.map`, a folder of maps).
 - `undo`: the snapshot undo stack.
+- `tag_bundle`: the tag bundle (`.h2tag`), the JSON file tags are
+  exported to and imported from, and the layout fingerprint it checks.
 - `Status`: a status-line message.
 - `variant_sources`: where the game variant and playlist tools get the
   variant schema from the disc's `mainmenu` or the built-in model, save

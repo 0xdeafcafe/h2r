@@ -9,6 +9,8 @@
 //!   conversions among them.
 //! - [`halo1`]: Halo 1 maps, read-only (a disc or a folder).
 //! - [`halo1_art`]: a Halo 1 map's base maps and lightmap pages.
+//! - [`tag_bundle`]: the `.h2tag` file tags are exported to and
+//!   imported from.
 //! - [`Status`]: a status-line message.
 //!
 //! Nothing here contains game data: map names and everything else come
@@ -19,6 +21,7 @@ pub mod halo1_art;
 pub mod mappack;
 pub mod packages;
 pub mod source;
+pub mod tag_bundle;
 pub mod undo;
 pub mod variant_sources;
 

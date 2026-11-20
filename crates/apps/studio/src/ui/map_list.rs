@@ -141,6 +141,13 @@ impl MapListUi {
         clicked
     }
 
+    /// A picture on the GPU under `key` (its own namespace beside the
+    /// rows'), uploaded when new or changed: for other windows' pictures
+    /// (the Tags tool's bitmap preview).
+    pub fn picture(&mut self, gpu: &mut Gpu<'_>, key: &str, pic: &Arc<Picture>) -> Option<TextureId> {
+        self.texture(gpu, key, pic)
+    }
+
     /// The picture for row `key` on the GPU, uploaded when new or changed.
     fn texture(&mut self, gpu: &mut Gpu<'_>, key: &str, pic: &Arc<Picture>) -> Option<TextureId> {
         if let Some(t) = self.textures.get(key)

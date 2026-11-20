@@ -94,8 +94,12 @@ impl Provider for TagFields {
             Ok(id) => id,
             Err(e) => return Some(Err(e)),
         };
-        // The scenario tag's edits are the Scenario tool's.
-        if method != m::TAG_READ && app.session.scenario().is_some_and(|s| s.tag == id) {
+        // The scenario tag's edits are the Scenario tool's (a browsed
+        // map's tags are not edited at all: the Tags tool says so).
+        if method != m::TAG_READ
+            && app.browsing().is_none()
+            && app.session.scenario().is_some_and(|s| s.tag == id)
+        {
             return None;
         }
         Some(self.run(app, method, &p, id))
@@ -103,8 +107,12 @@ impl Provider for TagFields {
 }
 
 /// The `tag` param: `group:name` as the Tags tool writes it, else as the
-/// built-in methods take it.
-fn resolve(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcError> {
+/// built-in methods take it. A browsed map's tags resolve in it.
+pub(super) fn resolve(app: &mut App, p: &P) -> Result<TagId, agent_proto::RpcError> {
+    if app.browsing().is_some() {
+        let want = p.get("tag").cloned().unwrap_or(Value::Null);
+        return tag_api::lookup(app.shown_tags(), &want).map_err(|e| err(code::INVALID_PARAMS, e));
+    }
     super::scenario::open(app)?;
     app.sync_tags();
     if let Some(e) = &app.tags.error {
@@ -124,11 +132,11 @@ impl TagFields {
     fn run(&self, app: &mut App, method: &str, p: &P, id: TagId) -> Reply {
         let failed = |e: String| err(code::REFUSED, e);
         match method {
-            m::TAG_READ => tag_api::read_tag(&app.tags, id).map_err(failed),
+            m::TAG_READ => tag_api::read_tag(app.shown_tags(), id).map_err(failed),
             m::TAG_SET => {
                 let path = p.str("path")?;
                 let value = p.get("value").cloned().unwrap_or(Value::Null);
-                let action = tag_api::set_field(&app.tags, id, path, &value)
+                let action = tag_api::set_field(app.shown_tags(), id, path, &value)
                     .map_err(|e| err(code::INVALID_PARAMS, format!("{path}: {e}")))?;
                 perform(app, action)?;
                 let (at, _, f) = tag_api::resolve(&app.tags, id, path).map_err(failed)?;
@@ -144,7 +152,7 @@ impl TagFields {
                     m::TAG_BLOCK_REMOVE => BlockOp::Remove(p.usize("index")? as u32),
                     _ => BlockOp::Duplicate(p.usize("index")? as u32),
                 };
-                let action = tag_api::block(&app.tags, id, path, op)
+                let action = tag_api::block(app.shown_tags(), id, path, op)
                     .map_err(|e| err(code::REFUSED, format!("{path}: {e}")))?;
                 perform(app, action)?;
                 let count = tag_api::resolve(&app.tags, id, path)
@@ -157,7 +165,7 @@ impl TagFields {
 }
 
 /// Applies a Tags tool command the way the window does, with its outcome.
-fn perform(app: &mut App, action: crate::app::TagAction) -> Result<(), agent_proto::RpcError> {
+pub(super) fn perform(app: &mut App, action: crate::app::TagAction) -> Result<(), agent_proto::RpcError> {
     app.perform(Action::Tag(action), false).map_err(|r| match r {
         crate::app::Refused::Failed(e) => err(code::REFUSED, e),
         other => refused(other),

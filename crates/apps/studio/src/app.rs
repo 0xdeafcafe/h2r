@@ -15,7 +15,10 @@ pub mod map_cards;
 pub mod map_pack;
 pub mod shared_refs;
 pub mod tag_api;
+pub mod tag_browse;
+pub mod tag_bundle;
 pub mod tag_doc;
+pub mod tag_tree;
 pub mod ui_screens;
 pub use commands::{PlaylistEdit, Refused};
 pub use convert::{
@@ -233,6 +236,23 @@ pub enum Action {
     // Tags.
     /// A tag editor command: select a tag, write a field, change a block.
     Tag(TagAction),
+    /// Show another map of the source in the Tags tool, read-only (a
+    /// shared cache), or (`None`) the open map again.
+    BrowseTags(Option<String>),
+    /// Decode a bitmap tag of the map the Tags tool shows for its preview.
+    TagPreview(map::TagId),
+    /// Write tags of the map the Tags tool shows as a tag bundle: to
+    /// `out`, else under the data root's `tag-bundles/`.
+    TagExport {
+        tags: Vec<map::TagId>,
+        out: Option<PathBuf>,
+        options: tag_bundle::ExportOptions,
+    },
+    /// Replace tags of the open map with a tag bundle's (one undo step).
+    TagImport {
+        path: PathBuf,
+        options: tag_bundle::ImportOptions,
+    },
 
     // Playlists.
     /// Open a `multiplayer_hopper.dat` (either form).
@@ -267,6 +287,8 @@ impl Action {
         match self {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty(ToolKind::Scenario),
+            // A shared cache opens in the Tags tool, beside the open map.
+            Action::SelectMap(name) if tag_browse::opens_as_tags(name) => None,
             Action::SelectMap(name)
                 if app.loaded.as_deref() != Some(name.as_str()) || app.opened_package.is_some() =>
             {
@@ -394,7 +416,16 @@ pub struct App {
     /// The tag editor's document over the open map.
     pub tags: TagDoc,
     /// The selected tag's shared-map line, for the tag and revision.
-    tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>)>>,
+    tag_homes: std::cell::RefCell<Option<(map::TagId, u64, Option<String>, Option<String>)>>,
+    /// Another map of the source shown read-only in the Tags tool (a
+    /// shared cache), beside the open map's document ([`Self::tags`]).
+    pub(crate) tag_browse: Option<tag_browse::Browse>,
+    /// The bitmap preview of the open map's document (the browsed map's
+    /// is its own): the tag and the picture, or why there is none.
+    tag_preview: Option<(map::TagId, Result<std::sync::Arc<map_pack::Picture>, String>)>,
+    /// What the last tag export and import did, for the agent API.
+    pub(crate) last_tag_export: Option<(PathBuf, tag_bundle::ExportReport)>,
+    pub(crate) last_tag_import: Option<tag_bundle::ImportReport>,
 }
 
 impl Default for App {
@@ -449,6 +480,10 @@ impl App {
             hud: HudTool::default(),
             tags: TagDoc::default(),
             tag_homes: Default::default(),
+            tag_browse: None,
+            tag_preview: None,
+            last_tag_export: None,
+            last_tag_import: None,
         }
     }
 
@@ -577,10 +612,11 @@ impl App {
                 let hud = s.hud().map(|h| h.name.clone()).unwrap_or_default();
                 format!("{} / {hud}", s.name)
             }),
-            ToolKind::Tags => self.loaded.clone(),
+            ToolKind::Tags => self.shown_map_name().map(str::to_owned),
         };
-        let dirty =
-            self.tool_dirty(self.tool) || (self.tool == ToolKind::Tags && self.session.is_dirty());
+        // A browsed map is never dirty: the open map's mark is its own.
+        let dirty = self.tool_dirty(self.tool)
+            || (self.tool == ToolKind::Tags && self.browsing().is_none() && self.session.is_dirty());
         match what {
             Some(name) => format!("{name}{} - h2-editor", if dirty { " *" } else { "" }),
             None => "h2-editor".to_owned(),
@@ -849,6 +885,62 @@ impl App {
             }
             Action::HudRefused(why) => self.error(why),
             Action::Tag(a) => self.run_tag(a),
+            Action::BrowseTags(name) => self.browse_tags(name.as_deref()),
+            Action::TagPreview(id) => self.preview_tag(id),
+            Action::TagExport { tags, out, options } => {
+                self.last_tag_export = None;
+                match self.export_tags(&tags, out.as_deref(), &options) {
+                    Ok((path, report)) => {
+                        let mut msg = format!(
+                            "exported {} to {}",
+                            match report.tags.as_slice() {
+                                [one] => one.clone(),
+                                many => format!("{} tags", many.len()),
+                            },
+                            path.display()
+                        );
+                        if report.blobs > 0 {
+                            msg += &format!(
+                                " with {} resources ({} bytes)",
+                                report.blobs, report.blob_bytes
+                            );
+                        }
+                        if !report.left_out.is_empty() {
+                            msg += &format!("; left out: {}", report.left_out.join("; "));
+                        }
+                        self.info(msg);
+                        self.last_tag_export = Some((path, report));
+                    }
+                    Err(e) => self.error(format!("export: {e}")),
+                }
+            }
+            Action::TagImport { path, options } => {
+                self.last_tag_import = None;
+                match self.import_tags(&path, &options) {
+                    Ok(report) => {
+                        self.push_tag_patches();
+                        let mut msg = format!("imported {}", report.replaced.join(", "));
+                        if !report.skipped.is_empty() {
+                            msg += &format!("; skipped (not in this map): {}", report.skipped.join(", "));
+                        }
+                        if report.raw_kept > 0 {
+                            msg += &format!(
+                                "; {} resource pointers kept this map's (the bundle's are another map's)",
+                                report.raw_kept
+                            );
+                        }
+                        if !report.nulled.is_empty() {
+                            msg += &format!(
+                                "; references to tags the bundle's map lacked set to none: {}",
+                                report.nulled.join(", ")
+                            );
+                        }
+                        self.info(msg);
+                        self.last_tag_import = Some(report);
+                    }
+                    Err(e) => self.error(format!("import: {e}")),
+                }
+            }
             a @ (Action::OpenVariant(_)
             | Action::NewVariant(_)
             | Action::CopyBuiltin(_)
@@ -949,10 +1041,14 @@ impl App {
             .open()
             .map_err(|e| e.to_string())
             .and_then(|mut m| self.tags.load(&mut m).map_err(|e| e.to_string()));
-        if let Err(e) = r {
-            self.tags.error = Some(e.clone());
-            self.error(format!("tags: {e}"));
+        match r {
+            Ok(()) => self.mark_elsewhere(),
+            Err(e) => {
+                self.tags.error = Some(e.clone());
+                self.error(format!("tags: {e}"));
+            }
         }
+        self.tag_preview = None;
     }
 
     /// Hand the tag editor's changed runs to the session, which saves them.
@@ -972,6 +1068,22 @@ impl App {
 
     fn run_tag(&mut self, action: TagAction) {
         self.sync_tags();
+        if let Some(b) = self.tag_browse.as_mut() {
+            // A browsed map's tags are shown, not edited.
+            let r = match action {
+                TagAction::Select(id) if b.doc.tag(id).is_some() => {
+                    b.doc.selected = Some(id);
+                    Ok(())
+                }
+                TagAction::Select(id) => Err(format!("no tag {:#010x} in {}", id.0, b.map)),
+                TagAction::Seal => Ok(()),
+                _ => Err(tag_browse::BROWSING.to_owned()),
+            };
+            if let Err(e) = r {
+                self.error(e);
+            }
+            return;
+        }
         let r = match action {
             TagAction::Select(id) => {
                 if self.tags.tag(id).is_some() {
@@ -1202,6 +1314,7 @@ impl App {
                     self.maps.len()
                 ));
                 self.source = Some(source);
+                self.tag_browse = None;
                 self.read_halo2_cards(path.to_owned());
                 self.session.close();
                 self.loaded = None;
@@ -1226,6 +1339,9 @@ impl App {
     }
 
     fn select_map(&mut self, name: &str) {
+        if self.select_shared_cache(name) {
+            return;
+        }
         let located = if self.is_mappack_map(name) {
             // A Map Pack map: its own bytes, the Halo 2 source's caches.
             let shared = self.shared_caches();
@@ -1257,10 +1373,20 @@ impl App {
                 self.loaded = Some(name.to_owned());
                 self.saved_path = None;
                 self.tool = ToolKind::Scenario;
+                self.tag_browse = None;
                 let msg = format!("opened {name}: {}", self.session.status());
                 self.info(msg);
             }
-            Err(e) => self.error(format!("{name}: {e}")),
+            Err(e) => {
+                self.error(format!("{name}: {e}"));
+                // Its tags may still read: show them in the Tags tool.
+                if !self.is_mappack_map(name) && self.source.is_some() {
+                    self.browse_tags(Some(name));
+                    if self.browsing().is_some() {
+                        self.tool = ToolKind::Tags;
+                    }
+                }
+            }
         }
     }
 

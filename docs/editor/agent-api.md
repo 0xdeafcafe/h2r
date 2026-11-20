@@ -133,7 +133,7 @@ before anything runs (`INVALID_PARAMS`). Indices are 0-based throughout
 | `session` | `status`, `methods`, `log` |
 | `source` | `open {path}`, `maps` |
 | `doc` | `list`, `open {map \| path \| package \| variant \| playlists}`, `save`, `save_as {path}`, `diff`, `undo`, `redo`, `close` |
-| `tag` | `list {group, name}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
+| `tag` | `list {group, name, query, path, limit, homes}`, `browse {map}`, `resources {tag}`, `export {tag, out, dependencies, resources}`, `import {path, tag, skip_missing}`, `read {tag, depth, elements, hex}`, `refs {tag}`, `follow {tag, ref}`, `set {tag, path, value}`, `block.add`, `block.remove`, `block.duplicate` |
 | `scenario` | `blocks`, `list {block}`, `get`, `set {block, index, field, value}`, `add {block, like, position}`, `move {block, index, position, ypr}`, `delete`, `duplicate`, `select` |
 | `variant` | `list`, `get`, `set {setting, value}`, `rename`, `copy`, `export`, `import`, `delete` |
 | `playlist` | `list` (with `unused` per playlist and the `templates`), `get {playlist}`, `set {playlist, title, description, template, clear}` (`template`: make the slot a playlist of that kind, or give a playlist another kind; `clear: true`: make it unused; [live-matchmaking.md §6.10](../live/live-matchmaking.md)), `entry {playlist, op, entry, to, weight}`, `entry_variant` |
@@ -162,6 +162,23 @@ Notes on some:
   the schema's structural view instead. The scenario tag's edits stay with
   the Scenario tool: `tag.set` paths `netgame_flags[0].position` and
   `tag.block.*` on `netgame_flags` run as the matching `scenario.*` calls.
+- **Other maps and tag bundles.** `tag.browse {"map": "shared"}` shows
+  another map of the source in the Tags tool, read-only (`shared`,
+  `single_player_shared`, `mainmenu`, any level); `tag.browse {}` goes
+  back to the open map. `tag.list`, `tag.read`, `tag.set` (refused),
+  `tag.resources` and `tag.export` then work on the browsed map;
+  `tag.read {"raw": true}` and `tag.refs` still read the open map.
+  `tag.list` searches like the Tags tool (`query`: words each in
+  `group:name`; `path`: a folder) and marks each tag with `elsewhere`
+  (the shared cache that has the data of a tag with none here) and, with
+  `homes`, its raw pointers counted by file. `tag.resources` lists the
+  data references and raw pointers, and a bitmap's images or a sound's
+  permutations. `tag.export` writes a tag bundle (`.h2tag`,
+  [editor.md](editor.md#tag-bundles)) to `out`, else under
+  `<data>/tag-bundles/`, refused in a Git checkout; `tag.import`
+  replaces the open map's tags with a bundle's as one undo step of the
+  `tags` document. It does not add tags: one the map lacks refuses the
+  import unless `skip_missing`.
 - **Placements.** `scenario.set` takes a number, `[x, y, z]`, or for a tag
   reference `{"id": "0x..."}` (or `null` for none). The scenario checks it
   first: read-only fields, integer ranges, finite floats, palette indices,
@@ -212,7 +229,10 @@ the window and the API stay one path.
   provider: `tag.read` through `tag_api::read_tag`, `tag.set` through
   `tag_api::set_field`, `tag.block.*` through `tag_api::block`, applied as
   `Action::Tag` with `App::perform`; it returns `None` for the scenario
-  tag's edits and for `tag.read {"raw": true}`.
+  tag's edits and for `tag.read {"raw": true}`. `api/tag_io.rs`
+  (`TagIo`, after it) answers `tag.list` (replacing the built-in one),
+  `tag.browse`, `tag.resources`, `tag.export` and `tag.import` through
+  `Action::BrowseTags`, `Action::TagExport` and `Action::TagImport`.
 - **HUDs (studio-hud, landed).** `api/hud.rs`: `hud.list` opens a map of
   the source (or a package) in the HUD tool and lists its `nhdt` tags
   and who names them; `hud.read` shows one and gives its widgets
@@ -326,8 +346,8 @@ identical profiles.
   example), `Api::call` (shape check, providers, built-ins),
   `Api::pump` (the window's between-frames answer).
 - `api/server.rs`: the socket. `api/{docs,scenario,tags,variants,playlists,ui_screens,view}.rs`:
-  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs` and
-  `api/hud.rs` the Tags and HUD tools'.
+  the namespaces. `api/seams.rs`: providers; `api/tag_fields.rs`,
+  `api/tag_io.rs` and `api/hud.rs` the Tags and HUD tools'.
 - `app/commands.rs`: the actions added for the API and the window
   (`SetField`, `EditSelection`, `MovePlacement`, `EditPlaylist`,
   `UndoIn`), `PlaylistEdit`, and `App::perform`. The viewport gizmo
@@ -356,6 +376,9 @@ system temp directory):
 - tags listed, read (raw and through the registry), referenced and
   followed; `tag.set` on a tag through the Tags tool, diffed, undone and
   redone as the `tags` document; a tag too short for its layout refused;
+- a shared cache browsed (its tags listed and read, `tag.set` refused),
+  back to the open map, a tag exported, edited and imported back over the
+  edit as one undo step;
 - the HUD tool through the API on `hud_edit`'s invented map: read, check,
   move (and in another mode), set, diff, undo and redo as the `hud`
   document, render (refused in a Git checkout), save as and re-open; and
