@@ -423,26 +423,6 @@ impl LitObjects {
         Some((vertex, pixel))
     }
 
-    /// One line on how `d` (of model `index`) draws (diagnostics: the
-    /// objects' probe).
-    pub fn describe(&self, index: u32, d: &PlannedDraw) -> String {
-        let section = self.models.get(&index).and_then(|m| m.parts.get(d.part)).map(|p| (p.section, p.part, p.shader_tag));
-        format!(
-            "part {} (section, part, shader) {section:x?} implementation {} indices {:?}: depth {:?} write {} cull {:?} front {:?} writes {:?} alpha test {:?} clamp {}{}",
-            d.part,
-            d.implementation,
-            d.indices,
-            d.state.depth_compare,
-            d.state.depth_write,
-            d.state.primitive.cull_mode,
-            d.state.primitive.front_face,
-            d.state.color_writes,
-            d.state.alpha_test,
-            d.state.w_clamp,
-            if d.texaccum { "; samples the texture accumulation level" } else { "" },
-        )
-    }
-
     /// The sections model `index`'s lit parts come from, each once
     /// (diagnostics).
     pub fn sections(&self, index: u32) -> Vec<u16> {
