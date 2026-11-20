@@ -1018,7 +1018,8 @@ fn sim_events_answers_the_tick_events_the_game_thread_recorded() {
     let (h, mut game) = (Harness::new(), game());
     damage::tick_starts();
     let r = h.ok(&mut game, method::EVENTS, Value::Null);
-    assert_eq!(r, json!({"events": []}));
+    assert_eq!(r["events"], json!([]));
+    assert_eq!(r["at"]["boundary"], "tick");
 
     // A kill credited at PLAYER_KILLED's entry, recorded by the observer
     // the object update's switch installs: attacker, victim, code.
@@ -1040,7 +1041,7 @@ fn sim_events_answers_the_tick_events_the_game_thread_recorded() {
     assert_eq!(events[0]["victim_unit"], Value::Null);
     assert_eq!(events[0]["tick"], Value::Null);
     let r = h.ok(&mut game, method::EVENTS, json!({"kinds": ["damage"]}));
-    assert_eq!(r, json!({"events": []}));
+    assert_eq!(r["events"], json!([]));
 
     let e = h.err(&mut game, method::EVENTS, json!({"kinds": ["moon"]}));
     assert_eq!(e["code"], code::INVALID_PARAMS);
