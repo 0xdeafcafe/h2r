@@ -704,7 +704,9 @@ h2 agent render.parity '{"arm": true}'
   one has been sealed, its map epoch, frame, tick, summary hash and cut
   reasons; per view (`key` is `kind:player:view`, `game:0:0`) whether it
   cut, its clusters, instances, parts, rows, lights, shadow maps, the
-  instances the guest still draws (`remainder`), and carried ops by slot
+  instances the guest still draws (`remainder`), its parts by how they
+  draw beyond their material (`part_flags`: `stencil_mark`, `strip`;
+  framescene.md, slice 3), and carried ops by slot
   and by `CameraUse` (empty while no stage carries ops); `counters`
   (`scenes_sealed`, `scenes_unsealed`, `scene_views`, `scene_no_camera`,
   `scene_refused_writes`, and from `d3d::scene_stage`

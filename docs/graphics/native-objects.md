@@ -83,7 +83,11 @@ columns count objects per view. Fallback reason columns have the same
 prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
 or `reservation`. `walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
-object count.
+object count. `walk_part_aux_state`, `walk_part_subparts` and
+`walk_part_topology` count the parts (not objects) behind
+`walk_unsupported` by their record's cause
+(`scene_extract::layout::object_walk::Refusal`,
+[framescene.md](framescene.md), "Slice 3").
 
 The method for comparing the walk with `impl.render.native=off` is in
 [notes/native-ab.md](notes/native-ab.md).

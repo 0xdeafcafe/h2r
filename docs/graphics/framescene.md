@@ -5,8 +5,8 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 [sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
-Slices 0 to 2 are built, and their sections say how; the rest is the
-plan. Lanes write code and tests; the coordinator builds, runs and
+Slices 0 to 2 are built, and so is slice 3's objects part; their
+sections say how. The rest is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -29,10 +29,11 @@ game data.
   4x, native 32.35 fps against D3D 34.34, p99 49.7 against 39.5 ms. The
   native-cost lane cut the native passes and command buffers that caused
   most of it; its numbers are not in yet.
-- Three things are still open on that path: about 14 objects a frame go
-  back to D3D from the object walk (`walk_unsupported`), the lights stage
-  refuses some lights, and side passes at a render scale above 1 are not
-  deferred.
+- Three things are still open on that path: the object walk gives back
+  the objects whose records toggle the depth scale or draw chosen
+  subparts (`walk_unsupported`, by cause `walk_part_*`, slice 3), the
+  lights stage refuses some lights, and side passes at a render scale
+  above 1 are not deferred.
 - `native-render` depends on `d3d`, reads guest memory through
   `dyn GuestRead` in about 19 of its modules, and is wrapped in about 30,000
   lines of glue in `boot` and `feature`.
@@ -177,7 +178,7 @@ pub struct PartDraw {
     pub implementation: u8,     // the record's layer-3 implementation
     pub material: MaterialId,   // shader tag datum
     pub rows: Range<u32>,       // palette rows, already remapped for this section
-    pub flags: PartFlags,       // stencil mark mode, conditional stream range, auxiliary state toggle
+    pub flags: PartFlags,       // stencil marking, strip topology (slice 3)
 }
 ```
 
@@ -703,14 +704,51 @@ commands are for the coordinator.
 ### Slice 3: no remainder in the opaque block
 
 Research first (`h2 disasm`), then code. Three parts, each its own
-commits:
+commits. The objects part is built; the lights and the first-person
+and world-layer parts are not.
 
-- **Objects.** The three causes of `walk_unsupported`
-  (`object_walk.rs`, `SPECIAL_RECORD_FLAGS`): stencil marking,
-  conditional stream ranges, the auxiliary state toggle in the geometry
-  draw's prologue and epilogue. Read what each does and what reads the
-  stencil marks (open in native-renderer.md), carry them as
-  `PartFlags`, draw them.
+- **Objects.** The geometry draw `0x0004d0b0` reads four bits of the
+  render record's `+0` in layer 3 (**Code**; the module notes of
+  `scene_extract::layout::object_walk` give the addresses).
+  `object_walk::record_flags` turns them into `PartFlags` or a named
+  refusal:
+  - **Bit 14, stencil marking** (`PartFlags::STENCIL_MARK`). The
+    prologue `0x0004d640` sets stencil mode 2 (`0x00015370`: `ALWAYS`,
+    reference `0xff`, masks `0xff`, `REPLACE` on pass) and the
+    epilogue `0x0004d720` mode 1 (the same with reference 0); with the
+    stencil-off flag bytes set, mode 0 for every item and the bit does
+    nothing. The objects stage draws a marked part with
+    `object_state::mark` (mode 2, the packet's stencil reference
+    `0xff`). A run with a marked part is taken only when the device
+    holds mode 1 (`boot::native_objects_glue::plan_walk`), so skipping
+    the epilogue leaves the state the guest would. What reads the marks
+    is still open (native-renderer.md, "Not verified"): `0x00015370`'s
+    other modes test the stencil `EQUAL` and `NOTEQUAL`, and they draw
+    on the D3D path over the same depth-stencil, so the native writes
+    are what they read.
+  - **Bit 9, strip topology** (`PartFlags::STRIP`). The whole-part
+    emitter `0x0004daa0` draws a part as a strip when the bit is set and
+    the part's triangle-list flag is clear, as a list otherwise. The
+    native models decode a part without the list flag as a strip, so
+    that part without bit 9 refuses (`Refusal::Topology`).
+  - **Bit 6, conditional stream ranges.** With a visible-subpart mask
+    (record `+0x14`) and subparts in the section, the emitter draws only
+    the visible subparts (each its own strip, or consecutive ones merged
+    into lists). That case refuses (`Refusal::Subparts`); without a mask
+    or subparts it draws the whole part and the part is in the scene.
+    Drawing it needs the models to keep each subpart's native index
+    range and the scene to carry the mask.
+  - **Bit 11, the auxiliary state toggle.** The prologue and epilogue
+    call `0x00012d50`, which rewrites the device's depth scale and the
+    transform it builds from the view. The object programs take neither,
+    so it refuses (`Refusal::AuxState`). Drawing it needs the scale the
+    toggle sets carried in the scene and applied in the object programs'
+    depth.
+
+  Refused parts count by cause as `native_objects_walk_part_aux_state`,
+  `_part_subparts` and `_part_topology` (parts, where
+  `walk_unsupported` counts objects). `render.scene` reports each view's
+  parts by flag (`part_flags`).
 - **Lights.** The refusals in `light_list.rs` and
   `native_lights::walk` ("shadow, stencil or layer 14 work", "both
   sorted light layers are required", the split-light case). Type the
@@ -718,8 +756,28 @@ commits:
   as one batch at the start of the view's stage, not as a pass per
   light.
 - **First person and world layers 1, 5, 7, 8, 20**, typed.
+- **Lights, research.** The light passes `0x00031170` draw, per light,
+  layer 10 (shadow casters, `0x000312ad`), layer 11 (shadow receivers,
+  `0x00031348`), layer 14 (`0x000313dd`), layer 12 (diffuse,
+  `0x0003144a`) and layer 13 (specular, `0x000314ca`), each after a
+  stencil mode change through `0x00015370` (**Code**).
+  `light_list::single_layer` refuses a light with any of layers 10, 11
+  or 14 ("shadow, stencil or layer 14 work"), which set the stencil the
+  later layers test (**S**, from the mode changes between them), and a
+  light with both 12 and 13 ("both sorted light layers are required"):
+  the hook takes one layer's sorted entries per light, and the other
+  layer's are built only when its own layer draw runs. Typing the light
+  list therefore means typing the whole sequence, stencil modes
+  included, at the light passes' entry rather than per layer.
 - **Tests.** One synthetic case per former refusal reason, asserting
-  the part or light is in the scene. Shadow batch: N lights record at
+  the part or light is in the scene: for objects,
+  `each_former_special_record_flag_is_a_part_or_a_named_cause` and
+  `a_records_flags_become_part_flags_or_name_their_refusal`
+  (`scene_extract::layout::object_walk`),
+  `a_marked_or_strip_part_is_in_the_scene_with_its_flags`
+  (`scene_extract::extract`),
+  `a_marked_part_draws_in_mode_2_whatever_its_implementation_left`
+  (`native_render::object_state`). Shadow batch: N lights record at
   most N target changes and no pass in between.
 - **Gate.** `walk_unsupported`, every lights refusal counter and every
   `refused_*` counter of the five stages are zero on the census corpus.
@@ -915,7 +973,7 @@ $H agent render.scene --socket $S > scene.json          # from slice 1
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,
 from slice 2 `native_<stage>_{extract_ns,render_prepare_ns,scene_stages,scene_dropped}`,
-`walk_unsupported`, and from slice 1 `scene_dropped_*`,
+`walk_unsupported` and from slice 3 `walk_part_{aux_state,subparts,topology}`, and from slice 1 `scene_dropped_*`,
 `scene_unresident`, `scene_readback`, `scene_held_draws`.
 
 **Pixels and the sim** (two launches from boot, same image):
