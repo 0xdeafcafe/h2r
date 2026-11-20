@@ -489,7 +489,7 @@ h2 agent fallbacks 20
   `native_world_v1_display_ranges` is zero when the display copy fails
   validation. Frame captures also include `native_lights_worker_round_trips`
   and `native_lights_reference_passes` / `native_lights_display_passes`.
-  Definitions: [native-renderer.md](../graphics/native-renderer.md#ordered-replacement-handoff).
+  Definitions: [native-renderer.md](../graphics/native-renderer.md#frame-counters).
 - **Fallbacks.** `profile.fallbacks {top}` (20 by default, 1 to 500)
   returns the fallback interpreter's totals and its entry addresses ranked
   by instructions interpreted, each with hits, x87 instructions and the
@@ -1588,7 +1588,7 @@ tests), `crates/agent/src/trace/tests.rs`, `crates/agent/src/havok.rs` and
 
 - [feature-engine.md](../engine/feature-engine.md): switches, hooks, native UI screens
 - [high-framerate.md](../game/high-framerate.md): `lockstep` and `xapi::tap`
-- [profiling.md](../perf/profiling.md), [gameplay-budget.md](../perf/gameplay-budget.md)
+- [profiling.md](../perf/profiling.md), [gameplay-budget.md](../perf/notes/gameplay-budget.md)
 - [level-boot.md](level-boot.md), [checkpoints.md](checkpoints.md), [snapshots.md](snapshots.md)
 - [lab.md](lab.md): `h2 lab`, runs on a second Mac over SSH with replays and frame stats
 - [hot-iteration.md](../graphics/hot-iteration.md): `edit.*` and hot `render.*`

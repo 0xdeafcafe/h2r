@@ -927,7 +927,7 @@ pub struct ObjectResult {
 
 // ---- profile ----
 
-/// The frame-stats rolling window (docs/perf/gameplay-budget.md).
+/// The frame-stats rolling window (docs/perf/notes/gameplay-budget.md).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Counters {
     pub at: At,

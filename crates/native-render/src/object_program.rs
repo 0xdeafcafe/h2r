@@ -2,7 +2,7 @@
 //! [`crate::program`] path draws a world pass: the pass's vertex program
 //! and pixel shader translated once per material, and per drawn object a
 //! vertex constant block holding what the game's upload would hold
-//! (docs/graphics/native-renderer.md, "Object programs"):
+//! (docs/graphics/native-objects.md, "Object programs"):
 //!
 //! - `c[0..18]`, the view's, from the device each frame
 //!   ([`crate::program::frame_vertex`]);

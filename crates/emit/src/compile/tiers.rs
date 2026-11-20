@@ -3,7 +3,7 @@
 //!
 //! Clang's time on a shard is mostly the optimiser and the register
 //! allocator, and both grow faster than linearly with a function's size
-//! (docs/lifter/build-perf.md). `-O0` compiles a shard about eight times
+//! (docs/lifter/notes/build-perf.md). `-O0` compiles a shard about eight times
 //! faster than `-O2`, `-O1` about a sixth faster. The game does the same
 //! thing at any level; only how fast cold code runs changes, so this stays
 //! off by default and is a measured choice: `H2_OPT_COLD` names the cold

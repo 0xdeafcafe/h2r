@@ -1,5 +1,5 @@
 //! Stage 5: a screen effect's layer-15 template pass (`0x00016610` from
-//! `0x0002d140`; docs/graphics/native-renderer.md, "Stage 5", "The screen
+//! `0x0002d140`; docs/graphics/native-post-hud.md, "Stage 5", "The screen
 //! effects") as the native renderer would draw it.
 //!
 //! `0x0002d140` draws each of its egor's passes through the shader's

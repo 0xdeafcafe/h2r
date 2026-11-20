@@ -1,5 +1,5 @@
 //! Objects in guest memory, read once per view by the stage-2 hook, and
-//! the skip of their layer-3 items (docs/graphics/native-renderer.md,
+//! the skip of their layer-3 items (docs/graphics/native-objects.md,
 //! "Stage 2: objects and skinning").
 //!
 //! Research points (Code, `h2 disasm`):

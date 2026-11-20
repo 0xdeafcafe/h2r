@@ -4,7 +4,7 @@
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
 //! view changed vertex and pixel constants staged in the submission upload ring,
 //! then ordered packets appended to the D3D render pass already open on the
-//! game's targets (docs/graphics/native-renderer.md, "Object programs").
+//! game's targets (docs/graphics/native-objects.md, "Object programs").
 
 use std::collections::HashMap;
 use std::ops::Range;

@@ -1,6 +1,6 @@
 //! "Convert to Halo 2": a read-only Halo 1 map built into a whole new Halo 2
 //! map by `h1convert`'s from-scratch path (`fresh::from_scratch`,
-//! docs/halo1/multiplayer.md, "Then built from scratch"), off the UI
+//! docs/halo1/multiplayer.md, "Converting a map"), off the UI
 //! thread, and written as the Halo 1 import's package
 //! (`<data>/maps/h1_<map>/`, one `[[variant]]` per sandbox).
 //!

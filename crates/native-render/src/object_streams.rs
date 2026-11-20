@@ -1,5 +1,5 @@
 //! An object section's vertex streams as the game's vertex declaration
-//! feeds them to its vertex program (docs/graphics/native-renderer.md,
+//! feeds them to its vertex program (docs/graphics/native-objects.md,
 //! "Object programs"): which `v` register reads which bytes, in which
 //! format. Pure: the stream formats are read from guest memory at run time
 //! ([`StreamFormats::read`]), nothing of them is copied here.

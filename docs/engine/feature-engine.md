@@ -143,7 +143,10 @@ registered (`InstallError::Occupied`).
 for synthetic guests. A point that resolves to nothing drops an optional hook
 with a note, and turns off the feature of any other hook with the reason. At
 install, a point with no generated original turns its features off the same
-way. A title update maps the table through `ImageAddrs`
+way. Each point expects a shape at its address (a function start, a call,
+a frame prologue; `engine::point_shapes`); install checks it against the
+loaded image, and a point that is not what it says turns its features off
+with its name ([guest-layout.md](guest-layout.md)). A title update maps the table through `ImageAddrs`
 ([title-updates.md](../runtime/title-updates.md) section 3.3).
 Structure layouts for a title update would go through `engine::view`
 ([Guest data access](#guest-data-access)); no title-update map exists yet.
@@ -176,7 +179,9 @@ manifest says `off_by_default` or the list switches it. An `impl.<name>`
 entry switches an implementation: `Switches::implementation(name, default)`
 falls back from `impl.engine.tags.<name>` to `impl.engine.tags`, then
 `impl.engine`. The native renderer's one switch, `impl.render.native`, is
-looked up exactly (`switches::NATIVE`).
+looked up exactly (`switches::NATIVE`). Every `impl.*` switch is a row of
+`feature::switches::table` (default, owner, age, removal); one not there
+does not parse ([guest-layout.md](guest-layout.md)).
 Switches are listed once in [switches.md](../runtime/switches.md).
 
 `Switches::spec` writes every switch set, sorted, so the same switches give
@@ -275,7 +280,9 @@ constant per field, and a builder that writes one on a `FakeGuest`. The grammar
 is `field @ 0xOFF: Type`; field types are the integers, `f32`, `Vec3` and
 `Option<DatumHandle>`. Nothing is read until a getter is called and nothing is
 cached, so each offset is a named research point beside the doc it came from
-(`crates/engine/src/view.rs`).
+(`crates/engine/src/view.rs`). Shared game structures (objects, units,
+players, game globals) and the globals table are in `crates/guest-layout`
+([guest-layout.md](guest-layout.md)); `record!` takes their offsets by name.
 
 | View | Built on | Used by |
 |---|---|---|
@@ -409,14 +416,13 @@ features in `crates/feature/src/native_*`; its one switch is
 sides of the four orchestrators, `render_frame_and_present` and the per-light
 pass, and reports the front-end's guest time as the frame stats' `render`
 phase with an exclusive split per stage
-([gameplay-budget.md](../perf/gameplay-budget.md)).
+([gameplay-budget.md](../perf/notes/gameplay-budget.md)).
 `scene_effect_instruction_entries` lists the retail instruction boundaries the
 emitter must route through entry dispatch for those stages.
 
 ## State
 
-A subsystem's state moves through three stages as it is rewritten
-([ARCHITECTURE.md](../ARCHITECTURE.md), "typed memory in stages"):
+A subsystem's state moves through three stages as it is rewritten:
 
 1. **Guest layout.** The state stays in guest memory in the original layout and
    Rust works through views. Always the first stage, and the only one for

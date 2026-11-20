@@ -1,6 +1,6 @@
 //! An object's lighting as its layer-3 pass reads it: the engine inputs
 //! the game computes from the object's render-state cache record, ported
-//! (docs/graphics/native-renderer.md, "Object lighting").
+//! (docs/graphics/native-objects.md, "Object lighting").
 //!
 //! Research points (Code, `h2 disasm`):
 //!

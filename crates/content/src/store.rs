@@ -1,6 +1,6 @@
 //! Writing packages into `<data>/maps/`: a package directory, and the
 //! `active.toml` choice. The editor saves through this; the resolver reads
-//! the same layout (docs/game/maps.md §7).
+//! the same layout (docs/game/maps.md §1, "The package directory").
 //!
 //! Every write is atomic for a reader: a new package is assembled in a
 //! hidden sibling directory (a `.` name, which [`Library`](crate::Library)

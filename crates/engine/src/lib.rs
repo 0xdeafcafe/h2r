@@ -22,6 +22,8 @@
 //! - [`function_eval`]: the tag function evaluator `0x0013b390` with the
 //!   CRT's `fmod` and `pow`, bit for bit.
 //! - [`points`]: the one table of named guest functions and globals.
+//! - [`point_shapes`]: what each point expects at its address, checked
+//!   against the user's image at install.
 //! - [`view`]: typed views (`record!`, datum arrays, tags, players,
 //!   objects).
 //! - [`entry`]: async entries, Rust bodies that await guest calls.
@@ -46,6 +48,7 @@ pub mod light_passes;
 pub mod locale;
 pub mod memory;
 pub mod objectives;
+pub mod point_shapes;
 pub mod points;
 pub mod render;
 pub mod render_loop;
@@ -69,6 +72,8 @@ pub mod view;
 
 #[cfg(feature = "runtime-glue")]
 pub mod runtime_glue;
+#[cfg(feature = "runtime-glue")]
+pub mod sim_anim;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_native;
 

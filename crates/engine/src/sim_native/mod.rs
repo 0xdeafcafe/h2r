@@ -62,28 +62,9 @@ fn scalar(x: u32) -> Vec4 {
 // magnitudes with headroom on either side of the normal range so even a
 // host that flushes subnormals never changes the answer. Rust's separate
 // binary32 operations round once each. All other cases use the SSE model.
-#[derive(Clone, Copy)]
-enum Op {
-    Add,
-    Sub,
-    Mul,
-}
+// The rule and the operations are `sim_core::lanes`'.
 use Op::*;
-
-fn ordinary(x: u32) -> bool {
-    let magnitude = x & 0x7fff_ffff;
-    magnitude == 0 || (0x2000_0000..0x5f00_0000).contains(&magnitude)
-}
-
-fn binary32(op: Op, a: u32, b: u32) -> u32 {
-    let (a, b) = (f32::from_bits(a), f32::from_bits(b));
-    match op {
-        Add => a + b,
-        Sub => a - b,
-        Mul => a * b,
-    }
-    .to_bits()
-}
+use sim_core::lanes::{Op, binary1 as binary32, ordinary1 as ordinary};
 
 fn op(c: &mut CpuAbi, op: Op, a: u32, b: u32) -> u32 {
     if c.mxcsr & 0x6020 == 0x20 && ordinary(a) && ordinary(b) {

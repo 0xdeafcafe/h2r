@@ -1,5 +1,5 @@
 //! Render models as GPU-ready arrays (stage 2,
-//! docs/graphics/native-renderer.md, "Stage 2: objects and skinning"): one
+//! docs/graphics/native-objects.md, "Stage 2: objects and skinning"): one
 //! vertex and index buffer per model, in the model's rest space, every
 //! vertex carrying up to four model-node indices and weights; one draw per
 //! opaque part; the nodes' inverse rest frames. Built once per model tag;
