@@ -471,10 +471,11 @@ from the completion DPC (see "Notification and callback contracts").
   packet submitted at 32 ms is pending after a 32 ms `advance_to` that came
   first, and complete after one that came second, whatever the host
   threads did. The thread never touches the mixer, guest memory or events:
-  it plays the rendered PCM, resampling if the sink's rate differs. At most
-  `max_queued` of rendered audio waits for it; older audio beyond that is
-  dropped and counted (`OutputStats::dropped_frames`), so a runner ahead of
-  real time does not grow the queue. Audio time stands still between
+  it plays the rendered PCM, resampling if the sink's rate differs. The
+  queue limit is `max_queued` raised as needed to hold one render quantum and
+  the highest playout target. Older audio beyond that limit is dropped and
+  counted (`OutputStats::dropped_frames`), so a runner ahead of real time
+  does not grow the queue. Audio time stands still between
   `advance_to` calls, so a runner that stops calling it while the game
   waits on a stream event with no timeout would hang the game.
 
@@ -544,7 +545,7 @@ playout:
   a dropout is one clean gap;
 - after a dropout, raises the target by `step_ms` (25), up to
   `max_target_ms` (150), and after `relax_after` (30 s) of clean play lowers
-  it by 1 ms a second;
+  it by 1 ms a second. The clean-play period starts when playback resumes;
 - trims the playback rate by at most `MAX_RATE_TRIM` (0.5%, about 9 cents)
   to hold the average fill at the target. This absorbs device clock drift
   and bleeds off the latency a hitch leaves behind. The trim is a linear
@@ -580,8 +581,10 @@ audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev unde
 - `dropouts`: times the device ran dry while playing, one gap each.
   `dev underruns` counts the device callbacks that came up short; a gap
   spans several.
-- `dropped`: rendered audio thrown away (the 250 ms queue overflowed, or
-  the sink refused it).
+- `dropped`: rendered audio thrown away (the queue overflowed, or the sink
+  refused it). The queue holds 250 ms by default and grows for higher
+  configured playout targets so it can hold the maximum adaptive target
+  plus the render quantum that crosses it.
 - `late wakes`, `max gap`: the output thread was held up for more than
   10 ms past its period (a device probe, the host).
 - `stream starves`: a stream ran out of packets and was fed again within
@@ -607,7 +610,7 @@ audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev unde
 - `pad ...`: the controller speaker's sink, when configured.
 
 A headless run plays into `audio::NullSink`, which nothing drains: `fill`
-sits at its ring plus the 250 ms queue (about 590 ms), `trim` at its
+sits at its ring plus the queue (about 590 ms by default), `trim` at its
 limit, and almost everything rendered is `dropped`. That is the sink only.
 The output thread's queue and playout never feed back into logical time,
 rendering or completions, so the stream counters are still the game's.

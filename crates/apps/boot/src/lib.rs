@@ -942,6 +942,14 @@ fn run_configured(
         }
         // world.* results name their tags the same way.
         a.agent.set_tag_names(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
+        if let Some(audio) = &ds {
+            dsound_glue::add_loop_agent_method(
+                &mut features,
+                &a.agent,
+                audio,
+                hot_glue::map_tags(&loaded.runtime, maps()),
+            )?;
+        }
     }
     // maps.test.*: test maps built from recipes and loaded through the
     // agent's guest calls (test_maps.rs, docs/game/test-maps.md).

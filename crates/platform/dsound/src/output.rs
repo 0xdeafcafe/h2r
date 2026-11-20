@@ -45,7 +45,7 @@ use runtime::Runtime;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Who drives audio time.
 pub enum Pacing {
@@ -63,11 +63,11 @@ pub enum Pacing {
     /// logical time given at spawn (`origin`), at the mixer's rate at spawn;
     /// it is rendered in whole [`QUANTUM`]s, with completions after each.
     /// Rendered audio waits in a queue for the thread to play; at most
-    /// `max_queued` of it is kept (the oldest beyond that is dropped and
-    /// counted), so a runner ahead of real time does not grow it without
-    /// bound. If logical time runs slower than real time the device
-    /// underruns. Audio time stands still while the runner does not call
-    /// `advance_to`.
+    /// `max_queued` of it is kept, raised when necessary to hold the
+    /// playout's highest target plus a render quantum (the oldest beyond that is
+    /// dropped and counted). If logical time runs slower than real time the
+    /// device underruns. Audio time stands still while the runner does not
+    /// call `advance_to`.
     ///
     /// `playout` is how the thread plays it: `None` writes everything to the
     /// sink as soon as it is rendered (exact samples, for tests); a
@@ -233,6 +233,65 @@ pub struct OutputStats {
     pub max_wake_gap_us: u64,
 }
 
+/// The main sink's counters and their most recent changes, as sampled by
+/// the output thread. Times are monotonic microseconds since output creation.
+#[derive(Clone, Copy, Debug)]
+pub struct OutputHealth {
+    pub elapsed_us: u64,
+    pub sink: Option<SinkStats>,
+    pub last_underrun_us: Option<u64>,
+    pub playout: Option<PlayoutStats>,
+    pub last_playout_starve_us: Option<u64>,
+    pub dropped_frames: u64,
+    pub last_drop_us: Option<u64>,
+}
+
+/// Read-only output telemetry. Holding it does not keep the output thread
+/// running or take a guest memory or mixer lock.
+#[derive(Clone)]
+pub struct OutputHealthProbe {
+    shared: Arc<Shared>,
+    clock_only: bool,
+}
+
+impl OutputHealthProbe {
+    pub fn elapsed_us(&self) -> u64 {
+        self.shared.elapsed_us()
+    }
+
+    pub fn read(&self) -> OutputHealth {
+        let s = &self.shared;
+        let sink = *s.sink.lock().unwrap_or_else(|e| e.into_inner());
+        let playout = *s.playout.lock().unwrap_or_else(|e| e.into_inner());
+        let dropped = *s.dropped.lock().unwrap_or_else(|e| e.into_inner());
+        OutputHealth {
+            elapsed_us: self.elapsed_us(),
+            sink: (!self.clock_only).then_some(sink.stats),
+            last_underrun_us: sink.last_increase_us,
+            playout: playout.stats,
+            last_playout_starve_us: playout.last_increase_us,
+            dropped_frames: dropped.stats,
+            last_drop_us: dropped.last_increase_us,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct TimedStats<T> {
+    stats: T,
+    last_increase_us: Option<u64>,
+}
+
+impl<T> TimedStats<T> {
+    #[cfg(feature = "playback")]
+    fn publish(&mut self, stats: T, count: impl Fn(&T) -> u64, elapsed_us: u64) {
+        if count(&stats) > count(&self.stats) {
+            self.last_increase_us = Some(elapsed_us);
+        }
+        self.stats = stats;
+    }
+}
+
 /// A wake gap over the period plus this is a late wake.
 pub const LATE_WAKE: Duration = Duration::from_millis(10);
 
@@ -256,10 +315,11 @@ struct Shared {
     stop: AtomicBool,
     gate: Mutex<Gate>,
     rendered: AtomicU64,
-    dropped: AtomicU64,
+    dropped: Mutex<TimedStats<u64>>,
     wakes: AtomicU64,
     rate: AtomicU32,
-    sink: Mutex<SinkStats>,
+    started: Instant,
+    sink: Mutex<TimedStats<SinkStats>>,
     /// Logical pacing: rendered interleaved stereo waiting to be played.
     queue: Mutex<VecDeque<f32>>,
     /// A side output was configured.
@@ -272,14 +332,27 @@ struct Shared {
     side_dropped: AtomicU64,
     side_rate: AtomicU32,
     side_sink: Mutex<SinkStats>,
-    playout: Mutex<Option<PlayoutStats>>,
+    playout: Mutex<TimedStats<Option<PlayoutStats>>>,
     late_wakes: AtomicU64,
     max_wake_gap_us: AtomicU64,
 }
 
 impl Shared {
+    fn elapsed_us(&self) -> u64 {
+        self.started.elapsed().as_micros() as u64
+    }
+
     fn gate(&self) -> MutexGuard<'_, Gate> {
         self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(feature = "playback")]
+    fn note_dropped(&self, frames: u64) {
+        if frames > 0 {
+            let mut dropped = self.dropped.lock().unwrap_or_else(|e| e.into_inner());
+            dropped.stats += frames;
+            dropped.last_increase_us = Some(self.elapsed_us());
+        }
     }
 
     /// Queues rendered side mix (clamped), keeping at most `max` frames.
@@ -320,15 +393,22 @@ pub struct Output {
 }
 
 impl Output {
+    pub fn health_probe(&self) -> OutputHealthProbe {
+        OutputHealthProbe {
+            shared: Arc::clone(&self.shared),
+            clock_only: self.clock_only,
+        }
+    }
+
     pub fn stats(&self) -> OutputStats {
         let s = &self.shared;
         OutputStats {
             rendered_frames: s.rendered.load(Ordering::Acquire),
-            dropped_frames: s.dropped.load(Ordering::Acquire),
+            dropped_frames: s.dropped.lock().unwrap_or_else(|e| e.into_inner()).stats,
             wakes: s.wakes.load(Ordering::Acquire),
             halted: s.gate().halted,
             sample_rate: s.rate.load(Ordering::Acquire),
-            sink: *s.sink.lock().unwrap_or_else(|e| e.into_inner()),
+            sink: s.sink.lock().unwrap_or_else(|e| e.into_inner()).stats,
             side: s.side_wanted.then(|| SideStats {
                 live: s.side_live.load(Ordering::Acquire),
                 rendered_frames: s.side_rendered.load(Ordering::Acquire),
@@ -336,7 +416,7 @@ impl Output {
                 sample_rate: s.side_rate.load(Ordering::Acquire),
                 sink: *s.side_sink.lock().unwrap_or_else(|e| e.into_inner()),
             }),
-            playout: *s.playout.lock().unwrap_or_else(|e| e.into_inner()),
+            playout: s.playout.lock().unwrap_or_else(|e| e.into_inner()).stats,
             late_wakes: s.late_wakes.load(Ordering::Acquire),
             max_wake_gap_us: s.max_wake_gap_us.load(Ordering::Acquire),
         }
@@ -348,7 +428,7 @@ impl Output {
         let stats = self.stats();
         let s = &self.shared;
         s.max_wake_gap_us.store(0, Ordering::Release);
-        if let Some(p) = s.playout.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(p) = s.playout.lock().unwrap_or_else(|e| e.into_inner()).stats.as_mut() {
             p.min_fill_ms = p.fill_ms;
             p.max_fill_ms = p.fill_ms;
         }
@@ -410,7 +490,7 @@ impl Output {
                     self.shared.push_side(side, g.max_queued);
                 }
                 let over = push_queue(&self.shared.queue, block, g.max_queued);
-                self.shared.dropped.fetch_add(over, Ordering::AcqRel);
+                self.shared.note_dropped(over);
             } else {
                 self.hle.advance_audio_leased(&self.runtime, QUANTUM, &self.lease)?;
             }
@@ -571,10 +651,11 @@ impl Hle {
                 when: halt_when,
             }),
             rendered: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
+            dropped: Mutex::new(TimedStats::default()),
             wakes: AtomicU64::new(0),
             rate: AtomicU32::new(0),
-            sink: Mutex::new(SinkStats::default()),
+            started: Instant::now(),
+            sink: Mutex::new(TimedStats::default()),
             queue: Mutex::new(VecDeque::new()),
             side_wanted: side.is_some(),
             side_live: AtomicBool::new(false),
@@ -583,7 +664,7 @@ impl Hle {
             side_dropped: AtomicU64::new(0),
             side_rate: AtomicU32::new(0),
             side_sink: Mutex::new(SinkStats::default()),
-            playout: Mutex::new(None),
+            playout: Mutex::new(TimedStats::default()),
             late_wakes: AtomicU64::new(0),
             max_wake_gap_us: AtomicU64::new(0),
         });
@@ -603,18 +684,15 @@ impl Hle {
                 origin,
                 max_queued,
                 playout,
-            } => {
-                let max_queued = (max_queued.as_secs_f64() * f64::from(mixer_rate)) as usize;
-                (
-                    Some(Mode::Logical(mixer_rate, playout)),
-                    Some(Mutex::new(Grid {
-                        origin,
-                        done: 0,
-                        rate: mixer_rate,
-                        max_queued: max_queued.max(QUANTUM as usize),
-                    })),
-                )
-            }
+            } => (
+                Some(Mode::Logical(mixer_rate, playout)),
+                Some(Mutex::new(Grid {
+                    origin,
+                    done: 0,
+                    rate: mixer_rate,
+                    max_queued: logical_queue_limit(max_queued, playout, mixer_rate),
+                })),
+            ),
         };
         #[cfg(not(feature = "playback"))]
         let (join, grid) = {
@@ -669,7 +747,11 @@ enum Mode {
 #[cfg(feature = "playback")]
 fn publish_sink<S: AudioSink>(shared: &Shared, sink: &S) {
     shared.rate.store(sink.sample_rate(), Ordering::Release);
-    *shared.sink.lock().unwrap_or_else(|e| e.into_inner()) = sink.stats();
+    shared.sink.lock().unwrap_or_else(|e| e.into_inner()).publish(
+        sink.stats(),
+        |s| s.underruns,
+        shared.elapsed_us(),
+    );
 }
 
 /// Device pacing: render what the sink wants, then complete.
@@ -756,17 +838,18 @@ fn run_logical<S: AudioSink>(
         }
         sink.maintain();
         let short = feed.play(&mut sink, &shared.queue, rate);
-        shared.dropped.fetch_add(short, Ordering::AcqRel);
+        shared.note_dropped(short);
         if let Some(p) = feed.stats() {
             let mut slot = shared.playout.lock().unwrap_or_else(|e| e.into_inner());
-            *slot = Some(match *slot {
+            let stats = match slot.stats {
                 Some(old) => PlayoutStats {
                     min_fill_ms: old.min_fill_ms.min(p.fill_ms),
                     max_fill_ms: old.max_fill_ms.max(p.fill_ms),
                     ..p
                 },
                 None => p,
-            });
+            };
+            slot.publish(Some(stats), |p| p.map_or(0, |p| p.starves), shared.elapsed_us());
         }
         if let Some(s) = side.as_mut() {
             s.maintain();
@@ -802,7 +885,7 @@ struct Jitter {
     fill_ms: f64,
     trim: f64,
     starves: u64,
-    /// Device frames played at the last starve or relax step.
+    /// Device frames played when playback started or the target last relaxed.
     calm_since: u64,
 }
 
@@ -854,7 +937,6 @@ impl Feed {
                     j.starves += 1;
                     j.target_ms =
                         (j.target_ms + f64::from(p.step_ms)).min(f64::from(p.max_target_ms));
-                    j.calm_since = stats.played_frames;
                 }
                 j.underruns = stats.underruns;
             }
@@ -872,10 +954,7 @@ impl Feed {
                 }
                 j.primed = true;
                 j.mean_ms = fill_ms;
-                j.trim = 0.0;
-                if j.calm_since == 0 {
-                    j.calm_since = stats.played_frames;
-                }
+                j.calm_since = stats.played_frames;
             }
             // Hold the average at the target: a little faster when above it.
             j.mean_ms += (fill_ms - j.mean_ms) * 0.02;
@@ -1001,6 +1080,20 @@ impl Drop for Side {
     fn drop(&mut self) {
         self.set_live(false);
     }
+}
+
+/// While priming, the sink ring can be empty. The queue alone must be
+/// able to reach the highest target without discarding the render quantum
+/// that crosses it.
+#[cfg(feature = "playback")]
+fn logical_queue_limit(max_queued: Duration, playout: Option<Playout>, rate: u32) -> usize {
+    let queue_frames = (max_queued.as_secs_f64() * f64::from(rate)) as usize;
+    let target_frames = playout.map_or(0, |p| {
+        let ms = f64::from(p.target_ms.max(p.max_target_ms));
+        let frames = (ms * f64::from(rate) / 1000.0).ceil() as usize;
+        frames.saturating_add(QUANTUM as usize)
+    });
+    queue_frames.max(QUANTUM as usize).max(target_frames)
 }
 
 /// Queues rendered interleaved stereo (clamped), keeping at most `max`
@@ -1287,6 +1380,84 @@ mod sim {
             "{o:?}"
         );
         assert!(o.mean_fill_ms < 80.0, "{o:?}");
+    }
+
+    #[test]
+    fn the_logical_audio_grid_keeps_advancing_through_present_2300() {
+        for fps in [30, 60] {
+            for present in 2299_u64..=2301 {
+                let ticks = (present * 10_000_000).div_ceil(fps);
+                assert_eq!(due_frames(ticks, MIX), present * u64::from(MIX) / fps);
+            }
+        }
+    }
+
+    #[test]
+    fn last_underrun_time_tracks_counter_changes_only() {
+        let mut stats = TimedStats::<SinkStats>::default();
+        stats.publish(SinkStats::default(), |s| s.underruns, 100);
+        assert_eq!(stats.last_increase_us, None);
+        let underrun = SinkStats { underruns: 1, underrun_frames: 20, played_frames: 512 };
+        stats.publish(underrun, |s| s.underruns, 200);
+        stats.publish(SinkStats { played_frames: 1024, ..underrun }, |s| s.underruns, 300);
+        assert_eq!(stats.last_increase_us, Some(200));
+    }
+
+    #[test]
+    fn playout_can_prime_at_a_target_larger_than_the_queue_setting() {
+        let rate = 1000;
+        let playout = Some(Playout {
+            target_ms: 500,
+            max_target_ms: 550,
+            ..Playout::default()
+        });
+        let limit = logical_queue_limit(Duration::from_millis(250), playout, rate);
+        assert_eq!(limit, 550 + QUANTUM as usize);
+        let queue = Mutex::new(VecDeque::new());
+        let mut sink = SimSink::new(rate);
+        let mut feed = Feed::new(playout);
+
+        assert_eq!(push_queue(&queue, &[0.5; 998], limit), 0);
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        assert!(!feed.jitter.primed);
+        assert_eq!(push_queue(&queue, &[0.5; 2], limit), 0);
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        assert!(feed.jitter.primed);
+        assert_eq!(sink.queued_frames(), 499); // resampler holds the last frame
+    }
+
+    #[test]
+    fn long_refill_preserves_sample_order_and_defers_target_relaxation() {
+        let rate = 1000;
+        let mut feed = Feed::new(Some(Playout {
+            target_ms: 4,
+            max_target_ms: 10,
+            step_ms: 2,
+            relax_after: Duration::from_millis(4),
+        }));
+        let queue = Mutex::new(VecDeque::new());
+        let mut sink = SimSink::new(rate);
+        let stereo = |frames: &[f32]| frames.iter().flat_map(|&s| [s, s]).collect::<Vec<_>>();
+
+        assert_eq!(push_queue(&queue, &stereo(&[0.125, 0.25, 0.375, 0.5]), 16), 0);
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        sink.callback(5);
+        assert_eq!(sink.played, [0.125, 0.25, 0.375, 0.0, 0.0]);
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        assert_eq!(feed.jitter.starves, 1);
+        assert!(!feed.jitter.primed);
+
+        sink.callback(2000);
+        let start = sink.played.len();
+        let next = [0.625, 0.75, 0.875, 1.0, 0.875, 0.75];
+        assert_eq!(push_queue(&queue, &stereo(&next), 16), 0);
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        sink.callback(6);
+        assert_eq!(&sink.played[start..], &[0.5, 0.625, 0.75, 0.875, 1.0, 0.875]);
+
+        assert_eq!(feed.play(&mut sink, &queue, rate), 0);
+        assert_eq!(feed.jitter.starves, 1);
+        assert_eq!(feed.jitter.target_ms, 6.0);
     }
 
     #[test]
