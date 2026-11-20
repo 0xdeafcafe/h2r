@@ -62,6 +62,7 @@
 //! [`Backend::draw_owned`] move to the render thread without a copy, and
 //! their stream buffers come back for the device to refill.
 
+mod capacity;
 pub mod owner;
 
 use crate::scene_sink::ReplaySample;
@@ -72,7 +73,7 @@ pub static LIGHT_WORKER_WAITS: std::sync::atomic::AtomicU64 = std::sync::atomic:
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use gfx::texture::{DecodedTexture, TextureDesc};
@@ -102,9 +103,9 @@ type Job<B> = Box<dyn FnOnce(&mut Worker<B>) + Send>;
 /// One queued backend command.
 enum Cmd<B: Backend> {
     Job(Job<B>),
-    /// Allocate a fresh proxy's resource without reading or overwriting an
-    /// existing attachment. It can be realized while older draws wait.
-    Create(Job<B>),
+    /// Work independent of this frame's retained draws: allocate a fresh
+    /// resource or retrieve a visibility ticket from an earlier present.
+    Independent(Job<B>),
     FrameStats(timeline::phase::WorkerFrame),
     /// Resolves a shader resource at this exact point in the command list.
     /// The original callback includes the backend's depth-alias fallback.
@@ -235,9 +236,7 @@ struct Shared {
     /// to refill, and their bytes.
     spent: Mutex<(Vec<Vec<StreamBytes>>, usize)>,
     misses: AtomicU64,
-    /// Presents the render thread has finished.
-    presented: Mutex<u64>,
-    presented_cv: Condvar,
+    display_capacity: capacity::DisplayCapacity,
     /// Wall time the render thread spent in the inner backend (ns).
     busy_ns: AtomicU64,
     /// Pixel counts already back from the GPU, by proxy ticket: the render
@@ -246,8 +245,9 @@ struct Shared {
     /// without waiting for the queue.
     landed: Mutex<HashMap<u64, u64>>,
     /// A [`Backend::try_pixel_count`] miss has queued a batch the render
-    /// thread has not run yet (one at a time).
-    land_kick: std::sync::atomic::AtomicBool,
+    /// thread has not run yet. An older report can land while the current
+    /// frame is retained. A current report has to submit that frame's draws.
+    land_kick: [std::sync::atomic::AtomicBool; 2],
     /// The inner backend's [`Backend::runs_scene_stages`], as the render
     /// thread last saw it (after each batch).
     scene_stages: std::sync::atomic::AtomicBool,
@@ -368,8 +368,8 @@ impl<B: Backend> Worker<B> {
     }
 
     fn exec(&mut self, cmd: Cmd<B>) {
-        if let Cmd::Create(create) = cmd {
-            create(self);
+        if let Cmd::Independent(job) = cmd {
+            job(self);
             return;
         }
         if let Cmd::OwnerPresent(present) = cmd {
@@ -396,7 +396,7 @@ impl<B: Backend> Worker<B> {
             Cmd::Render(op) => self.run(|worker| op.issue(worker)),
             Cmd::OwnerPresent(_) => unreachable!("a present terminates the owner transaction"),
             Cmd::Sample(sample) => (sample.original)(self),
-            Cmd::Job(job) | Cmd::Create(job) => job(self),
+            Cmd::Job(job) | Cmd::Independent(job) => job(self),
             Cmd::FrameStats(frame) => frame.finish(),
             Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
             Cmd::ExternalRun(run) => {
@@ -529,6 +529,8 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     next_surface: u32,
     next_texture: u64,
     next_ticket: u64,
+    /// First visibility ticket that can depend on this present's commands.
+    first_frame_ticket: u64,
     presents: u64,
     waits: Waits,
     /// The inner backend's draw outcomes, answered here (`None`: they are
@@ -558,6 +560,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let join = std::thread::Builder::new()
             .name("d3d-render".into())
             .spawn(move || {
+                let _worker_lifetime = capacity::WorkerLifetime(Arc::clone(&s));
                 if let Some(hook) = RENDER_THREAD_START.get() {
                     hook();
                 }
@@ -637,9 +640,6 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     // idle work answer `None` and the loop blocks again.
                     wake = Some(std::time::Instant::now());
                 }
-                // Wake a guest waiting on a frame that will never finish.
-                *w.shared.presented.lock().unwrap() = u64::MAX;
-                w.shared.presented_cv.notify_all();
             })?;
         Ok(Self {
             queue: Arc::new(Queue {
@@ -662,6 +662,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_surface: 1,
             next_texture: 1,
             next_ticket: 1,
+            first_frame_ticket: 1,
             presents: 0,
             waits: Waits::default(),
             judge,
@@ -739,7 +740,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
 
     fn post_create(&self, f: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static) {
         let create: Job<B> = Box::new(move |w| w.run(f));
-        self.push(if self.frame_owner.is_some() { Cmd::Create(create) } else { Cmd::Job(create) });
+        self.push(if self.frame_owner.is_some() { Cmd::Independent(create) } else { Cmd::Job(create) });
     }
 
     fn post_sample(
@@ -806,9 +807,23 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         }
     }
 
+    /// Classify before enqueueing: tickets older than the last Swap's fence
+    /// depend only on backend submissions preceding this frame.
+    fn previous_report(&self, ticket: u64) -> bool {
+        self.frame_owner.is_some() && ticket < self.first_frame_ticket
+    }
+
     /// Runs `f` after everything queued, and waits for its answer.
     fn call<R: Send + 'static>(
         &mut self,
+        f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
+        self.call_job(Cmd::Job, f)
+    }
+
+    fn call_job<R: Send + 'static>(
+        &mut self,
+        command: fn(Job<B>) -> Cmd<B>,
         f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
         self.check()?;
@@ -817,7 +832,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let (rtx, rrx) = mpsc::sync_channel(1);
         let gone = |_| "render thread: gone".to_string();
         self.queue
-            .push(Cmd::Job(Box::new(move |w: &mut Worker<B>| {
+            .push(command(Box::new(move |w: &mut Worker<B>| {
                 let _ = rtx.send(f(w));
             })))
             .map_err(gone)?;
@@ -1061,10 +1076,17 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let gamma = gamma.map(|g| Box::new(*g));
         self.presents += 1;
+        self.first_frame_ticket = self.next_ticket;
         let n = self.presents;
         // The arrival, read on the guest's thread (the render thread may
         // reach this present a frame later).
         let at = std::time::Instant::now();
+        let owned = self.frame_owner.is_some();
+        if owned {
+            // At most two sealed transactions wait to be taken. Refused
+            // transactions occupy their slot through the original Swap.
+            self.wait_for_display_capacity(n)?;
+        }
         if let Some(owner) = self.frame_owner.as_mut() {
             let candidate = (owner.select)(n);
             let declined = owner.declined;
@@ -1072,29 +1094,17 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.push(Cmd::OwnerPresent(Box::new(owner::Present { n, surface, at, flags, gamma, candidate, declined, failed })));
         } else {
             self.post(move |w| {
-                let s = w.surface(surface)?;
                 w.inner.stamp_present(at);
-                let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
+                let r = w.surface(surface).and_then(|s| w.inner.present_with_gamma(s, flags, gamma.as_deref()));
                 w.residency.present(r.is_ok() && !w.shared.failed.load(Ordering::Relaxed));
-                *w.shared.presented.lock().unwrap() = n;
-                w.shared.presented_cv.notify_all();
+                w.shared.display_capacity.release(n);
                 r?;
                 w.land_pixel_counts()
             });
         }
         self.flush();
-        // Frame-in-flight limit: wall time only, never logical time.
-        let t = std::time::Instant::now();
-        let mut done = self.shared.presented.lock().unwrap();
-        if n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
-            let _phase = timeline::phase::enter(timeline::phase::Phase::RenderWait);
-            self.waits.throttles += 1;
-            while n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
-                done = self.shared.presented_cv.wait(done).unwrap();
-            }
-            self.waits.throttle_wait += t.elapsed();
-            THROTTLES.fetch_add(1, Ordering::Relaxed);
-            THROTTLE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if !owned {
+            self.wait_for_display_capacity(n)?;
         }
         Ok(())
     }
@@ -1246,7 +1256,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             self.waits.landed_counts += 1;
             return Ok(c);
         }
-        self.call(move |w| {
+        let command: fn(Job<B>) -> Cmd<B> = if self.previous_report(ticket) { Cmd::Independent } else { Cmd::Job };
+        self.call_job(command, move |w| {
             // It may have landed after the check above.
             if let Some(c) = w.shared.landed.lock().unwrap().remove(&ticket) {
                 return Ok(c);
@@ -1271,12 +1282,14 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         }
         PENDING_COUNTS.fetch_add(1, Ordering::Relaxed);
         self.waits.pending_counts += 1;
-        if !self.shared.land_kick.swap(true, Ordering::AcqRel) {
-            // The guest is waiting on it: submit a report still open.
-            self.post(|w| {
-                w.shared.land_kick.store(false, Ordering::Release);
-                w.land_pixel_counts()
+        let previous = self.previous_report(ticket);
+        let index = usize::from(previous);
+        if !self.shared.land_kick[index].swap(true, Ordering::AcqRel) {
+            let kick: Job<B> = Box::new(move |w| {
+                w.shared.land_kick[index].store(false, Ordering::Release);
+                w.run(Worker::land_pixel_counts);
             });
+            self.push(if previous { Cmd::Independent(kick) } else { Cmd::Job(kick) });
         }
         self.flush();
         Ok(None)
@@ -1284,13 +1297,13 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.shared.landed.lock().unwrap().remove(&ticket);
-        self.post(move |w| {
+        let drop_ticket: Job<B> = Box::new(move |w| {
             w.shared.landed.lock().unwrap().remove(&ticket);
             if let Some(t) = w.tickets.remove(&ticket) {
                 w.inner.drop_pixel_count(t);
             }
-            Ok(())
         });
+        self.push(if self.previous_report(ticket) { Cmd::Independent(drop_ticket) } else { Cmd::Job(drop_ticket) });
     }
 
     fn can_sample_surfaces(&self) -> bool {

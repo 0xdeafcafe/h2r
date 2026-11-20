@@ -280,3 +280,50 @@ fn a_snapshot_keeps_its_value_and_guest_handle_across_native_or_legacy_present()
         }
     }
 }
+
+#[test]
+fn previous_present_flare_reports_can_land_while_the_next_frame_is_retained() {
+    use crate::RecordingBackend;
+
+    let mut inner = RecordingBackend::new();
+    inner.pixel_count = 47;
+    inner.pixel_counts_pending = true; // block only the polling operation
+    let owned = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&owned);
+    let mut gpu = ThreadedBackend::new(inner).unwrap().with_frame_owner(FrameOwner {
+        select: Box::new(move |n| {
+            let count = Arc::clone(&count);
+            Some(Candidate {
+                frame: Arc::new(frame(n, 13)),
+                eligible: Box::new(|_, _| true),
+                draw: Box::new(move |gpu: &mut RecordingBackend, targets| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                    let target = targets[&TargetRef::SceneColour];
+                    gpu.clear(target, None, clear(13))?;
+                    gpu.present(target, 0)?;
+                    Ok(Outputs::default())
+                }),
+            })
+        }),
+        declined: |_| {}, failed: |_| {}, stopped: || {},
+    });
+    let color = gpu.create_surface(D3DFormat::A8R8G8B8, 1, 1, false).unwrap();
+    let read = gpu.report_pixel_count().unwrap().unwrap();
+    let discarded = gpu.report_pixel_count().unwrap().unwrap();
+    gpu.present(color, 0).unwrap();
+    gpu.clear(color, None, clear(13)).unwrap();
+    assert_eq!(gpu.try_pixel_count(read).unwrap(), None);
+    gpu.drop_pixel_count(discarded);
+    assert_eq!(gpu.read_pixel_count(read).unwrap(), 47);
+    gpu.present(color, 0).unwrap();
+    assert_eq!(gpu.with_inner(|b| b.pixel_reports.len()).unwrap(), 0);
+    assert_eq!(owned.load(Ordering::Relaxed), 1);
+
+    // A read from within the current frame must still flush the saved report.
+    gpu.clear(color, None, clear(13)).unwrap();
+    let current = gpu.report_pixel_count().unwrap().unwrap();
+    assert_eq!(gpu.read_pixel_count(current).unwrap(), 47);
+    gpu.present(color, 0).unwrap();
+    gpu.finish().unwrap();
+    assert_eq!(owned.load(Ordering::Relaxed), 1);
+}
