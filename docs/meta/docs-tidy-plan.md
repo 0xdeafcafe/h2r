@@ -744,20 +744,14 @@ path that a doc names, update that doc in the same branch.
   it prints, or say in your report why a finding stands.
 ```
 
-## To decide
+## Decided (coordinator, 2026-11-20)
 
-1. Merge `flag-cleanup` before any lane starts (assumed above).
-2. No archive folder: superseded pages are deleted and git keeps them
-   (assumed above). The alternative is `docs/archive/`, which keeps stale
-   text where `rg` finds it.
-3. May LZ change code comments, one line each, to repoint doc citations?
-   Without it, about 20 comments will cite moved pages, and more will
-   cite sections that moved to a stage page.
-4. Who owns the crate table in `ARCHITECTURE.md`: LZ or the `crate-map`
-   lane.
-5. Delete `crates/fastmem-proto` (review 2.8)? Then its page is deleted
-   rather than moved to notes.
-6. `editor-guide.md` needs `hud-masterchief.jpg`: run
-   `scripts/editor-screenshots.sh` and commit the shot to LFS.
-7. Add `scripts/docs-check.py` to `scripts/check.sh` and CI once it
-   exits 0.
+1. `flag-cleanup` is merged (master 288b649cd). Lanes base on current master.
+2. No archive folder: superseded pages are deleted; git keeps them.
+3. LZ may make one-line comment edits in crates to repoint doc citations.
+4. The `crate-map` lane owns the crate-table generator; LZ runs it.
+5. `crates/fastmem-proto` is deleted by the cull step of the crate-map
+   plan; its page is deleted with it.
+6. `hud-masterchief.jpg` waits for the coordinator to run
+   `scripts/editor-screenshots.sh`.
+7. Halo 1 lanes (wave 2) wait for the `h1-*` code lanes.
