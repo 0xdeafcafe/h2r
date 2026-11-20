@@ -989,9 +989,15 @@ answers `UNAVAILABLE` ([`crates/extensions/game/src/host_metrics.rs`](../../crat
 | `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
 | `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
 | `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `wall_ms_per_tick_p99` | On a light host, nearest-rank p99 of individual multiplayer tick intervals ending in the last 30 s. The first tick on entering gameplay starts the clock. An empty window gives `null`. |
+| `late_ticks` | Number of intervals in that same window longer than 36 ms. Both interval fields are `null` outside the light profile. |
 | `cpu_percent` | Whole-process CPU over the wall interval; 100 is one fully used core |
+| `cpu_seconds` | User and system CPU seconds consumed by this game process through the request |
 | `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux, including resident shared pages |
-| `age_ms` | Time since the sample ended |
+| `pss_bytes`, `peak_pss_bytes` | Current and highest sampled Linux proportional resident bytes. Each `host.metrics` request samples the process. |
+| `private_bytes`, `shared_bytes` | Private and shared resident mappings in Linux smaps, each including clean and dirty pages |
+| `private_dirty_bytes`, `shared_clean_bytes` | Linux smaps Private_Dirty and Shared_Clean in bytes, for comparing copy-on-write and file sharing |
+| `age_ms` | Time since the 30-tick CPU sample ended |
 | `host_light` | Whether the process uses the light host profile |
 
 A platform counter that is unavailable is `null`. Compare active
@@ -1005,8 +1011,9 @@ Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to register this
 method (`crates/extensions/game/src/host_audit.rs`). `h2 agent hostaudit` takes no
 parameters. It writes a snapshot to the configured path and returns the
 path, ticks, observed and registered function counts, tag range count and
-inclusive CPU timing. An orderly exit writes the final snapshot; call the
-method before terminating a dedicated process externally. The collector
+inclusive CPU timing. Each snapshot also flushes any enabled map read
+recording for the private store build. An orderly exit writes the final
+snapshot. Call the method before terminating a dedicated process externally. The collector
 changes dispatch and memory-watch costs, so use `host.metrics` for sizing.
 Report fields and corpus: [sim.md](sim.md#host-audit-corpus).
 
@@ -1130,6 +1137,14 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   Open a pregame custom lobby to read its retail lines and any Clankers,
   Halo 1 Options and Skulls summaries. After changing the settings,
   close the dialog and read the panel again.
+
+- **`host.peer_rtts`** (`h2 agent host.peer_rtts '{}'`) reads the active simulation
+  membership's reliable-channel RTT at a game boundary. The result contains
+  `players` with the same slot, peer, name, bars and nullable RTT as
+  `ui.lobby.players`. Local players, phantoms and unsampled routes have
+  null RTT. The method returns `UNAVAILABLE` without a simulation membership.
+  Compare a remote client's `rtt_ms` to its matchmaking assignment's regional
+  probe sample during the match.
 
 - **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
   reads the pregame player list on a game boundary without UI watch

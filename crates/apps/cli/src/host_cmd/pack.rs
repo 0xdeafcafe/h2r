@@ -9,7 +9,7 @@
 //! the running ones leaves room ([`live_proto::host_pack::admit`]). The pack
 //! exits after it has run nothing for `--linger-s`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::os::unix::process::CommandExt;
@@ -32,7 +32,7 @@ mod measure;
 use measure::Meter;
 
 pub(super) const USAGE: &str = "usage:
-  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 3]
+  h2 host pack [--control-listen 0.0.0.0:31099] [--max-matches 5]
                [--vcpus N] [--memory-mib MIB] [--linger-s 60]
                [--base-port 31000] [--tunnel-listen 0.0.0.0:31100]
                [--agent-port 14720] [--data DIR]";
@@ -96,8 +96,8 @@ impl Options {
             .map_or(Ok(host_pack::DEFAULT_MAX_MATCHES), |v| v.parse())
             .context("--max-matches must be an integer")?;
         ensure!(
-            (1..=64).contains(&max_matches),
-            "--max-matches must be in 1..=64"
+            (1..=host_pack::MAX_PACK_MATCHES).contains(&max_matches),
+            "--max-matches must be in 1..=10"
         );
         let vcpus = value("--vcpus", "H2_PACK_VCPUS")
             .map(|v| v.parse::<f64>())
@@ -159,9 +159,31 @@ impl Options {
 /// Starts one match's `h2 host run`.
 type Launch = Box<dyn Fn(&AddMatch, u16, SlotPorts) -> io::Result<Child> + Send>;
 
+/// Each occupied slot accumulates the same fraction of each time interval.
+struct Occupancy {
+    changed: Instant,
+    per_slot: Duration,
+}
+
+impl Occupancy {
+    fn at(&self, now: Instant, slots: usize) -> Duration {
+        let elapsed = now.saturating_duration_since(self.changed);
+        self.per_slot + elapsed.checked_div(slots as u32).unwrap_or_default()
+    }
+
+    fn advance(&mut self, now: Instant, slots: usize) {
+        self.per_slot = self.at(now, slots);
+        self.changed = self.changed.max(now);
+    }
+}
+
 struct Slot {
+    started: Instant,
+    share_at_start: Duration,
+    charge_start: bool,
     lease: String,
     ports: SlotPorts,
+    map: Option<String>,
     child: Child,
     stopping_since: Option<Instant>,
     meter: Meter,
@@ -180,8 +202,47 @@ enum AddError {
     Spawn(io::Error),
 }
 
+/// Recent trusted observations across this pack. A single bounded history
+/// also bounds the number of distinct mod maps a long-lived pack retains.
+#[derive(Default)]
+struct MapCosts(VecDeque<(String, f64, Option<u64>)>);
+
+impl MapCosts {
+    fn observe(&mut self, map: &str, load: MatchLoad) {
+        // A low-CPU menu or a busy boot is not a sample of this map.
+        if load.wall_ms_per_tick_p99.is_some()
+            && let Some(ms) = load.ms_per_tick.filter(|ms| ms.is_finite() && *ms >= 0.0)
+        {
+            if self.0.len() == 256 {
+                self.0.pop_front();
+            }
+            self.0.push_back((map.to_owned(), ms, load.rss_mib.filter(|m| *m > 0)));
+        }
+    }
+
+    fn estimate(&self, map: Option<&str>, mut limits: Limits) -> Limits {
+        let Some(map) = map else { return limits };
+        let mut times = Vec::new();
+        let mut memory = Vec::new();
+        for (_, ms, mib) in self.0.iter().filter(|(key, _, _)| key == map) {
+            times.push(*ms);
+            memory.extend(*mib);
+        }
+        if !times.is_empty() {
+            times.sort_by(f64::total_cmp);
+            limits.new_ms_per_tick = (times[(times.len() - 1) / 2] + times[times.len() / 2]) / 2.0;
+        }
+        if !memory.is_empty() {
+            memory.sort_unstable();
+            limits.new_rss_mib = memory[(memory.len() - 1) / 2].midpoint(memory[memory.len() / 2]);
+        }
+        limits
+    }
+}
+
 pub(super) struct Pack {
     limits: Limits,
+    history: MapCosts,
     /// UDP, tunnel and agent port bases for slot 0.
     bases: (u16, u16, u16),
     slots: Vec<Option<Slot>>,
@@ -190,6 +251,8 @@ pub(super) struct Pack {
     linger: Duration,
     draining: bool,
     launch: Launch,
+    occupancy: Occupancy,
+    start_claimed: bool,
 }
 
 impl Pack {
@@ -202,6 +265,7 @@ impl Pack {
     ) -> Self {
         Self {
             bases,
+            history: MapCosts::default(),
             slots: (0..limits.max_matches).map(|_| None).collect(),
             limits,
             container_mib: None,
@@ -209,6 +273,8 @@ impl Pack {
             linger,
             draining: false,
             launch,
+            occupancy: Occupancy { changed: now, per_slot: Duration::ZERO },
+            start_claimed: false,
         }
     }
 
@@ -223,10 +289,8 @@ impl Pack {
         if !valid_lease(&add.lease) {
             return Err(AddError::Invalid("invalid lease ID".into()));
         }
-        let lease_id = serde_json::from_str::<serde_json::Value>(&add.lease_json)
-            .ok()
-            .and_then(|v| v.get("id").and_then(|id| id.as_str()).map(str::to_owned));
-        if lease_id.as_deref() != Some(add.lease.as_str()) {
+        let lease = serde_json::from_str::<serde_json::Value>(&add.lease_json).unwrap_or_default();
+        if lease["id"].as_str() != Some(add.lease.as_str()) {
             return Err(AddError::Invalid("lease_json does not name this lease".into()));
         }
         if let Some((slot, existing)) = self.find(&add.lease) {
@@ -243,8 +307,27 @@ impl Pack {
             return Err(AddError::Refused(Refusal::Draining));
         }
         // Stopping matches still hold their slot and CPU until reaped.
-        let running: Vec<MatchLoad> = self.slots.iter().flatten().map(|s| s.meter.load()).collect();
-        host_pack::admit(&self.limits, &running, self.container_mib).map_err(AddError::Refused)?;
+        let mut running = Vec::new();
+        let mut reserved_mib = 0u64;
+        for slot in self.slots.iter().flatten() {
+            let mut load = slot.meter.load();
+            if load.wall_ms_per_tick_p99.is_none() || load.ms_per_tick.is_none() || load.rss_mib.is_none() {
+                let estimate = self.history.estimate(slot.map.as_deref(), self.limits);
+                load.ms_per_tick = Some(load.ms_per_tick.unwrap_or(0.0).max(estimate.new_ms_per_tick));
+                let observed = load.rss_mib.unwrap_or(0);
+                // A just-started match may not have faulted its RAM yet.
+                // Add only its outstanding reservation to the cgroup sample.
+                let outstanding = estimate.new_rss_mib.saturating_sub(observed);
+                reserved_mib = reserved_mib.saturating_add(outstanding);
+                load.rss_mib = Some(observed.max(estimate.new_rss_mib));
+            }
+            running.push(load);
+        }
+        // Packaged maps are identified by content even if the scenario name matches.
+        let map = lease["map_id"].as_str().or_else(|| lease["map"].as_str());
+        let estimate = self.history.estimate(map, self.limits);
+        let committed_mib = self.container_mib.map(|used| used.saturating_add(reserved_mib));
+        host_pack::admit(&estimate, &running, committed_mib).map_err(AddError::Refused)?;
         let slot = self
             .slots
             .iter()
@@ -260,13 +343,20 @@ impl Pack {
             "h2 host pack: slot {slot} runs {} (UDP {}, tunnel {})",
             add.lease, ports.base_port, ports.tunnel_port
         );
+        let started = Instant::now();
+        self.occupancy.advance(started, self.slots.iter().flatten().count());
         self.slots[slot] = Some(Slot {
+            started,
+            share_at_start: self.occupancy.per_slot,
+            charge_start: !self.start_claimed,
             lease: add.lease.clone(),
+            map: map.map(str::to_owned),
             ports,
             child,
             stopping_since: None,
             meter: Meter::default(),
         });
+        self.start_claimed = true;
         self.idle_since = None;
         Ok(Added {
             slot: slot as u16,
@@ -295,11 +385,11 @@ impl Pack {
         sample: &dyn Fn(u32) -> Option<measure::Usage>,
         container_mib: Option<u64>,
     ) {
-        for entry in &mut self.slots {
-            let Some(slot) = entry else { continue };
+        for index in 0..self.slots.len() {
+            let Some(slot) = &mut self.slots[index] else { continue };
             if let Ok(Some(status)) = slot.child.try_wait() {
                 eprintln!("h2 host pack: {} exited ({status})", slot.lease);
-                *entry = None;
+                self.release_slot(index, now);
                 continue;
             }
             if slot
@@ -307,12 +397,16 @@ impl Pack {
                 .is_some_and(|since| now.duration_since(since) >= STOP_GRACE)
             {
                 signal_group(&slot.child, libc::SIGKILL);
-                let _ = slot.child.wait();
-                *entry = None;
+                if slot.child.wait().is_ok() {
+                    self.release_slot(index, now);
+                }
                 continue;
             }
             if let Some(usage) = sample(slot.child.id()) {
                 slot.meter.observe(now, usage);
+            }
+            if let Some(map) = &slot.map {
+                self.history.observe(map, slot.meter.load());
             }
         }
         self.container_mib = container_mib;
@@ -323,12 +417,37 @@ impl Pack {
         }
     }
 
+    /// Settle the interval at its old occupancy before the reaped slot disappears.
+    fn release_slot(&mut self, index: usize, now: Instant) {
+        self.occupancy.advance(now, self.slots.iter().flatten().count());
+        self.slots[index] = None;
+    }
+
     fn idle_for(&self, now: Instant) -> Option<Duration> {
         self.idle_since.map(|since| now.duration_since(since))
     }
 
     fn should_exit(&self, now: Instant) -> bool {
         self.draining || self.idle_for(now).is_some_and(|idle| idle >= self.linger)
+    }
+
+    fn usage(&self, lease: &str, now: Instant) -> Option<live_proto::hosts::PackUsage> {
+        let (_, slot) = self.find(lease)?;
+        let shared = self.occupancy.at(now, self.slots.iter().flatten().count());
+        // Linux includes already reaped children in the supervisor's CPU
+        // counters. Take the last reading after any film upload completes.
+        let mut meter = slot.meter.clone();
+        if let Some(usage) = measure::group_usage(slot.child.id()) {
+            meter.observe(now, usage);
+        }
+        let load = meter.load();
+        Some(live_proto::hosts::PackUsage {
+            slot_us: now.saturating_duration_since(slot.started).as_micros() as u64,
+            container_share_us: shared.saturating_sub(slot.share_at_start).as_micros() as u64,
+            charge_start: slot.charge_start,
+            cpu_us: load.cpu_seconds.map(|s| (s * 1_000_000.0).round() as u64),
+            peak_pss_bytes: load.peak_pss_bytes,
+        })
     }
 
     fn status(&self) -> PackStatus {
@@ -352,20 +471,26 @@ impl Pack {
             signal_group(&slot.child, libc::SIGTERM);
         }
         let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline
-            && self
-                .slots
-                .iter_mut()
-                .flatten()
-                .any(|s| matches!(s.child.try_wait(), Ok(None)))
-        {
-            thread::sleep(Duration::from_millis(100));
+        while Instant::now() < deadline && self.slots.iter().any(Option::is_some) {
+            for index in 0..self.slots.len() {
+                if let Some(slot) = &mut self.slots[index]
+                    && matches!(slot.child.try_wait(), Ok(Some(_)))
+                {
+                    self.release_slot(index, Instant::now());
+                }
+            }
+            if self.slots.iter().any(Option::is_some) {
+                thread::sleep(Duration::from_millis(100));
+            }
         }
-        for slot in self.slots.iter_mut().flatten() {
-            signal_group(&slot.child, libc::SIGKILL);
-            let _ = slot.child.wait();
+        for index in 0..self.slots.len() {
+            if let Some(slot) = &mut self.slots[index] {
+                signal_group(&slot.child, libc::SIGKILL);
+                if slot.child.wait().is_ok() {
+                    self.release_slot(index, Instant::now());
+                }
+            }
         }
-        self.slots.iter_mut().for_each(|s| *s = None);
     }
 }
 
@@ -402,6 +527,17 @@ fn ok_json(value: &impl serde::Serialize) -> (u16, Vec<u8>) {
 
 /// One control request.
 fn handle(pack: &mut Pack, req: &http::Request, now: Instant) -> (u16, Vec<u8>) {
+    if req.method == "GET"
+        && let Some(lease) = req.path.strip_prefix(host_pack::MATCHES_PATH)
+            .and_then(|path| path.strip_prefix('/'))
+            .and_then(|path| path.strip_suffix("/usage"))
+            .filter(|id| valid_lease(id))
+    {
+        return match pack.usage(lease, now) {
+            Some(usage) => ok_json(&usage),
+            None => error(404, "no such match"),
+        };
+    }
     let lease = req
         .path
         .strip_prefix(host_pack::MATCHES_PATH)
@@ -409,6 +545,13 @@ fn handle(pack: &mut Pack, req: &http::Request, now: Instant) -> (u16, Vec<u8>) 
         .filter(|id| valid_lease(id));
     match (req.method.as_str(), req.path.as_str(), lease) {
         ("GET", host_pack::STATUS_PATH, _) => ok_json(&pack.status()),
+        ("POST", host_pack::WARM_PATH, _) if !pack.draining => {
+            pack.start_claimed = true; // The warm reservation paid the pack start.
+            if pack.idle_since.is_some() {
+                pack.idle_since = Some(now);
+            }
+            (204, Vec::new())
+        }
         ("POST", host_pack::MATCHES_PATH, _) => {
             let Ok(add) = serde_json::from_slice::<AddMatch>(&req.body) else {
                 return error(400, "expected an AddMatch body");
@@ -459,19 +602,29 @@ fn serve_one(pack: &Mutex<Pack>, mut stream: TcpStream) -> io::Result<()> {
     stream.write_all(&http::response(status, &body))
 }
 
-fn launcher(opts: &Options) -> Result<Launch> {
+fn launcher(opts: &Options, mut control: SocketAddr) -> Result<Launch> {
+    if control.ip().is_unspecified() {
+        control.set_ip(if control.is_ipv4() {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv6Addr::LOCALHOST.into()
+        });
+    }
     let exe = std::env::current_exe().context("finding the h2 binary")?;
     let tunnel_ip = opts.tunnel.ip();
     let data = opts.data.clone();
     let public = std::env::var("H2_PUBLIC_ADDR").ok();
     let pack_base = opts.base_port;
-    Ok(Box::new(move |add: &AddMatch, _slot: u16, ports: SlotPorts| {
+    let slots = opts.max_matches as u64;
+    Ok(Box::new(move |add: &AddMatch, slot: u16, ports: SlotPorts| {
         let mut cmd = Command::new(&exe);
         cmd.args([
             "host",
             "run",
             "--lease",
             &add.lease,
+            "--pack-control",
+            &control.to_string(),
             "--live",
             &add.live,
             "--token",
@@ -512,6 +665,8 @@ fn launcher(opts: &Options) -> Result<Launch> {
         if let Some(public) = slot_public_addr(public.as_deref(), pack_base, ports.base_port)? {
             cmd.env("H2_PUBLIC_ADDR", public);
         }
+        let phase_ns = (1_000_000_000 / 30) * u64::from(slot) / slots;
+        cmd.env("H2_HOST_TICK_PHASE_NS", phase_ns.to_string());
         cmd.env("H2_HOST_LEASE_JSON", &add.lease_json)
             // Each match gets a private diagnostic agent of its own.
             .env(
@@ -573,7 +728,7 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         limits,
         (opts.base_port, opts.tunnel.port(), opts.agent_port),
         opts.linger,
-        launcher(&opts)?,
+        launcher(&opts, listener.local_addr()?)?,
         Instant::now(),
     )));
     {
@@ -596,8 +751,20 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
     }
     loop {
         thread::sleep(SAMPLE);
-        let now = Instant::now();
+        // The control thread may add or stop a lease while the agent replies.
+        // Never hold its lock across an RPC, or apply a sample to a reused slot.
+        let slots: Vec<_> = pack.lock().unwrap().slots.iter().flatten()
+            .map(|s| (s.child.id(), s.ports.agent_port)).collect();
+        let readings: Vec<_> = slots.into_iter().map(|(pid, port)| {
+            (pid, measure::agent_reading(port))
+        }).collect();
         let mut pack = pack.lock().unwrap();
+        let now = Instant::now();
+        for (pid, reading) in readings {
+            if let Some(slot) = pack.slots.iter_mut().flatten().find(|s| s.child.id() == pid) {
+                slot.meter.observe_agent(now, reading);
+            }
+        }
         pack.tick(now, &measure::group_usage, measure::cgroup_used_mib());
         if stopping() || pack.should_exit(now) {
             eprintln!("h2 host pack: stopping");

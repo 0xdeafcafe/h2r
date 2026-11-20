@@ -2814,6 +2814,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "ureq",
+ "vfs",
  "xiso",
  "zstd",
 ]
@@ -5387,6 +5388,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "thiserror 2.0.21",
  "timeline",
+ "vfs",
  "x87",
  "xbe",
 ]

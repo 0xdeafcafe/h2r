@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 xiso.workspace = true
+vfs.workspace = true
 # Match versions already used by the CLI and other workspace crates.
 sha2 = "0.10"
 ureq = { version = "2", default-features = false, features = ["tls"] }

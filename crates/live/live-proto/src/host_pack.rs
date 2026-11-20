@@ -14,20 +14,24 @@
 //! - The supervisor's control wire ([`AddMatch`], [`Added`], [`PackStatus`])
 //!   and its minimal HTTP/1.1 framing ([`http`]).
 
+pub mod memory;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 /// One game tick at 30 Hz, in milliseconds.
 pub const TICK_MS: f64 = 1000.0 / 30.0;
+/// The dedicated host's late-tick threshold.
+pub const LATE_TICK_MS: u64 = 36;
 /// Matches per container unless configured.
-pub const DEFAULT_MAX_MATCHES: usize = 3;
+pub const DEFAULT_MAX_MATCHES: usize = 5;
+/// Maximum blast radius of a large pack.
+pub const MAX_PACK_MATCHES: usize = 10;
 /// Share of each vCPU's tick the summed matches may use.
 pub const DEFAULT_CPU_BUDGET: f64 = 0.70;
-/// Assumed cost of a match with no measurement yet: the top of the
-/// observed 6-10 ms per tick for a light dedicated host.
+/// Admission estimates before the pack has measured the lease's map.
 pub const DEFAULT_MS_PER_TICK: f64 = 10.0;
-/// Assumed memory of a match with no measurement yet (observed ~340 MB RSS).
 pub const DEFAULT_RSS_MIB: u64 = 340;
 /// Kept free for the supervisor, the kernel and short spikes.
 pub const DEFAULT_RESERVE_MIB: u64 = 256;
@@ -43,6 +47,11 @@ pub const TUNNEL_PORT: u16 = 31100;
 pub const AGENT_PORT: u16 = 14720;
 
 pub const STATUS_PATH: &str = "/v1/pack";
+/// Refresh the idle deadline of an empty supervisor.
+pub const WARM_PATH: &str = "/v1/pack/warm";
+pub const LINGER_MS: i64 = 60_000;
+/// One speculative start and two more warm grants before a new match arrives.
+const MAX_WARM_GRANTS_WITHOUT_ARRIVAL: u8 = 3;
 pub const MATCHES_PATH: &str = "/v1/pack/matches";
 
 /// What one pack may run.
@@ -84,6 +93,16 @@ impl Limits {
     }
 }
 
+/// The same admission envelope on both homes. Cloudflare provisions at
+/// least 3 GiB per vCPU on its capped, default scheduling policy.
+pub fn class_limits(class: &crate::hosts::HostClass, configured_matches: Option<usize>) -> Limits {
+    let (cap, vcpus, memory_mib) = match class {
+        crate::hosts::HostClass::Small => (DEFAULT_MAX_MATCHES, 1.0, 1536),
+        crate::hosts::HostClass::Large => (MAX_PACK_MATCHES, 2.0, 3072),
+    };
+    Limits::new(configured_matches.unwrap_or(cap).clamp(1, cap), vcpus, memory_mib)
+}
+
 /// One running match's measured cost. `None` until the supervisor has
 /// enough samples; admission then assumes the configured default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -92,6 +111,19 @@ pub struct MatchLoad {
     pub ms_per_tick: Option<f64>,
     /// Proportional resident memory of the match's processes.
     pub rss_mib: Option<u64>,
+    /// Whole match process group on Linux, game process on other platforms.
+    pub cpu_seconds: Option<f64>,
+    /// Linux process-group smaps counters, in bytes. Shared counts include
+    /// each process's mappings. Pss apportions the shared pages.
+    pub pss_bytes: Option<u64>,
+    pub peak_pss_bytes: Option<u64>,
+    pub private_bytes: Option<u64>,
+    pub shared_bytes: Option<u64>,
+    pub private_dirty_bytes: Option<u64>,
+    pub shared_clean_bytes: Option<u64>,
+    /// Game tick intervals over the last 30 s of multiplayer gameplay.
+    pub wall_ms_per_tick_p99: Option<f64>,
+    pub late_ticks: Option<u64>,
 }
 
 /// Why a pack refused a match. The router tries another pack.
@@ -100,6 +132,8 @@ pub struct MatchLoad {
 pub enum Refusal {
     #[error("the pack already runs {running} of {max} matches")]
     Full { running: usize, max: usize },
+    #[error("tick deadline: wall p99 of {wall_ms_per_tick_p99:.1} ms exceeds 36 ms")]
+    Late { wall_ms_per_tick_p99: f64 },
     #[error("CPU: {projected_ms:.1} ms per tick would exceed the {budget_ms:.1} ms budget")]
     Cpu { projected_ms: f64, budget_ms: f64 },
     #[error("memory: {projected_mib} MiB would exceed the {budget_mib} MiB budget")]
@@ -125,6 +159,11 @@ pub fn admit(
             running: running.len(),
             max: limits.max_matches,
         });
+    }
+    if let Some(late) = running.iter().filter_map(|m| m.wall_ms_per_tick_p99)
+        .filter(|&p99| p99 > LATE_TICK_MS as f64).max_by(f64::total_cmp)
+    {
+        return Err(Refusal::Late { wall_ms_per_tick_p99: late });
     }
     let budget_ms = limits.tick_budget_ms();
     let projected_ms = running
@@ -204,6 +243,9 @@ impl Placement {
 struct PackEntry {
     /// Lease ID → its hard deadline (Unix ms).
     leases: BTreeMap<String, i64>,
+    /// Deadline to discard an empty supervisor after a release or demand pulse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idle_until_ms: Option<i64>,
     /// The lease count when the pack last refused. It has no room until
     /// it drops below this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +257,21 @@ impl PackEntry {
         let n = self.leases.len();
         n < max_matches && self.full_at.is_none_or(|full| n < full)
     }
+}
+
+/// Live tickets and active leases for this region and class. Available is
+/// bounded by the remaining lease cap and monthly budget at the hub.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WarmDemand {
+    pub searchers: usize,
+    pub leases: usize,
+    pub available: usize,
+}
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct WarmPlan {
+    pub refresh: Vec<String>,
+    pub start: Option<String>,
 }
 
 /// Every pack of one class and region and the leases each runs. The Worker
@@ -229,6 +286,18 @@ pub struct Pool {
     /// Pack names are never reused, so a late call to a stopped pack
     /// cannot land on a new one.
     next: u64,
+    /// Pool-wide so that retiring the last empty pack cannot restore credit.
+    #[serde(default)]
+    grants_without_arrival: u8,
+    /// Replayed or out-of-order grants cannot purchase a later deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_warm_until_ms: Option<i64>,
+    /// Lease arrivals grouped by second, covering the last five minutes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    arrivals: BTreeMap<i64, usize>,
+    /// Last 31 observed cold start durations from spawn to control readiness.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cold_ms: Vec<u64>,
 }
 
 impl Pool {
@@ -255,10 +324,111 @@ impl Pool {
         match best {
             Some(pack) => Placement::Existing(pack),
             None => {
-                let name = format!("pack-{}", self.next);
-                self.next += 1;
-                Placement::New(name)
+                Placement::New(self.next_pack())
             }
+        }
+    }
+
+    fn next_pack(&mut self) -> String {
+        let name = format!("pack-{}", self.next);
+        self.next += 1;
+        name
+    }
+
+    /// Routable slots, including empty supervisors still inside their hold.
+    pub fn free_slots(&self, max_matches: usize) -> usize {
+        self.packs.values().map(|p| {
+            p.full_at.unwrap_or(max_matches).min(max_matches).saturating_sub(p.leases.len())
+        }).sum()
+    }
+
+    /// Refresh only the empty packs needed beyond spare slots in occupied
+    /// packs. Plan at most one cold start per reconciliation, then remeasure.
+    pub fn warm_plan(&mut self, demand: WarmDemand, max_matches: usize, now_ms: i64) -> WarmPlan {
+        let mut plan = WarmPlan::default();
+        if max_matches == 0 || demand.available == 0 || (demand.searchers == 0 && demand.leases == 0)
+            || self.grants_without_arrival >= MAX_WARM_GRANTS_WITHOUT_ARRIVAL
+        {
+            return plan;
+        }
+        let second = now_ms.div_euclid(1000);
+        self.arrivals.retain(|&t, _| t <= second && second.saturating_sub(t) < 300);
+        let arrivals: usize = self.arrivals.values().sum();
+        let mut times = self.cold_ms.clone();
+        times.sort_unstable();
+        let median = match times.len() {
+            0 => 0,
+            n => times[(n - 1) / 2].midpoint(times[n / 2]),
+        };
+        let forecast = (arrivals as u128 * u128::from(median) * 2).div_ceil(300_000);
+        let wanted = demand.available.min(usize::try_from(forecast).unwrap_or(usize::MAX)
+            .max(usize::from(demand.searchers > 0)));
+        let mut free = self.packs.values().filter(|p| !p.leases.is_empty())
+            .map(|p| p.full_at.unwrap_or(max_matches).min(max_matches).saturating_sub(p.leases.len()))
+            .sum::<usize>();
+        for (name, entry) in &self.packs {
+            if free >= wanted {
+                break;
+            }
+            if entry.leases.is_empty() && entry.idle_until_ms.is_some_and(|until| until > now_ms) {
+                // A refresh every 20 s keeps a 60 s hold across slow requests.
+                if entry.idle_until_ms.unwrap() <= now_ms.saturating_add(2 * LINGER_MS / 3) {
+                    plan.refresh.push(name.clone());
+                }
+                free += max_matches;
+            }
+        }
+        if free < wanted {
+            plan.start = Some(self.next_pack());
+        }
+        plan
+    }
+
+    /// Claim a single pulse before acting on it. Every funded pack in the
+    /// same pulse shares its deadline. An unknown result still spends the
+    /// attempt, so failed starts or lost replies cannot keep a pool alive.
+    pub fn reserve_warm(&mut self, plan: &WarmPlan, until_ms: i64) -> bool {
+        if (plan.start.is_none() && plan.refresh.is_empty())
+            || self.grants_without_arrival >= MAX_WARM_GRANTS_WITHOUT_ARRIVAL
+            || self.last_warm_until_ms.is_some_and(|last| until_ms <= last)
+        {
+            return false;
+        }
+        self.grants_without_arrival += 1;
+        self.last_warm_until_ms = Some(until_ms);
+        true
+    }
+
+    pub fn warmed(&mut self, pack: &str, now_ms: i64, cold_start_ms: Option<u64>) {
+        let entry = self.packs.entry(pack.to_owned()).or_default();
+        if entry.leases.is_empty() {
+            entry.idle_until_ms = Some(now_ms.saturating_add(LINGER_MS));
+        }
+        if let Some(elapsed) = cold_start_ms {
+            if self.cold_ms.len() >= 31 {
+                self.cold_ms.remove(0);
+            }
+            self.cold_ms.push(elapsed);
+        }
+    }
+
+    pub fn admitted_at(&mut self, pack: &str, lease: &str, deadline_ms: i64, now_ms: i64) {
+        if self.pack_of(lease).is_none() {
+            self.grants_without_arrival = 0;
+            let second = now_ms.div_euclid(1000);
+            self.arrivals.retain(|&t, _| t <= second && second.saturating_sub(t) < 300);
+            *self.arrivals.entry(second).or_default() += 1;
+        }
+        self.admitted(pack, lease, deadline_ms);
+    }
+
+    /// Reports the release that transitions a pack from occupied to lingering.
+    pub fn release_at(&mut self, lease: &str, now_ms: i64) -> crate::hosts::PackRelease {
+        if let Some(pack) = self.release(lease) {
+            self.warmed(&pack, now_ms, None);
+            crate::hosts::PackRelease::Linger { released_ms: now_ms }
+        } else {
+            crate::hosts::PackRelease::NoLinger
         }
     }
 
@@ -271,11 +441,9 @@ impl Pool {
         {
             self.next = self.next.max(n + 1);
         }
-        self.packs
-            .entry(pack.to_owned())
-            .or_default()
-            .leases
-            .insert(lease.to_owned(), deadline_ms);
+        let entry = self.packs.entry(pack.to_owned()).or_default();
+        entry.idle_until_ms = None;
+        entry.leases.insert(lease.to_owned(), deadline_ms);
     }
 
     /// `pack` refused a lease. Returns true when the pack runs nothing and
@@ -318,7 +486,15 @@ impl Pool {
             .filter(|(_, deadline)| **deadline <= now_ms)
             .map(|(lease, _)| lease.clone())
             .collect();
-        expired.iter().filter_map(|lease| self.release(lease)).collect()
+        let mut stopped: Vec<_> = expired.iter().filter_map(|lease| self.release(lease)).collect();
+        self.packs.retain(|name, p| {
+            if p.idle_until_ms.is_some_and(|until| until <= now_ms) {
+                stopped.push(name.clone());
+                return false;
+            }
+            true
+        });
+        stopped
     }
 
     /// Forget a pack whose container is gone, with all its leases.
@@ -355,7 +531,7 @@ impl Pool {
     pub fn next_deadline(&self) -> Option<i64> {
         self.packs
             .values()
-            .flat_map(|p| p.leases.values().copied())
+            .flat_map(|p| p.leases.values().copied().chain(p.idle_until_ms))
             .min()
     }
 

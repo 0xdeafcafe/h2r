@@ -1232,3 +1232,64 @@ fn asynchronous_file_objects_complete_synchronously_with_event_and_iosb() {
     assert_eq!(h.runtime.memory().u64(INFO).unwrap(), 3);
     h.success(187, &[sync]);
 }
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+#[test]
+fn immutable_map_reads_install_private_pages_and_copy_noncongruent_reads() {
+    let root = std::env::temp_dir().join(format!("h2-kernel-mapped-read-{}", std::process::id()));
+    let dvd = root.join("dvd");
+    std::fs::create_dir_all(dvd.join("maps")).unwrap();
+    let path_on_host = dvd.join("maps/synthetic.map");
+    let bytes = pattern(512 * 1024 + 9);
+    std::fs::write(&path_on_host, &bytes).unwrap();
+    let mut cfg = vfs::Config::new(root.join("data"), 1);
+    cfg.mmap_disc = true;
+    cfg.map_guest_reads = true;
+    let mut storage = vfs::Vfs::with_disc(cfg.clone(), &dvd).unwrap();
+    storage.create_standard_links(&cfg).unwrap();
+    let mut h = Harness::with_memory(Default::default(), runtime::Guest::with_mapped_reads(true), |g| {
+        g.map(BIG, 1024 * 1024, 8 * 1024 * 1024, runtime::guest::Permissions::RW).unwrap();
+    });
+    h.kernel.set_vfs(storage).unwrap();
+    path(&h, r"D:\maps\synthetic.map", 0);
+    assert_eq!(h.success(202, &[DATA, vfs::Access::READ.0, ATTR, IOSB, 7, 0x60]), 0);
+    let handle = h.get(DATA);
+    let watch = {
+        let mut mem = h.runtime.memory();
+        let id = mem.subscribe_writes("mapped read");
+        mem.watch_virtual_read(id, BIG + 64 * 1024, 4096).unwrap();
+        id
+    };
+    // Starts and ends inside a page; the request also crosses logical EOF.
+    h.runtime.memory().set_u64(INFO, 3).unwrap();
+    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BIG + 3, 600_000, INFO]), 0);
+    assert_eq!(h.get(IOSB + 4) as usize, bytes.len() - 3);
+    assert!(h.runtime.memory().has_dirty(watch));
+    let mut got = vec![0; bytes.len()];
+    h.runtime.memory().read_bytes(BIG, &mut got, 1).unwrap();
+    assert_eq!(got[0..3], [0; 3]);
+    assert_eq!(got[3..], bytes[3..]);
+    let vfs = h.kernel.vfs().unwrap();
+    let first = vfs.lock().unwrap().guest_read_bytes();
+    if std::env::var_os("H2_FLAT_RAM").is_some_and(|v| v == "1") {
+        assert_eq!(first.mapped, 0);
+    } else {
+        assert!(first.mapped >= 16 * 16384);
+    }
+    assert_eq!(first.mapped + first.copied, (bytes.len() - 3) as u64);
+    h.bytes(BIG + 32768, &[0xbd]);
+    assert_eq!(std::fs::read(&path_on_host).unwrap(), bytes);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 8, 14]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO).unwrap(), bytes.len() as u64);
+
+    h.runtime.memory().set_u64(INFO, 1).unwrap();
+    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BIG, 300_000, INFO]), 0);
+    let second = vfs.lock().unwrap().guest_read_bytes();
+    assert_eq!(second.mapped, first.mapped);
+    assert_eq!(second.copied - first.copied, 300_000);
+    h.runtime.memory().read_bytes(BIG, &mut got[..300_000], 1).unwrap();
+    assert_eq!(got[..300_000], bytes[1..300_001]);
+    drop(h);
+    drop(vfs);
+    std::fs::remove_dir_all(root).unwrap();
+}

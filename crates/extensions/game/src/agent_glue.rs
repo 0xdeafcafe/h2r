@@ -423,6 +423,12 @@ pub fn add_host_methods(agent: &agent::Agent) {
             .map(|lines| json!({"lines": lines}))
             .ok_or_else(|| RpcError::new(code::UNAVAILABLE, "no active custom game options panel"))
     });
+    agent.add_game_method(method::HOST_PEER_RTTS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(code::INVALID_PARAMS, "host.peer_rtts takes no parameters"));
+        }
+        ctx.read_guest(crate::lobby_quality::match_peer_rtts)?
+    });
     agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
         if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
             return Err(RpcError::new(

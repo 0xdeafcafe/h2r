@@ -22,7 +22,12 @@ pub struct DiscBackend<R> {
 impl DiscBackend<File> {
     pub(crate) fn film_region(&mut self, path: &str) -> Result<Option<crate::FilmMapSource>> {
         let Some(region) = self.host_file(path) else { return Ok(None) };
-        Ok(Some(crate::FilmMapSource::region(self.reader.try_clone()?, region.offset)))
+        let file = self.reader.try_clone()?;
+        Ok(Some(if self.mapping.is_some() {
+            crate::FilmMapSource::immutable_region(file, region.offset, region.len)
+        } else {
+            crate::FilmMapSource::region(file, region.offset)
+        }))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {

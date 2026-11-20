@@ -28,24 +28,24 @@ LIVE_MAX_HOSTS = "4"
 H2_LIVE_ID = "live.example.net"
 
 # Dedicated host containers. Wrangler caps each fixed-size application;
-# LiveHub caps active leases across both. Keep max_instances in sync with
-# LIVE_MAX_HOSTS in each environment. Only a lease start boots an instance.
-# Each container runs up to LIVE_HOST_PACK_MATCHES (default 3) matches, so
-# the cap on containers is not reached before the cap on leases.
+# LiveHub caps active leases across both. deploy.sh derives each application's
+# max_instances from its environment's lease cap, pack slots and region count.
+# These capped applications require 3 GiB per vCPU. Their pack supervisors
+# admit against 1536/3072 MiB and at most five/ten small/large matches.
 # Cutover and production address the same Worker, namespaces and applications.
 [[containers]]
 class_name = "HostRoom"
 name = "h2-live-local-hosts-small"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[containers]]
 class_name = "LargeHostRoom"
 name = "h2-live-local-hosts-large"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[r2_buckets]]
 binding = "BLOBS"
@@ -114,14 +114,14 @@ class_name = "HostRoom"
 name = "h2-live-staging-hosts-small"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.staging.containers]]
 class_name = "LargeHostRoom"
 name = "h2-live-staging-hosts-large"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.staging.r2_buckets]]
 binding = "BLOBS"
@@ -170,14 +170,14 @@ class_name = "HostRoom"
 name = "h2-live-hosts-small"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.cutover.containers]]
 class_name = "LargeHostRoom"
 name = "h2-live-hosts-large"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.cutover.r2_buckets]]
 binding = "BLOBS"
@@ -222,14 +222,14 @@ class_name = "HostRoom"
 name = "h2-live-hosts-small"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 1, memory_mib = 3072, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.production.containers]]
 class_name = "LargeHostRoom"
 name = "h2-live-hosts-large"
 image = "./../../../deploy/host/Dockerfile"
 instance_type = { vcpu = 2, memory_mib = 6144, disk_mb = 12000 }
-max_instances = 4
+max_instances = 2
 
 [[env.production.r2_buckets]]
 binding = "BLOBS"

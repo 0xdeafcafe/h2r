@@ -116,7 +116,8 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     }
     // A level's Halo 2-assets map, when there is one, is served while the
     // pregame screen chooses Halo 2's assets (docs/halo1/campaign.md §5).
-    let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc && cfg.sim_store.is_none())?;
+    // A partial store directory still serves the other immutable maps from DVD.
+    let dvd = vfs::open_disc_with_mapping(disc, cfg.mmap_disc)?;
     // Sim stores sit under every other map layer: an editor override or a
     // verified server copy still wins where one is set, and everything
     // they do not serve comes from the store before the disc

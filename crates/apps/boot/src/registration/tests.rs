@@ -292,6 +292,33 @@ fn dedup(failures: Vec<String>) -> Vec<String> {
 }
 
 #[test]
+fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
+    use engine::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
+    let runtime = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
+    let points = [&SIM_ANIMATION_STREAM, &COLLISION_LOCATION, &OBJECT_FUNCTION_VALUE];
+    for (light, spec, expected) in [
+        (true, "", [false; 3]),
+        (false, "host-light-native", [false; 3]),
+        (true, "host-light-native", [true; 3]),
+        (true, "-host-light-native,impl.sim.native.anim", [true, false, false]),
+        (true, "host-light-native,-impl.sim.native.collision", [true, false, true]),
+        (true, "host-light-native,-impl.sim.native", [false; 3]),
+        (true, "host-light-native,-impl.sim,impl.sim.native.objects", [false, false, true]),
+    ] {
+        let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);
+        assert!(!switches.implementation("sim.native_unit_pose", false));
+        let mut registry = hooks::Registry::new(switches);
+        registry.add(&sim_bridge::sim_native::SimNative::new(&runtime)).unwrap();
+        let plan = registry.build(&hooks::Base).unwrap();
+        assert_eq!(
+            points.map(|p| plan.chains.get(&p.base).is_some_and(|c| c.implement.is_some())),
+            expected,
+            "{light} {spec}"
+        );
+    }
+}
+
+#[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
     use engine::points::{PREDICT_RESOURCES, SOUND_SUBMIX_FX};
     let points = [&PREDICT_RESOURCES, &SOUND_SUBMIX_FX];

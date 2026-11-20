@@ -85,14 +85,17 @@ fn rooms_are_told_apart_by_name() {
 }
 
 #[test]
-fn pack_size_defaults_to_three_and_stays_below_the_control_port() {
-    assert_eq!(pack_matches(None), 3);
-    assert_eq!(pack_matches(Some("2")), 2);
-    assert_eq!(pack_matches(Some("0")), 1);
-    assert_eq!(pack_matches(Some("99")), 8);
-    assert_eq!(pack_matches(Some("x")), 3);
+fn pack_size_follows_the_class_and_stays_below_the_control_port() {
+    use live_proto::hosts::HostClass::{Small, Large};
+    assert_eq!(pack_matches(&Small, None), 5);
+    assert_eq!(pack_matches(&Large, None), 10);
+    assert_eq!(pack_matches(&Small, Some("2")), 2);
+    assert_eq!(pack_matches(&Small, Some("0")), 1);
+    assert_eq!(pack_matches(&Small, Some("99")), 5);
+    assert_eq!(pack_matches(&Large, Some("99")), 10);
+    assert_eq!(pack_matches(&Large, Some("auto")), 10);
     use live_proto::host_pack::{AGENT_PORT, BASE_PORT, CONTROL_PORT, SlotPorts, UDP_WIDTH};
-    let last = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 7).unwrap();
+    let last = SlotPorts::for_slot(BASE_PORT, TUNNEL_PORT, AGENT_PORT, 9).unwrap();
     assert!(last.base_port + UDP_WIDTH - 1 < CONTROL_PORT);
     assert!(last.tunnel_port > CONTROL_PORT);
 }
@@ -100,16 +103,16 @@ fn pack_size_defaults_to_three_and_stays_below_the_control_port() {
 #[test]
 fn pack_containers_get_their_class_size_and_no_lease() {
     use live_proto::hosts::HostClass;
-    let small = pack_env(&HostClass::Small, 3);
+    let small = pack_env(&HostClass::Small, 5);
     assert_eq!(small["H2_PACK"], "1");
-    assert_eq!(small["H2_PACK_MAX_MATCHES"], "3");
+    assert_eq!(small["H2_PACK_MAX_MATCHES"], "5");
     assert_eq!(small["H2_PACK_VCPUS"], "1");
-    assert_eq!(small["H2_PACK_MEMORY_MIB"], "3072");
+    assert_eq!(small["H2_PACK_MEMORY_MIB"], "1536");
     assert_eq!(small["H2_PACK_CONTROL"], "0.0.0.0:31099");
-    let large = pack_env(&HostClass::Large, 3);
-    assert_eq!((large["H2_PACK_VCPUS"].as_str(), large["H2_PACK_MEMORY_MIB"].as_str()), ("2", "6144"));
+    let large = pack_env(&HostClass::Large, 10);
+    assert_eq!((large["H2_PACK_VCPUS"].as_str(), large["H2_PACK_MEMORY_MIB"].as_str()), ("2", "3072"));
     assert!(small.keys().all(|key| !key.contains("TOKEN") && !key.contains("LEASE")));
-    // Each class's sizes match wrangler.toml's instance types.
+    // The capped Cloudflare scheduling policy needs at least 3 GiB per vCPU.
     let config = include_str!("../wrangler.toml");
     assert!(config.contains("instance_type = { vcpu = 1, memory_mib = 3072"));
     assert!(config.contains("instance_type = { vcpu = 2, memory_mib = 6144"));
@@ -196,47 +199,126 @@ fn a_tunnel_needs_a_rostered_account_on_a_joinable_cloudflare_lease() {
     );
 }
 
-// Wrangler's cap is a deploy-time number; LIVE_MAX_HOSTS is read at runtime.
-// Catch an edit that changes capacity in just one place or environment.
-#[test]
-fn wrangler_room_caps_match_live_admission_in_each_environment() {
-    let config = include_str!("../wrangler.toml");
-    for prefix in ["", "env.staging.", "env.cutover.", "env.production."] {
-        let vars = format!("[{prefix}vars]\n");
-        let vars = config
-            .split_once(&vars)
-            .unwrap()
-            .1
-            .split("\n[")
-            .next()
-            .unwrap();
-        let cap = vars
-            .lines()
-            .find_map(|line| line.strip_prefix("LIVE_MAX_HOSTS = "))
-            .unwrap();
-        let cap = cap.trim_matches('"').parse::<usize>().unwrap();
+#[path = "../src/hostroom/pack_state.rs"]
+mod pack_state;
 
-        let header = format!("[[{prefix}containers]]\n");
-        let mut classes = vec![];
-        for section in config.split(&header).skip(1) {
-            let section = section.split("\n[").next().unwrap();
-            let field = |name: &str| {
-                section
-                    .lines()
-                    .find_map(|line| {
-                        let (key, value) = line.split_once('=')?;
-                        (key.trim() == name).then(|| value.trim().trim_matches('"'))
-                    })
-                    .unwrap()
-            };
-            assert_eq!(
-                field("max_instances").parse::<usize>().unwrap(),
-                cap,
-                "{prefix}"
-            );
-            classes.push(field("class_name"));
-        }
-        classes.sort_unstable();
-        assert_eq!(classes, ["HostRoom", "LargeHostRoom"], "{prefix}");
+#[test]
+fn search_warms_an_empty_pack_and_silence_retires_it_even_after_eviction() {
+    use live_proto::host_pack::LINGER_MS;
+    use pack_state::PackLeases;
+    let mut pack = PackLeases::default();
+    assert_eq!(pack.deadline(), None);
+    pack.hold_until(10 + LINGER_MS);
+    pack.hold_until(1_000 + LINGER_MS);
+    let mut restored: PackLeases = serde_json::from_value(serde_json::to_value(pack).unwrap()).unwrap();
+    let end = 1_000 + LINGER_MS;
+    restored.expire(end - 1);
+    assert_eq!(restored.deadline(), Some(end));
+    restored.expire(end);
+    assert_eq!(restored.deadline(), None);
+}
+
+#[test]
+fn releasing_the_last_match_lingers_once_and_a_new_match_supersedes_the_timer() {
+    use live_proto::host_pack::LINGER_MS;
+    use pack_state::{PackLease, PackLeases};
+    // The persisted layout predates warm packs.
+    let mut pack: PackLeases = serde_json::from_value(json!({
+        "leases":{"first":{"deadline_ms":1_000_000,"tunnel_port":31100}}
+    })).unwrap();
+    pack.hold_until(LINGER_MS);
+    assert_eq!(pack.deadline(), Some(1_000_000));
+    pack.release("first", 3);
+    pack.release("first", 9);
+    assert_eq!(pack.deadline(), Some(3 + LINGER_MS));
+    pack.admitted("next".into(), PackLease { deadline_ms: 2_000_000, tunnel_port: 31100 });
+    pack.expire(3 + LINGER_MS);
+    assert_eq!(pack.deadline(), Some(2_000_000));
+    pack.expire(2_000_000);
+    assert_eq!(pack.deadline(), None);
+}
+
+#[test]
+fn the_pool_and_container_agree_when_a_search_starts_and_its_hold_expires() {
+    use live_proto::host_pack::{LINGER_MS, Placement, Pool, WarmDemand};
+    use pack_state::PackLeases;
+    let mut pool = Pool::default();
+    let mut container = PackLeases::default();
+    let quiet = WarmDemand { available: 4, ..WarmDemand::default() };
+    assert!(pool.warm_plan(quiet, 3, 0).start.is_none());
+    let searching = WarmDemand { searchers: 1, ..quiet };
+    let name = pool.warm_plan(searching, 3, 0).start.unwrap();
+    container.hold_until(20 + LINGER_MS);
+    pool.warmed(&name, 20, Some(20));
+    assert_eq!(pool.place("synthetic-lease", 3), Placement::Existing(name.clone()));
+    let hold = pool.warm_plan(quiet, 3, 21);
+    assert!(hold.start.is_none() && hold.refresh.is_empty());
+    let end = container.deadline().unwrap();
+    assert_eq!(end, 20 + LINGER_MS);
+    assert_eq!(pool.next_deadline(), Some(end));
+    assert!(pool.expire(end - 1).is_empty());
+    container.expire(end);
+    assert_eq!(pool.expire(end), vec![name]);
+    assert!(container.deadline().is_none() && pool.is_empty());
+}
+
+#[test]
+fn a_stale_quote_cannot_start_a_replacement_or_extend_the_paid_interval() {
+    use live_proto::host_pack::{LINGER_MS, WarmPlan};
+    use pack_state::{funded, grant_deadline};
+
+    let grant = WarmPlan { refresh: vec!["pack-2".into()], start: Some("pack-3".into()) };
+    let changed = WarmPlan {
+        refresh: vec!["pack-2".into(), "pack-3".into()],
+        start: Some("pack-4".into()),
+    };
+    let plan = funded(changed, &grant);
+    assert_eq!(plan.refresh, ["pack-2"]);
+    assert_eq!(plan.start, None);
+    let until = 200 + LINGER_MS;
+    assert_eq!(grant_deadline(200, until + 1), Some(until));
+    assert_eq!(grant_deadline(until - 1, until), Some(until));
+    assert_eq!(grant_deadline(until, until), None);
+}
+
+#[test]
+fn a_search_cannot_restart_expired_packs_until_another_match_arrives() {
+    use live_proto::host_pack::{LINGER_MS, Pool, WarmDemand, WarmPlan};
+
+    let mut pool = Pool::default();
+    let mut now = 1_000;
+    let end = now + 3 * LINGER_MS;
+    // One real match fills a one-slot pack throughout three funded intervals.
+    pool.admitted_at("pack-0", "first-match", end, now);
+    let search = WarmDemand { searchers: 1, leases: 1, available: 1 };
+
+    for _ in 0..3 {
+        let plan = pool.warm_plan(search, 1, now);
+        let name = plan.start.as_deref().expect("a fresh pack for this interval");
+        let until = now + LINGER_MS;
+        assert!(pool.reserve_warm(&plan, until));
+        assert!(!pool.reserve_warm(&plan, until));
+        assert!(!pool.reserve_warm(&plan, until - 1));
+        pool.warmed(name, now, Some(10));
+
+        // A retried placement of the same lease is not another arrival.
+        pool.admitted_at("pack-0", "first-match", end, now);
+        now = until;
+        assert!(pool.expire(now).iter().any(|removed| removed == name));
+        // The room can be evicted even after every pack is gone.
+        pool = serde_json::from_value(serde_json::to_value(&pool).unwrap()).unwrap();
     }
+
+    assert!(pool.is_empty());
+    let quiet_search = WarmDemand { leases: 0, ..search };
+    let quote = pool.warm_plan(quiet_search, 1, now);
+    assert!(quote.start.is_none() && quote.refresh.is_empty());
+    let stale = WarmPlan { start: Some("pack-4".into()), ..WarmPlan::default() };
+    assert!(!pool.reserve_warm(&stale, now + LINGER_MS));
+
+    let name = pool.place("second-match", 1).pack().to_owned();
+    pool.admitted_at(&name, "second-match", now + 2 * LINGER_MS, now);
+    let quote = pool.warm_plan(search, 1, now);
+    assert!(quote.start.is_some());
+    assert!(pool.reserve_warm(&quote, now + LINGER_MS));
 }

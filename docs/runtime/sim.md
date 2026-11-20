@@ -147,7 +147,10 @@ paced or not (`crates/runtime/kernel/src/pacer.rs`). So a paced and an unpaced r
 of the same match are the same match. `sim::clock` holds the parsing and
 the arithmetic (tested); boot sets `Machine::pacer` from it. Pass
 `--pace realtime` to `h2 sim run` or `h2 sim batch` to override the match
-file for this invocation.
+file for this invocation. A real-time light host can group its wall waits
+on the pack slot’s 30 Hz phase. Socket readiness releases the grouped wait
+at the ordinary deadline. The guest still observes each intervening vblank,
+audio completion and thread deadline. [Switches](switches.md)
 
 The report's speed-up is game time over wall time from the match's first
 tick to its end (`sim::clock::SpeedMeter`), and also over the whole
@@ -434,6 +437,8 @@ The `wall` block carries the process's memory: `peak_rss_mib`
 fleet pays for), and, when the run loaded a shared copy-on-write guest
 RAM base (§6.2), `guest_written_pages` of `guest_pages`: the census of
 what the match wrote over the base, so batches record memory per run.
+`mapped_read_bytes` and `copied_read_bytes` count completed bytes transferred
+into guest RAM by NtReadFile since boot. Copied bytes include partial pages.
 The per-process memory of a Waterworks 2v2 sim run is in
 [notes/sim.md](notes/sim.md).
 
@@ -458,15 +463,29 @@ h2 sim store build all --disc disc/halo2.iso --out store --reads reads.txt
 H2_SIM_STORE=store h2 sim run match.toml   # or h2 serve --system-link --host-light
 ```
 
-The store file (`<map>.h2store`) is a 24-byte header, a sorted range
-index and the packed bytes of the ranges — nothing else. The serving
-side (`vfs::SimStoreBackend`, layered under `H2_MAP_DIR` and
-`H2_SERVER_MAP_DIR`) keeps only the index in memory, maps the file
-read-only and copies straight into the guest's own read buffer, so
-every process on one host shares the store's page-cache pages and
-nothing private is retained. `stat` keeps the map's logical length; a
-store-served map has no `host_file` (like a streamed overlay); an
-unreadable store file makes the map's reads fail, never fall back.
+The store file (`<map>.h2store`) contains a 24-byte header, a sorted
+range index and the recorded bytes. Version 1 of the index pads bulk
+ranges to the same offset within a 4 KiB page as their logical map
+offset. The reader also accepts packed version 0 indexes.
+`vfs::SimStoreBackend` maps the file read-only. The configured editor
+and server map layers take precedence. The guest sees the original
+logical file length, and an unreadable store fails its reads.
+
+On a light host, a read from an immutable disc map, verified server map
+or contiguous store range can supply whole pages directly to guest RAM.
+On macOS, boot selects a dedicated paged RAM mapping when this read path
+is enabled. Ordinary play and the light profile's copy control use the
+usual heap backing. Flat RAM keeps its separate aliasable mapping.
+The kernel attempts one mapping for the full NtReadFile request, before
+dividing a copied read into 64 KiB chunks. At least 16 whole host pages
+must fit. The physical destination and file offset must have the same
+remainder modulo the host page size. Partial edge pages are copied,
+and guest writes to a mapped page are private to that process. Flat
+RAM aliases, access traps, HLE write capture, mutable files and composed
+map streams take the ordinary copy path. The host reports the first
+refusal for each reason on stderr. See [the switch registry](switches.md)
+for the copy control.
+
 Two games on different maps still share `shared.map`'s store, the
 common tag data both read, and the dylib's code pages.
 
@@ -479,8 +498,7 @@ leaves no pages behind either.
 
 ### 6.2 Sharing guest RAM with machine snapshots
 
-Halo copies a map's tag data into guest RAM at load, so each process
-holds its own dirty copy. `state.save` with `"cow": true` writes, beside
+The snapshot shares guest RAM at a saved machine state. `state.save` with `"cow": true` writes, beside
 the snapshot, a sparse raw RAM image (`<name>.ram`: zero pages are
 holes); `state.load` with `"cow": true` maps that file private
 copy-on-write in place of decoding RAM in — pages the match never

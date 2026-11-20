@@ -91,9 +91,16 @@ at the first evidence of runtime and settles from the recorded
 | Fly Machines | Performance-1x, 2 GB, about $0.046/h | Performance-2x, 4 GB, about $0.092/h | Compute only in the estimate |
 
 Cloudflare bills active containers in 10 ms increments. Live rounds up
-the cumulative runtime to that increment for CPU, memory and disk. It
-assumes full use of the allocated vCPUs, memory and disk, and adds a flat
-$0.001 estimate per start. The flat amount is a planning allowance.
+the cumulative runtime to that increment. For a settled packed lease,
+it apportions provisioned memory and disk by the number of occupied
+slots over time and uses measured process-group CPU when available.
+A pack start carries one $0.001 planning allowance. Active reservations,
+unmeasured leases and cleanup intervals use full-class estimates. Admission
+reserves a 60-second idle hold for each launched Cloudflare lease. On release,
+the pool records which lease emptied the pack. Only that lease pays the hold,
+beginning at the pool's release timestamp. A retried stop returns the same
+receipt. Older stop events without a receipt retain the full hold estimate.
+Idle warm grants can overlap occupied intervals, so the estimate can run high.
 Fly uses the class's hourly rate divided by 3,600 and multiplies it by
 runtime in seconds. The estimate covers the dedicated hosts in one Live
 deployment. Cloudflare plan fees, Workers, Durable Objects, actual
@@ -172,8 +179,8 @@ runs it. [Packed hosts](#packed-hosts) Otherwise it passes `H2_LEASE`,
 `H2_LIVE`, `H2_TOKEN`, `H2_DATA_URL`, `H2_DATA_SHA` and optional
 `H2_REGION` to `h2 host run` for a single lease, as in a local Docker
 smoke test. The host verifies the bundle hash and caches the data in
-`/var/cache/h2`. The image exposes UDP 31000–31020 for three slots of game
-ports, TCP 31099 for pack control and TCP 31100–31102 for the slots'
+`/var/cache/h2`. The image exposes UDP 31000–31069 for ten slots of game
+ports, TCP 31099 for pack control and TCP 31100–31109 for the slots'
 datagram tunnels.
 
 ## Packed hosts
@@ -195,53 +202,56 @@ the lease, its token and the signed bundle URL. The supervisor passes them
 to its child and never writes them down. Each child is its own process
 group. A removal sends SIGTERM to the group, so `h2 host run` reports
 `Stopped` to Live, and sends SIGKILL after 15 seconds. The children watch
-a pipe from the supervisor and stop if it dies. A pack that has run
-nothing for `H2_PACK_LINGER_S` (default 60 s) exits.
+a pipe from the supervisor and stop if it dies. A private `POST /v1/pack/warm` renews an empty supervisor’s idle
+deadline. Unused supervisors exit after `H2_PACK_LINGER_S` (default 60 s).
 
-**Admission.** The supervisor samples each child's process group every
-2 seconds from `/proc`: CPU time per 33 ms of wall time and proportional
-resident memory (`Pss`). After three samples a match's cost is the higher
-of its smoothed and latest value. Until then it counts at 10 ms per tick
-and 340 MiB. A new match is refused when the pack already runs
-`H2_PACK_MAX_MATCHES` (default 3), when the summed cost plus 10 ms for the
-new match would pass 70% of 33.3 ms per vCPU, or when memory plus 340 MiB
-would pass the container limit less 256 MiB. Memory comes from the cgroup's
-`memory.current` less inactive file pages. Without a cgroup, it uses the
-matches' own figures. `H2_PACK_VCPUS` and `H2_PACK_MEMORY_MIB` set the
-size; otherwise the cgroup's `cpu.max` and `memory.max` do. On one vCPU,
-two matches measured at 6 ms leave room for a third (22 ms of a 23.3 ms
-budget). Two at 9 ms do not. Off Linux nothing is measured, so the
-defaults and the match cap decide.
+**Admission.** The supervisor samples the match process group every two
+seconds on Linux. The game agent supplies gameplay tick p99 on both homes.
+On other platforms the pack uses the game process’s CPU and resident memory.
+The pack estimates cold matches from the median of recent measured loads
+on that map. Without history it reserves 10 ms per tick and 340 MiB per match.
+Admission keeps 30% of each vCPU and 256 MiB of memory free. It accounts
+for boot reservations even before resident memory grows. A rolling
+30-second gameplay p99 over 36 ms also closes admission.
+
+Small packs admit up to five slots on one vCPU within 1,536 MiB. Large
+packs admit up to ten slots on two vCPUs within 3,072 MiB. Cloudflare
+provisions and bills 3 and 6 GiB respectively under its capped scheduling
+policy. The supervisor accepts explicit CPU, memory and slot limits.
+[Sizing and qualification](host-halving.md#pack-density-and-admission)
 
 **Routing.** On Cloudflare the hub still calls one room per lease. That
 room asks the class's pool room for its location
 (`pool-<hint>`, or `pool-any` when the region is not a Cloudflare location
 hint) to place the lease. The pool sends the match to the fullest pack
-with room and starts a new pack room (`pool-<hint>/pack-<n>`) only when
-none has room. A refusal marks that pack full until one of its leases
+with room. It starts a new pack room (`pool-<hint>/pack-<n>`) when
+search demand exceeds free slots or a lease cannot be placed. A refusal marks that pack full until one of its leases
 ends, and the pool tries the next pack, up to three new packs per lease.
-The pack room starts its container with only the pack's size in the
-environment and waits up to 30 seconds for the control port. The lease
+The pack room passes its resource settings and configured feature switches to the container and waits up to 30 seconds for the control port. The lease
 room forwards each tunnel upgrade to its pack room, which connects it to
 the match's tunnel port. When Live stops a lease, the pool removes the
-match from its pack. When that was the pack's last lease, the pack room
-destroys the container instead. Pack names are never reused. Each room
-keeps an alarm at its latest lease deadline as a backstop for a lost stop.
+match from its pack. The final lease starts a 60-second idle hold. Each regional class allows
+three speculative warm grants between new lease admissions, including
+the first start and any renewals. Durable alarms expire leases and empty
+holds across eviction.
+The pool assigns a new name to every new pack.
 `LIVE_HOST_PACK_MATCHES` sets matches per container on the Worker
-(default 3, at most 8).
+(five for small, ten for large, or a lower configured limit).
 
 Native Live uses the same pool logic and supervisor when
 `LIVE_HOST_PACK_MATCHES` is set. It starts one local `h2 host pack` per
 pack with its control port on loopback from `LIVE_HOST_PACK_CONTROL_PORT`
 (default 32000) plus the pack's window. Each later window shifts its UDP,
 tunnel and agent ports past the previous pack's slots. Its provider
-references are `pack:<pack>/<lease>`. Unset, each lease runs its own
-`h2 host run` as before.
+references are `pack:<pack>/<lease>`. Set the slot limit to `auto` for
+class-sized packs. Each child writes under `window-<n>/<lease>` in the
+host data directory. Unset, each lease runs its own `h2 host run`.
+[Warm capacity policy](host-halving.md#warm-capacity-from-demand)
 
-Live's cost estimate still counts a full container for each lease, and
-`LIVE_MAX_HOSTS` still counts leases. Packing three matches per container
-lets the same `max_instances` serve three times the leases. The estimate
-does not yet reflect that saving.
+The lease cap counts matches across both classes. The Worker deploy
+renderer computes a separate container limit for each class from the cap,
+its configured slots and the number of regions. See the
+[capacity steps](host-halving.md#caps) and [cost model](#cost-and-budget).
 
 ## Light host
 
@@ -256,9 +266,10 @@ machine-only lobby and remote join lifecycle above still need a game run.
 | World, HUD, effects | `sim-frame` skips every steady-state world call to `0x00223240`. This drops the world, HUD, and effect draw paths reached there. It calls `0x0012b2e0` for the frame clock, advances counters at `0x00485aa0` and `0x004ba034`, and clears `0x004e6098`. Guest effect updates stay because the tick reads the counters. The software D3D shim keeps display timing and device ABI, with no GPU, display presentation, or render thread. [Skip](../../crates/rewrites/sim-bridge/src/sim_frame.rs) · [Read-back census](../runtime/sim.md#2-what-can-be-skipped-and-what-cant) |
 | UI and movies | Bink takes the existing skip return, including intro, attract and credits. The lobby and loading frames keep the guest menu path and cache housekeeping. The menu layer at `0x00147af1` dispatches virtual callbacks, so a blanket guest-side skip needs a write audit. Animation has a tick-side request at `0x001236f0` and a render-side load at `0x001237e0`. Test animation-driven hit and melee behaviour in a real match. [Movie mode](../../crates/extensions/game/src/movies_glue.rs) · [Animation dependency](../graphics/notes/pipelined-render.md#the-new-dependency-sites) |
 | Audio | The guest polls buffer status and position and waits for stream events. `StreamGetStatus` at `0x0037f591` has a pause bit read at `0x002ae4c4`. The same logical 256-frame grid advances cursors and delivers status, events and callbacks with no sample mixing, output queue, sink or output thread. `SetBufferData` and PCM/ADPCM stream packets validate the guest ranges without reading their sample bytes in DirectSound. Machine snapshots are unavailable with this audio profile because their audio section contains samples. [DirectSound state](../../crates/platform/dsound/src/state.rs) · [Output clock](../../crates/platform/dsound/src/output.rs) |
-| Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Keep those source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/runtime/vfs/src/disc.rs) · [Directory reads](../../crates/runtime/vfs/src/dir_disc.rs) · [Cache copy](../../crates/extensions/game/src/map_copy.rs) · [Codec](../../crates/platform/dsound/src/xwma.rs) |
+| Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Eligible immutable ranges can also back guest pages directly. Writes to those pages are private to the match. Sim reports count mapped and copied read bytes. Keep the source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/runtime/vfs/src/disc.rs) · [Directory reads](../../crates/runtime/vfs/src/dir_disc.rs) · [Cache copy](../../crates/extensions/game/src/map_copy.rs) · [Codec](../../crates/platform/dsound/src/xwma.rs) |
 | Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/runtime/src/guest.rs) · [Module loading and boot](../../crates/apps/boot/src/lib.rs) |
-| Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/runtime/kernel/src/pacer.rs) · [XNet sockets](../../crates/live/live-hle/src/network.rs) |
+| Native simulation | Light hosts can opt into the three native animation, collision and object implementations together. Individual subsystem overrides take precedence. [Controls](../runtime/switches.md#waiting-for-a-measurement) |
+| Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. The optional pack pacer groups intermediate deadlines on a slot-specific 30 Hz grid and wakes for socket traffic. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/runtime/kernel/src/pacer.rs) · [XNet sockets](../../crates/live/live-hle/src/network.rs) |
 | Bots and telemetry | `--host-bots` enables explicit phantom adds. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/apps/boot/src/registration.rs) · [Telemetry configuration](../../crates/live/live-telemetry/src/config.rs) |
 | Completed match archive | `h2 host run --archive dual\|film` or `H2_HOST_ARCHIVE`. For provisioned leases, set `LIVE_HOST_ARCHIVE` on native Live or the Worker. A pack passes the archive mode to each lease and keeps each match’s film in its own directory. The default `dual` sends live telemetry and uploads the sealed film. In `film` mode the host uploads one film at match end, and Live derives the stats and web replay from that upload. [Cutover](live-api.md#switching-a-host-to-film-ingestion) |
 
@@ -288,6 +299,11 @@ charged per container. Three changes cut that, all behaviour-identical:
   build on demand as they load.
 - The descriptor-only D3D path creates no vertex or index caches (was:
   128 + 32 MiB of LRU budget).
+
+Light hosts build interpreter analysis on demand. Slim hosts keep one lifted
+cold owner. A bot visibility grid uses its sorted cell list when a dense
+index would exceed 256 KiB. Linux glibc lease children default to two
+allocator arenas and a 128 KiB trim threshold.
 
 **Sim stores** ([Sim stores](../runtime/sim.md#61-sim-stores-the-map-without-the-map))
 take it further: with `H2_SIM_STORE` naming a directory of built
@@ -496,7 +512,9 @@ done | tee "$trial/$label-metrics.txt"
 ```
 
 Compare `game_cpu_ms_per_tick`, `process_cpu_ms_per_tick`, `cpu_percent`
-and `rss_bytes`. Check `wall_ms_per_tick` against 33.3 ms. The match
+and `rss_bytes`. The game agent reports the gameplay tick p99 over 30 seconds
+and counts intervals over 36 ms. On Linux it also reports proportional,
+private dirty and shared clean bytes. The pack reports group memory for each slot. Check `wall_ms_per_tick` against 33.3 ms. The match
 check is remote movement, hits, death and respawn, results, and a second
 round on the same host. The render consumes shared RNG at
 `0x001032a0`, so the rendered control and the light host can diverge in
@@ -508,7 +526,7 @@ prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.m
 
 Live requests one host per match. Before asking a provider to start it, Live
 checks the monthly budget and counts hosts that are starting, serving a
-match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4. A refused request leaves matchmaking
+match, or awaiting provider cleanup. `LIVE_MAX_HOSTS` defaults to 4 and accepts 0–4, 16, 64, 256 or 1,024. A refused request leaves matchmaking
 free to use a peer host.
 
 | Event on the `hosts` stream | What Live records |
@@ -517,7 +535,7 @@ free to use a peer host.
 | `HostBooting` | The provider reference used to check or stop this instance. |
 | `HostReady` | The endpoint registered with the lease's own credential and the time from request to registration. Clients can now join. |
 | `HostPlaying` | The current player count. Live keeps the highest count for the match. |
-| `HostEnded` | The reason, elapsed time and peak players. A boot timeout or crash leaves the lease in `Failed`. |
+| `HostEnded` | The reason, elapsed time, peak players and optional packed usage. A boot timeout or crash leaves the lease in `Failed`. |
 
 On startup Live replays these server-signed events before it serves requests.
 The host token and signed game-data URL are passed directly to the provider.
@@ -571,6 +589,12 @@ OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.
 A same-named copy must match the original map header and logical length.
 Maps without a replacement come from the disc.
 
+Pass `--sim-stores DIR` to package recorded shared resources. Each store must
+cover the corresponding cache header and match the disc at every recorded
+byte. Playable maps and the menu stay available to native readers before boot.
+Both leased child paths mount stores from the verified bundle.
+[Recording and packaging](dedicated-host-build.md#package-recorded-shared-resources)
+
 The command writes `host-data.tar.zst` and `host-data.json`. The JSON gives
 the archive's `sha256` and the list of payload paths, sizes in bytes and
 SHA-256 digests. Keep the two files together.
@@ -623,7 +647,11 @@ bundles or give each deployment its own cache.
 
 **Assignment.** [Ping-aware OptiMatch](live-matchmaking.md#9-ping-aware-optimatch-assignments)
 can reserve an opted-in solo cohort for a registered dedicated endpoint.
-Each client measures the actual UDP route with the existing QoS echo.
+Each client probes a registered endpoint over UDP. For an ad hoc host,
+it measures running or configured regional UDP endpoints and can use a
+ticket-authenticated WebSocket echo on its Live origin. Cloudflare routes
+the echo through a running pack when available or answers in the regional
+pool room. Native Live answers the service echo itself.
 A registered endpoint can use its existing account. For an ad hoc host the
 matchmaker binds the lease to the assignment before the provider starts the
 child. Live attaches that assignment, including `matchmaking.host_lease`, to

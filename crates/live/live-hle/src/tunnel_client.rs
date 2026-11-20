@@ -230,6 +230,24 @@ fn request(url: &str, bearer: &str) -> io::Result<Request> {
 type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
 fn open(url: &str, bearer: &str) -> io::Result<Ws> {
+    open_with_timeouts(url, bearer, CONNECT_WAIT, TURN)
+}
+
+/// Measure only the first application frame on a fresh authenticated upgrade.
+pub(crate) fn region_echo(url: &str, bearer: &str) -> Option<u16> {
+    use live_proto::matchmaking::REGION_ECHO;
+    let mut socket = open_with_timeouts(url, bearer, Duration::from_millis(1000), Duration::from_millis(450)).ok()?;
+    let started = Instant::now();
+    socket.send(Message::Text(REGION_ECHO.into())).ok()?;
+    match socket.read().ok()? {
+        Message::Text(text) if text.as_str() == REGION_ECHO => {
+            Some(crate::qos::round_trip_ms(started.elapsed()))
+        }
+        _ => None,
+    }
+}
+
+fn open_with_timeouts(url: &str, bearer: &str, connect_wait: Duration, read_wait: Duration) -> io::Result<Ws> {
     let req = request(url, bearer)?;
     let uri = req.uri();
     let default_port = match uri.scheme_str() {
@@ -240,7 +258,7 @@ fn open(url: &str, bearer: &str) -> io::Result<Ws> {
     let name = uri.host().ok_or_else(|| invalid("missing tunnel host"))?;
     let name = name.trim_start_matches('[').trim_end_matches(']');
     let addrs = (name, uri.port_u16().unwrap_or(default_port)).to_socket_addrs()?;
-    let deadline = Instant::now() + CONNECT_WAIT;
+    let deadline = Instant::now() + connect_wait;
     let mut result = Err(io::Error::other("tunnel host has no address"));
     for addr in addrs {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -254,8 +272,8 @@ fn open(url: &str, bearer: &str) -> io::Result<Ws> {
     }
     let stream = result?;
     stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(CONNECT_WAIT))?;
-    stream.set_write_timeout(Some(CONNECT_WAIT))?;
+    stream.set_read_timeout(Some(connect_wait))?;
+    stream.set_write_timeout(Some(connect_wait))?;
     let config = WebSocketConfig::default()
         .max_message_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD))
         .max_frame_size(Some(tunnel::HEADER_LEN + MAX_PAYLOAD));
@@ -276,7 +294,7 @@ fn open(url: &str, bearer: &str) -> io::Result<Ws> {
         MaybeTlsStream::Rustls(tls) => &mut tls.sock,
         _ => return Err(io::Error::other("unsupported tunnel TLS backend")),
     };
-    tcp.set_read_timeout(Some(TURN))?;
+    tcp.set_read_timeout(Some(read_wait))?;
     Ok(socket)
 }
 

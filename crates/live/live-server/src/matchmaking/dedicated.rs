@@ -1,11 +1,12 @@
 //! The server-side opt-in and regional QoS targets for ad-hoc hosts.
 
 use super::{random_id, selection::Entrant};
-use crate::app::Live;
+use crate::app::{ApiError, Live, forbidden, not_found};
 use live_proto::{
     Xuid,
     hopper::HOPPERS,
-    matchmaking::{Candidate, Sample},
+    hosts::HostClass,
+    matchmaking::{Candidate, RegionProbe, Sample, valid_probe_region},
 };
 use serde::Deserialize;
 use std::{collections::BTreeMap, net::SocketAddrV4};
@@ -103,7 +104,70 @@ impl DedicatedConfig {
     }
 }
 
+impl super::Matchmaker {
+    pub(super) fn refresh_udp_probes(
+        &mut self, running: BTreeMap<String, (String, SocketAddrV4)>,
+    ) -> Result<(), ApiError> {
+        let table = &mut self.config.regions;
+        let mut removed = Vec::new();
+        table.active_udp.retain(|region, (lease, probe)| {
+            let keep = running.get(region).is_some_and(|(id, addr)| lease.as_str() == id.as_str() && probe.endpoint == *addr);
+            if !keep { removed.push(probe.xuid); }
+            keep
+        });
+        for id in removed {
+            for bucket in self.buckets.values_mut() {
+                for player in bucket.waiting.values_mut() {
+                    player.samples.remove(&id);
+                }
+            }
+        }
+        for (region, (lease, endpoint)) in running {
+            if let Some(echo) = table.echoes.get(&region)
+                && !table.active_udp.contains_key(&region)
+            {
+                let probe = Candidate {
+                    xuid: Xuid(echo.xuid.0 | (1 << 46)), endpoint, generation: random_id()?,
+                };
+                table.active_udp.insert(region, (lease, probe));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observe_warm_slots(&mut self, region: Option<&str>, class: &HostClass, slots: usize, at_ms: i64) {
+        if *class != HostClass::Small { return; }
+        let regions = &mut self.config.regions;
+        let Some(region) = region.filter(|r| regions.regions.contains_key(*r)) else { return };
+        if slots == 0 {
+            regions.warm_until_ms.remove(region);
+        } else {
+            regions.warm_until_ms.insert(region.to_owned(), at_ms.saturating_add(40_000));
+        }
+    }
+}
+
 impl Live {
+    /// Authorize a regional echo on either home. A room is addressed only for a
+    /// configured region, from an account with a fresh dedicated search ticket.
+    pub fn admit_region_echo(&self, bearer: Option<&str>, region: &str) -> Result<(), ApiError> {
+        let author = self.authenticate(bearer, live_proto::lxm::SESSIONS_RELAY)?;
+        let live_proto::Author::Account { xuid, .. } = &author else {
+            return Err(forbidden("a regional probe needs an account"));
+        };
+        self.rate_limit(&author, live_proto::lxm::SESSIONS_RELAY)?;
+        let matcher = self.matchmaking.lock().unwrap();
+        if !matcher.config.regions.echoes.contains_key(region) {
+            return Err(not_found("unknown probe region"));
+        }
+        let clock = crate::app::now();
+        if !matcher.buckets.iter().any(|(&hopper, bucket)| matcher.config.enabled(hopper)
+            && bucket.waiting.get(xuid).is_some_and(|w| !w.dedicated && w.seen + super::TICKET_SECONDS > clock)) {
+            return Err(forbidden("a regional probe needs an active dedicated search"));
+        }
+        Ok(())
+    }
+
     /// Load the queue's dedicated-host settings from the Worker's bindings.
     pub fn configure_dedicated_matchmaking(
         &self,
@@ -118,6 +182,10 @@ impl Live {
 #[derive(Default)]
 pub(super) struct RegionTable {
     regions: BTreeMap<String, Option<Candidate>>,
+    echoes: BTreeMap<String, RegionProbe>,
+    active_udp: BTreeMap<String, (String, Candidate)>,
+    // A pool observation is useful for one refresh period, including a little sweep jitter.
+    warm_until_ms: BTreeMap<String, i64>,
     default: Option<String>,
 }
 
@@ -138,12 +206,16 @@ impl RegionTable {
         }
 
         let mut regions = BTreeMap::new();
+        let mut echoes = BTreeMap::new();
         for (index, (code, endpoint)) in list.into_iter().enumerate() {
-            if code.is_empty()
-                || !code.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            {
+            if !valid_probe_region(&code) {
                 return Err(format!("{REGIONS} contains an invalid region code: {code:?}"));
             }
+            echoes.insert(code.clone(), RegionProbe {
+                region: code.clone(),
+                xuid: Xuid((PROBE_XUID_MARKER | (1 << 47)) | (index as u64 + 1)),
+                generation: random_id().map_err(|err| err.to_string())?,
+            });
             let candidate = if let Some(endpoint) = endpoint {
                 let ip = endpoint.ip();
                 if !(1..=65529).contains(&endpoint.port())
@@ -165,53 +237,59 @@ impl RegionTable {
             };
             regions.insert(code, candidate);
         }
-        Ok(Self { regions, default })
+        Ok(Self { regions, echoes, default, ..Self::default() })
+    }
+
+    pub(super) fn echoes(&self) -> impl Iterator<Item = &RegionProbe> {
+        self.echoes.values()
     }
 
     pub(super) fn candidates(&self) -> impl Iterator<Item = &Candidate> {
-        self.regions.values().filter_map(Option::as_ref)
+        self.active_udp.values().map(|(_, c)| c).chain(self.regions.values().filter_map(Option::as_ref))
     }
 
     pub(super) fn accepts(&self, sample: &Sample) -> bool {
         self.candidates().any(|candidate| {
             candidate.xuid == sample.target && candidate.generation == sample.generation
-        })
+        }) || self.echoes().any(|probe| probe.xuid == sample.target && probe.generation == sample.generation)
     }
 
     pub(super) fn pick(&self, members: &[Entrant<'_>]) -> Option<RegionChoice<'_>> {
+        self.pick_at(members, crate::app::now().saturating_mul(1000))
+    }
+
+    fn pick_at(&self, members: &[Entrant<'_>], now_ms: i64) -> Option<RegionChoice<'_>> {
         let default = self.default.as_deref()?;
-        let mut best = None;
-        let mut fallback = RegionChoice {
-            region: default,
-            rtt_ms: BTreeMap::new(),
-        };
+        let mut complete = Vec::new();
+        let mut fallback = RegionChoice { region: default, rtt_ms: BTreeMap::new() };
         for (region, candidate) in &self.regions {
-            let region = region.as_str();
-            let Some(probe) = candidate else { continue };
-            let rtt_ms: BTreeMap<_, _> = members
-                .iter()
-                .filter_map(|member| {
-                    member
-                        .samples
-                        .get(&probe.xuid)
-                        .copied()
-                        .flatten()
-                        .map(|rtt| (member.xuid, rtt))
-                })
-                .collect();
+            let echo = &self.echoes[region];
+            let rtt_ms: BTreeMap<_, _> = members.iter().filter_map(|member| {
+                let sample = |id| member.samples.get(&id).copied().flatten();
+                let rtt = self.active_udp.get(region).and_then(|(_, probe)| sample(probe.xuid))
+                    .or_else(|| candidate.as_ref().and_then(|probe| sample(probe.xuid)))
+                    .or_else(|| sample(echo.xuid))?;
+                Some((member.xuid, rtt))
+            }).collect();
             let choice = RegionChoice { region, rtt_ms };
             if choice.rtt_ms.len() == members.len()
                 && let Some(&worst) = choice.rtt_ms.values().max()
             {
-                let score = (worst, region != default, region);
-                if best.as_ref().is_none_or(|(previous, _)| score < *previous) {
-                    best = Some((score, choice));
-                }
+                complete.push((worst, choice));
             } else if region == default {
                 fallback = choice;
             }
         }
-        Some(best.map_or(fallback, |(_, choice)| choice))
+        let Some(best) = complete.iter().map(|(worst, _)| *worst).min() else {
+            return Some(fallback);
+        };
+        complete.into_iter()
+            .filter(|(worst, _)| *worst <= best.saturating_add(10))
+            .min_by_key(|(worst, choice)| {
+                let warm = self.warm_until_ms.get(choice.region).is_some_and(|&until| until > now_ms);
+                (!warm, *worst, choice.region != default, choice.region)
+            })
+            .map(|(_, choice)| choice)
     }
 }
 
@@ -308,6 +386,37 @@ mod tests {
         let samples = regions.candidates().map(|probe| (probe.xuid, Some(15))).collect();
         let members = [Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &samples }];
         assert_eq!(regions.pick(&members).unwrap().region, "lhr");
+    }
+
+    #[test]
+    fn room_echo_fills_missing_udp_and_only_fresh_warm_slots_win_within_ten_ms() {
+        let mut regions = configured_regions("lhr");
+        let ams = regions.regions["ams"].as_ref().unwrap().xuid;
+        let lhr_echo = regions.echoes["lhr"].xuid;
+        let samples = BTreeMap::from([(ams, Some(40)), (regions.echoes["ams"].xuid, Some(5)), (lhr_echo, Some(50))]);
+        let members = [Entrant { xuid: Xuid(1), level: 1, since: 0, samples: &samples }];
+        regions.warm_until_ms.insert("lhr".into(), 1000);
+        assert_eq!(regions.pick_at(&members, 999).unwrap().region, "lhr");
+        assert_eq!(regions.pick_at(&members, 1000).unwrap().region, "ams");
+        let mut outside = samples.clone();
+        outside.insert(lhr_echo, Some(51));
+        let members = [Entrant { samples: &outside, ..members[0] }];
+        assert_eq!(regions.pick_at(&members, 999).unwrap().region, "ams");
+    }
+
+    #[test]
+    fn replacement_pack_retires_its_predecessors_samples() {
+        let mut matcher = super::super::Matchmaker::default();
+        matcher.config.regions = configured_regions("ams");
+        let addr = "192.0.2.33:31000".parse().unwrap();
+        matcher.refresh_udp_probes(BTreeMap::from([("ams".into(), ("first".into(), addr))])).unwrap();
+        let first = matcher.config.regions.active_udp["ams"].1.clone();
+        let old = Sample { target: first.xuid, generation: first.generation, rtt_ms: Some(41) };
+        assert!(matcher.config.regions.accepts(&old));
+        matcher.refresh_udp_probes(BTreeMap::from([("ams".into(), ("second".into(), addr))])).unwrap();
+        assert!(!matcher.config.regions.accepts(&old));
+        matcher.refresh_udp_probes(BTreeMap::new()).unwrap();
+        assert!(matcher.config.regions.active_udp.is_empty());
     }
 
     #[test]

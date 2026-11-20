@@ -35,6 +35,8 @@ const REQUIRED_FILES: [&str; 4] = [
     "maps/shared.map",
     "maps/single_player_shared.map",
 ];
+/// Directory in the verified bundle containing shared resource stores.
+const STORE_DIR: &str = "sim-stores";
 const CACHE_LOCK: &str = ".host-data.lock";
 const LAST_USED: &str = ".last-used";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -131,6 +133,13 @@ impl Options {
 /// A complete cached copy can be reused after the signed URL expires.
 pub fn provision(url: &str, sha256: &str, cache_dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(provision_with(url, sha256, cache_dir, &Options::from_env())?)
+}
+
+/// The verified bundle's resource store directory, when its manifest lists stores.
+pub fn bundled_store_dir(disc: &Path) -> Result<Option<PathBuf>, Error> {
+    let manifest = read_embedded_manifest(disc)?;
+    let expects_stores = manifest.files.iter().any(|entry| entry.path.starts_with("sim-stores/"));
+    Ok(expects_stores.then(|| disc.join(STORE_DIR)))
 }
 
 /// [`provision`] with explicit [`Options`].
@@ -293,6 +302,7 @@ fn extract_bundle(archive: File, dest: &Path) -> Result<(), Error> {
 fn validate_payload_path(path: &str) -> Result<(), Error> {
     tar::validate_path(path).map_err(Error::UnsafePath)?;
     let allowed = path == "default.xbe"
+        || matches!(path.strip_prefix(STORE_DIR), Some("/shared.h2store" | "/single_player_shared.h2store"))
         || path.strip_prefix("maps/").is_some_and(|name| {
             name.strip_prefix("fonts/").map_or_else(
                 || name.to_ascii_lowercase().ends_with(".map") && !name.contains('/'),

@@ -26,6 +26,8 @@ use crate::store::{RecordedEvent, StoreError};
 mod endpoint;
 pub mod fly;
 mod lifecycle;
+mod warm_cost;
+mod warming;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod local;
 #[cfg(test)]
@@ -79,8 +81,28 @@ impl From<std::io::Error> for HostError {
 pub trait HostProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     async fn start(&self, lease: &HostLease, boot: &HostBoot) -> Result<String, HostError>;
+    /// Renew only the free capacity justified by live demand. Providers
+    /// without a pack supervisor expose zero warm slots.
+    async fn warm(
+        &self,
+        _live: &Live,
+        _region: Option<&str>,
+        _class: &HostClass,
+        _demand: live_proto::host_pack::WarmDemand,
+    ) -> Result<usize, HostError> {
+        Ok(0)
+    }
+
     /// Stopping an already stopped host succeeds.
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError>;
+    /// A replayable receipt from a provider that bills packed leases.
+    async fn stop_and_settle(
+        &self, lease_id: &str, provider_ref: &str,
+    ) -> Result<Option<live_proto::hosts::PackRelease>, HostError> {
+        self.stop(lease_id, provider_ref).await?;
+        Ok(None)
+    }
+
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError>;
 
     /// Providers with deterministic names can clean up even a lost start reply.
@@ -116,7 +138,15 @@ impl HostConfig {
             data_url: env("LIVE_HOST_DATA_URL").unwrap_or_default(),
             data_sha256: env("LIVE_HOST_DATA_SHA256").unwrap_or_default(),
             archive: env("LIVE_HOST_ARCHIVE").unwrap_or_else(|| "dual".into()),
-            max_hosts: env("LIVE_MAX_HOSTS").map_or(4, |s| s.parse().unwrap_or(0)),
+            max_hosts: env("LIVE_MAX_HOSTS").map_or(4, |s| {
+                match s.trim().parse::<usize>() {
+                    Ok(cap @ (0..=4 | 16 | 64 | 256 | 1024)) => cap,
+                    _ => {
+                        eprintln!("live: invalid LIVE_MAX_HOSTS; expected 0–4, 16, 64, 256 or 1024. Dedicated host admission disabled");
+                        0
+                    }
+                }
+            }),
         }
     }
 }
@@ -177,6 +207,8 @@ impl HostView {
 #[derive(Default)]
 struct Registry {
     leases: BTreeMap<String, HostView>,
+    // Warming runs on queue polls; terminal match history can be arbitrarily long.
+    active: std::collections::BTreeSet<String>,
     next_version: u64,
     // Terminal leases that had a provider reference, in log position order.
     cleanup: BTreeMap<u64, String>,
@@ -188,12 +220,8 @@ struct Registry {
 
 impl Registry {
     fn occupied(&self) -> usize {
-        let mut occupied: std::collections::BTreeSet<&str> = self
-            .leases
-            .values()
-            .filter(|r| r.active())
-            .map(|r| r.lease.id.as_str())
-            .collect();
+        let mut occupied: std::collections::BTreeSet<&str> =
+            self.active.iter().map(String::as_str).collect();
         occupied.extend(self.cleanup.values().map(String::as_str));
         occupied.extend(self.launching.keys().map(String::as_str));
         occupied.len()
@@ -205,6 +233,7 @@ pub(crate) struct Hosts {
     registry: RwLock<Registry>,
     writes: Mutex<()>,
     cleanup_work: Mutex<()>,
+    warm_pulses: Mutex<BTreeMap<(Option<String>, HostClass), i64>>,
     last_probe_ms: AtomicI64,
     reports: crate::guard::RateLimiter,
     provider: RwLock<Option<Arc<dyn HostProvider>>>,
@@ -232,6 +261,7 @@ impl Hosts {
                 ..Registry::default()
             }),
             cleanup_work: Default::default(),
+            warm_pulses: Default::default(),
             last_probe_ms: Default::default(),
             writes: Default::default(),
             reports: crate::guard::RateLimiter::new(write_rate.0, write_rate.1),
@@ -369,8 +399,12 @@ impl Subscriber for Hosts {
         let at = (at.unix_timestamp_nanos() / 1_000_000) as i64;
         let data = &e.body.data;
         if e.body.kind == HOST_REQUESTED {
-            if let Ok(HostRequested { lease, provider_ref }) = HostRequested::deserialize(data) {
-                registry.leases.entry(lease.id.clone()).or_insert(HostView {
+            if let Ok(HostRequested { lease, provider_ref, .. }) = HostRequested::deserialize(data) {
+                if registry.leases.contains_key(&lease.id) {
+                    return;
+                }
+                registry.active.insert(lease.id.clone());
+                registry.leases.insert(lease.id.clone(), HostView {
                     lease,
                     state: HostState::Requested,
                     endpoint: None,
@@ -446,8 +480,12 @@ impl Subscriber for Hosts {
             _ => return,
         }
         row.updated_ms = at;
-        if !row.active() && row.provider_ref.is_some() {
-            let id = row.lease.id.clone();
+        let terminal = !row.active() && row.provider_ref.is_some();
+        let id = row.lease.id.clone();
+        if e.body.kind == HOST_ENDED {
+            registry.active.remove(&id);
+        }
+        if terminal {
             if e.position > registry.cleaned_through {
                 registry.cleanup.insert(e.position, id);
             }
@@ -471,6 +509,26 @@ impl Live {
             .unwrap()
             .as_ref()
             .map(|p| p.kind())
+    }
+
+    pub(crate) fn regional_udp_probes(&self) -> BTreeMap<String, (String, std::net::SocketAddrV4)> {
+        let registry = self.hosts.registry.read().unwrap();
+        let mut probes = BTreeMap::new();
+        // The active index excludes terminal history. Only a managed host may
+        // supply a probe target; a hand-launched lease has no provider reference.
+        for id in &registry.active {
+            let host = &registry.leases[id];
+            if host.provider_ref.is_some()
+                && let Some(region) = &host.lease.region
+                && !probes.contains_key(region)
+                && let Some(endpoint) = &host.endpoint
+                && endpoint.transport == Transport::Udp
+                && let Some(addr) = endpoint.udp.as_deref().and_then(|s| s.parse().ok())
+            {
+                probes.insert(region.clone(), (id.clone(), addr));
+            }
+        }
+        probes
     }
 
     /// Trusted lookup for matchmaking, arbitration and the host service identity.

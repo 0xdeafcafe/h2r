@@ -5,7 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-runtime.workspace = true
+runtime = { workspace = true, features = ["guest-file-reads"] }
 xbe.workspace = true
 thiserror.workspace = true
 vfs = { path = "../vfs" }
@@ -14,7 +14,7 @@ snapshot = { path = "../snapshot" }
 # Slice, wait, DPC and idle events (docs/perf/profiling.md).
 timeline = { path = "../timeline" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "thread", "time"] }
 
 [dev-dependencies]

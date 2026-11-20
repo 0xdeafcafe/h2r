@@ -180,6 +180,7 @@ fn run_configured(
         host.host_light || (sim_mode.is_some() && switches.feature("host-light", true));
     #[cfg(not(feature = "desktop-runtime"))]
     anyhow::ensure!(host_light, "the host binary requires the light host profile");
+    let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
     let replaying = replay.is_some();
     let render_every = replay.as_ref().map_or(0, |r| r.render_every);
     if host_audit::module_from_env().is_some() {
@@ -209,6 +210,7 @@ fn run_configured(
             "light host and sim require the guest D3D, Bink, DirectSound and XAPI shims"
         );
     }
+    bots::vis::set_light_index_budget(host_light);
     let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
     d3d_diag::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
@@ -245,6 +247,7 @@ fn run_configured(
     // exactly what the game assumes. The write-combined window is a boot
     // stopgap: --no-stopgaps leaves it out.
     let mut options = runtime::loader::LoadOptions::halo2();
+    options.map_guest_reads = host_light && switches.implementation("sim.mapped-reads", true);
     if opts.stopgaps {
         for r in &mut options.physical_reservations {
             r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
@@ -270,7 +273,7 @@ fn run_configured(
     // Interpreting past unsupported instructions is a stopgap too.
     fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
-        fallback::start_analysis(&loaded.runtime);
+        fallback::configure_analysis(&loaded.runtime, !host_light);
     }
     eprintln!(
         "registered {} entries, {} resumes in {:.1}s",
@@ -358,13 +361,14 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
-    let mut features = hooks::Registry::new(switches);
+    let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     // Our text on the cannot-connect dialog when Live is off or its server
     // is unreachable (docs/live/live.md, "Client HLE: Live not set up").
     live_notice::install(&loaded.runtime, live).context("installing the Live notice")?;
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
+    cfg.map_guest_reads = options.map_guest_reads;
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())
@@ -1164,6 +1168,20 @@ fn run_configured(
     } else {
         None
     };
+    if coalesce_host_ticks
+        && let Some(pacer) = m.pacer.as_mut()
+        && pacer.ticks_per_second == kernel::clock::Clock::FREQUENCY
+    {
+        let phase = std::env::var_os("H2_HOST_TICK_PHASE_NS")
+            .map(|value| value.to_string_lossy().parse::<u64>())
+            .transpose()
+            .context("H2_HOST_TICK_PHASE_NS must be an unsigned integer")?
+            .unwrap_or(0);
+        let live = _live.clone();
+        pacer.coalesce_host_ticks(phase, move |timeout| {
+            live.as_ref().is_some_and(|hle| hle.wait_for_network_input(timeout))
+        });
+    }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
@@ -1417,7 +1435,9 @@ fn run_configured(
             );
             (w, t)
         });
-        s.note_cow(cow);
+        let reads = k.vfs().map(|vfs| vfs.lock().unwrap_or_else(|e| e.into_inner()).guest_read_bytes())
+            .unwrap_or_default();
+        s.note_memory(cow, reads);
     }
     let sim_upload_result = match &sim_mode {
         Some(_) if replaying => Ok(()),
