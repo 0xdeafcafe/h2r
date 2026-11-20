@@ -711,6 +711,8 @@ impl hooks::Feature for LoadedMark {
                 Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
                     let n = crate::d3d_diag::presents();
                     LOADED_AT.store(n, Ordering::Relaxed);
+                    #[cfg(feature = "gpu")]
+                    crate::scene_glue::level_activated(short(&path), n);
                     eprintln!("level boot: {} loaded at present {n}", short(&path));
                 }
                 Some((mode, path)) if req.is_some() => {

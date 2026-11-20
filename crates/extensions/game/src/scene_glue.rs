@@ -48,17 +48,36 @@ fn entries() -> Option<SceneEntries> {
     })
 }
 
-fn source(dump: bool) -> Result<SceneReply, String> {
-    // The sink's counters only while it records: zero readbacks from a
-    // sink that is off would read as a pass.
-    let sink = render_bridge::carried_slots::slot().is_some();
-    let counters: BTreeMap<String, u64> = render_bridge::scene_step::counters()
+fn counters(sink: bool) -> BTreeMap<String, u64> {
+    render_bridge::scene_step::counters()
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v))
         .chain(d3d::scene_stage::counters())
         .chain(render_bridge::native_layers::counters())
         .chain(sink.then(d3d::scene_sink::counters).into_iter().flatten())
-        .collect();
+        .collect()
+}
+
+static ACTIVATION: std::sync::OnceLock<agent_proto::SceneCensusActivation> = std::sync::OnceLock::new();
+
+/// Called by level boot at the same boundary as its first-level-loaded mark.
+/// Taking the baseline here preserves the earliest frames after activation
+/// even if an agent attaches much later.
+pub(crate) fn level_activated(map: &str, present: u64) {
+    if render_bridge::carried_slots::slot().is_some() {
+        ACTIVATION.get_or_init(|| {
+            let mut c = counters(true);
+            let frame = c["scene_carried_frames"];
+            c.retain(|k, _| k.starts_with("scene_dropped_") || k.starts_with("scene_readback") || k == "scene_unresident");
+            agent_proto::SceneCensusActivation { map: map.into(), present, frame, counters: c }
+        });
+    }
+}
+
+fn source(dump: bool) -> Result<SceneReply, String> {
+    // An inactive sink must not report zero measured readbacks.
+    let sink = render_bridge::carried_slots::slot().is_some();
+    let counters = counters(sink);
     let summary = if sink { d3d::scene_sink::last() } else { None };
     let census = if sink { d3d::scene_sink::census().map(carried_census) } else { None };
     let Some(scene) = render_bridge::scene_step::last() else {
@@ -126,6 +145,7 @@ fn carried_census(census: d3d::scene_sink::Census) -> agent_proto::SceneCarriedC
     agent_proto::SceneCarriedCensus {
         frames: census.frames,
         game_frames: census.game_frames,
+        activation: ACTIVATION.get().cloned(),
         targets: census.targets.into_iter().map(|(t, u)| agent_proto::SceneTargetUse {
             width: t.width, height: t.height, format: t.format, depth: t.depth,
             slot: t.slot.name().into(), operation: t.operation.into(), uses: uses(u),

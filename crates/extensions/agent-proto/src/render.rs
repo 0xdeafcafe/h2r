@@ -412,8 +412,21 @@ pub struct SceneCarriedCensus {
     pub frames: u64,
     /// Frames containing a guest D3D op inside a game view.
     pub game_frames: u64,
+    /// Activation of the requested level on a fresh level boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<SceneCensusActivation>,
     pub targets: Vec<SceneTargetUse>,
     pub reads: Vec<SceneReadUse>,
+}
+
+/// The level-boot mark, used as the baseline for post-load deltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneCensusActivation {
+    pub map: String,
+    pub present: u64,
+    /// The sink frame reached at activation.
+    pub frame: u64,
+    pub counters: BTreeMap<String, u64>,
 }
 
 /// Occurrences of a census row. Sink frames are numbered from one.
@@ -753,6 +766,10 @@ mod tests {
             carried_census: Some(SceneCarriedCensus {
                 frames: 10,
                 game_frames: 8,
+                activation: Some(SceneCensusActivation {
+                    map: "invented".into(), present: 2, frame: 2,
+                    counters: BTreeMap::from([("scene_readback".into(), 1)]),
+                }),
                 targets: vec![SceneTargetUse {
                     width: 9, height: 7, format: 6, depth: false,
                     slot: "after_lights".into(), operation: "copy_from".into(), uses,

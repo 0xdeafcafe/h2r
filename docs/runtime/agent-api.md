@@ -919,6 +919,10 @@ h2 agent render.parity '{"arm": true}'
   groups guest readbacks by `slot` and `kind`, including the overlay
   and outside slots. Each row gives its `count`, `first_frame` and
   `last_frame`. Compare counts at two boundaries to isolate a window.
+  On a direct level boot, `activation` records the loaded map, its
+  activation present, sink frame and gate counters. Subtract these
+  counts from the current counters for the post-load interval. A row
+  whose `last_frame` exceeds `activation.frame` occurred after loading.
   The per-frame `aux` number appears only under `carried.side_targets`.
   Both carried records are absent until the sink records a frame.
   Without the option the sink counters are also absent. With
