@@ -13,7 +13,7 @@ export const DASH_NAME = "Live Dashboard";
 
 /** The stats site's name (/games/halo2): where the dashboard sends you for
  *  games, service records and leaderboards. The options considered are in
- *  web/README.md, "Names, icons and link previews". */
+ *  docs/live/web-app.md, "Names, icons and link previews". */
 export const STATS_NAME = "h2 Uplink";
 
 /** The browser's colour on each side, and the web app manifest's: the
