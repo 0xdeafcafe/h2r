@@ -385,12 +385,11 @@ impl Pack {
         sample: &dyn Fn(u32) -> Option<measure::Usage>,
         container_mib: Option<u64>,
     ) {
-        self.occupancy.advance(now, self.slots.iter().flatten().count());
-        for entry in &mut self.slots {
-            let Some(slot) = entry else { continue };
+        for index in 0..self.slots.len() {
+            let Some(slot) = &mut self.slots[index] else { continue };
             if let Ok(Some(status)) = slot.child.try_wait() {
                 eprintln!("h2 host pack: {} exited ({status})", slot.lease);
-                *entry = None;
+                self.release_slot(index, now);
                 continue;
             }
             if slot
@@ -398,8 +397,9 @@ impl Pack {
                 .is_some_and(|since| now.duration_since(since) >= STOP_GRACE)
             {
                 signal_group(&slot.child, libc::SIGKILL);
-                let _ = slot.child.wait();
-                *entry = None;
+                if slot.child.wait().is_ok() {
+                    self.release_slot(index, now);
+                }
                 continue;
             }
             if let Some(usage) = sample(slot.child.id()) {
@@ -415,6 +415,12 @@ impl Pack {
         } else if self.idle_since.is_none() {
             self.idle_since = Some(now);
         }
+    }
+
+    /// Settle the interval at its old occupancy before the reaped slot disappears.
+    fn release_slot(&mut self, index: usize, now: Instant) {
+        self.occupancy.advance(now, self.slots.iter().flatten().count());
+        self.slots[index] = None;
     }
 
     fn idle_for(&self, now: Instant) -> Option<Duration> {
@@ -465,20 +471,26 @@ impl Pack {
             signal_group(&slot.child, libc::SIGTERM);
         }
         let deadline = Instant::now() + STOP_GRACE;
-        while Instant::now() < deadline
-            && self
-                .slots
-                .iter_mut()
-                .flatten()
-                .any(|s| matches!(s.child.try_wait(), Ok(None)))
-        {
-            thread::sleep(Duration::from_millis(100));
+        while Instant::now() < deadline && self.slots.iter().any(Option::is_some) {
+            for index in 0..self.slots.len() {
+                if let Some(slot) = &mut self.slots[index]
+                    && matches!(slot.child.try_wait(), Ok(Some(_)))
+                {
+                    self.release_slot(index, Instant::now());
+                }
+            }
+            if self.slots.iter().any(Option::is_some) {
+                thread::sleep(Duration::from_millis(100));
+            }
         }
-        for slot in self.slots.iter_mut().flatten() {
-            signal_group(&slot.child, libc::SIGKILL);
-            let _ = slot.child.wait();
+        for index in 0..self.slots.len() {
+            if let Some(slot) = &mut self.slots[index] {
+                signal_group(&slot.child, libc::SIGKILL);
+                if slot.child.wait().is_ok() {
+                    self.release_slot(index, Instant::now());
+                }
+            }
         }
-        self.slots.iter_mut().for_each(|s| *s = None);
     }
 }
 
@@ -746,8 +758,8 @@ pub(super) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         let readings: Vec<_> = slots.into_iter().map(|(pid, port)| {
             (pid, measure::agent_reading(port))
         }).collect();
-        let now = Instant::now();
         let mut pack = pack.lock().unwrap();
+        let now = Instant::now();
         for (pid, reading) in readings {
             if let Some(slot) = pack.slots.iter_mut().flatten().find(|s| s.child.id() == pid) {
                 slot.meter.observe_agent(now, reading);

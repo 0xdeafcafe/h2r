@@ -437,6 +437,22 @@ fn occupancy_divides_only_time_with_matches() {
 }
 
 #[test]
+fn surviving_slot_pays_its_own_share_after_the_other_child_is_reaped() {
+    let (mut pack, _) = pack(roomy());
+    let a = pack.add(&add("hl-a")).unwrap();
+    let b = pack.add(&add("hl-b")).unwrap();
+    let start = pack.slots[usize::from(b.slot)].as_ref().unwrap().started;
+    // TERM requests a stop. The slot stays occupied until the reap at 4s.
+    pack.remove("hl-a", start + Duration::from_secs(1));
+    pack.slots[usize::from(a.slot)].as_mut().unwrap().child.wait().unwrap();
+    pack.tick(start + Duration::from_secs(4), &|_| None, None);
+    let usage = pack.usage("hl-b", start + Duration::from_secs(7)).unwrap();
+    assert_eq!(usage.slot_us, 7_000_000);
+    assert_eq!(usage.container_share_us, 5_000_000);
+    pack.shutdown();
+}
+
+#[test]
 fn warm_pulse_renews_an_empty_pack_without_starting_a_match() {
     let (mut pack, launches) = pack(roomy());
     let start = pack.idle_since.unwrap();
