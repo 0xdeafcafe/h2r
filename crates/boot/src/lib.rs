@@ -1855,6 +1855,7 @@ fn run_configured(
             host.perf_overlay.clone(),
         );
     }
+    registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {
         let frame = match &sim_mode {
             Some(sim) => sim.frame().clone(),
