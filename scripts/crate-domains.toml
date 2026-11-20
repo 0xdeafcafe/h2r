@@ -52,7 +52,8 @@ about = "Rust that replaces a guest subsystem: the native simulation, FrameScene
 uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
     "engine", "frame-scene", "native-render", "render-bridge", "scene-extract",
-    "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-state",
+    "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-objects",
+    "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
 # `platform` and each other. No guest memory, no hook, no lifted code.

@@ -3,7 +3,8 @@
 //! "sim").
 //!
 //! - The wire types of `sim.player.*`, `sim.state.set`, `sim.view`,
-//!   `sim.expect` and `sim.session` (here).
+//!   `sim.expect` and `sim.session` (here), and `sim.objects`
+//!   ([`objects`]).
 //! - `sim.view`: the game as one JSON document ([`ROOTS`]), which
 //!   `h2 agent run`'s `expect` lines and `sim.expect` check in the same
 //!   [`crate::expect`] format.
@@ -23,6 +24,7 @@ use crate::{PadStep, RpcError, code};
 
 pub mod hashes;
 pub mod menu;
+pub mod objects;
 
 /// Method names. They are host methods: `session.methods` lists them where
 /// the game registered them (`agent::sim::install`).
@@ -52,6 +54,9 @@ pub mod method {
     /// functions ([`super::SpawnParams`]): host only, never in a co-op
     /// session.
     pub const SPAWN: &str = "sim.spawn";
+    /// Every live object through the simulation's typed views
+    /// ([`super::objects`]).
+    pub const OBJECTS: &str = "sim.objects";
 
     /// The running game's `state_hashes_v1` rows ([`super::hashes`]). Not
     /// in [`ALL`]: boot's agent glue registers it, not `agent::sim::install`.
@@ -68,6 +73,7 @@ pub mod method {
         SESSION,
         GIVE,
         SPAWN,
+        OBJECTS,
     ];
 }
 

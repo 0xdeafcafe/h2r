@@ -78,6 +78,8 @@ pub mod sim_anim;
 pub mod sim_collision;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_native;
+#[cfg(feature = "runtime-glue")]
+pub mod sim_objects;
 
 #[cfg(feature = "runtime-glue")]
 pub mod sim_physics;

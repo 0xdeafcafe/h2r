@@ -653,11 +653,11 @@ mod tests {
     /// The Clankers and Halo 1 Options pages are Quick Options inside, not
     /// just its frame: a dialog on `quick_options`, its list (skin,
     /// anchor, a row per setting), each value alone in the value column,
-    /// Quick Options' header (the page's own line in the help line, its
-    /// icon in the game type picture), a capitalised title and the legend
-    /// in its footer; drawn, laid out as the kit's Quick Options sample
-    /// is ([`assert_quick_options_inside`]), the icon where Quick Options
-    /// has its picture.
+    /// Quick Options' header (the focused row's one line in the help line,
+    /// its icon in the game type picture), a capitalised title and the
+    /// legend in its footer; drawn, laid out as the kit's Quick Options
+    /// sample is ([`assert_quick_options_inside`]), each row's icon where
+    /// Quick Options has its picture.
     #[test]
     fn our_settings_dialogs_are_quick_options_inside() {
         use crate::ui_kit::dialog::{
@@ -705,37 +705,42 @@ mod tests {
                     "{name}: {help:?}, one line"
                 );
             }
-            // Quick Options' header: the page's own line in the help
-            // line whatever the focus, one line, and its icon in Quick
-            // Options' game type picture.
-            let help = s
-                .help
-                .as_deref()
-                .unwrap_or_else(|| panic!("{name}: Quick Options' header line"));
-            assert!(!help.is_empty() && !help.contains('\n'), "{name}: {help:?}");
+            // Quick Options' header: the focused row's line in the help
+            // line, one line, and its icon in Quick Options' game type
+            // picture; nothing of the page's own in their place.
+            assert_eq!(s.help, None, "{name}: the rows' lines");
+            assert!(s.art.is_empty(), "{name}: the icon is the focused row's");
             let room = i32::from(QUICK_HELP.right) - i32::from(QUICK_HELP.left);
-            assert!(
-                crate::ui_kit::spec::fallback::width(help) <= room,
-                "{name}: {help:?} is more than the help line's one line"
-            );
-            assert_eq!(s.description_text().as_deref(), Some(help), "{name}");
-            assert_eq!(s.art.len(), 1, "{name}: its icon");
-            let icon = s.art[0];
-            assert!(
-                matches!(
-                    icon.art,
-                    crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
-                        if screen_id == QUICK_OPTIONS_SCREEN_ID
-                            && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
-                ),
-                "{name}: {:?} is not an icon in Quick Options' picture",
-                icon.art
-            );
-            assert_eq!(
-                (icon.at, icon.size, icon.depth),
-                (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
-                "{name}"
-            );
+            for (row, r) in s.rows.iter().enumerate() {
+                let focused = ScreenSpec {
+                    focus: row,
+                    ..s.clone()
+                };
+                let help = r.description.as_deref().unwrap_or("");
+                assert!(
+                    crate::ui_kit::spec::fallback::width(help) <= room,
+                    "{name}: {help:?} is more than the help line's one line"
+                );
+                assert_eq!(focused.description_text().as_deref(), Some(help), "{name}");
+                let art = focused.shown_art();
+                assert_eq!(art.len(), 1, "{name}: {}'s icon", r.label);
+                let icon = art[0];
+                assert!(
+                    matches!(
+                        icon.art,
+                        crate::ui_kit::view::Art::Screen { screen_id, pane: 0, index: 1, image }
+                            if screen_id == QUICK_OPTIONS_SCREEN_ID
+                                && (0..crate::ui_kit::dialog::icon::COUNT as i16).contains(&image)
+                    ),
+                    "{name}: {:?} is not an icon in Quick Options' picture",
+                    icon.art
+                );
+                assert_eq!(
+                    (icon.at, icon.size, icon.depth),
+                    (QUICK_PICTURE.at, QUICK_PICTURE_SIZE, QUICK_PICTURE_DEPTH),
+                    "{name}"
+                );
+            }
             assert_quick_options_inside(&crate::ui_kit::preview::From::Synthetic, name);
             let (v, _) = crate::ui_kit::preview::From::Synthetic
                 .draw(&s, "q")
@@ -1072,11 +1077,14 @@ mod tests {
                     );
                 }
                 assert!(disc.image(pic.bitmap, icon::COUNT as i16).is_none());
-                // Our pages' header lines fit the help line in its font.
+                // Our pages' rows' lines fit the help line in its font.
                 let room = i32::from(QUICK_HELP_TEXT.rect[3]) - i32::from(QUICK_HELP_TEXT.rect[1]);
-                for help in [crate::clankers::HEADER_HELP, crate::h1_options::HEADER_HELP] {
-                    let w = disc.fonts.width(QUICK_HELP_TEXT.font, help);
-                    assert!(w <= room, "{help:?}: {w} of {room}");
+                for name in QUICK_PAGES {
+                    for r in sample(name).unwrap().rows {
+                        let help = r.description.unwrap_or_default();
+                        let w = disc.fonts.width(QUICK_HELP_TEXT.font, &help);
+                        assert!(w <= room, "{name}: {help:?}: {w} of {room}");
+                    }
                 }
             }
             for name in QUICK_PAGES {

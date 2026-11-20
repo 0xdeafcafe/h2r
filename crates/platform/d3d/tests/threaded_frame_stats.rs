@@ -154,7 +154,10 @@ fn queued_frame_stats_and_game_thread_waits_reach_csv() {
         assert_eq!(value(row, "native_world_upload_bytes"), 8);
         assert_eq!(value(row, "native_world_buffers"), 1);
         assert_eq!(value(row, "native_objects_upload_bytes"), (i as u64 + 1) * 32);
-        assert!(value(row, "native_world_prepare_ns") > 0);
+        // The backend prepares on the render thread, so its time is charged
+        // to render_prepare_ns; prepare_ns is the game thread's alone.
+        assert!(value(row, "native_world_render_prepare_ns") > 0);
+        assert_eq!(value(row, "native_world_prepare_ns"), 0);
         assert!(value(row, "native_objects_encode_ns") > 0);
         assert_eq!(value(row, "native_world_v1_display_recorded"), 2);
         assert_eq!(value(row, "native_world_v1_display_ranges"), 0);

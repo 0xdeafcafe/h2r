@@ -18,6 +18,12 @@ to do it, and gives the slices. It was written from the code and docs on
 master and from public sources. No leaked build or archive was opened,
 and none may be for this work.
 
+[live-gi.md](live-gi.md) designs the mode's indirect light computed live,
+every sim tick, in place of the baked `I` of this page; that is the
+owner's choice for the mode. It builds on this page's cascades, layer-3
+composition, caster gather and setting. The hybrid here is what stands
+where that design's checkpoint stops it or its fit refuses a level.
+
 ## Evidence labels
 
 | Label | Meaning |
@@ -43,6 +49,8 @@ and none may be for this work.
   time.** One shadow ray per pixel misses the frame budget on a base M3
   at 4x, wgpu's ray queries on Metal are experimental, and runtime GI
   replaces the art's ambient light with something else.
+  [live-gi.md](live-gi.md) is the design that answers this: it traces
+  nothing at run time and fits its sources to the retail lightmap.
 - **Cost of the hybrid:** about 2 to 3.5 ms of GPU time per display frame
   on a base M3 at 2560x1920 (**Estimate**, "Approaches"). The retail
   frame's own GPU time at that scale is not measured; slice 0 measures it.
@@ -392,7 +400,7 @@ Choices for the owner, with the design's pick:
 
 | Choice | Options | Pick |
 |---|---|---|
-| What "dynamic" means | the hybrid split; our own bake (b1); runtime GI (b2, c) | the hybrid |
+| What "dynamic" means | the hybrid split; our own bake (b1); runtime GI (b2, c); indirect light relit live over transport traced offline ([live-gi.md](live-gi.md)) | the hybrid; the owner's choice is the live indirect term, with the hybrid under it |
 | The setting | a third value of the Lighting row; a row of its own | a third value |
 | Edge filter in `dynamic` | soft, sized to the bake's penumbra; hard, as E3 | soft; hard stays `e3` |
 | When the bake runs | at first load of a level, cached; only by the command | at first load, with the command for all maps at once |
@@ -452,7 +460,7 @@ Read 2026-11-20, all public, nothing copied, no leaked file opened.
 [framescene.md](framescene.md), [native-renderer.md](native-renderer.md),
 [native-world.md](native-world.md), [native-objects.md](native-objects.md),
 [native-lights.md](native-lights.md), [native-shadows.md](native-shadows.md),
-[e3-lighting.md](e3-lighting.md), [pstencil.md](pstencil.md),
+[e3-lighting.md](e3-lighting.md), [live-gi.md](live-gi.md), [pstencil.md](pstencil.md),
 [high-resolution.md](high-resolution.md),
 [lighting.md](../formats/lighting.md),
 [structure-bsp.md](../formats/structure-bsp.md),
