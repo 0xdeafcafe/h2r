@@ -1,5 +1,5 @@
 [package]
-name = "sim"
+name = "sim-bench"
 description = "Sim mode's pure parts: match and batch files, bot tuning files, the paced clock and speed-up, the metrics tally and report, and the A/B comparison (docs/runtime/sim.md)"
 edition.workspace = true
 version.workspace = true

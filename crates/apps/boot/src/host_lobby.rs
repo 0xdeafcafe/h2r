@@ -26,7 +26,7 @@ mod tests;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Variant {
-    Stock(sim::config::GameType),
+    Stock(sim_bench::config::GameType),
     Named(Box<VariantRecord>),
 }
 

@@ -22,7 +22,7 @@ pub(super) struct Capture {
     variant_name: String,
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     live: Weak<live_hle::Hle>,
-    sim_bots: Vec<sim::config::Bot>,
+    sim_bots: Vec<sim_bench::config::Bot>,
     active: BTreeMap<u8, u32>,
     results: BTreeMap<u32, PlayerSummary>,
     quitting: BTreeSet<u32>,
@@ -569,7 +569,7 @@ impl super::Session {
         &self,
         vfs: Option<Arc<Mutex<vfs::Vfs>>>,
         live: Option<Arc<live_hle::Hle>>,
-        sim: Option<&sim::config::Match>,
+        sim: Option<&sim_bench::config::Match>,
     ) {
         let mut state = self.lock();
         if let Some(engine) = &mut state.engine {

@@ -107,7 +107,7 @@ cp "$stage/h2uwp.exe" "$out/symbols/h2uwp.exe"
 
 echo "build.sh: disc subset, game module and boot cache"
 (cd "$root" && env -u RUSTC_BOOTSTRAP CARGO_TARGET_DIR="$host_target" \
-  cargo run --release -p apple-host --example pack -- "$iso" "$stage" --platform xbox --maps "$maps" $pack_args)
+  cargo run --release -p h2host --example pack -- "$iso" "$stage" --platform xbox --maps "$maps" $pack_args)
 [ -f "$stage/h2game.dll" ] || { echo "build.sh: no h2game.dll yet; run without --no-module once" >&2; exit 1; }
 cp "$stage/h2game.dll" "$out/symbols/h2game.dll"
 

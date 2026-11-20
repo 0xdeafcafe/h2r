@@ -59,7 +59,7 @@ impl Variants {
 
     pub(super) fn resolve(&self, name: Option<&str>) -> Result<Variant, agent_proto::RpcError> {
         let Some(name) = name else {
-            return Ok(Variant::Stock(sim::config::GameType::Slayer));
+            return Ok(Variant::Stock(sim_bench::config::GameType::Slayer));
         };
         let name = name.trim();
         if name.is_empty() || name.encode_utf16().count() > 63 || name.chars().any(char::is_control)
@@ -78,7 +78,7 @@ impl Variants {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b' ' | b'_' | b'-'))
         {
-            if let Ok(ty) = sim::config::GameType::parse(name) {
+            if let Ok(ty) = sim_bench::config::GameType::parse(name) {
                 return Ok(Variant::Stock(ty));
             }
             if let Some(v) = defaults::builtin_variant(&key.replace([' ', '-'], "_")) {

@@ -23,7 +23,7 @@ png = "0.18"
 [target.'cfg(windows)'.dependencies]
 # With the sampling profiler (profile.sample.* over the agent API;
 # docs/runtime/xbox.md, "Profiling on the console").
-apple-host = { path = "../apple-host", features = ["perf"] }
+h2host = { path = "../h2host", features = ["perf"] }
 # gilrs, whose Windows backend is Windows.Gaming.Input (the UWP pad API).
 app = { path = "../app", default-features = false, features = ["gamepads"] }
 vfs.workspace = true
