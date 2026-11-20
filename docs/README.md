@@ -37,6 +37,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/vfs`): volumes, FATX names, file semantics, map overrides
 - [agent-api.md](runtime/agent-api.md): design for an agent-facing API to the running game: UI and world views, profiling by owner, snapshots, input, overrides and A/B experiments (design only; none of it is on master)
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
+- [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over SSH, build branches there, replay input recordings, fetch frame stats, profiles and logs
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
