@@ -185,12 +185,7 @@ fn walk_geometry(c: &mut crate::Call) -> Result<crate::Flow, runtime::GuestFault
     let esp = c.cpu.esp;
     let esi = c.cpu.esi;
     let Ok(caller) = mem.u32(esp) else { return Ok(Flow::Continue) };
-    if caller != native_render::light_list::HANDLER_RETURN
-        && !c.ctx.live_continuations().iter().any(|k| {
-            k.token == caller && k.target == points::LIGHT_GEOMETRY_DRAW.base
-                && k.origin == crate::render_loop::SORTED_HANDLER
-        })
-    {
+    if caller != native_render::light_list::HANDLER_RETURN {
         return Ok(Flow::Continue);
     }
     // Move the plan out while interacting with the device. No RefCell

@@ -160,8 +160,6 @@ mod tests {
         })
         .unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
-        #[cfg(feature = "desktop-runtime")]
-        r.add(&feature::render_loop::RenderLoop).unwrap();
         r.add(&TickCounter {
             ticks: Arc::default(),
             preempt: true,

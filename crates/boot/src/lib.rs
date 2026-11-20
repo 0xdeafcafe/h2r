@@ -88,8 +88,6 @@ pub mod native_fog_glue;
 #[cfg(feature = "gpu")]
 pub mod native_gels_glue;
 #[cfg(feature = "gpu")]
-mod native_gels_load;
-#[cfg(feature = "gpu")]
 mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
@@ -101,8 +99,6 @@ mod native_map;
 mod native_shadows_draw;
 #[cfg(feature = "gpu")]
 mod native_shadows_scope;
-#[cfg(feature = "desktop-runtime")]
-mod native_shadows_probe;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_glue;
 #[cfg(feature = "gpu")]
@@ -1564,13 +1560,8 @@ fn run_configured(
     #[cfg(not(feature = "gpu"))]
     let headless = true;
     #[cfg(feature = "gpu")]
-    if opts.d3d && let Some(b) = &mut host.gfx {
-        native_shadows_glue::configure(b, "reference");
-        if let Some((view, _)) = &mut host.gfx_view {
-            native_shadows_glue::configure(view, "display");
-        } else if interp.is_none() {
-            native_shadows_glue::configure_single(b);
-        }
+    if opts.d3d && host.gfx_view.is_none() && interp.is_none() && let Some(b) = &mut host.gfx {
+        native_shadows_glue::configure_single(b);
     }
     #[cfg(feature = "gpu")]
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
@@ -2594,7 +2585,6 @@ mod tests {
             "{:?}",
             emit::Codegen {
                 accounting: on("H2_ACCESS_COUNT"),
-                reg_homes: on("H2_REG_HOMES")
             }
         );
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
@@ -2604,30 +2594,12 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!(
-            "{:?}",
-            emit::Codegen {
-                accounting: true,
-                ..emit::Codegen::default()
-            }
-        );
-        let all_locals = format!(
-            "{:?}",
-            emit::Codegen {
-                reg_homes: false,
-                ..emit::Codegen::default()
-            }
-        );
+        let on = format!("{:?}", emit::Codegen { accounting: true });
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(
             base,
             stamp_with(b"synthetic", "all", &on, &flags),
             "H2_ACCESS_COUNT"
-        );
-        assert_ne!(
-            base,
-            stamp_with(b"synthetic", "all", &all_locals, &flags),
-            "H2_REG_HOMES"
         );
         assert_ne!(
             base,

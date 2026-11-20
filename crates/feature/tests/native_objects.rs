@@ -9,10 +9,9 @@ use native_render::objects::ItemKey;
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_and_the_world() {
-    let switches = "render-timing=on,render-timing.deep=on,impl.render.layer_draw=on";
+    let switches = "render-timing=on,render-timing.deep=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     assert!(r.add(&feature::render_timing::RenderTiming::new()).unwrap());
-    assert!(r.add(&feature::render_loop::RenderLoop).unwrap());
     assert!(r.add(&feature::native_world::NativeWorld).unwrap());
     assert!(r.add(&NativeObjects).unwrap());
     let plan = match r.build(&Base) {

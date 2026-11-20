@@ -1054,7 +1054,7 @@ a separate effort; this phase leaves their names free and builds neither.
 | Area | Have | Missing | Lightest way |
 |---|---|---|---|
 | Profiling | `profile.capture`: per-frame phases (`cpu`, `render`, `decode`, `encode`, `submit`, `gpu-wait`, `render-wait`, `d3d`), counters, spikes; the sampler | why a spike happened; where the fallback interpreter runs; per-subsystem guest time; A/B of two feature sets on one recording | spike `causes` from the frame's own counters (built); `profile.fallbacks` (built); engine-phase spans as feature-registry hooks (phase 4 plan); A/B as two `h2 lab` runs of the same input log, run by the user or coordinator |
-| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; which native paths a frame took; one pass's image | `render.frame` and `render.stats` (built) |
+| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; one pass's image | `render.frame` and `render.stats` (built) |
 | Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
 | Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
 | Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
@@ -1083,11 +1083,11 @@ level without a restart.
 ### Render frame and pipeline counters
 
 ```sh
-h2 agent frame                     # the next whole frame: passes, totals, paths
+h2 agent frame                     # the next whole frame: passes, totals
 h2 agent frame draws               # ... and every draw, with its depth state
 h2 agent frame constants -38..-35,58,59   # ... and those vertex constants on each
 h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
-h2 agent render                    # interp, pipelined render, native paths
+h2 agent render                    # interp, pipelined render, counters
 ```
 
 Methods `render.frame` and `render.stats` (host methods: boot's agent glue
@@ -1111,8 +1111,7 @@ run against the game):
   with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
   primitives, D3D entries, texture formats, and counts of pixel-program,
   blended and depth-writing draws; `ops`: copies and readbacks with the
-  draw count before them; `paths`: calls into each native render path
-  during the frame. Surfaces are the backend's handles as text. With
+  draw count before them. Surfaces are the backend's handles as text. With
   `draws`, each draw (at most `max_draws`, 2000 by default; `truncated`
   says when there were more).
 - **A draw.** Its pass, D3D entry, primitive, vertex and index counts,
@@ -1151,9 +1150,7 @@ run against the game):
   pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
   `fallbacks` by call, joins, snapshot coverage, and times in ms including
   `overlap_ms` for the worker's execution before the game-thread join).
-  `paths` counts calls into each native render path since the start (`feature::render_loop::path_calls`:
-  `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
-  `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
+  `counters` is the frame-stats window's line. Each is
   `null` where that piece isn't running.
 - **Interp on a headless serve.** `interp` is there when in-between
   frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU

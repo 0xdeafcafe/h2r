@@ -342,10 +342,7 @@ impl Feature for NativeLights {
                     return Ok(Flow::Continue);
                 }
                 let rt = Arc::clone(c.ctx.runtime());
-                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |pc| {
-                    c.ctx.live_continuations().iter().any(|k| k.token == pc
-                        && k.target == skip::GEOMETRY_DRAW && k.origin == crate::render_loop::SORTED_HANDLER)
-                });
+                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |_| false);
                 Ok(Flow::Continue)
             })
             .context_only();

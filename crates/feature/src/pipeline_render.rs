@@ -1220,7 +1220,7 @@ fn setup(me: &Arc<Shared>, ctx: &mut ExecCtx, addr: u32) -> Result<(), String> {
     });
     let refuse = me.refuse.clone();
     let mut exec = SecondExecutor::new(&rt, |at, name| {
-        // Plan chains (render-loop's ports, render-timing's observers) are
+        // Plan chains (render-timing's observers) are
         // refused: they keep Rust continuations on the executor's context,
         // which a fallback could not carry over to the game thread.
         !refuse.contains(&at) && (allow(at, name) || at == addr || at == a.frame_wait)

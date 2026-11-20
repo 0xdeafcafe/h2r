@@ -67,7 +67,3 @@ pub(crate) fn world_states(cpu: &mut CpuAbi, mem: &mut Guest) -> Result<Transfer
     }
 }
 
-/// The continuation origin the removed layer-entries port gave its sorted
-/// handler calls. Nothing names a call with it any more; the native stages
-/// still compare against it and drop the check with their next change.
-pub(crate) const SORTED_HANDLER: &str = "render.layer_entries.sorted_handler";
