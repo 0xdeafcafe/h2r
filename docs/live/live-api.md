@@ -1260,6 +1260,7 @@ The server signs these lifecycle events on stream `hosts`.
 | `HostReady` | `{lease_id, endpoint, boot_ms}` (a `HostEndpoint` and milliseconds to readiness) |
 | `HostPlaying` | `{lease_id, players}` (player count) |
 | `HostEnded` | `{lease_id, reason, ran_ms, players_peak, pack_usage?}`. Packed supervisors report the elapsed `slot_us`, integrated `container_share_us`, `charge_start`, and sampled `cpu_us` and `peak_pss_bytes` when available. |
+| `HostStopped` | `{lease_id, pack_release?}`. A provider-confirmed stop can carry the pool receipt `"no_linger"` or `{"linger":{"released_ms":...}}` (Unix milliseconds). |
 
 End reasons are `match_over`, `empty`, `idle`, `max_duration`, `stopped`,
 `boot_timeout`, `crashed` and `budget`. `ran_ms` is elapsed milliseconds.

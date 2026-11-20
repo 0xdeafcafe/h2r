@@ -115,6 +115,8 @@ pub struct LeaseUsage {
     #[serde(skip)]
     pack_linger: bool,
     #[serde(skip)]
+    pack_release: Option<hosts::PackRelease>,
+    #[serde(skip)]
     stopped_ms: Option<i64>,
 }
 
@@ -135,6 +137,7 @@ impl LeaseUsage {
             deadline_ms: lease.deadline_ms(),
             managed,
             pack_linger: false,
+            pack_release: None,
             stopped_ms: None,
         }
     }
@@ -180,7 +183,16 @@ impl LeaseUsage {
     }
 
     fn billing_end(&self) -> Option<i64> {
-        if self.managed { self.stopped_ms } else { self.end_ms }
+        if !self.managed {
+            return self.end_ms;
+        }
+        // A replayed stop confirmation can arrive well after the release.
+        // Stop pricing this lease's occupied interval at the pool's clock.
+        if let Some(hosts::PackRelease::Linger { released_ms }) = self.pack_release {
+            Some(released_ms)
+        } else {
+            self.stopped_ms
+        }
     }
 }
 
@@ -329,9 +341,15 @@ impl HostCosts {
             hosts::HOST_STOPPED => {
                 if let Ok(data) = HostStopped::deserialize(&event.data)
                     && let Some(lease) = leases.get_mut(&data.lease_id)
-                    && lease.managed
+                    && lease.managed && lease.stopped_ms.is_none()
                 {
-                    lease.stopped_ms.get_or_insert(at_ms);
+                    lease.stopped_ms = Some(at_ms);
+                    lease.pack_release = data.pack_release.map(|release| match release {
+                        hosts::PackRelease::Linger { released_ms } => hosts::PackRelease::Linger {
+                            released_ms: released_ms.max(lease.requested_ms).min(at_ms),
+                        },
+                        other => other,
+                    });
                 }
             }
             _ => {}
@@ -430,7 +448,13 @@ impl HostCosts {
     fn estimate(&self, lease: &LeaseUsage, from_ms: i64, to_ms: i64, forecast: bool) -> LeaseCost {
         let mut cost = self.estimate_match(lease, from_ms, to_ms, forecast);
         if lease.pack_linger {
-            let start = lease.stopped_ms.or(forecast.then_some(lease.deadline_ms));
+            let start = match lease.pack_release {
+                Some(hosts::PackRelease::Linger { released_ms }) => Some(released_ms),
+                Some(hosts::PackRelease::NoLinger) => None,
+                // Pending stops reserve the whole tail. Older providers and
+                // historical events carry no receipt and retain that estimate.
+                None => lease.stopped_ms.or(forecast.then_some(lease.deadline_ms)),
+            };
             if let Some(start) = start {
                 let tail = hosts::PackWarmPeriod {
                     pack: String::new(), from_ms: start,
@@ -930,6 +954,34 @@ mod tests {
         close(packed.cost_usd, 61.0);
         assert_eq!(packed.ran_ms, legacy.ran_ms);
         close(costs.month_to_date(FEB + 20_000), 21.0);
+    }
+
+    #[test]
+    fn release_receipt_charges_one_tail_without_measured_usage_across_midnight() {
+        let costs = HostCosts::configured(
+            Some(r#"{"egress_gb_per_player_minute":0,"cloudflare":{"usd_per_vcpu_second":1,"usd_per_gib_second":0,"usd_per_gb_disk_second":0,"usd_per_start":0}}"#),
+            None,
+        ).unwrap();
+        for id in ["a", "b"] {
+            let mut request = managed_request(id, FEB - 2_000, 120);
+            request.data["pack_linger"] = json!(true);
+            costs.fold(&request);
+            costs.fold(&end(id, 0, 0, FEB - 1_000)); // No report from the game.
+        }
+        let stopped = |id: &str, release, at| event(
+            hosts::HOST_STOPPED, json!({ "lease_id": id, "pack_release": release }), at,
+        );
+        let first = stopped("a", hosts::PackRelease::NoLinger, FEB - 1_000);
+        costs.fold(&first);
+        // The last release was recorded before midnight. Confirmation was retried later.
+        let last = stopped("b", hosts::PackRelease::Linger { released_ms: FEB - 1_000 }, FEB + 10_000);
+        costs.fold(&last);
+        costs.fold(&first);
+        costs.fold(&last);
+        let at = FEB + 100_000;
+        close(costs.lease_cost("a", at).unwrap().cost_usd, 1.0);
+        close(costs.lease_cost("b", at).unwrap().cost_usd, 61.0);
+        close(costs.month_to_date(at), 59.0);
     }
 
     #[test]

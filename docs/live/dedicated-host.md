@@ -95,8 +95,12 @@ the cumulative runtime to that increment. For a settled packed lease,
 it apportions provisioned memory and disk by the number of occupied
 slots over time and uses measured process-group CPU when available.
 A pack start carries one $0.001 planning allowance. Active reservations,
-unmeasured leases and cleanup intervals use full-class estimates. Idle
-warm grants can overlap occupied intervals, so the estimate can run high.
+unmeasured leases and cleanup intervals use full-class estimates. Admission
+reserves a 60-second idle hold for each launched Cloudflare lease. On release,
+the pool records which lease emptied the pack. Only that lease pays the hold,
+beginning at the pool's release timestamp. A retried stop returns the same
+receipt. Older stop events without a receipt retain the full hold estimate.
+Idle warm grants can overlap occupied intervals, so the estimate can run high.
 Fly uses the class's hourly rate divided by 3,600 and multiplies it by
 runtime in seconds. The estimate covers the dedicated hosts in one Live
 deployment. Cloudflare plan fees, Workers, Durable Objects, actual

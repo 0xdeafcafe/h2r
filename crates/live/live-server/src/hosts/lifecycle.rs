@@ -636,12 +636,15 @@ impl Live {
         .await
     }
 
-    async fn record_host_stop(&self, version: u64, lease_id: &str) -> ApiResult<()> {
+    async fn record_host_stop(
+        &self, version: u64, lease_id: &str, pack_release: Option<live_proto::hosts::PackRelease>,
+    ) -> ApiResult<()> {
         self.host_event(
             version,
             HOST_STOPPED,
             HostStopped {
                 lease_id: lease_id.into(),
+                pack_release,
             },
         )
         .await
@@ -660,12 +663,12 @@ impl Live {
         }
         if let Some(id) = &row.provider_ref {
             let provider = self.hosts.provider_for(&row.lease)?;
-            provider
-                .stop(&row.lease.id, id)
+            let release = provider
+                .stop_and_settle(&row.lease.id, id)
                 .await
                 .map_err(|_| unavailable("dedicated host stop failed"))?;
             if self.hosts.costs.stop_confirmed(&row.lease.id) == Some(false) {
-                self.record_host_stop(version, &row.lease.id).await?;
+                self.record_host_stop(version, &row.lease.id, release).await?;
                 version = self.hosts.version();
             }
         }
@@ -837,14 +840,15 @@ impl Live {
                 Some(false) => {
                     // Stop also fences a delayed start for this known room.
                     // An alive check cannot tell whether a start is in flight.
-                    self.hosts
+                    let release = self.hosts
                         .provider_for(&row.lease)?
-                        .stop(&row.lease.id, id)
+                        .stop_and_settle(&row.lease.id, id)
                         .await
                         .map_err(|_| unavailable("ended host cleanup failed"))?;
                     let _write = self.hosts.writes.lock().await;
-                    self.record_host_stop(self.hosts.version(), &row.lease.id)
-                        .await?;
+                    if self.hosts.costs.stop_confirmed(&row.lease.id) == Some(false) {
+                        self.record_host_stop(self.hosts.version(), &row.lease.id, release).await?;
+                    }
                 }
                 Some(true) => {}
                 None => {

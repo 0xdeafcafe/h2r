@@ -422,9 +422,13 @@ impl Pool {
         self.admitted(pack, lease, deadline_ms);
     }
 
-    pub fn release_at(&mut self, lease: &str, now_ms: i64) {
+    /// Reports the release that transitions a pack from occupied to lingering.
+    pub fn release_at(&mut self, lease: &str, now_ms: i64) -> crate::hosts::PackRelease {
         if let Some(pack) = self.release(lease) {
             self.warmed(&pack, now_ms, None);
+            crate::hosts::PackRelease::Linger { released_ms: now_ms }
+        } else {
+            crate::hosts::PackRelease::NoLinger
         }
     }
 

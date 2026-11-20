@@ -402,3 +402,18 @@ fn occupied_capacity_is_used_before_an_idle_hold() {
     assert_eq!(pool.expire(60_000), [empty.pack()]);
     assert_eq!(pool.place("later", 3), Placement::Existing("pack-0".into()));
 }
+
+#[test]
+fn only_the_release_that_empties_the_pack_owns_its_linger() {
+    use crate::hosts::PackRelease;
+    for order in [["a", "b"], ["b", "a"]] {
+        let mut pool = Pool::default();
+        let pack = pool.place("a", 2).pack().to_owned();
+        pool.admitted_at(&pack, "a", 120_000, 0);
+        pool.admitted_at(&pack, "b", 120_000, 0);
+        assert_eq!(pool.release_at(order[0], 100), PackRelease::NoLinger);
+        assert_eq!(pool.release_at(order[1], 101), PackRelease::Linger { released_ms: 101 });
+        assert_eq!(pool.release_at(order[1], 102), PackRelease::NoLinger);
+        assert_eq!(pool.next_deadline(), Some(101 + LINGER_MS));
+    }
+}

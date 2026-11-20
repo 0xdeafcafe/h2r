@@ -95,6 +95,14 @@ pub trait HostProvider: Send + Sync {
 
     /// Stopping an already stopped host succeeds.
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> Result<(), HostError>;
+    /// A replayable receipt from a provider that bills packed leases.
+    async fn stop_and_settle(
+        &self, lease_id: &str, provider_ref: &str,
+    ) -> Result<Option<live_proto::hosts::PackRelease>, HostError> {
+        self.stop(lease_id, provider_ref).await?;
+        Ok(None)
+    }
+
     async fn alive(&self, provider_ref: &str) -> Result<bool, HostError>;
 
     /// Providers with deterministic names can clean up even a lost start reply.

@@ -265,10 +265,20 @@ pub struct PackWarmPeriod {
     pub start: bool,
 }
 
+/// The pool's disposition of the slot when it serialized the lease release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackRelease {
+    NoLinger,
+    Linger { released_ms: i64 },
+}
+
 /// Data for [`HOST_STOPPED`], recorded after a managed host confirms shutdown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostStopped {
     pub lease_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack_release: Option<PackRelease>,
 }
 
 #[cfg(test)]
@@ -512,6 +522,7 @@ mod tests {
         round_trip(
             HostStopped {
                 lease_id: LEASE_ID.into(),
+                pack_release: None,
             },
             json!({ "lease_id": LEASE_ID }),
         );

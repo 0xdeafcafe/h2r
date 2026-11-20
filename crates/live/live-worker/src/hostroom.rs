@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use axum::response::IntoResponse;
 use js_sys::futures::JsFuture;
 use live_proto::host_pack::{self, AddMatch, Added, Pool, WarmDemand};
-use live_proto::hosts::{HostClass, HostLease, ProviderKind, Transport};
+use live_proto::hosts::{HostClass, HostLease, PackRelease, ProviderKind, Transport};
 use live_proto::{Author, ErrorCode, lxm};
 use live_server::app::{ApiError, Live};
 use live_server::hosts::{HostBoot, HostError, HostProvider};
@@ -74,6 +74,9 @@ enum RoomLease {
     },
     /// Stopped, but the pool has not yet confirmed the release.
     Releasing { pool: String },
+    /// Recorded before acknowledging the pool receipt. Retried stops
+    /// return the original result even after a different lease refills it.
+    Settled { receipt: Option<PackRelease>, ack_pool: Option<String> },
     Stopped,
 }
 
@@ -152,6 +155,16 @@ async fn call_room(
     stub(env, namespace, name, hint)?
         .fetch_with_request(req)
         .await
+}
+
+/// A room from before release receipts returns an empty success response.
+async fn read_release(mut response: Response) -> Result<Option<PackRelease>> {
+    let body = response.text().await?;
+    if body.is_empty() {
+        Ok(None)
+    } else {
+        Ok(serde_json::from_str(&body)?)
+    }
 }
 
 fn ok(response: &Response) -> bool {
@@ -301,13 +314,18 @@ impl HostProvider for CloudflareProvider {
     }
 
     async fn stop(&self, lease_id: &str, provider_ref: &str) -> std::result::Result<(), HostError> {
+        self.stop_and_settle(lease_id, provider_ref).await.map(|_| ())
+    }
+
+    async fn stop_and_settle(
+        &self, lease_id: &str, provider_ref: &str,
+    ) -> std::result::Result<Option<PackRelease>, HostError> {
         let (namespace, id) = parse_ref(provider_ref)
             .filter(|(_, id)| *id == lease_id)
             .ok_or_else(|| HostError::new("HostRoom reference belongs to a different lease"))?;
         SendWrapper::new(async {
-            self.call(namespace, id, None, Method::Post, "stop", None)
-                .await?;
-            Ok::<_, worker::Error>(())
+            let response = self.call(namespace, id, None, Method::Post, "stop", None).await?;
+            read_release(response).await
         })
         .await
         .map_err(|e| HostError::new(e.to_string()))
@@ -484,6 +502,12 @@ impl Room {
             (Some(Role::Pool), Method::Post, "/pool/release") => {
                 self.release(req.json().await?).await
             }
+            (Some(Role::Pool), Method::Post, "/pool/release/ack") => {
+                let release: Release = req.json().await?;
+                let _guard = self.lifecycle.lock().await;
+                self.state.storage().delete(&format!("released:{}", release.lease)).await?;
+                Response::empty()
+            }
             (Some(Role::Pack), Method::Post, "/pack/warm") => self.pack_warm(req.json().await?).await,
             (Some(Role::Pack), Method::Post, "/pack/add") => self.pack_add(req.json().await?).await,
             (Some(Role::Pack), Method::Post, "/pack/remove") => {
@@ -581,40 +605,54 @@ impl Room {
     async fn stop(&self) -> Result<Response> {
         let _guard = self.lifecycle.lock().await;
         let storage = self.state.storage();
-        let pool = match storage.get::<RoomLease>(ROOM_KEY).await? {
-            Some(RoomLease::Active { pool, .. }) => pool,
-            Some(RoomLease::Releasing { pool }) => Some(pool),
-            Some(RoomLease::Stopped) | None => None,
+        let (pool, mut receipt) = match storage.get::<RoomLease>(ROOM_KEY).await? {
+            Some(RoomLease::Active { pool, .. }) => (pool, Some(PackRelease::NoLinger)),
+            Some(RoomLease::Releasing { pool }) => (Some(pool), None),
+            Some(RoomLease::Settled { receipt, ack_pool }) => {
+                return self.finish_stop(receipt, ack_pool).await;
+            }
+            // A historical tombstone cannot recover the original release.
+            Some(RoomLease::Stopped) => (None, None),
+            // Stopping before placement allocates no slot.
+            None => (None, Some(PackRelease::NoLinger)),
         };
         // A lease container from before packing.
         let container = self.container()?;
         if container.running() {
             container.destroy(None).await?;
         }
-        if let Some(pool) = pool {
-            // Tombstone first, so a delayed start cannot resurrect the lease
-            // while the pool is unreachable; Live's cleanup retries the stop.
-            storage
-                .put(ROOM_KEY, RoomLease::Releasing { pool: pool.clone() })
-                .await?;
+        if let Some(pool) = pool.as_deref() {
+            storage.put(ROOM_KEY, RoomLease::Releasing { pool: pool.to_owned() }).await?;
             let release = Release { lease: self.name() };
             let response = call_room(
-                &self.env,
-                self.namespace(),
-                &pool,
-                pool_hint(&pool),
-                Method::Post,
-                "/pool/release",
-                Some(serde_json::to_string(&release)?),
-            )
-            .await?;
+                &self.env, self.namespace(), pool, pool_hint(pool), Method::Post,
+                "/pool/release", Some(serde_json::to_string(&release)?),
+            ).await?;
             if !ok(&response) {
                 return Err(http_error("host pool release", &response));
             }
+            receipt = read_release(response).await?;
         }
-        storage.put(ROOM_KEY, RoomLease::Stopped).await?;
+        let ack_pool = pool.filter(|_| matches!(receipt, Some(PackRelease::Linger { .. })));
+        storage.put(ROOM_KEY, RoomLease::Settled { receipt, ack_pool: ack_pool.clone() }).await?;
+        self.finish_stop(receipt, ack_pool).await
+    }
+
+    async fn finish_stop(&self, receipt: Option<PackRelease>, ack_pool: Option<String>) -> Result<Response> {
+        let storage = self.state.storage();
+        if let Some(pool) = ack_pool {
+            let release = Release { lease: self.name() };
+            let response = call_room(
+                &self.env, self.namespace(), &pool, pool_hint(&pool), Method::Post,
+                "/pool/release/ack", Some(serde_json::to_string(&release)?),
+            ).await?;
+            if !ok(&response) {
+                return Err(http_error("host pool release ack", &response));
+            }
+            storage.put(ROOM_KEY, RoomLease::Settled { receipt, ack_pool: None }).await?;
+        }
         storage.delete_alarm().await?;
-        Response::empty()
+        Response::from_json(&receipt)
     }
 
     async fn alive(&self) -> Result<Response> {
@@ -689,6 +727,11 @@ impl Room {
         // Keep the serial and spent warm grants when the last pack exits.
         // A delayed request cannot reuse a name or replenish warm capacity.
         storage.put(POOL_KEY, pool).await?;
+        self.schedule_pool_alarm(pool).await
+    }
+
+    async fn schedule_pool_alarm(&self, pool: &Pool) -> Result<()> {
+        let storage = self.state.storage();
         if let Some(next) = pool.next_deadline() {
             storage.set_alarm(next.saturating_sub(now_ms()).max(1)).await?;
         } else {
@@ -768,6 +811,9 @@ impl Room {
             // Persist the attempt before an eviction or a lost container reply.
             self.save_pool(&pool).await?;
         }
+        if !reserved {
+            return Response::from_json(&pool.free_slots(self.max_matches));
+        }
         let refresh = plan.refresh.into_iter().map(|name| (name, false));
         for (name, allow_start) in refresh.chain(plan.start.map(|name| (name, true))) {
             let hold = WarmHold { until_ms: until, allow_start };
@@ -809,9 +855,6 @@ impl Room {
                 self.namespace(),
                 &room,
                 pool_hint(&self.name()),
-        if !reserved {
-            return Response::from_json(&pool.free_slots(self.max_matches));
-        }
                 Method::Post,
                 "/pack/add",
                 Some(body.clone()),
@@ -853,24 +896,34 @@ impl Room {
     async fn release(&self, release: Release) -> Result<Response> {
         let _guard = self.lifecycle.lock().await;
         let mut pool = self.load_pool().await?;
-        if let Some(pack) = pool.pack_of(&release.lease).map(str::to_owned) {
-            let remove = PackRemove {
-                lease: release.lease.clone(),
-                last: false,
-            };
-            let response = self
-                .call_pack(&pack, Method::Post, "/pack/remove", Some(&remove))
-                .await?;
-            // Keep the lease routed until its pack confirms, so a retried
-            // release can still find it.
-            if !ok(&response) {
-                return Err(http_error("host pack remove", &response));
-            }
-            pool.release_at(&release.lease, now_ms());
+        let storage = self.state.storage();
+        let key = format!("released:{}", release.lease);
+        let Some(pack) = pool.pack_of(&release.lease).map(str::to_owned) else {
+            // A lost reply or lease-room eviction can replay the release.
+            // Only the lease that emptied its pack has a pending receipt.
+            let receipt = storage.get::<PackRelease>(&key).await?.unwrap_or(PackRelease::NoLinger);
+            self.schedule_pool_alarm(&pool).await?;
+            return Response::from_json(&receipt);
+        };
+        let remove = PackRemove { lease: release.lease.clone(), last: false };
+        let response = self.call_pack(&pack, Method::Post, "/pack/remove", Some(&remove)).await?;
+        if !ok(&response) {
+            return Err(http_error("host pack remove", &response));
         }
-        self.expire(&mut pool).await;
-        self.save_pool(&pool).await?;
-        Response::empty()
+        let receipt = pool.release_at(&release.lease, now_ms());
+        if matches!(receipt, PackRelease::Linger { .. }) {
+            // Publish the last-slot decision and removal in one transaction.
+            // The receipt is forgotten only after its lease has stored it.
+            let snapshot = pool.clone();
+            storage.transaction(move |tx| async move {
+                tx.put(&key, receipt).await?;
+                tx.put(POOL_KEY, &snapshot).await
+            }).await?;
+            self.schedule_pool_alarm(&pool).await?;
+        } else {
+            self.save_pool(&pool).await?;
+        }
+        Response::from_json(&receipt)
     }
 
     async fn pool_alarm(&self) -> Result<Response> {
