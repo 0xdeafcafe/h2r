@@ -307,6 +307,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             report(&outcomes, 0);
             return None;
         }
+        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            gpu.prewarm_layer(l, device, color, depth).then_some(())
+        })?;
         let device_words = device_fog_words(&d, mem);
         let mut fogs = HashMap::new();
         for (&material, words) in &data.words {

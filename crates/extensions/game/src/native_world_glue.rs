@@ -97,6 +97,19 @@ pub struct Ready {
     pub palettes: StagePalettes,
 }
 
+impl Ready {
+    /// Check the actual attachment formats before any scene stage can
+    /// clear a guest mask. A busy GPU world leaves this draw on D3D.
+    pub(crate) fn with_pipeline_target<B: d3d::Backend, T>(
+        &self, device: &d3d::Device<B>, mem: &dyn GuestMemory,
+        prepare: impl FnOnce(&mut GpuWorld, &wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat) -> Option<T>,
+    ) -> Option<T> {
+        let (device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
+        let mut guard = self.gpu.try_lock().ok()?;
+        prepare(guard.as_mut()?, &device, color, depth)
+    }
+}
+
 /// The active BSP. The index and activation distinguish reused addresses
 /// within a map and a reload of the same map.
 #[derive(Clone, PartialEq, Eq)]
@@ -328,9 +341,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: Vec::new() };
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let run = u64::from(d.swap_count()).wrapping_add(1);
-        let pass = |selected: Vec<(Owner, u8)>| Box::new(WorldPass {
-            selected,
-            selection: None,
+        let selection = ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            configure_world(gpu, depth, cull, &stencil);
+            let selection = gpu.select_parts(&selected, camera)?;
+            gpu.prewarm_world(device, color, depth, &selection).then(|| Arc::new(selection))
+        })?;
+        let pass = || Box::new(WorldPass {
+            selection: Arc::clone(&selection),
             ready: Arc::clone(&ready),
             camera: *camera,
             view: None,
@@ -343,7 +360,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // A scene stage: queued now, prepared and recorded when the render
         // thread reaches it. Not taken, the pass is reserved here as before.
         let staged = if scene {
-            let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass(selected.clone()));
+            let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass());
             match reserved {
                 Ok(Some(reservation)) => {
                     if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
@@ -360,7 +377,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             false
         };
         if !staged {
-            let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(selected), Vec::new()).ok()??;
+            let reservation = d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass(), Vec::new()).ok()??;
             if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                 timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
                 return None;
@@ -562,8 +579,7 @@ pub fn upload_on<'a>(ready: &'a Ready, device: &wgpu::Device, queue: &wgpu::Queu
 
 /// One view's world pass.
 struct WorldPass {
-    selected: Vec<(Owner, u8)>,
-    selection: Option<WorldSelection>,
+    selection: Arc<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
     /// The device's view constants at the pass (material programs).
@@ -600,20 +616,20 @@ pub fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::FrontFac
     (p.cull_mode, p.front_face)
 }
 
-impl WorldPass {
-    fn configure(&self, gpu: &mut GpuWorld, depth_format: wgpu::TextureFormat) {
-        gpu.set_inherited_cull(native_render::program::InheritedCull {
-            device: self.cull,
-            placements: true,
-            clusters: true,
-        });
-        let (state, marked) = &self.stencil;
-        let mut stencil = PassStencil::from_device(state, depth_format);
-        if stencil != PassStencil::default() {
-            stencil.marked = marked.clone();
-        }
-        gpu.set_stencil(stencil);
+fn configure_world(
+    gpu: &mut GpuWorld, depth: wgpu::TextureFormat, cull: Option<native_render::program::Cull>,
+    (state, marked): &(gfx::state::StencilState, Vec<Owner>),
+) {
+    gpu.set_inherited_cull(native_render::program::InheritedCull {
+        device: cull,
+        placements: true,
+        clusters: true,
+    });
+    let mut stencil = PassStencil::from_device(state, depth);
+    if stencil != PassStencil::default() {
+        stencil.marked = marked.clone();
     }
+    gpu.set_stencil(stencil);
 }
 
 impl d3d::ExternalPass for WorldPass {
@@ -633,11 +649,8 @@ impl d3d::ExternalPass for WorldPass {
         let mut guard = upload(&self.ready, t);
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
         if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
-        self.configure(gpu, t.depth_format);
-        if self.selection.is_none() {
-            self.selection = gpu.select_parts(&self.selected, &self.camera);
-        }
-        let selection = self.selection.as_ref().ok_or("world part unavailable")?;
+        configure_world(gpu, t.depth_format, self.cull, &self.stencil);
+        let selection = &self.selection;
         gpu.prepare_selection(t.device, t.color_format, t.depth_format, selection)
             .then_some(()).ok_or("world part or program binding unavailable")
     }
@@ -657,11 +670,8 @@ impl d3d::ExternalPass for WorldPass {
         let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
         if !gpu.has_programs() { return None; }
         let Some(constants) = self.view else { return Some(Err("world view constants unavailable")) };
-        self.configure(gpu, t.depth_format);
-        if self.selection.is_none() {
-            self.selection = gpu.select_parts(&self.selected, &self.camera);
-        }
-        let Some(selection) = self.selection.as_ref() else { return Some(Err("world part unavailable")) };
+        configure_world(gpu, t.depth_format, self.cull, &self.stencil);
+        let selection = &self.selection;
         if !gpu.prepare_selection(&t.device, t.color_format, t.depth_format, selection) {
             return Some(Err("world part or program binding unavailable"));
         }
@@ -676,8 +686,8 @@ impl d3d::ExternalPass for WorldPass {
     fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
         let mut gpu = upload(&self.ready, &t);
         let Some(gpu) = gpu.as_mut() else { return 0 };
-        self.configure(gpu, t.depth_format);
-        let Some(selection) = &self.selection else { return 0 };
+        configure_world(gpu, t.depth_format, self.cull, &self.stencil);
+        let selection = &self.selection;
         let view = self.view.map(|constants| ViewInputs {
             constants, guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
         });

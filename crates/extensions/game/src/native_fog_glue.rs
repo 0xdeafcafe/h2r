@@ -281,6 +281,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         if selected.is_empty() {
             return None;
         }
+        ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+            gpu.prewarm_fog(device, color, depth).then_some(())
+        })?;
         // The view's fog into the frame step's scene; the stage draws the
         // scene's copy. A view the scene cannot take stays on the D3D path.
         let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
