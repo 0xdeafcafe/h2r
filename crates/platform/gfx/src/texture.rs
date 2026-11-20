@@ -233,7 +233,7 @@ pub struct TextureLayout {
 }
 
 /// Options controlling [`decode_texture`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecodeOptions {
     /// Pass DXT blocks through as BC1/2/3. When `false` (or when the base
     /// size is not a multiple of 4) they are decoded to RGBA8 on the CPU.

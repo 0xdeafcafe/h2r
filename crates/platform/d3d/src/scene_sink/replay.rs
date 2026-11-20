@@ -17,7 +17,7 @@ pub enum ReplayTexture {
     Sample(u32),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplaySample {
     Snapshot { opaque: bool },
     InPlace,

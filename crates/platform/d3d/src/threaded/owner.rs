@@ -151,7 +151,7 @@ impl<B: Backend> Transaction<B> {
     }
 
     pub fn hold(&self, cmd: &Cmd<B>) -> bool {
-        !self.refused && matches!(cmd, Cmd::Draw(_) | Cmd::Render(_))
+        !self.refused && matches!(cmd, Cmd::Draw(_) | Cmd::Render(_) | Cmd::Sample(_) | Cmd::ReleaseTexture(_) | Cmd::FrameStats(_))
     }
 
     pub fn barrier(&mut self) -> Vec<Cmd<B>> {
@@ -200,24 +200,53 @@ fn bind(map: &mut HashMap<TargetRef, u32>, target: TargetRef, id: Option<u32>) -
     Some(())
 }
 
+struct Proxies {
+    targets: HashMap<TargetRef, u32>,
+    // The graph names samples locally. The device can keep the texture
+    // after this frame, so each needs its exact original proxy handle.
+    samples: HashMap<u32, u64>,
+}
+
 fn target_map<B: Backend>(
     frame: &ReplayFrame,
     commands: &[Cmd<B>],
     surface: u32,
-) -> Option<HashMap<TargetRef, u32>> {
+) -> Option<Proxies> {
     if !frame.refusals.is_empty() || !frame.ops.iter().any(|(at, _)| at.slot.in_game_view()) {
         return None;
     }
     let mut targets = HashMap::new();
     bind(&mut targets, frame.presented, Some(surface))?;
     let mut bound = None;
-    let mut original = commands.iter();
+    let mut samples = HashMap::new();
+    // A released proxy has no further uses from the guest. On success
+    // it is removed after recording, once the submitted GPU work owns
+    // its references. The legacy branch executes releases in order.
+    // Only a trailing stats marker can be joined to the work of this
+    // whole graph. A split Swap can place one between two sets of draws.
+    if let Some(i) = commands.iter().position(|cmd| matches!(cmd, Cmd::FrameStats(_)))
+        && commands[i + 1..].iter().any(|cmd| !matches!(cmd, Cmd::ReleaseTexture(_)))
+    {
+        return None;
+    }
+    let mut original = commands.iter().filter(|cmd| match cmd {
+        Cmd::FrameStats(_) | Cmd::ReleaseTexture(_) => false,
+        // The judge's skipped draw writes no attachment or visibility
+        // samples. Later sampling, queries and present close the earlier
+        // pass at the actual point its contents become observable.
+        Cmd::Draw(slot) => !slot.as_ref().as_ref().is_some_and(|d| matches!(d.expect, DrawOutcome::Skipped(_))),
+        _ => true,
+    });
     for (_, op) in &frame.ops {
         if let ReplayOp::Bind { colour, depth } = op {
             bound = Some((*colour, *depth));
             continue;
         }
         match (op, original.next()?) {
+            (ReplayOp::Sample { of, id, how }, Cmd::Sample(sample)) if how == &sample.how => {
+                bind(&mut targets, *of, Some(sample.surface))?;
+                if samples.insert(*id, sample.proxy).is_some() { return None; }
+            }
             (ReplayOp::Stage(kept), Cmd::Render(RenderOp::Stage(queued))) => {
                 stage::bind_targets(&mut targets, kept, queued)?;
             }
@@ -228,12 +257,12 @@ fn target_map<B: Backend>(
                 if packet.expect != DrawOutcome::Drawn || &packet.draw != draw.as_ref() {
                     return None;
                 }
-                // Sampled targets and deferred texture handles carry queue
-                // state beyond the present. Only immutable uploaded textures
-                // and the backend's normal unbound stages are independent.
-                if !textures.iter().zip(&packet.textures).all(|(t,id)| matches!(
-                    (t, id), (None, None) | (Some(ReplayTexture::Upload(_)), Some(_))
-                )) {
+                if !textures.iter().zip(&packet.textures).all(|(binding, &proxy)| match (binding, proxy) {
+                    (None, None) => true,
+                    (Some(ReplayTexture::Sample(id)), Some(proxy)) => samples.get(id) == Some(&proxy),
+                    (Some(ReplayTexture::Upload(_)), Some(_)) => true,
+                    _ => false,
+                }) {
                     return None;
                 }
                 let (c, d) = bound?;
@@ -261,13 +290,13 @@ fn target_map<B: Backend>(
             _ => return None,
         }
     }
-    (original.next().is_none() && !commands.is_empty()).then_some(targets)
+    (original.next().is_none() && !commands.is_empty()).then_some(Proxies { targets, samples })
 }
 
 impl<B: Backend> Worker<B> {
     /// Both renderers spend the same guest proxy only when its backend
     /// ticket has been read, landed asynchronously, or explicitly dropped.
-    fn adopt_outputs(&mut self, frame: &ReplayFrame, outputs: Outputs<B::Texture>) -> Result<(), String> {
+    fn adopt_outputs(&mut self, frame: &ReplayFrame, samples: &HashMap<u32, u64>, outputs: Outputs<B::Texture>) -> Result<(), String> {
         let expected = frame.ops.iter().filter_map(|(at, op)| match op {
             ReplayOp::EndFlareQuery(proxy) => Some((at, *proxy)),
             _ => None,
@@ -277,6 +306,13 @@ impl<B: Backend> Worker<B> {
                 self.inner.drop_pixel_count(ticket);
             }
             return Err("native flare reports do not match the submitted queries".into());
+        }
+        if samples.len() != outputs.samples.len() || outputs.samples.keys().any(|k| !samples.contains_key(k)) {
+            for (_, ticket) in outputs.tickets { self.inner.drop_pixel_count(ticket); }
+            return Err("native sampled targets do not match the submitted textures".into());
+        }
+        for (id, handle) in outputs.samples {
+            self.textures.insert(samples[&id], handle);
         }
         self.tickets.extend(outputs.tickets);
         let game_queries = expected.filter(|(at, _)| at.slot.in_game_view()).count() as u64;
@@ -289,22 +325,31 @@ impl<B: Backend> Worker<B> {
         let transaction = self.transaction.replace(Transaction::new()).expect("owner installed");
         let accepted = candidate.and_then(|candidate| {
             let frame = &candidate.frame;
-            if transaction.refused || frame.present != n || frame.flags != flags || frame.gamma != gamma {
+            if self.shared.failed.load(Ordering::Acquire) || transaction.refused || frame.present != n || frame.flags != flags || frame.gamma != gamma {
                 return None;
             }
             let proxies = target_map(frame, &transaction.commands, surface)?;
-            let surfaces = proxies.into_iter().map(|(key, id)| {
+            let surfaces = proxies.targets.into_iter().map(|(key, id)| {
                 self.surfaces.get(&id).copied().map(|actual| (key, actual))
             }).collect::<Option<HashMap<_, _>>>()?;
-            (candidate.eligible)(&self.inner, &surfaces).then_some((candidate.frame, candidate.draw, surfaces))
+            (candidate.eligible)(&self.inner, &surfaces).then_some((candidate.frame, candidate.draw, surfaces, proxies.samples))
         });
 
         self.inner.stamp_present(at);
-        if let Some((frame, draw, targets)) = accepted {
-            let result = draw(&mut self.inner, &targets)
-                .and_then(|outputs| self.adopt_outputs(&frame, outputs));
+        if let Some((frame, draw, targets, samples)) = accepted {
+            let result = self.residency.record(|| draw(&mut self.inner, &targets), Result::is_err)
+                .and_then(|outputs| self.adopt_outputs(&frame, &samples, outputs));
+            for cmd in transaction.commands {
+                match cmd {
+                    Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
+                    Cmd::FrameStats(frame) => frame.finish(),
+                    _ => {}
+                }
+            }
             match result {
-                Ok(()) => { PRESENTED.fetch_add(1, Ordering::Relaxed); }
+                Ok(()) => {
+                    PRESENTED.fetch_add(1, Ordering::Relaxed);
+                }
                 // Encoding may have modified the borrowed targets. The
                 // ordinary error latch stops the guest before its next draw.
                 Err(err) => {
@@ -317,6 +362,7 @@ impl<B: Backend> Worker<B> {
                 self.exec_original(cmd);
             }
             match self.surface(surface).and_then(|surface| self.inner.present_with_gamma(surface, flags, gamma.as_deref())) {
+                Ok(()) if self.shared.failed.load(Ordering::Acquire) => failed(n),
                 Ok(()) => {
                     DECLINED.fetch_add(1, Ordering::Relaxed);
                     declined(n);
@@ -327,6 +373,7 @@ impl<B: Backend> Worker<B> {
                 }
             }
         }
+        self.residency.present(!self.shared.failed.load(Ordering::Relaxed));
         *self.shared.presented.lock().unwrap() = n;
         self.shared.presented_cv.notify_all();
         self.run(Self::land_pixel_counts);

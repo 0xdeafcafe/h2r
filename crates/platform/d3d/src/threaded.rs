@@ -102,9 +102,13 @@ type Job<B> = Box<dyn FnOnce(&mut Worker<B>) + Send>;
 /// One queued backend command.
 enum Cmd<B: Backend> {
     Job(Job<B>),
+    /// Allocate a fresh proxy's resource without reading or overwriting an
+    /// existing attachment. It can be realized while older draws wait.
+    Create(Job<B>),
+    FrameStats(timeline::phase::WorkerFrame),
     /// Resolves a shader resource at this exact point in the command list.
     /// The original callback includes the backend's depth-alias fallback.
-    Sample { surface: u32, proxy: u64, how: ReplaySample, original: Job<B> },
+    Sample(Box<SampleCmd<B>>),
     ReleaseTexture(u64),
     /// The hot path, without a boxed closure. The draw is freed on the
     /// render thread; its stream buffers go back to the guest's side
@@ -120,6 +124,13 @@ enum Cmd<B: Backend> {
 
 /// A queued draw's box: `Some` while queued, emptied by the render thread.
 type DrawBox = Box<Option<DrawCmd>>;
+
+struct SampleCmd<B: Backend> {
+    surface: u32,
+    proxy: u64,
+    how: ReplaySample,
+    original: Job<B>,
+}
 
 struct DrawCmd {
     color: u32,
@@ -186,6 +197,7 @@ impl<B: Backend> Queue<B> {
 /// What lives on the render thread.
 pub struct Worker<B: Backend> {
     inner: B,
+    residency: crate::scene_stage::residency::Frame,
     transaction: Option<owner::Transaction<B>>,
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
@@ -356,6 +368,10 @@ impl<B: Backend> Worker<B> {
     }
 
     fn exec(&mut self, cmd: Cmd<B>) {
+        if let Cmd::Create(create) = cmd {
+            create(self);
+            return;
+        }
         if let Cmd::OwnerPresent(present) = cmd {
             self.owner_present(present);
             return;
@@ -379,7 +395,9 @@ impl<B: Backend> Worker<B> {
         match cmd {
             Cmd::Render(op) => self.run(|worker| op.issue(worker)),
             Cmd::OwnerPresent(_) => unreachable!("a present terminates the owner transaction"),
-            Cmd::Sample { original, .. } | Cmd::Job(original) => original(self),
+            Cmd::Sample(sample) => (sample.original)(self),
+            Cmd::Job(job) | Cmd::Create(job) => job(self),
+            Cmd::FrameStats(frame) => frame.finish(),
             Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
@@ -542,6 +560,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                 timeline::native::mark_render_thread();
                 let mut w = Worker {
                     inner,
+                    residency: Default::default(),
                     transaction: None,
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
@@ -714,13 +733,18 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         self.push(Cmd::Job(Box::new(move |w: &mut Worker<B>| w.run(f))));
     }
 
+    fn post_create(&self, f: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static) {
+        let create: Job<B> = Box::new(move |w| w.run(f));
+        self.push(if self.frame_owner.is_some() { Cmd::Create(create) } else { Cmd::Job(create) });
+    }
+
     fn post_sample(
         &self, surface: u32, proxy: u64, how: Option<ReplaySample>,
         issue: impl FnOnce(&mut Worker<B>) -> Result<(), String> + Send + 'static,
     ) {
         let original: Job<B> = Box::new(move |w| w.run(issue));
         self.push(match how {
-            Some(how) => Cmd::Sample { surface, proxy, how, original },
+            Some(how) => Cmd::Sample(Box::new(SampleCmd { surface, proxy, how, original })),
             None => Cmd::Job(original),
         });
     }
@@ -909,7 +933,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let id = self.new_surface();
         self.surface_formats.insert(id, (format, depth));
-        self.post(move |w| {
+        self.post_create(move |w| {
             let s = w.inner.create_surface(format, width, height, depth)?;
             w.surfaces.insert(id, s);
             Ok(())
@@ -926,7 +950,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         self.check()?;
         let id = self.new_surface();
         self.surface_formats.insert(id, (format, false));
-        self.post(move |w| {
+        self.post_create(move |w| {
             let s = w.inner.create_texture_target(format, width, height)?;
             w.surfaces.insert(id, s);
             Ok(())
@@ -951,7 +975,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = self.new_texture(view);
         let id = t.id;
         let texture = texture.clone();
-        self.post(move |w| {
+        self.post_create(move |w| {
             let h = w.inner.upload_texture(&texture)?;
             w.textures.insert(id, h);
             Ok(())
@@ -1016,10 +1040,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn frame_stats(&mut self) {
         if let Some(frame) = timeline::phase::forward_frame() {
-            self.post(move |_| {
-                frame.finish();
-                Ok(())
-            });
+            self.push(Cmd::FrameStats(frame));
         }
     }
 
@@ -1050,6 +1071,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 let s = w.surface(surface)?;
                 w.inner.stamp_present(at);
                 let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
+                w.residency.present(r.is_ok() && !w.shared.failed.load(Ordering::Relaxed));
                 *w.shared.presented.lock().unwrap() = n;
                 w.shared.presented_cv.notify_all();
                 r?;
