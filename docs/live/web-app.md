@@ -46,7 +46,7 @@ waypoints, kills, scores, endings and new games.
 - `H2_MOCK_STATIC=<dir>`: also serve a built app with SPA fallback, as `h2 live serve` does: `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`.
 - `H2_MOCK_GAME_ART=1`: serve a stand-in `/art/game` manifest so the game-art path runs (see [web-viewer.md](web-viewer.md), "Game art"). Without it `/art/game` has no pictures, like a server with no game art.
 - `H2_MOCK_MAP_GEOMETRY=0`: turn off the mock's own map geometry, which is otherwise served either way; `/art/game` then answers 404.
-- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the dashboard's "find a game" (default 5; 0 shows its empty state).
+- `H2_MOCK_SESSIONS=<n>`: how many open sessions the mock keeps for the stats home's Open Games table (default 5; 0 hides the table).
 - `H2_MOCK_QUIET=1`: end the games in progress after the history is seeded and start no more, so the stats home's Live Now panel shows the last game on a loop (with `H2_MOCK_HISTORY_MIN=0` too, no games at all: the map montage).
 - `H2_MOCK_ACTORS=1`: put the mock campaign's AI and vehicles (`mock/campaign.ts`: about thirty actors, two vehicles in use and three parked empty, and a `bsp` zone that changes every 25 s, added by a frame hook) into every game's frames; without it only games whose mode is `campaign` get them.
 - `H2_MOCK_INDOOR=1`: shut each arena's glb inside a busy building (an inward-facing shell, partition walls, an upper floor, pillars and two "machines", over two `bsp_<n>` zones and a `machines` node, plus a third zone marked cinematic-only and a `backdrop` of far hills), for trying the 3D view's cutaways and zones.
@@ -64,9 +64,9 @@ waypoints, kills, scores, endings and new games.
 The dashboard (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
 lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
-in, create and recover, then live now, games, find a game, players
+in, create and recover, then live now, games, players
 and settings (the ones that need an account show greyed with a hint).
-Signed in it is live now, games, find a game, friends, players,
+Signed in it is live now, games, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Server admins can open **Live admin** (`/dash/admin`) from Settings for
@@ -136,25 +136,19 @@ shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
 thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
 the menu column drops under the content.
 
-### Find a game
+### Open Games
 
-The dashboard's "find a game" (`/dash/sessions`,
-`src/dash/Sessions.tsx`) lists the open sessions hosts are advertising
-(`GET /v1/sessions`): the host, the map, the game and players against the
-most, with a plate of details, and one session's own screen with its roster
-at `/dash/sessions/:id`. Both ask the server again every four seconds while
-the tab is showing (`src/state/sessions.ts`). It is read-only: joining
-happens in the game.
+The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
+shows advertised sessions with the host, map, game type and player count.
+It polls `GET /v1/sessions` every four seconds while the tab is showing
+(`src/state/sessions.ts`). Join sessions from the game.
 
 ### Custom maps
 
 Custom maps (docs/game/maps.md §5). A session's advertisement and a game
 may carry a `map_id`, the map package played; `map` is then its base map.
-The app looks each `map_id` up once per page load (`GET /v1/maps/{id}`,
-`src/state/maps.ts`; the rules are pure in `src/lib/maps.ts`). "Find a
-game" shows a custom map's name with a "custom map" tag, its author and
-"needs download (2.4 MB)" from the package size; a 410 (taken down by an
-admin) reads "custom map unavailable", a 404 shows as a plain map. Games
+The app looks each game's `map_id` up once per page load
+(`GET /v1/maps/{id}`, `src/state/maps.ts`). Games
 are titled by the package name, else the base map's; stats and filters
 group by `map_id ?? map`, so a modded level is its own row ("<Base>
 (modded)" until its name is known). The picture is the package's image

@@ -7,19 +7,18 @@
 import { LIVE_ADMIN, statsPath } from "../routes";
 import type { GlyphName } from "./parts";
 
-export type SectionId = "live" | "games" | "sessions" | "friends" | "teams" | "players" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
+export type SectionId = "live" | "games" | "friends" | "teams" | "players" | "settings" | "signup" | "server" | "signin" | "recover" | "account";
 
 export function menuFor(signedIn: boolean): SectionId[] {
   return signedIn
-    ? ["live", "games", "sessions", "friends", "players", "account", "settings"]
-    : ["signin", "signup", "recover", "live", "games", "sessions", "players", "settings"];
+    ? ["live", "games", "friends", "players", "account", "settings"]
+    : ["signin", "signup", "recover", "live", "games", "players", "settings"];
 }
 
 /** Why a menu item is greyed: it needs an account. Null when it opens. */
 export function lockedHint(id: SectionId, signedIn: boolean): string | null {
   if (signedIn) return null;
   switch (id) {
-    case "sessions": return "sign in to find a game";
     case "players": return "sign in to see players";
     case "settings": return "sign in for settings";
     default: return null;

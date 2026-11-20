@@ -4,7 +4,7 @@ import { applyCatalog, artStem, gameImage, isHalo1Map, loadServerArt, mapTitle, 
 import { gameMapGroupLabel, gameMapTitle } from "../src/state/maps";
 import { variantLabel, variantName, gameTypeLine } from "../src/state/gametype";
 import { OUTCOME_WORDS } from "../src/state/derive";
-import { campaignLine, levelName, mapName, sessionRow, parseSession } from "../src/lib/sessions";
+import { campaignLine, levelName, mapName, parseSession } from "../src/lib/sessions";
 import { count } from "../src/stats/fmt";
 
 // Invented names and stems in the shapes the server's art and catalog have
@@ -113,7 +113,6 @@ describe("sessions and co-op levels use the lookup they are given", () => {
     expect(levelName({ level: "02a_dock", name: "Game's Own" }, mapTitle)).toBe("Game's Own");
     expect(levelName({ level: "02a_dock", name: null })).toBe("dock");
     expect(campaignLine(coop, mapTitle)).toStartWith("The Dock, ");
-    expect(sessionRow(coop, mapTitle).meta).toStartWith("co-op The Dock ");
     expect(mapName({ map: "tower" }, mapTitle)).toBe("Tall Tower");
     noArt();
   });

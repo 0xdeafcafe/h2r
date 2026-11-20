@@ -56,7 +56,6 @@ import { useMotd } from "../state/motd";
 import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 import SocialScreen from "./Social";
-import SessionsScreen from "./Sessions";
 import SignInsScreen from "./SignIns";
 import GamesScreen from "./Games";
 import "../styles/social.css";
@@ -65,12 +64,11 @@ import Legal from "../components/Legal";
 import { lockedHint, menuFor, settingsRows, type SectionId } from "./menu";
 import { LIVE_ADMIN, STATS_ROOT, statsPath } from "../routes";
 
-type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions" | "signins";
+type ScreenId = "menu" | "games" | "list" | "player" | "signup" | "recovery" | "recover" | "server" | "social" | "signins";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
   games: () => "games",
-  sessions: () => "find a game",
   friends: () => "friends",
   teams: () => "teams",
   players: () => "players",
@@ -150,7 +148,6 @@ export default function Dashboard() {
     if (s === "games") return "games";
     if (s === "server") return "server";
     if (s === "friends" || s === "teams") return "social";
-    if (s === "sessions") return "sessions";
     // /dash/recover (and the older /dash/signup/recover): a new device takes
     // an account over; /dash/account (and /dash/signup/recovery): the
     // signed-in account. Signed out, /dash/account is the sign-in list.
@@ -349,7 +346,7 @@ export default function Dashboard() {
 
   // These screens manage selection and focus inside their own panels.
   let screenAct: ((a: Action) => boolean) | null = null;
-  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "sessions" || screen() === "signins";
+  const ownInput = () => screen() === "games" || screen() === "social" || screen() === "signins";
 
   const [serverErr, setServerErr] = createSignal<string | null>(null);
   const [serverBusy, setServerBusy] = createSignal(false);
@@ -385,7 +382,7 @@ export default function Dashboard() {
 
   function select() {
     switch (screen()) {
-      case "games": case "social": case "sessions": case "signins": screenAct?.("select"); break;
+      case "games": case "social": case "signins": screenAct?.("select"); break;
       case "menu": {
         const id = items()[menu()]!;
         if (!lockedHint(id, !!identity.me())) go(`/dash/${id}`, "deeper");
@@ -705,10 +702,6 @@ export default function Dashboard() {
 
           <Match when={screen() === "signins"}>
             <SignInsScreen go={go} back={() => go("/dash/account", "back")} bind={(f) => { screenAct = f; }} />
-          </Match>
-
-          <Match when={screen() === "sessions"}>
-            <SessionsScreen id={params.tag ? safeDecode(params.tag) : undefined} go={go} back={back} bind={(f) => { screenAct = f; }} />
           </Match>
 
           <Match when={screen() === "server" && serverSub() === "connect"}>

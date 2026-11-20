@@ -112,7 +112,6 @@ Every route and every page-level component, checked against §1.
 |---|---|---|---|
 | Main menu (orb, ring of pods) | `/` | stays | The front door. |
 | Live now | `/dash/live` | stays | Live state; rows link to `/games/halo2/games/:id`. |
-| Find a game | `/dash/sessions`, `/dash/sessions/:id` | stays | Live state. |
 | Friends | `/dash/friends` | stays | Your account, with actions. |
 | Teams | `/dash/teams` | stays | The Xbox Live Teams feature: create, recruit, answer, roles (§1.2). A clan's record is the stats site's. |
 | Players | `/dash/players`, `/dash/players/:tag` | stays | Presence ("who's online"). The player pod links to the service record. |
@@ -134,7 +133,7 @@ Every route and every page-level component, checked against §1.
 |---|---|---|---|
 | Home: leaderboards, tallies (24 hours, all time), of the week, maps, weapons, game types, skulls, activity heatmap, clan standings, recent games, Server Report | `/games/halo2` | stays | The record, summed. |
 | Home: "Live Now" live game cards | `/games/halo2` | stays, as a teaser | They link to the live game pages (§1.2). Keep it to the cards. |
-| Home: "Open Games" table (open sessions) | `/games/halo2` | **moves** to the dashboard | Live state, and a copy of "find a game". Replace it with a count that links to `/dash/sessions`. |
+| Home: "Open Games" table (open sessions) | `/games/halo2` | stays | Read-only view of advertised sessions alongside Live Now. |
 | Header Welcome box: "Players Online (n)", "Friends Online (n)", "Games Live (n)" | all | stays, as links | One-line teasers. "Players Online" should open `/dash/players`, not `/games/halo2/players`. |
 | Games | `/games/halo2/games` | stays | The record; its live tab links to live game pages. |
 | A game, carnage report, campaign report | `/games/halo2/games/:id` | stays | The record. |
@@ -157,8 +156,7 @@ too and could move to `components/` when it next changes.
 
 ### Remaining page moves
 
-- Replace the stats home's open sessions table with a link to dashboard
-  sessions. Put live presence on the dashboard's player directory.
+- Put live presence on the dashboard's player directory.
 - Add dashboard message management when there is a web messages screen.
 
 ## 3. The dense dashboard style ("deck")

@@ -6,11 +6,10 @@ import { INVITE_DAY_CHOICES, INVITE_MAX_DAYS, nextInviteDays } from "../src/admi
 describe("the main menu", () => {
   test("signed out: the ways in first, then what works without an account, then the greyed ones", () => {
     const items = menuFor(false);
-    expect(items.slice(0, 3)).toEqual(["signin", "signup", "recover"]);
-    expect(items.slice(3, 5)).toEqual(["live", "games"]);
+    expect(items).toEqual(["signin", "signup", "recover", "live", "games", "players", "settings"]);
     expect(items).not.toContain("history");
     const locked = items.filter((i) => lockedHint(i, false));
-    expect(locked).toEqual(["sessions", "players", "settings"]);
+    expect(locked).toEqual(["players", "settings"]);
     for (const i of locked) expect(lockedHint(i, false)).toStartWith("sign in");
     expect(items).not.toContain("account");
     expect(items).not.toContain("friends");
@@ -18,7 +17,7 @@ describe("the main menu", () => {
 
   test("signed in: the usual items, the account, nothing greyed", () => {
     const items = menuFor(true);
-    expect(items).toEqual(["live", "games", "sessions", "friends", "players", "account", "settings"]);
+    expect(items).toEqual(["live", "games", "friends", "players", "account", "settings"]);
     expect(items.filter((i) => lockedHint(i, true))).toEqual([]);
     expect(items).not.toContain("signin");
   });

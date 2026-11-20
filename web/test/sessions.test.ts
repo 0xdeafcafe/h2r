@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { gametype, keepSelection, kind, listed, mapName, openFor, parseSession, parseSessions, roomText, seats, sessionRow, sortSessions, visibilityText, type Session } from "../src/lib/sessions";
+import { gametype, kind, listed, mapName, parseSession, parseSessions, seats, sortSessions, type Session } from "../src/lib/sessions";
 import { Sessions } from "../mock/sessions";
 import { World } from "../mock/world";
 
@@ -37,8 +37,6 @@ describe("reading sessions", () => {
     expect(session({}, { visibility: "friends" }).visibility).toBe("friends");
     expect(session({}, { visibility: "invite" }).visibility).toBe("invite");
     expect(session({}, { visibility: "secret" }).visibility).toBe("public");
-    expect(visibilityText(session({}, { visibility: "friends" }))).toBe("friends only");
-    expect(visibilityText(session())).toBe("everyone");
     expect([session(), session({}, { visibility: "friends" }), session({}, { visibility: "invite" })].filter(listed).map((s) => s.visibility)).toEqual(["public", "friends"]);
   });
 
@@ -56,10 +54,10 @@ describe("reading sessions", () => {
     expect(parseSessions(undefined)).toEqual([]);
   });
 
-  test("a dedicated session has a region label without a host gamertag", () => {
+  test("a dedicated session reads its lease and region without a host gamertag", () => {
     const s = session({ host_gamertag: "", host_lease: "hl-example", dedicated_region: "lhr" });
     expect(s.host_gamertag).toBe("");
-    expect(sessionRow(s).label).toBe("Dedicated (lhr)");
+    expect(s).toMatchObject({ host_lease: "hl-example", dedicated_region: "lhr" });
   });
 
   test("bad slot numbers count as none", () => {
@@ -78,20 +76,9 @@ describe("players against the most", () => {
     expect(seats(session({ players }, { slots: { public_filled: 1, public_open: 3, private_filled: 0, private_open: 0 } }))).toEqual({ filled: 4, max: 4, open: 0 });
     expect(seats(session({ players }))).toEqual({ filled: 6, max: 10, open: 4 });
   });
-
-  test("says how much room there is, or that it is full or gone", () => {
-    expect(roomText(session())).toBe("6 open");
-    expect(roomText(session({}, { slots: { public_filled: 8, public_open: 0, private_filled: 0, private_open: 0 } }))).toBe("full");
-    expect(roomText(session({ state: "deleted" }))).toBe("closed");
-    expect(roomText(session({ state: "expired" }))).toBe("expired");
-  });
 });
 
 describe("what a row says", () => {
-  test("the host, then the map and players against the most", () => {
-    expect(sessionRow(session())).toEqual({ key: "00112233445566aa", label: "Sneaky Pete", meta: "teacup 4/10" });
-  });
-
   test("the game is the host's name for it, else the kind of session", () => {
     expect(gametype(session())).toBe("Team Slayer");
     expect(gametype(session({}, { name: null }))).toBe("custom game");
@@ -103,18 +90,9 @@ describe("what a row says", () => {
     expect(mapName(session({}, { map: "scenarios\\multi\\beaver_creek.map" }))).toBe("beaver creek");
     expect(mapName(session({}, { map: null }))).toBe("unknown map");
   });
-
-  test("how long it has been open", () => {
-    const t = Date.parse("2026-11-16T10:00:00.000Z");
-    expect(openFor("2026-11-16T10:00:00.000Z", t + 20_000)).toBe("just opened");
-    expect(openFor("2026-11-16T10:00:00.000Z", t + 4.5 * 60_000)).toBe("4 min");
-    expect(openFor("2026-11-16T10:00:00.000Z", t + 2.2 * 3_600_000)).toBe("2 h");
-    expect(openFor(null, t)).toBe("unknown");
-    expect(openFor("not a time", t)).toBe("unknown");
-  });
 });
 
-describe("list order and selection", () => {
+describe("list order", () => {
   const a = session({ session_id: "a", host_gamertag: "Zed" }, { slots: { public_filled: 2, public_open: 6, private_filled: 0, private_open: 0 } });
   const b = session({ session_id: "b", host_gamertag: "Amy" }, { slots: { public_filled: 8, public_open: 0, private_filled: 0, private_open: 0 } });
   const c = session({ session_id: "c", host_gamertag: "Bo" }, { slots: { public_filled: 5, public_open: 3, private_filled: 0, private_open: 0 } });
@@ -122,16 +100,6 @@ describe("list order and selection", () => {
 
   test("games with room come first, fuller before emptier, then by host; full ones last", () => {
     expect(sortSessions([a, b, c, d]).map((s) => s.session_id)).toEqual(["c", "d", "a", "b"]);
-  });
-
-  test("a refresh keeps the selection on the same session, wherever it moved", () => {
-    const rows = [{ key: "c" }, { key: "d" }, { key: "a" }];
-    expect(keepSelection(rows, "a", 0)).toBe(2);
-    // The selected session closed: stay on the same row, or the last one left.
-    expect(keepSelection(rows, "gone", 1)).toBe(1);
-    expect(keepSelection(rows, "gone", 9)).toBe(2);
-    expect(keepSelection([], "gone", 3)).toBe(0);
-    expect(keepSelection(rows, null, 1)).toBe(1);
   });
 });
 
