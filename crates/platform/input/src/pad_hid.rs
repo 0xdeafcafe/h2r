@@ -167,6 +167,7 @@ impl PadLink {
 }
 
 enum Cmd {
+    Stop,
     Speaker(bool),
     Mute(bool),
 }
@@ -240,6 +241,7 @@ impl PadHid {
 impl Drop for PadHid {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
+        let _ = self.tx.send(Cmd::Stop);
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -303,6 +305,7 @@ fn run(
     // With no pad, a command only changes what the next one starts with.
     fn note(cmd: Cmd, config: &mut PadHidConfig, speaker: &mut bool, muted: &mut bool) {
         match cmd {
+            Cmd::Stop => {}
             Cmd::Speaker(on) => *speaker = on,
             Cmd::Mute(on) => {
                 config.mute = on;
@@ -312,11 +315,12 @@ fn run(
     }
     while !shared.stop.load(Ordering::Acquire) {
         // No pad: follow the commands and look again now and then.
-        if last_try.is_some_and(|t| t.elapsed() < timing.retry) {
-            match rx.recv_timeout(timing.poll) {
+        let retry_in = last_try.map(|t| timing.retry.saturating_sub(t.elapsed())).unwrap_or_default();
+        if !retry_in.is_zero() {
+            match rx.recv_timeout(retry_in) {
                 Ok(cmd) => note(cmd, &mut config, &mut speaker, &mut muted),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
             }
             continue;
         }
@@ -334,6 +338,7 @@ fn run(
         while alive && !shared.stop.load(Ordering::Acquire) {
             while let Ok(cmd) = rx.try_recv() {
                 let r = match cmd {
+                    Cmd::Stop => break,
                     Cmd::Speaker(on) => link.set_speaker(on),
                     Cmd::Mute(on) => {
                         note(Cmd::Mute(on), &mut config, &mut speaker, &mut muted);

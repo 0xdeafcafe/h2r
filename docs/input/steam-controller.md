@@ -60,6 +60,10 @@ arrive as report `0x03` segments of 20 bytes, and the parser reassembles
 them. The 2026 controller numbers its reports: `0x42`/`0x45` and `0x47` are
 state, and `0x79`/`0x46` are receiver status.
 
+The macOS HID thread waits for a device event while all controllers are
+disconnected. A connected controller also wakes it at the next haptic
+frame. Dropping the last handle signals the run loop to release the devices.
+
 Each connected controller is one pad, named `Steam Controller`. The button
 icons follow it ([button-icons.md](button-icons.md), set `steam`).
 

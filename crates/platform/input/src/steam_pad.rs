@@ -60,6 +60,11 @@ pub trait SteamHid {
     /// Events, waiting at most `timeout` for the first. An error ends this
     /// host (the thread opens a new one later).
     fn wait(&mut self, timeout: Duration) -> io::Result<Vec<HidEvent>>;
+    /// Wake an in-progress or upcoming wait from another thread. Hosts
+    /// without a waker bound their wait by [`Timing::poll`] at shutdown.
+    fn wake_handle(&self) -> Option<Box<dyn Fn() + Send + Sync>> {
+        None
+    }
     /// Sends one report to the interface `key`.
     fn write(&mut self, key: u64, report: &HidWrite) -> io::Result<()>;
 }
@@ -145,9 +150,10 @@ struct Slot {
 }
 
 /// What the thread and the backend share.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct Shared {
     stop: AtomicBool,
+    wake: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     slots: Mutex<Vec<Slot>>,
     /// Frames of routed sound waiting for the actuators.
     tones: Mutex<VecDeque<Option<Tone>>>,
@@ -388,7 +394,11 @@ struct Joiner {
 impl Drop for Joiner {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
+        if let Some(wake) = lock(&self.shared.wake).take() {
+            wake();
+        }
         if let Some(j) = lock(&self.join).take() {
+            j.thread().unpark(); // An open retry can be asleep without a HID host.
             let _ = j.join();
         }
     }
@@ -473,20 +483,36 @@ fn run(mut open: SteamOpener, tuning: SteamTuning, timing: Timing, shared: Arc<S
     let mut hid: Option<Box<dyn SteamHid>> = None;
     let mut last_try: Option<Instant> = None;
     let mut next_frame = Instant::now();
+    let mut interruptible = false;
     while !shared.stop.load(Ordering::Acquire) {
         let Some(h) = hid.as_mut() else {
-            if last_try.is_some_and(|t| t.elapsed() < timing.retry) {
-                std::thread::sleep(timing.poll);
+            let retry_in = last_try.map(|t| timing.retry.saturating_sub(t.elapsed())).unwrap_or_default();
+            if !retry_in.is_zero() {
+                std::thread::park_timeout(retry_in);
                 continue;
             }
             last_try = Some(Instant::now());
             hid = open();
+            if let Some(h) = &hid {
+                let wake = h.wake_handle();
+                interruptible = wake.is_some();
+                *lock(&shared.wake) = wake;
+            }
             continue;
         };
-        let events = match h.wait(timing.poll) {
+        let connected = hub.devices.values().any(|device| device.connected);
+        let until_frame = if connected {
+            next_frame.saturating_duration_since(Instant::now())
+        } else {
+            // Only a device event or shutdown needs to wake the IOKit loop.
+            Duration::from_secs(24 * 60 * 60)
+        };
+        let timeout = if interruptible { until_frame } else { until_frame.min(timing.poll) };
+        let events = match h.wait(timeout) {
             Ok(e) => e,
             Err(_) => {
                 let _ = hub.release(&shared);
+                *lock(&shared.wake) = None;
                 hid = None;
                 continue;
             }
@@ -496,8 +522,11 @@ fn run(mut open: SteamOpener, tuning: SteamTuning, timing: Timing, shared: Arc<S
         for ev in events {
             writes.extend(hub.event(ev, now, &shared, &tuning));
         }
-        if now >= next_frame {
-            next_frame = (next_frame + haptics::FRAME).max(now);
+        if now >= next_frame && hub.devices.values().any(|device| device.connected) {
+            next_frame += haptics::FRAME;
+            if next_frame <= now {
+                next_frame = now + haptics::FRAME;
+            }
             writes.extend(hub.frame(now, shared.next_tone(), &shared, &tuning));
         }
         send(h.as_mut(), writes, &shared);
