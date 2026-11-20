@@ -226,6 +226,7 @@ pub fn seal() {
 /// dropped at the next begin.
 pub fn forget() {
     with_step(|step| step.builder.cut(Cut::LOAD));
+    crate::entry_census::forget();
 }
 
 /// The scene sealed last.
@@ -303,6 +304,11 @@ impl Feature for FrameSceneStep {
             .after_feature(crate::render_timing::ID)
             .context_only();
         b.raw().observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
+        // The census of the entries slices 4 and 5 replace: an option,
+        // since its exit observers give those entries an after part.
+        if b.switches().feature(crate::entry_census::ID, false) {
+            crate::entry_census::install(b);
+        }
         Ok(())
     }
 }
@@ -316,5 +322,28 @@ mod tests {
         let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
         assert!(on(""));
         assert!(!on("impl.render.native=off"));
+    }
+
+    #[test]
+    fn the_entry_census_is_placed_only_with_its_option() {
+        let text = |spec| {
+            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
+            assert!(r.add(&FrameSceneStep).unwrap());
+            r.build(&hooks::plan::Base).unwrap().text()
+        };
+        let off = text("");
+        assert!(!off.contains("entry_census"), "{off}");
+        let on = text("frame-scene.census");
+        for label in [
+            "entry_census_layer",
+            "entry_census_layer_end",
+            "entry_census_light_passes_end",
+            "entry_census_object_shadow",
+            "entry_census_screen_effects_end",
+            "entry_census_animation_get",
+            "entry_census_particle_update",
+        ] {
+            assert!(on.contains(label), "{label}\n{on}");
+        }
     }
 }

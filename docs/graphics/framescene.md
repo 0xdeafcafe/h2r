@@ -5,8 +5,9 @@ Change 7 of the [architecture review](../reviews/2026-11-20-architecture.md)
 [sim review](../reviews/2026-11-20-sim.md) (the presentation snapshot). This
 page is the spec: types, threads, the order of work, the tests and gates
 for each slice, the order of deletion and the commands that measure it.
-Slices 0 to 3 are built; their sections say how. The rest is the
-plan. Lanes write code and tests; the coordinator builds, runs and
+Slices 0 to 3 are built; their sections say how. Of slice 4 the entry
+census is built, and its section says what the replacements wait on. The
+rest is the plan. Lanes write code and tests; the coordinator builds, runs and
 measures.
 
 Evidence labels as in [feature-engine.md](../engine/feature-engine.md):
@@ -858,7 +859,58 @@ commits. The three parts are built.
 
 ### Slice 4: whole-call replacement for the opaque block
 
-- **Code.** `feature::frame_step`: implementations of `LAYER_DRAW` for
+Its entry census is built; its replacements are not, because rule 1 of
+8.2 (no remainder) holds for none of its entries. What each still leaves
+to the guest's draws (**Code**):
+
+- **Layers 1, 5, 7, 8 and 20, the scene's and the first person's.** Their
+  items are in the scene (slice 3), but the native stage draws them from
+  the draws the guest resolves under the layer draw
+  (`native_render::world_layers_gpu`, the indexed-draw admission in
+  `boot::native_world_layers_glue`; the first person's per item at
+  issue). With the entry replaced nothing is resolved. Replacing them
+  needs a stage that draws a layer pass from the scene: each item's
+  material pass for the layer, with the lightmap cycle coefficients and
+  material animation inputs of section 4.3, which extraction does not
+  read yet.
+- **Layer 3.** The decorators (build `0x0004de20`) have no native stage
+  ([native-objects.md](native-objects.md), "Other builds in layer 3"),
+  the world keeps the draws of materials it does not translate, and the
+  object walk the parts it refuses (`walk_unsupported`).
+- **The light passes and the shadow layers.** Models and rigid
+  placements keep their D3D handlers ([native-lights.md](native-lights.md),
+  "What a native light draws"), every layer keeps its handlers with the
+  additional casters' pair, and a gathered group takes its live streams,
+  pose, constants and bindings from the first geometry handler, which
+  the guest runs.
+
+The entry census (`render_bridge::entry_census`, built) measures both
+halves of 8.2's first two rules per entry, so the coordinator can tell
+from the census corpus which entry is ready. With `frame-scene.census` in
+`H2_FEATURES` (and the native renderer on), observers before and after
+every `LAYER_DRAW`, `RENDER_LIGHT_PASSES`, `OBJECT_SHADOW` and
+`RENDER_SCREEN_EFFECTS` count, per entry: the guest draws handed to the
+D3D backend under it (`d3d::device::backend_draws`: the remainder), the
+steps of both shared random seeds, and the calls of
+`ANIMATION_RESOURCE_GET` (`0x001237e0`) and `PARTICLE_VIEW_UPDATE`
+(`0x00174420`) under it (5.2's seed, effects word, animation stamp and
+particle stamp rows). A layer draw is named by its site and layer
+(`layer.scene.3`, `layer.first_person.1`), or, where the layer table
+does not place it, by the entry around it (`layer.light.12`,
+`layer.object_shadow.10`). Entries nest, and each counts what happens
+under it. `render.scene` reports the totals under `entries`. It is an
+option rather than always on because its exit observers give those
+entries an after part. Tests: the unit tests of
+`render_bridge::entry_census` (draws and seed steps between entry and
+exit, unmatched seeds, nesting, missed exits).
+
+An entry whose census is all zero over the corpus is replaced by
+"return"; a non-zero write becomes a row of the slice's table, kept by
+calling the guest function that makes it or reproduced. Texture,
+geometry and animation residency requests (5.2's residency row) are not
+counted by the census.
+
+- **Code.** `render_bridge::frame_step`: implementations of `LAYER_DRAW` for
   layers 1, 3, 5, 7, 8 and 20, of the light pass and of the shadow
   layers, each doing the writes of 5.2 and returning. The table of
   writes with their tests. `skip.rs`, the mask plans, `clear_objects`,
@@ -1041,6 +1093,11 @@ $H agent render.stats --socket $S > render-stats.json
 $H agent profile.counters --socket $S > counters.json
 $H agent render.scene --socket $S > scene.json          # from slice 1
 ```
+
+For the entry census (slice 4) add `frame-scene.census` to
+`H2_FEATURES` and read `.entries` of `render.scene`: per entry, its
+`d3d_draws` (8.2 rule 1) and its seed steps, animation gets and
+particle updates (rule 2), with `unbalanced` zero.
 
 Read per frame: `passes`, `command_buffers`, `draws`,
 `native_<stage>_{examined,suppressed,refused_*,prepare_ns,encode_ns,worker_round_trips,command_buffers}`,

@@ -2,17 +2,44 @@
 //! last sealed `FrameScene` (`render_bridge::scene_step`, docs/graphics/framescene.md),
 //! summarised per view, and written whole as JSON on `dump`; with the
 //! scene stages each typed stage queued to the render thread and dropped
-//! there (`d3d::scene_stage`).
+//! there (`d3d::scene_stage`); and with `frame-scene.census`, the entry
+//! census (`render_bridge::entry_census`) over the device's count of draws
+//! handed to the D3D backend.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use agent_proto::{SceneReply, SceneViewRecord};
+use agent_proto::{SceneEntries, SceneEntryRecord, SceneReply, SceneViewRecord};
 use frame_scene::FrameScene;
 
-/// Registers the source with the agent.
+/// Registers the source with the agent, and the D3D draw counter with the
+/// entry census.
 pub fn install() {
     agent::render::set_scene_source(source);
+    render_bridge::entry_census::set_draw_counter(d3d::device::backend_draws);
+}
+
+/// The entry census, when it is on.
+fn entries() -> Option<SceneEntries> {
+    let (counts, unbalanced) = render_bridge::entry_census::snapshot()?;
+    Some(SceneEntries {
+        by_entry: counts
+            .into_iter()
+            .map(|(name, c)| {
+                (name, SceneEntryRecord {
+                    calls: c.calls,
+                    d3d_draws: c.d3d_draws,
+                    seed_steps: c.seed_steps,
+                    effects_seed_steps: c.effects_seed_steps,
+                    seed_unmatched: c.seed_unmatched,
+                    animation_gets: c.animation_gets,
+                    particle_updates: c.particle_updates,
+                })
+            })
+            .collect(),
+        unbalanced,
+        draws_counted: render_bridge::entry_census::draws_counted(),
+    })
 }
 
 fn source(dump: bool) -> Result<SceneReply, String> {
@@ -22,9 +49,10 @@ fn source(dump: bool) -> Result<SceneReply, String> {
         .chain(d3d::scene_stage::counters())
         .collect();
     let Some(scene) = render_bridge::scene_step::last() else {
-        return Ok(SceneReply { counters, ..SceneReply::default() });
+        return Ok(SceneReply { counters, entries: entries(), ..SceneReply::default() });
     };
     let mut reply = reply(&scene, counters);
+    reply.entries = entries();
     if dump {
         reply.dump = Some(write_dump(&scene)?);
     }
@@ -68,6 +96,7 @@ fn reply(scene: &FrameScene, counters: BTreeMap<String, u64>) -> SceneReply {
             })
             .collect(),
         counters,
+        entries: None,
         dump: None,
     }
 }

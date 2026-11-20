@@ -61,6 +61,18 @@ use crate::shader::{CONSTANTS, Microcode, PROGRAM_SLOTS, ShaderInputs, VertexPro
 use crate::state::{DrawState, StateWords, Translator, slot};
 use crate::vertex_cache::{IndexCache, Probe, VertexCache};
 
+/// Guest draws handed to the backend as D3D draws, every device together:
+/// not those a committed external replacement took. The frame step's entry
+/// census reads it around each guest entry it watches
+/// (docs/graphics/framescene.md, slice 4: what a replaced entry would
+/// still leave to D3D).
+static BACKEND_DRAWS: AtomicU64 = AtomicU64::new(0);
+
+/// [`BACKEND_DRAWS`].
+pub fn backend_draws() -> u64 {
+    BACKEND_DRAWS.load(AtomicOrdering::Relaxed)
+}
+
 mod admission_scope;
 mod display;
 mod fragments;
@@ -2666,6 +2678,7 @@ impl<B: Backend> Device<B> {
             });
             let entry = p.draw.entry;
             let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
+            BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
             self.recycle_streams(spare);
             self.stats.draws += 1;
             self.stats.inline_draws += u64::from(entry == "inline Begin/End");
@@ -5665,6 +5678,7 @@ impl<B: Backend> Device<B> {
             None
         };
         let (outcome, spare) = self.backend.draw_owned(color, depth, draw, textures);
+        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
         if let Some(p) = prepared {
             timeline::native::world_packet(p.material, Some(fallback_reason));
         }

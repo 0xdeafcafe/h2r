@@ -654,7 +654,7 @@ h2 agent render.parity '{"arm": true}'
 |---|---|---|---|
 | `render.compare` | read | `{a, b, diff?}`: two PNG paths, and where to write a difference image | `{size: [w, h], differing, max_channel, mean, first: [x, y] \| null, within_bar, diff?}` |
 | `render.capture` | read | `{tick?, pass?}` | `{path, tick, present, pass?, scene_hash}` |
-| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, dump?}` |
+| `render.scene` | read | `{dump?}` | `{sealed, map_epoch, frame, tick, hash, cut, views, counters, entries?, dump?}` |
 | `render.parity` | act | `{arm: true}` | `render.compare`'s fields plus `tick` |
 | `sim.hashes` | read | `{from_tick?, max?}` | `{rows: [{tick, gameplay, arena?}], dropped, resets, truncated?}` |
 
@@ -722,7 +722,22 @@ h2 agent render.parity '{"arm": true}'
   to the render thread, and `scene_dropped_world`,
   `scene_dropped_objects`, those it could not record after the guest
   skipped their items; framescene.md, slice 2; later slices add
-  `scene_unresident`, `scene_readback`, `scene_held_draws`). With `dump`, the whole scene is written as JSON
+  `scene_unresident`, `scene_readback`, `scene_held_draws`). With
+  `frame-scene.census` in `H2_FEATURES`, `entries` is the entry census
+  (`render_bridge::entry_census`; framescene.md, slice 4), totals since
+  the start: `by_entry`, keyed by guest entry (`layer.<site>.<layer>`
+  with site `scene`, `alternate`, `first_person`, `light`,
+  `object_shadow` or `other`; `light_passes`, `object_shadow`,
+  `screen_effects`), each `{calls, d3d_draws, seed_steps,
+  effects_seed_steps, seed_unmatched, animation_gets,
+  particle_updates}`: the guest draws handed to the D3D backend under
+  the entry, the steps of the shared random seeds `+0` and `+4`, calls
+  whose seed was not a run of steps, and calls of
+  `animation_resource_get` and of the particle systems' per-view update
+  under it. Entries nest and each counts what is under it.
+  `unbalanced` counts entries whose exit never ran and exits with
+  nothing open; `draws_counted` is false when no D3D draw counter is
+  registered. Without the option `entries` is absent. With `dump`, the whole scene is written as JSON
   under the cache directory (`scenes/scene-<frame>-<tick>.json`) and
   `dump` names the file. With no source
   registered: `UNAVAILABLE`, "no scene has been built".

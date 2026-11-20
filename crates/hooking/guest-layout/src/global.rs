@@ -43,6 +43,10 @@ crate::globals! { GLOBALS;
     /// Pointer to the game-time record ([`crate::game::GameTime`]); `+8` is
     /// the tick count.
     GAME_TIME @ 0x0051_0c54; "docs/game/high-framerate.md";
+    /// Pointer to the two shared random seeds: `+0` the game's, `+4` the
+    /// effects', each stepped `x * 0x19660d + 0x3c6ef35f` (both the sim
+    /// and the render step them).
+    RANDOM_SEEDS @ 0x004e_7408; "docs/engine/hs_vm.md";
     /// Pointer to the players datum array (`0x21c`-byte
     /// [`crate::player::Player`]s).
     PLAYERS @ 0x004e_8c24; "docs/live/live-gamestate.md";

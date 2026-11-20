@@ -312,7 +312,7 @@ const RANDOM_STEPS: u32 = 1 << 16;
 
 /// `n` such that `n` steps take `from` to `to`, if at most
 /// [`RANDOM_STEPS`].
-fn random_steps(from: u32, to: u32) -> Option<u32> {
+pub(crate) fn random_steps(from: u32, to: u32) -> Option<u32> {
     let mut x = from;
     for n in 0..=RANDOM_STEPS {
         if x == to {
