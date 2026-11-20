@@ -163,7 +163,7 @@ capture() {
     if [[ -n "$size" ]]; then export H2_BOOT_GFX_SIZE="$size"; fi
     if ((fps > 30)); then export H2_RENDER_THREAD=1 H2_SINGLE_COPY=true; fi
     exec env H2_OPT="${H2_OPT:-2}" H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_FPS="$fps" \
-      H2_FEATURES="$features" \
+      H2_FEATURES="$features" H2_BOTS_NAV_AUTO=0 \
       H2_BOOT_GFX="$gfx" H2_BOOT_GFX_EVERY=never H2_BOOT_GFX_LIGHTING_AB=0 \
       H2_BOOT_GFX_SHADOWS=0 H2_BOOT_GFX_BETWEEN=0 \
       "$h2" serve "$disc" --out "$image" --socket "$socket" \
