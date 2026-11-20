@@ -747,7 +747,7 @@ converted model does not share (open question below).
 | `weap` | `2c0` | magazines, `0x5c` | V2 (stride: magazine objects start `0x5c` after) |
 | magazine | `04`, `06`, `08`, `0a`, `10`, `14` | rounds recharged, total initial, total maximum, loaded maximum, reload time, rounds reloaded | S, V2 (the loaded maximum and rounds reloaded agree on every magazine) |
 | magazine | `0c` | the most rounds held in reserve: total maximum less loaded maximum | E (`0x101a10` caps the reserve with it, [skulls.md](../game/skulls.md)), V (all seven retail magazines on Coagulation). Written 0 until converter version 76: no reserve, the HUD count 0. Live (version 77, Blood Gulch): the assault rifle spawns with 180 in reserve, and emptying the magazine and reloading leaves 120 |
-| `weap` | `2c8` | triggers, `0x40`: `04` i16 input, `06` i16 firing behaviour (0 automatic, 1 once per press, 2 charging), `08`/`0a` i16 primary and secondary barrel (-1 none), `0c` i16 (1, 0, 2 with those behaviours, but 0 on the wraith's automatic minigun) | V (every retail weapon with a barrel has one; 27 on Coagulation). Built from Halo 1's triggers (`arsenal::h2_triggers`): one per Halo 1 trigger (at most two, inputs 0 and 1), once per press where Halo 1's trigger flag `0x8` is set (the rocket launcher, sniper rifle, scorpion cannon), automatic otherwise; a charging first trigger (`+0x48` > 0, the plasma pistol) with a second is one charging trigger whose secondary barrel is the second. None were written from the rebuild (`dac88db6`) to converter version 76, so no converted Halo 1 weapon fired. The charging trigger also carries Halo 1's charge after its charging time (`+0x4c..+0x5c`: charged time, overcharged action, charged illumination, spew time) as `+0x20..+0x2c` (`arsenal::H1_TRIGGER_CHARGED`; the plasma pistol's 45, 0, 1.0, 0; retail's holds 0, 0, 1.0, 0; S for the names); before converter version 79 they were 0. The charging effect (`+0x30`) is not carried: no Blood Gulch trigger names one. `+0x10..+0x18` (retail's plasma pistol: 0.0667, 0.5, and the i16 pair 1, 0) have no Halo 1 field and stay 0 |
+| `weap` | `2c8` | triggers of stride `0x40`. Input and behaviour at `04/06`, primary and secondary barrels at `08/0a`, charging action at `18`, charge times, action and illumination at `1c..2c`, charging effect at `30` | V on Coagulation and Blood Gulch. See “Firing a rebuilt weapon” below. |
 | `weap` | `2d0` | barrels, `0xec` | E (objects.md) |
 | barrel | `04`, `0c`, `10` | rounds per second (2), acceleration, deceleration time | S, V2 |
 | barrel | `28`, `2a`, `2c`, `2e` | magazine, rounds per shot, minimum rounds loaded, rounds between tracers | S, V2 |
@@ -760,6 +760,66 @@ converted model does not share (open question below).
 | `eqip` | `12c`, `130` | powerup type, powerup time | [health.md](health.md) |
 
 Halo 1 speeds are multiplied by 30 (per tick to per second).
+
+### Firing a rebuilt weapon
+
+**Built** for the Halo 1 sandbox. The H1 disc has 316 weapon occurrences
+across 24 maps, covering 23 distinct paths. Blood Gulch's shotgun and assault rifle both
+have zero H1 trigger flags. The shotgun's weapon type is 1 at H1 `weap +4e2`,
+also the type the two engines check for shell reloads (H1 `0xbf70f`, H2
+`0x10271d`). The rebuild carries this to H2 `+292` and emits one shot per
+press for its primary barrel. H1 flag 3 selects this mode on the sniper,
+rocket launcher and Scorpion cannon. A charged trigger taps barrel 0 and
+discharges the last barrel, including the single-barrel fuel rods. H2
+checks its charging action at `0xfe955`. The charging effect comes from
+H1 trigger `+5c`.
+
+| Blood Gulch | AR | Shotgun |
+|---|---|---|
+| Input and cadence | Held, 15 rounds/s | One press, one shell/s |
+| Ammunition and projectiles | 1 round, 1 bullet | 1 shell, 15 pellets |
+| Spread | 2°–6.5°, rises in 0.6 s, recovers in 1 s | 10° at both error bounds |
+| Magazine and reload | 60 rounds, 3.4 s | 12 shells, 0.4 s per shell |
+| Projectile | 324 world units/s, 40 world units maximum | 140 to 100 world units/s, air slowdown from 1.5 to 3 world units |
+
+H2 reads minimum and maximum shots per fire at barrel `+1c/1e`, recovery
+at `+20`, and multiplayer prediction at `+34` (`0x10224f`, `0x103ec7`,
+`0x10429b`). Coagulation's native shotgun has one shot per fire and ten
+pellets. Its SMG and shotgun use continuous and discrete prediction,
+respectively. The converted barrels keep H1's magazine cost and projectile
+count independently of these fields.
+
+H2 blends two spread profiles (`0xff474`, `0x104dd1`). Both carry H1's
+bounds and acceleration/decay times and their reciprocal rates. The AR's
+camera shake comes from its own firing damage effect, including the 0.05 s
+duration and 0.5° rotational shake. H1 spin crossover, per-shot battery
+cost and age-dependent cadence, cooling and misfire fields also survive
+conversion. Barrel flags for partial ammunition, muzzle origins, zoom error,
+aiming direction and shared projectile direction move from H1 bits
+2/5/10/11/12 to H2 bits 2/3/5/6/7. The direct barrel damage reference at
+`+94` has a null datum. H2 checks for `-1` after the projectile loop at
+`0x1053f6`.
+
+**Built** for variable-speed H1 projectiles. H1 computes constant acceleration
+from the two speeds and the current medium's distance bounds at `0xc1a60`
+and `0xc1ac0`. At impact it normalizes the measured speed between those
+bounds at `0xc2de1`. H2 instead interpolates speed linearly with distance.
+The converter retains the native air-distance bounds and their reciprocal
+for effect inputs. It marks the zero guidance scalar at `proj +198` with
+the negative-zero bit pattern. H2 compares it numerically at `0xf88df`. The 725 local projectile occurrences inspected on
+the H2 disc contained no such marker. At the velocity-length call returning
+to `0xf966a`, the simulation integrates the H1 curve over the collision
+substep, supplies its mean velocity for the sweep and its end velocity for
+the next step. At the damage initializer returning to `0xfad79`, it scales
+direct impact damage by impact speed and retains material attenuation.
+Both guided angular velocity bounds receive H1's single value.
+
+`weapon_rebuild_disc` compares the firing fields, firing feedback and
+projectile targets against each original weapon on the campaign and
+multiplayer maps. Its Blood Gulch case also checks the retail Coagulation
+trigger and barrel layouts. The older running Blood Gulch served by the
+agent API showed automatic input and direct-damage datum zero on the
+shotgun and AR. A play check of the rebuilt map is pending.
 
 ### Weapon class and type (`weap +0x288`, `+0x28c`, **Built**, converter version 55)
 

@@ -2207,8 +2207,56 @@ fn every_halo1_trigger_gets_a_halo2_trigger_naming_its_barrel() {
         (0, 2, 0, 1, 2)
     );
     assert_eq!(c.charging_time(), 0.6);
-    // A lone charging trigger has nothing to charge into.
-    assert_eq!(h2_triggers(&[h1_trigger(0, 0.6)])[0].behaviour(), 0);
+    // A single-barrel fuel rod discharges the same barrel it charged.
+    let fuel = h2_triggers(&[h1_trigger(8, 1.25)])[0];
+    assert_eq!((fuel.behaviour(), fuel.primary(), fuel.secondary()), (2, 0, 0));
+    assert_eq!((fuel.0[6], fuel.charging_time()), (1, 1.25));
+}
+
+/// Identical unflagged barrels must obey their own weapon's trigger
+/// semantics. Pellet count and ammunition cost are independent of both.
+#[test]
+fn shotgun_and_automatic_have_distinct_inputs_on_the_same_barrel() {
+    use crate::arsenal::{WeaponParts, weapon};
+    use crate::h1::{TRIGGER_SIZE, Trigger, WEAP_SIZE, Weapon};
+    use tags::defs::{self, Defs, Val};
+
+    let mut source = vec![0; WEAP_SIZE + TRIGGER_SIZE];
+    let t = &mut source[WEAP_SIZE..];
+    t[4..8].copy_from_slice(&2.0_f32.to_le_bytes());
+    t[0x22..0x24].copy_from_slice(&1_i16.to_le_bytes());
+    t[0x6e..0x70].copy_from_slice(&15_i16.to_le_bytes());
+    t[0x38..0x3c].copy_from_slice(&0.5_f32.to_le_bytes());
+    let d = Defs::builtin().group(FourCC(*b"weap")).unwrap();
+    for (kind, single, prediction) in [(1, 1_i16, 2), (0, 0, 1)] {
+        let w = Weapon {
+            weapon_type: kind,
+            triggers: vec![Trigger::default()],
+            ..Default::default()
+        };
+        let built = weapon(&w, &source, &WeaponParts::default()).unwrap();
+        let r = defs::from_built(d, &built).unwrap();
+        let Some(Val::Block(triggers)) = r.at("block_2c8") else {
+            panic!("triggers")
+        };
+        let Some(Val::Block(barrels)) = r.at("barrels") else {
+            panic!("barrels")
+        };
+        let bytes = |path, record| {
+            defs::to_built(d.child(path).unwrap(), record, &mut |_| None)
+                .unwrap()
+                .bytes
+        };
+        let tr = bytes("block_2c8", &triggers[0]);
+        let b = bytes("barrels", &barrels[0]);
+        let short = |buf: &[u8], offset: usize| i16::from_le_bytes([buf[offset], buf[offset + 1]]);
+        assert_eq!(short(&tr, 6), single);
+        assert_eq!((short(&b, 0x1c), short(&b, 0x1e)), (single, single));
+        assert_eq!(short(&b, 0x34), prediction);
+        assert_eq!((short(&b, 0x2a), short(&b, 0x6a)), (1, 15));
+        assert_eq!(&b[0x50..0x54], &2.0_f32.to_le_bytes());
+        assert_eq!(&b[0x98..0x9c], &u32::MAX.to_le_bytes());
+    }
 }
 
 /// A charging trigger carries Halo 1's charge after its charging time:

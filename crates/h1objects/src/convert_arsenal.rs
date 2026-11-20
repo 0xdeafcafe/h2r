@@ -218,12 +218,27 @@ impl Converter<'_> {
                 w.label
             ));
         }
+        if let Some(id) = w.triggers.first().and_then(|t| t.charging_effect) {
+            let effect = self.h1_tag(id)?;
+            let target = self.effect(effect).map_err(|err| Error::Invalid(format!(
+                "{} {} charging effect {}: {err}", self.h1.header().name, tag.name, effect.name
+            )))?;
+            parts.charging_effect = Some(target);
+        }
         for t in &w.triggers {
             let mut list = Vec::new();
             for f in &t.firing_effects {
                 let mut damage = [None; 3];
                 for (dest, source) in damage.iter_mut().zip(f.damage) {
-                    *dest = self.h1_damage(source, "trigger damage", &mut rep)?;
+                    *dest = if let Some(id) = source {
+                        let feedback = self.h1_tag(id)?;
+                        Some(self.damage(id).map_err(|err| Error::Invalid(format!(
+                            "{} {} trigger damage {}: {err}",
+                            self.h1.header().name, tag.name, feedback.name
+                        )))?)
+                    } else {
+                        None
+                    };
                 }
                 list.push(arsenal::FiringParts {
                     effects: f.effects.map(|e| self.weapon_slot(e, &mut rep)),
@@ -307,7 +322,9 @@ impl Converter<'_> {
             arsenal::halo1_ref(arsenal::WEAPON_MELEE_RESPONSE, b"jpt!", response),
         ]);
         parts.halo1.extend(self.item_effect_refs(&bytes, &mut rep)?);
-        let root = arsenal::weapon(&w, &bytes, &parts)?;
+        let root = arsenal::weapon(&w, &bytes, &parts).map_err(|err| {
+            Error::Invalid(format!("{} {}: {err}", self.h1.header().name, tag.name))
+        })?;
         let root = self.with_object_attachments(*b"weap", "item.obje", root, &bytes, &w.object, &mut rep)?;
         self.tree.reports.push(rep);
         let id = self.tree.push(

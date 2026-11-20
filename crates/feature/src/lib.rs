@@ -17,6 +17,7 @@
 pub mod arena;
 pub mod bridge;
 pub mod entry;
+pub mod h1_projectiles;
 pub mod h1_scope_zoom;
 pub mod install;
 pub mod leaves;
