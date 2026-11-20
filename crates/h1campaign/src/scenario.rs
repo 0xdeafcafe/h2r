@@ -1430,7 +1430,7 @@ fn place_objects(
             if n > 0 {
                 dropped.push(format!("{}: {n} left out to fit ({devices:?})", k.label));
             }
-            palettes.push(pal);
+            palettes.push(None);
             continue;
         }
         for e in h1_block(h1, k.h1_palette)? {
@@ -1465,7 +1465,7 @@ fn place_objects(
             };
             pal.push(got);
         }
-        palettes.push(pal);
+        palettes.push(Some(pal));
     }
     // Starting profiles' weapons, through the same converter.
     let profiles = crate::profiles::read(h1)?;
@@ -1658,6 +1658,11 @@ fn place_objects(
     let mut blocks: Vec<PlacementBlock> = Vec::new();
     for (k, pal) in KINDS.iter().zip(&palettes) {
         let first = placement_block(&mut blocks, k.h2_type).palette.len();
+        let Some(pal) = pal else {
+            let count = h1_block(h1, k.h1)?.len();
+            rep.placements.push((k.label, 0, count, 0, 0));
+            continue;
+        };
         let mut targets = Vec::with_capacity(pal.len());
         for (i, p) in pal.iter().enumerate() {
             let id = p.as_ref().map(palette_id);
@@ -1686,7 +1691,9 @@ fn place_objects(
         let mut n = 0;
         for (i, e) in src.iter().enumerate() {
             let p = i16_at(e, 0);
-            let Some((ty, palette)) = targets.get(p as usize).copied().flatten() else {
+            let entry =
+                h1convert::placements::placement_entry(&h1.header().name, k.label, i, p, &targets)?;
+            let Some((ty, palette)) = entry.copied().flatten() else {
                 continue;
             };
             let def = tags::object::OBJECT_TYPES[usize::from(ty)];
@@ -1712,14 +1719,6 @@ fn place_objects(
             placed.insert((k.h1_type, i as i16), (ty as i16, out.len() as i16));
             out.push(b);
             n += 1;
-        }
-        if n < src.len() {
-            dropped.push(format!(
-                "{}: {} of {} placements (their palette entry did not convert)",
-                k.label,
-                src.len() - n,
-                src.len()
-            ));
         }
         rep.placements
             .push((k.label, n, src.len(), converted, pal.len()));

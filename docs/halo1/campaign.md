@@ -567,6 +567,20 @@ What each layer writes, from the base map up:
 | Sounds | **Built.** Every source looping sound, its tracks and details, and each distinct referenced sound rebuilt in the level's gestalt. All loops survive the fresh-map and pruning passes. Script sounds, object attachments, BSP background palettes and environments resolve by tag. The a30 entry pod plays its Halo 1 lifeboat track. Source inventory and cache evidence are in [sounds.md](sounds.md#campaign-loops-and-cache-slots-built). | End-to-end disc audit and playback pending |
 | Text | Nothing: the base's English table stays as it is. `h1text::Locales::extending` builds on the base's table (its rows and blob first, new rows after) for when Halo 1's text is converted | Halo 1's string lists and HUD messages; the scripts' HUD text builtins are stubbed |
 
+**Built. Empty object placements.** The retail Halo 1 XBE returns the null
+object handle when a placement's signed palette index is -1
+(`0x90320..0x90332`) or the selected 0x30-byte palette entry's tag datum
+at +0xc is null (`0x90376..0x90391`). Both branches bypass object creation
+at `0x903d4`. The automatic scenario loop calls this routine at `0x91231`
+and scripted object creation calls it at `0x9044d`. Campaign objects
+and multiplayer scenery and vehicles honor both sentinels. Other indices
+outside the palette produce a conversion error naming the map and placement.
+The BSP placement pass performs the same two checks at `0x90cc1..0x90cc5`
+and `0x90cec..0x90cff`, before creation at `0x90de7`. It records the
+result, including the null handle, at `0x90f11`. Of 11,624 retail
+placements, four scenery rows have index -1, one each on a10, a30, b40
+and c40.
+
 ### Cutscenes on all ten levels
 
 **Built.** The default policy is `Cutscenes::Play` on every level. The

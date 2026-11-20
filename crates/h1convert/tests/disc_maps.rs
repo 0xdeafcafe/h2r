@@ -952,8 +952,11 @@ fn every_multiplayer_map_converts_and_keeps_the_bases_bitmaps() {
         let mut roles: Vec<&str> = vehicles.iter().map(|v| v.0.as_str()).collect();
         roles.sort();
         eprintln!("    vehicles placed: {roles:?}");
+        assert_eq!(
+            p.applied.vehicles, p.source.vehicles,
+            "{name}: every vehicle"
+        );
         if name == "bloodgulch" {
-            assert_eq!(p.applied.vehicles, p.source.vehicles, "every vehicle");
             // Xbox Blood Gulch has warthogs, ghosts and scorpions; no
             // rocket warthog (that came with the PC version).
             for r in ["scorpion", "warthog", "ghost"] {

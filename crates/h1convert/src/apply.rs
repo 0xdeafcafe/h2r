@@ -107,6 +107,9 @@ pub const BASE_OBJECTS: [BlockKind; 7] = [
 /// Why a plan couldn't be written.
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyError {
+    /// The caller must install this source vehicle with the object converter.
+    #[error("vehicle {0} needs a rebuilt Halo 1 vehicle collection")]
+    SourceVehicle(String),
     /// The scenario editor refused an edit.
     #[error(transparent)]
     Edit(#[from] scenario_edit::Error),
@@ -182,6 +185,9 @@ pub fn apply(
     spare: &mut Vec<TagId>,
 ) -> Result<Applied, ApplyError> {
     use BlockKind::*;
+    if let Some(spawn) = plan.source_vehicles.first() {
+        return Err(ApplyError::SourceVehicle(spawn.collection.clone()));
+    }
     let templates = [
         template(s, StartingLocations)?,
         template(s, NetgameFlags)?,

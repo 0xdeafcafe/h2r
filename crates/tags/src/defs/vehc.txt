@@ -5,4 +5,5 @@ group vehc 0xc align 4
     0x0 f32 weight -- E 0x0019f200 subtracts it from the random roll (object/layouts.rs COLLECTION_ENTRY)
     0x4 tagref object -- E 0x0019f219 returns the datum at +8 (object/layouts.rs COLLECTION_ENTRY)
     0xc string variant -- E 0x0019f21e returns it alongside the datum (object/layouts.rs COLLECTION_ENTRY)
-  0x8 unknown 0x4
+  0x8 i16 respawn_time -- E 0x0015ac8e checks vehc and 0x0015acb0 reads the signed seconds
+  0xa unknown 0x2
