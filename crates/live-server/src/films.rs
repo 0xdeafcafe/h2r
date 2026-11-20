@@ -198,6 +198,12 @@ struct Film<'a> {
     map: &'a str,
     mode: &'a str,
     variant: Option<&'a str>,
+    kind: &'a str,
+    playlist: Option<&'a str>,
+    difficulty: Option<&'a str>,
+    online: Option<bool>,
+    players: Vec<&'a game::Player>,
+    scoreboard: &'a [game::PlayerScore],
     started_at: &'a str,
     duration_s: Option<u64>,
     result: Option<&'static str>,
@@ -218,11 +224,23 @@ impl<'a> Film<'a> {
             let wall = parse_time(at)? - parse_time(&game.started_at)?;
             Some(wall.whole_seconds().max(0) as u64)
         });
+        let mut players: Vec<_> = game.players.iter().collect();
+        for player in &start.players {
+            if !players.iter().any(|p| p.index == player.index) {
+                players.push(player);
+            }
+        }
         Self {
             game_id: &game.started.game_id,
             map: &start.map,
             mode: &start.mode,
             variant: start.variant.as_deref(),
+            kind: start.kind(),
+            playlist: start.playlist.as_deref(),
+            difficulty: start.difficulty.as_deref(),
+            online: start.online,
+            players,
+            scoreboard: &game.scoreboard,
             started_at: &game.started_at,
             duration_s,
             result: game_result(game, player),
@@ -411,6 +429,44 @@ pub(crate) fn host_film_key(id: &str) -> String {
 
 fn host_film_too_large() -> ApiError {
     ApiError::new(ErrorCode::TooLarge, "a host film is at most 64 MiB")
+}
+
+/// An exact recording includes the host's initial guest disk and network
+/// tape. Only an authenticated participant in that game can fetch it.
+pub(crate) async fn download_host_film(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    game_id(&id)?;
+    let author = live.authenticate(bearer(&headers), lxm::READ)?;
+    let player = account(&author)?;
+    let viewer = live.viewer_of(&author);
+    {
+        let model = live.model.read();
+        visible_game(&model, &id, viewer)
+            .filter(|game| game.has_host_film && game.xuids.contains(&player))
+            .ok_or_else(|| not_found("no host film for this account"))?;
+    }
+    let store = live
+        .blobs()
+        .ok_or_else(|| ApiError::new(ErrorCode::Unavailable, "the film store is unavailable"))?;
+    let (size, stream) = store
+        .private
+        .get_stream(&host_film_key(&id))
+        .await
+        .map_err(|error| {
+            eprintln!("live: film {id}: {error}");
+            ApiError::new(ErrorCode::Unavailable, "the film store cannot read")
+        })?
+        .filter(|(size, _)| (1..=MAX_HOST_FILM).contains(size))
+        .ok_or_else(|| not_found("the host film is not stored"))?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CACHE_CONTROL, "private, no-store")
+        .header(header::CONTENT_LENGTH, size.to_string())
+        .body(Body::from_stream(stream))
+        .expect("valid host film response headers"))
 }
 
 pub(crate) async fn upload_host_film(

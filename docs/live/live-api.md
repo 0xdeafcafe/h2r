@@ -404,11 +404,11 @@ Set by `crates/live-server/src/caching.rs` on GET and HEAD responses whose handl
 - Everything else under `/v1/` is `private, no-store`: any request with `Authorization` or an `auth` query mark (the web app adds `auth=1` to every read it sends with a token, because a CDN's cache key leaves out `Authorization`), any error, and every other route.
 - Art (`/art/*`) and title files keep their own headers.
 
-## Web Theater
+## Theater
 
 Films use the [game's spectator track](replay-fidelity.md). These routes
-store pins and clip ranges alongside the game log. Playback still uses
-the game's chunk or archive endpoints.
+store pins and clip ranges alongside the game log. Web playback uses the game's chunk or archive endpoints. In-game exact
+playback fetches the host recording when available.
 
 | Method and path | Token scope | Result |
 |---|---|---|
@@ -417,6 +417,7 @@ the game's chunk or archive endpoints.
 | `GET /v1/films?player=<xuid>&kind=clips` | public or `read` | Clips authored by that player across all games, newest clip first. Each item is `{clip, film}`. |
 | `POST /v1/films/{game}/save` | `films.write` | Save the game for the caller. The caller must have played in it. Returns 204, including a repeated save. |
 | `DELETE /v1/films/{game}/save` | `films.write` | Remove the caller's own pin. The caller must have played in the game. Returns 204 even if the pin is already absent. |
+| `GET /v1/games/{id}/film` | `read`, game participant | Streams the private exact host recording (up to 64 MiB). |
 | `GET /v1/films/{game}/clips` | public or `read` | The game's clips, newest first. |
 | `POST /v1/films/{game}/clips` | `films.write` | An account that can see the game can create a clip. Returns the clip with 201. |
 | `GET /v1/clips/{id}` | public or `read` | The clip. |
@@ -429,10 +430,15 @@ Recent films have `next: null`. The game record supplies each film:
 ```json
 { "game_id": "9ab0", "map": "lockout", "mode": "multiplayer",
   "variant": "Team Slayer", "started_at": "2026-11-19T19:30:00Z",
-  "duration_s": 230, "result": "win" }
+  "duration_s": 230, "result": "win", "has_host_film": true,
+  "kind": "matchmaking", "playlist": "Team Slayer", "difficulty": null,
+  "online": null, "players": [], "scoreboard": [] }
 ```
 
-`variant` can be null. For a finished game, `duration_s` measures whole
+`players` and `scoreboard` use the same entries as the game detail.
+`variant`, `playlist`, `difficulty` and `online` can be null.
+`has_host_film` records whether the server has received an exact film.
+For a finished game, `duration_s` measures whole
 seconds from the start and end ticks. Old games without a start tick use
 elapsed wall time, with zero for lost games from that era. Live games have
 `duration_s: null`. The player's `result` is `win`, `loss`, `draw` or null

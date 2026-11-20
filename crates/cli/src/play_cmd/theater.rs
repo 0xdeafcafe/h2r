@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use app::theater_overlay as shell;
 use boot::theater_ui::{
     Key, Theater,
-    adapter::{FilmMeta, Library, Player, Source},
+    adapter::{FilmMeta, Library, Player, Source, game_type},
 };
 
 pub(super) fn open_library(dir: &Path) -> Result<Box<dyn Library>, String> {
@@ -47,10 +47,12 @@ pub(crate) fn film_meta(
     FilmMeta {
         id: meta.id,
         map: meta.map,
-        variant: meta.variant,
+        game_type: game_type(&meta.variant),
+        mode: (host_film && lease_id.is_none()).then(|| "System Link".into()),
+        variant_name: meta.variant,
         started_ms: meta.started_ms,
         length_ticks: meta.length_ticks,
-        players: meta
+        scoreboard: meta
             .players
             .into_iter()
             .map(|player| Player {
@@ -69,7 +71,8 @@ pub(crate) fn film_meta(
         saved,
         result: None,
         host: None,
-        web_game_id: lease_id.filter(|_| host_film),
+        live_game_id: lease_id.filter(|_| host_film),
+        ..FilmMeta::default()
     }
 }
 
@@ -97,12 +100,17 @@ impl Controller {
 
 impl shell::Controller for Controller {
     fn update(&self) -> shell::View {
-        if let Some(input) = self.input.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(input) = self
+            .input
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             input.sync();
         }
         self.theater.pump();
         let mut view = shell::View {
-            web_url: self.theater.web_url(),
+            playing: self.theater.playing(),
             ..shell::View::default()
         };
         if let Some(overlay) = self.theater.overlay() {
@@ -126,6 +134,13 @@ impl shell::Controller for Controller {
             shell::Key::Hud => Key::Hud,
             shell::Key::Clip => Key::Clip,
             shell::Key::Screenshot => Key::Screenshot,
+            shell::Key::Camera => Key::Camera,
+            shell::Key::Forward => Key::Forward,
+            shell::Key::Backward => Key::Backward,
+            shell::Key::StrafeLeft => Key::StrafeLeft,
+            shell::Key::StrafeRight => Key::StrafeRight,
+            shell::Key::Rise => Key::Rise,
+            shell::Key::Fall => Key::Fall,
             shell::Key::Leave => Key::Leave,
         };
         self.theater.key(key, down, repeat)
@@ -133,6 +148,18 @@ impl shell::Controller for Controller {
 
     fn release_keys(&self) {
         self.theater.release_keys();
+    }
+
+    fn mouse_look(&self, dx: f64, dy: f64) -> bool {
+        self.theater.mouse_look(dx, dy)
+    }
+
+    fn mouse_zoom(&self, amount: f32) -> bool {
+        self.theater.mouse_zoom(amount)
+    }
+
+    fn scrub(&self, fraction: f32) -> bool {
+        self.theater.scrub(fraction)
     }
 
     fn take_screenshot(&self) -> Option<PathBuf> {
@@ -155,7 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_host_films_use_the_image_stamp_and_the_lease_web_link() {
+    fn exact_host_films_use_the_image_stamp_and_retain_the_live_id() {
         let meta = film::FilmMeta {
             id: "local-file-id".into(),
             map: "lockout".into(),
@@ -169,9 +196,9 @@ mod tests {
         let playable = film_meta(meta.clone(), false, "image stamp", Some("hl-game".into()));
         assert!(playable.playable_here);
         assert_eq!(playable.id, "local-file-id");
-        assert_eq!(playable.web_game_id.as_deref(), Some("hl-game"));
+        assert_eq!(playable.live_game_id.as_deref(), Some("hl-game"));
         let other = film_meta(meta, false, "other image", None);
         assert!(!other.playable_here);
-        assert!(other.web_game_id.is_none());
+        assert!(other.live_game_id.is_none());
     }
 }

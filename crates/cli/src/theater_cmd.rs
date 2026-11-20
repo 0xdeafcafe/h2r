@@ -101,9 +101,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut target = opts.range.map_or(0, |[start, _]| start);
     let mut speed = opts.speed;
     let mut paused = false;
+    let mut presentation = boot::theater::Presentation::default();
     loop {
         let temp = Temp::new()?;
         let restart = temp.0.join("restart.json");
+        serde_json::to_writer(fs::File::create(temp.0.join("view.json"))?, &presentation)?;
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.arg("theater")
             .args(&args)
@@ -140,32 +142,17 @@ pub fn run(args: Vec<String>) -> Result<()> {
         if !restart.try_exists()? {
             return Ok(());
         }
-        (target, speed, paused) = serde_json::from_reader(fs::File::open(restart)?)?;
+        (target, speed, paused, presentation) = serde_json::from_reader(fs::File::open(restart)?)?;
     }
 }
 
 fn child(opts: Options, work: &Path) -> Result<()> {
     let mut film = film::Reader::open(&opts.film)?;
     let xbe = boot::read_xbe(&opts.disc)?;
-    let image = [
-        boot::tier::clang_dylib(&opts.out),
-        boot::tier::fast_dylib(&opts.out),
-    ]
-    .into_iter()
-    .find(|p| {
-        if let Some(stamp) = boot::current_slim_stamp(&xbe, p) {
-            return film.header.meta.playable_here(&stamp);
-        }
-        boot::tier::module_tier(&xbe, p).is_some_and(|tier| {
-            let stamp = match tier {
-                boot::tier::Tier::Clang => boot::build_stamp(&xbe),
-                boot::tier::Tier::Fast => boot::tier::fast_stamp(&xbe),
-                boot::tier::Tier::Host => return false,
-            };
-            film.header.meta.playable_here(&stamp)
-        })
-    })
-    .context("no installed image matches the film stamp (check --disc, --out and H2_OPT)")?;
+    let image = boot::theater::playback_images(&xbe, &opts.out)
+        .into_iter()
+        .find_map(|(path, stamp)| film.header.meta.playable_here(&stamp).then_some(path))
+        .context("no installed image matches the film stamp (check --disc, --out and H2_OPT)")?;
     ensure!(
         film.header.meta.source == film::Source::Host,
         "exact playback requires a playerless host film"
@@ -194,12 +181,17 @@ fn child(opts: Options, work: &Path) -> Result<()> {
     };
     #[cfg(feature = "desktop")]
     let film_parent = opts.film.parent().unwrap_or(Path::new(".")).to_owned();
+    let presentation: boot::theater::Presentation =
+        serde_json::from_reader(fs::File::open(work.join("view.json"))?)?;
+    #[cfg(feature = "desktop")]
+    let clip_marks = presentation.clip_marks;
     let replay = boot::theater::Replay {
         path: opts.film,
         render_every: opts.every,
         speed: std::env::var("H2_THEATER_SPEED")?.parse()?,
         seek_tick: std::env::var("H2_THEATER_TARGET")?.parse()?,
         paused_at_target: std::env::var("H2_THEATER_PAUSED")? == "1",
+        presentation,
         restart: work.join("restart.json"),
         window_closed: None,
     };
@@ -235,9 +227,14 @@ fn child(opts: Options, work: &Path) -> Result<()> {
         let meta = film.header.meta;
         let title = meta.map.clone();
         let stamp = meta.image_stamp.clone();
+        let mut meta = film_meta(meta, false, &stamp, lease_id);
+        if let Ok(id) = std::env::var("H2_THEATER_FILM_ID") {
+            meta.id = id;
+        }
         let theater = boot::theater_ui::Theater::playback(
-            film_meta(meta, false, &stamp, lease_id),
+            meta,
             opts.range,
+            clip_marks,
             opts.socket,
             dir.clone(),
         )?;

@@ -8,7 +8,7 @@ use input::backend::keyboard::KeyboardMouse;
 use input::bindings::MouseButton;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, WindowEvent};
+use winit::event::{DeviceEvent, DeviceId, ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
@@ -103,6 +103,7 @@ struct Shell {
     theater_view: theater_overlay::View,
     theater_refresh: Instant,
     theater_screenshot: Option<std::path::PathBuf>,
+    theater_cursor: Option<(f64, f64)>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
 }
@@ -145,6 +146,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         theater_view: theater_overlay::View::default(),
         theater_refresh: now,
         theater_screenshot: None,
+        theater_cursor: None,
         display: DisplaySchedule::new(config_fps),
     };
     if let Some(c) = &shell.config.closer {
@@ -719,8 +721,45 @@ impl ApplicationHandler<UserEvent> for Shell {
                     }
                 }
             }
+            WindowEvent::CursorMoved { position, .. } if self.config.theater.is_some() => {
+                self.theater_cursor = Some((position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.theater_cursor = None,
+            WindowEvent::MouseWheel { delta, .. } if self.theater_view.playing => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 * 0.05,
+                };
+                if let Some(theater) = &self.config.theater {
+                    theater.0.mouse_zoom(amount);
+                }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let down = state == ElementState::Pressed;
+                if self.theater_view.playing
+                    && !self.super_held
+                    && let Some(theater) = &self.config.theater
+                {
+                    match button {
+                        winit::event::MouseButton::Right
+                            if !down || theater.0.mouse_look(0.0, 0.0) =>
+                        {
+                            self.capture(down);
+                            return;
+                        }
+                        winit::event::MouseButton::Left if down && !self.captured => {
+                            if let Some((x, y)) = self.theater_cursor
+                                && let Some(fraction) = self.gpu.as_ref()
+                                    .and_then(|gpu| gpu.theater.as_ref())
+                                    .and_then(|renderer| renderer.timeline_fraction(x, y))
+                                && theater.0.scrub(fraction)
+                            {
+                                return;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 let action = keymap::mouse_action(keymap::MouseContext {
                     capture_enabled: self.config.mouse_capture,
                     captured: self.captured,
@@ -746,9 +785,12 @@ impl ApplicationHandler<UserEvent> for Shell {
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta } = event
             && self.captured
-            && let Some(kb) = &self.keyboard
         {
-            kb.mouse_motion(delta.0, delta.1);
+            if self.theater_view.playing && let Some(theater) = &self.config.theater {
+                theater.0.mouse_look(delta.0, delta.1);
+            } else if let Some(kb) = &self.keyboard {
+                kb.mouse_motion(delta.0, delta.1);
+            }
         }
     }
 
@@ -803,7 +845,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                     self.close(event_loop, "leave Theater playback");
                     return;
                 }
-                let rate = if view.transport.is_empty() { 150 } else { 50 };
+                let rate = if view.playing { 16 } else { 150 };
                 if self.theater_screenshot.is_none() {
                     self.theater_screenshot = theater.0.take_screenshot();
                 }
