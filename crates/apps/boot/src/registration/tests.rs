@@ -26,6 +26,9 @@ pub(crate) struct Case {
     /// A default settings store: skulls, aim assist, the Halo 1 options, the
     /// Clankers page and the multiplayer skulls need one.
     pub settings: bool,
+    /// A backend drawing at the native 1x resolution.
+    #[cfg(feature = "gpu")]
+    pub drawing: bool,
     /// The XAPI layer: bots and the Clankers page.
     pub xapi: bool,
     /// A mounted VFS: map slots, our skulls' map reads.
@@ -50,6 +53,8 @@ impl Case {
         Case {
             switches: switches.to_owned(),
             settings: false,
+            #[cfg(feature = "gpu")]
+            drawing: false,
             xapi: false,
             vfs: false,
             telemetry: false,
@@ -66,6 +71,8 @@ impl Case {
     pub fn full(switches: &str) -> Case {
         Case {
             settings: true,
+            #[cfg(feature = "gpu")]
+            drawing: true,
             xapi: true,
             vfs: true,
             telemetry: true,
@@ -131,6 +138,8 @@ fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Regis
     register_late_for_profile(
         &mut features,
         LateInputs {
+            #[cfg(feature = "gpu")]
+            view: case.drawing.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
             rt: &rt,
             lockstep,
             agent: if case.agent { AgentSource::Local } else { AgentSource::None },
@@ -192,6 +201,34 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
             assert!(plan.chains.values().flat_map(|c| c.hooks()).all(|h| {
                 h.feature != "render-loop" && !h.feature.starts_with("native-")
             }));
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn lod_distance_requires_a_gpu_profile_and_a_drawing_view() {
+    use film::RenderHooks::{Desktop, Gpu, Slim};
+    for profile in [Slim, Desktop, Gpu] {
+        for drawing in [false, true] {
+            let mut case = Case::full("");
+            case.drawing = drawing;
+            let plan = registry_for_profile(&case, profile).build(&hooks::Base).unwrap();
+            let enabled = profile == Gpu && drawing;
+            assert_eq!(plan.features.iter().any(|feature| feature.id == "lod-distance"), enabled);
+            assert_eq!(plan.chains.values().any(|chain| chain.point.name == "MODEL_LOD"), enabled);
+        }
+    }
+    // The guest chooser still runs when either set of native replacements
+    // is switched off. Disabling the LOD feature disables both adapters.
+    for (switches, enabled) in [
+        (NATIVE_OFF, true),
+        ("-native-scene-lists", true),
+        ("-lod-distance", false),
+    ] {
+        let plan = registry_for_profile(&Case::full(switches), Gpu).build(&hooks::Base).unwrap();
+        for point in ["MODEL_LOD", "RESET_SCENE_RECORDS"] {
+            assert_eq!(plan.chains.values().any(|chain| chain.point.name == point), enabled);
         }
     }
 }
@@ -262,6 +299,8 @@ fn the_plan_builds_with_every_combination_of_optional_features() {
             let case = Case {
                 switches: switches.to_owned(),
                 settings: on(0),
+                #[cfg(feature = "gpu")]
+                drawing: true,
                 xapi: on(1),
                 vfs: on(2),
                 telemetry: on(3),

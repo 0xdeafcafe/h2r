@@ -8,13 +8,15 @@
 //! what the list hooks ask (`layout_glue`): how many rows a list has, which
 //! row an index is, the label and value string ids to draw, and what a
 //! press does. It owns the string ids of every text it can show, so the
-//! locale hook serves them. It is pure: no guest memory, and a press only
-//! goes through the store.
+//! locale hook serves them. Presses use the settings store and can offer
+//! a value picker without touching guest memory.
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use settings::{Apply, Def, Store, Tier};
+
+use crate::ui_kit::picker::{self, Pick};
 
 /// The text widgets of a list row: label, then value.
 pub const LABEL_SLOT: u32 = 0;
@@ -37,7 +39,7 @@ pub enum List {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowKind {
-    /// A setting's label and value; a press steps it.
+    /// A setting's label and value. A opens its picker or steps the value.
     Setting(&'static str),
     /// Opens one of our screens.
     Open(&'static str),
@@ -51,6 +53,7 @@ pub struct Row {
     /// own "On" and "Off" (the game's, so they are in the player's
     /// language).
     bool_ids: Option<[u32; 2]>,
+    picker: bool,
 }
 
 impl Row {
@@ -59,6 +62,7 @@ impl Row {
             kind: RowKind::Setting(key),
             label: None,
             bool_ids: None,
+            picker: false,
         }
     }
 
@@ -67,6 +71,7 @@ impl Row {
             kind: RowKind::Open(screen),
             label: None,
             bool_ids: None,
+            picker: false,
         }
     }
 
@@ -124,6 +129,16 @@ impl Screen {
         mine.sort();
         self.rows
             .extend(mine.into_iter().map(|(_, k)| Row::setting(k)));
+        self
+    }
+
+    /// Open the value picker when the player chooses this setting's row.
+    pub fn with_picker(mut self, key: &str) -> Screen {
+        if let Some(row) = self.rows.iter_mut().find(|r| {
+            matches!(r.kind, RowKind::Setting(k) if k == key)
+        }) {
+            row.picker = true;
+        }
         self
     }
 
@@ -473,24 +488,44 @@ impl Model {
         [label, (VALUE_SLOT, value)]
     }
 
-    /// A press on `row`: a setting steps (through the store, so its change
-    /// callbacks run); an open row says which screen. Never call it with
-    /// guest memory held.
+    /// A press on a row. The picker commits the selection through the same
+    /// store as a stepped row. Never call with guest memory held.
     pub fn press(&self, row: &Row) -> Chosen {
-        match row.kind {
-            RowKind::Open(id) => Chosen::Open(id),
-            RowKind::Setting(k) => match (self.store.def(k), self.store.step(k)) {
-                (Some(def), Ok(o)) => {
-                    let mut msg = o.describe(def);
-                    if let Some(e) = &o.not_saved {
-                        msg.push_str(&format!("; not saved: {e}"));
-                    }
-                    Chosen::Stepped(msg)
-                }
-                (_, Err(e)) => Chosen::Stepped(format!("{k}: {e}")),
-                (None, Ok(_)) => Chosen::Nothing,
-            },
+        let key = match row.kind {
+            RowKind::Open(id) => return Chosen::Open(id),
+            RowKind::Setting(key) => key,
+        };
+        let Some(def) = self.store.def(key) else {
+            return Chosen::Nothing;
+        };
+        if row.picker && let Some(state) = self.store.state(key) && !state.locked {
+            let values = def.values();
+            let labels = values.iter().map(|v| def.label(*v)).collect();
+            let current = values.iter().position(|v| *v == state.shown).unwrap_or(0);
+            let store = Arc::clone(&self.store);
+            let set = Arc::new(move |i: usize| match values.get(i) {
+                Some(&v) => change_message(def, store.set(key, v)),
+                None => format!("{key}: no choice {i}"),
+            });
+            let pick = Pick::new(self.label(row), labels, current, def.help, set);
+            if let Some(screen) = picker::offer(pick) {
+                return Chosen::Open(screen);
+            }
         }
+        Chosen::Stepped(change_message(def, self.store.step(key)))
+    }
+}
+
+fn change_message(def: &Def, result: Result<settings::Outcome, settings::SetError>) -> String {
+    match result {
+        Ok(outcome) => {
+            let mut msg = outcome.describe(def);
+            if let Some(e) = outcome.not_saved {
+                msg.push_str(&format!("; not saved: {e}"));
+            }
+            msg
+        }
+        Err(e) => format!("{}: {e}", def.key),
     }
 }
 
@@ -501,7 +536,7 @@ fn restart(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting_defs::{ALL, FOV, FPS, LIGHTING, PAD_SPEAKER, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FOV, FPS, LIGHTING, LOD_DISTANCE, PAD_SPEAKER, RENDER_SCALE};
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
@@ -544,9 +579,10 @@ mod tests {
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
                 RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 5), 4, "ours, whatever retail says");
+        assert_eq!(m.count(List::Screen("video"), 6), 5, "ours, whatever retail says");
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);

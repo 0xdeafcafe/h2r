@@ -128,7 +128,7 @@ pub(super) fn prepare(
         } else {
             ABSENT
         };
-        choose_lod(m, body, hlmt, state.pixels, old)?
+        choose_lod(m, body, hlmt, state.pixels, old, scene.lod_scale)?
     };
     let mut current = initial;
     for i in 0..slots {
@@ -422,7 +422,14 @@ fn effects(
     Ok(())
 }
 
-fn choose_lod(m: &dyn GuestMemory, body: u32, hlmt: u32, mut pixels: f32, old: u8) -> Result<u8> {
+fn choose_lod(
+    m: &dyn GuestMemory,
+    body: u32,
+    hlmt: u32,
+    mut pixels: f32,
+    old: u8,
+    scale: f32,
+) -> Result<u8> {
     if m.u32(at(body, 4)?)? & (1 << 19) != 0 {
         return Ok(5);
     }
@@ -432,6 +439,7 @@ fn choose_lod(m: &dyn GuestMemory, body: u32, hlmt: u32, mut pixels: f32, old: u
     if m.u8(at(body, 0x10a)?)? & 4 != 0 {
         pixels *= m.f32(OBJECT_LOD_SCALE)?;
     }
+    pixels = object_lod::model_pixels(m, hlmt, pixels, scale);
     let block = at(hlmt, 0x28)?;
     let mut thresholds = [0.0; 6];
     for (i, threshold) in thresholds.iter_mut().enumerate() {

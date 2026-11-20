@@ -25,8 +25,26 @@ pub struct Installed {
     /// The vblank callback on the 60 Hz logical clock, for
     /// `Kernel::add_periodic` (taken once).
     pub vblank: Option<kernel::periodic::Handler>,
+    /// Present only when this backend draws an image.
+    #[cfg(feature = "gpu")]
+    pub view: Option<DrawingView>,
     /// The device, for machine snapshots (`crate::snapshot_glue`).
     pub snapshot: Arc<dyn DeviceSnapshot>,
+}
+
+/// The installed GPU view. A plain backend draws at guest resolution. A
+/// scaled backend publishes its effective scale when it presents.
+#[cfg(feature = "gpu")]
+pub struct DrawingView {
+    pub scale_stats: Option<Arc<Mutex<d3d::scaled::ScaleStats>>>,
+}
+
+#[cfg(feature = "gpu")]
+impl Installed {
+    pub fn with_gpu_view(mut self, scale_stats: Option<Arc<Mutex<d3d::scaled::ScaleStats>>>) -> Self {
+        self.view = Some(DrawingView { scale_stats });
+        self
+    }
 }
 
 /// The device as a machine snapshot sees it, whatever backend it was made
@@ -371,6 +389,7 @@ pub fn install_headless_for_profile(
                 eprintln!(
                     "d3d: lighting A/B at {scale}x (H2_BOOT_GFX_LIGHTING_AB): a retail and an E3 view of one run; the guest sees a 1x reference"
                 );
+                let scale_stats = b.shared_stats();
                 let (retail_report, e3_report) =
                     (scale_report(b.reference_mut()), scale_report(&mut b));
                 let report: ExtraReport = Box::new(move || {
@@ -381,11 +400,12 @@ pub fn install_headless_for_profile(
                         ab.lock().unwrap().report()
                     )
                 });
-                return if render_thread_requested() {
+                let installed = if render_thread_requested() {
                     install_for_profile(rt, d3d::ThreadedBackend::new(b)?, Some(report), profile)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
-                };
+                }?;
+                return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
             if scale > 1 || lighting != d3d::Lighting::Retail {
                 // The display presents scaled frames. Exact reference captures
@@ -407,12 +427,14 @@ pub fn install_headless_for_profile(
                 eprintln!(
                     "d3d: rendering at {scale}x (H2_RENDER_SCALE), {lighting:?} lighting (H2_LIGHTING); single copy {single}"
                 );
+                let scale_stats = b.shared_stats();
                 let report = scale_report(&mut b);
-                return if render_thread_requested() {
+                let installed = if render_thread_requested() {
                     install_threaded_for_profile(rt, b, Some(report), interp, profile)
                 } else {
                     install_for_profile(rt, b, Some(report), profile)
-                };
+                }?;
+                return Ok(installed.with_gpu_view(Some(scale_stats)));
             }
             let mut backend = configure_gfx(
                 d3d::GfxBackend::new(ctx)
@@ -426,10 +448,12 @@ pub fn install_headless_for_profile(
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0;
             // behind the in-between frames when `interp` is given.
-            if render_thread_requested() {
-                return install_threaded_for_profile(rt, backend, None, interp, profile);
-            }
-            install_for_profile(rt, backend, None, profile)
+            let installed = if render_thread_requested() {
+                install_threaded_for_profile(rt, backend, None, interp, profile)
+            } else {
+                install_for_profile(rt, backend, None, profile)
+            }?;
+            Ok(installed.with_gpu_view(None))
         }
     }
 }
@@ -1462,6 +1486,8 @@ pub fn install_for_profile<B: d3d::backend::Backend + Send + 'static>(
         format!("stats {:?}; last stop {:?}{ev}\n{draws}{extra}", d.stats(), d.last_stop())
     });
     Ok(Installed {
+        #[cfg(feature = "gpu")]
+        view: None,
         vblank,
         snapshot,
         report,

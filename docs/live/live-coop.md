@@ -587,11 +587,9 @@ Which existing settings must match between peers depends on the path,
 and `Def::scope` already says it:
 
 - **Lockstep below the game (3b) needs every `View` and `Sim` value
-  equal**: the `exact` fingerprint. Of today's five, `graphics.fov` is
-  `View` and must match; `graphics.fps`, `graphics.render_scale`,
-  `pad_speaker.enabled` and `pad.mute_button` are `Host` and stay per
-  machine. There is no `Sim` setting yet. Future ones the design names
-  (button layouts, Forge and game variants) would be.
+  equal**: the `exact` fingerprint. Field of view, render scale and LOD
+  distance affect guest render state and carry `View` scope. Frame rate,
+  controller speaker and mute button carry `Host` scope and stay per machine.
 - **The retail path (3a) needs only `Sim` values equal**: the `sim`
   fingerprint. Each peer renders its own view, so `graphics.fov` and
   every other `View` setting stays personal.

@@ -16,7 +16,7 @@ const FIRST_PERSON_CAMERA: u32 = 0x0023_c110;
 const PLAYER_IDENTITIES: u32 = 0x004e_8c20;
 const ACTIVE_SCENARIO: u32 = 0x004e_0350;
 pub(super) const PROJECTION_DEPTH: [u32; 4] = [0x004b_9e20, 0x004b_9e2c, 0x004b_9e38, 0x004b_9e44];
-pub(super) const PIXEL_SCALE: u32 = 0x004b_9ed0;
+pub(super) use engine::points::PIXEL_SCALE;
 pub(super) const MIN_DEPTH: u32 = 0x0045_dc68;
 pub(super) const SIZE_FACTOR: u32 = 0x0045_dc0c;
 const EPSILON: u32 = 0x0045_dbdc;

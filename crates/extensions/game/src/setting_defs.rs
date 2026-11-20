@@ -100,13 +100,55 @@ pub static RENDER_SCALE: Def = Def {
     aliases: &[],
     parse_env: None,
     apply: Apply::Live,
-    scope: Scope::Host,
+    scope: Scope::View,
     tier: Tier::User,
     menu: Some(Menu {
         screen: "video",
         order: 30,
     }),
 };
+
+/// Render-distance multipliers in half units. Zero selects the guest's
+/// original pixel scale independently of the output resolution.
+pub static LOD_DISTANCE: Def = Def {
+    key: "graphics.lod_distance",
+    label: "LOD Distance",
+    help: "Choose how far away models keep their detail. 1x matches the rendering resolution. \
+           Higher values keep detail farther away. Retail uses the original Xbox distances.",
+    kind: Kind::Choice(&[
+        Choice { value: 0, name: "retail", label: "Retail" },
+        Choice { value: 1, name: "0.5", label: "0.5x" },
+        Choice { value: 2, name: "1.0", label: "1x" },
+        Choice { value: 3, name: "1.5", label: "1.5x" },
+        Choice { value: 4, name: "2.0", label: "2x" },
+        Choice { value: 6, name: "3.0", label: "3x" },
+        Choice { value: 8, name: "4.0", label: "4x" },
+    ]),
+    default: Value::Int(2),
+    env: Some("H2_LOD_DISTANCE"),
+    flag: None,
+    aliases: &[
+        ("1", Value::Int(2)), ("2", Value::Int(4)),
+        ("3", Value::Int(6)), ("4", Value::Int(8)),
+    ],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::View,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 40,
+    }),
+};
+
+/// Convert one pixel of the guest's projected size to output pixels for LOD.
+pub fn lod_pixel_multiplier(output_height: u32, half_units: u32) -> f32 {
+    if half_units == 0 {
+        return 1.0;
+    }
+    let render_scale = output_height as f32 / GUEST_FRAME.1 as f32;
+    render_scale * (half_units as f32 * 0.5)
+}
 
 /// Select the readback and draw policy when rendering above guest resolution.
 pub static SINGLE_COPY: Def = Def {
@@ -746,6 +788,7 @@ pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
     &RENDER_SCALE,
+    &LOD_DISTANCE,
     &SINGLE_COPY,
     &LIGHTING,
     &PAD_SPEAKER,
@@ -1153,6 +1196,34 @@ mod tests {
         let (s, _) = with_env(&data, &[("H2_HALO1_SANDBOX", "halo1")]);
         assert_eq!(halo1_sandbox(&s), "h1");
         assert!(s.state(HALO1_SANDBOX.key).unwrap().locked);
+    }
+
+    #[test]
+    fn lod_distance_matches_output_by_default_and_retail_is_independent_of_output() {
+        let data = tmp("lod-distance");
+        let (store, problems) = with_env(&data, &[]);
+        assert!(problems.is_empty());
+        let setting = store.handle::<u32>(LOD_DISTANCE.key);
+        assert_eq!(lod_pixel_multiplier(480, setting.get()), 1.0);
+        assert_eq!(lod_pixel_multiplier(1920, setting.get()), 4.0);
+        assert_eq!(lod_pixel_multiplier(2160, setting.get()), 4.5);
+        for (name, scale_at_4x) in [
+            ("0.5", 2.0), ("1", 4.0), ("1.0", 4.0), ("1.5", 6.0),
+            ("2", 8.0), ("3", 12.0), ("4", 16.0), ("retail", 1.0),
+        ] {
+            let v = LOD_DISTANCE.parse(name).unwrap();
+            store.set(LOD_DISTANCE.key, v).unwrap();
+            assert_eq!(lod_pixel_multiplier(1920, setting.get()), scale_at_4x);
+            assert_eq!(with_env(&data, &[]).0.get(LOD_DISTANCE.key), Some(v));
+        }
+        let (locked, problems) = with_env(&data, &[("H2_LOD_DISTANCE", "1.5")]);
+        assert!(problems.is_empty());
+        assert_eq!(locked.get(LOD_DISTANCE.key), Some(Value::Int(3)));
+        assert!(locked.state(LOD_DISTANCE.key).unwrap().locked);
+        assert!(LOD_DISTANCE.parse("5").is_err());
+        assert!(LOD_DISTANCE.parse("NaN").is_err());
+        assert_eq!(RENDER_SCALE.scope, Scope::View);
+        assert_eq!(LOD_DISTANCE.scope, Scope::View);
     }
 
     #[test]

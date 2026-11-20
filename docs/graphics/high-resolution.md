@@ -10,7 +10,7 @@ Switch: `H2_RENDER_SCALE` (1), `H2_SINGLE_COPY` (on), `H2_SMOOTH_TEXT` (off),
 listed in [switches.md](../runtime/switches.md).
 
 Above 1x the renderer draws each guest draw once, into surfaces at the
-render scale, and the guest never learns the resolution. The setting is
+render scale. The guest D3D device reports its original dimensions. The setting is
 `[graphics] render_scale`, the Resolution row on the Video screen
 ([settings-menu.md](../game/settings-menu.md), "Video screen");
 `H2_RENDER_SCALE` (1 to 6) locks the scale when set
@@ -21,9 +21,13 @@ view").
 
 ## Summary
 
-- **The guest never learns the resolution.** The device (`d3d::Device`) keeps
+- **Guest device coordinates.** The device (`d3d::Device`) keeps
   every size, viewport, scissor, header and return value in guest pixels.
-  Scaling lives below the `d3d::Backend` trait.
+  Raster scaling lives below the `d3d::Backend` trait. Model and structure
+  detail use projected pixels at the active render height. Both encoders in
+  exact mode draw the selected geometry. Choose **Retail** for LOD Distance
+  to keep the 480-line detail choices. See
+  [Projected size and level of detail](occlusion-culling.md#projected-size-and-level-of-detail).
 - **One draw per target.** At scale above 1 the display encoder owns the draw
   stream, including draws to guest-size intermediates. Guest reads sample the
   scaled image at guest pixel positions.

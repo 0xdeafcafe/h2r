@@ -738,17 +738,23 @@ fn run_configured(
                     b.set_lighting(setting_defs::lighting_of(lighting.get()));
                     b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
                 }
+                let scale_stats = b.shared_stats();
                 let report = Some(d3d_glue::scale_report(&mut b));
-                if host.render_thread {
-                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)?
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, report, interp, render_hooks)
                 } else {
-                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)?
-                }
+                    d3d_glue::install_for_profile(&loaded.runtime, b, report, render_hooks)
+                }?;
+                installed.with_gpu_view(Some(scale_stats))
             }
-            None if host.render_thread => {
-                d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)?
+            None => {
+                let installed = if host.render_thread {
+                    d3d_glue::install_threaded_for_profile(&loaded.runtime, b, None, interp, render_hooks)
+                } else {
+                    d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)
+                }?;
+                installed.with_gpu_view(None)
             }
-            None => d3d_glue::install_for_profile(&loaded.runtime, b, None, render_hooks)?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
         (true, None) => Some(d3d_glue::install_headless_for_profile(
@@ -898,6 +904,8 @@ fn run_configured(
     let late = registration::register_late_for_profile(
         &mut features,
         registration::LateInputs {
+            #[cfg(feature = "gpu")]
+            view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
             rt: &loaded.runtime,
             lockstep: lockstep_config,
             agent: agent_source,
