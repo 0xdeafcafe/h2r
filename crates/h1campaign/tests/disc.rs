@@ -2878,11 +2878,19 @@ fn campaign_hud_text_and_builtins_round_trip() {
         let scripts = hs::Scenario::read(&mut map).unwrap();
         let message_type = script.target.type_index("hud_message").unwrap();
         // Message atoms; a reference to a global of that type holds the
-        // global's index, not a message's.
+        // global's index, not a message's, and a call's head holds its
+        // builtin or script index in the same word (d40's script
+        // `d40_230_cortana`).
         let atoms: Vec<_> = scripts
             .nodes()
             .iter()
-            .filter(|n| n.live() && n.atom() && !n.global() && n.opcode() == message_type)
+            .filter(|n| {
+                n.live()
+                    && n.atom()
+                    && !n.global()
+                    && n.value_type() != hs::vm::HsType::FUNCTION_NAME.0
+                    && n.opcode() == message_type
+            })
             .collect();
         assert!(!atoms.is_empty());
         for atom in atoms {
