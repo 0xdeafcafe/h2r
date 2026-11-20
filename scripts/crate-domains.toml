@@ -22,7 +22,7 @@ crates = [
 about = "XBE to host code: analysis, lifting, IR, the C and Cranelift back ends, their oracles"
 uses = ["formats"]
 crates = [
-    "analyze", "clif", "emit", "fastmem-proto", "ir", "lift", "opt", "oracle",
+    "analyze", "clif", "emit", "ir", "lift", "opt", "oracle",
     "sim-tier", "simd", "sse-oracle", "symbols", "x87",
 ]
 

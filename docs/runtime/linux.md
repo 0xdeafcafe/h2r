@@ -140,15 +140,7 @@ addresses, aliases, permissions and MMIO still go through the Xbox page
 table, whose pages are 4 KiB. Linux snapshots copy the RAM bytes into a
 separate guarded reservation. [Runtime storage](../../crates/runtime/runtime/src/cow.rs)
 
-Game writes use the runtime's software dirty marks. The separate
-`fastmem-probe` executable exercises hardware write watching in its own
-process. On Linux it arms host pages read-only and installs a `SIGSEGV`
-action. For a write from the watched thread to an armed page, it records
-the fault address and RIP, opens one page and retries the instruction.
-Foreign faults return to the previous signal disposition. The probe's
-child-process tests cover cross-page writes, rearming, teardown, and
-the signal delivered for an unhandled access.
-[Fault probe](../../crates/recompiler/fastmem-proto/src/bin/fastmem-probe/linux.rs)
+Game writes use the runtime's software dirty marks.
 
 ### Host clocks and workers
 

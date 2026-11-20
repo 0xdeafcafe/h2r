@@ -37,7 +37,7 @@ session that owns Live, bots, theater and film.
 crates/
   formats/     asf content font hs map mopp movies pathfind settings shaders tags variants
                xbe xiso h1-contract
-  recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle fastmem-proto
+  recompiler/  analyze symbols lift ir opt emit clif x87 simd oracle sse-oracle
                +sim-tier
   runtime/     runtime (and its test-probe) kernel vfs snapshot timeline
                +hostfault +lifted +recomp
@@ -460,7 +460,7 @@ library's name; `platform/apple/build.sh` and `platform/xbox/build.sh`
 name the package and are edited by hand). On the scratch tree the first
 renames 84 `sim::` paths in `boot` and `cli` and leaves
 `cli/src/agent_sim.rs`, where `sim` is `agent_proto::sim`; the second
-changes no Rust. `git rm -r` of `fastmem-proto`.
+changes no Rust.
 `oracle`'s WMA oracle (`src/wma.rs`, a test, an example) moves into `wma`
 behind an `oracle` feature, which clears the `oracle` → `wma` exception.
 `viewer`: decision 3.

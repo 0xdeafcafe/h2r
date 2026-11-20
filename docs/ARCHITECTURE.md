@@ -89,7 +89,6 @@ the moves that put every crate in its domain's directory are in
 | `analyze` | recompiler | Disassembly (iced-x86), function discovery, coverage report, per-function CFG export † |  | done |
 | `clif` | recompiler | *(no description)* † |  |  |
 | `emit` | recompiler | IR to C11 against the runtime ABI (`h2abi.h`), sharded; clang build glue (output under `target/`, never committed) † |  | done |
-| `fastmem-proto` (bin `fastmem-probe`) | recompiler | Isolated prototype: page-protection write watch on macOS arm64 and Linux x86-64 | [fastmem-proto.md](perf/notes/fastmem-proto.md) | prototype, not used by the runtime |
 | `ir` | recompiler | Backend-independent semantic IR for lifted code, with a reference interpreter † |  | done for integer, x87, SSE1 and MMX |
 | `lift` | recompiler | Lowers decoded x86 to the IR, per instruction and per CFG function ([LIFTER.md](lifter/LIFTER.md)) † | [LIFTER.md](lifter/LIFTER.md) | done for integer, x87, SSE1 and MMX |
 | `opt` | recompiler | IR-to-IR optimisation passes between lifting and emission † |  | done |
@@ -143,17 +142,11 @@ the moves that put every crate in its domain's directory are in
 | `hot-tags` | extensions | Live edits of the running game's tags in guest memory, by field path from the tag definitions, with a journal to list and revert them (docs/graphics/hot-iteration.md) | [hot-iteration.md](graphics/hot-iteration.md) |  |
 | `lockstep` | extensions | Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/game/high-framerate.md) | [high-framerate.md](game/high-framerate.md) | done |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
-| `h1ai` | tools | Halo 1 AI data (actors, encounters, command lists) read and converted to Halo 2 squads, zones, orders and characters |  |  |
-| `h1bitmaps` | tools | Halo 1 Xbox bitmaps: decode to RGBA8 with Halo 2's texture decoder, and convert to Halo 2 bitm tags | [bitmaps.md](halo1/bitmaps.md) | done |
+| `h1-assets` | tools | Halo 1 assets as Halo 2 tags: bitmaps, models, sounds, skies and text, read from Xbox cache files (docs/halo1/README.md) | [README.md](halo1/README.md) |  |
 | `h1campaign` | tools | *(no description)* † |  |  |
 | `h1convert` | tools | Halo 1 multiplayer maps converted to Halo 2 tags: collision, shaders, objects ([multiplayer.md](halo1/multiplayer.md)) † | [multiplayer.md](halo1/multiplayer.md) | in progress: all 13 disc maps convert |
 | `h1map` | tools | Halo 1 Xbox cache (v5) reader ([map-format.md](halo1/map-format.md)) † | [map-format.md](halo1/map-format.md) | done |
-| `h1models` | tools | Halo 1 render models and animation graphs as Halo 2 tags ([models.md](halo1/models.md)) † | [models.md](halo1/models.md) | in progress |
 | `h1objects` | tools | *(no description)* † |  |  |
-| `h1scripts` | tools | *(no description)* † |  |  |
-| `h1sky` | tools | *(no description)* † |  |  |
-| `h1sounds` | tools | Halo 1 Xbox sounds: decode to PCM with the audio crate's Xbox ADPCM decoder, and convert to Halo 2 snd! tags plus ugh! gestalt entries |  |  |
-| `h1text` | tools | *(no description)* † |  |  |
 | `hopper-edit` | tools | The playlist (multiplayer_hopper.dat) editor's UI-free logic: the working copy, validation, presets, the variant picker's sources, undo and file handling | [editor.md](editor/editor.md) | in progress |
 | `hud-edit` | tools | The HUD editor's UI-free logic: a map's nhdt HUDs and their widgets, the engine's placement, a preview canvas, layout checks, edits with undo and the patched-map save (docs/editor/hud-editor.md) | [hud-editor.md](editor/hud-editor.md) |  |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
