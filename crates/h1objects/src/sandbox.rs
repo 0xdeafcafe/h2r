@@ -108,6 +108,7 @@ impl Halo1Objects for Objects<'_> {
             install: Box::new(move |set| {
                 Tree {
                     tags: tags.clone(),
+                    model_shader_error: tree.model_shader_error.clone(),
                     ..Tree::default()
                 }
                 .install_tags(set)

@@ -118,8 +118,6 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    ("mode", "materials[].shader", "door lock symbols", "bug: the small door's schi additive stage has a null bitmap"),
-    ("mode", "materials[].shader", "sentinel shield", "bug: the sentinel's spla needs its two volume-noise samplers"),
     ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
     ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
     ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
@@ -206,6 +204,7 @@ impl Halo1Objects for Audit<'_> {
 
     fn take(&mut self) -> ObjectTags {
         let t = self.inner.tree();
+        assert!(t.model_shader_error.is_none(), "{:?}", t.model_shader_error);
         let first = self.snap.tags.len();
         self.snap.tags.extend(t.tags.iter().cloned());
         self.snap
@@ -384,17 +383,32 @@ fn meaning<'d>(d: &'d StructDef, path: &str) -> Option<&'d str> {
     }
 }
 
-/// Classify the two remaining transparent materials by the original shader in this slot.
-fn known_material(h1: &H1Map, model: &str, path: &str) -> Option<&'static str> {
-    let slot = path.strip_prefix("materials[")?.strip_suffix("].shader")?;
-    let tag = h1.find(h1map::Group::new(b"mode"), model)?;
-    let model = h1models::h1::Model::read(h1, tag.data_address).ok()?;
-    let entry = model.shaders.get(slot.parse::<usize>().ok()?)?;
-    let source = h1.tag(entry.tag).ok()?;
-    match (&source.group.0.to_be_bytes(), source.name.as_str()) {
-        (b"schi", r"levels\a50\devices\small door\shaders\door lock symbols") => Some("door lock symbols"),
-        (b"spla", r"characters\sentinel\shaders\sentinel_shield") => Some("sentinel shield"),
-        _ => None,
+/// Each original slot must point into this tree, to the shader it was
+/// built from. Only the extra slot appended to a player can be an emblem.
+fn campaign_materials(h1: &H1Map, base: &Base, snap: &Snapshot, name: &str, mode: &Record) {
+    let map = &h1.header().name;
+    let model = h1.find(h1map::Group::new(b"mode"), name).expect("source render model");
+    let source = h1map::Block::read(h1.tag_data(model).unwrap(), 0xdc).unwrap();
+    let rows = h1.block(source, 0x20).unwrap();
+    let materials = values_at(mode, "materials[*].shader");
+    let n = source.count as usize;
+    assert!((n..=n+1).contains(&materials.len()), "{map} {name}: shader count");
+    for (k, shader) in materials.into_iter().enumerate() {
+        let Val::Ref { target: Target::Id(id), .. } = shader else {
+            panic!("{map} {name} slot {k}: unresolved shader {shader:?}");
+        };
+        if k == n {
+            assert_eq!(base.name(*id), Some((FourCC(*b"shad"), h1objects::convert::EMBLEM_SHADER)));
+            continue;
+        }
+        let source = h1.tag(h1map::TagRef::read(rows, k * 0x20).unwrap().id).unwrap();
+        let built = h1objects::convert::local_index(*id).and_then(|i| snap.tags.get(i))
+            .unwrap_or_else(|| panic!("{map} {name} slot {k}: {} is not rebuilt", source.name));
+        assert_eq!(built.1.group, FourCC(*b"shad"));
+        assert!(built.0 == source.name ||
+            (built.0.strip_prefix(source.name.as_str()).is_some_and(|s| s.starts_with('_'))
+                && h1convert::shad::chicago_numeric(h1, source).is_some()),
+            "{map} {name} slot {k}: expected {}, got {}", source.name, built.0);
     }
 }
 
@@ -413,6 +427,9 @@ fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
         };
         let d = Defs::builtin().group(conv.group);
         let record = d.and_then(|d| defs::from_built(d, &conv.root).ok());
+        if conv.group == FourCC(*b"mode") && h1map::disc::CAMPAIGN_LEVELS.contains(&map) {
+            campaign_materials(h1, base, snap, tag, record.as_ref().expect("read campaign model"));
+        }
         // Retail references.
         let mut refs = Vec::new();
         match (d, &record) {
@@ -427,10 +444,6 @@ fn audit(map: &str, h1: &H1Map, base: &Base, snap: &Snapshot) -> Vec<Leak> {
             // player's own emblem and colours.
             let what = if name == h1objects::convert::EMBLEM_SHADER {
                 "emblem".to_owned()
-            } else if conv.group == FourCC(*b"mode")
-                && base.model_shader.as_ref().is_some_and(|s| s.shader == id)
-            {
-                known_material(h1, tag, &p).map_or_else(|| g.to_string(), str::to_owned)
             } else {
                 g.to_string()
             };
@@ -556,6 +569,7 @@ fn campaign_objects(h1: &H1Map, base: &Base) -> Snapshot {
             _ => continue,
         }.unwrap_or_else(|e| panic!("{} {}: {e}", tag.group, tag.name));
     }
+    assert!(conv.tree.model_shader_error.is_none(), "{:?}", conv.tree.model_shader_error);
     Snapshot { tags: conv.tree.tags, roles: conv.tree.role_fields }
 }
 

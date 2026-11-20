@@ -1565,6 +1565,9 @@ fn place_objects(
     }
     rep.dialogue_bytes = conv.dialogue_bytes;
     let mut tree = std::mem::take(&mut conv.tree);
+    if let Some(reason) = &tree.model_shader_error {
+        return Err(invalid(reason.clone()));
+    }
     rep.object_tags = tree.tags.len();
     let hud_swaps = std::mem::take(&mut tree.hud_swaps);
     // The sounds the objects' effects and attachments play, with the

@@ -1,7 +1,6 @@
 //! Converted model shaders of a10's cryo tube on the disc: its glass
 //! (`sotr` `levels\a10\shaders\cryo glass`) is rebuilt as an alpha
-//! blended shader drawing its own glass texture and reflection cube, not
-//! the base's stand-in model shader. Reads `$H1_ISO` and `$H2_DISC`;
+//! blended shader drawing its own glass texture and reflection cube. Reads `$H1_ISO` and `$H2_DISC`;
 //! prints names only. Nothing is written.
 //!
 //! ```sh
@@ -62,12 +61,6 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         .stem(&h1convert::shad::ONE_ALPHA_ENV)
         .expect("the base has one_alpha_env");
     let base = Base::read(&mut base_map).unwrap();
-    let stand_in = base
-        .model_shader
-        .as_ref()
-        .expect("the base has a model shader")
-        .name
-        .clone();
     let mut conv = Converter::new(&h1, &base);
     let tube = h1
         .tags()
@@ -94,12 +87,12 @@ fn a10_cryo_tube_glass_is_alpha_blended_with_its_own_maps() {
         .tags
         .iter()
         .find(|(n, c)| n == "levels\\a10\\shaders\\cryo glass" && c.group.0 == *b"shad")
-        .expect("the cryo glass is a shader of its own, not the stand-in");
+        .expect("a rebuilt shader for the cryo glass");
     let mut refs = Vec::new();
     tag_refs(&glass.root, &mut refs);
     let names: Vec<&str> = refs.iter().filter_map(|&id| named(id)).collect();
     eprintln!(
-        "cryo glass: {} references; tree's: {names:?}; stand-in {stand_in}",
+        "cryo glass: {} references; tree's: {names:?}",
         refs.len()
     );
     assert!(refs.contains(&blended), "drawn with one_alpha_env");
@@ -917,3 +910,6 @@ fn leaf_alpha_cuts_the_bump(h1: &H1Map, tree: &h1objects::convert::Tree, leaf: &
 
 #[path = "model_shaders_disc/model_defaults.rs"]
 mod model_defaults;
+
+#[path = "model_shaders_disc/model_effects.rs"]
+mod model_effects;

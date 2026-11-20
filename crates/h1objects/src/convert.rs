@@ -39,6 +39,8 @@ mod scripted_props_conv;
 mod powerups_conv;
 #[path = "convert_model_defaults.rs"]
 mod model_defaults_conv;
+#[path = "convert_model_effects.rs"]
+mod model_effects_conv;
 #[path = "convert_scope.rs"]
 mod scope_conv;
 #[path = "convert_particles.rs"]
@@ -329,6 +331,9 @@ pub struct ObjectReport {
 /// Converted tags in install order, with placeholders for each other.
 #[derive(Default)]
 pub struct Tree {
+    /// A failed shader prevents installation even when a placement caller
+    /// collects object errors and continues preparing the rest of the palette.
+    pub model_shader_error: Option<String>,
     pub tags: Vec<(String, Converted)>,
     pub reports: Vec<ObjectReport>,
     /// Halo 1 sounds the tags play (effect parts), converted, by path;
@@ -597,6 +602,9 @@ impl Tree {
     /// sandbox adds its collections between the two, so the tags and the
     /// collections hold the datums its placements name.
     pub fn install_tags(&mut self, set: &mut TagSet) -> Result<Vec<TagId>> {
+        if let Some(reason) = &self.model_shader_error {
+            return Err(Error::Invalid(reason.clone()));
+        }
         let first = set.slots.len();
         let ids: Vec<TagId> = (0..self.tags.len())
             .map(|k| {
@@ -876,7 +884,7 @@ pub struct Converter<'a> {
     change_colour_bitmaps: HashMap<(u32, usize), Option<TagId>>,
     /// Ammunition counter digits ([`Self::counter_shader`]), by (Halo 1
     /// `schi`, permutation, loaded maximum).
-    counter_shaders: HashMap<(u32, i16, Option<i16>), Option<TagId>>,
+    counter_shaders: HashMap<(u32, i16, Option<i16>), TagId>,
     /// Vehicle role words, per vehicle type and powered point count
     /// ([`Self::vehicle_role`]).
     vehicle_roles: HashMap<(u16, usize), Option<crate::rebuild::VehicleRole>>,
@@ -1448,8 +1456,6 @@ impl<'a> Converter<'a> {
                     self.emblem(rep, &mut h1_model, &mut shaders);
                 }
                 // One material per Halo 1 shader, as convert_model writes.
-                let mut padded = shaders.clone();
-                padded.resize(h1_model.shaders.len(), TagId::NULL);
                 let opts = ModelOptions {
                     shaders,
                     ..ModelOptions::default()
@@ -1460,7 +1466,7 @@ impl<'a> Converter<'a> {
                     &opts,
                 )?;
                 if rebuild {
-                    crate::rebuild::mode_materials(&mut mode.root, &padded)?;
+                    crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
                 }
                 let mode = self.tree.push(&mode_tag.name, mode);
                 self.render_models.insert(key, mode);
@@ -1887,18 +1893,14 @@ impl<'a> Converter<'a> {
             ));
             return;
         };
-        shaders.resize(index, TagId::NULL);
+        debug_assert_eq!(shaders.len(), index);
         shaders.push(shader);
     }
 
     /// One rebuilt material per Halo 1 shader. Null-base model shaders
     /// use the rasterizer defaults and their own colours. Other supported
     /// shaders use their own maps and the appropriate lighting or transparent
-    /// template. An unsupported shader uses the stand-in from
-    /// [`Base::model_shader`]: the draw begin at `0x1bbf0` does not skip a
-    /// NONE shader (`0x1bcb9` only clears its cached words) and the draw
-    /// `0x16b90` then reads tag slot `0xffff`'s entry as a `shad`. With no
-    /// template at all the materials stay null.
+    /// template. An unresolved material is a conversion error.
     ///
     /// `rounds` is the loaded maximum of the weapon whose model this is
     /// when Halo 1's counters on it count its rounds
@@ -1912,65 +1914,76 @@ impl<'a> Converter<'a> {
         model: &h1models::h1::Model,
         rounds: Option<i16>,
     ) -> Result<Vec<TagId>> {
-        let Some(template) = self.base.model_shader.clone() else {
-            rep.no_home
-                .push("model shaders: the base has no model shader to copy; materials null".into());
-            return Ok(Vec::new());
-        };
-        let mut out = Vec::new();
-        for s in &model.shaders {
-            if let Some(id) = self.counter_shader(&template.library, s.tag, s.permutation, rounds) {
-                out.push(id);
-                continue;
-            }
-            let source_tag = self.h1.tag(s.tag).ok();
-            if let Some(tag) = source_tag {
-                if let Some(&id) = self.done.get(&tag.id.0) {
-                    out.push(id);
-                    continue;
-                }
-                if tag.group == h1map::Group::new(b"soso")
-                    && let Some(source) = ModelDefaults::read(tag.group, self.h1.tag_data(tag)?)
-                        .map_err(|e| Error::Invalid(format!("{}: {e}", tag.name)))?
-                {
-                    out.push(self.model_default_shader(&template.library, tag, source)?);
-                    continue;
+        let mut shaders = Vec::with_capacity(model.shaders.len());
+        for (slot, entry) in model.shaders.iter().enumerate() {
+            let source = self.h1.tag(entry.tag);
+            let result = match source {
+                Ok(tag) => self.model_shader(tag, entry, rounds).map_err(|e| format!(
+                    "{}: {} {}: {e}", self.h1.header().name, tag.group, tag.name
+                )),
+                Err(e) => Err(format!("{}: {} material {slot}, {} {}: {e}",
+                    self.h1.header().name, rep.source, entry.group, entry.tag)),
+            };
+            match result {
+                Ok(id) => shaders.push(id),
+                Err(reason) => {
+                    self.tree.model_shader_error.get_or_insert_with(|| reason.clone());
+                    return Err(Error::Invalid(reason));
                 }
             }
-            let id = (|| -> Option<TagId> {
-                let tag = source_tag?;
-                if let Some(id) = self.transparent_model_shader(&template.library, tag) {
-                    return Some(id);
-                }
-                let maps = h1convert::textures::h1_maps_of(self.h1, tag)?;
-                let base = self.bitmap(maps.base?)?;
-                let detail = maps.detail.and_then(|d| self.bitmap(d));
-                let scale = h1convert::textures::h1_scales_of(self.h1, tag).detail;
-                let (tree, _) = template.copy(base, detail, scale);
-                let conv = Converted {
-                    group: FourCC(*b"shad"),
-                    root: tree,
-                    raw: Vec::new(),
-                };
-                self.cached(tag, conv).ok()
-            })();
-            if id.is_none() {
-                rep.no_home.push(format!(
-                    "model shader {}: no base map read; the base's model shader stands in",
-                    source_tag.map_or("?", |t| t.name.as_str())
-                ));
-            }
-            out.push(id.unwrap_or(template.shader));
         }
-        Ok(out)
+        Ok(shaders)
+    }
+
+    fn model_shader(
+        &mut self,
+        tag: &Tag,
+        entry: &h1models::h1::ShaderRef,
+        rounds: Option<i16>,
+    ) -> Result<TagId> {
+        if !h1convert::shad::H1_GROUPS.contains(&tag.group.to_string().as_str()) {
+            return Err(Error::Invalid("unsupported model shader group".into()));
+        }
+        let base = self.base;
+        let template = &base.model_shader;
+        if let Some(id) = self.counter_shader(&template.library, tag, entry.permutation, rounds)? {
+            return Ok(id);
+        }
+        if let Some(&id) = self.done.get(&tag.id.0) {
+            return Ok(id);
+        }
+        if let Some(source) = ModelDefaults::read(tag.group, self.h1.tag_data(tag)?)? {
+            return self.model_default_shader(&template.library, tag, source);
+        }
+        if let Some(id) = self.model_effect_shader(&template.library, tag)? {
+            return Ok(id);
+        }
+        if let Some(id) = self.transparent_model_shader(&template.library, tag)? {
+            return Ok(id);
+        }
+        if !matches!(&tag.group.0.to_be_bytes(), b"soso" | b"senv") {
+            return Err(Error::Invalid("no supported model shader rebuild".into()));
+        }
+        let maps = h1convert::textures::h1_maps_of(self.h1, tag)
+            .ok_or_else(|| Error::Invalid("cannot read shader maps".into()))?;
+        let mut bitmap = |id| {
+            if h1convert::shad::h1_texture_kind(self.h1, id) != Some(h1map::bitmap::ImageKind::D2) {
+                return Err(Error::Invalid(format!("unreadable or non-2D opaque bitmap {id}")));
+            }
+            self.bitmap(id).ok_or_else(|| Error::Invalid(format!("unreadable bitmap {id}")))
+        };
+        let base = bitmap(maps.base.ok_or_else(|| Error::Invalid("missing base map".into()))?)?;
+        let detail = maps.detail.map(bitmap).transpose()?;
+        let scale = h1convert::textures::h1_scales_of(self.h1, tag).detail;
+        let root = template.build_opaque(base, detail, scale)?;
+        self.cached(tag, Converted { group: FourCC(*b"shad"), root, raw: Vec::new() })
     }
 
     /// A Halo 1 model shader that isn't `senv` or `soso` (glass, chicago,
     /// generic, meter, plasma, water) rebuilt as the structure's are
     /// ([`h1convert::shad::read_h1`]): its own stem (alpha blended,
-    /// additive or self-illuminated) and maps, converted once. `None` when
-    /// it isn't one, no map of it reads or converts, or `library` lacks
-    /// every stem it could draw with; the tex_bump copy then follows.
+    /// additive or self-illuminated) and maps, converted once. An ordinary
+    /// opaque model material is built by the caller.
     ///
     /// A `soso` whose base is cut out (an alpha Halo 1 tests,
     /// `h1convert::shad::soso_alpha_tested`: the leaves of plants and
@@ -2009,27 +2022,18 @@ impl<'a> Converter<'a> {
         &mut self,
         library: &h1convert::shad::Library,
         tag: &Tag,
-    ) -> Option<TagId> {
+    ) -> Result<Option<TagId>> {
         let group = tag.group.to_string();
         if group == "senv" {
-            return None;
+            return Ok(None);
         }
-        let s = h1convert::shad::read_h1(self.h1, tag)?;
-        let mut chosen = s.choose(library)?.clone();
-        // A change colour whose map doesn't bake draws as it did without
-        // one: the change-colour stem's default map would tint by colours
-        // nobody set.
+        let Some(s) = h1convert::shad::read_h1(self.h1, tag) else { return Ok(None) };
+        let mut chosen = s.choose(library)
+            .ok_or_else(|| Error::NoTemplate(s.layout.stem.into()))?.clone();
         let change_colour = h1convert::shad::soso_change_colour(self.h1, tag);
-        if chosen.layout.stem == h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR.stem
-            && change_colour
-                .and_then(|(slot, m)| self.change_colour_bitmap(m, slot))
-                .is_none()
-        {
-            chosen = chosen.fallback.as_deref()?.choose(library)?.clone();
-        }
         // A `soso` is rebuilt for its reflection (converter version 76)
         // or its cut-out base (84, `shad::soso_alpha_tested`): otherwise
-        // the tex_bump copy draws it as before.
+        // the caller builds the ordinary opaque shader.
         let env = [
             h1convert::shad::TEX_BUMP_ENV.stem,
             h1convert::shad::TEX_BUMP_ENV_FOUR_CHANGE_COLOR.stem,
@@ -2038,7 +2042,7 @@ impl<'a> Converter<'a> {
             && !env.contains(&chosen.layout.stem)
             && chosen.layout.stem != h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
         {
-            return None;
+            return Ok(None);
         }
         // On tex_bump_env the base's alpha masks the reflection: a `soso`'s
         // base takes its multipurpose map's red there (converter version
@@ -2053,22 +2057,20 @@ impl<'a> Converter<'a> {
         for (role, m) in &chosen.maps {
             let id = match (role, mask, chosen.extras.brightest_mask) {
                 (h1convert::shad::Role::Base, Some(mask), _) => {
-                    self.masked_bitmap(m.bitmap, mask).or_else(|| self.bitmap(m.bitmap))
+                    self.masked_bitmap(m.bitmap, mask)
                 }
                 // A plasma's picture with its brightness as alpha
                 // (converter version 90, `shad::plasma_shader`).
-                (h1convert::shad::Role::Mask, _, Some(gain)) => self
-                    .brightest_bitmap(m.bitmap, gain)
-                    .or_else(|| self.bitmap(m.bitmap)),
+                (h1convert::shad::Role::Mask, _, Some(gain)) => self.brightest_bitmap(m.bitmap, gain),
                 // The multipurpose map's blue in the slot's channel; no
-                // change-colour map, no tint (the layout's default).
+                // change-colour map is synthesized without its source.
                 (h1convert::shad::Role::ChangeColour, _, _) => match change_colour {
                     Some((slot, _)) => self.change_colour_bitmap(m.bitmap, slot),
                     None => None,
                 },
                 _ => self.bitmap(m.bitmap),
             };
-            let Some(id) = id else { continue };
+            let id = id.ok_or_else(|| Error::Invalid(format!("cannot convert {role:?} bitmap {}", m.bitmap)))?;
             maps.insert(
                 *role,
                 h1convert::shad::Bound {
@@ -2079,7 +2081,7 @@ impl<'a> Converter<'a> {
             );
         }
         if maps.is_empty() {
-            return None;
+            return Ok(None);
         }
         // The cut-out stem's depth and shadow passes kill by its bump
         // map's alpha, not the base's (`h1bitmaps::mask::cutout_bump`):
@@ -2088,12 +2090,11 @@ impl<'a> Converter<'a> {
         // opaque, and the leaves drew as whole dark cards).
         if chosen.layout.stem == h1convert::shad::TEX_BUMP_ALPHA_TEST.stem
             && !maps.contains_key(&h1convert::shad::Role::Bump)
-            && let Some((_, base)) = chosen
-                .maps
-                .iter()
-                .find(|(r, _)| *r == h1convert::shad::Role::Base)
-            && let Some(id) = self.cutout_bump(base.bitmap)
         {
+            let (_, base) = chosen.maps.iter().find(|(role, _)| *role == h1convert::shad::Role::Base)
+                .ok_or_else(|| Error::Invalid("cutout shader has no base map".into()))?;
+            let id = self.cutout_bump(base.bitmap)
+                .ok_or_else(|| Error::Invalid(format!("cannot convert cutout bitmap {}", base.bitmap)))?;
             maps.insert(
                 h1convert::shad::Role::Bump,
                 h1convert::shad::Bound {
@@ -2104,7 +2105,7 @@ impl<'a> Converter<'a> {
             );
         }
         chosen.extras.cinematic_reflection = group == "soso" && env.contains(&chosen.layout.stem);
-        let tree = library.build_with(chosen.layout, &maps, &chosen.extras).ok()?;
+        let tree = library.build_with(chosen.layout, &maps, &chosen.extras)?;
         self.cached(
             tag,
             Converted {
@@ -2113,7 +2114,7 @@ impl<'a> Converter<'a> {
                 raw: Vec::new(),
             },
         )
-        .ok()
+        .map(Some)
     }
 
     /// Rebuild a numeric `schi` as one animated shader per digit using
@@ -2122,52 +2123,55 @@ impl<'a> Converter<'a> {
     fn counter_shader(
         &mut self,
         library: &h1convert::shad::Library,
-        id: h1map::TagId,
+        tag: &Tag,
         permutation: i16,
         loaded: Option<i16>,
-    ) -> Option<TagId> {
-        let tag = self.h1.tag(id).ok()?;
+    ) -> Result<Option<TagId>> {
         if tag.group != h1map::Group::new(b"schi") {
-            return None;
+            return Ok(None);
         }
-        let key = (id.0, permutation, loaded);
-        if let Some(t) = self.counter_shaders.get(&key) {
-            return *t;
+        let key = (tag.id.0, permutation, loaded);
+        if let Some(id) = self.counter_shaders.get(&key) {
+            return Ok(Some(*id));
         }
-        let tag = tag.clone();
-        let out = (|| {
-            let n = h1convert::shad::chicago_numeric(self.h1, &tag)?;
-            let input = n
-                .countdown_digit(permutation)
-                .or_else(|| n.ammunition_digit(permutation, loaded?))?;
-            let s = h1convert::shad::counter_shader(&tag.name, &n, input);
-            let digits = self.bitmap(n.bitmap)?;
-            let maps = HashMap::from([(
-                h1convert::shad::Role::Base,
-                h1convert::shad::Bound {
-                    id: digits,
-                    scale: n.scale,
-                    lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
-                },
-            )]);
-            let tree = library.build_with(s.layout, &maps, &s.extras).ok()?;
-            let place = input.rsplit('_').next().unwrap_or(input);
-            Some(self.tree.push(
-                &format!("{}_{place}", tag.name),
-                Converted {
-                    group: FourCC(*b"shad"),
-                    root: tree,
-                    raw: Vec::new(),
-                },
-            ))
-        })();
-        self.counter_shaders.insert(key, out);
-        out
+        let flags = self.h1.tag_data(tag)?.get(h1convert::shad::CHICAGO_FLAGS)
+            .ok_or(Error::Truncated("Chicago shader flags"))?;
+        if flags & h1convert::shad::CHICAGO_NUMERIC == 0 {
+            return Ok(None);
+        }
+        let n = h1convert::shad::chicago_numeric(self.h1, tag)
+            .ok_or_else(|| Error::Invalid("unreadable numeric Chicago stage".into()))?;
+        let Some(input) = n.countdown_digit(permutation)
+            .or_else(|| n.ammunition_digit(permutation, loaded?)) else {
+            return Ok(None);
+        };
+        let s = h1convert::shad::counter_shader(&tag.name, &n, input);
+        let digits = self.bitmap(n.bitmap)
+            .ok_or_else(|| Error::Invalid(format!("unreadable counter bitmap {}", n.bitmap)))?;
+        let maps = HashMap::from([(
+            h1convert::shad::Role::Base,
+            h1convert::shad::Bound {
+                id: digits,
+                scale: n.scale,
+                lod_offset: h1convert::shad::h1_lod_offset(self.h1, n.bitmap),
+            },
+        )]);
+        let root = library.build_with(s.layout, &maps, &s.extras)?;
+        let place = input.rsplit('_').next().unwrap_or(input);
+        let id = self.tree.push(
+            &format!("{}_{place}", tag.name),
+            Converted { group: FourCC(*b"shad"), root, raw: Vec::new() },
+        );
+        self.counter_shaders.insert(key, id);
+        Ok(Some(id))
     }
 
     /// The Halo 1 bitmap `id`, converted once.
     fn bitmap(&mut self, id: h1map::TagId) -> Option<TagId> {
         let tag = self.h1.tag(id).ok()?;
+        if tag.group != h1map::Group::new(b"bitm") {
+            return None;
+        }
         if let Some(t) = self.done.get(&tag.id.0) {
             return Some(*t);
         }
@@ -2179,7 +2183,7 @@ impl<'a> Converter<'a> {
     /// `soso`'s multipurpose map) as its alpha, DXT5
     /// (`h1bitmaps::mask::red_into_alpha`), `<base name>_reflection_<mask
     /// leaf>`, built once per pair. `None` when either does not read or
-    /// decode (the caller then takes the base as it is), or for a base of
+    /// decode, or for a base of
     /// more than one image.
     fn masked_bitmap(&mut self, base: h1map::TagId, mask: h1map::TagId) -> Option<TagId> {
         let key = (base.0, mask.0);
@@ -2214,8 +2218,7 @@ impl<'a> Converter<'a> {
     /// The flat bump map cut out by the Halo 1 base map `base`'s alpha
     /// (`h1bitmaps::mask::convert_cutout_bump`), `<base
     /// name>_alpha_test_bump`, built once per base. `None` when the base
-    /// does not read or decode, or has more than one image: the stem's
-    /// default bump then stands, uncut, as before.
+    /// does not read or decode.
     fn cutout_bump(&mut self, base: h1map::TagId) -> Option<TagId> {
         if let Some(t) = self.cutout_bumps.get(&base.0) {
             return *t;

@@ -111,17 +111,13 @@ impl Converter<'_> {
         }
         let (h1_model, _) = h1models::model_from_map(self.h1, t, &ModelOptions::default())?;
         let shaders = self.model_shaders(rep, &h1_model, rounds)?;
-        let mut padded = shaders.clone();
-        padded.resize(h1_model.shaders.len(), TagId::NULL);
+        let opts = ModelOptions { shaders, ..ModelOptions::default() };
         let mut mode = h1models::mode::convert_model(
             &h1_model,
             h1models::short_name(&t.name),
-            &ModelOptions {
-                shaders,
-                ..ModelOptions::default()
-            },
+            &opts,
         )?;
-        crate::rebuild::mode_materials(&mut mode.root, &padded)?;
+        crate::rebuild::mode_materials(&mut mode.root, &opts.shaders)?;
         let mode = self.tree.push(&t.name, mode);
         self.render_models.insert(key, mode);
         Ok(mode)

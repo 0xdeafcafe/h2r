@@ -326,9 +326,6 @@ pub enum Lean {
     Everything,
     /// The seat-mapping table.
     SeatTable,
-    /// Halo 1's textures on object models (`h1objects`' shader copies and
-    /// bitmaps; the models draw with the base's model shader).
-    ObjectTextures,
     /// The cutscenes' animation graphs. Gameplay recordings stay installed
     /// ([`cutscenes`]).
     CutsceneData,
@@ -340,10 +337,9 @@ pub enum Lean {
 
 impl Lean {
     /// The steps in order.
-    pub const LADDER: [Lean; 5] = [
+    pub const LADDER: [Lean; 4] = [
         Lean::Everything,
         Lean::SeatTable,
-        Lean::ObjectTextures,
         Lean::CutsceneData,
         Lean::LevelData,
     ];
@@ -528,11 +524,8 @@ fn convert_with<R: Read + Seek>(
     report.bsps.extend(prepared.reports.iter().cloned());
     let bsps = &prepared.bsps;
     let objects_base = if opts.objects || opts.ai {
-        let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
+        let b = phase::time("base templates", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;
-        if lean.leaves_out(Lean::ObjectTextures) {
-            b.model_shader = None;
-        }
         Some(b)
     } else {
         None

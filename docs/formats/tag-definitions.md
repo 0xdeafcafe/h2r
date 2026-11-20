@@ -410,9 +410,8 @@ H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso \
 - `every_scenery_rebuilds_from_its_definition`: 237 scenery objects (the
   ten levels on 05a, the multiplayer maps on coagulation and beavercreek)
   convert; `scen`, `hlmt` and `mode` read back through the definitions,
-  write the same again, pin nothing, and name only converted tags (2
-  materials take the base's model shader, the shader conversion's
-  stand-in for a Halo 1 shader it cannot read); no report holds a
+  write the same again, pin nothing, and name only converted tags. The
+  material check requires every scenery shader to belong to the tree. No report holds a
   template stopgap; the type, bounds, model chain (collision and
   animation exactly where Halo 1 has them), region count and role words
   are as above; every `coll` (109) has a BSP physics slot per BSP; every

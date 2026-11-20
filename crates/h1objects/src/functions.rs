@@ -238,7 +238,7 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
     if f.function != 0 {
         return Err(format!("function {} is not one", f.function));
     }
-    if f.map_to != 0 || f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
+    if f.add != 0 || f.scale_result_by != 0 || f.step_count > 1 || f.sawtooth_count > 1 {
         return Err("a shape past one scaled by an input".into());
     }
     let import = match f.scale_function_by {
@@ -247,12 +247,26 @@ fn one(f: &h1::Function, inputs: &h1::FunctionInputs) -> Result<FunctionSpec, St
             .ok_or_else(|| format!("input {k} has no Halo 2 import"))?,
         k => return Err(format!("scaled by output {}", k - 4)),
     };
+    let data = match f.map_to {
+        0 => bounded(f.bounds_mode, f.bounds)?,
+        // The Sentinel's shield glow source: H1 0x8bf9e selects table
+        // 2 (0x173c65, pow(x, 0.25)); H2 transition 2 uses the same curve.
+        2 if f.bounds_mode == 0 && f.bounds == [0.0, 1.0] => Function {
+            kind: FunctionType::Transition,
+            flags: 0,
+            sub_types: [2; 2],
+            range: [0.0, 1.0],
+            unknown_0c: [0; 8],
+            payload: [0.0f32, 1.0, 0.0, 1.0].into_iter().flat_map(f32::to_le_bytes).collect(),
+        }.to_bytes(),
+        mode => return Err(format!("unsupported map-to {mode} with bounds {:?}", f.bounds)),
+    };
     Ok(FunctionSpec {
         flags: f.flags & 0b101,
         import: import.into(),
         export: String::new(),
         turn_off_with: String::new(),
-        data: bounded(f.bounds_mode, f.bounds)?,
+        data,
     })
 }
 

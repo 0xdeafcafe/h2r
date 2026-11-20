@@ -1677,8 +1677,9 @@ glow an object's A output animates (the jackal's shield) holds at its
 lower bound; a plasma whose last stage is another sum (the jackal's and
 the generator's shields add `v1 × (1 − picture.a)`) gets no glow.
 
-A material with no Halo 1 base map to read names the
-base's model shader itself; Blood Gulch has none. The sky model's
+A model material with a null base uses the matching H1 shader rebuild
+(role-audit.md). An unsupported material fails conversion with the map
+and source shader name. The sky model's
 materials name copies of the base's sky shaders drawing Halo 1's sky
 bitmaps at Halo 1's scale (`h1convert::sky_shaders`, sky.md "The
 model's shaders"), or the base sky's own shader where one doesn't convert

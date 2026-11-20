@@ -1359,6 +1359,15 @@ fn range16(start: u16, count: u16) -> Val {
 /// Writes `tree` with `props` (property `k` driving component `k`) into
 /// the record's postprocess.
 fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> {
+    animate_ranges(rec, tree, props, props.len())
+}
+
+/// Each group supplies one property range. Texture transforms consume several
+/// components together, while scalar register writes each consume one.
+fn animate_ranges(rec: &mut Record, tree: &AnimTree, props: &[Property], width: usize) -> Result<()> {
+    if !(1..=127).contains(&width) || props.len() > 512 || props.len() % width != 0 {
+        return Err(Error::Invalid("invalid shader animation property range"));
+    }
     let def = shad_def();
     let ppdef = child(def, "postprocess")?;
     let Some(Val::Block(pps)) = rec.at("postprocess").cloned() else {
@@ -1432,7 +1441,7 @@ fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> 
         .map(|k| {
             mk(
                 "property_refs",
-                &[("property", Val::Int(i64::from(k))), ("component", Val::Int(i64::from(k)))],
+                &[("property", Val::Int(i64::from(k))), ("component", Val::Int(i64::from(k % width as u16)))],
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1440,7 +1449,9 @@ fn animate(rec: &mut Record, tree: &AnimTree, props: &[Property]) -> Result<()> 
     set(
         &mut pp,
         "property_ranges",
-        Val::Block(vec![mk("property_ranges", &[("property_refs", range16(0, n))])?]),
+        Val::Block((0..n).step_by(width).map(|start| {
+            mk("property_ranges", &[("property_refs", range16(start, width as u16))])
+        }).collect::<Result<Vec<_>>>()?),
     )?;
     let binds = tree
         .bindings

@@ -891,9 +891,8 @@ The bound is `0xc24000`; the base alone is `0xaed000`.
   polyhedra since 43 (tag-definitions.md, Physics models from Halo 1).
 - **Historical pinned b40.** The pinned conversion reached the tag memory bound. A level over
   it is converted again leaner (`h1campaign::convert`, `Lean`), dropping
-  in turn: the seat table (`SeatTable`), Halo 1's textures on object models
-  (`ObjectTextures`), the cutscenes' graphs and
-  recordings (`CutsceneData`), the level data (`LevelData`). A level
+  the seat table (`SeatTable`), then cutscene graphs (`CutsceneData`), then
+  level data (`LevelData`). Object materials and gameplay recordings stay installed. A level
   still over the tag memory bound places fewer devices
   (`Options::devices`): no light fixtures (lamp models that give no
   light in Halo 2), then none. That pinned build

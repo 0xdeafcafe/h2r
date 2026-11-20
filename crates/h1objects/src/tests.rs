@@ -2082,6 +2082,18 @@ fn halo1_functions_become_halo2_functions_by_their_inputs() {
     assert_eq!(primary_scale(0, &got), "");
 }
 
+#[test]
+fn sentinel_shield_glow_exports_the_fourth_root_of_recent_damage() {
+    let inputs = crate::h1::FunctionInputs { object: [4, 0, 0, 0], ..Default::default() };
+    let mut glow = h1_function(1, 0, [0.0, 1.0]);
+    glow.map_to = 2;
+    let specs = crate::functions::convert(&[glow], &inputs, &mut Vec::new());
+    let spec = specs[0].as_ref().unwrap();
+    assert_eq!((spec.import.as_str(), spec.export.as_str()), ("current_shield_damage", "a_out"));
+    let function = tags::effects::function::Function::parse(&spec.data).unwrap();
+    assert!((function.evaluate(0.0625, 0.0) - 0.5).abs() < 0.01);
+}
+
 fn bounded_for_test(mode: u16, bounds: [f32; 2]) -> Vec<u8> {
     let inputs = crate::h1::FunctionInputs { unit: [1, 0, 0, 0], ..Default::default() };
     let got = crate::functions::convert(&[h1_function(1, mode, bounds)], &inputs, &mut Vec::new());

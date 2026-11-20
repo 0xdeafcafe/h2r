@@ -145,12 +145,74 @@ the matching H1 disc maps.
 | a50, d20 | `levels\a50\devices\small door\small door` | 1 | `schi door lock symbols` |
 | c10, c20, c40, d40 | `characters\sentinel\sentinel` | 1 | `spla sentinel_shield` |
 
-**Remaining.** The small door's Chicago shader has one additive stage
-with a null bitmap. Its own setup selects default 2D image 0 (black) at
-`0x67cc8..0x67cd8`. The Sentinel plasma shader has two non-null 3D
-noise inputs, bound at `0x6d557` and `0x6d5c2`. Both still reach the
-stand-in. The role audit records those two source shaders by group and
-path. Any `soso` material that reaches the stand-in fails the audit.
+**Built, small door.** Both caches name the same `schi` in material 1.
+Neither uses `scex`. The block at `+0x54` has one 0xdc-byte stage. Its
+colour and alpha functions both select the current map (0), its scale is
+(1, 1), its U, V and rotation functions are constant (0), and its bitmap
+datum is null. There are no extra layers. The framebuffer blend is
+additive (3). At `0x67c43..0x67cd8` the draw requests a 2D texture and
+image zero. The null branch at `0x803c3` reads the rasterizer bitmap at
+`+0xb8`. In both maps that is `globals\globals` block `+0x134`, reference
+`+0xac`, naming `rasterizer\default 2d`. Image zero is 4×4 opaque black.
+The new instance binds that converted H1 bitmap to H2's additive
+`one_add_illum` template. The stage adds zero RGB and leaves depth intact. The adjacent floor-symbol
+material in d20 has four source images. Its cutout bump now preserves the
+alpha mask for every image and mip.
+
+**Built, Sentinel.** All four caches bind the same H1 bitmap to both noise
+inputs at `+0xd4` and `+0x11c`. The image is a swizzled 32×32×32 A8Y8
+volume with five lower mip levels. H1 binds both stages with linear
+filtering and U/V/W wrap at `0x6d546..0x6d628`. The following rows give
+the transform of the position before each lookup. Time is in seconds.
+
+| Stage | Scale | Translation |
+| --- | ---: | --- |
+| 0 | 2 | (2, 0, −0.3) × time / 2.1 |
+| 1 | 1 | (0, 2, 0.5) × time / 3.2 |
+
+The XBE writes the rows at `0x6d73f..0x6d867`. The H2 instance writes
+their XYZ coefficients and animates the W components at the same rates,
+modulo one texture repeat. The H1 combiner at `0x6d8ed..0x6d99f`
+takes two differences biased by one half, Y0−Y1 and A1−A0. The first
+selects which difference to square and multiply by four. Calling that
+saturated result `s`, the bright core is `max(2s−1, 0)²`. The output RGB
+is `s² × saturate(s × tint + core/2)`. Source alpha is fog visibility
+times the angle-interpolated brightness times object output A. H1 sets
+source-alpha/one blend, RGB writes and read-only depth at `0x6d633..0x6d6e5`.
+
+The authored perpendicular RGBA is approximately (0.17647, 1, 0.98039, 1)
+and the parallel RGBA is (0.06275, 0, 0.31765, 1). At `0x6d867..0x6d8da`
+the XBE uploads perpendicular minus parallel in c[−83] and parallel
+in c[−82]. Instructions 37–38 of the plasma vertex program compute
+`c[−83] + dot(normal, eye) × c[−82]`. The effective facing endpoint
+is perpendicular. The effective grazing endpoint is approximately
+(0.11373, 1, 0.66274, **0**). H2's two vertex attributes receive those
+effective endpoints. Displacement is zero.
+The Sentinel's `shield glow source` maps recent shield damage through
+a fourth root (H1 `0x8bf9e`, table 2 at `0x173c65`). The converted biped
+exports the same curve as `a_out` from H2's `current_shield_damage`.
+
+The layer-15 `stem`, `spas` and `shad` are authored from the definitions.
+H2's retail plasma shield on 05a_deltaapproach establishes the two native
+3D stages and `transparent_generic_offset` vertex program. The rebuilt
+pass uses the H1 noise channels, colour equation and blend. The H2 vertex
+program supplies the model vertex format, skinning, view direction and fog.
+H1 projects the volume coordinates from the input position before skinning.
+H2's rigid and skinned model variants project the posed position. Animation
+can therefore move the noise over a deforming surface. H2 also clamps
+negative normal–eye dot products to zero. The H1 plasma vertex
+program at `0x1e2c70` normalizes the normal and uses the signed dot before
+output clamping. Back-facing normals can therefore produce different tints.
+Fog and the underlying recent-damage value follow the H2 engine.
+
+**Built, conversion errors.** Model materials require a rebuilt shader.
+An unsupported source fails with its map, group and tag path. A missing
+datum identifies the referring object, material slot and datum. The
+object tree keeps its first material error so a caller that collects
+placement errors cannot install an incomplete map. The campaign lean
+ladder keeps model materials at every step. The audit accepts the native
+player emblem added by the converter only in an appended slot. Each original slot must name its
+converted H1 shader or a permutation-specific numeric shader in the same tree.
 
 ## Running the audit
 
@@ -168,11 +230,12 @@ all supported object roots and their rebuilt dependencies on
 H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" H1_MAPS=all cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
 ```
 
-The shader regressions check the synthetic combiner equations and the
-15 converted model slots on the owner's discs. Run from the integrated
-checkout with `disc/` present.
+The shader regressions cover the combiner equations, named conversion errors,
+and all 21 affected material slots on the owner's discs. Run from the
+integrated checkout with `disc/` present.
 
 ```sh
-cargo test --release -p h1convert --lib model_defaults
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test model_shaders_disc campaign_null_base_model_materials_use_their_own_shaders -- --ignored
+cargo test --release -p h1bitmaps -p h1convert -p h1objects --lib
+cargo test --release -p h1objects --test weapon_counter
+H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" cargo test --release -p h1objects --test model_shaders_disc -- --ignored
 ```

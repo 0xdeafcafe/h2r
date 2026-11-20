@@ -255,23 +255,21 @@ pub fn cutout_bump(base: &Image, base_px: &[u8]) -> Result<(Image, Vec<u8>)> {
     Ok((out_img, out))
 }
 
-/// The single-image Halo 1 bitmap `tag` as [`cutout_bump`]'s bump map,
-/// converted (DXT5, format word [`INTERPOLATED_ALPHA`]).
+/// A flat bump with the same cutout and image sequences as the source bitmap.
 pub fn convert_cutout_bump(map: &h1map::H1Map, tag: &h1map::Tag) -> Result<h1models::Converted> {
-    let bm = h1map::bitmap::Bitmap::read(map, tag)?;
-    if bm.images.len() != 1 {
-        return Err(Error::Unsupported(format!(
-            "a cut-out bump of {} images",
-            bm.images.len()
-        )));
+    let mut baked = h1map::bitmap::Bitmap::read(map, tag)?;
+    if baked.images.is_empty() {
+        return Err(Error::Invalid("empty cutout bitmap".into()));
     }
-    let (img, px) = cutout_bump(&bm.images[0], bm.pixels(map, 0)?)?;
-    let mut baked = bm.clone();
-    baked.images[0] = img;
+    let mut pixels = Vec::with_capacity(baked.images.len());
+    for i in 0..baked.images.len() {
+        let (image, bytes) = cutout_bump(&baked.images[i], baked.pixels(map, i)?)?;
+        baked.images[i] = image;
+        pixels.push(bytes);
+    }
     baked.encoding = INTERPOLATED_ALPHA;
-    let mut px = Some(px);
-    let (conv, _) = crate::convert::convert_with(&baked, |_| Ok(px.take().unwrap_or_default()))?;
-    Ok(conv)
+    let (converted, _) = crate::convert::convert_with(&baked, |i| Ok(std::mem::take(&mut pixels[i])))?;
+    Ok(converted)
 }
 
 /// DXT5 blocks of a `w` x `h` level whose colour half is `colour` in

@@ -398,51 +398,18 @@ impl Retexture {
     }
 }
 
-/// Converted object models' shaders: [`shad::TEX_BUMP`] rebuilt from each
-/// Halo 1 model shader's base and detail maps ([`ModelTemplate::copy`]),
-/// and a stand-in for shader families the model converter cannot yet rebuild.
+/// The compiled templates and rasterizer resources used to build model materials.
 #[derive(Debug, Clone)]
 pub struct ModelTemplate {
-    /// A base `objects\` shader drawn with [`MODEL_TEMPLATE`]: what a
-    /// material whose source shader is unsupported names (never NONE).
-    pub shader: TagId,
-    pub name: String,
     pub library: shad::Library,
 }
 
-/// The stem converted model shaders draw with.
 pub const MODEL_TEMPLATE: &str = shad::TEX_BUMP.stem;
 
-/// The base's stems for model shaders, and the first `objects\` shader
-/// (by name) drawn with [`MODEL_TEMPLATE`] as the stand-in. `None` when
-/// the base lacks either.
-pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> Result<Option<ModelTemplate>> {
+pub fn model_template<R: Read + Seek>(base: &mut Map<R>) -> ModelTemplate {
     let mut library = shad::Library::read(base);
-    if !library.has(&shad::TEX_BUMP) {
-        return Ok(None);
-    }
-    let mut candidates: Vec<(String, TagId)> = base
-        .tags()
-        .iter()
-        .filter(|t| t.group == SHAD && t.location.is_some())
-        .filter_map(|t| Some((t.name.clone()?, t.id)))
-        .filter(|(n, _)| n.starts_with("objects\\"))
-        .collect();
-    candidates.sort_by(|a, b| a.0.cmp(&b.0));
-    for (name, id) in candidates {
-        let Ok((template, _)) = scenario_edit::scene::shader_bitmaps(base, id) else {
-            continue;
-        };
-        if template == MODEL_TEMPLATE {
-            library.load_model_lighting(base);
-            return Ok(Some(ModelTemplate {
-                shader: id,
-                name,
-                library,
-            }));
-        }
-    }
-    Ok(None)
+    library.load_model_lighting(base);
+    ModelTemplate { library }
 }
 
 impl ModelTemplate {
@@ -451,13 +418,13 @@ impl ModelTemplate {
     /// times (u, v) over the base, its bump map flat.
     /// The datums are [`map::build::FixupKind::TagId`] fixups, so a datum
     /// not yet installed (an `h1objects` tree's local one) is filled in
-    /// later. Returns the tree and the roles Halo 1 supplied.
-    pub fn copy(
+    /// later.
+    pub fn build_opaque(
         &self,
         base: TagId,
         detail: Option<TagId>,
         detail_scale: [f32; 2],
-    ) -> (Block, Vec<&'static str>) {
+    ) -> Result<Block> {
         let bound = |id, scale| shad::Bound {
             id,
             scale,
@@ -465,16 +432,10 @@ impl ModelTemplate {
         };
         let mut maps = HashMap::new();
         maps.insert(shad::Role::Base, bound(base, [1.0, 1.0]));
-        let mut roles = vec!["base"];
         if let Some(d) = detail {
             maps.insert(shad::Role::Detail, bound(d, detail_scale));
-            roles.push("detail");
         }
-        let tree = self
-            .library
-            .build(&shad::TEX_BUMP, &maps)
-            .expect("model_template checked the stem and defaults");
-        (tree, roles)
+        self.library.build(&shad::TEX_BUMP, &maps)
     }
 }
 
