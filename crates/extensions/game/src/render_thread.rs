@@ -227,6 +227,21 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "updates lobby widgets through guest calls and uses a game-thread reentry guard",
     ),
     (
+        "bots",
+        "PARTY_LEAVE",
+        "retires the departing lobby's Clankers through guest session calls on the game thread",
+    ),
+    (
+        "bots",
+        "MATCHMAKING_CANCEL_CONFIRMED",
+        "retires the departing lobby's Clankers through guest session calls on the game thread",
+    ),
+    (
+        "connection-bars",
+        "SCOREBOARD_CONNECTION_BARS",
+        "fills the scoreboard badge after the body runs, a Rust continuation the fallback cannot resume",
+    ),
+    (
         "clankermatch",
         "*",
         "the OptiMatch playlist list's rows and press, and the Live menu's Quickmatch press: \
