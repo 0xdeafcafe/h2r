@@ -17,8 +17,6 @@ runtime.workspace = true
 tags.workspace = true
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
 timeline = { path = "../../runtime/timeline" }
-# Shadow checks of the sim ports against the lifted original (shadow.rs).
-lifted = { path = "../../runtime/lifted" }
 # The world skip and camera read (pure: no GPU, no map reader).
 native-render = { path = "../../rewrites/native-render", default-features = false, optional = true }
 # The frame step's scene (docs/graphics/framescene.md).
