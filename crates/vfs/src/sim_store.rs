@@ -13,13 +13,12 @@
 //!
 //! The store file is a small fixed header, a sorted range index, and the
 //! packed bytes of those ranges, nothing else. The serving side keeps only
-//! the index in memory and reads the data with positioned reads, so
-//! nothing but the bytes in flight is ever resident.
+//! the index in memory and serves the packed data from a read-only mapping.
 
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -58,8 +57,7 @@ pub mod record {
             .as_ref()
     }
 
-    /// The file recordings are written to: the environment's, or the one a
-    /// test installed.
+    /// The file selected for this process's recordings.
     fn target() -> Option<PathBuf> {
         static TARGET: OnceLock<Option<PathBuf>> = OnceLock::new();
         TARGET
@@ -67,28 +65,8 @@ pub mod record {
                 std::env::var_os(super::RECORD_ENV)
                     .filter(|v| !v.is_empty())
                     .map(PathBuf::from)
-                    .or_else(test_target::take)
             })
             .clone()
-    }
-
-    /// A test's stand-in for the environment: read once, like the real one.
-    #[cfg(test)]
-    mod test_target {
-        use std::sync::Mutex;
-        static SET: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
-        pub(super) fn take() -> Option<std::path::PathBuf> {
-            SET.lock().unwrap_or_else(|e| e.into_inner()).take()
-        }
-        pub(super) fn set(path: std::path::PathBuf) {
-            *SET.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
-        }
-    }
-    #[cfg(not(test))]
-    mod test_target {
-        pub(super) fn take() -> Option<std::path::PathBuf> {
-            None
-        }
     }
 
     /// Whether recording is on: [`RECORD_ENV`] names a file. Decided once.
@@ -105,20 +83,24 @@ pub mod record {
         let Some(all) = state() else {
             return;
         };
+        let mut all = all.lock().unwrap_or_else(|e| e.into_inner());
+        insert(&mut all, device, path, at, len);
+    }
+
+    fn insert(all: &mut Spans, device: &str, path: &str, at: u64, len: u64) {
         let key = if path.is_empty() {
             device.to_owned()
         } else {
             format!("{device}\\{path}")
         };
         let end = at + len;
-        let mut all = all.lock().unwrap_or_else(|e| e.into_inner());
         let spans = all.entry(key).or_default();
         // Merge with every span this one touches, so the map stays the size
         // of the covered bytes' boundaries, not of the reads.
         let start = spans
             .range(..at)
             .next_back()
-            .filter(|(_, &e)| e >= at)
+            .filter(|&(_, &e)| e >= at)
             .map_or(at, |(&s, _)| s);
         let mut last = end;
         while let Some((&s, &e)) = spans.range(..=last).next_back() {
@@ -138,13 +120,15 @@ pub mod record {
         let Some(file) = target() else {
             return;
         };
-        let mut merged: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
         if let Some(all) = state() {
-            let all = all.lock().unwrap_or_else(|e| e.into_inner());
-            for (path, spans) in all.iter() {
-                merged.insert(path.clone(), spans.iter().map(|(&s, &e)| (s, e)).collect());
-            }
+            flush_to(&file, &all.lock().unwrap_or_else(|e| e.into_inner()));
         }
+    }
+
+    fn flush_to(file: &Path, all: &Spans) {
+        let mut merged: BTreeMap<String, Vec<(u64, u64)>> = all.iter()
+            .map(|(path, spans)| (path.clone(), spans.iter().map(|(&s, &e)| (s, e)).collect()))
+            .collect();
         match File::open(&file) {
             Ok(existing) => match parse_reads(BufReader::new(existing)) {
                 Ok(previous) => {
@@ -187,12 +171,11 @@ pub mod record {
     pub(in crate::sim_store) mod tests {
         use super::*;
 
-        /// Drive note+flush against an installed target, not the process
-        /// environment (which other tests must not see set).
+        /// Flush a fresh recording, as a separate run would.
         pub fn note_and_flush(file: &Path, path: &str, at: u64, len: u64) {
-            test_target::set(file.to_path_buf());
-            note("\\Device\\CdRom0", path, at, len);
-            flush();
+            let mut spans = Spans::new();
+            insert(&mut spans, "\\Device\\CdRom0", path, at, len);
+            flush_to(file, &spans);
         }
     }
 }
@@ -203,7 +186,8 @@ pub fn parse_reads<R: BufRead>(
 ) -> std::result::Result<BTreeMap<String, Vec<(u64, u64)>>, String> {
     let mut out: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut lines = input.lines();
-    let first = lines.next().ok_or("the recording is empty")??;
+    let first = lines.next().ok_or("the recording is empty")?
+        .map_err(|e| format!("line 1: {e}"))?;
     if first != READS_FORMAT {
         return Err(format!(
             "the recording's first line is not {READS_FORMAT:?}"
@@ -298,16 +282,21 @@ impl StoreIndex {
             return Err("not a sim store (the magic differs)".into());
         }
         let logical_len = field(8)?;
-        let count = field(16)? as usize;
-        if field(20)? != 0 {
+        let count = field(16)?;
+        if count >> 32 != 0 {
             return Err("the store file's format is newer than this build".into());
         }
         if count > 1 << 20 {
             return Err("the store file claims more ranges than any map has".into());
         }
+        let count = count as usize;
+        let index_len = HEADER + count * ROW;
+        if bytes.len() < index_len {
+            return Err("the store index is truncated".into());
+        }
         let mut ranges = Vec::with_capacity(count);
-        let mut covered = 0u64;
-        let data_base = (HEADER + count * ROW) as u64;
+        let mut logical_end = 0;
+        let mut data_end = index_len as u64;
         for i in 0..count {
             let at = HEADER + i * ROW;
             let range = Range {
@@ -318,14 +307,17 @@ impl StoreIndex {
             if range.len == 0 {
                 return Err(format!("range {i} is empty"));
             }
-            if range.logical < covered {
+            if range.logical < logical_end {
                 return Err(format!("range {i} overlaps or precedes its neighbour"));
             }
-            if range.data != data_base + covered {
+            if range.data != data_end {
                 return Err(format!("range {i}'s data is not packed in order"));
             }
-            covered = range.logical + range.len;
-            if covered > logical_len {
+            data_end = data_end.checked_add(range.len)
+                .ok_or_else(|| format!("range {i} overflows the store"))?;
+            logical_end = range.logical.checked_add(range.len)
+                .ok_or_else(|| format!("range {i} overflows the map"))?;
+            if logical_end > logical_len {
                 return Err(format!("range {i} runs past the map's length"));
             }
             ranges.push(range);
@@ -340,7 +332,6 @@ impl StoreIndex {
         out.write_all(&MAGIC)?;
         out.write_all(&self.logical_len.to_le_bytes())?;
         out.write_all(&(self.ranges.len() as u64).to_le_bytes())?;
-        out.write_all(&0u64.to_le_bytes())?;
         let mut data = (HEADER + self.ranges.len() * ROW) as u64;
         for range in &self.ranges {
             out.write_all(&range.logical.to_le_bytes())?;
@@ -363,7 +354,7 @@ impl StoreIndex {
     /// Whether `[at, at + len)` lies within the ranges. A read may span
     /// ranges; every byte between them must be covered.
     fn covers(&self, at: u64, len: u64) -> bool {
-        let mut end = at.saturating_add(len).min(self.logical_len);
+        let end = at.saturating_add(len).min(self.logical_len);
         let mut at = at;
         while at < end {
             match self.containing(at) {
@@ -397,38 +388,19 @@ pub struct Store {
 impl Store {
     pub fn open(path: impl Into<PathBuf>) -> std::result::Result<Self, OpenError> {
         let path = path.into();
-        let mut file = File::open(&path).map_err(|e| match e.kind() {
+        let file = File::open(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => OpenError::Absent,
             _ => OpenError::Broken(e.to_string()),
         })?;
         let broken = |e: String| OpenError::Broken(format!("{}: {e}", path.display()));
-        let mut head = [0u8; HEADER];
-        file.read_exact(&mut head)
-            .map_err(|e| broken(e.to_string()))?;
-        if head[..8] != MAGIC {
-            return Err(broken("not a sim store (the magic differs)".into()));
-        }
-        let count = u64::from_le_bytes(head[16..24].try_into().expect("eight bytes")) as usize;
-        let mut whole = head.to_vec();
-        whole.resize(HEADER + count * ROW, 0);
-        if count > 0 {
-            file.read_exact(&mut whole[HEADER..])
-                .map_err(|e| broken(e.to_string()))?;
-        }
-        let index = StoreIndex::parse(&whole).map_err(broken)?;
-        // The store is immutable and small (only recorded bytes): mapping it
-        // shares its pages with every other process using the same store.
-        let len = file.metadata().map_err(|e| broken(e.to_string()))?.len();
-        let wanted = (HEADER + count * ROW) as u64 + index.stored_len();
-        if len != wanted {
+        let map = crate::disc::map_immutable(&file).map_err(|e| broken(e.to_string()))?;
+        let index = StoreIndex::parse(&map).map_err(broken)?;
+        let wanted = index.ranges.last().map_or(HEADER as u64, |r| r.data + r.len);
+        if map.len() as u64 != wanted {
             return Err(broken(format!(
-                "the store file is {len} bytes, its index says {wanted}"
+                "the store file is {} bytes, its index says {wanted}", map.len()
             )));
         }
-        // SAFETY: the file is not written while mapped (stores are
-        // operator-provisioned immutable, like verified server maps).
-        let map =
-            unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|e| broken(e.to_string()))?;
         Ok(Self { path, map, index })
     }
 
@@ -468,7 +440,7 @@ impl Store {
                 .expect("covers() checked every byte");
             let logical = at + done as u64;
             let piece = (range.logical + range.len - logical).min((len - done) as u64) as usize;
-            let data = range.data + logical - range.logical;
+            let data = range.data + (logical - range.logical);
             let bytes = usize::try_from(data)
                 .ok()
                 .and_then(|at| self.map.get(at..)?.get(..piece))
@@ -485,7 +457,7 @@ impl Store {
 // ---------------------------------------------------------------------------
 
 /// What [`build`] wrote.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Built {
     pub map: String,
     pub ranges: usize,
@@ -621,7 +593,8 @@ pub fn recorded_maps(reads: &BTreeMap<String, Vec<(u64, u64)>>) -> Vec<String> {
     let mut names: Vec<String> = reads
         .keys()
         .filter_map(|path| {
-            let (dir, name) = path.to_ascii_lowercase().rsplit_once('\\')?;
+            let path = path.to_ascii_lowercase();
+            let (dir, name) = path.rsplit_once('\\')?;
             (dir.ends_with("\\maps") && name.ends_with(".map"))
                 .then(|| name[..name.len() - 4].to_owned())
         })
@@ -775,7 +748,7 @@ impl<B: Backend> Backend for SimStoreBackend<B> {
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let stored = self
             .ensure(path)
-            .is_some_and(|key| matches!(self.stores.get(&key), Some(Held::Store(_))));
+            .is_some_and(|key| matches!(self.stores.get(&key), Some(Held::Store(_) | Held::Broken(_))));
         if stored {
             return None;
         }
@@ -817,9 +790,9 @@ mod tests {
         let mut image = vec![0u8; 42 * 2048];
         image[32 * 2048..][..20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
         image[32 * 2048 + 20..][..4].copy_from_slice(&33u32.to_le_bytes());
-        let dirent = |left: u16, sector: u32, size: u32, directory: bool, name: &str| -> Vec<u8> {
+        let dirent = |right: u16, sector: u32, size: u32, directory: bool, name: &str| -> Vec<u8> {
             let mut b = vec![0; 14];
-            b[2..4].copy_from_slice(&left.to_le_bytes());
+            b[2..4].copy_from_slice(&right.to_le_bytes());
             b[4..8].copy_from_slice(&sector.to_le_bytes());
             b[8..12].copy_from_slice(&size.to_le_bytes());
             b[12] = if directory { 0x10 } else { 0 };
@@ -830,11 +803,10 @@ mod tests {
         };
         let fonts = dirent(0, 36, 6, false, "font");
         let maps = dirent(0, 37, LEVEL_LEN as u32, false, "level.map");
-        let root = [
-            dirent((fonts.len() / 4) as u16, 34, 2048, true, "fonts"),
-            dirent((maps.len() / 4) as u16, 35, 2048, true, "maps"),
-        ]
-        .concat();
+        let mut root = dirent(0, 34, fonts.len() as u32, true, "fonts");
+        let right = (root.len() / 4) as u16;
+        root[2..4].copy_from_slice(&right.to_le_bytes());
+        root.extend(dirent(0, 35, maps.len() as u32, true, "maps"));
         image[32 * 2048 + 24..][..4].copy_from_slice(&(root.len() as u32).to_le_bytes());
         image[33 * 2048..][..root.len()].copy_from_slice(&root);
         image[34 * 2048..][..fonts.len()].copy_from_slice(&fonts);
@@ -986,6 +958,7 @@ mod tests {
             backend.read_at("maps\\level.map", 0, &mut [0u8; 4]),
             Err(Error::FileCorrupt)
         );
+        assert!(backend.host_file("maps\\level.map").is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

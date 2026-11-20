@@ -11,6 +11,7 @@ pub fn usage() -> MemoryUsage {
     MemoryUsage {
         peak_rss_mib: peak_rss_mib(),
         footprint_mib: footprint_mib(),
+        ..MemoryUsage::default()
     }
 }
 
@@ -45,16 +46,17 @@ fn peak_rss_mib() -> u64 {
 fn footprint_mib() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
-        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        let mut info = std::mem::MaybeUninit::<libc::rusage_info_v4>::uninit();
         // SAFETY: a pointer to that struct, as the flavor's buffer.
         let ok = unsafe {
             libc::proc_pid_rusage(
                 std::process::id() as libc::c_int,
                 libc::RUSAGE_INFO_V4,
-                &mut info as *mut _ as libc::rusage_info_t,
+                info.as_mut_ptr().cast(),
             )
         } == 0;
-        ok.then(|| info.ri_phys_footprint / (1 << 20))
+        // SAFETY: on success the kernel filled the requested v4 structure.
+        ok.then(|| unsafe { info.assume_init() }.ri_phys_footprint / (1 << 20))
     }
     #[cfg(not(target_os = "macos"))]
     {

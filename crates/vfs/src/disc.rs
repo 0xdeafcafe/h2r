@@ -7,7 +7,6 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::Path,
-    sync::OnceLock,
 };
 
 /// Indexes only XDVDFS directory records. Reads seek into the original image; no extraction or full-file buffering.
@@ -183,17 +182,19 @@ impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
     }
 }
 
-/// Only the DVD input in the immutable-disc profile is mapped. The title
-/// may replace or truncate its writable cache files and installed maps.
-// The crate denies unsafe code; this read-only map is its one exception.
+/// Map an immutable host input (a disc, a verified map or a sim store).
 #[allow(unsafe_code)]
-pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
-    if !file.metadata().ok()?.is_file() {
-        return None;
+pub(crate) fn map_immutable(file: &File) -> std::io::Result<memmap2::Mmap> {
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("expected a regular file"));
     }
-    // SAFETY: The host-light input is an immutable disc image or immutable
-    // DVD files. Active files must remain intact until the run ends.
-    unsafe { memmap2::MmapOptions::new().map(file) }.ok()
+    // SAFETY: these inputs remain intact for the mapping's lifetime.
+    // The store builder replaces files by rename, including on a rebuild.
+    unsafe { memmap2::MmapOptions::new().map(file) }
+}
+
+pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
+    map_immutable(file).ok()
 }
 
 /// A whole-file read-only mapping whose bulk reads drop their pages after
@@ -203,7 +204,8 @@ pub(crate) fn map_read_only(file: &File) -> Option<memmap2::Mmap> {
 /// "Light host"). Small reads keep their pages.
 pub(crate) struct MappedDisc {
     map: memmap2::Mmap,
-    /// A descriptor of the mapped file, for `posix_fadvise` off Linux.
+    /// A descriptor of the mapped file, for Linux page-cache advice.
+    #[cfg(target_os = "linux")]
     file: Option<File>,
 }
 
@@ -217,6 +219,7 @@ impl MappedDisc {
     pub(crate) fn new(file: &File) -> Option<Self> {
         map_read_only(file).map(|map| Self {
             map,
+            #[cfg(target_os = "linux")]
             file: file.try_clone().ok(),
         })
     }
@@ -226,28 +229,15 @@ impl MappedDisc {
     /// so the bytes are the same either way.
     pub(crate) fn read(&self, offset: u64, buffer: &mut [u8]) -> Result<()> {
         copy_mapped(&self.map, offset, buffer)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if buffer.len() >= BULK_READ
-            && let Some((start, len)) = page_span(offset, buffer.len() as u64, page_size())
+            && let Some((start, len)) =
+                page_span(offset, buffer.len() as u64, rustix::param::page_size() as u64)
         {
-            drop_mapped_pages(&self.map, self.file.as_ref(), start, len);
+            self.drop_mapped_pages(start, len);
         }
         Ok(())
     }
-}
-
-/// The host's page size (16 KiB on Apple silicon, 4 KiB elsewhere).
-#[cfg(unix)]
-fn page_size() -> u64 {
-    static PAGE: OnceLock<u64> = OnceLock::new();
-    *PAGE.get_or_init(|| {
-        // SAFETY: sysconf with _SC_PAGESIZE has no preconditions.
-        let n = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        u64::try_from(n).unwrap_or(4096).max(1)
-    })
-}
-#[cfg(not(unix))]
-fn page_size() -> u64 {
-    4096
 }
 
 /// The whole pages covering `[offset, offset + len)`: `(start, len)`,
@@ -262,43 +252,27 @@ fn page_span(offset: u64, len: u64, page: u64) -> Option<(u64, u64)> {
     Some((start, end - start))
 }
 
-/// Return the mapping's pages of `[start, start + len)` (page-aligned,
-/// within the map) to the kernel: `msync(MS_KILLPAGES)` on macOS, then
-/// `posix_fadvise(POSIX_FADV_DONTNEED)` on Linux so the page cache drops
-/// them too and a container is no longer charged. Best effort: a failure
-/// leaves the pages resident, which is only memory.
-// The crate denies unsafe code; these calls on this read-only mapping are
-// its exception, as map_read_only above.
-#[allow(unsafe_code)]
-fn drop_mapped_pages(map: &memmap2::Mmap, file: Option<&File>, start: u64, len: u64) {
-    let (start, len) = (usize::try_from(start).ok(), usize::try_from(len).ok());
-    let (Some(start), Some(len)) = (start, len) else {
-        return;
-    };
-    let Some(at) = map.as_ptr().checked_add(start) else {
-        return;
-    };
-    let Some(end) = (at as usize).checked_add(len) else {
-        return;
-    };
-    if end > map.as_ptr() as usize + map.len() {
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: `at` is page-aligned and, with `len`, inside this
-        // read-only mapping, which outlives the call; MS_KILLPAGES on a
-        // clean range discards the pages and changes no bytes.
-        unsafe { libc::msync(at.cast::<libc::c_void>(), len, libc::MS_KILLPAGES) };
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        // SAFETY: as above; MADV_DONTNEED on a read-only file mapping only
-        // drops the page-table entries, and posix_fadvise never touches
-        // the mapping's bytes.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl MappedDisc {
+    #[allow(unsafe_code)]
+    fn drop_mapped_pages(&self, start: u64, len: u64) {
+        // The last page may extend beyond EOF. Give the kernel only the
+        // mapped bytes and let it round the length to whole pages.
+        let Some(bytes) = self.map.get(start as usize..) else {
+            return;
+        };
+        let len = bytes.len().min(len as usize);
+        let at = bytes.as_ptr().cast_mut().cast();
+        // SAFETY: the range starts on a host page boundary inside our
+        // immutable mapping. Discarding clean pages preserves their bytes.
+        #[cfg(target_os = "macos")]
         unsafe {
-            libc::madvise(at.cast::<libc::c_void>(), len, libc::MADV_DONTNEED);
-            if let Some(file) = file {
+            libc::msync(at, len, libc::MS_KILLPAGES);
+        }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::madvise(at, len, libc::MADV_DONTNEED);
+            if let Some(file) = &self.file {
                 use std::os::fd::AsRawFd;
                 libc::posix_fadvise(
                     file.as_raw_fd(),
@@ -308,10 +282,6 @@ fn drop_mapped_pages(map: &memmap2::Mmap, file: Option<&File>, start: u64, len: 
                 );
             }
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (map, file, start, at, len);
     }
 }
 
@@ -348,7 +318,7 @@ mod tests {
         assert_eq!(second, first);
         let mut tail = [0u8; 8];
         map.read((BULK_READ) as u64, &mut tail).unwrap();
-        assert_eq!(tail, &bytes[BULK_READ..]);
+        assert_eq!(&tail[..], &bytes[BULK_READ..BULK_READ + tail.len()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

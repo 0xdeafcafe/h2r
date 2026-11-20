@@ -2099,7 +2099,7 @@ fn run_configured(
     // "cow": true): census the pages the match wrote over it, so the
     // report says how much stayed shared.
     if let Some(s) = &sim_mode {
-        let cow = snapshot_glue::cow_census(&loaded.runtime).map(|(w, t, runs)| {
+        let cow = loaded.runtime.memory().cow_census()?.map(|(w, t, runs)| {
             eprintln!(
                 "sim: {w} of {t} guest pages written over the shared base ({} run(s))",
                 runs.len()

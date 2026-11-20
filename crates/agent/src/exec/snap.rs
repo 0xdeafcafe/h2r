@@ -302,8 +302,8 @@ impl State {
             Err(e) => return Some(Err(e)),
         };
         let (load, save) = match &op {
-            Op::Save { name, replace } => (None, Some((name, *replace))),
-            Op::Load { name } => (Some(name), None),
+            Op::Save { name, replace, .. } => (None, Some((name, *replace))),
+            Op::Load { name, .. } => (Some(name), None),
             Op::Fork {
                 from,
                 name,

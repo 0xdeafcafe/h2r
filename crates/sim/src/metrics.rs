@@ -1309,6 +1309,7 @@ mod tests {
             memory: MemoryUsage {
                 peak_rss_mib: 981,
                 footprint_mib: Some(143),
+                ..MemoryUsage::default()
             },
             ..Finish::bare(End::GameOver)
         });

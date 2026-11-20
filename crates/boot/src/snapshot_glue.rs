@@ -509,9 +509,6 @@ impl agent::SnapshotMachine for BootMachine<'_> {
             .transpose()?;
         let applied =
             load_parts(&mut self.parts, &snap, cow_path.as_deref()).map_err(unavailable)?;
-        if let Some(image) = &cow_path {
-            set_cow_base(image.clone());
-        }
         let hash = check_hash(&snap, &(self.hash)());
         let notes: BTreeMap<String, String> = snap.header.notes.iter().cloned().collect();
         Ok(Loaded {
@@ -554,24 +551,6 @@ fn write_ram_image(path: &Path, ram: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// The RAM image the last cow load mapped, if any: the census compares
-/// the guest's RAM against it.
-static COW_BASE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-
-fn set_cow_base(path: PathBuf) {
-    let _ = COW_BASE.set(Some(path));
-}
-
-/// The pages of the live guest RAM that differ from the copy-on-write base
-/// a `state.load` mapped, if one did: `(written, total, runs)`, the runs of
-/// written pages as `(first page, pages)`. The sharing a fleet of matches
-/// on one map keeps.
-pub fn cow_census(rt: &runtime::Runtime) -> Option<(u64, u64, Vec<(u32, u32)>)> {
-    let base = COW_BASE.get()?.as_ref()?;
-    let (written, total, runs) = rt.memory().census_against(base).ok()?;
-    Some((written, total, runs))
-}
-
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -592,13 +571,7 @@ impl Part for GuestPart<'_> {
         snapshot::guest::load_tsc(snapshot, self.0).map_err(err)
     }
     fn load_cow(&mut self, snapshot: &Snapshot<'_>, ram: &Path) -> Result<(), String> {
-        let layout = snapshot
-            .require(
-                snapshot::guest::LAYOUT,
-                snapshot::guest::LAYOUT_VERSION..=snapshot::guest::LAYOUT_VERSION,
-            )
-            .map_err(err)
-            .and_then(|bytes| snapshot::guest::decode_layout(bytes).map_err(err))?;
+        let layout = snapshot::guest::load_layout(snapshot).map_err(err)?;
         self.0.memory().restore_cow(&layout, ram).map_err(err)?;
         snapshot::guest::load_tsc(snapshot, self.0).map_err(err)
     }

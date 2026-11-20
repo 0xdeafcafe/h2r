@@ -7,6 +7,7 @@
 //! the kernel copies a host page on the first write to it from either side,
 //! so each side keeps its own writes. Other snapshots copy all RAM bytes.
 
+use std::fs::File;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 
@@ -25,6 +26,8 @@ pub(crate) struct Ram {
     ptr: NonNull<u8>,
     len: usize,
     backing: Backing,
+    /// The inode used by the last file restore, even after a save replaces its name.
+    pub(crate) cow_base: Option<File>,
 }
 
 enum Backing {
@@ -63,6 +66,7 @@ impl Ram {
             ptr,
             len,
             backing: Backing::Heap,
+            cow_base: None,
         }
     }
     /// A copy of these bytes as they are now; later writes to either side
@@ -88,28 +92,38 @@ impl Ram {
     /// shared pages until this block writes it, and a write gives this
     /// block its own page. Several Guests over the same file share the
     /// pages none of them writes. On failure the block is unchanged.
-    pub(crate) fn become_private_of(&mut self, file: &std::fs::File) -> std::io::Result<()> {
+    pub(crate) fn become_private_of(&mut self, file: File) -> std::io::Result<()> {
         let len = self.len;
-        let bytes = file.metadata()?.len();
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("expected a regular RAM image"));
+        }
+        let bytes = metadata.len();
         if bytes != len as u64 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("the RAM image is {bytes} bytes, guest RAM is {len}"),
             ));
         }
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
-            // SAFETY: MAP_FIXED over exactly this block's data range
-            // [ptr, ptr + len): the guard pages of the reservation around
-            // it stay, and the fast-memory path keeps its fixed base. A
-            // failure leaves the old mapping in place.
+            // Linux fast memory keeps its address and both guards. Elsewhere
+            // let the kernel choose an address before releasing the old block.
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            let (addr, placement) = (self.ptr.as_ptr().cast(), libc::MAP_FIXED);
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            let (addr, placement) = (std::ptr::null_mut(), 0);
+
+            // SAFETY: the image is published by rename and stays immutable.
+            // A fixed placement covers only our exclusively owned data pages.
+            // MAP_PRIVATE shares the file cache until a guest writes a page.
             let raw = unsafe {
                 libc::mmap(
-                    self.ptr.as_ptr().cast(),
+                    addr,
                     len,
                     libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_FIXED,
+                    libc::MAP_PRIVATE | placement,
                     file.as_raw_fd(),
                     0,
                 )
@@ -117,34 +131,16 @@ impl Ram {
             if raw == libc::MAP_FAILED {
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(())
-        }
-        #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
-        {
-            use std::os::fd::AsRawFd;
-            // SAFETY: a whole-file private mapping; a write anywhere in it
-            // gives this process its own page. The old block is dropped by
-            // the assignment, after the new one is in hand.
-            let raw = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            {
+                *self = Self {
+                    ptr: NonNull::new(raw.cast()).expect("mmap returned a pointer"),
                     len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE,
-                    file.as_raw_fd(),
-                    0,
-                )
-            };
-            if raw == libc::MAP_FAILED {
-                return Err(std::io::Error::last_os_error());
+                    backing: Backing::FilePrivate,
+                    cow_base: None,
+                };
             }
-            let ptr = NonNull::new(raw.cast::<u8>()).expect("mmap returned a pointer");
-            let mapped = Self {
-                ptr,
-                len,
-                backing: Backing::FilePrivate,
-            };
-            *self = mapped;
+            self.cow_base = Some(file);
             Ok(())
         }
         #[cfg(not(unix))]
@@ -182,6 +178,7 @@ impl Ram {
             ptr: NonNull::new(target as *mut u8)?,
             len: self.len,
             backing: Backing::MachCopy,
+            cow_base: None,
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -224,7 +221,7 @@ impl Drop for Ram {
                 // SAFETY: remap_copy transferred ownership of this mapping.
                 unsafe { mach::deallocate(self.ptr.as_ptr() as usize, self.len) };
             }
-            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            #[cfg(all(unix, not(all(target_os = "linux", target_arch = "x86_64"))))]
             Backing::FilePrivate => {
                 // SAFETY: become_private_of made this whole range one
                 // private mapping this block owns.
@@ -307,6 +304,7 @@ mod linux {
                 ptr,
                 len,
                 backing: Backing::Guarded { base, size },
+                cow_base: None,
             });
         }
         Err(io::Error::other("could not map non-null guest RAM"))

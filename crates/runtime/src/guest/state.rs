@@ -122,6 +122,7 @@ impl Guest {
         }
         self.check_fixed(layout)?;
         Self::check_mappings(&layout.mappings)?;
+        self.ram.cow_base = None;
         self.ram.copy_from_slice(ram);
         self.adopt(layout);
         Ok(())
@@ -139,6 +140,7 @@ impl Guest {
     ) -> Result<Result<(), E>, RestoreError> {
         self.check_fixed(layout)?;
         Self::check_mappings(&layout.mappings)?;
+        self.ram.cow_base = None;
         if let Err(e) = fill(&mut self.ram) {
             return Ok(Err(e));
         }
@@ -146,47 +148,50 @@ impl Guest {
         Ok(Ok(()))
     }
 
-    /// [`Guest::restore`] over a RAM image `file` of exactly [`RAM_SIZE`]
-    /// bytes, mapped private copy-on-write in place of the guest's own
-    /// store: pages the match never writes stay the file's shared pages —
-    /// one set for every process on the same image — and a write gives
-    /// this guest its own page. As `restore`, the layout must match and
-    /// every watched page is reported dirty. The fast-page table holds
-    /// physical numbers, not pointers, so it needs no rebuild.
+    /// Restore the layout and map the image at `file` as private guest RAM.
+    /// Guests share the image's clean pages. Each guest gets its own copy
+    /// of any page it writes. Layout and write-watch updates match [`Self::restore`].
     pub fn restore_cow(&mut self, layout: &GuestLayout, file: &Path) -> Result<(), RestoreError> {
         self.check_fixed(layout)?;
         Self::check_mappings(&layout.mappings)?;
         let image = std::fs::File::open(file)
             .map_err(|e| RestoreError::RamBase(format!("{}: {e}", file.display())))?;
-        let bytes = image
-            .metadata()
-            .map_err(|e| RestoreError::RamBase(e.to_string()))?
-            .len();
-        if bytes != RAM_SIZE as u64 {
-            return Err(RestoreError::RamBase(format!(
-                "{} is {bytes} bytes, guest RAM is {RAM_SIZE}",
-                file.display()
-            )));
-        }
         self.ram
-            .become_private_of(&image)
-            .map_err(|e| RestoreError::RamBase(e.to_string()))?;
+            .become_private_of(image)
+            .map_err(|e| RestoreError::RamBase(format!("{}: {e}", file.display())))?;
         self.adopt(layout);
         Ok(())
     }
 
-    /// The guest's RAM pages that differ from the RAM image at `base` (as
-    /// [`restore_cow`] adopted it): `(written, total, runs)` with the
-    /// runs of written pages as `(first page, pages)`. A match-end census
-    /// of how much of a shared base can stay shared.
+    /// Compare RAM with an image by physical page. Each run gives its first
+    /// page and length in pages. A write that restores the original bytes
+    /// leaves no difference for this census to count.
     pub fn census_against(&self, base: &Path) -> std::io::Result<(u64, u64, Vec<(u32, u32)>)> {
+        self.census_from(&std::fs::File::open(base)?)
+    }
+
+    /// Compare physical pages with the inode this guest mapped. A later
+    /// save may replace the sidecar while the game still uses the old one.
+    pub fn cow_census(&mut self) -> std::io::Result<Option<(u64, u64, Vec<(u32, u32)>)>> {
+        use std::io::Seek;
+        let Some(mut image) = self.ram.cow_base.as_ref() else {
+            return Ok(None);
+        };
+        // Exclusive guest access also serialises reads of the descriptor.
+        image.rewind()?;
+        self.census_from(image).map(Some)
+    }
+
+    fn census_from(
+        &self,
+        mut image: &std::fs::File,
+    ) -> std::io::Result<(u64, u64, Vec<(u32, u32)>)> {
         use std::io::Read;
-        let mut image = std::fs::File::open(base)?;
         let bytes = image.metadata()?.len();
         if bytes != RAM_SIZE as u64 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("{base:?} is {bytes} bytes, guest RAM is {RAM_SIZE}"),
+                format!("the RAM image is {bytes} bytes, guest RAM is {RAM_SIZE}"),
             ));
         }
         let page = crate::guest::PAGE_SIZE as usize;
@@ -428,7 +433,9 @@ mod tests {
     }
 
     /// A RAM image on disk, for the copy-on-write base.
+    #[cfg(unix)]
     struct RamImage(std::path::PathBuf);
+    #[cfg(unix)]
     impl RamImage {
         fn new(tag: &str, bytes: &[u8]) -> Self {
             let p =
@@ -440,42 +447,74 @@ mod tests {
             &self.0
         }
     }
+    #[cfg(unix)]
     impl Drop for RamImage {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn assert_private_image(guest: &Guest, image: &Path) {
+        use std::os::unix::fs::MetadataExt;
+        let start = guest.physical_ram().as_ptr() as usize;
+        let range = format!("{start:08x}-{:08x}", start + RAM_SIZE);
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let row = maps.lines()
+            .find(|line| line.split_whitespace().next() == Some(range.as_str()))
+            .expect("one mapping covering guest physical RAM");
+        let mut fields = row.split_whitespace().skip(1);
+        assert_eq!(fields.next(), Some("rw-p"));
+        assert_eq!(fields.next(), Some("00000000"));
+        let inode: u64 = fields.nth(1).unwrap().parse().unwrap();
+        assert_eq!(inode, std::fs::metadata(image).unwrap().ino());
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn a_cow_base_serves_the_snapshot_and_keeps_writes_private() {
-        let mut source = booted();
-        played(&mut source);
-        let layout = source.layout();
-        let image = RamImage::new("cow", source.physical_ram());
-        let before = std::fs::read(image.path()).unwrap();
+    fn two_cow_restores_share_an_image_and_keep_their_writes_private() {
+        let mut first = booted();
+        played(&mut first);
+        let layout = first.layout();
+        let image = RamImage::new("cow", first.physical_ram());
+        let mut second = booted();
+        second.prepare_fast_pages();
+        for guest in [&mut first, &mut second] {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            let base = guest.physical_ram().as_ptr();
+            guest.restore_cow(&layout, image.path()).unwrap();
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            assert_eq!(guest.physical_ram().as_ptr(), base);
+            #[cfg(target_os = "linux")]
+            assert_private_image(guest, image.path());
+            assert_eq!(guest.u32(0x8100_0040).unwrap(), 0x1234_5678);
+        }
 
-        let mut target = booted();
-        target.prepare_fast_pages();
-        target.restore_cow(&layout, image.path()).unwrap();
-        assert_eq!(target.physical_ram(), source.physical_ram());
-        assert_eq!(target.u32(0x2000_0010).unwrap(), 0xdead_beef);
-        // A write stays in this guest; the file never changes.
-        target.set_u32(0x2000_0010, 7).unwrap();
-        assert_eq!(target.u32(0x2000_0010).unwrap(), 7);
-        assert_eq!(std::fs::read(image.path()).unwrap(), before);
+        first.set_u32(0x8100_0040, 7).unwrap();
+        assert_eq!(second.u32(0x8100_0040).unwrap(), 0x1234_5678);
+        second.set_u32(0x8100_1040, 9).unwrap();
+        assert_eq!(first.u32(0x8100_1040).unwrap(), 0);
 
-        // The census counts the written pages and their runs.
-        let (written, total, runs) = target.census_against(image.path()).unwrap();
-        assert_eq!(total, (RAM_SIZE / crate::guest::PAGE_SIZE as usize) as u64);
-        assert_eq!(written, 1, "{runs:?}");
-        assert_eq!(runs, [(0x2000_0000 / crate::guest::PAGE_SIZE, 1)]);
+        let total = (RAM_SIZE / crate::guest::PAGE_SIZE as usize) as u64;
+        let page = 0x0100_0000 / crate::guest::PAGE_SIZE;
+        let expected = (1, total, vec![(page, 1)]);
+        assert_eq!(first.census_against(image.path()).unwrap(), expected);
+        // Removing the name leaves both mappings and their census bases alive.
+        std::fs::remove_file(image.path()).unwrap();
+        assert_eq!(first.cow_census().unwrap(), Some(expected));
+        assert_eq!(
+            second.cow_census().unwrap(),
+            Some((1, total, vec![(page + 1, 1)]))
+        );
 
-        // A wrong-sized image is a named error, not a mapping.
         let short = RamImage::new("short", &[0u8; 4096]);
         assert!(matches!(
-            target.restore_cow(&layout, short.path()),
+            first.restore_cow(&layout, short.path()),
             Err(RestoreError::RamBase(_))
         ));
+        assert_eq!(first.u32(0x8100_0040).unwrap(), 7);
+        first.restore(&layout, second.physical_ram()).unwrap();
+        assert_eq!(first.cow_census().unwrap(), None);
     }
 
     #[test]
