@@ -131,7 +131,7 @@ has room for 384 `0x98`-byte records and a bitmap. The group array
 keeps its 100 retail records and stays at its startup address. Before
 `0x00200b30` the hook sets the squad header capacity for the loaded
 scenario, with 335 as the retail minimum. The added allocation is part
-of guest game state. A further 6 KiB after the group array holds the
+of guest game state. A further 7 KiB after the group array holds the
 salted actor alert, recognition, injury and report state, with one
 record for each of the 256 native actor slots (`0x001dfae0`). The added
 storage changes the native checkpoint layout, so affected images and
@@ -208,5 +208,5 @@ H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test dis
 H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc migration_speech_events_use_retail_order_patterns -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc retail_ai_control_hooks_match_spawn_follow_and_uncover_paths -- --ignored
 H1_ISO=disc/halo1.iso H2_DISC=disc/halo2.iso cargo test -p h1campaign --test disc retail_uncover_and_combat_timer_contact_rules -- --ignored
-H1_ISO=disc/halo1.iso cargo test -p h1campaign --test disc every_campaign_places_squads_with_authored_sites -- --ignored
+H1_ISO=disc/halo1.iso cargo test -p h1campaign --lib campaign_scripts_keep_their_squad_targets_and_fit_the_pools -- --ignored
 ```

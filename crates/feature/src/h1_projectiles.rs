@@ -2,22 +2,10 @@
 //! damage by impact speed. Both operate on the current collision substep.
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
-use engine::points::{Point, Sig};
+use engine::points::{DAMAGE_DATA_INIT, VECTOR_LENGTH_3D};
 use runtime::{Guest, GuestFault};
 use tags::H1_PROJECTILE_VELOCITY_CURVE;
 
-const SPEED: Point = Point::new(
-    "VECTOR_LENGTH_3D",
-    0x0002_4590,
-    Sig::Opaque,
-    "docs/halo1/objects.md",
-);
-const DAMAGE: Point = Point::new(
-    "DAMAGE_DATA_INIT",
-    0x000d_6660,
-    Sig::Opaque,
-    "docs/halo1/objects.md",
-);
 const FLIGHT_RETURN: u32 = 0x000f_966a;
 const IMPACT_RETURN: u32 = 0x000f_ad79;
 
@@ -32,13 +20,13 @@ impl Feature for Projectiles {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
         b.raw()
-            .before(&SPEED, "integrate Halo 1 projectile velocity", |c| {
+            .before(&VECTOR_LENGTH_3D, "integrate Halo 1 projectile velocity", |c| {
                 flight_call(&mut c.ctx.memory(), c.cpu.esp, c.cpu.ebp, c.cpu.ebx)?;
                 Ok(Flow::Continue)
             })
             .context_only();
         b.raw()
-            .before(&DAMAGE, "scale Halo 1 impact damage", |c| {
+            .before(&DAMAGE_DATA_INIT, "scale Halo 1 impact damage", |c| {
                 impact_call(&mut c.ctx.memory(), c.cpu.esp, c.cpu.ebx, c.cpu.edi)?;
                 Ok(Flow::Continue)
             })

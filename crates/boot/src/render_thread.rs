@@ -106,6 +106,7 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
         "*",
         "native particle simulation on the game thread, with post-step hooks around the guest bodies",
     ),
+    ("campaigns", "*", "reads campaign selection and updates profile saves on the game thread"),
     ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
     ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
     ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
@@ -327,7 +328,12 @@ mod tests {
             ALL_ON.to_owned(),
             format!("{ALL_ON},render-census"),
         ] {
-            let plan = registry(&Case::full(&switches)).build(&feature::Base).unwrap();
+            let mut features = registry(&Case::full(&switches));
+            features.add(&crate::campaign_menu::Campaigns {
+                state: std::sync::Arc::new(crate::campaign_menu::tests::state()),
+                picker: std::sync::Arc::new(|| 0),
+            }).unwrap();
+            let plan = features.build(&feature::Base).unwrap();
             for c in plan.chains.values() {
                 match c.render_thread() {
                     Ok(()) => safe.push(c.point.name),

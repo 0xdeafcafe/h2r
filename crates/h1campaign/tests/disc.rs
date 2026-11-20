@@ -1096,10 +1096,10 @@ fn retail_uncover_and_combat_timer_contact_rules() {
     assert_eq!(target.bytes_at(0x0d9013, 3).unwrap(), [0xc2, 0x0c, 0]);
 }
 
-fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
+fn check_authored_uncover_rules(
     level: &str,
     source: &h1map::H1Map,
-    map: &mut Map<R>,
+    map: &mut Map<Cursor<Vec<u8>>>,
     scenario: &hs::Scenario,
     characters: &[(String, String)],
 ) {
@@ -1160,6 +1160,7 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
             (character.id(), [word(&row[..8]), word(&row[8..])])
         }).collect();
     assert_eq!(rules.len(), count as usize);
+    let metadata = map_memory(map);
     for (variant, character) in characters {
         if character == "none" {
             continue;
@@ -1185,15 +1186,16 @@ fn check_authored_uncover_rules<R: std::io::Read + std::io::Seek>(
         // authored thresholds: the major carries a rule, with its own
         // requirements when a source variant names it and the upgrading
         // variant's otherwise.
-        let payload = map.read_tag_bytes(tag.id).unwrap();
-        let address = tag.location.unwrap().address;
-        let decoded =
-            h1ai::h2::Character::read(&tags::geometry::TagView::new(&payload, address)).unwrap();
-        if decoded.major != TagId::NULL {
-            let major = map.tag(decoded.major).unwrap();
-            let major_name = major.name.clone().unwrap();
+        let id = metadata.slice(tag.index_address + 0x28, 4).expect("major character datum");
+        let major_id = TagId(u32::from_le_bytes(id.try_into().unwrap()));
+        if major_id != TagId::NULL {
+            let major = map.tag(major_id).unwrap();
+            let major_name = major.name.as_deref().unwrap();
+            let source_name = characters.iter()
+                .find(|(_, selected)| selected == major_name)
+                .map_or(major_name, |(variant, _)| variant.as_str());
             let major_expected = source
-                .find(h1map::Group::new(b"actv"), &major_name)
+                .find(h1map::Group::new(b"actv"), source_name)
                 .map(|variant| {
                     let variant = h1ai::h1::actor_variant(source, variant).unwrap();
                     let actor = source.tag(variant.actor.id).unwrap();

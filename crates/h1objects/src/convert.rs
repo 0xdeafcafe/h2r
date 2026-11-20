@@ -654,6 +654,9 @@ impl Tree {
     /// donor now references the converted tag, so donors must be tags the
     /// converted map no longer uses.
     pub fn install_over(mut self, set: &mut TagSet, donors: &[TagId]) -> Result<Vec<TagId>> {
+        if let Some(reason) = self.model_shader_error.take() {
+            return Err(Error::Invalid(reason));
+        }
         self.install_audio(set, false);
         if donors.len() < self.tags.len() {
             return Err(Error::Invalid(format!(

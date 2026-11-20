@@ -354,6 +354,14 @@ pub(super) fn apply_device_change_colors(schema: &mut Schema) {
             root.fields.insert(0xac, obje.fields[&0xac].clone());
         }
     }
+    // Retail projectiles already have a colour function block, but none
+    // exposed its darken-by string to inference.
+    if let Some(root) = schema.groups.get_mut(&FourCC(*b"proj"))
+        && let Some(Field::Block(colors)) = root.fields.get_mut(&0xac)
+        && let Some(Field::Block(functions)) = colors.fields.get_mut(&0x8)
+    {
+        functions.fields.insert(0x20, Field::StringId);
+    }
 }
 
 /// Words the engine reads as data that inference takes for raw-resource

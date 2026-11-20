@@ -21,9 +21,7 @@ const HIT_TIME: u32 = 0x0c;
 const FOCUS_HANDLE: u32 = 0x10;
 const FOCUS_TIME: u32 = 0x14;
 const APPLIED_BODY_DAMAGE: u32 = 0x28;
-/// The muzzle-report latch `reports` owns within the same 24-byte row
-/// (`campaign_squad_pool::ACTOR_STATE_SIZE`).
-pub(super) const REPORT_LATCH: u32 = 0x18;
+pub(super) use campaign_squad_pool::ACTOR_LAST_REPORT as REPORT_LATCH;
 const DAMAGE_GRACE: u32 = 60;
 const DAMAGE_DECAY: f32 = 1.0 / 60.0;
 const NO_HIT: u32 = u32::MAX;
@@ -41,8 +39,8 @@ pub(super) fn hex(m: &dyn GuestMemory, at: u32) -> R<Option<u32>> {
 /// The perception table: a header naming the character and weapon row
 /// counts, then the character rows (two floats each) and the weapon rows
 /// (one report loudness each). Tables written before the weapon section
-/// exist carry a one-word header and character rows only; the exact
-/// length tells them apart.
+/// existed carry a one-word header and character rows only. The high
+/// bit of the weapon count distinguishes the two-section format.
 pub(super) struct PerceptionTable {
     start: u32,
     characters: u32,
@@ -73,17 +71,14 @@ pub(super) fn perception_table(m: &dyn GuestMemory) -> R<Option<PerceptionTable>
     // next bytes are the first row's floats and never carry the bit (an
     // authored threshold is a small non-negative float). Past the pool's
     // end the table simply has no second word.
-    let second = match hex(m, start + 8) {
-        Ok(word) => word,
-        Err(_) => None,
-    };
+    let second = if len >= 16 { hex(m, start + 8)? } else { None };
     let weapons = second
         .filter(|word| word & 0x8000_0000 != 0)
         .map(|word| word & 0x7fff_ffff);
     match weapons {
         Some(weapons) => {
-            if characters > (len.saturating_sub(16)) / 16
-                || weapons > (len.saturating_sub(16) - characters * 16) / 8
+            if characters > (len - 16) / 16
+                || weapons > (len - 16 - characters * 16) / 8
             {
                 return Ok(None);
             }
@@ -104,12 +99,12 @@ pub(super) fn perception_table(m: &dyn GuestMemory) -> R<Option<PerceptionTable>
 }
 
 impl PerceptionTable {
-    /// The byte offset of character row `row` (two floats).
+    /// The guest address of character row `row` (two floats).
     pub(super) fn character_row(&self, row: u32) -> u32 {
         self.rows() + 16 * row
     }
 
-    /// The byte offset of weapon row `row` (one float).
+    /// The guest address of weapon row `row` (one float).
     pub(super) fn weapon_row(&self, row: u32) -> u32 {
         self.rows() + 16 * self.characters + 8 * row
     }
@@ -122,12 +117,8 @@ impl PerceptionTable {
         self.characters
     }
 
-    pub(super) fn start(&self) -> u32 {
-        self.start
-    }
-
     fn rows(&self) -> u32 {
-        u32::from(!self.legacy) * 8 + 8
+        self.start + if self.legacy { 8 } else { 16 }
     }
 }
 
@@ -178,7 +169,7 @@ pub(super) fn reset_row(m: &mut dyn GuestMemory, row: u32, actor: actors::Actor)
         m.set_u32(row + FOCUS_TIME, NONE)?;
         // The report latch at +0x18 belongs to this actor's unit, like the
         // alert bits Halo 1 keeps on the unit object.
-        m.set_u32(row + REPORT_LATCH, 0)?;
+        m.set_u32(row + REPORT_LATCH, u32::MAX)?;
     }
     Ok(())
 }

@@ -177,45 +177,29 @@ pub(crate) fn resolve(
 /// A major with its own rule keeps that rule; equal rules are fine; two
 /// different authored sets on one major tag is a conversion error.
 fn inherit_majors(set: &TagSet, ai_control: &mut Control) -> Result<()> {
-    let registered: Vec<(TagId, [u32; 2], String)> = ai_control
-        .uncover
-        .iter()
-        .map(|(&id, rule)| {
-            (
-                TagId(id),
-                rule.requirements.map(f32::to_bits),
-                rule.character.clone(),
-            )
-        })
-        .collect();
-    for (id, requirements, character) in registered {
-        let Some(major) = major_character(set, id) else {
+    let mut inherited = std::collections::BTreeMap::<u32, UncoverRule>::new();
+    for (&id, rule) in &ai_control.uncover {
+        let Some(major) = major_character(set, TagId(id)) else {
             continue;
         };
-        if let Some(existing) = ai_control.uncover.get(&major.0) {
-            if existing.requirements.map(f32::to_bits) != requirements {
+        if ai_control.uncover.contains_key(&major.0) {
+            continue;
+        }
+        if let Some(existing) = inherited.get(&major.0) {
+            if existing.requirements.map(f32::to_bits) != rule.requirements.map(f32::to_bits) {
                 return Err(invalid(format!(
-                    "AI character {character} upgrades to {} with different Halo 1 uncover thresholds",
-                    set.slots[major.index()]
-                        .name
-                        .as_deref()
-                        .unwrap_or("unnamed")
+                    "AI character {} upgrades to {} with different Halo 1 uncover thresholds",
+                    rule.character, existing.character,
                 )));
             }
             continue;
         }
-        let name = set.slots[major.index()]
-            .name
-            .clone()
-            .unwrap_or_else(|| "unnamed".into());
-        ai_control.uncover.insert(
-            major.0,
-            UncoverRule {
-                character: name,
-                requirements: requirements.map(f32::from_bits),
-            },
-        );
+        inherited.insert(major.0, UncoverRule {
+            character: set.slots[major.index()].name.clone().unwrap_or_else(|| "unnamed".into()),
+            requirements: rule.requirements,
+        });
     }
+    ai_control.uncover.extend(inherited);
     Ok(())
 }
 
@@ -300,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_major_with_its_own_rule_keeps_it_and_a_conflict_errors() {
-        let (set, _, built, _, _) = set_with_major();
+        let (set, _, built, pinned, _) = set_with_major();
         let major = major_character(&set, built).unwrap();
         let mut control = Control::default();
         control.uncover.insert(
@@ -314,17 +298,17 @@ mod tests {
             major.0,
             UncoverRule {
                 character: "h1\\major".into(),
-                requirements: [0.5, 0.1],
-            },
-        );
-        inherit_majors(&set, &mut control).unwrap();
-        control.uncover.insert(
-            major.0,
-            UncoverRule {
-                character: "h1\\major".into(),
                 requirements: [0.0, 0.0],
             },
         );
+        inherit_majors(&set, &mut control).unwrap();
+        assert_eq!(control.uncover[&major.0].requirements, [0.0, 0.0]);
+
+        control.uncover.remove(&major.0);
+        control.uncover.insert(pinned.0, UncoverRule {
+            character: "retail\\pinned".into(),
+            requirements: [0.0, 0.0],
+        });
         assert!(inherit_majors(&set, &mut control).is_err());
     }
 }

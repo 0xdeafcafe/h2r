@@ -558,12 +558,12 @@ pub fn install(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::campaigns::{Progress, Selection};
     use content::campaign_list::{self as cl, CampaignManifest, FIXTURE, HALO1};
 
-    pub(super) fn state() -> State {
+    pub(crate) fn state() -> State {
         let ms = [
             CampaignManifest::parse(HALO1).unwrap(),
             CampaignManifest::parse(FIXTURE).unwrap(),

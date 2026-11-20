@@ -56,22 +56,14 @@ fn legacy_combat_level(interest: u16) -> u16 {
 }
 
 fn releases(m: &dyn GuestMemory, actor: actors::Actor, phased: bool) -> R<bool> {
-    let forced = state::clock(m)?
-        .map(|(tick, rate)| reports::forced(m, actor, state::authored_tick(tick, rate)))
-        .transpose()?
-        .unwrap_or(false);
-    if phased {
-        if contact::enabled(m)?
-            && let Some((_, rate)) = state::clock(m)?
-        {
-            Ok(forced || contact::focused(m, actor, rate)?.releases_timer())
-        } else {
-            Ok(forced
-                || legacy_combat_level(m.u16(actor.at + INTEREST_CLASS)?) >= RELEASE_COMBAT_LEVEL)
-        }
-    } else {
-        Ok(forced || m.u16(actor.at + COMBAT_STATUS)? >= VISIBLE_ENEMY)
+    if !phased {
+        return Ok(m.u16(actor.at + COMBAT_STATUS)? >= VISIBLE_ENEMY);
     }
+    if contact::enabled(m)? && let Some((tick, rate)) = state::clock(m)? {
+        let now = state::authored_tick(tick, rate);
+        return Ok(reports::forced(m, actor, now)? || contact::focused(m, actor, rate)?.releases_timer());
+    }
+    Ok(legacy_combat_level(m.u16(actor.at + INTEREST_CLASS)?) >= RELEASE_COMBAT_LEVEL)
 }
 
 fn guard_baseline(m: &dyn GuestMemory, guard_bits: Option<u32>, squad: u32) -> R<u16> {
@@ -185,7 +177,7 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
                 }
             }
             let baseline = guard_baseline(m, guard_bits, actor.squad)?;
-            let forced = reports::forced(m, actor, now)?;
+            let forced = source_contact && reports::forced(m, actor, now)?;
             let mut own = if phased {
                 if source_contact {
                     contact::focused(m, actor, rate)?

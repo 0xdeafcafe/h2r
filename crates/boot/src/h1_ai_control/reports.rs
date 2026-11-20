@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use engine::{
     DatumHandle,
     memory::{GuestMemory, MemFault},
-    view::objects,
+    view::{Record, objects},
 };
 use feature::{Builder, Flow, points};
 
@@ -48,8 +48,11 @@ pub(super) fn forced(m: &dyn GuestMemory, actor: actors::Actor, now: u32) -> R<b
     let Some(row) = uncover_limits::actor_row(m, actor)? else {
         return Ok(false);
     };
+    if m.u32(row)? != actor.handle {
+        return Ok(false);
+    }
     let shot = m.u32(row + LAST_SHOT)?;
-    Ok(shot != 0 && now.wrapping_sub(shot) < FORCE_TICKS)
+    Ok(shot != u32::MAX && now.wrapping_sub(shot) < FORCE_TICKS)
 }
 
 /// The best contact an encounter's alert reports carry to a member that
@@ -138,6 +141,9 @@ fn weapon_loudness(m: &dyn GuestMemory, definition: Option<DatumHandle>) -> R<f3
 }
 
 fn record_shot(m: &mut dyn GuestMemory, weapon: u32, barrel: u32) -> R<()> {
+    if !contact::enabled(m)? {
+        return Ok(());
+    }
     let Some((tick, rate)) = state::clock(m)? else {
         return Ok(());
     };
@@ -240,7 +246,6 @@ mod tests {
         const GLOBALS: u32 = 0x004f_9380;
         const VM_ARRAY: u32 = 0x0074_0000;
         const VM_VALUES: u32 = 0x0075_0000;
-        const NONE_HANDLE: u32 = u32::MAX;
         const WEAP: u32 = u32::from_be_bytes(*b"weap");
 
         // The perception table: no character rows, one weapon row holding
@@ -372,11 +377,14 @@ mod tests {
         assert!(forced(&guest, near, 600 + FORCE_TICKS - 1).unwrap());
         assert!(!forced(&guest, near, 600 + FORCE_TICKS).unwrap());
         assert!(!forced(&guest, far, 600).unwrap());
+        assert_eq!(guest.u32(far_row), Ok(0));
+        let replacement = actors::Actor { handle: 0x8126_0000, ..near };
+        assert!(!forced(&guest, replacement, 600).unwrap());
     }
 
     #[test]
     fn a_silent_barrel_carries_no_report() {
-        let (mut guest, actor_rows) = shot_guest();
+        let (mut guest, _) = shot_guest();
         record_shot(&mut guest, 0x0002_0000, 1).unwrap();
         let near_row = campaign_squad_pool::actor_state(&guest, 0)
             .unwrap()

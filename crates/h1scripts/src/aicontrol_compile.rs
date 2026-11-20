@@ -621,6 +621,11 @@ impl Compiler<'_> {
         // and the runtime tells them apart by the bit.
         let weapons = 0x8000_0000u32 | control.weapon_reports.len() as u32;
         let mut data = format!("{:08x}{:08x}", control.uncover.len(), weapons);
+        for rule in control.uncover.values() {
+            let [seconds, damage] = rule.requirements;
+            write!(data, "{:08x}{:08x}", seconds.to_bits(), damage.to_bits())
+                .expect("write to String");
+        }
         for (weapon, loudness) in &control.weapon_reports {
             write!(data, "{:08x}", loudness.to_bits()).expect("write to String");
             self.out
@@ -628,9 +633,6 @@ impl Compiler<'_> {
                 .push((h1map::Group::new(b"weap"), weapon.clone()));
         }
         for rule in control.uncover.values() {
-            let [seconds, damage] = rule.requirements;
-            write!(data, "{:08x}{:08x}", seconds.to_bits(), damage.to_bits())
-                .expect("write to String");
             // These trailing references are normal scenario tag fixups.
             // The fresh map writer can change the actual character datum.
             self.out

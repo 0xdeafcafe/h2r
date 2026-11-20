@@ -123,7 +123,7 @@ wakes `tutorial_moving_1`.
 | Halo 1 mapped input | At `0xfa00a` mapped control 2 sets packet `+0x18` bit 6 on button-down. The gather at `0xf8a9a` records Action in bit 0 of the control globals. The hold threshold is a separate packet bit. |
 | Halo 1 script | Slot 345 at `0xed420` reads the recorded bit and claims the button. Slot 340 at `0xed520` clears the latch and claim. The input path at `0xf8bb3` consumes the claimed action through release. |
 | Halo 2 v99 | Native slots 488 (`0x2a91c0`) and 479 (`0x2a9020`) implement the test and reset. The packet starts cleared. At `0x186a07` the gather writes mapped action/reload (default X) to packet `+0x20` bit 0 and the hold threshold to bit 1. At `0x187b33` the script sampler reads bit 2. Holding X leaves the script latch clear. |
-| Converted campaign | At entry to `0x187b30` the hook records the mapped press in the guest latch. While the button is claimed or suppressed until release it moves the press into bit 2. The native routine at `0x187c9b` can then track release, clear interaction and mark it handled. An unclaimed press continues to ordinary interaction. |
+| Converted campaign, version 100 | At entry to `0x187b30` the hook records the mapped press in the guest latch. While the button is claimed or suppressed until release it moves the press into bit 2. The native routine at `0x187c9b` can then track release, clear interaction and mark it handled. An unclaimed press continues to ordinary interaction. |
 
 The look lesson uses signed pitch and yaw latches and checks all four
 directions (slots 491–495). The pitch-choice lesson uses Accept and

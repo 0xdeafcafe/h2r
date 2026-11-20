@@ -222,6 +222,10 @@ macro_rules! globals {
 }
 
 points! { ALL;
+    /// Length of the vector at EAX. The original returns the float in x87 ST(0).
+    VECTOR_LENGTH_3D @ 0x0002_4590: [fn(vector: eax) ret 0], Hot; "docs/halo1/objects.md";
+    /// Initialize the damage packet at EDX from the damage effect datum on the stack.
+    DAMAGE_DATA_INIT @ 0x000d_6660: [fn(packet: edx, effect: stack 0) ret 4]; "docs/halo1/objects.md";
     /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
     HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// How strongly the observing actor prioritizes one candidate.

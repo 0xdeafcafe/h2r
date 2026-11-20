@@ -21,7 +21,9 @@ const fn bytes(count: usize, stride: usize) -> u32 {
 pub const SQUAD_BYTES: u32 = bytes(LIMIT, SQUAD_SIZE);
 pub const GROUP_BYTES: u32 = bytes(GROUPS, GROUP_SIZE);
 const ACTORS: u32 = 256;
-const ACTOR_STATE_SIZE: u32 = 24;
+/// Last heard weapon report, after the actor's focus timestamp.
+pub const ACTOR_LAST_REPORT: u32 = 0x18;
+const ACTOR_STATE_SIZE: u32 = ACTOR_LAST_REPORT + 4;
 const ACTOR_STATE_BYTES: u32 = ACTORS * ACTOR_STATE_SIZE;
 pub const GROUP_ALLOCATION_BYTES: u32 = GROUP_BYTES + ACTOR_STATE_BYTES;
 
