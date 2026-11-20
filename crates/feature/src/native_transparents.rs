@@ -16,7 +16,7 @@ pub const ID: &str = "native-transparents";
 pub const SWITCH: &str = "impl.render.native_transparents";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 static ACTIVATION: AtomicU64 = AtomicU64::new(1);
@@ -190,7 +190,7 @@ impl Feature for NativeTransparents {
         if !on(b.switches()) {
             return Ok(());
         }
-        let objects = b.switches().feature(crate::native_objects::SWITCH, false);
+        let objects = b.switches().feature(crate::native_objects::SWITCH, true);
         b.raw()
             .observe_before(&points::GAME_ACTIVATE, "native_transparents_generation", |_| {
                 ACTIVATION.fetch_add(1, Ordering::AcqRel);

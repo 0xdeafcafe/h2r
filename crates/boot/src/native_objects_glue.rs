@@ -463,7 +463,7 @@ impl native_render::camera::GuestRead for Ro<'_> {
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     let switches = feature::Switches::from_env().unwrap_or_default();
-    if !switches.feature(feature::native_objects::SWITCH, false) {
+    if !switches.feature(feature::native_objects::SWITCH, true) {
         return;
     }
     let admission = Arc::new(ObjectAdmission::default());

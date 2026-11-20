@@ -56,7 +56,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     let switches = feature::Switches::from_env().unwrap_or_default();
     let native = feature::native_world_layers::on(&switches);
     let residual = feature::native_residual::on(&switches);
-    let objects = switches.feature(feature::native_objects::SWITCH, false);
+    let objects = switches.feature(feature::native_objects::SWITCH, true);
     let lights = feature::native_lights::on(&switches);
     let frames = compare_frames();
     if !native && !residual && !objects && !lights && frames.is_empty() {

@@ -1,5 +1,7 @@
-//! Shader-gel production at its original template/quad sites. Off by
-//! default. Guest setup and geometry assembly execute; draw admission
+//! Shader-gel production at its original template/quad sites. On by
+//! default (since 2026-11-20; `impl.render.native_gels=off` turns it off
+//! for the comparison against the D3D path). Guest setup and geometry
+//! assembly execute; draw admission
 //! transactionally replaces only complete target-13 packets.
 
 use crate::{BuildError, Builder, Feature, Flow, Manifest};
@@ -11,7 +13,7 @@ pub const ID: &str = "native-gels";
 pub const SWITCH: &str = "impl.render.native_gels";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

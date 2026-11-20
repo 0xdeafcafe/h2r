@@ -1,9 +1,9 @@
 //! `native-world`: the static world drawn by the native renderer instead
 //! of the game's layer-3 entries (docs/graphics/native-renderer.md, stage
-//! 1). Off by default ([`DEFAULT`]) until it matches the D3D path on
-//! screen; `H2_FEATURES=impl.render.native_world=on` turns it on, `=off`
-//! off (exactly that key: `impl.render=off` does not, since this
-//! one changes what draws the world).
+//! 1). On by default ([`DEFAULT`], since 2026-11-20);
+//! `H2_FEATURES=impl.render.native_world=off` turns it off for the
+//! comparison against the D3D path (exactly that key: `impl.render=off`
+//! does not, since this one changes what draws the world).
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
 //! opaque point, so nothing here replaces guest code:
@@ -51,7 +51,7 @@ pub const ID: &str = "native-world";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_world";
 /// The switch's value when `H2_FEATURES` does not name it.
-pub const DEFAULT: bool = false;
+pub const DEFAULT: bool = true;
 
 /// Whether the native world is on.
 pub fn on(switches: &crate::Switches) -> bool {

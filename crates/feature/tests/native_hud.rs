@@ -21,7 +21,10 @@ fn placed(switches: &str) -> Option<feature::plan::Plan> {
 #[test]
 fn the_switch_places_it_and_every_chain_runs_on_the_render_thread() {
     if native_hud::compare_spec().is_none() {
-        assert!(placed("").is_none(), "off: nothing");
+        assert!(
+            placed("impl.render.native_hud=off").is_none(),
+            "off: nothing"
+        );
     }
     let plan = placed("impl.render.native_hud=on").expect("placed");
     for point in [

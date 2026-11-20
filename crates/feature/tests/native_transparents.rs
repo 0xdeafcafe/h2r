@@ -12,7 +12,7 @@ use native_render::transparent::{DATA_OFFSET, GEOMETRY_HANDLER, Source};
 
 #[test]
 fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_transparents=off").unwrap());
     r.add(&NativeTransparents).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();

@@ -1,6 +1,7 @@
 //! The first-person arms and weapon drawn by the native GPU renderer.
-//! Off by default; `H2_FEATURES=impl.render.native_first_person=on` turns
-//! it on (exactly that key: `impl.render=on` does not).
+//! On by default (since 2026-11-20); `H2_FEATURES=impl.render.native_first_person=off`
+//! turns it off for the comparison against the D3D path (exactly that
+//! key: `impl.render=off` does not).
 //!
 //! One context-only observer before `LAYER_DRAW` acts only on the layer-3
 //! call in `0x0003fdf0` (return `0x00040136`). Both invocations are
@@ -290,7 +291,7 @@ impl Feature for NativeFirstPerson {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().feature(SWITCH, false) {
+        if !b.switches().feature(SWITCH, true) {
             return Ok(());
         }
         b.raw()

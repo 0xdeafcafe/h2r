@@ -1,9 +1,9 @@
 //! `native-objects`: objects' render models drawn by the native renderer
 //! instead of their layer-3 entries (docs/graphics/native-renderer.md,
-//! "Stage 2: objects and skinning"). Off by default;
-//! `H2_FEATURES=impl.render.native_objects=on` turns it on (exactly that
-//! key: `impl.render=on` does not, since this one changes what draws the
-//! objects).
+//! "Stage 2: objects and skinning"). On by default (since 2026-11-20);
+//! `H2_FEATURES=impl.render.native_objects=off` turns it off for the
+//! comparison against the D3D path (exactly that key: `impl.render=off`
+//! does not, since this one changes what draws the objects).
 //!
 //! One observer before the layer draw `LAYER_DRAW` (`0x00044550`), an
 //! opaque point, so nothing here replaces guest code:
@@ -569,7 +569,7 @@ impl Feature for NativeObjects {
         // count. The one thing held for the guest is `CLEARED`, the bits
         // to set back at the next layer draw, which a load drops
         // ([`forget_pending`]).
-        if !b.switches().feature(SWITCH, false) {
+        if !b.switches().feature(SWITCH, true) {
             b.snapshot(crate::SnapshotPolicy::Stateless);
             return Ok(());
         }
