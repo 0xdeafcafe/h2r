@@ -40,3 +40,33 @@ fn refused_boundary_keeps_callback_and_following_commands_in_order() {
     assert_eq!(device.stipple_pattern()[0], 0x5a5a);
     assert_eq!(device.stats().push_callbacks, 1);
 }
+
+#[test]
+fn a_refused_native_array_leaves_the_one_ordinary_draw_for_the_caller() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Refuse(AtomicUsize);
+    impl d3d::DrawAdmission for Refuse {
+        fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            assert_eq!(snapshot.draw.vertex_count, 4);
+            self.0.fetch_add(1, Ordering::Relaxed);
+            None
+        }
+    }
+
+    let mut backend = RecordingBackend::new();
+    backend.external_passes = true;
+    let (mut device, mut mem) = create(backend, UploadPolicy::Tracked);
+    set_states(&mut device, &mut mem);
+    quad_vb(&mut mem, 0.0, 0.0, 16.0, 16.0, 0xff_11_22_33);
+    bind_quad(&mut device, &mut mem);
+    let owner = Refuse(AtomicUsize::new(0));
+    assert!(!device.try_native_array_draw(
+        &mut mem, gfx::vertex::PrimitiveType::QuadList, 0, 4, &owner,
+    ).unwrap());
+    assert_eq!(owner.0.load(Ordering::Relaxed), 1);
+    assert!(device.backend.draws().is_empty());
+
+    device.draw_vertices(&mut mem, QUADLIST, 0, 4).unwrap();
+    assert_eq!(device.backend.draws().len(), 1);
+}

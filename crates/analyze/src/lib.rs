@@ -2029,6 +2029,22 @@ impl Analysis {
         Some((c, (owner[i] != 0).then_some(owner[i])))
     }
 
+    /// Route researched instruction boundaries through entry dispatch
+    /// when lifting. Discovery must already have decoded each instruction.
+    /// Passes that only inspect the image can keep the original ownership.
+    pub fn expose_instructions(&mut self, points: impl IntoIterator<Item = u32>) {
+        for pc in points {
+            let Some(('I', Some(owner))) = self.claim(pc) else {
+                continue;
+            };
+            let Some(original) = self.functions.get(&owner) else {
+                continue;
+            };
+            let entry = Function { start: pc, ..original.clone() };
+            self.functions.entry(pc).or_insert(entry);
+        }
+    }
+
     /// Name of the code section containing `va`.
     pub fn section_of(&self, va: u32) -> Option<&str> {
         self.ranges.iter().find(|(s, len, _)| va >= *s && va - *s < *len).map(|(_, _, n)| n.as_str())

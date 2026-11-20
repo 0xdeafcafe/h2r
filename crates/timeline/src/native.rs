@@ -4,19 +4,21 @@ use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(usize)]
-pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows }
+pub enum Stage { World, Objects, Transparents, Lights, Post, Particles, Decals, Hud, Gels, Fog, Water, Shadows, FirstPerson, Effects }
 
-const STAGES: [&str; 12] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows"];
+const STAGES: [&str; 14] = ["world", "objects", "transparents", "lights", "post", "particles", "decals", "hud", "gels", "fog", "water", "shadows", "first_person", "effects"];
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 pub enum Metric {
     Examined, Suppressed, RefusedOwnership, RefusedResources, RefusedRanges, RefusedMasks, RefusedInputs, RefusedValidation, RefusedReplay,
     PrepareNs, EncodeNs, Buffers, BindGroups, UploadBytes, PipelineMisses,
     WorkerRoundTrips, ReferencePasses, DisplayPasses,
+    WalkExamined, WalkSuppressed, WalkRefusedInputs, WalkRefusedReservation,
 }
-const METRICS: [&str; 18] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
+const METRICS: [&str; 22] = ["examined", "suppressed", "refused_ownership", "refused_resources", "refused_ranges",
     "refused_masks", "refused_inputs", "refused_validation", "refused_replay", "prepare_ns", "encode_ns", "buffers", "bind_groups", "upload_bytes", "pipeline_misses",
-    "worker_round_trips", "reference_passes", "display_passes"];
+    "worker_round_trips", "reference_passes", "display_passes",
+    "walk_examined", "walk_suppressed", "walk_refused_inputs", "walk_refused_reservation"];
 
 // Four Xbox player views and a bucket for non-player views.
 const VIEWS: usize = 5;

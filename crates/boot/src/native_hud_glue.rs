@@ -672,7 +672,7 @@ struct Glue<B: d3d::backend::Backend> {
     mirror: Mutex<Option<Mirror>>,
     gpu: Arc<Mutex<TextGpu>>,
     /// The open HUD shader quad's corners, for [`HudAdmission`].
-    hud: Arc<Mutex<Option<[[f32; 2]; 4]>>>,
+    hud: Arc<HudAdmission>,
 }
 
 /// The render state a draw recorded now would take, for the states the
@@ -1006,6 +1006,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+    fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &feature::native_hud::HudVertices) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let open = *self.hud.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.is_none() {
+            return false;
+        }
+        let drawn = device.try_native_immediate_draw(
+            &mut DeviceMemory(mem), PrimitiveType::TriangleFan, vertices, self.hud.as_ref(),
+        ).ok() == Some(true);
+        if !drawn {
+            *self.hud.open.lock().unwrap_or_else(|e| e.into_inner()) = open;
+        }
+        drawn
+    }
+
     fn begin(&self, mem: &mut dyn GuestMemory, record: u32) {
         let plan = Batch::read(&Ro(mem), record);
         match &plan {
@@ -1064,7 +1079,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn hud_quad(&self, mem: &mut dyn GuestMemory, call: HudQuadCall) {
         let quad = HudQuad::read(&Ro(mem), call.corners, call.rect, call.args);
         if self.native {
-            *self.hud.lock().unwrap_or_else(|e| e.into_inner()) = quad.map(|q| q.corners);
+            *self.hud.open.lock().unwrap_or_else(|e| e.into_inner()) = quad.map(|q| q.corners);
         }
         let Some(c) = &self.compare else { return };
         if let Some(q) = quad {
@@ -1099,12 +1114,12 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     if !native && compare.is_none() {
         return;
     }
-    let hud = Arc::new(Mutex::new(None));
+    let hud = Arc::new(HudAdmission {
+        open: Arc::new(Mutex::new(None)),
+        gpu: Arc::new(Mutex::new(ScreenGpu::new())),
+    });
     if native && let Ok(mut d) = device.lock() {
-        d.add_draw_admission(Arc::new(HudAdmission {
-            open: Arc::clone(&hud),
-            gpu: Arc::new(Mutex::new(ScreenGpu::new())),
-        }) as Arc<dyn d3d::DrawAdmission>);
+        d.add_draw_admission(hud.clone());
     }
     feature::native_hud::set_host(Arc::new(Glue {
         compare,

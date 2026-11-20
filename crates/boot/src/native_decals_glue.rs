@@ -27,7 +27,31 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
         return;
     }
     let Ok(mut d) = device.lock() else { return };
-    d.add_draw_admission(Arc::new(Glue));
+    let admission = Arc::new(Glue);
+    d.add_draw_admission(admission.clone());
+    feature::native_decals::set_walk_host(Arc::new(Walk {
+        device: device.clone(),
+        admission,
+    }));
+}
+
+struct Walk<B: d3d::Backend> {
+    device: d3d::abi::SharedDevice<B>,
+    admission: Arc<Glue>,
+}
+
+impl<B: d3d::Backend + Send + 'static> feature::native_decals::WalkHost for Walk<B> {
+    fn draw(&self, mem: &mut dyn engine::memory::GuestMemory, start: u32, count: u32) -> bool {
+        self.device.lock().is_ok_and(|mut device| {
+            device.try_native_array_draw(
+                &mut crate::native_lights_glue::DeviceMemory(mem),
+                PrimitiveType::QuadList,
+                start,
+                count,
+                self.admission.as_ref(),
+            ).ok() == Some(true)
+        })
+    }
 }
 
 fn clip(r: d3d::PixelRect) -> ClipRect {

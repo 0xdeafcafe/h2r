@@ -231,7 +231,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
             .unwrap_or(u32::MAX);
         let promise = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Objects,
+            stage: timeline::native::Stage::FirstPerson,
             view,
             ranges,
             slots: Vec::new(),
