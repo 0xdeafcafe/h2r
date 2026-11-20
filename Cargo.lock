@@ -2245,6 +2245,7 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "rustc-hash 2.1.3",
+ "scenario-edit",
  "serde",
  "serde_json",
  "settings",
@@ -5703,6 +5704,7 @@ dependencies = [
  "serde_json",
  "tags",
  "thiserror 2.0.21",
+ "toml",
  "wgpu",
  "xiso",
 ]

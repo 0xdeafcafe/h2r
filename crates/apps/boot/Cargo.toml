@@ -55,8 +55,6 @@ native-render = { path = "../../rewrites/native-render", optional = true }
 # The frame step's scene (docs/graphics/framescene.md); pure, no GPU.
 frame-scene = { path = "../../rewrites/frame-scene" }
 shaders = { path = "../../formats/shaders", optional = true }
-# Test-map recipes built into packages (test_maps.rs).
-scenario-edit = { path = "../../tools/scenario-edit", optional = true }
 serde.workspace = true
 dsound = { path = "../../platform/dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
@@ -102,7 +100,7 @@ local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
 # maps.test.* on the agent: test maps built from recipes (test_maps.rs,
 # docs/game/test-maps.md). The scenario editor's crate pulls in wgpu.
-test-maps = ["dep:scenario-edit", "game/test-maps"]
+test-maps = ["game/test-maps"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
