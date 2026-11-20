@@ -4,10 +4,14 @@
 //! [`Walls`] holds every collision surface of the structure BSP as
 //! triangles, bucketed on an XY grid. [`Walls::clear`] walks the cells a
 //! segment crosses and tests their triangles. Built offline with the nav
-//! mesh and kept in the same cache file.
+//! mesh and kept in the same cache file. A map's visibility grid
+//! (`crate::vis`), attached once loaded, answers segments between cells
+//! that never see each other without the walk.
 
+use crate::vis::Vis;
 use crate::visits::Visits;
 use rustc_hash::FxHashMap;
+use std::sync::{Arc, OnceLock};
 
 pub type V3 = [f32; 3];
 
@@ -29,10 +33,24 @@ fn dot(a: V3, b: V3) -> f32 {
 }
 
 /// The collision as triangles.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Walls {
     pub tris: Vec<[V3; 3]>,
     grid: FxHashMap<(i32, i32), Vec<u32>>,
+    /// The map's visibility grid, built from these triangles
+    /// (`crate::vis`): [`Walls::clear`] skips the walk for a pair of
+    /// cells that never see each other. Set once, in place, so a grid
+    /// built while a match runs goes into the shared map data without
+    /// replacing it.
+    vis: OnceLock<Arc<Vis>>,
+}
+
+/// Walls are their triangles: the bucket grid is made from them, and the
+/// visibility grid only ever skips a walk whose answer it knows.
+impl PartialEq for Walls {
+    fn eq(&self, other: &Self) -> bool {
+        self.tris == other.tris
+    }
 }
 
 fn cell(v: f32) -> i32 {
@@ -51,7 +69,23 @@ impl Walls {
                 }
             }
         }
-        Walls { tris, grid }
+        Walls {
+            tris,
+            grid,
+            vis: OnceLock::new(),
+        }
+    }
+
+    /// Attaches a visibility grid; `false` when one already is. It must
+    /// have been built from these triangles (`crate::vis::load` and
+    /// `crate::autonav::offer_vis` check).
+    pub(crate) fn set_vis(&self, vis: Arc<Vis>) -> bool {
+        self.vis.set(vis).is_ok()
+    }
+
+    /// The attached visibility grid.
+    pub fn vis(&self) -> Option<&Arc<Vis>> {
+        self.vis.get()
     }
 
     /// Fans each polygon into triangles.
@@ -65,8 +99,36 @@ impl Walls {
         Walls::new(tris)
     }
 
-    /// Whether nothing solid is between `a` and `b`.
+    /// Whether nothing solid is between `a` and `b`. With a visibility
+    /// grid attached, a segment between two cells that never see each
+    /// other is blocked without the walk: the same answer, proved when the
+    /// grid was built (`crate::vis`).
     pub fn clear(&self, a: V3, b: V3) -> bool {
+        if let Some(vis) = self.vis.get()
+            && vis.never(a, b)
+        {
+            return false;
+        }
+        let d = sub(b, a);
+        self.walk(a, b, |t| !hits(&self.tris[t as usize], a, d))
+    }
+
+    /// Every triangle the open segment `a`-`b` crosses, as
+    /// [`Walls::clear`] would test them (in the order it would), into
+    /// `out`. For building the visibility grid.
+    pub(crate) fn crossed(&self, a: V3, b: V3, out: &mut Vec<u32>) {
+        let d = sub(b, a);
+        self.walk(a, b, |t| {
+            if hits(&self.tris[t as usize], a, d) {
+                out.push(t);
+            }
+            true
+        });
+    }
+
+    /// Calls `f` with each triangle bucketed in the cells the segment
+    /// `a`-`b` crosses, until it returns `false`; whether it never did.
+    fn walk(&self, a: V3, b: V3, mut f: impl FnMut(u32) -> bool) -> bool {
         let d = sub(b, a);
         // The cells the segment's XY projection crosses (Amanatides-Woo).
         let (mut cx, mut cy) = (cell(a[0]), cell(a[1]));
@@ -77,7 +139,7 @@ impl Walls {
             return self
                 .grid
                 .get(&(cx, cy))
-                .is_none_or(|ts| ts.iter().all(|&t| !hits(&self.tris[t as usize], a, d)));
+                .is_none_or(|ts| ts.iter().all(|&t| f(t)));
         }
         let step = |v: f32| if v > 0.0 { 1 } else { -1 };
         let (sx, sy) = (step(d[0]), step(d[1]));
@@ -104,7 +166,7 @@ impl Walls {
             for _ in 0..100_000 {
                 if let Some(ts) = self.grid.get(&(cx, cy)) {
                     for &t in ts {
-                        if seen.insert(t) && hits(&self.tris[t as usize], a, d) {
+                        if seen.insert(t) && !f(t) {
                             return false;
                         }
                     }

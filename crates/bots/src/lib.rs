@@ -37,6 +37,7 @@ pub mod tactics;
 pub mod think;
 pub mod tuning;
 pub mod vehicle;
+pub mod vis;
 mod visits;
 pub mod weapons;
 mod work;

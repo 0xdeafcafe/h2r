@@ -296,6 +296,7 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
         h.want(&name);
     }
     let file = dir.join(bots::cache::file_name(&name, 0));
+    let dir = dir.to_path_buf();
     std::thread::spawn(move || {
         let read = std::fs::read(&file);
         let data = read
@@ -303,13 +304,17 @@ fn load_map_data(seen: &Mutex<String>, dir: &std::path::Path, mem: &runtime::Gue
             .ok()
             .and_then(|b| bots::cache::MapData::from_bytes(b));
         match (data, read.is_ok(), auto.is_some()) {
-            (Some((d, _)), ..) => {
+            (Some((d, stamp)), ..) => {
+                // The visibility grid beside it, or a line saying why not
+                // (every sight ray is then cast).
+                let vis = bots::vis::load(&dir, &name, 0, stamp, &d.walls);
                 let (polys, links, walls) =
                     (d.nav.polys.len(), d.nav.edges.len(), d.walls.tris.len());
                 if autonav::offer(&name, d, false) {
                     eprintln!(
                         "bots: {name}: {polys} polygons, {links} links, {walls} wall triangles"
                     );
+                    eprintln!("{vis}");
                 }
             }
             (None, false, true) => eprintln!(
