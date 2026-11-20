@@ -1,5 +1,7 @@
 # User-interface tags
 
+Status: Built. Code: `crates/tags/src/ui.rs`. Tests: `crates/tags/src/ui_tests.rs`. Switch: none.
+
 This describes the menu UI data model in `crates/tags/src/ui.rs`: the tags that
 define screens and widgets, how the retail engine reads them, and what a Rust
 renderer needs to draw a screen. Fonts and localized text are separate pieces

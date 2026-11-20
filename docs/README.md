@@ -183,6 +183,7 @@ every page here and the plan to bring them to those rules.
 
 Halo 1 (Xbox) running in the Halo 2 engine: its data read from your own `halo1.iso` and converted offline into Halo 2 maps. [README.md](halo1/README.md) (**start here**) says where each part stands.
 
+- [rebuild.md](halo1/rebuild.md): the Halo 1 converter writing objects from typed definitions: scenery, vehicles, bipeds, devices, physics, effects, weapons, particles
 - [campaign.md](halo1/campaign.md): Halo 1's campaign in the Halo 2 engine: the decisions, the pipeline, and every step. All ten levels convert offline at import (`h2 import halo1`); a30 has run headless, none has been played yet
 - [multiplayer.md](halo1/multiplayer.md): Halo 1's 13 disc multiplayer maps converted onto Halo 2 base maps (`h2 h1 convert`): collision, structure BSP, MOPP, placements, packages with variants
 - [campaign-picker.md](halo1/campaign-picker.md): how 1.0's menus list campaign levels and keep progress, and the campaign picker and per-campaign progress built on them (confirmed in the game)
