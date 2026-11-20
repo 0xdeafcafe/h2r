@@ -2056,6 +2056,13 @@ checks, in order (`bots::lobby`):
 | 8 | this console does not lead the party (`0x592f0`: session `+0x72d8` against `+0x50`) | "Waiting for ... to start the game" |
 | 9 | ready | "Waiting for you to start the game" |
 
+The custom lobby's status line passes a countdown string to `TEXT_SET`
+at `0x25012a`. While the host's countdown is active at zero, pending
+phantoms or seated phantoms in the load and simulation-start stages
+select **Setting up bots…** through the shared string table
+(`crates/extensions/game/src/lobby_status.rs`, `layout_glue.rs`). The
+asynchronous nav cache load can finish after play starts.
+
 So the earlier reading, that a bot with a profile but no Live sign-in
 keeps the state from 9, does not hold: no check reads a slot's `0x20` or
 `+0x470`. `0x59670` and `0x58d70` are about the session, and
@@ -2905,6 +2912,21 @@ state distributed by the host. Recomp clients recognise the gear mark
 in the player configuration's name (§8.2). The bots leave when the host
 ends the game.
 
+**Connection bars.** The Live match scoreboard draws the connection
+badge with `0x1634d0`. Retail's `0x68a90` takes the lowest score across
+RTT and three traffic metrics, so a zeroed rate field can give one red
+bar even at low latency. `crates/extensions/game/src/lobby_quality.rs`
+keeps the game's badge visibility and uses the player's session peer for
+its bar count. The local console and phantom machines get six bars.
+Remote peers use the last acknowledged round trip from the game's
+reliable packet queue (`0x96dc7`, timestamp at `+0x95c` and milliseconds
+at `+0x960`). One bar is the fallback while the viewer has no sample for
+that peer. The scale uses retail's latency calculation, interpolating
+from six bars at 60 ms to one at 800 ms with nearest-even rounding.
+The pregame lists show voice activity. The agent reads the same
+connection ratings for their members through
+[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+
 **Scoreboard and stats.** Bots participate in the scoreboard, the
 carnage report and post-game stats. Telemetry identifies phantoms by
 machine id and records them by game slot with `bot: true`
@@ -3341,6 +3363,12 @@ lobby never started.
   full says the start is held elsewhere.
 - **Live.** The match's bots went to the party's Live session too, and
   each was refused there (§9.5): now only the roster's session is told.
+
+The matchmaking progress screen's countdown (`0x0f00188e`, token U+E45B)
+reads the target session through `0x59590`. It shows **Setting up bots…**
+at zero under the same host setup conditions as the custom lobby.
+`lobby_status::MatchCountdown` replaces the temporary text used to
+measure and draw the widget at `0x22d2ee`.
 
 **Phantoms only.** In the 2026-11-19 run on `f5d3010c`, the retired
 controller-backed bots appeared in the player's party. The local-player

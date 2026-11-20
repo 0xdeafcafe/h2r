@@ -373,6 +373,15 @@ pub fn add_host_methods(agent: &agent::Agent) {
     agent.add_game_method(method::UI_CAMPAIGN, Access::Read, |_, ctx| {
         ctx.read_guest(crate::campaign_menu::inspect)
     });
+    agent.add_game_method(method::UI_LOBBY_PLAYERS, Access::Read, |params, ctx| {
+        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
+            return Err(RpcError::new(
+                code::INVALID_PARAMS,
+                "ui.lobby.players takes no parameters",
+            ));
+        }
+        ctx.read_guest(crate::lobby_quality::inspect)?
+    });
     agent.add_method(
         method::UI_SCREEN,
         Access::Read,
@@ -534,6 +543,8 @@ mod tests {
             a.between_slices(&mut Nothing, 0);
             serde_json::from_str(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
         };
+        let r = call(method::UI_LOBBY_PLAYERS, json!({"unknown": true}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::RENDER_STATS, Value::Null);
         assert!(r["result"].as_object().is_some_and(|o| o.contains_key("counters")), "{r}");
         let r = call(method::PROFILE_FALLBACKS, json!({"top": 3}));

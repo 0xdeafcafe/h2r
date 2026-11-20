@@ -962,6 +962,9 @@ points! { ALL;
     /// started. Refuses a campaign session with more than one peer
     /// (`0x6eea5`).
     SESSION_GAME_START @ 0x0006_ec80: [fn(session: edx, flag: stack 0) -> al ret 4]; "docs/live/live-coop.md";
+    /// The scoreboard badge's visibility (AL) and connection bar count
+    /// (written to the out pointer).
+    SCOREBOARD_CONNECTION_BARS @ 0x0006_8a90: [fn(stats: ebx, bars: stack 0) -> al ret 4], Optional; "docs/game/bots.md";
     /// Whether a machine (its 6-byte id at EAX) is in the game, AL: 1 with
     /// no simulation or for this console's machine, else its simulation
     /// view's `+0x78` (0 with no view). The player update (`0x14d2a0`, its

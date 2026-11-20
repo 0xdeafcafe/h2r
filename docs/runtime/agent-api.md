@@ -46,7 +46,7 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
 | `audio.voices` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](#input-act-like-a-player) |
@@ -949,7 +949,7 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
 
 ## `ui`: what the menus show
 
-Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
+These methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
 
 - **`ui.screen`** (`h2 agent ui`): the menu screen player one's input goes
   to, read each tick (`boot::ui_watch`): `{screen, window, slot,
@@ -980,6 +980,18 @@ Both methods are read-only. `ui.screen` needs `H2_UI_WATCH=1`.
   campaign dialog from `0x230888`; the picker intercepts it before the
   later profile-dependent solo branch at `0x2b16ad`. With UI watch on,
   `lobby mode campaign` also recognizes the installed picker.
+
+- **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
+  reads the pregame player list on a game boundary without UI watch
+  (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its
+  membership `slot`, console `peer`, `name`, `bars` (1 to 6) and `rtt_ms`
+  (milliseconds, or null when there is no network sample). Split-screen
+  players on a console share its peer and bar count. Local players and
+  phantoms have six bars and null RTT. Remote peers with no sample have
+  one bar. The list uses the squad's membership in custom games and the
+  target membership when the matchmaking lobby has one. Results are in
+  slot order, with an empty list outside pregame.
+  For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))
