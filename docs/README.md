@@ -73,6 +73,7 @@ every page here and the plan to bring them to those rules.
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/gfx`): batching, merged passes, the pipeline cache
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/d3d`): entries, device model, push buffer, render targets, vblank
 - [render-switches.md](graphics/render-switches.md): the render switches and experiments that were removed, and why
+- [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates, and the coordinator's measurement commands
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe, measured gain
 - [render-loop.md](graphics/render-loop.md): stage 7a, the view and pass loops ported to Rust: what is built and what is next
