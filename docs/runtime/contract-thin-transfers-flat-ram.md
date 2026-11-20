@@ -260,12 +260,15 @@ fence goes.
 **The fixup table.** Each row is two 32-bit self-relative words: the
 access instruction and its landing label. Rows are emitted from the same
 `asm` string into a named section (`__DATA_CONST,__h2_fix` on Mach-O,
-`.h2_fix` on ELF and COFF). The module exports the section bounds. At
+`h2_fix` on ELF, a C identifier so the linker defines `__start_h2_fix`
+and `__stop_h2_fix`, and `.h2_fix$m` between `$a` and `$z` markers on
+COFF). The module exports the section bounds. At
 registration the runtime checks the rows are sorted by address and fails
 with a named error if not; it never sorts or skips.
 
 **The fault handler.** A new crate, `crates/hostfault`, with no
-dependencies, owns the process-wide handler: `SIGBUS` and `SIGSEGV` on
+dependency but `libc` (for `sigaction` and the saved machine context),
+owns the process-wide handler: `SIGBUS` and `SIGSEGV` on
 macOS, `SIGSEGV` on Linux, a vectored handler on Windows. It keeps a
 fixed array of registered regions. A region is an address range and a
 callback that runs in the handler. For a fault inside a window the
@@ -553,7 +556,10 @@ gone.
   fixup-table registration and lookup.
 - A C fixture in `crates/emit/tests/c/` with one `asm goto` load and store
   per width, built for every target `Arch` knows
-  (`crates/emit/src/compile.rs:202`).
+  (`crates/emit/src/compile.rs:202`). `H2_FIX_ABS=1` (a define of the
+  fixture only) emits 64-bit absolute rows instead, and `hostfault`
+  takes either (`Format::Relative32`, `Format::Absolute64`);
+  `fixture_builds_for_every_target` prints which one each target took.
 - Tests: `fixup_lands_on_the_slow_label` per width;
   `unowned_fault_reaches_the_previous_handler`; `table_must_be_sorted`.
 - Exit: the fixture builds for macOS arm64 and x86-64, Linux x86-64,

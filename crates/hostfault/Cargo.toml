@@ -1,0 +1,10 @@
+[package]
+name = "hostfault"
+description = "The process-wide host fault handler: regions with in-handler callbacks, and fixup tables that send a faulting access to its slow path"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+# sigaction, siginfo and the saved machine context; as the other crates pin it.
+libc = "0.2"

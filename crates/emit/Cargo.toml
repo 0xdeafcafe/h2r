@@ -24,3 +24,5 @@ sse-oracle = { path = "../sse-oracle" }
 libc = "0.2"
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 runtime = { path = "../runtime" }
+# The fixup spike (tests/fixup.rs, contract slice F1).
+hostfault = { path = "../hostfault" }
