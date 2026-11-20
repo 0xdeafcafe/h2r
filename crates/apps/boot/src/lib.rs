@@ -247,6 +247,7 @@ fn run_configured(
     // exactly what the game assumes. The write-combined window is a boot
     // stopgap: --no-stopgaps leaves it out.
     let mut options = runtime::loader::LoadOptions::halo2();
+    options.map_guest_reads = host_light && switches.implementation("sim.mapped-reads", true);
     if opts.stopgaps {
         for r in &mut options.physical_reservations {
             r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
@@ -367,7 +368,7 @@ fn run_configured(
     std::fs::create_dir_all(&opts.data_root)?;
     let mut cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     cfg.mmap_disc = host_light;
-    cfg.map_guest_reads = host_light && features.switches().implementation("sim.mapped-reads", true);
+    cfg.map_guest_reads = options.map_guest_reads;
     if host_light {
         cfg.server_maps = std::env::var_os("H2_SERVER_MAP_DIR")
             .filter(|path| !path.is_empty())

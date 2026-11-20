@@ -254,12 +254,18 @@ impl Default for Guest {
 impl Guest {
     /// RAM starts zeroed and entirely unmapped, including guest address zero.
     pub fn new() -> Self {
+        Self::with_mapped_reads(false)
+    }
+
+    /// Start with paged RAM suitable for immutable mapped file reads when
+    /// requested. Flat RAM takes precedence because it needs writable aliases.
+    pub fn with_mapped_reads(map_guest_reads: bool) -> Self {
         Self {
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
             flat: None,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
             flat_requested: crate::flat::enabled(),
-            ram: crate::cow::Ram::zeroed(RAM_SIZE),
+            ram: crate::cow::Ram::zeroed(RAM_SIZE, map_guest_reads),
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| AtomicUsize::new(usize::MAX)),
             fast_pages: None,
@@ -1447,7 +1453,7 @@ impl Guest {
     #[cfg(test)]
     pub(crate) fn new_aliasable() -> Self {
         let mut g = Self::new();
-        g.ram = crate::cow::Ram::zeroed_with(RAM_SIZE, true);
+        g.ram = crate::cow::Ram::zeroed_with(RAM_SIZE, true, false);
         g
     }
 

@@ -455,6 +455,9 @@ logical file length, and an unreadable store fails its reads.
 
 On a light host, a read from an immutable disc map, verified server map
 or contiguous store range can supply whole pages directly to guest RAM.
+On macOS, boot selects a dedicated paged RAM mapping when this read path
+is enabled. Ordinary play and the light profile's copy control use the
+usual heap backing. Flat RAM keeps its separate aliasable mapping.
 The kernel attempts one mapping for the full NtReadFile request, before
 dividing a copied read into 64 KiB chunks. At least 16 whole host pages
 must fit. The physical destination and file offset must have the same

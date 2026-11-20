@@ -1247,7 +1247,7 @@ fn immutable_map_reads_install_private_pages_and_copy_noncongruent_reads() {
     cfg.map_guest_reads = true;
     let mut storage = vfs::Vfs::with_disc(cfg.clone(), &dvd).unwrap();
     storage.create_standard_links(&cfg).unwrap();
-    let mut h = Harness::with_guest(Default::default(), |g| {
+    let mut h = Harness::with_memory(Default::default(), runtime::Guest::with_mapped_reads(true), |g| {
         g.map(BIG, 1024 * 1024, 8 * 1024 * 1024, runtime::guest::Permissions::RW).unwrap();
     });
     h.kernel.set_vfs(storage).unwrap();

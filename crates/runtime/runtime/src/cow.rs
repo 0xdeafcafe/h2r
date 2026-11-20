@@ -71,17 +71,20 @@ unsafe impl Sync for Ram {}
 impl Ram {
     /// The live, initially zero physical store; aliasable when flat RAM
     /// is selected (`H2_FLAT_RAM=1`).
-    pub(crate) fn zeroed(len: usize) -> Self {
+    pub(crate) fn zeroed(len: usize, map_guest_reads: bool) -> Self {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         let aliasable = crate::flat::enabled();
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         let aliasable = false;
-        Self::zeroed_with(len, aliasable)
+        Self::zeroed_with(len, aliasable, map_guest_reads)
     }
     /// The live, initially zero physical store. `aliasable` asks for a
     /// backing that [`Ram::alias`] can map into a window (a shared memfd on
-    /// Linux, a dedicated mapping on macOS); elsewhere it is ignored.
-    pub(crate) fn zeroed_with(len: usize, aliasable: bool) -> Self {
+    /// Linux, a dedicated mapping on macOS). A paged macOS light host also
+    /// needs an owned mapping when it installs immutable guest file pages.
+    pub(crate) fn zeroed_with(len: usize, aliasable: bool, map_guest_reads: bool) -> Self {
+        #[cfg(not(target_os = "macos"))]
+        let _ = map_guest_reads;
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
         {
             linux::reserve(len, linux::PREFERRED_BASE, aliasable)
@@ -90,7 +93,7 @@ impl Ram {
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
         let _ = aliasable;
         #[cfg(target_os = "macos")]
-        if aliasable || cfg!(feature = "guest-file-reads") {
+        if aliasable || (map_guest_reads && cfg!(feature = "guest-file-reads")) {
             // A dedicated mapping guarantees host-page alignment for shared
             // aliases, independent of the selected global allocator.
             let p = unsafe {
@@ -216,7 +219,7 @@ impl Ram {
         if self.can_share() {
             return true;
         }
-        let mut fresh = Self::zeroed_with(self.len, true);
+        let mut fresh = Self::zeroed_with(self.len, true, false);
         if !fresh.can_alias() {
             return false;
         }
@@ -723,10 +726,21 @@ mod tests {
 
     const LEN: usize = 64 * 1024 * 1024;
 
+    #[cfg(all(target_os = "macos", feature = "guest-file-reads"))]
+    #[test]
+    fn mac_guest_file_reads_select_the_paged_backing_per_guest() {
+        let ordinary = Ram::zeroed_with(64 * 1024, false, false);
+        let mapped = Ram::zeroed_with(64 * 1024, false, true);
+        let flat = Ram::zeroed_with(64 * 1024, true, true);
+        assert!(matches!(ordinary.backing, Backing::Heap));
+        assert!(matches!(mapped.backing, Backing::MachPaged));
+        assert!(matches!(flat.backing, Backing::MachLive));
+    }
+
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn linux_live_ram_has_two_guards_and_collision_preserves_the_first_guest() {
-        let mut first = Ram::zeroed(LEN);
+        let mut first = Ram::zeroed(LEN, false);
         first[0] = 0xa5;
         let Backing::Guarded { base, .. } = first.backing;
         let mut other = linux::reserve(LEN, base.as_ptr() as usize, false).unwrap();
@@ -761,7 +775,7 @@ mod tests {
 
     #[test]
     fn a_copy_keeps_the_bytes_of_its_moment_and_its_own_writes() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         live[0] = 1;
         live[LEN / 2] = 2;
         live[LEN - 1] = 3;
@@ -804,7 +818,7 @@ mod tests {
 
     #[test]
     fn copies_made_and_dropped_repeatedly_stay_independent() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         for round in 0..64u8 {
             live[round as usize * 4096] = round;
             let (mut copy, _) = live.cow_copy();
@@ -823,7 +837,7 @@ mod tests {
     #[test]
     #[ignore = "benchmark"]
     fn cow_copy_cost() {
-        let mut live = Ram::zeroed(LEN);
+        let mut live = Ram::zeroed(LEN, false);
         let touched = 16 * 1024 * 1024;
         live[..touched].fill(1);
         for _ in 0..5 {
