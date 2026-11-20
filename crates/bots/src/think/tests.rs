@@ -282,8 +282,13 @@ fn a_pipelined_think_from_before_a_reset_is_dropped() {
         last.push(thinker.sample(tick, &g, &seats));
     }
     assert_eq!(last[10][2], HostPadState::default());
-    // The other bots' thinks went on.
-    assert!((0..BOTS as usize).filter(|&i| i != 2).any(|i| last[10][i] != HostPadState::default()));
+    // The other bots' thinks went on: their tick-10 pads are serial's
+    // tick-9 pads (the fixture may still be idle then, so compare, not
+    // just look for a press).
+    let serial = run(Mode::Serial);
+    for i in (0..BOTS as usize).filter(|&i| i != 2) {
+        assert_eq!(last[10][i], serial.pads[9][i], "bot {i}");
+    }
     // A gap in ticks drops every think in flight.
     let pads = thinker.sample(20, &g, &seats(&w, 20));
     assert!(pads.iter().all(|p| *p == HostPadState::default()));

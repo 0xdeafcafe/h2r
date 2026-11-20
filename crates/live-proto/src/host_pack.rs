@@ -264,6 +264,13 @@ impl Pool {
 
     /// Record that `pack` now runs `lease` until `deadline_ms`.
     pub fn admitted(&mut self, pack: &str, lease: &str, deadline_ms: i64) {
+        // A pack named elsewhere (restored state, another router) still
+        // claims its number, so a later new pack never reuses it.
+        if let (n, _) = pack_order(pack)
+            && n != u64::MAX
+        {
+            self.next = self.next.max(n + 1);
+        }
         self.packs
             .entry(pack.to_owned())
             .or_default()
