@@ -1744,6 +1744,13 @@ mod tests {
     use super::*;
     use d3d::backend::Backend;
 
+    #[test]
+    fn the_feature_arena_starts_after_the_device_pages() {
+        assert!(PUSH_BASE + PUSH_LEN <= SCRATCH_BASE);
+        assert!(SCRATCH_BASE + 0x1000 <= hooks::arena::ARENA_START);
+        assert!(hooks::arena::ARENA_END <= crate::community_variants::DATA_BASE);
+    }
+
     #[cfg(feature = "gpu")]
     #[test]
     fn slim_film_keeps_the_dedicated_indexed_draw_dispatch_on_a_gpu_player() {
