@@ -224,12 +224,50 @@ playerless System Link host. The host occupies one peer slot and signs
 in no controller. The other fifteen peer slots are available for bots.
 Each simulated peer supplies its own marked name, appearance and team
 because the host has no local profile to copy.
-The sim uses the dedicated lobby's readiness checks and machine load
-request (`0x5a220`) when the controller countdown has no signed-in user.
-Playerless sim startup is inferred, needs a run. The lobby waits for one
-host peer plus one peer per bot. Verify that `match.status` reaches
-`playing` with every logical seat in `bound_seats` and that the match
-report lists just those players.
+
+**The playerless start path** (**Code**, `sim_glue/hosted.rs` and
+`host_lobby/retail.rs`), one step per game tick at the start of the tick:
+
+1. **Open.** `PROFILE_SIGN_IN` (`0x18fb34`) is refused for the run, so no
+   port is ever signed in. The host creates the System Link squad
+   (`0x199df9(0,0)`, custom mode `0x199a03(2)`), sets the map
+   (`0x19a6f2`) and the variant (`0x19a728`) with the player limit at the
+   bot count, and waits until the squad shows them
+   (`sim: System Link host Create -> Start`).
+2. **Gate.** The squad must be live (state 5), hosted here, distributed,
+   on the match's map, with one player per seat and one peer per machine:
+   this host's own peer plus one per phantom (`start_gate`).
+3. **Eligibility.** The lobby's own checks (`Eligibility::blocker`): the
+   pregame phase, party leader, map, protocol, player limit, the variant
+   open applied, and every peer's map status above 2. The last is the
+   countdown finisher's test (`0x6e410` at `0x6e4b8`); retail's start
+   check lets a status still loading through for the party leader, and
+   the playerless path stands in for the finisher.
+4. **Retail's start check** `0x19a2ce(0)` must answer 9.
+5. **Start.** The controller countdown `0x19a78e` (EAX port 0) refuses on
+   this host (port 0's local-user index is −1), so the host makes the
+   finisher's own request: `0x5a220` with the session in ESI and stage 2
+   in EDI (register arguments, plain `ret`, as `0x6e4d7` calls it). Session
+   `+0x4980` becomes 2 and the machines load the map
+   (`sim: System Link host Start -> Loading`).
+
+Every wait says why, once per change:
+`sim: System Link host waits at Start: <reason>`, for example
+`peer 0 has map status 2 (...)` or
+`retail start state 7, blocked by the teams or co-op check (...)`.
+The co-op hooks (`SESSION_GAME_LIMITS` "peer limit 2",
+`SESSION_GAME_START` "one peer for the campaign check",
+`LOBBY_START_STATE` "co-op over 2 to N consoles") act on campaign
+sessions only and leave this lobby as retail has it (tested).
+
+Needs a run: `h2 sim run` on an all-phantom match (for example four
+phantoms, Slayer, Lockout). Expect `Create -> Start`, the phantoms'
+joins, possibly `waits at Start: peer N has map status 2` while the map
+loads, then `Start -> Loading`, `sim: match started at tick N` and
+`bots: phantoms: the game's start waits for real consoles only`.
+`match.status` must reach `playing` with every logical seat in
+`bound_seats`, and the report must list just those players. A run that
+still stalls names the check in its last `waits at Start` line.
 
 For a mixed roster the headless host signs in the local pads (`0x18fb34`), creates a System
 Link squad (`0x199df9(0,0)`, `0x199a03(2)`), and applies the map and
@@ -997,6 +1035,8 @@ headers and blocks while those dependencies are being traced.
 7. The speed-up.
 8. `--fork`: a snapshot of a sim match at spawn, loaded into another
    process.
+9. The playerless start ([More than four](#more-than-four)): an
+   all-phantom match reaches `Start -> Loading` and binds every seat.
 
 ## First runs
 

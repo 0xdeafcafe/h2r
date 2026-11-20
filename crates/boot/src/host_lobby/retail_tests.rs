@@ -101,9 +101,11 @@ fn reply(f: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
             assert_eq!(f.eax, Some(0));
             0
         }
-        0x5a220 => {
-            assert_eq!(f.args, [2]);
-            m.set_u32(S + CLASS, 2).unwrap();
+        MACHINE_LOAD_REQUEST => {
+            // 0x6e4d7's convention: session in ESI, stage in EDI, plain ret.
+            assert!(f.args.is_empty(), "no stack arguments");
+            assert_eq!((f.esi, f.edi), (Some(S), Some(STAGE_LOAD)));
+            m.set_u32(S + CLASS, STAGE_LOAD).unwrap();
             0
         }
         LEAVE_SESSIONS => {
@@ -159,13 +161,19 @@ fn all_phantom_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
                 m.set_u32(S + PEERS + PEER_MAP_STATUS, 3)?;
                 m.set_u32(S + PEERS + PEER_SIZE + PEER_MAP_STATUS, 4)
             })?;
-            assert!(!lobby.start_sim(&cx, 2).await.map_err(rpc)?);
+            assert_eq!(
+                lobby.start_sim(&cx, 2).await.map_err(rpc)?,
+                SimStart::Wait("1 of 2 seats have a player".into())
+            );
             cx.write(|m| -> Result<(), MemFault> {
                 m.set_u32(S + PEER_COUNT, 3)?;
                 peer(m, 9, 2, "Second")?;
                 m.set_u32(S + PEERS + 2 * PEER_SIZE + PEER_MAP_STATUS, 4)
             })?;
-            assert!(lobby.start_sim(&cx, 2).await.map_err(rpc)?);
+            assert_eq!(
+                lobby.start_sim(&cx, 2).await.map_err(rpc)?,
+                SimStart::Started
+            );
             Ok(Ret::new(1, 0))
         })
     };
@@ -176,7 +184,223 @@ fn all_phantom_sim_waits_for_its_full_roster_and_keeps_variant_settings() {
             .iter()
             .all(|c| c.target != points::PROFILE_SIGN_IN.base)
     );
-    assert_eq!(run.calls.iter().filter(|c| c.target == 0x5a220).count(), 1);
+    assert_eq!(
+        run.calls
+            .iter()
+            .filter(|c| c.target == MACHINE_LOAD_REQUEST)
+            .count(),
+        1
+    );
+}
+
+/// The playerless lobby the sim drives: no local user on any port, the
+/// host as peer 0 with no player, and one phantom peer with one player per
+/// seat.
+fn eligible(seats: usize) -> Eligibility {
+    Eligibility {
+        phase: Phase::Lobby,
+        open: true,
+        leader: 0,
+        local: 0,
+        map: MAP,
+        want_map: MAP,
+        protocol: 2,
+        max: seats as u32,
+        want_max: seats as u32,
+        players: seats,
+        peer_maps: vec![3; seats + 1],
+        variant: true,
+    }
+}
+
+#[test]
+fn a_playerless_lobby_with_only_phantoms_is_eligible_and_says_what_holds_it() {
+    for seats in [1, 4, 15] {
+        let e = eligible(seats);
+        assert_eq!(e.blocker(), None, "{seats} phantoms");
+        assert_eq!(sim_blocker(e.blocker(), seats, seats), None);
+    }
+    let e = eligible(4);
+    let why = |f: &dyn Fn(&mut Eligibility)| {
+        let mut e = e.clone();
+        f(&mut e);
+        e.blocker().expect("a blocker")
+    };
+    assert!(why(&|e| e.phase = Phase::Loading).contains("Loading"));
+    assert!(why(&|e| e.open = false).contains("not open"));
+    assert!(why(&|e| e.leader = 1).contains("does not lead"));
+    assert!(why(&|e| e.map = MAP + 1).contains("map"));
+    assert!(why(&|e| e.protocol = 1).contains("protocol"));
+    assert!(why(&|e| e.max = 2).contains("player limit is 2 (want 4)"));
+    assert!(why(&|e| e.players = 0).contains("no remote player"));
+    assert!(why(&|e| e.players = 5).contains("exceed"));
+    assert!(why(&|e| e.variant = false).contains("variant"));
+    // The countdown finisher's map test: every peer, this host's own too.
+    assert!(why(&|e| e.peer_maps[0] = 0).starts_with("peer 0 has map status 0"));
+    assert!(why(&|e| e.peer_maps[3] = 2).starts_with("peer 3 has map status 2"));
+    assert!(why(&|e| e.peer_maps[2] = 1).starts_with("peer 2 has map status 1"));
+    assert_eq!(
+        Eligibility {
+            peer_maps: vec![4, 3, 4, 4, 3],
+            ..e.clone()
+        }
+        .blocker(),
+        None
+    );
+    // The sim needs every seat filled; the lobby's reason comes first.
+    assert_eq!(
+        sim_blocker(None, 3, 4),
+        Some("3 of 4 seats have a player".into())
+    );
+    assert_eq!(
+        sim_blocker(Some("x".into()), 3, 4),
+        Some("x".into())
+    );
+}
+
+#[test]
+fn an_all_phantom_sim_starts_with_zero_local_users_and_four_phantoms() {
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let config = sim::config::parse_match(
+                "map='lockout'\nteam_play=true\n\
+                 [[bot]]\nkind='phantom'\nteam=0\n[[bot]]\nkind='phantom'\nteam=1\n\
+                 [[bot]]\nkind='phantom'\nteam=0\n[[bot]]\nkind='phantom'\nteam=1\n",
+                false,
+            )
+            .unwrap();
+            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            assert!(matched.playerless_host());
+            let mut lobby = Machine::default();
+            while !lobby
+                .open_sim(&cx, MAP, &matched, SCRATCH)
+                .await
+                .map_err(rpc)?
+            {}
+            assert_eq!(cx.read(|m| m.u32(S + MAX_PLAYERS))?, 4);
+            // The host's own peer is loaded; four phantom peers join, each
+            // with one player and this host's properties.
+            cx.write(|m| -> Result<(), MemFault> {
+                m.set_u32(S + PEER_COUNT, 5)?;
+                m.set_u32(S + PEERS + PEER_MAP_STATUS, 2)?;
+                for (i, name) in ["Red 1", "Blue 1", "Red 2", "Blue 2"].iter().enumerate() {
+                    let p = i as u32 + 1;
+                    peer(m, i as u32, p, name)?;
+                    m.set_u32(S + PEERS + p * PEER_SIZE + PEER_MAP_STATUS, 2)?;
+                }
+                Ok(())
+            })?;
+            // Still loading the map: retail's start check would say 9 (a
+            // leader's loading lobby), but the load request must wait as the
+            // countdown finisher does.
+            assert!(matches!(
+                lobby.start_sim(&cx, 4).await.map_err(rpc)?,
+                SimStart::Wait(why) if why.starts_with("peer 0 has map status 2")
+            ));
+            cx.write(|m| -> Result<(), MemFault> {
+                for p in 0..5 {
+                    m.set_u32(S + PEERS + p * PEER_SIZE + PEER_MAP_STATUS, 3)?;
+                }
+                Ok(())
+            })?;
+            assert_eq!(
+                lobby.start_sim(&cx, 4).await.map_err(rpc)?,
+                SimStart::Started
+            );
+            assert_eq!(cx.read(|m| m.u32(S + CLASS))?, STAGE_LOAD);
+            Ok(Ret::new(1, 0))
+        })
+    };
+    let run = testing::run(&test, menu(), Regs::default(), |f, m| {
+        if f.target == SET_VARIANT {
+            // Four seats: the limit open writes before the variant setter.
+            assert_eq!(m.u32(SCRATCH + variant::MAX_PLAYERS as u32), Ok(4));
+            let raw = m.bytes(SCRATCH, level_boot::VARIANT_SIZE as usize).unwrap();
+            m.write(S + VARIANT, &raw).unwrap();
+            return Regs {
+                eax: 1,
+                ..Default::default()
+            };
+        }
+        reply(f, m)
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+    assert!(
+        run.calls
+            .iter()
+            .all(|c| c.target != points::PROFILE_SIGN_IN.base),
+        "no local seat is ever signed in"
+    );
+    let order: Vec<u32> = run
+        .calls
+        .iter()
+        .map(|c| c.target)
+        .filter(|t| {
+            [
+                points::LOBBY_START_STATE.base,
+                CONTROLLER_COUNTDOWN,
+                MACHINE_LOAD_REQUEST,
+            ]
+            .contains(t)
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            points::LOBBY_START_STATE.base,
+            CONTROLLER_COUNTDOWN,
+            MACHINE_LOAD_REQUEST
+        ],
+        "one start check, the refused controller countdown, then the load request"
+    );
+}
+
+#[test]
+fn a_refused_retail_start_check_is_a_wait_with_its_reason() {
+    let test = |cx: Cx| -> EntryFuture {
+        Box::pin(async move {
+            let config = sim::config::parse_match(
+                "map='lockout'\n[[bot]]\nkind='phantom'\n[[bot]]\nkind='phantom'\n",
+                false,
+            )
+            .unwrap();
+            let matched = sim::config::resolve(config, &|_| unreachable!()).unwrap();
+            let mut lobby = Machine::default();
+            while !lobby
+                .open_sim(&cx, MAP, &matched, SCRATCH)
+                .await
+                .map_err(rpc)?
+            {}
+            cx.write(|m| -> Result<(), MemFault> {
+                m.set_u32(S + PEER_COUNT, 3)?;
+                peer(m, 0, 1, "A")?;
+                peer(m, 1, 2, "B")?;
+                for p in 0..3 {
+                    m.set_u32(S + PEERS + p * PEER_SIZE + PEER_MAP_STATUS, 4)?;
+                }
+                Ok(())
+            })?;
+            assert!(matches!(
+                lobby.start_sim(&cx, 2).await.map_err(rpc)?,
+                SimStart::Wait(why) if why.starts_with("retail start state 7, blocked by the teams")
+            ));
+            Ok(Ret::new(1, 0))
+        })
+    };
+    // The facts behind the reason read this console's own map status.
+    let mut guest = menu();
+    guest.map(lobby::MAP_FAILED_HERE, 4);
+    let run = testing::run(&test, guest, Regs::default(), |f, m| {
+        if f.target == points::LOBBY_START_STATE.base {
+            return Regs {
+                eax: 7,
+                ..Default::default()
+            };
+        }
+        reply(f, m)
+    });
+    assert_eq!(run.result.unwrap(), Ret::new(1, 0));
+    assert!(run.calls.iter().all(|c| c.target != MACHINE_LOAD_REQUEST));
 }
 
 #[test]
