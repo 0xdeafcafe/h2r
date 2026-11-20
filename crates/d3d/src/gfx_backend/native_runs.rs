@@ -1,7 +1,7 @@
 //! Ordered native commands share the pending draw list when they can use
 //! its attachments. Opaque bundles keep their own run.
 use super::{GfxBackend, PendingPass, SurfaceId};
-use crate::backend::{ExternalBundles, ExternalDraws, TargetCopy};
+use crate::backend::{ExternalBundles, ExternalDraws, ExternalEncoded, TargetCopy};
 use std::sync::atomic::{AtomicU64, Ordering};
 use timeline::native::{Metric, Stage, Timer};
 
@@ -138,6 +138,22 @@ impl GfxBackend {
         }
         let pending = self.pending.as_mut().expect("at least one validated draw");
         pending.native.push((start..pending.draws.len(), stage, copy));
+        true
+    }
+
+    /// A stage's own targets' passes and copies, in the frame's open
+    /// encoder after the pending pass: no command buffer of its own.
+    pub(super) fn append_native_encoded(&mut self, stage: Stage, copy: TargetCopy, encoded: ExternalEncoded) -> bool {
+        if !self.encode_before_external() {
+            return false;
+        }
+        let _encode = Timer::start(stage, Metric::EncodeNs);
+        let (encoder, passes) = self.open.get_or_insert_with(||
+            (self.ctx.device.create_command_encoder(&Default::default()), 0));
+        (encoded.commands)(encoder);
+        *passes += encoded.passes;
+        self.stats.render_passes += encoded.passes as u64;
+        stage.count(metric(copy), encoded.passes as u64);
         true
     }
 

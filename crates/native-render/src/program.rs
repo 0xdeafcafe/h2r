@@ -1137,12 +1137,12 @@ fn render_pipeline(
 
 /// Shader ids the world's packets report to the pass they join (for
 /// diagnostics; the pipelines are the programs' own).
-const WORLD_CLUSTER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 1);
-const WORLD_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 2);
+pub(crate) const WORLD_CLUSTER_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 1);
+pub(crate) const WORLD_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::MAX - 2);
 
 /// [`render_pipeline`]'s state as a packet describes it: primitive, depth
 /// and stencil, and colour target (its write mask splits merged passes).
-fn described_pipeline(
+pub(crate) fn described_pipeline(
     shader: gfx::pipeline::ShaderId,
     color: wgpu::TextureFormat,
     depth: wgpu::TextureFormat,

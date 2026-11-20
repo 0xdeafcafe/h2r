@@ -1761,6 +1761,9 @@ impl Backend for GfxBackend {
             crate::backend::ExternalCommands::Draws { targets, draws } => {
                 if !self.append_native_draws(recording.stage, recording.copy, targets, draws, &recording.uploads) { return; }
             }
+            crate::backend::ExternalCommands::Encoded(encoded) => {
+                if !self.append_native_encoded(recording.stage, recording.copy, encoded) { return; }
+            }
             crate::backend::ExternalCommands::Standalone(commands) => {
                 if !self.encode_before_external() { return; }
                 if let Some((enc, _)) = self.open.take() {

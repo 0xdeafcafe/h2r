@@ -478,6 +478,13 @@ impl RecordedDraw {
         }
     }
 
+    /// The blend constant a native pass sets itself (a translated pass's
+    /// own `BLENDCOLOR`), in place of the render state's.
+    pub fn with_blend_constant(mut self, color: wgpu::Color) -> Self {
+        self.blend_constant = color;
+        self
+    }
+
     /// Reuse the pipeline and immutable buffer allocations for another
     /// rectangle of the same validated draw.
     pub fn with_scissor(mut self, scissor: ScissorRect, size: (u32, u32)) -> Self {
