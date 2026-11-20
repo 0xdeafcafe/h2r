@@ -226,13 +226,19 @@ fn a_second_identical_frame_creates_no_programs_pipelines_groups_or_buffers() {
     let mut cache = DecalCache::default();
     let pool = gfx::ring::UploadPool::default();
     let scene = scene(&ctx);
+    let start = gfx::churn::snapshot();
     let first = frame(&ctx, &mut cache, &pool, &scene, true);
     let (created, churn) = (cache.created(), gfx::churn::snapshot());
+    let first_spent = churn - start;
     assert!(created.programs == 2 && created.pipelines == 2 && created.texture_groups == 1);
     let second = frame(&ctx, &mut cache, &pool, &scene, true);
     assert_eq!(cache.created(), created, "nothing cached is made again");
     let spent = gfx::churn::snapshot() - churn;
-    assert_eq!(spent.buffers_created, 0, "the arena's buffers are pooled");
+    // `frame` reads its colour back, and the readback's staging buffer is
+    // the one buffer the test itself makes each frame; the arena's rings
+    // (made on the first frame) come back from the pool on the second.
+    assert!(first_spent.buffers_created > 1, "the first frame makes the arena's rings: {first_spent:?}");
+    assert_eq!(spent.buffers_created, 1, "only the readback's buffer: the arena's are pooled");
     assert_eq!(first, second);
 }
 
