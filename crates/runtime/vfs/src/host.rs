@@ -1930,7 +1930,15 @@ mod tests {
                 .count()
         };
         assert_eq!(leftover(".root.h2format-old-"), 1, "the old tree awaits deletion");
-        fs::set_permissions(&folder, permissions).unwrap();
+        // The unreadable folder moved aside with the old tree.
+        let aside = fs::read_dir(&temp.0)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(".root.h2format-old-")))
+            .unwrap()
+            .path()
+            .join("folder");
+        fs::set_permissions(&aside, permissions).unwrap();
         drop(backend);
         let _reopened = temp.backend();
         assert_eq!(leftover(".root.h2format-"), 0, "the mount swept it");
