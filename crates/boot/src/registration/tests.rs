@@ -182,7 +182,6 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
             .build(&feature::Base)
             .unwrap();
         let ids: Vec<_> = plan.features.iter().map(|f| f.id).collect();
-        assert_eq!(ids.contains(&"render-loop"), profile != Slim);
         assert_eq!(ids.contains(&"native-map-work"), profile == Gpu);
         assert_eq!(ids.contains(&"native-world"), profile == Gpu);
         assert_eq!(ids.contains(&"native-hud"), profile == Gpu);

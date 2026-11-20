@@ -102,6 +102,8 @@ pub const REFUSED: &[(&str, &str, &str)] = &[
     ("campaigns", "*", "reads campaign selection and updates profile saves on the game thread"),
     ("campaign-squad-pools", "*", "sizes the guest datum pools as a map loads"),
     ("h1-ai-control", "*", "updates simulation actors and evaluates guest script arguments"),
+    ("h1-drive", "VEHICLE_CONTACT_FORCES", AFTER),
+    ("h1-flag", "*", "steps source cloth points around the guest solver on the simulation thread"),
     ("h1-command-atoms", "*", "runs command scripts and their actor updates on the simulation thread"),
     ("h1-conversations", "*", "uses the interpreter and tracks actor construction across guest calls"),
     ("h1-recordings", "UNIT_APPLY_CONTROL", "applies recorded input through a guest continuation"),

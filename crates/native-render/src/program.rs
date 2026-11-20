@@ -1499,7 +1499,7 @@ impl ProgramSet {
         let (source, start) = uploads.arena.stage(uploads.device, uploads.queue, &view_bytes(view));
         let viewport = start + VIEW_PREFIX as u64;
         for material in selection.materials.keys() {
-            uploads.encoder.copy_buffer_to_buffer(&source, viewport + 32, &self.materials[material].pixel_buffer, PIXEL_TAIL as u64, 32);
+            uploads.copy(&source, viewport + 32, &self.materials[material].pixel_buffer, PIXEL_TAIL as u64, 32);
         }
         for &(material, instance) in &selection.vertices {
             let (buffer, offset) = if let Some(n) = instance {
@@ -1508,8 +1508,8 @@ impl ProgramSet {
             } else {
                 (&self.materials[&material].vertex_buffer, 0)
             };
-            uploads.encoder.copy_buffer_to_buffer(&source, start, buffer, offset, VIEW_PREFIX as u64);
-            uploads.encoder.copy_buffer_to_buffer(&source, viewport, buffer, offset + VERTEX_TAIL as u64, 32);
+            uploads.copy(&source, start, buffer, offset, VIEW_PREFIX as u64);
+            uploads.copy(&source, viewport, buffer, offset + VERTEX_TAIL as u64, 32);
         }
     }
 

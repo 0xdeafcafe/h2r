@@ -501,6 +501,14 @@ impl EncoderUploads<'_> {
         self.arena.written_in_order(self.device, dst);
     }
 
+    /// Copy already staged bytes (from [`SubmissionUploads::stage`]) in draw
+    /// order, remembering `dst` as written in order like [`Self::write`].
+    pub fn copy(&mut self, src: &wgpu::Buffer, src_offset: u64, dst: &wgpu::Buffer, offset: u64, len: u64) {
+        if len == 0 { return; }
+        self.encoder.copy_buffer_to_buffer(src, src_offset, dst, offset, len);
+        self.arena.written_in_order(self.device, dst);
+    }
+
     /// Stage shared view data once and copy it into each placement's block;
     /// the stable rows in the rest of each block are initialized at map load.
     pub fn repeat(&mut self, dst: &wgpu::Buffer, first: u64, stride: u64, count: usize, bytes: &[u8]) {
