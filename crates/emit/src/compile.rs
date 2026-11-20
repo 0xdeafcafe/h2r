@@ -99,6 +99,13 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// targets had flags of their own. The stamp ([`boot`'s `build_stamp`])
 /// takes them for the target it builds for, so a module cross-built for
 /// Windows matches what the app computes on the device.
+///
+/// H2_XMM_LOCALS, H2_SSE_STICKY_PE, H2_SSE_HOST_RUN, H2_SSE_PACKED_X86
+/// and H2_X87_STORE_BITS enable the local vector bank, precision-flag
+/// shortcut, host control reuse, SSE2 packed path and ext80 store rounding.
+/// Each defaults on. H2_RAM_PAGE_CACHE and H2_X87_TOP are opt-in until
+/// measured in full images: both trade fewer hot operations for more
+/// live state or larger generated code.
 pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
@@ -110,7 +117,14 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_PERF", false),
         ("H2_FASTMEM", true),
         ("H2_X87_NATIVE", true),
+        ("H2_X87_STORE_BITS", true),
+        ("H2_X87_TOP", false),
         ("H2_SSE_NATIVE", true),
+        ("H2_SSE_STICKY_PE", true),
+        ("H2_SSE_PACKED_X86", true),
+        ("H2_SSE_HOST_RUN", true),
+        ("H2_XMM_LOCALS", true),
+        ("H2_RAM_PAGE_CACHE", false),
         ("H2_DIRECT_CALLS", true),
         ("H2_DIRTY_INLINE", false),
         ("H2_COLD_STATS", false),

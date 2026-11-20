@@ -73,11 +73,22 @@ enum {
     H2C_ENTRY, H2C_LENT_ENTRY, H2C_AFTER_DCALL, H2C_FLUSH, H2C_DROP, H2C_TICK, H2C_MISS, H2C_NO_GATE,
     H2C_COUNT
 };
+#if H2_RAM_PAGE_CACHE && H2_FASTMEM
+/* Private to a generated handler. A write slot also certifies that the
+ * physical page was marked dirty if a watch was active in this hold. */
+typedef struct H2RamPage {
+    uint64_t end; /* exclusive guest end, 0 for an empty slot */
+    uint8_t *base;
+} H2RamPage;
+#endif
 typedef struct H2Gate {
     uint32_t held, dirtied;
     H2MemoryData *data;
 #if H2_COLD_STATS
     uint32_t why; /* H2C_*: why the gate is not held */
+#endif
+#if H2_RAM_PAGE_CACHE && H2_FASTMEM
+    H2RamPage ram_page[2]; /* last read and last write are independent */
 #endif
 } H2Gate;
 #define H2_GATE_TRIPS 32u
@@ -127,10 +138,10 @@ static H2_COLD H2_PRESERVE void h2_cold_note(uint32_t why) {
 #define H2_COLD_NOTE_AFTER(g) ((void)0)
 #endif
 #if H2_FASTMEM
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {0, UINT32_MAX, NULL}; (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {.dirtied = UINT32_MAX}; (void)h2_mem_
 #define H2_FAST_RELEASE() h2abi_v1_fast_release(ctx)
 #else
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {0, UINT32_MAX, NULL}; (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {.dirtied = UINT32_MAX}; (void)h2_mem_
 #define H2_FAST_RELEASE() ((void)0)
 #endif
 
@@ -250,6 +261,9 @@ static inline H2MemoryData *h2_gate_try(H2FastAccess *f) {
  * and unused until the next hold). */
 static H2_ALWAYS_INLINE void h2_gate_adopt(H2Gate *g, H2MemoryData *d) {
     if (d) {
+#if H2_RAM_PAGE_CACHE && H2_FASTMEM
+        g->ram_page[0].end = g->ram_page[1].end = 0;
+#endif
         g->data = d;
         g->dirtied = UINT32_MAX;
         g->held = 1u;
@@ -370,6 +384,29 @@ static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical
 #else
 #define H2_HELD_TRY(f, g, addr, width, write, page, host, slow) do { (void)(g); (void)(page); (host) = NULL; goto slow; } while (0)
 #endif
+/* Under this gate pages, RAM backing, page permissions and watch state
+ * cannot change. A single unsigned range check validates the entire span,
+ * including the final 32-bit guest page. An empty slot gives off >= 4096;
+ * an address below the cached page underflows in uint64_t. Never form a
+ * host pointer until the range check succeeds. Cold helpers and direct
+ * callees may have released the gate: adoption clears both slots. */
+#if H2_RAM_PAGE_CACHE && H2_FASTMEM
+#define H2_SITE_TRY(f, g, addr, width, write, page, host, slow)                 \
+    do {                                                                        \
+        H2RamPage *slot_ = &(g).ram_page[(write)];                              \
+        uint64_t off_ = (uint64_t)(addr) + 4096u - slot_->end;                  \
+        if ((g).held && H2_FAST_WIDTH_OK(width) && off_ <= 4096u - (width)) {   \
+            (host) = slot_->base + off_;                                        \
+            H2_FAST_CHARGE(f);                                                  \
+        } else {                                                                \
+            H2_HELD_TRY(f, g, addr, width, write, page, host, slow);             \
+            slot_->end = (uint64_t)((addr) | 4095u) + 1u;                       \
+            slot_->base = (host) - ((addr) & 4095u);                            \
+        }                                                                       \
+    } while (0)
+#else
+#define H2_SITE_TRY H2_HELD_TRY
+#endif
 /* What h2_access_cold leaves: the view if the handler now holds the gate
  * (else NULL), and the ordinary helper's status (0: it accessed). */
 typedef struct H2Cold {
@@ -406,7 +443,7 @@ static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAcces
     if (f && held) {
         H2_GATE_RELEASE(f->memory);
     } else if (f) {
-        H2Gate g = {0, UINT32_MAX, NULL};
+        H2Gate g = {.dirtied = UINT32_MAX};
         h2_gate_adopt(&g, h2_gate_try(f));
         H2FastPage page;
         uint8_t *host;

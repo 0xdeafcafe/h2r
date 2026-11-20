@@ -211,6 +211,7 @@ static inline uint32_t h2i_emms(CpuAbi *cpu) {
 /* SSE floating point (ir::Intrinsic::Sse): MXCSR in CpuAbi, h2s_* from
  * h2simd.h returning 1 on #XM. Results written only on success. */
 #define H2_SSE_RES(r) ((r) ? H2SHIM_SIMD_EXCEPTION : 0u)
+#define H2_SSE_RUN(host, name, cpu, ...) H2_SSE_RES(h2sn_##name##_mode(host, &(cpu)->mxcsr, __VA_ARGS__))
 #define H2_SSE_SS(op, impl)                                                           \
     static inline uint32_t h2i_sse_##op(CpuAbi *cpu, h2u128 a, uint32_t b, h2u128 *out) { \
         return H2_SSE_RES(impl(&cpu->mxcsr, a, b, out));                   \
@@ -393,8 +394,25 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
  * local is a constant 0 that clang deletes. */
 #define H2_HOME_ALL 0x1ffu
 #define H2_HOMED(bit) ((h2_home_ >> (bit)) & 1u)
+/* Only IR ReadXmm/WriteXmm access the XMM bank. Intrinsics take operand
+ * values and return a result to the IR. Use the same sync points as GPRs:
+ * all exits, runtime atomics and direct calls (including a callee that
+ * transfers out instead of returning inline). Masks and indices are
+ * compile-time constants. */
+#if H2_XMM_LOCALS
+#define H2_EACH_XMM(F, m) F(0,m) F(1,m) F(2,m) F(3,m) F(4,m) F(5,m) F(6,m) F(7,m)
+#define H2_XMM_INIT(i,m) h2u128 xmm##i = H2_HOMED(9+i) ? h2_rx(cpu, i) : 0;
+#define H2_XMM_SAVE(i,m) if (H2_HOMED(9+i) && (((m) >> (9+i)) & 1u)) h2_wx(cpu, i, xmm##i);
+#define H2_XMM_LOAD(i,m) if (H2_HOMED(9+i)) xmm##i = h2_rx(cpu, i);
+#define H2_READ_XMM(i) (H2_HOMED(9+i) ? xmm##i : h2_rx(cpu, i))
+#define H2_WRITE_XMM(i,v) (xmm##i = (v))
+#else
+#define H2_EACH_XMM(F, m)
+#define H2_READ_XMM(i) h2_rx(cpu, i)
+#define H2_WRITE_XMM(i,v) h2_wx(cpu, i, v)
+#endif
 #define H2_LOCALS_HOMED(m)                                                      \
-    enum { h2_home_ = (m) };                                                    \
+    enum { h2_home_ = (m) }; H2_EACH_XMM(H2_XMM_INIT, 0)                         \
     uint32_t eax = H2_HOMED(0) ? cpu->eax : 0u, ecx = H2_HOMED(1) ? cpu->ecx : 0u; \
     uint32_t edx = H2_HOMED(2) ? cpu->edx : 0u, ebx = H2_HOMED(3) ? cpu->ebx : 0u; \
     uint32_t esp = H2_HOMED(4) ? cpu->esp : 0u, ebp = H2_HOMED(5) ? cpu->ebp : 0u; \
@@ -406,11 +424,12 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
 /* Every register in a local. */
 #define H2_LOCALS() H2_LOCALS_HOMED(H2_HOME_ALL)
 /* The homed locals to CpuAbi (EFLAGS with bit 1 set), and back. */
-#define H2_SPILL_HOMED_() H2_SPILL_DIRTY_(H2_HOME_ALL)
+#define H2_SPILL_HOMED_() H2_SPILL_DIRTY_(UINT32_MAX)
 /* Only the homed locals in `m` (a constant): the emitter has shown the
  * others still equal their CpuAbi fields (emit::c::dirty_at_exits). */
 #define H2_SPILL_DIRTY_(m)                                                      \
     do {                                                                        \
+        H2_EACH_XMM(H2_XMM_SAVE, m)                                             \
         if (H2_HOMED(0) && ((m) & 0x1u)) cpu->eax = eax;                        \
         if (H2_HOMED(1) && ((m) & 0x2u)) cpu->ecx = ecx;                        \
         if (H2_HOMED(2) && ((m) & 0x4u)) cpu->edx = edx;                        \
@@ -423,6 +442,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
     } while (0)
 #define H2_RELOAD_HOMED_()                                                      \
     do {                                                                        \
+        H2_EACH_XMM(H2_XMM_LOAD, 0)                                             \
         if (H2_HOMED(0)) eax = cpu->eax;                                        \
         if (H2_HOMED(1)) ecx = cpu->ecx;                                        \
         if (H2_HOMED(2)) edx = cpu->edx;                                        \
@@ -655,7 +675,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2FastPage pg_;                                                         \
         H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
+        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
         memcpy(&dst, p_, (n));                                                  \
         goto done_;                                                             \
     slow_:                                                                      \
@@ -695,7 +715,7 @@ static inline uint64_t h2_acc_budget(ExecCtxOpaque *ctx, const H2FastAccess *f) 
         H2FastPage pg_;                                                         \
         H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
+        H2_SITE_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
         memcpy(p_, &v_, (n));                                                   \
         goto done_;                                                             \
     slow_:                                                                      \
@@ -977,7 +997,7 @@ static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
 #define H2_VIEW_LOCALS_()                                                       \
     H2FastAccess *const h2_lent_ = h2_view_borrow(ctx);                         \
     H2FastAccess *h2_mem_ = h2_lent_ ? h2_lent_ : h2abi_v1_fast_acquire(ctx);   \
-    H2Gate h2g_ = {h2_gate_borrow(ctx, h2_lent_), UINT32_MAX, NULL};            \
+    H2Gate h2g_ = {.held = h2_gate_borrow(ctx, h2_lent_), .dirtied = UINT32_MAX}; \
     if (h2g_.held) h2g_.data = &h2_lent_->memory->data;                         \
     H2_COLD_WHY(h2g_, h2_lent_ ? H2C_LENT_ENTRY : H2C_ENTRY);                   \
     (void)h2_mem_
@@ -989,9 +1009,8 @@ static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
         uint32_t h_ = (d)->gate;                                                \
         (d)->gate = 0u;                                                         \
         if (h_) {                                                               \
+            h2_gate_adopt(&h2g_, &h2_mem_->memory->data);                        \
             h2g_.held = h_;                                                     \
-            h2g_.data = &h2_mem_->memory->data;                                 \
-            h2g_.dirtied = UINT32_MAX;                                          \
         }                                                                       \
     } while (0)
 /* Before the call: one more trip of the hold, the count charged under it. */
@@ -1017,7 +1036,7 @@ static inline uint32_t h2_gate_borrow(ExecCtxOpaque *ctx, H2FastAccess *lent) {
 #define H2_VIEW_LOCALS_()                                                       \
     H2FastAccess *const h2_lent_ = h2_view_borrow(ctx);                         \
     H2FastAccess *h2_mem_ = h2_lent_ ? h2_lent_ : h2abi_v1_fast_acquire(ctx);   \
-    H2Gate h2g_ = {0, UINT32_MAX, NULL};                                        \
+    H2Gate h2g_ = {.dirtied = UINT32_MAX};                                       \
     H2_COLD_WHY(h2g_, h2_lent_ ? H2C_LENT_ENTRY : H2C_ENTRY);                   \
     (void)h2_mem_
 #define H2_LEND_(d) ((d)->view = h2_mem_)

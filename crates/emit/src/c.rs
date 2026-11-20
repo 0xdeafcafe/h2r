@@ -21,9 +21,9 @@
 //! transfer and jumps to the one shared epilogue, which spills them to
 //! `CpuAbi`, so state is canonical whenever the runtime sees it. A register
 //! the handler never writes has no local: it is read from `CpuAbi` where it
-//! is used, and never loaded, spilled or reloaded (see [`homes`]). Memory goes through the ABI's checked
-//! the checked helpers or the opt-in gated inline RAM path (`h2fastmem.h`). XMM and FP
-//! state are read and written in `CpuAbi` directly. The inline path's gate
+//! is used, and never loaded, spilled or reloaded (see [`homes`]). Written
+//! XMM registers can use the same homes. Guest memory goes through the ABI's
+//! checked helpers or the gated inline RAM path (`h2fastmem.h`). The gate
 //! is held across consecutive accesses and dropped (`H2_GATE_DROP`) before
 //! anything that takes the context, at every exit, and every few loop trips. All arithmetic is
 //! unsigned and fixed-width, through the total helpers in `h2gen.h`, so no
@@ -84,11 +84,14 @@ pub struct OwnerShape<'a> {
 /// [`homes`] bit for EFLAGS and its defined mask (bits 0-7 are the GPRs in
 /// encoding order, [`Gpr::index`]).
 pub const HOME_FLAGS: u32 = 1 << 8;
-/// Every register and EFLAGS in locals.
+/// Upper home-mask bits for XMM0..7, independent of the integer homes switch.
+const XMM_BASE: u8 = 9;
+
+/// All integer registers and EFLAGS in locals.
 pub const HOME_ALL: u32 = 0x1ff;
 
 /// Which registers `f`'s handler keeps in C locals: those it can write,
-/// as a [`Gpr::index`] bit set plus [`HOME_FLAGS`].
+/// as a [`Gpr::index`] bit set plus [`HOME_FLAGS`] and bits 9–16 for XMM0–7.
 ///
 /// A register outside the set is never assigned by the handler, so
 /// `CpuAbi` holds its current value at every point: on entry, across a
@@ -109,6 +112,7 @@ pub fn homes(f: &IrFunction) -> u32 {
         for s in list {
             match s {
                 Stmt::WriteReg { reg, .. } => *m |= 1 << reg.index(),
+                Stmt::WriteXmm { reg, .. } => *m |= 1 << (XMM_BASE + *reg),
                 Stmt::ReadFlag { .. }
                 | Stmt::WriteFlag { .. }
                 | Stmt::ReadEflags { .. }
@@ -145,6 +149,7 @@ fn assigned(list: &[Stmt]) -> u32 {
     list.iter()
         .map(|s| match s {
             Stmt::WriteReg { reg, .. } => 1 << reg.index(),
+            Stmt::WriteXmm { reg, .. } => 1 << (XMM_BASE + *reg),
             Stmt::WriteFlag { .. } | Stmt::WriteEflags { .. } | Stmt::LazyFlags(_) => HOME_FLAGS,
             Stmt::If { then, otherwise, .. } => assigned(then) | assigned(otherwise),
             Stmt::Repeat { body, .. } => {
@@ -250,7 +255,7 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
     // With accounting a REP loop polls too, so it needs the poll's locals.
     let polled = !shape.loops.headers.is_empty()
         || (shape.accounting && f.insns().any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. }))));
-    let home = if shape.reg_homes { homes(f) } else { HOME_ALL };
+    let home = homes(f) | if shape.reg_homes { 0 } else { HOME_ALL };
     let dirty = if shape.reg_homes { dirty_at_exits(f, home) } else { BTreeMap::new() };
     let mut e = Emitter {
         out: String::new(),
@@ -260,6 +265,8 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
         in_repeat: false,
         x87,
         polled,
+        fp_ready: false,
+        top: if x87 { crate::x87::top::hints(f) } else { BTreeMap::new() },
         lazy,
         pend: Pend::default(),
         entry_of_settle,
@@ -318,6 +325,10 @@ struct Emitter<'a> {
     /// The handler polls (loop headers, or REP loops with accounting): it
     /// has `H2_PREEMPT_LOCALS`.
     polled: bool,
+    /// A host FP control sample dominates the current register-only run.
+    fp_ready: bool,
+    /// Guarded x87 TOP predictions at instruction entry.
+    top: BTreeMap<u32, u8>,
     /// The handler's lazy flags, if it has any.
     lazy: Option<Lazy>,
     /// What may be pending at the statement being emitted.
@@ -500,6 +511,7 @@ impl Emitter<'_> {
         if accesses_memory(f) {
             self.line(1, "H2_GATE_ENTER();");
         }
+        self.line(1, "int h2fp_ __attribute__((unused));");
         self.line(1, "switch (start) {");
         for s in self.shape.selectors {
             // Entered from the runner, which is a safe point: skip the poll.
@@ -510,6 +522,7 @@ impl Emitter<'_> {
         self.line(1, "}");
         self.line(1, "{ H2_GATE_DROP(); uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
         for b in f.blocks.values() {
+            self.fp_ready = false;
             self.line(0, format!("L_{:08x}:;", b.start));
             if let Some(l) = &self.lazy {
                 self.pend = l.entry[&b.start];
@@ -525,6 +538,7 @@ impl Emitter<'_> {
                 // A selector inside a block (a REP restart point): every
                 // local is live from H2_LOCALS, so entering here is sound.
                 if i > 0 && self.shape.selectors.contains(&insn.pc) {
+                    self.fp_ready = false;
                     self.line(0, format!("L_{:08x}:;", insn.pc));
                 }
                 self.insn(insn, last);
@@ -654,9 +668,10 @@ impl Emitter<'_> {
                 // The runtime reads the spilled flags.
                 self.settle(lazy::ALL, 2);
                 self.atomic(insn, a);
+                self.fp_ready = false;
                 self.pend = Pend::default();
             }
-            None => self.stmts(&insn.stmts, insn, 2),
+            None => self.stmts(&insn.stmts, insn, 2, self.top.get(&pc).copied()),
         }
         self.control(insn, last);
         self.line(1, "}");
@@ -679,7 +694,7 @@ impl Emitter<'_> {
         let pc = insn.pc;
         let li = insn.stmts.iter().position(|s| matches!(s, Stmt::Load { .. })).expect("validated atomic shape");
         let Stmt::Load { dst, addr } = &insn.stmts[li] else { unreachable!() };
-        self.stmts(&insn.stmts[..li], insn, 2);
+        self.stmts(&insn.stmts[..li], insn, 2, None);
         let addr = self.addr(addr);
         let n = dst.width.bytes();
         let operand = a.operand.map_or("0u".to_string(), |v| format!("(uint32_t){}", val(&v)));
@@ -788,9 +803,28 @@ impl Emitter<'_> {
         }
     }
 
-    fn stmts(&mut self, list: &[Stmt], insn: &IrInsn, d: usize) {
+    fn stmts(&mut self, list: &[Stmt], insn: &IrInsn, d: usize, mut top: Option<u8>) {
         let pc = insn.pc;
         for s in list {
+            let at = top;
+            if top.is_some() {
+                top = crate::x87::top::after(top, s);
+            }
+            // Only straight-line, register-only IR can keep the host sample.
+            // In particular even a successful guest load could have called
+            // a host MMIO handler, and a conditional body may never execute.
+            use ir::SseOp::*;
+            let native_fp = match s {
+                Stmt::Intrinsic { op: Intrinsic::Sse(op @ (AddSs | AddPs | SubSs | SubPs | MulSs |
+                    MulPs | DivSs | DivPs | SqrtSs | SqrtPs)), .. } if d == 2 => Some(*op),
+                _ => None,
+            };
+            if native_fp.is_none() && !matches!(s, Stmt::Assign { .. } | Stmt::ReadReg { .. }
+                | Stmt::WriteReg { .. } | Stmt::ReadXmm { .. } | Stmt::WriteXmm { .. }
+                | Stmt::ReadFlag { .. } | Stmt::WriteFlag { .. } | Stmt::LazyFlags(_))
+            {
+                self.fp_ready = false;
+            }
             // A flag read from known formulas is computed in place.
             let inline = matches!(s, Stmt::ReadFlag { .. }) && self.pend.known().is_some();
             self.settle(if inline { 0 } else { lazy::reads(s) }, d);
@@ -876,8 +910,8 @@ impl Emitter<'_> {
                 Stmt::WriteEflags { value, mask } => {
                     self.line(d, format!("fl = (fl & ~{mask:#x}u) | ({} & {mask:#x}u) | 2u; fd |= {mask:#x}u;", val(value)))
                 }
-                Stmt::ReadXmm { dst, reg } => self.line(d, format!("h2u128 t{} = h2_rx(cpu, {reg});", dst.id)),
-                Stmt::WriteXmm { reg, value } => self.line(d, format!("h2_wx(cpu, {reg}, {});", val(value))),
+                Stmt::ReadXmm { dst, reg } => self.line(d, format!("h2u128 t{} = H2_READ_XMM({reg});", dst.id)),
+                Stmt::WriteXmm { reg, value } => self.line(d, format!("H2_WRITE_XMM({reg}, {});", val(value))),
                 Stmt::ReadMmx { dst, reg } => self.line(d, format!("uint64_t t{} = h2_rmm(cpu, {reg});", dst.id)),
                 Stmt::WriteMmx { reg, value } => self.line(d, format!("h2_wmm(cpu, {reg}, {});", val(value))),
                 Stmt::Load { dst, addr } => {
@@ -904,11 +938,11 @@ impl Emitter<'_> {
                 Stmt::If { cond, then, otherwise } => {
                     self.line(d, format!("if ({}) {{", val(cond)));
                     let before = self.pend;
-                    self.stmts(then, insn, d + 1);
+                    self.stmts(then, insn, d + 1, None);
                     let then_pend = std::mem::replace(&mut self.pend, before);
                     if !otherwise.is_empty() {
                         self.line(d, "} else {");
-                        self.stmts(otherwise, insn, d + 1);
+                        self.stmts(otherwise, insn, d + 1, None);
                     }
                     self.pend = self.pend.join(then_pend);
                     self.line(d, "}");
@@ -926,7 +960,7 @@ impl Emitter<'_> {
                     self.line(d, format!("H2X87_WAIT({pc:#x}u);"));
                 }
                 Stmt::Intrinsic { op: Intrinsic::X87(op), args, dsts } => {
-                    for l in crate::x87::stmt(*op, args, dsts, pc) {
+                    for l in crate::x87::stmt(*op, args, dsts, pc, at) {
                         self.line(d, l);
                     }
                 }
@@ -937,7 +971,15 @@ impl Emitter<'_> {
                     for t in dsts {
                         self.line(d, format!("{} t{} = 0;", ty(t.width), t.id));
                     }
-                    let mut call = format!("h2i_{}(cpu", op.name());
+                    let mut call = if let Some(sse) = native_fp {
+                        if !self.fp_ready {
+                            self.line(d, "h2fp_ = H2_FP_SAMPLE();");
+                            self.fp_ready = true;
+                        }
+                        format!("H2_SSE_RUN(h2fp_, {}, cpu", sse.name())
+                    } else {
+                        format!("h2i_{}(cpu", op.name())
+                    };
                     for a in args {
                         call.push_str(&format!(", {}", val(a)));
                     }
@@ -977,7 +1019,7 @@ impl Emitter<'_> {
                     }
                     self.line(d + 1, "{");
                     self.in_repeat = true;
-                    self.stmts(body, insn, d + 2);
+                    self.stmts(body, insn, d + 2, None);
                     self.in_repeat = false;
                     self.line(d + 1, "}");
                     self.line(d + 1, "ecx -= 1u;");

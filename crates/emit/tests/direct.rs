@@ -54,6 +54,8 @@ const CL: u32 = CODE + 0x1100;
 const IND_JUMP: u32 = CODE + 0x1300;
 /// Shares NEST_B's slot in a table of 256, not in one of 4096.
 const COLL: u32 = CODE + 0x1213;
+const VEC_CALLER: u32 = CODE + 0x1800;
+const VEC_CALLEE: u32 = CODE + 0x1900;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -337,6 +339,20 @@ fn funcs() -> Vec<IrFunction> {
             a.mov(ebx, 0x5150)?;
             a.mov(eax, DATA + 0x80)?;
             a.db(&[0x66, 0xD9, 0x30])?;
+            a.ret()
+        }),
+        function(VEC_CALLER, |a| {
+            a.mov(eax, 0x42)?;
+            a.movd(xmm7, eax)?;
+            a.call(VEC_CALLEE as u64)?;
+            a.movd(eax, xmm7)?;
+            a.movd(edx, xmm2)?;
+            a.ret()
+        }),
+        function(VEC_CALLEE, |a| {
+            a.movaps(xmm2, xmm7)?;
+            a.mov(ecx, 0x99)?;
+            a.movd(xmm7, ecx)?;
             a.ret()
         }),
         // An interrupt callback.
@@ -1057,6 +1073,23 @@ fn a_callee_writes_registers_its_caller_only_reads() {
     });
     // Both calls and both returns are direct on the second run.
     assert_eq!(direct_count(HOME, None), 4);
+}
+
+#[test]
+fn xmm_homes_spill_and_reload_at_direct_calls() {
+    let caller = funcs().into_iter().find(|f| f.entry == VEC_CALLER).unwrap();
+    // XMM7 is written; XMM2 only read after the callee has changed it.
+    assert_eq!(emit::c::homes(&caller) >> 9, 1 << 7);
+    agree("xmm homes", |m| {
+        let out = run_twice(VEC_CALLER)(m);
+        for o in &out {
+            assert_eq!((o.cpu.eax, o.cpu.edx), (0x99, 0x42));
+            assert_eq!(o.cpu.xmm[7], 0x99u128.to_le_bytes());
+            assert_eq!(o.cpu.xmm[2], 0x42u128.to_le_bytes());
+        }
+        out
+    });
+    assert_eq!(direct_count(VEC_CALLER, None), 2);
 }
 
 /// A local changed after a direct call returns, on the way back round a
