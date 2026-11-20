@@ -93,10 +93,14 @@ disposition paths. Host OS permissions still apply.
 
 `Vfs::format_device(device)` quick-formats one mounted device by exact name
 through `Backend::format` (default `MediaWriteProtected`). `HostBackend`
-empties its root and metadata directories and drops its caches. It traverses
-from directory handles opened at construction (openat/unlinkat with
-O_NOFOLLOW, via rustix), so host symlinks are removed, not followed, and a
-root or ancestor path replaced later cannot redirect it. `Vfs::device_of(name)`
+swaps its root and metadata directories for staged empty siblings (a rename
+on the same filesystem) and drops its caches; the old trees are deleted
+afterwards, without following symlinks. The swap rolls back on the first
+error, so a failed format changes nothing the guest can see: a host read
+error inside the old tree (a permission failure, a transient I/O error)
+cannot make its entries look deleted. An old tree that cannot be deleted
+stays next to its root, invisible to the guest, and is swept at the next
+mount. `Vfs::device_of(name)`
 gives the mounted device a name finally resolves into. It fails with `SharingViolation`, changing nothing,
 while any file object or pending delete exists on that volume. XAPI uses it for
 the Z: and N: cache volumes (docs/runtime/xapi.md).
@@ -333,10 +337,9 @@ Removing a file holds that lock across the unlink and drops the pending
 entry only once the file is gone, so a failed remove keeps both the
 durable record and the write's pending metadata. Creating a name drops
 any pending entry for it and holds the lock from clearing an orphaned
-record until the new entry exists. Format holds the lock throughout and
-clears pending metadata once the volume is empty; a format that fails
-partway keeps the pending metadata of the files that survive it and drops
-that of the files it removed, so no flusher recreates their records.
+record until the new entry exists. Format holds the lock across the root
+swap and clears pending metadata once the volume is empty; a failed format
+moves nothing, so every pending entry still describes its file.
 
 ### Write-behind
 
@@ -379,8 +382,8 @@ failure for a path is logged once and latched; the next operation on
 that file that waits for it (`read_at`, `set_len`, `flush`, `cleanup`,
 `remove`, `create`), or the next `write_at`, returns it, once, and does
 nothing else. Bookkeeping assumed the write landed, so usage and the
-directory indexes are rebuilt from the host at that point. Format drops
-latched errors with the files. A drop logs nothing more: the failure was
+directory indexes are rebuilt from the host at that point. A successful
+format drops latched errors with the files; a failed one keeps them. A drop logs nothing more: the failure was
 logged when it happened. Nothing below the backend sees the difference
 between a failure reported late and one reported at once, except that
 a failed write's bytes may be partly on the host.

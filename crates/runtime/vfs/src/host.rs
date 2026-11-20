@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime},
 };
@@ -212,16 +212,50 @@ fn write_record(target: &Path, info: BasicInfo) -> Result<()> {
     sync_directory(parent)
 }
 
+/// The sibling path a format stages `root`'s replacement or moves its old
+/// tree aside to (see [`HostBackend::format`]). The counter keeps a
+/// leftover of an earlier, crashed or partly deleted format from blocking
+/// the next one; construction sweeps what remains.
+fn format_companion(root: &Path, kind: &str) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    root.with_file_name(format!(
+        ".{name}.h2format-{kind}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Delete what an interrupted format left next to `root`: a staged empty
+/// root or an old tree whose deletion failed (see [`HostBackend::format`]).
+/// Links are removed themselves, never followed.
+fn sweep_format_leftovers(root: &Path) {
+    let (Some(name), Some(parent)) = (root.file_name().and_then(|n| n.to_str()), root.parent())
+    else {
+        return;
+    };
+    let prefix = format!(".{name}.h2format-");
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(|n| n.starts_with(&prefix)) {
+            continue;
+        }
+        if let Err(error) = fs::remove_dir_all(entry.path()) {
+            eprintln!(
+                "vfs: cannot remove {} left by an interrupted format: {error}",
+                entry.path().display()
+            );
+        }
+    }
+}
+
 /// FATX view of a private host directory. Metadata is outside the mounted tree.
 /// One owner must serialize mutations, including direct Backend calls. The Vfs checks access at open.
 pub struct HostBackend {
     root: PathBuf,
     metadata_root: PathBuf,
-    /// The two roots as opened at construction (no symlink followed). Format
-    /// traverses from these, so renaming or replacing a root or an ancestor
-    /// later cannot redirect its deletions.
-    #[cfg(unix)]
-    anchors: [rustix::fd::OwnedFd; 2],
     capacity: u64,
     label: String,
     serial: u32,
@@ -246,9 +280,9 @@ pub struct HostBackend {
     next_unlink_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
     next_format_error: std::cell::Cell<Option<Error>>,
-    /// Fail the next format after this many removals.
+    /// Fail the next format after this many root-swap renames.
     #[cfg(test)]
-    format_error_after_unlinks: std::cell::Cell<Option<usize>>,
+    format_error_after_renames: std::cell::Cell<Option<usize>>,
 }
 
 fn host_litter(name: &str) -> bool {
@@ -335,11 +369,8 @@ impl HostBackend {
         if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
             return Err(Error::InvalidParameter);
         }
-        #[cfg(unix)]
-        let anchors = [
-            anchor::open_root(&root)?,
-            anchor::open_root(&metadata_root)?,
-        ];
+        sweep_format_leftovers(&root);
+        sweep_format_leftovers(&metadata_root);
         let written = Arc::new(Written {
             metadata_root: metadata_root.clone(),
             stale: Mutex::new(METADATA_STALE),
@@ -354,8 +385,6 @@ impl HostBackend {
             written,
             root,
             metadata_root,
-            #[cfg(unix)]
-            anchors,
             capacity: 5 * 1024 * 1024 * 1024,
             label: "Xbox Data".into(),
             serial: 1,
@@ -371,7 +400,7 @@ impl HostBackend {
             #[cfg(test)]
             next_format_error: std::cell::Cell::new(None),
             #[cfg(test)]
-            format_error_after_unlinks: std::cell::Cell::new(None),
+            format_error_after_renames: std::cell::Cell::new(None),
         })
     }
     pub fn with_volume(mut self, label: impl Into<String>, serial: u32, capacity: u64) -> Self {
@@ -1071,74 +1100,51 @@ impl Backend for HostBackend {
         basic.attributes &= FATX_ATTRIBUTES;
         self.store_basic(path, basic)
     }
-    /// Empty the volume directory and its metadata directory, keeping both
-    /// roots ([`HostBackend::empty_roots`]).
+    /// Empty the volume by swapping both roots for staged empty
+    /// directories ([`HostBackend::swap_roots`]), then dropping every
+    /// cached and pending record of the old trees. A failed swap is rolled
+    /// back, so a failed format changes nothing the guest can see: a host
+    /// read error on an old entry (a permission failure, a transient I/O
+    /// error) cannot make that entry look deleted, it can only fail the
+    /// format with the entry's files intact. The old trees are deleted
+    /// best-effort after the swap; a tree that cannot go (an unreadable
+    /// host directory) stays next to its root, invisible to the guest, and
+    /// is swept at the next mount ([`sweep_format_leftovers`]).
     fn format(&mut self) -> Result<()> {
-        // Land queued writes before deleting their files. Keep errors for
-        // files that survive a failed format.
+        // Land queued writes before their files move aside.
         self.settle_all();
         self.handles.clear();
-        // Held throughout so no flusher stores a record mid-format. A
-        // format that fails partway keeps the pending metadata of the files
-        // that survive it and drops that of the files it removed, so no
-        // flusher recreates their records.
+        // Held throughout so no flusher stores a record mid-format.
         let mut written = self.written.lock();
         #[cfg(test)]
-        let mut unlinks = self.format_error_after_unlinks.take();
-        let mut before_unlink = || -> Result<()> {
-            #[cfg(test)]
-            if let Some(n) = unlinks.as_mut() {
-                if *n == 0 {
-                    return Err(Error::IoDeviceError);
-                }
-                *n -= 1;
-            }
-            Ok(())
-        };
-        let emptied = self.empty_roots(&mut before_unlink);
-        if let Err(error) = emptied {
-            // Listings and usage may describe removed entries. Drop
-            // per-path state only when we can establish that the entry
-            // is gone. A later lookup still reports any access error.
-            let (mut atimes, mut dirty_data, mut reservations) = {
-                let mut cache = self.cache.borrow_mut();
-                cache.directories.clear();
-                cache.used_bytes = None;
-                (
-                    std::mem::take(&mut cache.atimes),
-                    std::mem::take(&mut cache.dirty_data),
-                    std::mem::take(&mut cache.reservations),
-                )
-            };
-            let may_survive = |path: &str| {
-                !matches!(
-                    self.resolve(path, false),
-                    Err(Error::ObjectNameNotFound | Error::ObjectPathNotFound)
-                )
-            };
-            written.retain(|path, _| may_survive(path));
-            atimes.retain(|path, _| may_survive(path));
-            dirty_data.retain(|path| may_survive(path));
-            reservations.retain(|path, _| may_survive(path));
-            if let Some(wb) = &self.write_behind {
-                wb.retain_errors(|host| {
-                    !matches!(
-                        fs::symlink_metadata(host).map_err(Error::from),
-                        Err(Error::ObjectNameNotFound | Error::NotADirectory)
-                    )
-                });
-            }
-            let mut cache = self.cache.borrow_mut();
-            cache.atimes = atimes;
-            cache.dirty_data = dirty_data;
-            cache.reservations = reservations;
+        if let Some(error) = self.next_format_error.take() {
             return Err(error);
         }
+        let asides = self.swap_roots()?;
         if let Some(wb) = &self.write_behind {
             wb.clear_errors();
         }
         written.clear();
         *self.cache.borrow_mut() = Cache::default();
+        drop(written);
+        // The swap is durable before the old trees go.
+        let parents: BTreeSet<_> = [&self.root, &self.metadata_root]
+            .into_iter()
+            .filter_map(|root| root.parent().map(Path::to_owned))
+            .collect();
+        for parent in parents {
+            if let Err(error) = sync_directory(&parent) {
+                eprintln!("vfs: formatted volume, but its directory sync failed: {error}");
+            }
+        }
+        for aside in &asides {
+            if let Err(error) = fs::remove_dir_all(aside) {
+                eprintln!(
+                    "vfs: the old tree of a formatted volume stays at {} ({error}); the next mount sweeps it",
+                    aside.display()
+                );
+            }
+        }
         Ok(())
     }
     fn remove(&mut self, path: &str) -> Result<()> {
@@ -1290,115 +1296,75 @@ impl Backend for HostBackend {
     }
 }
 impl HostBackend {
-    /// The emptying half of `format`. Traversal starts from the directory
-    /// handles opened at construction and never follows a symlink: entries
-    /// are opened with O_NOFOLLOW|O_DIRECTORY relative to their parent's
-    /// handle and removed with unlinkat, so a symlink is removed itself and
-    /// a replaced root or ancestor path is never consulted.
-    #[cfg(unix)]
-    fn empty_roots(&self, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
-        for fd in &self.anchors {
-            #[cfg(test)]
-            if let Some(error) = self.next_format_error.take() {
-                return Err(error);
-            }
-            anchor::empty(fd, before_unlink)?;
-            rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
-        }
-        Ok(())
-    }
-
-    /// The emptying half of `format` off Unix (Windows): [`empty_by_path`]
-    /// on each root. Unlike the Unix walk the roots are named by path, so
-    /// swapping a root for a link between construction and format is not
-    /// caught; the roots are the app's own private data directories.
-    #[cfg(not(unix))]
-    fn empty_roots(&self, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
-        for root in [&self.root, &self.metadata_root] {
-            #[cfg(test)]
-            if let Some(error) = self.next_format_error.take() {
-                return Err(error);
-            }
-            empty_by_path(root, before_unlink)?;
-        }
-        Ok(())
-    }
-}
-
-/// Remove every entry below `root`, keeping `root`, without following any
-/// entry: `remove_dir_all` removes a symlink (or, on Windows, a junction,
-/// which it opens with `FILE_FLAG_OPEN_REPARSE_POINT`) itself, never its
-/// target. `before_unlink` runs before each top-level removal; its error
-/// stops the walk. Format's walk off Unix; compiled everywhere so the Mac
-/// tests cover it.
-#[cfg_attr(unix, allow(dead_code))]
-fn empty_by_path(root: &Path, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
-        before_unlink()?;
-        let kind = std::fs::symlink_metadata(&path)?.file_type();
-        if kind.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-        } else if kind.is_symlink() {
-            // A Windows directory symlink or junction is removed as a directory.
-            std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path))?;
-        } else {
-            std::fs::remove_file(&path)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-mod anchor {
-    use crate::{Error, Result};
-    use rustix::fd::{AsFd, OwnedFd};
-    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat, unlinkat};
-    use std::path::Path;
-
-    const DIRECTORY: OFlags = OFlags::RDONLY
-        .union(OFlags::DIRECTORY)
-        .union(OFlags::NOFOLLOW)
-        .union(OFlags::CLOEXEC);
-
-    fn io(e: rustix::io::Errno) -> Error {
-        std::io::Error::from(e).into()
-    }
-
-    /// Open a root directory without following a final symlink.
-    pub(super) fn open_root(path: &Path) -> Result<OwnedFd> {
-        rustix::fs::open(path, DIRECTORY, Mode::empty()).map_err(io)
-    }
-
-    /// Remove every entry below `dir`, keeping `dir` itself.
-    /// `before_unlink` runs before each removal; its error stops the walk.
-    pub(super) fn empty(
-        dir: &impl AsFd,
-        before_unlink: &mut impl FnMut() -> Result<()>,
-    ) -> Result<()> {
-        let mut names = Vec::new();
-        for entry in Dir::read_from(dir).map_err(io)? {
-            let entry = entry.map_err(io)?;
-            let name = entry.file_name();
-            if name.to_bytes() != b"." && name.to_bytes() != b".." {
-                names.push(name.to_owned());
+    /// The emptying half of `format`: swap each root for a staged empty
+    /// sibling directory, rolling every completed swap back on the first
+    /// error, so a failed format leaves both roots exactly as they were.
+    /// Returns the old trees' aside paths; their deletion is the caller's
+    /// and best-effort, after the swap is durable.
+    fn swap_roots(&self) -> Result<Vec<PathBuf>> {
+        let roots = [self.root.clone(), self.metadata_root.clone()];
+        let mut asides = Vec::with_capacity(roots.len());
+        for root in &roots {
+            match self.swap_root(root) {
+                Ok(aside) => asides.push(aside),
+                Err(error) => {
+                    for (root, aside) in roots.iter().zip(&asides).rev() {
+                        // The staged root is empty; the old tree moves back.
+                        let undo =
+                            fs::remove_dir(root).and_then(|()| fs::rename(aside, root));
+                        if let Err(undo) = undo {
+                            eprintln!(
+                                "vfs: format rollback of {} failed, its old tree is at {}: {undo}",
+                                root.display(),
+                                aside.display()
+                            );
+                        }
+                    }
+                    return Err(error);
+                }
             }
         }
-        for name in names {
-            let stat = statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io)?;
-            if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
-                // Fails (ELOOP/ENOTDIR) if the entry was swapped for a
-                // symlink after the stat, instead of following it.
-                let child = openat(dir, &name, DIRECTORY, Mode::empty()).map_err(io)?;
-                empty(&child, before_unlink)?;
-                before_unlink()?;
-                unlinkat(dir, &name, AtFlags::REMOVEDIR).map_err(io)?;
-            } else {
-                before_unlink()?;
-                unlinkat(dir, &name, AtFlags::empty()).map_err(io)?;
+        Ok(asides)
+    }
+
+    /// Swap `root` for a staged empty directory, returning the old tree's
+    /// aside path. A rename is atomic, so the root is either swapped or —
+    /// after undoing the first half of a failed swap — untouched.
+    fn swap_root(&self, root: &Path) -> Result<PathBuf> {
+        let staging = format_companion(root, "new");
+        let aside = format_companion(root, "old");
+        fs::create_dir(&staging)?;
+        let swapped = self
+            .format_rename(root, &aside)
+            .and_then(|()| self.format_rename(&staging, root));
+        if let Err(error) = swapped {
+            // Undo a completed first half; a failed one moved nothing.
+            if aside.exists()
+                && let Err(undo) = fs::rename(&aside, root)
+            {
+                eprintln!(
+                    "vfs: format rollback of {} failed, its old tree is at {}: {undo}",
+                    root.display(),
+                    aside.display()
+                );
             }
+            let _ = fs::remove_dir(&staging);
+            return Err(error);
         }
-        Ok(())
+        Ok(aside)
+    }
+
+    /// One rename of a root swap, with the test's fault injection.
+    fn format_rename(&self, from: &Path, to: &Path) -> Result<()> {
+        #[cfg(test)]
+        if let Some(n) = self.format_error_after_renames.get() {
+            if n == 0 {
+                self.format_error_after_renames.set(None);
+                return Err(Error::IoDeviceError);
+            }
+            self.format_error_after_renames.set(Some(n - 1));
+        }
+        Ok(fs::rename(from, to)?)
     }
 }
 
@@ -1453,38 +1419,32 @@ mod tests {
         }
     }
 
-    /// Format's walk off Unix (Windows): every entry goes, the root stays,
-    /// links are removed themselves and their targets survive, and a
-    /// `before_unlink` error stops the walk.
+    /// A formatted volume's old tree is deleted without following links:
+    /// the links go with it, their targets survive.
     #[test]
-    fn path_emptying_keeps_the_root_and_never_follows_links() {
+    fn format_never_follows_links_in_the_old_tree() {
         let temp = Temp::new();
-        let root = temp.0.join("volume");
+        let mut backend = temp.backend();
         let outside = temp.0.join("outside");
-        fs::create_dir_all(root.join("dir/deeper")).unwrap();
         fs::create_dir_all(&outside).unwrap();
-        fs::write(root.join("file"), b"x").unwrap();
-        fs::write(root.join("dir/deeper/file"), b"x").unwrap();
         fs::write(outside.join("precious"), b"keep").unwrap();
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
-            std::os::unix::fs::symlink(&outside, root.join("dir/inner-link")).unwrap();
-            std::os::unix::fs::symlink(outside.join("precious"), root.join("file-link")).unwrap();
+            std::os::unix::fs::symlink(&outside, backend.root.join("dir-link")).unwrap();
+            std::os::unix::fs::symlink(
+                outside.join("precious"),
+                backend.root.join("file-link"),
+            )
+            .unwrap();
         }
-        let mut stop = || -> Result<()> { Err(Error::IoDeviceError) };
-        assert_eq!(empty_by_path(&root, &mut stop), Err(Error::IoDeviceError));
-        assert!(fs::read_dir(&root).unwrap().next().is_some(), "an error before the first removal removes nothing");
-        let mut removals = 0;
-        empty_by_path(&root, &mut || {
-            removals += 1;
-            Ok(())
-        })
-        .unwrap();
-        assert!(root.is_dir(), "the root itself stays");
-        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
-        assert_eq!(removals, if cfg!(unix) { 4 } else { 2 });
-        assert_eq!(fs::read(outside.join("precious")).unwrap(), b"keep", "no link was followed");
+        backend.create("file", false, 0).unwrap();
+        backend.format().unwrap();
+        assert_eq!(fs::read_dir(&backend.root).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(outside.join("precious")).unwrap(),
+            b"keep",
+            "no link was followed"
+        );
     }
 
     #[test]
@@ -1935,20 +1895,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_failed_format_keeps_state_for_an_unreadable_path() {
+    fn an_unreadable_old_tree_does_not_fail_or_break_a_format() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = Temp::new();
         let mut backend = temp.backend().with_write_behind(false);
         backend.set_stale(Duration::from_secs(3600));
-        let path = "folder\\data";
         backend.create("folder", true, 0).unwrap();
-        backend
-            .create_allocated(path, false, 0, 2 * FATX_CLUSTER_SIZE, 1)
-            .unwrap();
-        backend.write_at(path, 0, b"x").unwrap();
-        assert_eq!(backend.read_at(path, 0, &mut [0]), Ok(1));
-        let before = backend.stat(path).unwrap();
+        backend.create("folder\\data", false, 0).unwrap();
+        backend.write_at("folder\\data", 0, b"x").unwrap();
+        assert_eq!(backend.pending_written(), 1);
         let folder = backend.root.join("folder");
         let permissions = fs::metadata(&folder).unwrap().permissions();
         fs::set_permissions(&folder, fs::Permissions::from_mode(0o000)).unwrap();
@@ -1957,60 +1913,59 @@ mod tests {
             fs::set_permissions(&folder, permissions).unwrap();
             return;
         }
-        let formatted = backend.format();
-        let unresolved = backend.stat(path);
-        fs::set_permissions(&folder, permissions).unwrap();
-
-        assert_eq!(formatted, Err(Error::AccessDenied));
-        assert_eq!(unresolved, Err(Error::AccessDenied));
-        assert_eq!(backend.pending_written(), 1);
-        assert!(backend.cache.borrow().atimes.contains_key(path));
-        assert!(backend.cache.borrow().dirty_data.contains(path));
-        assert_eq!(backend.stat(path), Ok(before));
+        // The swap does not read the tree: the volume is emptied, the
+        // unreadable old tree cannot be deleted and stays aside, out of
+        // the guest's sight, until the next mount sweeps it.
         backend.format().unwrap();
-        assert_eq!(backend.stat(path), Err(Error::ObjectPathNotFound));
+        assert_eq!(
+            backend.stat("folder\\data"),
+            Err(Error::ObjectPathNotFound)
+        );
+        assert_eq!(backend.pending_written(), 0);
+        let leftover = |prefix: &str| {
+            fs::read_dir(&temp.0)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(prefix)))
+                .count()
+        };
+        assert_eq!(leftover(".root.h2format-old-"), 1, "the old tree awaits deletion");
+        fs::set_permissions(&folder, permissions).unwrap();
+        drop(backend);
+        let _reopened = temp.backend();
+        assert_eq!(leftover(".root.h2format-"), 0, "the mount swept it");
     }
 
     #[test]
-    fn a_partly_failed_format_drops_pending_metadata_of_the_files_it_removed() {
-        let temp = Temp::new();
-        let mut backend = temp.backend();
-        backend.set_stale(Duration::from_secs(3600));
-        for name in ["one", "two"] {
-            backend.create(name, false, 0).unwrap();
-            backend.write_at(name, 0, b"x").unwrap();
+    fn a_format_failing_partway_rolls_back_everything() {
+        // Each root swaps with two renames (root aside, staged into place):
+        // fail the format at every one of the four.
+        for renames in 0..4 {
+            let temp = Temp::new();
+            let mut backend = temp.backend();
+            backend.set_stale(Duration::from_secs(3600));
+            for name in ["one", "two"] {
+                backend.create(name, false, 0).unwrap();
+                backend.write_at(name, 0, b"x").unwrap();
+            }
+            assert_eq!(backend.pending_written(), 2);
+            backend.format_error_after_renames.set(Some(renames));
+            assert_eq!(backend.format(), Err(Error::IoDeviceError));
+            // Nothing moved: every file, its bytes and its pending metadata.
+            for name in ["one", "two"] {
+                assert_eq!(backend.read_at(name, 0, &mut [0]), Ok(1));
+                let info = backend.stat(name).unwrap();
+                assert_eq!(info.end_of_file, 1);
+                assert_eq!(info.basic.attributes, ATTR_ARCHIVE);
+            }
+            assert_eq!(backend.pending_written(), 2);
+            assert!(backend.cache.borrow().dirty_data.contains("one"));
+            // The next, unfailed format empties the volume.
+            backend.format().unwrap();
+            assert_eq!(backend.stat("one"), Err(Error::ObjectNameNotFound));
+            assert_eq!(backend.stat("two"), Err(Error::ObjectNameNotFound));
+            assert_eq!(backend.pending_written(), 0);
         }
-        assert_eq!(backend.pending_written(), 2);
-        // The first removal succeeds, the second fails: one file is gone and
-        // one survives, whichever order the host lists them in.
-        backend.format_error_after_unlinks.set(Some(1));
-        assert_eq!(backend.format(), Err(Error::IoDeviceError));
-        let [gone, kept] = if backend.root.join("one").exists() {
-            ["two", "one"]
-        } else {
-            ["one", "two"]
-        };
-        assert!(!backend.root.join(gone).exists());
-        assert!(backend.root.join(kept).exists());
-        assert_eq!(backend.pending_written(), 1);
-        assert_eq!(
-            backend.stat(gone).map(|_| ()),
-            Err(Error::ObjectNameNotFound)
-        );
-        let kept_basic = backend.stat(kept).unwrap().basic;
-        // A flush stores only the survivor's pending metadata. The removed
-        // file's record may outlive the failed format as an orphan, which
-        // creating the name clears.
-        backend.written.flush(None).unwrap();
-        assert_eq!(backend.pending_written(), 0);
-        backend.create(gone, false, ATTR_HIDDEN).unwrap();
-        assert_eq!(
-            backend.stat(gone).unwrap().basic.attributes,
-            ATTR_HIDDEN | ATTR_ARCHIVE
-        );
-        drop(backend);
-        let mut reopened = temp.backend();
-        assert_eq!(reopened.stat(kept).unwrap().basic, kept_basic);
     }
 
     #[test]

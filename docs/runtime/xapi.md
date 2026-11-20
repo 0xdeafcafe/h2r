@@ -444,10 +444,11 @@ Neither letter can be put on, or format, the volume the other resolves to.
 Volumes are compared with `Vfs::device_of`, so an alias chain or a link
 into a subdirectory counts. Either format fails with 32 while a file on that
 volume is open. So N:'s format cannot empty Z:, and XFormatUtilityDrive
-cannot empty N:. `HostBackend::format` walks from directory handles opened
-when the volume was created, with O_NOFOLLOW openat/unlinkat. A root or
-ancestor path swapped for a symlink later, or a symlink inside the volume,
-cannot redirect its deletions.
+cannot empty N:. `HostBackend::format` swaps each root directory for a
+staged empty sibling by rename, then deletes the old tree without
+following symlinks. A root or ancestor path swapped for a symlink later,
+or a symlink inside the volume, cannot redirect its deletions, and a swap
+that fails partway is rolled back (docs/runtime/storage.md).
 
 ## Runtime registration
 
