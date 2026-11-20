@@ -1878,6 +1878,38 @@ synthetic packets; nothing here was run against the game):
 - **Access.** Read-only (no claim), answered between slices too. Files
   are written where asked, as `input.record`'s are.
 
+## Shadow checks
+
+Built 2026-11-20, tested over synthetic code and memory; not yet run on
+the disc. Design: [shadow-exec.md](../engine/shadow-exec.md). Host methods
+(`agent::shadow`, registered by boot's agent glue) over
+`feature::shadow`'s registry. A native sim port is checked against the
+lifted original, each on its own copy of guest memory from the state the
+game reached, then runs on the live Guest as usual. Only installed ports
+are checked: a port's `impl.` switch puts it in the plan, and
+`shadow.enable` is the only switch for the checks.
+
+Ports are named by switch (`sim.native_unit_pose`,
+`sim.native_havok_solver`), by group (`sim.native`, `sim.physics`) or
+`all`.
+
+| Method | Access | What |
+|---|---|---|
+| `shadow.enable` | act | `{ports, every?, step_limit?}`: checks on for those ports, their counts and mismatches reset. `every` checks one call in that many (default 1); `step_limit` caps the original's instructions per check (default 5,000,000). The first call builds the lifted original from the image's cached analysis (a few seconds on the game thread). → `{enabled, not_installed, every, step_limit}`. Unknown names: invalid params; no image in the process: unavailable |
+| `shadow.disable` | act | `{ports?}`: checks off (no ports: all). → `{disabled}`. Counts and mismatches stay |
+| `shadow.status` | read | `{on, ready, every, step_limit, calls, checked, matched, mismatched, skipped, ports, mismatches, mismatches_dropped}`. Each port: `name`, `group`, `point`, `function`, `installed`, `on`, `calls`, `checked`, `matched`, `mismatched`, `skipped`, `skip_reasons`. Each mismatch (at most 64 kept): `port`, `group`, `point`, `function`, `pc` (entry or resume), `tick`, `call` (which call since `enable`), `kind` (`transfer`, `registers`, `memory`, `returned`, `nondeterministic`), `summary`, `transfer` (`port`, `original`), `registers` (`name`, `port`, `original`), `memory` (runs of bytes: `address` folded physical, `virtual_addresses`, `before`, `port`, `original`), `memory_bytes`, `steps`, `entry` (every register at entry, hex) |
+
+```sh
+H2_FEATURES=impl.sim.native_unit_pose h2 serve ...
+h2 agent shadow.enable '{"ports":["sim.native_unit_pose"]}'
+h2 agent session.wait '{"until":{"ticks":300}}'
+h2 agent shadow.status
+```
+
+`scripts/shadow-gate.sh` is the scripted disc gate over these methods: a
+headless sim match with the ports installed, checks on for N ticks, and a
+failure on any mismatch ([shadow-exec.md](../engine/shadow-exec.md#the-disc-gate)).
+
 ## Open decisions
 
 - **Who runs the game the API talks to.** Decided (2026-11-17): one

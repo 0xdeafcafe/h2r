@@ -126,6 +126,7 @@ goals, the two-stage plan, the crate table and milestones.
   [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md),
   [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md)
   and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
+- [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 
 ## Game features and enhancements (`game/`)
 

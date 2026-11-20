@@ -61,11 +61,13 @@ be ugly. So the project runs in two stages that overlap:
 
 What makes stage 2 safe:
 
-- **Differential testing.** Calls to a function can be recorded (input
-  registers, the guest memory it reads, the memory it writes, its return
-  value) while playing the recompiled build. Each override is replayed
-  against those recordings and has to match before it ships. For floating
-  point the bar is matching bits, or a tolerance documented per function.
+- **Differential testing.** Each override is checked against the lifted
+  original on the IR interpreter: from seeded states in the differential
+  tests, and from the states the game reaches by shadow execution while it
+  runs (each call run on a copy beside the original and compared;
+  [shadow-exec.md](engine/shadow-exec.md)). It has to match before it
+  ships. For floating point the bar is matching bits, or a tolerance
+  documented per function.
 - **Switch at runtime.** Overrides are enabled per function from config, so a
   regression can be bisected down to a single function.
 - **Work up from the leaves.** Start with leaf functions such as math, string
