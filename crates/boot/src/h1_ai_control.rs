@@ -2,6 +2,7 @@
 //! The scripts still run on the retail Halo 2 interpreter. See
 //! docs/halo1/ai-control.md for the builtin and guest ABI evidence.
 
+use engine::DatumHandle;
 use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use feature::{BuildError, Builder, Flow, Manifest, points};
@@ -126,6 +127,28 @@ impl feature::Feature for AiControl {
                     let actor = call.cpu.eax;
                     let mut guest = call.ctx.runtime().memory();
                     let _ = timers::hold_movement(&mut *guest, actor);
+                }
+                Ok(Flow::Continue)
+            },
+        );
+        b.raw().before(
+            &points::AI_UPDATE_BEHAVIORS,
+            "hold Halo 1 behaviour updates during the combat timer",
+            |call| {
+                if is_converted_campaign(call)
+                    && let Some(actor) = call.arg_u32("actor")
+                {
+                    let hold = {
+                        let guest = call.ctx.runtime().memory();
+                        actors::by_handle(&*guest, DatumHandle(actor))
+                            .and_then(|actor| {
+                                actor.map_or(Ok(false), |actor| timers::held(&*guest, actor))
+                            })
+                            .unwrap_or(false)
+                    };
+                    if hold {
+                        return call.ret(4).map(Flow::Return);
+                    }
                 }
                 Ok(Flow::Continue)
             },

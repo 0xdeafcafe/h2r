@@ -22,8 +22,8 @@ use super::{
     NONE, actors, contact, is_converted_campaign, state, uncover_limits,
     uncover_limits::REPORT_LATCH as LAST_SHOT,
 };
-/// A muzzle report's reach: the hearing actor's own converted `char`
-/// perception block offsets.
+/// The scenario squad record's character-palette index, and the palette
+/// and `char` tag offsets the reach reads below use.
 const SQUAD_CHARACTER: u32 = 0x36;
 const CHARACTER_COUNT: u32 = 0x178;
 const CHARACTERS: u32 = 0x17c;

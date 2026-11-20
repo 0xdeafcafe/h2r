@@ -292,6 +292,8 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::testing::FakeGuest;
+    use feature::points;
 
     #[test]
     fn a_lost_contact_starts_the_clock_but_does_not_release_the_hold() {
@@ -304,8 +306,22 @@ mod tests {
     #[test]
     fn the_same_encounter_phase_is_used_at_both_frame_rates() {
         assert_eq!(state::authored_tick(34, 60), state::authored_tick(17, 30));
-        assert_eq!(timers::encounter_updates(Some(state::authored_tick(33, 60)), state::authored_tick(34, 60), 2), 1);
-        assert_eq!(timers::encounter_updates(Some(state::authored_tick(34, 60)), state::authored_tick(35, 60), 2), 0);
+        assert_eq!(
+            timers::encounter_updates(
+                Some(state::authored_tick(33, 60)),
+                state::authored_tick(34, 60),
+                2
+            ),
+            1
+        );
+        assert_eq!(
+            timers::encounter_updates(
+                Some(state::authored_tick(34, 60)),
+                state::authored_tick(35, 60),
+                2
+            ),
+            0
+        );
     }
 
     fn timers_guest(value: u32) -> (FakeGuest, actors::Actor) {
@@ -319,9 +335,9 @@ mod tests {
         const CLOCK: u32 = 0x0089_0000;
         // One squad's table, with the guard masks appended as the compiler
         // does, and the phased marker global holding base 0 at the end.
-        let mut words = registry::build([(0, 0x8, 2.0)]).unwrap();
-        words[registry::HEADER as usize] = value;
-        for block in 0..registry::BLOCKS {
+        let mut words = timers::build([(0, 0x8, 2.0)]).unwrap();
+        words[timers::HEADER as usize] = value;
+        for block in 0..timers::BLOCKS {
             words.push(0);
         }
         let mut guest = FakeGuest::new();
@@ -332,25 +348,22 @@ mod tests {
             .put_u32(SCENARIO + 0x1c0, (words.len() + 1) as u32)
             .put_u32(SCENARIO + 0x1c4, DECLARATIONS)
             .put(
-                DECLARATIONS + 40 * words.len(),
-                registry::PHASED_GLOBAL.as_bytes(),
+                DECLARATIONS + 40 * words.len() as u32,
+                timers::PHASED_GLOBAL.as_bytes(),
             )
             .put_u32(points::SCENARIO.base, SCENARIO)
             .put_u32(points::GAME_TIME.base, CLOCK)
             .put_u16(CLOCK + 2, 30)
             .put_u32(CLOCK + 8, 600);
         for (index, word) in words.iter().enumerate() {
-            guest.put_u32(
-                VALUES + (state::VALUE_START as usize + index) * 8 + 4,
-                *word,
-            );
+            guest.put_u32(VALUES + (state::VALUE_START + index as u32) * 8 + 4, *word);
         }
         guest.put_u32(
-            VALUES + (state::VALUE_START as usize + words.len()) * 8 + 4,
+            VALUES + (state::VALUE_START + words.len() as u32) * 8 + 4,
             0,
         );
         guest
-            .put_u32(super::super::ACTORS, ACTORS)
+            .put_u32(actors::ACTORS, ACTORS)
             .put_u32(ACTORS + engine::datum::layout::ELEMENT_SIZE, 0x100)
             .put_u32(ACTORS + engine::datum::layout::HIGH_WATER, 1)
             .put_u32(ACTORS + engine::datum::layout::DATA, ACTOR_ROWS)
@@ -369,9 +382,9 @@ mod tests {
 
     #[test]
     fn the_hold_covers_behaviour_updates_until_the_timer_ends() {
-        let (guest, actor) = timers_guest(registry::SCRIPT_HELD | 900);
+        let (guest, actor) = timers_guest(timers::SCRIPT_HELD | 900);
         assert!(held(&guest, actor).unwrap());
-        let (guest, actor) = timers_guest(registry::REVEAL_PLAYERS);
+        let (guest, actor) = timers_guest(timers::REVEAL_PLAYERS);
         assert!(!held(&guest, actor).unwrap());
     }
 }

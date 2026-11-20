@@ -23,7 +23,7 @@ const FOCUS_TIME: u32 = 0x14;
 const APPLIED_BODY_DAMAGE: u32 = 0x28;
 /// The muzzle-report latch `reports` owns within the same 24-byte row
 /// (`campaign_squad_pool::ACTOR_STATE_SIZE`).
-const REPORT_LATCH: u32 = 0x18;
+pub(super) const REPORT_LATCH: u32 = 0x18;
 const DAMAGE_GRACE: u32 = 60;
 const DAMAGE_DECAY: f32 = 1.0 / 60.0;
 const NO_HIT: u32 = u32::MAX;
