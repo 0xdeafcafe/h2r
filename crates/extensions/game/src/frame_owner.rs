@@ -491,6 +491,11 @@ pub fn present_failed(present: u64) {
     crate::frame_parity::reference_error(present);
 }
 
+/// Publication of scenes to the private renderer is independent of the display queue.
+pub(crate) fn private_mailbox_stats() -> Option<mailbox::Stats> {
+    Some(active()?.frames.stats())
+}
+
 /// Camera use belongs to a particular sealed scene, including its map epoch.
 pub fn camera_counts(id: SceneId, view: u8) -> Option<[u32; 3]> {
     let shared = active()?;
