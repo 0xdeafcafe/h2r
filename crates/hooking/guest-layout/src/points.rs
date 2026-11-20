@@ -1266,6 +1266,13 @@ points! { ALL;
     LIGHT_UNLINK @ 0x000c_3220: [fn(light: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// Expire a light: unlink it, update its marker parent's flag when `notify`, free the datum.
     LIGHT_EXPIRE @ 0x000c_3260: [fn(light: stack 0, notify: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    // Slice 6a of docs/engine/sim-rewrite-objects.md: the unit update's shell and movement.
+    /// Unit movement: the aim and look directions turned toward the desired ones (`UNIT_UPDATE`'s third call).
+    UNIT_MOVEMENT @ 0x000c_60c0: [fn(unit: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Clamp a unit's direction (`look` 0: aim, 1: look) to its yaw and pitch limits; whether it clamped.
+    UNIT_CLAMP_DIRECTION @ 0x000c_ba50: [fn(unit: eax, direction: stack 0, look: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
+    /// Whether the unit is free of seven states and of its held weapons' test (`0x100880`).
+    UNIT_IDLE_TEST @ 0x000c_85c0: [fn(unit: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.

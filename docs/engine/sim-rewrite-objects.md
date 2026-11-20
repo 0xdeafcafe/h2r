@@ -1,6 +1,6 @@
 # Simulation rewrite, phase 3: the object and unit update
 
-Status: design, 2026-11-20. Slices 0 to 5, 8 and 11 are built: the
+Status: design, 2026-11-20. Slices 0 to 6a, 8 and 11 are built: the
 dispatcher and the switch (default off), the views and `sim-state`,
 slice 1's bodies (the walks, the per-object updates, the type
 dispatchers, the wake leaves and the early-mover wake), slice 3's
@@ -11,8 +11,9 @@ light-list link, unlink and expire; the lists stay guest), slice 8's (the
 damage update, and the `Damage` and `Kill` events), slice 4's (the
 bounds, attachment refresh, node-matrix notify and component transform,
 the transform setters and getters, and `bd090` as the phase 1 port run
-as a body, without `sim-anim`'s skeleton walk yet), and slice 11's (the
-small type updates and the projectile step `f8eb0`). The differential
+as a body, without `sim-anim`'s skeleton walk yet), slice 6a's (the unit update's shell, movement, direction clamp, idle
+test and aim update), and slice 11's (the small type updates and the
+projectile step `f8eb0`). The differential
 harness compares the XMM registers and the x87 state at every callout of
 every root, except the roots in its `FLOAT_OPT_OUT`. The contracts they keep are in
 [object-update.md](object-update.md). It details phase 3 of

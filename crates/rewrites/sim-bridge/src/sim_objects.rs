@@ -235,6 +235,142 @@ mod tests {
         assert!(!U.guarded(points::OBJECT_DAMAGE_UPDATE.base));
     }
 
+    // Slice 6a: the resume machinery on a real body, the unit update's
+    // shell (`c6b30`) alone, so its nine calls are true callouts.
+
+    fn unit_table() -> &'static Table {
+        static T: std::sync::LazyLock<Table> = std::sync::LazyLock::new(|| {
+            Table::new(objects::BODIES.iter().filter(|b| b.point.base == points::UNIT_UPDATE.base)).unwrap()
+        });
+        &T
+    }
+
+    fn unit_body() -> &'static Body {
+        unit_table().bodies()[0]
+    }
+
+    const UNIT_STACK: u32 = 0x703000;
+
+    fn unit_guest(arg: u32) -> runtime::Guest {
+        use runtime::guest::Permissions;
+        let mut mem = runtime::Guest::new();
+        mem.map_zeroed(0xb0000, 0x80000, Permissions::RX).unwrap();
+        mem.map_zeroed(UNIT_STACK - 0x1000, 0x2000, Permissions::RW).unwrap();
+        mem.set_u32(UNIT_STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        mem.set_u32(UNIT_STACK + 4, arg).unwrap();
+        mem
+    }
+
+    #[test]
+    fn a_body_resumes_at_its_sites_on_the_real_guest_stack() {
+        use runtime::{Dispatch, Event, Runner, Runtime};
+        use std::sync::{Arc, Mutex};
+        let body = unit_body();
+        let mut dispatch = Dispatch::default();
+        dispatch
+            .register_generated_rust(body.point.base, |_, _, _| panic!("unit original reached with the body installed"))
+            .unwrap();
+        for &site in body.sites {
+            dispatch.register_resume(site, body.point.base, site).unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for (target, cleanup) in [
+            (0xc49b0, 4),
+            (0xc58f0, 4),
+            (0xc60c0, 4),
+            (0xc5eb0, 0),
+            (0xc6740, 0),
+            (0x114c60, 0),
+            (0xc6990, 0),
+            (0xc6810, 0),
+            (0xc50a0, 0),
+        ] {
+            let calls = Arc::clone(&calls);
+            dispatch.register_override(target, "unit fixture", move |cpu, ctx, _| {
+                let mut calls = calls.lock().unwrap();
+                let mem = ctx.memory();
+                if cleanup != 0 {
+                    assert_eq!(mem.u32(cpu.esp + 4)?, 0x9000_0032);
+                } else {
+                    assert_eq!(cpu.eax, 0x9000_0032);
+                }
+                calls.push(mem.u32(cpu.esp)?);
+                cpu.eax = 0x4400_0000 | (1 << ((calls.len() - 1) % 8));
+                mem.ret(cpu, cleanup)
+            });
+        }
+        let rt = Runtime::new(unit_guest(0x9000_0032), dispatch);
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&Installs(unit_table())).unwrap();
+        registry.build(&Base).unwrap().install(&rt).unwrap();
+        let mut cpu = CpuAbi { esp: UNIT_STACK, ebx: 17, esi: 25, ..Default::default() };
+        let mut ctx = ExecCtx::new(rt, 1);
+        let done = Runner::default().run(&mut cpu, &mut ctx, body.point.base);
+        assert!(matches!(ctx.event(done.event_id), Some(Event::HarnessExit)));
+        assert_eq!(&*calls.lock().unwrap(), body.sites);
+        // The first five answers ORed: 1 | 2 | 4 | 8 | 10.
+        assert_eq!((cpu.eax, cpu.ebx, cpu.esi, cpu.esp), (0x4400_001f, 17, 25, UNIT_STACK + 8));
+    }
+
+    #[test]
+    fn a_disabled_body_returns_to_the_generated_owner_with_its_selector() {
+        use runtime::{Dispatch, Event, Runner, Runtime};
+        let body = unit_body();
+        let point = body.point.base;
+        let first = body.sites[0];
+        let mut dispatch = Dispatch::default();
+        // A module may assign a shared return site to another canonical owner.
+        let owner = 0xc6800;
+        let selector = owner + 12;
+        dispatch.register_generated_rust(point, |_, _, _| panic!("unexpected entry")).unwrap();
+        dispatch
+            .register_generated_rust(owner, move |cpu, ctx, pc| {
+                assert_eq!(pc, selector);
+                let memory = ctx.memory();
+                cpu.esi = memory.u32(cpu.esp)?;
+                cpu.ebx = memory.u32(cpu.esp + 4)?;
+                cpu.esp += 8;
+                cpu.eax = 91;
+                memory.ret(cpu, 4)
+            })
+            .unwrap();
+        for &pc in body.sites {
+            dispatch.register_resume(pc, owner, if pc == first { selector } else { pc }).unwrap();
+        }
+        dispatch.register_override(0xc49b0, "disable the unit body", move |cpu, ctx, _| {
+            assert!(ctx.runtime().edit_dispatch(|d| d.set_enabled(point, false)));
+            ctx.memory().ret(cpu, 4)
+        });
+        let rt = Runtime::new(unit_guest(17), dispatch);
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&Installs(unit_table())).unwrap();
+        registry.build(&Base).unwrap().install(&rt).unwrap();
+        let mut ctx = ExecCtx::new(rt, 1);
+        let mut cpu = CpuAbi { esp: UNIT_STACK, esi: 19, ebx: 23, ..Default::default() };
+        let done = Runner::default().run(&mut cpu, &mut ctx, point);
+        assert!(matches!(ctx.event(done.event_id), Some(Event::HarnessExit)));
+        assert_eq!((cpu.eax, cpu.esi, cpu.ebx, cpu.esp), (91, 19, 23, UNIT_STACK + 8));
+    }
+
+    #[test]
+    fn a_missing_continuation_leaves_the_plan_uninstalled() {
+        use runtime::{Dispatch, Runtime};
+        let body = unit_body();
+        let mut dispatch = Dispatch::default();
+        dispatch.register_generated_rust(body.point.base, |_, _, _| panic!("installation only")).unwrap();
+        for &site in &body.sites[1..] {
+            dispatch.register_resume(site, body.point.base, site).unwrap();
+        }
+        let rt = Runtime::new(runtime::Guest::new(), dispatch);
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&Installs(unit_table())).unwrap();
+        let result = registry.build(&Base).unwrap().install(&rt);
+        assert!(
+            matches!(result, Err(hooks::InstallError::MissingResume { site, .. }) if site == body.sites[0])
+        );
+        assert!(rt.edit_dispatch(|d| d.override_name(body.point.base).is_none()));
+    }
+
     /// A feature that installs a given table, so the installer is tested
     /// on bodies of its own.
     struct Installs(&'static Table);

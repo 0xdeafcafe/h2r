@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 41;
+pub const BUDGET: usize = 40;
 
 use Initial::{Group, Off, On};
 
@@ -122,7 +122,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_spatial_visit", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_spatial_portal", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_unit_update", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_pose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_first_person_filters", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_observer_camera", Off, "sim", "2026-11-20", SIM_PORT),

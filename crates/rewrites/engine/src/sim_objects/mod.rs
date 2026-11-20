@@ -45,6 +45,8 @@ mod transform;
 mod xform;
 // Slice 5: lights.
 mod lights;
+// Slice 6a: the unit update's shell and movement.
+mod unit;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -157,6 +159,14 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::LIGHT_LINK, sites: &lights::list::LINK_SITES, run: lights::list::link },
     Body { point: &points::LIGHT_UNLINK, sites: &lights::list::UNLINK_SITES, run: lights::list::unlink },
     Body { point: &points::LIGHT_EXPIRE, sites: &lights::list::EXPIRE_SITES, run: lights::list::expire },
+    // Slice 6a: the unit update's shell (the `unit` descriptor's slot
+    // `+40`), its movement, the direction clamp, the idle test and the aim
+    // update (the port `sim_physics::unit_aim`, run as a body).
+    Body { point: &points::UNIT_UPDATE, sites: &unit::SHELL_SITES, run: unit::shell },
+    Body { point: &points::UNIT_MOVEMENT, sites: &unit::MOVEMENT_SITES, run: unit::movement },
+    Body { point: &points::UNIT_CLAMP_DIRECTION, sites: &unit::CLAMP_SITES, run: unit::clamp },
+    Body { point: &points::UNIT_IDLE_TEST, sites: &unit::IDLE_SITES, run: unit::idle },
+    Body { point: &points::UNIT_AIM_UPDATE, sites: unit::AIM_SITES, run: unit::aim },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

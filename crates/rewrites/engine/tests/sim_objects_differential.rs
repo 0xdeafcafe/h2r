@@ -321,6 +321,7 @@ fn cleanup(target: u32) -> u32 {
         // Slice 4's callouts.
         t if let Some(&(_, pop)) = SLICE_4_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_5_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = SLICE_6A_CALLEES.iter().find(|c| c.0 == t) => pop,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -418,6 +419,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         }
     }
     answer_floats(cpu, target, n, case);
+    slice_6a_answer(cpu, g, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -2212,4 +2214,236 @@ fn light_unlink() {
 #[test]
 fn light_expire() {
     lit(&points::LIGHT_EXPIRE, 8);
+}
+
+// Slice 6a: the unit update's shell `c6b30`, the movement `c60c0`, the
+// direction clamp `cba50`, the idle test `c85c0` and the aim update
+// `c7840`. The dispatcher and walk roots above reach them through the
+// unit types' `+40` slot; the roots below run them over the pool dressed
+// with a unit's rates, directions, limits and held weapons.
+
+/// Every guest function a slice 6a body calls and is not stubbed above,
+/// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 6a
+/// bodies"). `b9fc0` is slice 11's, `e6fe0` slice 3's.
+const SLICE_6A_CALLEES: &[(u32, u32)] = &[
+    // The shell `c6b30`.
+    (0xc49b0, 4),
+    (0xc58f0, 4),
+    (0xc5eb0, 0),
+    (0xc6740, 0),
+    (0x114c60, 0),
+    (0xc6990, 0),
+    (0xc6810, 0),
+    (0xc50a0, 0),
+    // The movement `c60c0`.
+    (0xc4970, 0),
+    (0x11f0d0, 12),
+    (0x11ce20, 0),
+    (0x1201a0, 0),
+    (FTOL2, 0),
+    // The clamp `cba50`.
+    (0x30bf0, 0),
+    (0x11d000, 0),
+    (0x1420f0, 0),
+    // The aim update `c7840`.
+    (0xc7300, 20),
+    (0xc75d0, 4),
+    (0xc7750, 4),
+    (0x322bd8, 0),
+    // The idle test `c85c0`.
+    (0x100880, 0),
+];
+
+/// `_ftol2`: `st(0)` popped into `edx:eax`.
+const FTOL2: u32 = 0x322b0c;
+/// The direction the clamp root is given.
+const UNIT_DIRECTION: u32 = 0x0068_0000;
+/// `[body+33e]`: the unit's limits record, in its body.
+const UNIT_LIMITS: u16 = 0x1c0;
+/// `[body+346]`: the unit's record word, at `+4` from here.
+const UNIT_RECORD: u16 = 0x1f0;
+
+std::thread_local! {
+    /// Whether a slice 6a root is running: its stubs answer as a unit's.
+    static UNIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The slice 6a stubs' effects beyond [`answer`]'s: `_ftol2` pops the
+/// x87 stack (always; the dispatcher roots reach it too). Under a unit
+/// root, the state tests answer no but one, the weapon test by turns, the
+/// frame and the matrix are written.
+fn slice_6a_answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
+    if target == FTOL2 {
+        let x = &mut cpu.x87;
+        let top = (x.status >> 11) & 7;
+        x.tag |= 3 << (2 * top);
+        x.status = (x.status & !0x3800) | (((top + 1) & 7) << 11);
+    }
+    if !UNIT.with(std::cell::Cell::get) {
+        return;
+    }
+    match target {
+        0xe6fe0 => cpu.gpr[0] = u32::from(case == 2 && n == 3),
+        0x100880 => cpu.gpr[0] = (n as u32 + case) % 2,
+        // `b9fc0 (unit: eax, out: esi, edi)`.
+        0xb9fc0 => {
+            vec3(g, cpu.gpr[6], [1.0, 0.0, 0.0]);
+            vec3(g, cpu.gpr[7], [0.0, 0.0, 1.0]);
+        }
+        // `1420f0`: a matrix at `edx`, turned about z by the case.
+        0x1420f0 => {
+            let m = cpu.gpr[2];
+            let (s, c) = (0.4 * case as f32).sin_cos();
+            f32w(g, m, 1.0);
+            vec3(g, m + 4, [c, s, 0.0]);
+            vec3(g, m + 0x10, [-s, c, 0.0]);
+            vec3(g, m + 0x1c, [0.0, 0.0, 1.0]);
+        }
+        _ => {}
+    }
+}
+
+/// Three floats at `at`.
+fn vec3(g: &mut Guest, at: u32, v: [f32; 3]) {
+    for (i, x) in v.into_iter().enumerate() {
+        f32w(g, at + 4 * i as u32, x);
+    }
+}
+
+/// [`dress`], then the fields the slice 6a bodies branch on, varied by
+/// `case`: the definition's rates and early-out bit, the unit's
+/// directions, its limits record, its record word and held weapons.
+fn unit_dress(g: &mut Guest, case: u32) {
+    dress(g, case);
+    let c = case as usize % 6;
+    // Aim rates `+144`, `+148`, the scale `+14c`, look rates `+150`, `+154`.
+    let rates = [
+        [0.0, 0.0, 1.0, 0.0, 0.0],
+        [0.5, 0.25, 2.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.75, 0.5],
+        [1.0, 1.0, 0.5, 1.0, 1.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0],
+        [0.25, 0.0, 1.0, 0.0, 0.125],
+    ][c];
+    for (i, r) in rates.into_iter().enumerate() {
+        f32w(g, DEFINITION + 0x144 + 4 * i as u32, r);
+    }
+    if case == 4 {
+        let bits = g.u32(DEFINITION + 0xbc).unwrap();
+        word(g, DEFINITION + 0xbc, bits | 1 << 10);
+    }
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    byte(g, body + 0x10a, if case == 5 { 4 } else { 0 });
+    let (s, k) = (0.3 * case as f32 + 0.2).sin_cos();
+    let v = |at: u32| body + at;
+    // Desired aim and aim, aim velocity, desired look and look, look
+    // velocity: unequal but in case 0.
+    vec3(g, v(0x15c), [k, s, 0.1]);
+    vec3(g, v(0x168), if case == 0 { [k, s, 0.1] } else { [1.0, 0.0, 0.0] });
+    vec3(g, v(0x174), [9.0, 9.0, 9.0]);
+    vec3(g, v(0x180), [k, 0.0, s]);
+    vec3(g, v(0x18c), if case == 0 { [k, 0.0, s] } else { [0.0, 1.0, 0.0] });
+    vec3(g, v(0x198), [9.0, 9.0, 9.0]);
+    byte(g, body + 0x1bc, u8::from(case % 2 == 1));
+    // The limits: bit 5 the aim's, bit 6 the look's; each a yaw and a
+    // pitch range.
+    g.set_u16(body + 0x33e, UNIT_LIMITS).unwrap();
+    let limits = body + u32::from(UNIT_LIMITS);
+    byte(g, limits, [0, 0x20, 0x40, 0x60, 0x20, 0x60][c]);
+    for (i, w) in [-0.5f32, 0.5, -0.4, 0.4, -1.0, 1.0, -0.3, 0.3].into_iter().enumerate() {
+        f32w(g, limits + 4 + 4 * i as u32, w);
+    }
+    // The idle test: the record word's bits 26 and 27, the two held
+    // weapons' indices and handles.
+    g.set_u16(body + 0x346, UNIT_RECORD).unwrap();
+    word(g, body + u32::from(UNIT_RECORD) + 4, [0, 1 << 26, 0, 1 << 27, 0, 0][c]);
+    let held = [[0xff, 0xff], [0, 0xff], [0xff, 1], [0, 1], [1, 0], [0, 1]][c];
+    byte(g, body + 0x212, held[0]);
+    byte(g, body + 0x213, held[1]);
+    word(g, body + 0x218, 0xe200_0001);
+    word(g, body + 0x21c, if case == 4 { u32::MAX } else { 0xe200_0002 });
+    // The clamp root's direction.
+    let a = 0.9 * case as f32 + 0.1;
+    for (i, w) in [a.cos(), a.sin(), 0.2 * case as f32 - 0.5].into_iter().enumerate() {
+        f32w(g, UNIT_DIRECTION + 4 * i as u32, w);
+    }
+}
+
+/// The arguments of a slice 6a root: the unit on the stack (`c6b30`,
+/// `c60c0`) or in `eax` (`cba50`, `c85c0`); the clamp's direction and
+/// look flag on the stack.
+fn unit_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let unit = object(case);
+    if root == points::UNIT_UPDATE.base || root == points::UNIT_MOVEMENT.base {
+        word(g, STACK + 4, unit);
+    } else {
+        cpu.gpr[0] = unit;
+    }
+    if root == points::UNIT_CLAMP_DIRECTION.base {
+        word(g, STACK + 4, UNIT_DIRECTION);
+        word(g, STACK + 8, case % 2);
+    }
+}
+
+/// [`transcripts`] of a slice 6a root over a [`unit_dress`]ed pool; the
+/// float state is compared like every root's.
+fn unit_transcripts(point: &points::Point, cases: u32) {
+    let Some((image, ram)) = image() else { return };
+    let table: &Table = &*sim_objects::TABLE;
+    let mut code = image.original();
+    code.prime(point.base);
+    for body in table.bodies() {
+        code.prime(body.point.base);
+    }
+    assert!(code.insn(point.base).is_some(), "{}", point.name);
+    assert!(table.owns(point.base), "{} is a body", point.name);
+    FLOATS.with(|x| x.set(floats(point.base)));
+    UNIT.with(|u| u.set(true));
+    let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
+    for case in 0..cases {
+        h.case = case;
+        let fresh = || {
+            let (mut cpu, mut g) = start(ram, point.base, case);
+            unit_dress(&mut g, case);
+            unit_entry(&mut g, &mut cpu, point.base, case);
+            (cpu, g)
+        };
+        let (cpu, g) = fresh();
+        let reference = h.run(cpu, g, &|_| false);
+        let (cpu, g) = fresh();
+        let fused = h.run(cpu, g, &|_| true);
+        check(&format!("{} case {case} fused", point.name), &reference, &fused);
+        for (k, &pc) in reference.resumes.iter().enumerate() {
+            if table.at(pc).is_none() {
+                continue;
+            }
+            let (cpu, g) = fresh();
+            let into = h.run(cpu, g, &|i| i >= k);
+            check(&format!("{} case {case} lifted then Rust at {k} ({pc:#x})", point.name), &reference, &into);
+            let (cpu, g) = fresh();
+            let out = h.run(cpu, g, &|i| i < k);
+            check(&format!("{} case {case} Rust then lifted at {k} ({pc:#x})", point.name), &reference, &out);
+        }
+    }
+    UNIT.with(|u| u.set(false));
+}
+
+#[test]
+fn unit_update() {
+    unit_transcripts(&points::UNIT_UPDATE, 6);
+}
+
+#[test]
+fn unit_movement() {
+    unit_transcripts(&points::UNIT_MOVEMENT, 6);
+}
+
+#[test]
+fn unit_clamp_direction() {
+    unit_transcripts(&points::UNIT_CLAMP_DIRECTION, 6);
+}
+
+#[test]
+fn unit_idle_test() {
+    unit_transcripts(&points::UNIT_IDLE_TEST, 6);
 }

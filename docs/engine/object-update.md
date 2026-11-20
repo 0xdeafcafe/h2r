@@ -1,7 +1,7 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
-Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows)), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard and the event observers), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 8 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
+Status: Partly built. Slice 1's, slice 3's, slice 4's, slice 5's, slice 6a's, slice 8's and slice 11's bodies are in the body table behind the switch: the three walks, the per-object pre- and post-update, the four type dispatchers, the wake leaves and the early-mover wake; function values, the export evaluator, the import dispatcher, every type level's import handler and change colours; the light walk, the light record update and its phase step, and the light-list link, unlink and expire; the damage update `d5de0`, with the tick's `Damage` and `Kill` events; the item, scenery, device, machine, crate, creature and projectile updates, and the projectile step `f8eb0`; the post-update shell (component transform, node matrices, bounds, attachment refresh, node-matrix notify) and the transform setters and getters; the unit update's shell `c6b30`, the movement `c60c0`, the direction clamp `cba50`, the idle test `c85c0` and the aim update `c7840`. The other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 8 and slice 11 root, comparing the integer registers, flags, memory, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
 Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md).
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
@@ -33,10 +33,13 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   original runs from the same frame. A per-function port at a point a body
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
   switch is on (`sim_bridge::sim_objects::owns`). The ports the slice 1
-  bodies replaced (the two walks and the two per-object updates) and
-  change colours, and the light record update `c0c80` that slice 5's body
-  takes over, are in `sim_physics::ORACLES`: never installed, kept as
-  test oracles. The function value, import and base import ports
+  bodies replaced (the two walks and the two per-object updates),
+  change colours, the unit update's shell `c6b30` and the light record
+  update `c0c80` that slice 5's body takes over, are in
+  `sim_physics::ORACLES`: never installed, kept as test oracles. The
+  unit aim port stays in `sim_physics::PORTS` under its own switch; the
+  `c7840` body runs the same code (`sim_physics::unit_aim::step`). The
+  function value, import and base import ports
   (`sim_native::object`, `sim_native::object_base`) are not installed
   either; `tests/sim_native_differential.rs` keeps them as oracles. The
   node-matrix port `sim_physics::node_matrices` is the `bd090` body's
@@ -150,8 +153,18 @@ How the body keeps the contract is in "Slice 8 body" below.
 | `118b80` | `CREATURE_POST_UPDATE` | `(object: stack 0)`; `ret 4`. Slot `+44` of `crea` | segment |
 | `f8eb0` | `PROJECTILE_STEP` | `(object: stack 0, velocity: stack 1)`; `ret 8`. The projectile step; called by `f8de0` | segment |
 
-Slices 6, 7, 9 and 10 (unit, biped, weapon, vehicle) add one block each
-here, in the same shape.
+### Slice 6a: unit shell and movement
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `c6b30` | `UNIT_UPDATE` | `(unit: stack 0) -> al`; `ret 4`. Slot `+40` of `unit`; bipeds and vehicles inherit it | segment |
+| `c60c0` | `UNIT_MOVEMENT` | `(unit: stack 0) -> al`, whether the aim or look moved; `ret 4` | segment |
+| `cba50` | `UNIT_CLAMP_DIRECTION` | `(unit: eax, direction: stack 0, look: stack 1) -> al`, whether it clamped; `ret 8` | segment |
+| `c85c0` | `UNIT_IDLE_TEST` | `(unit: eax) -> al`; `ret`. Called from `c58f0` (slice 6b) | segment |
+| `c7840` | `UNIT_AIM_UPDATE` | `eax`, `esi`, `edi` and five stack arguments; `ret 14` | segment |
+
+Slices 6b, 6c, 7, 9 and 10 (unit, biped, weapon, vehicle) add one block
+each here, in the same shape.
 
 ### Callouts that stay guest in this phase
 
@@ -834,10 +847,90 @@ lights with `16bc00`), and frees the light (`16ba40`).
   with a function source, so `bab40` and the owner-marker path (`b8c40`,
   `16640f`, `b8d30`) are reached only by those captures.
 - `c0c80` writes whole `xmm` registers where retail writes the low lane,
-  so the harness compares `xmm` state only for the `c0b00`, `c2d00`,
-  `c3220` and `c3260` roots, not `c1400` or `c0c80`.
+  so the harness leaves the float comparison out for the `c1400` and
+  `c0c80` roots (`FLOAT_OPT_OUT`, with the reason) and keeps it for the
+  `c0b00`, `c2d00`, `c3220` and `c3260` roots.
 - The harness answers `16bc00` from the synthetic bitmap; the iterator's
   own behaviour is not compared.
+
+## Slice 6a bodies
+
+Each is **C** for its control flow and accesses: read at its address
+with `h2 disasm`, and compared with the lifted original by
+`tests/sim_objects_differential.rs` (the four roots below, and the type
+dispatchers and walks, which reach `c6b30` through the unit types' `+40`
+slot). Field names are ours and **L**. `unit.rs`'s header records each
+body's frame and the registers it keeps across calls.
+
+**Transfers.** The eight integer registers, the `xmm` registers, MXCSR
+and the x87 state are retail's at every call and return. Flags are left
+undefined at every transfer of `c60c0`, `cba50` and `c85c0`: no caller
+and no callee reads them before writing them (`scripts/sim-liveness.py`).
+`c6b30` and `c7840` reproduce them, as the ports they come from do. x87
+sequences (the `_ftol2` arguments, the six "moved" tests, the clamp's
+`fpatan`, `fsqrt`, `fsin` and `fcos`) run through `x87::abi` on the
+guest's x87 state, with the last instruction and data pointers retail's
+last x87 instruction leaves.
+
+**Shell `c6b30`.** Calls `c49b0`, `c58f0` and `c60c0` with the unit on
+the stack, then `c5eb0`, `c6740`, `114c60`, `c6990`, `c6810` and `c50a0`
+with it in `eax`; `al` is the OR of the first five answers. `c60c0` is a
+body (fused); the rest stay callouts until slices 6b and 6c. The port it
+comes from (`sim_physics::objects::unit`) is an oracle.
+
+**Movement `c60c0`.** Returns 0 at once when definition `+bc` bit 10 or
+body `+10a` bit 2 is set. Otherwise it moves the aim (body `+168`)
+toward the desired aim (`+15c`) and the look (`+18c`) toward the desired
+look (`+180`). With both of a pair's rates zero (definition `+144`,
+`+148`; `+150`, `+154`; times `+14c` when body `+1bc` is 1) the
+direction is copied and clamped (`cba50`, fused; for the aim only when
+`c4970` answers) and its velocity (`+174`, `+198`) set from `[4687a4]`.
+Otherwise `c7840` (fused) turns it in the unit's frame (`b9fc0`) when
+the limits record's (body `+ [body+33e]`) bit 5 (aim) or 6 (look) is
+set, or `11f0d0` turns it in the world. The aim's two rate fractions
+(`11ce20`, `1201a0`, clamped to 0..1) become the bytes at `+243` and
+`+1f8` through `_ftol2` (`322b0c`), which pops the x87 stack. When any
+of the six components moved by more than `[45dbdc]` the unit is woken
+for the post walk (`bba20`, fused) and `al` is 1.
+
+**Clamp `cba50`.** Returns 0 when the limits record's bit for the
+direction (5, or 6 for the look) is clear. Otherwise it takes the unit's
+frame (`b9fc0`; for the look re-based on the aim, normalised by `30bf0`
+and `11d000`), builds a matrix from it (`1420f0`), takes the direction's
+yaw and pitch in it and clamps them to the record's ranges (`+4..+10`,
+or `+14..+20` for the look). When either clamped it writes the direction
+back from the clamped angles. The x87 compare of the yaw against its
+minimum leaves the x87 status and pointers that a later x87 user sees.
+
+**Idle test `c85c0`.** 0 when the unit has a parent (body `+14`), when
+bit 26 or 27 of its record word (body `+ [body+346] + 4`) is set, or when
+any of seven `e6fe0(unit, n)` tests answers; then 0 when a held weapon
+(the two index bytes at body `+212` into the handles at `+218`) answers
+`100880`. Else 1. The result is also stored in the top byte of the
+caller's `ecx`, saved and restored in the frame, so `ecx` returns with
+it.
+
+**Aim `c7840`.** The port `sim_physics::unit_aim` run as a body:
+`unit_aim::step` returns its calls and return as an `Exit`, which the
+port maps to a `TransferAbi` and the body to a `Next`. The port stays in
+`sim_physics::PORTS` under `impl.sim.native_unit_aim` until phase 1c
+retires it; the port's check that x87 rounding is to nearest does not
+apply to the body: the transcendentals it uses (`fsin`, `fcos`,
+`fpatan`, `fsqrt`) give the same bits in every rounding mode in the
+`x87` crate.
+
+### Not verified for slice 6a
+
+- Captures from Waterworks and a campaign level: registers and RAM at
+  the n-th call of `c6b30`, `c60c0`, `cba50`, `c85c0` and `c7840`,
+  compared with `impl.sim.native.objects` off. The harness covers
+  synthetic pools only.
+- The harness compares the eight integer registers, the flags, memory,
+  `xmm` and the x87 state at callouts. `_ftol2`'s stub pops the x87
+  stack without storing the truncation, so the `+243` and `+1f8` bytes
+  are checked only against stub answers.
+- That the x87 crate's transcendentals do not depend on the rounding
+  mode is read from its source, not checked in a test.
 
 ## Register liveness
 
