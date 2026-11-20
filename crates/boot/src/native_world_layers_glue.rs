@@ -30,6 +30,8 @@ pub(crate) struct DrawContext {
     pub(crate) frame: u64,
     compare: bool,
     pub(crate) geometry: Option<Geometry>,
+    bsp: Option<u32>,
+    generation: u64,
     target: [u32; 8],
     pub(crate) index_count: Option<u32>,
     return_address: u32,
@@ -109,6 +111,8 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                         frame,
                         compare,
                         target,
+                        bsp: mem.read_u32(feature::native_world::ACTIVE_BSP),
+                        generation: feature::native_map_work::bsp_generation(),
                         geometry: Geometry::read(&mem, cpu.esp, layer.number),
                         index_count: cpu.esp.checked_add(8).and_then(|a| mem.read_u32(a)),
                         return_address,
@@ -253,7 +257,8 @@ impl DrawAdmission for Admission {
         if !self.owners.admits(stage) {
             return None;
         }
-        let pass = IndexedPass::new(draw, Arc::clone(&self.cache), c.frame, texaccum)?;
+        let pass = IndexedPass::for_section(draw, Arc::clone(&self.cache), c.frame, texaccum,
+            (c.generation, c.bsp?), geometry, layer.number)?;
         Some((
             ExternalPlan {
                 stage,

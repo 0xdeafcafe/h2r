@@ -2,6 +2,8 @@
 //! record before appending any items. A transparent producer, material
 //! override or unrecognised shader sends the record back to its guest loop.
 
+use std::collections::HashMap;
+
 use engine::memory::GuestMemory;
 use native_render::skip;
 
@@ -28,10 +30,10 @@ fn material_visible(m: &dyn GuestMemory, material: u32, placement: u32) -> Optio
     Some(word & (1 << (bit%32)) != 0)
 }
 
-fn part_visible(m: &dyn GuestMemory, part: u32, mask: u32, masked: bool) -> Option<bool> {
+fn part_visible(m: &dyn GuestMemory, part: &Part, mask: u32, masked: bool) -> Option<bool> {
     if !masked { return Some(true); }
-    let first = u32::from(m.u16(part.checked_add(10)?).ok()?);
-    let count = u32::from(m.u16(part.checked_add(12)?).ok()?);
+    let first = u32::from(part.first_subpart);
+    let count = u32::from(part.subparts);
     if first + count > i16::MAX as u32 || mask == 0 { return None; }
     for i in first..first+count {
         if m.u32(mask.checked_add(i/32*4)?).ok()? & (1 << (i%32)) != 0 { return Some(true); }
@@ -39,37 +41,229 @@ fn part_visible(m: &dyn GuestMemory, part: u32, mask: u32, masked: bool) -> Opti
     Some(false)
 }
 
-fn lod(m: &dyn GuestMemory, shader: u32, pixels: f32) -> Option<(u8, u32, u32)> {
-    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
-    let entry = table.checked_add((shader & 0xffff)*16)?;
-    if shader as u16 > i16::MAX as u16 || m.u32(entry).ok()? != u32::from_be_bytes(*b"shad") { return None; }
-    let tag = m.u32(entry.checked_add(8)?).ok()?;
-    let classification = u32::from(m.u16(tag.checked_add(0x3c)?).ok()?);
-    if classification > 5 { return None; }
-    let instance = m.u32(tag.checked_add(0x24)?).ok()?;
-    let template_id = m.u32(instance).ok()?;
-    let template = m.u32(table.checked_add((template_id & 0xffff)*16 + 8)?).ok()?;
-    let header = m.u32(template.checked_add(0x5c)?).ok()?;
-    let count = m.u32(header).ok()?;
-    if header == 0 || !(1..=256).contains(&count) { return None; }
-    let levels = m.u32(header.checked_add(4)?).ok()?;
-    let mut level = 0;
-    if classification != 5 {
-        let mut pixels = pixels;
-        if m.u8(DOUBLE_LOD).ok()? != 0 { pixels *= m.f32(engine::light_constants::constant::TWO).ok()?; }
-        pixels *= m.f32(LOD_SCALES + classification*4).ok()?;
-        if !pixels.is_finite() { return None; }
-        while level + 1 < count {
-            let threshold = m.f32(levels.checked_add(level*10+6)?).ok()?;
-            if !threshold.is_finite() { return None; }
-            if pixels >= threshold { break; }
-            level += 1;
-        }
-    }
-    Some((level as u8, m.u32(levels.checked_add(level*10+2)?).ok()?, m.u32(levels.checked_add(2)?).ok()?))
+// Validate the source spans independently: a level edit or a relocated
+// template invalidates this material even if its shader datum is unchanged.
+struct LodPlan {
+    checked: Option<u64>,
+    source: Vec<(u32, Vec<u8>)>,
+    classification: u32,
+    levels: Vec<(u32, f32)>,
 }
 
-pub(super) fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32> {
+impl LodPlan {
+    fn read(m: &dyn GuestMemory, table: u32, shader: u32) -> Option<Self> {
+        let mut source = Vec::new();
+        let mut block = |address: u32, len: usize| -> Option<Vec<u8>> {
+            let data = m.bytes(address, len).ok()?;
+            source.push((address, data.clone()));
+            Some(data)
+        };
+        let word = |data: &[u8], i: usize| u32::from_le_bytes(data[i..i+4].try_into().unwrap());
+        let entry = block(table.checked_add((shader & 0xffff)*16)?, 12)?;
+        if shader as u16 > i16::MAX as u16 || word(&entry, 0) != u32::from_be_bytes(*b"shad") { return None; }
+        let tag = word(&entry, 8);
+        let instance = word(&block(tag.checked_add(0x24)?, 4)?, 0);
+        let class = block(tag.checked_add(0x3c)?, 2)?;
+        let classification = u32::from(u16::from_le_bytes(class.try_into().ok()?));
+        if classification > 5 { return None; }
+        let template_id = word(&block(instance, 4)?, 0);
+        let template = word(&block(table.checked_add((template_id & 0xffff)*16 + 8)?, 4)?, 0);
+        let header = word(&block(template.checked_add(0x5c)?, 4)?, 0);
+        if header == 0 { return None; }
+        let header = block(header, 8)?;
+        let count = word(&header, 0);
+        if !(1..=256).contains(&count) { return None; }
+        let data = block(word(&header, 4), count as usize * 10)?;
+        let levels = data.chunks_exact(10).map(|row| (word(row, 2), f32::from_bits(word(row, 6)))).collect();
+        Some(Self { checked: None, source, classification, levels })
+    }
+
+    fn current(&self, m: &dyn GuestMemory, scratch: &mut Vec<u8>) -> bool {
+        self.source.iter().all(|(addr, saved)| {
+            scratch.resize(saved.len(), 0);
+            m.read(*addr, scratch).is_ok() && scratch.as_slice() == saved.as_slice()
+        })
+    }
+
+    fn select(&self, m: &dyn GuestMemory, mut pixels: f32) -> Option<(u8, u32, u32)> {
+        let mut level = 0;
+        if self.classification != 5 {
+            if m.u8(DOUBLE_LOD).ok()? != 0 { pixels *= m.f32(engine::light_constants::constant::TWO).ok()?; }
+            pixels *= m.f32(LOD_SCALES + self.classification*4).ok()?;
+            if !pixels.is_finite() { return None; }
+            while level + 1 < self.levels.len() {
+                let threshold = self.levels[level].1;
+                if !threshold.is_finite() { return None; }
+                if pixels >= threshold { break; }
+                level += 1;
+            }
+        }
+        Some((level as u8, self.levels[level].0, self.levels[0].0))
+    }
+}
+
+#[derive(Default)]
+struct Materials {
+    shaders: HashMap<(u32, u32), LodPlan>,
+    scratch: Vec<u8>,
+}
+
+impl Materials {
+    fn lod(&mut self, m: &dyn GuestMemory, shader: u32, pixels: f32, watch: &mut Sources)
+        -> Option<((u8, u32, u32), bool)> {
+        let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+        let key = (table, shader);
+        let hit = self.shaders.get(&key).is_some_and(|p| {
+            watch.clean(p.checked) || p.current(m, &mut self.scratch)
+        });
+        if !hit {
+            self.shaders.insert(key, LodPlan::read(m, table, shader)?);
+        }
+        let plan = self.shaders.get_mut(&key)?;
+        if watch.stamp.is_some() && plan.checked.is_none() {
+            for (addr, data) in &plan.source { watch.add(*addr, data.len()); }
+        }
+        plan.checked = watch.stamp;
+        Some((plan.select(m, pixels)?, hit))
+    }
+}
+
+const PART_SIZE: usize = 0x48;
+
+struct Part {
+    kind: u16,
+    material: u16,
+    first_subpart: u16,
+    subparts: u16,
+    size: f32,
+}
+
+struct Parts {
+    checked: Option<u64>,
+    source: Vec<u8>,
+    parts: Vec<Part>,
+}
+
+#[derive(Default)]
+pub(super) struct SectionCache {
+    parts: SectionParts,
+    materials: Materials,
+    outputs: Vec<u8>,
+    sources: Sources,
+}
+
+/// Clean watched pages let the scene walk use decoded resources directly.
+/// If any watched page changes, verify the actual spans on their next use.
+#[derive(Default)]
+struct Sources {
+    subscription: Option<(u64, u64, runtime::WatchId)>, // BSP generation, virtual layout, watch
+    revision: u64,
+    stamp: Option<u64>,
+    pending: Vec<(u32, usize)>,
+}
+
+impl Sources {
+    fn clean(&self, checked: Option<u64>) -> bool { checked.is_some() && self.stamp == checked }
+
+    fn add(&mut self, addr: u32, len: usize) {
+        if self.stamp.is_some() { self.pending.push((addr, len)); }
+    }
+}
+
+impl SectionCache {
+    pub(super) fn append_guest(&mut self, m: &mut runtime::Guest, sp: u32, index: u32)
+        -> Option<(u32, bool)> {
+        const OWNER: &str = "native-world-section-sources";
+        let generation = crate::native_map_work::bsp_generation();
+        let (layout, revision) = m.write_watch_epoch();
+        let id = match self.sources.subscription {
+            Some((g, l, id)) if (g, l) == (generation, layout) => id,
+            _ => {
+                // Watch IDs are local to a Guest. A render-thread RAM view or
+                // restored runtime can have a different owner at the same ID.
+                if let Some((id, _)) = m.write_watch_owners().into_iter().find(|(_, name)| *name == OWNER) {
+                    m.unsubscribe_writes(id);
+                }
+                for section in self.parts.sections.values_mut() { section.checked = None; }
+                for shader in self.materials.shaders.values_mut() { shader.checked = None; }
+                let id = m.subscribe_writes(OWNER);
+                self.sources.subscription = Some((generation, layout, id));
+                id
+            }
+        };
+        if m.has_dirty(id) || self.sources.revision != revision || m.has_trap() {
+            m.take_dirty(id).ok()?;
+            self.sources.stamp = Some(self.sources.stamp.unwrap_or(0).wrapping_add(1));
+        } else {
+            self.sources.stamp.get_or_insert(0);
+        }
+        self.sources.revision = revision;
+        let result = append_cached(m, sp, index, self, generation);
+        if !self.sources.pending.is_empty() {
+            // Verify newly watched data once. The caller may have aliased the
+            // output list with a source before its pages were subscribed.
+            self.sources.stamp = self.sources.stamp.map(|stamp| stamp.wrapping_add(1));
+        }
+        for (addr, len) in self.sources.pending.drain(..) {
+            if m.watch_virtual_read(id, addr, len).is_err() {
+                // Outputs were resolved from live bytes. Retry registration
+                // with empty caches on the next call.
+                self.sources.subscription = None;
+                break;
+            }
+        }
+        result
+    }
+}
+
+#[derive(Default)]
+struct SectionParts {
+    scope: Option<(u64, u32)>,
+    sections: HashMap<u32, Parts>,
+    scratch: Vec<u8>,
+}
+
+impl SectionParts {
+    // Compare the live block in one read. Resource streaming and tag edits
+    // can overwrite a section in place, including on a render-thread RAM view.
+    fn resolve(&mut self, m: &dyn GuestMemory, generation: u64, bsp: u32, address: u32, count: u32, watch: &mut Sources)
+        -> Option<(&[Part], bool)> {
+        if self.scope != Some((generation, bsp)) {
+            self.sections.clear();
+            self.scope = Some((generation, bsp));
+        }
+        let len = count as usize * PART_SIZE;
+        let cached = self.sections.entry(address).or_insert_with(|| Parts {
+            source: Vec::new(), parts: Vec::new(), checked: None,
+        });
+        if cached.source.len() == len && watch.clean(cached.checked) { return Some((&cached.parts, true)); }
+        self.scratch.resize(len, 0);
+        m.read(address, &mut self.scratch).ok()?;
+        let hit = cached.source == self.scratch;
+        if !hit || cached.checked.is_none() { watch.add(address, len); }
+        cached.checked = watch.stamp;
+        if !hit {
+            std::mem::swap(&mut cached.source, &mut self.scratch);
+            cached.parts.clear();
+            for row in cached.source.chunks_exact(PART_SIZE) {
+                let word = |at: usize| u16::from_le_bytes([row[at], row[at+1]]);
+                cached.parts.push(Part {
+                    kind: word(0), material: word(4), first_subpart: word(10), subparts: word(12),
+                    size: f32::from_le_bytes(row[0x2c..0x30].try_into().unwrap()),
+                });
+            }
+        }
+        Some((&cached.parts, hit))
+    }
+}
+
+#[cfg(test)]
+fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32> {
+    append_cached(m, sp, index, &mut SectionCache::default(), 0).map(|(count, _)| count)
+}
+
+fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut SectionCache,
+    generation: u64) -> Option<(u32, bool)> {
     if index >= 0x352 || m.u32(sp).ok()? != FIRST_PART_RETURN ||
         m.u32(sp.checked_add(4)?).ok()? != 0 || m.u32(sp.checked_add(0x60)?).ok()? != 0 ||
         m.u32(sp.checked_add(0x68)?).ok()? != 0x1f ||
@@ -100,19 +294,23 @@ pub(super) fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32
     if first > capacity || capacity > skip::MAX_ITEMS { return None; }
     let dst = m.u32(SCENE_LIST+20).ok()?.checked_add(first * skip::ITEM_SIZE)?;
     let mut all_layers = m.u32(SCENE_LIST+8).ok()?;
-    let mut outputs = Vec::new();
-    for n in 0..count {
-        let part = parts.checked_add(n*0x48)?;
-        let material_no = u32::from(m.u16(part.checked_add(4)?).ok()?);
+    if cache.parts.scope != Some((generation, bsp)) { cache.materials.shaders.clear(); }
+    let outputs = &mut cache.outputs;
+    outputs.clear();
+    let (parts, mut hit) = cache.parts.resolve(m, generation, bsp, parts, count, &mut cache.sources)?;
+    for (n, part) in parts.iter().enumerate() {
+        let material_no = u32::from(part.material);
         if material_no >= material_count || material_no > i16::MAX as u32 { return None; }
         let mat = materials.checked_add(material_no*32)?;
         if !material_visible(m, mat, placement)? || !part_visible(m, part, mask, flags & 64 != 0)? { continue; }
         let shader = m.u32(mat.checked_add(12)?).ok()?;
-        let kind = m.u16(part).ok()?;
+        let kind = part.kind;
         if shader == u32::MAX || matches!(kind, 0 | 5) { continue; }
-        let size = m.f32(part.checked_add(0x2c)?).ok()?;
+        let size = part.size;
         let size = if size > 0.0 { size } else { m.f32(engine::light_constants::constant::ONE).ok()? };
-        let (level, layers, base_layers) = lod(m, shader, ((f32::from(pixels)*size)*scale)*alpha_scale)?;
+        let ((level, layers, base_layers), material_hit) = cache.materials.lod(m, shader,
+            ((f32::from(pixels)*size)*scale)*alpha_scale, &mut cache.sources)?;
+        hit &= material_hit;
         // The standard scene caller passes the same shader as its override.
         if layers & 0x8080 != 0 && layers & 0xa == 0 && base_layers & (1 << 21) != 0 { continue; }
         // The transparent producer allocates a second entry and publishes its
@@ -125,7 +323,7 @@ pub(super) fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32
         item[0..4].copy_from_slice(&skip::GEOMETRY_BUILD.to_le_bytes());
         item[4..8].copy_from_slice(&skip::GEOMETRY_DRAW.to_le_bytes());
         item[8..12].copy_from_slice(&shader.to_le_bytes());
-        let argument = u32::from(pixels)<<24 | index<<8 | n;
+        let argument = u32::from(pixels)<<24 | index<<8 | n as u32;
         item[12..16].copy_from_slice(&argument.to_le_bytes());
         item[16..20].copy_from_slice(&layers.to_le_bytes());
         item[20] = 0;
@@ -140,12 +338,12 @@ pub(super) fn append(m: &mut dyn GuestMemory, sp: u32, index: u32) -> Option<u32
         header[..4].copy_from_slice(&(first+(outputs.len()/24) as u32).to_le_bytes());
         header[4..].copy_from_slice(&all_layers.to_le_bytes());
         m.write(SCENE_LIST+4, &header).ok()?;
-        if m.write(dst, &outputs).is_err() {
+        if m.write(dst, outputs).is_err() {
             m.write(SCENE_LIST+4, &old_header).expect("restore scene list on refusal");
             return None;
         }
     }
-    Some(count)
+    Some((count, hit))
 }
 
 #[cfg(test)]
@@ -195,6 +393,63 @@ mod tests {
         assert_eq!(m.u32(ITEMS+12).unwrap(), 19<<24);
         assert_eq!(m.u32(ITEMS+24+12).unwrap(), (19<<24)|1);
         assert_eq!(m.u16(ITEMS+22).unwrap(), 0xbeef);
+    }
+
+    #[test]
+    fn a_second_frame_reuses_sections_and_reads_live_visibility_and_materials() {
+        let mut m = fixture();
+        let mut cache = SectionCache::default();
+        let mut frame = |m: &mut FlatMemory, generation| {
+            m.set_u32(SCENE_LIST+4, 0).unwrap();
+            m.set_u32(SCENE_LIST+8, 0).unwrap();
+            append_cached(m, SP, 0, &mut cache, generation)
+        };
+        assert_eq!(frame(&mut m, 1), Some((2, false)));
+        let first = m.bytes(ITEMS, 48).unwrap();
+        assert_eq!(frame(&mut m, 1), Some((2, true)));
+        assert_eq!(m.bytes(ITEMS, 48).unwrap(), first);
+        m.set_u32(skip::RENDER_RECORDS, 64).unwrap();
+        m.set_u32(skip::RENDER_RECORDS+20, BSP+0x40).unwrap();
+        assert_eq!(frame(&mut m, 1), Some((2, true)));
+        assert_eq!(m.u32(SCENE_LIST+4).unwrap(), 0);
+        m.set_u32(skip::RENDER_RECORDS, 0).unwrap();
+        m.set_u32(HEADER+0x42, 1<<7).unwrap();
+        assert_eq!(frame(&mut m, 1), Some((2, false)));
+        assert_eq!(m.u32(ITEMS+16).unwrap(), 1<<7);
+        m.set_u16(PARTS, 0).unwrap();
+        assert_eq!(frame(&mut m, 1), Some((2, false)));
+        assert_eq!(m.u32(SCENE_LIST+4).unwrap(), 1);
+        assert_eq!(frame(&mut m, 2), Some((2, false)));
+    }
+
+    #[test]
+    fn watched_sections_follow_alias_writes_and_refreshed_render_views() {
+        use runtime::guest::Permissions;
+        let src = fixture();
+        let mut game = runtime::Guest::new();
+        let len = src.bytes.len() as u32;
+        let alias = src.base + len;
+        game.map(src.base, len, 0, Permissions::RW).unwrap();
+        game.map(alias, len, 0, Permissions::RW).unwrap();
+        game.write_bytes(src.base, &src.bytes, 1).unwrap();
+        let (mut render, _) = game.cow_snapshot();
+        let mut cache = SectionCache::default();
+        let mut frame = |mem: &mut runtime::Guest| {
+            mem.set_u32(SCENE_LIST+4, 0).unwrap();
+            cache.append_guest(mem, SP, 0)
+        };
+        assert_eq!(frame(&mut render), Some((2, false)));
+        assert_eq!(frame(&mut render), Some((2, true)));
+        render.set_u16(PARTS + alias - src.base, 0).unwrap();
+        assert_eq!(frame(&mut render), Some((2, false)));
+        assert_eq!(render.u32(SCENE_LIST+4).unwrap(), 1);
+        // cow_refresh clears dirty pages, but can change the contents of any
+        // watched range while retaining the identical virtual layout.
+        game.set_u32(HEADER+0x42, 1<<7).unwrap();
+        render.cow_refresh(&game);
+        assert_eq!(frame(&mut render), Some((2, false)));
+        assert_eq!(render.u32(SCENE_LIST+4).unwrap(), 2);
+        assert_eq!(render.u32(ITEMS+16).unwrap(), 1<<7);
     }
 
     #[test]

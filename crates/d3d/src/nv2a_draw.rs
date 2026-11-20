@@ -7,6 +7,15 @@ use gfx::translate::Capabilities;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NativeDrawKey(ProgramKey);
 
+/// GPU-independent shader and sampler selection for a resolved material.
+pub struct NativeDrawMaterial {
+    pub key: NativeDrawKey,
+    def: PixelShaderDef,
+    signs: [u8; 4],
+    pub samplers: [SamplerKey; 4],
+    pub writes_depth: bool,
+}
+
 /// GPU-independent shader inputs for one copy of a resolved draw.
 pub struct NativeDrawProgram {
     pub key: NativeDrawKey,
@@ -14,6 +23,15 @@ pub struct NativeDrawProgram {
     pub pixel: PixelUniforms,
     pub samplers: [SamplerKey; 4],
     pub writes_depth: bool,
+}
+
+impl NativeDrawProgram {
+    pub fn resolve(draw: &ResolvedDraw, present: [bool; 4], caps: Capabilities,
+        fetch: FetchMode, scale: u32) -> Result<Self, String> {
+        let material = NativeDrawMaterial::resolve(draw, present, caps, fetch)?;
+        let (vertex, pixel) = material.uniforms(draw, scale);
+        Ok(Self { key: material.key, vertex, pixel, samplers: material.samplers, writes_depth: material.writes_depth })
+    }
 }
 
 /// The linked shader and the dimensions of the stages it really samples.
@@ -34,16 +52,15 @@ impl NativeDrawKey {
     }
 }
 
-impl NativeDrawProgram {
+static TABLE: std::sync::LazyLock<RenderStateTable> = std::sync::LazyLock::new(RenderStateTable::default);
+
+impl NativeDrawMaterial {
     pub fn resolve(
         draw: &ResolvedDraw,
         present: [bool; 4],
         caps: Capabilities,
         fetch: FetchMode,
-        scale: u32,
     ) -> Result<Self, String> {
-        static TABLE: std::sync::LazyLock<RenderStateTable> =
-            std::sync::LazyLock::new(RenderStateTable::default);
         let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
         if (0..4).any(|n| sampled[n] && (!present[n] || draw.texture_info[n].is_none())) {
             return Err("a sampled stage has no resolved texture view".into());
@@ -61,14 +78,17 @@ impl NativeDrawProgram {
         if key.pixel_options.shadow.iter().any(Option::is_some) || draw.glyph_cache != 0 {
             return Err("requires a backend-specific texture path".into());
         }
-        let (vertex, pixel) = uniforms(&TABLE, draw, &key, &def, signs, scale);
         Ok(Self {
             writes_depth: key.pixel_options.w_buffer,
             key: NativeDrawKey(key),
-            vertex,
-            pixel,
+            def,
+            signs,
             samplers: samplers(draw, border, caps),
         })
+    }
+
+    pub fn uniforms(&self, draw: &ResolvedDraw, scale: u32) -> (VertexUniforms, PixelUniforms) {
+        uniforms(&TABLE, draw, &self.key.0, &self.def, self.signs, scale)
     }
 }
 

@@ -165,6 +165,8 @@ pub struct Guest {
     /// For a copy-on-write view ([`Guest::cow_refresh`]): the source's
     /// layout its mappings and page table were last copied under (0: none).
     cow_source_layout: u64,
+    /// RAM replaced without per-page notifications (COW refresh or rollback).
+    watch_revision: u64,
 }
 
 /// Layout identities, unique across every [`Guest`] in the process, so a
@@ -205,7 +207,7 @@ impl Guest {
             watch: Default::default(),
             layout: fresh_layout(),
             trap: None,
-            cow_source_layout: 0,
+            cow_source_layout: 0, watch_revision: 0,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -216,6 +218,30 @@ impl Guest {
     pub(crate) fn layout_id(&self) -> u64 {
         self.layout
     }
+    /// Identity of the virtual layout and revision of unreported RAM replacements.
+    /// Together with a write subscription these validate cached virtual reads.
+    pub fn write_watch_epoch(&self) -> (u64, u64) {
+        (self.layout, self.watch_revision)
+    }
+
+    /// Subscribe to the physical pages backing a previously read virtual range.
+    /// A layout change requires subscribing to its new backing pages.
+    pub fn watch_virtual_read(&mut self, id: crate::WatchId, addr: u32, len: usize)
+        -> Result<(), crate::watch::WatchError> {
+        use crate::watch::{CONTIGUOUS_BASE, WatchError};
+        let mut index = self.checked_start(addr, len, Access::Read, 1)
+            .ok().flatten().ok_or(WatchError::InvalidRange)?;
+        let mut at = u64::from(addr);
+        let end = at + len as u64;
+        while at < end {
+            let range = self.span(index, at, end);
+            self.watch_writes(id, CONTIGUOUS_BASE + range.start as u32, range.len() as u32)?;
+            at += range.len() as u64;
+            index += 1;
+        }
+        Ok(())
+    }
+
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
     }

@@ -2,7 +2,7 @@
 //! programs and pixel shaders ([`crate::object_program`]): per section
 //! its vertex streams expanded once through each declaration a program
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
-//! view immutable vertex and pixel blocks in the submission upload ring,
+//! view changed vertex and pixel constants staged in the submission upload ring,
 //! then one render pass over the game's targets
 //! (docs/graphics/native-renderer.md, "Object programs").
 
@@ -85,11 +85,14 @@ impl LitModelInput {
 }
 
 struct LitBuffer {
+    layout_id: usize,
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     registers: Vec<u8>,
     formats: Vec<Attribute>,
 }
+
+type InheritedState = std::sync::Mutex<Option<(bool, EntryStates, DrawState)>>;
 
 struct LitProgram {
     pass: ObjectPass,
@@ -102,8 +105,21 @@ struct LitProgram {
     /// Its stages' bind group, made once; `None` when a stage samples the
     /// texture accumulation target, whose group is cached by its live view.
     textures: Option<wgpu::BindGroup>,
-    accum_group: Option<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, DrawState), Option<wgpu::RenderPipeline>>,
+    accum_groups: Vec<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, usize, DrawState), Option<wgpu::RenderPipeline>>,
+    bundles: HashMap<BundleKey, (wgpu::RenderBundle, u64)>,
+    uses: u64,
+    inherited: InheritedState,
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct BundleKey {
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::BindGroup,
+    textures: wgpu::BindGroup,
+    offsets: [u32; 2],
+    buffer: usize,
+    indices: Range<u32>,
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -269,10 +285,15 @@ impl LitObjects {
     /// when a program samples the normalization cube and it is not
     /// uploaded (the build refuses such a program without it).
     pub fn add_model(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, index: u32, input: LitModelInput) {
+        let mut layouts = HashMap::new();
         let buffers = input
             .buffers
             .iter()
             .map(|b| LitBuffer {
+                layout_id: {
+                    let next = layouts.len();
+                    *layouts.entry((b.registers.clone(), b.formats.clone())).or_insert(next)
+                },
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("native object program vertices"),
                     contents: bytemuck::cast_slice(&b.vertices),
@@ -362,7 +383,7 @@ impl LitObjects {
         });
         Some(LitProgram {
             pass, module, layout, textures_layout, views, samplers, textures,
-            accum_group: None, pipelines: HashMap::new(),
+            accum_groups: Vec::new(), pipelines: HashMap::new(), bundles: HashMap::new(), uses: 0, inherited: Default::default(),
         })
     }
 
@@ -393,7 +414,7 @@ impl LitObjects {
     ) -> Result<PlannedDraw, String> {
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
         let part = m.part_index.get(&(key.section, key.part)).copied();
-        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry, scene)
+        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| (&p.pass, Some(&p.inherited))), frame, key, rows, entry, scene)
     }
 
     pub fn planned_pass(&self, index: u32, draw: &PlannedDraw) -> Option<&ObjectPass> {
@@ -544,10 +565,9 @@ impl LitObjects {
         for (planned, _) in &issued {
             let (model, d) = (planned.0, &planned.1);
             let m = self.models.get_mut(&model).expect("checked in issued");
-            let registers = m.buffers[d.buffer].registers.clone();
-            let formats = m.buffers[d.buffer].formats.clone();
+            let b = &m.buffers[d.buffer];
             let p = &mut m.programs[d.program];
-            let key = (color_format, depth_format, registers.clone(), formats.clone(), d.state);
+            let key = (color_format, depth_format, b.layout_id, d.state);
             if p.pipelines.contains_key(&key) {
                 continue;
             }
@@ -559,7 +579,7 @@ impl LitObjects {
                 Some(depth_format),
                 wgpu::PrimitiveTopology::TriangleList,
             )?.stencil;
-            let attrs = attributes(&registers, &formats);
+            let attrs = attributes(&b.registers, &b.formats);
             let pipeline = gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
                 layout: Some(&p.layout),
@@ -568,7 +588,7 @@ impl LitObjects {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[Some(wgpu::VertexBufferLayout {
-                        array_stride: (SLOT * registers.len()) as u64,
+                        array_stride: (SLOT * b.registers.len()) as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &attrs,
                     })],
@@ -598,7 +618,7 @@ impl LitObjects {
             }));
             p.pipelines.insert(key, pipeline);
         }
-        let uniforms = uploads.uniform_run(
+        let uniforms = uploads.resident_uniform_run(
             device, queue, &self.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE],
             issued.len(), |i, v, p| {
                 let (_, (vertex, pixel)) = &issued[i];
@@ -615,21 +635,38 @@ impl LitObjects {
                 return None;
             }
             let p = &mut m.programs[d.program];
-            let pipeline = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state))?.as_ref()?;
+            let pipeline = p.pipelines.get(&(color_format, depth_format, b.layout_id, d.state))?.as_ref()?;
             let textures = match &p.textures {
                 Some(textures) => textures,
                 None => {
                     let accum = texaccum.as_ref()?;
-                    if p.accum_group.as_ref().is_none_or(|(view, _)| view != accum.view) {
+                    let slot = if let Some(i) = p.accum_groups.iter().position(|(view, _)| view == accum.view) {
+                        i
+                    } else {
                         let extra: Vec<_> = (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, accum.view)).collect();
                         let group = gfx::program::validated_resource(device, || {
                             texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers)
                         });
-                        p.accum_group = Some((accum.view.clone(), group));
-                    }
-                    p.accum_group.as_ref()?.1.as_ref()?
+                        // Keep both target copies hot. A resized target evicts the oldest view.
+                        if p.accum_groups.len() == 2 { p.accum_groups.remove(0); }
+                        p.accum_groups.push((accum.view.clone(), group));
+                        p.accum_groups.len() - 1
+                    };
+                    p.accum_groups[slot].1.as_ref()?
                 }
             };
+            let offsets = uniforms.offsets(i);
+            let key = BundleKey { pipeline: pipeline.clone(), uniforms: uniforms.group.clone(),
+                textures: textures.clone(), offsets, buffer: d.buffer, indices: d.indices.clone() };
+            let blend = p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant);
+            p.uses += 1;
+            if let Some((bundle, used)) = p.bundles.get_mut(&key) {
+                *used = p.uses;
+                gfx::churn::native_cache(true);
+                groups.push((blend, bundle.clone()));
+                continue;
+            }
+            gfx::churn::native_cache(false);
             let mut bundle = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
                 label: Some("native object geometry"),
                 color_formats: &[Some(color_format)],
@@ -639,13 +676,21 @@ impl LitObjects {
                 sample_count: 1, multiview: None,
             });
             bundle.set_pipeline(pipeline);
-            bundle.set_bind_group(0, &uniforms.group, &uniforms.offsets(i));
+            bundle.set_bind_group(0, &uniforms.group, &offsets);
             bundle.set_bind_group(1, textures, &[]);
             bundle.set_vertex_buffer(0, b.vertices.slice(..));
             bundle.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
             bundle.draw_indexed(d.indices.clone(), 0, 0..1);
-            let blend = p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant);
-            groups.push((blend, bundle.finish(&Default::default())));
+            let bundle = bundle.finish(&Default::default());
+            // Keys hold pooled buffers and views. Retire cold bindings without
+            // throwing away every hot part at once.
+            const MAX_BUNDLES: usize = 256;
+            if p.bundles.len() >= MAX_BUNDLES {
+                let oldest = p.uses.saturating_sub(MAX_BUNDLES as u64 / 2);
+                p.bundles.retain(|_, (_, used)| *used > oldest);
+            }
+            p.bundles.insert(key, (bundle.clone(), p.uses));
+            groups.push((blend, bundle));
         }
         Some(d3d::backend::ExternalBundles {
             run, scissor: [0, 0, target_size.0, target_size.1], ranges: groups.len(), groups,
@@ -666,7 +711,7 @@ pub fn plan_part<'a>(
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
     let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
-    plan_indexed_part(parts, part, pass_of, frame, key, rows, entry, false)
+    plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), frame, key, rows, entry, false)
 }
 
 fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
@@ -678,7 +723,8 @@ fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
 }
 
 fn plan_indexed_part<'a>(
-    parts: &[LitPart], part: Option<usize>, pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    parts: &[LitPart], part: Option<usize>,
+    pass_of: &dyn Fn(usize) -> Option<(&'a ObjectPass, Option<&'a InheritedState>)>,
     frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates, scene: bool,
 ) -> Result<PlannedDraw, String> {
     let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
@@ -692,14 +738,22 @@ fn plan_indexed_part<'a>(
         .copied()
         .flatten()
         .ok_or_else(|| format!("the part has no implementation {}", key.implementation))?;
-    let pass = pass_of(program).ok_or("its program is missing")?;
+    let (pass, inherited) = pass_of(program).ok_or("its program is missing")?;
     let defaults = frame.defaults.ok_or("the inputs' defaults do not read")?;
     let inputs = ObjectInputs { lighting: frame.lighting.as_ref(), defaults: &defaults, shader: p.shader };
     let vertex = object_vertex_uniforms(&pass.program.vertex, &pass.implementation, &inputs, rows, p.decompression)?;
     let pixel = object_pixel_uniforms(&pass.program.pixel, &pass.implementation, &inputs)?;
     let compiled = pass.program.state.as_ref().ok_or("its pass has no state")?.alpha_test;
     let resolve = if scene { object_state::resolve_scene } else { object_state::resolve };
-    let state = resolve(&pass.implementation.render_states, entry, compiled)?;
+    let mut cached = inherited.map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
+    let state = if let Some((_, _, state)) = cached.as_deref().and_then(Option::as_ref)
+        .filter(|(was_scene, previous, _)| *was_scene == scene && previous == entry) {
+        *state
+    } else {
+        let state = resolve(&pass.implementation.render_states, entry, compiled)?;
+        if let Some(slot) = cached.as_deref_mut() { *slot = Some((scene, entry.clone(), state)); }
+        state
+    };
     Ok(PlannedDraw {
         part,
         implementation: key.implementation,
@@ -1341,6 +1395,44 @@ mod tests {
         assert!(refused(key(4, 2, 0)).contains("not a native part"));
         assert!(refused(key(5, 0, 0)).contains("not a native part"));
         assert!(refused(ItemKey { shader: 0xe000_0010, ..key(4, 0, 0) }).contains("shader"));
+    }
+
+    #[test]
+    fn object_bundles_survive_a_new_swap_and_pose() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let mut objects = LitObjects::new(&ctx.device);
+        let pass = equal_pass(0);
+        let registers: Vec<_> = (0u8..16).filter(|i| pass.program.inputs & (1u16 << i) != 0).collect();
+        let buffer = LitBufferInput {
+            vertices: vec![[0; SLOT]; 3 * registers.len()],
+            formats: vec![Attribute::Float(4); registers.len()],
+            registers, indices: vec![0, 1, 2],
+        };
+        objects.add_model(&ctx.device, &ctx.queue, 7, LitModelInput {
+            programs: vec![LitProgramInput { pass, images: Default::default() }],
+            buffers: vec![buffer],
+            parts: vec![part(0, 0, [Some((0, 0)), None, None, None, None])],
+        });
+        let pool = gfx::ring::UploadPool::default();
+        let view = ViewInputs { constants: Default::default(), guest_size: (16, 16), size: (16, 16),
+            z_scale: 1.0, w_clip: None };
+        let mut record = |swap, translate| {
+            let arena = pool.begin();
+            let rows = [[translate; 4]; 3];
+            let draw = objects.plan(7, &frame(), &key(0, 0, 0), &rows, &entry()).unwrap();
+            let packet = objects.bundles(&ctx.device, &ctx.queue, &arena, wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Depth24PlusStencil8, view.size, &view, &[(7, draw)], None, swap).unwrap();
+            arena.flush(&ctx.queue);
+            ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            packet.groups.into_iter().next().unwrap().1
+        };
+        let first = record(1, 0.5);
+        let before = gfx::churn::snapshot();
+        assert_eq!(first, record(2, 0.5));
+        assert_eq!((gfx::churn::snapshot() - before).queue_writes, 0);
+        assert_eq!(first, record(3, 1.5));
+        let total = gfx::churn::snapshot() - before;
+        assert_eq!((total.buffers_created, total.queue_writes), (0, 1));
     }
 
     #[test]

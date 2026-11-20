@@ -196,6 +196,23 @@ struct SubmissionStorage {
 struct SubmissionRing {
     upload: UploadRing,
     uniform_groups: Vec<UniformGroup>,
+    // Slots are exclusive to this submission until its completion callback.
+    // Replaying a different draw order is safe: compare the actual bytes.
+    resident: Vec<ResidentRun>,
+    next_run: usize,
+    patches: Option<wgpu::CommandEncoder>,
+    // Repeated view rows can feed multiple destinations from one staged span.
+    patch_sources: std::collections::HashMap<(usize, usize), (u64, u64)>,
+    scratch: Vec<u8>,
+}
+
+struct ResidentRun {
+    buffer: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    layout: wgpu::BindGroupLayout,
+    sizes: [usize; 2],
+    // Last contents including alignment padding. None after a cancelled upload.
+    shadow: Option<Vec<u8>>,
 }
 
 struct UniformGroup {
@@ -222,6 +239,18 @@ impl Drop for SubmissionStorage {
     fn drop(&mut self) {
         let Some(mut ring) = self.ring.get_mut().unwrap_or_else(|e| e.into_inner()).take() else { return };
         // A cancelled preparation can still have unflushed CPU bytes.
+        if ring.patches.take().is_some() {
+            // The patch encoder never reached the queue. Its CPU shadows
+            // describe speculative contents, so refill these slots on reuse.
+            for slot in &mut ring.resident[..ring.next_run] {
+                slot.shadow = None;
+            }
+        }
+        // Keep spare slots for a subsequent view with more visible draws.
+        // They hold uniforms and layouts, never references to map textures.
+        ring.resident.truncate(ring.next_run.saturating_add(64));
+        ring.patch_sources.clear();
+        ring.next_run = 0;
         ring.upload.staged.clear();
         ring.upload.reset();
         self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).push(ring);
@@ -244,6 +273,7 @@ impl SubmissionUploads {
                         | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
                     256 << 10),
                 uniform_groups: Vec::new(),
+                resident: Vec::new(), next_run: 0, patches: None, patch_sources: Default::default(), scratch: Vec::new(),
             })
         });
         let before = ring.upload.generation();
@@ -319,12 +349,108 @@ impl SubmissionUploads {
         })
     }
 
-    /// Enqueue the staged bytes ahead of the commands that consume these regions.
+    /// Reuse uniform storage across completed submissions. In a steady scene
+    /// only changed constant rows (view, skinning, fog, etc.) cross the bus.
+    /// Draws within a submission get distinct slots, including split views.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resident_uniform_run(
+        &self, device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout,
+        sizes: [usize; 2], count: usize, mut fill: impl FnMut(usize, &mut [u8], &mut [u8]),
+    ) -> Option<UniformRun> {
+        let limits = device.limits();
+        if count == 0 || sizes.iter().any(|&n| n == 0 || n as u64 > limits.max_uniform_buffer_binding_size) {
+            return None;
+        }
+        let align = limits.min_uniform_buffer_offset_alignment.max(4) as usize;
+        let pixel = sizes[0].checked_next_multiple_of(align)?;
+        let stride = pixel.checked_add(sizes[1])?.checked_next_multiple_of(align)?;
+        let len = count.checked_mul(stride)?;
+        if len as u64 > limits.max_buffer_size || len > u32::MAX as usize { return None; }
+        self.with_ring(device, |ring| {
+            let index = ring.next_run;
+            if ring.resident.get(index).is_none_or(|s| {
+                &s.layout != layout || s.sizes != sizes || s.buffer.size() < len as u64
+            }) {
+                let buffer = crate::churn::create_buffer(device, &wgpu::BufferDescriptor {
+                    label: Some("resident native constants"), size: len as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let entry = |binding: u32| wgpu::BindGroupEntry {
+                    binding, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(sizes[binding as usize] as u64),
+                    }),
+                };
+                let group = crate::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
+                    label: Some("resident native uniforms"), layout, entries: &[entry(0), entry(1)],
+                });
+                let slot = ResidentRun { buffer, group, layout: layout.clone(), sizes, shadow: None };
+                if index == ring.resident.len() { ring.resident.push(slot); } else { ring.resident[index] = slot; }
+            }
+            ring.next_run += 1;
+            let slot = &mut ring.resident[index];
+            ring.scratch.resize(len, 0);
+            for (i, pair) in ring.scratch.chunks_exact_mut(stride).enumerate() {
+                let (v, p) = pair.split_at_mut(pixel);
+                v[sizes[0]..].fill(0);
+                p[sizes[1]..].fill(0);
+                fill(i, &mut v[..sizes[0]], &mut p[..sizes[1]]);
+            }
+            let bytes = &ring.scratch;
+            let old = slot.shadow.as_deref().unwrap_or(&[]);
+            changed_rows(old, bytes, |start, changed| {
+                let key = (start % stride, changed.len());
+                let cached = ring.patch_sources.get(&key).and_then(|&(generation, at)| {
+                    if generation != ring.upload.generation() { return None; }
+                    let i = usize::try_from(at.checked_sub(ring.upload.staged_at)?).ok()?;
+                    (ring.upload.staged.get(i..i.checked_add(changed.len())?)? == changed).then_some(at)
+                });
+                let (src, at) = if let Some(at) = cached {
+                    (ring.upload.buffer().clone(), at)
+                } else {
+                    crate::churn::upload_bytes(changed.len());
+                    let range = ring.upload.push(device, queue, changed, 4);
+                    ring.patch_sources.insert(key, (ring.upload.generation(), range.1));
+                    range
+                };
+                let encoder = ring.patches.get_or_insert_with(|| device.create_command_encoder(&Default::default()));
+                encoder.copy_buffer_to_buffer(&src, at, &slot.buffer, start as u64, changed.len() as u64);
+            });
+            let shadow = slot.shadow.get_or_insert_with(Vec::new);
+            std::mem::swap(shadow, &mut ring.scratch);
+            Some(UniformRun { group: slot.group.clone(), first: [0, pixel as u32], stride: stride as u32 })
+        })
+    }
+
+    /// Flush the shared staging write. Submit the returned copies ahead of
+    /// the first command buffer that binds the resident uniform buffers.
+    pub fn upload_commands(&self, queue: &wgpu::Queue) -> Option<wgpu::CommandBuffer> {
+        let mut guard = self.0.ring.lock().unwrap_or_else(|e| e.into_inner());
+        let ring = guard.as_mut()?;
+        ring.upload.flush(queue);
+        ring.patch_sources.clear();
+        ring.patches.take().map(wgpu::CommandEncoder::finish)
+    }
+
     pub fn flush(&self, queue: &wgpu::Queue) {
-        if let Some(ring) = self.0.ring.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { ring.upload.flush(queue); }
+        if let Some(copies) = self.upload_commands(queue) { queue.submit([copies]); }
     }
 
     pub fn same_submission(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.0, &other.0) }
+}
+
+/// Coalesce consecutive changed vec4 rows. Compare bytes to preserve NaNs and
+/// signed zero. All native uniform bindings and copy ranges are word aligned.
+fn changed_rows(old: &[u8], new: &[u8], mut copy: impl FnMut(usize, &[u8])) {
+    if old == new { return; }
+    if old.len() != new.len() { copy(0, new); return; }
+    let mut first = None;
+    for (i, (a, b)) in old.chunks(16).zip(new.chunks(16)).enumerate() {
+        let at = i * 16;
+        if a != b { first.get_or_insert(at); }
+        else if let Some(start) = first.take() { copy(start, &new[start..at]); }
+    }
+    if let Some(start) = first { copy(start, &new[start..]); }
 }
 
 /// Writes made immediately before a native draw. Only the source allocation is
@@ -358,6 +484,39 @@ impl EncoderUploads<'_> {
 mod tests {
     use super::*;
     use crate::{GfxContext, program::ProgramBindings};
+
+    #[test]
+    fn resident_constant_patches_are_batched_and_cancelled_slots_refill() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let pool = UploadPool::default();
+        let program = ProgramBindings::new(&ctx.device);
+        let allocate = |arena: &SubmissionUploads, tag| {
+            arena.resident_uniform_run(&ctx.device, &ctx.queue, program.uniform_layout(), [64, 32],
+                1, |_, v, p| { v.fill(0); v[32..48].fill(tag); p.fill(9); }).unwrap().group
+        };
+        let first = pool.begin();
+        let a = allocate(&first, 1);
+        let b = allocate(&first, 2);
+        assert_ne!(a, b);
+        first.flush(&ctx.queue);
+        ctx.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        drop(first);
+
+        let second = pool.begin();
+        assert_eq!(a, allocate(&second, 1));
+        assert_eq!(b, allocate(&second, 3));
+        second.with_ring(&ctx.device, |r| {
+            assert_eq!(r.upload.staged, [3; 16]);
+        });
+        drop(second); // The patch for slot b never reached the GPU.
+        let retry = pool.begin();
+        allocate(&retry, 1);
+        allocate(&retry, 3);
+        retry.with_ring(&ctx.device, |r| assert!(r.upload.staged.len() > 16));
+        let before = crate::churn::snapshot();
+        retry.flush(&ctx.queue);
+        assert_eq!((crate::churn::snapshot() - before).queue_writes, 1);
+    }
 
     #[test]
     fn uniform_runs_keep_distinct_bytes_and_rebind_when_the_backing_or_layout_changes() {
