@@ -263,13 +263,17 @@ pub struct LateInputs<'a> {
     pub data_root: &'a Path,
 }
 
-/// The pipelined render as the plan gets it: off for a lockstep run, which
-/// compares serial runs.
+/// Light hosts replace the frame entry with the skip implementation.
+/// Full headless simulations keep the entry and can opt in for hash comparisons.
 pub fn pipeline_for(
-    pipeline: feature::pipeline_render::PipelineRender, lockstep_on: bool,
+    pipeline: feature::pipeline_render::PipelineRender,
+    lockstep_on: bool,
+    host_light: bool,
 ) -> feature::pipeline_render::PipelineRender {
     if lockstep_on {
         pipeline.disabled("lockstep (H2_LOCKSTEP/H2_INPUT_RECORD/H2_INPUT_REPLAY) compares serial runs")
+    } else if host_light {
+        pipeline.disabled("the world render is skipped (sim-frame)")
     } else {
         pipeline
     }

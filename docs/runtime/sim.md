@@ -158,7 +158,7 @@ process (boot and load included).
 What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
 `crates/feature/src/sim_frame.rs`):
 
-1. **The render front-end is skipped** in world frames: the `sim-frame`
+1. **The light host can skip the render front-end** in world frames. The `sim-frame`
    feature implements `RENDER_FRAME` (`0x00223240`). At each entry it
    decides as the prototype does (the world path, the countdowns,
    `render_every`). Not skipping: the generated original. Skipping: the
@@ -167,13 +167,15 @@ What it changes (**Code**, `crates/boot/src/sim_glue.rs`,
    bots' pads before it, their views back after it) run as they would
    around the original. The host's present count (`d3d_diag::presents`,
    which `H2_BOOT_STOP_AT_PRESENT`, the input script and the agent stamp
-   count) moves on by one per skipped frame.
+   count) moves on by one per skipped frame. Full headless runs
+   (`-host-light`) keep the render entry and can explicitly enable the
+   [render worker for hash comparisons](../graphics/pipelined-render.md#tick-ordering-and-hash-parity).
 2. **No GPU and no window.** `Host::gfx` stays `None`; `H2_BOOT_GFX` is
    refused. The D3D layer stays installed over a `RecordingBackend`, so
    the game's own D3D calls outside the render (device creation, the
    loading screen, the sim's few calls) are answered as before.
 3. **No audio output**: the logical mixer into a `NullSink`, as headless
-   already is. The pipelined render is off (it implements the same point).
+   already is.
 4. **No keyboard pad.** The host's input manager has no keyboard, so all
    four ports are free for bots: a sim match can be four bots and no
    human.

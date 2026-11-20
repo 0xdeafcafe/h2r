@@ -46,6 +46,33 @@ tick would ideally move the CPU limit from 42–51 ms to 28–37 ms, or about
 20–24 fps to 27–36 fps. This assumes the GPU and frame cap can keep up and
 excludes snapshot and merge cost. The guarded prototype retains the tick join.
 
+## Tick ordering and hash parity
+
+The guest writes required by tick N+1 must be published before that tick.
+A buffer handed back before tick N+2 only works for state that N+1 can ignore.
+The following boundaries describe the required split. The current worker still
+joins before the tick.
+
+| State | Evidence and boundary |
+|---|---|
+| Particle system, emitter, particle location and effect location | Render update `0x00174420` sets or clears the visibility bit in the system's flags and stamps the location with the current render frame. The effect and particle tick paths read and update those records. The tick-visible update belongs in a serial pass at the render-entry boundary, before the snapshot. It needs the same per-view visits, including culling and creation/deletion order. A draw-only worker can keep its own temporary particle data. |
+| Animation cache | `animation_resource_get` writes the use stamp at `0x0012387a`. Each slot is 24 bytes and the stamp is at `+0x14`. `animation_resource_request` reads that same field at `0x0012378c` and uses it for its age decision. On a miss the get can evict (`0x001234a0`), allocate a handle, and start a read (`0x001235b0`). A pending get can wait for completion (`0x001237a0`). Completed animation payloads can be read from the COW view. Residency, eviction, I/O and use-stamp updates need one writer before the tick reads them. Recomputing the payload alone leaves these effects out. |
+| Random streams | The render path at `0x00027be0` and the tick's emitter initialisation at `0x002491c4` both advance the effects word at `[0x004e7408] + 4`. The serial boundary pass needs to reserve the draws in guest order and pass the results to the renderer. The ordinary gameplay digest hashes the first word of the RNG record. Replaying a step after a digest has been captured cannot repair that digest if a hashed word or a hashed output used the old value. |
+| Texture/geometry caches and async I/O | The census also lists tick reads of render-side cache bookkeeping. The existing I/O replay orders the host calls at join time. A single owner must publish request and residency decisions at the serial boundary before the tick can use them. |
+| Timing, view state and object/light bookkeeping | Frame wait already runs before launch. Predicted counters need to match what that frame will do. The census's false-sharing fields can stay in the worker view and merge where the tick does not use them. The game-time bracket and director/view dependencies still need an audit before removing the join. |
+
+The synthetic boot hash tests use the production `state_hashes_v1` gameplay
+digest. They model stale particle and cache reads separately and show why a
+late RNG replay can leave a different tick digest even when the final seed
+matches. They do not measure gameplay parity.
+
+Full headless sim runs can exercise this worker while collecting
+`state_hashes_v1`. Use `-host-light` in both arms and set
+`impl.render.pipelined_frame=off` or `=on` explicitly. Keep the image,
+scenario, seeds, inputs and tick limit matched. Compare the complete tick
+series. This exercises guest rendering and the headless D3D path. The GPU
+performance comparison is a separate run.
+
 ## What it would buy
 
 From docs/perf/gameplay-budget.md, "Render front-end versus simulation"
@@ -646,7 +673,7 @@ the record the instruction addresses.
 | `0x0003dfb1` (in `0x0003ddd0`) → `0x000bc50d` (`0x000bc470`, object update), `0x001a588b`, `0x001511f0` | 25 / 29 / 13 lines over about 3000 frames | **Object render-state handle.** `0x0003ddd0` stores a cached render-state handle at object `+0xcc` and stamps it with the render frame counter `0x004ba034`. The sim readers load `+0x68`, `+0x0c` and `+0xaa`, never `+0xcc`; object records are not 64-byte aligned, so these are other fields, often of a neighbouring object, in the same line. | (a), false sharing | Render-owned field. Merge `game_state` pages byte by byte; the render's `+0xcc` write never meets a sim write. |
 | `0x000c132e` (in `0x000c12d0`, from `0x000c15a0` ← `0x0002ba10` under `render_views`) → `0x000c3238` (`0x000c3220`), `0x000c0ca7` (`0x000c0c80`, light update from the tick through `0x000c1400`) | 12 / 7 lines, every frame | **Lights.** The render writes per-light render fields at `+0xf8..+0x108` of the 0x110-byte light record (`0x000c12d0` is the only function that touches them). The tick's light update reads `+0x02` and `+0x4c`. With a 0x110 stride, `+0x100` of one light shares a line with `+0x02`/`+0x4c` of the next. | (a), false sharing | Byte-level merge of `datum:lights`. The fields are render-only. |
 | `0x001747aa`, `0x00174837` (in `0x00174420`, from `0x00174220`/`0x00176cb0` ← the object and effect draw paths `0x0003fdf0`/`0x00040e90`) → `0x00179128` (`0x00179020` ← `0x001792b0` ← `0x00176e40`, the effect update in the tick), `0x0017531c` (`0x00175270`), `0x00248756` (`0x00248750`; both under `0x00174a30`) | 35 lines over 1820 frames, 14, and 64 over 1579 | **Particle systems.** The render pass updates particle systems as it draws them: `0x00174420` clears a flag bit at `+0x0d` and rewrites `+0x10`, `+0x30` and `+0x44` in `datum:particle_system`, `particle_emitter`, `particle_location` and `effect location`. The sim's effect and particle updates read and write the same fields (`+0x0c`, `+0x10`, `+0x30`, `+0x44`). This is real two-writer state, not false sharing. | (c), cosmetic | Make the four particle datums render-owned. The sim's particle-side updates (`0x00174a30` and `0x00179020`'s particle work) run on the render thread at the launch, against the sim's committed state, and effect creation and deletion reach them through a queue. Particles do not feed gameplay, so the order change is visible only as a one-frame shift in particle motion. Until that exists, a pipelined frame has to skip these datums in the merge and accept conflicts, which is not correct. |
-| `0x0012387a` (in `0x001237e0`, `animation_resource_get`) → `0x0012377e` (`0x001236f0`, `animation_resource_request`, from the animation code in the tick) | 25 lines over 2835 frames | **Animation cache.** The render's get updates the cache entry's use stamp (`+0x14` + 8 × index) in the cache records at `0x7ff60000`; the tick's request reads the header at `+0x64` in the same lines. When the data is not resident, the get loads it and waits (`0x001237a0`, a `SwitchToThread` loop). | (c) | Same as the texture and geometry caches (step 3.5 of the first plan): cache bookkeeping is written only on the game thread, the render's stamp updates and requests are queued and replayed at the join. |
+| `0x0012387a` (in `0x001237e0`, `animation_resource_get`) → `0x0012377e` (`0x001236f0`, `animation_resource_request`, from the animation code in the tick) | 25 lines over 2835 frames | **Animation cache.** The render's get updates the cache entry's use stamp (`+0x14` + 24 × index) in the cache records at `0x7ff60000`. The tick's request loads the entry-array header through `+0x64` and reads the same use stamp at `0x0012378c`. When the data is not resident, the get loads it and waits (`0x001237a0`, a `SwitchToThread` loop). | (c) | Same as the texture and geometry caches (step 3.5 of the first plan): cache bookkeeping is written only on the game thread, the render's stamp updates and requests are queued and replayed at the join. |
 | host, `other` (3 lines); `0x002df76e` → host | small | **Per-thread kernel scratch.** The pages at the top of the thread stacks (`0xa1005000`, `0xa1048000`, `0xa1049000`) and `0xa1001000`, which the host's kernel code writes for the calling thread. | (a) | The render thread gets its own (the second `ExecCtx` already needs its own stack and TLS). |
 
 Smaller lines (each under 10 lines a frame): the cached object

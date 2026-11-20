@@ -122,6 +122,7 @@ pub(crate) fn registry(case: &Case) -> feature::Registry {
     let pipeline = super::pipeline_for(
         feature::pipeline_render::PipelineRender::with(true, feature::pipeline_render::Addrs::HALO2),
         lockstep.enabled(),
+        false,
     );
     register_late(
         &mut features,
@@ -162,6 +163,39 @@ fn plan(case: &Case) -> Result<feature::Plan, String> {
 fn assert_builds(case: &Case) {
     if let Err(e) = plan(case) {
         panic!("{e}");
+    }
+}
+
+#[test]
+fn full_profile_allows_explicit_pipelining_for_tick_hashes() {
+    use feature::pipeline_render::{Addrs, PipelineRender, SWITCH};
+
+    for (switches, lockstep, light, expected) in [
+        ("", false, false, false),
+        ("impl.render.native=on", false, false, false),
+        (SWITCH, false, false, true),
+        (
+            "impl.render.native=on,impl.render.pipelined_frame=on",
+            false,
+            false,
+            true,
+        ),
+        (SWITCH, false, true, false),
+        (SWITCH, true, false, false),
+    ] {
+        let mut features = feature::Registry::new(feature::Switches::parse(switches).unwrap());
+        let pipeline = super::pipeline_for(
+            PipelineRender::with(false, Addrs::HALO2),
+            lockstep,
+            light,
+        );
+        features.add(&pipeline).unwrap();
+        let plan = features.build(&feature::Base).unwrap();
+        assert_eq!(
+            plan.chains.contains_key(&feature::points::RENDER_FRAME.base),
+            expected,
+            "{switches}, lockstep={lockstep}, light={light}"
+        );
     }
 }
 

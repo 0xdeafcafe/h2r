@@ -11,10 +11,11 @@
 //! - **The bots** are the match file's, each a [`bots::Brain`] with its
 //!   skill, its seed (from the match seed and its logical seat) and its tuning, in a
 //!   [`Metered`] wrapper that counts what only the brain knows.
-//! - **The render front-end** is skipped in world frames
-//!   ([`feature::sim_frame`]); the pipelined render is off, the kernel
-//!   trace file is off, and the nav meshes are never built in the
-//!   background (`bots_nav_auto`).
+//! - **The render front-end** is skipped in world frames on the light
+//!   host ([`feature::sim_frame`]). Full headless runs can opt into the
+//!   render worker and collect the same tick hashes. The kernel trace
+//!   file is off and nav meshes are never built in the background
+//!   (`bots_nav_auto`).
 //! - **The pace** is the match's ([`sim::clock::Pace`]); unpaced by default.
 //! - **The metrics** come from read-only observers ([`SimMetrics`]): each
 //!   tick's player snapshot, the shots, the damage reports, the kills and
