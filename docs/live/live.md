@@ -1544,10 +1544,9 @@ that our screen's event hook sees the direction kinds before the list does, that
 list's row text runs every frame (so a finished check shows without a
 press), and what the game shows for `INVALID_USER` after a cancel.
 
-Switches: `H2_SIGNIN_PROMPT=0` leaves the screen out (a waiting sign-in is
-cancelled at once, with a line pointing at `--signin-terminal`);
-`H2_SIGNIN_TEXT_RECT=top,left,bottom,right` moves the description;
-`features.signin-code=off` turns the class off (the sign-in is cancelled).
+Switches: `features.signin-code=off` turns the class off (a waiting
+sign-in is cancelled at once; `h2 play --signin-terminal` asks on the
+terminal instead).
 Every step logs a `live:` or `signin prompt:` line on stderr.
 
 The app builds (iOS, tvOS) run the same HLE and boot glue, so an entry
@@ -1668,8 +1667,7 @@ made on that server's web dashboard and none on this machine):
    `signin prompt: opening for controller 0 (window kind 5)`.
 3. The prompt is drawn over the signing-in step, titled "Xbox Live
    sign-in", the row reading "Sign in as <tag>", the description the code
-   page. If the description is off-screen, move it with
-   `H2_SIGNIN_TEXT_RECT`.
+   page. If the description is off-screen, say where it is drawn.
 4. D-pad: each press logs `signin prompt: event K, button N (Some(Up))`
    and so on (K 1 to 4), and the digits change.
 
