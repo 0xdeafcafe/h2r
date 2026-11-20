@@ -334,3 +334,102 @@ fn one_x_e3_wrapper_records_once_and_resumes_the_menu_with_a_live_view() {
     );
     assert_eq!(backend.view().last_presented(), Some(shown));
 }
+
+#[test]
+fn four_x_partial_shadow_write_preserves_depth_and_stencil_across_both_owners() {
+    let _guard = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    if !ctx.caps.depth32_stencil8 {
+        return;
+    }
+    let mut backend = scaled(&ctx, 4, true);
+    backend.set_lighting(Lighting::E3);
+    let colour = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let side = 8;
+    let small = backend.create_texture_target(FORMAT, side, side).unwrap();
+    let shadow = backend.create_surface(DEPTH, side, side, true).unwrap();
+    backend
+        .clear(
+            small,
+            Some(shadow),
+            Clear {
+                color: None,
+                depth: Some(1.),
+                stencil: Some(0x2a),
+            },
+        )
+        .unwrap();
+    assert!(!backend.shadow_copies().is_empty());
+    let rect = |x, y, stencil| d3d::RectClear {
+        rects: vec![d3d::PixelRect {
+            x,
+            y,
+            width: 1,
+            height: 1,
+        }],
+        color: None,
+        depth: Some(0.),
+        stencil: Some(stencil),
+    };
+    let mut frame = replay();
+    frame.aux.extend([
+        AuxTarget {
+            width: side,
+            height: side,
+            ..frame.colour.unwrap()
+        },
+        AuxTarget {
+            width: side,
+            height: side,
+            ..frame.depth.unwrap()
+        },
+    ]);
+    let targets = HashMap::from([
+        (MAIN, colour),
+        (Z, depth),
+        (TargetRef::Aux(0), small),
+        (TargetRef::Aux(1), shadow),
+    ]);
+    op(&mut frame, Slot::Opaque, clear());
+    op(
+        &mut frame,
+        Slot::AfterOpaque,
+        ReplayOp::ClearRects {
+            colour: TargetRef::Aux(0),
+            depth: TargetRef::Aux(1),
+            clear: rect(0, 0, 0x61),
+        },
+    );
+    assert!(backend.can_draw_scene(&frame, &targets));
+    draw_scaled_display_on(&mut backend, &sealed(), &frame, None, &targets).unwrap();
+
+    // The legacy view reopens its scaled shadow and clears another texel.
+    backend
+        .clear_rects(small, Some(shadow), &rect(1, 0, 0x42))
+        .unwrap();
+    let z = backend
+        .read_depth(
+            shadow,
+            DEPTH,
+            side,
+            side,
+            GuestLayoutKind::Linear { pitch: side * 4 },
+        )
+        .unwrap()
+        .unwrap();
+    let word = |i: usize| u32::from_le_bytes(z[i * 4..i * 4 + 4].try_into().unwrap());
+    assert_eq!(
+        word(0),
+        0x61,
+        "canonical depth/stencil survived the handoff"
+    );
+    assert_eq!(word(1), 0x42, "the later legacy clear is visible");
+    assert_eq!(
+        word(2),
+        0xffff_ff2a,
+        "the original offscreen depth survives both partial writes"
+    );
+}
