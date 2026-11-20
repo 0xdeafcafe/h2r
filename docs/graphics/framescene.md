@@ -1221,9 +1221,14 @@ records which game frames the native graph actually presents.
   flare query results under the tickets already held by the guest. An
   early guest access that needs buffered work runs those commands in
   order. Menus and declined game frames continue on the same device.
-- **Scheduling and probes.** `frame_scene::mailbox` keeps the newest
-  pending scene in paced mode and blocks at two waiting scenes in
-  locked mode. Capture requests can pin a scene across two draws and
+- **Scheduling and probes.** For private drawing, `frame_scene::mailbox`
+  keeps the newest pending scene in paced mode and blocks at two waiting
+  scenes in locked mode. The display worker accepts two waiting transactions
+  in either mode. An adopted frame releases one slot before recording. A
+  declined frame releases its slot after its original Swap. Both execute
+  in order because later guest commands can reuse their surfaces, sampled
+  textures and flare tickets. The window takes the newest finished picture
+  from its triple buffer. Capture requests can pin a scene across two draws and
   wake the renderer during pause. `render.frame` identifies the path
   that presented and supports pass snapshots on private draws.
   `render.stats` reports completed graph work. `render.parity` compares

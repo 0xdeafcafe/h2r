@@ -55,8 +55,7 @@ the guest's critical path.
 
 **Batches.** Calls collect in one pending list and cross the channel
 together: one send and one wake per batch. A batch goes at every call that
-waits (before the wait), at every present (before the frame-in-flight
-wait), every `threaded::BATCH` (64) calls and on drop. Texture-proxy drops
+waits (before the wait), at every present, every `threaded::BATCH` (64) calls and on drop. Texture-proxy drops
 go into the same list, so they keep their place. The render thread runs a
 batch in order, so the calls and their order are the synchronous ones; they
 only start later. The device hands each draw over with
@@ -186,9 +185,12 @@ Against the requirements:
 - **Guest reads of GPU-written memory, pixel counters.** Class 1.
 - **Vblank and present pacing.** Vblanks, the frame wait and the swap count
   are the device's and the kernel's, on logical time. The render thread
-  finishes presents in order. `Swap` waits on wall time when the guest is
-  more than two presents ahead (`MAX_FRAMES_IN_FLIGHT`), which bounds
-  memory and latency. That wait, like every class-1 wait, is on host wall
+  finishes presents in order. On the original stack, `Swap` waits on wall
+  time when the guest is more than two completed presents ahead
+  (`MAX_FRAMES_IN_FLIGHT`). With the scene owner installed, the producer
+  can enqueue two waiting transactions. An adopted transaction releases
+  its slot as soon as the worker takes it for drawing. A declined
+  transaction releases its slot when the original present completes. That wait, like every class-1 wait, is on host wall
   time and never charges logical time, so it changes no guest-visible
   value. `H2_BOOT_REALTIME` makes logical time follow wall time; the render
   thread only lets the runner reach a vblank sooner.
@@ -236,8 +238,8 @@ Against the requirements:
 - A backend error stops the guest at the next backend call.
 - RTT write-backs the guest asks for (`BlockOnResource`, the busy check,
   `BlockOnTime`, push-buffer callbacks) wait for the queue.
-- At most two presents are in flight; under load that limit is what holds
-  the guest.
+- At most two display transactions wait behind an adopted native frame.
+  The original renderer counts a frame in progress against its two slots.
 
 ## Evidence
 
