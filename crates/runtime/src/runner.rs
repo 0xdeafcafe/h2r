@@ -30,11 +30,29 @@ impl Runner {
         ctx: &mut ExecCtx,
         transfer: TransferAbi,
     ) -> TransferAbi {
+        let diag = diagnostics(ctx);
+        self.run_from_instance(cpu, ctx, transfer, diag)
+    }
+    /// [`run_from`](Self::run_from) on the instance named by `diag`, not
+    /// the one the switches pick: for tests that hold the lean runner to
+    /// the diagnostic one.
+    #[doc(hidden)]
+    pub fn run_from_instance(
+        &self,
+        cpu: &mut CpuAbi,
+        ctx: &mut ExecCtx,
+        transfer: TransferAbi,
+        diag: bool,
+    ) -> TransferAbi {
         // A runner nested in a handler (an override running a callback)
         // hands the direct-call budget back as the outer one set it.
         let outer = ctx.direct_budget();
         let result = ctx.measure(crate::perf::Scope::Runner, |ctx| {
-            self.run_inner::<false>(cpu, ctx, transfer, (0, 0))
+            if diag {
+                self.run_inner::<false, true>(cpu, ctx, transfer, (0, 0))
+            } else {
+                self.run_inner::<false, false>(cpu, ctx, transfer, (0, 0))
+            }
         });
         ctx.set_direct_budget(outer);
         result
@@ -50,12 +68,22 @@ impl Runner {
         return_pc: u32,
     ) -> TransferAbi {
         let outer = ctx.direct_budget();
-        let result = self.run_inner::<true>(cpu, ctx, transfer, (entry_esp, return_pc));
+        let scope = (entry_esp, return_pc);
+        let result = if diagnostics(ctx) {
+            self.run_inner::<true, true>(cpu, ctx, transfer, scope)
+        } else {
+            self.run_inner::<true, false>(cpu, ctx, transfer, scope)
+        };
         ctx.set_direct_budget(outer);
         result
     }
 
-    fn run_inner<const SCOPED: bool>(
+    /// The runner's loop: validate the transfer, take the safe point, then
+    /// [`step`]. `DIAG` adds the entry stats, the dispatch census, the
+    /// profile counters, coverage, the HLE census and the CPU ABI checks;
+    /// without them the routing, the safe point, every event and every
+    /// transfer count are the same.
+    fn run_inner<const SCOPED: bool, const DIAG: bool>(
         &self,
         cpu: &mut CpuAbi,
         ctx: &mut ExecCtx,
@@ -63,10 +91,7 @@ impl Runner {
         scope: (u32, u32),
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
-        // H2_ENTRY_STATS: what returned `transfer`.
-        let stats = es::enabled();
-        let census = ctx.runtime().dispatch_census.is_some();
-        let mut came = es::Came::Start;
+        let mut diag = Diag::new::<DIAG>(ctx);
         loop {
             if let Some(id) = ctx.pending_fault.take() {
                 return TransferAbi::fault(id);
@@ -81,7 +106,7 @@ impl Runner {
             {
                 return transfer;
             }
-            if !cpu.valid_abi() {
+            if DIAG && !cpu.valid_abi() {
                 return TransferAbi::fault(ctx.emit(Event::InvalidAbi));
             }
             let valid = match transfer.kind {
@@ -115,19 +140,19 @@ impl Runner {
             // interrupt runs first, as a call that resumes this transfer
             // when it returns. Then a preempted context stops with
             // `transfer` still undispatched and resumes with it as is.
-            if let Some(p) = &mut ctx.profile {
+            if DIAG && let Some(p) = &mut ctx.profile {
                 p.runner_safe_points += 1;
             }
             let reasons = ctx.take_preempt();
             if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
                 ctx.defer_preempt(reasons);
                 transfer = call;
-                came = es::Came::Interrupt;
+                diag.came = es::Came::Interrupt;
                 continue;
             }
-            let slice_expired = census && ctx.slice.expired;
+            let slice_expired = DIAG && diag.census && ctx.slice.expired;
             if let Some(stop) = ctx.preempt_decide(reasons, transfer) {
-                if let Some(census) = &ctx.runtime().dispatch_census {
+                if DIAG && let Some(census) = &ctx.runtime().dispatch_census {
                     census.note(if slice_expired {
                         DispatchCount::SlicePreempt
                     } else {
@@ -136,146 +161,205 @@ impl Runner {
                 }
                 return stop;
             }
-            // Diagnostic call chain only; the guest stack decides control.
-            // Every transfer first drops the records whose return slots ESP
-            // has passed, so returns, `ret n` and longjmp-style ESP restores
-            // followed by a JUMP all forget the frames they abandoned. A tail
-            // jump leaves ESP at its own return slot and keeps its frame.
-            ctx.frames.unwind(cpu.esp);
-            match transfer.kind {
-                abi::CALL => ctx
-                    .frames
-                    .call(transfer.target_pc, transfer.resume_pc, cpu.esp),
-                abi::RETURN => {}
-                _ => ctx.frames.enter(transfer.target_pc),
-            }
-            let returned = if SCOPED {
-                cpu.esp > scope.0 && transfer.target_pc == scope.1
-            } else {
-                transfer.target_pc == HARNESS_EXIT
-            };
-            if transfer.kind == abi::RETURN && returned {
-                cpu.eip = HARNESS_EXIT;
-                return TransferAbi::stop(ctx.emit(Event::HarnessExit));
-            }
-            if remaining == 0 {
-                return TransferAbi::fault(ctx.emit(Event::TransferLimit));
-            }
-            remaining -= 1;
-            if let Some(p) = &mut ctx.profile {
-                p.transfers += 1;
-            }
-            if transfer.kind == abi::RETURN
-                && let Some(continuation) = ctx.take_continuation(transfer.target_pc)
-            {
-                cpu.eip = transfer.target_pc;
-                if stats {
-                    es::note(es::CONTINUATION, &transfer);
-                    came = es::Came::Rust;
-                }
-                ctx.direct_begin(remaining);
-                transfer = execute_dispatched(
-                    Invocation::Continuation(continuation),
-                    cpu,
-                    ctx,
-                    transfer.target_pc,
-                );
-                remaining = ctx.direct_end(remaining);
-                continue;
-            }
-            // Tokens belong exclusively to the continuation namespace. A stale
-            // generation must not fall through to an entry override or a mapped
-            // executable page. JUMP cancels only an exactly matching live token.
-            if crate::continuation::is_token_address(transfer.target_pc) {
-                if transfer.kind == abi::JUMP {
-                    ctx.cancel_continuation(transfer.target_pc);
-                }
-                return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
-                    pc: cpu.eip,
-                    target: transfer.target_pc,
-                    kind: transfer.kind,
-                    route: transfer.route,
-                }));
-            }
-            let Some(resolution) = ctx.resolve_cached(transfer) else {
-                return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
-                    pc: cpu.eip,
-                    target: transfer.target_pc,
-                    kind: transfer.kind,
-                    route: transfer.route,
-                }));
-            };
-            // Only recognized kernel dispatch tokens bypass instruction-page
-            // permissions. An arbitrary high-address override is not a token.
-            let token = transfer
-                .target_pc
-                .checked_sub(kernel::KERNEL_TOKEN_BASE)
-                .filter(|v| v.is_multiple_of(4))
-                .and_then(|v| kernel::function(v / 4));
-            if token.is_none()
-                && let Err(fault) = ctx.check_execute_cached(&resolution, transfer.target_pc)
-            {
-                return ctx.fault(transfer.target_pc, fault);
-            }
-            let crate::exec::Resolution {
-                handler,
-                selector,
-                function,
-                generation,
-                ..
-            } = resolution;
-            let native = matches!(handler, Handler::Native(_) | Handler::NativeAdapter(_));
-            let generated = matches!(handler, Handler::Native(_));
-            cpu.eip = transfer.target_pc;
-            ctx.frames.enter(function);
-            if stats {
-                let c = if generated {
-                    let routed = transfer.route == abi::ENTRY
-                        && matches!(transfer.kind, abi::CALL | abi::JUMP);
-                    let slot = routed
-                        .then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
-                    es::cause(came, &transfer, slot)
-                } else {
-                    es::RUST_HANDLER
-                };
-                es::note(c, &transfer);
-                came = if generated { es::Came::Native } else { es::Came::Rust };
-            }
-            // Sample the slot before warming it. Generated code may now
-            // use the resolution while the generation stays the same.
-            if generated && transfer.route == abi::ENTRY && selector == transfer.target_pc {
-                ctx.note_direct(transfer.target_pc, &handler, generation);
-            }
-            // Direct calls the handler makes spend this run's transfers.
-            ctx.direct_begin(remaining);
-            // The access trap's HLE census (trap.rs): which Rust handler runs.
-            let hle = (!native && crate::trap::hle_census()).then(|| {
-                let target = transfer.target_pc;
-                let thread = timeline::phase::running_guest_thread().unwrap_or(crate::trap::NO_THREAD);
-                (crate::trap::hle_enter(target), target, thread)
-            });
-            transfer = execute_dispatched(Invocation::Handler(handler), cpu, ctx, selector);
-            if let Some((prev, target, thread)) = hle {
-                crate::trap::hle_leave(prev, target, thread, transfer.kind == abi::STOP);
-            }
-            remaining = ctx.direct_end(remaining);
-            if census {
-                let count = if generated {
-                    DispatchCount::native_exit(transfer)
-                } else {
-                    DispatchCount::Hle
-                };
-                if let Some(census) = &ctx.runtime().dispatch_census {
-                    census.note(count);
-                }
-            }
-            if native
-                && transfer.kind == abi::STOP
-                && transfer.valid_abi()
-                && let Some(recover) = ctx.runtime().stop_recovery()
-            {
-                transfer = recover(cpu, ctx, transfer);
+            match step::<SCOPED, DIAG>(cpu, ctx, transfer, scope, &mut remaining, &mut diag) {
+                Step::Next(next) => transfer = next,
+                Step::Done(done) => return done,
             }
         }
     }
+}
+
+/// Whether this run takes the diagnostic instance: always in a debug build,
+/// and whenever a switch that exists asks for something only it records.
+/// Chosen once per run; a switch turned on mid-run applies from the next.
+fn diagnostics(ctx: &ExecCtx) -> bool {
+    cfg!(debug_assertions)
+        || es::enabled()
+        || ctx.profile.is_some()
+        || ctx.runtime().dispatch_census.is_some()
+        || ctx.runtime().coverage.get().is_some()
+        || crate::trap::hle_census()
+}
+
+/// The diagnostic instance's per-run state; inert in the lean one.
+pub(crate) struct Diag {
+    /// H2_ENTRY_STATS.
+    stats: bool,
+    /// H2_DISPATCH_STATS.
+    census: bool,
+    /// H2_ENTRY_STATS: what returned the transfer about to be dispatched.
+    came: es::Came,
+}
+impl Diag {
+    pub(crate) fn new<const DIAG: bool>(ctx: &ExecCtx) -> Self {
+        Self {
+            stats: DIAG && es::enabled(),
+            census: DIAG && ctx.runtime().dispatch_census.is_some(),
+            came: es::Came::Start,
+        }
+    }
+}
+
+/// What one routed transfer led to.
+pub(crate) enum Step {
+    /// The transfer the handler returned, for the next safe point.
+    Next(TransferAbi),
+    /// The run ends with this.
+    Done(TransferAbi),
+}
+
+/// One transfer past the safe point: the diagnostic frame record, the scope
+/// and transfer-limit tests, then the continuation, token, resolution and
+/// execute checks, the handler and stop recovery. The runner's loop calls
+/// it after every safe point; the host-call thunk (contract slice T3) will
+/// call it where the caller has just seen the leave word zero.
+pub(crate) fn step<const SCOPED: bool, const DIAG: bool>(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    transfer: TransferAbi,
+    scope: (u32, u32),
+    remaining: &mut u64,
+    diag: &mut Diag,
+) -> Step {
+    // Diagnostic call chain only; the guest stack decides control.
+    // Every transfer first drops the records whose return slots ESP
+    // has passed, so returns, `ret n` and longjmp-style ESP restores
+    // followed by a JUMP all forget the frames they abandoned. A tail
+    // jump leaves ESP at its own return slot and keeps its frame.
+    ctx.frames.unwind(cpu.esp);
+    match transfer.kind {
+        abi::CALL => ctx
+            .frames
+            .call(transfer.target_pc, transfer.resume_pc, cpu.esp),
+        abi::RETURN => {}
+        _ => ctx.frames.enter(transfer.target_pc),
+    }
+    let returned = if SCOPED {
+        cpu.esp > scope.0 && transfer.target_pc == scope.1
+    } else {
+        transfer.target_pc == HARNESS_EXIT
+    };
+    if transfer.kind == abi::RETURN && returned {
+        cpu.eip = HARNESS_EXIT;
+        return Step::Done(TransferAbi::stop(ctx.emit(Event::HarnessExit)));
+    }
+    if *remaining == 0 {
+        return Step::Done(TransferAbi::fault(ctx.emit(Event::TransferLimit)));
+    }
+    *remaining -= 1;
+    if DIAG && let Some(p) = &mut ctx.profile {
+        p.transfers += 1;
+    }
+    if transfer.kind == abi::RETURN
+        && let Some(continuation) = ctx.take_continuation(transfer.target_pc)
+    {
+        cpu.eip = transfer.target_pc;
+        if DIAG && diag.stats {
+            es::note(es::CONTINUATION, &transfer);
+            diag.came = es::Came::Rust;
+        }
+        ctx.direct_begin(*remaining);
+        let next = execute_dispatched::<DIAG>(
+            Invocation::Continuation(continuation),
+            cpu,
+            ctx,
+            transfer.target_pc,
+        );
+        *remaining = ctx.direct_end(*remaining);
+        return Step::Next(next);
+    }
+    // Tokens belong exclusively to the continuation namespace. A stale
+    // generation must not fall through to an entry override or a mapped
+    // executable page. JUMP cancels only an exactly matching live token.
+    if crate::continuation::is_token_address(transfer.target_pc) {
+        if transfer.kind == abi::JUMP {
+            ctx.cancel_continuation(transfer.target_pc);
+        }
+        return Step::Done(TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
+            pc: cpu.eip,
+            target: transfer.target_pc,
+            kind: transfer.kind,
+            route: transfer.route,
+        })));
+    }
+    let Some(resolution) = ctx.resolve_cached(transfer) else {
+        return Step::Done(TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
+            pc: cpu.eip,
+            target: transfer.target_pc,
+            kind: transfer.kind,
+            route: transfer.route,
+        })));
+    };
+    // Only recognized kernel dispatch tokens bypass instruction-page
+    // permissions. An arbitrary high-address override is not a token.
+    let token = transfer
+        .target_pc
+        .checked_sub(kernel::KERNEL_TOKEN_BASE)
+        .filter(|v| v.is_multiple_of(4))
+        .and_then(|v| kernel::function(v / 4));
+    if token.is_none()
+        && let Err(fault) = ctx.check_execute_cached(&resolution, transfer.target_pc)
+    {
+        return Step::Done(ctx.fault(transfer.target_pc, fault));
+    }
+    let crate::exec::Resolution {
+        handler,
+        selector,
+        function,
+        generation,
+        ..
+    } = resolution;
+    let native = matches!(handler, Handler::Native(_) | Handler::NativeAdapter(_));
+    let generated = matches!(handler, Handler::Native(_));
+    cpu.eip = transfer.target_pc;
+    ctx.frames.enter(function);
+    if DIAG && diag.stats {
+        let c = if generated {
+            let routed =
+                transfer.route == abi::ENTRY && matches!(transfer.kind, abi::CALL | abi::JUMP);
+            let slot =
+                routed.then(|| ctx.direct_slot_state(transfer.target_pc, &handler, generation));
+            es::cause(diag.came, &transfer, slot)
+        } else {
+            es::RUST_HANDLER
+        };
+        es::note(c, &transfer);
+        diag.came = if generated { es::Came::Native } else { es::Came::Rust };
+    }
+    // Sample the slot before warming it. Generated code may now
+    // use the resolution while the generation stays the same.
+    if generated && transfer.route == abi::ENTRY && selector == transfer.target_pc {
+        ctx.note_direct(transfer.target_pc, &handler, generation);
+    }
+    // Direct calls the handler makes spend this run's transfers.
+    ctx.direct_begin(*remaining);
+    // The access trap's HLE census (trap.rs): which Rust handler runs.
+    let hle = (DIAG && !native && crate::trap::hle_census()).then(|| {
+        let target = transfer.target_pc;
+        let thread = timeline::phase::running_guest_thread().unwrap_or(crate::trap::NO_THREAD);
+        (crate::trap::hle_enter(target), target, thread)
+    });
+    let mut next = execute_dispatched::<DIAG>(Invocation::Handler(handler), cpu, ctx, selector);
+    if let Some((prev, target, thread)) = hle {
+        crate::trap::hle_leave(prev, target, thread, next.kind == abi::STOP);
+    }
+    *remaining = ctx.direct_end(*remaining);
+    if DIAG && diag.census {
+        let count = if generated {
+            DispatchCount::native_exit(next)
+        } else {
+            DispatchCount::Hle
+        };
+        if let Some(census) = &ctx.runtime().dispatch_census {
+            census.note(count);
+        }
+    }
+    if native
+        && next.kind == abi::STOP
+        && next.valid_abi()
+        && let Some(recover) = ctx.runtime().stop_recovery()
+    {
+        next = recover(cpu, ctx, next);
+    }
+    Step::Next(next)
 }

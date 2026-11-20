@@ -393,6 +393,14 @@ interrupt count is zero" means today, and `h2_direct_quiet` is one load.
 The transfer budget stays a separate decrement and test, because
 `TransferLimit` must fire on the same transfer.
 
+Loop headers and `h2_fast_movs` also read the word, with `word != 0`.
+With `IRQ_QUEUED` set they would leave on every trip while an interrupt
+for another thread (or a masked one) waits, which changes the transfer
+count. So those polls mask it out (`word & ~IRQ_QUEUED`, one more
+instruction), and the runtime keeps the bit only once a module that
+does so asks (`Runtime::enable_leave_word`). T1 adds the runtime side
+dormant; T2's image masks its polls and turns it on.
+
 **The entry table.** The emitter gives every `H2GenEntry` row a dense
 index. Each `Runtime` owns `live`, an array of handler pointers with one
 element per row, and the context's fourth word points to it. `live[i]`
@@ -487,8 +495,10 @@ different macros and files and can alternate. Slices that change
 
 - `runner.rs`: `run_inner::<SCOPED, DIAG>`; move the per-transfer body
   into one `step` function that T3 will reuse.
-- `preempt.rs`, `interrupt.rs`: `IRQ_QUEUED`, kept in step with the queue.
-  `direct.rs`: `H2Direct.interrupts` stays for now (old images read it).
+- `preempt.rs`, `interrupt.rs`: `IRQ_QUEUED`, kept in step with the queue
+  once `Runtime::enable_leave_word` is called (nothing calls it before
+  T2; see 4.2 on loop polls). `direct.rs`: `H2Direct.interrupts` stays
+  for now (old images read it).
 - Tests: `leave_word_matches_old_quiet` (property test over queue, mask
   and raise sequences: word non-zero iff old test fails);
   `lean_and_diag_runners_agree` (same transfers, events and final CPU on
@@ -499,7 +509,10 @@ different macros and files and can alternate. Slices that change
 ### T2. Entry table, indirect map, no per-call execute read
 
 - `crates/emit/src/lib.rs` (registry emission, `:481`): dense indices,
-  `pcmap`, module feature bit 8.
+  `pcmap`, module feature bit 8. A module with bit 8 masks `IRQ_QUEUED`
+  out of `H2_POLLED` and `h2_fast_movs`, compares the whole word in
+  `h2_direct_quiet`, and its registration calls
+  `Runtime::enable_leave_word`.
 - `h2gen.h`: `H2_CALL_SLOT_` and `H2_JUMP_SLOT_` on `live`; delete
   `H2DirectSlot`, `h2_direct_slot`, `h2_direct_lookup`, `h2_direct_exec`;
   slim frames. `c.rs:1141-1205` passes indices.
