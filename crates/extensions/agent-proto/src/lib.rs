@@ -209,6 +209,10 @@ pub mod method {
     pub const RENDER_COMPARE: &str = "render.compare";
     /// The frame of a sim tick as a PNG ([`crate::FrameCaptureParams`]).
     pub const RENDER_CAPTURE: &str = "render.capture";
+    /// Arm a sequence of headless display presents, including in-between frames.
+    pub const RENDER_CAPTURE_CLIP: &str = "render.capture_clip";
+    /// Read the number of display frames written by a clip capture.
+    pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
     /// Arm the in-process two-path comparison for one frame

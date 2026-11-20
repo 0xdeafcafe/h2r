@@ -355,6 +355,8 @@ pub fn add_host_methods(agent: &agent::Agent) {
     // render.parity (their sources register on agent::render::HOSTED).
     #[cfg(feature = "desktop-runtime")]
     agent::render::add_frame_methods(agent, &agent::render::CAPTURE, &agent::render::HOSTED);
+    #[cfg(feature = "gpu")]
+    agent::render::clip::add_methods(agent);
     agent.add_method(method::PROFILE_FALLBACKS, Access::Read, |v| {
         let top = match v.get("top") {
             None => 20,

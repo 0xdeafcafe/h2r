@@ -1199,6 +1199,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         // render.capture: the present after the tick asked for is its frame.
         agent::render::CAPTURE.present(n);
+        #[cfg(feature = "gpu")]
+        agent::render::clip::CLIPS.present(n);
         if !self.probe.armed() {
             self.probe_target = None;
         }

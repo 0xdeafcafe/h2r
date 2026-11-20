@@ -4,10 +4,12 @@
 # available, with readme-screenshots.sh JPEGs filling in missing levels.
 #
 #   scripts/readme-art.sh [--frames <dir>] [--src <dir>] [--dest <dir>] [--header <n>]
+#                         [--master <dir>]
 #
 # Still sources default to docs/images/readme, frames to <src>/frames and
 # output to <src>. The header takes the first three levels by default.
 # Requires Python 3 with Pillow and NumPy, and img2webp (brew install webp).
+# --master also requires ffmpeg with libx265 and writes MP4s outside git.
 # Commit only the output WebPs under docs/images/** in Git LFS.
 set -euo pipefail
 
@@ -16,6 +18,7 @@ exec python3 - "$root/docs/images/readme" "$@" <<'PY'
 """Build README images from captured clips and fallback JPEGs."""
 
 import argparse
+import json
 import math
 import os
 from pathlib import Path
@@ -42,7 +45,7 @@ def find_clips(src, frames_dir):
     for still in sorted(src.glob("*.jpg")):
         stem = still.stem
         name = stem[:-3] if stem.endswith("-4x") else stem
-        clips[name] = [still]
+        clips[name] = ([still], FPS)
 
     for folder in sorted(frames_dir.iterdir()) if frames_dir.is_dir() else []:
         if not folder.is_dir() or folder.name.startswith("."):
@@ -56,15 +59,24 @@ def find_clips(src, frames_dir):
             continue
         frames.sort()
         first = frames[0][0]
-        if len(frames) < 2 * FPS or any(
+        metadata = folder / "capture.json"
+        fps = FPS
+        if metadata.exists():
+            try:
+                fps = json.loads(metadata.read_text())["fps"]
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                raise SystemExit(f"{metadata}: invalid capture metadata ({error})") from error
+            if type(fps) is not int or fps not in (30, 60, 120):
+                raise SystemExit(f"{metadata}: fps must be 30, 60 or 120")
+        if len(frames) < 2 * fps or any(
             number != first + i for i, (number, _) in enumerate(frames)
         ):
-            raise SystemExit(f"{folder}: expected at least 60 consecutive PNG frames")
-        clips[folder.name] = [path for _, path in frames]
+            raise SystemExit(f"{folder}: expected at least {2 * fps} consecutive PNG frames")
+        clips[folder.name] = ([path for _, path in frames], fps)
 
     names = [name for name in LEVEL_ORDER if name in clips]
     names.extend(sorted(name for name in clips if name not in LEVEL_ORDER))
-    return [(name, clips[name]) for name in names]
+    return [(name, *clips[name]) for name in names]
 
 
 def load_rgb(path):
@@ -142,7 +154,7 @@ def make_headers(clips, scratch):
 
 def video_frame(path):
     image = load_rgb(path)
-    # The source is 4:3. Fit takes a centered 16:9 window before resizing.
+    # Fit centers a 16:9 crop when the source has a different aspect ratio.
     return ImageOps.fit(image, SIZE, method=LANCZOS)
 
 
@@ -200,12 +212,66 @@ def make_gameplay(clips, scratch):
             raise SystemExit("gameplay.webp has an alpha channel")
 
 
+def make_masters(clips, dest):
+    captures = [(name, frames, fps) for name, frames, fps in clips if len(frames) > 1]
+    if not captures:
+        raise SystemExit("--master needs at least one captured PNG clip")
+    formats = set()
+    for _, frames, fps in captures:
+        with Image.open(frames[0]) as frame:
+            formats.add((frame.width, frame.height, fps))
+    if len(formats) != 1:
+        raise SystemExit("--master needs the same size and frame rate in every captured clip")
+    width, height, _ = next(iter(formats))
+    if width % 2 or height % 2:
+        raise SystemExit("--master needs even frame dimensions for HEVC")
+
+    dest.mkdir(parents=True, exist_ok=True)
+    ffmpeg = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
+    with tempfile.TemporaryDirectory(prefix=".readme-master.", dir=dest) as directory:
+        staging = Path(directory)
+        outputs = []
+        for i, (name, frames, fps) in enumerate(captures):
+            first = FRAME_NAME.fullmatch(frames[0].name)[1]
+            pattern = f"frame-%0{len(first)}d.png"
+            output = staging / f"{i}.mp4"
+            subprocess.run(
+                ffmpeg + [
+                    "-framerate", str(fps), "-start_number", first, "-i", pattern,
+                    "-frames:v", str(len(frames)), "-c:v", "libx265",
+                    "-preset", "fast", "-crf", "12", "-pix_fmt", "yuv420p",
+                    "-tag:v", "hvc1", "-movflags", "+faststart", str(output),
+                ],
+                cwd=frames[0].parent,
+                check=True,
+            )
+            outputs.append((output, dest / f"clip-{name}.mp4"))
+
+        manifest = staging / "clips.ffconcat"
+        manifest.write_text("ffconcat version 1.0\n" + "".join(
+            f"file {path.name}\n" for path, _ in outputs
+        ))
+        joined = staging / "gameplay.mp4"
+        subprocess.run(
+            ffmpeg + [
+                "-f", "concat", "-i", str(manifest), "-c", "copy",
+                "-tag:v", "hvc1", "-movflags", "+faststart", str(joined),
+            ],
+            check=True,
+        )
+        for path, output in outputs + [(joined, dest / joined.name)]:
+            path.replace(output)
+            print(f"wrote {output} ({output.stat().st_size:,} bytes)", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="scripts/readme-art.sh", description=__doc__)
     parser.add_argument("--src", type=Path, default=Path(sys.argv[1]), help="source JPEG folder")
     parser.add_argument("--frames", type=Path, help="clip folders (default: <src>/frames)")
     parser.add_argument("--dest", type=Path, help="output folder (default: <src>)")
     parser.add_argument("--header", type=int, default=3, help="number of header panels (default: 3)")
+    parser.add_argument("--master", type=Path, metavar="DIR",
+                        help="also write individual and joined HEVC MP4s to DIR outside git")
     args = parser.parse_args(sys.argv[2:])
     if args.header < 1:
         parser.error("--header must be positive")
@@ -213,6 +279,12 @@ def main():
         parser.error(f"frame directory does not exist: {args.frames}")
     if shutil.which("img2webp") is None:
         parser.error("img2webp is required (brew install webp)")
+    if args.master is not None:
+        args.master = args.master.resolve()
+        if any((path / ".git").exists() for path in (args.master, *args.master.parents)):
+            parser.error("--master must be outside a Git checkout")
+        if shutil.which("ffmpeg") is None:
+            parser.error("--master requires ffmpeg with libx265")
 
     frames_dir = args.frames if args.frames is not None else args.src / "frames"
     dest = args.dest if args.dest is not None else args.src
@@ -220,18 +292,22 @@ def main():
     if not clips:
         parser.error(f"no frame folders in {frames_dir} or JPEGs in {args.src}")
 
-    for name, clip in clips:
-        source = f"{len(clip)} frames" if len(clip) > 1 else f"still {clip[0].name}"
+    for name, clip, fps in clips:
+        source = f"{len(clip)} frames at {fps} fps" if len(clip) > 1 else f"still {clip[0].name}"
         print(f"{name}: {source}", flush=True)
 
+    webp_clips = [clip[::fps // FPS] for _, clip, fps in clips]
     with tempfile.TemporaryDirectory(prefix="readme-art.", dir=os.environ.get("TMPDIR")) as directory:
         scratch = Path(directory)
-        make_headers([clip for _, clip in clips[:args.header]], scratch)
-        make_gameplay([clip for _, clip in clips], scratch)
+        make_headers(webp_clips[:args.header], scratch)
+        make_gameplay(webp_clips, scratch)
         dest.mkdir(parents=True, exist_ok=True)
         for name in ("header.webp", "header@2x.webp", "gameplay.webp"):
             shutil.move(str(scratch / name), str(dest / name))
             print(f"wrote {dest / name} ({(dest / name).stat().st_size:,} bytes)")
+
+    if args.master is not None:
+        make_masters(clips, args.master)
 
 
 if __name__ == "__main__":
