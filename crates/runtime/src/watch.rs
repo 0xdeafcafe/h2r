@@ -230,10 +230,14 @@ impl Guest {
     pub fn watch_writes(&mut self, id: WatchId, addr: u32, len: u32) -> Result<(), WatchError> {
         let (first, last) = pages(addr, len)?;
         let s = self.watch.get(id)?;
+        let mut changed = false;
         for (w, mask) in words(first, last) {
+            changed |= s.watched[w] & mask != mask;
             s.watched[w] |= mask;
         }
-        self.watch.refresh();
+        if changed {
+            self.watch.refresh();
+        }
         Ok(())
     }
     /// Stop watching every page touching folded `[addr, addr + len)` and

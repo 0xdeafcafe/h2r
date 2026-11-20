@@ -575,7 +575,8 @@ held across the handler's out-of-line calls (the memory helpers, the direct
 callee) also occupies a callee-saved host register or a stack slot for the
 whole handler, whether the guest code touches the register or not.
 
-Now (`emit::c::homes`, on unless `H2_REG_HOMES=0`):
+Now (`emit::c::homes`; the `H2_REG_HOMES=0` comparison switch was removed
+once the result below settled it):
 
 - A handler keeps in locals only the registers it can write (a partial
   write such as `AL` counts; EFLAGS with its mask when any flag is read or
@@ -595,8 +596,8 @@ never touches EFLAGS still sets its bit 1 on the way out.
 Static effect, measured before the inline loads and stores below landed,
 on a sample of the retail image (every 37th shard plus the
 one holding `0x2dc220`: 27 shards, 507 handlers), compiled with the image's
-default switches and no debug info, homes off against on
-(`cargo test -p emit --release --test homes retail_sample -- --ignored --nocapture`):
+default switches and no debug info, homes off against on (the ignored
+`homes` test `retail_sample_code_size`, removed with the switch):
 
 | | `__text` | loads (`ldr`/`ldur`/`ldp`) | stores (`str`/`stur`/`stp`) |
 |---|---:|---:|---:|
@@ -700,9 +701,11 @@ write barrier's `take_dirty` and guard (about 700).
 
 ## Handler entry and exit: gate at entry, inline charge, dirty bits (2026-11-18)
 
-Three generated-code switches and one x87 switch, all off by default. The
-C ones are in `cflags_for`'s list, so they are in the object cache key and
-the boot stamp: set them identically for `h2 build` and `h2 run`.
+Three generated-code switches and one x87 experiment, all off when this
+was written; `H2_VIEW_CHARGE` has been on by default since feddd0402
+(2026-11-20). The C ones are in `cflags_for`'s list, so they are in the
+object cache key and the boot stamp: set them identically for `h2 build`
+and `h2 run`.
 
 - **`H2_ENTRY_GATE=1`.** A handler with inline loads or stores takes the
   RAM gate as it starts (after acquire and the budget), and again when a
@@ -724,9 +727,11 @@ the boot stamp: set them identically for `h2 build` and `h2 run`.
   stores round four pages (an alias, three bitmap words), drains, and runs
   again, with and without the switch and accounting; a deliberately wrong
   "already marked" test fails it.
-- **`H2_X87_FAST_TRANSCENDENTALS=1`** (boot, run time only, no rebuild of the
-  image). FSIN, FCOS, FSINCOS, FYL2X and F2XM1 in native f64 (`libm`)
-  instead of the correctly rounded series; see the sweep below.
+- **f64 transcendentals** (measured, not adopted). FSIN, FCOS, FSINCOS,
+  FYL2X and F2XM1 in native f64 (`libm`) instead of the correctly rounded
+  series; see the sweep below. Its boot switch,
+  `H2_X87_FAST_TRANSCENDENTALS`, was removed in the 2026-11-20 flag
+  cleanup.
 
 Proof: `held_gate_matches_the_helper_path_at_every_stop_and_fault` runs with
 each switch, both, and everything with `H2_DIRECT_GATE`/`H2_DIRECT_COUNT`
@@ -764,26 +769,15 @@ one.
 ```sh
 cargo test -p emit --release --test perf entry_access_benchmark -- --ignored --nocapture
 cargo test -p emit --release --test perf dirty_store_benchmark -- --ignored --nocapture
-cargo test -p x87 --release --test f64_trans -- --nocapture
 ```
 
-f64 transcendentals against the series (`tests/f64_trans.rs`, 20,000
-synthetic operands each, low 11 significand bits random, difference in
-units of the 64-bit result's last place; 2^11 = 2048 is one f64 ulp):
-
-| function | operands | median | p99 | max |
-|---|---|---:|---:|---:|
-| fsin | \|x\| < 8 | 1,352 | 121,071 | 2^24.8 |
-| fcos | \|x\| < 8 | 1,619 | 153,357 | 2^24.9 |
-| fsin | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^39.5 |
-| fcos | \|x\| < 10^6 | 1.8e8 | 1.6e10 | 2^41.3 |
-| fyl2x | x in 2^±20 | 683 | 4,084 | 2^20.5 |
-| f2xm1 | \|x\| < 1 | 835 | 3,315 | 4,859 |
-
-No exception flag other than PE and C1 differs. Most results are within one
-f64 ulp, as expected; the tails are the operand's own rounding to 53 bits,
-amplified near zeros of sin and cos (and of log2 at x near 1), and for large
-angles the operand error alone is up to |x| * 2^-53 of angle. Not turned on.
+f64 transcendentals against the series (a sweep of 20,000 synthetic
+operands per function, in units of the 64-bit result's last place, where
+2048 is one f64 ulp): medians of 683-1,619 for FSIN/FCOS with |x| < 8,
+FYL2X and F2XM1, but tails up to 2^24.8 for small angles and 2^41 for
+|x| < 10^6, from the operand's own rounding to 53 bits. Not adopted; the
+f64 path and its sweep (`x87` `trans_f64.rs`, `tests/f64_trans.rs`) were
+removed in the 2026-11-20 flag cleanup.
 
 ## The D3D write barrier runs its entry in place (2026-11-18)
 

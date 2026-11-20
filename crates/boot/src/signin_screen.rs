@@ -23,9 +23,7 @@
 //! HLE's `XOnlineTaskContinue` (`0x003a0620`) asks
 //! [`live_hle::Hle::take_signin_open`] after each call and, the first time
 //! a sign-in waits, opens this screen for that controller with
-//! `0x149f1e(1 << controller, loader)`. `H2_SIGNIN_PROMPT=0` leaves the
-//! prompt out: the waiting sign-in is cancelled at once and fails, with a
-//! line saying to use `h2 play --signin-terminal`.
+//! `0x149f1e(1 << controller, loader)`.
 //!
 //! **A new account** (the app builds' "New Account" identity,
 //! [`live_hle::LiveConfig::offer_new_account`]): the page asks for a
@@ -94,8 +92,7 @@ pub const A_BUTTON: u32 = crate::ui_kit::input::A_BUTTON;
 pub const B_BUTTON: u32 = crate::ui_kit::input::B_BUTTON;
 
 /// The description: the right half of the screen, the level select's
-/// description font and colour. `H2_SIGNIN_TEXT_RECT=top,left,bottom,right`
-/// moves it without a rebuild.
+/// description font and colour.
 pub const TEXT_BLOCK: TextBlock = TextBlock {
     rect: [110, -40, -130, 300],
     font: 1,
@@ -1060,11 +1057,6 @@ impl feature::Feature for Strings {
     }
 }
 
-/// Whether the prompt is on (`H2_SIGNIN_PROMPT=0` leaves it out).
-pub fn prompt_on(env: Option<&str>) -> bool {
-    !matches!(env.map(str::trim), Some("0" | "off" | "false" | "no"))
-}
-
 /// The window the prompt opens in: the dialogs' (window kind 1, as the
 /// game's own dialogs open) with `H2_SIGNIN_DIALOG=1`, else the main
 /// menu's, as `0x149f1e` opens a screen. Off until a game run settles it
@@ -1087,48 +1079,22 @@ pub fn install(
     let Some(hle) = hle.filter(|h| h.config().server_url.is_some()) else {
         return Ok(false);
     };
-    let on = prompt_on(std::env::var("H2_SIGNIN_PROMPT").ok().as_deref());
     let rows = Arc::new(SigninRows::new(Arc::clone(hle)));
-    if on {
-        let block = text_block(std::env::var("H2_SIGNIN_TEXT_RECT").ok().as_deref());
-        registry
-            .add(&Strings(Arc::clone(&rows)))
-            .map_err(|e| anyhow::anyhow!("signin strings: {e}"))?;
-        match registry.add(&class(Arc::clone(&rows), block)) {
-            Ok(true) => {}
-            Ok(false) => eprintln!("signin prompt: features.{FEATURE} is off"),
-            Err(e) => eprintln!("signin prompt: {e}"),
-        }
+    registry
+        .add(&Strings(Arc::clone(&rows)))
+        .map_err(|e| anyhow::anyhow!("signin strings: {e}"))?;
+    match registry.add(&class(Arc::clone(&rows), TEXT_BLOCK)) {
+        Ok(true) => {}
+        Ok(false) => eprintln!("signin prompt: features.{FEATURE} is off"),
+        Err(e) => eprintln!("signin prompt: {e}"),
     }
     let window = window(std::env::var("H2_SIGNIN_DIALOG").ok().as_deref());
-    wrap_continue(rt, rows, on, window)
-}
-
-/// The description block, moved by `H2_SIGNIN_TEXT_RECT` when it parses.
-pub fn text_block(env: Option<&str>) -> TextBlock {
-    let Some(v) = env else { return TEXT_BLOCK };
-    let n: Vec<i16> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-    match <[i16; 4]>::try_from(n) {
-        Ok(rect) => {
-            eprintln!("signin prompt: text at {rect:?} (H2_SIGNIN_TEXT_RECT)");
-            TextBlock { rect, ..TEXT_BLOCK }
-        }
-        Err(_) => {
-            eprintln!("signin prompt: H2_SIGNIN_TEXT_RECT={v:?} is not top,left,bottom,right");
-            TEXT_BLOCK
-        }
-    }
+    wrap_continue(rt, rows, window)
 }
 
 /// Wraps the HLE's `XOnlineTaskContinue`: after each call, a sign-in that
-/// has just started waiting opens the prompt for its controller (or, with
-/// the prompt off, is cancelled).
-fn wrap_continue(
-    rt: &Runtime,
-    rows: Arc<SigninRows>,
-    on: bool,
-    window: u32,
-) -> anyhow::Result<bool> {
+/// has just started waiting opens the prompt for its controller.
+fn wrap_continue(rt: &Runtime, rows: Arc<SigninRows>, window: u32) -> anyhow::Result<bool> {
     let hle = Arc::clone(&rows.hle);
     let Some(inner) = rt.edit_dispatch(|d| d.override_handler(TASK_CONTINUE)) else {
         eprintln!("signin prompt: no Live entry at {TASK_CONTINUE:#x}; not wrapped");
@@ -1140,13 +1106,6 @@ fn wrap_continue(
             let Some(controller) = hle.take_signin_open() else {
                 return Ok(done);
             };
-            if !on {
-                eprintln!(
-                    "signin prompt: off (H2_SIGNIN_PROMPT); the sign-in is cancelled. Use h2 play --signin-terminal, or h2 live account recover"
-                );
-                hle.signin_cancel();
-                return Ok(done);
-            }
             match list_class::loader_of(SCREEN) {
                 Some(loader) if done.kind == abi::RETURN && controller < 4 => {
                     eprintln!(
@@ -1548,15 +1507,6 @@ mod tests {
     }
 
     #[test]
-    fn the_prompt_switch_reads_off_values() {
-        assert!(prompt_on(None));
-        assert!(prompt_on(Some("1")));
-        for off in ["0", "off", " false ", "no"] {
-            assert!(!prompt_on(Some(off)));
-        }
-    }
-
-    #[test]
     fn the_dialog_switch_picks_the_dialogs_window() {
         use crate::ui_kit::dialog_tag::{DIALOG_WINDOW, MAIN_WINDOW};
         assert_eq!(window(None), MAIN_WINDOW, "off until a game run settles it");
@@ -1566,16 +1516,6 @@ mod tests {
         for on in ["1", " on ", "true"] {
             assert_eq!(window(Some(on)), DIALOG_WINDOW);
         }
-    }
-
-    #[test]
-    fn a_bad_rect_keeps_the_default() {
-        assert_eq!(text_block(None), TEXT_BLOCK);
-        assert_eq!(text_block(Some("1,2,3")), TEXT_BLOCK);
-        assert_eq!(
-            text_block(Some("10, -20, -30, 40")).rect,
-            [10, -20, -30, 40]
-        );
     }
 
     #[test]

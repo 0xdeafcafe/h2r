@@ -24,7 +24,6 @@ fn the_headless_gpu_backend_runs_reprojection_and_reports_its_counters() {
         std::env::set_var("H2_PIPELINE_CACHE", dir.join("pipelines.bin"));
         for k in [
             "H2_RENDER_THREAD",
-            "H2_PIPELINE_RENDER",
             "H2_RENDER_SCALE",
             "H2_LIGHTING",
             "H2_BOOT_GFX_LIGHTING_AB",

@@ -12,7 +12,7 @@ use native_render::transparent::{DATA_OFFSET, GEOMETRY_HANDLER, Source};
 
 #[test]
 fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_transparents=off").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     r.add(&NativeTransparents).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -24,7 +24,7 @@ fn the_switch_off_places_nothing() {
 /// On too: what it holds lasts one view and changes no guest memory.
 #[test]
 fn on_its_snapshot_policy_is_stateless() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
+    let mut r = Registry::new(Switches::defaults());
     assert!(r.add(&NativeTransparents).unwrap());
     let plan = r.build(&Base).unwrap();
     let policies: Vec<_> = plan
@@ -37,7 +37,7 @@ fn on_its_snapshot_policy_is_stateless() {
 
 #[test]
 fn the_scene_and_its_cleanup_share_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_transparents=on").unwrap());
+    let mut r = Registry::new(Switches::defaults());
     assert!(r.add(&NativeTransparents).unwrap());
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -106,7 +106,7 @@ fn same_shader_parts_keep_their_sorted_slots_across_a_d3d_handler() {
     // The after hook changes the scene return slot before its body runs.
     guest.set(SCENE, 0xb000_0010);
     guest.set(HANDLER + 4, a);
-    scope.begin_entry(&guest, HANDLER, true);
+    scope.begin_entry(&guest, HANDLER);
     let (generation, first) = scope.indexed_entry(&guest, DRAW).unwrap();
     assert_eq!((first.source, first.record, first.part), (Source::Cluster(20), 1, 3));
 
@@ -115,7 +115,7 @@ fn same_shader_parts_keep_their_sorted_slots_across_a_d3d_handler() {
     assert_eq!(scope.indexed_entry(&guest, DRAW), None);
 
     guest.set(HANDLER + 4, b);
-    scope.begin_entry(&guest, HANDLER, true);
+    scope.begin_entry(&guest, HANDLER);
     let (same_generation, second) = scope.indexed_entry(&guest, DRAW).unwrap();
     assert_eq!(generation, same_generation);
     assert_eq!(first.shader, second.shader);
@@ -133,17 +133,17 @@ fn changing_bsp_at_the_same_address_invalidates_the_saved_entry() {
     guest.set(HANDLER + 4, data);
     let mut scope = Scope::default();
     scope.begin_view(&guest, SCENE);
-    scope.begin_entry(&guest, HANDLER, true);
+    scope.begin_entry(&guest, HANDLER);
     let (first, _) = scope.indexed_entry(&guest, DRAW).unwrap();
 
     guest.set(GLOBALS, 3 << 16);
     assert_eq!(scope.indexed_entry(&guest, DRAW), None);
     scope.begin_view(&guest, SCENE);
-    scope.begin_entry(&guest, HANDLER, true);
+    scope.begin_entry(&guest, HANDLER);
     let (second, _) = scope.indexed_entry(&guest, DRAW).unwrap();
     assert_ne!(first, second);
 
     guest.set(HANDLER, 0x0010_0020);
-    scope.begin_entry(&guest, HANDLER, true);
+    scope.begin_entry(&guest, HANDLER);
     assert_eq!(scope.indexed_entry(&guest, DRAW), None);
 }

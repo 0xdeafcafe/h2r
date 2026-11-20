@@ -160,8 +160,6 @@ mod tests {
         })
         .unwrap();
         r.add(&feature::leaves::EngineLeaves).unwrap();
-        #[cfg(feature = "desktop-runtime")]
-        r.add(&feature::render_loop::RenderLoop).unwrap();
         r.add(&TickCounter {
             ticks: Arc::default(),
             preempt: true,
@@ -181,17 +179,15 @@ mod tests {
         assert_eq!(plan.snapshot_blockers(), vec![], "{policies:?}");
     }
 
-    /// The render features boot always registers, with their `impl.render.*`
-    /// switches off (the native ones are on by default): each declares its
-    /// policy before it returns, so none is left unaudited and none blocks a
-    /// save (the agent's `state.save` once refused with all six "not
-    /// audited").
+    /// The render features boot always registers, switched off (occlusion
+    /// is off by default, the native ones go with `impl.render.native=off`):
+    /// each declares its policy before it returns, so none is left
+    /// unaudited and none blocks a save (the agent's `state.save` once
+    /// refused with all six "not audited").
     #[cfg(feature = "desktop-runtime")]
     #[test]
     fn switched_off_render_features_block_nothing() {
-        let off = "impl.render.native_world=off,impl.render.native_objects=off,\
-                   impl.render.native_transparents=off,impl.render.native_lights=off,\
-                   impl.render.native_post=off";
+        let off = "impl.render.native=off";
         let mut r = feature::Registry::new(feature::Switches::parse(off).unwrap());
         r.add(&feature::occlusion::OcclusionCull).unwrap();
         r.add(&feature::native_world::NativeWorld).unwrap();

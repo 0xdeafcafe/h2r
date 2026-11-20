@@ -25,10 +25,6 @@ impl Reader for Menu {
 
 static PROBE: FrameProbe = FrameProbe::new();
 
-fn paths() -> Vec<(&'static str, u64)> {
-    vec![("render_views", 3)]
-}
-
 #[test]
 fn render_frame_and_stats_through_the_socket() {
     let path = std::env::temp_dir().join(format!("h2a-{}-render.sock", std::process::id()));
@@ -39,7 +35,6 @@ fn render_frame_and_stats_through_the_socket() {
         RenderSources {
             interp: Box::new(|| Some(json!({"frames": 7, "unsure_camera": 1}))),
             pipeline: Box::new(|| None),
-            paths: Some(paths),
             counters: Box::new(|| None),
         },
     );
@@ -60,7 +55,6 @@ fn render_frame_and_stats_through_the_socket() {
     let s = c.call(method::RENDER_STATS, Value::Null).unwrap();
     assert_eq!(s["interp"]["unsure_camera"], 1);
     assert_eq!(s["pipeline"], Value::Null, "not running");
-    assert_eq!(s["paths"]["render_views"], 3);
 
     let r = c.call(method::RENDER_FRAME, Value::Null).unwrap();
     assert_eq!(r["armed"], false);

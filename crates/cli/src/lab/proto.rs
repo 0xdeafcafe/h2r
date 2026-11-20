@@ -114,6 +114,9 @@ pub struct RunReq {
     pub fresh_data: bool,
     /// Free text kept in the run's metadata.
     pub note: Option<String>,
+    /// Driven through the agent API (`h2 lab agent`) until `stop`: the game
+    /// never stops by itself, so `frames` can't be set (docs/runtime/lab.md).
+    pub serve: bool,
 }
 
 /// A recording's manifest (`recordings/<name>/manifest.json`). A recording
@@ -159,6 +162,19 @@ pub enum Request {
         limit: Option<usize>,
     },
     Recordings,
+    /// One `h2 agent` call against run `id`'s game: `args` are what follow
+    /// `h2 agent` on a command line (a method and its JSON, or a short
+    /// form). The answer carries the call's `exit`, `stdout` and `stderr`.
+    Agent {
+        id: String,
+        args: Vec<String>,
+        /// Seconds the call may take (default [`AGENT_TIMEOUT`]).
+        #[serde(default)]
+        timeout: Option<f64>,
+        /// Standard input for the call (an `h2 agent -` script).
+        #[serde(default)]
+        stdin: Option<String>,
+    },
     /// Store a recording's input (hex) under `recordings/<name>`, or a
     /// PGO profile under `pgo/<name>` with `kind: "pgo"`.
     Put {
@@ -174,6 +190,15 @@ pub enum Request {
         commit: Option<String>,
     },
 }
+
+/// Default seconds an `agent` call may take.
+pub const AGENT_TIMEOUT: f64 = 300.0;
+
+/// Most seconds an `agent` call may take.
+pub const AGENT_TIMEOUT_MAX: f64 = 7200.0;
+
+/// Largest `agent` stdin, in bytes.
+pub const AGENT_STDIN_MAX: usize = 1 << 20;
 
 /// Largest upload `put` takes, in bytes.
 pub const PUT_MAX: usize = 64 << 20;
@@ -200,6 +225,27 @@ pub fn validate(r: &Request) -> Result<()> {
             Ok(())
         }
         Request::Stop { id } => check_name("id", id),
+        Request::Agent {
+            id,
+            args,
+            timeout,
+            stdin,
+        } => {
+            check_name("id", id)?;
+            check_agent_args(args)?;
+            if let Some(t) = timeout {
+                ensure!(
+                    t.is_finite() && *t > 0.0 && *t <= AGENT_TIMEOUT_MAX,
+                    "timeout must be between 0 and {AGENT_TIMEOUT_MAX} seconds"
+                );
+            }
+            ensure!(
+                stdin.as_ref().is_none_or(|s| s.len() <= AGENT_STDIN_MAX),
+                "stdin over {} KiB",
+                AGENT_STDIN_MAX >> 10
+            );
+            Ok(())
+        }
         Request::Put {
             name,
             kind,
@@ -235,7 +281,41 @@ pub fn validate(r: &Request) -> Result<()> {
     }
 }
 
+/// What follows `h2 agent` in an `agent` request. Any call goes through
+/// (the host does not know the methods); what is refused is naming a
+/// different socket or console, which the run's own socket replaces, and
+/// the two forms that read files on the host instead of talking to a game.
+pub fn check_agent_args(args: &[String]) -> Result<()> {
+    ensure!(
+        !args.is_empty() && args.len() <= 64,
+        "an agent call is a method and at most 63 more words"
+    );
+    for a in args {
+        ensure!(
+            a.len() <= 64 << 10 && !a.contains('\0'),
+            "an agent argument is over 64 KiB or has a NUL"
+        );
+        ensure!(
+            !matches!(
+                a.as_str(),
+                "--socket" | "--xbox" | "--timeout" | "-h" | "--help"
+            ),
+            "{a} is not passed to the host's h2 agent: the run's own socket is used (--timeout is an option of `h2 lab agent`)"
+        );
+    }
+    ensure!(
+        !matches!(args[0].as_str(), "flight" | "raw-diff"),
+        "`h2 agent {}` reads files on the machine it runs on; the lab doesn't forward it",
+        args[0]
+    );
+    Ok(())
+}
+
 pub fn validate_run(r: &RunReq) -> Result<()> {
+    ensure!(
+        !(r.serve && r.frames.is_some()),
+        "a --serve run never stops by itself; --frames can't be set (h2 lab stop ends it)"
+    );
     if let Some(l) = &r.level {
         check_level(l)?;
     }
@@ -571,6 +651,34 @@ mod tests {
         assert!(a(&["--fps", "--no-audio"]).is_err());
         assert!(a(&["--set", "novalue"]).is_err());
         assert!(a(&["03a_oldmombasa"]).is_err());
+    }
+
+    #[test]
+    fn agent_calls_pass_through_but_not_sockets_or_file_readers() {
+        let ok = r#"{"cmd":"agent","id":"0003","args":["capture","600"],"timeout":90}"#;
+        assert!(run(ok).is_ok());
+        assert!(
+            run(r#"{"cmd":"agent","id":"0003","args":["session.wait","{\"until\":{\"phase\":\"gameplay\"}}"]}"#)
+                .is_ok()
+        );
+        for bad in [
+            r#"{"cmd":"agent","id":"0003","args":[]}"#,
+            r#"{"cmd":"agent","id":"../x","args":["status"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["status","--socket","/tmp/x"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["status","--xbox"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["flight","show","/etc/passwd"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["raw-diff","a","b"]}"#,
+            r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":0}"#,
+            r#"{"cmd":"agent","id":"0003","args":["status"],"timeout":-1}"#,
+        ] {
+            assert!(run(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_serve_run_has_no_frame_limit() {
+        assert!(run(r#"{"cmd":"run","level":"x","serve":true}"#).is_ok());
+        assert!(run(r#"{"cmd":"run","level":"x","serve":true,"frames":10}"#).is_err());
     }
 
     #[test]

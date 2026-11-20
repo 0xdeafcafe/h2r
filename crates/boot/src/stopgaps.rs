@@ -205,38 +205,3 @@ pub fn install(k: &kernel::Kernel, rt: &runtime::Runtime) -> Uses {
     });
     uses
 }
-
-/// XeLoadSection / XeUnloadSection with the section reference count at
-/// header +0x18. The runtime maps every section resident at load, so a
-/// load only restores pristine bytes (raw data, zero tail) on a 0 -> 1
-/// transition of a writable section, as the retail loader re-reads it.
-pub fn install_sections(rt: &runtime::Runtime, xbe_bytes: Vec<u8>, uses: &Uses) {
-    let image = Arc::new(xbe_bytes);
-    rt.edit_dispatch(|d| {
-        for (ord, name, delta) in [(327u32, "XeLoadSection", 1i32), (328, "XeUnloadSection", -1)] {
-            let (u, image) = (Arc::clone(uses), Arc::clone(&image));
-            kernel::abi::register(d, Export::stdcall(ord, name, 1), move |args, m| {
-                u.lock().unwrap().entry(ord).or_insert((name, 0)).1 += 1;
-                let h = args.get(0);
-                let count = m.u32(h + 0x18)?;
-                if delta < 0 && count == 0 {
-                    return Ok(Value::U32(0xc000_000d)); // STATUS_INVALID_PARAMETER
-                }
-                let next = (count as i32 + delta) as u32;
-                if delta > 0 && count == 0 {
-                    let (va, vsize, raw, rsize) = (m.u32(h + 4)?, m.u32(h + 8)?, m.u32(h + 0xc)?, m.u32(h + 0x10)?);
-                    if m.check(va, vsize as usize, runtime::guest::Access::Write, 1).is_ok() {
-                        let mut bytes = vec![0u8; vsize as usize];
-                        let n = (rsize.min(vsize)) as usize;
-                        if let Some(src) = image.get(raw as usize..raw as usize + n) {
-                            bytes[..n].copy_from_slice(src);
-                            m.write_bytes(va, &bytes, 1)?;
-                        }
-                    }
-                }
-                m.set_u32(h + 0x18, next)?;
-                Ok(Value::U32(0))
-            });
-        }
-    });
-}

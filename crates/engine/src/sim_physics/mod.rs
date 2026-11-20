@@ -16,6 +16,7 @@ mod support;
 mod observer;
 mod objects;
 mod object_update;
+mod node_matrices;
 mod spatial;
 mod visit;
 mod unit_aim;
@@ -73,6 +74,12 @@ pub const PORTS: &[Port] = {
         port(&OBJECTS_POST_PHYSICS, "sim.native_objects_post_physics", Integer, &objects::POST_SITES, objects::post),
         port(&OBJECT_PRE_UPDATE, "sim.native_object_pre_update", Integer, &object_update::PRE, object_update::pre),
         port(&OBJECT_POST_UPDATE, "sim.native_object_post_update", Integer, &object_update::POST, object_update::post),
+        // The pose root runs under the pose-matrix switch: it inlines that
+        // leaf and transform composition for the whole skeleton walk.
+        port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
+        // Node evaluators run the native codecs inline under the codec switch.
+        // Other codecs are guest calls that resume at the call's return.
+        port(&ANIM_ADDITIVE_NODES, "sim.native_rotation_codec", Sse, &crate::sim_native::evaluator::ADDITIVE_SITES, crate::sim_native::evaluator::additive),
         port(&OBJECT_CHANGE_COLORS, "sim.native_object_change_colors", Sse, &colors::SITES, colors::update),
         port(&OBJECT_SPATIAL_VISIT, "sim.native_spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "sim.native_spatial_portal", Mixed, &spatial::SITES, spatial::portal),

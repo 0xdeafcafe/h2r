@@ -2077,8 +2077,8 @@ fn reader(repo: std::sync::Weak<Repo>) {
 }
 
 /// Builds the repository, its screens and texts, and starts the reader.
-/// Live off (no HLE or no map gate), or `H2_NO_MODS_ROW=1`: nothing, and
-/// the Live menu keeps Content Download's Map Pack dialog.
+/// Live off (no HLE or no map gate): nothing, and the Live menu keeps
+/// Content Download's Map Pack dialog.
 pub fn install(
     registry: &mut feature::Registry,
     hle: Option<Arc<live_hle::Hle>>,
@@ -2088,9 +2088,6 @@ pub fn install(
     let (Some(hle), Some(gate)) = (hle, gate) else {
         return Ok(false);
     };
-    if std::env::var_os("H2_NO_MODS_ROW").is_some() {
-        return Ok(false);
-    }
     let repo = Repo::new(
         Arc::new(LiveSource { hle, gate }),
         Some(data_root.join(SEEN_FILE)),

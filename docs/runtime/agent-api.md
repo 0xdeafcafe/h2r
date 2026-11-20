@@ -23,6 +23,12 @@ test) can see and drive a running Halo 2. That means: what is on screen,
 what is in the level, where frame time goes, and how to put the game into a
 given state, act in it, and compare variants of a mission to find fps.
 
+A game on another Mac is reached the same way through the lab:
+`h2 lab agent --host H <run id> <call>` runs `h2 agent <call>` there against
+the run's socket and returns its output and exit code, and `h2 lab bench`
+does a wait, capture, `render` and `counters` in one command
+([lab.md](lab.md#driving-a-run-the-agent-api)).
+
 ## Evidence labels
 
 - **Code**: read from this repository at `51a3810c`. File given.
@@ -130,6 +136,11 @@ environment variable read at launch (**Code**: no listener outside
 - **Events.** `session.subscribe(["screen", "phase", "death", "checkpoint",
   "frame_budget_miss", …])` streams notifications, so a client waits on
   "the skulls page opened" instead of polling.
+- **Benchmarks use `h2 play`.** `h2 serve` has no window or GPU view
+  backend, so frame cost measured on it is not what a player sees. A
+  windowed `h2 play` with `H2_AGENT` set serves the same API, which is what
+  `h2 lab run --serve` and `h2 lab bench` launch (every lab run sets
+  `H2_AGENT`).
 - **Headless.** `h2 serve` is `h2 run` with the agent socket on, no window,
   optional GPU rendering and optional real-time pacing (`H2_BOOT_REALTIME=1`).
   `h2 serve --system-link --host-light` always paces to real time. It is the
@@ -547,7 +558,7 @@ named, reversible change, applied live:
 
 | Override | Label | Example |
 |---|---|---|
-| `switch {name, on}` | as the feature says | `impl.render.views=on`, `e3_lighting=off` |
+| `switch {name, on}` | as the feature says | `impl.render.native=off`, `e3_lighting=off` |
 | `render.pass {name, off}` | View | drop the shadow pass |
 | `render.lod_bias`, `render.scale` | View | |
 | `effects.cap {class?, max}` | Sim | at most 8 live plasma impacts |
@@ -1063,7 +1074,7 @@ a separate effort; this phase leaves their names free and builds neither.
 | Area | Have | Missing | Lightest way |
 |---|---|---|---|
 | Profiling | `profile.capture`: per-frame phases (`cpu`, `render`, `decode`, `encode`, `submit`, `gpu-wait`, `render-wait`, `d3d`), counters, spikes; the sampler | why a spike happened; where the fallback interpreter runs; per-subsystem guest time; A/B of two feature sets on one recording | spike `causes` from the frame's own counters (built); `profile.fallbacks` (built); engine-phase spans as feature-registry hooks (phase 4 plan); A/B as two `h2 lab` runs of the same input log, run by the user or coordinator |
-| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; which native paths a frame took; one pass's image | `render.frame` and `render.stats` (built) |
+| Render pipeline | frame counters (`draws`, `passes`, pass splits); `H2_BOOT_CAPTURE`, `H2_BOOT_DRAWLOG` at launch only | a frame's passes, draws and targets on request; interp and pipelined-render counters and hold reasons; one pass's image | `render.frame` and `render.stats` (built) |
 | Features | `features.list` (the plan text) | state as data; setting a switch live | `features.list` grows `{name, on, sim, live}` per switch; a `features.set` for the `Host`/`View` switches whose hooks read a flag each call, and for the rest the reason a restart is needed (the switch places or removes hooks at build) |
 | Loading | `present N: last 100 at X fps` lines; `read_bytes` per frame | a load's timeline; stalls; loading a named level or BSP | `load.timeline` (built: stall and settle with bytes, uploads, compiles, phase times); seeks and cache hits need kernel I/O counters (later); `load.level` needs a runtime level switch (the game's own map change, through `hs.eval` once it exists) |
 | Editing, test maps | `scenario-edit` (placements, undo, save), `h2-editor`, `h2 map testbuild` | a scripted, headless way to make a small test map | `h2 testmap`: a JSON edit script (clear blocks, keep, add, set, remove) over `scenario-edit`, saved to a new `.map` (built, on disk only) |
@@ -1092,18 +1103,18 @@ level without a restart.
 ### Render frame and pipeline counters
 
 ```sh
-h2 agent frame                     # the next whole frame: passes, totals, paths
+h2 agent frame                     # the next whole frame: passes, totals
 h2 agent frame draws               # ... and every draw, with its depth state
 h2 agent frame constants -38..-35,58,59   # ... and those vertex constants on each
 h2 agent frame snap 0,3            # ... and passes 0 and 3 read back as PNGs
-h2 agent render                    # interp, pipelined render, native paths
+h2 agent render                    # interp, pipelined render, counters
 ```
 
 Methods `render.frame` and `render.stats` (host methods: boot's agent glue
 adds them; types in `crates/agent-proto/src/render.rs`, logic in
 `crates/agent/src/render.rs`). How it behaves (**Code**, tested in
-`crates/agent`, `crates/boot`'s `d3d_diag` and `render_probe`, and
-`crates/feature/tests/render_loop.rs`; not run against the game):
+`crates/agent` and `crates/boot`'s `d3d_diag` and `render_probe`; not
+run against the game):
 
 - **Recording.** `render.frame {"arm": true, "draws", "max_draws",
   "constants", "snap"}` arms the recorder; the next present starts the frame and the
@@ -1120,8 +1131,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   with its target (`640x480 X8R8G8B8`), clears, draws, vertices, outcomes,
   primitives, D3D entries, texture formats, and counts of pixel-program,
   blended and depth-writing draws; `ops`: copies and readbacks with the
-  draw count before them; `paths`: calls into each native render path
-  during the frame. Surfaces are the backend's handles as text. With
+  draw count before them. Surfaces are the backend's handles as text. With
   `draws`, each draw (at most `max_draws`, 2000 by default; `truncated`
   says when there were more).
 - **A draw.** Its pass, D3D entry, primitive, vertex and index counts,
@@ -1153,24 +1163,6 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   (`frame-<seq>-pass-<n>.png`); `snaps` gives each file or error. A pass
   with no draw has no known size and says so. This is a GPU round trip,
   only when asked.
-- **Residual render census.** With
-  `H2_NATIVE_RESIDUAL_PROBE=2000,3000` at launch,
-  `render.stats` includes `counters.residual`. It lists completed
-  present numbers and, for each view kind, the invocation count and
-  distinct Direct3D entry and return-PC pairs, with ordinary backend
-  draw attempts. Use the stage counters
-  in the same reply to identify submitted native draws. See the
-  [residual caller inventory](../graphics/native-renderer.md#residual-render-callers).
-- **Shadow maps.** `render.shadows {}` reads completed GPU comparisons when
-  `impl.render.native_shadows=on` and `H2_NATIVE_SHADOWS_COMPARE=1`.
-  It accepts no parameters. `comparing` reports the requested mode.
-  `maps.completed`, `nonempty` (at least one caster packet) and `mismatched`
-  count physical maps since process start. `maps.recent` keeps the latest 32
-  in readback completion order. Each includes the present (`frame`), generation,
-  view, parent identity, site, map kind, physical copy, extent, candidate count,
-  projection (nine vectors of four raw u32 words), packet count,
-  differing texel count and first differing pixel or null. A dropped or pending
-  readback contributes no sample. See [native shadows](../graphics/native-shadows.md).
 - **Counters.** `render.stats`: `interp` is `d3d::interp::InterpStats`
   with every field (frames blended and held, replays, warps, and the hold
   reasons `unsure_*`, `mismatch_*`, `dropped`), read from its `Debug`
@@ -1178,9 +1170,7 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   pipelined render's totals (`pipelined`, `completed`, `serial` reasons,
   `fallbacks` by call, joins, snapshot coverage, and times in ms including
   `overlap_ms` for the worker's execution before the game-thread join).
-  `paths` counts calls into each native render path since the start (`feature::render_loop::path_calls`:
-  `render_views`, `layer_draw`, `layer_entries`, `render_game_view`,
-  `render_scene_passes`, `render_states`); `counters` the frame-stats window's line. Each is
+  `counters` is the frame-stats window's line. Each is
   `null` where that piece isn't running.
 - **Interp on a headless serve.** `interp` is there when in-between
   frames run: in `h2 play`, or in an `h2 serve` that renders on the GPU

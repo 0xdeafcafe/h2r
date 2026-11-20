@@ -84,9 +84,6 @@ fn harness_mode(native: bool, mode: u32) -> PathBuf {
             "-fno-sanitize-recover=all",
         ])
         .arg(format!("-DH2_SSE_NATIVE={}", u8::from(native)))
-        .arg("-DH2_SSE_HOST_RUN=1")
-        .arg("-DH2_SSE_STICKY_PE=1")
-        .arg("-DH2_SSE_PACKED_X86=1")
         .arg(format!("-DH2SSE_HOST_MODE={mode}"))
         .arg("-I")
         .arg(root.join("c"))
@@ -413,8 +410,6 @@ fn fast_equiv(opt: &str, sanitize: bool, count: u64, seed: u64) -> String {
         "-Wextra",
         "-Werror",
         "-DH2_SSE_NATIVE=1",
-        "-DH2_SSE_STICKY_PE=1",
-        "-DH2_SSE_PACKED_X86=1",
     ]);
     if sanitize {
         command.args(["-fsanitize=undefined", "-fno-sanitize-recover=all"]);

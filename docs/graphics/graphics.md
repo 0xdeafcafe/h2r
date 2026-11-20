@@ -210,8 +210,8 @@ into stream layouts. Vertex data types with no float wgpu equivalent
 handled by `repack.rs` in one of two modes (`FetchMode`, per draw in
 `Draw::vertex_fetch`):
 
-* GPU fetch (the default for translated programs; `H2_VERTEX_FETCH=cpu`
-  selects the old path). Every type maps to a wgpu format that reads the
+* GPU fetch (the default for translated programs; `set_vertex_fetch`
+  selects the old path for tests and benches). Every type maps to a wgpu format that reads the
   guest bytes unconverted (`SHORT3` as `Sint16x4`, `NORMPACKED3` as
   `Uint32`, `FLOAT2H` as `Float32x3`, ...) and the vertex program's entry
   point finishes the decode (`shaders::vsh::InputFetch` in
@@ -345,8 +345,8 @@ one render pass by default, for speed: about 6 fps at the main menu
 against about 2.5 with one render pass per draw. On Apple GPUs (Metal
 through wgpu 30) a few draws' edge pixels depend on what earlier draws in
 the same render pass left in the tile. The exact rule
-(`H2_GFX_MERGE_PASSES=exact`, `GfxBackend::set_merge_discards(false)`)
-gives two kinds of draw a render pass of their own:
+(`GfxBackend::set_merge_masks(false)`, for tests and references) gives
+two kinds of draw a render pass of their own:
 
 - a draw whose program can `discard`;
 - a draw after one that writes only some colour channels, unless it
@@ -354,10 +354,13 @@ gives two kinds of draw a render pass of their own:
 
 With both rules, a menu run to present 560 with a frame every 20 gives
 the same bytes merged and per draw on all 29 frames. The rules were found
-on that run and are not proven in general. The default is the fast rule
-below, which drops the first rule except after a partly masked draw.
-`H2_GFX_MERGE_PASSES=0` (`GfxBackend::set_merge_passes(false)`) gives
-one render pass per draw, which is the exact reference.
+on that run and are not proven in general. The default is the loose rule
+below, which drops both. `GfxBackend::set_merge_passes(false)` gives one
+render pass per draw, which is the exact reference; the tests use both
+setters, and `H2_GFX_MERGE_CHECK=N` (headless `h2 run`) compares the
+merged and per-draw passes of frame N in game. The environment variable
+`H2_GFX_MERGE_PASSES` that chose a rule went in the 2026-11-20 flag
+cleanup.
 
 The first case: in the main menu (frame 480) a strip drawn additively at
 draw 594 of the frame came out up to 91 levels different on 32 edge pixels
@@ -414,29 +417,14 @@ render pass and 38cd3f7 onwards at 200, and the later commits in that
 range (compile workers, render thread, W-buffer) change neither count
 nor cost.
 
-**The fast rule** (the default until 2026-11-18; `H2_GFX_MERGE_PASSES=fast`,
-`GfxBackend::set_merge_discards`) gives a discarding draw a render pass
-of its own only after a partly masked draw (`merge_split` in
-`d3d::gfx_backend`), which is the one trigger the menu cases share.
-Because a draw with another mask already splits after a partly masked
-one, a render pass holds a partly masked draw only while its last draw
-is one, so the check looks at the previous draw only. It is not exact.
-The merge self-check at The Heretic's frame 4216 found two passes off
-(the others were exact): 8 pixels by up to 2 levels, which needs draws
-434, 524 and 526, and 53 pixels by up to 4, which needs draws 838 and 840.
-All of them write every channel, and the later ones are additive
-(`DstAlpha`, `One`) with depth `Equal`. So an earlier additive draw
-triggers it too, not only a masked one. In the bench it takes the
-churn scene from 200 render passes to 1, and from 41-53 us a draw to
-9-10.5 at a load average of about 55 (docs/perf/gameplay-budget.md, "The submit
-regression"). It became the default after play-testing showed nothing
-visible: the differences are a few levels on edge pixels, and merged
-passes already accept that trade. Whether the exact rule is exact on
-that level frame was not checked: the self-check ran only with the fast
-rule on.
+**The fast rule** (the default from 38cd3f7's follow-up until
+2026-11-18) gave a discarding draw a render pass of its own only after a
+partly masked draw. It was not exact either (The Heretic's frame 4216: 61
+edge pixels off by up to 4 levels in two passes, after additive draws),
+and the loose rule superseded it; it was removed in the flag cleanup.
 
 **The loose rule** (the default since 2026-11-18;
-`H2_GFX_MERGE_PASSES=loose`, `GfxBackend::set_merge_masks`) drops the
+`GfxBackend::set_merge_masks`) drops the
 merge-rule splits altogether: no draw starts a render pass of its own
 because of the draw before it. Counted draws and target switches still
 split. On Old Mombasa (presents 4000-7000, 1x) it took a 1000-draw frame
@@ -448,7 +436,6 @@ The merge self-check at frame 5000 (970 draws) found two passes off:
 1 pixel by 1 level (draws 836-837) and 11 pixels by up to 3 (draws
 897-898). It became the default on the owner's call: edge pixels a few
 levels off, for render-thread headroom in heavy scenes.
-`H2_GFX_MERGE_PASSES=fast` goes back to the fast rule.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 

@@ -366,12 +366,10 @@ const LIGHT_TAIL_RETURN: u32 = 0x0003_1508;
 const BUILDER_TO_LAYER_CALLER: u32 = 0xf02c;
 const ADDITIONAL_COUNT: u32 = 0x004b_a134;
 
-pub const SWITCH: &str = "impl.render.native_light_walk";
-
+/// Whether the gathered walk is on: with the native renderer, which also
+/// turns on the lights and shadows it serves.
 pub fn on(switches: &crate::Switches) -> bool {
-    crate::switches::native_render_default(switches)
-        && crate::switches::native_stage_on(switches, SWITCH)
-        && (super::on(switches) || crate::native_shadows::on(switches))
+    crate::switches::native_render_on(switches)
 }
 
 pub(super) fn reset() {
@@ -564,9 +562,7 @@ impl Feature for NativeLightWalk {
     }
 
     fn build(&self, b: &mut Builder) -> std::result::Result<(), BuildError> {
-        if on(b.switches()) && !b.switches().feature(crate::render_timing::ID, false)
-            && !crate::native_shadows::comparing()
-            && std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() != Ok("1") {
+        if on(b.switches()) && !b.switches().feature(crate::render_timing::ID, false) {
             install(b);
             b.snapshot(crate::SnapshotPolicy::section(Vec::new, |_, _| {
                 reset();

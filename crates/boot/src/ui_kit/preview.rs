@@ -1459,44 +1459,6 @@ impl Canvas {
         }
         out
     }
-    /// `self` and `other` side by side, `other` scaled to this height.
-    pub fn beside(&self, other: &Canvas) -> Canvas {
-        let mut out = Canvas::new(
-            self.width + other.width + 8,
-            self.height.max(other.height),
-            [255, 255, 255, 255],
-        );
-        for (dx, c) in [(0, self), (self.width + 8, other)] {
-            for y in 0..c.height {
-                for x in 0..c.width {
-                    let i = ((y * c.width + x) * 4) as usize;
-                    let o = ((y * out.width + x + dx) * 4) as usize;
-                    out.rgba[o..o + 4].copy_from_slice(&c.rgba[i..i + 4]);
-                }
-            }
-        }
-        out
-    }
-    /// A PNG (8-bit RGB or RGBA) as a canvas.
-    pub fn read_png(path: &Path) -> Result<Canvas> {
-        let d = png::Decoder::new(BufReader::new(File::open(path)?));
-        let mut r = d.read_info()?;
-        let mut buf = vec![0; r.output_buffer_size().context("png size")?];
-        let info = r.next_frame(&mut buf)?;
-        let rgba = match info.color_type {
-            png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
-            png::ColorType::Rgb => buf[..info.buffer_size()]
-                .chunks(3)
-                .flat_map(|p| [p[0], p[1], p[2], 255])
-                .collect(),
-            t => bail!("{t:?} png"),
-        };
-        Ok(Canvas {
-            width: info.width,
-            height: info.height,
-            rgba,
-        })
-    }
     pub fn write_png(&self, path: &Path) -> Result<()> {
         let f = std::io::BufWriter::new(
             File::create(path).with_context(|| path.display().to_string())?,

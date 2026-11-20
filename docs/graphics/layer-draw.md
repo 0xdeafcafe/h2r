@@ -76,22 +76,17 @@ different function per entry type), and what they call: shader draw begin
 
 ## The port (Code, Test)
 
-`engine::render_loop::layer` ports both functions as state machines like
-`render_views` (docs/graphics/render-loop.md): `Draw` for `0x00044550` and
-`Entries` for `0x0003bc30`, which does `_chkstk`'s probes and stack
-writes itself. The `render-loop` feature places them with
-`H2_FEATURES=impl.render.layer_draw=on` and
-`impl.render.layer_entries=on` (or `impl.render=on`); both are off by
-default. The entry loop in Rust is where batching goes: it reads each
-entry, its item record and the handler before calling it.
-
-Evidence: `crates/engine/tests/layer_differential.rs` runs each against
-the lifted original from seeded states (any layer 0 to 31, the fog
-cases, 0 to 40 entries or a negative count, six item types with stub
-handlers, skipped targets); call logs, registers and all 64 MB must be
-equal. `crates/feature/tests/render_loop.rs` runs the entry loop on the
-runtime with stub build and handlers and checks the calls equal the
-port's.
+`engine::render_loop::layer::Entries` ports the entry loop `0x0003bc30` as
+a state machine (it does `_chkstk`'s probes and stack writes itself).
+`crates/engine/tests/layer_differential.rs` runs it against the lifted
+original from seeded states (0 to 40 entries or a negative count, six
+item types with stub handlers, skipped targets); call logs, registers and
+all 64 MB must be equal. It is not placed in the game: the native lights'
+split test drives the loop through it. A port of the layer draw itself
+and placements of both (`impl.render.layer_draw`,
+`impl.render.layer_entries`) were removed unused in `ebaa4a0b`; a hooked
+call leaves the direct path (below), and neither was measured to save
+time.
 
 ## `render-timing` breakdown
 

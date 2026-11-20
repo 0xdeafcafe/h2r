@@ -1,7 +1,8 @@
 //! The shader draw's render-state list, `0x0001a170` (docs/graphics/layer-draw.md,
 //! "Shader draw begin"; the read is in docs/graphics/render-loop.md, "The
-//! render-state list"), as a Port-grade state machine like the other ports
-//! in [`super`].
+//! render-state list"), as a Port-grade state machine (see [`super`]). The
+//! native world's walk runs it with [`Mode::SkipRedundant`]; the
+//! differential test checks both modes against the lifted original.
 //!
 //! `0x00016b90` calls it once per draw with EBX the shader draw's context
 //! and one stack argument: a word `count << 9 | first`. Entry `i` is the

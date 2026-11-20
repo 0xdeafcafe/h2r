@@ -69,8 +69,8 @@ at 0x4c99b8 turns voice on and off as a whole.
 
 Startup is 0x533a0 then 0x55810: 4 local talkers, up to 15 remote talkers in
 chat mode. The kernel side already runs the engine's 20 ms DPC (0x332f4c on
-timer 0x484248, armed from 0x332b6d; see the kernel README). The boot notes
-record that 0x55810 is skipped under `H2_BOOT_OLD_GLUE`.
+timer 0x484248, armed from 0x332b6d; see the kernel README). The boot's old
+0x55810 voice-off override is gone (docs/runtime/BOOT.md "Retired").
 
 ### 1.2 Communicator presence
 

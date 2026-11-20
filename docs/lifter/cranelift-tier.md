@@ -86,8 +86,8 @@ register on x86-64 System V, which is how C returns the 28-byte
   writes `cpu->eip`, stores the `TransferAbi` through the sret pointer and
   returns. One spill per handler, as `H2_EPILOGUE` has.
 
-All eight registers are kept in variables (the C's `H2_REG_HOMES=0`
-shape): the loads of registers a handler never writes are dead after
+All eight registers are kept in variables (the shape the C had before
+register homes): the loads of registers a handler never writes are dead after
 Cranelift's SSA construction except at the spill, which writes back what
 was read. Nothing else writes those `CpuAbi` fields while a handler runs
 except the atomic accessors, around which the variables are spilled and

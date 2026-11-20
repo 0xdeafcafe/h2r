@@ -60,11 +60,11 @@ struct Churn {
     masked_every: Option<u32>,
 }
 
-/// Merged passes under the fast rule (the default) or the exact rule
-/// (`H2_GFX_MERGE_PASSES=exact`), or one render pass per draw.
+/// Merged passes under the loose rule (the default) or the exact rule
+/// (`set_merge_masks(false)`), or one render pass per draw.
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
-    Fast,
+    Loose,
     Exact,
     PerDraw,
 }
@@ -74,7 +74,7 @@ fn device(mode: Mode) -> Option<(Device<GfxBackend>, SparseMemory)> {
         Ok(ctx) => {
             let mut b = GfxBackend::new(ctx);
             b.set_merge_passes(mode != Mode::PerDraw);
-            b.set_merge_discards(mode != Mode::Exact);
+            b.set_merge_masks(mode != Mode::Exact);
             Some(create(b, UploadPolicy::Tracked))
         }
         Err(e) => {
@@ -268,18 +268,18 @@ pub fn bench() {
         material_run: 6,
         ..level
     };
-    run("fast, city 1500", Mode::Fast, city);
+    run("loose, city 1500", Mode::Loose, city);
     run(
-        "fast, city 1500 + masked",
-        Mode::Fast,
+        "loose, city 1500 + masked",
+        Mode::Loose,
         Churn {
             masked_every: Some(20),
             ..city
         },
     );
-    run("fast, uniforms + textures", Mode::Fast, plain);
-    run("fast, level churn", Mode::Fast, level);
-    run("fast, level churn + masked", Mode::Fast, masked);
+    run("loose, uniforms + textures", Mode::Loose, plain);
+    run("loose, level churn", Mode::Loose, level);
+    run("loose, level churn + masked", Mode::Loose, masked);
     run("exact, level churn", Mode::Exact, level);
     run("exact, level churn + masked", Mode::Exact, masked);
     run("pass per draw, level churn", Mode::PerDraw, level);
@@ -345,7 +345,7 @@ fn city_output_matches_individual_passes_across_frames() {
     let Some(reference) = render(Mode::PerDraw) else {
         return;
     };
-    for mode in [Mode::Fast, Mode::Exact] {
+    for mode in [Mode::Loose, Mode::Exact] {
         for (epoch, (actual, expected)) in render(mode).unwrap().iter().zip(&reference).enumerate()
         {
             let mismatch = actual.iter().zip(expected).position(|(a, e)| a != e);

@@ -4,8 +4,7 @@ Status: built and unit tested. The first version's rows did not appear in
 the game; the cause was found statically and fixed (see "Why the rows did
 not show"), but the fix is not yet seen in the game; "To check in the game"
 lists what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
-in `crates/boot/src/layout_glue.rs`, installed by `boot::run` unless
-`H2_NO_LAYOUTS=1`. This page records how the retail game implements layouts
+in `crates/boot/src/layout_glue.rs`, installed by `boot::run`. This page records how the retail game implements layouts
 and what the hooks touch.
 
 No game data is here. Addresses are guest virtual addresses of the retail XBE
@@ -128,8 +127,7 @@ is "drawn". The list rows are not in the tag. Code fills them:
 Every change is at a function entry, because the game is statically
 recompiled: `rt.edit_dispatch(|d| d.register_override(addr, name, closure))`
 replaces a function at its entry, `rt.resolve_original(addr)` runs the
-generated original, and the shadow-page pattern in `crates/boot/src/wrappers.rs`
-and `d3d_glue.rs` runs the original and then continues in Rust through
+generated original, and the shadow-page pattern in `d3d_glue.rs` runs the original and then continues in Rust through
 `ctx.call_guest`. There is no way to patch inside a function, so a site that
 is a switch inside a big function needs the whole function wrapped.
 
@@ -306,9 +304,7 @@ the speaker row and the Video screen's rows saves them all to `<data>/settings.t
 6. Save, quit, reload: the layout is kept (needs a named profile; the Default
    profile cannot save). The profile select dialog's summary has not been
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
-7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
-   layouts off (the Controller Speaker row on the Controls screen has its own
-   switch, `H2_NO_SPEAKER_ROW=1`; docs/audio/playstation-audio.md).
+7. Retail rows 0 to 3 still behave as before.
 8. The hooks install with no stall at boot.
 
 ## Known gaps

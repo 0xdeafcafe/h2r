@@ -431,12 +431,13 @@ struct Compiled {
     pipelines: HashMap<(wgpu::TextureFormat, Option<Blend>), wgpu::RenderPipeline>,
 }
 
-/// What [`GpuGlow::encode`] draws into: the view's colour (a sampled,
-/// drawable texture) and its sizes.
+/// What [`GpuGlow::prepare`] draws into: the view's colour (a sampled,
+/// drawable texture) and its sizes, and the submission's arena its
+/// uniforms go in.
 pub struct GlowTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub uploads: &'a gfx::ring::SubmissionUploads,
     pub color: &'a wgpu::TextureView,
     /// Resolved inputs of the downsample, including any XRGB alpha fixup.
     pub entry_sources: [Option<&'a wgpu::TextureView>; 4],
@@ -485,32 +486,37 @@ impl QuadDrawer {
         Ok(p)
     }
 
-    /// Records one quad of `program` with `quad`'s vertex uniforms into
-    /// `dest` (format `format`, blended by `blend`), each sampled stage
-    /// `n` reading `stages[n]`, the rest of `dest` kept.
+    /// One quad of `program` with `quad`'s vertex uniforms into `dest`
+    /// (format `format`, blended by `blend`), each sampled stage `n`
+    /// reading `stages[n]`, the rest of `dest` kept: its pipeline and
+    /// groups made and its uniforms staged in `uploads`, for
+    /// [`QuadCommand::record`].
     #[allow(clippy::too_many_arguments)]
-    pub fn draw(
+    pub fn quad(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
         program: &Program,
         quad: &Quad,
         dest: &wgpu::TextureView,
         format: wgpu::TextureFormat,
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
-    ) {
-        self.record(device, encoder, program, bytemuck::bytes_of(quad), None, (dest, format, blend), stages);
+    ) -> Result<Option<QuadCommand>, &'static str> {
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(quad), None, (dest, format, blend), stages)
     }
 
-    /// Records a grid's `strips` (`screen_gpu::StripVertex`, each a
-    /// triangle strip) of a [`grid_program`] into `dest` (`frame` its
-    /// size), as [`Self::draw`] does a quad.
+    /// A grid's `strips` (`screen_gpu::StripVertex`, each a triangle
+    /// strip) of a [`grid_program`] into `dest` (`frame` its size), as
+    /// [`Self::quad`] does a quad; `None` when the strips hold no vertex
+    /// (nothing to draw).
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_grid(
+    pub fn grid(
         &mut self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
         program: &Program,
         frame: &GridFrame,
         strips: &[Vec<StripVertex>],
@@ -518,25 +524,24 @@ impl QuadDrawer {
         format: wgpu::TextureFormat,
         blend: Option<Blend>,
         stages: [Option<&wgpu::TextureView>; 4],
-    ) {
-        self.record(device, encoder, program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages);
+    ) -> Result<Option<QuadCommand>, &'static str> {
+        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (dest, format, blend), stages)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record(
+    fn prepare(
         &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
+        (device, queue, uploads): (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),
         program: &Program,
         vertex_uniform: &[u8],
         strips: Option<&[Vec<StripVertex>]>,
         (dest, format, blend): (&wgpu::TextureView, wgpu::TextureFormat, Option<Blend>),
         stages: [Option<&wgpu::TextureView>; 4],
-    ) {
+    ) -> Result<Option<QuadCommand>, &'static str> {
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
         let c = self.compiled.entry(program.wgsl.clone()).or_insert_with(|| compile(device, program));
         let (module, layout) = (&c.module, &c.layout);
-        c.pipelines.entry((format, blend)).or_insert_with(|| {
+        let pipeline = c.pipelines.entry((format, blend)).or_insert_with(|| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native glow"),
                 layout: Some(layout),
@@ -566,29 +571,18 @@ impl QuadDrawer {
                 multiview_mask: None,
                 cache: None,
             })
-        });
-        let buffer = |label, bytes: &[u8], usage| {
-            use wgpu::util::DeviceExt;
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents: bytes,
-                usage,
-            })
-        };
+        }).clone();
         let all: Vec<StripVertex> = strips.unwrap_or_default().iter().flatten().copied().collect();
         if strips.is_some() && all.is_empty() {
-            return;
+            return Ok(None);
         }
-        let quad = buffer("native glow vertex", vertex_uniform, wgpu::BufferUsages::UNIFORM);
-        let pixel = buffer("native glow pixel", &program.pixel.to_bytes(), wgpu::BufferUsages::UNIFORM);
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native glow uniforms"),
-            layout: &c.uniforms_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: quad.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: pixel.as_entire_binding() },
-            ],
-        });
+        let pixel = program.pixel.to_bytes();
+        let run = uploads
+            .uniform_run(device, queue, &c.uniforms_layout, [vertex_uniform.len(), pixel.len()], 1, |_, v, p| {
+                v.copy_from_slice(vertex_uniform);
+                p.copy_from_slice(&pixel);
+            })
+            .ok_or("native glow uniforms unavailable")?;
         let mut entries = Vec::new();
         for (n, d) in program.dims.iter().enumerate() {
             let (Some(_), Some(view)) = (d, stages[n]) else { continue };
@@ -606,10 +600,49 @@ impl QuadDrawer {
             layout: &c.textures_layout,
             entries: &entries,
         });
+        let (vertices, ranges) = match strips {
+            None => (None, vec![0..4]),
+            Some(strips) => {
+                let bytes: &[u8] = bytemuck::cast_slice(&all);
+                let (buffer, offset) = uploads.stage(device, queue, bytes);
+                (Some((buffer, offset, bytes.len() as u64)), strip_ranges(strips))
+            }
+        };
+        Ok(Some(QuadCommand {
+            dest: dest.clone(),
+            pipeline,
+            uniforms: run.group.clone(),
+            offsets: run.offsets(0),
+            textures,
+            vertices,
+            ranges,
+        }))
+    }
+}
+
+/// One quad's or grid's render pass ([`QuadDrawer::quad`],
+/// [`QuadDrawer::grid`]): its pipeline, groups and bytes made and staged
+/// when it was prepared, so recording only issues commands, the same each
+/// time.
+#[derive(Clone)]
+pub struct QuadCommand {
+    dest: wgpu::TextureView,
+    pipeline: wgpu::RenderPipeline,
+    uniforms: wgpu::BindGroup,
+    offsets: [u32; 2],
+    textures: wgpu::BindGroup,
+    /// A grid's strips in the submission's arena.
+    vertices: Option<(wgpu::Buffer, u64, u64)>,
+    ranges: Vec<std::ops::Range<u32>>,
+}
+
+impl QuadCommand {
+    /// Records the pass into `encoder`, loading `dest`'s pixels.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native glow"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: dest,
+                view: &self.dest,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -622,18 +655,14 @@ impl QuadDrawer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&c.pipelines[&(format, blend)]);
-        pass.set_bind_group(0, &uniforms, &[]);
-        pass.set_bind_group(1, &textures, &[]);
-        match strips {
-            None => pass.draw(0..4, 0..1),
-            Some(strips) => {
-                let vertices = buffer("native glow grid", bytemuck::cast_slice(&all), wgpu::BufferUsages::VERTEX);
-                pass.set_vertex_buffer(0, vertices.slice(..));
-                for r in strip_ranges(strips) {
-                    pass.draw(r, 0..1);
-                }
-            }
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.uniforms, &self.offsets);
+        pass.set_bind_group(1, &self.textures, &[]);
+        if let Some((buffer, offset, size)) = &self.vertices {
+            pass.set_vertex_buffer(0, buffer.slice(*offset..*offset + *size));
+        }
+        for r in &self.ranges {
+            pass.draw(r.clone(), 0..1);
         }
     }
 }
@@ -668,6 +697,8 @@ pub enum Refused {
     Attachment(Surface),
     Source(Surface),
     Program(String),
+    /// The submission's arena could not hold a quad's uniforms.
+    Uniforms,
 }
 
 /// A draw's program's key: its block without its constants (uniforms,
@@ -696,9 +727,11 @@ impl GpuGlow {
         Self::default()
     }
 
-    /// Records every quad into the exact colour attachment the D3D draw
-    /// used. Destination format and existing pixels come from that view.
-    pub fn encode(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<(), Refused> {
+    /// Every quad into the exact colour attachment the D3D draw used,
+    /// prepared ([`GlowCommands::record`] records them). Destination
+    /// format and existing pixels come from that view. Refused before
+    /// anything is recorded.
+    pub fn prepare(&mut self, t: GlowTarget<'_>, plan: &Plan) -> Result<GlowCommands, Refused> {
         if t.guest_size != plan.view {
             return Err(Refused::ViewSize(t.guest_size, plan.view));
         }
@@ -740,20 +773,58 @@ impl GpuGlow {
             }
             prepared.push((dest, program, stages));
         }
+        let mut quads = Vec::with_capacity(prepared.len());
         for (draw, (dest, program, stages)) in plan.draws.iter().zip(prepared) {
-            self.quads.draw(t.device, t.encoder, &program, &plan.quad(draw), dest, dest.texture().format(), draw.blend, stages);
+            let format = dest.texture().format();
+            let quad = self.quads.quad(t.device, t.queue, t.uploads, &program, &plan.quad(draw), dest, format, draw.blend, stages);
+            quads.extend(quad.map_err(|_| Refused::Uniforms)?);
         }
+        Ok(GlowCommands { quads })
+    }
+
+    /// [`Self::prepare`], recorded into `encoder`.
+    pub fn encode(&mut self, t: GlowTarget<'_>, encoder: &mut wgpu::CommandEncoder, plan: &Plan) -> Result<(), Refused> {
+        self.prepare(t, plan)?.record(encoder);
         Ok(())
     }
 }
 
+/// A plan's quads ([`GpuGlow::prepare`]), one render pass each.
+#[derive(Clone)]
+pub struct GlowCommands {
+    quads: Vec<QuadCommand>,
+}
+
+impl GlowCommands {
+    /// The render passes [`Self::record`] begins.
+    pub fn passes(&self) -> usize {
+        self.quads.len()
+    }
+
+    /// Records the quads in order: no resource is made or written.
+    pub fn record(&self, encoder: &mut wgpu::CommandEncoder) {
+        for quad in &self.quads {
+            quad.record(encoder);
+        }
+    }
+}
+
+/// The vertex and pixel uniforms, at dynamic offsets into the
+/// submission's arena (`SubmissionUploads::uniform_run`).
 fn uniforms_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let entry = |binding, visibility| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: None,
+        },
+        count: None,
+    };
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("native glow uniforms"),
-        entries: &[
-            crate::program::uniform_entry(0, wgpu::ShaderStages::VERTEX),
-            crate::program::uniform_entry(1, wgpu::ShaderStages::FRAGMENT),
-        ],
+        entries: &[entry(0, wgpu::ShaderStages::VERTEX), entry(1, wgpu::ShaderStages::FRAGMENT)],
     })
 }
 
@@ -953,23 +1024,109 @@ mod tests {
                 taps: 1, spread: 0.0, blend: None,
             }).to_vec(),
         };
+        let arena = gfx::ring::UploadPool::default().begin();
         let mut encoder = ctx.device.create_command_encoder(&Default::default());
         let mut glow = GpuGlow::new();
         let target = GlowTarget {
-            device: &ctx.device, queue: &ctx.queue, encoder: &mut encoder,
+            device: &ctx.device, queue: &ctx.queue, uploads: &arena,
             color: view.target().color, entry_sources: [None; 4],
             intermediates: [Some(small.target().color), None],
             guest_size: plan.view, size: plan.view,
         };
-        assert_eq!(glow.encode(target, &plan), Err(Refused::Source(Surface::View)));
+        assert_eq!(glow.encode(target, &mut encoder, &plan), Err(Refused::Source(Surface::View)));
         glow.encode(GlowTarget {
-            device: &ctx.device, queue: &ctx.queue, encoder: &mut encoder,
+            device: &ctx.device, queue: &ctx.queue, uploads: &arena,
             color: view.target().color, entry_sources: [Some(&sample), None, None, None],
             intermediates: [Some(small.target().color), None],
             guest_size: plan.view, size: plan.view,
-        }, &plan).unwrap();
+        }, &mut encoder, &plan).unwrap();
+        arena.flush(&ctx.queue);
         ctx.queue.submit([encoder.finish()]);
         assert_eq!(&view.read_pixels(&ctx)[..4], &[64, 128, 192, 255]);
+    }
+
+    /// The prepared quads ([`GpuGlow::prepare`]) recorded into a frame's
+    /// open encoder, after a dry run on a scratch encoder that is thrown
+    /// away (the backend's validation), draw what the quads recorded on
+    /// an encoder of their own draw: the down-sample, a blended quad
+    /// between the intermediates and the composite.
+    #[test]
+    fn prepared_glow_recorded_twice_draws_what_its_own_encoder_draws() {
+        use psh::bits::{CHAN_ALPHA, REG_T0, final_efg, inputs};
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let copy = words(&PixelShaderDef {
+            texture_modes: 1,
+            final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+            final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+            ..Default::default()
+        });
+        let plan = Plan {
+            window: [0.0, 0.0, 8.0, 8.0],
+            signs: [-0.5, 0.5],
+            view: (8, 8),
+            small: (4, 4),
+            draws: vec![
+                Draw { dest: Surface::Down, stages: [Some(Surface::View), None, None, None], combiner: copy, taps: 1, spread: 0.0, blend: None },
+                Draw {
+                    dest: Surface::Other, stages: [Some(Surface::Down), None, None, None], combiner: copy, taps: 1, spread: 0.5,
+                    blend: Some(Blend { inverse_dest_colour: false, keep_dest: true }),
+                },
+                Draw { dest: Surface::View, stages: [Some(Surface::Other), None, None, None], combiner: copy, taps: 1, spread: 0.0, blend: None },
+            ],
+        };
+        let texture = |size: (u32, u32), usage| ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glow target"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: usage | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let fill = |t: &wgpu::Texture, pixels: &[u8]| ctx.queue.write_texture(
+            t.as_image_copy(), pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * t.width()), rows_per_image: Some(t.height()) },
+            t.size(),
+        );
+        let read = |t: &wgpu::Texture| gfx::readback::read_texture(&ctx, t, wgpu::TextureAspect::All, 4, (t.width(), t.height()));
+        let pixels: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 255 - i * 3, i * 2 + 7, 255]).collect();
+        let run = |prepared: bool| {
+            let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
+            let (view, down, other) = (texture((8, 8), attachment), texture((4, 4), attachment), texture((4, 4), attachment));
+            fill(&view, &pixels);
+            fill(&other, &[10, 20, 30, 40].repeat(16));
+            // The downsample's entry reads a copy of the view.
+            let entry = texture((8, 8), wgpu::TextureUsages::empty());
+            fill(&entry, &pixels);
+            let views = [&view, &down, &other, &entry].map(|t| t.create_view(&Default::default()));
+            let arena = gfx::ring::UploadPool::default().begin();
+            let target = GlowTarget {
+                device: &ctx.device, queue: &ctx.queue, uploads: &arena,
+                color: &views[0], entry_sources: [Some(&views[3]), None, None, None],
+                intermediates: [Some(&views[1]), Some(&views[2])],
+                guest_size: plan.view, size: plan.view,
+            };
+            let mut glow = GpuGlow::new();
+            let mut encoder = ctx.device.create_command_encoder(&Default::default());
+            if prepared {
+                let commands = glow.prepare(target, &plan).unwrap();
+                assert_eq!(commands.passes(), 3);
+                let mut scratch = ctx.device.create_command_encoder(&Default::default());
+                commands.record(&mut scratch);
+                drop(scratch.finish());
+                commands.record(&mut encoder);
+            } else {
+                glow.encode(target, &mut encoder, &plan).unwrap();
+            }
+            arena.flush(&ctx.queue);
+            ctx.queue.submit([encoder.finish()]);
+            (read(&view), read(&down), read(&other))
+        };
+        let (own, prepared) = (run(false), run(true));
+        assert_eq!(own, prepared);
+        assert_ne!(&own.0[..4], &pixels[..4], "the composite drew over the view");
     }
 
     #[test]
