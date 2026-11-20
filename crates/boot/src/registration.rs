@@ -417,6 +417,10 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
+    #[cfg(feature = "gpu")]
+    features
+        .add(&feature::native_lights::walk::NativeLightWalk)
+        .map_err(|e| anyhow::anyhow!("native light walk: {e}"))?;
     // Shader-driven gels: observe target-13 production before light consumption.
     #[cfg(feature = "gpu")]
     features

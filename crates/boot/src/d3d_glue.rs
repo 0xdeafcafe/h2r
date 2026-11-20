@@ -1264,13 +1264,14 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     let device = d3d::runtime_glue::shared(cfg, backend);
     install_occlusion_capture(&device);
     #[cfg(feature = "gpu")]
-    {
-        crate::native_world_glue::install(&device);
+    let shadow_admission = {
+        let shadows = crate::native_world_glue::install(&device);
         crate::native_objects_glue::install(&device);
         crate::native_decals_glue::install(&device);
         crate::native_particles_glue::install(&device);
         crate::native_first_person_glue::install(&device);
-    }
+        shadows
+    };
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
@@ -1295,6 +1296,8 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     install_write_barrier(rt, &device, &entries)?;
     #[cfg(feature = "gpu")]
     crate::native_world_layers_glue::install(rt, &device);
+    #[cfg(feature = "gpu")]
+    crate::native_lights_glue::walk::install(rt, &device, shadow_admission);
     #[cfg(feature = "gpu")]
     crate::native_residual_glue::install(rt, &device, &r.implemented);
     let vblank: Option<kernel::periodic::Handler> =

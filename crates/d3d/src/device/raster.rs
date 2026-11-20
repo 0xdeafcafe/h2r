@@ -1372,7 +1372,7 @@ impl<B: Backend> Device<B> {
 
     /// The guest memory `resource` reads: a texture's or surface's whole
     /// layout from `Data`, any other resource's first byte.
-    fn resource_span(&self, mem: &dyn GuestMemory, resource: u32) -> Result<(u64, u64), D3dError> {
+    pub(super) fn resource_span(&self, mem: &dyn GuestMemory, resource: u32) -> Result<(u64, u64), D3dError> {
         let header = ResourceHeader::read(mem, resource)?;
         let start = self.cfg.address_map.to_virtual(header.data) as u64;
         let len = match header.kind() {
