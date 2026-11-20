@@ -18,7 +18,8 @@
 //! `c49b0`, `c58f0` and `c60c0` (stack argument; their `al` starts and is
 //! ORed into `bl`), then `c5eb0` and `c6740` (`eax` the unit; ORed), then
 //! `114c60`, `c6990`, `c6810`, `c50a0` (`eax` the unit; for their effects).
-//! `c60c0` is a body here; the rest are callouts until slices 6b and 6c.
+//! `c60c0` is a body here, and `c49b0`, `c58f0` and `c5eb0` are slice 6b's
+//! (`unit_state`); the rest are callouts until slice 6c.
 //!
 //! **`c60c0 (unit: stack 0) -> al`; `ret 4`.** Frame `E` = `esp` after
 //! `sub esp, 7c`; `ebp`, `esi`, then `ebx`, then `edi` pushed (so at every

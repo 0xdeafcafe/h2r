@@ -94,12 +94,25 @@ fn x87_empty(cpu: &CpuAbi) -> bool {
     cpu.x87.tag == 0xffff
 }
 
+/// The bodies without slice 6b's (`unit_state`), so the shell's first,
+/// second and fourth calls are callouts this test answers.
+fn without_slice_6b() -> crate::sim_objects::Table {
+    let later = [
+        points::UNIT_UPDATE_CONTROL.base,
+        points::UNIT_UPDATE_STATE.base,
+        points::UNIT_POWERED_SEATS.base,
+        points::UNIT_CONTROL_REFRESH.base,
+    ];
+    crate::sim_objects::Table::new(crate::sim_objects::BODIES.iter().filter(|b| !later.contains(&b.point.base))).unwrap()
+}
+
 #[test]
 fn the_shell_ors_the_first_five_answers_and_restores_its_registers() {
     let (mut cpu, mut g) = world();
+    let table = without_slice_6b();
     // The movement returns 0 at once: definition `+bc` bit 10.
     g.set_u32(DEF + 0xbc, 1 << 10).unwrap();
-    let mut out = drive(&mut cpu, &mut g, &TABLE, points::UNIT_UPDATE.base).unwrap();
+    let mut out = drive(&mut cpu, &mut g, &table, points::UNIT_UPDATE.base).unwrap();
     let mut answers = [0x01u32, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80].into_iter();
     let mut called = Vec::new();
     loop {
@@ -119,7 +132,7 @@ fn the_shell_ors_the_first_five_answers_and_restores_its_registers() {
         let site = returned(&mut cpu, &g, if stack_arg { 4 } else { 0 });
         assert_eq!(site, out.resume_pc);
         cpu.eax = 0xabcd_0000 | answers.next().unwrap();
-        out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
+        out = drive(&mut cpu, &mut g, &table, site).unwrap();
     }
     assert_eq!(
         called,

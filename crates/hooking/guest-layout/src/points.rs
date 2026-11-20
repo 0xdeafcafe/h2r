@@ -1293,6 +1293,14 @@ points! { ALL;
     /// Sets the first word of the vehicle update's 16 contact records
     /// (`d8` bytes each, from `buffer + bc0`) to none.
     VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
+    // Slice 6b of docs/engine/sim-rewrite-objects.md: the unit update's state
+    // children (`UNIT_CONTROL_REFRESH`, `ce0c0`, is named above).
+    /// Unit control: desired aim and look, timed bits, the two linked objects (`UNIT_UPDATE`'s first call).
+    UNIT_UPDATE_CONTROL @ 0x000c_49b0: [fn(unit: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Unit state: timers, unit states, held weapons (`UNIT_UPDATE`'s second call).
+    UNIT_UPDATE_STATE @ 0x000c_58f0: [fn(unit: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
+    /// Powered seats: calls `UNIT_CONTROL_REFRESH`, then moves each seat's power (`UNIT_UPDATE`'s fourth call).
+    UNIT_POWERED_SEATS @ 0x000c_5eb0: [fn(unit: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
 }
 
 /// The point at `base`, if the table names one.
