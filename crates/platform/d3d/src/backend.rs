@@ -1095,6 +1095,20 @@ pub trait Backend: Send {
     /// A host texture made from guest texture memory.
     type Texture: Send;
 
+    /// Pins the exact reference and display images of an immutable sample
+    /// produced in an earlier submitted frame. Never for a live surface view.
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, _texture: &Self::Texture) -> Option<crate::scene_sink::FrozenImages> {
+        None
+    }
+
+    /// The threaded backend resolves its proxy in queue order without a
+    /// guest wait. Synchronous encoders can share the submitted images now.
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        self.frozen_images(texture).map(crate::scene_sink::FrozenSample::ready)
+    }
+
     /// Creates a surface (`depth` selects depth/stencil).
     fn create_surface(
         &mut self,
@@ -1108,6 +1122,11 @@ pub trait Backend: Send {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String>;
     /// Uploads a decoded guest texture.
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String>;
+    /// An immutable upload shared with a scene. The render queue can
+    /// identify its exact texels by allocation across frames.
+    fn upload_shared(&mut self, texture: std::sync::Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        self.upload_texture(&texture)
+    }
     /// Whether the backend can supply descriptor-only textures. Such handles
     /// never back real drawing, and no texel or palette data is needed.
     fn uses_texture_placeholders(&self) -> bool {

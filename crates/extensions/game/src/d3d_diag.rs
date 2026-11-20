@@ -564,6 +564,62 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
 }
 
 impl<B: Backend> DiagBackend<B> {
+    fn observe_upload(
+        &mut self, texture: &DecodedTexture, r: Result<B::Texture, String>,
+    ) -> Result<Tracked<B::Texture>, String> {
+        if let Some(s) = &mut self.sweep {
+            s.upload(texture);
+        }
+        if let Err(e) = &r {
+            self.line(format!("upload_texture failed: {e}"));
+        }
+        let id = self.next_texture;
+        self.next_texture += 1;
+        self.origin(id, || {
+            let d = &texture.desc;
+            format!(
+                "upload of {:?} {}x{} (guest bytes or a decoded readback)",
+                d.format, d.width, d.height
+            )
+        });
+        if let Some(c) = &self.capture {
+            let levels: Vec<String> = texture
+                .levels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    let name = format!("tex-{id}-{i}.bin");
+                    if c.keep_tex.contains(&id) {
+                        let _ = std::fs::write(c.dir.join(name), &l.data);
+                    } else {
+                        c.blob(&name, &l.data);
+                    }
+                    format!(
+                        "face {} level {} {}x{}x{} {} bytes",
+                        l.face,
+                        l.level,
+                        l.width,
+                        l.height,
+                        l.depth,
+                        l.data.len()
+                    )
+                })
+                .collect();
+            c.append(
+                "textures.txt",
+                &format!(
+                    "tex {id} frame {} host {:?} desc {:?} ok={} levels [{}]",
+                    self.in_frame,
+                    texture.host,
+                    texture.desc,
+                    r.is_ok(),
+                    levels.join("; ")
+                ),
+            );
+        }
+        r.map(|inner| Tracked { id, inner })
+    }
+
     fn inspects_draw(&mut self) -> bool {
         self.capturing().is_some() || self.logging() || self.sweep.is_some() || self.probe.armed()
     }
@@ -1045,58 +1101,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
         Ok(Tracked { id, inner })
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
-        let r = self.inner.upload_texture(texture);
-        if let Some(s) = &mut self.sweep {
-            s.upload(texture);
-        }
-        if let Err(e) = &r {
-            self.line(format!("upload_texture failed: {e}"));
-        }
-        let id = self.next_texture;
-        self.next_texture += 1;
-        self.origin(id, || {
-            let d = &texture.desc;
-            format!(
-                "upload of {:?} {}x{} (guest bytes or a decoded readback)",
-                d.format, d.width, d.height
-            )
-        });
-        if let Some(c) = &self.capture {
-            let levels: Vec<String> = texture
-                .levels
-                .iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    let name = format!("tex-{id}-{i}.bin");
-                    if c.keep_tex.contains(&id) {
-                        let _ = std::fs::write(c.dir.join(name), &l.data);
-                    } else {
-                        c.blob(&name, &l.data);
-                    }
-                    format!(
-                        "face {} level {} {}x{}x{} {} bytes",
-                        l.face,
-                        l.level,
-                        l.width,
-                        l.height,
-                        l.depth,
-                        l.data.len()
-                    )
-                })
-                .collect();
-            c.append(
-                "textures.txt",
-                &format!(
-                    "tex {id} frame {} host {:?} desc {:?} ok={} levels [{}]",
-                    self.in_frame,
-                    texture.host,
-                    texture.desc,
-                    r.is_ok(),
-                    levels.join("; ")
-                ),
-            );
-        }
-        r.map(|inner| Tracked { id, inner })
+        let result = self.inner.upload_texture(texture);
+        self.observe_upload(texture, result)
+    }
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        let result = self.inner.upload_shared(Arc::clone(&texture));
+        self.observe_upload(&texture, result)
     }
     fn bc_supported(&self) -> bool {
         self.inner.bc_supported()

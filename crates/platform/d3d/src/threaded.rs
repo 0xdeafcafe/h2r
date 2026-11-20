@@ -227,6 +227,8 @@ pub struct Worker<B: Backend> {
     transaction: Option<owner::Transaction<B>>,
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
+    /// Source of a live immutable scene texture, indexed by its device proxy.
+    scene_uploads: HashMap<u64, std::sync::Weak<DecodedTexture>>,
     /// Pixel-count tickets not yet landed: proxy to the inner backend's,
     /// in report order.
     tickets: BTreeMap<u64, u64>,
@@ -417,6 +419,11 @@ impl<B: Backend> Worker<B> {
         self.exec_original(cmd);
     }
 
+    fn release_texture(&mut self, proxy: u64) {
+        self.textures.remove(&proxy);
+        self.scene_uploads.remove(&proxy);
+    }
+
     fn exec_original(&mut self, cmd: Cmd<B>) {
         match cmd {
             Cmd::Render(op) => self.run(|worker| op.issue(worker)),
@@ -424,7 +431,7 @@ impl<B: Backend> Worker<B> {
             Cmd::Sample(sample) => (sample.original)(self),
             Cmd::Job(job) | Cmd::Independent(job) => job(self),
             Cmd::FrameStats(frame) => frame.finish(),
-            Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
+            Cmd::ReleaseTexture(proxy) => self.release_texture(proxy),
             Cmd::ExternalRun(run) => {
                 for recording in run { self.inner.commit_external(recording); }
             }
@@ -604,6 +611,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     transaction: None,
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
+                    scene_uploads: HashMap::new(),
                     tickets: BTreeMap::new(),
                     depth_words: None,
                     shared: s,
@@ -996,6 +1004,19 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     type Surface = u32;
     type Texture = ProxyTexture<B>;
 
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<crate::scene_sink::FrozenSample> {
+        let id = texture.id;
+        let (sample, send) = crate::scene_sink::FrozenSample::pending(id);
+        // Only earlier-frame immutable results come here. Their producing
+        // present (including adoption) precedes this job and any guest
+        // release of this still-live proxy follows it.
+        self.push(Cmd::Independent(Box::new(move |worker| {
+            let images = worker.textures.get(&id).and_then(|t| worker.inner.frozen_images(t));
+            let _ = send.send(images);
+        })));
+        Some(sample)
+    }
+
     fn drain(&mut self) -> Result<(), String> {
         self.finish()
     }
@@ -1058,6 +1079,20 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(t)
+    }
+
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<ProxyTexture<B>, String> {
+        self.check()?;
+        let view = self.judge.as_ref().is_none_or(|j| j.upload_view(&texture));
+        let handle = self.new_texture(view);
+        let id = handle.id;
+        self.post_create(move |w| {
+            let gpu_texture = w.inner.upload_texture(&texture)?;
+            w.scene_uploads.insert(id, Arc::downgrade(&texture));
+            w.textures.insert(id, gpu_texture);
+            Ok(())
+        });
+        Ok(handle)
     }
 
     fn bc_supported(&self) -> bool {

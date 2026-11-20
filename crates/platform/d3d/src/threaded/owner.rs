@@ -224,6 +224,7 @@ struct Proxies {
 fn target_map<B: Backend>(
     frame: &ReplayFrame,
     commands: &[Cmd<B>],
+    uploads: &HashMap<u64, std::sync::Weak<gfx::texture::DecodedTexture>>,
     surface: u32,
 ) -> Option<Proxies> {
     if !frame.refusals.is_empty() || !frame.ops.iter().any(|(at, _)| at.slot.in_game_view()) {
@@ -274,7 +275,8 @@ fn target_map<B: Backend>(
                 if !textures.iter().zip(&packet.textures).all(|(binding, &proxy)| match (binding, proxy) {
                     (None, None) => true,
                     (Some(ReplayTexture::Sample(id)), Some(proxy)) => samples.get(id) == Some(&proxy),
-                    (Some(ReplayTexture::Upload(_)), Some(_)) => true,
+                    (Some(ReplayTexture::Upload(asset)), Some(proxy)) => uploads
+                        .get(&proxy).is_some_and(|source| source.as_ptr() == Arc::as_ptr(asset)),
                     _ => false,
                 }) {
                     return None;
@@ -348,7 +350,7 @@ impl<B: Backend> Worker<B> {
                 return None;
             }
             let matching_swap = frame.present == n && frame.flags == flags && frame.gamma == gamma;
-            let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, surface)).flatten() else {
+            let Some(proxies) = matching_swap.then(|| target_map(frame, &transaction.commands, &self.scene_uploads, surface)).flatten() else {
                 MISMATCHES.fetch_add(1, Ordering::Relaxed);
                 return None;
             };
@@ -373,7 +375,7 @@ impl<B: Backend> Worker<B> {
                 .and_then(|outputs| self.adopt_outputs(&frame, &samples, outputs));
             for cmd in transaction.commands {
                 match cmd {
-                    Cmd::ReleaseTexture(proxy) => { self.textures.remove(&proxy); }
+                    Cmd::ReleaseTexture(proxy) => self.release_texture(proxy),
                     Cmd::FrameStats(frame) => frame.finish(),
                     Cmd::Draw(slot) => {
                         if let Some(draw) = slot.as_ref().as_ref() && matches!(draw.expect, DrawOutcome::Skipped(_)) {

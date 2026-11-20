@@ -237,7 +237,8 @@ fn a_later_clear_defines_the_final_image_but_not_an_earlier_pass_snapshot() {
 #[test]
 fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_bits() {
     use d3d::{Backend, ThreadedBackend};
-    use d3d::scene_sink::{ReplayFrame, ReplayOp};
+    use d3d::scene_sink::{ReplayFrame, ReplayOp, ReplayTexture};
+    use gfx::texture::{TextureDesc, TextureKind, decode_texture};
     use d3d::threaded::owner::{Candidate, FrameOwner, Outputs};
     use std::sync::{Arc, Mutex};
 
@@ -261,6 +262,16 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
                     }
                 }
             }
+            if present == 3 {
+                for (_, op) in &mut replay.ops {
+                    if let ReplayOp::Draw { textures, .. } = op
+                        && let Some(ReplayTexture::Upload(data)) = &mut textures[0]
+                    {
+                        // Identical texels from a different upload still have a different lifetime.
+                        *data = Arc::new(data.as_ref().clone());
+                    }
+                }
+            }
             let target = replay.presented;
             Some(Candidate {
                 frame: Arc::new(replay),
@@ -279,11 +290,14 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
     let mut sink = SceneSink::new(device, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
         .with_replay(move |frame| *pending.lock().unwrap() = Some(frame));
     let surface = sink.create_surface(gfx::D3DFormat::LinA8R8G8B8, 32, 32, false).unwrap();
-    for native in [true, false] {
-        sink.draw_shared(surface, None, Arc::clone(&packet), [None; 4]).0.unwrap();
+    let desc = TextureDesc::new(gfx::D3DFormat::LinA8R8G8B8, TextureKind::D2, 1, 1, 1, 1);
+    let data = decode_texture(&desc, &[12, 34, 56, 78], None, Default::default()).unwrap();
+    let texture = sink.upload_texture(&data).unwrap();
+    for expected_legacy in [0, 1, 2] {
+        sink.draw_shared(surface, None, Arc::clone(&packet), [Some(&texture), None, None, None]).0.unwrap();
         sink.present(surface, 0).unwrap();
         let legacy_draws = sink.inner_mut().with_inner(|gpu| gpu.draws().len()).unwrap();
-        assert_eq!(legacy_draws, usize::from(!native));
+        assert_eq!(legacy_draws, expected_legacy);
     }
 }
 

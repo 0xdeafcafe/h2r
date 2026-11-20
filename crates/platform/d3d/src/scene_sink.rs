@@ -13,6 +13,10 @@ mod camera;
 mod census;
 pub mod window;
 mod contents;
+#[cfg(feature = "gpu")]
+mod frozen;
+#[cfg(feature = "gpu")]
+pub use frozen::{FrozenImages, FrozenSample};
 mod replay;
 mod seeds;
 pub use seeds::TargetSeed;
@@ -314,13 +318,26 @@ impl<B: Backend> SceneSink<B> {
         let (c, d) = self.replay_attachments(colour, depth);
         let replay = self.replay.as_mut().expect("recording replay");
         replay.bind(at, c, d);
-        let inputs = textures.map(|t| match &t?.origin {
+        let inputs = textures.map(|t| {
+            let t = t?;
+            match &t.origin {
             Some(Origin::Upload(data)) => Some(ReplayTexture::Upload(data.clone())),
             Some(Origin::Placeholder(desc)) => Some(ReplayTexture::Placeholder(desc.clone())),
-            Some(Origin::Sample { seq, id }) if *seq == replay.seq => Some(ReplayTexture::Sample(*id)),
+            Some(Origin::Sample { seq, id: Some(id), .. }) if *seq == replay.seq => Some(ReplayTexture::Sample(*id)),
+            #[cfg(feature = "gpu")]
+            Some(Origin::Sample { seq, immutable: true, frozen, .. }) if *seq != replay.seq => {
+                let sample = frozen.get_or_init(|| self.inner.retain_scene_sample(&t.inner));
+                if sample.is_none() { replay.frame.refuse("unavailable_frozen_sample"); }
+                sample.clone().map(ReplayTexture::Frozen)
+            }
+            Some(Origin::Sample { seq, immutable: false, .. }) if *seq != replay.seq => {
+                replay.frame.refuse("previous_in_place_view");
+                None
+            }
             _ => {
                 replay.frame.refuse("uncaptured_texture");
                 None
+            }
             }
         });
         let camera = if draw.layout.pretransformed {
@@ -349,7 +366,7 @@ impl<B: Backend> SceneSink<B> {
             let of = self.replay_target(surface);
             Some(self.replay.as_mut().expect("recording replay").sample(at, of, kind()))
         } else {
-            None
+            self.replay.as_ref().map(|replay| Origin::sample(replay.seq, None, &kind()))
         };
         SinkTexture { inner, origin }
     }
@@ -424,6 +441,16 @@ impl<B: Backend> Backend for SceneSink<B> {
     type Surface = B::Surface;
     type Texture = SinkTexture<B::Texture>;
 
+    #[cfg(feature = "gpu")]
+    fn frozen_images(&self, texture: &Self::Texture) -> Option<FrozenImages> {
+        self.inner.frozen_images(&texture.inner)
+    }
+
+    #[cfg(feature = "gpu")]
+    fn retain_scene_sample(&self, texture: &Self::Texture) -> Option<FrozenSample> {
+        self.inner.retain_scene_sample(&texture.inner)
+    }
+
     fn create_surface(&mut self, format: D3DFormat, width: u32, height: u32, depth: bool) -> Result<Self::Surface, String> {
         let s = self.inner.create_surface(format, width, height, depth)?;
         self.made(s, AuxTarget { width, height, format: u32::from(format as u8), depth });
@@ -441,8 +468,14 @@ impl<B: Backend> Backend for SceneSink<B> {
         self.inner.destroy_surface(surface)
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
-        let inner = self.inner.upload_texture(texture)?;
-        let origin = self.replay.as_ref().map(|_| Origin::Upload(Arc::new(texture.clone())));
+        if self.replay.is_some() {
+            return self.upload_shared(Arc::new(texture.clone()));
+        }
+        Ok(SinkTexture { inner: self.inner.upload_texture(texture)?, origin: None })
+    }
+    fn upload_shared(&mut self, texture: Arc<DecodedTexture>) -> Result<Self::Texture, String> {
+        let origin = self.replay.as_ref().map(|_| Origin::Upload(Arc::clone(&texture)));
+        let inner = self.inner.upload_shared(texture)?;
         Ok(SinkTexture { inner, origin })
     }
     fn uses_texture_placeholders(&self) -> bool {

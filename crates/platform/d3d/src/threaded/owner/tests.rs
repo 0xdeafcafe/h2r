@@ -213,7 +213,7 @@ fn two_logical_names_cannot_alias_one_physical_target_during_admission() {
         ..Default::default()
     };
     let same = [Cmd::<Pixels>::Render(RenderOp::Copy { src: 1, dst: 1 })];
-    assert!(target_map(&replay, &same, 1).is_none());
+    assert!(target_map(&replay, &same, &HashMap::new(), 1).is_none());
 }
 
 
