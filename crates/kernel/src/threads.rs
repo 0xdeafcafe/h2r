@@ -720,8 +720,13 @@ impl Machine {
         name: &'static str,
     ) -> Result<Option<RunOutcome>, Error> {
         let mut cpu = CpuAbi::xbox_thread();
-        let mut ctx = ExecCtx::new(Arc::clone(&self.runtime), DPC_THREAD_ID);
         let top = self.dpc_stack()?;
+        // Dropping an old callback can run its captured state's destructors.
+        // Restart before taking the kernel and guest-memory locks.
+        let mut ctx = match self.dpc.take() {
+            Some(previous) => previous.ctx.restart(),
+            None => ExecCtx::new(Arc::clone(&self.runtime), DPC_THREAD_ID),
+        };
         let (resume, old_irql) = {
             let mut core = self.kernel.lock();
             let mut memory = self.runtime.memory();

@@ -309,7 +309,7 @@ so a module is never run by a runtime that would charge twice or not at all.
 A bridge forwards the four functions; the test bridge's legacy install fills
 them with the charged accessors, a no-op charge and an unlimited budget.
 
-`H2_VIEW_CHARGE=1` (a `cflags` switch, off by default; counting modules
+`H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules
 with `H2_FASTMEM`) makes no call to charge when the handler has a view: a
 charge adds the count to the view's own (`accesses`), raising SLICE on the
 preempt word when the sum reaches the view's `budget`, exactly as the
@@ -523,12 +523,12 @@ Its semantics:
     `runtime::direct`), or null, in which case no call is direct (the test
     host; `ExecCtx::enable_direct_calls(false)`). A runtime without the
     block refuses the module by its feature bit.
-  - Only a `call` to a static target that is a function entry (kind 0) of
-    the module, whose continuation is a selector of the caller's own
-    handler, or a `jmp` tail to such an entry, is emitted as a direct call
-    (`H2_DCALL`, `H2_DJUMP`). Lazy flags are settled and the inline RAM
-    gate dropped first, and the handler's access count is charged
-    (`H2_ACC_FLUSH`), as at any exit.
+  - A static `call` or tail `jmp` to a function entry of the module may
+    use its linked symbol (`H2_DCALL`, `H2_DJUMP`). Indirect calls and
+    jumps may use the cached handler for the evaluated target PC
+    (`H2_ICALL`, `H2_IJUMP`, on unless `H2_INDIRECT_CALLS=0`). Both call
+    forms require a continuation selector in the calling handler. Lazy
+    flags and the access count are settled before entering the target.
   - It is direct only if, at that moment: the preempt word is 0 and the
     runtime's interrupt queue is empty (so the runner's safe point would do
     nothing); the block's `budget` (the runner's `max_transfers` left) is
@@ -538,9 +538,11 @@ Its semantics:
     view (taken with the gate; no view, a busy gate or no bit is a no).
     Otherwise the handler leaves with the ordinary `CALL`/`JUMP`, exactly
     as without the flag.
-  - The runner fills a slot each time it dispatches an entry route to a
-    native handler with selector = target, recording the generation it
-    resolved at. Any `edit_dispatch` moves the generation, so an override
+  - The runner learns slots from generated registry entries reached through
+    an entry route with selector = target, recording the generation it resolved
+    at. Standalone native adapters and overrides go through the runner. `H2_DIRECT_SLOTS` selects the active
+    size of the per-context cache (4096 by default, up to 8192).
+    Any `edit_dispatch` moves the generation, so an override
     registered, enabled, disabled or replaced (from any thread) stops every
     direct call to that entry: the next call goes to the runner, which
     resolves it again. A direct call therefore never bypasses an override.
@@ -554,11 +556,11 @@ Its semantics:
     clears. A handler with a lent view does not call
     `h2abi_v1_fast_acquire`, and on its way out (epilogue or hand-up)
     calls `h2abi_v1_exit` only to charge a count of its own, never just to
-    release. The caller charged its count just before, so the view holds
-    nothing unsettled when lent; what the callee counts in it is settled
-    by the first Rust helper that looks (they all settle first) or by the
-    outermost handler's exit, and its budget is what acquire would have
-    set again, so the slice runs out at the same access. The runtime
+    release. With view charging the lent view can already hold accesses
+    counted by the caller. The safe-point check accounts for that count.
+    The first Rust helper that observes the count, or the runtime after
+    the outermost handler returns, settles it. Its budget is what acquire
+    would have set again, so the slice runs out at the same access. The runtime
     clears `view` before it invokes any native handler itself, so a
     handler entered through the runner always acquires.
   - The callee's result continues inline only if it is `RETURN`/

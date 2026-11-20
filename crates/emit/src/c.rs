@@ -1073,6 +1073,12 @@ impl Emitter<'_> {
             Control::Jump { target: Target::Direct(t), tail, .. } => {
                 self.line(d, Self::go(Dest { pc: *t, tail: *tail }));
             }
+            Control::Jump { target: Target::Dynamic(v), .. } if self.shape.functions.is_some() => {
+                self.settle(lazy::ALL, d);
+                let spill = if self.x87 { "H2X87_SPILL()" } else { "(void)0" };
+                let dirty = self.dirty_at(pc);
+                self.line(d, format!("H2_IJUMP({}, {spill}, {dirty:#x}u);", val(v)));
+            }
             Control::Jump { target, .. } => {
                 self.line(d, format!("H2_XFER(H2_JUMP, H2_ENTRY, {}, 0);", Self::target(target)))
             }

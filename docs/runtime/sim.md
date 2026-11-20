@@ -337,6 +337,14 @@ ticks; and the final score. The report is one JSON file per match:
 }
 ```
 
+With `H2_DISPATCH_STATS=1`, the report includes `dispatch_per_tick`
+for the observed match interval. It records the CALLs, JUMPs, RESUMEs,
+RETURNs, STOPs and FAULTs that native generated handlers hand back to the
+runner. HLE entries and slice or host-request preemptions are counted
+alongside those exits. A loop resume can also cause a preemption, so
+these counts can overlap. `H2_ENTRY_STATS=1` adds a separate, more
+expensive census of direct-slot misses and hot runner targets on stderr.
+
 A shot is attributed to the firing weapon's parent unit at `WEAPON_FIRE`,
 with the next tick's held-weapon snapshot as a fallback. Damage is the damage
 report's body plus shield numbers (**S**: read as amounts, as telemetry's

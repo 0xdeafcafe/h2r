@@ -401,6 +401,9 @@ pub struct Report {
     pub kills: Vec<KillEvent>,
     /// The bots' nav mesh: `loaded` or `missing`.
     pub nav: String,
+    /// Runner dispatch and preemption census when enabled for this match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_per_tick: Option<BTreeMap<String, f64>>,
     #[serde(default)]
     pub notes: Vec<String>,
 }
@@ -835,6 +838,7 @@ impl Tally {
             players,
             kills: self.kills.clone(),
             nav: nav.into(),
+            dispatch_per_tick: None,
             notes,
         }
     }

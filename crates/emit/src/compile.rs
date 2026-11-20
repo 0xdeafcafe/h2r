@@ -86,14 +86,12 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 /// accesses by cause (`H2_COLD_STATS`, printed to stderr), and lending the
 /// RAM gate across direct calls (`H2_DIRECT_GATE`, `h2gen.h`), reading
 /// the access budget from the RAM view (`H2_VIEW_BUDGET`) and carrying the
-/// access count across direct calls (`H2_DIRECT_COUNT`), and calls through
-/// pointers invoking the handler in the target's direct slot
-/// (`H2_INDIRECT_CALLS`), taking the RAM gate at a handler's start
-/// (`H2_ENTRY_GATE`, `h2fastmem.h`) and spending a counting handler's
-/// accesses in the RAM view instead of calling the runtime to charge them
-/// (`H2_VIEW_CHARGE`). Profile-guided optimisation (`H2_PGO`) and the
-/// target CPU (`H2_CPU`, arm64 only: see [`pgo::for_arch`]) are off unless
-/// set ([`pgo`]).
+/// access count across direct calls (`H2_DIRECT_COUNT`) and taking the RAM
+/// gate at a handler's start (`H2_ENTRY_GATE`, `h2fastmem.h`). Indirect calls
+/// and jumps through the target's direct slot (`H2_INDIRECT_CALLS`) and
+/// charging accesses in the RAM view (`H2_VIEW_CHARGE`) default on.
+/// Profile-guided optimisation (`H2_PGO`) and the target CPU (`H2_CPU`,
+/// arm64 only: see [`pgo::for_arch`]) are off unless set ([`pgo`]).
 ///
 /// These are the flags for `arch`: [`Arch::codegen_flags`] after
 /// [`CFLAGS`], and its default level ([`Arch::default_opt`]) when `H2_OPT`
@@ -119,9 +117,9 @@ pub fn cflags_for(arch: Arch) -> Result<Vec<String>, Error> {
         ("H2_DIRECT_GATE", false),
         ("H2_VIEW_BUDGET", false),
         ("H2_DIRECT_COUNT", false),
-        ("H2_INDIRECT_CALLS", false),
+        ("H2_INDIRECT_CALLS", true),
         ("H2_ENTRY_GATE", false),
-        ("H2_VIEW_CHARGE", false),
+        ("H2_VIEW_CHARGE", true),
     ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
@@ -1458,7 +1456,14 @@ mod tests {
         assert!(flag("H2_PERF", Some("1"), false).unwrap());
         assert!(flag("H2_X87_NATIVE", Some("yes"), true).is_err());
         let flags = cflags().unwrap();
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
+        for name in [
+            "H2_FASTMEM",
+            "H2_X87_NATIVE",
+            "H2_SSE_NATIVE",
+            "H2_DIRECT_CALLS",
+            "H2_INDIRECT_CALLS",
+            "H2_VIEW_CHARGE",
+        ] {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }
@@ -1468,7 +1473,7 @@ mod tests {
         assert_eq!(flags.contains(&"-DH2_COLD_STATS=1".to_string()), stats);
         let gate = std::env::var("H2_DIRECT_GATE").as_deref() == Ok("1");
         assert_eq!(flags.contains(&"-DH2_DIRECT_GATE=1".to_string()), gate);
-        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_INDIRECT_CALLS", "H2_ENTRY_GATE", "H2_VIEW_CHARGE"] {
+        for name in ["H2_VIEW_BUDGET", "H2_DIRECT_COUNT", "H2_ENTRY_GATE"] {
             let on = std::env::var(name).as_deref() == Ok("1");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }

@@ -1155,6 +1155,7 @@ mod tests {
             players: vec![p(0, arm_a, 1), p(1, arm_b, kills_b)],
             kills: vec![],
             nav: "loaded".into(),
+            dispatch_per_tick: None,
             notes: vec![],
         }
     }

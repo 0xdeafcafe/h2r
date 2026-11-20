@@ -288,7 +288,7 @@ static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
 #else
 #define H2_GATE_ENTER_(f, g) ((void)0)
 #endif
-/* H2_VIEW_CHARGE=1 (emit-time, default off; counting modules): spend the
+/* H2_VIEW_CHARGE (on in h2 build/emit; counting modules): spend the
  * handler's count in the RAM view, inline, where it called
  * h2abi_v1_charge, h2abi_v1_budget or h2abi_v1_exit (h2gen.h). The view's
  * count is the runtime's to settle, and it settles it before anything that

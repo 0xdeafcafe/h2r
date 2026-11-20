@@ -914,7 +914,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #endif
 /* The table has room for H2_DIRECT_SLOTS; the runtime uses the first
  * slot_mask + 1 of them (a power of two, H2_DIRECT_SLOTS in its
- * environment, 256 unless set). */
+ * environment, 4096 unless set). */
 #define H2_DIRECT_SLOTS 8192u
 #define H2_DIRECT_MAX_DEPTH 64u
 /* What the runner learnt: entry `pc` resolved to `fn` (selector pc) at
@@ -1098,15 +1098,20 @@ static inline int h2_direct_quiet(const H2Direct *d, ExecCtxOpaque *ctx) {
     return d->budget != 0u && __atomic_load_n(h2_preempt_word(ctx), __ATOMIC_RELAXED) == 0u
         && __atomic_load_n(d->interrupts, __ATOMIC_ACQUIRE) == 0u;
 }
-/* Before a direct CALL/JUMP: may the handler invoke `fn` for `target`? If
- * so, take a transfer and a nesting level, and record the frame at *my. */
-static inline int h2_direct_enter(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *f, const H2MemoryData *held, H2Handler fn,
-                                  uint32_t kind, uint32_t target, uint32_t resume, uint32_t esp,
-                                  uint32_t *my, int fits) {
-    if (!d || d->depth >= d->cap || d->depth >= H2_DIRECT_MAX_DEPTH) return 0;
+/* Static sites require their linked symbol. Indirect sites can use any
+ * generated entry. Reject cold targets before flushing the access count. */
+static inline const H2DirectSlot *h2_direct_lookup(const H2Direct *d, uint32_t target, H2Handler expected) {
+    if (!d || d->depth >= d->cap || d->depth >= H2_DIRECT_MAX_DEPTH) return NULL;
     const H2DirectSlot *s = &d->slots[h2_direct_slot(d, target)];
-    if (s->pc != target || s->fn != fn || s->generation != __atomic_load_n(d->generation, __ATOMIC_ACQUIRE))
-        return 0;
+    return s->pc == target && s->fn && (!expected || s->fn == expected) ? s : NULL;
+}
+/* The matching entry is still live after charging. Take a transfer and a
+ * nesting level and record the frame at *my. */
+static inline int h2_direct_enter(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *f,
+                                  const H2MemoryData *held, const H2DirectSlot *s,
+                                  uint32_t kind, uint32_t target, uint32_t resume,
+                                  uint32_t esp, uint32_t *my, int fits) {
+    if (s->generation != __atomic_load_n(d->generation, __ATOMIC_ACQUIRE)) return 0;
     if (!fits || !h2_direct_quiet(d, ctx) || !h2_direct_exec(f, held, target)) return 0;
     uint32_t i = d->depth;
     H2DirectFrame fr = {kind, target, resume, esp};
@@ -1155,85 +1160,85 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
  * accounting budget in a handler that polls (or (void)0); `dirty` the
  * homed locals that may differ from CpuAbi here, which are all it spills
  * before the callee. Lazy flags are settled before it, as at any exit. */
-#define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty)       \
-    do {                                                                        \
-        H2_DCALL_GATE_();                                                       \
-        H2Direct *d_ = h2_direct(ctx);                                          \
-        uint32_t my_ = 0;                                                       \
-        if (h2_direct_enter(d_, ctx, h2_mem_, H2_HELD_DATA_(), (fn), H2_CALL, (target), (cont), esp, &my_, \
-                            H2_COUNT_FITS_())) {                                \
-            H2_SPILL_DIRTY_(dirty);                                             \
-            spill;                                                              \
-            cpu->eip = (target);                                                \
-            H2_LEND_ACC_(d_);                                                   \
-            H2_LEND_(d_);                                                       \
-            TransferAbi r_ = (fn)(cpu, ctx, (target));                          \
-            H2_TAKE_BACK_(d_);                                                  \
-            H2_TAKE_BACK_ACC_(d_);                                              \
-            if (h2_direct_back(d_, ctx, h2_mem_, H2_HELD_DATA_(), cpu, &r_, (cont), esp, my_, \
-                               H2_COUNT_FITS_())) {                             \
-                H2_SYNC_IN();                                                   \
-                reload;                                                         \
-                refresh;                                                        \
-                H2_COLD_WHY(h2g_, H2C_AFTER_DCALL);                             \
-                H2_GATE_ENTER();                                                \
-                goto label;                                                     \
-            }                                                                   \
-            H2_DIRECT_HANDUP(r_);                                               \
-        }                                                                       \
-        H2_XFER(H2_CALL, H2_ENTRY, (target), (cont));                           \
+#define H2_CALL_SLOT_(expected, invoke, target, cont, label, spill, reload, refresh, dirty) \
+    do {                                                                                    \
+        H2Direct *d_ = h2_direct(ctx);                                                      \
+        const H2DirectSlot *slot_ = h2_direct_lookup(d_, (target), (expected));             \
+        uint32_t my_ = 0;                                                                   \
+        if (slot_) H2_DCALL_GATE_();                                                        \
+        if (slot_ && h2_direct_enter(d_, ctx, h2_mem_, H2_HELD_DATA_(), slot_,              \
+                H2_CALL, (target), (cont), esp, &my_, H2_COUNT_FITS_())) {                  \
+            H2_SPILL_DIRTY_(dirty);                                                         \
+            spill;                                                                          \
+            cpu->eip = (target);                                                            \
+            H2_LEND_ACC_(d_);                                                               \
+            H2_LEND_(d_);                                                                   \
+            TransferAbi r_ = (invoke)(cpu, ctx, (target));                                  \
+            H2_TAKE_BACK_(d_);                                                              \
+            H2_TAKE_BACK_ACC_(d_);                                                          \
+            if (h2_direct_back(d_, ctx, h2_mem_, H2_HELD_DATA_(), cpu, &r_, (cont), esp, my_,\
+                               H2_COUNT_FITS_())) {                                         \
+                H2_SYNC_IN();                                                               \
+                reload;                                                                     \
+                refresh;                                                                    \
+                H2_COLD_WHY(h2g_, H2C_AFTER_DCALL);                                         \
+                H2_GATE_ENTER();                                                            \
+                goto label;                                                                 \
+            }                                                                               \
+            H2_DIRECT_HANDUP(r_);                                                           \
+        }                                                                                   \
+        H2_XFER(H2_CALL, H2_ENTRY, (target), (cont));                                       \
     } while (0)
 /* A tail jump: the target's transfer is this handler's. */
-#define H2_DJUMP(fn, target, spill, dirty)                                      \
-    do {                                                                        \
-        H2_DCALL_GATE_();                                                       \
-        H2Direct *d_ = h2_direct(ctx);                                          \
-        uint32_t my_ = 0;                                                       \
-        if (h2_direct_enter(d_, ctx, h2_mem_, H2_HELD_DATA_(), (fn), H2_JUMP, (target), 0u, esp, &my_, \
-                            H2_COUNT_FITS_())) {                                \
-            H2_SPILL_DIRTY_(dirty);                                             \
-            spill;                                                              \
-            cpu->eip = (target);                                                \
-            H2_LEND_ACC_(d_);                                                   \
-            H2_LEND_(d_);                                                       \
-            TransferAbi r_ = (fn)(cpu, ctx, (target));                          \
-            H2_TAKE_BACK_(d_);                                                  \
-            H2_TAKE_BACK_ACC_(d_);                                              \
-            d_->depth = my_;                                                    \
-            H2_DIRECT_HANDUP(r_);                                               \
-        }                                                                       \
-        H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u);                               \
+#define H2_JUMP_SLOT_(expected, invoke, target, spill, dirty)                               \
+    do {                                                                                    \
+        H2Direct *d_ = h2_direct(ctx);                                                      \
+        const H2DirectSlot *slot_ = h2_direct_lookup(d_, (target), (expected));             \
+        uint32_t my_ = 0;                                                                   \
+        if (slot_) H2_DCALL_GATE_();                                                        \
+        if (slot_ && h2_direct_enter(d_, ctx, h2_mem_, H2_HELD_DATA_(), slot_,              \
+                H2_JUMP, (target), 0u, esp, &my_, H2_COUNT_FITS_())) {                      \
+            H2_SPILL_DIRTY_(dirty);                                                         \
+            spill;                                                                          \
+            cpu->eip = (target);                                                            \
+            H2_LEND_ACC_(d_);                                                               \
+            H2_LEND_(d_);                                                                   \
+            TransferAbi r_ = (invoke)(cpu, ctx, (target));                                  \
+            H2_TAKE_BACK_(d_);                                                              \
+            H2_TAKE_BACK_ACC_(d_);                                                          \
+            d_->depth = my_;                                                                \
+            H2_DIRECT_HANDUP(r_);                                                           \
+        }                                                                                   \
+        H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u);                                           \
     } while (0)
+/* Static sites still make a direct host call to the linked symbol. */
+#define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty)                    \
+    H2_CALL_SLOT_(fn, fn, target, cont, label, spill, reload, refresh, dirty)
+#define H2_DJUMP(fn, target, spill, dirty) H2_JUMP_SLOT_(fn, fn, target, spill, dirty)
 #else
 #define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
 #define H2_DJUMP(fn, target, spill, dirty) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
 #endif
-/* A call through a pointer, `cont` this handler's own selector.
- * H2_INDIRECT_CALLS=1 (emit-time, default off) takes the target's handler
- * from its direct slot, where the runner put it when it last dispatched
- * that entry, and calls it as H2_DCALL does: h2_direct_enter checks the
- * slot again (pc, handler, generation) with everything else, so the call is
- * direct exactly where H2_DCALL's would be for that target, and otherwise
- * the same CALL for the runner. Off: always the runner's. */
+/* Indirect transfers use the same generation, execute and safe-point
+ * checks as static ones. Evaluate the guest target once before charging,
+ * spilling or invoking the target; a miss hands the same PC to the runner. */
 #ifndef H2_INDIRECT_CALLS
 #define H2_INDIRECT_CALLS 0
 #endif
 #if H2_DIRECT_CALLS && H2_INDIRECT_CALLS
-static inline H2Handler h2_slot_fn(ExecCtxOpaque *ctx, uint32_t target) {
-    const H2Direct *d = h2_direct(ctx);
-    if (!d) return NULL;
-    const H2DirectSlot *s = &d->slots[h2_direct_slot(d, target)];
-    return s->pc == target ? s->fn : NULL;
-}
-#define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)           \
-    do {                                                                        \
-        uint32_t it_ = (target);                                                \
-        H2Handler if_ = h2_slot_fn(ctx, it_);                                   \
-        if (if_) H2_DCALL(if_, it_, (cont), label, spill, reload, refresh, dirty); \
-        H2_XFER(H2_CALL, H2_ENTRY, it_, (cont));                                \
+#define H2_ICALL(target, cont, label, spill, reload, refresh, dirty)                        \
+    do {                                                                                    \
+        uint32_t it_ = (target);                                                            \
+        H2_CALL_SLOT_(NULL, slot_->fn, it_, cont, label, spill, reload, refresh, dirty);    \
+    } while (0)
+#define H2_IJUMP(target, spill, dirty)                                                      \
+    do {                                                                                    \
+        uint32_t it_ = (target);                                                            \
+        H2_JUMP_SLOT_(NULL, slot_->fn, it_, spill, dirty);                                  \
     } while (0)
 #else
 #define H2_ICALL(target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
+#define H2_IJUMP(target, spill, dirty) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
 #endif
 
 #endif

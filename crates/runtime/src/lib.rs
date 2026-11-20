@@ -43,6 +43,7 @@ pub use cow::CopyKind;
 pub use coverage::GuestCoverage;
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
+pub use entry_stats::DispatchCounts;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
 pub use ffi::ExecCtxOpaque;
 pub use generated::{H2GenEntry, H2GenModule, H2GenResume, RegisteredModule};
