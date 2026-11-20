@@ -565,6 +565,7 @@ pub fn install(
     });
     let with_fov = has(video_screen::LIST, RowKind::Setting(FOV.key));
     let with_video = has(List::Settings, RowKind::Open(video_screen::SCREEN));
+    let with_campaigns = crate::campaign_menu::class().is_some();
     // The Voice screen, and our rows on the pause menus (crate::pause_menu).
     let with_voice = model
         .as_ref()

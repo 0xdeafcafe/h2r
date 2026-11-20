@@ -824,7 +824,7 @@ fn load_ready(name: &str, bsp: u32, active: u16, palettes: StagePalettes) -> Res
             let page = bitmap.as_ref().map_err(Clone::clone).and_then(|b| {
                 let image = b.images.get(usize::from(key.page)).ok_or("no such lightmap bitmap page")?;
                 let palette = lightmap_palettes.get(usize::from(key.palette)).ok_or("no such lightmap palette")?;
-                decode_lightmap(image, palette, &mut files)
+                decode_lightmap(image, palette, &mut files, true)
             });
             match page {
                 Ok(page) => {
@@ -932,12 +932,13 @@ pub(crate) fn decode_lightmap(
     image: &tags::Image,
     palette: &[u32; 256],
     files: &mut assets::ResourceFiles,
+    refuse_linear: bool,
 ) -> Result<Image, String> {
     if image.format != tags::PixelFormat::P8 {
         return Err(format!("unsupported lightmap format {:?}", image.format));
     }
     let decoded = assets::decode_image(image, files).map_err(|e| e.to_string())?;
-    if decoded.desc.format.layout() == gfx::format::Layout::Linear {
+    if refuse_linear && decoded.desc.format.layout() == gfx::format::Layout::Linear {
         return Err("linear lightmap coordinates are in texels".into());
     }
     expand_levels(decoded.levels, palette).ok_or_else(|| "no usable lightmap mip levels".into())
@@ -1456,7 +1457,6 @@ pub(crate) fn light_image<R: std::io::Read + std::io::Seek>(
 }
 
 /// The first image of a bitmap as RGBA, with its mip chain.
-#[cfg(test)]
 pub(crate) fn decode_first<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, files: &mut assets::ResourceFiles, id: TagId) -> Option<Image> {
     decode_image(map, files, id, 0)
 }
