@@ -183,9 +183,10 @@ are under [Reviews](#reviews).
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness, the interpolated replay and reprojection (built, not yet run in game)
 - [theater.md](game/theater.md): Theater: saved films, free camera and spectating; the in-game selector and host-film player are built, the real-host experiments are pending
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
-- [theater-design.md](game/theater-design.md): design for the full in-game Theater: rewind and jumps from self-made keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
+- [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from sidecar keyframes, warm restore, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
+- [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
 - [forge.md](game/forge.md): design for Forge on Halo 2 multiplayer maps (not built)
-- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps)
+- Notes: [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources)
 
 ## Halo 1 (`halo1/`)
 
