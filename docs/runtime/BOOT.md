@@ -88,7 +88,7 @@ calls come from memory and are complete.
 
 `run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (`h2 play`,
 [app.md](app.md) "Playing"; the agent and dedicated-host paths) fills in
-`boot::Host` (`crates/apps/boot/src/lib.rs`). The fields a plain host sets:
+`boot::Host` (`crates/extensions/game/src/run_opts.rs`). The fields a plain host sets:
 
 | Field | Instead of | Goes to |
 | --- | --- | --- |
@@ -111,7 +111,9 @@ fed on the guest's clock, the callback count, a monotonic clock and
 
 - **`crates/runtime/recomp/src/lib.rs`** builds and loads the module;
   **`crates/apps/boot/src/lib.rs`**, the composition root, runs it and
-  re-exports `recomp` (`boot::build`, `boot::tier`).
+  re-exports `game` (`crates/extensions/game`: every module below that is
+  not `recomp`'s, and `RunOpts` and `Host`), which re-exports `recomp`
+  (`boot::build`, `boot::tier`).
   - `build` runs analyze, lifts each function, then `emit::plan` writes
     C11 shards and `h2gen.h`.
   - clang builds the shards for the host architecture, and they are linked
