@@ -1,5 +1,5 @@
 //! Independently selectable simulation replacements for the base Xbox image.
-use crate::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::{points, sim_native as sim};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
@@ -89,7 +89,7 @@ pub(crate) const ENTRIES: &[(&points::Point, &'static str, Body)] = &[
 /// `impl.sim.native_simd`: host vector lanes inside the native bodies'
 /// packed SSE fast path. On by default, so it follows the native ports;
 /// off keeps the scalar per-lane loop for A/B timing. Both are exact.
-fn simd_on(switches: &crate::Switches) -> bool {
+fn simd_on(switches: &hooks::Switches) -> bool {
     switches.implementation("sim.native_simd", true)
 }
 
@@ -195,7 +195,7 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 /// evaluator and stream ports it covers are test oracles only.
 pub const ANIM: &str = "sim.native.anim";
 
-fn anim_on(switches: &crate::Switches) -> bool {
+fn anim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(ANIM, false)
 }
 
@@ -236,7 +236,7 @@ fn install_anim(b: &mut Builder) {
 /// `native_bsp_segment` ports are test oracles while it is on.
 pub const COLLISION: &str = "sim.native.collision";
 
-fn collision_on(switches: &crate::Switches) -> bool {
+fn collision_on(switches: &hooks::Switches) -> bool {
     switches.implementation(COLLISION, false)
 }
 
@@ -295,7 +295,7 @@ fn install_collision(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Base, Registry, Switches};
+    use hooks::{Base, Registry, Switches};
 
     #[test]
     fn switches_install_only_the_requested_body() {

@@ -299,7 +299,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   functions/                      bab40, ba8c0, 108d90, bcc20, be8e0 and the import handlers (segments)
   item.rs, scenery.rs, ...        the slice 11 type updates; sse.rs, alu.rs their SSE and flag idioms
   ...                             one file per ported segment body
-crates/hooking/hooks/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
+crates/rewrites/sim-bridge/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 

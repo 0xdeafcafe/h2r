@@ -326,8 +326,8 @@ pub(super) fn install(
             "enter Theater render RNG",
             move |call| {
                 let mut guest = call.ctx.memory();
-                if hooks::sim_frame::frame_kind(&hooks::sim_frame::Addrs::HALO2, &*guest)
-                    == hooks::sim_frame::FrameKind::World
+                if sim_bridge::sim_frame::frame_kind(&sim_bridge::sim_frame::Addrs::HALO2, &*guest)
+                    == sim_bridge::sim_frame::FrameKind::World
                 {
                     frame_seeds
                         .lock()

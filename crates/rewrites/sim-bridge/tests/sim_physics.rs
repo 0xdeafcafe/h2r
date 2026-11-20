@@ -1,7 +1,8 @@
 //! A unit callback can inspect its actual return PC. At each RET dispatch
 //! must enter the port at that site without running the entry chain again.
 use engine::{points, sim_physics::PORTS};
-use hooks::{Base, Registry, Switches, sim_physics::NativePhysics};
+use hooks::{Base, Registry, Switches};
+use sim_bridge::{sim_physics::NativePhysics};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, exec::HARNESS_EXIT, guest::Permissions};
 use std::sync::{Arc, Mutex};
 
