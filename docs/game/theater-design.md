@@ -558,20 +558,18 @@ measurement.
 
 ## Open questions
 
-1. **Host film picture.** Most shared films are playerless host films,
-   drawn without effects, sky or HUD. Is that acceptable for the first
-   release, or should clients in a Live match also record their own
-   film, which replays with the full picture and that player's HUD?
-2. **Budgets.** 256 MiB for the ring and 4 GiB for sidecars by default,
+1. **Budgets.** 256 MiB for the ring and 4 GiB for sidecars by default,
    both settings?
-3. **Rewind feel.** Jumps of 5 s and 30 s, as Halo 3 had, or is
-   tick-accurate backward stepping worth its cost before slice 11?
-4. **Hosts beyond macOS** that register the `h2recomp` scheme.
+2. **Hosts beyond macOS** that register the `h2recomp` scheme.
 
 Settled: downloads serve the scrubbed, compacted Live film (sharing
 above); films after a breaking simulation change are refused, not drawn
 as poses (film compatibility); clip video is the user's ffmpeg and Live
-stores only tick ranges; the scheme is `h2recomp`.
+stores only tick ranges; the scheme is `h2recomp`; every player in a Live
+match records their own film of the simulation, and Theater on that
+player's machine plays it with the full picture and their HUD, while the
+host film is what Live serves to everyone else; rewind is jumps of 5 s
+and 30 s until slice 11 brings scrubbing.
 
 ## Related
 
