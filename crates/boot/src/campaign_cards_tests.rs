@@ -201,7 +201,7 @@ fn the_rewrite_wants_mainmenu_only_and_fills_the_table() {
 
 #[cfg(feature = "gpu")]
 #[test]
-fn native_bitmap_reads_from_the_rewritten_mainmenu_resource() {
+fn native_bitmap_reads_from_cold_and_cached_mainmenu_resources() {
     use crate::native_map::open_from_vfs;
     use crate::native_world_glue::decode_first;
 
@@ -246,23 +246,38 @@ fn native_bitmap_reads_from_the_rewritten_mainmenu_resource() {
     );
     std::fs::write(maps.join("level.map"), level.build().unwrap().0).unwrap();
 
-    let table = Table::default();
+    let data = dir.0.join("data");
+    let disk_cache = data.join("cache/campaign-cards");
     let picture = card("level", 8, 6);
-    let rewrite = CardRewrite::new(vec![picture.clone()], table.clone()).unwrap();
-    let config = vfs::Config::new(dir.0.join("data"), 0x4D530064);
-    let mut vfs = crate::map_override::mount(config, &disc, Some(rewrite), None, &[]).unwrap();
-    assert!(vfs.host_file(r"\Device\CdRom0\maps\mainmenu.map").is_none());
-    let vfs = Mutex::new(vfs);
+    let check_mount = || {
+        let table = Table::default();
+        let rewrite = CardRewrite::new(vec![picture.clone()], table.clone())
+            .unwrap()
+            .with_cache(&data);
+        let config = vfs::Config::new(data.clone(), 0x4D530064);
+        let mut vfs = crate::map_override::mount(config, &disc, Some(rewrite), None, &[]).unwrap();
+        let source = vfs.file_source(r"\Device\CdRom0\maps\mainmenu.map");
+        assert!(matches!(source, Some(vfs::FileSource::Memory(_))));
+        let vfs = Mutex::new(vfs);
 
-    let (mut level, mut resources) = open_from_vfs(&vfs, "level").unwrap();
-    let image = decode_first(&mut level, &mut resources, bitmap).unwrap();
-    assert_eq!((image.width, image.height), (8, 6));
-    assert_eq!(image.rgba, framed_template());
+        let (mut level, mut resources) = open_from_vfs(&vfs, "level").unwrap();
+        let image = decode_first(&mut level, &mut resources, bitmap).unwrap();
+        assert_eq!((image.width, image.height), (8, 6));
+        assert_eq!(image.rgba, framed_template());
 
-    let card_id = TagId(table.lock().unwrap()["level"]);
-    let (mut menu, mut resources) = open_from_vfs(&vfs, "mainmenu").unwrap();
-    let image = decode_first(&mut menu, &mut resources, card_id).unwrap();
-    assert_eq!(image.rgba, framed(&picture.rgba, &framed_template()));
+        let card_id = TagId(table.lock().unwrap()["level"]);
+        let (mut menu, mut resources) = open_from_vfs(&vfs, "mainmenu").unwrap();
+        let image = decode_first(&mut menu, &mut resources, card_id).unwrap();
+        assert_eq!(image.rgba, framed(&picture.rgba, &framed_template()));
+        card_id
+    };
+
+    assert!(!disk_cache.exists());
+    let cold_id = check_mount();
+    let disk_key = cache::key(&menu, std::slice::from_ref(&picture));
+    let cached = cache::load(&disk_cache, disk_key).unwrap();
+    assert_eq!(cached.table["level"], cold_id.0);
+    assert_eq!(check_mount(), cold_id);
 }
 
 #[test]

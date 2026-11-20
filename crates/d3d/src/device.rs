@@ -2301,7 +2301,11 @@ impl<B: Backend> Device<B> {
     /// when none is bound or it does not read. Read-only, for a native
     /// pass that expands the same indices itself.
     pub fn stage_palette(&self, mem: &dyn GuestMemory, stage: usize) -> Option<Vec<u32>> {
-        let header = *self.palettes.get(stage)?;
+        self.palette_entries(mem, *self.palettes.get(stage)?)
+    }
+
+    /// The entries of a guest palette header, whether or not a stage binds it.
+    pub fn palette_entries(&self, mem: &dyn GuestMemory, header: u32) -> Option<Vec<u32>> {
         if header == 0 {
             return None;
         }
