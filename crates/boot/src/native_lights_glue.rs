@@ -1,10 +1,8 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
 //! immutable draw resources alongside the exact resolved fallback.
-mod compare;
 pub(crate) mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
-use compare::{Begin, End, ProbeState};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -56,7 +54,6 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     tally: Mutex<Tally>,
     order: Mutex<RunOrder>,
     admission: Arc<LightAdmission>,
-    compare: Option<Mutex<ProbeState>>,
 }
 
 /// Why a light keeps its D3D passes.
@@ -101,9 +98,6 @@ pub const SUMMARY_EVERY: u64 = 1800;
 pub struct Tally {
     pub asked: u64,
     pub planned: u64,
-    /// Lights split (the host's `split`): their native surfaces
-    /// drawn natively, the rest by their D3D passes.
-    pub split: u64,
     pub shader_gels: u64,
     pub kept: BTreeMap<Keep, u64>,
 }
@@ -141,34 +135,15 @@ impl Tally {
         kept.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
         let kept: Vec<String> = kept.iter().map(|(k, n)| format!("{n} {k}")).collect();
         format!(
-            "native-lights: host planned {} of {} lights, split {}; kept on D3D: {}",
+            "native-lights: host planned {} of {} lights; kept on D3D: {}",
             self.planned,
             self.asked,
-            self.split,
             if kept.is_empty() { "none".to_string() } else { kept.join(", ") }
         )
     }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    fn end_probe(&self, layer: Option<usize>, mem: Option<&mut dyn GuestMemory>) {
-        let Some(compare) = &self.compare else { return };
-        let mut state = compare.lock().unwrap_or_else(|e| e.into_inner());
-        if let ProbeState::Reference { handle, last_layer } = *state
-            && layer.is_none_or(|l| l == last_layer)
-            && let Ok(mut device) = self.device.lock()
-        {
-            if let Some(mem) = mem {
-                if !device.external_pass_now(&mut DeviceMemory(mem), Box::new(End(handle))).unwrap_or(false) {
-                    device.request_external_pass(Box::new(End(handle)));
-                }
-            } else {
-                device.request_external_pass(Box::new(End(handle)));
-            }
-            *state = ProbeState::Done;
-        }
-    }
-
     fn gel_binding(&self, mem: &dyn GuestMemory, serial: u64, identity: Option<(u32, u32)>,
         c: &LightConstants) -> Result<Option<Binding>, Keep>
     {
@@ -187,7 +162,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .map(Some).ok_or(Keep::Unsupported("no matching target 13 binding for this light"))
     }
 
-    fn prepare_light(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, light: &Light, sorted: &SortedLayer, split: bool, binding: Option<Binding>)
+    fn prepare_light(&self, d: &d3d::Device<B>, mem: &dyn GuestMemory, light: &Light, sorted: &SortedLayer, binding: Option<Binding>)
         -> Result<(PreparedLight, usize), Keep>
     {
         let constants = constants(light)?;
@@ -196,7 +171,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             Arc::clone(current_ready(&state, mem).ok_or(Keep::NoWorld)?)
         };
         let world = ready.lights.as_ref().ok_or(Keep::NoWorld)?;
-        let parts = select_parts(&world.clusters, &sorted.entries, split)?;
+        let parts = select_parts(&world.clusters, &sorted.entries)?;
         let consumed = parts.len();
         let draws = world.resolve_parts(&constants, parts, binding.is_some())?;
         if draws.is_empty() {
@@ -232,33 +207,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("unreadable inherited CULLMODE or FRONTFACE"));
         }
         let cull = InheritedCull { device: cull, clusters: true, placements: false };
-        Ok((PreparedLight { ready, constants, handle: light.handle, draws, cull, scissor, binding }, consumed))
+        Ok((PreparedLight { ready, constants, draws, cull, scissor, binding }, consumed))
     }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-
-    fn probe(device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, plan: &PreparedLight,
-        state: Option<&mut ProbeState>) -> bool {
-        let Some(state) = state else { return false };
-        let Some(last) = plan.draws.last() else { return false };
-        if !matches!(*state, ProbeState::Waiting) {
-            return false;
-        }
-        if !device.external_pass_now(&mut DeviceMemory(mem), Box::new(Begin::new(plan.clone()))).unwrap_or(false) {
-            eprintln!("native-lights compare: device refused the reference marker, keeping this light on D3D");
-            *state = ProbeState::Done;
-            return true;
-        }
-        *state = ProbeState::Reference { handle: plan.handle, last_layer: last.layer };
-        eprintln!("native-lights compare: keeping light {:#010x} on D3D for {} planned passes", plan.handle, plan.draws.len());
-        true
-    }
-
-    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<bool, Keep> {
-        let Dispatch { light, serial, shader_gel, view_target, sorted, split: split_enabled } = dispatch;
-        self.end_probe(None, None);
-        let mut probe = self.compare.as_ref().map(|p| p.lock().unwrap_or_else(|e| e.into_inner()));
+    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<(), Keep> {
+        let Dispatch { light, serial, shader_gel, view_target, sorted } = dispatch;
         let mut d = self.device.lock().map_err(|_| Keep::Unsupported("device unavailable"))?;
         if !d.begin_external_boundary(&mut DeviceMemory(mem)).map_err(|_| Keep::Unsupported("could not drain light state"))? {
             return Err(Keep::Unsupported("light has an outstanding push callback"));
@@ -267,21 +222,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Keep::Unsupported("light view target changed"));
         }
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
-        let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled, binding)?;
-        if Self::probe(&mut d, mem, &plan, probe.as_deref_mut()) {
-            if feature::native_verbose() {
-                let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
-                    mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
-                eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
-                    plan.scissor, sorted.entries.len());
-                for (i, e) in sorted.entries.iter().enumerate() {
-                    eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
-                        e.slot, e.handler_item, e.geometry.map(|g| g.part), e.implementation,
-                        if i < count { "native" } else { "D3D" });
-                }
-            }
-            return Err(Keep::Unsupported("D3D comparison sample"));
-        }
+        let (plan, count) = self.prepare_light(&d, mem, &light, sorted, binding)?;
         let c = &plan.constants;
         let layers = mem.u32(feature::native_lights::LIGHT_LIST + 8).ok()
             .and_then(|mask| native_render::light_list::single_layer(mask, c.flags, c.definition_flags).ok());
@@ -293,10 +234,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 mem.u32(engine::light_constants::global::FRAME + 4 * i as u32).ok() != Some(*word)) {
             return Err(Keep::Unsupported("light globals differ from the prepared frame or flags"));
         }
-        let split = count != sorted.entries.len();
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
         let targets = d.stats().target_changes;
-        let isolated = split || plan.binding.is_some();
+        let isolated = plan.binding.is_some();
         let key = order.key(serial, targets, isolated);
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(&state.1, Load::Ready(current) if Arc::ptr_eq(current, &plan.ready)) {
@@ -306,7 +246,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             .ok_or(Keep::Unsupported("light ranges differ from its sorted entries"))?;
         *self.admission.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(layer);
         order.previous = (!isolated).then_some((serial, targets, key));
-        Ok(split)
+        Ok(())
     }
 }
 
@@ -317,12 +257,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         if shader_gel && ok { t.shader_gels += 1; }
-        if matches!(&result, Ok(true)) { t.split += 1; }
-        for msg in t.count(result.map(|_| ())) { eprintln!("{msg}"); }
+        for msg in t.count(result) { eprintln!("{msg}"); }
         if t.asked == 1 || (ok && t.planned.is_power_of_two()) || (ok && shader_gel && t.shader_gels == 1) || t.asked % SUMMARY_EVERY == 0 {
             let [reference, display] = d3d::GfxBackend::native_bundle_passes();
-            eprintln!("native-lights: {} admitted, {} split, {} shader gels, {} reference passes, {} scaled passes, {} worker round trips",
-                t.planned, t.split, t.shader_gels, reference, display,
+            eprintln!("native-lights: {} admitted, {} shader gels, {} reference passes, {} scaled passes, {} worker round trips",
+                t.planned, t.shader_gels, reference, display,
                 d3d::threaded::LIGHT_WORKER_WAITS.load(Ordering::Relaxed));
         }
         ok
@@ -330,14 +269,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn clear_admission(&self) {
         self.admission.0.lock().unwrap_or_else(|e| e.into_inner()).take();
-    }
-
-    fn end_layer(&self, mem: &mut dyn GuestMemory) {
-        if mem.u32(native_render::skip::CURRENT_LIST).ok() == Some(feature::native_lights::LIGHT_LIST)
-            && let Ok(layer) = mem.u32(native_render::skip::CURRENT_LAYER)
-        {
-            self.end_probe(Some(layer as usize), Some(mem));
-        }
     }
 
     fn checkpoint_gel(&self, serial: u64) {
@@ -456,7 +387,7 @@ type ClusterParts = HashMap<(Owner, u8), (TagId, WorldDraw)>;
 
 /// Only a prefix can precede the untouched D3D suffix. A later native
 /// match must never move ahead of a fallback draw (even the same shader).
-fn select_parts(clusters: &ClusterParts, items: &[SortedItem], split: bool)
+fn select_parts(clusters: &ClusterParts, items: &[SortedItem])
     -> Result<Vec<(usize, usize, WorldDraw)>, Keep> {
     let mut selected = Vec::new();
     for entry in items {
@@ -470,7 +401,6 @@ fn select_parts(clusters: &ClusterParts, items: &[SortedItem], split: bool)
         });
         match part {
             Ok(p) => selected.push(p),
-            Err(_) if split && !selected.is_empty() => break,
             Err(why) => return Err(Keep::Unsupported(why)),
         }
     }
@@ -666,7 +596,6 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::a
         tally: Mutex::new(Tally::default()),
         order: Mutex::default(),
         admission,
-        compare: (std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1")).then(Mutex::default),
     }));
 }
 
@@ -1003,7 +932,6 @@ fn gels<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, lib: &ShaderLibrary,
 struct PreparedLight {
     ready: Arc<Ready>,
     constants: native_render::lights::LightConstants,
-    handle: u32,
     draws: Vec<Planned>,
     cull: InheritedCull,
     scissor: [u32; 4],
@@ -1361,14 +1289,14 @@ mod tests {
             geometry: Some(native_render::light_list::Item { part: (d.owner, d.part), shader: shader.0, layers: 1 << 12 }),
         };
         let mut items = [entry(1, b, 2), entry(2, b, 3), entry(3, a, 1), entry(4, b, 1)];
-        assert_eq!(select_parts(&clusters, &items, false).unwrap(),
+        assert_eq!(select_parts(&clusters, &items).unwrap(),
             [(DIFFUSE_LAYER, 2, b), (DIFFUSE_LAYER, 3, b), (DIFFUSE_LAYER, 1, a), (DIFFUSE_LAYER, 1, b)]);
         items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
-        assert_eq!(select_parts(&clusters, &items, false).unwrap_err(),
+        assert_eq!(select_parts(&clusters, &items).unwrap_err(),
             Keep::Unsupported("gathered shader datum differs from the cluster material"));
-        assert_eq!(select_parts(&clusters, &items, true).unwrap(), [(DIFFUSE_LAYER, 2, b), (DIFFUSE_LAYER, 3, b)]);
+        items[2].geometry.as_mut().unwrap().shader ^= 1 << 24;
         items[0].geometry = None;
-        assert!(select_parts(&clusters, &items, true).is_err(), "cannot move native draws before a D3D prefix");
+        assert!(select_parts(&clusters, &items).is_err(), "a gathered model keeps the whole light on D3D");
     }
 
     #[test]
@@ -1387,8 +1315,8 @@ mod tests {
         assert_eq!(order.key(6, 9, false), 3);
         assert_eq!(order.key(6, 11, false), 6); // away and back
         assert_eq!(order.key(7, 9, false), 7); // refused light or view boundary
-        assert_eq!(order.key(6, 9, true), 6); // split or animated gel
-        assert_eq!(RunOrder::default().key(7, 9, false), 7); // preceding split
+        assert_eq!(order.key(6, 9, true), 6); // animated gel
+        assert_eq!(RunOrder::default().key(7, 9, false), 7); // no preceding run
     }
 
     #[test]
@@ -1406,7 +1334,7 @@ mod tests {
         assert!(t.count(Ok(())).is_empty());
         assert_eq!(
             t.summary(),
-            "native-lights: host planned 1 of 4 lights, split 0; kept on D3D: 2 samples an unloaded normalization cube, 1 gathered model"
+            "native-lights: host planned 1 of 4 lights; kept on D3D: 2 samples an unloaded normalization cube, 1 gathered model"
         );
         for _ in 5..SUMMARY_EVERY {
             assert!(t.count(Ok(())).is_empty());
@@ -1414,7 +1342,7 @@ mod tests {
         let said = t.count(Ok(()));
         assert_eq!(t.asked, SUMMARY_EVERY);
         assert_eq!(said, vec![t.summary()], "the counts every SUMMARY_EVERY lights");
-        assert_eq!(Tally::default().summary(), "native-lights: host planned 0 of 0 lights, split 0; kept on D3D: none");
+        assert_eq!(Tally::default().summary(), "native-lights: host planned 0 of 0 lights; kept on D3D: none");
     }
 
     #[test]

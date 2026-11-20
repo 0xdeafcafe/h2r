@@ -4,8 +4,8 @@ use feature::plan::Base;
 use feature::{Registry, Switches};
 
 #[test]
-fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_lights=off").unwrap());
+fn the_master_switch_off_places_nothing() {
+    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
     r.add(&NativeLights).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -16,7 +16,7 @@ fn the_switch_off_places_nothing() {
 
 #[test]
 fn its_chains_run_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
+    let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeLights).unwrap());
     let plan = r.build(&Base).unwrap();
     use engine::points::{LIGHT_GEOMETRY_DRAW, Loc, Sig};
@@ -41,20 +41,8 @@ fn its_chains_run_on_the_render_thread() {
 }
 
 #[test]
-fn splitting_requires_both_switches() {
-    assert!(!native_lights::split_on(&Switches::parse("impl.render.native_lights=on").unwrap()));
-    assert!(native_lights::split_on(&Switches::parse("impl.render.native_lights=on,impl.render.native_lights_split=on").unwrap()));
-    // Without the lights, nothing splits.
-    let mut r = Registry::new(
-        Switches::parse("impl.render.native_lights=off,impl.render.native_lights_split=on").unwrap(),
-    );
-    r.add(&NativeLights).unwrap();
-    assert!(!r.build(&Base).unwrap().text().contains("native_lights"));
-}
-
-#[test]
 fn render_timing_on_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on,render-timing").unwrap());
+    let mut r = Registry::new(Switches::parse("render-timing").unwrap());
     r.add(&NativeLights).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -63,11 +51,11 @@ fn render_timing_on_places_nothing() {
     assert!(plan.snapshot_blockers().is_empty());
 }
 
-/// Placed, its section (no bytes) forgets the open run and the split
+/// Placed, its section (no bytes) forgets the open run and the pending
 /// light at a load.
 #[test]
 fn placed_its_snapshot_policy_is_a_section() {
-    let mut r = Registry::new(Switches::parse("impl.render.native_lights=on").unwrap());
+    let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeLights).unwrap());
     let plan = r.build(&Base).unwrap();
     let policies: Vec<_> = plan
@@ -80,12 +68,9 @@ fn placed_its_snapshot_policy_is_a_section() {
 }
 
 #[test]
-fn light_walk_has_its_own_default_on_switch_and_context_only_chains() {
+fn light_walk_follows_the_master_switch_with_context_only_chains() {
     use native_lights::walk::{self, NativeLightWalk};
-    for (spec, enabled) in [("", true), ("impl.render.native=off", false),
-        ("impl.render.native_light_walk=off", false),
-        ("impl.render.native=off,impl.render.native_lights=on,impl.render.native_light_walk=on", false),
-        ("impl.render.native_lights=off,impl.render.native_shadows=off", false)] {
+    for (spec, enabled) in [("", true), ("impl.render.native=off", false), ("impl.render=off", false)] {
         let switches = Switches::parse(spec).unwrap();
         assert_eq!(walk::on(&switches), enabled);
         let mut r = Registry::new(switches);
