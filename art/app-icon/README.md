@@ -45,7 +45,7 @@ between.
 | --- | --- | --- |
 | iOS, iPadOS | `platform/ios/H2iOS/Assets.xcassets/AppIcon.appiconset`: one 1024 universal image, plus dark (transparent space) and tinted (grayscale) appearances | `ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon` in `platform/ios/project.yml` |
 | tvOS | `platform/tvos/H2TV/Assets.xcassets/App Icon & Top Shelf Image.brandassets`: the App Icon stack (400x240 @1x/@2x) and App Store stack (1280x768), each Front, Middle and Back; Top Shelf Image (1920x720 @1x/@2x) and Top Shelf Image Wide (2320x720 @1x/@2x) | `ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"` in `platform/tvos/project.yml` |
-| macOS windows | `crates/apps/app-icon/assets/AppIcon-512.png`, the plated Mac icon | `app_icon::set_dock_icon()`: the Dock icon of `h2 play` (`crates/apps/app`) and `h2-editor` (`crates/apps/studio`), which have no bundle |
+| macOS windows | `crates/apps/app-icon/assets/AppIcon-512.png`, the plated Mac icon | `app_icon::set_dock_icon()`: the Dock icon of `h2 play` (`crates/apps/app`) and `h2-editor` (`crates/apps/studio`), and the Finder icon in the macOS app bundle |
 | Xbox (UWP) | `platform/xbox/Assets/` on the `xbox` branch | the AppxManifest that `uwp-host`'s `package` example writes (docs/runtime/xbox.md) |
 
 The tvOS layers sit Front over Middle over Back on one registered canvas:
@@ -58,9 +58,8 @@ The Xbox images are the scale-200 exports under plain names
 `resources.pri`, and without one Windows cannot pick between qualified
 names, so the manifest names each file directly.
 
-The macOS `.icns` and iconset (ten sizes, with simplified 16 and 32 point
-renditions) are not committed: nothing here builds a Mac `.app` yet.
-Regenerate them from the sources below when something does.
+The macOS installer builds `AppIcon.icns` from the plated 512-pixel PNG
+with `iconutil` (`platform/macos/install.sh`).
 
 ## Sources
 

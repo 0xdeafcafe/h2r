@@ -203,11 +203,11 @@ export function medalKey(id: string): string | null {
 }
 
 const WEAPONS: Array<[RegExp, string]> = [
-  [/sword/, "energy_sword"],
+  [/sword|energy ?blade/, "energy_sword"],
   [/plasma ?pistol/, "plasma_pistol"],
   [/plasma ?rifle/, "plasma_rifle"],
   [/beam ?rifle/, "beam_rifle"],
-  [/sentinel/, "sentinel_beam"],
+  [/sentinel ?beam|^sentinel$/, "sentinel_beam"],
   [/sniper/, "sniper_rifle"],
   [/rocket/, "rocket_launcher"],
   [/\bsmg\b|sub ?machine/, "smg"],

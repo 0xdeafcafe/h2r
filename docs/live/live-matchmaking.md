@@ -1067,10 +1067,12 @@ ExtendRound and Report start with the session id, which is also the
 Live session's id. Ids are written as the game's 8 bytes in order, 16
 lowercase hex digits.
 
-1. **Game record.** `NewGame.session_id`, matchmaking games only. The
-   boot's playlist locator answers `Hle::matchmade`: the playlist and
-   the session, both from this console's own advertisement, else from
-   the joined session as last read. Telemetry puts both on the game.
+1. **Game record.** For matchmaking, the boot's playlist locator reads
+   `Hle::matchmade` and supplies the playlist and session from this console's
+   own advertisement or the joined session. Telemetry sends both on the game
+   start request. The server stores `NewGame.session_id` on its private lobby
+   link, which ranking reads when the game ends. Custom hosts also send their
+   advertisement for web joins.
 2. **HLE to server.** Register, ExtendRound and Report post through the
    Live worker, never waiting, once for every account signed in on the
    console:

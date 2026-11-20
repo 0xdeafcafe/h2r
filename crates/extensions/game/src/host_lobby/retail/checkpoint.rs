@@ -10,9 +10,10 @@ fn corrupt(reason: &str) -> snapshot::Error {
 impl Machine {
     pub(in crate::host_lobby) fn save(&self) -> Vec<u8> {
         let mut w = Writer::new();
-        w.u8(1).bool(self.owned.is_some());
+        w.u8(2).bool(self.owned.is_some());
         if let Some(o) = &self.owned {
             w.u32(o.addr)
+                .u32(o.incarnation)
                 .u32(o.config.map)
                 .u8(o.config.max_players)
                 .bool(o.config.live);
@@ -28,6 +29,7 @@ impl Machine {
                 Setup::Created => 0,
                 Setup::Applied => 1,
                 Setup::Open => 2,
+                Setup::Pregame => 3,
             });
             w.bool(o.applied_variant.is_some());
             if let Some(v) = &o.applied_variant {
@@ -44,9 +46,13 @@ impl Machine {
         w.into_bytes()
     }
 
-    pub(in crate::host_lobby) fn load(bytes: &[u8]) -> Result<Self, snapshot::Error> {
+    pub(in crate::host_lobby) fn load(
+        bytes: &[u8],
+        m: &dyn engine::GuestMemory,
+    ) -> Result<Self, snapshot::Error> {
         let mut r = Reader::new(bytes, "host-lobby");
-        if r.u8()? != 1 {
+        let version = r.u8()?;
+        if !matches!(version, 1 | 2) {
             return Err(corrupt("unknown version"));
         }
         let owned = if r.bool()? {
@@ -54,6 +60,12 @@ impl Machine {
             if addr == 0 || addr.checked_add(0x7900).is_none() {
                 return Err(corrupt("squad pointer"));
             }
+            let incarnation = if version == 1 {
+                m.u32(addr + super::INCARNATION)
+                    .map_err(|_| corrupt("squad incarnation"))?
+            } else {
+                r.u32()?
+            };
             let map = r.u32()?;
             let max_players = r.u8()?;
             if !(1..=16).contains(&max_players) {
@@ -82,6 +94,7 @@ impl Machine {
                 0 => Setup::Created,
                 1 => Setup::Applied,
                 2 => Setup::Open,
+                3 if version == 2 => Setup::Pregame,
                 _ => return Err(corrupt("squad setup")),
             };
             let applied_variant = r.bool()?.then(|| r.array().map(Box::new)).transpose()?;
@@ -92,6 +105,7 @@ impl Machine {
             let live_id = id()?;
             Some(Owned {
                 addr,
+                incarnation,
                 config,
                 setup,
                 applied_variant,
@@ -122,6 +136,7 @@ mod tests {
         let state = Machine {
             owned: Some(Owned {
                 addr: 0x8000,
+                incarnation: 12,
                 config,
                 setup: Setup::Open,
                 applied_variant: Some(Box::new([27; variant::SIZE])),
@@ -131,7 +146,15 @@ mod tests {
             }),
         };
         let bytes = state.save();
-        assert_eq!(Machine::load(&bytes).unwrap().save(), bytes);
-        assert!(Machine::load(&bytes[..bytes.len() - 1]).is_err());
+        let mut m = engine::testing::FakeGuest::new();
+        assert_eq!(Machine::load(&bytes, &m).unwrap().save(), bytes);
+        assert!(Machine::load(&bytes[..bytes.len() - 1], &m).is_err());
+
+        // Version 1 stored the pointer and left the incarnation in guest RAM.
+        let mut old = bytes.clone();
+        old[0] = 1;
+        old.drain(6..10);
+        m.put_u32(0x8000 + super::super::INCARNATION, 12);
+        assert_eq!(Machine::load(&old, &m).unwrap().save(), bytes);
     }
 }

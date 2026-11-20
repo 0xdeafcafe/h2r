@@ -250,6 +250,7 @@ pub async fn grant(
     tag: &Gamertag,
 ) -> Result<WireEvent, ApiError> {
     operator(live, bearer)?;
+    let _guard = live.invites.writes.lock().await;
     if live.admins.is_configured(tag) {
         return Err(conflict(format!(
             "{tag} is an admin by configuration (--admin or {ENV_ADMINS}); nothing to grant"
@@ -270,6 +271,7 @@ pub async fn revoke(
     tag: &Gamertag,
 ) -> Result<WireEvent, ApiError> {
     operator(live, bearer)?;
+    let _guard = live.invites.writes.lock().await;
     if live.admins.is_configured(tag) {
         return Err(conflict(format!(
             "{tag} is an admin by configuration (--admin or {ENV_ADMINS}); remove it there and restart"
@@ -294,7 +296,7 @@ pub(crate) fn operator(live: &Live, bearer: Option<&str>) -> Result<Author, ApiE
     Ok(author)
 }
 
-fn account_xuid(live: &Live, tag: &Gamertag) -> Result<Xuid, ApiError> {
+pub(crate) fn account_xuid(live: &Live, tag: &Gamertag) -> Result<Xuid, ApiError> {
     live.model
         .read()
         .account_by_tag(tag)
@@ -308,11 +310,22 @@ async fn append_admin_event(
     tag: &Gamertag,
     kind: &str,
 ) -> Result<WireEvent, ApiError> {
-    let event = live.server_event(
-        streams::account(xuid),
+    append_account_event(
+        live,
+        xuid,
         kind,
         serde_json::json!({"xuid": xuid, "gamertag": tag}),
-    );
+    )
+    .await
+}
+
+pub(crate) async fn append_account_event(
+    live: &Live,
+    xuid: Xuid,
+    kind: &str,
+    data: Value,
+) -> Result<WireEvent, ApiError> {
+    let event = live.server_event(streams::account(xuid), kind, data);
     let recorded = live.store().append(vec![event], &[]).await?;
     let event = recorded.into_iter().next().expect("one appended");
     live.wait_applied(event.position).await?;

@@ -283,6 +283,33 @@ fn agreement(a: &[u8], b: &[u8], tol: u8) -> (f64, u8) {
 }
 
 #[test]
+fn fixed_capture_records_four_presents_even_if_readback_misses_wall_clock_slots() {
+    let Some(ctx) = context() else {
+        return;
+    };
+    let shown: Shown = Arc::default();
+    let clock = Arc::new(AtomicU64::new(0));
+    let now = Arc::clone(&clock);
+    let mut presents = 0;
+    let mut b = InterpBackend::new(scaled(&ctx, 2, &shown), || 120)
+        .with_clock(move || now.load(Ordering::Relaxed))
+        .with_capture_slots(move || {
+            presents += 1;
+            if presents == 3 { 4 } else { 0 }
+        });
+    let color = b.create_surface(D3DFormat::A8R8G8B8, W, H, false).unwrap();
+    b.present(color, 0).unwrap();
+    clock.store(F, Ordering::Relaxed);
+    frame(&mut b, color);
+    clock.store(F + 500_000_000, Ordering::Relaxed);
+    frame(&mut b, color);
+    assert_eq!(b.idle_at(F + 600_000_000), None);
+    let stats = *b.stats().lock().unwrap();
+    assert_eq!((stats.blended_frames, stats.replays, stats.dropped), (1, 3, 0));
+    assert_eq!(shown.lock().unwrap().len(), 6);
+}
+
+#[test]
 fn made_frames_match_the_guests_at_render_scale() {
     let Some(ctx) = context() else {
         return;

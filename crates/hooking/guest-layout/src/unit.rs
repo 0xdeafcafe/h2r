@@ -1,5 +1,5 @@
 //! Units, bipeds, weapons and devices: the type-specific parts of an
-//! object's body (docs/live/live-gamestate.md "Unit aim and held weapon").
+//! object's body (docs/live/live-gamestate.md "Unit aim, held weapon, species and shots").
 //!
 //! Offsets are from the body's start, as [`Object`]'s are. `unit_new`
 //! (`0x000c4410`) is the evidence for most unit fields: it sets the four

@@ -93,6 +93,7 @@
   background: linear-gradient(#1f4a12, #12300b); box-shadow: 0 0 0 1px #6fa043, inset 0 1px 0 #ffffff1a;
   transition: background .12s, color .12s, box-shadow .12s;
 }
+.dx a.soc-act { display: inline-flex; align-items: center; text-decoration: none; }
 .dx .soc-act.on, .dx .soc-act:focus-visible {
   color: #1e3d05; outline: none;
   background: linear-gradient(#ecff96, #bedc38 60%, #d8ee6b); box-shadow: 0 0 0 1px #e8fa9b, 0 0 calc(var(--u) * 12) #cafa5455;
