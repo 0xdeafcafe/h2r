@@ -216,10 +216,17 @@ impl Mind {
                 _ => None,
             }
             .or(chosen.map(|(o, _)| o.position))
-            .or(self.last_seen.map(|(_, at, _)| at));
+            .or(self.last_seen.map(|(_, at, _)| at))
+            // An errand under way (the weapon it seeks, `mount_plan`'s far
+            // one): ridden to, and finished on foot within ON_FOOT.
+            .or(self.vehicles.errand);
             if let Some(Goal::Go(at)) = goal {
                 there |= dist_xy(position, at) < drive::ON_FOOT;
             }
+            there |= self
+                .vehicles
+                .errand
+                .is_some_and(|at| dist_xy(position, at) < drive::ON_FOOT);
             let dest = match dest {
                 Some(d) => Some(d),
                 None => {
@@ -272,8 +279,21 @@ impl Mind {
                         self.vehicles.route = Some(drive::Route::new(std::mem::take(points), dest));
                     } else {
                         there |= matches!(goal, Some(Goal::Go(_)));
+                        // The chassis cannot reach the errand's road: out,
+                        // and the rest of the way on foot.
+                        there |= self.vehicles.errand == Some(dest);
                         if chosen.is_none() && goal.is_none() {
+                            // A roam goal the chassis cannot reach (an
+                            // infantry-only way there): leave it alone a
+                            // while, as a foot goal it got stuck on, so the
+                            // same undrivable goal is not re-picked at once.
+                            self.stuck.blacklist(dest, tick);
                             self.goal = None;
+                            // Each failure cost a goal and a search: a run
+                            // of them is going nowhere (drive::NOWHERE_TICKS
+                            // gets the bot out to fight on foot).
+                            self.vehicles.planless =
+                                self.vehicles.planless.saturating_add(drive::FAILED_PLAN);
                         }
                     }
                 } else if !self.vehicles.route_refresh {
@@ -337,6 +357,19 @@ impl Mind {
                 }
                 drive::Unstuck::GiveUp => stuck = true,
             }
+            // Nowhere to drive: on a large map a roam goal can be beyond
+            // every portal the chassis fits, and plans that keep failing
+            // move nothing. A fight empties the count, a tick steering a
+            // live route slowly pays it off, an idle tick grows it, and a
+            // failed plan grows it by a run's worth (above); past
+            // drive::NOWHERE_TICKS the bot gets out and fights on foot.
+            if chosen.is_some() {
+                self.vehicles.planless = 0;
+            } else if go.is_some() || self.vehicles.route.as_ref().is_some_and(|r| !r.done()) {
+                self.vehicles.planless = self.vehicles.planless.saturating_sub(1);
+            } else {
+                self.vehicles.planless += 1;
+            }
         } else if look.is_none() {
             // A gun with nothing to shoot: where the enemy was, else ahead.
             look = Some(match self.last_seen {
@@ -357,6 +390,7 @@ impl Mind {
                 },
                 driver,
                 stuck,
+                nowhere: driver && self.vehicles.planless >= drive::NOWHERE_TICKS,
                 there,
             });
             if self.vehicles.leaving.is_none()
@@ -376,13 +410,20 @@ impl Mind {
         }
 
         // The right stick through the hand (mind::look): onto the target it
-        // tracks, else toward what it looks at. The left stick through the
-        // thumb (mind::pad::Feet), eased, where to go relative to the aim:
-        // the vehicle turns to go there.
+        // tracks, else toward what it looks at. A driver parked with nowhere
+        // to drive sweeps the view, as an idle bot on foot does, so it sees
+        // what comes into view instead of staring one way. The left stick
+        // through the thumb (mind::pad::Feet), eased, where to go relative
+        // to the aim: the vehicle turns to go there.
         if aim_error.is_none() {
             aim_error = look.map(|l| angle_error(aim_at, angles(sub(l, eye))));
         }
-        pad.right_stick = self.hand.steer(self.skill, aim_error, dt);
+        if aim_error.is_none() && chosen.is_none() && self.vehicles.leaving.is_none() {
+            pad.right_stick = self.fidget.pad(u64::from(tick)).right_stick;
+        } else {
+            self.fidget.reset();
+            pad.right_stick = self.hand.steer(self.skill, aim_error, dt);
+        }
         let [x, y] = self.feet.step(
             go.map(|d| [d[0] * throttle, d[1] * throttle]),
             dt,
@@ -559,11 +600,17 @@ impl Mind {
                     }
                     _ => false,
                 };
-                if mem.sight.vehicles.is_empty()
-                    || !calm
-                    || matches!(self.kit, Kit::Seek(_))
-                    || !far_goal
-                {
+                // A weapon it seeks only rules the vehicle out when it is
+                // close enough to walk to (§3.6): on a large map a far one
+                // is exactly what a vehicle is for, and it is ridden to
+                // and finished on foot (the errand in `Memory`).
+                let near_seek = match &self.kit {
+                    Kit::Seek(pk) | Kit::Dual(pk) => {
+                        dist_xy(me.position, pk.position) <= OBJECTIVE_FAR
+                    }
+                    _ => false,
+                };
+                if mem.sight.vehicles.is_empty() || !calm || near_seek || !far_goal {
                     return None;
                 }
                 friends.extend(

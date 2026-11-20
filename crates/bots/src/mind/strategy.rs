@@ -206,6 +206,13 @@ impl Mind {
                             len(sub(**a, me.position)).total_cmp(&len(sub(**b, me.position)))
                         })
                         .map(|&at| (at, k.tick));
+                    // The guess is a roam sighting too: the short search
+                    // window runs out long before the walk (or the drive)
+                    // across a large map gets there, and the next fight is
+                    // likeliest where the respawn lands.
+                    if let Some(&(at, _)) = self.search.as_ref() {
+                        self.roam.saw(at, k.tick);
+                    }
                 }
                 self.last_seen = None;
                 self.tracks.remove(&k.victim);

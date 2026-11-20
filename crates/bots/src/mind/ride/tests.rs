@@ -434,6 +434,118 @@ fn a_standalone_gunner_stays_on_the_gun_until_flanked() {
     assert_eq!(pad.right_trigger, 0.0);
 }
 
+/// A large map as a driver on a small pocket of it sees it: the pocket the
+/// vehicle is on, and a wide polygon beyond a link it cannot drive over
+/// (an infantry jump). Every roam goal the mesh offers the chassis is
+/// unreachable, as on a big vehicle map whose infantry routes climb away
+/// from the roads.
+fn pocket_map(link: crate::nav::Kind) -> MapData {
+    let pocket = Poly::new(vec![
+        [0.0, 0.0, 0.0],
+        [4.0, 0.0, 0.0],
+        [4.0, 4.0, 0.0],
+        [0.0, 4.0, 0.0],
+    ]);
+    let beyond = Poly::new(vec![
+        [0.0, 20.0, 0.0],
+        [60.0, 20.0, 0.0],
+        [60.0, 60.0, 0.0],
+        [0.0, 60.0, 0.0],
+    ]);
+    let nav = NavMesh::new(
+        vec![pocket, beyond],
+        vec![crate::nav::Edge {
+            from: 0,
+            to: 1,
+            a: [2.0, 4.0, 0.0],
+            b: [2.0, 20.0, 0.0],
+            kind: link,
+        }],
+    );
+    MapData {
+        nav,
+        walls: Walls::default(),
+        ..MapData::default()
+    }
+}
+
+/// Steps `ticks` as the driver of a Ghost on the pocket at `[2, 2]`, the
+/// vehicle held still: the last pad, whether X was ever held, whether the
+/// right stick ever swept, and the first tick X was held.
+fn park_pocket(m: &mut Mind, map: &MapData, ticks: u32) -> (HostPadState, bool, bool, Option<u32>) {
+    let at = [2.0, 2.0, 0.0];
+    let mut x = false;
+    let mut swept = false;
+    let mut first_x = None;
+    let mut pad = HostPadState::default();
+    for t in 0..ticks {
+        m.see_vehicles(driving(ghost(100, at)));
+        pad = step(m, bot(at), vec![], t, Some(map));
+        swept |= pad.right_stick != (0.0, 0.0);
+        if holds_x(&pad) {
+            first_x = first_x.or(Some(t));
+            x = true;
+        }
+    }
+    (pad, x, swept, first_x)
+}
+
+#[test]
+fn a_driver_with_nowhere_to_drive_gets_out_and_roams_on_foot_instead() {
+    let map = pocket_map(crate::nav::Kind::Jump);
+    let mut m = Mind::new(Skill::Legendary, 7);
+    let (pad, x, swept, first_x) = park_pocket(&mut m, &map, 200);
+    assert_eq!(m.doing, Doing::Drive(100));
+    let t = first_x.expect("holds X to get out");
+    // Not at once (it tried: a goal, a plan, a wait), and well within the
+    // window a parked player would give up in.
+    assert!((60..=190).contains(&t), "when it got out: {t}");
+    assert_eq!(
+        m.vehicles.leaving,
+        Some(crate::vehicle::drive::Leave::Nowhere)
+    );
+    assert_eq!(pad.left_stick, (0.0, 0.0));
+    assert_eq!(pad.right_trigger, 0.0);
+    assert!(swept, "while it waited it looked around");
+    // The goal the chassis cannot reach is not offered again at once.
+    let beyond = map.nav.polys[1].center;
+    assert!(m.stuck.blocked(beyond, t));
+
+    // Out: the vehicle is left alone well past the usual shun, so it
+    // fights on foot rather than parking again.
+    let out = 200;
+    m.see_vehicles(on_foot(vec![ghost(100, [2.0, 2.0, 0.0])]));
+    step(&mut m, bot([2.0, 2.0, 0.0]), vec![], out, Some(&map));
+    assert_eq!(m.vehicles.planless, 0);
+    assert!(m.vehicles.shunned(100, out + crate::vehicle::plan::SHUN_TICKS));
+    assert!(!m.vehicles.shunned(100, out + crate::vehicle::NOWHERE_SHUN_TICKS));
+    for t in out + 1..out + 60 {
+        m.see_vehicles(on_foot(vec![ghost(100, [2.0, 2.0, 0.0])]));
+        step(&mut m, bot([2.0, 2.0, 0.0]), vec![], t, Some(&map));
+        assert_ne!(m.doing, Doing::Mount(100), "it does not get back in");
+    }
+}
+
+#[test]
+fn a_driver_with_a_way_over_keeps_driving_and_never_holds_x() {
+    let map = pocket_map(crate::nav::Kind::Walk);
+    let mut m = Mind::new(Skill::Legendary, 7);
+    // The vehicle rolls ahead at half a unit a tick, as the pad asks.
+    let mut x = false;
+    let mut pad = HostPadState::default();
+    for t in 0..150u32 {
+        let at = [2.0, 2.0 + 0.5 * t as f32, 0.0];
+        m.see_vehicles(driving(ghost(100, at)));
+        pad = step(m, bot(at), vec![], t, Some(&map));
+        x |= holds_x(&pad);
+    }
+    assert!(!x, "nowhere to leave over a drivable link");
+    assert_eq!(m.vehicles.leaving, None);
+    assert!(m.vehicles.planless < crate::vehicle::drive::NOWHERE_TICKS);
+    assert_eq!(m.doing, Doing::Drive(100));
+    assert!(pad.left_stick != (0.0, 0.0), "it steers: {:?}", pad.left_stick);
+}
+
 #[test]
 fn the_mind_builds_a_flight_pad_for_the_banshee_driver() {
     let mut m = Mind::new(Skill::Normal, 1);
@@ -452,4 +564,83 @@ fn the_mind_builds_a_flight_pad_for_the_banshee_driver() {
     let pad = step(&mut m, bot(banshee.position), vec![], 1, None);
     assert!(holds_x(&pad));
     assert_eq!(pad.left_stick, (0.0, 0.0));
+}
+
+fn pickup(id: u32, at: Vec3) -> crate::arms::Pickup {
+    crate::arms::Pickup {
+        id,
+        position: at,
+        gun: crate::arms::Gun::default(),
+    }
+}
+
+/// On a large map the weapons plan can want a gun far across the map. A
+/// near one is walked to and rules the vehicle out as before (§3.6);
+/// a far one is what a vehicle is for: ridden to, then taken on foot
+/// (the errand in `vehicle::Memory`).
+#[test]
+fn a_far_weapon_seek_takes_a_vehicle_a_near_one_does_not() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    m.see_vehicles(on_foot(vec![ghost(100, [5.0, 0.0, 0.0])]));
+    let p = Perception {
+        me: Some(bot([0.0, 0.0, 0.0])),
+        teams: true,
+        tick: 0,
+        ..Perception::default()
+    };
+    let mut friends = Vec::new();
+    m.kit = crate::arms::Kit::Seek(pickup(7, [120.0, 0.0, 0.0]));
+    assert_eq!(
+        m.mount_plan(&p, None, &bot([0.0; 3]), None, true, None, &mut friends),
+        Some(100),
+        "the far gun is ridden to"
+    );
+    let mut m = Mind::new(Skill::Normal, 1);
+    m.see_vehicles(on_foot(vec![ghost(100, [5.0, 0.0, 0.0])]));
+    m.kit = crate::arms::Kit::Seek(pickup(8, [6.0, 0.0, 0.0]));
+    let mut friends = Vec::new();
+    assert_eq!(
+        m.mount_plan(&p, None, &bot([0.0; 3]), None, true, None, &mut friends),
+        None,
+        "the near gun is walked to"
+    );
+}
+
+/// The errand ride itself: the driver's route is to the sought gun, and
+/// within [`crate::vehicle::drive::ON_FOOT`] of it the bot gets out to
+/// finish on foot.
+#[test]
+fn a_driver_rides_to_its_errand_and_gets_out_to_take_it() {
+    let floor = Poly::new(vec![
+        [0.0, 0.0, 0.0],
+        [40.0, 0.0, 0.0],
+        [40.0, 10.0, 0.0],
+        [0.0, 10.0, 0.0],
+    ]);
+    let map = MapData {
+        places: Default::default(),
+        nav: NavMesh::new(vec![floor], vec![]),
+        walls: Walls::default(),
+    };
+    let gun = [36.0, 2.0, 0.0];
+    let mut m = Mind::new(Skill::Normal, 1);
+    m.see_vehicles(driving(ghost(100, [2.0, 2.0, 0.0])));
+    m.vehicles.errand = Some(gun);
+    for t in 0..3 {
+        step(&mut m, bot([2.0, 2.0, 0.0]), vec![], t, Some(&map));
+        assert_eq!(m.doing, Doing::Drive(100), "tick {t}");
+    }
+    assert_eq!(
+        m.vehicles.route.as_ref().map(|r| r.goal),
+        Some(gun),
+        "the route is to the gun"
+    );
+    // Within ON_FOOT of the gun: out, on foot, for the weapon.
+    m.see_vehicles(driving(ghost(100, [35.0, 2.0, 0.0])));
+    let pad = step(&mut m, bot([35.0, 2.0, 0.0]), vec![], 3, Some(&map));
+    assert!(holds_x(&pad), "X to get out");
+    assert_eq!(
+        m.vehicles.leaving,
+        Some(crate::vehicle::drive::Leave::There)
+    );
 }

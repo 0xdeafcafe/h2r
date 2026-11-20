@@ -44,8 +44,9 @@ fn vec3(g: &mut FakeGuest, at: u32, v: Vec3) {
 /// Objects: 0 the bot's biped (player 0, port 1), 1 an enemy's biped
 /// (player 1), 2 a Warthog at (10, 20, 1) facing +Y, 3 its gun mounted
 /// 1 behind and 0.5 up, 4 an empty Ghost at (30, 0, 0), 5 a wrecked
-/// Ghost. Tags: 0 the Warthog (driver, passenger), 1 its gun (gunner),
-/// 2 the Ghost (one seat, flags not set).
+/// Ghost, 6 a weapon on the Warthog's gun, 7 one on the Ghost, 8 one
+/// the enemy biped holds. Tags: 0 the Warthog (driver, passenger), 1
+/// its gun (gunner), 2 the Ghost (one seat, flags not set).
 fn world() -> FakeGuest {
     let mut g = FakeGuest::new();
     g.map(GAME, 0x400)
@@ -80,7 +81,7 @@ fn world() -> FakeGuest {
     }
     // Objects.
     g.put_u32(points::OBJECTS.base, OBJECTS_HEADER);
-    array(&mut g, OBJECTS_HEADER, OBJECTS_DATA, 0xc, 6);
+    array(&mut g, OBJECTS_HEADER, OBJECTS_DATA, 0xc, 9);
     let kinds = [
         objects::BIPED,
         objects::BIPED,
@@ -88,6 +89,9 @@ fn world() -> FakeGuest {
         objects::VEHICLE,
         objects::VEHICLE,
         objects::VEHICLE,
+        objects::WEAPON,
+        objects::WEAPON,
+        objects::WEAPON,
     ];
     for (i, kind) in (0u32..).zip(kinds) {
         let h = OBJECTS_DATA + i * 0xc;
@@ -120,6 +124,10 @@ fn world() -> FakeGuest {
     vec3(&mut g, body(4) + 0x64, [30.0, 0.0, 0.0]);
     g.put_u32(body(5), tag(2))
         .put_u16(body(5) + 0x10a, BODY_DEPLETED);
+    // Weapons: on the Warthog's gun, on the Ghost, and in the enemy's hands.
+    g.put_u32(body(6) + 0x14, handle(3).raw());
+    g.put_u32(body(7) + 0x14, handle(4).raw());
+    g.put_u32(body(8) + 0x14, handle(1).raw());
     // Players: 0 the bot (port 1, team 0), 1 the enemy (team 1).
     g.put_u32(points::PLAYERS.base, PLAYERS_HEADER);
     array(&mut g, PLAYERS_HEADER, PLAYERS_DATA, 0x21c, 2);
@@ -310,4 +318,23 @@ fn reads_a_seat_entry_marker_in_its_live_node_and_checks_the_tag_radius() {
         entry,
         [9.75, 21.4, 1.0]
     ));
+}
+
+#[test]
+fn a_mounted_weapons_shot_is_the_seated_players_and_a_held_one_is_its_holder() {
+    let g = world();
+    // The Warthog's chaingun: its gunner (player 1) fires it.
+    assert_eq!(firing_player(&g, handle(6)).unwrap(), Some(FiredBy::Seated(1)));
+    // The Ghost's plasma with nobody aboard: nobody.
+    assert_eq!(firing_player(&g, handle(7)).unwrap(), None);
+    // A handheld weapon: its holder's biped.
+    assert_eq!(
+        firing_player(&g, handle(8)).unwrap(),
+        Some(FiredBy::Holder(handle(1)))
+    );
+    // The bot boards the empty Ghost: the driver fires the plasma.
+    let mut g = world();
+    g.put_u32(body(0) + 0x14, handle(4).raw())
+        .put_u16(body(0) + UNIT_SEAT, 0);
+    assert_eq!(firing_player(&g, handle(7)).unwrap(), Some(FiredBy::Seated(0)));
 }

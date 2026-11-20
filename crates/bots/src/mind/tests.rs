@@ -1363,3 +1363,128 @@ fn temperament_showboats_attempt_risky_melee_but_still_reach_for_the_button() {
     }
     assert!((3..30).contains(&first.expect("showboat tries the melee")));
 }
+
+/// A strip of eight 10-unit squares end to end (0 to 80 in X, 0 to 10 in
+/// Y): a large map's worth of polygons, all reachable from one another.
+fn strip() -> NavMesh {
+    let mut polys = Vec::new();
+    let mut edges = Vec::new();
+    for i in 0..8 {
+        let x = i as f32 * 10.0;
+        polys.push(Poly::new(vec![
+            [x, 0.0, 0.0],
+            [x + 10.0, 0.0, 0.0],
+            [x + 10.0, 10.0, 0.0],
+            [x, 10.0, 0.0],
+        ]));
+        if i > 0 {
+            let (a, b) = ([x, 0.0, 0.0], [x, 10.0, 0.0]);
+            for (from, to) in [(i - 1, i), (i, i - 1)] {
+                edges.push(Edge {
+                    from,
+                    to,
+                    a,
+                    b,
+                    kind: crate::nav::Kind::Walk,
+                });
+            }
+        }
+    }
+    NavMesh::new(polys, edges)
+}
+
+/// With nobody in view and nothing heard, roaming is the only thing left,
+/// and on a large map its random polygons spread the team out. A
+/// teammate's radio call is the one piece of knowledge that says where a
+/// fight is at any range, so it must become the roam goal (docs/game/
+/// bots.md §3.2: "Legendary goes where the fight is").
+#[test]
+fn a_teammates_call_far_across_a_large_map_becomes_the_roam_goal() {
+    let map = MapData {
+        nav: strip(),
+        ..MapData::default()
+    };
+    let contact = [75.0, 5.0, 0.0];
+    for seed in 0..8u64 {
+        let mut m = Mind::new(Skill::Legendary, seed);
+        m.decisions.inbox = vec![crate::decisions::radio::Call {
+            sender: 1,
+            team: 0,
+            target: 2,
+            at: contact,
+            tick: 90,
+            help: false,
+        }];
+        m.step(
+            &Perception {
+                observations: Default::default(),
+                me: me([5.0, 5.0, 0.0], X),
+                others: vec![],
+                teams: true,
+                tick: 91,
+                pickups: vec![],
+                objective: None,
+            },
+            Some(&map),
+        );
+        assert_eq!(m.doing, Doing::Roam, "seed {seed}");
+        assert_eq!(m.goal, Some(contact), "the call draws it, seed {seed}");
+        assert!(
+            m.roam.sightings.contains(&(contact, 90)),
+            "kept as a sighting, seed {seed}"
+        );
+    }
+}
+
+/// The kill feed retires the bot's target and guesses at the respawn. On
+/// a large map the walk there outlasts the search's short confidence
+/// window, so the guess must also be a roam sighting or the hunt ends at
+/// the window's edge (§3.2).
+#[test]
+fn a_killed_targets_respawn_guess_hunts_past_the_search_window() {
+    let mut map = MapData {
+        nav: strip(),
+        ..MapData::default()
+    };
+    // Both spawns out of the bot's sight: the far one down the strip
+    // behind it (aim -X), the near one at its own feet (always in
+    // view). The far one is the guess.
+    map.places.starts = vec![[5.0, 5.0, 0.0], [75.0, 5.0, 0.0]];
+    let far = [75.0, 5.0, 0.0];
+    let mut m = Mind::new(Skill::Legendary, 1);
+    m.last_seen = Some((1, [5.0, 5.0, 0.0], 5));
+    let p = Perception {
+        observations: Default::default(),
+        me: me([5.0, 5.0, 0.0], [-1.0, 0.0, 0.0]),
+        others: vec![],
+        teams: true,
+        tick: 5,
+        pickups: vec![],
+        objective: None,
+    };
+    m.hear_deaths(
+        &p,
+        &[crate::emote::Kill {
+            seq: 1,
+            tick: 5,
+            victim: 1,
+            attacker: Some(0),
+            betrayal: false,
+            at: None,
+        }],
+        Some(&map),
+    );
+    assert_eq!(m.search, Some((far, 5)));
+    assert!(
+        m.roam.sightings.contains(&(far, 5)),
+        "the guess is kept as a sighting"
+    );
+    // Within the window the search walks it there; long after the window
+    // (the search's confidence is gone by tick 200) the sighting still
+    // holds the hunt across the strip.
+    let mut late = p.clone();
+    late.tick = 210;
+    m.step(&late, Some(&map));
+    assert_eq!(m.doing, Doing::Roam);
+    assert_eq!(m.goal, Some(far), "the sighting carries the hunt");
+}

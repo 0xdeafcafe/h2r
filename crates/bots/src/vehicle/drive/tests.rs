@@ -79,6 +79,7 @@ fn ride() -> Ride {
         driverless: 0,
         driver: true,
         stuck: false,
+        nowhere: false,
         there: false,
     }
 }
@@ -127,6 +128,25 @@ fn it_gets_out_of_a_wreck_a_flip_a_stuck_one_or_a_stranded_gun() {
             ..gun
         }),
         None
+    );
+}
+
+#[test]
+fn a_driver_with_nowhere_to_drive_gets_out_but_a_gunner_waits() {
+    // A healthy, upright vehicle: only the nowhere rule says leave, and
+    // only for a driver.
+    let nowhere = Ride {
+        nowhere: true,
+        ..ride()
+    };
+    assert_eq!(leave(&nowhere), Some(Leave::Nowhere));
+    assert_eq!(
+        leave(&Ride {
+            driver: false,
+            ..nowhere
+        }),
+        None,
+        "a gunner is stranded by nobody driving, not by routes"
     );
 }
 

@@ -37,6 +37,15 @@ pub const LEAVE_HEALTH: f32 = 0.2;
 pub const FLIPPED_TICKS: u32 = 30;
 /// A gunner or passenger with nobody driving gets out after this long.
 pub const DRIVERLESS_TICKS: u32 = 4 * 30;
+/// A driver with neither a route nor a fight for this long gets out:
+/// on a large map every goal it is offered can be beyond a portal the
+/// chassis fits, and a healthy vehicle it cannot plan from is a seat
+/// it would otherwise never leave.
+pub const NOWHERE_TICKS: u32 = 4 * 30;
+/// One failed roam plan counts this many of those ticks: a failure cost
+/// a goal and a search, and a pocket the chassis can roam needs a run of
+/// failures around it before the bot gives up on driving there.
+pub const FAILED_PLAN: u32 = 16;
 /// Within this (XY) of a goal it must reach on foot (the enemy flag, the
 /// ball), it gets out.
 pub const ON_FOOT: f32 = 3.0;
@@ -322,6 +331,8 @@ pub struct Ride {
     pub driver: bool,
     /// Stuck for good ([`Unstuck::GiveUp`]).
     pub stuck: bool,
+    /// A driver with neither a route nor a fight for [`NOWHERE_TICKS`].
+    pub nowhere: bool,
     /// Within [`ON_FOOT`] of a goal it must reach on foot.
     pub there: bool,
 }
@@ -333,6 +344,8 @@ pub enum Leave {
     Wrecked,
     Flipped,
     Stuck,
+    /// A driver with nowhere to drive (see [`NOWHERE_TICKS`]).
+    Nowhere,
     /// A gun with nobody driving.
     Stranded,
     /// Where it was going needs feet.
@@ -347,6 +360,8 @@ pub fn leave(r: &Ride) -> Option<Leave> {
         Some(Leave::Flipped)
     } else if r.driver && r.stuck {
         Some(Leave::Stuck)
+    } else if r.driver && r.nowhere {
+        Some(Leave::Nowhere)
     } else if !r.driver && r.driverless >= DRIVERLESS_TICKS {
         Some(Leave::Stranded)
     } else if r.there {
