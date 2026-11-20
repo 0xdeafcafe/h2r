@@ -343,7 +343,9 @@ impl Feature for NativePost {
                         x87_control: c.cpu.x87.control,
                     };
                     let mut mem = rt.memory();
-                    on_screen_effect(&mut *mem, c.cpu.eax, c.cpu.esp, fp);
+                    if super::h1_scope_zoom::hud_profile(&*mem, c.cpu.eax, c.cpu.esp).is_none() {
+                        on_screen_effect(&mut *mem, c.cpu.eax, c.cpu.esp, fp);
+                    }
                     Ok(Flow::Continue)
                 })
                 .context_only();

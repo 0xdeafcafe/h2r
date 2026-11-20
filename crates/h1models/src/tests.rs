@@ -398,6 +398,16 @@ fn check_graph(
     }
     // Every animation reads as the engine reads it.
     for (i, a) in src.animations.iter().enumerate() {
+        let record = &g.animations[i];
+        assert_eq!(u16::from(record.frame_info_type), a.frame_info_type, "{}", a.name);
+        let sizes = record.sizes;
+        let len = u16::from_le_bytes(sizes.unknown) as usize;
+        let at = record.data_offset as usize
+            + usize::from(sizes.static_size)
+            + sizes.animated_size as usize
+            + usize::from(sizes.static_flags)
+            + usize::from(sizes.animated_flags);
+        assert_eq!(&resource[at..at + len], a.frame_info.as_slice(), "{}", a.name);
         let p = g.engine_problems(i, &resource);
         assert!(p.is_empty(), "{}: {p:?}", a.name);
     }
@@ -864,6 +874,31 @@ fn reads_synthetic_graph() {
 }
 
 #[test]
+fn movement_records_follow_the_two_channel_masks_for_each_encoding() {
+    for (kind, axes) in [(1, 2), (2, 3), (3, 4)] {
+        let (mut img, graph) = synthetic_graph();
+        let animations = h1::u32_at(&img.0, (graph - BASE) as usize + 0x78);
+        let entry = (animations - BASE) as usize;
+        let movement: Vec<u8> = (0..5 * axes)
+            .flat_map(|n| ((n as f32 - 3.0) / 8.0).to_le_bytes())
+            .collect();
+        let addr = img.alloc(&movement);
+        put16(&mut img.0, entry + 0x26, kind);
+        put(&mut img.0, entry + 0x48, movement.len() as u32);
+        put(&mut img.0, entry + 0x54, addr);
+        let g = h1::Graph::read(&img, graph).unwrap();
+        assert_eq!(g.animations[0].frame_info, movement);
+        let (out, report) = jmad::convert_graph(&g, None).unwrap();
+        assert_eq!(report.movement, [g.animations[0].name.clone()]);
+        let (bytes, ids) = build(vec![(out, "invented\\graph")]);
+        assert_eq!(check_graph(&g, &[], bytes, ids[0]).len(), g.animations.len());
+
+        put(&mut img.0, entry + 0x48, movement.len() as u32 - 1);
+        assert!(h1::Graph::read(&img, graph).is_err());
+    }
+}
+
+#[test]
 fn synthetic_graph_round_trips_through_the_h2_decoder() {
     let (img, at) = synthetic_graph();
     let g = h1::Graph::read(&img, at).unwrap();
@@ -1322,7 +1357,7 @@ fn real_graphs_round_trip() {
             std::array::from_fn(|k| w[k].max(e[k]))
         });
         println!(
-            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, dropped movement {}, dropped overlay defaults {}, zero rotations {}",
+            "{path}: {} animations, {} frames; max error rotation {:.2e} rad, translation {:.2e}, scale {:.2e}; variants {}, root movement {}, dropped overlay defaults {}, zero rotations {}",
             g.animations.len(),
             g.animations
                 .iter()
@@ -1332,7 +1367,7 @@ fn real_graphs_round_trip() {
             worst[1],
             worst[2],
             report.variants.len(),
-            report.dropped_movement.len(),
+            report.movement.len(),
             report.dropped_default_channels,
             report.zero_rotations
         );
@@ -2173,4 +2208,64 @@ fn a_graph_without_vehicle_tables_is_unchanged() {
     for at in [0x24, 0x3c, 0x44, 0x54] {
         assert_eq!(r.w(r.base + at), 0, "+{at:#x}");
     }
+}
+
+#[test]
+fn sentinel_fixed_slots_build_a_runtime_idle_and_aim_overlay() {
+    let (img, at) = synthetic_graph();
+    let mut g = h1::Graph::read(&img, at).unwrap();
+    g.animations[0].name = "stand fixed idle%0".into();
+    g.animations[1].name = "stand fixed aim-still".into();
+    let mut slots = vec![-1; 26];
+    slots[0] = 0;
+    slots[25] = 1;
+    g.units = vec![h1::UnitSlots {
+        label: "stand".into(),
+        classes: vec![h1::ClassSlots {
+            label: "fixed".into(),
+            slots,
+            screen: h1::AimScreen {
+                right_frames: 1,
+                right_yaw_per_frame: 0.35,
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    }];
+    let (out, _) = jmad::convert_graph_for(&g, None, &Default::default(), true).unwrap();
+    let (bytes, ids) = build(vec![(out, "invented\\sentinel")]);
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let graph = tags::anim::AnimationGraph::read(&mut map, ids[0]).unwrap();
+    let strings = map.strings();
+    let mode = graph
+        .modes
+        .iter()
+        .find(|m| m.name.resolve(strings).unwrap() == Some("combat"))
+        .unwrap();
+    let class = mode
+        .classes
+        .iter()
+        .find(|c| c.name.resolve(strings).unwrap() == Some("any"))
+        .unwrap();
+    let ty = &class.types[0];
+    assert!(
+        ty.actions
+            .iter()
+            .any(|a| a.name.resolve(strings).unwrap() == Some("idle") && a.animation_index == 0)
+    );
+    for name in [
+        "aim_still_up",
+        "aim_still_down",
+        "aim_move_up",
+        "aim_move_down",
+    ] {
+        assert!(
+            ty.overlays
+                .iter()
+                .any(|a| a.name.resolve(strings).unwrap() == Some(name) && a.animation_index == 1)
+        );
+    }
+    assert_eq!(graph.animations[1].unknown_12, 0);
+    assert_eq!(graph.blend_screens.len(), 1);
 }

@@ -147,6 +147,14 @@ Then, on offsets still free:
     control. `device_change_color_pointers_are_relocatable` uses synthetic
     bytes with that address for both groups and checks that the schema
     follows the block and both children.
+12. **Converter groups (Built).** No retail map has an `hmt `: retail
+    scenarios leave `scnr +0x208` null. The Halo 1 campaign converter
+    rebuilds one per level, so `infer::apply_converter_groups` takes the
+    whole layout from `defs/hmt_.txt`. Its flash colours and silhouette
+    cache keys are words. a10's help flash colour `0x8075baff` falls in
+    the metadata space and was refused as an undescribed pointer.
+    `converted_hud_messages_walk_with_colours_that_look_like_addresses`
+    walks synthetic bytes with such values.
 
 Fields where the evidence is ambiguous, such as an offset that is always
 zero or one that mixes pointer-like and scalar values, are left out. They

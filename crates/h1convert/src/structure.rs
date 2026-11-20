@@ -1005,10 +1005,14 @@ impl Structure<'_> {
         self.sections.len().max(1)
     }
 
-    /// Visibility rows: every cluster sees every cluster.
+    /// Halo 1's cluster visibility in the v8 BSP bit-row layout.
     pub fn visibility(&self) -> Vec<u8> {
         let n = self.clusters();
         let words = n.div_ceil(32);
+        if self.visibility.pvs.len() == n * words * 4 {
+            return self.visibility.pvs.clone();
+        }
+        // An empty source BSP or a synthesized structure has no PVS rows.
         let mut row = vec![0u32; words];
         for c in 0..n {
             row[c / 32] |= 1 << (c % 32);

@@ -498,8 +498,20 @@ Snapshots never enter the repository: they contain game data.
   the first version compiles one expression with `crates/hs` and runs it
   through the guest's evaluator. How to inject a node into the guest's
   script pool is a research point (**S**).
-- `hs.globals`, `hs.threads`: read script state, so "has the courtyard
-  fight started" is a global, not a guess.
+### HaloScript state
+
+Both read methods take an empty parameter object and sample the loaded
+scenario at a tick boundary. They return `UNAVAILABLE` while its interpreter
+tables are uninitialized or unreadable.
+
+- `hs.threads` returns a `threads` array of live slots. Each row has
+  `slot`, numeric thread `category`, and signed `wake` tick. Scenario
+  script threads also have their definition's `script` name and `kind`.
+  These two fields are null for transient evaluation threads.
+- `hs.globals` returns a `globals` array in scenario declaration order.
+  Each row has `name`, `type`, `type_index`, and `value.bits`. For scalar
+  types the value also includes `boolean`, `real`, or signed `number`.
+  Scenario declarations start after the interpreter's external-global cells.
 
 ### `input`: act like a player
 
@@ -1737,6 +1749,31 @@ vertices, contact IDs and separation bound. Allocators can reuse an address
 between samples. The raw dump also contains
 pointers, unused slots and padding. A cached surface with an empty manifold
 is still a candidate in the query box.
+
+## `world.ai`
+
+`h2 agent --socket <socket> world.ai` returns `{at, actors}` at one game
+boundary. It takes no parameters. Each allocated actor has its salted AI
+`datum`, its `unit` ID (for `world.object`), character tag datum, team,
+scenario squad index, current behavior ID, its retail name when available
+(`behavior_name`), and combat status. A missing unit,
+squad or behavior is JSON null. The actor datum and unit ID have separate
+lifetimes. Compare the same unit across ticks to measure movement, weapon
+and vehicle changes.
+
+`sector` is the actor's cached sector index in the active BSP when in
+range, otherwise null. `location_cached` distinguishes a pending refresh
+from a completed lookup. The observer only reads this cache. Retail
+`0x0026c180` refreshes it, and `0x00297e15` passes its sector to the
+mesh walk at `0x0026c590`, which bounds it against the mesh's sector count.
+The behavior ID comes from the top of the four-frame stack used at
+`0x001a813d`. Its label comes from the loaded executable's parallel name
+table at `0x0046f0c8`. Combat status is the signed value read per actor by the
+`ai_combat_status` builtin at `0x00276070`. `focus_object` follows the actor's selected
+perception record to the object datum used at `0x001b368a`. The fight
+behavior reads the same record at `0x001af0c2`. Compare it with
+the player's `unit` in `world.query` to identify attention on the player.
+A remembered object can remain selected after contact is lost.
 
 ## `world.raw`: an object's bytes, before and after
 

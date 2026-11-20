@@ -14,7 +14,7 @@ use h1convert::convert::{Sandbox, structure_mopp};
 use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::sandbox::Objects;
-use map::{FourCC, Map};
+use map::{FourCC, Map, TagId};
 
 fn bloodgulch() -> H1Map {
     let path = std::env::var("H1_ISO").expect("set H1_ISO");
@@ -386,4 +386,151 @@ fn starting_weapons_side_by_side() {
         starting_weapon(&format!("{sandbox:?}"), &mut m);
     }
     starting_weapon("retail coagulation", &mut h2_map("coagulation"));
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn bloodgulch_native_powerups_spawn_in_both_sandboxes() {
+    use h1convert::convert::halo1::plan_objects;
+    use h1objects::h1::Equipment;
+    use scenario_edit::{BlockKind, Scenario};
+
+    let h1 = bloodgulch();
+    let mut source = Vec::new();
+    for sp in plan_objects(&h1).unwrap() {
+        let items: Vec<_> = sp
+            .items
+            .iter()
+            .filter_map(|i| {
+                let t = h1.find(h1map::Group::new(&i.group), &i.name)?;
+                let e = Equipment::read(&h1, t).ok()?;
+                h1convert::sandbox::native_powerup(e.powerup_type).then_some((i, e))
+            })
+            .collect();
+        if !items.is_empty() {
+            assert_eq!(sp.items.len(), items.len());
+            source.push((
+                sp.clone(),
+                items
+                    .into_iter()
+                    .map(|(i, e)| ((*i).clone(), e))
+                    .collect::<Vec<_>>(),
+            ));
+        }
+    }
+    assert_eq!(source.len(), 4);
+    assert!(source.iter().any(|(_, items)| items.len() == 2));
+
+    for sandbox in [Sandbox::Halo1, Sandbox::Halo2] {
+        let mut out = Map::from_reader(Cursor::new(fresh(sandbox))).unwrap();
+        let mem = memory(&mut out);
+        let scenario = Scenario::read(&mut out).unwrap();
+        let block = scenario.block(BlockKind::NetgameEquipment);
+        let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+        let short = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+        let float = |b: &[u8], at: usize| f32::from_bits(word(b, at));
+        for (sp, items) in &source {
+            let mut entries = (0..block.len())
+                .map(|i| block.entry(i).unwrap())
+                .filter(|e| (0..3).all(|axis| float(e, 0x40 + axis * 4) == sp.position[axis]));
+            let placement = entries
+                .next()
+                .unwrap_or_else(|| panic!("{sandbox:?} {}", sp.collection));
+            assert!(entries.next().is_none(), "duplicate {}", sp.collection);
+            assert_eq!(placement[0x14], 9);
+            assert_eq!(short(placement, 4), 12);
+            assert_eq!(short(placement, 0xe), sp.respawn);
+            assert_eq!(float(placement, 0x4c), sp.facing);
+            assert_eq!(word(placement, 0x58), FourCC(*b"itmc").as_u32());
+            let id = TagId(word(placement, 0x5c));
+            assert_eq!(
+                out.tag(id).unwrap().name.as_deref(),
+                Some(sp.collection.as_str())
+            );
+            let coll = out.read_tag_bytes(id).unwrap();
+            assert_eq!(short(&coll, 8), sp.collection_respawn);
+            assert_eq!(word(&coll, 0) as usize, items.len());
+            for (k, (src, equipment)) in items.iter().enumerate() {
+                let entry = mem.slice(word(&coll, 4) + k as u32 * 0x10, 0x10).unwrap();
+                assert_eq!(float(entry, 0), src.weight);
+                assert_eq!(word(entry, 4), FourCC(*b"eqip").as_u32());
+                let id = TagId(word(entry, 8));
+                assert_eq!(
+                    out.tag(id).unwrap().name.as_deref(),
+                    Some(src.name.as_str())
+                );
+                let tag = out.read_tag_bytes(id).unwrap();
+                assert_eq!(short(&tag, 0), 3);
+                assert_eq!(short(&tag, 0x12c), equipment.powerup_type as u16);
+                assert_eq!(float(&tag, 0x130), equipment.powerup_time);
+                let hlmt = out.read_tag_bytes(TagId(word(&tag, 0x38))).unwrap();
+                let mode = out.tag(TagId(word(&hlmt, 4))).unwrap();
+                let source_model = h1.tag(equipment.object.model.unwrap()).unwrap();
+                assert_eq!(mode.name.as_deref(), Some(source_model.name.as_str()));
+                let sound = out.tag(TagId(word(&tag, 0x138))).unwrap();
+                let source_sound = h1.tag(equipment.pickup_sound.unwrap()).unwrap();
+                assert_eq!(sound.name.as_deref(), Some(source_sound.name.as_str()));
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "reads the retail Halo 2 disc ($H2_DISC)"]
+fn retail_powerups_use_eqip_and_type_nine_netgame_placements() {
+    use scenario_edit::{BlockKind, Scenario};
+
+    let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
+    let short = |b: &[u8], at: usize| u16::from_le_bytes(b[at..at + 2].try_into().unwrap());
+    for name in ["shared", "single_player_shared"] {
+        let mut map = h2_map(name);
+        for (pickup, kind, seconds) in [
+            ("over_shield", 2, 60.0f32),
+            ("active_camouflage", 3, 45.0),
+            ("health_pack", 5, 1.0),
+        ] {
+            let path = format!("objects\\powerups\\{pickup}\\{pickup}");
+            let id = map
+                .tags()
+                .iter()
+                .find(|t| t.name.as_deref() == Some(path.as_str()) && t.group == FourCC(*b"eqip"))
+                .unwrap()
+                .id;
+            let b = map.read_tag_bytes(id).unwrap();
+            assert_eq!(short(&b, 0), 3);
+            assert_eq!(short(&b, 0x12c), kind);
+            assert_eq!(f32::from_bits(word(&b, 0x130)), seconds);
+        }
+    }
+
+    for (name, pickup) in [
+        ("beavercreek", "powerup_super_shield"),
+        ("zanzibar", "powerup_invisibility"),
+    ] {
+        let mut map = h2_map(name);
+        let id = map
+            .tags()
+            .iter()
+            .find(|t| {
+                t.group == FourCC(*b"itmc")
+                    && t.name.as_deref().is_some_and(|p| p.ends_with(pickup))
+            })
+            .unwrap()
+            .id;
+        let mem = memory(&mut map);
+        let collection = map.read_tag_bytes(id).unwrap();
+        assert_eq!(word(&collection, 0), 1);
+        let entry = mem.slice(word(&collection, 4), 0x10).unwrap();
+        assert_eq!(word(entry, 4), FourCC(*b"eqip").as_u32());
+        assert_eq!(
+            map.tag(TagId(word(entry, 8))).unwrap().group,
+            FourCC(*b"eqip")
+        );
+        let scenario = Scenario::read(&mut map).unwrap();
+        let block = scenario.block(BlockKind::NetgameEquipment);
+        assert!((0..block.len()).any(|i| {
+            let e = block.entry(i).unwrap();
+            word(e, 0x5c) == id.0 && e[0x14] == 9 && short(e, 4) == 12
+        }));
+    }
 }

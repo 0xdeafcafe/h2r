@@ -404,6 +404,7 @@ fn datagrams_that_are_not_this_sessions_are_dropped() {
         frames: vec![[0xee; PAD]; 8],
         first_tick: 0,
         hashes: vec![1, 2, 3],
+        ..Default::default()
     };
     let junk = vec![other.encode(), b"not co-op".to_vec(), Vec::new()];
     let mut w = World {
@@ -450,4 +451,40 @@ fn two_peers_over_real_udp_on_loopback() {
     assert_eq!(a.seen, expected([2, 2], 120));
     assert_eq!(b.seen, a.seen);
     assert!(a.peer.stats().ticks_agreed.min(b.peer.stats().ticks_agreed) > 100);
+}
+
+#[test]
+fn cinematic_frames_apply_the_hosts_extra_ticks_once_through_loss_and_reordering() {
+    use coop::cinematic::CinematicTicks;
+    let clock = FakeClock::default();
+    let (a,b,link) = sim_pair(&clock, Conditions {
+        latency: ms(10), jitter: ms(17), loss: 0.25, reorder: 0.3
+    }, 17);
+    let mut peers = [Peer::new(a,SESSION,0,2), Peer::new(b,SESSION,1,2)];
+    let mut seen = [Vec::new(), Vec::new()];
+    let mut next_tick = [0,0];
+    for _ in 0..20_000 {
+        clock.advance(STEP);
+        for (port, peer) in peers.iter_mut().enumerate() {
+            peer.pump();
+            let decision = if port == 0 { (peer.next_frame() % 16) as u8 } else { 15 };
+            if seen[port].len() < 40 {
+                if let Ok((frame,ticks)) = peer.begin_cinematic_frame([0;PAD],CinematicTicks::new(decision).unwrap()) {
+                    assert_eq!(frame as usize,seen[port].len());
+                    seen[port].push(ticks.count());
+                    for _ in 0..=ticks.count() {
+                        let tick = next_tick[port];
+                        peer.report_hash(tick,u64::from(frame) << 32 | u64::from(tick));
+                        next_tick[port] += 1;
+                    }
+                }
+            }
+        }
+        if seen[0].len() == 40 && seen[1].len() == 40
+            && peers.iter().all(|p| p.stats().ticks_agreed == u64::from(next_tick[0])) { break; }
+    }
+    assert_eq!(seen[0],(0..40).map(|n| n%16).collect::<Vec<u8>>());
+    assert_eq!(seen[1],seen[0]);
+    assert!(link.dropped() > 0);
+    assert!(peers.iter().all(|p| p.desync().is_none() && p.stats().ticks_agreed == u64::from(next_tick[0])));
 }

@@ -10,6 +10,8 @@
 //!
 //! Layouts are those `crates/tags` decodes (`docs/formats/animation.md`).
 
+mod sentinel;
+
 use std::collections::BTreeMap;
 
 use map::build::{Block, RawRef};
@@ -40,8 +42,8 @@ pub struct GraphReport {
     /// Animations whose Halo 2 name an earlier one already took (Halo 1
     /// permutations); they get a `:var<n>` action suffix.
     pub variants: Vec<String>,
-    /// Animations with root movement (frame info) data, which is dropped.
-    pub dropped_movement: Vec<String>,
+    /// Animations with per-frame root movement in the output resource.
+    pub movement: Vec<String>,
     /// Non-identity default channels of overlays and replacements, dropped.
     pub dropped_default_channels: usize,
     /// Zero quaternions in the source, written as identity.
@@ -701,6 +703,15 @@ pub fn convert_graph_with(
     skeleton: Option<&[AnimNode]>,
     opts: &GraphOptions,
 ) -> Result<(Converted, GraphReport)> {
+    convert_graph_for(g, skeleton, opts, false)
+}
+
+pub(crate) fn convert_graph_for(
+    g: &Graph,
+    skeleton: Option<&[AnimNode]>,
+    opts: &GraphOptions,
+    sentinel: bool,
+) -> Result<(Converted, GraphReport)> {
     let node_list: &[AnimNode] = match (g.nodes.is_empty(), skeleton) {
         (false, _) => &g.nodes,
         (true, Some(s)) => s,
@@ -731,7 +742,12 @@ pub fn convert_graph_with(
     let mut tree: BTreeMap<String, BTreeMap<String, BTreeMap<String, Vec<(String, usize)>>>> =
         BTreeMap::new();
     let names = animation_names(g);
-    let plan = vehicle_plan(g, &names, opts, &mut report);
+    let mut plan = vehicle_plan(g, &names, opts, &mut report);
+    let sentinel_overlays = if sentinel {
+        sentinel::bindings(g, &mut plan, &mut tree)
+    } else {
+        Overlays::new()
+    };
     for (i, anim) in g.animations.iter().enumerate() {
         if anim.frame_count == 0 {
             return Err(Error::Unsupported(format!("{}: no frames", anim.name)));
@@ -744,7 +760,7 @@ pub fn convert_graph_with(
         report.names.push((anim.name.clone(), full.clone()));
         report.zero_rotations += anim.zero_rotations;
         if anim.frame_info_type != 0 {
-            report.dropped_movement.push(anim.name.clone());
+            report.movement.push(anim.name.clone());
         }
         if !plan.outside.contains(&i) {
             tree.entry(name.mode)
@@ -762,6 +778,9 @@ pub fn convert_graph_with(
         let (blob, static_size, animated_size) =
             encode(anim, nodes, screen.is_some(), &mut report)?;
         resource.extend(blob);
+        let movement_size = i16::try_from(anim.frame_info.len())
+            .map_err(|_| Error::Unsupported(format!("{}: root movement exceeds i16", anim.name)))?;
+        resource.extend_from_slice(&anim.frame_info);
 
         let mut r = Block::zeroed(ANIMATION_LEN);
         r.string_id(0, &full)
@@ -774,6 +793,7 @@ pub fn convert_graph_with(
                     AnimType::Replacement => 2,
                 },
             )
+            .put_u8(0x11, anim.frame_info_type as u8)
             // The blend screen (aim screen) index, -1 for none: the
             // engine takes `blend_screens[+0x12]` (`+0x24`, `0x1c` each)
             // unless it is -1 (E `0x001daf9c`, from the unit aim update
@@ -794,6 +814,7 @@ pub fn convert_graph_with(
             .put_i16(0x32, -1)
             .put_u8(0x3c, (3 * a) as u8)
             .put_u8(0x3d, (3 * a) as u8)
+            .put_i16(0x3e, movement_size)
             .put_u16(0x42, static_size as u16)
             .put_u32(0x48, animated_size as u32);
         records.push(r);
@@ -801,6 +822,7 @@ pub fn convert_graph_with(
     borrow_slots(g, &names, &mut tree);
     first_person_slots(g, &mut tree);
     let mut overlays = first_person_overlays(g, &mut tree);
+    overlays.extend(sentinel_overlays);
     if !plan.slot_overlays.is_empty() {
         let any = || "any".to_owned();
         tree.entry(any())

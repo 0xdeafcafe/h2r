@@ -260,9 +260,11 @@ Token lookups inspect at most 4,097 bytes (4,096 bytes plus NUL); a longer or
 unterminated token is an error. This bounds repeated scanning and UTF-8 checks
 even when many nodes share one string offset. A blob is capped at 64 MiB.
 Before decoding any record, the table reader checks every count and span:
-36,864 syntax slots, 32,767 scripts/globals each, and 65,536 references.
-The reference/string/output limits are host resource policies, not recovered
-engine capacities. Output appends check remaining capacity before writing,
+65,535 syntax slots, 32,767 scripts/globals each, and 65,536 references.
+Retail's node pool covers 36,864 slots (`hs::RETAIL_NODES`); the larger
+limit is what the runtime provides for converted Halo 1 scenarios
+(docs/halo1/scripts.md, Syntax storage). The reference/string/output
+limits are host resource policies, not recovered engine capacities. Output appends check remaining capacity before writing,
 including escaped atoms, definition headers and delimiters. The maximum source
 size is 64 MiB; callers can request a smaller budget. Node expansion has a
 separate bound for shared graphs.

@@ -83,6 +83,7 @@ fn every_looping_sound_and_environment_converts() {
         failed.len()
     );
     assert!(loops > 0 && environments > 0);
+    assert!(failed.is_empty(), "{failed:#?}");
 }
 
 /// Loudness and character of one decoded permutation: seconds, RMS in

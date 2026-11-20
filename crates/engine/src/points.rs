@@ -222,9 +222,60 @@ macro_rules! globals {
 }
 
 points! { ALL;
+    /// The HaloScript evaluator shared by argument-evaluating discarded builtins.
+    HS_DISCARDED_EVALUATE @ 0x002a_b6c0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// How strongly the observing actor prioritizes one candidate.
+    AI_TARGET_SCORE @ 0x0026_5d30: [fn(actor: stack 0, interest: stack 1) -> xmm0 ret 8], Hot; "docs/halo1/ai-control.md";
+    /// Finalizes the actor's current interest after examining perception records.
+    AI_SELECT_INTEREST @ 0x0026_6640: [fn(actor: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
+    /// The actor's contribution to outgoing damage calculation.
+    AI_DAMAGE_MODIFIER @ 0x001c_8440: [fn(actor: ecx, multiplier: edx, packet: stack 0) -> al ret 4]; "docs/halo1/ai-control.md";
+    /// Selects the uncover behavior from presearch when a tracked target is available.
+    AI_PRESEARCH_UNCOVER @ 0x001b_44d0: [fn(actor: stack 0, state: stack 1) -> eax ret 8], Hot; "docs/halo1/ai-control.md";
+    /// Ranks uncover from its own behavior descriptor.
+    AI_UNCOVER_RANK @ 0x001b_84a0: [fn(actor: stack 0) -> eax ret 4], Hot; "docs/halo1/ai-control.md";
+    AI_UNCOVER_ENTER @ 0x001b_8540: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_BEGIN @ 0x001b_85a0: [fn(actor: stack 0, record: stack 1) -> al ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_UPDATE @ 0x001b_89d0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
+    AI_UNCOVER_CONTROL @ 0x001b_8ae0: [fn(actor: stack 0, record: stack 1) ret 8]; "docs/halo1/ai-control.md";
+    /// Starts a firing burst, setting the actor timer and angular spread.
+    AI_FIRE_BURST @ 0x001f_e620: [fn(actor: eax, firing: ebx, weapon: stack 0) ret 4], Hot; "docs/halo1/ai-control.md";
+    /// Chooses the pause between bursts and saves it in the actor timer.
+    AI_FIRE_PAUSE @ 0x001f_ed70: [fn(actor: eax, firing: ecx) ret 0], Hot; "docs/halo1/ai-control.md";
+    /// Stages the actor's movement, aim and trigger commands for its unit.
+    AI_SUBMIT_UNIT_CONTROL @ 0x001e_4390: [fn(actor: eax) ret 0], Hot; "docs/halo1/ai-control.md";
+    HS_UNIT_GRENADE_COUNT @ 0x002a_4310: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    /// HaloScript's object awareness evaluator, index 305.
+    HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
+    HS_CONVERSATION_SPAWN_WAVE @ 0x0020_1520: [fn(count: eax, squad: stack 0, location: stack 1) ret 16]; "docs/halo1/ai.md";
+    HS_CONVERSATION_UNIT_NEW @ 0x000c_4410: [fn(unit: stack 0) ret 12]; "docs/halo1/ai.md";
+    HS_CONVERSATION_MAP_DISPOSE @ 0x0020_9290: [fn() ret 0]; "docs/halo1/ai.md";
     /// `game_tick`: the per-tick phases, then the tick count. Called once per
     /// simulated tick by `game_update_ticks`.
     GAME_TICK @ 0x0013_7fe0: [fn() ret 0]; "docs/engine/engine-map.md";
+    /// Choose and reserve an available actor starting location.
+    AI_CHOOSE_SQUAD_START @ 0x0020_39d0: [fn(squad: eax, available: stack 0, excluded: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
+    /// Spawn an actor using the chosen starting location index.
+    AI_SPAWN_AT_SQUAD_START @ 0x0020_3780: [fn(context: eax, start: ecx, squad: stack 0, flags: stack 1) -> eax ret 8]; "docs/halo1/ai-control.md";
+    AI_SQUADS_ALLOCATE @ 0x0020_0930: [fn() ret 0]; "docs/halo1/ai-control.md";
+    AI_SQUADS_INITIALIZE @ 0x0020_0b30: [fn() ret 0]; "docs/halo1/ai.md";
+    /// The frame's local tick batch and its elapsed seconds output.
+    GAME_UPDATE_TICKS @ 0x0013_7f70: [fn(ticks: eax, elapsed: ebx) ret 0]; "docs/halo1/script-builtins.md";
+    /// Per-frame gameplay updates after the local simulation batch.
+    GAME_UPDATE_FRAME @ 0x0013_7ed0: [fn(elapsed: stack 0) ret 4]; "docs/halo1/script-builtins.md";
+    /// The shared HaloScript evaluator for discarded retail commands.
+    OBJECT_FUNCTION_IMPORT @ 0x0010_8d90: [fn(object: stack 0, name: stack 1, value: ebx, active: edi) -> al ret 8]; "docs/halo1/script-builtins.md";
+    HS_UNIT_FLAG_SET @ 0x002a_3200: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_UNIT_FLAG_GET @ 0x002a_3a10: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_AI_LIST_FLAG_SET @ 0x002a_55f0: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    OBJECT_FUNCTION_VALUE @ 0x000b_ab40: [fn(object: stack 0, name: stack 1, value: stack 2) -> al ret 12]; "docs/halo1/script-builtins.md";
+    HS_SHORT_TO_LONG_EVALUATOR @ 0x002a_b760: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    /// The shared HaloScript evaluator for discarded retail commands.
+    HS_UNUSED_EVALUATOR @ 0x002a_b130: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_LOOK_ANY_DIRECTION @ 0x002a_9340: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_MOVE_ANY_DIRECTION @ 0x002a_9370: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_FALSE_EVALUATOR @ 0x002a_5d50: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
+    HS_CONSTANT_LONG_EVALUATOR @ 0x002a_c600: [fn(index: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/script-builtins.md";
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
@@ -271,11 +322,37 @@ points! { ALL;
     /// `0xd8184`): the record in EDI, stdcall `(object datum, ?, damage
     /// data)`. Reads the amount at `record+0x1c` through `0xd9020`.
     BODY_DAMAGE @ 0x000d_8cb0: [fn(record: edi, object: stack 0) ret 12], Optional; "docs/game/game-options.md";
+    /// Wheel and tread controllers after the driver inputs have been read.
+    VEHICLE_TREAD_UPDATE @ 0x000f_1cd0: [fn(object: ebx, contacts: stack 0) ret 4]; "docs/halo1/role-audit.md";
+    VEHICLE_CONTACT_SOLVE @ 0x0020_56e0: [fn(object: stack 0, contacts: stack 1, fraction: stack 2, force: stack 3, torque: stack 4) ret 20]; "docs/halo1/role-audit.md";
+    VEHICLE_WHEEL_UPDATE @ 0x000f_1f80: [fn(object: stack 0, contacts: stack 1) ret 8]; "docs/halo1/role-audit.md";
     /// An object's damage update: stdcall `(object datum)`, AL whether
     /// anything changed. Called once per object per tick by
     /// `object_update` (`0xbc470`, its only caller): stun timers, shield
     /// recharge, and the body's regeneration (`0xd63de`..`0xd64b5`).
     OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/halo1/health.md";
+    /// Update one effect's native particle systems for this event step.
+    EFFECT_STEP_EMITTERS @ 0x0017_9020: [fn(effect: stack 0, elapsed: stack 1, dt: stack 2) ret 12]; "docs/halo1/objects.md";
+    /// Dispatch one native movement operator over an emitter's particle list.
+    PARTICLE_MOVEMENT_STAGE @ 0x002b_8da0: [fn(stage: eax, head: esi, dt: stack 1) ret 12]; "docs/halo1/objects.md";
+    /// Initialise a particle's local position and velocity at birth.
+    PARTICLE_INITIALISE @ 0x0024_9170: [fn(emitter: stack 0, particle: edi) ret 8]; "docs/halo1/objects.md";
+    /// Begin, update and remove a command on the Halo 2 AI scheduler.
+    AI_COMMAND_BEGIN @ 0x0025_8cf0: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
+    AI_COMMAND_UPDATE @ 0x0025_9430: [fn(actor: stack 0, unit: stack 1, state: stack 2, command: stack 3) -> eax ret 16]; "docs/halo1/ai.md";
+    AI_COMMAND_REMOVE @ 0x0025_8540: [fn(actor: ecx, command: stack 0) ret 4]; "docs/halo1/ai.md";
+    OBJECT_ANIMATION_BLEND @ 0x000b_a350: [fn(unit: esi, duration: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Finish the character physics mode's velocity calculation.
+    CHARACTER_MOTION_STATE @ 0x001e_5b50: [fn(input: eax, state: ecx, output: esi) ret 0]; "docs/halo1/ai.md";
+    AI_COMMAND_TARGETS @ 0x0025_a380: [fn(actor: stack 0) ret 4]; "docs/halo1/ai.md";
+    /// Clear HS threads and instantiate scenario globals and persistent scripts.
+    HS_NEW_MAP @ 0x0020_90a0: [fn() ret 0]; "docs/halo1/scripts.md";
+    /// Attach the new scenario's syntax nodes (`0x16b6b0`) and strings,
+    /// then tail-jump to `HS_NEW_MAP`.
+    HS_MAP_ATTACH @ 0x0020_a750: [fn() ret 0]; "docs/halo1/scripts.md";
+
+    /// HS global write-back notification (EAX is the variable index).
+    HS_GLOBAL_STORED @ 0x0020_a490: [fn(index: eax) ret 0]; "docs/halo1/ai.md";
     /// Restore an object's body to full (EAX the object datum), AL 1 when
     /// it did (refused when full or depleted). Its only caller is the
     /// powerup pickup's health case (`0x151f73`).
@@ -351,6 +428,11 @@ points! { ALL;
     /// columns, rows, &corners)` (`engine::screen_effect::plan`), `ret
     /// 0x10`.
     SCREEN_EFFECT @ 0x0002_d140: [fn(datum: eax, values: stack 0, columns: stack 1, rows: stack 2, corners: stack 3) ret 16]; "docs/graphics/native-renderer.md";
+    /// Screen convolution blur, also called by the colour pass. From
+    /// 0x0002da96, stack arguments 0 and 1 are the steps and tap spread.
+    SCREEN_CONVOLUTION_BLUR @ 0x0002_11a0: [fn(source: eax, steps: stack 0, spread: stack 1, growth: stack 2, dest: stack 3, other: stack 4, last: stack 5, combine: stack 6, arg7: stack 7, arg8: stack 8, arg9: stack 9) -> eax ret 40]; "docs/graphics/native-renderer.md";
+    /// A unit's integrated-light update, called at the end of its tick.
+    UNIT_LIGHT_UPDATE @ 0x000c_50a0: [fn(unit: eax) ret 0]; "docs/halo1/hud.md";
     /// A shader template's pass set up (`0x00016610`, called by
     /// `0x0002d140` at `0x0002d4b7` per pass): stack `(shader, layer,
     /// implementation, selector, target, 0)`, AL whether the pass draws
@@ -428,7 +510,7 @@ points! { ALL;
     /// opaque path's build and draw over the template's layer-15 passes.
     TRANSPARENT_GEOMETRY @ 0x0004_1020: [fn(data: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Shader draw begin: per draw.
-    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/formats/shader-instances.md";
+    SHADER_DRAW_BEGIN @ 0x0001_bbf0: [fn(shader: edi, mode: stack 0, pass: stack 1, flags: stack 2, index: stack 3, scale: stack 4) ret 20], Hot; "docs/formats/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
     GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/formats/structure-bsp.md";
     /// A shader parameter's value for this draw: its sources through
@@ -544,6 +626,27 @@ points! { ALL;
     MAP_SCREEN_FREE @ 0x002b_b384: [fn(screen: ecx, flags: stack 0) -> eax ret 4]; "docs/game/map-select.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/game/skulls.md";
+    HUD_TEXT_SETUP @ 0x0013_edb0: [fn(font: esi, colour: edi, shadow: stack 3) ret 16], Optional; "docs/halo1/text.md";
+    HUD_TEXT_MEASURE @ 0x0013_ee20: [fn(text: ecx, font: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_TEXT_BOUNDS @ 0x0024_ce9d: [fn(text: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MESSAGE_LOOKUP @ 0x0013_925f: [fn(key: edi, output: ecx) ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_FIND @ 0x0014_0b20: [fn(font: eax, unit: ecx) -> eax ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_CREATE @ 0x0014_0b80: [fn(font: stack 0, unit: stack 1) -> eax ret 8], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_LOAD @ 0x0014_1020: [fn(glyph: eax, flags: edx) -> al ret 0], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_PIXELS_READY @ 0x0014_0870: [fn(glyph: eax, flags: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_GLYPH_PIXELS @ 0x0014_0960: [fn(glyph: eax, output: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_INTERACTION_VISIBLE @ 0x0024_c98c: [fn(user: eax, visible: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    PLAYER_PICKUP_SCAN @ 0x0015_08e0: [fn(player: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    PLAYER_PICKUP_CANDIDATE @ 0x0015_0e30: [fn(player: stack 0, target: stack 1) ret 8], Optional; "docs/halo1/text.md";
+    PLAYER_PRESS_INTERACT @ 0x0015_1c90: [fn(player: eax, action: stack 0) -> al ret 4], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_CONSTANTS @ 0x0001_8ee0: [fn(material: stack 0) ret 4], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_PIXEL_SHADER @ 0x0001_b050: [fn(material: esi) ret 0], Optional; "docs/halo1/text.md";
+    HUD_MATERIAL_READY @ 0x0001_cd90: [fn() ret 0], Optional; "docs/halo1/text.md";
+    HUD_WIDGET_GATE @ 0x0013_ac87: [fn(state: eax, weapon: ecx, word_c: edx, word_a: stack 0, word_b: stack 1, word_d: stack 2) -> al ret 12], Optional; "docs/editor/hud-editor.md";
+    HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
+    HUD_TEXT_TAIL @ 0x0015_f120: [fn(player: eax, out: esi, capacity: stack 0, mode: stack 1) -> al ret 8], Optional; "docs/halo1/text.md";
+    HUD_TEXT_DRAW @ 0x0001_fa30: [fn(rect: eax, text: ecx) ret 0], Optional; "docs/halo1/text.md";
+    HUD_TEXT_SUBSTITUTE @ 0x0022_d2ee: [fn(text: stack 0, capacity: stack 1) ret 8], Optional; "docs/halo1/text.md";
     /// Draws the first-person weapons of one local user (stdcall, four
     /// arguments, EAX the result); skipped whole in a campaign with Blind on.
     FIRST_PERSON_RENDER @ 0x0016_5f16: [fn(user: stack 0, a: stack 1, b: stack 2, c: stack 3) -> eax ret 16]; "docs/game/skulls.md";
@@ -834,6 +937,11 @@ points! { ALL;
     /// `0x18d4dc`, on the game thread (the object and effect updates and the
     /// per-frame update `0x18c060`), not inside `SOUND_UPDATE`'s window.
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
+    /// Per-type file bound called by the cache header validator (0x1228b8).
+    CACHE_TYPE_LIMIT @ 0x0021_4ed0: [fn(kind: ecx) -> eax ret 0]; "docs/halo1/sounds.md";
+    /// Apply the unit control packet (EAX unit datum, ECX control). The
+    /// recording player calls this after its event decoder, at 0x1fb630.
+    UNIT_APPLY_CONTROL @ 0x000c_6de0: [fn(unit: eax, control: ecx) ret 0]; "docs/halo1/campaign.md";
     /// The map cache copy machine: one state step per call (submit a
     /// 1 MiB read or write job, take its result, checksum, publish), AL
     /// returned and ignored by its callers. They step it only while the

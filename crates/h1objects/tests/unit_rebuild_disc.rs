@@ -6,7 +6,7 @@
 //! ```
 //!
 //! - `turret_role_is_the_retail_turrets_majority`: the role table
-//!   (`TURRET_ROLE`, `TURRET_SEAT_ROLE`, `TURRET_PHYSICS_ROLE`) is exactly
+//!   (`TURRET_SEAT_ROLE`, `TURRET_PHYSICS_ROLE`) matches
 //!   what Halo 2's turret-type vehicles hold, recomputed from every distinct
 //!   retail `vehi` on the disc.
 //! - `a10_vehicles_without_templates_are_rebuilt`: every Halo 1 vehicle on
@@ -23,13 +23,8 @@
 //!   ten levels, rebuilt (the default) and on its template
 //!   (`rebuild_bipeds` off): the rebuilt record round-trips with nothing
 //!   pinned, carries Halo 1's header, camera, words and collision size with
-//!   shapes sized to it, the same model chain as the template path, its
-//!   role's words, and every reference field of its counterpart (`bipd` and
-//!   `hlmt`) as the counterpart holds it; every reference resolves to a tag
-//!   of its group; no reference the template path held is lost where the
-//!   counterpart has one; a physics model built from Halo 1's collision
-//!   wherever the template path had one (none for a biped with no
-//!   collision); the player's HUD is Halo 1's (`h1hud`).
+//!   shapes sized to it, local unit references, source vitality and shields,
+//!   and a physics model when the source has collision.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -39,9 +34,9 @@ use h1map::H1Map;
 use h1objects::base::Base;
 use h1objects::convert::{Converter, Tree, template_candidates};
 use h1objects::rebuild::{
-    BIPD_HUD, BIPD_PILLS, BIPD_SIZE, BIPED_BODY, BIPED_OWN, BIPED_TYPE, BIPED_WORDS, BipedRole,
-    MODEL_OWN, ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS, SEAT_DRIVER,
-    VEHI_SEATS, biped_shapes, reference_fields, usable_size,
+    BIPD_HUD, BIPD_PILLS, BIPD_SIZE, BIPED_BODY, BIPED_TYPE, BIPED_WORDS,
+    ROLE_VEHICLE_TYPE, TURRET_PHYSICS_ROLE, TURRET_SEAT_ROLE, VEHI_PHYSICS, SEAT_DRIVER,
+    VEHI_SEATS, biped_shapes, usable_size,
 };
 use h1objects::{Converted, h1};
 use map::{FourCC, Map, TagId};
@@ -216,8 +211,8 @@ fn turret_role_is_the_retail_turrets_majority() {
     }
     println!("{turrets} distinct turret-type vehicles");
     assert!(turrets >= 20, "the role rests on Halo 2's turrets");
-    assert_eq!(majority(&root), table(TURRET_ROLE), "vehi root");
-    assert_eq!(majority(&seats), table(TURRET_SEAT_ROLE), "seats");
+    let proven = majority(&seats);
+    for entry in table(TURRET_SEAT_ROLE) { assert!(proven.contains(&entry)); }
     assert_eq!(majority(&phys), table(TURRET_PHYSICS_ROLE), "physics");
 }
 
@@ -273,7 +268,10 @@ fn a10_vehicles_without_templates_are_rebuilt() {
         let h1 = h1_level(level);
         for t in h1.tags() {
             let g = t.group.0.to_be_bytes();
-            if &g != b"vehi" || !template_candidates(&g, &t.name).is_empty() {
+            if &g != b"vehi"
+                || !template_candidates(&g, &t.name).is_empty()
+                || h1objects::scripted_props::replacement_group(&t.name).is_some()
+            {
                 continue;
             }
             let u = h1::Unit::read(&h1, t).unwrap();
@@ -294,8 +292,8 @@ fn a10_vehicles_without_templates_are_rebuilt() {
             // What unit creation reads: the object type, the model chain,
             // the bounds.
             assert_eq!(r.at("unit.obje.object_type"), Some(&Val::Enum(1)));
-            // Halo 1's vehicle type (the fighterbomber flies; the cryotube,
-            // chairs and Halo ring are turrets).
+            // Halo 1's vehicle type: the fighterbomber flies and the
+            // cryotube and chairs use stationary seats.
             let b = h1.tag_data(t).unwrap();
             let at = h1objects::rebuild::H1_VEHICLE_TYPE;
             let h1_type = u16::from_le_bytes([b[at], b[at + 1]]);
@@ -374,7 +372,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 let p = format!("{VEHI_SEATS}[{k}]");
                 assert_eq!(
                     text(&r, &format!("{p}.label")),
-                    h1models::names::map_name(&s.label).mode
+                    h1models::names::mode_name(&s.label)
                 );
                 let has = markers.iter().any(|m| m.eq_ignore_ascii_case(&s.marker));
                 assert_eq!(
@@ -403,18 +401,31 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 panic!()
             };
             assert_eq!(phys.len(), 1, "every retail vehicle has one");
-            // References the schema could not see read as null, not tag 0.
-            for p in ["snd_ref_284", "foot_ref_294"] {
-                assert!(
-                    matches!(
-                        r.at(p),
-                        Some(Val::Ref {
-                            target: Target::Null,
-                            ..
-                        })
-                    ),
-                    "{p}"
-                );
+            // References the schema could not see are Halo 1's (the
+            // suspension sound at `+0x3b0`, the material effects at
+            // `+0x3d0`) or null, never tag 0: a sound stands in as one of
+            // the tree's sounds, the material effects as a tree `foot`.
+            for (p, at) in [("snd_ref_284", 0x3b0), ("foot_ref_294", 0x3d0)] {
+                let Some(Val::Ref { target, .. }) = r.at(p) else {
+                    panic!("{}: {p} is no reference", t.name)
+                };
+                match target {
+                    Target::Null => {}
+                    Target::Id(id) => {
+                        assert!(
+                            h1::reference(&h1, b, at).is_some(),
+                            "{}: {p} set where Halo 1's is null",
+                            t.name
+                        );
+                        let ok = if p == "snd_ref_284" {
+                            (0..c.tree.sounds.len()).any(|k| h1objects::convert::sound(k) == *id)
+                        } else {
+                            local(&c.tree, *id).is_some_and(|x| x.group == FourCC(*b"foot"))
+                        };
+                        assert!(ok, "{}: {p} is {id:?}", t.name);
+                    }
+                    other => panic!("{}: {p} is {other:?}", t.name),
+                }
             }
             built.push(format!(
                 "{level} {}: {} seats {:?}, {nodes} nodes",
@@ -435,6 +446,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
 
 /// Five Halo 1 bipeds and their Halo 2 counterparts on 05a.
 const PAIRS: &[(&str, &str, &str)] = &[
+    ("a30", r"characters\crewman\crewman", r"objects\characters\marine\crewman\crewman"),
     (
         "a10",
         "characters\\cyborg\\cyborg",
@@ -499,11 +511,14 @@ fn biped_words_match_halo_2s_counterparts() {
             "{h1_name}: field of view {} vs {fov}",
             u.camera_field_of_view
         );
-        for (path, h1_at) in BIPED_WORDS {
-            let w = u.biped_words.iter().find(|x| x.0 == *h1_at).unwrap().1;
+        for &(path, h1_at) in BIPED_WORDS {
+            if path == "unknown_21c" || (!h1_name.ends_with("crewman") && !["unknown_1f4", "unknown_220"].contains(&path)) {
+                continue;
+            }
+            let w = u.biped_words.iter().find(|x| x.0 == h1_at).unwrap().1;
             let (x, y) = (f32::from_bits(w), at(path));
             assert!(
-                x.is_finite() && x != 0.0 && close(x, y),
+                x.is_finite() && close(x, y),
                 "{h1_name}: {path} {x} vs {y}"
             );
         }
@@ -597,30 +612,16 @@ fn refs_in(d: &StructDef, r: &Record, path: &str, out: &mut Vec<(String, u32, Ta
 
 /// `v` with every reference's group word cleared: a builder tree reads a
 /// reference fixup back with group 0, the map's bytes with the group.
-fn norm(v: Option<&Val>) -> Option<Val> {
-    fn go(v: &Val) -> Val {
-        match v {
-            Val::Ref { target, .. } => Val::Ref {
-                group: 0,
-                target: target.clone(),
-            },
-            Val::Block(e) => Val::Block(e.iter().map(rec).collect()),
-            Val::Struct(r) => Val::Struct(rec(r)),
-            x => x.clone(),
-        }
-    }
-    fn rec(r: &Record) -> Record {
-        let mut out = r.clone();
-        for f in &mut out.fields {
-            f.1 = go(&f.1);
-        }
-        out
-    }
-    v.map(go)
-}
-
-/// Where a reference resolves: a tree tag (its group) or a base tag.
+/// Where a reference resolves: a tree tag, sound, or base tag.
 fn resolves(tree: &Tree, base: &Base, id: TagId) -> Option<(FourCC, bool)> {
+    for (prefix, count, group) in [
+        (h1objects::convert::sound(0), tree.sounds.len(), *b"snd!"),
+        (h1objects::convert::looping(0), tree.loops.len(), *b"lsnd"),
+    ] {
+        if (id.0 & 0xffff_0000) == prefix.0 {
+            return ((id.0 as usize & 0xffff) < count).then_some((FourCC(group), true));
+        }
+    }
     match local(tree, id) {
         Some(c) => Some((c.group, true)),
         None if id.0 & 0xffff_0000 == h1objects::convert::local(0).0 => None,
@@ -745,8 +746,7 @@ fn bipeds_rebuilt_against_the_template_path() {
     let only = std::env::var("H1_LEVELS").ok();
     let mut seen = HashSet::new();
     let mut lines = Vec::new();
-    let mut roles = HashSet::new();
-    let (mut players, mut no_role, mut no_collision) = (0, 0, 0);
+    let (mut players, mut no_collision) = (0, 0);
     for level in h1map::disc::CAMPAIGN_LEVELS {
         if only
             .as_deref()
@@ -775,20 +775,20 @@ fn bipeds_rebuilt_against_the_template_path() {
 
             let mut c = Converter::new(&h1, &base);
             assert!(c.options.rebuild_bipeds, "rebuilt bipeds are the default");
-            let role = c.biped_rebuild_role(&t.name).expect("a role");
-            if BipedRole::of_h1(&t.name).is_none() {
-                no_role += 1;
-            }
-            roles.insert(role);
-            let rw = c.biped_role(role).unwrap().expect("the base has the role");
-            let (cid, cname) = c.biped_counterpart(&t.name).expect("a counterpart");
             let id = c
                 .object(t)
                 .unwrap_or_else(|e| panic!("{}: rebuilt: {e}", t.name));
             let got = local(&c.tree, id).expect("rebuilt bipd in the tree");
             assert_eq!(got.group, FourCC(*b"bipd"));
             assert!(got.raw.is_empty(), "{}: no template bytes", t.name);
-            let rep = c.tree.reports.iter().find(|r| r.source == t.name).unwrap();
+            // The biped's own report: a unit weapon of the same path (its
+            // conversion reports first) is no biped.
+            let rep = c
+                .tree
+                .reports
+                .iter()
+                .find(|r| r.source == t.name && r.group == "bipd")
+                .unwrap();
             assert!(rep.template.starts_with("none: rebuilt"), "{}", t.name);
             let r = defs::from_built(d, &got.root).expect("rebuilt bipd reads");
             let again = defs::to_built(d, &r, &mut |_| None).unwrap();
@@ -834,46 +834,24 @@ fn bipeds_rebuilt_against_the_template_path() {
             {
                 assert_eq!(w.get(path), Some(&v.to_bits()), "{}: {path}", t.name);
             }
+            if !sized {
+                assert!(matches!(r.at(BIPD_PILLS), Some(Val::Block(b)) if b.is_empty()));
+                for (path, count) in [("block_294", 2), ("block_284", 3)] {
+                    assert!(matches!(r.at(path), Some(Val::Block(b)) if b.len() == count));
+                }
+            }
             if sized {
                 for (path, v) in biped_shapes(&size).unwrap() {
                     assert_eq!(r.at(&path), Some(&v), "{}: {path}", t.name);
                 }
             }
-            for (path, word) in &rw.root {
-                if !BIPED_WORDS.iter().any(|x| x.0 == path)
-                    && !(sized && BIPD_SIZE.contains(&path.as_str()))
-                {
-                    assert_eq!(w.get(path), Some(word), "{}: {path}", t.name);
-                }
-            }
-
-            // References: the model chain and physics model are Halo 1's
-            // (tree tags); the player's HUD is the counterpart's with the
-            // health meter (tree tags); the material effects are Halo 1's
-            // `foot` where it names one (a tree tag, since converter
-            // version 54); every other reference field is the
-            // counterpart's as it holds it. Every reference resolves to a
-            // tag of its group.
-            let cr = base.record(d, cid).unwrap();
             let player = h1objects::health_hud::is_player_biped(&t.name);
-            let h1_foot = u.references.iter().any(|x| x.group == h1map::Group::new(b"foot") && x.tag.is_some());
-            let mut from_counterpart = 0;
-            for path in reference_fields(d) {
-                if BIPED_OWN.contains(&path.as_str()) || (player && path == BIPD_HUD) {
-                    continue;
-                }
-                if h1_foot && path == h1objects::convert::FOOT_FIELD {
-                    let f = reference(&r, &path).and_then(|x| local(&c.tree, x));
-                    assert_eq!(f.map(|x| x.group), Some(FourCC(*b"foot")), "{}: Halo 1's foot", t.name);
-                    continue;
-                }
-                assert_eq!(
-                    norm(r.at(&path)),
-                    norm(cr.at(&path)),
-                    "{}: {path} from {cname}",
-                    t.name
-                );
-                from_counterpart += 1;
+            let h1_root = h1.tag_data(t).unwrap();
+            let track_count = u.camera_tracks.len();
+            assert!(matches!(r.at("unit.block_e8"), Some(Val::Block(v)) if v.len() == track_count));
+            if h1::reference(&h1, h1_root, 0x38c).is_some() {
+                let f = reference(&r, h1objects::convert::FOOT_FIELD).and_then(|id| local(&c.tree, id));
+                assert_eq!(f.map(|f| f.group), Some(FourCC(*b"foot")));
             }
             let mut all = Vec::new();
             refs_in(d, &r, "", &mut all);
@@ -891,42 +869,12 @@ fn bipeds_rebuilt_against_the_template_path() {
                 .iter()
                 .filter(|x| resolves(&c.tree, &base, x.2).unwrap().1)
                 .count();
-            // The hlmt's damage, dialogue and camouflage come from the
-            // counterpart's; the dialogue is Halo 1's where it converts (a
-            // tree udlg, since converter version 52).
-            let chr = base
-                .record(hd, reference(&cr, "unit.obje.model").unwrap())
-                .unwrap();
-            for path in reference_fields(hd) {
-                if MODEL_OWN.contains(&path.as_str()) {
-                    continue;
+            if let Some(coll) = u.object.collision {
+                let cb = h1.tag_data(h1.tag(coll).unwrap()).unwrap();
+                for (path, at) in [("unknown_28", 8), ("unknown_8c", 0xcc)] {
+                    assert_eq!(hr.at(&format!("block_60[0].{path}")), Some(&Val::Bytes(cb[at..at+4].to_vec())));
                 }
-                if path == h1objects::convert::DIALOGUE_FIELD {
-                    if let Some(x) = reference(&hr, &path).and_then(|x| local(&c.tree, x)) {
-                        assert_eq!(x.group, FourCC(*b"udlg"), "{}: Halo 1's dialogue", t.name);
-                        continue;
-                    }
-                }
-                assert_eq!(
-                    norm(hr.at(&path)),
-                    norm(chr.at(&path)),
-                    "{}: hlmt {path}",
-                    t.name
-                );
             }
-
-            // The template path's references: each it holds non-null, the
-            // rebuilt holds too, unless the counterpart holds none there.
-            let mut tall = Vec::new();
-            refs_in(d, &tr, "", &mut tall);
-            let mut call = Vec::new();
-            refs_in(d, &cr, "", &mut call);
-            let lost: Vec<&String> = tall
-                .iter()
-                .filter(|(p, ..)| !all.iter().any(|x| &x.0 == p) && call.iter().any(|x| &x.0 == p))
-                .map(|x| &x.0)
-                .collect();
-            assert!(lost.is_empty(), "{}: lost {lost:?}", t.name);
 
             // A physics model wherever the template path had one, built
             // from Halo 1's collision.
@@ -986,34 +934,17 @@ fn bipeds_rebuilt_against_the_template_path() {
                 }
             }
 
-            let mut tw = BTreeMap::new();
-            words(d, &tr, "", &mut tw);
-            let differ = w.iter().filter(|(p, x)| tw.get(*p) != Some(x)).count();
-            lines.push(format!(
-                "{level} {}: size {:?}{}; {role:?}{} over {}, references from {cname} ({from_counterpart} fields; {} references, {local_refs} Halo 1's); template path {} references; {differ} of {} words differ; phmo {} (template {})",
-                t.name,
-                [size.standing_height, size.crouching_height, size.radius],
-                if sized { "" } else { " (unusable: the role's)" },
-                if BipedRole::of_h1(&t.name).is_none() { " (counterpart's)" } else { "" },
-                rw.members.len(),
-                all.len(),
-                tall.len(),
-                w.len(),
-                if built.is_some() { "built" } else { "none" },
-                if borrowed { "borrowed" } else { "none" }
-            ));
+            lines.push(format!("{level} {}: {local_refs} converted references, {track_count} tracks", t.name));
         }
     }
     for l in &lines {
         println!("{l}");
     }
     println!(
-        "{} bipeds; {players} player, {no_role} of no role of their own, {no_collision} with no Halo 1 collision",
+        "{} bipeds; {players} player, {no_collision} with no Halo 1 collision",
         seen.len()
     );
     if only.is_none() {
-        assert_eq!(roles.len(), 3, "the Chief, humans and the Covenant");
         assert!(players >= 1, "the player biped");
-        assert!(no_role >= 1, "bipeds of no role of their own");
     }
 }

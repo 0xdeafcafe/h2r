@@ -14,6 +14,10 @@ use h1map::{H1Map, Tag, TagId as H1TagId};
 use map::build::Block;
 use map::{FourCC, TagId};
 use tags::defs::{self, Defs, Record, StructDef, Val};
+use tags::effects::function::{Function, FunctionType};
+use tags::effects::h1_attachment::{
+    DIRECTIONAL_BIRTH, POPULATION_CLOCK, RADIAL_BIRTH, population_word,
+};
 
 use crate::h1::{reference, tag_bytes};
 use crate::{Error, Result};
@@ -127,12 +131,9 @@ pub fn contrail(c: &H1Contrail, bitmap: Option<TagId>) -> Result<Block> {
 //   rest `-1`; `parameter_colors` two zero colours, `parameter_scalars`
 //   six zeros.
 //
-// The colour and vector values are the parameters' compiled defaults;
-// they are not derived here but taken from the base's particles on the
-// same stem (the most common set: [`ParticleShader`]), as a role.
-// Two words vary on retail with nothing reading them (a lod's `+0x6`, a
-// pass's `+0x2`); they are written zero.
-
+// The texture transform is identity (unit scale, zero offset). The second
+// vertex default is the homogeneous origin. The blend's pixel constants
+// start at zero; the emitter supplies the particle colours.
 /// One stem's compiled-shader role on a base: the stem, its compiled
 /// postprocess and the colour and vector values its particles hold.
 #[derive(Clone, Debug)]
@@ -167,78 +168,27 @@ pub fn lod_offset(width: u16, height: u16) -> f32 {
     f32::from(width.max(height).max(1)).log2() * ln2 * ln2
 }
 
-fn block_of<'r>(r: &'r Record, path: &str) -> &'r [Record] {
-    match r.at(path) {
-        Some(Val::Block(b)) => b,
-        _ => &[],
-    }
-}
-
-fn int(r: &Record, path: &str) -> i64 {
-    match r.at(path) {
-        Some(Val::Int(v)) => *v,
-        _ => 0,
-    }
-}
-
-fn float_list(r: &Record, path: &str) -> Vec<f32> {
-    match r.at(path) {
-        Some(Val::List(v)) => v
-            .iter()
-            .map(|x| match x {
-                Val::Float(f) => *f,
-                _ => 0.0,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-/// Every stem the base's particles use, with its role
-/// ([`ParticleShader`]): the colour and vector values most of its
-/// particles hold.
+/// Read the compiled particle stems directly. Conversion only needs a
+/// stem's bindings; a base can supply a stem without any particle on it.
 pub fn particle_shaders(base: &crate::base::Base) -> Result<Vec<ParticleShader>> {
-    use std::collections::BTreeMap;
-    let d = def(b"prt3")?;
     let meta = tags::shader::Metadata::new(base.meta.base, base.meta.bytes.clone());
-    type Values = (Vec<u32>, Vec<[u32; 4]>);
-    let mut tally: BTreeMap<u32, BTreeMap<Values, usize>> = BTreeMap::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"prt3")) {
-        let r = base.record(d, t.0)?;
-        let Some(Val::Ref { target: defs::Target::Id(stem), .. }) = r.at("shader_template") else {
-            continue;
-        };
-        let Some(pp) = block_of(&r, "postprocess").first() else { continue };
-        let colors = block_of(pp, "colors").iter().map(|c| int(c, "color") as u32).collect();
-        let vectors = block_of(pp, "vectors")
-            .iter()
-            .map(|v| {
-                let f = float_list(v, "vector");
-                std::array::from_fn(|k| f.get(k).copied().unwrap_or(0.0).to_bits())
-            })
-            .collect();
-        *tally.entry(stem.0).or_default().entry((colors, vectors)).or_default() += 1;
-    }
     let mut out = Vec::new();
-    for (stem, values) in tally {
-        let stem = TagId(stem);
-        let Some(t) = base.tags.iter().find(|t| t.0 == stem) else { continue };
+    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"stem")
+        && t.2.rsplit('\\').next().is_some_and(|name| name.starts_with("particle_"))) {
         let template = tags::shader::ShaderTemplate::decode(&meta, t.3)
             .map_err(|e| Error::Invalid(format!("{}: {e}", t.2)))?
             .compiled()
             .map_err(|e| Error::Invalid(format!("{}: {e}", t.2)))?
             .clone();
-        let ((colors, vectors), _) = values
-            .into_iter()
-            .max_by_key(|(v, n)| (*n, std::cmp::Reverse(v.clone())))
-            .expect("tallied");
-        out.push(ParticleShader {
-            name: t.2.clone(),
-            stem,
-            template,
-            colors,
-            vectors: vectors.into_iter().map(|v| v.map(f32::from_bits)).collect(),
-        });
+        let (_, colors, count) = source_counts(&template);
+        let mut vectors = vec![[0.0; 4]; count];
+        if let Some(uv) = vectors.first_mut() {
+            *uv = [1.0, 1.0, 0.0, 0.0];
+        }
+        if let Some(origin) = vectors.get_mut(1) {
+            *origin = [0.0, 0.0, 0.0, 1.0];
+        }
+        out.push(ParticleShader { name: t.2.clone(), stem: t.0, template, colors: vec![0; colors], vectors });
     }
     Ok(out)
 }
@@ -338,7 +288,7 @@ pub fn particle_postprocess(s: &ParticleShader, bitmap: Option<(TagId, u16, u16)
 // initial and `+0x9c` looping counts: one random sequence per particle
 // among them, prt3 flag `0x10`), its collision and death effects
 // (`+0x48`, `+0x58`) converted. The five properties are constants as the
-// base's static particles write them ([`ParticleRole`]): white, opaque,
+// base's particle evaluator reads them: white, opaque,
 // unit size (the emitter scales it), no rotation, the first sprite.
 //
 // **The frame property is never empty.** Many of the base's static
@@ -409,56 +359,6 @@ pub fn particle_stem(blend: u16) -> (&'static str, bool) {
     }
 }
 
-/// The base's particle role: its stems' compiled shaders and the root
-/// words of a static particle (the five constant properties, the input
-/// mask, vertex shader, quad and UV window most of the base's particles
-/// with white, opaque, unit-size, unrotated constants hold).
-#[derive(Clone, Debug)]
-pub struct ParticleRole {
-    pub shaders: Vec<ParticleShader>,
-    pub statics: Vec<(&'static str, Val)>,
-}
-
-/// The root fields [`ParticleRole::statics`] holds.
-pub const STATIC_FIELDS: [&str; 9] =
-    ["color", "alpha", "size", "rotation", "frame", "input_mask", "vertex_shader", "quad", "uv_window"];
-
-fn constant(r: &Record, slot: &str) -> Option<[f32; 2]> {
-    let Some(Val::Data(b)) = r.at(&format!("{slot}.function")) else { return None };
-    let f = tags::effects::function::Function::parse(b).ok()?;
-    (f.kind == tags::effects::function::FunctionType::Constant).then_some(f.range)
-}
-
-pub fn particle_role(base: &crate::base::Base) -> Result<Option<ParticleRole>> {
-    use std::collections::BTreeMap;
-    let d = def(b"prt3")?;
-    let mut tally: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"prt3")) {
-        let r = base.record(d, t.0)?;
-        let white = matches!(r.at("color.function"), Some(Val::Data(b)) if b.get(4..8) == Some(&[0xff; 4][..]));
-        let frame_static = matches!(r.at("frame.function"), Some(Val::Data(b)) if b.is_empty())
-            || constant(&r, "frame") == Some([0.0, 0.0]);
-        if !(white
-            && constant(&r, "alpha") == Some([1.0, 1.0])
-            && constant(&r, "size") == Some([1.0, 1.0])
-            && constant(&r, "rotation") == Some([0.0, 0.0])
-            && frame_static)
-        {
-            continue;
-        }
-        let vals: Vec<_> = STATIC_FIELDS.iter().map(|f| (*f, r.at(f).cloned().unwrap_or(Val::Int(0)))).collect();
-        let e = tally.entry(format!("{vals:?}")).or_insert((0, vals));
-        e.0 += 1;
-    }
-    let Some((_, (_, statics))) = tally.into_iter().max_by_key(|(k, (n, _))| (*n, std::cmp::Reverse(k.clone()))) else {
-        return Ok(None);
-    };
-    Ok(Some(ParticleRole {
-        shaders: particle_shaders(base)?,
-        statics,
-    }))
-}
-
 /// The function blob of a frame property that always picks the first
 /// sprite: a constant (type 1, unranged, so the evaluator gives 0) mapped
 /// onto the range `[0, 0]`; one set of one word, `0x1c` bytes.
@@ -492,7 +392,6 @@ pub fn sprite_frame(r: &mut Record) -> Result<()> {
 /// (converted, with their groups).
 pub fn particle(
     p: &H1Particle,
-    role: &ParticleRole,
     shader: &ParticleShader,
     bitmap: Option<(TagId, u16, u16)>,
     collision_effect: Option<(FourCC, TagId)>,
@@ -511,11 +410,18 @@ pub fn particle(
     set(&mut x, "name", Val::text("alpha_map_texture"))?;
     set(&mut x, "bitmap", Val::tag(FourCC(*b"bitm"), bitmap.map_or(TagId::NULL, |b| b.0)))?;
     set(&mut r, "parameters", Val::Block(vec![x]))?;
-    for (f, v) in &role.statics {
-        crate::provenance::note(*f, v);
-        set(&mut r, f, v.clone())?;
+    // 0x2245ad..0x224caf multiplies these three particle properties by
+    // emitter tint, alpha and size. Their neutral values preserve the H1 emitter.
+    for (field, scalar, colour) in [
+        ("color", 1.0, Some(u32::MAX)), ("alpha", 1.0, None),
+        ("size", 1.0, None), ("rotation", 0.0, None), ("frame", 0.0, None),
+    ] {
+        constant_property(&mut r, field, scalar, colour)?;
     }
-    sprite_frame(&mut r)?;
+    // Input index zero is used by each constant (0x173ba0 builds this mask).
+    set(&mut r, "input_mask", Val::Int(1))?;
+    set(&mut r, "quad", Val::floats(&[-0.5, -0.5, 0.5, 0.5]))?;
+    set(&mut r, "uv_window", Val::floats(&[0.0, 1.0, 0.0, 1.0]))?;
     for (f, e) in [("collision_effect", collision_effect), ("death_effect", death_effect)] {
         let v = match e {
             Some((g, id)) => Val::tag(g, id),
@@ -554,12 +460,8 @@ pub fn particle(
 // - `+0x58` tint and `+0x68` alpha: Halo 1's tint bounds (`+0xb0`, `+0xc0`,
 //   alpha then RGB) as a packed colour and a scalar.
 //
-// Bounds become their midpoint. The record words nothing above names
-// (the particle system's flags, fade and LOD distances; the emitter's
-// `+0x9c..+0xb8`; each constant property's input words) are the base's
-// most common ([`EmitterRole`]). Halo 1's distribution radius, relative
-// direction and offset, angular velocity and physics have no proven slot
-// and are not carried.
+// Bounds become their midpoint. The constant property encoding is built
+// directly. Optional system flags and distance controls keep the defaults.
 
 /// Halo 1 effect particle size.
 pub const H1_EFFECT_PARTICLE: usize = 0xe8;
@@ -627,107 +529,24 @@ pub fn spawn_rate(count: [i16; 2], duration: f32) -> f32 {
     n / (30.0 * duration.max(TICK))
 }
 
-/// The base's emitter role: the most common particle-system words, emitter
-/// words (on shape-0 emitters) and per property slot the most common
-/// constant encoding.
-#[derive(Clone, Debug)]
-pub struct EmitterRole {
-    pub system: Vec<(&'static str, Val)>,
-    pub emitter: Vec<(&'static str, Val)>,
-    /// Per emitter property field, a constant property record of the base.
-    pub constants: Vec<(&'static str, Record)>,
+/// Encode a constant directly in the property definition. The scalar
+/// evaluator (0x246cd0) maps to its two equal endpoints. The colour
+/// evaluator (0x246d80) reads packed ARGB at +4 with flag 0x10.
+fn constant_property(r: &mut Record, field: &str, scalar: f32, colour: Option<u32>) -> Result<()> {
+    set(r, &format!("{field}.function"), Val::Data(constant_data(scalar, colour)))
 }
 
-/// Particle-system fields the role holds.
-pub const SYSTEM_ROLE_FIELDS: [&str; 8] =
-    ["unknown_c", "unknown_e", "unknown_10", "unknown_12", "unknown_14", "unknown_16", "fade", "lod"];
-/// Emitter fields the role holds.
-pub const EMITTER_ROLE_FIELDS: [&str; 3] = ["unknown_9c", "unknown_b0", "unknown_b4"];
-/// Emitter property fields.
-pub const EMITTER_PROPERTIES: [&str; 9] = [
-    "property_8", "lifespan", "property_28", "property_38", "property_48", "property_58", "property_68",
-    "shape_input", "velocity_input",
-];
-
-fn is_constant(r: &Record, colour: bool) -> bool {
-    let Some(Val::Data(b)) = r.at("function") else { return false };
-    let Ok(f) = tags::effects::function::Function::parse(b) else { return false };
-    f.kind == tags::effects::function::FunctionType::Constant
-        && f.flags & 1 == 0
-        && (f.flags & 0xf0 != 0) == colour
-}
-
-pub fn emitter_role(base: &crate::base::Base) -> Result<Option<EmitterRole>> {
-    use std::collections::BTreeMap;
-    let d = def(b"effe")?;
-    fn top<T: Clone>(m: BTreeMap<String, (usize, T)>) -> Option<T> {
-        m.into_iter()
-            .max_by_key(|(k, (n, _))| (*n, std::cmp::Reverse(k.clone())))
-            .map(|(_, (_, v))| v)
+fn constant_data(scalar: f32, colour: Option<u32>) -> Vec<u8> {
+    let mut data = first_sprite_frame();
+    if let Some(argb) = colour {
+        data[1] = 0x10;
+        data[4..8].copy_from_slice(&argb.to_le_bytes());
+        data[8..12].copy_from_slice(&1.0f32.to_le_bytes());
+    } else {
+        data[4..8].copy_from_slice(&scalar.to_le_bytes());
+        data[8..12].copy_from_slice(&scalar.to_le_bytes());
     }
-    let mut systems: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
-    let mut emitters: BTreeMap<String, (usize, Vec<(&'static str, Val)>)> = BTreeMap::new();
-    let mut constants: BTreeMap<&'static str, BTreeMap<String, (usize, Record)>> = BTreeMap::new();
-    let tally = |m: &mut BTreeMap<String, (usize, Vec<(&'static str, Val)>)>, v: Vec<(&'static str, Val)>| {
-        m.entry(format!("{v:?}")).or_insert((0, v)).0 += 1;
-    };
-    for t in base.tags.iter().filter(|t| t.1 == FourCC(*b"effe")) {
-        let r = base.record(d, t.0)?;
-        for ev in block_of(&r, "events") {
-            for s in block_of(ev, "particle_systems") {
-                tally(&mut systems, SYSTEM_ROLE_FIELDS.iter().map(|f| (*f, s.at(f).cloned().unwrap_or(Val::Int(0)))).collect());
-                for e in block_of(s, "emitters") {
-                    if int(e, "emission_shape") != 0 {
-                        continue;
-                    }
-                    tally(&mut emitters, EMITTER_ROLE_FIELDS.iter().map(|f| (*f, e.at(f).cloned().unwrap_or(Val::Int(0)))).collect());
-                    for f in EMITTER_PROPERTIES {
-                        let Some(Val::Struct(p)) = e.at(f) else { continue };
-                        if !is_constant(p, f == "property_58") {
-                            continue;
-                        }
-                        let mut key = p.clone();
-                        // The encoding, not the value.
-                        if let Some(Val::Data(b)) = key.at("function").cloned() {
-                            let mut b = b.clone();
-                            b[4..12].fill(0);
-                            key.set("function", Val::Data(b)).map_err(|e| Error::Invalid(e.to_string()))?;
-                        }
-                        constants.entry(f).or_default().entry(format!("{key:?}")).or_insert((0, p.clone())).0 += 1;
-                    }
-                }
-            }
-        }
-    }
-    let (Some(system), Some(emitter)) = (top(systems), top(emitters)) else { return Ok(None) };
-    let mut list = Vec::new();
-    for f in EMITTER_PROPERTIES {
-        let Some(c) = constants.remove(f).and_then(top) else { return Ok(None) };
-        list.push((f, c));
-    }
-    Ok(Some(EmitterRole { system, emitter, constants: list }))
-}
-
-/// The role's constant for `field` with value `v` (a scalar), or the packed
-/// colour `argb` for the tint.
-fn constant_property(role: &EmitterRole, field: &str, v: f32, argb: Option<u32>) -> Result<Record> {
-    let mut p = role
-        .constants
-        .iter()
-        .find(|c| c.0 == field)
-        .map(|c| c.1.clone())
-        .ok_or_else(|| Error::Invalid(format!("no constant for {field}")))?;
-    let Some(Val::Data(b)) = p.at("function") else { return Err(Error::Invalid("constant".into())) };
-    let mut b = b.clone();
-    match argb {
-        Some(c) => b[4..8].copy_from_slice(&c.to_le_bytes()),
-        None => {
-            b[4..8].copy_from_slice(&v.to_le_bytes());
-            b[8..12].copy_from_slice(&v.to_le_bytes());
-        }
-    }
-    set(&mut p, "function", Val::Data(b))?;
-    Ok(p)
+    data
 }
 
 /// Halo 1's tint midpoint as a packed colour (alpha 0xff, the alpha is the
@@ -744,29 +563,50 @@ pub fn particle_system(
     p: &H1EffectParticle,
     part: &H1Particle,
     particle: TagId,
-    role: &EmitterRole,
     duration: f32,
+) -> Result<Record> {
+    particle_system_at_rate(
+        p,
+        part,
+        particle,
+        [spawn_rate(p.count, duration); 2],
+        None,
+        None,
+        H1ParticleBirth::default(),
+    )
+}
+
+/// Emitter rate in particles per tick, optionally multiplied by the
+/// owning effect's primary object function.
+fn particle_system_at_rate(
+    p: &H1EffectParticle,
+    part: &H1Particle,
+    particle: TagId,
+    rate: [f32; 2],
+    scale_rate: Option<bool>,
+    movement: Option<TagId>,
+    birth: H1ParticleBirth,
 ) -> Result<Record> {
     let sd = def(b"effe")?.child("events.particle_systems").expect("effe particle systems");
     let ed = sd.child("emitters").expect("emitters");
     let mut s = defs::default_record(sd);
     set(&mut s, "particle", Val::tag(FourCC(*b"prt3"), particle))?;
     set(&mut s, "location", Val::Int(p.location.into()))?;
-    // The caller places the system in an effect's event: any element.
-    for (f, v) in &role.system {
-        crate::provenance::note(format!("events[*].particle_systems[*].{f}"), v);
-        set(&mut s, f, v.clone())?;
+    if scale_rate.is_some() {
+        // 0x00247beb uses a zero word for world-space particles. The
+        // object velocity is added in that branch (0x00247da9).
+        set(&mut s, "unknown_c", Val::Int(0))?;
     }
     let mut e = defs::default_record(ed);
-    set(&mut e, "movement", Val::tag(FourCC(*b"pmov"), TagId::NULL))?;
-    for (f, v) in &role.emitter {
-        crate::provenance::note(format!("events[*].particle_systems[*].emitters[0].{f}"), v);
-        set(&mut e, f, v.clone())?;
-    }
+    set(
+        &mut e,
+        "movement",
+        Val::tag(FourCC(*b"pmov"), movement.unwrap_or(TagId::NULL)),
+    )?;
     set(&mut e, "emission_shape", Val::Int(0))?;
     let alpha = mid([p.tint[0][0], p.tint[1][0]]);
     let props: [(&str, f32, Option<u32>); 9] = [
-        ("property_8", spawn_rate(p.count, duration), None),
+        ("property_8", rate[0], None),
         ("lifespan", mid(part.lifespan), None),
         ("property_28", mid(p.velocity), None),
         ("property_38", 0.0, None),
@@ -777,7 +617,58 @@ pub fn particle_system(
         ("velocity_input", p.velocity_cone.to_degrees(), None),
     ];
     for (f, v, c) in props {
-        set(&mut e, f, Val::Struct(constant_property(role, f, v, c)?))?;
+        let mut property = defs::default_record(ed.child(f).expect("emitter property"));
+        set(&mut property, "function", Val::Data(constant_data(v, c)))?;
+        if f == "property_8"
+            && let Some(scale) = scale_rate
+        {
+            set(
+                &mut property,
+                "output_modifier",
+                Val::Int(if scale { 2 } else { 0 }),
+            )?;
+            // E 0x00248eac reads effect +0x6c (selector 9); 0x001795e3
+            // updates that scalar from the attachment's primary function.
+            set(
+                &mut property,
+                "modifier_input",
+                Val::Int(if scale { 9 } else { -1 }),
+            )?;
+            if rate[0] != rate[1] {
+                // Selector 4 reads the system's normalised event time
+                // (0x00248e65, assigned at 0x001752f6).
+                let ramp = Function {
+                    kind: FunctionType::Identity,
+                    flags: 0,
+                    sub_types: [0; 2],
+                    range: rate,
+                    unknown_0c: [0; 8],
+                    payload: Vec::new(),
+                };
+                set(&mut property, "input", Val::Int(4))?;
+                set(&mut property, "function", Val::Data(ramp.to_bytes()))?;
+            }
+        }
+        if f == "property_28"
+            && let Some(words) = birth.words()
+        {
+            let mut constant = Function {
+                kind: FunctionType::Constant,
+                flags: 0,
+                sub_types: [0; 2],
+                range: [0.0; 2],
+                unknown_0c: [0; 8],
+                payload: vec![0; 8],
+            }
+            .to_bytes();
+            for (bytes, word) in constant[12..].chunks_exact_mut(4).zip(words) {
+                bytes.copy_from_slice(&word.to_le_bytes());
+            }
+            set(&mut property, "output_modifier", Val::Int(0))?;
+            set(&mut property, "modifier_input", Val::Int(-1))?;
+            set(&mut property, "function", Val::Data(constant))?;
+        }
+        set(&mut e, f, Val::Struct(property))?;
     }
     set(&mut s, "emitters", Val::Block(vec![e]))?;
     Ok(s)
@@ -808,13 +699,20 @@ pub fn particle_system(
 // duration plus transition as lifespan, its radius and colour. The
 // state sequence (fire turning to smoke), the creation physics and its
 // constants (no proven meaning: explosion `0.03 0.08 200`, jet
-// `45 0.0355 1`), the system states and the rotation rate are not
-// carried: the particles start still at the part's location.
+// `45 0.0355 1`) and rotation rate are not carried. For object
+// attachments we also use the system states’ emission rates and timing
+// ([`attached_particle_effect`]).
 
 /// Halo 1 `pctl` sizes.
 pub const H1_PCTL_SIZE: usize = 0x68;
 pub const H1_PCTL_TYPE: usize = 0x80;
 pub const H1_PCTL_PARTICLE_STATE: usize = 0x178;
+const H1_PCTL_SYSTEM_STATE: usize = 0xc0;
+// E (Halo 1) 0x0010fc27 scales the emission rate by the attachment output.
+const H1_SCALE_RATE: u32 = 0x1000;
+// E (Halo 1) 0x0010edbf: on the last state, stop, wrap or reverse.
+const H1_LOOP_STATES: u32 = 1;
+const H1_REVERSE_AT_END: u32 = 2;
 
 /// One particle state of a Halo 1 particle system type.
 #[derive(Clone, Debug, PartialEq)]
@@ -827,13 +725,52 @@ pub struct H1ParticleState {
     pub radius: [f32; 2],
     pub colour: [[f32; 4]; 2],
     pub blend: u16,
+    pub physics: Option<H1TagId>,
+    pub collision_radius_scale: f32,
 }
 
-/// A Halo 1 particle system type: its initial count and particle states.
+/// Initial velocity and scatter of particles born in a system state.
+/// E (Halo 1) creation dispatch at 0x0010f8c9; the emitter state supplies
+/// its kind at +0xb0. The initial burst instead uses the type's +0x54.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct H1ParticleBirth {
+    pub kind: u16,
+    pub constants: [f32; 3],
+}
+
+impl H1ParticleBirth {
+    fn words(self) -> Option<[u32; 4]> {
+        let kind = match self.kind {
+            1 => RADIAL_BIRTH,
+            2 => DIRECTIONAL_BIRTH,
+            // Kind 0 inherits object velocity natively (0x00247da9).
+            _ => return None,
+        };
+        let [a, b, c] = self.constants.map(f32::to_bits);
+        Some([kind, a, b, c])
+    }
+}
+
+/// The emission phase of a Halo 1 particle system type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct H1EmitterState {
+    pub duration: [f32; 2],
+    pub transition: [f32; 2],
+    pub particles_per_second: f32,
+    pub minimum_population: f32,
+    pub birth: H1ParticleBirth,
+}
+
+/// A Halo 1 particle system type, with separate emitter and particle states.
 #[derive(Clone, Debug, PartialEq)]
 pub struct H1ParticleType {
     pub name: String,
+    pub flags: u32,
     pub initial_count: u16,
+    pub initial_birth: H1ParticleBirth,
+    pub particle_radius: f32,
+    pub default_physics: Option<H1TagId>,
+    pub emitter_states: Vec<H1EmitterState>,
     pub states: Vec<H1ParticleState>,
 }
 
@@ -847,9 +784,44 @@ pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleTyp
     let b = tag_bytes(map, tag, b"pctl", H1_PCTL_SIZE)?;
     let f = |x: &[u8], o: usize| f32::from_le_bytes(x[o..o + 4].try_into().expect("4"));
     let h = |x: &[u8], o: usize| u16::from_le_bytes([x[o], x[o + 1]]);
+    let birth =
+        |bytes: &[u8], kind_at, constants_at, fallback: [f32; 3]| -> Result<H1ParticleBirth> {
+            let mut constants = fallback;
+            if let Some(block) = h1map::Block::read(bytes, constants_at) {
+                for (c, x) in constants
+                    .iter_mut()
+                    .zip(map.block(block, 4)?.chunks_exact(4))
+                {
+                    *c = f(x, 0);
+                }
+            }
+            Ok(H1ParticleBirth {
+                kind: h(bytes, kind_at),
+                constants,
+            })
+        };
     let mut out = Vec::new();
-    let Some(tb) = h1map::Block::read(b, 0x5c) else { return Ok(out) };
-    for t in map.block(tb, H1_PCTL_TYPE)?.to_vec().chunks_exact(H1_PCTL_TYPE) {
+    let Some(tb) = h1map::Block::read(b, 0x5c) else {
+        return Ok(out);
+    };
+    for t in map.block(tb, H1_PCTL_TYPE)?.chunks_exact(H1_PCTL_TYPE) {
+        let initial_birth = birth(t, 0x54, 0x5c, [0.0; 3])?;
+        let mut emitter_states = Vec::new();
+        if let Some(sb) = h1map::Block::read(t, 0x68) {
+            for s in map
+                .block(sb, H1_PCTL_SYSTEM_STATE)?
+                .chunks_exact(H1_PCTL_SYSTEM_STATE)
+            {
+                emitter_states.push(H1EmitterState {
+                    duration: [f(s, 0x20), f(s, 0x24)],
+                    transition: [f(s, 0x28), f(s, 0x2c)],
+                    // E (Halo 1) 0x0010f6a5 uses this rate times the timestep.
+                    particles_per_second: f(s, 0x58),
+                    minimum_population: f(s, 0x54),
+                    birth: birth(s, 0xb0, 0xb4, initial_birth.constants)?,
+                });
+            }
+        }
         let mut states = Vec::new();
         if let Some(sb) = h1map::Block::read(t, 0x74) {
             for s in map.block(sb, H1_PCTL_PARTICLE_STATE)?.chunks_exact(H1_PCTL_PARTICLE_STATE) {
@@ -863,10 +835,21 @@ pub fn particle_system_types(map: &H1Map, tag: &Tag) -> Result<Vec<H1ParticleTyp
                     radius: [f(s, 0x48), f(s, 0x4c)],
                     colour: [argb(0x60), argb(0x70)],
                     blend: h(s, 0xe2),
+                    physics: reference(map, s, 0x84),
+                    collision_radius_scale: f(s, 0x80),
                 });
             }
         }
-        out.push(H1ParticleType { name: name32(t), initial_count: h(t, 0x24), states });
+        out.push(H1ParticleType {
+            name: name32(t),
+            flags: u32::from_le_bytes(t[0x20..0x24].try_into().expect("4")),
+            initial_count: h(t, 0x24),
+            initial_birth,
+            particle_radius: f(t, 0x2c),
+            default_physics: reference(map, b, 0x38),
+            emitter_states,
+            states,
+        });
     }
     Ok(out)
 }
@@ -903,5 +886,248 @@ impl H1ParticleState {
             radius: self.radius,
             tint: self.colour,
         }
+    }
+}
+
+/// A native effect for one attached particle type. Each type has its own
+/// clock. An initial burst plays once. Later events follow the emission states,
+/// including pauses and the source loop mode.
+pub(crate) fn attached_particle_effect(
+    ty: &H1ParticleType,
+    states: &[AttachmentParticle],
+    marker: &str,
+) -> Result<Option<Block>> {
+    if states.is_empty() {
+        return Ok(None);
+    }
+    let d = def(b"effe")?;
+    let mut r = defs::default_record(d);
+    let mut location = defs::default_record(d.child("locations").expect("effe locations"));
+    set(&mut location, "marker", Val::text(marker))?;
+    set(&mut r, "locations", Val::Block(vec![location]))?;
+    let ev_def = d.child("events").expect("effe events");
+    let event = |bounds: [f32; 2],
+                 rate: [f32; 2],
+                 scale: bool,
+                 minimum: [f32; 2],
+                 birth: H1ParticleBirth|
+     -> Result<Record> {
+        let mut ev = defs::default_record(ev_def);
+        set(
+            &mut ev,
+            "duration_bounds",
+            Val::floats(&bounds.map(|v| v.max(TICK))),
+        )?;
+        set(
+            &mut ev,
+            "attachment_population",
+            Val::Int(population_word(minimum, ty.flags & 0x800 != 0).into()),
+        )?;
+        let mut systems = Vec::new();
+        if rate[0] > 0.0 || rate[1] > 0.0 {
+            for p in states {
+                systems.push(particle_system_at_rate(
+                    &p.source.as_effect_particle(0, 0),
+                    &p.source.as_particle(),
+                    p.tag,
+                    rate,
+                    Some(scale),
+                    p.movement,
+                    birth,
+                )?);
+            }
+        }
+        set(&mut ev, "particle_systems", Val::Block(systems))?;
+        Ok(ev)
+    };
+    let mut events = Vec::new();
+    if ty.initial_count != 0 {
+        events.push(event(
+            [TICK; 2],
+            [f32::from(ty.initial_count); 2],
+            false,
+            [0.0; 2],
+            ty.initial_birth,
+        )?);
+    }
+    let first_phase = events.len();
+    let phases = &ty.emitter_states;
+    let loops = ty.flags & H1_LOOP_STATES != 0;
+    if phases.iter().any(|s| s.particles_per_second > 0.0) {
+        let scale = ty.flags & H1_SCALE_RATE != 0;
+        let mut order: Vec<_> = (0..phases.len()).collect();
+        if loops && ty.flags & H1_REVERSE_AT_END != 0 {
+            order.extend((0..phases.len()).rev());
+        }
+        for (i, &index) in order.iter().enumerate() {
+            let s = &phases[index];
+            let rate = s.particles_per_second.max(0.0) * TICK;
+            let next = order.get(i + 1).or_else(|| loops.then(|| &order[0]));
+            if s.duration[1] > 0.0 || s.transition[1] <= 0.0 || next.is_none() {
+                events.push(event(
+                    s.duration,
+                    [rate; 2],
+                    scale,
+                    [s.minimum_population; 2],
+                    s.birth,
+                )?);
+            }
+            if let Some(&next) = next
+                && s.transition[1] > 0.0
+            {
+                let next = &phases[next];
+                let next_rate = next.particles_per_second.max(0.0) * TICK;
+                events.push(event(
+                    s.transition,
+                    [rate, next_rate],
+                    scale,
+                    [s.minimum_population, next.minimum_population],
+                    s.birth,
+                )?);
+            }
+        }
+    }
+    let loop_start = if loops && events.len() > first_phase {
+        first_phase as i64
+    } else {
+        -1
+    };
+    if events.is_empty() {
+        return Ok(None);
+    }
+    // The stock effect root ends with two unused words at +0x28.
+    // Mark the tag so event population words never affect retail effects.
+    set(
+        &mut r,
+        "unknown_28",
+        Val::Bytes([POPULATION_CLOCK.to_le_bytes(), [0; 4]].concat()),
+    )?;
+    set(&mut r, "loop_start_event", Val::Int(loop_start))?;
+    set(&mut r, "events", Val::Block(events))?;
+    defs::to_built(d, &r, &mut |_| None)
+        .map(Some)
+        .map_err(|e| Error::Invalid(e.to_string()))
+}
+
+pub(crate) struct AttachmentParticle {
+    pub tag: TagId,
+    pub source: H1ParticleState,
+    pub movement: Option<TagId>,
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    fn block_of<'r>(r: &'r Record, path: &str) -> &'r [Record] {
+        match r.at(path) {
+            Some(Val::Block(b)) => b,
+            _ => &[],
+        }
+    }
+
+    #[test]
+    fn attached_particle_effect_uses_burst_and_emitter_states() {
+        let d = def(b"effe").unwrap();
+        let state = H1ParticleState {
+            name: "smoke".into(),
+            duration: [0.5, 0.75],
+            transition: [0.25, 0.5],
+            bitmap: None,
+            sequence: 0,
+            radius: [1.0, 2.0],
+            colour: [[1.0; 4]; 2],
+            blend: 0,
+            physics: None,
+            collision_radius_scale: 1.0,
+        };
+        let tag = TagId(0xe100_0007);
+        let mut ty = H1ParticleType {
+            name: "test".into(),
+            flags: H1_LOOP_STATES | H1_SCALE_RATE,
+            initial_count: 3,
+            initial_birth: H1ParticleBirth::default(),
+            particle_radius: 1.0,
+            default_physics: None,
+            emitter_states: vec![
+                H1EmitterState {
+                    duration: [1.0, 2.0],
+                    transition: [0.25, 0.5],
+                    particles_per_second: 30.0,
+                    minimum_population: 10.0,
+                    birth: H1ParticleBirth::default(),
+                },
+                H1EmitterState {
+                    duration: [2.0, 3.0],
+                    transition: [0.0; 2],
+                    particles_per_second: 0.0,
+                    minimum_population: 2.0,
+                    birth: H1ParticleBirth::default(),
+                },
+            ],
+            states: vec![],
+        };
+        let states = [AttachmentParticle {
+            tag,
+            source: state,
+            movement: None,
+        }];
+        let root = attached_particle_effect(&ty, &states, "burn")
+            .unwrap()
+            .unwrap();
+        let effect = defs::from_built(d, &root).unwrap();
+        assert_eq!(effect.at("loop_start_event"), Some(&Val::Int(1)));
+        assert_eq!(effect.at("locations[0].marker"), Some(&Val::text("burn")));
+        let events = block_of(&effect, "events");
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            events[2].at("attachment_population"),
+            Some(&Val::Int(population_word([10.0, 2.0], false).into()))
+        );
+        for (ev, bounds, rate, modifier) in [
+            (&events[0], [TICK; 2], [3.0; 2], -1),
+            (&events[1], [1.0, 2.0], [1.0; 2], 9),
+            (&events[2], [0.25, 0.5], [1.0, 0.0], 9),
+        ] {
+            assert_eq!(ev.at("duration_bounds"), Some(&Val::floats(&bounds)));
+            assert_eq!(ev.at("particle_systems[0].location"), Some(&Val::Int(0)));
+            assert!(matches!(ev.at("particle_systems[0].particle"),
+                Some(Val::Ref { target: defs::Target::Id(id), .. }) if *id == tag
+            ));
+            let property = "particle_systems[0].emitters[0].property_8";
+            assert_eq!(
+                ev.at(&format!("{property}.modifier_input")),
+                Some(&Val::Int(modifier))
+            );
+            let Some(Val::Data(curve)) = ev.at(&format!("{property}.function")) else {
+                panic!("missing rate curve")
+            };
+            let curve = Function::parse(curve).unwrap();
+            assert_eq!(curve.range, rate);
+            if rate[0] != rate[1] {
+                assert_eq!(ev.at(&format!("{property}.input")), Some(&Val::Int(4)));
+                assert_eq!(curve.evaluate(0.5, 0.0), 0.5);
+            }
+        }
+        assert_eq!(
+            events[3].at("duration_bounds"),
+            Some(&Val::floats(&[2.0, 3.0]))
+        );
+        assert!(block_of(&events[3], "particle_systems").is_empty());
+
+        ty.flags = 0;
+        let root = attached_particle_effect(&ty, &states, "burn")
+            .unwrap()
+            .unwrap();
+        let finite = defs::from_built(d, &root).unwrap();
+        assert_eq!(finite.at("loop_start_event"), Some(&Val::Int(-1)));
+
+        ty.initial_count = 0;
+        ty.emitter_states.clear();
+        assert!(
+            attached_particle_effect(&ty, &states, "burn")
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -278,7 +278,7 @@ fn every_level_builds_in_both_assets() {
             let mut base = h2_map(h1campaign::base_for(level));
             let opts = h1campaign::Options {
                 scripts: Some(&s),
-                sounds: 1000,
+                sounds: usize::MAX,
                 donors: Some(&donors),
                 assets,
                 ..Default::default()
@@ -303,6 +303,21 @@ fn every_level_builds_in_both_assets() {
                 check_a30_holo_control(&mut m);
             }
             let mem = tags::schema::Memory::of(&mut m).unwrap();
+            if level == "a30" {
+                let pod = m.tag(map::TagQuery::NameInGroup(
+                    r"vehicles\lifepod_entry\lifepod_entry", FourCC(*b"vehi"),
+                )).unwrap();
+                let field = pod.location.unwrap().address + h1objects::convert::h2::ATTACHMENTS as u32;
+                let block = mem.slice(field, 8).unwrap();
+                let count = word(block, 0);
+                let stride = h1objects::convert::h2::ATTACHMENT as u32;
+                let entries = mem.slice(word(block, 4), count * stride).unwrap();
+                let loops: Vec<_> = entries.chunks_exact(stride as usize)
+                    .filter(|row| word(row, 0) == FourCC(*b"lsnd").as_u32())
+                    .map(|row| m.tag(word(row, 4)).unwrap().name.as_deref().unwrap())
+                    .collect();
+                assert_eq!(loops, [r"sound\sfx\vehicles\lifeboat"], "{what}");
+            }
             let (refs, bad) = reference_sweep(&m, &mem);
             let (atoms, defs, script_bad) = script_tags(&mut m, &catalog);
             println!(

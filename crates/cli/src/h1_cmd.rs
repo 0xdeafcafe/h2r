@@ -1105,7 +1105,7 @@ pub(crate) fn campaign_options<'a>(
 ) -> h1campaign::Options<'a> {
     h1campaign::Options {
         scripts,
-        sounds: 1000,
+        sounds: usize::MAX,
         donors,
         ..Default::default()
     }

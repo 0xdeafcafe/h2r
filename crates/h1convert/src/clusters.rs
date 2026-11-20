@@ -341,6 +341,8 @@ pub struct Visibility {
     /// Per cluster: the sky it shows, an index into the scenario's skies,
     /// -1 none ([`cluster_skies`]). Empty: every cluster shows sky 0.
     pub skies: Vec<i8>,
+    /// Source visibility bit rows in the unchanged cluster order.
+    pub pvs: Vec<u8>,
 }
 
 impl Visibility {
@@ -415,6 +417,7 @@ pub fn portals(bsp: &StructureBsp, clusters: usize, planes: usize) -> Result<Vis
         portals,
         clusters: lists,
         skies,
+        pvs: bsp.cluster_visibility()?.to_vec(),
     })
 }
 

@@ -7,7 +7,8 @@
 //! vectors (postprocess `+0x04`, `+0x0c`, `+0x14`). Each Halo 1 shader
 //! type draws with a retail stem chosen for it ([`Layout`]); every stem
 //! used here but the three sky ones is in `shared.map`, so every base map
-//! has it. We write no shader programs.
+//! has it. The structure installer emits a colour pass for non-default
+//! terrain detail modes, and the HUD scope has its own screen-effect pass.
 //!
 //! **The parameters.** A [`Layout`] says, per instance parameter of its
 //! stem, where the value comes from: a role of the Halo 1 shader (its base,
@@ -48,6 +49,11 @@ use tags::shader::SHAD;
 use tags::{DecodedTag, TagData};
 
 use crate::{Error, Result};
+
+mod detail;
+pub mod program;
+
+pub use detail::DetailBlend;
 
 /// What a Halo 1 shader supplies to a stem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -332,6 +338,21 @@ pub const COUNTER_TREE: AnimTree = AnimTree {
 /// magazine's loaded maximum, `0x000ffadf`).
 pub const AMMUNITION_DIGITS: [&str; 2] = ["primary_ammunition_ones", "primary_ammunition_tens"];
 
+/// Names of the object functions that provide the Halo 1 engine timer's
+/// individual digits. The boot feature resolves these names in the loaded
+/// cache's StringID table before answering the shader's function lookups.
+pub const COUNTDOWN_DIGITS: [&str; 9] = [
+    "h1_countdown_digit_0",
+    "h1_countdown_digit_1",
+    "h1_countdown_digit_2",
+    "h1_countdown_digit_3",
+    "h1_countdown_digit_4",
+    "h1_countdown_digit_5",
+    "h1_countdown_digit_6",
+    "h1_countdown_digit_7",
+    "h1_countdown_digit_8",
+];
+
 /// A counter digit's frames: a digit's bitmap holds one image per digit,
 /// 0 to 9 in order (Halo 1's `numbers_plate` and retail's).
 pub const COUNTER_FRAMES: f32 = 10.0;
@@ -347,7 +368,7 @@ pub struct Property {
 }
 
 /// The ten properties of a counter digit ([`COUNTER_TREE`]) driven by the
-/// object function `input` (one of [`AMMUNITION_DIGITS`]): component 0 is
+/// object function `input` ([`AMMUNITION_DIGITS`] or [`COUNTDOWN_DIGITS`]): component 0 is
 /// the input mapped by an identity onto 0..[`COUNTER_FRAMES`], so the
 /// handler's `digit × 0.1` picks frame `digit`; the rest an identity
 /// transform. V: retail's `tens` and `ones` hold exactly these (property
@@ -1004,6 +1025,18 @@ pub struct Bound {
     pub lod_offset: f32,
 }
 
+/// Final unbound colour of a converted model reflection parameter block.
+pub const MODEL_REFLECTION_SIGNATURE: u32 = u32::from_le_bytes(*b"H1rf");
+
+/// Facing/grazing RGB followed by facing/grazing alpha, before the saved copy.
+pub fn model_reflection_start(original_colors: usize) -> Option<usize> {
+    match original_colors {
+        7 => Some(1),
+        8 => Some(4),
+        _ => None,
+    }
+}
+
 /// Values a shader sets over its layout's.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Extras {
@@ -1012,6 +1045,9 @@ pub struct Extras {
     /// The scrolling of the layout's animated map
     /// ([`Layout::animation`]); `None`: not animated.
     pub scroll: Option<[Option<Slide>; 2]>,
+    /// Retain original reflection endpoints in a converted model shader so the
+    /// cinematic renderer can release its override after a checkpoint or a cut.
+    pub cinematic_reflection: bool,
     /// The colour and fade, on a layout with [`Layout::tint`] vectors;
     /// `None` keeps the layout's (white, no fade).
     pub tint: Option<Tint>,
@@ -1024,6 +1060,9 @@ pub struct Extras {
     /// of [`AMMUNITION_DIGITS`] ([`counter_properties`]); over
     /// [`Self::scroll`]. `None`: no counter.
     pub counter: Option<&'static str>,
+    /// Separate Halo 1 operations after the details are blended, then
+    /// after sampling the micro detail. The retail stem already does [0, 0].
+    pub detail_blend: [DetailBlend; 2],
 }
 
 impl Extras {
@@ -1044,6 +1083,7 @@ impl Extras {
 pub struct Library {
     stems: HashMap<&'static str, TagId>,
     fixed: HashMap<Fixed, Bound>,
+    detail: Option<detail::Program>,
 }
 
 impl Library {
@@ -1093,6 +1133,7 @@ impl Library {
         Self {
             stems: stems.iter().copied().collect(),
             fixed: fixed.iter().copied().collect(),
+            detail: None,
         }
     }
 
@@ -1123,8 +1164,18 @@ impl Library {
         maps: &HashMap<Role, Bound>,
         extras: &Extras,
     ) -> Result<Record> {
-        let colors = extras.colors_of(layout);
         let stem = self.stem(layout).ok_or(Error::Invalid("the base lacks the stem"))?;
+        self.record_on_stem(layout, maps, extras, stem)
+    }
+
+    fn record_on_stem(
+        &self,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+        stem: TagId,
+    ) -> Result<Record> {
+        let colors = extras.colors_of(layout);
         let fixed = |f: &Fixed| {
             self.fixed
                 .get(f)
@@ -1216,6 +1267,13 @@ impl Library {
             }
             _ => None,
         };
+        let mut colors = colors;
+        if extras.cinematic_reflection {
+            if let Some(first) = model_reflection_start(colors.len()) {
+                colors.extend_from_within(first..first + 4);
+                colors.push(MODEL_REFLECTION_SIGNATURE);
+            }
+        }
         let mut rec = build_record(layout, stem, &bitmaps, &colors, &vectors, picture)?;
         if let Some(tree) = layout.animation {
             let props = match (extras.counter, scroll) {
@@ -1238,6 +1296,39 @@ impl Library {
             }
         }
         Ok(rec)
+    }
+
+    /// Read the terrain's other layer connections once when a map uses
+    /// a non-default detail program.
+    pub(crate) fn load_detail_program<R: Read + Seek>(&mut self, base: &mut Map<R>) -> Result<()> {
+        if self.detail.is_none() {
+            let stem = self
+                .stem(&TEX_BUMP_DETAIL_BLEND_DETAIL)
+                .ok_or(Error::Invalid("the base lacks the detail-blend stem"))?;
+            self.detail = Some(detail::Program::read(base, stem)?);
+        }
+        Ok(())
+    }
+
+    /// Rebuild a structure shader with the detail mode selected by its senv.
+    pub(crate) fn build_surface(
+        &self,
+        set: &mut map::build::TagSet,
+        layout: &Layout,
+        maps: &HashMap<Role, Bound>,
+        extras: &Extras,
+    ) -> Result<Block> {
+        if !uses_detail_program(layout, extras) {
+            return self.build_with(layout, maps, extras);
+        }
+        let program = self
+            .detail
+            .as_ref()
+            .ok_or(Error::Invalid("missing terrain detail program"))?;
+        let stem = program.install(set, detail::active(extras.detail_blend, maps))?;
+        let record = self.record_on_stem(layout, maps, extras, stem)?;
+        defs::to_built(shad_def(), &record, &mut |_| None)
+            .map_err(|e| Error::Textures(format!("shad: {e}")))
     }
 
     /// The `shad` tree for `layout` drawing `maps`.
@@ -1801,8 +1892,13 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
             // Last resort first: each choice falls back to the one before.
             let mut out = mk(layout, maps.clone(), Extras::default());
             if group == "senv" && !alpha_tested {
-                if let Some(blend) = senv_blend(h1, d, &maps) {
-                    let mut b = mk(&TEX_BUMP_DETAIL_BLEND_DETAIL, blend, Extras::default());
+                let detail_blend = DetailBlend::read(d);
+                if let Some(blend) = senv_blend(h1, d, &maps, detail_blend) {
+                    let extras = Extras {
+                        detail_blend,
+                        ..Extras::default()
+                    };
+                    let mut b = mk(&TEX_BUMP_DETAIL_BLEND_DETAIL, blend, extras);
                     b.fallback = Some(Box::new(out));
                     out = b;
                 }
@@ -1811,7 +1907,10 @@ fn read_h1_maps(h1: &h1map::H1Map, tag: &h1map::Tag) -> Option<H1Shader> {
                 let blended = d
                     .get(SENV_TYPE..SENV_TYPE + 2)
                     .is_some_and(|b| u16::from_le_bytes([b[0], b[1]]) != 0);
-                if !blended && let Some((cube, extras)) = senv_reflection(h1, d) {
+                if !blended
+                    && !uses_detail_program(out.layout, &out.extras)
+                    && let Some((cube, extras)) = senv_reflection(h1, d)
+                {
                     let mut env = maps.clone();
                     env.push((Role::Cube, cube));
                     let mut e = mk(&TEX_BUMP_ENV, env, extras);
@@ -2027,6 +2126,15 @@ pub struct H1Numeric {
 }
 
 impl H1Numeric {
+    /// An engine-number shader reads the digit selected by the model's
+    /// shader permutation through the Halo 1 routine at `0x56aa0`.
+    pub fn countdown_digit(&self, permutation: i16) -> Option<&'static str> {
+        if !self.engine_number || self.images != COUNTER_FRAMES as usize {
+            return None;
+        }
+        COUNTDOWN_DIGITS.get(usize::try_from(permutation).ok()?).copied()
+    }
+
     /// The Halo 2 weapon function ([`AMMUNITION_DIGITS`]) drawing digit
     /// `permutation` of this counter on a weapon whose A out is its
     /// rounds loaded over `loaded_maximum` (Halo 1's primary ammunition):
@@ -2548,7 +2656,7 @@ pub fn plasma_shader(
             scroll: Some(maps[1].scroll),
             tint: Some(Tint::faded([1.0; 3], fade)),
             brightest_mask: Some(light.gain()),
-            counter: None,
+            ..Extras::default()
         },
         fallback: Some(Box::new(plain)),
     }
@@ -2619,14 +2727,25 @@ fn swat_water(d: &[u8]) -> Option<(Vec<(Role, H1Bound)>, Extras)> {
     Some((maps, extras))
 }
 
+pub(crate) fn uses_detail_program(layout: &Layout, extras: &Extras) -> bool {
+    layout.stem == TEX_BUMP_DETAIL_BLEND_DETAIL.stem
+        && extras.detail_blend != [DetailBlend::default(); 2]
+}
+
 /// The maps of an `senv` (`d`, its data) for
 /// [`TEX_BUMP_DETAIL_BLEND_DETAIL`], from `single`, its maps for
 /// [`TEX_BUMP`] (base and bump): Halo 1's primary detail where the base
 /// alpha is 0 ([`Role::Detail`]) and, for a blended type, its secondary
 /// where it is 1 ([`Role::Secondary`]); a normal one (or one missing
 /// either) shows the one it has everywhere. The micro detail is
-/// [`Role::Micro`]. `None` when it names no detail map.
-fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option<Vec<(Role, H1Bound)>> {
+/// [`Role::Micro`]. With the default modes and no detail map, the
+/// simpler opaque layout is enough.
+fn senv_blend(
+    h1: &h1map::H1Map,
+    d: &[u8],
+    single: &[(Role, H1Bound)],
+    detail_blend: [DetailBlend; 2],
+) -> Option<Vec<(Role, H1Bound)>> {
     let at = |o: usize| {
         let r = h1map::TagRef::read(d, o)?;
         if r.group != h1map::Group::new(b"bitm") || r.id.is_none() || h1.tag(r.id).is_err() {
@@ -2648,7 +2767,11 @@ fn senv_blend(h1: &h1map::H1Map, d: &[u8], single: &[(Role, H1Bound)]) -> Option
     let primary = at(SENV_PRIMARY);
     let secondary = if blended { at(SENV_SECONDARY) } else { None };
     let micro = at(SENV_MICRO);
-    if primary.is_none() && secondary.is_none() && micro.is_none() {
+    if primary.is_none()
+        && secondary.is_none()
+        && micro.is_none()
+        && detail_blend == [DetailBlend::default(); 2]
+    {
         return None;
     }
     let mut maps: Vec<(Role, H1Bound)> = single

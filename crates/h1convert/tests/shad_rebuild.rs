@@ -258,6 +258,29 @@ fn check_rebuilt(
             return Err(format!("bitmap {k} isn't Halo 1's {r:?}"));
         }
     }
+    // The legacy image list indexes the rebuilt shader's own bitmap
+    // datums, with a distinct image entry for each repetition.
+    let Some(Val::Block(images)) = rec.at("bitmap_images") else {
+        return Err("missing shad +0x2c image list".into());
+    };
+    let mut counts = HashMap::<TagId, i64>::new();
+    let mut entries = 0;
+    for k in 0..layout.bitmaps.len() {
+        let path = format!("postprocess[0].bitmaps[{k}].bitmap");
+        let Some(Val::Datum(Target::Id(id))) = rec.at(&path) else { continue };
+        let image_index = counts.entry(*id).or_insert(0);
+        let entry = images.get(entries).ok_or("short shad +0x2c image list")?;
+        if entry.at("bitmap") != Some(&Val::Datum(Target::Id(*id)))
+            || entry.at("image") != Some(&Val::Int(*image_index))
+        {
+            return Err(format!("shad +0x2c entry {entries} disagrees with bitmap {k}"));
+        }
+        *image_index += 1;
+        entries += 1;
+    }
+    if entries != images.len() {
+        return Err("extra shad +0x2c image entries".into());
+    }
     // The colours: the layout's, with the shader's over them.
     for (k, c) in extras.colors_of(layout).iter().enumerate() {
         let got = rec.at(&format!("postprocess[0].colors[{k}].color"));
@@ -1540,4 +1563,75 @@ fn teleporter_receiver_brightness_against_halo1() {
     // bluer than the average differs; within 0.05.
     assert!(near(lit_peak, h1_lit_peak, 0.05), "lit peak");
     assert!(near(glow_peak, h1_glow_peak, 0.05), "glow peak");
+}
+
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn terrain_detail_modes_are_read_and_installed() {
+    use h1convert::structure::{COLLISION_MATERIAL, PART_KIND, Templates};
+    use map::build::TagSet;
+
+    let h1_iso = std::env::var("H1_ISO").expect("set H1_ISO");
+    let h2_disc = std::env::var("H2_DISC").expect("set H2_DISC");
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(&h1_iso).unwrap())).unwrap();
+    let disc = h1map::disc::Disc::open(&mut iso).unwrap();
+    let b30 = disc.map("b30").unwrap().clone();
+    let h1 = H1Map::from_bytes(&iso.read(&b30).unwrap()).unwrap();
+    // The one non-default pair on the disc is on Silent Cartographer.
+    let source = h1
+        .tags()
+        .iter()
+        .find(|t| t.group == h1map::Group::new(b"senv") && t.name.ends_with("\\shaft cover"))
+        .unwrap();
+    let s = shad::read_h1(&h1, source).unwrap();
+    assert_eq!(s.extras.detail_blend, [shad::DetailBlend::Multiply; 2]);
+
+    let (_, b, s) = h2_maps(&h2_disc)
+        .into_iter()
+        .find(|m| m.0 == "coagulation")
+        .unwrap();
+    let mut base = open(&h2_disc, b, s);
+    let source_materials = [(0, source.name.clone())];
+    let templates = Templates {
+        collision_material: [0; COLLISION_MATERIAL],
+        material_heads: vec![[0; 16]],
+        part_kinds: vec![PART_KIND],
+    };
+    let plan = h1convert::textures::plan(&h1, &mut base, &templates, &source_materials).unwrap();
+    let mut set = TagSet::from_map(&mut base).unwrap();
+    let (materials, indices) = plan
+        .install(&mut set, &templates, &source_materials)
+        .unwrap();
+    let shader = materials.shader(indices[0]);
+    let (bytes, _) = set.build().unwrap();
+    let mut built = Map::from_reader(Cursor::new(bytes)).unwrap();
+    let mut lib = ShaderLibrary::read(&mut built).unwrap();
+    let tree = lib.material(shader, None).unwrap();
+    let color = tree
+        .layers
+        .iter()
+        .find(|l| l.lod == 0 && l.layer == 1)
+        .unwrap();
+    let def =
+        shaders::psh::PixelShaderDef::from_bytes(&color.passes[0].implementations[0].pixel_shader)
+            .unwrap();
+    let (c0, c1) = def.embedded_constants();
+    // This material names neither detail map, so the generated program
+    // shows the base colour without multiplying it by a stand-in bitmap.
+    let texel = [0.2, 0.4, 0.8, 1.0];
+    let colors = shaders::psh::interp::run(
+        &def,
+        &shaders::psh::PixelOptions::default(),
+        &shaders::psh::interp::Inputs::default(),
+        &shaders::psh::interp::Uniforms {
+            c0,
+            c1,
+            ..Default::default()
+        },
+        &Texels([texel, [0.0; 4], [0.0; 4], [0.0; 4]]),
+    )
+    .unwrap();
+    for i in 0..3 {
+        assert!((colors[i] - texel[i]).abs() < 0.002, "{colors:?}");
+    }
 }

@@ -840,6 +840,9 @@ pub struct Animation {
     pub frame_count: u16,
     /// Root movement type, 0 to 3 (none, dx/dy, dx/dy/dyaw, dx/dy/dz/dyaw).
     pub frame_info_type: u16,
+    /// Per-frame local displacement and yaw, as little-endian floats. H2
+    /// consumes the same 8/12/16-byte records (0x20aa70).
+    pub frame_info: Vec<u8>,
     pub node_list_checksum: u32,
     pub node_count: u16,
     pub loop_frame: u16,
@@ -1032,6 +1035,19 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         t => return Err(Error::Invalid(format!("{name}: animation type {t}"))),
     };
     let frame_count = u16_at(e, 0x22);
+    let frame_info_type = u16_at(e, 0x26);
+    let stride = match frame_info_type {
+        0 => 0,
+        1 => 8,
+        2 => 12,
+        3 => 16,
+        other => return Err(Error::Invalid(format!("{name}: frame info type {other}"))),
+    };
+    let size = usize::from(frame_count) * stride;
+    let frame_info = data_ref(m, e, 0x48)?
+        .get(..size)
+        .ok_or_else(|| Error::Invalid(format!("{name}: truncated root movement")))?
+        .to_vec();
     let frame_size = usize::from(u16_at(e, 0x24));
     let node_count = u16_at(e, 0x2c);
     let flags = u16_at(e, 0x3a);
@@ -1065,7 +1081,8 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
             name,
             kind,
             frame_count,
-            frame_info_type: u16_at(e, 0x26),
+            frame_info_type,
+            frame_info,
             node_list_checksum: u32_at(e, 0x28),
             node_count,
             loop_frame: u16_at(e, 0x2e),
@@ -1137,7 +1154,8 @@ fn read_animation<M: Memory + ?Sized>(m: &M, e: &[u8], graph_nodes: usize) -> Re
         name,
         kind,
         frame_count,
-        frame_info_type: u16_at(e, 0x26),
+        frame_info_type,
+        frame_info,
         node_list_checksum: u32_at(e, 0x28),
         node_count,
         loop_frame: u16_at(e, 0x2e),

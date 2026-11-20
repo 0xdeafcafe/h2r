@@ -48,6 +48,30 @@ impl fmt::Display for EngineError {
     }
 }
 
+/// Scenario-local globals available to native script extensions. The
+/// external globals and the VM's object-list bookkeeping stay in the VM.
+pub struct ScenarioGlobals<'a> {
+    pub(super) cells: &'a mut [Cell],
+    pub(super) definitions: &'a [crate::Global],
+}
+
+impl ScenarioGlobals<'_> {
+    pub fn get(&self, index: u32, ty: HsType) -> Option<Cell> {
+        let index = index as usize;
+        let definition = self.definitions.get(index)?;
+        (definition.value_type() == ty.0).then(|| self.cells[index])
+    }
+
+    pub fn set(&mut self, index: u32, ty: HsType, value: Cell) -> bool {
+        if ty == HsType::OBJECT_LIST || self.get(index, ty).is_none() {
+            return false;
+        }
+        let cell = &mut self.cells[index as usize];
+        *cell = cell.store(ty, value);
+        true
+    }
+}
+
 /// Everything the VM needs from the game.
 pub trait Engine {
     /// Game-time tick count, `game_time + 8` (`0x00510c54`).
@@ -69,6 +93,16 @@ pub trait Engine {
 
     /// An engine-facing builtin.
     fn call(&mut self, call: EngineCall<'_>) -> Result<Cell, EngineError>;
+
+    /// An engine builtin that can inspect or update scenario globals. Retail
+    /// extensions can access these values by index in the guest interpreter.
+    fn call_with_globals(
+        &mut self,
+        call: EngineCall<'_>,
+        _globals: ScenarioGlobals<'_>,
+    ) -> Result<Cell, EngineError> {
+        self.call(call)
+    }
 
     /// Object type byte (object `+0xaa`) of a live object, for casts.
     fn object_type(&mut self, object: u32) -> Option<u8>;

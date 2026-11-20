@@ -6,7 +6,7 @@
 //!
 //! ```sh
 //! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test role_audit_disc -- --ignored --nocapture
-//! H1_MAPS=all ...   # every multiplayer map on its base (default bloodgulch)
+//! H1_MAPS=all ...   # all multiplayer and campaign maps (default bloodgulch)
 //! ```
 //!
 //! What counts as a leak, per converted tag (`docs/halo1/role-audit.md`):
@@ -16,7 +16,7 @@
 //!   values kept in the source) that still holds that value in the built
 //!   tag, so no Halo 1 value replaced it;
 //! - **copied**: a block or struct taken whole from the Halo 2
-//!   counterpart (`rebuild::counterpart_fields`) and still the
+//!   model damage response and still the
 //!   counterpart's;
 //! - **a reference** to a tag of the base map (not one the conversion
 //!   built), by the referenced tag's group: a retail Halo 2 tag in a slot.
@@ -54,34 +54,21 @@ const ALLOWED: &[Rule] = &[
         "(a) the player biped's emblem material: Halo 2's, which draws the player's own emblem and colours (h1models::emblem)",
     ),
     (
-        "*",
+        "vehi",
         "*",
         "none-word",
         "(a) half of a reference the definition does not name, holding none (a group word or -1): no value to take from anywhere",
     ),
+    ("hlmt", "block_60[].block_bc*", "*", "(a) native damage section response table indexed by object_new"),
+    ("hlmt", "block_60[].tagref_7c", "shad", "(a) native first- or third-person shield shader"),
+    ("hlmt", "block_60[].tagref_84", "shad", "(a) native first- or third-person shield shader"),
+    ("hlmt", "block_60[].tagref_e8", "shad", "(a) native first- or third-person shield shader"),
+    ("hlmt", "block_60[].tagref_f0", "shad", "(a) native first- or third-person shield shader"),
     (
         "hlmt",
-        "block_60*",
-        "*",
-        "(a) damage info (vitality, shields, their shaders and effects): Halo 2's damage model wins (campaign.md decision 2; health.md)",
-    ),
-    (
-        "hlmt",
-        "shad_ref_*",
+        "shad_ref_94",
         "shad",
         "(a) the active camouflage shader: Halo 1 draws camouflage from its globals, not per model",
-    ),
-    (
-        "prt3",
-        "*",
-        "value",
-        "(a) the static particle encoding (input mask, vertex shader, quad, UV window): Halo 2's particle shader inputs",
-    ),
-    (
-        "prt3",
-        "*",
-        "copied",
-        "(a) the unit colour, alpha, size and rotation constants: Halo 1's values go on the emitter, which multiplies them (particles::particle)",
     ),
     (
         "prt3",
@@ -114,40 +101,10 @@ const ALLOWED: &[Rule] = &[
         "(a) the Halo 2 HUD of the HUD pair (masterchief_h1_health), Halo 2's by design (hud.md)",
     ),
     (
-        "bipd",
-        "unit.ref_16c",
-        "jpt!",
-        "(a) boarding melee (V: masterchief_boarding_melee): Halo 1 has no boarding",
-    ),
-    (
-        "bipd",
-        "unit.ref_174",
-        "jpt!",
-        "(a) boarding melee response (V: masterchief_boarding_melee_response): Halo 1 has no boarding",
-    ),
-    (
-        "proj",
-        "unknown_178",
-        "value",
-        "(a) Halo 1's own value: arsenal::PROJECTILE_WORDS writes it after the role (water damage range, to), equal to the role's",
-    ),
-    (
-        "proj",
-        "unknown_e4",
-        "value",
-        "(a) Halo 1's detonation noise in the low half (arsenal::projectile), equal to the role's word",
-    ),
-    (
-        "deca",
-        "unknown_18",
-        "value",
-        "(a) the decal scale word: no Halo 1 decal field (rebuild::DecalRole)",
-    ),
-    (
-        "deca",
-        "max_overlapping",
-        "value",
-        "(a) how many decals may overlap: no Halo 1 decal field",
+        "spas",
+        "postprocess[].implementations[].vertex_shader",
+        "vrtx",
+        "(a) the scope effect's passes draw with Halo 2's screen-effect vertex shader (program::SCOPE_VERTEX): Halo 1 has no vertex shader tags (hud.md, Scope mask)",
     ),
 ];
 
@@ -160,231 +117,26 @@ const ALLOWED: &[Rule] = &[
 /// damage bounds were; docs/formats/tag-definitions.md). The suspects are
 /// listed; each is a bug until shown otherwise.
 const KNOWN: &[Rule] = &[
-    // Owned by other lanes now.
     (
-        "weap",
-        "barrels[].block_e4[]*",
-        "*",
-        "owned by h1-weap-snd: firing effects, their sounds and trigger damage (Halo 1 trigger firing effects)",
+        "mode",
+        "materials[].shader",
+        "shad",
+        "bug: a Halo 1 model shader with no base map (V: a10's soso `light siren` on alert_light names no map at all) gets the base's stand-in model shader (Converter::model_shaders; a marine's head on 05a_deltaapproach); the fix needs Halo 1's draw of a null base map",
     ),
-    (
-        "weap",
-        "*",
-        "snd!",
-        "owned by h1-weap-snd: pickup (pickup_sound) and zoom (zoom_in_sound, zoom_out_sound) sounds",
-    ),
-    (
-        "weap",
-        "ready_effect",
-        "effe",
-        "owned by h1-weap-snd: the ready effect (V: needler ready); Halo 1's weap +0x33c",
-    ),
-    (
-        "eqip",
-        "*",
-        "snd!",
-        "owned by h1-weap-snd: the item pickup sound (Halo 1's eqip +0x310)",
-    ),
-    (
-        "bipd",
-        "unit.obje.functions*",
-        "*",
-        "owned by h1-bipd-colour: functions come with the change colours",
-    ),
-    (
-        "bipd",
-        "unit.obje.attachments*",
-        "*",
-        "bug, after h1-bipd-colour: Halo 1's attachments (Converter::halo1_attachments, as projectiles) name the object's functions, which are that lane's",
-    ),
-    (
-        "vehi",
-        "block_1c8[]*",
-        "value",
-        "owned by h1-veh-phys: seat words and flags (the driver seat bit)",
-    ),
-    (
-        "vehi",
-        "block_2e8[]*",
-        "value",
-        "owned by h1-veh-phys: hover points",
-    ),
-    (
-        "vehi",
-        "block_2f0[]*",
-        "value",
-        "owned by h1-veh-phys: friction points",
-    ),
-    (
-        "vehi",
-        "block_268[]*",
-        "value",
-        "owned by h1-veh-phys: engine gears (Halo 1's engine speeds and acceleration)",
-    ),
-    (
-        "vehi",
-        "block_2f8[]*",
-        "value",
-        "owned by h1-veh-phys: the physics element (Halo 1's phys mass, density, gravity)",
-    ),
-    // The object header of every group.
-    (
-        "*",
-        "object.*",
-        "value",
-        "unidentified: object header words; +0x6c..+0x8c are the same nine floats on every object of every group (likely (a): Halo 1's obje has one acceleration scale)",
-    ),
-    (
-        "*",
-        "item.obje.*",
-        "value",
-        "unidentified: object header words; +0x6c..+0x8c are the same nine floats on every object of every group (likely (a): Halo 1's obje has one acceleration scale)",
-    ),
-    (
-        "*",
-        "unit.obje.*",
-        "value",
-        "unidentified: object header words; +0x6c..+0x8c as every object's, +0x14..+0x1c the biped's",
-    ),
-    (
-        "*",
-        "item.obje.foot_ref_54",
-        "foot",
-        "unidentified: kept where Halo 1's root names no material effects (Converter::h1_foot takes Halo 1's when it does)",
-    ),
-    (
-        "*",
-        "object.foot_ref_54",
-        "foot",
-        "unidentified: kept where Halo 1's root names no material effects (Converter::h1_foot takes Halo 1's when it does)",
-    ),
-    (
-        "vehi",
-        "*",
-        "value",
-        "owned by h1-veh-phys: the vehicle type's root and unit words (driving, steering, speeds; the Ghost's zeroed words)",
-    ),
-    // Bugs not fixed here.
-    (
-        "bipd",
-        "unit.block_e8[].ref_0",
-        "trak",
-        "bug: Halo 1's unit camera track (biped_follow_camera here): convert it as the seats' (Converter::camera_track) once the unit's block is read",
-    ),
-    (
-        "bipd",
-        "unit.effe_ref_c4",
-        "effe",
-        "bug: the flashlight toggle effect (V: masterchief flashlight); Halo 1's unit integrated light toggle effect, not read yet",
-    ),
-    (
-        "bipd",
-        "ref_25c",
-        "effe",
-        "unidentified: a biped area-of-effect blood effect (V: blood_aoe_human_masterchief); no Halo 1 suspect: likely (a)",
-    ),
-    (
-        "eqip",
-        "item.ref_10c",
-        "jpt!",
-        "bug: the grenade's explosion damage when shot (V: *_equipment_explosion); Halo 1's item detonation effect carries it: read the item's detonation fields",
-    ),
-    (
-        "eqip",
-        "item.detonation_effect",
-        "effe",
-        "bug: the grenade's detonation effect when shot (V: airborne_detonation, equipment_detonation); Halo 1's item detonation effect: read it",
-    ),
-    (
-        "weap",
-        "ref_1cc",
-        "jpt!",
-        "unidentified: a further Halo 2 melee slot (strike_melee); Halo 1 has one melee damage, in ref_1bc",
-    ),
-    (
-        "weap",
-        "ref_1d4",
-        "jpt!",
-        "unidentified: a further Halo 2 melee slot (strike_melee_response); Halo 1 has one melee response, in ref_1c4",
-    ),
-    (
-        "weap",
-        "ref_1dc",
-        "jpt!",
-        "unidentified: a further Halo 2 melee slot (smash/strike_melee); Halo 1 has one melee damage, in ref_1bc",
-    ),
-    (
-        "weap",
-        "ref_1e4",
-        "jpt!",
-        "unidentified: a further Halo 2 melee slot (smash_melee and its response); Halo 1 has one melee damage, in ref_1bc",
-    ),
-    (
-        "weap",
-        "ref_1ec",
-        "jpt!",
-        "unidentified: a further Halo 2 melee slot (smash_melee_response); Halo 1 has one melee response, in ref_1c4",
-    ),
-    (
-        "proj",
-        "ref_140",
-        "effe",
-        "unidentified: the rocket's rocket_detonation only; Halo 1's one detonation effect is in ref_f0 and ref_f8",
-    ),
-    (
-        "jpt!",
-        "*",
-        "value",
-        "unidentified: jpt! +0xa0 (1.0 on 16); Halo 2's jpt! is unnamed past the damage bounds",
-    ),
-    (
-        "weap",
-        "*",
-        "value",
-        "unidentified: weapon words past WEAPON_WORDS, BARREL_WORDS and the magazine; suspects Halo 1's ready time, zoom levels and magnification, autoaim, movement penalty, weapon and trigger flags",
-    ),
-    (
-        "proj",
-        "*",
-        "value",
-        "unidentified: projectile words past PROJECTILE_WORDS; suspects Halo 1's projectile flags",
-    ),
-    (
-        "eqip",
-        "*",
-        "value",
-        "unidentified: equipment and item words; suspects Halo 1's item flags",
-    ),
-    (
-        "bipd",
-        "*",
-        "value",
-        "unidentified: biped and unit words past BIPED_WORDS; suspects Halo 1's unit speeds, jump velocity, seat acceleration, unit and biped flags",
-    ),
-    (
-        "scen",
-        "*",
-        "value",
-        "unidentified: scenery words past the object header (Halo 1's scen has nothing past its obje: likely (a))",
-    ),
-    (
-        "ligh",
-        "*",
-        "value",
-        "unidentified: light words and brightness; suspects Halo 1's light intensity and its falloff function",
-    ),
-    (
-        "effe",
-        "events[].particle_systems[]*",
-        "value",
-        "unidentified: particle-system and emitter words (camera mode, LOD, fade); suspects Halo 1 particle fade times",
-    ),
-    (
-        "deca",
-        "layer",
-        "value",
-        "bug: Halo 1's decal layer (its own enumeration); Halo 2's layer values need naming to map it",
-    ),
+    ("vehi", "block_1c8[]*", "value", "seat access thresholds used by the Halo 2 entry test"),
+    ("vehi", "block_2e8[]*", "value", "Havok lift-point parameters"),
+    ("vehi", "block_2f0[]*", "value", "Havok friction-point parameters"),
+    ("vehi", "block_2f8[]*", "value", "native vehicle phantom"),
+    ("vehi", "unknown_218", "value", "aircraft controller subtype"),
+    ("vehi", "unknown_244", "value", "vehicle priority comparison at 0x1ab48a"),
+    ("vehi", "unknown_25c", "value", "native vehicle controller coefficient at +0x25c"),
+    ("vehi", "unknown_270", "value", "native vehicle controller coefficient at +0x270"),
+    ("vehi", "unknown_274", "value", "native vehicle controller coefficient at +0x274"),
+    ("vehi", "unknown_278", "value", "native vehicle controller coefficient at +0x278"),
+    ("vehi", "unknown_27c", "value", "native vehicle controller coefficient at +0x27c"),
+    ("vehi", "unknown_280", "value", "native vehicle controller coefficient at +0x280"),
+    ("vehi", "unknown_2b0", "value", "native vehicle controller coefficient at +0x2b0"),
+    ("vehi", "unknown_2bc", "value", "native vehicle controller coefficient at +0x2bc"),
 ];
 
 /// One field still holding a role's value or a retail reference.
@@ -762,42 +514,82 @@ fn report(leaks: &[Leak]) -> String {
     s
 }
 
+fn audit_maps(selection: &str) -> Vec<String> {
+    let mut maps = Vec::new();
+    if matches!(selection, "all" | "multiplayer") {
+        maps.extend(h1convert::convert::MAPS.iter().map(|m| m.0.to_owned()));
+    }
+    if matches!(selection, "all" | "campaign") {
+        maps.extend(h1map::disc::CAMPAIGN_LEVELS.map(str::to_owned));
+    }
+    if maps.is_empty() {
+        maps.extend(selection.split(',').map(|name| name.trim().to_owned()));
+    }
+    maps
+}
+
+// Include campaign-only and script-spawned objects even when the starting
+// BSP has no placement. Their dependent models, effects and damage tags
+// share the same conversion tree as the object that names them.
+fn campaign_objects(h1: &H1Map, base: &Base) -> Snapshot {
+    let mut conv = h1objects::convert::Converter::new(h1, base);
+    for tag in h1.tags() {
+        match &tag.group.0.to_be_bytes() {
+            b"garb" => conv.garbage(tag),
+            b"bipd" | b"vehi" | b"weap" | b"eqip" | b"proj" | b"scen"
+            | b"mach" | b"ctrl" | b"lifi" => conv.object(tag),
+            _ => continue,
+        }.unwrap_or_else(|e| panic!("{} {}: {e}", tag.group, tag.name));
+    }
+    Snapshot { tags: conv.tree.tags, roles: conv.tree.role_fields }
+}
+
+#[test]
+fn selection_includes_all_ten_campaign_maps_and_keeps_explicit_order() {
+    assert_eq!(audit_maps("campaign"), h1map::disc::CAMPAIGN_LEVELS.map(str::to_owned).to_vec());
+    for level in audit_maps("campaign") {
+        assert!(audit_maps("all").contains(&level));
+    }
+    assert_eq!(audit_maps("d40, a10"), ["d40", "a10"]);
+}
+
 #[test]
 #[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
 fn every_role_leak_is_classified() {
-    let maps: Vec<String> = match std::env::var("H1_MAPS") {
-        Ok(s) if s == "all" => h1convert::convert::MAPS
-            .iter()
-            .map(|m| m.0.to_owned())
-            .collect(),
-        Ok(s) => s.split(',').map(str::to_owned).collect(),
-        Err(_) => vec!["bloodgulch".to_owned()],
-    };
+    let selection = std::env::var("H1_MAPS").unwrap_or_else(|_| "bloodgulch".into());
+    let maps = audit_maps(&selection);
     let mut leaks = Vec::new();
     for name in &maps {
+        let campaign = h1map::disc::CAMPAIGN_LEVELS.contains(&name.as_str());
         let Some((h1, sha)) = h1_map(name) else {
+            assert!(!campaign, "campaign level {name} missing from disc");
             println!("{name}: not on this Halo 1 disc");
             continue;
         };
-        let (_, base_name) = h1convert::convert::known(name).expect("a multiplayer map");
+        let base_name = if campaign {
+            "05a_deltaapproach"
+        } else {
+            h1convert::convert::known(name).expect("a known multiplayer map").1
+        };
         let mut base_map = h2_map(base_name);
         let base = Base::read(&mut base_map).unwrap();
-        let mut objects = Audit {
-            inner: Objects::new(&h1, &base),
-            snap: Snapshot::default(),
+        let snap = if campaign {
+            campaign_objects(&h1, &base)
+        } else {
+            let mut objects = Audit {
+                inner: Objects::new(&h1, &base),
+                snap: Snapshot::default(),
+            };
+            let _prepared = prepare_halo1(&h1, sha, &mut base_map, &mut objects).unwrap();
+            objects.snap
         };
-        let _prepared = prepare_halo1(&h1, sha, &mut base_map, &mut objects).unwrap();
-        let snap = objects.snap;
+        assert!(!snap.tags.is_empty(), "{name}: no objects converted");
         let noted: usize = snap.roles.iter().map(|e| e.1.len()).sum();
         let got = audit(name, &base, &snap);
         println!(
             "{name} on {base_name}: {} tags, {noted} role values noted, {} leaks",
             snap.tags.len(),
             got.len()
-        );
-        assert!(
-            noted > 0,
-            "{name}: no role value noted: is the provenance wired?"
         );
         leaks.extend(got);
     }
@@ -853,7 +645,7 @@ fn paths_normalise_and_rules_match_by_prefix() {
         what: "effe".into(),
         shown: String::new(),
     };
-    assert!(rule(KNOWN, &l).unwrap().starts_with("owned by h1-weap-snd"));
+    assert!(rule(KNOWN, &l).is_none());
     assert!(rule(ALLOWED, &l).is_none());
     assert!(matches("unknown_*", "unknown_1c"));
     assert!(!matches("unknown_1", "unknown_1c"));

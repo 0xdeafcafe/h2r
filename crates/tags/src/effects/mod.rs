@@ -13,6 +13,7 @@ pub mod damage;
 pub mod decal;
 pub mod effect;
 pub mod function;
+pub mod h1_attachment;
 pub mod lens;
 pub mod light;
 pub mod mem;

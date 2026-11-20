@@ -522,8 +522,8 @@ fn halo1_solid_space_becomes_physics_pieces() {
             *built
                 .entry(format!("{} {key}", String::from_utf8_lossy(&g)))
                 .or_default() += 1;
-            let solid = h1::Object::read(&h1, h1.tag_data(t).unwrap())
-                .unwrap()
+            let obj = h1::Object::read(&h1, h1.tag_data(t).unwrap()).unwrap();
+            let solid = obj
                 .collision
                 .map(|c| {
                     let c = Collision::read(&h1, h1.tag(c).unwrap()).unwrap();
@@ -536,6 +536,22 @@ fn halo1_solid_space_becomes_physics_pieces() {
                 eprintln!("{level} {}: {how}", t.name);
             }
             if how.starts_with("borrowed") {
+                continue;
+            }
+            // A seatless prop placed as scenery (a10's ring) gets no phmo:
+            // a scenery placement's collision joins the level's.
+            if h1objects::scripted_props::replacement_group(&t.name) == Some(*b"scen") {
+                assert!(!how.starts_with("built"), "{level} {}: {how}", t.name);
+                continue;
+            }
+            // A scripted flyer with no collision builds from its `phys`
+            // mass points instead (`scripted_props::mass_point_physics`).
+            if how.starts_with("built from Halo 1's phys") {
+                assert!(
+                    obj.collision.is_none() && obj.physics.is_some(),
+                    "{level} {}: {how}",
+                    t.name
+                );
                 continue;
             }
             assert_eq!(how.starts_with("built"), solid, "{level} {}: {how}", t.name);

@@ -81,6 +81,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&map_copy::MapCopy)
         .map_err(|e| anyhow::anyhow!("map copy: {e}"))?;
+    features
+        .add(&crate::h1_recordings::Playback)
+        .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
     layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
     features
         .add(&crate::list_class::ScrollArrowLayout)
@@ -171,10 +174,32 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     });
     let skulls_custom_on = skulls_custom::install(features, i.settings.clone(), telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    features
+        .add(&crate::h1_particle_physics::H1ParticlePhysics)
+        .map_err(|e| anyhow::anyhow!("installing Halo 1 attachment particle physics: {e}"))?;
+    features
+        .add(&crate::h1_conversation::Conversations)
+        .map_err(|e| {
+            anyhow::anyhow!("installing converted conversation playback and casting: {e}")
+        })?;
+    features
+        .add(&crate::h1_command_atoms::CommandAtoms)
+        .map_err(|e| anyhow::anyhow!("Halo 1 command lists: {e}"))?;
+    features.add(&crate::h1_drive::DirectDrive)
+        .map_err(|e| anyhow::anyhow!("Halo 1 ground vehicle controller: {e}"))?;
     // Halo 1's health model on Halo 1 maps (docs/halo1/health.md): no body
     // regeneration, health packs, a health meter. Off (Halo 2's) until the
     // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
+    features
+        .add(&crate::h1_squad_storage::SquadStorage)
+        .map_err(|e| anyhow::anyhow!("campaign squad pools: {e}"))?;
     let health_on = health::install(features).context("installing the health model")?;
+    features
+        .add(&crate::h1_ai_control::AiControl)
+        .map_err(|e| anyhow::anyhow!("Halo 1 AI control: {e}"))?;
+    features
+        .add(&crate::h1_script_builtins::ScriptBuiltins::default())
+        .map_err(|e| anyhow::anyhow!("Halo 1 script builtins: {e}"))?;
     // Precision variants on converted Halo 1 maps in the Halo 2 sandbox
     // (docs/halo1/multiplayer.md): the battle rifle for the SMG at game
     // activation, from the swaps each package's manifest records.
@@ -182,6 +207,8 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // Halo 1's or Halo 2's HUD on converted Halo 1 maps (docs/halo1/hud.md):
     // the owners' HUD references at game activation, by `hud::style_for_map`.
     hud_swap::install(features, i.packages, i.data_root).context("installing the HUD swap")?;
+    crate::h1_hud_text::install(features)
+        .map_err(|e| anyhow::anyhow!("installing Halo 1 HUD text: {e}"))?;
     // Stronger aim assist (docs/game/aim-assist.md): the weapons' aim cone and
     // pull at each map load, from the Aim Assist setting (Auto: Strong
     // while the touch controls show). Headless runs keep retail.
@@ -426,6 +453,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     features
         .add(&feature::native_shadows::NativeShadows)
         .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
+    features
+        .add(&feature::h1_scope_zoom::ScopeZoom)
+        .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
     // The view's post passes on the native GPU renderer
     // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
     // turns them off for the comparison against the D3D path;

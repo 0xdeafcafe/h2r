@@ -126,18 +126,57 @@ pub fn vehicle_import(source: u16) -> Option<&'static str> {
         .filter(|n| !n.is_empty())
 }
 
-/// The Halo 2 import name of input `slot` (0 to 3, A to D): the
-/// vehicle's source where it names one, else the unit's, else the
-/// object's ([`h1::FunctionInputs`]). `None` when none is set or the one
-/// set has no Halo 2 name.
+/// Halo 1's weapon input table (E 0x000beca7) and names recognised
+/// by Halo 2's weapon handler (E 0x000ff5f0).
+fn weapon_import(source: u16) -> Option<&'static str> {
+    Some(match source {
+        1 => "heat",
+        2 => "primary_ammunition",
+        3 => "secondary_ammunition",
+        4 => "primary_rate_of_fire",
+        5 => "secondary_rate_of_fire",
+        7 => "primary_ejection_port",
+        8 => "secondary_ejection_port",
+        10 => "primary_charged",
+        11 => "secondary_charged",
+        12 => "illumination",
+        13 => "age",
+        14 => "integrated_light_power",
+        _ => return None,
+    })
+}
+
+/// Halo 1's device input table (E 0x00117c83) and names recognised
+/// by Halo 2's device handler (E 0x00106d70).
+fn device_import(source: u16) -> Option<&'static str> {
+    Some(match source {
+        1 => "power",
+        2 => "change_in_power",
+        3 => "position",
+        4 => "change_in_position",
+        5 => "locked",
+        6 => "delay",
+        _ => return None,
+    })
+}
+
+/// A type-specific input takes precedence over the object's base input
+/// in the same A to D slot.
 pub fn input_import(inputs: &h1::FunctionInputs, slot: usize) -> Option<&'static str> {
-    let (v, u, o) = (inputs.vehicle[slot], inputs.unit[slot], inputs.object[slot]);
+    let v = inputs.vehicle[slot];
+    let u = inputs.unit[slot];
+    let w = inputs.weapon[slot];
+    let d = inputs.device[slot];
     if v != 0 {
         vehicle_import(v)
     } else if u != 0 {
         unit_import(u)
+    } else if w != 0 {
+        weapon_import(w)
+    } else if d != 0 {
+        device_import(d)
     } else {
-        object_import(o)
+        object_import(inputs.object[slot])
     }
 }
 

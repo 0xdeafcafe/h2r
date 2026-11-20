@@ -14,14 +14,19 @@
 //! from the owner's disc at run time. See `docs/halo1/scripts.md`.
 #![forbid(unsafe_code)]
 
+pub mod aicontrol;
 pub mod catalog;
+pub mod cinematics;
+pub mod commands;
 pub mod compile;
 pub mod decompile;
+pub mod hud;
 pub mod identified;
 pub mod layout;
 pub mod level;
 pub mod seats;
 pub mod translate;
+pub mod unit_builtins;
 
 pub use catalog::Catalog;
 pub use layout::Tables;

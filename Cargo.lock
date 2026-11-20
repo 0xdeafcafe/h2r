@@ -640,6 +640,7 @@ dependencies = [
  "chrono",
  "clif",
  "content",
+ "coop",
  "d3d",
  "debug-menu",
  "dsound",
@@ -649,8 +650,12 @@ dependencies = [
  "film",
  "font",
  "gfx",
+ "h1convert",
+ "h1scripts",
+ "h1text",
  "hot-render",
  "hot-tags",
+ "hs",
  "iced-x86",
  "input",
  "ir",
@@ -1970,6 +1975,7 @@ dependencies = [
  "native-render",
  "runtime",
  "runtime-test-probe",
+ "tags",
  "timeline",
 ]
 
@@ -2467,6 +2473,7 @@ name = "h1campaign"
 version = "0.1.0"
 dependencies = [
  "content",
+ "engine",
  "h1ai",
  "h1bitmaps",
  "h1convert",
@@ -2476,6 +2483,7 @@ dependencies = [
  "h1scripts",
  "h1sky",
  "h1sounds",
+ "h1text",
  "hs",
  "map",
  "mopp",
@@ -2559,6 +2567,7 @@ dependencies = [
 name = "h1scripts"
 version = "0.1.0"
 dependencies = [
+ "h1ai",
  "h1map",
  "h1models",
  "hs",
@@ -2597,6 +2606,7 @@ dependencies = [
 name = "h1text"
 version = "0.1.0"
 dependencies = [
+ "h1bitmaps",
  "h1map",
  "h1models",
  "map",

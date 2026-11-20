@@ -8,7 +8,7 @@
 //! | squad starting location | squad starting location |
 //! | actor variant (`actv` → `actr` type) | a retail `char`, nearest by species and rank ([`character_for`]) |
 //! | command list points | a point set of the same name |
-//! | command list | an order stub of the same name, plus its atoms as a [`CommandScript`] for the scripts lane |
+//! | command list | compiled to a command script by `h1scripts` |
 //!
 //! [`convert`] makes the plan as [`h2`] types, so building it and reading it
 //! back through [`h2::ScenarioAi::read`] must give the same values.
@@ -27,8 +27,11 @@ use crate::{Error, Result};
 /// prints it): the most common firing position flags, zone flags and area
 /// type, and order style `-1` (none; 175 retail orders), which needs no
 /// style palette entry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Options {
+    /// First generated HS command script, after the authored scenario scripts.
+    /// Absent when the caller is building AI without scripts.
+    pub first_command_script: Option<u16>,
     /// Flags of each firing position.
     pub firing_position_flags: u16,
     /// Flags of each zone.
@@ -37,15 +40,26 @@ pub struct Options {
     pub area_kind: u16,
     /// Style palette index of each order.
     pub order_style: i16,
+    /// Halo 1 platoons the scripts name (`encounter/platoon`, lower case),
+    /// each converted to a squad group of that name under the encounter's
+    /// group, holding exactly the platoon's squads. Halo 2's `ai` builtins
+    /// walk a group's children (`ai_place`, `ai_actors`, `ai_strength`, ...
+    /// on retail's own parent groups, 05a's `all_enemies` among them), so a
+    /// platoon argument covers every squad it did in Halo 1 while the
+    /// encounter's group still covers them all. Empty: no platoon groups
+    /// (the squad's group is its encounter's, as before).
+    pub platoon_groups: std::collections::BTreeSet<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
+            first_command_script: None,
             firing_position_flags: 0x42,
             zone_flags: 1,
             area_kind: 0,
             order_style: -1,
+            platoon_groups: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -60,17 +74,24 @@ pub mod grenade {
     pub const COVENANT: u16 = 2;
 }
 
-/// A retail Halo 2 character chosen for a Halo 1 actor variant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A Halo 2 character chosen for a Halo 1 actor variant.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CharacterChoice {
     /// The Halo 1 actor variant (`actv`) path.
     pub h1_variant: String,
     /// The Halo 1 actor type.
     pub h1_type: ActorType,
-    /// The retail Halo 2 `char` path.
-    pub h2_character: &'static str,
+    /// The installed Halo 2 `char` path.
+    pub h2_character: String,
     /// Grenades the squad carries.
     pub grenade: u16,
+    /// The source actor's ordinary uncover requirements.
+    pub uncover: [f32; 2],
+}
+
+/// Actor types for which campaign conversion builds a per-variant character.
+pub fn rebuilds_character(kind: ActorType) -> bool {
+    matches!(kind.0, 8 | 13)
 }
 
 /// The stopgap character table: the nearest retail Halo 2 `char` for a
@@ -118,16 +139,6 @@ pub fn character_for(kind: ActorType, variant: &str) -> (&'static str, u16) {
     (path, grenade)
 }
 
-/// A Halo 1 command list's atoms, kept for the scripts lane to turn into
-/// a Halo 2 command script over the point set of the same name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CommandScript {
-    /// The command list's (and point set's, and order's) name.
-    pub name: String,
-    /// Atoms: type name ([`h1::atom_name`]), and the points they name.
-    pub atoms: Vec<(String, [i16; 2])>,
-}
-
 /// A conversion: the Halo 2 AI data, with the character palette as paths
 /// still to be resolved against the map being built.
 #[derive(Debug, Clone, PartialEq)]
@@ -135,10 +146,13 @@ pub struct Plan {
     /// The AI data; [`ScenarioAi::character_palette`] is empty until
     /// [`Plan::blocks`] resolves [`Self::characters`].
     pub ai: ScenarioAi,
+    /// Full script names in emitted index order, before the wire format truncates them.
+    pub squad_names: Vec<String>,
+    pub group_names: Vec<String>,
     /// Character palette: the choice for each entry.
     pub characters: Vec<CharacterChoice>,
-    /// Command lists, for the scripts lane.
-    pub command_scripts: Vec<CommandScript>,
+    pub voice_definitions: Vec<crate::voices::Definition>,
+    pub squad_voices: Vec<crate::voices::Squad>,
     /// What didn't carry over, one line each.
     pub notes: Vec<String>,
 }
@@ -154,8 +168,36 @@ fn letter(group: u16) -> String {
 
 /// Converts a Halo 1 scenario's AI data.
 pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
+    convert_for_map(src, opts, &[], &[])
+}
+
+/// Converts with the generated meshes in scenario BSP order and the scenario
+/// weapon palette index chosen for each Halo 1 actor variant. Missing entries
+/// leave the corresponding reference unassigned.
+pub fn convert_for_map(
+    src: &H1Ai,
+    opts: &Options,
+    meshes: &[tags::pathfinding::PathfindingData],
+    weapons: &[Option<i16>],
+) -> Plan {
+    let weapon = |actor: i16| {
+        usize::try_from(actor)
+            .ok()
+            .and_then(|i| weapons.get(i).copied().flatten())
+            .unwrap_or(-1)
+    };
     let mut notes = Vec::new();
     let mut ai = ScenarioAi::default();
+    let mut squad_names = Vec::new();
+    let mut group_names = Vec::new();
+    let mut squad_voices = Vec::new();
+    let voice_bank = |actor: i16| {
+        let unit = src.actor_palette.get(actor as usize)?.as_ref()?.unit.id;
+        src.voice_definitions
+            .iter()
+            .position(|bank| bank.tag == unit)
+            .and_then(|index| u16::try_from(index).ok())
+    };
 
     // Character palette: one entry per distinct retail character, in the
     // order the actor palette first needs it.
@@ -163,16 +205,26 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
     let palette: Vec<Option<usize>> = (0..src.actor_palette.len())
         .map(|i| {
             let v = src.actor_palette[i].as_ref()?;
-            let kind = src.actor_of(i).map(|a| a.kind).unwrap_or(ActorType(14));
+            let actor = src.actor_of(i);
+            let kind = actor.map_or(ActorType(14), |a| a.kind);
+            let uncover = actor.map_or([0.0; 2], |a| a.uncover);
             let (path, grenade) = character_for(kind, &v.name);
-            if let Some(k) = characters.iter().position(|c| c.h2_character == path) {
+            let path = if rebuilds_character(kind) {
+                v.name.as_str()
+            } else {
+                path
+            };
+            if let Some(k) = characters.iter().position(|c| {
+                c.h2_character == path && c.uncover.map(f32::to_bits) == uncover.map(f32::to_bits)
+            }) {
                 return Some(k);
             }
             characters.push(CharacterChoice {
                 h1_variant: v.name.clone(),
                 h1_type: kind,
-                h2_character: path,
+                h2_character: path.to_owned(),
                 grenade,
+                uncover,
             });
             Some(characters.len() - 1)
         })
@@ -185,6 +237,15 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
 
     for (ei, e) in src.encounters.iter().enumerate() {
         let zone_index = ei as i16;
+        // Halo 1's manual BSP is only an editor input. Its compiled choice
+        // names the collision mesh that the firing positions index.
+        let bsp = if e.bsp >= 0 {
+            e.bsp
+        } else {
+            e.manual_bsp.max(0)
+        };
+        // The compiled surface only describes ground positions.
+        let ground = meshes.get(bsp as usize).filter(|_| e.flags & (1 << 5) == 0);
         // Areas: one per firing position group letter, in letter order.
         let mut letters: Vec<u16> = e.firing_positions.iter().map(|f| f.group).collect();
         letters.sort_unstable();
@@ -197,14 +258,19 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         fps.sort_by_key(|(a, _)| *a);
         let firing_positions: Vec<h2::FiringPosition> = fps
             .iter()
-            .map(|(a, f)| h2::FiringPosition {
-                position: f.position,
-                reference_frame: -1,
-                flags: opts.firing_position_flags,
-                area: *a as i16,
-                cluster: -1,
-                surface: f.surface,
-                normal: [0.0, std::f32::consts::FRAC_PI_2],
+            .map(|(a, f)| {
+                let (sector, normal) = ground
+                    .and_then(|mesh| crate::ground::location(mesh, f))
+                    .unwrap_or((u32::MAX, [0.0, std::f32::consts::FRAC_PI_2]));
+                h2::FiringPosition {
+                    position: f.position,
+                    reference_frame: -1,
+                    flags: if e.flags & 0x20 == 0 { opts.firing_position_flags } else { 0 },
+                    area: *a as i16,
+                    cluster: f.cluster,
+                    sector,
+                    normal,
+                }
             })
             .collect();
         let areas = letters
@@ -225,6 +291,14 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     .map(|p| (0..3).map(|k| (p[k] - mean[k]).powi(2)).sum::<f32>())
                     .sum::<f32>()
                     / n;
+                let mut clusters = [0u32; 16];
+                for (_, f) in &fps[first..first + pts.len()] {
+                    if let Ok(c) = usize::try_from(f.cluster)
+                        && let Some(word) = clusters.get_mut(c / 32)
+                    {
+                        *word |= 1 << (c % 32);
+                    }
+                }
                 h2::Area {
                     name: letter(g),
                     flags: 0,
@@ -233,6 +307,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     deviation: var.sqrt(),
                     first: first as i16,
                     count: pts.len() as i16,
+                    clusters,
                     manual_reference_frame: 0,
                 }
             })
@@ -246,18 +321,39 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         ai.zones.push(h2::Zone {
             name: name31(&e.name),
             flags: opts.zone_flags,
-            manual_bsp: e.manual_bsp.max(0),
+            manual_bsp: bsp,
             firing_positions,
             areas,
         });
+        group_names.push(e.name.clone());
         ai.squad_groups.push(h2::SquadGroup {
             name: name31(&e.name),
             parent: -1,
             initial_order: -1,
         });
+        let encounter_group = ai.squad_groups.len() as i16 - 1;
+        // Platoons the scripts name become child groups of the encounter's,
+        // holding exactly their squads: a platoon argument then covers every
+        // squad it did in Halo 1 (see `Options::platoon_groups`).
+        let mut platoon_of: Vec<Option<i16>> = vec![None; e.platoons.len()];
+        for (pi, p) in e.platoons.iter().enumerate() {
+            let token = format!("{}/{}", e.name, p.name).to_ascii_lowercase();
+            if !opts.platoon_groups.contains(&token) {
+                continue;
+            }
+            group_names.push(format!("{}/{}", e.name, p.name));
+            ai.squad_groups.push(h2::SquadGroup {
+                name: name31(&format!("{}/{}", e.name, p.name)),
+                parent: encounter_group,
+                initial_order: -1,
+            });
+            platoon_of[pi] = Some(ai.squad_groups.len() as i16 - 1);
+        }
 
         for s in &e.squads {
-            let name = name31(&format!("{}/{}", e.name, s.name));
+            let full_name = format!("{}/{}", e.name, s.name);
+            let name = name31(&full_name);
+            squad_names.push(full_name);
             // A Halo 1 squad with nowhere to start never spawns, but
             // scripts still name it (migration targets, counts). It is kept
             // with no starting locations and no actors, as retail Halo 2
@@ -278,7 +374,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             let mut set: Vec<AreaRef> = letters
                 .iter()
                 .enumerate()
-                .filter(|&(_, &g)| s.attacking() & (1 << g) != 0)
+                .filter(|&(_, &g)| g < 32 && s.attacking() & (1 << g) != 0)
                 .map(|(a, _)| AreaRef {
                     kind: opts.area_kind,
                     zone: zone_index,
@@ -294,16 +390,15 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     })
                     .collect();
             }
-            // An empty squad has no actors to order: no order (room).
-            let order = if unplaced {
-                -1
-            } else {
+            // Migrating actors take the destination squad's order.
+            let order = {
                 ai.orders.push(h2::Order {
                     name: name.clone(),
                     style: opts.order_style,
                     flags: 0,
                     force_combat_status: 0,
                     entry_script: String::new(),
+                    entry_script_index: -1,
                     follow_squad: -1,
                     follow_radius: 0.0,
                     primary_areas: set,
@@ -316,31 +411,64 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
             let starting_locations = s
                 .starting_locations
                 .iter()
-                .map(|l| h2::StartingLocation {
-                    name: 0,
-                    position: l.position,
-                    reference_frame: -1,
-                    facing: [l.facing, 0.0],
-                    flags: 0,
-                    character: if l.actor == -1 {
-                        -1
-                    } else {
-                        char_of(l.actor).map(|c| c as i16).unwrap_or(-1)
-                    },
-                    initial_weapon: -1,
-                    initial_secondary_weapon: -1,
-                    vehicle: -1,
-                    seat_type: 0,
-                    grenade_type: 0,
-                    swarm_count: 0,
-                    emitter_vehicle: -1,
+                .map(|l| {
+                    let list = usize::try_from(l.command_list).ok()
+                        .filter(|&i| i < src.command_lists.len());
+                    let script = list.and_then(|i| {
+                        let index = opts.first_command_script?.checked_add(i as u16)?;
+                        Some((h1::command_script_name(i), i16::try_from(index).ok()?))
+                    });
+                    let (placement_script, placement_script_index) =
+                        script.unwrap_or_else(|| (String::new(), -1));
+                    h2::StartingLocation {
+                        name: 0,
+                        position: l.position,
+                        reference_frame: -1,
+                        facing: [l.facing, 0.0],
+                        flags: 0,
+                        character: if l.actor == -1 {
+                            -1
+                        } else {
+                            char_of(l.actor).map(|c| c as i16).unwrap_or(-1)
+                        },
+                        initial_weapon: weapon(l.actor),
+                        initial_secondary_weapon: -1,
+                        vehicle: -1,
+                        seat_type: 0,
+                        grenade_type: char_of(l.actor).map_or(0, |c| characters[c].grenade),
+                        swarm_count: 0,
+                        emitter_vehicle: -1,
+                        placement_script,
+                        placement_script_index,
+                    }
                 })
                 .collect::<Vec<_>>();
+            let leader_rule = if src
+                .actor_of(s.actor as usize)
+                .is_some_and(|a| a.kind.0 == 7)
+            {
+                s.unique_leader
+            } else {
+                1
+            };
+            squad_voices.push(crate::voices::Squad {
+                encounter: ei as u16,
+                leader_rule,
+                generic: voice_bank(s.actor),
+                locations: s
+                    .starting_locations
+                    .iter()
+                    .map(|l| voice_bank(if l.actor == -1 { s.actor } else { l.actor }))
+                    .collect(),
+            });
             ai.squads.push(h2::Squad {
                 name,
                 flags: 0,
                 team: e.team,
-                parent: ei as i16,
+                parent: usize::try_from(s.platoon)
+                    .ok()
+                    .and_then(|i| platoon_of.get(i).copied().flatten())
+                    .unwrap_or(encounter_group),
                 delay: s.delay,
                 normal_count: if unplaced { 0 } else { s.normal_count },
                 insane_count: if unplaced { 0 } else { s.insane_count },
@@ -348,7 +476,7 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                 vehicle: -1,
                 character: character.map(|c| c as i16).unwrap_or(-1),
                 initial_zone: zone_index,
-                initial_weapon: -1,
+                initial_weapon: weapon(s.actor),
                 initial_secondary_weapon: -1,
                 grenade_type: grenade,
                 initial_order: order,
@@ -357,7 +485,6 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
         }
     }
 
-    let mut command_scripts = Vec::new();
     for c in &src.command_lists {
         ai.point_sets.push(h2::PointSet {
             name: name31(&c.name),
@@ -373,41 +500,18 @@ pub fn convert(src: &H1Ai, opts: &Options) -> Plan {
                     facing: [0.0, 0.0],
                 })
                 .collect(),
-            bsp: c.manual_bsp.max(0),
+            bsp: c.bsp,
             manual_reference_frame: -1,
             flags: 0,
         });
-        ai.orders.push(h2::Order {
-            name: name31(&c.name),
-            style: opts.order_style,
-            flags: 0,
-            force_combat_status: 0,
-            entry_script: String::new(),
-            follow_squad: -1,
-            follow_radius: 0.0,
-            primary_areas: Vec::new(),
-            secondary_areas: Vec::new(),
-            endings: 0,
-        });
-        command_scripts.push(CommandScript {
-            name: c.name.clone(),
-            atoms: c
-                .atoms
-                .iter()
-                .map(|a| (h1::atom_name(a.kind), a.points))
-                .collect(),
-        });
-    }
-    if !src.conversations.is_empty() {
-        notes.push(format!(
-            "{} conversations not converted",
-            src.conversations.len()
-        ));
     }
     Plan {
         ai,
         characters,
-        command_scripts,
+        squad_names,
+        group_names,
+        voice_definitions: src.voice_definitions.clone(),
+        squad_voices,
         notes,
     }
 }
@@ -508,6 +612,14 @@ impl Plan {
     /// `resolve` (the map being built must hold the tag). Fails on a path
     /// that doesn't resolve.
     pub fn blocks(&self, resolve: impl Fn(&str) -> Option<TagId>) -> Result<ScenarioBlocks> {
+        self.blocks_with_characters(|choice| resolve(&choice.h2_character))
+    }
+
+    /// Resolve each palette entry, including variants sharing a native character path.
+    pub fn blocks_with_characters(
+        &self,
+        mut resolve: impl FnMut(&CharacterChoice) -> Option<TagId>,
+    ) -> Result<ScenarioBlocks> {
         let ai = &self.ai;
         let mut fields = Vec::new();
         let mut push = |(at, stride): (usize, usize), elements: Vec<Block>| {
@@ -518,7 +630,7 @@ impl Plan {
             .characters
             .iter()
             .map(|c| {
-                let id = resolve(c.h2_character)
+                let id = resolve(c)
                     .ok_or_else(|| Error::Invalid(format!("no char {}", c.h2_character)))?;
                 let mut e = Block::zeroed(8);
                 e.tag_ref(0, id);
@@ -581,7 +693,8 @@ impl Plan {
                             b.put_u16(0x2c, t.grenade_type);
                             put_i16(&mut b, 0x2e, t.swarm_count);
                             put_i16(&mut b, 0x3c, t.emitter_vehicle);
-                            put_i16(&mut b, 0x60, -1);
+                            put_name(&mut b, 0x40, &t.placement_script);
+                            put_i16(&mut b, 0x60, t.placement_script_index);
                             b
                         })
                         .collect();
@@ -610,7 +723,7 @@ impl Plan {
                             b.put_u16(0xe, f.flags);
                             put_i16(&mut b, 0x10, f.area);
                             put_i16(&mut b, 0x12, f.cluster);
-                            b.put_u32(0x14, f.surface);
+                            b.put_u32(0x14, f.sector);
                             put_f32s(&mut b, 0x18, &f.normal);
                             b
                         })
@@ -628,6 +741,9 @@ impl Plan {
                             b.put_f32(0x34, a.deviation);
                             put_i16(&mut b, 0x38, a.first);
                             put_i16(&mut b, 0x3a, a.count);
+                            for (i, bits) in a.clusters.iter().enumerate() {
+                                b.put_u32(0x3c + 4 * i, *bits);
+                            }
                             put_i16(&mut b, 0x7c, a.manual_reference_frame);
                             b
                         })
@@ -649,8 +765,8 @@ impl Plan {
                     e.put_u32(0x24, o.flags);
                     e.put_u16(0x28, o.force_combat_status);
                     put_name(&mut e, 0x2c, &o.entry_script);
-                    put_i16(&mut e, 0x4c, o.follow_squad);
-                    put_i16(&mut e, 0x4e, -1);
+                    put_i16(&mut e, 0x4c, o.entry_script_index);
+                    put_i16(&mut e, 0x4e, o.follow_squad);
                     e.put_f32(0x50, o.follow_radius);
                     child(&mut e, l::ORDER_PRIMARY_AREAS, area_refs(&o.primary_areas));
                     child(

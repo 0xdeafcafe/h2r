@@ -46,7 +46,11 @@ fn survey_bases() {
     println!("a30 bsps: {}", h1.structure_bsps().unwrap().len());
     let ai = h1ai::h1::H1Ai::read(&h1).unwrap();
     let plan = h1ai::convert::convert(&ai, &Default::default());
-    let chars: Vec<&str> = plan.characters.iter().map(|c| c.h2_character).collect();
+    let chars: Vec<&str> = plan
+        .characters
+        .iter()
+        .map(|c| c.h2_character.as_str())
+        .collect();
     let mut groups = std::collections::BTreeMap::<String, usize>::new();
     for t in h1.tags() {
         *groups.entry(t.group.to_string()).or_default() += 1;
@@ -1221,11 +1225,11 @@ fn h1_atoms_by_token() {
             }
         }
     }
-    let bytes: usize = lv
-        .blocks()
-        .iter()
-        .map(|(_, stride, e)| stride * e.len())
-        .sum();
+    use h1scripts::level::h2;
+    let bytes = lv.flags.len() * h2::FLAGS.1
+        + lv.camera_points.len() * h2::CAMERA_POINTS.1
+        + lv.titles.len() * h2::TITLES.1
+        + lv.device_groups.len() * h2::DEVICE_GROUPS.1;
     println!(
         "{level}: {} flags, {} camera points, {} titles, {} device groups: {bytes:#x} bytes in Halo 2's blocks",
         flags.len(),

@@ -86,8 +86,11 @@ impl AgentGlue {
             ),
             Err(e) => anyhow::bail!("agent-calls: {e}"),
         }
+        agent::ai::install(&agent);
         agent::havok::install(&agent);
         agent::raw::install(&agent, &sim);
+        // HaloScript state: the threads and globals of the running scenario.
+        agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
         let mut listeners = Vec::new();

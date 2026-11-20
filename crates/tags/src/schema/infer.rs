@@ -318,7 +318,28 @@ pub fn infer(maps: &mut [MapSample]) -> Schema {
     pair_raw_sizes(&mut schema, maps);
     apply_engine_strides(&mut schema);
     apply_device_change_colors(&mut schema);
+    apply_converter_groups(&mut schema);
     schema
+}
+
+/// Groups only converters write: no retail map has an instance, so
+/// inference never sees them. Each takes its whole relocation layout from
+/// its definition. `hmt ` is the Halo 1 campaign's rebuilt HUD message list
+/// (`defs/hmt_.txt`, docs/halo1/text.md): retail scenarios leave
+/// `scnr +0x208` null.
+pub const CONVERTER_GROUPS: &[FourCC] = &[FourCC(*b"hmt ")];
+
+/// Applies [`CONVERTER_GROUPS`] to a schema.
+pub(super) fn apply_converter_groups(schema: &mut Schema) {
+    let defs = crate::defs::Defs::builtin();
+    for &group in CONVERTER_GROUPS {
+        let root = defs
+            .group(group)
+            .expect("converter group has a definition")
+            .schema_fields()
+            .expect("converter group definition has a relocation layout");
+        schema.groups.insert(group, root);
+    }
 }
 
 /// Retail `ctrl` and `mach` leave `obje +0xac` empty, so inference misses
@@ -368,6 +389,13 @@ pub fn apply_engine_data(schema: &mut Schema) {
             },
         }
     }
+    // The entire 0x44-byte gear is inline numeric data. H2 evaluates two
+    // six-float torque curves at 0xf1540, reads the ratio at 0xf152c and
+    // tests four shift parameters at 0xf18aa. No word is a resource.
+    if let Some(gear) = schema.groups.get_mut(&FourCC(*b"vehi"))
+        .and_then(|root| at(root, &[0x268])) {
+        gear.fields.clear();
+    }
     for &(group, path, offset) in ENGINE_DATA {
         let Some(s) = schema
             .groups
@@ -403,7 +431,25 @@ pub fn apply_engine_data(schema: &mut Schema) {
 /// Halo 1's weapons fill each (`h1objects::arsenal::WEAPON_EFFECTS`,
 /// `MAGAZINE_CHAMBERING_EFFECT`).
 pub const ENGINE_REFS: &[(FourCC, &[u32], u32)] = &[
+    (FourCC(*b"bipd"), &[], 0x4c),
+    (FourCC(*b"vehi"), &[], 0x4c),
+    (FourCC(*b"weap"), &[], 0x4c),
+    (FourCC(*b"eqip"), &[], 0x4c),
+    (FourCC(*b"proj"), &[], 0x4c),
+    (FourCC(*b"scen"), &[], 0x4c),
+    (FourCC(*b"garb"), &[], 0xfc),
+    (FourCC(*b"garb"), &[], 0x10c),
+    (FourCC(*b"garb"), &[], 0x11c),
+    (FourCC(*b"garb"), &[], 0x124),
+    (FourCC(*b"garb"), &[], 0x4c),
+    (FourCC(*b"vehi"), &[], 0xc4),
+    (FourCC(*b"vehi"), &[], 0x164),
+    (FourCC(*b"vehi"), &[], 0x284),
+    (FourCC(*b"vehi"), &[], 0x294),
+    (FourCC(*b"eqip"), &[], 0xfc),
+    (FourCC(*b"eqip"), &[], 0x11c),
     (FourCC(*b"weap"), &[], 0xfc),
+    (FourCC(*b"weap"), &[], 0x10c),
     (FourCC(*b"weap"), &[], 0x11c),
     (FourCC(*b"weap"), &[], 0x124),
     (FourCC(*b"weap"), &[], 0x17c),
@@ -421,6 +467,17 @@ pub fn apply_engine_refs(schema: &mut Schema) {
                 Field::Block(child) => at(child, rest),
                 _ => None,
             },
+        }
+    }
+    // Halo 2 embeds the same object header in all three. The native biped
+    // populates both arrays, equipment and debris on the disc leave them empty.
+    for at in [0x64, 0x94] {
+        if let Some(field) = schema.groups.get(&FourCC(*b"bipd")).and_then(|r| r.fields.get(&at)).cloned() {
+            for group in [b"eqip", b"garb"] {
+                if let Some(root) = schema.groups.get_mut(&FourCC(*group)) {
+                    root.fields.insert(at, field.clone());
+                }
+            }
         }
     }
     for &(group, path, offset) in ENGINE_REFS {

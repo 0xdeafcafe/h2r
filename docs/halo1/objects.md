@@ -252,6 +252,61 @@ carried: the state sequence, the creation physics and its constants (no
 proven meaning), the system states, the rotation rate. The particles
 start still at the part's location.
 
+### Object attachments
+
+**Built.** Every converted object kind uses Halo 1's `obje +0x140`
+block for its marker attachments. Halo 2's attachment dispatcher
+(`0x000bed2a`) creates lights, effects, contrails and looping sounds.
+Their tags and marker names come from Halo 1, and the scales name the
+converted object functions. Light fixtures use the same path on the
+machines they become. The attachment reader also carries the
+change-colour selector, translated to the same slots as the object's
+colours. Halo 2's effect updater skips colour slot 0 (`0x00179610`).
+The converter reports source functions that lack a supported curve or
+engine input.
+
+Halo 2 does not dispatch `pctl` attachments directly. Each emitting
+particle type becomes an attached `effe` with the source marker as its
+location, an optional initial burst, and native emitter events. Halo 1
+reads the emission-state rate in particles per second (`pctl` state
+`+0x58`, E `0x0010f6a5`); Halo 2 reads particles per tick
+(`0x00247100`). State durations, timed transitions and loop mode
+come from Halo 1. Halo 2 evaluates the transition rates over native
+event time. The existing particle-state conversion supplies the
+textures, sizes, tints and lifetimes. Visual states still have separate
+native emitters.
+
+**Built** for attachment physics. The native emitter inherits the owner’s
+motion. Its birth hook (`0x00249170`) uses the source’s radial scatter or
+directional kick (`0x0010f2d0`, `0x0010f150` in Halo 1). Each particle
+state’s `pphy` supplies the mass, collision radius scale, air and liquid
+drag, buoyancy, friction and rebound. A marked native `pmov` stage keeps
+Halo 2’s collision sweep and bounce (`0x002b9060`). The movement hook
+applies Halo 1’s point forces before that sweep (`0x00080720` in Halo 1),
+choosing the coefficients from the active BSP’s liquid plane where
+present, and applies the source type’s death flags. Halo 2’s particle
+initialisation and simulation own all mutable particle state.
+
+**Built** for the minimum-population clock. Each native phase carries
+the source minimum (including the transition endpoints and the
+attachment-scale flag). After Halo 2 steps its emitters
+(`0x00179020`), the clock shortens the remaining phase time to 30%
+when the live count is below that threshold. Halo 1 does this at
+`0x0010f928` before advancing the particle-state clock. To account
+for parallel visual states, the hook counts the largest surviving
+stream per phase and includes surviving streams from earlier phases.
+The conversion continues to use separate visual layers and their
+individual lifetimes, so the count can differ from Halo 1's sequential
+particles. Particle forces use the active BSP’s physical liquid
+volumes where available.
+
+On a30 the entry pod's `burn` marker carries `burning big debris`,
+starting at zero particles and emitting 30 per second (V).
+`effects_disc::entry_lifepod_burns_at_its_halo1_marker_and_rate`
+checks the model marker, the effect loop, the visible states, the
+emitter rate, the minimum population and the native collision curves. `placed_object_builders_keep_halo1_attachments`
+checks the attachment paths across object kinds.
+
 ### `cont` (root `0x144`) and contrail attachments
 
 `h1objects::particles::H1Contrail` (since converter version 55): Halo 2's
@@ -319,6 +374,57 @@ role ([tag-definitions.md](../formats/tag-definitions.md), "Every vehicle from
 definitions"). The vehicle rows described below (warthog, ghost,
 scorpion, banshee, pelican, dropship, wraith, gun turret, lifepods) and
 the lifepods' quiet stand-in are history, kept for the record.
+
+**Lifepod engine audio. Built.** The a30 entry pod attaches the Halo 1
+`sound\sfx\vehicles\lifeboat` loop. Its marker is empty and its primary
+scale is zero. The rebuilt attachment names that level's converted loop,
+whose track plays `lifeboat_entry`. The other lifepod variants have no
+source engine attachment. The campaign disc test compares the ordered
+loop attachments of converted vehicles with their source and checks a30's
+entry pod explicitly. [Campaign audio evidence](sounds.md#campaign-loops-and-cache-slots-built).
+### Native pickups and scripted props
+
+**Built** in `h1objects::convert_powerups`. Halo 1's overshield,
+active camouflage and health pack build fresh `eqip` and model chains.
+The source provides the bounding sphere, pickup time, model, collision,
+pickup sound and effect references. The paired retail `eqip` tags on
+`shared` and `single_player_shared` establish the item sort word and
+powerup fields (V). Overshield is type 2 and 60 seconds, camouflage type 3
+and 45 seconds, and health type 5 with a positive time. Halo 2's pickup
+routine reads those fields at `0x00151eff` and `0x00151f3e`, dispatches
+shield at `0x00151f4b`, health at `0x00151f6a` and camouflage at
+`0x00151f85` (E). The multiplayer conversion rebuilds the collections in
+both settings ([multiplayer.md](multiplayer.md#what-isnt-placed-and-why)).
+
+**Built** in `h1objects::scripted_props` and the campaign placement
+writer. b30's seven boxes are dynamic `bloc` instances with the Halo 1
+storage crate's model and collision. Halo 1's vehicle tag references a
+`phys` for the mass and leaves the object's radius at zero. The rebuilt
+crate takes its bounds from its model and its shape and inertia from
+the collision hull. Halo 2's `crate_space` on 05a establishes a
+dynamic `bloc` with one object-space body (V). a10's Halo ring is a
+`scen`, as in Halo 2's 00a. The ring and boxes keep their scenario names,
+transforms and script-controlled creation.
+
+**Built** for a10's seated props and aircraft. The cryotube and chairs
+keep their source stationary vehicle type 6 and seats. a10's scripts call
+`unit_enter_vehicle` or `vehicle_load_magic` on them (V).
+Their collision bodies follow the model's nodes, including the cryotube
+door. The fighter-bomber is a type 3 aircraft for `recording_play`. Its
+`phys` has eighteen mass point spheres, which form one native compound
+body. Halo 1 supplies mass, center of mass and inertia.
+
+**Built** for the lifepods. The flying pods use Halo 1's type 5, model,
+collision, seats and flight rates. Where Halo 1 supplies `phys` (the
+plain pod and a30 entry pod), the collision-derived rigid body keeps its
+mass, center of mass and inertia tensor. The axis limits and accelerations
+feed the native vehicle functions at `0x000f32f5` and `0x000f3562` (E).
+The docked pod keeps its stationary body and source lights. a30's entry pod
+attaches its own `lifeboat` loop, including the source track samples,
+through `h1sounds::looping`, and its reentry fire through the native
+`effe` attachment on `burn`. The plain and docked tags carry no engine
+loop (V). Offline checks are in `vehicle_rebuild_disc` and
+`h1campaign/tests/disc.rs`.
 
 **Where a vehicle meets the ground (converter version 63).** Three
 things the engine reads at a vehicle's base, proved in
@@ -460,9 +566,8 @@ functions; on a lifepod they hummed the pelican's engine at every
 placement, all level (a10 at converter version 14: "repeated
 wurrrring"). A lifepod gets its own copy of the attachments without the
 `lsnd` elements (its lights and thruster effects stay the template's)
-and a report line per sound dropped. Halo 1's own looping sounds are not
-converted, so lifepods are quiet. Other craft keep their template's
-sounds: those are the same vehicle's.
+and a report line per sound dropped. At that point lifepods were quiet.
+Other craft kept their template's sounds.
 
 Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
 (5 placements, the intro pods) is named in `recording_play` (5),
@@ -471,9 +576,8 @@ Lifepod use (**S**, `lifepod_use`, 2026-11-17): a30's `lifepod_entry`
 calls; a10's `lifepod_docked` and `lifepod` in `objects_attach`,
 `custom_animation`, `unit_open`/`unit_close` and teleports; b30's and
 a30's plain `lifepod` palette entries have no placement. No call drives
-one with a player. So the template is a flying unit with passenger
-seats that a recording can fly: the pelican, on 05a; the model and
-animations stay Halo 1's.
+one with a player. The earlier converter used 05a's Pelican template
+for its passenger seats and compatibility with recordings.
 
 **Model chain.** `hlmt` = the template's `hlmt` root with: render model
 -> converted `mode` (`h1models`, no shaders yet), collision -> converted
@@ -886,6 +990,23 @@ vehicle keeps its own colour (the Scorpion's grey). Proof:
 `tests/model_shaders_disc.rs` (`bloodgulch_cyborg_and_scorpion_take_change_colours`)
 and `tests/rebuild_disc.rs`.
 
+### Weapon zoom
+
+`arsenal::weapon` transfers Halo 1's magnification count and range
+from `weap +0x3da` and `+0x3dc` to Halo 2's `+0x1fe` (`i16`) and
+`+0x200` (two `f32` values). The engine checks the count at
+`0x001010cd` and reads the range at `0x00101103` and `0x0010111c`.
+Blood Gulch's pistol keeps one level and the sniper rifle keeps two.
+An unscoped weapon has zero levels and a zero range, like the retail
+magnum and shotgun on Coagulation and Zanzibar.
+
+The older Blood Gulch serve had zero magnification fields on both the
+assault rifle and the sniper (`h2 agent edit get`). A zero count still
+lets Halo 2 use the player's binocular zoom. Converted unscoped weapons set `weap +0x12c` bit 16 to skip that
+fallback (E `0x000c89c1..0x000c89df`). This keeps the assault rifle
+and other unscoped Halo 1 weapons at the unzoomed field of view.
+Scope HUD conversion is described in [hud.md](hud.md#scope-mask).
+
 ### Ammunition counter (**Built**, converter version 95)
 
 The assault rifle's first-person model shows the rounds loaded on two
@@ -970,10 +1091,10 @@ speed (Halo 1's are slower than the Halo 2 templates').
 - **Unit and vehicle tuning:** speeds, acceleration, seats, cameras,
   boarding; `bipd`/`vehi` keep the template's. Halo 1 `phys` (mass points)
   is read but not used: the template's `phmo` is.
-- **Weapon:** zoom levels (template's kept; the magnum happens to be 2x
-  like the pistol), ready time, chamber time, charging (plasma pistol),
-  first-person model and animations, the HUD (`wphi` vs `nhdt`), firing
-  effects and sounds: all the template's.
+- **Weapon:** ready time, chamber time, charging (plasma pistol), firing
+  effects and sounds. The [HUD conversion](hud.md#weapon-huds) covers
+  the weapon panel and crosshairs. Scope masks need the screen effect
+  block.
 - **Projectile:** material responses and every effect and sound: the
   template's. Contrails are Halo 1's (above).
 - **Equipment:** non-health powerup and grenade type values (template's).

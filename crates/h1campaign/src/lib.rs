@@ -26,13 +26,18 @@
 #![forbid(unsafe_code)]
 
 pub mod cutscenes;
+mod actor_control;
+mod ai_control_characters;
+mod ai_control_roster;
 pub mod donor;
 pub mod h2assets;
 pub mod manifest;
 pub mod profiles;
 pub mod recordings;
+mod roster;
 pub mod scenario;
 pub mod scratch;
+mod squad_roster;
 pub mod structure;
 
 use std::io::{Read, Seek};
@@ -93,21 +98,8 @@ pub enum Error {
         /// The scenario's biggest root fields, as `offset bytes`.
         fields: String,
     },
-    /// The converted map file is over the engine's size limit for its cache
-    /// type, with `music` bytes of the scripts' looping sounds' samples,
-    /// `dialogue` bytes of the bipeds' dialogue sounds' and `ambience`
-    /// bytes of the clusters' background sounds' in it.
-    #[error(
-        "{level}: map file {need:#x} bytes, over the engine's {max:#x} ({music:#x} of music, {dialogue:#x} of dialogue, {ambience:#x} of ambience)"
-    )]
-    FileSize {
-        level: String,
-        need: u64,
-        max: u64,
-        music: u64,
-        dialogue: u64,
-        ambience: u64,
-    },
+    #[error("{level}: map file {need:#x} bytes, over the native campaign slot's {max:#x}")]
+    FileSize { level: String, need: u64, max: u64 },
 }
 
 /// Result alias for this crate.
@@ -169,7 +161,7 @@ pub struct Options<'a> {
     /// ([`donor`]); none copies nothing.
     pub donors: Option<&'a donor::Donors>,
     /// Halo 1's cinematics and the a10 tutorial: played or skipped. `None`
-    /// (the default) takes each level's own choice
+    /// (the default) plays all ten levels as authored
     /// ([`cutscenes::default_for`]; docs/halo1/campaign.md, Cutscenes).
     pub cutscenes: Option<h1scripts::compile::Cutscenes>,
     /// The animation graphs and recorded animations the scripts name
@@ -205,64 +197,29 @@ pub struct Options<'a> {
 /// What a level's conversions onto one base share ([`Options::shared`]):
 /// its BSPs, prepared once (`structure::prepare_all` reads only the Halo 1
 /// map, the base and the level's palettes, never the assets or devices),
-/// for each ambience budget a conversion asks.
+/// with the same palettes for both asset variants.
 #[derive(Default)]
 pub struct Shared {
-    #[allow(clippy::type_complexity)]
-    bsps: std::sync::Mutex<
-        Vec<(u64, std::sync::Arc<std::sync::OnceLock<Option<std::sync::Arc<PreparedBsps>>>>)>,
-    >,
+    bsps: std::sync::Mutex<Option<std::sync::Arc<PreparedBsps>>>,
 }
 
-/// The BSPs prepared, and their report lines.
 struct PreparedBsps {
     bsps: Vec<structure::Prepared>,
     reports: Vec<structure::BspReport>,
 }
 
 impl Shared {
-    /// The BSPs for `budget`: prepared by `prepare` the first time, the
-    /// same afterwards (a conversion asking while another prepares waits
-    /// for it). A failure is not kept: the next prepares its own.
     fn bsps(
         &self,
-        budget: u64,
         prepare: impl FnOnce() -> Result<PreparedBsps>,
     ) -> Result<std::sync::Arc<PreparedBsps>> {
-        let cell = {
-            let mut all = self.bsps.lock().unwrap_or_else(|e| e.into_inner());
-            match all.iter().find(|(b, _)| *b == budget) {
-                Some((_, c)) => c.clone(),
-                None => {
-                    let c = std::sync::Arc::default();
-                    all.push((budget, std::sync::Arc::clone(&c)));
-                    c
-                }
-            }
-        };
-        let mut prepare = Some(prepare);
-        let mut failed = None;
-        let got = cell.get_or_init(|| match prepare.take().expect("once")() {
-            Ok(p) => Some(std::sync::Arc::new(p)),
-            Err(e) => {
-                failed = Some(e);
-                None
-            }
-        });
-        if let Some(e) = failed {
-            // Not kept: the next conversion prepares again.
-            self.bsps
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .retain(|(_, c)| !std::sync::Arc::ptr_eq(c, &cell));
-            return Err(e);
+        let mut slot = self.bsps.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = slot.as_ref() {
+            return Ok(p.clone());
         }
-        match got {
-            Some(p) => Ok(p.clone()),
-            // Another conversion's preparing failed while this one waited:
-            // its own error.
-            None => Ok(std::sync::Arc::new(prepare.take().expect("not run")()?)),
-        }
+        let prepared = std::sync::Arc::new(prepare()?);
+        *slot = Some(prepared.clone());
+        Ok(prepared)
     }
 }
 
@@ -354,11 +311,9 @@ pub struct Report {
     pub file_size: u64,
     /// Each conversion retried before this one, and why (`convert`).
     pub retries: Vec<String>,
-    /// Raw bytes (sound samples) the clusters' background sounds added
-    /// (`h1convert::ambience`).
-    pub ambience_bytes: u64,
-    /// Background sounds left silent for the map file's size limit.
-    pub ambience_silenced: Vec<String>,
+    /// All Halo 1 looping definitions in the level and their local sample bytes.
+    pub looping_sounds: usize,
+    pub looping_bytes: u64,
 }
 
 /// The lean ladder: what a conversion of a level over the engine's tag
@@ -369,16 +324,12 @@ pub enum Lean {
     /// Everything.
     #[default]
     Everything,
-    /// The empty squads kept only because the scripts name them.
-    EmptySquads,
     /// The seat-mapping table.
     SeatTable,
     /// Halo 1's textures on object models (`h1objects`' shader copies and
     /// bitmaps; the models draw with the base's model shader).
     ObjectTextures,
-    /// The looping sounds (music and ambience) the scripts name.
-    Music,
-    /// The cutscenes' animation graphs and recorded animations
+    /// The cutscenes' animation graphs. Gameplay recordings stay installed
     /// ([`cutscenes`]).
     CutsceneData,
     /// The level data the scripts name (cutscene flags, camera points,
@@ -389,12 +340,10 @@ pub enum Lean {
 
 impl Lean {
     /// The steps in order.
-    pub const LADDER: [Lean; 7] = [
+    pub const LADDER: [Lean; 5] = [
         Lean::Everything,
-        Lean::EmptySquads,
         Lean::SeatTable,
         Lean::ObjectTextures,
-        Lean::Music,
         Lean::CutsceneData,
         Lean::LevelData,
     ];
@@ -415,7 +364,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} on {} ({}): {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} (ambience {:#x}), lean {:?}",
+            "{} on {} ({}): {} tags ({} added), metadata {:#x}, tag memory {:#x} of {:#x}, file {:#x} ({} looping sounds, {:#x} sample bytes), lean {:?}",
             self.level,
             self.base,
             if self.fresh { "fresh" } else { "pinned" },
@@ -425,7 +374,8 @@ impl std::fmt::Display for Report {
             self.memory,
             self.metadata_max,
             self.file_size,
-            self.ambience_bytes,
+            self.looping_sounds,
+            self.looping_bytes,
             self.lean
         )?;
         if let Some(s) = &self.scratch {
@@ -487,9 +437,6 @@ impl std::fmt::Display for Report {
         for d in &self.dropped {
             writeln!(f, "  dropped: {d}")?;
         }
-        for a in &self.ambience_silenced {
-            writeln!(f, "  silenced for file size: {a}")?;
-        }
         for r in &self.retries {
             writeln!(f, "  retried: {r}")?;
         }
@@ -512,26 +459,24 @@ pub struct Converted {
 /// Converts the Halo 1 campaign level `h1` onto `base` (a retail Halo 2
 /// campaign map, normally [`BASE`]).
 pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) -> Result<Converted> {
-    // A level over the tag memory bound (b40) is converted again a step
-    // further down the lean ladder ([`Lean`]). A map file over the
-    // engine's size limit is converted again with that much less music
-    // (and 256 KiB of margin), down to none; then with that much less of
-    // the bipeds' dialogue (`h1objects::convert::Options::dialogue_budget`),
-    // down to none; then with that much less of
-    // the clusters' background sounds (an entry left out stays in the
-    // palette, silent), down to none; then without the cutscenes'
-    // animation graphs (their animation data is raw in the file), which
-    // the cutscenes need to play. A level still over either bound places
-    // fewer devices ([`Devices`]): no light fixtures, then none.
+    // The tag memory retries affect scenario layers. Audio stays in every attempt.
     let mut lean = Lean::Everything;
-    let mut music = u64::MAX;
-    let mut dialogue = u64::MAX;
-    let mut ambience = u64::MAX;
+    let preserve_content = !opts.pinned
+        && opts.scripts.is_some()
+        && opts.cutscene_data
+        && opts.cutscene_graphs
+        && opts.cutscenes.unwrap_or_default() == h1scripts::compile::Cutscenes::Play;
     let mut opts = Options { ..*opts };
     // Each retry and why, for the report.
     let mut retries = Vec::new();
     loop {
-        match convert_with(h1, base, &opts, lean, [music, dialogue, ambience]) {
+        match convert_with(h1, base, &opts, lean) {
+            // A normal fresh scripted campaign promises the whole level. Report
+            // a capacity regression with the original diagnostics before a retry
+            // could remove a seat, a device, a recording dependency or a graph.
+            Err(e @ (Error::TagMemory { .. } | Error::FileSize { .. })) if preserve_content => {
+                return Err(e);
+            }
             Err(Error::TagMemory { need, max, .. }) if lean.next().is_some() => {
                 lean = lean.next().expect("checked");
                 retries.push(format!("tag memory {need:#x} over {max:#x}: lean {lean:?}"));
@@ -540,52 +485,6 @@ pub fn convert<R: Read + Seek>(h1: &H1Map, base: &mut Map<R>, opts: &Options) ->
                 opts.devices = opts.devices.fewer().expect("checked");
                 retries.push(format!(
                     "tag memory {need:#x} over {max:#x} at the end of the ladder: devices {:?}",
-                    opts.devices
-                ));
-            }
-            Err(Error::FileSize {
-                need,
-                max,
-                music: m,
-                ..
-            }) if m > 0 => {
-                music = m.saturating_sub(need - max + 0x4_0000);
-                retries.push(format!(
-                    "file {need:#x} over {max:#x} with {m:#x} of music: music to {music:#x}"
-                ));
-            }
-            Err(Error::FileSize {
-                need,
-                max,
-                dialogue: d,
-                ..
-            }) if d > 0 => {
-                dialogue = d.saturating_sub(need - max + 0x4_0000);
-                retries.push(format!(
-                    "file {need:#x} over {max:#x} without music, with {d:#x} of dialogue: dialogue to {dialogue:#x}"
-                ));
-            }
-            Err(Error::FileSize {
-                need,
-                max,
-                ambience: a,
-                ..
-            }) if a > 0 => {
-                ambience = a.saturating_sub(need - max + 0x4_0000);
-                retries.push(format!(
-                    "file {need:#x} over {max:#x} without music or dialogue, with {a:#x} of ambience: ambience to {ambience:#x}"
-                ));
-            }
-            Err(Error::FileSize { need, max, .. }) if opts.cutscene_graphs => {
-                opts.cutscene_graphs = false;
-                retries.push(format!(
-                    "file {need:#x} over {max:#x} without music or ambience: no cutscene animation graphs"
-                ));
-            }
-            Err(Error::FileSize { need, max, .. }) if opts.devices.fewer().is_some() => {
-                opts.devices = opts.devices.fewer().expect("checked");
-                retries.push(format!(
-                    "file {need:#x} over {max:#x} without music, ambience or cutscene graphs: devices {:?}",
                     opts.devices
                 ));
             }
@@ -603,7 +502,6 @@ fn convert_with<R: Read + Seek>(
     base: &mut Map<R>,
     opts: &Options,
     lean: Lean,
-    [music, dialogue, ambience_budget]: [u64; 3],
 ) -> Result<Converted> {
     let level = h1.header().name.to_ascii_lowercase();
     let mut report = Report {
@@ -614,8 +512,7 @@ fn convert_with<R: Read + Seek>(
         ..Report::default()
     };
     let scnr = scenario::BaseScenario::read(base)?;
-    let mut ambience = h1convert::ambience::read(h1);
-    report.ambience_silenced = scenario::bound_ambience(&mut ambience, ambience_budget);
+    let ambience = h1convert::ambience::read_campaign(h1);
     let prepare = |base: &mut Map<R>| -> Result<PreparedBsps> {
         let mut r = Report::default();
         let bsps = phase::time("bsp", || structure::prepare_all(h1, base, &scnr, &ambience, &mut r))?;
@@ -625,12 +522,12 @@ fn convert_with<R: Read + Seek>(
         })
     };
     let prepared = match opts.shared {
-        Some(s) => s.bsps(ambience_budget, || prepare(base))?,
+        Some(s) => s.bsps(|| prepare(base))?,
         None => std::sync::Arc::new(prepare(base)?),
     };
     report.bsps.extend(prepared.reports.iter().cloned());
     let bsps = &prepared.bsps;
-    let objects_base = if opts.objects {
+    let objects_base = if opts.objects || opts.ai {
         let mut b = phase::time("base templates", || h1objects::base::Base::read(base))
             .map_err(|e| invalid(format!("base: {e}")))?;
         if lean.leaves_out(Lean::ObjectTextures) {
@@ -649,9 +546,12 @@ fn convert_with<R: Read + Seek>(
 
     // The level's background sounds and sound environments, which the
     // clusters and the scenario's palettes name.
-    let raw_before: u64 = set.raw.iter().map(|r| r.bytes.len() as u64).sum();
+    let raw_start = set.raw.len();
+    let loops = phase::time("looping sounds", || h1sounds::looping::install_level_loops(h1, &mut set))
+        .map_err(|e| invalid(format!("{}: looping sounds: {e}", level)))?;
+    report.looping_sounds = loops.len();
+    report.looping_bytes = set.raw[raw_start..].iter().map(|r| r.bytes.len() as u64).sum();
     let sounds = phase::time("ambience", || ambience.install(&mut set))?.bounded();
-    report.ambience_bytes = set.raw.iter().map(|r| r.bytes.len() as u64).sum::<u64>() - raw_before;
 
     // Halo 1's indoor fog, if the level has one, is the scenario's
     // atmosphere element 0, which every skyless cluster names
@@ -685,9 +585,12 @@ fn convert_with<R: Read + Seek>(
             sounds: b.sound_clusters.clone(),
         });
     }
-    let pathfinding = bsps.iter().map(|b| b.pathfinding.clone()).collect();
+    let pathfinding: Vec<_> = bsps.iter().map(|b| b.pathfinding.clone()).collect();
     if let Some(d) = opts.donors.filter(|_| opts.objects || opts.ai) {
         let mut wanted = donor::wanted(h1)?;
+        if let Some(scripts) = opts.scripts {
+            wanted.extend(actor_control::wanted(h1, &scripts.catalog)?);
+        }
         // The retail weapons, vehicles and player the Halo 2-assets
         // variant places that the base lacks.
         if opts.objects && opts.assets == h2assets::Assets::Halo2 {
@@ -695,20 +598,33 @@ fn convert_with<R: Read + Seek>(
         }
         phase::time("donors", || donor::bring(d, &mut set, &wanted, &mut report))?;
     }
+    let mut locales = h1text::convert::Locales::from_map(base)
+        .map_err(|e| invalid(format!("base text: {e}")))?;
+    let base_rows = locales.len();
+    let level_text = h1text::scenario::LevelText::install(h1, &mut set, &mut locales)
+        .map_err(|e| invalid(format!("level text: {e}")))?;
     phase::time("scenario", || {
         scenario::write(
             h1,
             &mut set,
             &scnr,
             &slots,
+            &pathfinding,
+            bsps,
             &sounds,
             objects_base.as_ref(),
             opts,
             lean,
-            [music, dialogue],
+            &level_text,
             &mut report,
         )
     })?;
+
+    level_text.write_object_prompts(&mut set);
+    if locales.len() != base_rows {
+        locales.install_pinned(&mut set)
+            .map_err(|e| invalid(format!("installing level text: {e}")))?;
+    }
 
     // Built without the bound, so an overflow can say by how much and
     // where the bytes went.
@@ -736,7 +652,8 @@ fn convert_with<R: Read + Seek>(
         };
         // Each Halo 2 HUD is named by nothing but the HUD pairs: kept for
         // `boot::hud` (docs/halo1/hud.md).
-        let keep: Vec<TagId> = report.scenario.hud_swaps.iter().map(|h| h[2]).collect();
+        let mut keep = loops;
+        keep.extend(report.scenario.hud_swaps.iter().map(|h| h[2]));
         let out = match scratch::build(file, &set, &bytes, &keep) {
             Ok((out, r)) => {
                 report.fresh = true;
@@ -754,7 +671,7 @@ fn convert_with<R: Read + Seek>(
         // Over the engine's file size (d40: the gestalt still holds the
         // pruned sounds' chunks, and copied raw runs to the next known
         // resource), the pinned map stands.
-        if built.0.len() as u64 > map::writer::cache_size_limit(set.cache_type)? {
+        if built.0.len() as u64 > u64::from(map::writer::NATIVE_CAMPAIGN_FILE_LIMIT) {
             report.fresh = false;
             report.dropped.push(format!(
                 "fresh build: {:#x} bytes, over the engine's file size; written pinned",
@@ -809,19 +726,12 @@ fn convert_with<R: Read + Seek>(
             fields,
         });
     }
-    let limit = map::writer::cache_size_limit(set.cache_type)?;
+    let limit = u64::from(map::writer::NATIVE_CAMPAIGN_FILE_LIMIT);
     if bytes.len() as u64 > limit {
         return Err(Error::FileSize {
             level,
             need: bytes.len() as u64,
             max: limit,
-            music: report
-                .scenario
-                .scripts
-                .as_ref()
-                .map_or(0, |s| s.looping_bytes),
-            dialogue: report.scenario.dialogue_bytes,
-            ambience: report.ambience_bytes,
         });
     }
     report.file_size = bytes.len() as u64;

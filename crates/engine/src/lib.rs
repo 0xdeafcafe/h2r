@@ -34,6 +34,7 @@
 
 pub mod abi;
 pub mod colour_pass;
+pub mod campaign_squad_pool;
 pub mod datum;
 pub mod entry;
 pub mod function_eval;
@@ -51,6 +52,11 @@ pub mod screen_effect;
 pub mod screen_effects;
 pub mod screen_grid;
 pub mod shadow_constants;
+pub mod hs_pool;
+pub mod hs_syntax;
+// Historical fixed-size partition fixture; the runtime reserves campaign_squad_pool.
+#[cfg(test)]
+mod squad_pool;
 pub mod tags;
 pub mod testing;
 pub mod view;

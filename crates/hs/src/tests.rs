@@ -103,6 +103,45 @@ fn fixture() -> (Scenario, Catalog) {
     };
     (scenario, catalog)
 }
+#[test]
+fn marked_vehicle_count_keeps_the_retail_grenade_count_name() {
+    use crate::h1_ai_slots::{CONTROL_TOKEN, Operation, VEHICLE_COUNT};
+
+    let (mut scenario, _) = fixture();
+    let name_offset = scenario.strings.len() as u32;
+    scenario.strings.extend_from_slice(b"unit_get_total_grenade_count\0");
+    let marker_offset = scenario.strings.len() as u32;
+    scenario.strings.extend_from_slice(CONTROL_TOKEN.as_bytes());
+    scenario.strings.push(0);
+
+    for node in &mut scenario.nodes[..4] {
+        node.opcode = VEHICLE_COUNT;
+    }
+    scenario.nodes[1].string_offset = marker_offset;
+    scenario.nodes[1].data = Operation::VehicleCount.marker();
+    scenario.nodes[3].string_offset = name_offset;
+    assert_eq!(scenario.builtin_names().unwrap()[&VEHICLE_COUNT], "unit_get_total_grenade_count");
+
+    scenario.nodes[1].data = 0;
+    assert!(scenario.builtin_names().is_err());
+}
+
+#[test]
+fn flashlight_list_and_ai_braindead_share_the_retail_descriptor() {
+    let (mut scenario, _) = fixture();
+    for (outer, head, name) in [
+        (0, 1, "units_set_desired_flashlight_state"),
+        (2, 3, "ai_braindead_by_unit"),
+    ] {
+        scenario.nodes[outer].opcode = 312;
+        scenario.nodes[head].opcode = 312;
+        scenario.nodes[head].string_offset = scenario.strings.len() as u32;
+        scenario.strings.extend_from_slice(name.as_bytes());
+        scenario.strings.push(0);
+    }
+    assert_eq!(scenario.builtin_names().unwrap()[&312], "ai_braindead_by_unit");
+}
+
 fn payload(s: &Scenario) -> (Vec<u8>, u32) {
     let base = 0x81000000;
     let mut b = vec![0; 0x240];

@@ -22,53 +22,9 @@ use map::build::TagSet;
 use crate::{Options, Result, invalid};
 use h1scripts::compile::Cutscenes;
 
-/// Each level's cutscene policy when [`Options::cutscenes`] is `None`, and
-/// why. A level not listed skips (Halo 1's skip path).
-///
-/// Played: every graph the cutscenes name converts, every recording and
-/// dialogue length is written, and no call left stubbed in a cinematic
-/// holds it (`cutscenes_convert_and_read_back` lists them: HUD and
-/// screen effects, `object_beautify`, `object_pvs_activate`,
-/// `unit_set_emotion`, `unit_set_seat`, command lists).
-pub const LEVELS: &[(&str, Cutscenes, &str)] = &[
-    (
-        "a10",
-        Cutscenes::PlayShortPaths,
-        "cinematics played; the cryo tutorial still takes fast_setup (its look tests have no Halo 2 builtin)",
-    ),
-    ("a30", Cutscenes::Play, "every cutscene converts"),
-    ("a50", Cutscenes::Play, "every cutscene converts"),
-    ("b30", Cutscenes::Play, "every cutscene converts"),
-    (
-        "b40",
-        Cutscenes::Skip,
-        "at the tag memory bound: converted without level data, graphs and recordings, so its cutscenes would have no camera points, flags or animations",
-    ),
-    (
-        "c10",
-        Cutscenes::Play,
-        "every cutscene converts; the marines' command lists in x50 are stubbed (they stand)",
-    ),
-    ("c20", Cutscenes::Play, "every cutscene converts"),
-    (
-        "c40",
-        Cutscenes::Play,
-        "every cutscene converts; command lists stubbed (actors stand)",
-    ),
-    ("d20", Cutscenes::Play, "every cutscene converts"),
-    (
-        "d40",
-        Cutscenes::Skip,
-        "over the campaign cache's file size with the cutscene graphs (they need 0x1baa00 bytes, 0x7c000 are left), so its characters would not animate",
-    ),
-];
-
-/// The level's own cutscene policy ([`LEVELS`]).
-pub fn default_for(level: &str) -> Cutscenes {
-    LEVELS
-        .iter()
-        .find(|(l, _, _)| l.eq_ignore_ascii_case(level))
-        .map_or(Cutscenes::Skip, |e| e.1)
+/// Every campaign level runs the source cutscene guards and tutorial branches.
+pub fn default_for(_level: &str) -> Cutscenes {
+    Cutscenes::Play
 }
 
 /// The policy a conversion of `level` uses: the caller's, or the level's.
@@ -129,11 +85,22 @@ fn model_by_checksum(h1: &H1Map, checksum: u32) -> Option<&h1map::Tag> {
 /// (`animation_graph` atoms and [`ANIMATION_NAME`] tokens) that `set` does
 /// not hold as a `jmad` of that name yet, and maps the animation names.
 pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Graphs> {
+    let graphs = install_graph_hooks(h1, set, c.hooks.iter())?;
+    if !graphs.dropped.is_empty() {
+        return Err(invalid(format!("cinematic animation graphs: {}", graphs.dropped.join(", "))));
+    }
+    Ok(graphs)
+}
+
+/// Install graphs needed by AI even when cinematic graphs are omitted.
+pub(crate) fn install_graph_hooks<'a>(
+    h1: &H1Map, set: &mut TagSet, hooks: impl Iterator<Item = &'a Hook>,
+) -> Result<Graphs> {
     let antr = Group::new(b"antr");
     let jmad = FourCC(*b"jmad");
     let mut wanted: BTreeMap<String, ()> = BTreeMap::new();
-    for h in &c.hooks {
-        if h.type_name == "animation_graph" {
+    for h in hooks {
+        if h.type_name == "animation_graph" && h.h1_type != "command_unit_graph_candidate" {
             wanted.insert(h.token.clone(), ());
         } else if h.h1_type == ANIMATION_NAME
             && let Some((g, _)) = h.token.split_once('|')
@@ -143,6 +110,9 @@ pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Grap
     }
     let mut out = Graphs::default();
     for name in wanted.into_keys() {
+        if name.is_empty() || name.eq_ignore_ascii_case("none") {
+            continue;
+        }
         let Some(tag) = h1.find(antr, &name) else {
             out.dropped.push(format!("{name}: not in the level"));
             continue;
@@ -186,6 +156,25 @@ pub fn install_graphs(h1: &H1Map, set: &mut TagSet, c: &Compiled) -> Result<Grap
     Ok(out)
 }
 
+/// The two inputs to H1's video combiner (0x61990), rebuilt as local bitmaps.
+pub(crate) fn install_video(h1: &H1Map, set: &mut TagSet, c: &mut Compiled) -> Result<()> {
+    let globals = h1.tags().iter().find(|t| t.group == Group::new(b"matg"))
+        .ok_or_else(|| invalid("missing video rasterizer globals"))?;
+    let rows = h1.tag_space().block_at(h1.tag_data(globals)?, 0x134, 0x13c)?;
+    let raster = rows.first().ok_or_else(|| invalid("missing rasterizer data"))?;
+    for (offset, name) in [0x11c, 0x12c].into_iter().zip(h1scripts::cinematics::VIDEO_BITMAPS) {
+        let reference = h1map::TagRef::read(raster, offset)
+            .filter(|r| r.group == Group::new(b"bitm"))
+            .ok_or_else(|| invalid(format!("missing video bitmap at {offset:#x}")))?;
+        let tag = h1.tag(reference.id)?;
+        let (_, converted, _) = h1bitmaps::convert_bitmap(h1, tag)
+            .map_err(|e| invalid(format!("{}: {e}", tag.name)))?;
+        converted.install(set, name)?;
+        c.references.push((reference.group, name.to_owned()));
+    }
+    Ok(())
+}
+
 /// Halo 1 `scnr` recorded animations block: count, address; `0x40` each.
 pub const H1_RECORDINGS: usize = 0x36c;
 const H1_RECORDING_LEN: usize = 0x40;
@@ -194,76 +183,72 @@ const H1_RECORDING_LEN: usize = 0x40;
 /// `+0x114`; no retail scenario holds one).
 pub const H2_RECORDINGS: u32 = 0x110;
 pub const H2_RECORDING_LEN: usize = 0x34;
-/// Bytes both games' elements share before the event stream's data
-/// reference: the name (32), version `+0x20`, raw animation data `+0x21`,
-/// unit control data version `+0x22`, length in ticks `+0x24` (E: Halo 2
-/// reads `+0x20`, `+0x22` and `+0x24` at `0x001fb3f4`..`0x001fb422`).
-const SHARED: usize = 0x2c;
-
-/// One Halo 1 recorded animation.
+/// The named fields of one recorded animation. The two games have different
+/// data references and the reserved bytes are not part of the recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recording {
     pub name: String,
-    /// The element's first [`SHARED`] bytes, as Halo 1 stores them.
-    pub head: Vec<u8>,
-    /// The event stream (Halo 1 data reference `+0x2c`; Halo 2 reads the
-    /// pointer at `+0x30`).
+    pub version: u8,
+    pub control_version: u8,
+    pub ticks: i16,
     pub stream: Vec<u8>,
-}
-
-impl Recording {
-    /// Version byte (`+0x20`): Halo 2 decodes versions 1 to 4 (its decoder
-    /// table at `0x0046fd5c` holds four entries).
-    pub fn version(&self) -> u8 {
-        self.head[0x20]
-    }
-    /// Unit control data version (`+0x22`).
-    pub fn control_version(&self) -> u8 {
-        self.head[0x22]
-    }
-    /// Length in ticks (`+0x24`).
-    pub fn ticks(&self) -> i16 {
-        i16::from_le_bytes([self.head[0x24], self.head[0x25]])
-    }
 }
 
 /// The level's recorded animations, in Halo 1's order.
 pub fn read_recordings(h1: &H1Map) -> Result<Vec<Recording>> {
     let scnr = h1.tag_data(h1.scenario())?;
-    let w = |o: usize| u32::from_le_bytes(scnr[o..o + 4].try_into().expect("4 bytes"));
-    let (count, address) = (w(H1_RECORDINGS) as usize, w(H1_RECORDINGS + 4));
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let all = h1.read(address, count * H1_RECORDING_LEN)?;
-    let mut out = Vec::with_capacity(count);
-    for e in all.as_chunks::<H1_RECORDING_LEN>().0 {
-        let name_end = e[..32].iter().position(|&c| c == 0).unwrap_or(32);
-        let size = u32::from_le_bytes(e[0x2c..0x30].try_into().expect("4 bytes")) as usize;
-        let at = u32::from_le_bytes(e[0x38..0x3c].try_into().expect("4 bytes"));
-        let stream = match size {
-            0 => Vec::new(),
-            n => h1.read(at, n)?.to_vec(),
-        };
-        out.push(Recording {
-            name: String::from_utf8_lossy(&e[..name_end]).into_owned(),
-            head: e[..SHARED].to_vec(),
-            stream,
-        });
-    }
-    Ok(out)
+    let rows = h1
+        .tag_space()
+        .block_at(scnr, H1_RECORDINGS, H1_RECORDING_LEN)?;
+    rows.into_iter()
+        .map(|e| {
+            let name_end = e[..32].iter().position(|&c| c == 0).unwrap_or(32);
+            let name = std::str::from_utf8(&e[..name_end])
+                .map_err(|_| invalid("invalid recording name"))?
+                .to_owned();
+            let size = u32::from_le_bytes(e[0x2c..0x30].try_into().unwrap());
+            let at = u32::from_le_bytes(e[0x38..0x3c].try_into().unwrap());
+            Ok(Recording {
+                name,
+                version: e[0x20],
+                control_version: e[0x22],
+                ticks: i16::from_le_bytes([e[0x24], e[0x25]]),
+                stream: if size == 0 {
+                    Vec::new()
+                } else {
+                    h1.read(at, size as usize)?.to_vec()
+                },
+            })
+        })
+        .collect()
 }
 
-/// Halo 2 elements for `recordings`: the shared bytes as they are, the
-/// event stream behind the data reference at `+0x2c`.
-pub fn recordings_block(recordings: &[Recording]) -> Vec<map::build::Block> {
+/// Build fresh Halo 2 rows. The map builder relocates each converted stream.
+pub fn recordings_block(recordings: &[Recording]) -> Result<Vec<map::build::Block>> {
+    use tags::defs::{self, Defs, Val};
+    let d = &Defs::builtin().structs["recorded_animation"];
     recordings
         .iter()
         .map(|r| {
-            let mut b = map::build::Block::zeroed(H2_RECORDING_LEN);
-            b.bytes[..SHARED].copy_from_slice(&r.head);
-            b.data(SHARED as u32, map::build::Block::new(r.stream.clone()));
-            b
+            let mut name = [0; 32];
+            let dest = name
+                .get_mut(..r.name.len())
+                .ok_or_else(|| invalid("recording name exceeds 32 bytes"))?;
+            dest.copy_from_slice(r.name.as_bytes());
+            let mut row = defs::default_record(d);
+            for (field, value) in [
+                (
+                    "name",
+                    Val::List(name.into_iter().map(|b| Val::Int(i64::from(b))).collect()),
+                ),
+                ("version", Val::Int(r.version.into())),
+                ("control_version", Val::Int(r.control_version.into())),
+                ("ticks", Val::Int(r.ticks.into())),
+                ("stream", Val::Data(r.stream.clone())),
+            ] {
+                row.set(field, value).map_err(|e| invalid(e.to_string()))?;
+            }
+            defs::to_built(d, &row, &mut |_| None).map_err(|e| invalid(e.to_string()))
         })
         .collect()
 }
@@ -280,4 +265,45 @@ pub fn recording_index(recordings: &[Recording], token: &str) -> Option<u32> {
 /// The string a hook on an animation name interns.
 pub fn animation_name(graphs: &Graphs, h: &Hook) -> String {
     graphs.h2_name(&h.token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use map::build::FixupKind;
+
+    #[test]
+    fn fresh_recording_rows_keep_source_order_and_relocate_the_stream() {
+        let first = Recording {
+            name: "Zulu".into(),
+            version: 4,
+            control_version: 3,
+            ticks: 257,
+            stream: vec![3, 2, 1],
+        };
+        let second = Recording {
+            name: "Alpha".into(),
+            ..first.clone()
+        };
+        let recordings = [first, second];
+        assert_eq!(recording_index(&recordings, "alpha"), Some(1));
+        assert_eq!(recording_index(&recordings, "absent"), None);
+        assert!(recordings_block(&[]).unwrap().is_empty());
+        let rows = recordings_block(&recordings).unwrap();
+        for (row, recording) in rows.iter().zip(recordings) {
+            assert_eq!(row.bytes.len(), H2_RECORDING_LEN);
+            let name_len = recording.name.len();
+            assert_eq!(&row.bytes[..name_len], recording.name.as_bytes());
+            assert!(row.bytes[name_len..32].iter().all(|&b| b == 0));
+            assert_eq!(row.bytes[0x20..0x2c], [4, 0, 3, 0, 1, 1, 0, 0, 0, 0, 0, 0]);
+            assert_eq!(row.fixups.len(), 1);
+            let fixup = &row.fixups[0];
+            assert_eq!(fixup.offset, 0x2c);
+            let FixupKind::Data(child) = &fixup.kind else {
+                panic!("expected a stream");
+            };
+            assert_eq!(child.align, 4);
+            assert_eq!(child.bytes, recording.stream);
+        }
+    }
 }
