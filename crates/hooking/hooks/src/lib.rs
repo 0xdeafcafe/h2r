@@ -41,7 +41,7 @@ pub mod native_objects;
 #[cfg(feature = "native-render")]
 pub mod native_particles;
 #[cfg(feature = "native-render")]
-mod native_effects;
+pub mod native_effects;
 #[cfg(feature = "native-render")]
 pub mod native_post;
 #[cfg(feature = "native-render")]
@@ -58,24 +58,16 @@ pub mod native_world;
 pub mod native_world_layers;
 pub mod occlusion;
 pub mod plan;
-mod verify;
+pub mod verify;
 pub mod pipeline_render;
 pub mod render_census;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;
-pub mod shadow;
 #[cfg(feature = "native-render")]
 pub mod scene_step;
 pub mod scene_entries;
 pub mod scope_zoom_hud;
-pub mod sim_frame;
-pub mod sim_native;
-pub mod sim_objects;
-pub mod sim_physics;
-pub mod sim_observer;
-pub mod sim_static_light;
-pub mod sim_submix;
 pub mod snapshot;
 pub mod switches;
 

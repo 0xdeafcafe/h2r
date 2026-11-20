@@ -1,10 +1,10 @@
 //! `shadow.*`: shadow checks of the native ports against the lifted
-//! original (docs/engine/shadow-exec.md), over `hooks::shadow`'s
+//! original (docs/engine/shadow-exec.md), over `sim_bridge::shadow`'s
 //! registry. Boot's agent glue registers them ([`add_methods`]).
 
 use agent_proto::shadow::{DisableParams, EnableParams, method};
 use agent_proto::{RpcError, code};
-use hooks::shadow::{Error, SHADOW, Shadow};
+use sim_bridge::shadow::{Error, SHADOW, Shadow};
 use serde_json::{Value, json};
 
 use crate::{Access, Agent};

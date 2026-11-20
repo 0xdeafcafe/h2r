@@ -10,6 +10,7 @@ default = ["render-overrides"]
 render-overrides = ["dep:hot-render"]
 
 [dependencies]
+sim-bridge = { path = "../../rewrites/sim-bridge" }
 agent-proto = { path = "../agent-proto" }
 serde.workspace = true
 serde_json.workspace = true
