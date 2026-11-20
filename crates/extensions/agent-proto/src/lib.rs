@@ -187,6 +187,8 @@ pub mod method {
     /// "mode", "dialog", "age_ms"}`; `dialog` is the first screen on windows
     /// 0 to 4 (`{"id", "name", "window", "slot"}`) or `null`.
     pub const UI_CAMPAIGN: &str = "ui.campaign";
+    /// The pregame session's player slots, peer indices, names and connection bars.
+    pub const UI_LOBBY_PLAYERS: &str = "ui.lobby.players";
     pub const UI_SCREEN: &str = "ui.screen";
     /// The visible option lines in the active pregame custom lobby.
     pub const UI_LOBBY_OPTIONS: &str = "ui.lobby_options";

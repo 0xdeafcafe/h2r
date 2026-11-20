@@ -46,7 +46,7 @@ connection to hold `session.claim`.
 | `host.metrics`, `host.audit`, `host.perf` | read | [`host`](#host-the-process-and-its-lobby) |
 | `host.lobby.open`, `close`, `start` | act | [`host.lobby`](#hostlobby) |
 | `host.lobby.state` | read | [`host.lobby`](#hostlobby) |
-| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack` | read | [`ui`](#ui-what-the-menus-show) |
+| `ui.screen`, `ui.campaign`, `ui.audit`, `ui.stack`, `ui.lobby.players` | read | [`ui`](#ui-what-the-menus-show) |
 | `ui.press` | act | [Menu inspection and navigation](#menu-inspection-and-navigation) |
 | `audio.voices` | read | [`audio`](#audio-voice-routing) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](#haloscript-state) |
@@ -1060,6 +1060,18 @@ mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
   Open a pregame custom lobby to read its retail lines and any Clankers,
   Halo 1 Options and Skulls summaries. After changing the settings,
   close the dialog and read the panel again.
+
+- **`ui.lobby.players`** (`h2 agent ui.lobby.players`, no parameters):
+  reads the pregame player list on a game boundary without UI watch
+  (`crates/extensions/game/src/lobby_quality.rs`). Each entry has its
+  membership `slot`, console `peer`, `name`, `bars` (1 to 6) and `rtt_ms`
+  (milliseconds, or null when there is no network sample). Split-screen
+  players on a console share its peer and bar count. Local players and
+  phantoms have six bars and null RTT. Remote peers with no sample have
+  one bar. The list uses the squad's membership in custom games and the
+  target membership when the matchmaking lobby has one. Results are in
+  slot order, with an empty list outside pregame.
+  For example, `{"players":[{"slot":1,"peer":1,"name":"Clanker","bars":6,"rtt_ms":null}]}`.
 
 Screens already moved to Rust (the Video screen, the skulls page, the
 account, co-op and sign-in screens; [feature-engine.md](../engine/feature-engine.md))

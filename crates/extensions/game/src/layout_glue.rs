@@ -616,6 +616,7 @@ pub fn install(
         if with_theater {
             served.push((theater_menu::LABEL_ID, theater_menu::LABEL));
         }
+        served.extend(crate::lobby_status::STRINGS);
         if with_skulls {
             served.extend(skulls_menu::strings());
         }
@@ -1036,9 +1037,13 @@ pub fn install(
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
                 announce(&seen, "layouts: text set");
                 let pending = PENDING_VALUE.load(Ordering::Relaxed);
-                if pending != 0 {
+                {
                     let mut mem = ctx.runtime().memory();
-                    if mem.u32(cpu.esp + 4)? == 0 {
+                    let id = mem.u32(cpu.esp + 4)?;
+                    let return_pc = mem.u32(cpu.esp)?;
+                    if let Some(id) = crate::lobby_status::custom_game_text(&*mem, return_pc, id) {
+                        mem.set_u32(cpu.esp + 4, id)?;
+                    } else if pending != 0 && id == 0 {
                         PENDING_VALUE.store(0, Ordering::Relaxed);
                         if let Some(l) = mem.u8(pending).ok().and_then(Layout::from_preset).filter(|l| !l.is_retail()) {
                             mem.set_u32(cpu.esp + 4, name_id(l))?;
@@ -1660,6 +1665,12 @@ pub fn install(
     registry
         .add(&crate::controls_text::ControlsText)
         .map_err(|e| anyhow::anyhow!("controls text: {e}"))?;
+    registry
+        .add(&crate::lobby_status::MatchCountdown)
+        .map_err(|e| anyhow::anyhow!("match countdown: {e}"))?;
+    registry
+        .add(&crate::lobby_quality::ConnectionBars)
+        .map_err(|e| anyhow::anyhow!("connection bars: {e}"))?;
     // Our strings: a source for the locale lookup (the Rust one serves it;
     // with that off, the plan's locale bridge does).
     registry

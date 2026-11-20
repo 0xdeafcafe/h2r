@@ -67,6 +67,8 @@ pub mod keyboard_glue;
 pub mod layout_glue;
 pub mod level_boot;
 pub mod list_class;
+mod lobby_quality;
+mod lobby_status;
 pub mod live_glue;
 pub mod live_notice;
 pub mod lobby_options;

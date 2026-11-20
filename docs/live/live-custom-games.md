@@ -21,6 +21,13 @@ Joining uses the browser's own join and the existing XNet path: direct UDP to
 the host, as described in [live-matchmaking.md](live-matchmaking.md) §3.6.
 Invitations keep working whatever the visibility.
 
+A custom game hosted with Clankers shows **Setting up bots…** at the
+end of the countdown while their seats are being prepared. The match
+scoreboard rates connections from measured packet RTT. The lobby roster
+and each player's rating are available through
+[`ui.lobby.players`](../runtime/agent-api.md#ui-what-the-menus-show).
+See [phantom peers and connection bars](../game/bots.md#5-way-in-2-phantom-peers).
+
 Labels follow [live-boundary.md](live-boundary.md): **confirmed** means read
 statically in the retail code, **likely** means consistent with that code but
 not proven. Addresses are guest VAs in the retail 5849 image.
