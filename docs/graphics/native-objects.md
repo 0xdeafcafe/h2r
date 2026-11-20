@@ -80,8 +80,13 @@ a previous load cannot suppress any of the new load's draws.
 
 The `native_objects_walk_native` and `native_objects_walk_fallback`
 columns count objects per view. Fallback reason columns have the same
-prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`
-or `reservation`. `walk_unreadable` counts views whose sorted list or
+prefix and end in `unsupported`, `order`, `model`, `inputs`, `state`,
+`reservation` or `unresident`. `walk_unresident` counts the objects
+returned to the guest in a run whose requested model agrees with the
+loader's part coverage but has no uploaded geometry and materials.
+`walk_model` includes unresolved definitions, mismatched models and
+loader lock contention. These planning refusals keep the guest draws.
+`walk_unreadable` counts views whose sorted list or
 ownership could not be established. These views may have an unknown
 object count. `walk_part_aux_state`, `walk_part_subparts` and
 `walk_part_topology` count the parts (not objects) behind

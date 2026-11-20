@@ -414,7 +414,7 @@ fn plan_walk<B: d3d::backend::Backend>(
     } else {
         models.lit.lock().map_err(|_| ObjectWalk::Model)?
     };
-    let lit = lit.as_ref().ok_or(ObjectWalk::Model)?;
+    let lit = lit.as_ref();
     let guest = Ro(mem);
     let mut draws = Vec::with_capacity(run.len());
     for (slot, &item) in (first..).zip(run) {
@@ -426,7 +426,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         let instance = scene.instance(view, InstanceKey(handle)).ok_or(ObjectWalk::Inputs)?;
         let model = *index.get(&(instance.definition as u16)).ok_or(ObjectWalk::Model)?;
         let cover = coverage.get(&TagId(model)).ok_or(ObjectWalk::Model)?;
-        if model != part.mode || instance.nodes.len() != cover.nodes || !lit.has(model) {
+        if model != part.mode || instance.nodes.len() != cover.nodes {
             return Err(ObjectWalk::Model);
         }
         if !cover.ranges.get(&(part.key.section, part.key.part)).is_some_and(|range| range.matches(part)) {
@@ -435,6 +435,9 @@ fn plan_walk<B: d3d::backend::Backend>(
         let (_, scene_part) = scene.part_at(view, slot as u32)
             .filter(|(owner, p)| owner.key == instance.key && p.key == part.key)
             .ok_or(ObjectWalk::Inputs)?;
+        // The model and part agree with the CPU loader's coverage. Only a
+        // failed GPU lookup for that same model is a residency fallback.
+        let lit = lit.filter(|assets| assets.has(model)).ok_or(ObjectWalk::Unresident)?;
         let mut draw = lit.plan_part_of(model, scene, instance, scene_part, &entry.states).map_err(|why| {
             count_refusal(&why);
             ObjectWalk::Inputs
