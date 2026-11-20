@@ -155,7 +155,7 @@ pub struct View {
     pub clusters: Range<u32>,
     pub instances: Range<u32>,  // into FrameScene::instances, in the guest's order
     pub lights: Range<u32>,
-    pub world: WorldState,      // lightmap cycle coefficients, material animation time, texaccum use
+    pub world: WorldState,      // texaccum use (a layer draw's material inputs are its LayerPass's)
     pub fog: FogState,          // planar and atmospheric fog words, resolved
     pub water: WaterState,
     pub post: PostParams,       // colour pass, screen effects, glow, fades: values, not draws
@@ -202,7 +202,7 @@ hundred kilobytes at most (**Estimate**).
 | Visible clusters, placements | the Rust scene lists (`feature::native_scene_lists`: camera visibility) | typed | 1 |
 | Object instances, parts, palette rows, lighting | the Rust object setup and render records (`native_scene_lists::setup`, `objects::record_rows`, `object_lighting`) | typed | 1 |
 | First person | the layer-3 caller in `0x0003fdf0` (return `0x00040136`): its items, each record's mode at `+4`, the owner's lighting | typed | 3 |
-| World layers 1, 3, 5, 7, 8, 20 state | lightmap coefficients, material animation inputs | typed | 1 (layer 3), 3 (rest) |
+| World layers 1, 3, 5, 7, 8, 20 state | each layer draw's material inputs at its begin (`scene_extract::layout::layer_inputs`: the render time, the view-wide engine inputs, the defaults) and each object item's lighting, which carries the lightmap cycle | typed | 1 (layer 3), 3 and 4 (rest) |
 | Lights and their geometry | the Rust light order and gathered light geometry (`native_scene_lists::lights`, `native_lights::walk`) | typed | 3 |
 | Shadow maps | the shadow layers' casters and projections (`native_shadows`) | typed | 3 |
 | Fog (layer 16), water (layer 6) | the device-resolved fog words; the water gate and items | typed | 5 |
@@ -809,7 +809,7 @@ commits. The three parts are built.
   `LayerItem`; `View::layers`): each geometry item's key, its owner (a
   cluster's section, a placement, or an object by handle), its record's
   model (the first-person mode for a first-person item), an object
-  item's palette rows, and for a first-person item its owner's lighting;
+  item's palette rows and its owner's lighting;
   the pass keeps the stencil-off flags and whether the texture
   accumulation target binds. Another build callback, or a record, owner
   or rows that do not read, is the pass's remainder. The first person
@@ -817,10 +817,9 @@ commits. The three parts are built.
   The scene's view can open at its layer 1, before layer 3; its
   clusters and world state are read at layer 3 either way
   (`scene_step::open_kind`). The stages still draw these layers from
-  their packets, with the constants the device holds; so the lightmap
-  cycle coefficients and material animation inputs of section 4.3 are
-  not read into the pass yet, and the stage that draws these layers
-  from the scene (slice 4) reads them.
+  their packets, with the constants the device holds; the material
+  inputs of section 4.3 are read into the pass in slice 4
+  (`frame_scene::LayerInputs`, below).
 - **Tests.** One synthetic case per former refusal reason, asserting
   the part or light is in the scene: for objects,
   `each_former_special_record_flag_is_a_part_or_a_named_cause` and
@@ -868,11 +867,63 @@ to the guest's draws (**Code**):
   the draws the guest resolves under the layer draw
   (`native_render::world_layers_gpu`, the indexed-draw admission in
   `boot::native_world_layers_glue`; the first person's per item at
-  issue). With the entry replaced nothing is resolved. Replacing them
-  needs a stage that draws a layer pass from the scene: each item's
-  material pass for the layer, with the lightmap cycle coefficients and
-  material animation inputs of section 4.3, which extraction does not
-  read yet.
+  issue). With the entry replaced nothing is resolved. What a stage
+  needs to draw a layer pass from the scene alone is extracted and
+  planned; the GPU recording of the plan is not built.
+  - **Material inputs** (`frame_scene::LayerInputs`, read at the layer
+    draw's begin by `scene_extract::layout::layer_inputs`, research
+    points in its module notes). The render time `0x004858a0`, which
+    game-time animated properties divide by their period
+    (`0x0001b230`). The engine inputs that do not read the item,
+    evaluated as the selectors `0x000336f0`, `0x00033980` and
+    `0x00034060` do, from the render context `0x00485600` (copied per
+    view by `0x000132d0`), the view vectors, the fog and the light
+    block, each with a mask of the ones that read. The defaults the
+    lighting inputs fall back on. Every object item of a layer draw
+    carries its owner's lighting (`LayerItem::lighting`), the scene's as
+    the first person's.
+  - **The lightmap cycle.** `0x00022850`, at each view's begin
+    (`0x00012a50`), steps the probe coefficients `0x004b8940` and the
+    phase `0x005093f0`; their one reader, `0x00022cf0`, is the object
+    lighting `0x00023690` under the object setup (`0x0004b5d0`). So the
+    cycle reaches a layer's draws only through the object items'
+    lighting, read after it; the world's items draw without one.
+  - **The plan** (`native_render::layer_pass`). Per item: the passes
+    the layer draws for its shader at the first level of detail
+    (`0x00016610` draws each implementation with a vertex shader), the
+    implementation (the only one, or the item's), the engine inputs
+    (the view's, the lighting's from the item's owner, none for the
+    structure's, and the shader's own) with the material resolved again
+    with them when an implementation reads any, and the values of its
+    pixel- and vertex-constant animations at the render time
+    (`0x00017550`: time over period, wrapped unless periodic, the
+    function `0x0013b390`, mapped onto its range). An item that cannot
+    be planned has a named cause (`LayerRefusal::name`): an input the
+    scene does not give, an animation driven by an object function or of
+    a bitmap or state, a material or pass that does not resolve.
+  - **Not built.** Recording the plan: the clusters' and placements'
+    passes over the world's buffers (as the fog stage records its
+    layer-16 passes, `fog_gpu::FogSet`), the objects' over the model
+    buffers (`object_program_gpu`), with the planned constants and
+    animation values; the glue that takes the layer entries with it in
+    place of the indexed-draw admission; and the plan's refusals in
+    `render.scene`.
+  - **Tests** (synthetic). `every_view_input_reads_as_its_selector_computes_it`,
+    `without_fog_or_a_view_the_selectors_fall_back` and
+    `an_input_whose_words_do_not_read_is_not_given`
+    (`scene_extract::layout::layer_inputs`); the pass's inputs in
+    `a_layers_items_are_in_the_scene_with_their_owners_and_the_rest_a_remainder`
+    (`scene_extract::extract`);
+    `a_layer_draws_material_inputs_count_in_the_hash`
+    (`frame_scene::summary`); for the plan
+    (`native_render::layer_pass`),
+    `a_static_material_plans_each_pass_with_its_own_inputs`,
+    `the_items_implementation_picks_among_several_and_one_without_a_vertex_shader_draws_nothing`,
+    `view_and_lighting_inputs_are_given_and_the_material_is_resolved_with_them`,
+    `a_structure_item_draws_with_no_lighting_and_an_input_nothing_gives_is_named`,
+    `a_game_time_property_wraps_its_time_over_its_period_and_maps_onto_its_range`,
+    `constant_animations_take_their_values_and_other_kinds_are_named`
+    and `a_scene_layer_plans_its_items_in_order_and_names_the_rest`.
 - **Layer 3.** The decorators (build `0x0004de20`) have no native stage
   ([native-objects.md](native-objects.md), "Other builds in layer 3"),
   the world keeps the draws of materials it does not translate, and the
