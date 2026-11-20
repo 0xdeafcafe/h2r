@@ -406,12 +406,13 @@ A module built with the block clock (it also has feature 1) uses all of
 the above, but `h2acc` counts the plan's block costs instead of accesses
 (`crates/recompiler/emit/src/clock.rs`): the guest instructions of the
 function's entry block when the handler is entered with the entry as its
-selector, and of a loop header's block on each trip that runs the header,
-after its poll. An access, and a REP bulk copy, add nothing. The runtime
+selector (nothing when the entry is a loop header, whose trip charge
+covers it), and of a loop header's block on each trip that runs the
+header, after its poll. An access, and a REP bulk copy, add nothing. The runtime
 charges `preempt::HLE_COST` for each Rust handler it invokes. Atomics
 charge as before. A handler cut into parts charges the entry only at the
-function entry's selector, never at a cut-in. The runtime refuses the bit without feature 1, and a
-module whose clock differs from one already registered
+function entry's selector, never at a cut-in. The runtime refuses the bit
+without feature 1, and a module whose clock differs from one already registered
 (docs/runtime/block-clock-imprecise-faults.md).
 
 `H2_VIEW_CHARGE` (a `cflags` switch, on by default; counting modules

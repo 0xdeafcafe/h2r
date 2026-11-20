@@ -800,11 +800,8 @@ impl Emitter<'_> {
             // Entered from the runner, which is a safe point: skip the poll.
             let label = if headers.contains(s) { "P" } else { "L" };
             // The block clock charges entering the function (crate::clock).
-            let clock = if self.shape.block_clock && *s == f.entry {
-                format!("H2_CLOCK({}u); ", crate::clock::entry_cost(f))
-            } else {
-                String::new()
-            };
+            let entry = if self.shape.block_clock && *s == f.entry { crate::clock::entry_cost(f, headers) } else { 0 };
+            let clock = if entry > 0 { format!("H2_CLOCK({entry}u); ") } else { String::new() };
             self.line(1, format!("case {s:#010x}u: {clock}goto {label}_{s:08x};"));
         }
         // From another part: the block's own label, a header's poll first.

@@ -88,7 +88,8 @@ fn register_loop() -> IrFunction {
 }
 
 /// A loop whose header is the function entry: entered there, it charges
-/// both the entry and the first trip.
+/// the first trip only (no separate entry charge), so a resume there costs
+/// what an uninterrupted trip does.
 fn entry_loop() -> IrFunction {
     function(A, |a| {
         let mut l = a.create_label();
@@ -124,7 +125,7 @@ fn drive(g: &emit::host::Generated, slice: Option<u64>) -> Run {
 }
 
 /// The rule, from the IR alone: entering at the function entry charges
-/// `entry_cost`; every arrival at a loop header polls (leaves if the
+/// `entry_cost` (0 when the entry is a loop header); every arrival at a loop header polls (leaves if the
 /// handler's count has reached the budget it read on entry), then charges
 /// `header_cost`; a handler charges its count when it leaves, which ends
 /// the slice once the count reaches what was left. A resumed header skips
@@ -143,7 +144,7 @@ fn reference(f: &IrFunction, headers: &BTreeSet<u32>, slice: Option<u64>) -> (Ve
         let budget = if left > 0 { left } else { u64::MAX };
         let mut count = 0u64;
         if start == f.entry {
-            count += emit::clock::entry_cost(f) as u64;
+            count += emit::clock::entry_cost(f, headers) as u64;
         }
         if headers.contains(&start) {
             count += emit::clock::header_cost(f, start) as u64;
@@ -201,7 +202,7 @@ fn a_block_clocked_loop_charges_its_entry_and_each_trip_not_its_accesses() {
     let Some((owners, block, access)) = builds("block-clock-loop", vec![memory_loop()]) else { return };
     let o = &owners[0];
     let header = *o.loops.headers.iter().next().expect("one loop");
-    let entry = emit::clock::entry_cost(&o.func) as u64;
+    let entry = emit::clock::entry_cost(&o.func, &o.loops.headers) as u64;
     let trip = emit::clock::header_cost(&o.func, header) as u64;
     assert_eq!((entry, trip), (1, 5), "xor; then add, mov, add, dec, jnz");
     let run = drive(&block, None);
@@ -241,7 +242,7 @@ fn every_slice_ends_where_the_ir_rule_says() {
             for &(pc, charged) in &run.stops {
                 assert!(pc == HARNESS_EXIT || o.loops.headers.contains(&pc), "{name}: stop at {pc:#x}");
                 let spent = charged - last;
-                let most = emit::clock::entry_cost(&o.func) as u64
+                let most = emit::clock::entry_cost(&o.func, &o.loops.headers) as u64
                     + o.loops.headers.iter().map(|&h| emit::clock::header_cost(&o.func, h) as u64).max().unwrap_or(0);
                 assert!(spent >= slice && spent < slice + most, "{name}, slice {slice}: {spent} spent");
                 last = charged;
@@ -267,6 +268,20 @@ fn the_entry_and_header_charges_are_in_the_c() {
     assert!(text.contains(&format!("P_{header:08x}:;\n    H2_CLOCK(5u);")), "{text}");
     let text = emit::c::function(&o.func, &shape(false));
     assert!(!text.contains("H2_CLOCK"), "{text}");
+    // An entry that is a loop header charges only its trip, at P_.
+    let owners = emit::plan(vec![entry_loop()]);
+    let o = &owners[0];
+    assert!(o.loops.headers.contains(&A));
+    let shape = emit::c::OwnerShape {
+        selectors: &o.selectors,
+        loops: &o.loops,
+        accounting: true,
+        block_clock: true,
+        functions: None,
+    };
+    let text = emit::c::function(&o.func, &shape);
+    assert!(text.contains(&format!("case {A:#010x}u: goto P_{A:08x};")), "{text}");
+    assert_eq!(text.matches("H2_CLOCK(").count(), 1, "{text}");
 }
 
 /// The resume selector a stop leaves at is the header's, so the runner

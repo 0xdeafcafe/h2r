@@ -57,8 +57,9 @@ the plan assigns instead (`emit::clock`):
 
 - entering a handler with its function entry as the selector charges the
   entry block's guest instruction count (`H2_CLOCK(n)` in the selector
-  switch); a loop whose header is the function entry charges it again on
-  a resume there;
+  switch), except when the entry is a loop header: the selector cannot
+  tell a call from a resume there, so the header's trip charge alone
+  covers it, and a resumed trip costs what an uninterrupted one does;
 - each trip round a loop charges the header block's instruction count,
   after the header's poll (`H2_CLOCK(n)` at the `P_` label), so a trip that
   leaves at the poll charges nothing and the resumed trip charges once;
