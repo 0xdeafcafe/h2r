@@ -127,7 +127,8 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     fn load(&self, mem: &dyn GuestMemory) -> Option<(Arc<Models>, u64)> {
         let generation = native_map_work::generation();
-        let name = crate::health::loaded_map_name(mem).ok()?;
+        let mut field = [0; 32];
+        let name = crate::health::read_map_name(mem, &mut field).ok()?;
         if name.is_empty() {
             return None;
         }
@@ -148,6 +149,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if let Some(s) = state.as_ref().filter(|s| current(s)) {
             return Some((s.resident(timeline::frames())?, generation));
         }
+        let name = name.into_owned();
         let job = Arc::new(());
         let retired = state.replace(MapState {
             name: name.clone(),
