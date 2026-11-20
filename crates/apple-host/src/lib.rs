@@ -91,6 +91,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
             gfx: Some(gfx),
             gfx_view: None,
             render_thread: boot::d3d_glue::render_thread_requested(),
+            host_light: false,
+            host_bots: false,
             audio_sink: Some(audio_sink()),
             // Voice chat's devices are macOS-only for now (live-voice.md).
             voice_io: None,
@@ -110,6 +112,7 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
                 host.tick(k.clock().counter()) == app::Control::Continue
             })),
             on_vfs: cloud.as_ref().map(|c| c.on_vfs()),
+            ..boot::Host::default()
         };
         let opts = boot::RunOpts {
             disc: layout.disc.clone(),

@@ -75,7 +75,9 @@ use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes,
+    Backend, DrawJudge, DrawOutcome, ExternalAttachments, ExternalCommands, ExternalCopies,
+    ExternalRecording, GuestLayoutKind, RectClear, ResolvedDraw, StreamBytes, TargetCopy,
+    prepare_external_recordings,
 };
 
 /// Presents the guest may run ahead of the render thread before `Swap`
@@ -102,6 +104,7 @@ enum Cmd<B: Backend> {
     /// ([`Shared::spent_boxes`]), for the next draw to fill instead of an
     /// allocation per draw.
     Draw(DrawBox),
+    ExternalRun(Vec<ExternalRecording>),
 }
 
 /// A queued draw's box: `Some` while queued, emptied by the render thread.
@@ -119,23 +122,45 @@ struct DrawCmd {
 /// The pending batch, shared with the texture proxies so that their drops
 /// keep their place in the order.
 struct Queue<B: Backend> {
-    pending: Mutex<Vec<Cmd<B>>>,
+    pending: Mutex<PendingBatch<B>>,
     tx: mpsc::Sender<Vec<Cmd<B>>>,
+}
+
+struct PendingBatch<B: Backend> {
+    commands: Vec<Cmd<B>>,
+    /// Changes at every command outside the pinned external run.
+    order: u64,
 }
 
 impl<B: Backend> Queue<B> {
     /// Queues `cmd`; hands the batch over once it is [`BATCH`] long.
     fn push(&self, cmd: Cmd<B>) -> Result<(), ()> {
         let mut p = self.pending.lock().unwrap();
-        p.push(cmd);
-        if p.len() >= BATCH {
-            return self.send(&mut p);
+        p.commands.push(cmd);
+        p.order = p.order.wrapping_add(1);
+        if p.commands.len() >= BATCH {
+            return self.send(&mut p.commands);
         }
         Ok(())
     }
+    fn push_external(&self, recording: ExternalRecording) -> Result<(), ()> {
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(Cmd::ExternalRun(run)) = pending.commands.last_mut() {
+            run.push(recording);
+        } else {
+            pending.commands.push(Cmd::ExternalRun(vec![recording]));
+        }
+        if pending.commands.len() >= BATCH { self.send(&mut pending.commands)?; }
+        Ok(())
+    }
+
+    fn order(&self) -> u64 {
+        self.pending.lock().unwrap().order
+    }
+
     /// Hands the pending batch to the render thread.
     fn flush(&self) -> Result<(), ()> {
-        self.send(&mut self.pending.lock().unwrap())
+        self.send(&mut self.pending.lock().unwrap().commands)
     }
     /// Sends under the lock, so batches leave in the order they filled.
     fn send(&self, p: &mut Vec<Cmd<B>>) -> Result<(), ()> {
@@ -310,6 +335,9 @@ impl<B: Backend> Worker<B> {
     fn exec(&mut self, cmd: Cmd<B>) {
         match cmd {
             Cmd::Job(job) => job(self),
+            Cmd::ExternalRun(run) => {
+                for recording in run { self.inner.commit_external(recording); }
+            }
             Cmd::Draw(mut slot) => {
                 let d = slot.take().expect("a queued draw");
                 self.spent_boxes.push(slot);
@@ -406,6 +434,12 @@ impl<B: Backend + 'static> std::fmt::Debug for ProxyTexture<B> {
 /// e.g. to register it with the sampling profiler.
 pub static RENDER_THREAD_START: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
 
+struct PinnedExternalRun {
+    key: (u64, u32, u32, TargetCopy),
+    order: u64,
+    attachments: Arc<[ExternalAttachments]>,
+}
+
 /// [`Backend`] that queues `B`'s work to a render thread.
 pub struct ThreadedBackend<B: Backend + 'static> {
     queue: Arc<Queue<B>>,
@@ -420,6 +454,8 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     sample_surfaces: bool,
     sample_depth: bool,
     external_pass: bool,
+    reusable_external_attachments: bool,
+    pinned_external_run: Option<PinnedExternalRun>,
     /// `inner.can_mirror()`.
     mirror: bool,
     next_surface: u32,
@@ -446,6 +482,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let sample_surfaces = inner.can_sample_surfaces();
         let sample_depth = inner.can_sample_depth_surfaces();
         let external_pass = inner.supports_external_pass();
+        let reusable_external_attachments = inner.reusable_external_attachments();
         let mirror = inner.can_mirror();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
@@ -532,7 +569,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             })?;
         Ok(Self {
             queue: Arc::new(Queue {
-                pending: Mutex::new(Vec::with_capacity(BATCH)),
+                pending: Mutex::new(PendingBatch { commands: Vec::with_capacity(BATCH), order: 0 }),
                 tx,
             }),
             spare: Vec::new(),
@@ -543,6 +580,8 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             sample_surfaces,
             sample_depth,
             external_pass,
+            reusable_external_attachments,
+            pinned_external_run: None,
             mirror,
             next_surface: 1,
             next_texture: 1,
@@ -701,6 +740,34 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         r
     }
 
+    fn pin_external_run(
+        &mut self, run: u64, surfaces: crate::ExternalSurfaces<u32>, copy: TargetCopy,
+        stage: timeline::native::Stage,
+    ) -> Result<ExternalCopies<Arc<[ExternalAttachments]>>, String> {
+        self.check()?;
+        let key = (run, surfaces.color, surfaces.depth, copy);
+        let order = self.queue.order();
+        if let Some(pinned) = self.pinned_external_run.as_ref()
+            && (pinned.key, pinned.order) == (key, order)
+        {
+            return Ok(ExternalCopies::Ready(Arc::clone(&pinned.attachments)));
+        }
+        self.pinned_external_run = None;
+        count_external_wait(stage);
+        let copies = self.external_attachments(surfaces, [None; 4], copy)?;
+        Ok(match copies {
+            ExternalCopies::Ready(attachments) => {
+                let attachments: Arc<[_]> = attachments.into();
+                self.pinned_external_run = Some(PinnedExternalRun {
+                    key, order: self.queue.order(),
+                    attachments: Arc::clone(&attachments),
+                });
+                ExternalCopies::Ready(attachments)
+            }
+            ExternalCopies::Missing(copy) => ExternalCopies::Missing(copy),
+        })
+    }
+
     fn new_surface(&mut self) -> u32 {
         let id = self.next_surface;
         self.next_surface += 1;
@@ -746,6 +813,13 @@ fn expect_drawn(what: &str, r: DrawOutcome) -> Result<(), String> {
     match r {
         DrawOutcome::Drawn => Ok(()),
         other => Err(format!("{what}: {other:?}")),
+    }
+}
+
+fn count_external_wait(stage: timeline::native::Stage) {
+    stage.count(timeline::native::Metric::WorkerRoundTrips, 1);
+    if stage == timeline::native::Stage::Lights {
+        LIGHT_WORKER_WAITS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1184,10 +1258,25 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         &mut self, surfaces: crate::ExternalSurfaces<Self::Surface>, request: crate::ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &crate::ExternalPlan, copy: crate::TargetCopy, pass: crate::SharedReplacement,
     ) -> Result<Option<Vec<crate::ExternalRecording>>, String> {
-        plan.stage.count(timeline::native::Metric::WorkerRoundTrips, 1);
-        if plan.stage == timeline::native::Stage::Lights {
-            LIGHT_WORKER_WAITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if matches!(plan.stage, timeline::native::Stage::World | timeline::native::Stage::Objects | timeline::native::Stage::Lights)
+            && pass.lock().map_err(|_| "native pass poisoned")?.resolved_fallback().is_some()
+        {
+            // This is a resolved admission the queue declined. Keep its
+            // ordinary D3D path instead of waiting for a worker decision.
+            return Ok(None);
         }
+        if self.reusable_external_attachments && textures.iter().all(Option::is_none)
+            && surfaces.sampled.is_empty() && surfaces.slots.is_empty() && surfaces.slot_sizes.is_empty()
+        {
+            let batch = pass.lock().map_err(|_| "native pass poisoned")?.batch_key();
+            if let Some(run) = batch {
+                return prepare_external_recordings(request, plan, copy, pass, true, || {
+                    self.pin_external_run(run, surfaces, copy, plan.stage)
+                });
+            }
+        }
+        self.pinned_external_run = None;
+        count_external_wait(plan.stage);
         let plan = plan.clone();
         let ids = textures.map(|t| t.map(|t| t.id));
         self.call(move |w| {
@@ -1198,7 +1287,57 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         })
     }
 
+    fn queue_external_draw(
+        &mut self, candidate: crate::backend::QueuedExternalDraw<u32>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        if !self.external_pass
+            || self.check().is_err() || self.judge.is_none()
+            || self.judge_draw(&candidate.fallback, textures) != DrawOutcome::Drawn
+        {
+            return false;
+        }
+        let ids = textures.map(|t| t.map(|t| t.id));
+        self.post(move |w| {
+            let draw = candidate.fallback;
+            let color = w.surface(candidate.surfaces.color)?;
+            let depth = w.depth(candidate.fallback_depth)?;
+            let mut textures = [None; 4];
+            for (slot, id) in textures.iter_mut().zip(ids) {
+                if let Some(id) = id {
+                    *slot = Some(w.textures.get(&id).ok_or_else(|| format!("render thread: texture {id} is not live"))?);
+                }
+            }
+            if let Some(surfaces) = candidate.surfaces.try_map(|s| w.surfaces.get(s).copied())
+                && let Ok(Some(recordings)) = w.inner.prepare_external(
+                    surfaces, candidate.request, textures, &candidate.plan, crate::TargetCopy::Reference, candidate.pass,
+                )
+                && crate::device::complete_recordings(&candidate.plan, &recordings)
+            {
+                for recording in recordings { w.inner.commit_external(recording); }
+                (candidate.finished)(None);
+                return Ok(());
+            }
+            let result = w.inner.draw(color, depth, &draw, textures);
+            (candidate.finished)(Some(&result));
+            let outcome = result?;
+            if outcome != DrawOutcome::Drawn {
+                w.shared.miss(format!("{}: answered Drawn, the backend gave {outcome:?}", draw.entry));
+            }
+            Ok(())
+        });
+        true
+    }
+
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
+        if recording.stage == timeline::native::Stage::Lights
+            && matches!(&recording.commands, ExternalCommands::Bundles { .. })
+        {
+            if self.queue.push_external(recording).is_err() {
+                self.shared.latch("render thread: gone".into());
+            }
+            return;
+        }
         self.post(move |w| {
             w.inner.commit_external(recording);
             Ok(())

@@ -34,7 +34,7 @@
 
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -751,6 +751,10 @@ pub struct SwallowTarget {
 
 /// Validates the live state of the original packets before native recording.
 pub trait SwallowPass: crate::backend::ExternalPass {
+    /// Need the first original's resolved inputs (such as an opaque
+    /// framebuffer snapshot) alongside the live post attachments.
+    fn entry_samples(&self) -> bool { false }
+
     fn validate(&self, _originals: &[SwallowOriginal<'_>], _slots: &[Option<SwallowTarget>]) -> Result<(), String> {
         Ok(())
     }
@@ -1024,6 +1028,7 @@ pub struct Device<B: Backend> {
     events: Vec<Event>,
     last_stop: Option<HleStop>,
     stats: Stats,
+    queued_external_stats: Arc<QueuedExternalStats>,
     /// `D3DSIMPLERENDERSTATEENCODE`, read from the image at creation.
     encode: Option<SimpleEncode>,
     /// NV2A register state the push buffer has set ([`crate::hw`]).
@@ -1039,6 +1044,7 @@ pub struct Device<B: Backend> {
     residual: Residual,
     /// Optional vertex-binding optimization at the resolved indexed draw.
     indexed_geometry: Option<IndexedGeometryHook>,
+    indexed_geometry_scope: fn() -> bool,
     /// The draws of a pass being swallowed ([`Device::swallow`]).
     swallowing: Option<Swallowing<B>>,
     /// How the last swallow that ended early ended
@@ -1170,7 +1176,25 @@ struct ExternalBinding<S> {
     depth_write: bool,
 }
 
-fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
+#[derive(Default)]
+struct QueuedExternalStats {
+    committed: AtomicU64,
+    dropped: AtomicU64,
+}
+
+impl<S: Copy + Eq> ExternalBinding<S> {
+    fn same_draw_writes(&self, header: u32, color: S, depth: Option<S>, writes_depth: bool) -> bool {
+        self.colors.as_slice() == [(header, color)]
+            && self.depth_write == writes_depth
+            && self.surfaces.color == color
+            && match depth {
+                Some(depth) => self.surfaces.depth == depth,
+                None => !writes_depth && self.surfaces.depth == color,
+            }
+    }
+}
+
+pub(crate) fn complete_recordings(plan: &crate::ExternalPlan, c: &[crate::ExternalRecording]) -> bool {
     let copies = matches!(c, [r] if r.copy == crate::TargetCopy::Reference)
         || matches!(c, [r, d] if r.copy == crate::TargetCopy::Reference && d.copy == crate::TargetCopy::Display);
     copies && c.iter().all(|r| plan.complete(r.copy, r.ranges))
@@ -1299,6 +1323,7 @@ impl<B: Backend> Device<B> {
             events: Vec::new(),
             last_stop: None,
             stats: Stats::default(),
+            queued_external_stats: Default::default(),
             encode: None,
             hw: HwState::default(),
             pending_grid: None,
@@ -1307,6 +1332,7 @@ impl<B: Backend> Device<B> {
             scoped_admission: None,
             residual: Residual::default(),
             indexed_geometry: None,
+            indexed_geometry_scope: || false,
             swallowing: None,
             swallow_mismatch: None,
             trace: None,
@@ -1348,7 +1374,10 @@ impl<B: Backend> Device<B> {
 
     /// Counters.
     pub fn stats(&self) -> Stats {
-        self.stats
+        let mut stats = self.stats;
+        stats.external_passes += self.queued_external_stats.committed.load(AtomicOrdering::Relaxed);
+        stats.external_passes_dropped += self.queued_external_stats.dropped.load(AtomicOrdering::Relaxed);
+        stats
     }
 
     /// Drains recorded events.
@@ -2041,6 +2070,13 @@ impl<B: Backend> Device<B> {
     /// It runs after texture and attachment resolution, in submission order.
     pub fn set_indexed_geometry(&mut self, hook: IndexedGeometryHook) {
         self.indexed_geometry = Some(hook);
+        self.indexed_geometry_scope = || true;
+    }
+
+    /// Outside this predicate the adapter cannot replace the D3D fallback stream.
+    pub fn set_scoped_indexed_geometry(&mut self, scope: fn() -> bool, hook: IndexedGeometryHook) {
+        self.set_indexed_geometry(hook);
+        self.indexed_geometry_scope = scope;
     }
 
     /// Whether the backend can draw an external pass: asked before the
@@ -2265,7 +2301,11 @@ impl<B: Backend> Device<B> {
     /// when none is bound or it does not read. Read-only, for a native
     /// pass that expands the same indices itself.
     pub fn stage_palette(&self, mem: &dyn GuestMemory, stage: usize) -> Option<Vec<u32>> {
-        let header = *self.palettes.get(stage)?;
+        self.palette_entries(mem, *self.palettes.get(stage)?)
+    }
+
+    /// The entries of a guest palette header, whether or not a stage binds it.
+    pub fn palette_entries(&self, mem: &dyn GuestMemory, header: u32) -> Option<Vec<u32>> {
         if header == 0 {
             return None;
         }
@@ -2489,7 +2529,11 @@ impl<B: Backend> Device<B> {
         if self.swallowing.is_none() {
             return Ok(());
         }
-        if entry.starts_with("D3DDevice_SetVertexData")
+        // The dedicated render-state adapters all call set_render_state.
+        // They only change state for later draws; held packets already
+        // contain their resolved state.
+        if crate::abi::RENDER_STATE_SETTERS.iter().any(|&(_, name, _)| entry == name)
+            || entry.starts_with("D3DDevice_SetVertexData")
             || entry.starts_with("D3DDevice_SetVertexShader")
             || entry.starts_with("D3DDevice_SetTextureState")
             || entry.starts_with("D3DDevice_SetRenderTarget")
@@ -2632,16 +2676,17 @@ impl<B: Backend> Device<B> {
 
     /// Verify that an upcoming resource operation cannot destroy, refill
     /// or alias a surface with pending draws. Direct sampling of an exact
-    /// lazy RTT level is ordered with the original draws on replay.
+    /// lazy RTT level is ordered with the original draws on replay. Returns
+    /// true if the caller must bind that level without a write-back.
     fn swallow_resource(
         &mut self,
         mem: &dyn GuestMemory,
         header: u32,
         sample_sign: Option<u32>,
-    ) -> Result<(), D3dError> {
-        let Some(s) = self.swallowing.as_ref() else { return Ok(()) };
+    ) -> Result<bool, D3dError> {
+        let Some(s) = self.swallowing.as_ref() else { return Ok(false) };
         if s.packets.is_empty() || header == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let live = PixelContainer::read(mem, header).ok();
         let desc = live.and_then(|pc| crate::texdesc::from_header(pc.format, pc.size).ok());
@@ -2653,6 +2698,7 @@ impl<B: Backend> Device<B> {
                 a < b + u64::from(bytes) && b < a + n as u64
             })
         };
+        let mut samples_held = false;
         let conflicts = s.surfaces.iter().flatten().any(|t| {
             let Ok(current) = PixelContainer::read(mem, t.header) else { return true };
             if current.identity() != t.identity {
@@ -2667,23 +2713,37 @@ impl<B: Backend> Device<B> {
                 {
                     return true;
                 }
-                if sample_sign.is_none() {
-                    return header != t.header;
+                if self.cfg.upload != UploadPolicy::Tracked
+                    && self.rtt_synced.get(&t.header).is_none_or(|synced| {
+                        mem.read_vec(level.data, level.len() as usize).ok().as_ref() != Some(synced)
+                    })
+                {
+                    return true;
                 }
-                let aliases = self.rtt.iter().any(|(&other, candidate)| {
-                    other != t.header && overlaps(candidate.data, candidate.len())
-                });
-                return aliases || !self.rtt_lazy()
-                    || sample_sign.is_some_and(|bits| bits & COLOR_SIGN_MASK != 0)
-                    || t.header == self.render_target
-                    || start != Some(u64::from(level.data))
-                    || !desc.as_ref().is_some_and(|d| {
-                        d.kind == gfx::texture::TextureKind::D2 && d.levels == 1
-                            && matches!(d.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
-                            && (d.width, d.height, d.format) == (level.width, level.height, level.format)
-                            && (d.format.layout() == gfx::format::Layout::Swizzled
-                                || level.layout == GuestLayoutKind::Linear { pitch: d.pitch.max(d.width * 4) })
+                if sample_sign.is_none() {
+                    return header != t.header || self.dirty_level_overlap(header, level);
+                }
+                let direct = live.zip(desc.as_ref()).and_then(|(pc, desc)| {
+                    let map = self.cfg.address_map;
+                    let data = map.to_virtual(pc.resource.data);
+                    let within = |base| data.wrapping_sub(map.to_virtual(base)) < FRAME_DATA_SPAN;
+                    let frame_memory = self.swap.as_ref().is_some_and(|sw| {
+                        (self.depth.is_some() && within(DEPTH_BUFFER_DATA))
+                            || sw.buffers.iter().any(|&(base, _)| within(base))
                     });
+                    if pc.resource.kind() != ResourceType::Texture || frame_memory {
+                        return None;
+                    }
+                    self.direct_color_level(data, desc, sample_sign?)
+                });
+                // Resolving an exact direct sample never reads the guest
+                // pixels. A clean alias cannot trigger a write-back.
+                let same = direct.is_some_and(|(selected, source)| {
+                    selected == t.header && source.surface == t.surface
+                        && !self.dirty_level_overlap(selected, &source)
+                });
+                samples_held |= same;
+                return !same;
             }
             // A frame-buffer sample makes an immediate snapshot: it must
             // see any queued draw into that memory before the snapshot.
@@ -2692,8 +2752,9 @@ impl<B: Backend> Device<B> {
         });
         if conflicts {
             self.swallow_abort(SwallowRefusal::Resource, || format!("resource {header:#010x} needs the original post pixels"))?;
+            return Ok(false);
         }
-        Ok(())
+        Ok(samples_held)
     }
 
     fn swallow_target_switch(
@@ -2709,7 +2770,8 @@ impl<B: Backend> Device<B> {
             self.swallow_abort(SwallowRefusal::Dependency, || "target switch writes back the original post pixels".into())?;
         }
         self.swallow_resource(mem, target, None)?;
-        self.swallow_resource(mem, depth, None)
+        self.swallow_resource(mem, depth, None)?;
+        Ok(())
     }
 
     fn swallow_before_destroy(&mut self, header: u32) -> Result<(), D3dError> {
@@ -2758,6 +2820,7 @@ impl<B: Backend> Device<B> {
         }
         let s = self.swallowing.take().expect("post call");
         let (color, request) = s.last.expect("the matched call drew");
+        let entry_samples = s.plan.pass.entry_samples();
         let mut pass: Box<dyn crate::backend::ExternalPass> = s.plan.pass;
         pass.view_constants(&std::array::from_fn(|r| self.constant(r)));
         pass.depth_clip(self.depth_clip(mem, request.z_scale));
@@ -2784,8 +2847,15 @@ impl<B: Backend> Device<B> {
             slots: s.surfaces.iter().map(|slot| slot.map(|t| t.surface)).collect(),
             slot_sizes: s.surfaces.iter().map(|slot| slot.map(|t| t.size)).collect(),
         };
+        let textures = std::array::from_fn(|i| {
+            let first = s.packets.first().filter(|_| entry_samples)?;
+            if !first.sampled[i] { return None; }
+            first.snapshots[i].as_ref().or_else(|| {
+                first.keys[i].and_then(|key| first.cached.get(&key)).map(|texture| &texture.host)
+            })
+        });
         let recordings = self.backend.prepare_external(
-            surfaces, request, [None; 4], &plan, TargetCopy::Reference,
+            surfaces, request, textures, &plan, TargetCopy::Reference,
             Arc::new(std::sync::Mutex::new(pass)),
         );
         if let Ok(Some(recordings)) = recordings
@@ -2964,12 +3034,12 @@ impl<B: Backend> Device<B> {
     /// `[0, z_max]` when empty) and `D3DRS_DEPTHCLIPCONTROL` from the
     /// guest's render-state array (unreadable: no clamp).
     pub fn depth_clip(&self, mem: &dyn GuestMemory, z_max: f32) -> crate::backend::DepthClip {
-        let slot = RenderStateTable::default().canonical_to_guest(crate::nv2a::RS_DEPTHCLIPCONTROL);
+        let slot = RenderStateTable::default().canonical_to_guest(crate::hw::RS_DEPTHCLIPCONTROL);
         let control = slot.and_then(|s| self.render_state(mem, s)).unwrap_or(0);
         crate::backend::DepthClip {
-            range: crate::nv2a::w_clip_range(&self.hw, z_max),
-            clamp: crate::nv2a::clamps_depth(control),
-            w_buffered: self.hw.control0.map(|c| c & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
+            range: crate::hw::w_clip_range(&self.hw, z_max),
+            clamp: crate::hw::clamps_depth(control),
+            w_buffered: self.hw.control0.map(|c| c & crate::hw::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
 
@@ -3005,7 +3075,7 @@ impl<B: Backend> Device<B> {
     /// The W-buffer's parameters now: `None` unless the depth is W-buffered
     /// (`SET_CONTROL0` z-perspective) with a finite, positive scale.
     fn depth_grid_scale(&self, mem: &dyn GuestMemory) -> Option<DepthScale> {
-        let w = self.hw.control0? & crate::nv2a::CONTROL0_Z_PERSPECTIVE != 0;
+        let w = self.hw.control0? & crate::hw::CONTROL0_Z_PERSPECTIVE != 0;
         if !w {
             return None;
         }
@@ -4277,12 +4347,15 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
+        #[cfg(feature = "gpu")]
         let compatible = self.indexed_geometry.is_some()
             && gfx::surface::color_surface_format(c.format).is_some()
             && depth.as_ref().is_some_and(|d| {
                 d.width == c.width && d.height == c.height
                     && gfx::surface::depth_surface_format(d.format, gfx::translate::Capabilities::ALL).is_some()
             });
+        #[cfg(not(feature = "gpu"))]
+        let compatible = false;
         Ok((
             TargetInfo {
                 width: c.width,
@@ -4984,6 +5057,26 @@ impl<B: Backend> Device<B> {
             levels: desc.levels,
         };
         let identity = pc.identity();
+        if self.backend.uses_texture_placeholders() {
+            if self.cache.get(&key).is_some_and(|cached| {
+                cached.identity == identity && cached.palette == pal
+            }) {
+                self.stats.texture_hits += 1;
+                return Ok((key, info));
+            }
+            let host = self.backend.texture_placeholder(&desc).map_err(D3dError::Backend)?;
+            self.cache.insert(key, CachedTexture {
+                identity,
+                palette: pal,
+                va,
+                len,
+                generation: self.tracker.generation(),
+                hash: 0,
+                info,
+                host,
+            });
+            return Ok((key, info));
+        }
         let policy = self.cfg.upload;
         let read_all = |mem: &dyn GuestMemory| -> Result<(Vec<u8>, Option<Vec<u8>>), D3dError> {
             let t = mem.read_vec(va, len as usize)?;
@@ -5305,9 +5398,14 @@ impl<B: Backend> Device<B> {
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
-                if self.swallowing.is_some() {
-                    self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
+                if self.swallowing.as_ref().is_some_and(|s| s.holding) && !sampled[stage] {
+                    // Stale bindings on inactive combiner stages cannot observe
+                    // held pixels. Resolving one can force an alias writeback.
+                    bound[stage] = 0;
+                    continue;
                 }
+                let samples_held = self.swallowing.is_some() && sampled[stage]
+                    && self.swallow_resource(mem, header, Some(extras[stage].color_sign))?;
                 match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
@@ -5325,7 +5423,7 @@ impl<B: Backend> Device<B> {
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
-                        self.swallow_abort(SwallowRefusal::Resource, || "post draw's sampled frame texture is unavailable".into())?;
+                        self.swallow_abort(SwallowRefusal::Resource, || format!("post sample at stage {stage}: {reason}"))?;
                         self.stats.draws += 1;
                         self.events.push(Event::DrawSkipped { entry, reason });
                         return Ok(());
@@ -5340,6 +5438,9 @@ impl<B: Backend> Device<B> {
                     texture_info[stage] = Some(info);
                     snapshots[stage] = Some(t);
                     continue;
+                }
+                if samples_held {
+                    self.swallow_abort(SwallowRefusal::Resource, || format!("post stage {stage} could not bind held level {header:#010x}"))?;
                 }
                 if let Some((info, level)) =
                     self.rtt_depth_texture(mem, header, extras[stage].color_sign)?
@@ -5460,9 +5561,35 @@ impl<B: Backend> Device<B> {
             !missing
         });
         if let Some((plan, pass, binding)) = replacement {
+            // Layer-level mask edits and helper scopes need the answer immediately.
+            // At a resolved draw the original packet is sufficient for worker fallback
+            // when both routes make precisely the same guest-visible writes.
+            let fallback = if scoped.is_none()
+                && binding.same_draw_writes(self.render_target, color, depth, writes_depth)
+                && !(parts.indexed_esp.is_some() && compatible_geometry_target && (self.indexed_geometry_scope)())
+            {
+                pass.resolved_fallback()
+            } else {
+                None
+            };
+            let pass = Arc::new(std::sync::Mutex::new(pass));
+            if let Some(fallback) = fallback {
+                let stats = Arc::clone(&self.queued_external_stats);
+                let queued = crate::backend::QueuedExternalDraw {
+                    surfaces: binding.surfaces.clone(), request: binding.request, plan: plan.clone(),
+                    pass: pass.clone(), fallback, fallback_depth: depth, finished: Box::new(move |fallback| {
+                        let count = if fallback.is_some() { &stats.dropped } else { &stats.committed };
+                        count.fetch_add(1, AtomicOrdering::Relaxed);
+                    }),
+                };
+                if self.backend.queue_external_draw(queued, textures) {
+                    self.mark_written(writes_depth);
+                    *streams = draw.streams;
+                    return Ok(());
+                }
+            }
             let commands = self.backend.prepare_external(
-                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference,
-                Arc::new(std::sync::Mutex::new(pass)),
+                binding.surfaces.clone(), binding.request, textures, &plan, crate::TargetCopy::Reference, pass,
             );
             if let Ok(Some(recordings)) = commands && complete_recordings(&plan, &recordings) {
                 for &(_, surface) in &binding.colors { self.before_target_write(surface)?; }
@@ -6231,7 +6358,7 @@ fn linear_twin(f: D3DFormat) -> D3DFormat {
 /// stages whose `PSTEXTUREMODES` mode (slot 136, five bits a stage)
 /// samples a texture (`TexMode::texture_dim`); for the
 /// fixed-function combiner, the stages before the first `COLOROP =
-/// DISABLE` (where [`crate::nv2a::fixed_function_def`] stops).
+/// DISABLE` (where `crate::nv2a::fixed_function_def` stops).
 pub(crate) fn sampled_stages(
     shader: &ShaderInputs,
     words: &StateWords,
@@ -6268,6 +6395,29 @@ fn count_vertex_bytes(counter: timeline::phase::Counter, len: usize) {
 mod depth_write_tests {
     use super::*;
     use gfx::state::{DepthBufferMode, StencilOp};
+
+    #[test]
+    fn queued_fallback_requires_identical_guest_writes() {
+        let mut binding = ExternalBinding {
+            surfaces: crate::ExternalSurfaces { color: 1, depth: 2, slots: vec![], slot_sizes: vec![], sampled: vec![] },
+            request: crate::ExternalPassRequest { rect: (0, 0, 1, 1), surface_size: (1, 1), z_scale: 1.0 },
+            colors: vec![(11, 1)], depth_write: true,
+        };
+        assert!(binding.same_draw_writes(11, 1, Some(2), true));
+        assert!(!binding.same_draw_writes(11, 1, None, true));
+        assert!(!binding.same_draw_writes(11, 1, Some(3), true));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), false));
+        assert!(!binding.same_draw_writes(12, 1, Some(2), true));
+        binding.colors.push((13, 3));
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        binding.colors.clear();
+        assert!(!binding.same_draw_writes(11, 1, Some(2), true));
+        binding.colors.push((11, 1));
+        binding.depth_write = false;
+        assert!(!binding.same_draw_writes(11, 1, None, false));
+        binding.surfaces.depth = binding.surfaces.color;
+        assert!(binding.same_draw_writes(11, 1, None, false));
+    }
 
     /// Review P3: a stencil test that can store nothing does not change the
     /// depth/stencil surface.

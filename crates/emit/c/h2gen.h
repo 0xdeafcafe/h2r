@@ -10,6 +10,12 @@
 #ifndef H2GEN_H
 #define H2GEN_H
 #include "h2abi.h"
+/* The ELF module hides generated handlers. Its registry and bridge
+ * installers must still be visible to dlsym in the loading process. */
+#if defined(__linux__)
+#undef H2_EXPORT
+#define H2_EXPORT __attribute__((visibility("default")))
+#endif
 #include <string.h>
 #include "h2fastmem.h"
 

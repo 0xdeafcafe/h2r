@@ -83,6 +83,10 @@ const SOL_SOCKET: i32 = 0xffff;
 #[cfg(target_os = "linux")]
 const SOL_SOCKET: i32 = 1;
 #[cfg(target_vendor = "apple")]
+const IP_TOS: i32 = 3;
+#[cfg(target_os = "linux")]
+const IP_TOS: i32 = 1;
+#[cfg(target_vendor = "apple")]
 const FIONBIO: c_ulong = 0x8004667e;
 #[cfg(target_os = "linux")]
 const FIONBIO: c_ulong = 0x5421;
@@ -135,8 +139,7 @@ impl Socket {
     /// Wi-Fi (WMM) puts them in its voice queue and routers that honour it
     /// send them first.
     pub fn low_delay(&self) -> io::Result<()> {
-        // IPPROTO_IP 0, IP_TOS 3 on both platforms.
-        self.set_int(0, 3, 0xb8)
+        self.set_int(0, IP_TOS, 0xb8)
     }
     pub fn bind(&self, a: SocketAddrV4) -> io::Result<()> {
         let a = Address::new(a);
@@ -407,5 +410,18 @@ impl Socket {
                 size_of::<Timeval>() as u32,
             )
         })
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn low_delay_sets_the_datagram_type_of_service() {
+        let socket = Socket::new(true).unwrap();
+        socket.low_delay().unwrap();
+        // Linux IP_TOS is option 1. Option 3 is IP_HDRINCL on raw sockets.
+        assert_eq!(socket.get_int(0, 1).unwrap(), 0xb8);
     }
 }

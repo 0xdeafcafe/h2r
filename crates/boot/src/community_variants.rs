@@ -692,9 +692,19 @@ pub fn extend_builtins<M: Mem>(
 /// The string lookup's hook: our ids' text into the caller's buffer, any
 /// other id to the original, on the context it runs on (the render
 /// thread's view there).
-fn register_strings(d: &mut runtime::Dispatch, o: Arc<runtime::exec::OriginalHandler>) {
+fn register_strings(
+    d: &mut runtime::Dispatch,
+    o: Arc<runtime::exec::OriginalHandler>,
+    live: Option<Arc<live_hle::Hle>>,
+) {
     d.register_override(LOCALIZED_STRING, STRINGS_HOOK, move |cpu, ctx, _| {
-        if let Some(t) = text(cpu.edi).or_else(|| crate::variant_options::text(cpu.edi)) {
+        let status = matchmaking_status_text(cpu.edi, || {
+            live.as_ref().and_then(|hle| hle.matchmaking_status())
+        });
+        if let Some(t) = status
+            .or_else(|| text(cpu.edi))
+            .or_else(|| crate::variant_options::text(cpu.edi))
+        {
             let mut mem = ctx.runtime().memory();
             let buf = mem.u32(cpu.esp + 4)?;
             mem.write_bytes(buf, &utf16_buffer(&t), 1)?;
@@ -703,6 +713,16 @@ fn register_strings(d: &mut runtime::Dispatch, o: Arc<runtime::exec::OriginalHan
         Ok(o.invoke(cpu, ctx, LOCALIZED_STRING))
     });
     d.mark_context_only(LOCALIZED_STRING);
+}
+
+// dh-client-join: the status widget on the retail matchmaking progress
+// screen uses these two string IDs (docs/live/live-motd.md §4).
+fn matchmaking_status_text(id: u32, status: impl FnOnce() -> Option<String>) -> Option<String> {
+    if matches!(id, 0x0e00_0761 | 0x1100_0762) {
+        status()
+    } else {
+        None
+    }
 }
 
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<runtime::exec::OriginalHandler>> {
@@ -715,9 +735,16 @@ fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<runtime::exec::Origi
 
 /// Install the three hooks. A missing original skips its hook and says so.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    install_with_live(rt, None)
+}
+
+pub(crate) fn install_with_live(
+    rt: &runtime::Runtime,
+    live: Option<Arc<live_hle::Hle>>,
+) -> anyhow::Result<()> {
     let community = std::env::var_os("H2_NO_COMMUNITY_VARIANTS").is_none();
     let options = crate::variant_options::enabled();
-    if !community && !options {
+    if !community && !options && live.is_none() {
         return Ok(());
     }
     if community {
@@ -734,9 +761,11 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
     // Resolve the originals first: `resolve_original` takes the dispatch
     // read lock, which `edit_dispatch` holds for writing.
     let (load, strings, numbers) = (
-        original(rt, BUILTINS_LOAD),
+        (community || options)
+            .then(|| original(rt, BUILTINS_LOAD))
+            .flatten(),
         original(rt, LOCALIZED_STRING),
-        original(rt, NUMBER_STRING_ID),
+        community.then(|| original(rt, NUMBER_STRING_ID)).flatten(),
     );
     rt.edit_dispatch(|d| {
         if let Some(o) = load {
@@ -785,9 +814,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         if let Some(o) = strings {
-            register_strings(d, o);
+            register_strings(d, o, live);
         }
-        if let Some(o) = numbers.filter(|_| community) {
+        if let Some(o) = numbers {
             d.register_override(NUMBER_STRING_ID, DESCRIPTIONS_HOOK, move |cpu, ctx, _| {
                 if cpu.ecx >= DESCRIPTION_BASE {
                     let mem = ctx.runtime().memory();
@@ -808,6 +837,24 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn dedicated_host_status_uses_the_retail_matchmaking_status_strings() {
+        for id in [0x0e00_0761, 0x1100_0762] {
+            assert_eq!(
+                matchmaking_status_text(id, || Some("Joining dedicated host (lhr)".into()))
+                    .as_deref(),
+                Some("Joining dedicated host (lhr)"),
+            );
+            assert_eq!(matchmaking_status_text(id, || None), None);
+        }
+        for id in [0x1400_043a, 0x0007_f8a0, name_id(0)] {
+            assert_eq!(
+                matchmaking_status_text(id, || panic!("unrelated string")),
+                None,
+            );
+        }
+    }
 
     /// A stand-in for the generated string lookup: `r` into the buffer.
     fn lookup_original(
@@ -843,7 +890,7 @@ mod tests {
         g.prepare_fast_pages();
         let rt = runtime::Runtime::new(g, d);
         let o = rt.resolve_original(LOCALIZED_STRING).unwrap();
-        rt.edit_dispatch(|d| register_strings(d, Arc::new(o)));
+        rt.edit_dispatch(|d| register_strings(d, Arc::new(o), None));
         let mut exec = SecondExecutor::new(&rt, crate::d3d_glue::pipeline_allow(&[]));
         exec.snapshot(&rt);
         let ours = text(name_id(0)).unwrap();

@@ -1272,9 +1272,9 @@ impl feature::Feature for SkullsCustom {
                     Box::pin(run_work(cx, s, work, scratch))
                 })
             })
-            // Outside every other hook here: they run once, in the tick we
-            // re-enter.
-            .first();
+            // Inside agent calls, before the other tick hooks.
+            .first()
+            .after_feature(agent::sim::calls::FEATURE);
         let s = Arc::clone(&self.0);
         b.raw().after(&GAME_TICK, "our skulls", move |c| {
             let rt = Arc::clone(c.ctx.runtime());

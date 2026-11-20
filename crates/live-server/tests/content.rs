@@ -66,6 +66,44 @@ async fn upload(h: &Harness, u: &User, bytes: &[u8]) -> Sha256 {
     hash
 }
 
+#[tokio::test]
+async fn content_download_delivers_a_chunk_before_the_whole_object() {
+    use axum::http::{Request, header};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let h = content_harness(Policy::default()).await;
+    let user = h.create("Publisher").await;
+    let bytes = vec![7; 256 * 1024];
+    let hash = upload(&h, &user, &bytes).await;
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/v1/content/{hash}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()[header::CONTENT_LENGTH],
+        bytes.len().to_string()
+    );
+    assert_eq!(resp.headers()[header::ETAG], format!("\"{hash}\""));
+    let mut body = resp.into_body();
+    let first = body.frame().await.unwrap().unwrap().into_data().unwrap();
+    assert!(
+        !first.is_empty() && first.len() < bytes.len(),
+        "one frame held the whole blob"
+    );
+    let rest = body.collect().await.unwrap().to_bytes();
+    assert_eq!(first.as_ref(), &bytes[..first.len()]);
+    assert_eq!(rest.as_ref(), &bytes[first.len()..]);
+}
+
 /// A Lockout mod: one invented patch over an invented base hash.
 fn manifest(patch: &[u8]) -> Manifest {
     let mut m = Manifest::retail("lockout", Sha256([0x11; 32]));

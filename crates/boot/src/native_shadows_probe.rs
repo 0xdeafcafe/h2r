@@ -63,9 +63,11 @@ pub(crate) fn read(params: Value) -> Result<Value, RpcError> {
         ));
     }
     let results = RESULTS.lock().unwrap_or_else(|e| e.into_inner());
-    Ok(
-        serde_json::json!({ "comparing": crate::native_shadows_glue::comparison_enabled(), "maps": &*results }),
-    )
+    #[cfg(feature = "gpu")]
+    let comparing = crate::native_shadows_glue::comparison_enabled();
+    #[cfg(not(feature = "gpu"))]
+    let comparing = false;
+    Ok(serde_json::json!({ "comparing": comparing, "maps": &*results }))
 }
 
 #[cfg(test)]

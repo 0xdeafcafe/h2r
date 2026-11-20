@@ -12,6 +12,7 @@ pub(crate) struct WindowSurface {
     /// was resized, or the last configure failed (wgpu could not wait for
     /// the GPU to go idle, which happens mid-resize under a heavy frame).
     stale: bool,
+    last_configure_error: Option<String>,
 }
 
 impl WindowSurface {
@@ -53,6 +54,7 @@ impl WindowSurface {
             surface,
             config,
             stale: false,
+            last_configure_error: None,
         })
     }
 
@@ -81,11 +83,16 @@ impl WindowSurface {
         self.surface.configure(&ctx.device, &self.config);
         match pollster::block_on(scope.pop()) {
             None => {
+                self.last_configure_error = None;
                 self.stale = false;
                 true
             }
             Some(e) => {
-                eprintln!("app: surface configure failed, retrying next frame: {e}");
+                let message = e.to_string();
+                if self.last_configure_error.as_ref() != Some(&message) {
+                    eprintln!("app: surface configure failed, retrying next frame: {message}");
+                    self.last_configure_error = Some(message);
+                }
                 self.stale = true;
                 false
             }

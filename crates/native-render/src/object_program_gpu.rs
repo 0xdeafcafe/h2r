@@ -2,8 +2,7 @@
 //! programs and pixel shaders ([`crate::object_program`]): per section
 //! its vertex streams expanded once through each declaration a program
 //! needs ([`crate::object_streams`]), each program uploaded once, and per
-//! view one buffer holding every drawn part's vertex and pixel blocks at
-//! dynamic offsets (as the lights do, [`crate::light_gpu::run_layout`]),
+//! view immutable vertex and pixel blocks in the submission upload ring,
 //! then one render pass over the game's targets
 //! (docs/graphics/native-renderer.md, "Object programs").
 
@@ -15,7 +14,7 @@ use shaders::vsh::VertexUniforms;
 use wgpu::util::DeviceExt;
 
 use crate::gpu::{Image, texture};
-use crate::light_gpu::{LayeredImage, layered_texture, run_layout, uniforms_layout};
+use crate::light_gpu::{StaticLightTexture, uniforms_layout};
 use crate::look::Stage;
 use crate::object_lighting::ShaderValues;
 use crate::object_program::{
@@ -101,10 +100,10 @@ struct LitProgram {
     views: Vec<(usize, wgpu::TextureView)>,
     samplers: Vec<wgpu::Sampler>,
     /// Its stages' bind group, made once; `None` when a stage samples the
-    /// texture accumulation target, whose level is the pass's (made per
-    /// encode, [`texture_group`]).
+    /// texture accumulation target, whose group is cached by its live view.
     textures: Option<wgpu::BindGroup>,
-    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, DrawState), wgpu::RenderPipeline>,
+    accum_group: Option<(wgpu::TextureView, Option<wgpu::BindGroup>)>,
+    pipelines: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Vec<u8>, Vec<Attribute>, DrawState), Option<wgpu::RenderPipeline>>,
 }
 
 /// The bind group of `views` (and `extra`, the texture accumulation
@@ -153,6 +152,7 @@ struct LitModel {
     programs: Vec<LitProgram>,
     buffers: Vec<LitBuffer>,
     parts: Vec<LitPart>,
+    part_index: HashMap<(u16, u8), usize>,
 }
 
 /// Every model's lit parts on the GPU.
@@ -258,9 +258,9 @@ impl LitObjects {
 
     /// Uploads the normalization cube the programs' normalization stages
     /// sample, once.
-    pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &LayeredImage) {
+    pub fn set_normalization(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, image: &StaticLightTexture) {
         if self.normalization.is_none() {
-            self.normalization = Some(layered_texture(device, queue, image, "native object normalization"));
+            self.normalization = Some(image.view(device, queue));
         }
     }
 
@@ -289,16 +289,19 @@ impl LitObjects {
         let Some(programs) = input.programs.into_iter().map(|p| self.program(device, queue, p)).collect::<Option<Vec<_>>>() else {
             return;
         };
-        self.models.insert(index, LitModel { programs, buffers, parts: input.parts });
+        let part_index = index_parts(&input.parts);
+        self.models.insert(index, LitModel { programs, buffers, parts: input.parts, part_index });
     }
 
     fn program(&self, device: &wgpu::Device, queue: &wgpu::Queue, input: LitProgramInput) -> Option<LitProgram> {
         let LitProgramInput { pass, mut images } = input;
         let p = &pass.program;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native object program"),
-            source: wgpu::ShaderSource::Wgsl(p.wgsl.clone().into()),
-        });
+        let module = gfx::program::validated_resource(device, || {
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("native object program"),
+                source: wgpu::ShaderSource::Wgsl(p.wgsl.clone().into()),
+            })
+        })?;
         let mut layout_entries = Vec::new();
         let mut views = Vec::new();
         let samplers: Vec<wgpu::Sampler> = (0..4).map(|n| device.create_sampler(&sampler_descriptor(p.samplers[n].as_ref()))).collect();
@@ -344,13 +347,22 @@ impl LitObjects {
             label: Some("native object program textures"),
             entries: &layout_entries,
         });
-        let textures = (!pass.texaccum.contains(&true)).then(|| texture_group(device, &textures_layout, &views, &[], &samplers));
+        let textures = if pass.texaccum.contains(&true) {
+            None
+        } else {
+            Some(gfx::program::validated_resource(device, || {
+                texture_group(device, &textures_layout, &views, &[], &samplers)
+            })?)
+        };
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("native object program"),
             bind_group_layouts: &[Some(&self.uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
-        Some(LitProgram { pass, module, layout, textures_layout, views, samplers, textures, pipelines: HashMap::new() })
+        Some(LitProgram {
+            pass, module, layout, textures_layout, views, samplers, textures,
+            accum_group: None, pipelines: HashMap::new(),
+        })
     }
 
     /// Whether model `index` has lit parts.
@@ -368,7 +380,8 @@ impl LitObjects {
     /// the item keeps its D3D draw.
     pub fn plan(&self, index: u32, frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates) -> Result<PlannedDraw, String> {
         let m = self.models.get(&index).ok_or("its model is not uploaded")?;
-        plan_part(&m.parts, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
+        let part = m.part_index.get(&(key.section, key.part)).copied();
+        plan_indexed_part(&m.parts, part, &|program| m.programs.get(program).map(|p| &p.pass), frame, key, rows, entry)
     }
 
     /// The blocks `d` (of model `index`) is issued with in `view`, and the
@@ -458,14 +471,14 @@ impl LitObjects {
     /// loaded and kept), the viewport the whole target as the programs
     /// expect. A draw sampling the texture accumulation target takes
     /// `texaccum`, its stages' coordinates in that level's guest texels.
-    /// Returns the draws issued: fewer only when a model is gone or a
-    /// draw samples the level and there is none, which the caller counts
-    /// (the hook has already given up those items' D3D draws).
+    /// Returns the number of ranges recorded so the caller can check the
+    /// reservation before replacing any originals.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
         color_format: wgpu::TextureFormat,
@@ -476,6 +489,31 @@ impl LitObjects {
         draws: &[(u32, PlannedDraw)],
         texaccum: Option<Texaccum<'_>>,
     ) -> usize {
+        let Some(packet) = self.bundles(device, queue, uploads, color_format, depth_format,
+            target_size, view, draws, texaccum, 0)
+        else {
+            return 0;
+        };
+        let count = packet.ranges;
+        d3d::backend::ExternalBundles::encode_run(encoder, color, depth, depth_format.has_stencil_aspect(), &[packet]);
+        count
+    }
+
+    /// Build a packet for an ordered run on compatible colour and depth targets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bundles(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uploads: &gfx::ring::SubmissionUploads,
+        color_format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+        target_size: (u32, u32),
+        view: &ViewInputs,
+        draws: &[(u32, PlannedDraw)],
+        texaccum: Option<Texaccum<'_>>,
+        run: u64,
+    ) -> Option<d3d::backend::ExternalBundles> {
         let mut issued: Vec<(&(u32, PlannedDraw), (VertexUniforms, PixelUniforms))> = Vec::new();
         for d in draws {
             if let Some(blocks) = self.issued(d.0, &d.1, view, texaccum) {
@@ -483,7 +521,7 @@ impl LitObjects {
             }
         }
         if issued.is_empty() {
-            return 0;
+            return None;
         }
         for (planned, _) in &issued {
             let (model, d) = (planned.0, &planned.1);
@@ -496,7 +534,7 @@ impl LitObjects {
                 continue;
             }
             let attrs = attributes(&registers, &formats);
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let pipeline = gfx::program::validated_resource(device, || device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native object program"),
                 layout: Some(&p.layout),
                 vertex: wgpu::VertexState {
@@ -531,90 +569,61 @@ impl LitObjects {
                 }),
                 multiview_mask: None,
                 cache: None,
-            });
+            }));
             p.pipelines.insert(key, pipeline);
         }
-        let align = u64::from(device.limits().min_uniform_buffer_offset_alignment);
-        let (offsets, size) = run_layout(issued.len(), align);
-        let mut bytes = vec![0u8; size as usize];
-        for ((_, (vertex, pixel)), o) in issued.iter().zip(&offsets) {
-            let (v, p) = (o[0] as usize, o[1] as usize);
-            let vertex = vertex.to_bytes();
-            bytes[v..v + vertex.len()].copy_from_slice(&vertex);
-            let pixel = pixel.to_bytes();
-            bytes[p..p + pixel.len()].copy_from_slice(&pixel);
-        }
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("native object program uniforms"),
-            size,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&buffer, 0, &bytes);
-        let entry = |binding: u32, size: usize| wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: wgpu::BufferSize::new(size as u64),
-            }),
-        };
-        let uniforms = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("native object program uniforms"),
-            layout: &self.uniforms_layout,
-            entries: &[entry(0, VertexUniforms::SIZE), entry(1, PixelUniforms::SIZE)],
-        });
-        // The stages of programs sampling the texture accumulation level,
-        // with this pass's level.
-        let mut groups: HashMap<(u32, usize), wgpu::BindGroup> = HashMap::new();
-        if let Some(t) = texaccum {
-            for (planned, _) in &issued {
-                let (model, d) = (planned.0, &planned.1);
-                let p = &self.models[&model].programs[d.program];
-                if p.textures.is_none() && !groups.contains_key(&(model, d.program)) {
-                    let extra: Vec<(usize, &wgpu::TextureView)> =
-                        (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, t.view)).collect();
-                    groups.insert((model, d.program), texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers));
-                }
-            }
-        }
-        let has_stencil = depth_format.has_stencil_aspect();
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native object programs"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: color,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                stencil_ops: has_stencil.then_some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_viewport(0.0, 0.0, target_size.0 as f32, target_size.1 as f32, 0.0, 1.0);
-        let mut drawn = 0;
-        for ((planned, _), o) in issued.iter().zip(&offsets) {
+        let uniforms = uploads.uniform_run(
+            device, queue, &self.uniforms_layout, [VertexUniforms::SIZE, PixelUniforms::SIZE],
+            issued.len(), |i, v, p| {
+                let (_, (vertex, pixel)) = &issued[i];
+                vertex.write_bytes(v);
+                pixel.write_bytes(p);
+            },
+        )?;
+        let mut groups = Vec::with_capacity(issued.len());
+        for (i, (planned, _)) in issued.iter().enumerate() {
             let (model, d) = (planned.0, &planned.1);
-            let m = &self.models[&model];
+            let m = self.models.get_mut(&model)?;
             let b = &m.buffers[d.buffer];
-            let p = &m.programs[d.program];
-            let Some(pipeline) = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state)) else { continue };
-            let Some(textures) = p.textures.as_ref().or_else(|| groups.get(&(model, d.program))) else { continue };
-            pass.set_pipeline(pipeline);
-            pass.set_bind_group(0, &uniforms, o);
-            pass.set_bind_group(1, textures, &[]);
-            pass.set_blend_constant(p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant));
-            pass.set_vertex_buffer(0, b.vertices.slice(..));
-            pass.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(d.indices.clone(), 0, 0..1);
-            drawn += 1;
+            if d.indices.is_empty() || u64::from(d.indices.end) > b.indices.size() / 4 {
+                return None;
+            }
+            let p = &mut m.programs[d.program];
+            let pipeline = p.pipelines.get(&(color_format, depth_format, b.registers.clone(), b.formats.clone(), d.state))?.as_ref()?;
+            let textures = match &p.textures {
+                Some(textures) => textures,
+                None => {
+                    let accum = texaccum.as_ref()?;
+                    if p.accum_group.as_ref().is_none_or(|(view, _)| view != accum.view) {
+                        let extra: Vec<_> = (0..4).filter(|&n| p.pass.texaccum[n]).map(|n| (n, accum.view)).collect();
+                        let group = gfx::program::validated_resource(device, || {
+                            texture_group(device, &p.textures_layout, &p.views, &extra, &p.samplers)
+                        });
+                        p.accum_group = Some((accum.view.clone(), group));
+                    }
+                    p.accum_group.as_ref()?.1.as_ref()?
+                }
+            };
+            let mut bundle = device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                label: Some("native object geometry"),
+                color_formats: &[Some(color_format)],
+                depth_stencil: Some(wgpu::RenderBundleDepthStencil {
+                    format: depth_format, depth_read_only: false, stencil_read_only: !depth_format.has_stencil_aspect(),
+                }),
+                sample_count: 1, multiview: None,
+            });
+            bundle.set_pipeline(pipeline);
+            bundle.set_bind_group(0, &uniforms.group, &uniforms.offsets(i));
+            bundle.set_bind_group(1, textures, &[]);
+            bundle.set_vertex_buffer(0, b.vertices.slice(..));
+            bundle.set_index_buffer(b.indices.slice(..), wgpu::IndexFormat::Uint32);
+            bundle.draw_indexed(d.indices.clone(), 0, 0..1);
+            let blend = p.pass.program.state.map_or(wgpu::Color::BLACK, |s| s.blend_constant);
+            groups.push((blend, bundle.finish(&Default::default())));
         }
-        drawn
+        Some(d3d::backend::ExternalBundles {
+            run, scissor: [0, 0, target_size.0, target_size.1], ranges: groups.len(), groups,
+        })
     }
 }
 
@@ -630,10 +639,23 @@ pub fn plan_part<'a>(
     rows: &[Row],
     entry: &EntryStates,
 ) -> Result<PlannedDraw, String> {
-    let part = parts
-        .iter()
-        .position(|p| p.section == key.section && p.part == key.part)
-        .ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
+    let part = parts.iter().position(|p| p.section == key.section && p.part == key.part);
+    plan_indexed_part(parts, part, pass_of, frame, key, rows, entry)
+}
+
+fn index_parts(parts: &[LitPart]) -> HashMap<(u16, u8), usize> {
+    let mut index = HashMap::with_capacity(parts.len());
+    for (i, p) in parts.iter().enumerate() {
+        index.entry((p.section, p.part)).or_insert(i);
+    }
+    index
+}
+
+fn plan_indexed_part<'a>(
+    parts: &[LitPart], part: Option<usize>, pass_of: &dyn Fn(usize) -> Option<&'a ObjectPass>,
+    frame: &ObjectFrame, key: &ItemKey, rows: &[Row], entry: &EntryStates,
+) -> Result<PlannedDraw, String> {
+    let part = part.ok_or_else(|| format!("section {} part {} is not a native part", key.section, key.part))?;
     let p = &parts[part];
     if p.shader_tag as u16 != key.shader as u16 {
         return Err(format!("the item names shader {:#010x}, the part's is {:#010x}", key.shader, p.shader_tag));
@@ -1255,6 +1277,17 @@ mod tests {
             lighting: Some(Lighting { words: [0u32; 30], root: Some(0) }),
             defaults: Some(Default::default()),
         }
+    }
+
+    #[test]
+    fn model_index_matches_the_first_part_in_each_section_and_is_rebuilt_per_model() {
+        let p = |section, number| part(section, number, [None; IMPLEMENTATIONS]);
+        let index = index_parts(&[p(0, 2), p(1, 2), p(0, 2)]);
+        assert_eq!(index.get(&(0, 2)), Some(&0));
+        assert_eq!(index.get(&(1, 2)), Some(&1));
+        let replacement = index_parts(&[p(1, 2)]);
+        assert_eq!(replacement.get(&(1, 2)), Some(&0));
+        assert!(!replacement.contains_key(&(0, 2)));
     }
 
     fn key(section: u16, part: u8, implementation: usize) -> ItemKey {

@@ -1,6 +1,7 @@
 //! `native-decals`: scope dynamic decal callbacks for the ordered
-//! `d3d::DrawAdmission` in boot. Off by default;
-//! `H2_FEATURES=impl.render.native_decals=on`.
+//! `d3d::DrawAdmission` in boot. On by default (since 2026-11-20);
+//! `H2_FEATURES=impl.render.native_decals=off` turns it off for the
+//! comparison against the D3D path.
 //!
 //! The observers do not suppress guest code. `0x00044040` still binds every
 //! texture, writes every duplicate marker and emits every draw. The admission
@@ -27,7 +28,7 @@ pub const SWITCH: &str = "impl.render.native_decals";
 const CURRENT_MODE: u32 = 0x004c_8790;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 thread_local! {

@@ -113,9 +113,9 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
 }
 
 #[test]
-fn it_is_off_by_default() {
-    assert!(!native_fog::DEFAULT);
-    let mut r = Registry::new(Switches::parse("").unwrap());
+fn it_is_on_by_default_and_the_switch_turns_it_off() {
+    assert!(native_fog::DEFAULT);
+    let mut r = Registry::new(Switches::parse("impl.render.native_fog=off").unwrap());
     assert!(r.add(&NativeFog).unwrap());
     assert!(!r.build(&Base).unwrap().text().contains("native_fog"));
 }

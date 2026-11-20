@@ -400,16 +400,17 @@ are never changed.
   at most 512 KB.
 - **Directory**: the folder name for the package inside `<data>/maps`.
   It defaults to `<map>-edit`.
-- **Make it the active package for this map**: tick it to make the game
-  use this package for the map even when you have others for it.
+- **Make it the active package for this map** writes a legacy editor
+  selection. Current game builds list installed packages separately.
 
 Click **Save package**. The window shows where it goes (`in <data>/maps`),
 and the log then says `saved package ...` with the package's MapId, an
 identifier for this exact version of the map.
 
 A package is small: it holds only the difference from your disc's map,
-plus a description. It's the form that can be shared, and the game picks
-it up by itself.
+plus a description. The game finds the package at boot. Pick it from
+**Change Map > Mods** when a slot is available.
+[Map selection](../game/map-select.md)
 
 To keep working on a package later, open the same map, choose **File >
 Open package...** and click **Open** next to it. Saving again with the
@@ -1112,7 +1113,7 @@ uses, `~/Library/Application Support/h2recomp/data`.
 
 | What | Where | How the game finds it |
 |---|---|---|
-| Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | Automatically, the next time it loads that map ([maps.md](../game/maps.md) §7). `<data>/maps/active.toml` records which package is active for each map. |
+| Map packages (yours, and converted Halo 1 maps) | `<data>/maps/<directory>/` | The installer assigns each package a free slot at boot. Converted Halo 1 maps appear under Halo: CE, and other packages under Mods. [Map selection](../game/map-select.md) |
 | Edited `.map` files | Wherever you save them (never inside the game's installed content) | With `H2_MAP_DIR=<that folder> h2 play`; the file must have the disc's map name. |
 | The Map Pack (read only) | `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/` | Installed by `h2 play` or `h2 import-mappack`. |
 | Saved game variants | `<data>/disk/Partition1/UDATA/4D530064/` (the game's saved data) | Listed in the game with its own saved variants. |

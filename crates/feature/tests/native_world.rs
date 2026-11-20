@@ -32,9 +32,9 @@ fn the_plan_orders_it_inside_render_timing_with_the_layer_ports() {
     assert!(!text.contains("native_world_restore"), "nothing after the body: {text}");
 }
 
-/// Alone at the layer draw (switched on: it is off by default), the chain
-/// runs on the pipelined render thread: one context-only observer before,
-/// nothing after.
+/// Alone at the layer draw (on by default), the chain runs on the
+/// pipelined render thread: one context-only observer before, nothing
+/// after.
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("impl.render.native_world=on").unwrap());
@@ -49,13 +49,13 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert!(chain.render_thread().is_ok());
 }
 
-/// Off, it holds nothing and never blocks a snapshot; on, its section
-/// (no bytes) drops the pending restore at a load.
+/// Off, it holds nothing and never blocks a snapshot; on (the default),
+/// its section (no bytes) drops the pending restore at a load.
 #[test]
 fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
     for (switches, policy) in [
-        ("", "stateless"),
-        ("impl.render.native_world=on", "section"),
+        ("impl.render.native_world=off", "stateless"),
+        ("", "section"),
     ] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         assert!(r.add(&NativeWorld).unwrap());
@@ -74,7 +74,7 @@ fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
 fn material_programs_are_on_with_the_world_and_need_it() {
     let on = |s: &str| native_world::programs_on(&Switches::parse(s).unwrap());
     assert!(native_world::PROGRAMS_DEFAULT);
-    assert!(!on(""), "the world is off by default");
+    assert!(on(""), "on with the world, on by default");
     assert!(on("impl.render.native_world=on"), "on with the world");
     assert!(!on("impl.render.native_world=on,impl.render.native_world_programs=off"), "stage 1 for the A/B");
     assert!(!on("impl.render.native_world=off,impl.render.native_world_programs=on"));
@@ -92,13 +92,13 @@ fn plan_with_pipeline(switches: &str) -> String {
 }
 
 #[test]
-fn it_is_off_by_default_and_on_keeps_pipelining() {
-    assert!(!native_world::DEFAULT);
+fn it_is_on_by_default_and_keeps_pipelining() {
+    assert!(native_world::DEFAULT);
     let text = plan_with_pipeline("");
-    assert!(!text.contains("native_world"), "{text}");
-    let text = plan_with_pipeline("impl.render.native_world=on");
     assert!(text.contains("native_world_skip"), "{text}");
     assert!(text.contains("pipelined frame"), "{text}");
+    let text = plan_with_pipeline("impl.render.native_world=on");
+    assert!(text.contains("native_world_skip"), "{text}");
 }
 
 #[test]
@@ -115,9 +115,15 @@ const BSP: u32 = 0x0080_0000;
 struct Stub {
     asked: Mutex<Vec<(u32, RenderCamera, StencilPlan)>>,
     parts: Arc<PartSet>,
+    resolved: std::sync::atomic::AtomicBool,
 }
 
 impl Host for Stub {
+    fn use_resolved_scene(&self, _: &dyn GuestMemory, bsp: u32) -> bool {
+        assert_eq!(bsp, BSP);
+        self.resolved.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, camera: &RenderCamera, stencil: &StencilPlan) -> Option<native_render::skip::Cleared> {
         self.asked.lock().unwrap().push((bsp, *camera, stencil.clone()));
         let mut mem = native_world::Mem(mem);
@@ -167,17 +173,18 @@ fn masks(m: &FlatMemory) -> Vec<u32> {
 fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // No host yet: nothing changes.
     let mut m = guest();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b1010; 3]);
     native_world::restore_pending(&mut m);
 
     let stub = Arc::new(Stub {
         asked: Mutex::default(),
+        resolved: Default::default(),
         parts: Arc::new([((Owner::Cluster(0), 0), 0xe000_0010u32)].into_iter().collect()),
     });
     native_world::set_host(stub.clone());
 
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(
         masks(&m),
         vec![0b0010, 0b1010, 0b1010],
@@ -193,18 +200,18 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // The next layer draw (layer 5) sets the bit back first, and the host
     // is not asked for it.
     m.set_u32(CURRENT_LAYER, 5).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), 1);
 
     // Nothing pending: another layer draw changes nothing.
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b1010; 3]);
 
     // A snapshot load between a layer 3 and the next layer draw drops the
     // pending restore: the loaded RAM is not the memory it was made in.
     m.set_u32(CURRENT_LAYER, 3).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m)[0], 0b0010);
     native_world::forget_pending();
     native_world::restore_pending(&mut m);
@@ -215,7 +222,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // An item list built again before the next layer draw (another value
     // in the cleared item's mask): its mask is left alone.
     m.set_u32(CURRENT_LAYER, 3).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m)[0], 0b0010);
     m.set_u32(ITEMS + 0x10, 0b0100).unwrap();
     native_world::restore_pending(&mut m);
@@ -225,7 +232,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // BSP items carry shader 0x10, and only part 0 is native.
     let mut m = guest();
     m.set_u32(ITEMS + 0x18 + 8, 0xe000_0010).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
@@ -237,7 +244,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     let mut m = guest();
     m.set_u32(RENDER_RECORDS + 0x20, STENCIL_MARK).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 3, STENCIL_MARK).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010], "still drawn natively");
     let plan = stub.asked.lock().unwrap().last().unwrap().2.clone();
     assert_eq!((plan.off, plan.switches, plan.marked), (false, true, vec![Owner::Cluster(0)]));
@@ -245,7 +252,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     // The stencil-off flag.
     let mut m = guest();
     m.set_u32(STENCIL_OFF_FLAGS, 0x0000_0100).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert!(stub.asked.lock().unwrap().last().unwrap().2.off);
     native_world::restore_pending(&mut m);
     // Unreadable switches (the list runs past the memory): the D3D path
@@ -254,7 +261,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     let left = native_world::stencil_views();
     let mut m = guest();
     m.set_u32(LIST + 4, 0x1000).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked);
     assert_eq!(native_world::stencil_views(), left + 1);
@@ -270,13 +277,25 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     for record in [1u32, 2] {
         m.set_u32(RENDER_RECORDS + 0x20 * record + 4, 0xe124_0002).unwrap();
     }
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked, "not asked");
     assert_eq!(native_world::views_without_world(), without + 1);
     // One BSP item back in the list: the world's layer 3 again.
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX).unwrap();
-    native_world::before_layer(&mut m);
+    native_world::before_layer(&mut m, 0);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
+    native_world::restore_pending(&mut m);
+
+    // With resolved scene draws enabled, they retain their original guest
+    // emissions. The alternate view can still use the mask reservation.
+    let mut m = guest();
+    stub.resolved.store(true, std::sync::atomic::Ordering::Relaxed);
+    native_world::before_layer(&mut m, native_render::objects::SCENE_LAYER3_RETURN);
+    assert_eq!(masks(&m), vec![0b1010; 3]);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
+    native_world::before_layer(&mut m, 0x0002_bd74);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
+    assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
     native_world::restore_pending(&mut m);
 }

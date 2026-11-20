@@ -24,10 +24,13 @@ pub(crate) fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::Share
     }
     if let Ok(mut device) = device.lock() {
         let mut cache = Cache::default();
-        device.set_indexed_geometry(Box::new(move |mem, esp, draw| {
-            let (map, entry) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
-            cache.geometry(map, entry, draw)
-        }));
+        device.set_scoped_indexed_geometry(
+            native_transparents::in_indexed_handler,
+            Box::new(move |mem, esp, draw| {
+                let (map, entry) = native_transparents::indexed_entry(&ReadMemory(mem), esp)?;
+                cache.geometry(map, entry, draw)
+            }),
+        );
     }
 }
 
@@ -208,6 +211,9 @@ fn diagnostics() -> &'static Diagnostics {
 }
 
 fn describe(entry: Entry, draw: &ResolvedDraw, native: &IndexedGeometry) {
+    if !feature::native_verbose() {
+        return;
+    }
     let strides: Vec<_> = draw.streams.iter().map(|s| s.stride).collect();
     let original = RepackPlan::with_mode(&draw.layout, &strides, FetchMode::Gpu);
     let packed = RepackPlan::with_mode(&native.layout, &[native.stream.stride], FetchMode::Gpu);

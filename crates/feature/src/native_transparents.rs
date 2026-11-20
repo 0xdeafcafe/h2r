@@ -16,7 +16,7 @@ pub const ID: &str = "native-transparents";
 pub const SWITCH: &str = "impl.render.native_transparents";
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 static ACTIVATION: AtomicU64 = AtomicU64::new(1);
@@ -144,6 +144,16 @@ thread_local! {
     static SCOPE: Cell<Scope> = Cell::new(Scope::default());
 }
 
+/// Without a sorted handler the indexed draw cannot use the transparent adapter.
+pub fn in_indexed_handler() -> bool {
+    SCOPE.with(|slot| {
+        let scope = slot.take();
+        let active = scope.handler.is_some();
+        slot.set(scope);
+        active
+    })
+}
+
 pub fn indexed_entry(mem: &dyn GuestRead, esp: u32) -> Option<(MapGeneration, Entry)> {
     SCOPE.with(|slot| {
         let scope = slot.take();
@@ -180,7 +190,7 @@ impl Feature for NativeTransparents {
         if !on(b.switches()) {
             return Ok(());
         }
-        let objects = b.switches().feature(crate::native_objects::SWITCH, false);
+        let objects = b.switches().feature(crate::native_objects::SWITCH, true);
         b.raw()
             .observe_before(&points::GAME_ACTIVATE, "native_transparents_generation", |_| {
                 ACTIVATION.fetch_add(1, Ordering::AcqRel);

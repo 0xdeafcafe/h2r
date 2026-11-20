@@ -570,6 +570,25 @@ impl Mixer {
         self.clock += frames as u64;
     }
 
+    /// Drives guest-visible cursors and packet completions without generating
+    /// samples. Stream pitch effects change its read position only.
+    pub fn advance_clock(&mut self, frames: usize) {
+        let rate = self.sample_rate;
+        for buffer in self.buffers.values_mut().filter(|b| b.is_playing()) {
+            let pitch = buffer.params().spatial.as_ref()
+                .map_or(1.0, |source| self.listener.spatial(source).pitch);
+            buffer.set_doppler_pitch(pitch);
+            buffer.advance_clock(frames, rate);
+        }
+        for stream in self.streams.values_mut().filter(|s| s.is_audible()) {
+            stream.advance_clock(frames, rate);
+        }
+        for mix in self.mix_ins.values_mut().filter(|m| m.is_playing()) {
+            mix.advance_clock(frames as u64);
+        }
+        self.clock += frames as u64;
+    }
+
     /// Playing mix-ins, each after every mix-in that sends to it (Kahn's
     /// algorithm on the send graph; members of a cycle follow in id order).
     fn mix_in_order(&self) -> Vec<MixInId> {

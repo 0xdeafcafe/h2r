@@ -3,6 +3,7 @@
 // repo. Everything here is pure, so it can be tested; state/gameart.ts loads
 // the manifest and components fall back to the art pack when a key is absent.
 
+import clankerKernel from "./clanker-kernel.json";
 import { titleCase } from "./format";
 import { parseMapFiles } from "../map/views";
 import { parseModels, type PlayerModels } from "../viewer/models";
@@ -251,6 +252,10 @@ export const EMBLEM_COLOURS: Rgb[] = [
 export function fnv(seed: string, salt: number): number {
   let h = (2166136261 ^ salt) >>> 0;
   for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  return mixHash(h);
+}
+
+function mixHash(h: number): number {
   // Final mix, so near-identical seeds don't land on neighbouring picks.
   h ^= h >>> 15; h = Math.imul(h, 0x2c1b3c6d); h ^= h >>> 12;
   return h >>> 0;
@@ -276,6 +281,35 @@ export function emblemFromIndices(
 export interface Appearance {
   emblem?: { fg?: number; bg?: number };
   colours?: { primary?: number; secondary?: number; tertiary?: number; quaternary?: number };
+}
+
+interface ClankerKernel {
+  memory: WebAssembly.Memory;
+  __heap_base: WebAssembly.Global;
+  clanker_appearance(input: number, length: number, output: number): void;
+}
+
+let kernel: ClankerKernel | undefined;
+const tagEncoder = new TextEncoder();
+
+/** The same six-byte profile as live_proto::bots::appearance. The synchronous
+ *  mock and game-event reducer can both use the inline, import-free module. */
+export function clankerAppearance(tag: string): Appearance {
+  if (!kernel) {
+    const bytes = Uint8Array.from(atob(clankerKernel.wasm), c => c.charCodeAt(0));
+    kernel = new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports as unknown as ClankerKernel;
+  }
+  const normalized = tag.toLowerCase().split(/\p{White_Space}+/u).filter(Boolean).join(" ");
+  const input = tagEncoder.encode(normalized);
+  const outputAt = Number(kernel.__heap_base.value);
+  const inputAt = outputAt + 6;
+  const needed = inputAt + input.length - kernel.memory.buffer.byteLength;
+  if (needed > 0) kernel.memory.grow(Math.ceil(needed / 65536));
+  const memory = new Uint8Array(kernel.memory.buffer);
+  memory.set(input, inputAt);
+  kernel.clanker_appearance(inputAt, input.length, outputAt);
+  const [fg, bg, primary, secondary, tertiary, quaternary] = memory.subarray(outputAt, inputAt);
+  return { emblem: { fg, bg }, colours: { primary, secondary, tertiary, quaternary } };
 }
 
 /** An appearance off the wire, keeping only finite indices, so state never

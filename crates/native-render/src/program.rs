@@ -383,9 +383,9 @@ const ADDRESS_BORDER: u8 = 4;
 /// register the program reads (a missing one would read zero where the
 /// D3D path streams the real data or binds another implementation), and
 /// where the program samples the lightmap, each part has a page and
-/// `page` has it decoded. The game's skip is per shader, so one part that
-/// cannot be drawn keeps the whole material on the D3D path.
-pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> bool) -> Result<(), String> {
+/// `page` reports whether it decoded. One part that cannot be drawn keeps
+/// the whole material on the D3D path.
+pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: &dyn Fn(LightmapKey) -> Result<(), String>) -> Result<(), String> {
     const NAMES: [&str; 7] = [
         "positions",
         "texture coordinates",
@@ -410,9 +410,7 @@ pub fn world_fit(world: &World, material: u16, program: &MaterialProgram, page: 
             let Some(key) = d.lightmap else {
                 return Err("a part has no lightmap page".into());
             };
-            if !page(key) {
-                return Err("a part's lightmap page does not decode".to_string());
-            }
+            page(key)?;
         }
     }
     Ok(())
@@ -709,6 +707,24 @@ pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
     }
 }
 
+// Byte ranges in the shader uniform ABI. The rest of each block is constant
+// for the material (or, for rigid vertices, the material and placement).
+const VIEW_PREFIX: usize = VIEW_CONSTANTS * 16;
+const VERTEX_TAIL: usize = VertexUniforms::SIZE - 32;
+const PIXEL_TAIL: usize = PixelUniforms::SIZE - 32;
+
+fn view_bytes(view: &ViewInputs) -> [u8; VIEW_PREFIX + 64] {
+    let mut bytes = [0; VIEW_PREFIX + 64];
+    let mut vertex = [0; VertexUniforms::SIZE];
+    frame_vertex(&VertexUniforms::default(), view).write_bytes(&mut vertex);
+    let mut pixel = [0; PixelUniforms::SIZE];
+    frame_pixel(&PixelUniforms::default(), view).write_bytes(&mut pixel);
+    bytes[..VIEW_PREFIX].copy_from_slice(&vertex[..VIEW_PREFIX]);
+    bytes[VIEW_PREFIX..VIEW_PREFIX + 32].copy_from_slice(&vertex[VERTEX_TAIL..]);
+    bytes[VIEW_PREFIX + 32..].copy_from_slice(&pixel[PIXEL_TAIL..]);
+    bytes
+}
+
 /// The wgpu sampler for a stage's states, made as the D3D path makes it
 /// (`gfx::translate::SamplerKey::from_stage`: anisotropic filtering,
 /// `MAXMIPLEVEL` as the smallest LOD, no mip filter as level 0 only;
@@ -785,7 +801,7 @@ fn stage_state(s: &StageStates) -> Option<gfx::state::TextureStageState> {
 /// textures and pipelines (by target formats).
 pub(crate) struct Gpu {
     pub(crate) program: MaterialProgram,
-    module: wgpu::ShaderModule,
+    module: Option<wgpu::ShaderModule>,
     layout: wgpu::PipelineLayout,
     textures_layout: wgpu::BindGroupLayout,
     vertex_buffer: wgpu::Buffer,
@@ -807,6 +823,12 @@ pub(crate) struct Gpu {
 /// A world or rigid pipeline's key: target formats, stencil state and the
 /// inherited cull it was made with ([`InheritedCull::of`]).
 type PipelineKey = (wgpu::TextureFormat, wgpu::TextureFormat, wgpu::StencilState, Option<Cull>);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MaterialUse {
+    pub cluster: bool,
+    pub rigid: bool,
+}
 
 /// The materials drawn with their own programs, and each batch's texture
 /// group (its lightmap page bound where the pass samples the lightmap).
@@ -843,22 +865,30 @@ impl Gpu {
         program: MaterialProgram,
         stage_image: &mut dyn FnMut(Stage) -> Option<Image>,
     ) -> Option<Self> {
+        Self::with_images(device, program, &mut |stage, signed| {
+            let mut image = stage_image(stage)?;
+            bias_signed(&mut image, signed);
+            Some((
+                texture(device, queue, &image, "native world stage"),
+                describe_image(&image, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)),
+            ))
+        })
+    }
+
+    fn with_images(
+        device: &wgpu::Device,
+        program: MaterialProgram,
+        image: &mut dyn FnMut(Stage, [bool; 4]) -> Option<(wgpu::TextureView, String)>,
+    ) -> Option<Self> {
         let mut stage_views: [Option<wgpu::TextureView>; 4] = Default::default();
         let mut stage_info: [Option<String>; 4] = Default::default();
-        for (n, s) in program.stages.iter().enumerate() {
-            if let Stage::Bitmap { .. } = s
-                && program.dims[n].is_some()
-            {
-                let mut image = stage_image(*s)?;
-                bias_signed(&mut image, program.signed[n]);
-                stage_views[n] = Some(texture(device, queue, &image, "native world stage"));
-                stage_info[n] = Some(describe_image(&image, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)));
+        for (n, &stage) in program.stages.iter().enumerate() {
+            if matches!(stage, Stage::Bitmap { .. }) && program.dims[n].is_some() {
+                let (view, description) = image(stage, program.signed[n])?;
+                stage_views[n] = Some(view);
+                stage_info[n] = Some(description);
             }
         }
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native world program"),
-            source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
-        });
         let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("native world program uniforms"),
             entries: &[
@@ -897,16 +927,15 @@ impl Gpu {
             bind_group_layouts: &[Some(&uniforms_layout), Some(&textures_layout)],
             immediate_size: 0,
         });
-        let buffer = |label, size: usize| {
-            gfx::churn::create_buffer(device, &wgpu::BufferDescriptor {
+        let buffer = |label, contents: &[u8]| {
+            gfx::churn::create_buffer_init(device, &wgpu::util::BufferInitDescriptor {
                 label: Some(label),
-                size: size as u64,
+                contents,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
             })
         };
-        let vertex_buffer = buffer("native world program vertex", VertexUniforms::SIZE);
-        let pixel_buffer = buffer("native world program pixel", PixelUniforms::SIZE);
+        let vertex_buffer = buffer("native world program vertex", &program.vertex.to_bytes());
+        let pixel_buffer = buffer("native world program pixel", &program.pixel.to_bytes());
         let uniforms = gfx::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
             label: Some("native world program uniforms"),
             layout: &uniforms_layout,
@@ -918,7 +947,7 @@ impl Gpu {
         let samplers = std::array::from_fn(|n| device.create_sampler(&sampler_descriptor(program.samplers[n].as_ref())));
         Some(Gpu {
             program,
-            module,
+            module: None,
             layout,
             textures_layout,
             vertex_buffer,
@@ -1009,11 +1038,20 @@ impl Gpu {
         depth: wgpu::TextureFormat,
         state: Option<&PassState>,
     ) {
-        let (module, layout) = (&self.module, &self.layout);
+        let module = shader_module(device, &mut self.module, &self.program.wgsl);
+        let layout = &self.layout;
         self.pipelines
             .entry((color, depth))
             .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, None, wgpu::StencilState::default()));
     }
+}
+
+/// Defer WGSL compilation until a selected material needs its first pipeline.
+fn shader_module<'a>(device: &wgpu::Device, module: &'a mut Option<wgpu::ShaderModule>, source: &str) -> &'a wgpu::ShaderModule {
+    module.get_or_insert_with(|| device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("native world program"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    }))
 }
 
 /// A program's pipeline over the world vertex ([`INPUTS`]): the world's
@@ -1075,7 +1113,7 @@ fn render_pipeline(
 /// material's pixel uniforms and texture groups.
 pub(crate) struct Rigid {
     program: RigidProgram,
-    module: wgpu::ShaderModule,
+    module: Option<wgpu::ShaderModule>,
     layout: wgpu::PipelineLayout,
     buffer: wgpu::Buffer,
     pub(crate) uniforms: wgpu::BindGroup,
@@ -1127,10 +1165,6 @@ impl Rigid {
         let align = u64::from(device.limits().min_uniform_buffer_offset_alignment.max(1));
         let size = VertexUniforms::SIZE as u64;
         let stride = size.div_ceil(align) * align;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native world rigid program"),
-            source: wgpu::ShaderSource::Wgsl(program.wgsl.clone().into()),
-        });
         let mut vertex = uniform_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT);
         if let wgpu::BindingType::Buffer { has_dynamic_offset, min_binding_size, .. } = &mut vertex.ty {
             *has_dynamic_offset = true;
@@ -1172,7 +1206,7 @@ impl Rigid {
                 wgpu::BindGroupEntry { binding: 1, resource: gpu.pixel_buffer.as_entire_binding() },
             ],
         });
-        Some(Self { program, module, layout, buffer, uniforms, stride, slots, pipelines: HashMap::new() })
+        Some(Self { program, module: None, layout, buffer, uniforms, stride, slots, pipelines: HashMap::new() })
     }
 
     /// The frame's view and rows in every slot.
@@ -1203,7 +1237,8 @@ impl Rigid {
         cull: Option<Cull>,
         stencil: &wgpu::StencilState,
     ) {
-        let (module, layout) = (&self.module, &self.layout);
+        let module = shader_module(device, &mut self.module, &self.program.wgsl);
+        let layout = &self.layout;
         self.pipelines
             .entry((color, depth, stencil.clone(), cull))
             .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state, cull, stencil.clone()));
@@ -1235,8 +1270,20 @@ impl ProgramSet {
     ) -> Self {
         let mut materials = HashMap::new();
         let mut rigid = HashMap::new();
+        let mut images = HashMap::new();
         for (material, program) in programs {
-            if let Some(g) = Gpu::new(device, queue, program, stage_image) {
+            let g = Gpu::with_images(device, program, &mut |stage, signed| {
+                let Stage::Bitmap { bitmap, image } = stage else { return None };
+                images.entry((bitmap, image, signed)).or_insert_with(|| {
+                    let mut decoded = stage_image(stage)?;
+                    bias_signed(&mut decoded, signed);
+                    Some((
+                        texture(device, queue, &decoded, "native world stage"),
+                        describe_image(&decoded, device.features().contains(wgpu::Features::TEXTURE_COMPRESSION_BC)),
+                    ))
+                }).clone()
+            });
+            if let Some(g) = g {
                 if let Some(r) = Rigid::new(device, &g, world, material) {
                     rigid.insert(material, r);
                 }
@@ -1244,19 +1291,18 @@ impl ProgramSet {
             }
         }
         let mut pages: HashMap<LightmapKey, Option<wgpu::TextureView>> = HashMap::new();
+        let mut groups = HashMap::new();
         let batch_groups = world
             .batches
             .iter()
             .map(|b| {
                 let g = materials.get(&b.material)?;
-                let page = match b.lightmap {
-                    Some(k) => pages
-                        .entry(k)
-                        .or_insert_with(|| lightmap(k).map(|i| texture(device, queue, &i, "native world lightmap")))
-                        .clone(),
-                    None => None,
-                };
-                g.textures(device, page.as_ref())
+                groups.entry((b.material, b.lightmap)).or_insert_with(|| {
+                    let page = b.lightmap.and_then(|k| {
+                        pages.entry(k).or_insert_with(|| lightmap(k).map(|i| texture(device, queue, &i, "native world lightmap"))).clone()
+                    });
+                    g.textures(device, page.as_ref())
+                }).clone()
             })
             .collect();
         Self { materials, rigid, batch_groups, cull: InheritedCull::default() }
@@ -1295,22 +1341,61 @@ impl ProgramSet {
         cull: InheritedCull,
     ) {
         self.cull = cull;
-        for g in self.materials.values_mut() {
-            let state = g.program.state;
-            let c = cull.of(g.program.inherits_cull, true);
-            let (module, layout) = (&g.module, &g.layout);
-            g.world_pipelines
-                .entry((color, depth, stencil.clone(), c))
-                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), c, stencil.clone()));
+        for (&material, g) in &mut self.materials {
+            Self::material_pipelines(g, self.rigid.get_mut(&material), device, color, depth, stencil, cull, true);
         }
-        for (m, r) in &mut self.rigid {
-            let program = self.materials.get(m).map(|g| &g.program);
-            let state = program.and_then(|p| p.state);
-            let c = cull.of(program.is_some_and(|p| p.inherits_cull), false);
-            let (module, layout) = (&r.module, &r.layout);
-            r.pipelines
-                .entry((color, depth, stencil.clone(), c))
-                .or_insert_with(|| render_pipeline(device, module, layout, color, depth, state.as_ref(), c, stencil.clone()));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn material_pipelines(
+        g: &mut Gpu, rigid: Option<&mut Rigid>, device: &wgpu::Device, color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat, stencil: &wgpu::StencilState, cull: InheritedCull, cluster: bool,
+    ) {
+        let state = g.program.state;
+        if cluster {
+            let c = cull.of(g.program.inherits_cull, true);
+            let module = shader_module(device, &mut g.module, &g.program.wgsl);
+            g.world_pipelines.entry((color, depth, stencil.clone(), c)).or_insert_with(|| {
+                render_pipeline(device, module, &g.layout, color, depth, state.as_ref(), c, stencil.clone())
+            });
+        }
+        if let Some(r) = rigid {
+            r.pipeline_for(device, color, depth, state.as_ref(), cull.of(g.program.inherits_cull, false), stencil);
+        }
+    }
+
+    pub(crate) fn selected_pipelines(
+        &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState, materials: &HashMap<u16, MaterialUse>,
+    ) {
+        for (&material, usage) in materials {
+            if let Some(g) = self.materials.get_mut(&material) {
+                let rigid = if usage.rigid { self.rigid.get_mut(&material) } else { None };
+                Self::material_pipelines(g, rigid, device, color, depth, stencil, self.cull, usage.cluster);
+            }
+        }
+    }
+
+    /// All selected programs see the same view bytes. Only the material constants
+    /// and the model rows between these ranges differ, and those were uploaded at load.
+    pub(crate) fn write_selected(
+        &self, uploads: &mut gfx::ring::EncoderUploads<'_>, view: &ViewInputs,
+        selection: &crate::gpu::WorldSelection,
+    ) {
+        let (source, start) = uploads.arena.stage(uploads.device, uploads.queue, &view_bytes(view));
+        let viewport = start + VIEW_PREFIX as u64;
+        for material in selection.materials.keys() {
+            uploads.encoder.copy_buffer_to_buffer(&source, viewport + 32, &self.materials[material].pixel_buffer, PIXEL_TAIL as u64, 32);
+        }
+        for &(material, instance) in &selection.vertices {
+            let (buffer, offset) = if let Some(n) = instance {
+                let r = &self.rigid[&material];
+                (&r.buffer, u64::from(r.offset(n).expect("selected slot")))
+            } else {
+                (&self.materials[&material].vertex_buffer, 0)
+            };
+            uploads.encoder.copy_buffer_to_buffer(&source, start, buffer, offset, VIEW_PREFIX as u64);
+            uploads.encoder.copy_buffer_to_buffer(&source, viewport, buffer, offset + VERTEX_TAIL as u64, 32);
         }
     }
 
@@ -1320,10 +1405,20 @@ impl ProgramSet {
     pub fn batch(
         &self, index: usize, material: u16, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
     ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, &wgpu::BindGroup)> {
+        let (pipeline, uniforms) = self.cluster(material, color, depth, stencil)?;
+        Some((pipeline, uniforms, self.batch_textures(index)?))
+    }
+
+    pub(crate) fn batch_textures(&self, index: usize) -> Option<&wgpu::BindGroup> {
+        self.batch_groups.get(index)?.as_ref()
+    }
+
+    pub(crate) fn cluster(
+        &self, material: u16, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, stencil: &wgpu::StencilState,
+    ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup)> {
         let g = self.materials.get(&material)?;
-        let textures = self.batch_groups.get(index)?.as_ref()?;
         let cull = self.cull.of(g.program.inherits_cull, true);
-        Some((g.world_pipelines.get(&(color, depth, stencil.clone(), cull))?, &g.uniforms, textures))
+        Some((g.world_pipelines.get(&(color, depth, stencil.clone(), cull))?, &g.uniforms))
     }
 
     /// The rigid pipeline, uniforms and dynamic offset placement
@@ -1464,6 +1559,75 @@ mod tests {
         let p = frame_pixel(&PixelUniforms::default(), &clipped);
         assert_eq!(p.depth_range, [0.0, 33_554_430.0, 0.0, 0.0]);
         assert!(!frame_vertex(&base, &view).w_clamp, "none: the whole range, culled");
+    }
+
+    #[test]
+    fn selected_view_patches_match_the_full_uniform_blocks_byte_for_byte() {
+        let mut vertex = VertexUniforms::default();
+        vertex.constants[MODEL_ROWS] = [-0.0, 2.0, f32::from_bits(0x7fc1_2345), 4.0];
+        vertex.defaults[1] = [3.0; 4];
+        let pixel = PixelUniforms { lod_bias: [0.25; 4], stipple: [17; 32], ..Default::default() };
+        let mut vb = vertex.to_bytes();
+        let mut pb = pixel.to_bytes();
+        for (size, w_clip) in [((8, 4), None), ((16, 8), Some(([2.0, 7.0], true)))] {
+            let view = ViewInputs { constants: [[1.0, -0.0, 3.0, 4.0]; VIEW_CONSTANTS], size, guest_size: (8, 4), z_scale: 10.0, w_clip };
+            let bytes = view_bytes(&view);
+            vb[..VIEW_PREFIX].copy_from_slice(&bytes[..VIEW_PREFIX]);
+            vb[VERTEX_TAIL..].copy_from_slice(&bytes[VIEW_PREFIX..VIEW_PREFIX + 32]);
+            pb[PIXEL_TAIL..].copy_from_slice(&bytes[VIEW_PREFIX + 32..]);
+            assert_eq!(vb, frame_vertex(&vertex, &view).to_bytes());
+            assert_eq!(pb, frame_pixel(&pixel, &view).to_bytes());
+        }
+    }
+
+    #[test]
+    fn bsp_resources_share_matching_signed_images_and_material_page_groups_only_within_the_load() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let page = LightmapKey { page: 1, palette: 2 };
+        let other = LightmapKey { palette: 3, ..page };
+        let batch = |material, lightmap| crate::world::Batch { material, lightmap: Some(lightmap), first_draw: 0, draw_count: 0 };
+        let world = World {
+            batches: vec![batch(0, page), batch(0, page), batch(0, other), batch(1, page), batch(2, page)],
+            ..Default::default()
+        };
+        let make = || {
+            let mut program = compile(&plain_look(), &plain_program()).unwrap();
+            program.dims[..2].fill(Some(TextureDim::D2));
+            program.stages[0] = Stage::Bitmap { bitmap: map::TagId(7), image: 1 };
+            program.stages[1] = Stage::Lightmap;
+            let mut signed = program.clone();
+            signed.signed[0][0] = true;
+            let mut images = 0;
+            let mut pages = 0;
+            let set = ProgramSet::new(&ctx.device, &ctx.queue, &world,
+                [(0, program.clone()), (1, program), (2, signed)].into(),
+                &mut |_| { images += 1; Some(Image::solid([7; 4])) },
+                &mut |_| { pages += 1; Some(Image::solid([9; 4])) });
+            assert_eq!((images, pages), (2, 2));
+            set
+        };
+        let mut set = make();
+        assert_eq!(set.materials[&0].stage_views[0], set.materials[&1].stage_views[0]);
+        assert_ne!(set.materials[&0].stage_views[0], set.materials[&2].stage_views[0]);
+        let groups = &set.batch_groups;
+        assert!(groups.iter().all(Option::is_some));
+        assert_eq!(groups[0], groups[1]);
+        assert_ne!(groups[0], groups[2]);
+        assert_ne!(groups[0], groups[3]);
+        let replacement = make();
+        assert_ne!(groups[0], replacement.batch_groups[0]);
+        assert_ne!(set.materials[&0].stage_views[0], replacement.materials[&0].stage_views[0]);
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let depth = wgpu::TextureFormat::Depth24PlusStencil8;
+        let stencil = wgpu::StencilState::default();
+        let selected = [(1, MaterialUse { cluster: true, rigid: false })].into();
+        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected);
+        let pipeline = set.batch(3, 1, format, depth, &stencil).unwrap().0.clone();
+        set.selected_pipelines(&ctx.device, format, depth, &stencil, &selected);
+        assert_eq!(&pipeline, set.batch(3, 1, format, depth, &stencil).unwrap().0);
+        assert!(set.materials[&0].module.is_none());
+        assert!(replacement.materials[&1].world_pipelines.is_empty());
     }
 
     #[test]
@@ -1936,15 +2100,19 @@ mod tests {
         p.inputs = INPUT_MASK;
         p.stages[3] = Stage::Lightmap;
         p.dims[3] = Some(TextureDim::D2);
-        let all = |_: LightmapKey| true;
+        let all = |_: LightmapKey| Ok(());
+        let missing = |key| {
+            assert_eq!(key, page);
+            Err("a part's lightmap page does not decode".to_string())
+        };
         assert_eq!(world_fit(&world, 1, &p, &all), Ok(()));
         assert_eq!(world_fit(&world, 2, &p, &all), Err("a part has no lighting vectors (v5)".to_string()));
         assert_eq!(world_fit(&world, 3, &p, &all), Err("a part has no lightmap coordinates (v6)".to_string()));
-        assert_eq!(world_fit(&world, 1, &p, &|_: LightmapKey| false), Err("a part's lightmap page does not decode".to_string()));
+        assert_eq!(world_fit(&world, 1, &p, &missing), Err("a part's lightmap page does not decode".to_string()));
         // A program that reads neither: the unlit part fits.
         p.inputs = 0b11;
         p.stages[3] = Stage::Empty;
         p.dims[3] = None;
-        assert_eq!(world_fit(&world, 3, &p, &|_: LightmapKey| false), Ok(()));
+        assert_eq!(world_fit(&world, 3, &p, &missing), Ok(()));
     }
 }

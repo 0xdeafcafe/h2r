@@ -23,6 +23,7 @@ use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
 use crate::surface::WindowSurface;
+use crate::theater_overlay;
 use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
@@ -45,6 +46,7 @@ struct Gpu {
     overlay: OverlayRenderer,
     watermark: WatermarkRenderer,
     menu: MenuRenderer,
+    theater: Option<theater_overlay::Renderer>,
     /// The adapter's backend, lower case (`metal`), for the watermark.
     backend: String,
     source: FrameSource,
@@ -98,6 +100,9 @@ struct Shell {
     banner_drawn: u64,
     restart_requested: bool,
     watermark_text: Option<WatermarkText>,
+    theater_view: theater_overlay::View,
+    theater_refresh: Instant,
+    theater_screenshot: Option<std::path::PathBuf>,
     /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
     display: DisplaySchedule,
 }
@@ -137,6 +142,9 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         banner_drawn: 0,
         restart_requested: false,
         watermark_text: None,
+        theater_view: theater_overlay::View::default(),
+        theater_refresh: now,
+        theater_screenshot: None,
         display: DisplaySchedule::new(config_fps),
     };
     if let Some(c) = &shell.config.closer {
@@ -263,6 +271,7 @@ impl Shell {
             overlay: OverlayRenderer::new(&ctx.device),
             watermark: WatermarkRenderer::new(&ctx.device),
             menu: MenuRenderer::new(&ctx.device),
+            theater: self.config.theater.as_ref().map(|_| theater_overlay::Renderer::new(&ctx.device)),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
@@ -342,6 +351,10 @@ impl Shell {
                 );
             }
         }
+        if let Some(renderer) = &mut g.theater {
+            renderer.draw(&g.ctx, &mut enc, &self.theater_view, &view,
+                g.surface.config.format, g.surface.size(), viewport);
+        }
         // The debug menu over everything but the banner.
         if let Some(lines) = self
             .config
@@ -377,6 +390,11 @@ impl Shell {
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
         g.ctx.queue.present(target);
+        if let Some(theater) = &self.config.theater
+            && let Some(dir) = self.theater_screenshot.take()
+        {
+            theater.0.screenshot_saved(theater_overlay::screenshot(&g.ctx, frame.as_ref(), &dir));
+        }
     }
 
     fn update_status(&mut self) {
@@ -554,6 +572,9 @@ impl ApplicationHandler<UserEvent> for Shell {
             }
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::Focused(focused) => {
+                if !focused && let Some(theater) = &self.config.theater {
+                    theater.0.release_keys();
+                }
                 if !focused {
                     if let Some(kb) = &self.keyboard {
                         kb.release_all();
@@ -648,6 +669,19 @@ impl ApplicationHandler<UserEvent> for Shell {
                         }
                         keymap::MenuKey::Pass => {}
                     }
+                }
+                if let Some(theater) = &self.config.theater
+                    && let Some(key) = theater_overlay::key(code)
+                    && theater.0.key(key, down, event.repeat)
+                {
+                    if !down && let (Some(kb), Some(name)) = (&self.keyboard, keymap::key_name(code)) {
+                        kb.key_up(name);
+                    }
+                    self.theater_refresh = Instant::now();
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
+                    return;
                 }
                 if let Some(banner) = self.config.banner.clone()
                     && matches!(code, KeyCode::F5 | KeyCode::F6)
@@ -761,6 +795,28 @@ impl ApplicationHandler<UserEvent> for Shell {
         // interpolation before phase 2, docs/game/high-framerate.md). At 30 the
         // schedule is never due and this changes nothing.
         let mut wake = self.status.last + Duration::from_secs(1);
+        if let Some(theater) = &self.config.theater {
+            let now = Instant::now();
+            if now >= self.theater_refresh {
+                let view = theater.0.update();
+                if theater.0.take_leave() {
+                    self.close(event_loop, "leave Theater playback");
+                    return;
+                }
+                let rate = if view.transport.is_empty() { 150 } else { 50 };
+                if self.theater_screenshot.is_none() {
+                    self.theater_screenshot = theater.0.take_screenshot();
+                }
+                if self.theater_view != view || self.theater_screenshot.is_some() {
+                    self.theater_view = view;
+                    if let Some(g) = &self.gpu {
+                        g.window.request_redraw();
+                    }
+                }
+                self.theater_refresh = now + Duration::from_millis(rate);
+            }
+            wake = wake.min(self.theater_refresh);
+        }
         // A new frame-rate target (the Video screen's row): the schedule
         // from now, and the surface's vsync when that changes too.
         if let Some(c) = &self.config.fps_control

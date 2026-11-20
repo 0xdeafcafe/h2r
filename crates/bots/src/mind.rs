@@ -23,9 +23,11 @@ use crate::tactics::{self, Shot, Style, Tactics};
 pub(crate) mod feel;
 mod look;
 pub(crate) mod pad;
-pub(crate) use look::{TURN_RATE, turn_rate};
+#[cfg(test)]
+use look::turn_rate;
 
 use feel::{Rng, reached};
+pub use look::AimTrace;
 use look::{Hand, angle_error};
 use pad::{Buttons, Feet, Fidget, Tap};
 
@@ -411,6 +413,12 @@ impl Mind {
             .filter(|o| map.is_none_or(|m| m.walls.clear(eye, up(o.position, CHEST))))
             .copied()
             .collect()
+    }
+
+    /// What the hand last saw of a tracked target (the sim's aim-motion
+    /// metrics; docs/runtime/sim.md §6).
+    pub fn aim_trace(&self) -> Option<AimTrace> {
+        self.hand.trace()
     }
 
     pub(crate) fn release(&mut self, tick: u32) {
@@ -806,6 +814,7 @@ impl Mind {
                         shot.role,
                         arms::Role::Scatter | arms::Role::Spray | arms::Role::Blade
                     ) && dist > self.fight.band.1;
+                    self.hand.wield(shot.role);
                     track = Some((o.id, sub(target, eye), sub(led, eye)));
                 }
                 // Until it reacts it stands, caught out. Then its footwork

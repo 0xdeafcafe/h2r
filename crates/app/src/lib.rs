@@ -48,6 +48,8 @@ use input::backend::keyboard::KeyboardMouse;
 use input::backend::scripted::ScriptedInput;
 use input::bindings::Bindings;
 
+pub mod theater_overlay;
+
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
 pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
@@ -126,6 +128,7 @@ pub struct AppConfig {
     /// the arrows, Enter, Space, Escape and Backspace drive it and no key
     /// press reaches the guest.
     pub debug_menu: Option<debug_menu::Shared>,
+    pub theater: Option<theater_overlay::Overlay>,
 }
 
 impl Default for AppConfig {
@@ -157,6 +160,7 @@ impl Default for AppConfig {
             banner: None,
             watermark: None,
             debug_menu: None,
+            theater: None,
         }
     }
 }

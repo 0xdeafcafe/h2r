@@ -31,17 +31,21 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use agent::Access;
-use agent_proto::{RpcError, code, method};
+use agent_proto::{Endpoint, RpcError, code, method};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+
+/// Optional second listener, supplied by the dedicated-host supervisor
+/// as a TCP address (without the tcp:// prefix).
+pub const HOST_TCP_ENV: &str = "H2_HOST_AGENT_TCP";
 
 /// The agent attached to one run.
 pub struct AgentGlue {
     pub agent: agent::Agent,
     /// `sim.*`'s state; `None` for [`AgentGlue::local`].
     pub sim: Option<agent::sim::SimHandle>,
-    /// `None` for [`AgentGlue::local`]: no socket, only in-process clients.
-    server: Option<agent::Server>,
+    /// Empty for [`AgentGlue::local`], which has only in-process clients.
+    _listeners: Vec<agent::Server>,
 }
 
 /// The socket path from `H2_AGENT`, when set and not empty.
@@ -61,6 +65,7 @@ impl AgentGlue {
         path: PathBuf,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
         replaying: bool,
+        allow_bot_add: bool,
     ) -> Result<AgentGlue> {
         let endpoint = agent_proto::Endpoint::from(path);
         if let agent_proto::Endpoint::Unix(p) = &endpoint
@@ -70,7 +75,7 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
-        let sim = install_sim(&agent);
+        let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.
         let calls = agent::sim::calls::shared();
@@ -88,8 +93,14 @@ impl AgentGlue {
         agent::hs_state::install(&agent);
         // On the game thread: the sampler's main target.
         crate::sampling::set_game_thread();
-        let server = agent::Server::listen_on(&endpoint, agent.clone())
-            .with_context(|| format!("agent: listening on {endpoint}"))?;
+        let mut listeners = Vec::new();
+        if let Some(addr) = std::env::var_os(HOST_TCP_ENV).filter(|addr| !addr.is_empty()) {
+            let addr = addr
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("{HOST_TCP_ENV} is not UTF-8"))?;
+            listeners.push(listen(&Endpoint::Tcp(addr), &agent)?);
+        }
+        listeners.push(listen(&endpoint, &agent)?);
         match registry.add(&agent::AgentFeature(agent.clone())) {
             Ok(true) => {}
             Ok(false) => {
@@ -121,14 +132,16 @@ impl AgentGlue {
                 eprintln!("agent: frame stats: {e}");
             }
         }
-        eprintln!(
-            "agent: listening on {} (docs/runtime/agent-api.md)",
-            server.path().display()
-        );
+        for listener in &listeners {
+            eprintln!(
+                "agent: listening on {} (docs/runtime/agent-api.md)",
+                listener.endpoint()
+            );
+        }
         Ok(AgentGlue {
             agent,
             sim: Some(sim),
-            server: Some(server),
+            _listeners: listeners,
         })
     }
 
@@ -143,7 +156,7 @@ impl AgentGlue {
         AgentGlue {
             agent,
             sim: None,
-            server: None,
+            _listeners: Vec::new(),
         }
     }
 
@@ -159,6 +172,11 @@ impl AgentGlue {
         let mut reader = agent::GuestReader::new(|| rt.memory());
         self.agent.between_slices(&mut reader, presents);
     }
+}
+
+fn listen(endpoint: &Endpoint, agent: &agent::Agent) -> Result<agent::Server> {
+    agent::Server::listen_on(endpoint, agent.clone())
+        .with_context(|| format!("agent: listening on {endpoint}"))
 }
 
 fn rpc(code: i64) -> impl Fn(String) -> RpcError {
@@ -247,11 +265,12 @@ pub fn add_host_methods(agent: &agent::Agent) {
 /// `sim.*` (crates/agent's `sim`): its players are the process-wide local
 /// bots ([`crate::sim_bots`]), and the session kind is read as `coop_probe`
 /// reads it.
-pub fn install_sim(agent: &agent::Agent) -> agent::sim::SimHandle {
+fn install_sim(agent: &agent::Agent, allow_bot_add: bool) -> agent::sim::SimHandle {
     agent::sim::install(
         agent,
         Box::new(crate::sim_bots::LocalBots::new(
             bots::local::global().clone(),
+            allow_bot_add,
         )),
         Some(Box::new(session_view)),
     )
@@ -293,7 +312,6 @@ pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionVie
 impl Drop for AgentGlue {
     fn drop(&mut self) {
         self.agent.shutdown();
-        let _ = &self.server;
     }
 }
 
@@ -301,6 +319,52 @@ impl Drop for AgentGlue {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[cfg(unix)]
+    #[test]
+    fn host_tcp_listener_shares_the_unix_agent() {
+        use std::time::Instant;
+
+        struct Empty;
+        impl agent::Reader for Empty {
+            fn status(&mut self) -> agent::GameStatus {
+                agent::GameStatus::default()
+            }
+
+            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> {
+                Ok(Vec::new())
+            }
+        }
+
+        let glue = AgentGlue::local();
+        let mut count = 0;
+        glue.agent.add_method("test.count", Access::Act, move |_| {
+            count += 1;
+            Ok(json!(count))
+        });
+        let path = std::env::temp_dir().join(format!(
+            "h2h-{}.sock",
+            live_proto::sign::random_id()
+        ));
+        let unix = listen(&Endpoint::Unix(path), &glue.agent).unwrap();
+        let tcp = listen(&Endpoint::Tcp("127.0.0.1:0".into()), &glue.agent).unwrap();
+        let endpoints = [unix.endpoint(), tcp.endpoint()];
+        let clients = std::thread::spawn(move || {
+            endpoints.map(|endpoint| {
+                let mut client = agent_proto::Client::connect_to(&endpoint).unwrap();
+                client.set_timeout(Some(Duration::from_secs(2))).unwrap();
+                client.call("test.count", json!({})).unwrap()
+            })
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !clients.is_finished() {
+            assert!(Instant::now() < deadline, "agent calls did not finish");
+            glue.agent.between_slices(&mut Empty, 0);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(clients.join().unwrap(), [json!(1), json!(2)]);
+    }
 
     #[test]
     fn the_sim_session_kind_comes_from_the_simulation_mode() {

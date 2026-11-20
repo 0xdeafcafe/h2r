@@ -772,8 +772,8 @@ a running game) instead of all of RAM.
 
 **Live server**: `GET /v1/sessions/{id}/relay` ([live-api.md](live-api.md),
 "Co-op relay"): a WebSocket for the two members of an open session
-advertised with `flags: "coop"`, authenticated with a `sessions.relay`
-token, 1200 bytes a message, rate-limited per socket
+advertised with `flags: "coop"`. The upgrade uses a `sessions.relay`
+bearer token. The relay caps messages at 1200 bytes and rate-limits each socket
 (`Policy::relay_rate`). It forwards bytes and never reads or stores them.
 
 **What the tests prove** (`cargo test -p coop -p lockstep -p live-server`):
@@ -2336,7 +2336,8 @@ The question (2026-11-18): can the network game state be made to lag
 less, and how does the game predict? Co-op over Live runs the retail
 synchronous path: one console builds every tick's update from everyone's
 actions, the others run only the updates they receive. A guest's own
-press therefore shows only after a round trip. This section is a static
+simulation action therefore takes a round trip. First-person look has a
+local camera path as well (15.4). This section is a static
 reading (`h2 disasm`) and our own code; no game run. The `coop-live:
 latency` line (15.4) is how a run will put numbers on it.
 
@@ -2471,17 +2472,44 @@ a BSP switch, fade, music, a checkpoint) would need replicating. That is
 a new replication layer for most of campaign: months, with the
 synchronous path's exactness given up.
 
-**Prediction on the synchronous path.** Two levels:
+**Prediction on the synchronous path.** Look prediction is in progress.
+The synchronous simulation and its input schedule still provide the
+authoritative aim.
 
-1. **Look prediction (camera only).** On a guest, rotate the drawn
-   camera by the look input not yet in a received update, with the
-   game's own look-rate rule (`0x001870a0`, high-framerate.md "Input
-   latency and aim"); when the update arrives, its real aim replaces
-   the prediction. The simulation never sees it, so it cannot desync;
-   a mismatch shows as a small correction. Aim is what players feel.
-   Cost: the look-rate rule, the camera hook on the render path, and
-   the guest's own pending inputs (it sent them, so it has them). About
-   a week or two; low risk. This is the recommendation.
+1. **Guest look prediction (implemented, game measurement pending).**
+   `coop.look_prediction` defaults to true. `H2_COOP_LOOK_PREDICTION=0`
+   disables it. Only an armed synchronous guest (world mode 3) draws
+   predicted look. The host uses its ordinary camera.
+
+   The outgoing action already contains the result of the look-rate rule.
+   `0x1870a0` runs local player control, and `0x186ab0` writes absolute
+   yaw and pitch in radians to action `+4/+8`. Sampling the actual
+   `0x28` in its channel encoder (`0xb2790`) uses the same response curve, axis speeds,
+   acceleration, pitch limits, aim assist and zoom that produced the
+   host's input. A second stick integrator would have to reproduce all
+   of those, including per-profile settings and map tags.
+
+   Each local user has a separate queue. A send carries its sequence and
+   the last update the guest saw. When `0x683a0` applies a newer numbered
+   update, the guest reads its own player slot's action from the record.
+   The wire carries that action and omits the sender's sequence. The
+   guest matches the earliest eligible send within one wire cell (13-bit
+   yaw, 12-bit pitch). Identical looks are ambiguous but give the same
+   orientation. Earlier unmatched sends are superseded. After 30 newer
+   updates an unmatched send expires, with a hard limit of 64 sends.
+   Replaying absolute aims leaves the newest pending aim as the target.
+
+   [local] The on-foot first-person director (`0x23c110`) already reads
+   local player-control angles. A network wait for a simulated action
+   does not establish an equal wait for the drawn look. `boot::coop_look`
+   compares the drawn camera with the turn already sent and adds only the
+   remaining rotation. A camera already showing the sent look needs zero
+   adjustment. Only `render_game_view` receives the private view record,
+   with its two camera bases rotated together. Small corrections settle
+   over two draws. Errors of 30 degrees or more snap. Death, loss of local
+   control, a changed unit or zoom, a teleport, a vehicle or a cinematic
+   discard pending look. Tests cover the packet and update layouts on a
+   fake guest, private camera copies, wrap, loss, blending and the gates.
 2. **Full prediction (rollback).** Run the guest's game ahead on its own
    input and roll back to each received update, replaying. It would
    remove the round trip from movement too. Cost: a game-state snapshot
@@ -2491,6 +2519,16 @@ synchronous path's exactness given up.
    base. Months, high risk; not before 1 is measured.
 
 ### 15.5 What needs a game run
+
+Measure before changing the input schedule. Take a prediction-off
+baseline with both consoles on the same map and repeat with controlled
+delay and jitter. Record RTT, guest input-to-update, host wait and
+update spacing. Compare prediction on and off on the same routes and
+look inputs. Measure the time to the first displayed turn and the size
+and frequency of corrections when the authoritative aim catches up.
+Check that a cut or reconnect clears stale prediction and that the
+simulation sees the same inputs. Ping-aware host selection is being
+added to SBMM for distributed matches. [Matchmaking](live-matchmaking.md#9-ping-aware-optimatch-assignments)
 
 `h2 coop test --players 2 --auto`. In a level, read the two `coop-live: latency`
 lines once a second and the `coop-live: ping` line:
@@ -2502,3 +2540,37 @@ lines once a second and the `coop-live: ping` line:
 - "largest" over about 1400 B says updates fragment;
 - then the same with `H2_XNET_LOWDELAY=1` on both, on Wi-Fi, and
   compare the medians and maxima.
+
+**Look prediction run checklist (code-only lane, pending).**
+
+1. Start `H2_COOP_LATENCY=1 h2 coop test --players 2 --auto`, join the
+   same campaign level on both instances and wait for an on-foot view.
+   Save both latency lines and ping. On the guest socket, record a turn
+   with `input.record {"name":"coop-look"}` and `input.stop`. Include a small deflection,
+   a held full turn, a reversal, vertical motion and a zoomed turn.
+2. Read `render.coop_look` on both sockets during the sequence. On Bravo,
+   compare `predicted` with `confirmed` while `pending` is positive.
+   Compare `drawn` with `camera` to measure how much retail already
+   showed. Record the lag in guest frames between the first drawn turn
+   and the confirming update, and the maximum `correction_rad`. Alpha
+   should report `host`, zero pending and identical camera angles.
+3. Stop the stick and let the last changed look reach a newer update.
+   The angles should converge within wire precision. Repeated stationary
+   sends may remain pending. Check zoom, death/respawn, vehicle entry
+   and exit, a cinematic, and a checkpoint revert. The first view after
+   a cut should show the new camera without carrying the old turn.
+4. Repeat on the same level with `H2_COOP_LOOK_PREDICTION=0` and the
+   recorded pad sequence. Compare drawn-turn timing and the latency lines.
+   Record a zero visual gain if retail already showed the turn in both
+   runs. Check the retail desync latch and compare host/guest simulation
+   pools at common ticks with `h2 coop-probe diff` as in §9. Report any
+   new divergent simulation pool and the first differing tick.
+
+For the recorded-stick regression, save one Bravo `render.coop_look` JSON
+reply covering the on-foot sweep and its echoes. The test consumes that
+file and the corresponding XAPI input log offline. Set
+`H2_COOP_LOOK_CAPTURE` to the JSON path and `H2_COOP_LOOK_INPUT` to the
+`inputs/coop-look.input` path reported by the recorder. Include
+`cargo test -p boot --lib recorded_stick_turns -- --ignored` after the
+capture. The ordinary `cargo test -p boot --lib coop_look` tests use
+synthetic packets and require neither a disc nor a recording.

@@ -1,7 +1,8 @@
 //! `native-post`: the view's post passes drawn by the native renderer
-//! (docs/graphics/native-renderer.md, "Stage 5: post and HUD"). Off by
-//! default; `H2_FEATURES=impl.render.native_post=on` turns it on (exactly
-//! that key).
+//! (docs/graphics/native-renderer.md, "Stage 5: post and HUD"). On by
+//! default (since 2026-11-20); `H2_FEATURES=impl.render.native_post=off`
+//! turns it off for the comparison against the D3D path (exactly that
+//! key).
 //!
 //! The colour pass and each screen effect run their guest code. Entry
 //! hooks supply the call's arguments and stack identity. Return hooks
@@ -30,9 +31,11 @@ pub const ID: &str = "native-post";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_post";
 
-/// Whether the native post is on (off by default).
+/// Whether the native post is on (on by default since 2026-11-20;
+/// `impl.render.native_post=off` turns it off for the comparison against
+/// the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// The caller's floating-point state at the hook: the numbers are the

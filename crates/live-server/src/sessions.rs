@@ -1,5 +1,6 @@
 //! Signed-host discovery sessions, projected from the event log.
 use crate::ConnectInfo;
+use crate::host_identity::{Publisher, SESSIONS_PUBLISH}; // dh-identity
 use crate::{
     app::{ApiError, Live, conflict, forbidden, invalid, not_found, now, sign_error, unauthorized},
     model::{State, nonce_key},
@@ -31,23 +32,115 @@ impl Live {
         new: NewSession,
         observed: Option<IpAddr>,
     ) -> Result<Session, ApiError> {
-        let author = self.authenticate(bearer, lxm::SESSIONS_WRITE)?;
+        self.create_session_with_assignment(bearer, new, observed, None).await
+    }
+
+    async fn create_session_with_assignment(
+        &self,
+        bearer: Option<&str>,
+        mut new: NewSession,
+        observed: Option<IpAddr>,
+        match_id: Option<&str>,
+    ) -> Result<Session, ApiError> {
+        let (author, grant, _) = self.publisher(bearer, SESSIONS_PUBLISH)?;
         self.rate_limit(&author, lxm::SESSIONS_WRITE)?;
-        let Author::Account { xuid, .. } = author else {
-            return Err(forbidden("a session host must be an account"));
+        let xuid = match &author {
+            Publisher::Peer(Author::Account { xuid, .. }) => *xuid,
+            Publisher::Host(_) => live_proto::Xuid(0), // wire placeholder, never a player
+            _ => {
+                return Err(forbidden(
+                    "a session host must be an account or a leased host",
+                ));
+            }
+        };
+        let match_id = match &grant {
+            Some(host) => {
+                host.require_active(self)?;
+                host.session_assignment(&new, match_id)?
+            }
+            None => match_id,
         };
         new.validate().map_err(invalid)?;
-        self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
         let seen = observed.and_then(|ip| match ip {
             IpAddr::V4(v) => Some(v),
             _ => None,
         });
-        // A listed session draws every browsing console's discovery probes
-        // to its address, so off-loopback it is the address the host
-        // connected from, whatever was declared. A declared address is kept
-        // otherwise, and lists show the session only if that address is a
-        // local-network one (Endpoint::listable, docs/live/live-custom-games.md).
+        let _guard = self.session_writes.lock().await;
+        let subject = author.to_string();
+        if grant.is_some()
+            && let Some(existing) = self
+                .model
+                .read()
+                .sessions
+                .values()
+                .find(|s| s.host == subject)
+        {
+            return if existing.state == "open" {
+                Ok(existing.clone())
+            } else {
+                Err(conflict("the lease session has already closed"))
+            };
+        }
+        let matchmaking = if let Some(id) = match_id {
+            if !session::valid_id(id) {
+                return Err(invalid("invalid matchmaking assignment id"));
+            }
+            if grant.is_none()
+                && let Some(existing) = self.model.read().sessions.get(id)
+            {
+                if existing.host == subject && existing.matchmaking.is_some() {
+                    return Ok(existing.clone());
+                }
+                return Err(forbidden("only the elected host may publish the assigned session"));
+            }
+            let matcher = self.matchmaking.lock().unwrap();
+            let lease = if grant.is_some() {
+                matcher.dedicated_lease(id, now())
+            } else {
+                matcher.lease(id, now())
+            }
+            .ok_or_else(|| conflict("matchmaking assignment expired"))?;
+            let elected = match &grant {
+                Some(host) => host.owns_assignment(&lease.assignment),
+                None => lease.assignment.host_lease.is_none() && lease.assignment.host == xuid,
+            };
+            if !elected {
+                return Err(forbidden("only the elected host may publish the assigned session"));
+            }
+            if grant.is_none()
+                && (seen != Some(*lease.endpoint.ip()) || new.port != lease.endpoint.port())
+            {
+                return Err(conflict("session endpoint changed after the QoS probes"));
+            }
+            if grant.is_some() {
+                // A playerless publisher may have no local hopper selection.
+                new.attributes
+                    .entry(live_proto::optimatch::attr::HOPPER)
+                    .or_insert(session::AttributeValue::Integer(u64::from(
+                        lease.assignment.hopper,
+                    )));
+                new.validate().map_err(invalid)?;
+            }
+            if new.is_coop()
+                || live_proto::optimatch::playlist(&new.attributes) != Some(lease.assignment.hopper)
+                || new.slots.public_open < lease.joiners
+            {
+                return Err(invalid(
+                    "assigned session needs the matching hopper and room for its roster",
+                ));
+            }
+            new.hopper_id = Some(lease.assignment.hopper);
+            new.flags = if lease.ranked { "ranked" } else { "hopper" }.into();
+            Some(lease.assignment.clone())
+        } else {
+            None
+        };
+        self.check_session_map(&new.flags, new.hopper_id, new.map_id.as_ref())?;
+        // Off loopback, listed sessions use the observed client address.
+        // An assigned session always uses the address the roster probed.
         let declared = match seen {
+            None if grant.is_some() => new.addr,
+            _ if matchmaking.is_some() => None,
             Some(v) if new.visibility.is_listed() && !v.is_loopback() => None,
             _ => new.addr,
         };
@@ -57,8 +150,9 @@ impl Live {
         if addr.is_unspecified() || addr.is_multicast() || addr.is_broadcast() || new.port > 65529 {
             return Err(invalid("invalid gameplay endpoint"));
         }
-        let _guard = self.session_writes.lock().await;
-        let tag = {
+        let tag = if grant.is_some() {
+            String::new()
+        } else {
             let s = self.model.read();
             if s.sessions
                 .values()
@@ -74,13 +168,17 @@ impl Live {
                 .gamertag
                 .to_string()
         };
-        let id = loop {
-            let mut bytes = [0; 8];
-            getrandom::fill(&mut bytes).map_err(|_| invalid("random source unavailable"))?;
-            bytes[0] = (bytes[0] & 15) | 0x80;
-            let id = live_proto::sign::hex(&bytes);
-            if !self.model.read().sessions.contains_key(&id) {
-                break id;
+        let id = if let Some(assignment) = matchmaking.as_ref().filter(|_| grant.is_none()) {
+            assignment.id.clone()
+        } else {
+            loop {
+                let mut bytes = [0; 8];
+                getrandom::fill(&mut bytes).map_err(|_| invalid("random source unavailable"))?;
+                bytes[0] = (bytes[0] & 15) | 0x80;
+                let id = live_proto::sign::hex(&bytes);
+                if Some(id.as_str()) != match_id && !self.model.read().sessions.contains_key(&id) {
+                    break id;
+                }
             }
         };
         let time = time::OffsetDateTime::now_utc();
@@ -89,7 +187,7 @@ impl Live {
             .expect("time formats");
         let item = Session {
             session_id: id.clone(),
-            host: author.to_string(),
+            host: subject,
             host_xuid: xuid,
             host_gamertag: tag,
             xnkid: id.clone(),
@@ -104,6 +202,7 @@ impl Live {
                 .into(),
             },
             advertisement: new,
+            matchmaking,
             since: at,
             last_activity: time.unix_timestamp(),
             state: "open".into(),
@@ -126,15 +225,15 @@ impl Live {
         id: &str,
         jws: &str,
     ) -> Result<u64, ApiError> {
-        let author = self.authenticate(bearer, lxm::SESSIONS_WRITE)?;
+        let (author, grant, _) = self.publisher(bearer, SESSIONS_PUBLISH)?;
         self.rate_limit(&author, lxm::SESSIONS_WRITE)?;
         let (parsed, bodies) = SignedEvent::open_batch(jws).map_err(sign_error)?;
         let first = &bodies[0];
         if first.author != author.to_string() {
             return Err(forbidden("event author is not the token issuer"));
         }
-        let key = self
-            .key_for(&author, &first.kid)
+        let key = author
+            .key(self, &first.kid)
             .ok_or_else(|| unauthorized("unknown or revoked session key"))?;
         parsed.verify(&key).map_err(sign_error)?;
         let _guard = self.session_writes.lock().await;
@@ -148,11 +247,32 @@ impl Live {
         if item.host != author.to_string() {
             return Err(forbidden("only the host writes this session"));
         }
-        if item.state != "open" {
-            return Err(conflict("session is closed"));
-        }
         let clock = now();
         let stream = session::stream(id);
+        if item.state != "open" {
+            // A worker retry can arrive after the delete committed but its
+            // HTTP acknowledgement was lost. Acknowledge that signed delete.
+            if grant.is_some()
+                && item.state == "deleted"
+                && bodies.len() == 1
+                && first.stream == stream
+                && first.kind == session::DELETED
+                && self
+                    .model
+                    .nonces
+                    .contains(&nonce_key(&first.author, &first.nonce), clock)
+            {
+                return Ok(self.position());
+            }
+            return Err(conflict("session is closed"));
+        }
+        // A stopped host may withdraw its own listing while shutting down.
+        // Its unexpired boot token cannot keep advertising or changing seats.
+        if let Some(host) = &grant
+            && bodies.iter().any(|b| b.kind != session::DELETED)
+        {
+            host.require_active(self)?;
+        }
         let mut nonces = BTreeSet::new();
         let mut changed = Vec::new();
         for (i, b) in bodies.iter().enumerate() {
@@ -180,9 +300,19 @@ impl Live {
                     .map_err(|_| invalid("invalid player"))?;
                 let known = {
                     let m = self.model.read();
-                    m.accounts.contains_key(&p.xuid)
-                        || crate::bots::leased_to(&m, id, &author, p.xuid)
-                        || (b.kind == session::LEFT && item.players.contains_key(&p.xuid))
+                    let eligible = grant.as_ref().is_none_or(|host| {
+                        p.xuid.0 != 0 && (host.roster.is_empty() || host.roster.contains(&p.xuid))
+                    });
+                    eligible
+                        && (m.accounts.contains_key(&p.xuid)
+                            || grant.as_ref().is_some_and(|g| {
+                                g.roster.contains(&p.xuid)
+                                    && m.bots.bot(p.xuid).is_some_and(|bot| bot.persistent)
+                            })
+                            || author
+                                .peer()
+                                .is_some_and(|a| crate::bots::leased_to(&m, id, a, p.xuid))
+                            || (b.kind == session::LEFT && item.players.contains_key(&p.xuid)))
                 };
                 if !known || p.slot.as_ref().is_some_and(|s| s.len() > 64) {
                     return Err(invalid("unknown player or invalid slot"));
@@ -199,6 +329,17 @@ impl Live {
                 return Err(invalid("SessionDeleted must be last"));
             }
             let did = item.apply(&b.kind, &b.data, &b.at, at).map_err(invalid)?;
+            if let Some(host) = &grant
+                && b.kind == session::UPDATED
+            {
+                host.session_assignment(&item.advertisement, None)?;
+                if let Some(a) = &item.matchmaking
+                    && live_proto::optimatch::playlist(&item.advertisement.attributes)
+                        != Some(a.hopper)
+                {
+                    return Err(forbidden("session update changed the leased hopper"));
+                }
+            }
             if did {
                 changed.push(i);
             }
@@ -331,7 +472,7 @@ impl Live {
             .collect()
     }
 
-    fn viewer_of(&self, author: &Author) -> Viewer {
+    pub(crate) fn viewer_of(&self, author: &Author) -> Viewer {
         if matches!(author, Author::Server(_)) {
             return Viewer::Operator;
         }
@@ -348,10 +489,13 @@ impl Live {
 /// Whether `viewer` may read a log event (`GET /v1/events`, `/v1/stream`):
 /// a game's events follow [`crate::model::Game::shows_to`], a session's
 /// follow its current visibility with [`finished_shows_to`]'s rule (who was
-/// in it counts), and every other event is public.
+/// in it counts). Only admins and the operator read host lifecycle and Theater events.
 pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
     if viewer.is_admin() {
         return true;
+    }
+    if stream == live_proto::hosts::STREAM {
+        return false;
     }
     if let Some(id) = stream.strip_prefix("game-") {
         return game_shows_to(s, id, viewer);
@@ -359,7 +503,8 @@ pub fn event_shows_to(s: &State, stream: &str, viewer: Viewer) -> bool {
     if let Some(id) = stream.strip_prefix("session-") {
         return session_shows_to(s, id, viewer);
     }
-    true
+    // Theater reads use the current game visibility and current clip state.
+    stream != crate::films::STREAM
 }
 
 /// What presence says instead of a hidden game's or session's activity.
@@ -760,8 +905,12 @@ pub(crate) async fn create(HttpState(live): Shared, req: Request) -> Result<Resp
         .await
         .map_err(|_| invalid("session request too large"))?;
     let new = serde_json::from_slice(&bytes).map_err(|_| invalid("invalid session request"))?;
+    let match_id = headers
+        .get(live_proto::matchmaking::MATCH_HEADER)
+        .map(|value| value.to_str().map_err(|_| invalid("invalid matchmaking assignment id")))
+        .transpose()?;
     let item = live
-        .create_session(crate::http::bearer(&headers), new, observed)
+        .create_session_with_assignment(crate::http::bearer(&headers), new, observed, match_id)
         .await?;
     Ok(crate::http::json(
         StatusCode::CREATED,
@@ -791,13 +940,18 @@ pub(crate) async fn detail(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let viewer = live.read_viewer(crate::http::bearer(&headers))?;
+    let token = crate::http::bearer(&headers);
+    let viewer = live.read_caller(token)?;
     let state = live.model.read();
     let item = state
         .sessions
         .get(&id)
         .ok_or_else(|| not_found("no such session"))?;
-    let item = for_reader(item, viewer != Viewer::Anonymous);
+    let item = for_reader(
+        &live,
+        item,
+        token.is_some() && assignment_endpoint_shows(item, viewer),
+    );
     Ok(crate::http::json(
         StatusCode::OK,
         &json!({"session":item,"position":live.position()}),
@@ -858,15 +1012,20 @@ pub(crate) async fn list(
             && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
             && q.get("visibility")
                 .is_none_or(|v| v == s.advertisement.visibility.as_str())
+            && (!signed || assignment_endpoint_shows(s, viewer))
             && s.listed_for(viewer, |a, b| state.is_friends(a, b))
     });
     if let Some(query) = optimatch {
         // Ordered by match quality, so one page: no cursor.
-        let items: Vec<_> =
-            live_proto::optimatch::select(&query, listed, |s| &s.advertisement.attributes, limit)
-                .into_iter()
-                .cloned()
-                .collect();
+        let items: Vec<_> = live_proto::optimatch::select(
+            &query,
+            listed.filter(|s| s.matchmaking.is_none()),
+            |s| &s.advertisement.attributes,
+            limit,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
         return Ok(crate::http::json(
             StatusCode::OK,
             &Page {
@@ -886,17 +1045,30 @@ pub(crate) async fn list(
     Ok(crate::http::json(
         StatusCode::OK,
         &Page {
-            items: items.iter().map(|s| for_reader(s, signed)).collect(),
+            items: items.iter().map(|s| for_reader(&live, s, signed)).collect(),
             next,
             position: live.position(),
         },
     ))
 }
+fn assignment_endpoint_shows(s: &Session, viewer: Option<live_proto::Xuid>) -> bool {
+    s.matchmaking.as_ref().is_none_or(|assignment| {
+        viewer.is_some_and(|xuid| xuid == assignment.host || assignment.members.contains(&xuid))
+    })
+}
+
 /// A session as the session endpoints answer it: whole for a signed-in
 /// reader (a game joins by its addresses), without them
 /// ([`strip_addresses`]) for an anonymous one.
-fn for_reader(s: &Session, signed: bool) -> serde_json::Value {
+fn for_reader(live: &Live, s: &Session, signed: bool) -> serde_json::Value {
     let mut v = serde_json::to_value(s).expect("serializes");
+    let dedicated = live.dedicated_host_fields(&s.host);
+    if let Some(id) = dedicated.host_lease {
+        v["host_lease"] = id.into();
+    }
+    if let Some(region) = dedicated.dedicated_region {
+        v["dedicated_region"] = region.into();
+    }
     if !signed {
         strip_addresses(&mut v);
     }

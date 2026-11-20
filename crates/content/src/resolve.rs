@@ -607,6 +607,17 @@ fn resolve_package(
     if patches.iter().any(|p| matches!(p, Patch::Bps(_))) {
         let path = cache.join(format!("{}.map", package.id));
         if let Ok(file) = File::open(&path) {
+            // The cache key includes the expected base hash. Check the
+            // actual base too, in case a different disc or Map Pack is mounted.
+            let hash = Tee {
+                src: base_src,
+                hash: Hasher::default(),
+                next: 0,
+            }
+            .finish()?;
+            if hash != want {
+                return Err(ResolveError::Base { what });
+            }
             let len = file.metadata()?.len();
             touch(&path);
             return Ok(Resolved {
@@ -726,8 +737,10 @@ fn touch(path: &Path) {
 /// then evict least recently used maps until the cache is within `cap`.
 fn store(cache: &Path, path: &Path, bytes: &[u8], cap: u64) -> io::Result<File> {
     std::fs::create_dir_all(cache)?;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = cache.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{n}.{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("map"),
         std::process::id()
     ));
@@ -1131,8 +1144,13 @@ pub(crate) mod tests {
         repair_checksum(&mut want);
         assert_eq!(std::fs::read(path).unwrap(), want);
         assert_eq!(*len, want.len() as u64);
-        // Built once: a second resolve does not read the base.
-        let r2 = lib.resolve("lockout", &mut &b""[..]).unwrap().unwrap();
+        // The matching base can reuse the materialised bytes.
+        let r2 = lib.resolve("lockout", &mut &disc[..]).unwrap().unwrap();
+        // A different base cannot use the cache, even for the same package.
+        assert!(matches!(
+            lib.resolve("lockout", &mut &b"wrong base"[..]),
+            Err(ResolveError::Base { .. })
+        ));
         assert_eq!(read(&r2, b""), want);
         let leftovers: Vec<_> = std::fs::read_dir(lib.root().join(CACHE_DIR))
             .unwrap()

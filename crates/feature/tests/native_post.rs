@@ -18,18 +18,18 @@ fn placed(switches: &str) -> Option<feature::plan::Plan> {
 #[test]
 fn the_switch_places_it_and_the_ab_places_it_observing() {
     // One test: the A/B's placement is process-wide.
-    assert!(placed("").is_none(), "off: nothing");
+    assert!(placed("impl.render.native_post=off").is_none(), "off: nothing");
     native_post::place_for_capture(true);
-    assert!(placed("").is_some(), "the A/B's D3D side");
+    assert!(placed("impl.render.native_post=off").is_some(), "the A/B's D3D side");
     native_post::place_for_capture(false);
-    assert!(placed("").is_none());
+    assert!(placed("impl.render.native_post=off").is_none());
     assert!(placed("impl.render.native_post=on,render-timing").is_some(), "the call still runs: timing is fine");
 }
 
 /// Off or on, it holds nothing a load must drop: never a blocker.
 #[test]
 fn its_snapshot_policy_is_stateless_on_or_off() {
-    for switches in ["", "impl.render.native_post=on"] {
+    for switches in ["impl.render.native_post=off", ""] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         assert!(r.add(&NativePost).unwrap());
         let plan = r.build(&Base).unwrap();

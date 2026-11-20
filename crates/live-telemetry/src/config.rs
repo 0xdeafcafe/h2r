@@ -21,12 +21,28 @@ impl fmt::Debug for TelemetryAccount {
     }
 }
 
+/// Private boot credential supplied by the host supervisor.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct HostToken(pub(crate) String);
+
+impl fmt::Debug for HostToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("<redacted host token>")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TelemetrySinkConfig {
     File(PathBuf),
     Server {
         base_url: String,
         account: TelemetryAccount,
+    },
+    Host {
+        base_url: String,
+        token: HostToken,
+        game: Option<live_proto::game::SimGame>,
     },
     Simulation {
         base_url: String,
@@ -67,9 +83,33 @@ impl TelemetryConfig {
         }
     }
 
+    /// Dedicated matches and hosted training runs use the private lease
+    /// bearer for ingest, including when the machine has no Live accounts.
+    pub fn for_host(
+        base_url: String,
+        token: String,
+        game: Option<live_proto::game::SimGame>,
+    ) -> Result<Self, String> {
+        if !live_proto::bearer_allowed(&base_url) {
+            return Err("host telemetry requires HTTPS or a loopback URL".into());
+        }
+        if token.is_empty() {
+            return Err("missing host telemetry credential".into());
+        }
+        Ok(Self {
+            enabled: true,
+            sink: TelemetrySinkConfig::Host {
+                base_url,
+                token: HostToken(token),
+                game,
+            },
+        })
+    }
+
     /// Boot-only configuration boundary. `H2_TELEMETRY_FILE` selects offline
-    /// capture; an enabled Live configuration otherwise supplies the account
-    /// and server. `H2_TELEMETRY=0` disables either source.
+    /// capture. The supervisor supplies the dedicated host credential.
+    /// Ordinary Live consoles use the signed-in account. `H2_TELEMETRY=0`
+    /// disables all three.
     pub fn from_live(
         live_enabled: bool,
         accounts_path: Option<&std::path::Path>,
@@ -80,6 +120,13 @@ impl TelemetryConfig {
         }
         if let Some(path) = std::env::var_os("H2_TELEMETRY_FILE").filter(|v| !v.is_empty()) {
             return Ok(Self::file(path.into()));
+        }
+        if let Some(token) = std::env::var_os("H2_HOST_TOKEN") {
+            let token = token.into_string()
+                .map_err(|_| "invalid host telemetry credential")?;
+            let base_url = std::env::var("H2_HOST_LIVE_URL")
+                .map_err(|_| "H2_HOST_LIVE_URL is required with H2_HOST_TOKEN")?;
+            return Self::for_host(base_url, token, None);
         }
         if !live_enabled {
             return Ok(Self::default());

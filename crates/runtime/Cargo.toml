@@ -12,6 +12,9 @@ x87.workspace = true
 timeline = { path = "../timeline" }
 rustc-hash = "2"
 
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
 runtime-test-probe = { path = "test-probe" }

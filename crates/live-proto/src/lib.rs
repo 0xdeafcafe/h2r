@@ -6,18 +6,21 @@
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
 pub mod arbitration;
+pub mod archive;
 pub mod audit;
 pub mod bans;
 pub mod bots;
 pub mod chunk;
 pub mod game;
 pub mod hopper;
+pub mod hosts; // dh-lease
 pub mod jcs;
 pub mod mailbox;
 pub mod map_details;
 pub mod maps;
 pub mod motd;
 pub mod mutes;
+pub mod matchmaking;
 pub mod optimatch;
 pub mod pack;
 pub mod rank;
@@ -31,6 +34,7 @@ pub mod skulls;
 pub mod storage;
 pub mod team;
 pub mod title_file;
+pub mod tunnel;
 
 use std::fmt;
 
@@ -317,6 +321,8 @@ pub mod lxm {
     pub const EVENTS_WRITE: &str = "events.write";
     /// Game events, `POST /v1/games`, the ingest socket, map outlines.
     pub const GAMES_WRITE: &str = "games.write";
+    /// Saving films and creating or deleting Theater clips.
+    pub const FILMS_WRITE: &str = "films.write";
     pub const SESSIONS_WRITE: &str = "sessions.write";
     /// The co-op relay socket of a session the token's account is in.
     pub const SESSIONS_RELAY: &str = "sessions.relay";
@@ -419,6 +425,9 @@ pub struct Health {
 /// `GET /.well-known/h2live.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Discovery {
+    /// Additional packed ingest versions this server accepts beyond the v7 baseline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingest_frame_versions: Vec<u8>,
     pub id: String,
     pub api: String,
     pub keys: Vec<sign::Jwk>,

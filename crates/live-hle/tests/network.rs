@@ -26,6 +26,7 @@ struct World {
     ctx: ExecCtx,
     cpu: CpuAbi,
     config: NetworkConfig,
+    hle: Arc<Hle>,
 }
 impl World {
     fn new() -> Self {
@@ -58,6 +59,7 @@ impl World {
             ctx,
             cpu: CpuAbi::default(),
             config,
+            hle,
         }
     }
     fn call(&mut self, name: &str, args: &[u32]) -> u32 {
@@ -1163,4 +1165,80 @@ fn nested_transport_references_keep_sockets_and_keys_until_final_cleanup() {
     assert_eq!(a.call("WSAStartup", &[2, DATA]), 0);
     assert_eq!(a.call("closesocket", &[id]), ERROR);
     assert_eq!(a.error(), 10038);
+}
+
+/// The original listener still holds the port while the replay binds it, and
+/// nobody sends the replay a packet. Both boots see the same complete ABI.
+#[test]
+fn film_replays_network_random_and_qos_without_a_live_socket() {
+    use film::tape::{Call, Tap};
+    use std::{collections::VecDeque, sync::Mutex};
+    #[derive(Default)]
+    struct Tape {
+        replay: bool,
+        calls: Mutex<VecDeque<Call>>,
+    }
+    impl Tap for Tape {
+        fn replaying(&self) -> bool {
+            self.replay
+        }
+        fn next(&self, op: &str, args: &[u32], thread: u32) -> Option<Call> {
+            let c = self.calls.lock().unwrap().pop_front()?;
+            assert_eq!(
+                (c.op.as_str(), c.args.as_slice(), c.thread),
+                (op, args, thread)
+            );
+            Some(c)
+        }
+        fn record(&self, _: film::Tag, c: Call) {
+            self.calls.lock().unwrap().push_back(c)
+        }
+        fn fault(&self, why: String) {
+            panic!("{why}")
+        }
+    }
+    let run = |w: &mut World, send: bool| {
+        w.start();
+        let id = w.socket(17);
+        w.bind(id, 1000);
+        w.nonblock(id, true);
+        assert_eq!(w.recvfrom(id, 4), ERROR);
+        assert_eq!(w.error(), 10035);
+        if send {
+            let tx = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            tx.send_to(b"abcde", w.config.address).unwrap();
+        }
+        assert_eq!(w.readable(id), 1);
+        assert_eq!(w.call("ioctlsocket", &[id, 0x4004667f, OUT]), 0);
+        assert_eq!(w.u32(OUT), 5);
+        assert_eq!(w.recvfrom(id, 4), ERROR);
+        assert_eq!(w.error(), 10040);
+        assert_eq!(w.get(DATA, 4), b"abcd");
+        assert_eq!(w.u32(OUT), 16);
+        let sender = w.get(ADDR, 16);
+        w.key();
+        assert_eq!(w.call("XNetRandom", &[OUT, 12]), 0);
+        let random = w.get(OUT, 12);
+        assert_eq!(w.call("XNetGetConnectStatus", &[1]), 3);
+        assert_eq!(
+            w.call("XNetQosLookup", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, OUT]),
+            0
+        );
+        let ptr = w.u32(OUT);
+        assert_eq!(w.get(ptr, 8), vec![0; 8]);
+        assert_eq!(w.call("XNetQosRelease", &[ptr]), 0);
+        (sender, w.get(KID, 8), w.get(KEY, 16), random, ptr)
+    };
+    let mut original = World::new();
+    let tape = Arc::new(Tape::default());
+    original.hle.set_film_tap(tape.clone());
+    let expected = run(&mut original, true);
+    let mut replay = World::with(original.config.clone());
+    let replay_tape = Arc::new(Tape {
+        replay: true,
+        calls: Mutex::new(tape.calls.lock().unwrap().clone()),
+    });
+    replay.hle.set_film_tap(replay_tape.clone());
+    assert_eq!(run(&mut replay, false), expected);
+    assert!(replay_tape.calls.lock().unwrap().is_empty());
 }

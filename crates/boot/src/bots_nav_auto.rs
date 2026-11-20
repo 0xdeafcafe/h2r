@@ -2,13 +2,12 @@
 //! stage 2, "Built for you"): [`bots::autonav::Worker`] on a low-priority
 //! thread of its own, so the boot never waits for it.
 //!
-//! It looks at every map the game can load, as the VFS serves it (so a
-//! package or `H2_MAP_DIR` map in place of a disc map, and a converted
-//! Halo 1 map's chosen sandbox, are what it fingerprints and builds):
+//! It scans retail maps as the VFS serves them, including explicit
+//! `H2_MAP_DIR` editor overrides. Generated offers open on demand so the
+//! background scan does not apply every installed patch at boot.
 //!
 //! - the disc's `maps\*.map`, opened as `D:\maps\<name>.map`;
-//! - the content packages' maps, `T:\$c\<offer>\*.map` (the Map Pack,
-//!   new maps from `<data>/maps`, converted Halo 1 maps).
+//! - the installed Map Pack's maps, `T:\$c\<offer>\*.map`.
 //!
 //! The level being booted (`H2_LEVEL`) goes first. When the game loads a
 //! map, `bot_glue` asks for it ([`bots::autonav::Handle::want`]): it is
@@ -43,19 +42,32 @@ pub fn start_with(on: bool, data_root: &Path, disc: &Path, vfs: SharedVfs, first
         return None;
     }
     let (disc, content) = (disc.to_path_buf(), content_root(data_root));
+    let scan_vfs = Arc::clone(&vfs);
     let (worker, handle) = Worker::new(
         data_root.join("bots"),
-        Box::new(move || scan(&disc, &content, &vfs)),
+        Box::new(move || scan(&disc, &content, &scan_vfs)),
     );
-    let worker = worker.first(first).stay(true).on_built(|name, d| {
-        if autonav::offer(name, d.clone(), true) {
-            eprintln!("bots: {name}: the new nav mesh is in use");
-        }
-    });
-    let spawned = std::thread::Builder::new().name("bots-nav".into()).spawn(move || {
-        lower_priority();
-        worker.run();
-    });
+    let worker = worker
+        .on_demand(move |name| {
+            let path = vfs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .content_map_path(name)?;
+            vfs_source(&vfs, name, &path)
+        })
+        .first(first)
+        .stay(true)
+        .on_built(|name, d| {
+            if autonav::offer(name, d.clone(), true) {
+                eprintln!("bots: {name}: the new nav mesh is in use");
+            }
+        });
+    let spawned = std::thread::Builder::new()
+        .name("bots-nav".into())
+        .spawn(move || {
+            lower_priority();
+            worker.run();
+        });
     if let Err(e) = spawned {
         eprintln!("bots: nav meshes not built: {e}");
         return None;
@@ -71,8 +83,8 @@ fn content_root(data_root: &Path) -> PathBuf {
         .join(vfs::CONTENT_DIR)
 }
 
-/// Every map the game can load, as the VFS serves it: the disc's, then
-/// the content packages'.
+/// Disc and physically installed content. Generated package placeholders
+/// are opened through the worker's on-demand lookup.
 pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>> {
     let mut out = Vec::new();
     for name in disc_map_names(disc) {
@@ -91,6 +103,7 @@ pub fn scan(disc: &Path, content: &Path, vfs: &SharedVfs) -> Vec<Box<dyn Source>
             .into_iter()
             .flatten()
             .flatten()
+            .filter(|e| e.metadata().is_ok_and(|m| m.is_file() && m.len() != 0))
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.to_ascii_lowercase().ends_with(".map"))
             .collect();

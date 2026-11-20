@@ -383,7 +383,7 @@ fn short_pixels_are_refused_and_long_ones_cut() {
 fn an_alpha_block_reads_back_within_half_a_step() {
     use crate::mask::alpha_block;
     use gfx::dxt::{BcKind, decode_block};
-    let a: [u8; 16] = std::array::from_fn(|k| (k as u8 * 37) % 200 + 20);
+    let a: [u8; 16] = std::array::from_fn(|k| ((k * 37) % 200 + 20) as u8);
     let mut block = [0u8; 16];
     block[..8].copy_from_slice(&alpha_block(&a));
     let back = decode_block(BcKind::Bc3, &block);

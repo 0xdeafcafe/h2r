@@ -9,14 +9,46 @@
 //! seed instead; both read, and fields this version does not know are kept.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use live_proto::sign::{KeyPair, PrivateJwk};
-use live_proto::{AccountKeys, Author, Discovery, Gamertag, Xuid};
+#[cfg(feature = "desktop")]
+use live_proto::{AccountKeys, Discovery, Gamertag};
+use live_proto::{Author, Xuid};
+#[cfg(feature = "desktop")]
 use live_server::identity::write_private;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+/// Where Live keeps this machine's accounts (`accounts.json`), the
+/// account handed to a game (`play-accounts.json`) and an embedded
+/// server's data: `$H2_LIVE_DIR`, else the application support directory.
+/// `h2 coop test` gives each game its own, so two games on one Mac never
+/// share `play-accounts.json`.
+pub(crate) fn live_dir() -> Result<PathBuf> {
+    live_dir_from(std::env::var_os(LIVE_DIR_ENV), std::env::var_os("HOME"))
+}
+
+/// The variable [`live_dir`] reads first.
+pub(crate) const LIVE_DIR_ENV: &str = "H2_LIVE_DIR";
+
+fn live_dir_from(
+    over: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    if let Some(dir) = over.filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = home
+        .filter(|h| !h.is_empty())
+        .context("HOME is not set; nowhere to keep live data")?;
+    Ok(PathBuf::from(home).join("Library/Application Support/h2recomp/live"))
+}
+
+pub(crate) fn accounts_path() -> Result<PathBuf> {
+    Ok(live_dir()?.join("accounts.json"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalAccount {
@@ -50,6 +82,7 @@ impl std::fmt::Debug for StoredKey {
 }
 
 impl LocalAccount {
+    #[cfg(feature = "desktop")]
     pub fn new(
         xuid: Xuid,
         gamertag: &str,
@@ -94,12 +127,14 @@ impl LocalAccount {
         }
     }
 
+    #[cfg(feature = "desktop")]
     fn tag_key(&self) -> String {
         self.gamertag.to_ascii_lowercase()
     }
 
     /// The account as this version writes it: the key as a JWK, the
     /// derivable fields filled in.
+    #[cfg(feature = "desktop")]
     fn normalized(mut self, key: &KeyPair, server_id: &str) -> Self {
         self.key = StoredKey::Jwk(key.private_jwk());
         self.kid = Some(key.kid().into());
@@ -130,6 +165,7 @@ pub fn load(path: &Path) -> Result<Vec<LocalAccount>> {
 }
 
 /// Writes the file mode 0600 (tightening an older, looser one).
+#[cfg(feature = "desktop")]
 pub fn save(path: &Path, accounts: &[LocalAccount]) -> Result<()> {
     write_private(
         path,
@@ -138,12 +174,14 @@ pub fn save(path: &Path, accounts: &[LocalAccount]) -> Result<()> {
 }
 
 /// Replaces any entry with the same xuid.
+#[cfg(feature = "desktop")]
 pub fn upsert(accounts: &mut Vec<LocalAccount>, account: LocalAccount) {
     accounts.retain(|a| a.xuid != account.xuid);
     accounts.push(account);
 }
 
 /// An import file: one entry, or a list of them.
+#[cfg(feature = "desktop")]
 pub fn parse_import(bytes: &[u8]) -> Result<Vec<LocalAccount>> {
     let value: Value = serde_json::from_slice(bytes).context("the file is not JSON")?;
     let entries = match value {
@@ -167,6 +205,7 @@ pub fn parse_import(bytes: &[u8]) -> Result<Vec<LocalAccount>> {
 /// Checks an imported entry against what the server says: the gamertag is
 /// valid, the key parses, and its public half is the account's current key.
 /// Returns the entry as it will be stored.
+#[cfg(feature = "desktop")]
 pub fn check_import(
     entry: LocalAccount,
     discovery: &Discovery,
@@ -204,6 +243,7 @@ pub fn check_import(
 
 /// Adds `entry`, refusing one whose xuid is already here or whose gamertag
 /// is already held for the same server.
+#[cfg(feature = "desktop")]
 pub fn merge(accounts: &mut Vec<LocalAccount>, entry: LocalAccount) -> Result<()> {
     if let Some(a) = accounts.iter().find(|a| a.xuid == entry.xuid) {
         bail!(
@@ -229,6 +269,7 @@ pub fn merge(accounts: &mut Vec<LocalAccount>, entry: LocalAccount) -> Result<()
 /// A gamertag from an OS user name: letters and digits kept, anything else
 /// a single space between words, cut to 15 and led by a letter. `Player`
 /// when nothing usable is left.
+#[cfg(feature = "desktop")]
 pub fn gamertag_from(name: &str) -> String {
     let words: Vec<String> = name
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -249,6 +290,7 @@ pub fn gamertag_from(name: &str) -> String {
 }
 
 /// `base` with a number on the end, kept within 15 characters.
+#[cfg(feature = "desktop")]
 pub fn numbered(base: &str, n: u32) -> String {
     let suffix = n.to_string();
     let keep = base.len().min(15 - suffix.len());
@@ -258,10 +300,29 @@ pub fn numbered(base: &str, n: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_live_directory_is_h2_live_dir_when_set() {
+        assert_eq!(
+            live_dir_from(Some("/x/live".into()), Some("/home/a".into())).unwrap(),
+            PathBuf::from("/x/live")
+        );
+        assert_eq!(
+            live_dir_from(Some("".into()), Some("/home/a".into())).unwrap(),
+            PathBuf::from("/home/a/Library/Application Support/h2recomp/live")
+        );
+        assert!(live_dir_from(None, None).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "desktop"))]
+mod management_tests {
+    use super::*;
     use live_proto::AccountKey;
 
     fn discovery() -> Discovery {
         Discovery {
+            ingest_frame_versions: Vec::new(),
             id: "live.test".into(),
             api: "/v1".into(),
             keys: Vec::new(),

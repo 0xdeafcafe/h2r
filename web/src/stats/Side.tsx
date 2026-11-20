@@ -17,6 +17,7 @@ import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import { colourFor, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { ago, titleCase } from "../lib/format";
 import { now } from "../lib/now";
+import { dedicatedHostLabel } from "../lib/hosts";
 import { outlineFor } from "../state/outlines";
 import { geometryFor } from "../map/geometry";
 import ViewMap from "../map/ViewMap";
@@ -166,8 +167,10 @@ export function MapPreview(props: { map: string; mapId?: string | null }) {
   return <MapPicture map={props.map} mapId={props.mapId} class="s-mappic" />;
 }
 
-/** The gamertag of whoever started the game (the server names them `acct:<xuid>@<server>`). */
+/** The dedicated host label or the gamertag of the player who started the game. */
 export function hostName(g: GameState): string | null {
+  const dedicated = dedicatedHostLabel(g);
+  if (dedicated) return dedicated;
   const xuid = g.host?.match(/^acct:([^@]+)@/)?.[1] ?? g.console;
   const tag = xuid ? live.state.accounts[xuid]?.gamertag : undefined;
   return tag ?? Object.values(g.players).find((p) => p.local)?.name ?? null;

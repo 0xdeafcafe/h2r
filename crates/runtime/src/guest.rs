@@ -840,6 +840,21 @@ impl Guest {
             }
         }
     }
+    /// Arm read-only watches of selected virtual pages. Read masks cover
+    /// 64-byte lines, so this tracks ranges rather than individual fields.
+    pub fn watch_read_lines(&mut self, pages: impl IntoIterator<Item = u32>) {
+        self.install_trap(4096);
+        let Some(trap) = &self.trap else { return };
+        for page in pages.into_iter().filter(|p| *p < (1 << 20)) {
+            let page = page as usize;
+            trap.arm(page, true, false);
+            trap.set_sticky(page, true);
+            if let Some(fast) = &mut self.fast_pages {
+                fast[page].permissions &= !1;
+            }
+        }
+    }
+
     /// Disarms every page and restores its fast page table entry.
     pub fn disarm_all(&mut self) {
         let Some(trap) = &self.trap else {

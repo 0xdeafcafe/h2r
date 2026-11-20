@@ -2,7 +2,7 @@
 //!
 //! The device resolves every guest-visible thing (state arrays, resource
 //! headers, vertex bytes, shader inputs) into a [`ResolvedDraw`] and hands it
-//! to a [`Backend`]. [`GfxBackend`](crate::gfx_backend::GfxBackend) renders
+//! to a [`Backend`]. `GfxBackend` renders
 //! through `gfx`; [`RecordingBackend`] records calls for CPU-only tests.
 
 use gfx::texture::{DecodedTexture, TextureDesc};
@@ -269,6 +269,7 @@ pub type DepthGridSink = std::sync::Arc<dyn Fn(DepthGridResult) + Send + Sync>;
 /// world. The device decides where (the bound targets and viewport); the
 /// backend gives the pass its encoder and the targets' views.
 pub trait ExternalPass: Send {
+    #[cfg(feature = "gpu")]
     /// Records the pass, on the thread that owns the GPU. Called once per
     /// copy of the targets: twice under the render scale (the 1x
     /// reference and the scaled view), with the same frame each time.
@@ -281,19 +282,44 @@ pub trait ExternalPass: Send {
     }
 
     /// Validate stage-specific resources on this copy before recording.
+    #[cfg(feature = "gpu")]
     fn prepare_copy(&mut self, _target: &ExternalTarget<'_>) -> Result<(), &'static str> {
         Ok(())
     }
 
     /// Record the complete replacement in an isolated encoder. Return the number
     /// of guest ranges actually recorded. Legacy, uncounted passes fail closed.
+    #[cfg(feature = "gpu")]
     fn record_ranges(&mut self, _target: ExternalTarget<'_>) -> usize {
         0
     }
 
+    /// Prepare draws with cached pipelines and bindings for an ordered
+    /// attachment run. They can be appended without a private encoder.
+    #[cfg(feature = "gpu")]
+    fn record_draws(
+        &mut self,
+        _target: &ExternalAttachments,
+        _request: ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> { None }
+
+    /// The pass validates cached GPU resources when creating them and
+    /// checks attachment compatibility, usage and draw bounds explicitly.
+    fn uses_validated_resources(&self) -> bool { false }
+
+    /// A run whose immutable attachments can be pinned once. Opt in only
+    /// when prepare/record can run off the render worker on the pinned copies.
+    fn batch_key(&self) -> Option<u64> { None }
+
     /// Fully recorded bundles for an ordered run on the bound attachments.
     /// The per-copy reservation checks their range count before commit.
+    /// Bundle uniforms use the pinned upload arena, leaving the encoder untouched.
+    #[cfg(feature = "gpu")]
     fn record_bundles(&mut self, _target: &mut ExternalTarget<'_>) -> Option<ExternalBundles> { None }
+
+    /// A resolved draw admission can retain its original, immutable D3D packet for
+    /// ordered fallback on the worker. Guest-mask reservations leave this empty.
+    fn resolved_fallback(&self) -> Option<std::sync::Arc<ResolvedDraw>> { None }
 
     /// Number of suppressed guest items represented by this reservation. Most
     /// geometry promises one range per item; multi-range effects override it.
@@ -320,15 +346,15 @@ pub trait ExternalPass: Send {
 
     /// Whether the pass draws colour only (a full-screen post pass): the
     /// device then issues it with no depth bound, and the backend gives it
-    /// a scratch depth ([`ExternalTarget::depth`]) it must not rely on.
+    /// a scratch depth (`ExternalTarget::depth`) it must not rely on.
     fn colour_only(&self) -> bool {
         false
     }
 
     /// Guest texture headers the pass samples, read when it is issued: the
     /// render-to-texture levels the D3D path drew into them (the game's
-    /// texture accumulation target), given to [`ExternalPass::encode`] as
-    /// [`ExternalTarget::sampled`] in this order. Empty by default.
+    /// texture accumulation target), given to `ExternalPass::encode` as
+    /// `ExternalTarget::sampled` in this order. Empty by default.
     fn sampled(&self) -> Vec<u32> {
         Vec::new()
     }
@@ -356,6 +382,7 @@ pub struct DepthClip {
 /// (docs/graphics/native-renderer.md, "What a world pass reads").
 pub const VIEW_CONSTANTS: usize = 18;
 
+#[cfg(feature = "gpu")]
 /// What an [`ExternalPass`] draws into.
 pub struct ExternalTarget<'a> {
     pub device: &'a wgpu::Device,
@@ -391,6 +418,7 @@ pub struct ExternalTarget<'a> {
     pub on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
 }
 
+#[cfg(feature = "gpu")]
 impl ExternalTarget<'_> {
     pub fn encoder_uploads(&mut self) -> gfx::ring::EncoderUploads<'_> {
         gfx::ring::EncoderUploads { device: self.device, queue: self.queue, arena: self.uploads, encoder: self.encoder }
@@ -417,6 +445,7 @@ pub struct ExternalSlot {
     pub written: bool,
 }
 
+#[cfg(feature = "gpu")]
 pub struct ExternalColor {
     pub guest_size: (u32, u32),
     pub attachment: wgpu::TextureView,
@@ -474,12 +503,14 @@ impl<S> ExternalSurfaces<S> {
 }
 
 /// All pinned targets, or the physical copy whose attachments could not be resolved.
-pub enum ExternalCopies {
-    Ready(Vec<ExternalAttachments>),
+#[cfg(feature = "gpu")]
+pub enum ExternalCopies<T = Vec<ExternalAttachments>> {
+    Ready(T),
     Missing(TargetCopy),
 }
 
 /// GPU handles pinned for a complete prepare/record transaction.
+#[cfg(feature = "gpu")]
 pub struct ExternalAttachments {
     pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
     pub uploads: gfx::ring::SubmissionUploads,
@@ -496,6 +527,7 @@ pub struct ExternalAttachments {
     pub copy: TargetCopy,
 }
 
+#[cfg(feature = "gpu")]
 impl ExternalAttachments {
     fn target<'a>(
         &'a self,
@@ -520,11 +552,14 @@ pub struct ExternalRecording {
     pub items: usize,
     pub copy: TargetCopy,
     pub ranges: usize,
+    #[cfg(feature = "gpu")]
     pub commands: ExternalCommands,
+    #[cfg(feature = "gpu")]
     pub uploads: gfx::ring::SubmissionUploads,
     pub on_submit: Vec<Box<dyn FnOnce() + Send>>,
 }
 
+#[cfg(feature = "gpu")]
 pub struct ExternalBundles {
     pub run: u64,
     pub scissor: [u32; 4],
@@ -532,12 +567,13 @@ pub struct ExternalBundles {
     pub ranges: usize,
 }
 
+#[cfg(feature = "gpu")]
 impl ExternalBundles {
     /// Use identical attachments and dynamic state for validation and final submission.
-    pub(crate) fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
+    pub fn encode_run(encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView,
         depth: &wgpu::TextureView, stencil: bool, packets: &[Self]) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("native light run"),
+            label: Some("native draw run"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: color, depth_slice: None, resolve_target: None,
                 ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
@@ -560,10 +596,22 @@ impl ExternalBundles {
     }
 }
 
+#[cfg(feature = "gpu")]
+pub struct ExternalDraws {
+    /// Guest ranges represented by the packets (a range may have several scissors).
+    pub ranges: usize,
+    pub packets: Vec<gfx::RecordedDraw>,
+    pub discards: bool,
+}
+
+#[cfg(feature = "gpu")]
 pub enum ExternalCommands {
     Standalone(wgpu::CommandBuffer),
+    Draws {
+        targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
+        draws: ExternalDraws,
+    },
     Bundles {
-        setup: wgpu::CommandBuffer,
         targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
         color: wgpu::TextureView,
         depth: wgpu::TextureView,
@@ -573,6 +621,153 @@ pub enum ExternalCommands {
 }
 
 pub type SharedReplacement = std::sync::Arc<std::sync::Mutex<Box<dyn ExternalPass>>>;
+
+/// A resolved external draw whose guest-visible writes agree with its D3D fallback.
+/// The worker chooses one complete recording or replays the original in this queue slot.
+pub struct QueuedExternalDraw<S> {
+    pub surfaces: ExternalSurfaces<S>,
+    pub request: ExternalPassRequest,
+    pub plan: ExternalPlan,
+    pub pass: SharedReplacement,
+    pub fallback: std::sync::Arc<ResolvedDraw>,
+    /// The original draw's depth. A colour-only native pass has scratch depth.
+    pub fallback_depth: Option<S>,
+    /// None on native commit, otherwise the result of the fallback draw.
+    pub finished: Box<dyn FnOnce(Option<&Result<DrawOutcome, String>>) + Send>,
+}
+
+/// Validate and seal every copy, either on the worker or over pinned handles
+/// on the device thread. Refusal discards all copies and their uploads.
+#[cfg(feature = "gpu")]
+pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
+    request: ExternalPassRequest, plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
+    slots_valid: bool, pin: impl FnOnce() -> Result<ExternalCopies<T>, String>,
+) -> Result<Option<Vec<ExternalRecording>>, String> {
+    use timeline::native::{Metric, Timer};
+    let item_count = pass.lock().map_err(|_| "native pass poisoned")?.items(plan.ranges) as u64;
+    plan.stage.count(Metric::Examined, item_count);
+    let refuse = |reason| { plan.stage.count(reason, item_count); Ok(None) };
+    let preparing = Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
+    if plan.ranges == 0 { return refuse(Metric::RefusedRanges); }
+    let (x, y, w, h) = request.rect;
+    let (sw, sh) = request.surface_size;
+    if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw)
+        || y.checked_add(h).is_none_or(|b| b > sh)
+    {
+        return refuse(Metric::RefusedResources);
+    }
+    if !slots_valid {
+        return refuse(Metric::RefusedResources);
+    }
+    let targets = match pin() {
+        Ok(ExternalCopies::Ready(targets)) => targets,
+        Ok(ExternalCopies::Missing(copy)) => {
+            plan.stage.copy_refused(plan.view, copy == TargetCopy::Display);
+            return refuse(Metric::RefusedResources);
+        }
+        Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
+    };
+    let targets = targets.as_ref();
+    if !matches!(targets, [one] if one.copy == copy)
+        && !matches!(targets, [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
+    {
+        return refuse(Metric::RefusedResources);
+    }
+    enum Prepared {
+        Draws(ExternalDraws),
+        Commands(wgpu::CommandEncoder),
+    }
+    // Native wgpu resolves validation scopes synchronously on the CPU.
+    // If a backend cannot report validation immediately, fail closed.
+    fn validated(future: impl std::future::Future<Output = Option<wgpu::Error>>) -> bool {
+        let mut future = std::pin::pin!(future);
+        matches!(
+            std::future::Future::poll(future.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop())),
+            std::task::Poll::Ready(None)
+        )
+    }
+
+    let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
+    let check_recording = !pass.uses_validated_resources();
+    let mut failure = None;
+    let mut prepared = [None, None];
+    for (slot, target) in prepared.iter_mut().zip(targets) {
+        let result = if let Some(draws) = pass.record_draws(target, request) {
+            draws.map(Prepared::Draws).map_err(|_| Metric::RefusedInputs)
+        } else {
+            let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
+            let mut encoder = target.device.create_command_encoder(&Default::default());
+            let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
+            if !scope.is_none_or(|scope| validated(scope.pop())) { Err(Metric::RefusedValidation) }
+            else if !ready { Err(Metric::RefusedInputs) }
+            else { Ok(Prepared::Commands(encoder)) }
+        };
+        match result {
+            Ok(copy) => *slot = Some((target, copy)),
+            Err(why) => {
+                plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
+                failure.get_or_insert(why);
+            }
+        }
+    }
+    if let Some(why) = failure { return refuse(why); }
+    drop(preparing);
+
+    let _encode = Timer::start(plan.stage, Metric::EncodeNs);
+    let mut recordings = Vec::with_capacity(targets.len());
+    for (target, prepared) in prepared.into_iter().flatten() {
+        let mut on_submit = Vec::new();
+        let (ranges, commands, valid) = match prepared {
+            Prepared::Draws(draws) => {
+                let ranges = draws.ranges;
+                let valid = ranges <= draws.packets.len()
+                    && !draws.packets.iter().any(gfx::RecordedDraw::counts_samples);
+                (ranges, ExternalCommands::Draws { targets: target.targets, draws }, valid)
+            }
+            Prepared::Commands(mut encoder) => {
+                let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
+                let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
+                let (ranges, commands) = match bundles {
+                    Some(draws) => {
+                        // Bundle attachment compatibility is checked at execution.
+                        if check_recording {
+                            ExternalBundles::encode_run(&mut encoder, &target.color, &target.depth,
+                                target.depth_format.has_stencil_aspect(), std::slice::from_ref(&draws));
+                            drop(encoder.finish());
+                        }
+                        (draws.ranges, ExternalCommands::Bundles {
+                            targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
+                            stencil: target.depth_format.has_stencil_aspect(), draws,
+                        })
+                    }
+                    None => {
+                        let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
+                        (ranges, ExternalCommands::Standalone(encoder.finish()))
+                    }
+                };
+                (ranges, commands, scope.is_none_or(|scope| validated(scope.pop())))
+            }
+        };
+        plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
+        if !valid || !plan.complete(target.copy, ranges) {
+            plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
+            failure.get_or_insert(if valid { Metric::RefusedRanges } else { Metric::RefusedValidation });
+            continue;
+        }
+        recordings.push(ExternalRecording {
+            stage: plan.stage,
+            view: plan.view,
+            items: item_count as usize,
+            copy: target.copy,
+            ranges,
+            commands,
+            uploads: target.uploads.clone(),
+            on_submit,
+        });
+    }
+    if let Some(why) = failure { return refuse(why); }
+    Ok(Some(recordings))
+}
 
 /// Available only at an ordered draw boundary, after D3D resolved the draw.
 pub struct DrawSnapshot<'a> {
@@ -610,8 +805,9 @@ pub(crate) fn admit_draw(
     candidate
 }
 
+#[cfg(feature = "gpu")]
 /// A render-to-texture level an [`ExternalPass`] samples
-/// ([`ExternalTarget::sampled`]).
+/// (`ExternalTarget::sampled`).
 #[derive(Clone, Debug)]
 pub struct SampledLevel {
     pub view: wgpu::TextureView,
@@ -852,6 +1048,14 @@ pub trait Backend: Send {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String>;
     /// Uploads a decoded guest texture.
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String>;
+    /// Whether the backend can supply descriptor-only textures. Such handles
+    /// never back real drawing, and no texel or palette data is needed.
+    fn uses_texture_placeholders(&self) -> bool {
+        false
+    }
+    fn texture_placeholder(&mut self, _desc: &TextureDesc) -> Result<Self::Texture, String> {
+        Err("the backend has no descriptor-only texture handles".into())
+    }
     /// Whether BC formats pass through (decides the decode path).
     fn bc_supported(&self) -> bool;
     /// Clears the whole of the given attachments.
@@ -889,12 +1093,12 @@ pub trait Backend: Send {
     /// When the guest called `Swap` for the present that comes next, read
     /// on the guest's thread (a render thread passes it along with the
     /// present). Only the interpolated replay uses it
-    /// ([`crate::interp`]); the default ignores it.
+    /// (`crate::interp`); the default ignores it.
     fn stamp_present(&mut self, at: std::time::Instant) {
         let _ = at;
     }
     /// Shows a host-only frame between the guest's presents (an
-    /// interpolated replay, [`crate::interp`]): the present hook sees it,
+    /// interpolated replay, `crate::interp`): the present hook sees it,
     /// but it is not a guest frame, so frame counters, shader upkeep and
     /// the `D3DSWAP_FINISH` wait are left alone where a backend has them.
     /// The default presents with no flags.
@@ -908,7 +1112,7 @@ pub trait Backend: Send {
     /// Draws colour surface `src` over all of `dst` (same guest size)
     /// through a projective warp: `dst`'s texel at normalised `(u, v)`
     /// samples `src` at `h * (u, v, 1)` (rows), filtered, clamped to the
-    /// edge. Host-only (the interpolated reprojection, [`crate::interp`]).
+    /// edge. Host-only (the interpolated reprojection, `crate::interp`).
     /// `Ok(false)`: the backend cannot (the default).
     fn warp_surface(
         &mut self,
@@ -922,7 +1126,7 @@ pub trait Backend: Send {
     /// The size in host texels of what `surface` shows when presented (a
     /// view backend's scaled copy, say). Host-only: the interpolated
     /// replay checks its frames against the guest's with it
-    /// ([`crate::interp`]). `None` (the default): not known.
+    /// (`crate::interp`). `None` (the default): not known.
     fn surface_extent(&self, surface: Self::Surface) -> Option<(u32, u32)> {
         let _ = surface;
         None
@@ -931,7 +1135,7 @@ pub trait Backend: Send {
     /// whether the GPU has finished it, without waiting. Host-only: the
     /// interpolated replay drops an in-between frame while the last one is
     /// still on the GPU, so its work never queues up ahead of the guest's
-    /// frames ([`crate::interp`]). `None` (the default): never behind.
+    /// frames (`crate::interp`). `None` (the default): never behind.
     fn gpu_fence(&mut self) -> Option<Box<dyn Fn() -> bool + Send>> {
         None
     }
@@ -1062,6 +1266,7 @@ pub trait Backend: Send {
         Ok(false)
     }
     /// Pin the actual resources for every live copy. No pass has run yet.
+    #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, _surfaces: ExternalSurfaces<Self::Surface>, _textures: [Option<&Self::Texture>; 4],
         _copy: TargetCopy,
@@ -1071,109 +1276,40 @@ pub trait Backend: Send {
 
     /// Prepare all target copies before recording any of them. Record into
     /// disposable command buffers and check validation before releasing the guest draw.
+    #[cfg(feature = "gpu")]
     fn prepare_external(
         &mut self, surfaces: ExternalSurfaces<Self::Surface>, request: ExternalPassRequest,
         textures: [Option<&Self::Texture>; 4], plan: &ExternalPlan, copy: TargetCopy, pass: SharedReplacement,
     ) -> Result<Option<Vec<ExternalRecording>>, String> {
-        use timeline::native::{Metric, Timer};
-        let item_count = pass.lock().map_err(|_| "native pass poisoned")?.items(plan.ranges) as u64;
-        plan.stage.count(Metric::Examined, item_count);
-        let refuse = |reason| { plan.stage.count(reason, item_count); Ok(None) };
-        let preparing = Timer::start(plan.stage, timeline::native::Metric::PrepareNs);
-        if plan.ranges == 0 { return refuse(Metric::RefusedRanges); }
-        let (x, y, w, h) = request.rect;
-        let (sw, sh) = request.surface_size;
-        if w == 0 || h == 0 || x.checked_add(w).is_none_or(|r| r > sw)
-            || y.checked_add(h).is_none_or(|b| b > sh)
-        {
-            return refuse(Metric::RefusedResources);
-        }
-        if surfaces.slots.len() != surfaces.slot_sizes.len()
-            || surfaces.slots.iter().zip(&surfaces.slot_sizes).any(|(s, size)| match (s, size) {
-                (None, None) => false,
-                (Some(_), Some((w, h))) => *w == 0 || *h == 0,
-                _ => true,
-            })
-        {
-            return refuse(Metric::RefusedResources);
-        }
-        let targets = match self.external_attachments(surfaces, textures, copy) {
-            Ok(ExternalCopies::Ready(targets)) => targets,
-            Ok(ExternalCopies::Missing(copy)) => {
-                plan.stage.copy_refused(plan.view, copy == TargetCopy::Display);
-                return refuse(Metric::RefusedResources);
-            }
-            Err(e) => { plan.stage.count(Metric::RefusedResources, item_count); return Err(e) }
-        };
-        if !matches!(targets.as_slice(), [one] if one.copy == copy)
-            && !matches!(targets.as_slice(), [r, d] if r.copy == TargetCopy::Reference && d.copy == TargetCopy::Display)
-        {
-            return refuse(Metric::RefusedResources);
-        }
-        let mut pass = pass.lock().map_err(|_| "native pass poisoned")?;
-        let mut failure = None;
-        let mut prepared = Vec::with_capacity(targets.len());
-        for target in targets {
-            let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let mut encoder = target.device.create_command_encoder(&Default::default());
-            let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
-            let invalid = pollster::block_on(scope.pop()).is_some();
-            if !ready || invalid {
-                plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
-                failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedInputs });
-            } else {
-                prepared.push((target, encoder));
-            }
-        }
-        if let Some(why) = failure { return refuse(why); }
-        drop(preparing);
-        let _encode = timeline::native::Timer::start(plan.stage, timeline::native::Metric::EncodeNs);
-        let mut recordings = Vec::with_capacity(prepared.len());
-        for (target, mut encoder) in prepared {
-            let scope = target.device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let mut on_submit = Vec::new();
-            let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
-            let (ranges, commands) = match bundles {
-                Some(draws) => {
-                    // Usage conflicts (e.g. sampling the colour attachment) and render-pass
-                    // compatibility are only checked when a finished bundle is executed.
-                    // Never submit this verification encoder. Both copies are still cancellable.
-                    let mut verify = target.device.create_command_encoder(&Default::default());
-                    ExternalBundles::encode_run(&mut verify, &target.color, &target.depth,
-                        target.depth_format.has_stencil_aspect(), std::slice::from_ref(&draws));
-                    drop(verify.finish());
-                    (draws.ranges, ExternalCommands::Bundles {
-                        setup: encoder.finish(), targets: target.targets, color: target.color.clone(), depth: target.depth.clone(),
-                        stencil: target.depth_format.has_stencil_aspect(), draws,
-                    })
-                }
-                None => {
-                    let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
-                    (ranges, ExternalCommands::Standalone(encoder.finish()))
-                }
-            };
-            plan.stage.attempted(plan.view, target.copy == TargetCopy::Display, ranges);
-            let invalid = pollster::block_on(scope.pop()).is_some();
-            let complete = plan.complete(target.copy, ranges);
-            if invalid || !complete {
-                plan.stage.copy_refused(plan.view, target.copy == TargetCopy::Display);
-                failure.get_or_insert(if invalid { Metric::RefusedValidation } else { Metric::RefusedRanges });
-                continue;
-            }
-            recordings.push(ExternalRecording {
-                stage: plan.stage,
-                view: plan.view,
-                items: item_count as usize,
-                copy: target.copy,
-                ranges,
-                commands,
-                uploads: target.uploads,
-                on_submit,
+        let slots_valid = surfaces.slots.len() == surfaces.slot_sizes.len()
+            && surfaces.slots.iter().zip(&surfaces.slot_sizes).all(|(s, size)| match (s, size) {
+                (None, None) => true,
+                (Some(_), Some((w, h))) => *w != 0 && *h != 0,
+                _ => false,
             });
-        }
-        if let Some(why) = failure { return refuse(why); }
-        Ok(Some(recordings))
+        prepare_external_recordings(request, plan, copy, pass, slots_valid, || {
+            self.external_attachments(surfaces, textures, copy)
+        })
     }
+
+    #[cfg(not(feature = "gpu"))]
+    fn prepare_external(
+        &mut self, _surfaces: ExternalSurfaces<Self::Surface>, _request: ExternalPassRequest,
+        _textures: [Option<&Self::Texture>; 4], _plan: &ExternalPlan, _copy: TargetCopy, _pass: SharedReplacement,
+    ) -> Result<Option<Vec<ExternalRecording>>, String> {
+        Ok(None)
+    }
+
+    /// Try to enqueue an independently resolved draw with its exact fallback.
+    /// True guarantees the same Drawn outcome and attachment writes for either route.
+    fn queue_external_draw(
+        &mut self, _candidate: QueuedExternalDraw<Self::Surface>,
+        _textures: [Option<&Self::Texture>; 4],
+    ) -> bool { false }
+
+    /// Can simple, ordered draws reuse pinned attachments until the next
+    /// non-batch command? Backends with live admission policy can opt out.
+    fn reusable_external_attachments(&self) -> bool { false }
 
     /// Splice an already validated recording into submission order. A backend
     /// implementing prepare must also implement commit. Commit cannot refuse.
@@ -1191,7 +1327,7 @@ pub trait Backend: Send {
     /// as `color`: a colour-only pass ([`ExternalPass::colour_only`]),
     /// given a scratch depth of the colour's size. `sampled`: per header
     /// of [`ExternalPass::sampled`], the surface it samples, which the pass
-    /// gets a view of ([`ExternalTarget::sampled`]). `Ok(false)`: the
+    /// gets a view of (`ExternalTarget::sampled`). `Ok(false)`: the
     /// backend cannot (the default) and `pass` is dropped.
     fn external_pass(
         &mut self,
@@ -1629,6 +1765,14 @@ impl DrawJudge for DrawsEverything {
     }
 }
 
+impl RecordingBackend {
+    /// A handle for a headless draw. It has no sample storage.
+    pub fn texture_placeholder_id(&mut self) -> u32 {
+        self.next += 1;
+        self.next
+    }
+}
+
 impl Backend for RecordingBackend {
     type Surface = u32;
     type Texture = u32;
@@ -1885,6 +2029,7 @@ impl Backend for RecordingBackend {
         Ok(vec![self.readback_fill; len])
     }
 
+    #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, _: ExternalSurfaces<Self::Surface>, _: [Option<&Self::Texture>; 4], copy: TargetCopy,
     ) -> Result<ExternalCopies, String> {

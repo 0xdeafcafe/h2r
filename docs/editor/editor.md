@@ -571,9 +571,9 @@ H2_AGENT=<cache>/h2recomp/editor-<pid>-<n>.sock H2_MAP_DIR=$TMPDIR/h2-editor-pla
   not run `h2 import-mappack` itself).
 - The editor's bytes, edits included, are written as `<map>.map` to the
   scratch directory (`scenario_edit::save::save_as`, which is not a save:
-  the map stays unsaved) and served with `H2_MAP_DIR`, which wins over
-  packages as a whole-file override ([maps.md](../game/maps.md) §8). No
-  package is written and `active.toml` is untouched. A new map (a
+  the map stays unsaved) and served with `H2_MAP_DIR` as a whole-file
+  override of the retail path. Installed packages have their own content
+  paths. [Map packages](../game/maps.md#8-saving-packages-from-the-editor) A new map (a
   derived package, such as a converted Halo 1 map) plays from its
   package: save it first.
 - `--level` boots the level with one default player

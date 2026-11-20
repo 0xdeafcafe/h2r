@@ -194,7 +194,7 @@ pub fn quad_vb(m: &mut SparseMemory, x0: f32, y0: f32, x1: f32, y1: f32, color: 
 
 /// What game code does for an inlined Begin/SetVertexData/End: reserve
 /// space at put, store NV2A method words, advance put.
-pub fn inline_quad(m: &mut SparseMemory, x0: f32, y0: f32, x1: f32, y1: f32, rgba: [u8; 4]) {
+pub fn inline_quad(m: &mut dyn GuestMemory, x0: f32, y0: f32, x1: f32, y1: f32, rgba: [u8; 4]) {
     let dev = d3d::GuestLayout::HALO2.device;
     let mut put = m.read_u32(dev).unwrap();
     let threshold = m.read_u32(dev + 4).unwrap();

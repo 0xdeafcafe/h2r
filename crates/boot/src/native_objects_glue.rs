@@ -5,7 +5,7 @@
 //! `impl.render.native_objects` is on (nothing asks).
 //!
 //! - **Load once per map.** On a new map a worker opens the loaded map
-//!   through the VFS (the world's locator, `native_world_glue::locate`)
+//!   through the VFS (`native_map`)
 //!   with its shared maps and the object tag context. Each definition the
 //!   feature meets is sent once; the worker resolves its model
 //!   (`native_render::model_load`) and compiles its opaque materials'
@@ -31,16 +31,15 @@
 //!   with a base-map stand-in.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::memory::GuestMemory;
-use feature::native_objects::{Host, ItemMasks, NativeSet, SetPart};
-use map::{Map, ResourceFile, TagId};
+use feature::native_objects::{Drawn, Host, ItemMasks, NativeSet, SetPart};
+use map::TagId;
 use native_render::camera::RenderCamera;
 use native_render::gpu::Image;
-use native_render::light_gpu::LayeredImage;
+use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::model::Model;
 use native_render::model_gpu::GpuModels;
@@ -51,10 +50,12 @@ use native_render::object_nodes::{Compression, decompression_rows};
 use native_render::object_program_gpu::{EngineStages, LitBuild, LitMaterial, LitModelInput, LitObjects, LitSection, PlannedDraw, Texaccum, lit_model, uniform};
 use native_render::object_state::EntryStates;
 use native_render::object_streams::{self, StreamData, StreamFormats};
-use native_render::objects::{ItemDraw, ObjectFrame};
+use native_render::objects::{ItemDraw, ItemKey, ObjectFrame};
+use native_render::world_layers::{Geometry, Owner, Site};
 use native_render::program::ViewInputs;
 
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, palettes_hold, region, stage_palettes};
+use crate::native_map::{self, NativeMap};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, stage_palettes};
 
 /// A model loaded on the worker, waiting for the render thread.
 struct CpuModel {
@@ -64,7 +65,7 @@ struct CpuModel {
     /// The parts drawn through the game's programs.
     lit: LitModelInput,
     /// The normalization cube the lit parts' programs may sample.
-    normalization: Option<Arc<LayeredImage>>,
+    normalization: Option<Arc<StaticLightTexture>>,
 }
 
 /// One map's models: queued, uploaded, and which definition is which.
@@ -113,6 +114,23 @@ pub(crate) fn upload_pending<'a>(models: &'a Models, t: &d3d::ExternalTarget<'_>
     guard
 }
 
+/// Uploads model resources even if this layer offers no drawable object items.
+struct UploadModels(Arc<Models>);
+
+impl d3d::ExternalPass for UploadModels {
+    fn colour_only(&self) -> bool {
+        true
+    }
+
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites::default()
+    }
+
+    fn encode(&mut self, target: d3d::ExternalTarget<'_>) {
+        drop(upload_pending(&self.0, &target));
+    }
+}
+
 /// What one load of models belongs to: the map's name, the active BSP's
 /// address and its index (as the world's key them). A view under another
 /// key starts a new load (new [`Models`], a new worker); nothing queued
@@ -140,10 +158,23 @@ struct LayerEntry {
     w_buffered: bool,
 }
 
+impl LayerEntry {
+    /// For an ordered replacement, inherited fog is checked on the resolved
+    /// draw. Fog the implementation explicitly sets still goes through resolve.
+    fn for_admission(&self) -> EntryStates {
+        use gfx::state::RenderStateType::FogEnable;
+        let mut states = self.states.clone();
+        states.0.retain(|(state, _)| *state != FogEnable);
+        states.0.push((FogEnable, 0));
+        states
+    }
+}
+
 /// The host: the device and the current map's models.
 pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: Arc<Mutex<Option<MapState>>>,
+    admission: Arc<ObjectAdmission>,
 }
 
 /// The key of the load guest memory `mem` holds now, `None` without a map
@@ -166,6 +197,7 @@ fn publishes_to(current: &MapState, models: &Arc<Models>) -> bool {
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn native(&self, mem: &mut dyn GuestMemory) -> Option<Arc<NativeSet>> {
+        self.admission.0.lock().ok()?.take();
         if !self.device.lock().ok()?.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
             return None;
         }
@@ -202,6 +234,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let s = st.as_ref()?;
             (Arc::clone(&s.set), Arc::clone(&s.models))
         };
+        // A published CPU set can have no acceptable items in this view.
+        // Schedule the upload at the layer boundary independently of its draws.
+        if !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            self.device.lock().ok()?.request_external_pass(Box::new(UploadModels(Arc::clone(&models))));
+        }
         // A base map expanded through a palette that is no longer bound
         // would sample other colours than the D3D path: then it draws
         // every object.
@@ -230,8 +267,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
 
     fn draw(
         &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, generation: u64,
-        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: ItemMasks,
-    ) -> Option<native_render::objects::ClearedObjects> {
+        objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, _masks: ItemMasks,
+    ) -> Option<Drawn> {
         use timeline::native::{Metric, Stage, Timer};
         // The guest material binder reads the cinematic reflection endpoints per draw.
         if crate::h1_cinematics::reflection_active(mem) { return None; }
@@ -254,39 +291,121 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let refused = (items.len() - ranges) as u64;
         Stage::Objects.count(Metric::Examined, refused);
         Stage::Objects.count(Metric::RefusedInputs, refused);
-        let pending = !models.pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
-        if ranges == 0 && plan.compare.is_none() && !pending { return None; }
-        let mut drawn = vec![false; items.len()];
-        for &i in &plan.drawn { drawn[i] = true; }
-        let pass = Box::new(ObjectsPass {
-            models: Arc::clone(&models), camera: *camera, objects, draws: plan.draws, owners: plan.owners,
-            refused: plan.refused, compare: plan.compare, view: None, w_clip: None,
-        });
-        if ranges == 0 {
-            // Upload new models or arm a comparison; every guest item stays live.
-            device.request_external_pass(pass);
-            return None;
+        if ranges == 0 && plan.compare.is_none() { return None; }
+        let probing = probe_at().is_some();
+        if plan.compare.is_some() || probing {
+            device.request_external_pass(Box::new(ObjectsPass {
+                models: Arc::clone(&models), camera: *camera,
+                objects: if probing { objects.clone() } else { Vec::new() },
+                draws: if probing { plan.draws.clone() } else { Vec::new() },
+                owners: if probing { plan.owners.clone() } else { Vec::new() },
+                refused: plan.refused, compare: plan.compare,
+                view: None, w_clip: None, fallback: None, run: 0,
+            }));
         }
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
-        drop(planning);
-        let ready = device.prepare_external_bound(
-            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass, Vec::new(),
-        ).ok()??;
-        // Pin the current load through the mask change and commit. The worker
-        // may publish another definition, but a replaced load cannot win here.
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !st.as_ref().is_some_and(|s| s.generation == generation && Arc::ptr_eq(&s.models, &models)) {
             Stage::Objects.count(Metric::RefusedInputs, ranges as u64);
             return None;
         }
-        let Some(cleared) = masks.apply(mem, &drawn) else {
-            Stage::Objects.count(Metric::RefusedMasks, ranges as u64);
-            return None;
-        };
-        ready.commit();
-        Some(cleared)
+        drop(planning);
+        let object_count = plan.owners.iter().copied().collect::<HashSet<_>>().len();
+        let draws: HashMap<_, _> = plan.drawn.into_iter().zip(plan.draws).map(|(index, draw)| {
+            let item = &items[index];
+            ((objects[item.object].handle, item.key), draw)
+        }).collect();
+        if draws.is_empty() { return None; }
+        let count = draws.len();
+        *self.admission.0.lock().ok()? = Some(ObjectLayer {
+            frame: crate::d3d_diag::presents() + 1,
+            bound: device.bound_target(),
+            models,
+            camera: *camera,
+            draws,
+        });
+        Some(Drawn::Queued { objects: object_count, items: count })
     }
+}
+
+#[derive(Default)]
+struct ObjectAdmission(Mutex<Option<ObjectLayer>>);
+
+struct ObjectLayer {
+    frame: u64,
+    bound: [u32; 8],
+    models: Arc<Models>,
+    camera: RenderCamera,
+    draws: HashMap<(u32, ItemKey), (u32, PlannedDraw)>,
+}
+
+fn object_key(geometry: Geometry) -> Option<(u32, ItemKey)> {
+    let Owner::Object { handle, section, .. } = geometry.owner else { return None };
+    Some((handle, ItemKey {
+        record: geometry.record, shader: geometry.shader, section: section.try_into().ok()?,
+        part: geometry.part, implementation: usize::from(geometry.implementation),
+    }))
+}
+
+impl d3d::DrawAdmission for ObjectAdmission {
+    fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let context = crate::native_world_layers_glue::indexed_draw()?;
+        let draw = snapshot.draw;
+        if context.layer.site != Site::Scene || context.layer.number != 3
+            || draw.entry != "D3DDevice_DrawIndexedVertices"
+            || context.index_count? as usize != draw.indices.as_ref()?.len()
+            || !draw.clip_rects.is_empty()
+            || !draw.clip.is_some_and(|r| r.is_whole(draw.target.width, draw.target.height))
+        {
+            return None;
+        }
+        let key = object_key(context.geometry?)?;
+        let mut pending = self.0.lock().ok()?;
+        let layer = pending.as_mut()?;
+        if layer.frame != context.frame || layer.bound[..2] != [snapshot.color_header, snapshot.depth_header] {
+            return None;
+        }
+        let (_, planned) = layer.draws.get(&key)?;
+        if !object_state_matches(draw, planned)
+            || !crate::native_world_layers_glue::matches_triangle_range(draw, planned.indices.len())
+        {
+            if draw.state.render.fog_enable {
+                count_refusal("fog is on (FOGENABLE)");
+            }
+            return None;
+        }
+        let accum = native_render::object_program::TEXACCUM_HEADER;
+        if planned.texaccum != (0..4).any(|i| snapshot.sampled_stages[i] && draw.textures[i] == Some(accum)) {
+            return None;
+        }
+        let planned = layer.draws.remove(&key)?;
+        let pass = ObjectsPass {
+            models: Arc::clone(&layer.models), camera: layer.camera, objects: Vec::new(),
+            draws: vec![planned], owners: Vec::new(), refused: Vec::new(), compare: None,
+            view: None, w_clip: None, fallback: Some(Arc::new(draw.clone())), run: layer.frame,
+        };
+        Some((d3d::ExternalPlan {
+            stage: timeline::native::Stage::Objects, view: context.layer.view, ranges: 1, slots: Vec::new(),
+        }, Box::new(pass)))
+    }
+}
+
+fn object_state_matches(draw: &d3d::ResolvedDraw, planned: &PlannedDraw) -> bool {
+    use gfx::state::{CompareFunc, DepthBufferMode, FillMode};
+    let r = &draw.state.render;
+    let p = planned.state;
+    let primitive = gfx::translate::primitive_state(r, wgpu::PrimitiveTopology::TriangleList,
+        gfx::translate::Capabilities::from_features(wgpu::Features::empty()));
+    let depth = r.depth_mode != DepthBufferMode::Disabled;
+    let compare = if depth { gfx::translate::compare_function(r.depth_func) } else { wgpu::CompareFunction::Always };
+    let alpha = (r.alpha_test_enable && r.alpha_func != CompareFunc::Always)
+        .then(|| (gfx::translate::compare_function(r.alpha_func), r.alpha_ref));
+    draw.hw.control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0)
+        && draw.target.depth_format.is_some()
+        && primitive == p.primitive && compare == p.depth_compare && (depth && r.depth_write) == p.depth_write
+        && gfx::translate::color_writes(r.color_write) == p.color_writes && alpha == p.alpha_test
+        && r.depth_clamp == p.w_clamp && !r.stencil.enable && !r.blend_enable && !r.fog_enable
+        && r.fill_mode == FillMode::Solid && r.back_fill_mode == FillMode::Solid
+        && (!r.solid_offset_enable || (r.depth_bias == 0.0 && r.depth_bias_slope_scale == 0.0))
 }
 
 /// One view's plan ([`plan_view`]).
@@ -313,9 +432,10 @@ struct ViewPlan {
 fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry: &LayerEntry, levels: bool) -> ViewPlan {
     let mut plan = ViewPlan::default();
     // Locked in `upload_pending`'s order: the index, then the lit parts.
-    let index = models.index.lock().unwrap_or_else(|e| e.into_inner());
-    let lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
+    let Ok(index) = models.index.try_lock() else { return plan };
+    let Ok(lit) = models.lit.try_lock() else { return plan };
     let compared = compare();
+    let admission_states = entry.for_admission();
     for (k, item) in items.iter().enumerate() {
         let o = &objects[item.object];
         let planned = (|| -> Result<(u32, PlannedDraw), String> {
@@ -324,7 +444,8 @@ fn plan_view(models: &Models, objects: &[ObjectFrame], items: &[ItemDraw], entry
             }
             let model = *index.get(&(o.definition as u16)).ok_or("its model is not uploaded")?;
             let lit = lit.as_ref().ok_or("no model is uploaded")?;
-            let d = lit.plan(model, o, &item.key, &item.rows, &entry.states)?;
+            let states = if item.shadow { &entry.states } else { &admission_states };
+            let d = lit.plan(model, o, &item.key, &item.rows, states)?;
             if d.texaccum && !levels {
                 return Err("it samples the texture accumulation target and the device does not sample levels in place".into());
             }
@@ -381,10 +502,18 @@ impl native_render::camera::GuestRead for Ro<'_> {
 
 /// Installs the host on the device (beside the world's).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let state = Arc::new(Mutex::new(None));
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    if !switches.feature(feature::native_objects::SWITCH, true) {
+        return;
+    }
+    let admission = Arc::new(ObjectAdmission::default());
+    if let Ok(mut device) = device.lock() {
+        device.add_draw_admission(admission.clone());
+    }
     feature::native_objects::set_host(Arc::new(Glue {
         device: Arc::clone(device),
-        state,
+        state: Arc::new(Mutex::new(None)),
+        admission,
     }));
 }
 
@@ -412,7 +541,9 @@ fn spawn_worker(
             while let Ok(def) = rx.recv() {
                 if excepted(def) {
                     refused += 1;
-                    eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    if refused == 1 || feature::native_verbose() {
+                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path (H2_NATIVE_OBJECTS_EXCEPT)");
+                    }
                     continue;
                 }
                 let t0 = std::time::Instant::now();
@@ -443,17 +574,22 @@ fn spawn_worker(
                         // No lock held across the print.
                         drop(st);
                         loaded += 1;
-                        eprintln!(
-                            "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
-                            t0.elapsed().as_secs_f32() * 1000.0
-                        );
+                        if feature::native_verbose() {
+                            eprintln!(
+                                "native-objects: {name}: definition {def:#010x}: {draws} draws, {lit} lit parts, {nodes} nodes, in {:.0} ms ({loaded} models native, {refused} left to D3D)",
+                                t0.elapsed().as_secs_f32() * 1000.0
+                            );
+                        }
                     }
                     Err(e) => {
                         refused += 1;
-                        eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        if refused == 1 || feature::native_verbose() {
+                            eprintln!("native-objects: {name}: definition {def:#010x} left to the D3D path ({e})");
+                        }
                     }
                 }
             }
+            eprintln!("native-objects: {name}: {loaded} models native, {refused} left to the D3D path");
         })
         .ok()?;
     Some(tx)
@@ -461,7 +597,7 @@ fn spawn_worker(
 
 /// The map open for model loads.
 struct Opened {
-    map: Map<BufReader<std::fs::File>>,
+    map: NativeMap,
     ctx: tags::object::Context,
     raw: Raw,
     /// Base maps as their stages sample them (palettized ones expanded
@@ -472,7 +608,7 @@ struct Opened {
     lib: Option<Option<tags::material::ShaderLibrary>>,
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
-    normalization: Option<Option<Arc<LayeredImage>>>,
+    normalization: Option<Option<Arc<StaticLightTexture>>>,
     /// The game's stream formats (`None`: lit materials stay on D3D).
     formats: Option<StreamFormats>,
     /// What an object's draw samples for the lightmap (the globals'
@@ -482,19 +618,7 @@ struct Opened {
 }
 
 fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> Result<Opened, load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(BufReader::new(std::fs::File::open(&file.path)?), file.offset, file.len)?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (mut map, files) = native_map::open(name)?;
     let ctx = tags::object::Context::read(&mut map)?;
     Ok(Opened {
         map,
@@ -511,7 +635,7 @@ fn open(name: &str, palettes: StagePalettes, formats: Option<StreamFormats>) -> 
 
 /// The map's tag whose index is the datum's low word (the guest's datum
 /// and the map's agree on the index; the salt is not relied on).
-fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
+fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
     if let Ok(t) = map.tag(TagId(datum)) {
         return Some(t.id);
     }
@@ -677,7 +801,7 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
     // The normalization cube, as the lights load it (once per map).
     if o.normalization.is_none() {
         let cube = match o.lib.as_ref().and_then(Option::as_ref) {
-            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0.map(Arc::new),
+            Some(lib) => crate::native_lights_glue::light_textures(&mut o.map, lib.metadata(), &mut o.raw.0).0,
             None => None,
         };
         o.normalization = Some(cube);
@@ -685,7 +809,11 @@ fn lit_parts(o: &mut Opened, loaded: &model_load::LoadedModel, materials: &HashM
     if o.lightmap.is_none() {
         let l = object_lightmap(o);
         match &l {
-            Ok(i) => eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height),
+            Ok(i) => {
+                if feature::native_verbose() {
+                    eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height);
+                }
+            }
             Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
         }
         o.lightmap = Some(l);
@@ -798,9 +926,17 @@ struct ObjectsPass {
     /// 0, not at the view's near (03a: 256 depth units), and drew the part
     /// of an object nearer than that, which the D3D path culls.
     w_clip: Option<([f32; 2], bool)>,
+    fallback: Option<Arc<d3d::ResolvedDraw>>,
+    run: u64,
 }
 
 impl d3d::ExternalPass for ObjectsPass {
+    fn uses_validated_resources(&self) -> bool { self.fallback.is_some() }
+
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        self.fallback.clone()
+    }
+
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
         self.view = Some(*constants);
     }
@@ -818,6 +954,9 @@ impl d3d::ExternalPass for ObjectsPass {
     }
 
     fn writes(&self) -> d3d::ExternalWrites {
+        if self.fallback.is_none() {
+            return d3d::ExternalWrites::default();
+        }
         d3d::ExternalWrites {
             color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
             depth_stencil: self.draws.iter().any(|(_, d)| d.state.depth_write),
@@ -829,19 +968,12 @@ impl d3d::ExternalPass for ObjectsPass {
         if self.draws.iter().any(|(_, d)| d.texaccum) && texaccum_level(t.sampled, t.guest_size, t.size).is_none() {
             return Err("object texture accumulation unavailable");
         }
-        drop(upload_pending(&self.models, t));
         let lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         if lit.as_ref().is_some_and(|l| self.draws.iter().all(|(model, d)| l.has(*model) && !d.indices.is_empty())) {
             Ok(())
         } else {
             Err("planned object geometry unavailable")
         }
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        // Comparison-only views can still upload models for the following view.
-        drop(upload_pending(&self.models, &t));
-        self.record_ranges(t);
     }
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
@@ -876,20 +1008,21 @@ impl d3d::ExternalPass for ObjectsPass {
                 t.size
             );
         }
-        if self.draws.is_empty() { return 0; }
-        lit.encode(
-            t.device,
-            t.queue,
-            &mut *t.encoder,
-            t.color,
-            t.color_format,
-            t.depth,
-            t.depth_format,
-            t.size,
-            &view,
-            &self.draws,
-            texaccum,
-        )
+        0
+    }
+
+    fn record_bundles(&mut self, t: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
+        let constants = self.view?;
+        let view = self.view_inputs(constants, t);
+        let mut lit = self.models.lit.lock().ok()?;
+        let texaccum = texaccum_level(t.sampled, t.guest_size, t.size);
+        if let Some(accum) = &texaccum
+            && (accum.view.texture() == t.color.texture() || accum.view.texture() == t.depth.texture())
+        {
+            return None;
+        }
+        lit.as_mut()?.bundles(t.device, t.queue, t.uploads, t.color_format, t.depth_format,
+            t.size, &view, &self.draws, texaccum, self.run)
     }
 }
 
@@ -1113,6 +1246,18 @@ mod tests {
     /// object nearer than the view's near is drawn where the D3D path
     /// culls it.
     #[test]
+    fn an_object_draw_is_keyed_by_owner_record_shader_part_and_implementation() {
+        let geometry = Geometry {
+            shader: 0xe000_0001, variant: 0, implementation: 2, sorted_slot: 16,
+            record: 5, part: 3, owner: Owner::Object { handle: 9, model: 18, section: 4 },
+        };
+        assert_eq!(object_key(geometry), Some((9, ItemKey {
+            record: 5, shader: 0xe000_0001, section: 4, part: 3, implementation: 2,
+        })));
+        assert!(object_key(Geometry { owner: Owner::Cluster(4), ..geometry }).is_none());
+    }
+
+    #[test]
     fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
         use d3d::ExternalPass;
         let camera = RenderCamera {
@@ -1134,6 +1279,8 @@ mod tests {
             compare: None,
             view: None,
             w_clip: None,
+            fallback: None,
+            run: 0,
         };
         pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
         assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
@@ -1247,6 +1394,33 @@ mod tests {
             rows: vec![[0.0; 4]; 3],
             shadow,
         }
+    }
+
+    #[test]
+    fn ordered_object_planning_defers_only_inherited_fog() {
+        use gfx::state::{CompareFunc, CullMode, DepthBufferMode, FillMode, FrontFace, RenderStateType as R};
+        use native_render::object_state::resolve;
+
+        let entry = LayerEntry {
+            states: EntryStates::read(|state| Some(match state {
+                R::ZEnable => DepthBufferMode::W.xbox_value(),
+                R::ZFunc => CompareFunc::LessEqual.xbox_value(),
+                R::ColorWriteEnable => 0x0101_0101,
+                R::CullMode => CullMode::Cw.xbox_value(),
+                R::FrontFace => FrontFace::Cw.xbox_value(),
+                R::FillMode | R::BackFillMode => FillMode::Solid.xbox_value(),
+                R::FogEnable => 1,
+                _ => 0,
+            })),
+            w_buffered: true,
+        };
+        assert_eq!(resolve(&[], &entry.states, None), Err("fog is on (FOGENABLE)".into()));
+        let admission = entry.for_admission();
+        assert!(resolve(&[], &admission, None).is_ok());
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = table.canonical_to_guest(R::FogEnable.index()).unwrap() as u8;
+        let own = tags::shader::RenderStateValue { state: slot, value: 1 };
+        assert_eq!(resolve(&[own], &admission, None), Err("fog is on (FOGENABLE)".into()));
     }
 
     /// Every item the plan cannot resolve is refused, with why, before the

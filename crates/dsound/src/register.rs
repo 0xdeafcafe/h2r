@@ -316,6 +316,19 @@ impl Hle {
         Ok(frames)
     }
 
+    /// Advances the leased clock, publishing the same completion events as
+    /// the logical render path.
+    pub(crate) fn advance_audio_leased(
+        &self,
+        runtime: &Runtime,
+        frames: u64,
+        lease: &Lease,
+    ) -> Result<(), Stop> {
+        self.host_call(runtime, |ds, bridge| {
+            ds.advance_audio_leased(bridge, frames, lease).map(|_| ())
+        })
+    }
+
     /// [`DirectSound::render_leased`] from the host, with events delivered
     /// and callbacks owed as for [`Hle::do_work`].
     pub(crate) fn render_leased(
@@ -558,6 +571,13 @@ impl GuestMemory for Bridge<'_> {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), MemFault> {
         self.guest
             .read_bytes(addr, out, 1)
+            .map_err(|f| self.record(f))
+    }
+    fn check_samples(&self, addr: u32, len: u32) -> Result<(), MemFault> {
+        if addr.checked_add(len).is_none() || len > crate::host::MAX_GUEST_COPY {
+            return Err(MemFault { addr, len });
+        }
+        self.guest.check(addr, len as usize, Access::Read, 1)
             .map_err(|f| self.record(f))
     }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {

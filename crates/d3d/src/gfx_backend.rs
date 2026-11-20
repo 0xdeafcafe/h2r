@@ -124,6 +124,7 @@ struct PendingPass {
     /// Each draw's number in its frame (backend `draw` calls since the last
     /// present, from 0), for the merge self-check.
     tags: Vec<u64>,
+    native: Vec<(std::ops::Range<usize>, timeline::native::Stage, crate::TargetCopy)>,
 }
 
 /// Passes one submission may hold before the pending pass is submitted and
@@ -149,12 +150,14 @@ pub struct GfxBackend {
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
     recorded_pass_observer: Option<RecordedPassObserver>,
+    submission_uploads: Option<Box<dyn FnMut() + Send>>,
     submitted_frame_observer: Option<Box<dyn FnMut() + Send>>,
     /// [`Self::on_present_replay`]'s hook; `None`: in-between frames go
     /// through `present_hook`.
     replay_hook: Option<PresentHook>,
     pending: Option<PendingPass>,
     native_run: Option<native_runs::Run>,
+    external_ordering_error: Option<String>,
     stats: BatchStats,
     merge_passes: bool,
     /// [`set_merge_discards`](Self::set_merge_discards).
@@ -307,10 +310,12 @@ impl GfxBackend {
             presented: None,
             present_hook: None,
             recorded_pass_observer: None,
+            submission_uploads: None,
             submitted_frame_observer: None,
             replay_hook: None,
             pending: None,
             native_run: None,
+            external_ordering_error: None,
             stats: BatchStats::default(),
             merge_passes: true,
             merge_discards: merge_discards_from_env(
@@ -480,6 +485,11 @@ impl GfxBackend {
         self.recorded_pass_observer = Some(Box::new(observer));
     }
 
+    /// Flush a side renderer's staged bytes before submitting its recorded passes.
+    pub fn flush_external_uploads_with(&mut self, flush: impl FnMut() + Send + 'static) {
+        self.submission_uploads = Some(Box::new(flush));
+    }
+
     /// Recycle external renderer resources after the guest frame has been submitted.
     pub fn observe_submitted_frames(&mut self, observer: impl FnMut() + Send + 'static) {
         self.submitted_frame_observer = Some(Box::new(observer));
@@ -595,11 +605,7 @@ impl GfxBackend {
             let drawable = s.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT);
             (single && drawable).then(|| {
                 (
-                    s.texture().create_view(&wgpu::TextureViewDescriptor {
-                        base_mip_level: 0,
-                        mip_level_count: Some(1),
-                        ..Default::default()
-                    }),
+                    s.base_view().clone(),
                     s.wgpu_format(),
                     (s.texture().width(), s.texture().height()),
                 )
@@ -611,6 +617,7 @@ impl GfxBackend {
             // Colour only: a scratch depth of the colour's size.
             const SCRATCH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
             if self.scratch_depth.as_ref().is_none_or(|(s, _)| *s != size) {
+                let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let t = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("external pass scratch depth"),
                     size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
@@ -621,7 +628,11 @@ impl GfxBackend {
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
-                self.scratch_depth = Some((size, t.create_view(&wgpu::TextureViewDescriptor::default())));
+                let depth = t.create_view(&wgpu::TextureViewDescriptor::default());
+                if pollster::block_on(scope.pop()).is_some() {
+                    return Ok(None);
+                }
+                self.scratch_depth = Some((size, depth));
             }
             let Some((_, v)) = &self.scratch_depth else { return Ok(None) };
             (v.clone(), SCRATCH)
@@ -705,12 +716,18 @@ impl GfxBackend {
     /// Encodes the pending pass, if any, after the passes encoded before it
     /// (without submitting them).
     fn encode_pending(&mut self) -> Result<(), String> {
+        if let Some(error) = self.external_ordering_error.take() {
+            return Err(error);
+        }
         self.finish_native_run();
         let Some(mut p) = self.pending.take() else {
             return Ok(());
         };
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         if self.merge_check_frame == Some(self.frame)
+            // The self-check submits the D3D rings independently. Native
+            // packets keep immutable uploads until their actual submission.
+            && p.native.is_empty()
             && p.draws.len() > 1
             && !p.draws.iter().any(RecordedDraw::counts_samples)
         {
@@ -730,7 +747,7 @@ impl GfxBackend {
                 .prepare_target(&self.ctx, &mut enc, p.color, d)
                 .map_err(|e| e.to_string())?;
         }
-        {
+        let padded = {
             let target = self
                 .store
                 .target(p.color, p.depth)
@@ -750,10 +767,13 @@ impl GfxBackend {
                 .map_err(|e| e.to_string())?;
             self.stats.render_passes += n as u64;
             passes += n;
+            let color = target.color.texture();
+            target.size != (color.width(), color.height())
+        };
+        p.count_native_passes();
+        if padded {
+            self.store.finish_target(&mut enc, p.color).map_err(|e| e.to_string())?;
         }
-        self.store
-            .finish_target(&mut enc, p.color)
-            .map_err(|e| e.to_string())?;
         self.open = Some((enc, passes));
         self.stats.passes += 1;
         Ok(())
@@ -968,6 +988,9 @@ impl GfxBackend {
         if let Some(s) = self.shaders.as_mut() {
             s.flush_uploads(&self.ctx);
         }
+        if let Some(flush) = self.submission_uploads.as_mut() {
+            flush();
+        }
         // Persistent buffers' copies go ahead of everything that draws.
         let copies = self.renderer.upload_commands(&self.ctx.device);
         let index = {
@@ -1004,14 +1027,7 @@ impl GfxBackend {
         depth: Option<SurfaceId>,
     ) -> Result<&mut PendingPass, String> {
         self.switch_to(color, depth)?;
-        Ok(self.pending.get_or_insert_with(|| PendingPass {
-            color,
-            depth,
-            clear: Clear::NONE,
-            draws: Vec::new(),
-            encoded: 1,
-            tags: Vec::new(),
-        }))
+        Ok(self.pending.get_or_insert_with(|| PendingPass::new(color, depth)))
     }
 
     /// Encodes and submits the pending pass if it is for another target,
@@ -1136,60 +1152,48 @@ impl GfxBackend {
                 .prepare_target(&self.ctx, &mut enc, color, d)
                 .map_err(|e| e.to_string())?;
         }
-        let mut recorded = {
+        let recorded = {
             let target = self.store.target(color, depth).map_err(|e| e.to_string())?;
             self.renderer
                 .record(&self.ctx, &target, draw)
                 .map_err(|e| e.to_string())?
         };
-        // With merged passes, a draw that follows a draw writing only some
-        // colour channels (unless it writes the same ones) starts a render
-        // pass of its own: on Apple GPUs its edge pixels otherwise depend
-        // on earlier draws in the pass (docs/graphics/graphics.md, "Merged passes").
-        // The fast rule (the default) splits a discarding draw only after a
-        // partly masked one; the exact rule splits every discarding draw.
-        let prev_mask = self
-            .pending
-            .as_ref()
-            .and_then(|p| p.draws.last())
-            .map(RecordedDraw::color_writes);
-        let mask = recorded.color_writes();
-        let split = if self.merge_masks {
-            false
-        } else if self.merge_discards {
+        self.append_recorded(color, depth, recorded, first, discards);
+        self.stats.draws += 1;
+        Ok(())
+    }
+
+    fn append_recorded(
+        &mut self, color: SurfaceId, depth: Option<SurfaceId>,
+        mut draw: RecordedDraw, first: bool, discards: bool,
+    ) {
+        let pending = self.pending.get_or_insert_with(|| PendingPass::new(color, depth));
+        debug_assert_eq!((pending.color, pending.depth), (color, depth));
+        let prev_mask = pending.draws.last().map(RecordedDraw::color_writes);
+        let mask = draw.color_writes();
+        // Apply the same driver workarounds across both kinds of draws.
+        let split = !self.merge_masks && if self.merge_discards {
             merge_split(prev_mask, mask, discards)
         } else {
             discards || merge_split(prev_mask, mask, false)
         };
-        let own_pass = first && (!self.merge_passes || split);
-        // Why a merged pending pass splits (frame stats `pass_*`).
-        if own_pass && self.merge_passes && !recorded.counts_samples() {
-            use timeline::phase::{Counter, count};
-            match prev_mask {
-                Some(prev) if prev != wgpu::ColorWrites::ALL && prev != mask => {
-                    count(if prev.is_empty() { Counter::PassNoColor } else { Counter::PassMask }, 1)
+        if first && (!self.merge_passes || split) {
+            draw.start_pass();
+            if self.merge_passes && !draw.counts_samples() {
+                use timeline::phase::{Counter, count};
+                match prev_mask {
+                    Some(prev) if prev != wgpu::ColorWrites::ALL && prev != mask => {
+                        count(if prev.is_empty() { Counter::PassNoColor } else { Counter::PassMask }, 1)
+                    }
+                    Some(_) => count(Counter::PassDiscard, 1),
+                    None => {}
                 }
-                Some(_) => count(Counter::PassDiscard, 1),
-                None => {}
             }
         }
-        // A counted draw adds its count pass and the sum, and the draws
-        // after it resume in a new render pass.
-        let encoded = if recorded.counts_samples() {
-            3
-        } else {
-            usize::from(own_pass)
-        };
-        if own_pass {
-            recorded.start_pass();
-        }
-        let tag = self.frame_draw.wrapping_sub(1);
-        let pending = self.pending_for(color, depth)?;
-        pending.draws.push(recorded);
-        pending.encoded += encoded;
-        pending.tags.push(tag);
-        self.stats.draws += 1;
-        Ok(())
+        // A counted draw generates a count pass and sum before it resumes.
+        pending.encoded += if draw.counts_samples() { 3 } else { usize::from(draw.starts_pass()) };
+        pending.draws.push(draw);
+        pending.tags.push(self.frame_draw.wrapping_sub(1));
     }
 }
 
@@ -1561,19 +1565,21 @@ impl Backend for GfxBackend {
         surface: SurfaceId,
         opaque: bool,
     ) -> Result<Option<HostTexture>, String> {
-        // The copy holds everything drawn so far.
-        self.flush()?;
+        // Order the copy after the source draw and before any consumer.
+        let (mut enc, passes) = self.side_encoder()?;
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(
             timeline::Cat::Gfx,
             timeline::Track::Host,
             "surface snapshot",
         );
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        let t = self
-            .store
-            .snapshot(&self.ctx, &mut enc, surface)
-            .map_err(|e| e.to_string())?;
+        let t = match self.store.snapshot(&self.ctx, &mut enc, surface) {
+            Ok(texture) => texture,
+            Err(error) => {
+                self.side_done(enc, passes);
+                return Err(error.to_string());
+            }
+        };
         if opaque {
             // Alpha to one: an alpha-only masked clear of the copy.
             let view = t.create_view(&Default::default());
@@ -1600,7 +1606,7 @@ impl Backend for GfxBackend {
             self.renderer
                 .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
         }
-        self.submit(enc);
+        self.side_done(enc, passes);
         Ok(Some(self.host_texture(t, TextureKind::D2)))
     }
 
@@ -1684,13 +1690,14 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
+    fn reusable_external_attachments(&self) -> bool { true }
+
     fn external_attachments(
         &mut self, surfaces: crate::ExternalSurfaces<SurfaceId>, textures: [Option<&Self::Texture>; 4],
         copy: crate::TargetCopy,
     ) -> Result<crate::ExternalCopies, String> {
-        // Finish pending D3D work before the device can give up its guest draws.
-        if self.pending.is_some() { self.encode_pending()?; }
-        let scope = self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        // Pinning handles alone neither reads nor writes the attachment pixels.
+        // Apply ordering when committing so a refusal leaves the draw list intact.
         let attachments: Result<Option<Vec<_>>, String> = (|| {
             let sampled = surfaces.sampled.into_iter().map(Some).collect();
             let Some((cv, cf, dv, df, size, sampled)) = self.external_views(surfaces.color, surfaces.depth, sampled)? else {
@@ -1712,7 +1719,7 @@ impl Backend for GfxBackend {
                 slots.push(Some(crate::ExternalColor {
                     guest_size: guest_size.ok_or("missing guest slot dimensions")?,
                     sample: s.view().clone(),
-                    attachment: t.create_view(&wgpu::TextureViewDescriptor { mip_level_count: Some(1), ..Default::default() }),
+                    attachment: s.base_view().clone(),
                     format: t.format(),
                     size: (t.width(), t.height()),
                 }));
@@ -1727,7 +1734,6 @@ impl Backend for GfxBackend {
                 depth: dv, depth_format: df, size, sampled, slots, copy, stages,
             }]))
         })();
-        if pollster::block_on(scope.pop()).is_some() { return Ok(crate::ExternalCopies::Missing(copy)); }
         Ok(match attachments? {
             Some(a) => crate::ExternalCopies::Ready(a),
             None => crate::ExternalCopies::Missing(copy),
@@ -1735,25 +1741,33 @@ impl Backend for GfxBackend {
     }
 
     fn commit_external(&mut self, recording: crate::ExternalRecording) {
-        recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
-        if recording.copy == crate::TargetCopy::Reference {
-            recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
-        }
+        if self.external_ordering_error.is_some() { return; }
         match recording.commands {
-            crate::backend::ExternalCommands::Bundles { setup, targets, color, depth, stencil, draws } =>
-                self.append_native(recording.copy, setup, targets, color, depth, stencil, draws),
+            crate::backend::ExternalCommands::Bundles { targets, color, depth, stencil, draws } => {
+                if self.pending.is_some() && !self.encode_before_external() { return; }
+                self.append_native(recording.stage, recording.copy, targets, color, depth, stencil, draws);
+            }
+            crate::backend::ExternalCommands::Draws { targets, draws } => {
+                if !self.append_native_draws(recording.stage, recording.copy, targets, draws) { return; }
+            }
             crate::backend::ExternalCommands::Standalone(commands) => {
-                self.finish_native_run();
+                if !self.encode_before_external() { return; }
                 if let Some((enc, _)) = self.open.take() {
                     self.external_prefix.push(enc.finish());
                 }
                 self.external_prefix.push(commands);
             }
         }
+        recording.stage.recorded(recording.view, recording.copy == crate::TargetCopy::Display, recording.ranges);
+        if recording.copy == crate::TargetCopy::Reference {
+            recording.stage.count(timeline::native::Metric::Suppressed, recording.items as u64);
+        }
         self.retain_uploads(recording.uploads);
         // The pass limit can submit this recording immediately.
         self.external_on_submit.extend(recording.on_submit);
-        if self.external_prefix.len() >= MAX_ENCODED_PASSES {
+        let passes = self.external_prefix.len() + self.open.as_ref().map_or(0, |(_, passes)| *passes)
+            + self.pending.as_ref().map_or(0, |p| p.encoded);
+        if passes >= MAX_ENCODED_PASSES && self.encode_before_external() {
             self.submit_open();
         }
     }

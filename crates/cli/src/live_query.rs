@@ -116,7 +116,11 @@ pub fn run(mut args: Args) -> Result<()> {
             let id = one(args, "game takes a game id")?;
             let id = path_part(&id);
             if frames {
-                let list = pages(&client, &format!("/games/{id}/frames"), &[])?;
+                let list = pages(
+                    &client,
+                    &format!("/games/{id}/frames"),
+                    &[("format", "json".into())],
+                )?;
                 emit(&mut out, format, Output::List(list), FRAMES)
             } else {
                 let detail: Value = client.get(&format!("/games/{id}"), &[])?;
@@ -753,6 +757,16 @@ mod tests {
         assert_eq!(pages(&client, "/accounts", &[]).unwrap().len(), 2);
         let games = pages(&client, "/games", &[("state", "live".into())]).unwrap();
         assert_eq!(games[0]["game_id"], id);
+        // A game with kills and no recorded frames has an empty packed body.
+        run(Args(vec![
+            "game".into(),
+            id.into(),
+            "--frames".into(),
+            "--json".into(),
+            "--server".into(),
+            server.url.clone(),
+        ]))
+        .unwrap();
         let report = verify(&client, 0).unwrap();
         assert_eq!(report["bad"], json!([]));
         assert_eq!(report["checked"], 9, "{report}");

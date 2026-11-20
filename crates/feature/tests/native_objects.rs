@@ -42,7 +42,7 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
 
 #[test]
 fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_objects=off").unwrap());
     r.add(&NativeObjects).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -99,7 +99,7 @@ impl Host for Stub {
     fn draw(
         &self, mem: &mut dyn GuestMemory, camera: &RenderCamera, _generation: u64,
         objects: Vec<ObjectFrame>, items: Vec<ItemDraw>, masks: native_objects::ItemMasks,
-    ) -> Option<native_render::objects::ClearedObjects> {
+    ) -> Option<native_objects::Drawn> {
         // The fixture's guest mask bits survive both planning and a failed reservation.
         for d in &items {
             let item = ITEMS + 0x18 * (u32::from(d.key.record) - 1);
@@ -114,7 +114,7 @@ impl Host for Stub {
         if let Some(item) = self.rebind_item.lock().unwrap().take() {
             mem.set_u32(item + 8, 0xe000_ffff).unwrap();
         }
-        masks.apply(mem, &out)
+        masks.apply(mem, &out).map(native_objects::Drawn::Masked)
     }
 }
 

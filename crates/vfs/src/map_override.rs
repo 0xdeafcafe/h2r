@@ -34,6 +34,7 @@ struct Override {
     file: File,
     path: PathBuf,
     len: u64,
+    mapping: Option<memmap2::Mmap>,
     /// Its identity, hashed on first ask.
     id: Option<content::MapId>,
 }
@@ -47,6 +48,7 @@ pub struct MapOverrideBackend<B> {
     /// map served from the inner backend.
     files: HashMap<String, Option<Override>>,
     notice: MapOverrideNotice,
+    server_maps: bool,
 }
 
 /// Whether `path` names a map directly under `maps` (any case).
@@ -68,6 +70,14 @@ impl<B: Backend> MapOverrideBackend<B> {
             dir,
             Box::new(|line: &str| eprintln!("map override: {line}")),
         )
+    }
+
+    /// A light-host copy must have the original header and length. This
+    /// directory is operator-provisioned with verified immutable maps.
+    pub fn server_maps(inner: B, dir: impl AsRef<Path>) -> Self {
+        let mut backend = Self::new(inner, dir);
+        backend.server_maps = true;
+        backend
     }
 
     pub fn with_notice(inner: B, dir: impl AsRef<Path>, mut notice: MapOverrideNotice) -> Self {
@@ -94,6 +104,7 @@ impl<B: Backend> MapOverrideBackend<B> {
             dir,
             files: HashMap::new(),
             notice,
+            server_maps: false,
         }
     }
 
@@ -112,7 +123,19 @@ impl<B: Backend> MapOverrideBackend<B> {
             let chosen = match on_disc {
                 Some(disc) => match find(dir, name) {
                     Ok(None) => None,
-                    Ok(Some(o)) => {
+                    Ok(Some(mut o)) => {
+                        if self.server_maps {
+                            let mut header = [0; 0x800];
+                            let n = self.inner.read_at(path, 0, &mut header).ok();
+                            if n != Some(header.len())
+                                || !matching_server_copy(&mut o.file, o.len, disc.end_of_file, &header)
+                            {
+                                (self.notice)(&format!("warning: {name}: server copy header or length differs"));
+                                self.files.insert(key, None);
+                                return None;
+                            }
+                            o.mapping = crate::disc::map_read_only(&o.file);
+                        }
                         (self.notice)(&format!(
                             "maps\\{name} from {} ({} bytes; disc {} bytes)",
                             o.path.display(),
@@ -208,21 +231,40 @@ fn find(dir: &Path, name: &str) -> std::result::Result<Option<Override>, String>
         file,
         path: target,
         len: meta.len(),
+        mapping: None,
         id: None,
     }))
+}
+
+pub(crate) fn matching_server_copy(
+    file: &mut File,
+    size: u64,
+    original_size: u64,
+    original_header: &[u8; 0x800],
+) -> bool {
+    let mut header = [0; 0x800];
+    size == original_size
+        && original_header.starts_with(b"daeh")
+        && file.read_exact(&mut header).is_ok()
+        && &header == original_header
 }
 
 /// The `MapId` of a whole-file override of map `map`.
 pub(crate) fn override_id(map: &str, file: &Path) -> std::io::Result<content::MapId> {
     let mut f = File::open(file)?;
+    let len = f.metadata()?.len();
+    opened_override_id(map, &mut f, len)
+}
+
+fn opened_override_id(map: &str, file: &mut File, mut len: u64) -> std::io::Result<content::MapId> {
+    file.rewind()?;
     let mut h = content::Hasher::default();
     let mut buf = vec![0; 1 << 20];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+    while len > 0 {
+        let n = len.min(buf.len() as u64) as usize;
+        file.read_exact(&mut buf[..n])?;
         h.update(&buf[..n]);
+        len -= n as u64;
     }
     let manifest = content::Manifest {
         package: content::manifest::Package {
@@ -298,6 +340,10 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
         if n == 0 {
             return Ok(0);
         }
+        if let Some(map) = &o.mapping {
+            crate::disc::copy_mapped(map, offset, &mut buffer[..n])?;
+            return Ok(n);
+        }
         o.file.seek(SeekFrom::Start(offset))?;
         match o.file.read_exact(&mut buffer[..n]) {
             Ok(()) => Ok(n),
@@ -313,6 +359,9 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
     /// whose one layer is the whole file, so a local edit is never taken
     /// for retail. Hashed once, on first ask.
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
+        if self.server_maps {
+            return self.inner.map_id(path);
+        }
         let Some(name) = is_map_path(path) else {
             return self.inner.map_id(path);
         };
@@ -321,7 +370,7 @@ impl<B: Backend> Backend for MapOverrideBackend<B> {
             return self.inner.map_id(path);
         };
         if o.id.is_none() {
-            o.id = Some(override_id(&map, &o.path).ok()?);
+            o.id = Some(opened_override_id(&map, &mut o.file, o.len).ok()?);
         }
         o.id
     }
@@ -457,9 +506,16 @@ mod tests {
         let t = Temp::new("id");
         std::fs::write(t.maps().join("a.map"), b"edited map bytes").unwrap();
         let (mut b, _) = backend(&t.maps());
+        let path = t.maps().join("a.map");
+        let expected = override_id("a", &path).unwrap();
+        assert_eq!(read_all(&mut b, "maps\\a.map"), b"edited map bytes");
+        // Replacement between first use and the first ID lookup.
+        let next = t.maps().join("next.map");
+        std::fs::write(&next, b"new contents").unwrap();
+        std::fs::rename(next, path).unwrap();
         let id = b.map_id("maps\\A.MAP").unwrap();
         assert_eq!(b.map_id("maps\\a.map"), Some(id));
-        assert_eq!(id, override_id("a", &t.maps().join("a.map")).unwrap());
+        assert_eq!(id, expected);
         // Not overridden, or not a map: the disc's, which says nothing.
         assert_eq!(b.map_id("maps\\b.map"), None);
         assert_eq!(b.map_id("default.xbe"), None);

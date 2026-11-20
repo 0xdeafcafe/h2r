@@ -3,7 +3,7 @@
 //! from one member of a co-op session to the other, for two machines that
 //! cannot reach each other directly.
 //!
-//! - The first message is `{kind: "auth", token}` with `lxm: sessions.relay`.
+//! - The upgrade request needs a `sessions.relay` bearer token.
 //! - The author must be a member: the session's host, or an account whose
 //!   invitation to this session was accepted. The session must be open and
 //!   advertised with `flags: "coop"`.
@@ -26,17 +26,22 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 #[cfg(feature = "native")]
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+#[cfg(feature = "native")]
 use axum::extract::{Path, State};
+#[cfg(feature = "native")]
+use axum::http::HeaderMap;
+#[cfg(feature = "native")]
 use axum::response::Response;
+#[cfg(feature = "native")]
+use live_proto::ClientMessage;
 use live_proto::mailbox::Answer;
 use live_proto::sign::{TOKEN_LEEWAY_S, Token};
-use live_proto::{Author, ClientMessage, ErrorCode, Xuid, lxm};
+use live_proto::{Author, ErrorCode, Xuid, lxm};
 use tokio::sync::mpsc;
 
 use crate::app::{ApiError, Live, now};
 #[cfg(feature = "native")]
-use crate::http::close;
-use crate::http::{AUTH_TIMEOUT, CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message};
+use crate::http::{CLOSE_UNAUTHORIZED, MAX_WS_MESSAGE, auth_message, bearer, close};
 
 /// The largest relayed message: a co-op datagram is under 900 bytes
 /// (`coop::wire::MAX_DATAGRAM`).
@@ -48,7 +53,7 @@ const QUEUE: usize = 256;
 /// How often an open socket's membership is checked again.
 const RECHECK: Duration = Duration::from_secs(5);
 
-/// Close codes, beside [`CLOSE_UNAUTHORIZED`].
+/// Close code for a refused relay member.
 pub const CLOSE_FORBIDDEN: u16 = 4403;
 /// Replaced by the same account's newer socket, or the room is full.
 pub const CLOSE_CONFLICT: u16 = 4409;
@@ -245,6 +250,11 @@ impl Live {
         bearer: Option<&str>,
         session: &str,
     ) -> Result<TicketReply, ApiError> {
+        Ok(self.sign_ticket(&self.relay_admission(bearer, session)?))
+    }
+
+    /// Authenticates and checks membership before accepting an upgrade.
+    fn relay_admission(&self, bearer: Option<&str>, session: &str) -> Result<Ticket, ApiError> {
         let raw = bearer.ok_or_else(|| {
             ApiError::new(
                 ErrorCode::Unauthorized,
@@ -252,26 +262,22 @@ impl Live {
             )
         })?;
         let token_exp = self.authenticate_until(raw, lxm::SESSIONS_RELAY)?;
-        let author = Author::parse(
-            &Token::parse(raw)
-                .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "token"))?
-                .claims
-                .iss,
-        );
-        let Some(Author::Account { xuid, .. }) = author.clone() else {
+        let token = Token::parse(raw)
+            .map_err(|_| ApiError::new(ErrorCode::Unauthorized, "token"))?;
+        let Some(author @ Author::Account { xuid, .. }) = Author::parse(&token.claims.iss) else {
             return Err(ApiError::new(
                 ErrorCode::Forbidden,
                 "the relay is for accounts",
             ));
         };
         self.relay_member(session, xuid)?;
-        Ok(self.sign_ticket(&Ticket {
+        Ok(Ticket {
             session: session.to_string(),
             xuid,
-            author: author.expect("parsed").to_string(),
+            author: author.to_string(),
             token_exp,
             exp: now() + TICKET_S,
-        }))
+        })
     }
 
     /// A new ticket for the holder of one that has (nearly) run out, if it
@@ -300,23 +306,23 @@ impl Live {
 pub async fn relay(
     State(live): State<Arc<Live>>,
     Path(session): Path<String>,
+    headers: HeaderMap,
     ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
 ) -> Result<Response, ApiError> {
     let ws = ws.map_err(|_| ApiError::new(ErrorCode::Invalid, "the relay is a WebSocket"))?;
+    let admission = live.relay_admission(bearer(&headers), &session)?;
     Ok(ws
         .max_message_size(MAX_WS_MESSAGE)
-        .on_upgrade(move |socket| run(live, session, socket)))
+        .on_upgrade(move |socket| run(live, admission, socket)))
 }
 
-fn account(token_text: &str) -> Option<(Author, Xuid)> {
+#[cfg(feature = "native")]
+fn account(token_text: &str) -> Option<Author> {
     let ClientMessage::Auth { token } = serde_json::from_str(token_text).ok()? else {
         return None;
     };
     let author = Author::parse(&Token::parse(&token).ok()?.claims.iss)?;
-    match author {
-        Author::Account { xuid, .. } => Some((author, xuid)),
-        Author::Server(_) => None,
-    }
+    matches!(author, Author::Account { .. }).then_some(author)
 }
 
 /// A token bucket for one socket.
@@ -352,24 +358,15 @@ impl Bucket {
 }
 
 #[cfg(feature = "native")]
-async fn run(live: Arc<Live>, session: String, mut socket: WebSocket) {
-    let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
-    let Ok(Some(Ok(Message::Text(text)))) = first else {
-        close(
-            &mut socket,
-            CLOSE_UNAUTHORIZED,
-            "send an auth message first",
-        )
-        .await;
-        return;
-    };
-    let mut expires = match auth_message(&live, &text, lxm::SESSIONS_RELAY) {
-        Ok(exp) => exp,
-        Err(e) => return close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await,
-    };
-    let Some((author, xuid)) = account(&text) else {
-        return close(&mut socket, CLOSE_FORBIDDEN, "the relay is for accounts").await;
-    };
+async fn run(live: Arc<Live>, admission: Ticket, mut socket: WebSocket) {
+    let Ticket {
+        session,
+        xuid,
+        author,
+        token_exp: mut expires,
+        ..
+    } = admission;
+    let author = Author::parse(&author).expect("authenticated account");
     if let Err(e) = live.relay_member(&session, xuid) {
         return close(&mut socket, CLOSE_FORBIDDEN, &e.message).await;
     }
@@ -426,7 +423,7 @@ async fn pump(
                 }
                 // A fresh token keeps the socket open; it must be the same account's.
                 Some(Ok(Message::Text(text))) => match auth_message(live, &text, lxm::SESSIONS_RELAY) {
-                    Ok(exp) if account(&text).is_some_and(|(a, _)| &a == author) => *expires = exp,
+                    Ok(exp) if account(&text).as_ref() == Some(author) => *expires = exp,
                     Ok(_) => return stop(CLOSE_FORBIDDEN, "a socket keeps its author"),
                     Err(e) => return stop(CLOSE_UNAUTHORIZED, &e.message),
                 },

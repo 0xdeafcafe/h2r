@@ -15,6 +15,62 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 #[tokio::test]
+async fn api_reads_share_a_per_ip_limit_on_native_and_worker() {
+    use axum::http::Request;
+    use std::net::SocketAddr;
+    use tower::ServiceExt;
+
+    for edge in [false, true] {
+        let policy = Policy {
+            read_rate: (0.0, 2),
+            ..Policy::default()
+        };
+        if edge {
+            policy.public.set_edge("https://live.test");
+        }
+        let h = start(Arc::new(MemoryStore::new()), policy).await;
+        let request = |method, path, port, distinct| {
+            let ip = if distinct { "192.0.2.2" } else { "192.0.2.1" };
+            let (peer, cf_ip) = if edge {
+                (None, ip.to_owned())
+            } else {
+                let peer = format!("{ip}:{port}").parse::<SocketAddr>().unwrap();
+                // On a direct native connection the header cannot select the bucket.
+                (Some(peer), format!("203.0.113.{port}"))
+            };
+            let mut req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("cf-connecting-ip", cf_ip)
+                .body(Body::empty())
+                .unwrap();
+            if let Some(peer) = peer {
+                req.extensions_mut().insert(live_server::ConnectInfo(peer));
+            }
+            let app = h.app.clone();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+
+        assert_eq!(
+            request(Method::GET, "/v1/accounts", 1, false).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(Method::HEAD, "/v1/presence", 2, false).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            request(Method::GET, "/v1/content/missing", 3, false).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert_eq!(
+            request(Method::GET, "/v1/accounts", 4, true).await,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
 async fn accounts_are_created_and_readable() {
     let h = harness().await;
     let user = h.create("Sneaky Pete").await;
@@ -58,6 +114,7 @@ async fn accounts_are_created_and_readable() {
     let wk = h.get("/.well-known/h2live.json").await.json();
     assert_eq!(wk["id"], "live.test");
     assert_eq!(wk["api"], "/v1");
+    assert_eq!(wk["ingest_frame_versions"], json!([8]));
     assert_eq!(wk["federation"], false);
     assert_eq!(wk["keys"][0]["kid"], h.operator.kid());
     assert_eq!(

@@ -5,18 +5,23 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["gpu"]
+# Guest formats, texture decoding, state and vertex declarations are CPU-only.
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster", "dep:hashbrown", "dep:timeline"]
+
 [dependencies]
 # `serde`: pipeline keys are persisted (d3d::pipeline_store).
-wgpu = { version = "30", features = ["serde"] }
-bytemuck = "1"
+wgpu = { version = "30", features = ["serde"], optional = true }
+bytemuck = { version = "1", optional = true }
 # Borrowed pipeline entries avoid cloning keys and hashing twice on hits.
-hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"] }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more"], optional = true }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
-pollster = "1"
+pollster = { version = "1", optional = true }
 thiserror.workspace = true
 # Pipeline-creation spans (docs/perf/profiling.md); no dependencies of its own.
-timeline = { path = "../timeline" }
+timeline = { path = "../timeline", optional = true }
 
 [dev-dependencies]
 winit = "0.30"
@@ -25,3 +30,4 @@ anyhow.workspace = true
 [[example]]
 name = "window"
 path = "examples/window.rs"
+required-features = ["gpu"]

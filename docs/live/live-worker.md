@@ -1,15 +1,16 @@
 # The Live server on Cloudflare Workers
 
-Today the Live server (`live.forbes.red`) runs on a Mac at home. Every
-request crosses the home network through a Cloudflare Tunnel, which costs
-250–700 ms per request. This plan moves the whole server to Cloudflare:
+The Live service has a native deployment and a Cloudflare deployment.
+The original Mac setup sent requests through a Cloudflare Tunnel and
+measured 250–700 ms per request. The Cloudflare deployment serves the
+same Live API from the edge:
 
 - the routes run in a Worker;
 - the event log lives in the hub Durable Object's own SQLite storage;
 - blobs live in R2;
 - whatever needs a single owner runs in a Durable Object.
 
-No request reaches the Mac afterwards.
+The Worker deployment serves requests independently of the Mac.
 
 The code stays shared. The Worker runs live-server's own axum router, built
 without the crate's `native` feature, so the routes are not forked.
@@ -161,10 +162,31 @@ checks, in order:
   a replay from a position, a token-authed reader, a bad token closed with
   4401, and a plain GET refused with 400;
 - with `WAKE=S`, a hibernation wake with a socket open;
-- game ingest, to JSON and packed readers;
+- game ingest to JSON and packed readers, then game close, alarm-driven archive publication and reads of both stored segments;
 - R2: a multipart content upload, a cloud save and a 2 MiB title file;
 - warm timings;
 - with `--seed N`, 2N more events so a restart has a log to replay.
+
+## Finished replay archive smoke
+
+The local workerd smoke used Worker build `3719470d` and harness `b4b49436`.
+It ingested frames at ticks 30 and 960 to force two independent segments.
+A WebSocket reader observed publication. The harness fetched each segment
+over HTTP with Brotli content encoding and checked every decoded field against
+the original H2CK response. Admin verification checked the retained originals
+and both index hashes. Repeating the final verification cursor returned the
+same receipt.
+
+| Operation on the two-frame recording | Local elapsed time |
+|---|---:|
+| Signed game close, HTTP round trip | 16.5 ms |
+| Start of close to publication observed on the stream | 622.7 ms |
+| HTTP fetch and decode of each archived segment | 13.8 ms each |
+| Verify both segments and retry the final cursor | 106.8 ms |
+
+These are wall times from a single local run with Durable Object storage and
+emulated R2. The full-match size and browser CPU measurements use the seeded
+multiplayer and campaign recordings. [Telemetry measurements](../engine/live-telemetry.md#finished-replay-archives)
 
 ## Slice 2 results
 
@@ -252,6 +274,11 @@ sender's pacing, under `relay_rate` (240 a second a socket).
 
 ## The stream on the hub
 
+The hub and native server advertise the same v8 ingest support in
+discovery. Packed subscribers opt in separately. The hibernation
+attachment retains each subscriber's version preference.
+[Packed frames](live-telemetry.md#version-8-live-wire)
+
 `live_server::stream` holds `/v1/stream` with no socket underneath it:
 - `StreamFilter` is the query string.
 - `StreamSession` turns what happens into messages for the reader (`Out`:
@@ -289,9 +316,10 @@ Two drivers run the session:
 the game socket's logic, driven by axum's task on a machine and by the hub
 (`crates/live-worker/src/ingest.rs`). The hub handles each ingest socket's
 messages one at a time, behind an async lock, since a message's work awaits
-the store. Its attachment keeps the author and the token's end; the packed
-decoder is not kept, so after a wake the sender's next keyframe picks its
-frames up again.
+the store. The shared session checks the 16 KiB message cap before parsing
+the auth message or decoding any frames. The attachment keeps the author
+and token expiry. After a wake, the sender's next keyframe restarts the
+packed decoder.
 
 ## Timers and hibernation
 
@@ -353,17 +381,16 @@ see [live-telemetry.md](live-telemetry.md).
 
 ## The co-op relay
 
-`/v1/sessions/{id}/relay` goes to a `CoopRelay` Durable Object named by
-the session id (`crates/live-worker/src/relay.rs`), so a session's
-datagrams never touch the hub. The client speaks the machine's protocol:
-its first message is `{kind: "auth", token}` with `sessions.relay`.
+`/v1/sessions/{id}/relay` begins at the hub. The upgrade request carries a
+`sessions.relay` bearer token, just as on a machine. After admission, a
+`CoopRelay` Durable Object named by the session id forwards datagrams.
 
-- **Membership.** The relay hands the token to the hub as
-  `POST /v1/sessions/{id}/relay/ticket`. The hub spends the token's `jti`,
-  checks the account is the host or an accepted guest of an open co-op
-  session, and signs a ticket: session, xuid, author, the token's `exp`,
-  and the ticket's own end, 15 s on (`relay::TICKET_S`). The relay checks
-  it with the server's public key.
+- **Membership.** The hub spends the token's `jti`, checks that the
+  account is the host or an accepted guest of an open co-op session,
+  and signs a 15-second ticket containing the session, XUID, author and
+  token expiry. It then forwards the upgrade to the relay object, which
+  verifies the ticket before accepting the socket. An `auth` message
+  later refreshes the token through `POST /v1/sessions/{id}/relay/ticket`.
 - **Rechecks.** On a machine the relay rechecks membership every 5 s. Here,
   a member whose ticket has run out gets a new one from the hub with the
   old ticket (`{"ticket": ...}`, no token), in the background, so no
@@ -374,11 +401,78 @@ its first message is `{kind: "auth", token}` with `sessions.relay`.
   4413, faster than `relay_rate` with 4429; `{kind: "peer", present}`
   when the other arrives or leaves.
 - **Hibernation.** Sockets are hibernatable, with the ticket as the
-  attachment; the room is rebuilt from them after a wake. The token's end
-  and the 10 s auth deadline are the object's alarm.
+  attachment. The room is rebuilt after a wake, and the object's alarm
+  closes sockets when their tokens expire.
 
-The ticket endpoint is public: a client could fetch a ticket itself, but
-it carries nothing the account could not learn anyway.
+The ticket endpoint can also issue a ticket directly to an authenticated
+member, and accepts a current ticket for renewal.
+
+## Dedicated host containers
+
+When Live grants a Cloudflare lease, the hub calls the room named by the
+lease ID. Its private `start` request launches the image entrypoint, which
+configures the module and cache and executes `/opt/h2/h2 host run`. The
+host receives the lease ID, Live URL, lease-scoped token, signed bundle URL
+and SHA-256. `H2_HOST_LEASE_JSON` carries the complete lease so the
+supervisor can check its ID and configure the map and lobby before registration. It fetches the private bundle and registers with Live over
+outbound HTTPS. The room keeps the boot credentials out of Durable Object
+storage. Registration opens the match for joins.
+[Lease and boot contracts](dedicated-host-build.md)
+
+Wrangler configures two container applications in each environment. A
+capped application has a fixed size, so `HostRoom` handles Small leases
+and `LargeHostRoom` handles Large leases. Each uses the same Dockerfile
+and room implementation. Both use 12 GB of scratch disk. Small reserves
+1 vCPU and 3 GiB, Large reserves 2 vCPU and 6 GiB. Those memory values
+meet the default scheduling policy's 3 GiB per vCPU minimum.
+[Scheduling policies](https://developers.cloudflare.com/containers/configuration/scheduling-policy/) ·
+[Custom instance constraints](https://developers.cloudflare.com/changelog/post/2026-09-29-remove-disk-to-memory-ratio/)
+
+| Worker setting | Purpose |
+|---|---|
+| `LIVE_MAX_HOSTS` | Shared cap across both classes. Defaults to 4. Set each application's numeric `max_instances` to the same value when deploying. |
+| `LIVE_HOST_PRICES` | Optional JSON price table used to estimate lease costs, including when replaying past host events. |
+| `LIVE_HOST_BUDGET_USD_MONTH` | Monthly host budget in USD. Live checks the month-to-date cost before granting a lease. |
+| `LIVE_HOST_LIVE_URL` | URL the host can reach for registration and reports. Defaults to Live's public URL. |
+| `LIVE_HOST_DATA_URL` | Set as an environment-specific Worker secret containing a signed download URL for the owner's private bundle. Renew before the URL expires. |
+| `LIVE_HOST_DATA_SHA256` | SHA-256 of that bundle. Update alongside its signed URL. |
+
+`GET /v1/hosts/{lease}/tunnel` takes a fresh `sessions.relay` account
+bearer on each WebSocket upgrade. LiveHub checks the roster and match
+state, then sends a fresh upgrade to the lease's room. The account bearer
+stays in LiveHub. The room forwards the upgrade to TCP port 31100 and
+returns the WebSocket response. The supervisor uses the same port through
+`H2_TUNNEL_LISTEN=0.0.0.0:31100`. It drives the game through a private
+Unix socket. The image's `H2_AGENT` fallback stays on container loopback.
+Each binary message carries one tunnel frame end to end. The host assigns
+peer IDs and handles the game ports.
+[WebSocket forwarding](https://developers.cloudflare.com/containers/examples/websocket/)
+
+Only provider start can launch a container. A liveness check reads
+`container.running`. On stop or match end, the provider calls the room to
+destroy the running instance. The room also arms an alarm at the lease's
+hard deadline before starting compute. It restores the container's
+inactivity timeout on wake so bot-only matches can run while the room is
+quiet. The game supervisor and Live reaper measure match idle time.
+[Container lifecycle API](https://developers.cloudflare.com/containers/api/durable-object-container/)
+
+Before deploying, stage the owner's Linux binary and module under
+`deploy/host/stage/`. Wrangler uses `deploy/host/` as the build context
+and uploads the resulting image to the account's private registry.
+[Preparing the host image](../../deploy/host/README.md)
+
+In staging, exercise both sizes with a private bundle. Check
+that the host registers, a rostered client can exchange binary datagrams,
+and a different account receives 403. End one lease through a normal match
+and stop another from the admin page. Confirm each instance stops in
+Cloudflare and that a subsequent tunnel request leaves it stopped.
+
+To check the first boot alarm, use a staging host that starts but withholds
+registration. After the cohort forms and the queue responds, stop all client
+polls. Once the 60-second boot deadline has passed, check the host log for
+`HostEnded` with reason `boot_timeout` and confirm the container stopped.
+The event timestamp should precede the first verification request.
+[Coordinator integration pass](dedicated-host-build.md#coordinators-integration-pass)
 
 ## Cost of the relay
 
@@ -455,6 +549,14 @@ its own Durable Objects (so its own log), bucket and key:
 without the route (to copy the log into before the switch), `production`
 with it (the switch). Both need `--yes-production`.
 
+Every environment declares the dedicated host containers, built from
+`deploy/host/Dockerfile` with the image `deploy/host/build.sh` stages. Until
+that image is staged, deploy with `--no-hosts`: the script writes
+`wrangler.nohosts.toml` beside `wrangler.toml` without the `[[containers]]`
+blocks and with `LIVE_MAX_HOSTS = "0"`, so Live refuses host launches and
+everything else deploys. Without the image and without the flag it stops
+before deploying.
+
 `deploy.sh` prints each step as it goes:
 
 1. **Toolchain.** Rust from rust-toolchain.toml with the wasm32 target and
@@ -509,9 +611,13 @@ What the Mac's server serves, and where it comes from on the Worker:
 | `/art/emblem/*` | composed from local game art, under the same sharing rules | composed from the published art in the Worker, without waking the hub |
 
 A game page's header model travels with the hub's existing
-`GET /v1/page-meta` reply. The Worker uses the shared Rust renderer to put
-the header and its emblem image URLs above the app's root in the initial
-HTML. There are no extra hub calls for the images.
+`GET /v1/page-meta` reply. If the hub supplies a game preview without a
+header, the Worker reads `GET /v1/games/{id}` anonymously and builds the
+model from the matching game detail. The hub's generic metadata response
+skips the fallback, and the detail read enforces the same anonymous
+visibility rules. Both homes use the same renderer to put the header
+and its emblem URLs above the app's root in the initial HTML.
+[Worker page rendering](../../crates/live-worker/src/site.rs)
 
 The Worker routes `/art/emblem/*` ahead of static assets. The stable
 appearance URL redirects to a revision derived from the published art

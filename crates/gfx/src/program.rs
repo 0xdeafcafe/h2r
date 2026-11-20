@@ -62,7 +62,7 @@ pub struct ProgramBindings {
     /// generation) since the last submit, for draws that repeat them.
     last: [Option<(Vec<u8>, u32, u64)>; 2],
     uniform_align: u64,
-    texture_groups: HashMap<TextureGroupKey, (wgpu::BindGroup, u64)>,
+    texture_groups: HashMap<TextureGroupKey, (Option<wgpu::BindGroup>, u64)>,
     frame: u64,
 }
 
@@ -86,6 +86,25 @@ pub fn filterable(format: wgpu::TextureFormat, features: wgpu::Features) -> bool
         format.sample_type(None, Some(features)),
         Some(wgpu::TextureSampleType::Float { filterable: true })
     )
+}
+
+/// Validate a newly created GPU resource. The native backend has the
+/// result when the scope is popped. Callers cache the result with the resource.
+pub fn validated_resource<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Option<T> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let resource = create();
+    let mut result = std::pin::pin!(scope.pop());
+    match std::future::Future::poll(
+        result.as_mut(),
+        &mut std::task::Context::from_waker(std::task::Waker::noop()),
+    ) {
+        std::task::Poll::Ready(None) => Some(resource),
+        std::task::Poll::Ready(Some(error)) => {
+            eprintln!("gfx: GPU resource refused: {error}");
+            None
+        }
+        std::task::Poll::Pending => None,
+    }
 }
 
 impl ProgramBindings {
@@ -112,6 +131,11 @@ impl ProgramBindings {
             texture_groups: HashMap::new(),
             frame: 0,
         }
+    }
+
+    /// Group 0 shared by every program linked with these bindings.
+    pub fn uniform_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.uniforms
     }
 
     fn layout(
@@ -354,7 +378,7 @@ impl ProgramBindings {
         );
         if let Some((group, used)) = self.texture_groups.get_mut(&key) {
             *used = self.frame;
-            return Some(group.clone());
+            return group.clone();
         }
         let mut owned: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = Vec::new();
         for n in 0..4 {
@@ -378,12 +402,12 @@ impl ProgramBindings {
                 resource: wgpu::BindingResource::Sampler(sampler),
             });
         }
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = validated_resource(device, || device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("program textures"),
             layout,
             entries: &entries,
-        });
+        }));
         self.texture_groups.insert(key, (group.clone(), self.frame));
-        Some(group)
+        group
     }
 }

@@ -4,14 +4,13 @@
 //! provide the model, material and stream implementation.
 
 use std::collections::{HashMap, HashSet};
-use std::io::BufReader;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use feature::native_objects::{NativeSet, SetPart};
-use map::{Map, ResourceFile, TagId};
+use map::TagId;
 use native_render::gpu::Image;
-use native_render::light_gpu::LayeredImage;
+use native_render::light_gpu::StaticLightTexture;
 use native_render::load;
 use native_render::look;
 use native_render::model::{Model, ModelInput, ModelSectionInput};
@@ -24,13 +23,14 @@ use native_render::object_program_gpu::{
 use native_render::object_streams::{self, StreamData, StreamFormats};
 use tags::model::RenderModelGeometry;
 
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, locate, region};
+use crate::native_map::{self, NativeMap};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes};
 
 pub(crate) struct CpuModel {
     pub(crate) definition: u32,
     pub(crate) nodes: usize,
     pub(crate) lit: LitModelInput,
-    pub(crate) normalization: Option<Arc<LayeredImage>>,
+    pub(crate) normalization: Option<Arc<StaticLightTexture>>,
 }
 
 #[derive(Default)]
@@ -96,16 +96,21 @@ pub(crate) fn spawn_worker(
                         s.set = Arc::new(set);
                         drop(st);
                         loaded += 1;
-                        eprintln!(
-                            "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
-                        );
+                        if feature::native_verbose() {
+                            eprintln!(
+                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                            );
+                        }
                     }
                     Err(why) => {
                         refused += 1;
-                        eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                        if feature::native_verbose() {
+                            eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                        }
                     }
                 }
             }
+            eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
         })
         .ok()?;
     Some(tx)
@@ -139,12 +144,12 @@ fn set_parts(lit: &LitModelInput) -> Vec<((u16, u8), SetPart)> {
 }
 
 struct Opened {
-    map: Map<BufReader<std::fs::File>>,
+    map: NativeMap,
     raw: Raw,
     decoder: StageDecoder,
     images: StageImages,
     lib: Option<Option<tags::material::ShaderLibrary>>,
-    normalization: Option<Option<Arc<LayeredImage>>>,
+    normalization: Option<Option<Arc<StaticLightTexture>>>,
     formats: Option<StreamFormats>,
     lightmap: Option<Result<Image, String>>,
 }
@@ -154,23 +159,7 @@ fn open(
     palettes: StagePalettes,
     formats: Option<StreamFormats>,
 ) -> Result<Opened, load::Error> {
-    let file = locate(name).ok_or("the map's file is not found")?;
-    let mut map = Map::from_region(
-        BufReader::new(std::fs::File::open(&file.path)?),
-        file.offset,
-        file.len,
-    )?;
-    let mut files = assets::ResourceFiles::new();
-    files.set(ResourceFile::Local, region(&file))?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f))?;
-        }
-    }
+    let (map, files) = native_map::open(name)?;
     Ok(Opened {
         map,
         raw: Raw(files),
@@ -183,7 +172,7 @@ fn open(
     })
 }
 
-fn tag_of(map: &Map<BufReader<std::fs::File>>, datum: u32) -> Option<TagId> {
+fn tag_of(map: &NativeMap, datum: u32) -> Option<TagId> {
     if let Ok(tag) = map.tag(TagId(datum)) {
         return Some(tag.id);
     }
@@ -437,8 +426,7 @@ fn lit_parts(
                 lib.metadata(),
                 &mut opened.raw.0,
             )
-            .0
-            .map(Arc::new),
+            .0,
             None => None,
         };
         opened.normalization = Some(cube);

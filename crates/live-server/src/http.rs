@@ -1,6 +1,7 @@
 //! The HTTP and WebSocket API (docs/live/live-api.md) over [`Live`].
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use live_proto::{ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, TitleId, Xuid, lxm};
 
 use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
@@ -78,7 +79,8 @@ fn invalid(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Invalid, m)
 }
 
-pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
+/// The compact token carried by an Authorization bearer header.
+pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()
@@ -95,7 +97,7 @@ fn jws_body(body: Result<Bytes, BytesRejection>) -> ApiResult<String> {
     Ok(text.trim().to_string())
 }
 
-fn body_bytes(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
+pub(crate) fn body_bytes(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
     body.map_err(|e| match e.status() {
         StatusCode::PAYLOAD_TOO_LARGE => {
             ApiError::new(ErrorCode::TooLarge, "request body too large")
@@ -109,15 +111,15 @@ fn gamertag(raw: &str) -> ApiResult<Gamertag> {
 }
 
 /// `?limit=` and `?cursor=` (or `?from=`, its alias on the log).
-struct Paging {
-    after: u64,
-    limit: usize,
+pub(crate) struct Paging {
+    pub(crate) after: u64,
+    pub(crate) limit: usize,
 }
 
 /// The most events one `GET /v1/events` page holds.
 pub const EVENTS_MAX_LIMIT: usize = 200;
 
-fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
+pub(crate) fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
     let num = |k: &str| -> ApiResult<Option<u64>> {
         p.get(k)
             .filter(|v| !v.is_empty())
@@ -343,6 +345,10 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/accounts/{gamertag}/ranks/{playlist}",
             get(crate::ranks::player_history),
         )
+        .route("/v1/admin/replay-archives", get(crate::replay_archive::inventory))
+        .route("/v1/admin/replay-archives/{id}", get(crate::replay_archive::detail))
+        .route("/v1/admin/replay-archives/{id}/step", post(crate::replay_archive::run_step))
+        .route("/v1/admin/replay-archives/{id}/rollback", post(crate::replay_archive::rollback))
         .route(
             "/v1/admin/sim-runs",
             get(crate::sim_runs::list).post(crate::sim_runs::start),
@@ -353,6 +359,14 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             axum::routing::put(crate::sim_runs::upload)
                 .layer(DefaultBodyLimit::max(crate::sim_runs::MAX_REPORT)),
         )
+        // dh-api: dedicated host, tunnel and sim host routes.
+        .merge({
+            #[path = "http_hosts.rs"]
+            mod hosts;
+
+            hosts::routes()
+        })
+        .merge(crate::sim_runs::host_routes())
         .route("/v1/admin/status", get(crate::status::get_admin_status))
         .route("/v1/admin/usage", get(crate::usage::get_overview))
         .route("/v1/admin/usage/accounts", get(crate::usage::get_accounts))
@@ -361,17 +375,35 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
             "/v1/sessions",
             get(crate::sessions::list).post(crate::sessions::create),
         )
+        .route("/v1/matchmaking/queue", put(crate::matchmaking::queue))
+        .route("/v1/matchmaking/dedicated/{xuid}", put(crate::matchmaking::register))
         .route("/v1/coop/games", get(crate::sessions::coop_games))
         .route("/v1/sessions/{id}", get(crate::sessions::detail))
         .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/snapshot", get(snapshot))
+        .route("/v1/films", get(crate::films::list))
+        .route(
+            "/v1/films/{game}/save",
+            post(crate::films::save).delete(crate::films::unsave),
+        )
+        .route(
+            "/v1/films/{game}/clips",
+            get(crate::films::game_clips).post(crate::films::create_clip),
+        )
+        .route(
+            "/v1/clips/{id}",
+            get(crate::films::get_clip).delete(crate::films::delete_clip),
+        )
         .route("/v1/games", get(list_games).post(start_game))
+        .route("/v1/games/bots/{xuid}", get(crate::bots::player_card))
         .route("/v1/games/bots", post(crate::bots::post_roster))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/archive/{index}/{number}", get(crate::replay_archive::segment))
         .route("/v1/games/{id}/chunks", get(game_chunks))
         .route("/v1/games/{id}/chunks/{tick}", get(game_chunk))
         .route("/v1/games/{id}/events", post(game_events))
+        .route("/v1/games/{id}/film", post(crate::films::upload_host_film))
         .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
             "/v1/{*rest}",
@@ -388,6 +420,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         })
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::Extension(facts))
+        .layer(middleware::from_fn_with_state(live.clone(), guard_request))
         .layer(middleware::from_fn(cors))
         .with_state(live)
 }
@@ -498,11 +531,6 @@ async fn app_page(live: &Live, index: &std::path::Path, req: Request) -> Respons
     );
     let meta = crate::page_meta::describe(live, path);
     let body = crate::page_meta::page_html(&html, &meta, &origin, path);
-    // A game page's header, pre-rendered above the app (page_header.rs).
-    let body = match &meta.header {
-        Some(header) => crate::page_header::inject(&body, header),
-        None => body,
-    };
     (
         [(
             header::CONTENT_TYPE,
@@ -542,6 +570,56 @@ impl WithStatus for Response {
         *self.status_mut() = status;
         self
     }
+}
+
+/// Use the transport's trusted client address, or one fallback bucket when
+/// the transport supplies none. An IPv6 prefix shares one bucket across
+/// its interface addresses.
+pub fn client_ip_key(live: &Live, peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
+    live.policy()
+        .public
+        .client_ip(peer, headers)
+        .map(|ip| ip.to_canonical())
+        .map_or_else(
+            || "unknown".into(),
+            |ip| match ip {
+                IpAddr::V4(ip) => ip.to_string(),
+                IpAddr::V6(ip) => {
+                    let prefix = Ipv6Addr::from_bits(ip.to_bits() & (u128::MAX << 64));
+                    format!("{prefix}/64")
+                }
+            },
+        )
+}
+
+/// Charge an API read or WebSocket upgrade to this client's bucket.
+pub fn limit_read(live: &Live, ip: &str) -> Result<(), ApiError> {
+    if live.reads.allow(ip) {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            ErrorCode::RateLimited,
+            "too many reads; try again shortly",
+        ))
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ClientIp(pub String);
+
+async fn guard_request(State(live): Shared, mut req: Request, next: Next) -> Response {
+    let peer = req
+        .extensions()
+        .get::<crate::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0);
+    let ip = client_ip_key(&live, peer, req.headers());
+    if matches!(*req.method(), Method::GET | Method::HEAD)
+        && let Err(e) = limit_read(&live, &ip)
+    {
+        return e.into_response();
+    }
+    req.extensions_mut().insert(ClientIp(ip));
+    next.run(req).await
 }
 
 /// CORS (security §6): reads are open to any origin, writes to none. A
@@ -1092,7 +1170,7 @@ async fn start_game(
     Ok(json(StatusCode::CREATED, &created))
 }
 
-fn game_id(id: &str) -> ApiResult<&str> {
+pub(crate) fn game_id(id: &str) -> ApiResult<&str> {
     if live_proto::game::valid_id(id) {
         Ok(id)
     } else {
@@ -1198,17 +1276,23 @@ async fn game_chunks(
     State(live): Shared,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Params(query): Params<HashMap<String,String>>,
 ) -> ApiResult<Response> {
     let viewer = live.read_viewer(bearer(&headers))?;
     let id = game_id(&id)?;
     live.check_game_shows(id, viewer)?;
-    let items = live.frame_chunks(id).await?;
+    let source_order = query.get("format").is_some_and(|f| f == "archive");
+    if source_order && let Some(response) = crate::replay_archive::index(&live, id) {
+        return Ok(response);
+    }
+    let items = if source_order { live.source_chunks(id).await? } else { live.frame_chunks(id).await? };
     let ended = live.game(id)?.end_reason.is_some();
     Ok(json(
         StatusCode::OK,
         &serde_json::json!({
             "game_id": id,
             "chunk_ticks": live_proto::chunk::CHUNK_TICKS,
+            "source_order": source_order,
             "ended": ended,
             "items": items,
         }),
@@ -1236,7 +1320,7 @@ async fn game_chunk(
         Some("json") => true,
         Some(_) => return Err(invalid("format must be packed or json")),
     };
-    let bytes = live.frame_chunk(id, tick).await?;
+    let bytes = live.frame_chunk_named(id, tick, query.get("sha256").map(String::as_str)).await?;
     // The query keeps the representations distinct for URL-keyed edge caches.
     let mut resp = if as_json {
         let frames = live_proto::chunk::frames(&bytes).map_err(|e| invalid(e.to_string()))?;

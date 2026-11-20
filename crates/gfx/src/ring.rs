@@ -107,6 +107,17 @@ impl UploadRing {
         align: u64,
         fill: impl FnOnce(wgpu::WriteOnly<'_, [u8]>),
     ) -> (wgpu::Buffer, u64) {
+        self.push_bytes_with(device, queue, len, align, |bytes| fill(wgpu::WriteOnly::from(bytes)))
+    }
+
+    fn push_bytes_with(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        len: usize,
+        align: u64,
+        fill: impl FnOnce(&mut [u8]),
+    ) -> (wgpu::Buffer, u64) {
         debug_assert!(align.is_power_of_two() && align >= 4);
         let padded = (len as u64).max(4).next_multiple_of(4);
         let mut offset = self.cursor.next_multiple_of(align);
@@ -128,7 +139,7 @@ impl UploadRing {
         }
         let at = (offset - self.staged_at) as usize;
         self.staged.resize(at + padded as usize, 0);
-        fill(wgpu::WriteOnly::from(&mut self.staged[at..at + len]));
+        fill(&mut self.staged[at..at + len]);
         self.cursor = offset + padded;
         (self.buffer.clone(), offset)
     }
@@ -172,22 +183,47 @@ impl UploadRing {
 /// Native views and target copies share a forward-only upload arena until submit.
 /// Return the ring to this pool only after its last command buffer completes.
 #[derive(Clone, Default)]
-pub struct UploadPool(std::sync::Arc<std::sync::Mutex<Vec<UploadRing>>>);
+pub struct UploadPool(std::sync::Arc<std::sync::Mutex<Vec<SubmissionRing>>>);
 
 #[derive(Clone)]
 pub struct SubmissionUploads(std::sync::Arc<SubmissionStorage>);
 
 struct SubmissionStorage {
     pool: UploadPool,
-    ring: std::sync::Mutex<Option<UploadRing>>,
+    ring: std::sync::Mutex<Option<SubmissionRing>>,
+}
+
+struct SubmissionRing {
+    upload: UploadRing,
+    uniform_groups: Vec<UniformGroup>,
+}
+
+struct UniformGroup {
+    generation: u64,
+    layout: wgpu::BindGroupLayout,
+    sizes: [usize; 2],
+    group: wgpu::BindGroup,
+}
+
+/// Dynamic offsets for two uniforms per draw in an immutable submission allocation.
+pub struct UniformRun {
+    pub group: wgpu::BindGroup,
+    first: [u32; 2],
+    stride: u32,
+}
+
+impl UniformRun {
+    pub fn offsets(&self, draw: usize) -> [u32; 2] {
+        self.first.map(|offset| offset + draw as u32 * self.stride)
+    }
 }
 
 impl Drop for SubmissionStorage {
     fn drop(&mut self) {
         let Some(mut ring) = self.ring.get_mut().unwrap_or_else(|e| e.into_inner()).take() else { return };
         // A cancelled preparation can still have unflushed CPU bytes.
-        ring.staged.clear();
-        ring.reset();
+        ring.upload.staged.clear();
+        ring.upload.reset();
         self.pool.0.lock().unwrap_or_else(|e| e.into_inner()).push(ring);
     }
 }
@@ -199,22 +235,93 @@ impl UploadPool {
 }
 
 impl SubmissionUploads {
-    /// Allocate immutable bytes for a run. Returns a COPY_SRC region usable in
-    /// this copy's encoder. A buffer is allocated only when a pass uploads data.
-    pub fn stage(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> (wgpu::Buffer, u64) {
-        crate::churn::upload_bytes(bytes.len());
+    fn with_ring<T>(&self, device: &wgpu::Device, f: impl FnOnce(&mut SubmissionRing) -> T) -> T {
         let mut guard = self.0.ring.lock().unwrap_or_else(|e| e.into_inner());
         let ring = guard.get_or_insert_with(|| {
-            self.0.pool.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| {
-                UploadRing::new(device, "native submission uploads", wgpu::BufferUsages::COPY_SRC, 256 << 10)
+            self.0.pool.0.lock().unwrap_or_else(|e| e.into_inner()).pop().unwrap_or_else(|| SubmissionRing {
+                upload: UploadRing::new(device, "native submission uploads",
+                    wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::UNIFORM
+                        | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+                    256 << 10),
+                uniform_groups: Vec::new(),
             })
         });
-        ring.push(device, queue, bytes, 4)
+        let before = ring.upload.generation();
+        let result = f(ring);
+        let after = ring.upload.generation();
+        if before != after {
+            ring.uniform_groups.retain(|g| g.generation == after);
+        }
+        result
+    }
+
+    /// Allocate immutable bytes for a run. Returns a COPY_SRC region usable in
+    /// this copy's encoder or bound as vertices or indices. A buffer is
+    /// allocated only when a pass uploads data.
+    pub fn stage(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) -> (wgpu::Buffer, u64) {
+        crate::churn::upload_bytes(bytes.len());
+        self.with_ring(device, |r| r.upload.push(device, queue, bytes, 4))
+    }
+
+    /// Pack pairs of dynamic vertex and pixel uniforms for successive draws into the
+    /// submission. A pooled backing buffer keeps its bind group across submissions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn uniform_run(
+        &self, device: &wgpu::Device, queue: &wgpu::Queue, layout: &wgpu::BindGroupLayout,
+        sizes: [usize; 2], count: usize, mut fill: impl FnMut(usize, &mut [u8], &mut [u8]),
+    ) -> Option<UniformRun> {
+        let limits = device.limits();
+        if count == 0 || sizes.iter().any(|&n| n == 0 || n as u64 > limits.max_uniform_buffer_binding_size) {
+            return None;
+        }
+        let align = limits.min_uniform_buffer_offset_alignment.max(4) as usize;
+        let pixel = sizes[0].checked_next_multiple_of(align)?;
+        let stride = pixel.checked_add(sizes[1])?.checked_next_multiple_of(align)?;
+        let len = stride.checked_mul(count)?;
+        if len as u64 > limits.max_buffer_size || len > u32::MAX as usize { return None; }
+        crate::churn::upload_bytes(count * (sizes[0] + sizes[1]));
+        self.with_ring(device, |r| {
+            let (buffer, base) = r.upload.push_bytes_with(device, queue, len, align as u64, |dst| {
+                for (i, pair) in dst.chunks_exact_mut(stride).enumerate() {
+                    let (v, p) = pair.split_at_mut(pixel);
+                    fill(i, &mut v[..sizes[0]], &mut p[..sizes[1]]);
+                }
+            });
+            if base + len as u64 - 1 > u64::from(u32::MAX) { return None; }
+            let run = |group| Some(UniformRun {
+                group, first: [base as u32, (base + pixel as u64) as u32], stride: stride as u32,
+            });
+            let generation = r.upload.generation();
+            if let Some(cached) = r.uniform_groups.iter().find(|g| {
+                g.generation == generation && &g.layout == layout && g.sizes == sizes
+            }) {
+                return run(cached.group.clone());
+            }
+            let entry = |binding: u32| wgpu::BindGroupEntry {
+                binding,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(sizes[binding as usize] as u64),
+                }),
+            };
+            let group = crate::churn::create_bind_group(device, &wgpu::BindGroupDescriptor {
+                label: Some("native submission uniforms"), layout,
+                entries: &[entry(0), entry(1)],
+            });
+            // A ring can serve interleaved object and world programs. Bound the
+            // retired layouts retained when maps or renderers change.
+            if r.uniform_groups.len() == 8 {
+                r.uniform_groups.remove(0);
+            }
+            r.uniform_groups.push(UniformGroup { generation, layout: layout.clone(), sizes, group: group.clone() });
+            run(group)
+        })
     }
 
     /// Enqueue the staged bytes ahead of the commands that consume these regions.
     pub fn flush(&self, queue: &wgpu::Queue) {
-        if let Some(ring) = self.0.ring.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { ring.flush(queue); }
+        if let Some(ring) = self.0.ring.lock().unwrap_or_else(|e| e.into_inner()).as_mut() { ring.upload.flush(queue); }
     }
 
     pub fn same_submission(&self, other: &Self) -> bool { std::sync::Arc::ptr_eq(&self.0, &other.0) }
@@ -244,5 +351,58 @@ impl EncoderUploads<'_> {
         for i in 0..count {
             self.encoder.copy_buffer_to_buffer(&src, at, dst, first + i as u64 * stride, bytes.len() as u64);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{GfxContext, program::ProgramBindings};
+
+    #[test]
+    fn uniform_runs_keep_distinct_bytes_and_rebind_when_the_backing_or_layout_changes() {
+        let Ok(ctx) = GfxContext::headless() else { return };
+        let pool = UploadPool::default();
+        let arena = pool.begin();
+        let program = ProgramBindings::new(&ctx.device);
+        let layout = program.uniform_layout();
+        let allocate = |arena: &SubmissionUploads, layout: &wgpu::BindGroupLayout, sizes, count, tag: u8| {
+            arena.uniform_run(&ctx.device, &ctx.queue, layout, sizes, count, |i, v, p| {
+                v.fill(tag + i as u8);
+                p.fill(tag + 10 + i as u8);
+            }).unwrap()
+        };
+        let sizes = [12, 20];
+        let first = allocate(&arena, layout, sizes, 2, 1);
+        let second = allocate(&arena, layout, sizes, 1, 3);
+        assert_eq!(first.group, second.group);
+        let align = ctx.device.limits().min_uniform_buffer_offset_alignment;
+        let draws = [first.offsets(0), first.offsets(1), second.offsets(0)];
+        for [v, p] in draws {
+            assert_eq!((v % align, p % align), (0, 0));
+        }
+        arena.with_ring(&ctx.device, |r| {
+            for (i, [v, p]) in draws.into_iter().enumerate() {
+                assert_eq!(r.upload.staged[v as usize..][..12], [1 + i as u8; 12]);
+                assert_eq!(r.upload.staged[p as usize..][..20], [11 + i as u8; 20]);
+            }
+        });
+
+        let resized = allocate(&arena, layout, [16, 20], 1, 4);
+        assert_ne!(second.group, resized.group);
+        let other = ProgramBindings::new(&ctx.device);
+        let rebound = allocate(&arena, other.uniform_layout(), [16, 20], 1, 5);
+        assert_ne!(resized.group, rebound.group);
+        assert_eq!(resized.group, allocate(&arena, layout, [16, 20], 1, 5).group);
+
+        // Force ring growth while older commands can still reference the original.
+        arena.stage(&ctx.device, &ctx.queue, &vec![0; 256 << 10]);
+        let grown = allocate(&arena, other.uniform_layout(), [16, 20], 1, 6);
+        assert_ne!(rebound.group, grown.group);
+        // Cancel the pending run. Returning the ring resets its offsets.
+        drop(arena);
+        let reused = allocate(&pool.begin(), other.uniform_layout(), [16, 20], 1, 7);
+        assert_eq!(grown.group, reused.group);
+        assert_eq!(reused.offsets(0)[0], 0);
     }
 }

@@ -1,6 +1,11 @@
 # Native GPU renderer
 
-Status: design, and stage 1 in part (below, "Stage 1 as built"). The goal
+Status: every stage built, and the whole set measured as one all-native
+push on 2026-11-19/20 (below, "The all-native push"): frames identical
+to D3D, fps still behind, and **on by default since 2026-11-20** — each
+stage's `impl.render.native_*=off` gives it back to the D3D path for a
+comparison (`impl.render.native_lights_split` stays off: a diagnostic,
+not a stage). The goal
 is every frame drawn from GPU-resident data, with the game's recompiled
 render front-end left doing only what the GPU path cannot do yet. Evidence
 labels as in [feature-engine.md](../engine/feature-engine.md): **Code**
@@ -3219,6 +3224,77 @@ uses D3D for that call.
 9. **The live A/B**, as the other stages': the same frame with the
    switch on and off, `external_passes_dropped` steady, and the time of
    `render_screen_effects`.
+
+## The all-native push (2026-11-19/20)
+
+### Method
+
+Headless `03a_oldmombasa` (`H2_LEVEL=03a_oldmombasa`), `H2_BOOT_GFX`
+frames every 500 presents to present 5000, `H2_FRAME_STATS=1` from
+present 3000, `--slices 10000000`. Without the higher slice limit the
+run stops at about present 2500. The machine's load varied from 40 to
+180 and moved D3D fps from 35 down to 23, so each D3D run is made back
+to back with its native run under the same load.
+
+**All native** means every switch on: `impl.render.native_world,
+native_world_programs, native_world_layers, native_objects,
+native_transparents, native_decals, native_particles, native_lights,
+native_gels, native_shadows, native_fog, native_water,
+native_first_person, native_residual, native_post, native_hud`.
+
+### Pixels
+
+Every captured frame — 1, 500 … 4500, cutscene and gameplay — is
+identical to D3D after round 3: the max channel difference is 6 at
+frame 500 and 0 elsewhere. Before round 3, one explosion frame (2000)
+differed by 44 px.
+
+### Gameplay fps by round
+
+Presents 3000–5000, D3D against all native, same load:
+
+| Round | D3D fps | All-native fps |
+|---|---|---|
+| before | 35.0 | 10.7 |
+| round 1 | — | 4.75, worse than before |
+| round 2 | 23.8 | 14.4 |
+| round 3 | 25.6 | 15.4 average |
+| round 4 | — | TODO: pending measurement |
+
+Round 3's average hides two regimes: native is slower in a
+mid-gameplay stretch (12–14 fps for about 15 s) and faster at the end
+(29.3 against 24.3).
+
+### Root causes found and fixed
+
+- native-world prepared and uploaded every part per view. Now only the
+  view's parts, with cached bindings and pipelines and queued draws,
+  giving 1 worker round trip per frame instead of 12.
+- The 156 "lights" worker round trips per frame were native shadows
+  counted as lights. Shadows now queue with an exact D3D fallback and
+  batch adjacent ranges.
+- Objects and lights made the game thread wait on the render thread
+  before masking guest items (render-wait 0 → 10–20 ms). They now queue
+  with an ordered D3D fallback.
+- The post glow never committed: first render-state setters counted as
+  dependencies, then the plan matched the wrong surface field (the
+  guest binds the embedded surface header), then a resource check
+  refused a clean RTT alias.
+- The per-copy `push_error_scope` + `block_on` validation moved to
+  resource creation.
+
+### Why native can lose despite less work
+
+In the round 3 late window, native cut game-thread cpu from 34.7 to
+23.9 ms and encode from 10.9 to 3.9 ms. But any synchronous admission
+makes the game thread wait on the render thread, and per-pass
+load/store costs (73 shadow passes per frame in round 3) make the
+render thread the bottleneck.
+
+### Status
+
+All native switches stay off by default until a paired A/B shows
+native at least as fast as D3D with identical frames.
 
 ## Open
 

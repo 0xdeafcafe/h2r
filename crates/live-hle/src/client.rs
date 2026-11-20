@@ -21,11 +21,17 @@ use std::{
 };
 use url::Url;
 
+mod publication;
+pub use publication::HostPublisher;
+use publication::Writer;
+
 pub(crate) const MAX_FILE: usize = 2 * 1024 * 1024;
 pub(crate) const FILES: [(u32, &str); 2] =
     [(1, "message_of_the_day.dat"), (4, "multiplayer_hopper.dat")];
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
+    /// Boot credential for a playerless machine. Its only HLE service is session publication.
+    pub publisher: Option<HostPublisher>,
     pub request_timeout: Duration,
     pub heartbeat_interval: Duration,
     /// Custom maps (docs/game/maps.md §5): sessions on a map that cannot be had
@@ -50,6 +56,7 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
+            publisher: None,
             request_timeout: Duration::from_secs(5),
             heartbeat_interval: Duration::from_secs(30),
             maps: None,
@@ -105,6 +112,8 @@ pub(crate) enum Reply {
     Done,
     Teams(Vec<live_proto::team::Team>),
     Matches(Vec<live_proto::session::Session>),
+    Matchmaking(Box<crate::matchmaking::Step>),
+    MatchmakingUnsupported,
     Social(SocialSnapshot),
     InviteAccepted(live_proto::mailbox::Invite),
     /// A mute list, oldest first.
@@ -113,6 +122,7 @@ pub(crate) enum Reply {
     /// A bot roster for the host's session (docs/game/bots.md §9.1), not
     /// yet checked.
     Roster(live_proto::bots::Roster),
+    BotCard(live_proto::bots::PlayerCard),
     /// Everyone's presence, as `GET /v1/presence` shows this console.
     Presence(Vec<live_proto::Presence>),
     /// A page of the mod repository (docs/game/maps.md §5, "Mod downloads").
@@ -189,7 +199,15 @@ pub(crate) enum TeamRequest {
 }
 #[derive(Clone)]
 pub(crate) enum MatchRequest {
-    Create(live_proto::session::NewSession),
+    Create {
+        session: live_proto::session::NewSession,
+        assignment: Option<String>,
+    },
+    Queue {
+        ticket: live_proto::matchmaking::Ticket,
+        waiting: Option<live_proto::matchmaking::Assignment>,
+    },
+    JoinDedicated(Box<crate::matchmaking::DedicatedJoin>),
     Update {
         id: String,
         update: live_proto::session::Update,
@@ -258,6 +276,7 @@ enum Work {
     /// `POST /games/bots` (docs/game/bots.md §9.1), as the host of the
     /// request's session.
     Bots(live_proto::bots::RosterRequest),
+    BotCard(Xuid),
     /// `GET /v1/presence`.
     ReadPresence,
     /// `GET /v1/maps?sort=new` (the mod repository), as the first account
@@ -278,16 +297,46 @@ struct Command {
     result: Pending,
     then: Option<Then>,
 }
+#[derive(Clone)]
 pub(crate) struct Service {
+    pub machine: bool,
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
-    /// Every session the worker has read, by id: what its host advertised
+    /// The sessions the worker read most recently: what their hosts advertised
     /// (the skulls, docs/game/skulls.md "In multiplayer"; a co-op
     /// campaign, docs/live/live-coop.md) and who is in it.
     pub seen: Seen,
 }
-/// Sessions by session id, as last read from the server.
-pub(crate) type Seen = Arc<Mutex<BTreeMap<String, live_proto::session::Session>>>;
+pub(crate) type Seen = Arc<Mutex<SessionCache>>;
+
+/// Keep at least a full server page, plus room for individual finds.
+const MAX_SEEN_SESSIONS: usize = 1024;
+
+#[derive(Default)]
+pub(crate) struct SessionCache {
+    by_id: BTreeMap<String, (u64, live_proto::session::Session)>,
+    by_age: BTreeMap<u64, String>,
+    next: u64,
+}
+
+impl SessionCache {
+    pub(crate) fn get(&self, id: &str) -> Option<&live_proto::session::Session> {
+        self.by_id.get(id).map(|(_, session)| session)
+    }
+
+    fn remember(&mut self, session: &live_proto::session::Session) {
+        let id = &session.session_id;
+        self.next += 1;
+        if let Some((old, _)) = self.by_id.insert(id.clone(), (self.next, session.clone())) {
+            self.by_age.remove(&old);
+        }
+        self.by_age.insert(self.next, id.clone());
+        if self.by_id.len() > MAX_SEEN_SESSIONS {
+            let (_, oldest) = self.by_age.pop_first().expect("the cache has an entry");
+            self.by_id.remove(&oldest);
+        }
+    }
+}
 impl Service {
     pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
@@ -295,6 +344,7 @@ impl Service {
         let counters = metrics.clone();
         let seen = Seen::default();
         let seen_by_worker = seen.clone();
+        let machine = options.publisher.is_some();
         std::thread::Builder::new()
             .name("h2-live-http".into())
             .spawn(move || {
@@ -307,6 +357,7 @@ impl Service {
                     maps: options.maps.clone(),
                     software: Software::from_options(&options),
                     agent,
+                    publisher: options.publisher,
                     connection: None,
                     active: None,
                     metrics: counters,
@@ -355,6 +406,7 @@ impl Service {
                 }
             })?;
         Ok(Self {
+            machine,
             sender,
             metrics,
             seen,
@@ -390,6 +442,10 @@ impl Service {
         then: Then,
     ) -> Result<(), u32> {
         self.submit_then(s, Work::Bots(request), Some(then))
+            .map(|_| ())
+    }
+    pub fn bot_card(&self, s: &Session, xuid: Xuid, then: Then) -> Result<(), u32> {
+        self.submit_then(s, Work::BotCard(xuid), Some(then))
             .map(|_| ())
     }
     pub fn logon(&self, s: &Session, accounts: Vec<Account>) -> Result<Pending, u32> {
@@ -516,6 +572,7 @@ struct Identity {
     key: Arc<KeyPair>,
 }
 struct Active {
+    published: Option<live_proto::session::Session>,
     session: Session,
     users: BTreeMap<u64, Identity>,
     presence: BTreeMap<u64, Presence>,
@@ -544,6 +601,7 @@ impl Software {
     }
 }
 struct Worker {
+    publisher: Option<HostPublisher>,
     base: String,
     maps: Option<Arc<crate::maps::MapGate>>,
     software: Software,
@@ -730,6 +788,9 @@ impl Worker {
             || api.fragment().is_some()
         {
             return Err(Error::Protocol);
+        }
+        if let Some(host) = &self.publisher {
+            host.verify(&discovery)?;
         }
         self.connection = Some(Connection {
             api: api.as_str().trim_end_matches('/').into(),
@@ -931,6 +992,175 @@ impl Worker {
         }
         Ok(vec![reply.team])
     }
+    fn matchmaking(
+        &self,
+        user: &Identity,
+        ticket: &live_proto::matchmaking::Ticket,
+        waiting: Option<&live_proto::matchmaking::Assignment>,
+    ) -> Result<Reply, Error> {
+        use crate::matchmaking::{Outcome, QueueAction, Step, queue_action};
+
+        let body = serde_json::to_string(ticket).map_err(|_| Error::Protocol)?;
+        let bytes = match self.response(
+            self.request("PUT", "/matchmaking/queue", user, lxm::SESSIONS_WRITE)
+                .set("content-type", "application/json"),
+            Some(&body),
+            64 * 1024,
+        ) {
+            Err(Error::Status(404)) => return Ok(Reply::MatchmakingUnsupported),
+            Err(error) if error.retryable() => {
+                // Allocation may outlast the HTTP timeout. Let the search
+                // resubmit the same ticket with a fresh sessions.write token.
+                return Ok(Reply::Matchmaking(Box::new(Step::RefreshQueue)));
+            }
+            other => other?,
+        };
+        let me = Xuid(user.xuid);
+        let value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        let step = match queue_action(value, ticket.hopper, me).ok_or(Error::Protocol)? {
+            QueueAction::Probe(candidates) => {
+                let samples = crate::qos::measure(candidates, Duration::from_millis(450))
+                    .map_err(|_| Error::Transport)?;
+                Step::Retry(samples)
+            }
+            QueueAction::Wait => Step::Retry(Vec::new()),
+            QueueAction::WaitForHost(assignment) => Step::WaitingForHost(assignment),
+            QueueAction::Host(assignment) => Step::Complete(Outcome::Host(assignment)),
+            QueueAction::Join {
+                session_id,
+                frames_from_host,
+            } => self.matchmaking_join(user, ticket.hopper, &session_id, frames_from_host, waiting)?,
+        };
+        Ok(Reply::Matchmaking(Box::new(step)))
+    }
+    fn matchmaking_join(
+        &self,
+        user: &Identity,
+        hopper: u32,
+        session_id: &str,
+        frames_from_host: bool,
+        waiting: Option<&live_proto::matchmaking::Assignment>,
+    ) -> Result<crate::matchmaking::Step, Error> {
+        use crate::matchmaking::{DedicatedJoin, HostAction, Outcome, Step, host_action, join_assignment};
+
+        let mut rows = match self.fetch_match(user, session_id) {
+            Err(Error::Status(403 | 404 | 410)) if frames_from_host || waiting.is_some() => {
+                return Ok(Step::RequeueDedicated);
+            }
+            Err(e) if e.retryable() && (frames_from_host || waiting.is_some()) => {
+                return Ok(Step::RequeueDedicated);
+            }
+            Err(Error::Status(404)) => return Ok(Step::Retry(Vec::new())),
+            result => result?,
+        };
+        let Some(row) = rows.pop() else {
+            return Ok(if frames_from_host || waiting.is_some() {
+                Step::RequeueDedicated
+            } else {
+                Step::Retry(Vec::new())
+            });
+        };
+        row.advertisement.validate().map_err(|_| Error::Protocol)?;
+        let Some(assignment) = join_assignment(&row, waiting, hopper, Xuid(user.xuid), frames_from_host)
+        else {
+            return if frames_from_host {
+                Ok(Step::RequeueDedicated)
+            } else {
+                Err(Error::Protocol)
+            };
+        };
+        if row.xnkid != session_id {
+            return Err(Error::Protocol);
+        }
+
+        if let Some(lease) = &assignment.host_lease {
+            if !crate::matchmaking::valid_host_lease(lease) {
+                return Err(Error::Protocol);
+            }
+            let host = match self.team_json(user, &format!("/hosts/{lease}")) {
+                Err(Error::Status(403 | 404 | 410)) => return Ok(Step::RequeueDedicated),
+                Err(e) if e.retryable() => return Ok(Step::WaitingForHost(assignment.clone())),
+                result => result?,
+            };
+            let api = &self.connection.as_ref().ok_or(Error::Protocol)?.api;
+            return Ok(match host_action(host, assignment, session_id, api) {
+                HostAction::Wait => Step::WaitingForHost(assignment.clone()),
+                HostAction::Requeue => Step::RequeueDedicated,
+                HostAction::Join { route, region } => Step::CheckDedicated(Box::new(DedicatedJoin {
+                    row,
+                    hopper,
+                    route,
+                    region,
+                    frames_from_host,
+                })),
+            });
+        }
+
+        if frames_from_host {
+            // A lease-bearing queue reply can race a peer fallback in Find.
+            return Ok(Step::RequeueDedicated);
+        }
+        if assignment.id != session_id
+            || !crate::matchmaking::valid_address(row.endpoint.addr, row.endpoint.port)
+        {
+            return Err(Error::Protocol);
+        }
+        let kid = crate::sessions::wire_id(session_id).ok_or(Error::Protocol)?;
+        let address = std::net::SocketAddrV4::new(row.endpoint.addr, row.endpoint.port);
+        if self.map_ready(&row, true)
+            && crate::qos::query_why(address, kid, 1).is_ok_and(|r| !r.data.is_empty())
+        {
+            Ok(Step::Complete(Outcome::Join {
+                rows: vec![row],
+                frames_from_host,
+                dedicated: None,
+                tunnel: None,
+            }))
+        } else {
+            Ok(Step::Retry(Vec::new()))
+        }
+    }
+    fn join_dedicated(
+        &self,
+        user: &Identity,
+        join: &crate::matchmaking::DedicatedJoin,
+    ) -> Result<crate::matchmaking::Step, Error> {
+        use crate::matchmaking::{DedicatedMatch, Outcome, Step};
+
+        if !self.map_ready(&join.row, true) {
+            return Ok(Step::RequeueDedicated);
+        }
+        let tunnel = if let Some(url) = &join.route.tunnel_url {
+            let server = &self.connection.as_ref().ok_or(Error::Protocol)?.id;
+            let bearer = issue_token(&user.key, &self.author(user), server, lxm::SESSIONS_RELAY, now());
+            match crate::connect_tunnel(url.as_str(), &bearer) {
+                Ok(handle) => Some((join.route.address, handle)),
+                Err(_) => return Ok(Step::RequeueDedicated),
+            }
+        } else {
+            None
+        };
+        let kid = crate::sessions::wire_id(&join.row.session_id).ok_or(Error::Protocol)?;
+        let qos_base = tunnel
+            .as_ref()
+            .map_or(join.route.address, |(_, handle)| handle.qos_base());
+        if !crate::qos::query_why(qos_base, kid, 1).is_ok_and(|r| !r.data.is_empty()) {
+            return Ok(Step::RequeueDedicated);
+        }
+
+        let mut row = join.row.clone();
+        join.route.apply(&mut row);
+        self.saw(std::slice::from_ref(&row));
+        Ok(Step::Complete(Outcome::Join {
+            rows: vec![row],
+            frames_from_host: join.frames_from_host,
+            dedicated: Some(DedicatedMatch {
+                hopper: join.hopper,
+                route: join.route.clone(),
+            }),
+            tunnel,
+        }))
+    }
     fn matches_request(
         &self,
         user: &Identity,
@@ -938,22 +1168,14 @@ impl Worker {
     ) -> Result<Vec<live_proto::session::Session>, Error> {
         use live_proto::session;
         let items = match request {
-            MatchRequest::Create(new) => {
-                #[derive(serde::Deserialize)]
-                struct Created {
-                    session: session::Session,
-                }
-                let bytes = self.response(
-                    self.request("POST", "/sessions", user, lxm::SESSIONS_WRITE)
-                        .set("content-type", "application/json"),
-                    Some(&serde_json::to_string(&new).map_err(|_| Error::Protocol)?),
-                    MAX_FILE,
-                )?;
-                vec![
-                    serde_json::from_slice::<Created>(&bytes)
-                        .map_err(|_| Error::Protocol)?
-                        .session,
-                ]
+            MatchRequest::Create {
+                session: new,
+                assignment,
+            } => {
+                vec![self.create_match(Writer::Account(user), &new, assignment.as_deref())?]
+            }
+            MatchRequest::Queue { .. } | MatchRequest::JoinDedicated(_) => {
+                return Err(Error::Protocol);
             }
             MatchRequest::Update { id, update } => {
                 self.match_event(
@@ -969,22 +1191,7 @@ impl Worker {
                 Vec::new()
             }
             MatchRequest::Players { id, joined, left } => {
-                let events = left
-                    .iter()
-                    .map(|x| (session::LEFT, x))
-                    .chain(joined.iter().map(|x| (session::JOINED, x)));
-                let mut last = Ok(());
-                for (kind, xuid) in events {
-                    if let Err(e) = self.match_event(user, &id, kind, json!({ "xuid": xuid })) {
-                        let why = match e {
-                            Error::Status(n) => format!("status {n}"),
-                            _ => "no answer".to_owned(),
-                        };
-                        eprintln!("live: session {id}: {kind} for {xuid} refused ({why})");
-                        last = Err(e);
-                    }
-                }
-                last?;
+                self.match_players(Writer::Account(user), &id, &joined, &left)?;
                 Vec::new()
             }
             MatchRequest::Find(id) => match self.fetch_match(user, &id) {
@@ -1035,11 +1242,7 @@ impl Worker {
             item.advertisement.validate().map_err(|_| Error::Protocol)?;
             if !session::valid_id(&item.session_id)
                 || item.xnkid != item.session_id
-                || item.endpoint.port == 0
-                || item.endpoint.port > 65529
-                || item.endpoint.addr.is_unspecified()
-                || item.endpoint.addr.is_multicast()
-                || item.endpoint.addr.is_broadcast()
+                || !crate::matchmaking::valid_address(item.endpoint.addr, item.endpoint.port)
             {
                 return Err(Error::Protocol);
             }
@@ -1047,12 +1250,12 @@ impl Worker {
         self.saw(&items);
         Ok(items)
     }
-    /// Keeps each session read, for a guest's game start (the host's
+    /// Keeps recent sessions, for a guest's game start (the host's
     /// skulls) and its co-op join screen (the campaign, the host).
     fn saw(&self, sessions: &[live_proto::session::Session]) {
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         for s in sessions {
-            seen.insert(s.session_id.clone(), s.clone());
+            seen.remember(s);
         }
     }
     /// Whether a session's map can be had (docs/game/maps.md §5): checked for a
@@ -1115,6 +1318,32 @@ impl Worker {
             Vec::new()
         })
     }
+    fn match_players(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        joined: &[Xuid],
+        left: &[Xuid],
+    ) -> Result<(), Error> {
+        use live_proto::session;
+        let events = left
+            .iter()
+            .map(|x| (session::LEFT, x))
+            .chain(joined.iter().map(|x| (session::JOINED, x)));
+        let mut last = Ok(());
+        for (kind, xuid) in events {
+            if let Err(e) = self.write_match_event(writer, id, kind, json!({ "xuid": xuid })) {
+                let why = match e {
+                    Error::Status(n) => format!("status {n}"),
+                    _ => "no answer".to_owned(),
+                };
+                eprintln!("live: session {id}: {kind} for {xuid} refused ({why})");
+                last = Err(e);
+            }
+        }
+        last
+    }
+
     fn match_event(
         &self,
         user: &Identity,
@@ -1122,19 +1351,31 @@ impl Worker {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<(), Error> {
+        self.write_match_event(Writer::Account(user), id, kind, data)
+    }
+
+    fn write_match_event(
+        &self,
+        writer: Writer<'_>,
+        id: &str,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        let (author, key) = writer.signer(self);
         let body = EventBody::new(
-            &user.key,
-            &self.author(user),
+            key,
+            &author,
             &live_proto::session::stream(id),
             kind,
             data,
             time::OffsetDateTime::now_utc(),
         );
-        let jws = live_proto::sign::sign_batch(&user.key, &[body]);
+        let jws = live_proto::sign::sign_batch(key, &[body]);
         let path = format!("/sessions/{id}/events");
         self.retried(
             || {
-                self.request("POST", &path, user, lxm::SESSIONS_WRITE)
+                writer
+                    .post(self, &path)
                     .set("content-type", "application/jose")
             },
             Some(&jws),
@@ -1279,6 +1520,13 @@ impl Worker {
         if c.session.cancelled() {
             return Err(NO_SESSION);
         }
+        if self.publisher.is_some() {
+            match &c.work {
+                Work::Match(request) => return self.publish_host_match(&c.session, request),
+                Work::Logon(accounts) if accounts.is_empty() => {}
+                _ => return Err(NO_USER),
+            }
+        }
         match &c.work {
             Work::Logon(accounts) => {
                 self.sign_out();
@@ -1304,6 +1552,7 @@ impl Worker {
                     return Err(NO_SESSION);
                 }
                 self.active = Some(Active {
+                    published: None,
                     session: c.session.clone(),
                     presence: users.keys().map(|u| (*u, Presence::default())).collect(),
                     users,
@@ -1434,6 +1683,15 @@ impl Worker {
                     .filter(|a| a.session.id == c.session.id)
                     .ok_or(NO_SESSION)?;
                 let user = active.users.values().next().ok_or(NO_USER)?.clone();
+                if let MatchRequest::Queue { ticket, waiting } = request {
+                    return self.matchmaking(&user, ticket, waiting.as_ref()).map_err(Error::result);
+                }
+                if let MatchRequest::JoinDedicated(join) = request {
+                    return self
+                        .join_dedicated(&user, join)
+                        .map(|step| Reply::Matchmaking(Box::new(step)))
+                        .map_err(Error::result);
+                }
                 let rows = self
                     .matches_request(&user, request.clone())
                     .map_err(|e| match e {
@@ -1443,7 +1701,7 @@ impl Worker {
                     })?;
                 let active = self.active.as_mut().unwrap();
                 match request {
-                    MatchRequest::Create(_) => {
+                    MatchRequest::Create { .. } => {
                         if let Some(row) = rows.first() {
                             active.matches.insert(row.session_id.clone(), user.xuid);
                         }
@@ -1624,6 +1882,17 @@ impl Worker {
                     _ => e.result(),
                 })
             }
+            Work::BotCard(xuid) => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?;
+                self.team_json(user, &format!("/games/bots/{xuid}"))
+                    .map(Reply::BotCard)
+                    .map_err(Error::result)
+            }
             Work::ReadPresence => {
                 let active = self
                     .active
@@ -1681,6 +1950,14 @@ impl Worker {
     }
     fn sign_out(&mut self) {
         if let Some(active) = self.active.take() {
+            if let (Some(host), Some(row)) = (&self.publisher, active.published) {
+                let _ = self.write_match_event(
+                    Writer::Host(host),
+                    &row.session_id,
+                    live_proto::session::DELETED,
+                    json!({"reason":"host_left"}),
+                );
+            }
             for (id, uid) in &active.matches {
                 if let Some(user) = active.users.get(uid) {
                     let _ = self.match_event(
@@ -1844,4 +2121,45 @@ pub(crate) fn presence_data(
         }
     }
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_session_cache_bounds_churn_and_keeps_refreshed_rows() {
+        let mut seen = SessionCache::default();
+        let mut row: live_proto::session::Session = serde_json::from_value(json!({
+            "session_id": "", "host": "acct:0009000000000001@live.test",
+            "host_xuid": "0009000000000001", "host_gamertag": "Host", "xnkid": "",
+            "endpoint": {"addr": "127.0.0.1", "port": 1000, "source": "observed"},
+            "advertisement": {
+                "port": 1000, "host_address": [], "attributes": {},
+                "slots": live_proto::session::Slots::default()
+            },
+            "since": "", "last_activity": 0, "state": "open"
+        }))
+        .unwrap();
+        let id = |n: usize| format!("{n:016x}");
+        for n in 0..MAX_SEEN_SESSIONS {
+            row.session_id = id(n);
+            seen.remember(&row);
+        }
+
+        row.session_id = id(0);
+        row.advertisement.name = Some("Refreshed".into());
+        seen.remember(&row);
+        row.session_id = id(MAX_SEEN_SESSIONS);
+        seen.remember(&row);
+
+        assert_eq!(seen.by_id.len(), MAX_SEEN_SESSIONS);
+        assert_eq!(seen.by_age.len(), MAX_SEEN_SESSIONS);
+        assert!(seen.get(&id(1)).is_none());
+        assert_eq!(
+            seen.get(&id(0)).unwrap().advertisement.name.as_deref(),
+            Some("Refreshed")
+        );
+        assert_eq!(seen.get(&id(MAX_SEEN_SESSIONS)), Some(&row));
+    }
 }

@@ -20,6 +20,7 @@ pub struct NativeDrawProgram {
 pub struct NativeDrawShader {
     pub source: String,
     pub dims: StageDims,
+    pub discards: bool,
 }
 
 impl NativeDrawKey {
@@ -28,6 +29,7 @@ impl NativeDrawKey {
         Ok(NativeDrawShader {
             source: linked.source,
             dims: linked.dims,
+            discards: linked.discards,
         })
     }
 }

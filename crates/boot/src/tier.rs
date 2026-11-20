@@ -96,7 +96,9 @@ fn fast_stamp_with(xbe_bytes: &[u8], passes: &str, opt: &str) -> String {
 
 /// Whether `dylib` exists and its stamp is the fast tier's for this image.
 pub fn fast_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
-    dylib.exists() && std::fs::read_to_string(crate::stamp_path(dylib)).is_ok_and(|s| s == fast_stamp(xbe_bytes))
+    crate::host_audit::module_from_env().is_none()
+        && dylib.exists()
+        && std::fs::read_to_string(crate::stamp_path(dylib)).is_ok_and(|s| s == fast_stamp(xbe_bytes))
 }
 
 /// Whether `dylib` is a current module of either tier, and which.
@@ -180,10 +182,25 @@ pub fn prepare(xbe_bytes: &[u8], disc: &Path, out: &Path, choice: Choice, jobs: 
 /// Lift the image and compile it with the Cranelift fast tier into
 /// `out/fast/libh2game.dylib`, stamped with [`fast_stamp`].
 pub fn build_fast(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
-    let total = Instant::now();
-    if emit::compile::Arch::target().map_err(anyhow::Error::msg)? != emit::compile::Arch::host() {
-        bail!("the fast tier builds for this host only; unset H2_EMIT_TARGET");
+    build_fast_for(xbe_bytes, out, jobs, emit::compile::Arch::target()?)
+}
+
+/// The Cranelift ISA is the running host's. Check this for both builds and
+/// stamp-only checks so cross builds cannot accept a host fast-tier module.
+pub fn check_fast_target(arch: emit::compile::Arch) -> Result<()> {
+    anyhow::ensure!(
+        crate::host_audit::module_from_env().is_none(),
+        "H2_HOST_MODULE requires the clang tier"
+    );
+    if arch != emit::compile::Arch::host() {
+        bail!("the fast tier builds for this host only; use --tier clang for {}", arch.name());
     }
+    Ok(())
+}
+
+pub fn build_fast_for(xbe_bytes: &[u8], out: &Path, jobs: usize, arch: emit::compile::Arch) -> Result<PathBuf> {
+    check_fast_target(arch)?;
+    let total = Instant::now();
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let lib = fast_dylib(out);
     let dir = lib.parent().expect("fast_dylib has a parent").to_path_buf();

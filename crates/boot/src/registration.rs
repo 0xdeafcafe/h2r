@@ -37,6 +37,7 @@ pub struct CoreInputs<'a> {
     pub vfs: Option<Arc<Mutex<vfs::Vfs>>>,
     /// The Video screen's model (a settings store's, else none).
     pub model: Option<Arc<ui::Model>>,
+    pub theater: Option<crate::theater_ui::Theater>,
     pub campaigns: Option<Arc<crate::campaigns::State>>,
     pub settings: Option<Arc<settings::Store>>,
     pub live: Option<Arc<live_hle::Hle>>,
@@ -45,8 +46,8 @@ pub struct CoreInputs<'a> {
     pub level: Option<level_boot::Request>,
     /// `H2_PERF_FROM=level`: wait for the level-loaded mark.
     pub perf_level: bool,
-    /// The XAPI layer is on (bots and the Clankers page need pads).
-    pub xapi: bool,
+    /// Install bots and the Clankers page (requires XAPI pads).
+    pub bots: bool,
 }
 
 /// What [`register_core`] decided, for the install lines after the plan.
@@ -83,12 +84,12 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     features
         .add(&crate::h1_recordings::Playback)
         .map_err(|e| anyhow::anyhow!("recorded animation playback: {e}"))?;
-    layout_glue::install(rt, features, i.model).context("installing the button layouts")?;
+    layout_glue::install(rt, features, i.model, i.theater).context("installing the button layouts")?;
     features
         .add(&crate::list_class::ScrollArrowLayout)
         .map_err(|e| anyhow::anyhow!("list scroll arrows: {e}"))?;
     campaign_menu::install(rt, features, i.campaigns).context("installing the campaigns")?;
-    map_select::install(rt, features).context("installing the map select")?;
+    map_select::install(features, i.live.clone()).context("installing the map select")?;
     // The Halo 1 / Halo 2 options (docs/halo1/multiplayer.md "Halo 1
     // options"): the switches follow the settings, the HUD style is picked
     // at each game start, and a custom game's Game Setup gets the Halo 1
@@ -216,7 +217,9 @@ pub fn register_core(features: &mut feature::Registry, i: CoreInputs<'_>) -> any
     // signed in on the players screen, their views and listeners hidden.
     // `H2_BOTS` adds brains at boot; idle with none.
     let mut bots_on = false;
-    if i.xapi {
+    if i.bots {
+        crate::clanker_card::install(features, i.live.clone())
+            .context("installing Clanker player options")?;
         bot_glue::add_from_env();
         bots_on = bot_glue::install(features, i.data_root).context("installing the bots")?;
         // The Clankers page and its Game Setup row (stage 7).
@@ -247,6 +250,7 @@ pub struct LateInputs<'a> {
     pub rt: &'a Arc<Runtime>,
     pub lockstep: lockstep_glue::Config,
     pub agent: AgentSource,
+    pub allow_bot_add: bool,
     pub xa: Option<&'a xapi_glue::Shared>,
     /// From [`pipeline_for`].
     pub pipeline: feature::pipeline_render::PipelineRender,
@@ -298,7 +302,7 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         // Over TCP (the Xbox app) a refused port must not stop the game:
         // it runs on, undriven, and says why.
         AgentSource::Socket(path) if matches!(agent_proto::Endpoint::from(path.clone()), agent_proto::Endpoint::Tcp(_)) => {
-            match agent_glue::AgentGlue::install(features, path, xa, input_replay) {
+            match agent_glue::AgentGlue::install(features, path, xa, input_replay, i.allow_bot_add) {
                 Ok(a) => Some(a),
                 Err(e) => {
                     eprintln!("agent: not listening: {e:#}");
@@ -306,7 +310,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
                 }
             }
         }
-        AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(features, path, xa, input_replay)?),
+        AgentSource::Socket(path) => Some(agent_glue::AgentGlue::install(
+            features, path, xa, input_replay, i.allow_bot_add,
+        )?),
         // The debug menu talks to an agent: a local one, with no socket.
         AgentSource::Local => Some(agent_glue::AgentGlue::local()),
         AgentSource::None => None,
@@ -351,75 +357,95 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     // (on by default, H2_FEATURES=impl.render.native_world=off turns it
     // off; docs/graphics/native-renderer.md). Its layer-draw observer is
     // context-only, so the pipelined render runs it on its own thread. It
-    // runs after render-timing's; the world's map file comes from the
-    // locator boot sets (native_world_glue::set_locator).
+    // runs after render-timing's. The world reads its map and resources
+    // through the VFS (native_map).
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_world::NativeWorld)
         .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
     // Planar fog, layer 16, on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_fog=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_fog=off
+    // turns it off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, "Stage 4b"). Its layer-draw
     // observer sits inside render-timing's and the world's; the fog
     // materials load with the world (native_world_glue's worker,
     // native_fog_glue's load).
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_fog::NativeFog)
         .map_err(|e| anyhow::anyhow!("native fog: {e}"))?;
     // Water edge blend (layer 6) and the water, camouflage and hologram
     // census. The layer observer is enabled by impl.render.native_water.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_water::NativeWater)
         .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
     // Objects' render models on the native GPU renderer, skinned on the
-    // GPU (H2_FEATURES=impl.render.native_objects=on, off by default;
+    // GPU (on by default since 2026-11-20;
+    // H2_FEATURES=impl.render.native_objects=off turns it off for the
+    // comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 2). Its observers on the
     // layer draw sit inside render-timing's and the world's; the models
     // load per map through native_objects_glue.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_objects::NativeObjects)
         .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
     // The first-person arms and weapon on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_first_person=on, off by default):
-    // both 0x0003fdf0 layer-3 draws, with the light and transparent calls
+    // (on by default since 2026-11-20;
+    // H2_FEATURES=impl.render.native_first_person=off turns it off for
+    // the comparison against the D3D path): both 0x0003fdf0 layer-3
+    // draws, with the light and transparent calls
     // between and after them left in guest order.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_first_person::NativeFirstPerson)
         .map_err(|e| anyhow::anyhow!("native first person: {e}"))?;
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_world_layers::NativeWorldLayers)
         .map_err(|e| anyhow::anyhow!("native world layers: {e}"))?;
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_residual::NativeResidual)
         .map_err(|e| anyhow::anyhow!("native residual: {e}"))?;
     // Mark the sorted geometry entries so their resolved indexed draws
     // can use a cached vertex binding in the game's order (off by default).
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_transparents::NativeTransparents)
         .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
     // Dynamic decals in their seven observed pass positions
-    // (H2_FEATURES=impl.render.native_decals=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_decals=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-decals-research.md). Only a fully resolved callback
     // is replaced; all others keep their D3D draws.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_decals::NativeDecals)
         .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_particles::NativeParticles)
         .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
     // The dynamic lights on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_lights=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_lights=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 4): a context-only skip on
     // each light's passes, in the game's light order. Its host
     // (native_lights_glue) does the device side of a skipped light's tail
     // and reports the bound target, but takes no light yet, so every light
     // keeps its D3D passes.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_lights::NativeLights)
         .map_err(|e| anyhow::anyhow!("native lights: {e}"))?;
     // Shader-driven gels: observe target-13 production before light consumption.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_gels::NativeGels)
         .map_err(|e| anyhow::anyhow!("native gels: {e}"))?;
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_shadows::NativeShadows)
         .map_err(|e| anyhow::anyhow!("native shadows: {e}"))?;
@@ -427,23 +453,28 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         .add(&feature::h1_scope_zoom::ScopeZoom)
         .map_err(|e| anyhow::anyhow!("Halo 1 scope zoom: {e}"))?;
     // The view's post passes on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_post=on, off by default;
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_post=off
+    // turns them off for the comparison against the D3D path;
     // docs/graphics/native-renderer.md, stage 5): a context-only hook at
     // the colour pass's entry. Its host (native_post_glue, installed with
     // the world's) plans the glow, has the device drop exactly its quads
     // and draws the glow natively in place of the last; the game's code
     // runs and leaves every state. H2_POST_AB=<dir> places it with the
     // switch off too, observing, for the frame A/B's captures.
+    #[cfg(feature = "gpu")]
     feature::native_post::place_for_capture(crate::native_post_glue::ab_requested());
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_post::NativePost)
         .map_err(|e| anyhow::anyhow!("native post: {e}"))?;
     // The HUD's and the UI's screen draws on the native GPU renderer
-    // (H2_FEATURES=impl.render.native_hud=on, off by default, or
+    // (on by default since 2026-11-20; H2_FEATURES=impl.render.native_hud=off
+    // turns them off for the comparison against the D3D path, or
     // H2_NATIVE_HUD_COMPARE; docs/graphics/native-renderer.md, stage 5):
     // context-only hooks on the screen-quad batch (text) and the HUD shader
     // quad. Its host (native_hud_glue) draws accepted quads natively and
     // pairs the plans for D3D draws in compare mode.
+    #[cfg(feature = "gpu")]
     features
         .add(&feature::native_hud::NativeHud)
         .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;
@@ -465,6 +496,14 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
         } else {
             coop_probe::install_live(i.rt, features, i.data_root)?
         };
+        if let Some(arm) = &arm {
+            crate::coop_look::install(
+                features,
+                Arc::clone(arm),
+                i.settings.as_deref(),
+                agent.as_ref().map(|a| &a.agent),
+            )?;
+        }
         // coop.max_players: the host's co-op limit (docs/live/live-coop.md 12).
         if let (Some(arm), Some(store)) = (&arm, &i.settings) {
             let n = arm.set_max_players(i64::from(crate::setting_defs::coop_max_players(store)));
@@ -489,7 +528,9 @@ pub fn register_late(features: &mut feature::Registry, i: LateInputs<'_>) -> any
     custom_games::set_mods_row(mods_on);
     // Clankermatch (docs/game/bots.md §8): the Live menu's row splits the
     // OptiMatch playlists into the server's clanker hoppers and the rest.
-    crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+    if i.allow_bot_add {
+        crate::clankermatch::install(features, i.live.clone()).context("installing Clankermatch")?;
+    }
     // Back to the Xbox Live menu, the cursor is on the browser or co-op
     // row the player chose, past the four rows retail restores.
     custom_games::install_cursor(features).context("installing the Live menu's cursor")?;

@@ -229,6 +229,8 @@ pub struct GameStarted {
     pub game_id: String,
     pub host: String,
     #[serde(flatten)]
+    pub dedicated: crate::hosts::DedicatedHostFields,
+    #[serde(flatten)]
     pub game: NewGame,
 }
 
@@ -899,6 +901,8 @@ pub struct Layer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GameSummary {
     pub game_id: String,
+    #[serde(flatten)]
+    pub dedicated: crate::hosts::DedicatedHostFields,
     pub map: String,
     pub mode: String,
     /// Always set: the game's `kind`, or the one inferred from `mode`.
@@ -2003,6 +2007,7 @@ mod tests {
         let started = GameStarted {
             game_id: "g".into(),
             host: "h".into(),
+            dedicated: Default::default(),
             game: modded.clone(),
         };
         let back: GameStarted =
@@ -2035,6 +2040,7 @@ mod tests {
         let started = GameStarted {
             game_id: "g".into(),
             host: "h".into(),
+            dedicated: Default::default(),
             game: campaign.clone(),
         };
         let back: GameStarted =
@@ -2122,6 +2128,7 @@ mod tests {
         let started = GameStarted {
             game_id: "g1".into(),
             host: "acct:x@h".into(),
+            dedicated: Default::default(),
             game: g,
         };
         let v = serde_json::to_value(&started).unwrap();

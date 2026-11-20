@@ -265,6 +265,11 @@ fn state() -> MutexGuard<'static, State> {
     .unwrap_or_else(|e| e.into_inner())
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_NOW_NS: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
 /// Nanoseconds since the first use of the timeline in this process.
 ///
 /// Frame stats read it at every phase switch, several times a draw, so it
@@ -274,6 +279,10 @@ fn state() -> MutexGuard<'static, State> {
 /// nanoseconds by a fixed-point factor; elsewhere `Instant`.
 #[inline]
 pub fn now_ns() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = TEST_NOW_NS.get() {
+        return now;
+    }
     clock::now_ns()
 }
 
@@ -770,7 +779,7 @@ mod tests {
     use super::*;
 
     /// Recording is process-global; tests that start it take this.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    pub(super) static SERIAL: Mutex<()> = Mutex::new(());
 
     #[test]
     fn nothing_is_recorded_while_off() {

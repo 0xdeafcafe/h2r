@@ -1,5 +1,5 @@
 //! Native light draws over sorted guest geometry. Each target copy prepares
-//! immutable draw resources. Only the confirmed, suppressed prefix commits.
+//! immutable draw resources alongside the exact resolved fallback.
 mod compare;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
@@ -13,7 +13,7 @@ use engine::memory::{GuestMemory, MemFault};
 use feature::native_lights::{Dispatch, Host};
 use map::{Map, TagId};
 use native_render::gpu::Image;
-use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, TextureDim, light_gpu_key};
+use native_render::light_gpu::{LayeredImage, LightDraw, LightSet, StaticLightTexture, TextureDim, light_gpu_key};
 use native_render::light_look::{
     DIFFUSE_LAYER, LightInputs, LightProgram, LightRefusal, LightStage, LookCache, SPECULAR_LAYER, compile_light, engine_inputs, light_look,
 };
@@ -54,6 +54,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// What preparation returned, by reason ([`Tally`]).
     tally: Mutex<Tally>,
     order: Mutex<RunOrder>,
+    admission: Arc<LightAdmission>,
     compare: Option<Mutex<ProbeState>>,
 }
 
@@ -260,7 +261,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         true
     }
 
-    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> Result<bool, Keep> {
+    fn reserve(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> Result<bool, Keep> {
         let Dispatch { light, serial, shader_gel, view_target, sorted, split: split_enabled } = dispatch;
         self.end_probe(None, None);
         let mut probe = self.compare.as_ref().map(|p| p.lock().unwrap_or_else(|e| e.into_inner()));
@@ -274,14 +275,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let binding = self.gel_binding(mem, serial, shader_gel, &constants(&light)?)?;
         let (plan, count) = self.prepare_light(&d, mem, &light, sorted, split_enabled, binding)?;
         if Self::probe(&mut d, mem, &plan, probe.as_deref_mut()) {
-            let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
-                mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
-            eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
-                plan.scissor, sorted.entries.len());
-            for (i, e) in sorted.entries.iter().enumerate() {
-                eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
-                    e.slot, e.handler_item, e.geometry.map(|g| g.part), e.implementation,
-                    if i < count { "native" } else { "D3D" });
+            if feature::native_verbose() {
+                let rectangle: [Option<f32>; 4] = std::array::from_fn(|i|
+                    mem.u32(engine::light_constants::global::RECTANGLE + 4 * i as u32).ok().map(f32::from_bits));
+                eprintln!("native-lights compare: projected [left,right,top,bottom] {rectangle:?}, guest scissor [x,y,w,h] {:?}, planned {count}/{} sorted dispatches",
+                    plan.scissor, sorted.entries.len());
+                for (i, e) in sorted.entries.iter().enumerate() {
+                    eprintln!("  dispatch[{i}] slot {:#x} item {:#x} part {:?} impl {} {}",
+                        e.slot, e.handler_item, e.geometry.map(|g| g.part), e.implementation,
+                        if i < count { "native" } else { "D3D" });
+                }
             }
             return Err(Keep::Unsupported("D3D comparison sample"));
         }
@@ -298,39 +301,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let split = count != sorted.entries.len();
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-        let gel = plan.constants.gel;
         let targets = d.stats().target_changes;
         let isolated = split || plan.binding.is_some();
-        let key = order.key(serial, gel, targets, isolated);
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let mut request = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Lights, view, ranges: count,
-            slots: Vec::new(),
-        };
-        let gel_slot = plan.binding.map(|binding| binding.append(&mut request));
-        let reason = Arc::new(Mutex::new(None));
-        let pass = RunPass { light: plan, view: None, clip: None, key, gel_slot,
-            bundles: [None, None], refusal: Arc::clone(&reason) };
-        let reservation = d.prepare_external_pass(&mut DeviceMemory(mem), request, Box::new(pass))
-            .map_err(|_| Keep::Unsupported("could not drain or confirm the light"))?
-            .ok_or_else(|| reason.lock().unwrap_or_else(|e| e.into_inner()).take()
-                .unwrap_or(Keep::Unsupported("target binding, validation or range count refused the light")))?;
-        // On a write fault the reservation drops all copies. After the
-        // cursor moves the only remaining operation is infallible commit.
-        if !sorted.consume(count, esi, |addr, value| mem.set_u32(addr, value).is_ok()) {
-            timeline::native::Stage::Lights.count(timeline::native::Metric::RefusedMasks, count as u64);
-            return Err(Keep::Unsupported("cannot consume sorted light entries"));
+        let key = order.key(serial, targets, isolated);
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(&state.1, Load::Ready(current) if Arc::ptr_eq(current, &plan.ready)) {
+            return Err(Keep::Unsupported("world changed during light preparation"));
         }
-        reservation.commit();
-        order.previous = (!isolated).then_some((serial, gel, targets, key));
+        let layer = LightLayer::new(view_target, key, plan, &sorted.entries[..count])
+            .ok_or(Keep::Unsupported("light ranges differ from its sorted entries"))?;
+        *self.admission.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(layer);
+        order.previous = (!isolated).then_some((serial, targets, key));
         Ok(split)
     }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
-    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool {
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool {
         let shader_gel = dispatch.shader_gel.is_some();
-        let result = self.reserve(mem, dispatch, esi);
+        let result = self.reserve(mem, dispatch);
         let ok = result.is_ok();
         let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
         if shader_gel && ok { t.shader_gels += 1; }
@@ -343,6 +332,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 d3d::threaded::LIGHT_WORKER_WAITS.load(Ordering::Relaxed));
         }
         ok
+    }
+
+    fn clear_admission(&self) {
+        self.admission.0.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     fn end_layer(&self, mem: &mut dyn GuestMemory) {
@@ -360,6 +353,87 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn target(&self) -> Option<[u32; 8]> {
         self.device.lock().ok().map(|d| d.bound_target())
     }
+}
+
+#[derive(Default)]
+struct LightAdmission(Mutex<Option<LightLayer>>);
+
+struct LightLayer {
+    targets: [u32; 8],
+    key: u64,
+    light: PreparedLight,
+    draws: HashMap<u32, (SortedItem, Planned)>,
+}
+
+impl LightLayer {
+    fn new(targets: [u32; 8], key: u64, mut light: PreparedLight, entries: &[SortedItem]) -> Option<Self> {
+        let mut draws = HashMap::with_capacity(entries.len());
+        let mut entries = entries.iter();
+        for pass in std::mem::take(&mut light.draws) {
+            for range in pass.ranges {
+                let entry = *entries.next()?;
+                draws.insert(entry.slot, (entry, Planned {
+                    material: pass.material, layer: pass.layer, implementation: pass.implementation,
+                    compiled: Arc::clone(&pass.compiled), ranges: vec![range],
+                }));
+            }
+        }
+        if entries.next().is_some() {
+            return None;
+        }
+        Some(Self { targets, key, light, draws })
+    }
+}
+
+impl d3d::DrawAdmission for LightAdmission {
+    fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let context = crate::native_world_layers_glue::indexed_draw()?;
+        let geometry = context.geometry?;
+        let draw = snapshot.draw;
+        if context.layer.list != feature::native_lights::LIGHT_LIST
+            || !matches!(context.layer.number, 12 | 13)
+            || draw.entry != "D3DDevice_DrawIndexedVertices"
+            || context.index_count? as usize != draw.indices.as_ref()?.len()
+            || !draw.clip_rects.is_empty()
+        {
+            return None;
+        }
+        let mut pending = self.0.lock().ok()?;
+        let run = pending.as_mut()?;
+        let (entry, planned) = run.draws.get(&geometry.sorted_slot)?;
+        if run.targets[..2] != [snapshot.color_header, snapshot.depth_header]
+            || planned.layer != context.layer.number as usize
+            || !matches_light_entry(*entry, geometry)
+            || !run.light.matches(draw, planned)
+            || !crate::native_world_layers_glue::matches_triangle_range(draw, planned.ranges.first()?.len())
+        {
+            return None;
+        }
+        let (_, planned) = run.draws.remove(&geometry.sorted_slot)?;
+        let light = PreparedLight { draws: vec![planned], ..run.light.clone() };
+        let mut plan = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Lights, view: context.layer.view, ranges: 1,
+            slots: Vec::new(),
+        };
+        let gel_slot = light.binding.map(|binding| binding.append(&mut plan));
+        let pass = RunPass {
+            light, view: None, clip: None, key: run.key, gel_slot, bundles: [None, None],
+            fallback: Arc::new(draw.clone()),
+        };
+        Some((plan, Box::new(pass)))
+    }
+}
+
+fn matches_light_entry(entry: SortedItem, geometry: native_render::world_layers::Geometry) -> bool {
+    use native_render::world_layers::Owner as ResolvedOwner;
+    let Some(item) = entry.geometry else { return false };
+    let owner = match geometry.owner {
+        ResolvedOwner::Cluster(section) => Owner::Cluster(section),
+        ResolvedOwner::Placement(index) => Owner::Instance(index),
+        ResolvedOwner::Object { .. } => return false,
+    };
+    geometry.variant == 0 && geometry.sorted_slot == entry.slot && geometry.implementation == entry.implementation
+        && item.part == (owner, geometry.part) && item.shader == geometry.shader
 }
 
 fn uses_gel_target(mem: &dyn GuestMemory, definition: u32, shader: u32, flags: u32, definition_flags: u32) -> bool {
@@ -408,12 +482,13 @@ fn select_parts(clusters: &ClusterParts, items: &[SortedItem], split: bool)
 
 #[derive(Default)]
 struct RunOrder {
-    previous: Option<(u64, Option<u32>, u64, u64)>,
+    previous: Option<(u64, u64, u64)>,
 }
 impl RunOrder {
-    fn key(&self, serial: u64, gel: Option<u32>, targets: u64, split: bool) -> u64 {
+    fn key(&self, serial: u64, targets: u64, isolated: bool) -> u64 {
         match self.previous {
-            Some((last, previous_gel, previous_targets, key)) if targets == previous_targets && !split && last.checked_add(1) == Some(serial) && previous_gel == gel => key,
+            Some((last, previous_targets, key))
+                if !isolated && targets == previous_targets && last.checked_add(1) == Some(serial) => key,
             _ => serial,
         }
     }
@@ -505,6 +580,26 @@ fn shape(levels: &[assets::bitmap::Level]) -> String {
     format!("{faces} faces, level 0 {top:?}")
 }
 
+struct DecodedLightTexture {
+    desc: gfx::texture::TextureDesc,
+    bytes: Vec<u8>,
+    texture: Arc<StaticLightTexture>,
+}
+
+fn cached_light_texture(
+    slot: &mut Option<DecodedLightTexture>,
+    desc: gfx::texture::TextureDesc,
+    bytes: Vec<u8>,
+    decode: impl FnOnce(&gfx::texture::TextureDesc, &[u8]) -> Result<LayeredImage, String>,
+) -> Result<Arc<StaticLightTexture>, String> {
+    if let Some(cached) = slot.as_ref().filter(|c| c.desc == desc && c.bytes == bytes) {
+        return Ok(Arc::clone(&cached.texture));
+    }
+    let texture = Arc::new(StaticLightTexture::new(decode(&desc, &bytes)?));
+    *slot = Some(DecodedLightTexture { desc, bytes, texture: Arc::clone(&texture) });
+    Ok(texture)
+}
+
 /// [`light_bitmaps`] of the map's `matg`, decoded: `(normalization cube,
 /// attenuation volume)`. Says on stderr what loaded and, for what does not,
 /// why (the light passes that sample it stay on the D3D path).
@@ -512,7 +607,10 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
     map: &mut map::Map<R>,
     meta: &tags::shader::Metadata,
     files: &mut assets::ResourceFiles,
-) -> (Option<LayeredImage>, Option<LayeredImage>) {
+) -> (Option<Arc<StaticLightTexture>>, Option<Arc<StaticLightTexture>>) {
+    // One entry per engine texture. Match the descriptor and exact bytes so
+    // different maps or mods can share unchanged images without aliasing.
+    static TEXTURES: Mutex<[Option<DecodedLightTexture>; 2]> = Mutex::new([None, None]);
     let matg = map
         .tags()
         .iter()
@@ -523,39 +621,54 @@ pub(crate) fn light_textures<R: std::io::Read + std::io::Seek>(
         return (None, None);
     };
     let (n, a) = matg_light_bitmaps(meta, matg);
-    let mut decode = |id: Option<map::TagId>, dim, what| {
-        let image = (|| -> Result<LayeredImage, String> {
+    let mut decode = |slot: usize, id: Option<map::TagId>, dim, what| {
+        let image = (|| -> Result<Arc<StaticLightTexture>, String> {
             let id = id.ok_or_else(|| format!("no datum in matg {matg:#x} +{RASTERIZER_DATA:#x}'s element"))?;
             let tag = tags::DecodedTag::read(map, id).map_err(|e| format!("{id:?} does not read: {e}"))?;
             let tags::TagData::Bitmap(b) = tag.data else {
                 return Err(format!("{id:?} is not a bitmap"));
             };
             let image = b.images.first().ok_or_else(|| format!("{id:?} has no image"))?;
-            let d = assets::decode_image(image, files).map_err(|e| format!("{id:?} does not decode: {e}"))?;
-            let shape = shape(&d.levels);
-            layered(d.levels, dim).ok_or_else(|| format!("{id:?} is not a {dim:?} ({shape})"))
+            let (desc, bytes) = assets::bitmap::image_bytes(image, files).map_err(|e| format!("{id:?} does not read: {e}"))?;
+            let mut cache = TEXTURES.lock().unwrap_or_else(|e| e.into_inner());
+            cached_light_texture(&mut cache[slot], desc, bytes, |desc, bytes| {
+                let levels = assets::bitmap::decode_bytes(desc, bytes).map_err(|e| format!("{id:?} does not decode: {e}"))?;
+                let shape = shape(&levels);
+                let image = layered(levels, dim).ok_or_else(|| format!("{id:?} is not a {dim:?} ({shape})"))?;
+                if feature::native_verbose() {
+                    eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)",
+                        image.width, image.height, image.layers, 1 + image.mips.len());
+                }
+                Ok(image)
+            })
         })();
         match image {
-            Ok(i) => {
-                eprintln!("native-lights: the {what} loads ({}x{}, {} layers, {} levels)", i.width, i.height, i.layers, 1 + i.mips.len());
-                Some(i)
-            }
+            Ok(i) => Some(i),
             Err(why) => {
                 eprintln!("native-lights: the {what} does not load: {why}");
                 None
             }
         }
     };
-    (decode(n, TextureDim::Cube, "normalization cube"), decode(a, TextureDim::D3, "attenuation volume"))
+    (decode(0, n, TextureDim::Cube, "normalization cube"), decode(1, a, TextureDim::D3, "attenuation volume"))
 }
 
 /// Installs the host over the world's state (`native_world_glue::install`).
 pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State, gels: Arc<Outputs>) {
+    let switches = feature::Switches::from_env().unwrap_or_default();
+    if !feature::native_lights::on(&switches) {
+        return;
+    }
+    let admission = Arc::new(LightAdmission::default());
+    if let Ok(mut device) = device.lock() {
+        device.add_draw_admission(admission.clone());
+    }
     feature::native_lights::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         state, gels, checkpoint: Mutex::default(),
         tally: Mutex::new(Tally::default()),
         order: Mutex::default(),
+        admission,
         compare: (std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1")).then(Mutex::default),
     }));
 }
@@ -619,8 +732,8 @@ pub struct LightsWorld {
     palettes: StagePalettes,
     /// Gel bitmaps' image 0 by datum.
     gels: HashMap<u32, Image>,
-    normalization: Option<LayeredImage>,
-    attenuation: Option<LayeredImage>,
+    normalization: Option<Arc<StaticLightTexture>>,
+    attenuation: Option<Arc<StaticLightTexture>>,
 }
 
 impl LightsWorld {
@@ -897,6 +1010,30 @@ struct PreparedLight {
 }
 
 impl PreparedLight {
+    fn matches(&self, draw: &d3d::ResolvedDraw, planned: &Planned) -> bool {
+        use gfx::state::{CompareFunc, DepthBufferMode, FillMode};
+        let r = &draw.state.render;
+        let program = &planned.compiled.program;
+        let (primitive, (writes_depth, depth_compare)) = native_render::program::pipeline_state(
+            Some(&program.state), self.cull.of(program.inherits_cull, true),
+        );
+        let live_primitive = gfx::translate::primitive_state(r, wgpu::PrimitiveTopology::TriangleList,
+            gfx::translate::Capabilities::from_features(wgpu::Features::empty()));
+        let depth = r.depth_mode != DepthBufferMode::Disabled;
+        let compare = if depth { gfx::translate::compare_function(r.depth_func) } else { wgpu::CompareFunction::Always };
+        let alpha = (r.alpha_test_enable && r.alpha_func != CompareFunc::Always)
+            .then(|| (gfx::translate::compare_function(r.alpha_func), r.alpha_ref));
+        draw.clip.is_some_and(|r| [r.x, r.y, r.width, r.height] == self.scissor)
+            && primitive == live_primitive
+            && writes_depth == (depth && r.depth_write) && depth_compare == compare
+            && program.state.blend == gfx::translate::blend_state(r)
+            && (program.state.blend.is_none() || program.state.blend_constant == gfx::translate::blend_constant(r))
+            && program.state.color_writes == gfx::translate::color_writes(r.color_write)
+            && program.state.alpha_test == alpha
+            && !r.fog_enable && !r.stencil.enable && r.fill_mode == FillMode::Solid && r.back_fill_mode == FillMode::Solid
+            && (!r.solid_offset_enable || (r.depth_bias == 0.0 && r.depth_bias_slope_scale == 0.0))
+    }
+
     fn draw<'a>(&'a self, p: &'a Planned) -> LightDraw<'a> {
         let c = &self.constants;
         let inputs = LightInputs::from_constants(c);
@@ -909,7 +1046,7 @@ impl PreparedLight {
             gel: c.gel,
             gel_view: None,
             gel_scale: self.binding.map(Binding::tex_scale),
-            ranges: p.ranges.clone(),
+            ranges: &p.ranges,
         }
     }
 }
@@ -939,10 +1076,12 @@ struct RunPass {
     key: u64,
     gel_slot: Option<usize>,
     bundles: [Option<(native_render::light_gpu::LightBundles, [u32; 4])>; 2],
-    refusal: Arc<Mutex<Option<Keep>>>,
+    fallback: Arc<d3d::ResolvedDraw>,
 }
 
 impl d3d::ExternalPass for RunPass {
+    fn uses_validated_resources(&self) -> bool { true }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites {
             color: self.light.draws.iter().any(|d| !d.compiled.program.state.color_writes.is_empty()),
@@ -950,10 +1089,13 @@ impl d3d::ExternalPass for RunPass {
         }
     }
 
+    fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+        Some(Arc::clone(&self.fallback))
+    }
+
     fn record_bundles(&mut self, target: &mut d3d::ExternalTarget<'_>) -> Option<d3d::backend::ExternalBundles> {
         let (recorded, scissor) = self.bundles[usize::from(target.copy == d3d::TargetCopy::Display)].take()?;
-        recorded.upload(&mut target.encoder_uploads());
-        Some(d3d::backend::ExternalBundles { run: self.key, scissor, groups: recorded.groups, ranges: recorded.ranges })
+        Some(recorded.into_packet(self.key, scissor))
     }
 
     fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
@@ -965,12 +1107,7 @@ impl d3d::ExternalPass for RunPass {
     }
 
     fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        let result = self.prepare_gpu(t);
-        if let Err(why) = result {
-            *self.refusal.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Keep::Refused(format!("{:?} copy: {why}", t.copy)));
-        }
-        result
+        self.prepare_gpu(t)
     }
 }
 
@@ -987,9 +1124,9 @@ impl RunPass {
         let mut gpu = upload(ready, t);
         let gpu = gpu.as_mut().ok_or("world upload failed")?;
         if gpu.lights().is_none() {
-            gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_ref(), lw.attenuation.as_ref()));
+            gpu.set_lights(LightSet::new(t.device, t.queue, lw.normalization.as_deref(), lw.attenuation.as_deref()));
         }
-        // Resolve the pinned slot for this physical copy before any guest cursor moves.
+        // Resolve the pinned slot on this copy before replacing the guest draw.
         let sample = match &self.light.binding {
             Some(binding) => Some(binding.sample(t, self.gel_slot.ok_or("missing gel slot")?).ok_or("target 13 has no matching sample view on this copy")?),
             None => None,
@@ -1000,7 +1137,7 @@ impl RunPass {
             draw
         }).collect();
         let recorded = gpu.prepare_lights(
-            t.device, t.queue, t.color_format, t.depth_format, &view, &draws,
+            t, &view, &draws,
             &mut |stage, s| match s {
                 LightStage::Bitmap { bitmap, image } => lw.images.get(&(stage, bitmap, image)).cloned(),
                 _ => None,
@@ -1016,6 +1153,32 @@ impl RunPass {
 mod tests {
     use super::*;
     use engine::FlatMemory;
+
+    #[test]
+    fn a_light_range_requires_its_original_sorted_slot_and_geometry() {
+        use native_render::world_layers::{Geometry, Owner as ResolvedOwner};
+        let entry = SortedItem {
+            slot: 8,
+            handler_item: 16,
+            implementation: 2,
+            geometry: Some(native_render::light_list::Item {
+                part: (Owner::Cluster(4), 3), shader: 0xe000_0001, layers: 1 << 12,
+            }),
+        };
+        let draw = Geometry {
+            shader: 0xe000_0001, variant: 0, implementation: 2, sorted_slot: 8,
+            record: 5, part: 3, owner: ResolvedOwner::Cluster(4),
+        };
+        assert!(matches_light_entry(entry, draw));
+        for changed in [
+            Geometry { sorted_slot: 32, ..draw },
+            Geometry { implementation: 1, ..draw },
+            Geometry { shader: 0xe000_0002, ..draw },
+            Geometry { owner: ResolvedOwner::Placement(4), ..draw },
+        ] {
+            assert!(!matches_light_entry(entry, changed));
+        }
+    }
 
     fn level(face: u32, level: u32, depth: u32) -> assets::bitmap::Level {
         assets::bitmap::Level {
@@ -1036,6 +1199,22 @@ mod tests {
             b[o..o + 4].copy_from_slice(&v.to_le_bytes());
         }
         tags::shader::Metadata::new(base, b)
+    }
+
+    #[test]
+    fn static_light_textures_reuse_the_decode_until_the_source_changes() {
+        use gfx::{D3DFormat, texture::{TextureDesc, TextureKind}};
+        let desc = TextureDesc::new(D3DFormat::Al8, TextureKind::Volume, 2, 2, 2, 1);
+        let image = |_: &TextureDesc, bytes: &[u8]| {
+            LayeredImage::volume(2, 2, 2, vec![bytes[0]; 32]).ok_or_else(|| "wrong volume shape".into())
+        };
+        let mut slot = None;
+        let a = cached_light_texture(&mut slot, desc.clone(), vec![42], image).unwrap();
+        let b = cached_light_texture(&mut slot, desc.clone(), vec![42], |_, _| panic!("decoded twice")).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        let c = cached_light_texture(&mut slot, desc, vec![43], image).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c));
+        assert_eq!((a.image().rgba[0], c.image().rgba[0]), (42, 43));
     }
 
     #[test]
@@ -1202,14 +1381,13 @@ mod tests {
     }
 
     #[test]
-    fn a_run_requires_adjacent_whole_lights_with_the_same_gel() {
-        let order = RunOrder { previous: Some((5, Some(12), 9, 3)) };
-        assert_eq!(order.key(6, Some(12), 9, false), 3);
-        assert_eq!(order.key(6, Some(12), 11, false), 6); // away and back
-        assert_eq!(order.key(7, Some(12), 9, false), 7); // refused light or view boundary
-        assert_eq!(order.key(6, None, 9, false), 6);
-        assert_eq!(order.key(6, Some(12), 9, true), 6);
-        assert_eq!(RunOrder::default().key(7, None, 9, false), 7); // preceding split
+    fn a_run_requires_adjacent_whole_lights_with_the_same_target_generation() {
+        let order = RunOrder { previous: Some((5, 9, 3)) };
+        assert_eq!(order.key(6, 9, false), 3);
+        assert_eq!(order.key(6, 11, false), 6); // away and back
+        assert_eq!(order.key(7, 9, false), 7); // refused light or view boundary
+        assert_eq!(order.key(6, 9, true), 6); // split or animated gel
+        assert_eq!(RunOrder::default().key(7, 9, false), 7); // preceding split
     }
 
     #[test]

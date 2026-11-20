@@ -61,8 +61,8 @@ mod trace;
 
 pub use capture::{FrameSource, Sampler, TickMark, summarise, write_csv};
 pub use exec::{
-    Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, Page,
-    SnapshotMachine, Snapshots, TICK_STALE, query,
+    Access, Agent, ConnId, DEFER_TICKS_MAX, GameCtx, GameMethod, HostMethod, Later, LobbyTape,
+    Page, SnapshotMachine, Snapshots, TICK_STALE, query,
 };
 pub use loads::{LoadTracker, TimelineTotals, TotalsSource};
 pub use reader::{

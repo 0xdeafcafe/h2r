@@ -1,6 +1,6 @@
-//! Replace geometry dispatches inside a dynamic light. The guest gathers,
-//! builds, sorts and applies its per-light state before admission. Its
-//! layer teardown and the light's tail run along both paths.
+//! Admit resolved geometry draws inside a dynamic light. The guest gathers,
+//! builds, sorts and applies its per-light state before planning. Each
+//! handler still emits the D3D packet used for fallback.
 mod reference;
 
 use std::cell::{Cell, RefCell};
@@ -23,9 +23,11 @@ pub const ID: &str = "native-lights";
 /// The switch, looked up exactly.
 pub const SWITCH: &str = "impl.render.native_lights";
 
-/// Whether the native lights are on (off by default).
+/// Whether the native lights are on (on by default since 2026-11-20;
+/// `impl.render.native_lights=off` turns them off for the comparison
+/// against the D3D path).
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// A light the host cannot draw whole
@@ -61,9 +63,10 @@ pub struct Dispatch<'a> {
 }
 
 pub trait Host: Send + Sync {
-    /// Confirm all target copies. Consume only the confirmed prefix on
-    /// this stack before publishing any draw to the worker.
-    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>, esi: &mut u32) -> bool;
+    /// Plan a sorted prefix. The handlers still emit their D3D packets so
+    /// each native draw can fall back in the same queue slot.
+    fn submit(&self, mem: &mut dyn GuestMemory, dispatch: Dispatch<'_>) -> bool;
+    fn clear_admission(&self);
     /// Before the guest constants or gel quad for this invocation.
     fn checkpoint_gel(&self, serial: u64);
     fn target(&self) -> Option<[u32; 8]>;
@@ -111,7 +114,10 @@ pub fn new_view() {
     reference::next_light();
     SERIAL.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let target = host.and_then(|h| h.target());
+    let target = host.and_then(|h| {
+        h.clear_admission();
+        h.target()
+    });
     VIEW_TARGET.set(target);
 }
 
@@ -122,6 +128,9 @@ pub fn new_view() {
 pub fn forget_runs() {
     CANDIDATE.take();
     VIEW_TARGET.set(None);
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        host.clear_admission();
+    }
 }
 
 /// The light `handle` as the passes would draw it, with the caller's
@@ -227,6 +236,9 @@ pub fn light_constants(mem: &dyn GuestMemory, e: &Entry) -> Option<LightConstant
 fn begin_light(mem: &dyn GuestMemory, entry: Entry) {
     finish_candidate();
     reference::next_light();
+    if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        host.clear_admission();
+    }
     let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
     let esp = entry.esp;
     let (Ok(handle), Ok(shadow), Ok(weight)) = (mem.u32(esp.wrapping_add(4)),
@@ -271,7 +283,7 @@ fn enter_layer(mem: &dyn GuestMemory, ret: u32) {
     });
 }
 
-fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32, port_caller: impl FnOnce(u32) -> bool) -> Option<u32> {
+fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: u32, port_caller: impl FnOnce(u32) -> bool) -> Option<()> {
     let c = CANDIDATE.with_borrow_mut(|slot| slot.take_if(|c| c.inside_layer))?;
     let caller = mem.u32(esp).ok();
     let caller = match caller {
@@ -281,13 +293,13 @@ fn geometry(mem: &mut dyn GuestMemory, esp: u32, esi: &mut u32, port_caller: imp
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some(host) = host else { refused("no light host"); return None; };
     let Some(view_target) = VIEW_TARGET.get() else { refused("light view target unavailable"); return None; };
-    let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, c.layer, esp, *esi, caller) {
+    let accepted = match light_list::sorted_at(&Ro(mem), LIGHT_LIST, c.layer, esp, esi, caller) {
         Ok(sorted) => host.submit(mem, Dispatch { light: c.light, serial: c.serial, shader_gel: c.shader_gel, view_target,
-            sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }, esi),
+            sorted: &sorted, split: SPLIT_ENABLED.load(Ordering::Relaxed) }),
         Err(why) => refused(why),
     };
     if !accepted { reference::refused(c.light); }
-    accepted.then_some(caller)
+    accepted.then_some(())
 }
 
 pub struct NativeLights;
@@ -333,21 +345,20 @@ impl Feature for NativeLights {
         b.raw()
             .before(&points::LIGHT_GEOMETRY_DRAW, "native_lights_geometry", |c| {
                 let rt = Arc::clone(c.ctx.runtime());
-                let Some(caller) = geometry(&mut *rt.memory(), c.cpu.esp, &mut c.cpu.esi, |pc| {
+                let _ = geometry(&mut *rt.memory(), c.cpu.esp, c.cpu.esi, |pc| {
                     c.ctx.live_continuations().iter().any(|k| k.token == pc
                         && k.target == skip::GEOMETRY_DRAW && k.origin == crate::render_loop::SORTED_HANDLER)
-                }) else {
-                    return Ok(Flow::Continue);
-                };
-                // sorted() already checked the return address on this locked stack.
-                c.cpu.esp = c.cpu.esp.wrapping_add(4 + engine::render_loop::layer::HANDLER_CLEANUP);
-                Ok(Flow::Return(runtime::TransferAbi::ret(caller)))
+                });
+                Ok(Flow::Continue)
             })
             .context_only();
         b.raw()
             .observe_before(&points::LAYER_END, "native_lights_end", |_| {
                 let inside = CANDIDATE.with_borrow(|c| c.as_ref().is_some_and(|c| c.inside_layer));
                 if inside { finish_candidate(); }
+                if let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                    host.clear_admission();
+                }
             })
             .context_only();
         let compare = std::env::var("H2_NATIVE_LIGHTS_COMPARE").as_deref() == Ok("1");

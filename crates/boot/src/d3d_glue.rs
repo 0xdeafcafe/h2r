@@ -82,9 +82,23 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
 /// N frames that sample a shadow map (`d3d_diag::samples_shadow_map`).
 /// Halo's frame wait goes through `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
-    install_headless(rt, None)
+    #[cfg(feature = "gpu")]
+    {
+        install_headless(rt, None)
+    }
+    #[cfg(not(feature = "gpu"))]
+    {
+        install_with(rt, Headless::default())
+    }
 }
 
+/// No display backend. Leftover lobby and loading draws carry texture
+/// descriptors and handles through the ABI without copying the pixels.
+pub fn install_light(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    install_with(rt, Headless(RecordingBackend::default(), true))
+}
+
+#[cfg(feature = "gpu")]
 /// [`install`], with in-between frames on the headless GPU backend when
 /// `interp` (from [`interpolation`], asked with [`interp_render_thread`])
 /// is given (docs/game/high-framerate.md "E1", "Headless"): the backend at
@@ -331,6 +345,7 @@ pub fn install_headless(
     }
 }
 
+#[cfg(feature = "gpu")]
 /// `H2_BOOT_GFX_BETWEEN`'s captures: the in-between frames a headless
 /// run's replay hook is handed, numbered after the guest swap before them,
 /// until `limit` are written, and each one's neighbours: the guest frame
@@ -352,6 +367,7 @@ pub struct BetweenShots {
     kept: Mutex<Option<gfx::surface::KeptImage>>,
 }
 
+#[cfg(feature = "gpu")]
 #[derive(Default)]
 struct BetweenState {
     /// The last guest swap's number (the present hook's count).
@@ -363,6 +379,7 @@ struct BetweenState {
     shown: Option<u64>,
 }
 
+#[cfg(feature = "gpu")]
 /// What the present hook does with guest swap `n` ([`BetweenShots::guest_swap`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuestShot {
@@ -372,6 +389,7 @@ pub struct GuestShot {
     pub keep: bool,
 }
 
+#[cfg(feature = "gpu")]
 /// What the replay hook writes for an in-between frame ([`BetweenShots::next_between`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BetweenShot {
@@ -381,6 +399,7 @@ pub struct BetweenShot {
     pub before: Option<String>,
 }
 
+#[cfg(feature = "gpu")]
 impl BetweenShots {
     pub fn new(limit: u64) -> Arc<Self> {
         Arc::new(Self {
@@ -489,6 +508,7 @@ impl BetweenShots {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// `h2 run`'s settings for a headless `GfxBackend`.
 fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBackend {
     crate::native_shadows_glue::configure(&mut backend, copy);
@@ -515,6 +535,7 @@ fn configure_gfx(copy: &'static str, mut backend: d3d::GfxBackend) -> d3d::GfxBa
     }
 }
 
+#[cfg(feature = "gpu")]
 /// Another handle to `ctx`'s device and queue, for a second backend on it.
 pub(crate) fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
     gfx::GfxContext {
@@ -526,6 +547,7 @@ pub(crate) fn share_context(ctx: &gfx::GfxContext) -> gfx::GfxContext {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// The run report's line for a scaled backend: what the view did
 /// differently, as of the last present (`d3d::scaled::ScaleStats`).
 pub fn scale_report<R, V>(b: &mut d3d::ScaledBackend<R, V>) -> ExtraReport
@@ -547,7 +569,8 @@ pub type ExtraReport = Box<dyn Fn() -> String + Send + Sync>;
 /// `H2_BOOT_GFX`, and `h2 play`) unless `H2_RENDER_THREAD=0`. On by
 /// default (docs/graphics/render-thread.md, "Measurements").
 pub fn render_thread_requested() -> bool {
-    render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
+    cfg!(feature = "gpu")
+        && render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
 /// What frame stats say when the run has no GPU backend: `h2 run` without
@@ -563,6 +586,7 @@ pub fn frame_stats_gpu_note(frame_stats: bool, gpu: bool) -> Option<&'static str
     )
 }
 
+#[cfg(feature = "gpu")]
 /// What [`interpolation`] turns on: the frame-rate setting's reader and how
 /// in-between frames are made.
 pub struct Interpolation {
@@ -570,6 +594,7 @@ pub struct Interpolation {
     pub mode: d3d::interp::Mode,
 }
 
+#[cfg(feature = "gpu")]
 /// In-between frames (`d3d::InterpBackend`, docs/game/high-framerate.md
 /// "Phase 2" and "E1"), when asked for in `H2_FEATURES` by exact switch
 /// (`impl.render=on` does not include them): `impl.render.interpolate`
@@ -621,6 +646,7 @@ pub fn interpolation(
     Some(Interpolation { rate, mode })
 }
 
+#[cfg(feature = "gpu")]
 /// The mode the switches ask for: reprojection wins over the replay, and
 /// `reproject_ahead` over `reproject`; none of them, none.
 pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3d::interp::Mode> {
@@ -634,6 +660,7 @@ pub fn interp_mode(interpolate: bool, reproject: bool, ahead: bool) -> Option<d3
     }
 }
 
+#[cfg(feature = "gpu")]
 /// Whether a run has a GPU backend for in-between frames, and the
 /// render-thread answer [`interpolation`] is asked with: a window's backend
 /// runs on the host's render thread (`host_render_thread`); with no window,
@@ -655,6 +682,7 @@ pub fn interp_render_thread(
     }
 }
 
+#[cfg(feature = "gpu")]
 /// [`interpolation`]'s decision: the switch, the render thread, and
 /// `H2_PIPELINE_RENDER` unset or `0`.
 pub fn interpolation_from(
@@ -680,6 +708,7 @@ pub fn interpolation_from(
     true
 }
 
+#[cfg(feature = "gpu")]
 /// `H2_FPS` as the setting stores it: 0 for uncapped, 30 when unset or
 /// unreadable.
 pub fn fps_from(value: Option<&str>) -> u32 {
@@ -690,6 +719,7 @@ pub fn fps_from(value: Option<&str>) -> u32 {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// `backend` on a render thread, behind the interpolated replay when
 /// `interp` (from [`interpolation`]) is given.
 pub fn install_threaded<B>(
@@ -720,6 +750,7 @@ pub fn render_thread_from(value: Option<&str>) -> bool {
     value != Some("0")
 }
 
+#[cfg(feature = "gpu")]
 fn save_png(
     ctx: &gfx::GfxContext,
     store: &gfx::surface::SurfaceStore,
@@ -735,6 +766,7 @@ fn save_png(
     Ok(true)
 }
 
+#[cfg(feature = "gpu")]
 /// Surface `id`'s pixels as RGBA with opaque alpha, and its size.
 fn read_rgba(
     ctx: &gfx::GfxContext,
@@ -749,6 +781,7 @@ fn read_rgba(
     Ok((px, d.width, d.height))
 }
 
+#[cfg(feature = "gpu")]
 /// Host pixels in `order` as RGBA with opaque alpha, in place.
 fn opaque_rgba(px: &mut [u8], order: gfx::surface::HostPixelOrder) {
     if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
@@ -770,6 +803,7 @@ pub(crate) fn write_png(path: &std::path::Path, px: &[u8], w: u32, h: u32) -> an
     Ok(())
 }
 
+#[cfg(feature = "gpu")]
 /// The lighting A/B's comparison (`H2_BOOT_GFX_LIGHTING_AB`): the retail
 /// view presents a frame before the E3 view does (it is the E3 view's
 /// reference), so its image of each shadow-map frame is held here until
@@ -787,6 +821,7 @@ struct AbCompare {
     first: Vec<u64>,
 }
 
+#[cfg(feature = "gpu")]
 impl AbCompare {
     /// The E3 view's image `e3` of `frame`: compared with the retail
     /// view's, if it was held. `Some(retail image)` when they differ.
@@ -827,10 +862,12 @@ impl AbCompare {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// The largest per-channel change the A/B treats as rounding: the two
 /// views take different shader variants, which can round a channel by one.
 const AB_NOISE: u8 = 2;
 
+#[cfg(feature = "gpu")]
 /// Whether RGBA images `a` and `b` differ in some colour channel by more
 /// than `AB_NOISE` (alpha aside).
 fn differs_beyond_noise(a: &[u8], b: &[u8]) -> bool {
@@ -841,18 +878,19 @@ fn differs_beyond_noise(a: &[u8], b: &[u8]) -> bool {
         .any(|(p, q)| (0..3).any(|i| p[i].abs_diff(q[i]) > AB_NOISE))
 }
 
+#[cfg(feature = "gpu")]
 /// Whether RGBA pixels `px` are all black (alpha aside).
 fn all_black(px: &[u8]) -> bool {
     px.as_chunks::<4>().0.iter().all(|p| p[..3] == [0, 0, 0])
 }
 
 /// The headless default: a `RecordingBackend` that forgets every call once
-/// it returns, except the surface creations and destructions its
-/// `destroy_surface` checks against. Without this the recorder would hold
+/// it returns, except the live surface records its `destroy_surface`
+/// checks against. Without this the recorder would hold
 /// a copy of every draw (streams included) for the whole run; the report's
 /// draw counts come from `DiagBackend`.
 #[derive(Default)]
-pub struct Headless(RecordingBackend);
+pub struct Headless(RecordingBackend, bool);
 
 impl Headless {
     fn forget<T>(&mut self, r: T) -> T {
@@ -888,11 +926,24 @@ impl d3d::backend::Backend for Headless {
         self.0.create_surface(format, width, height, depth)
     }
     fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
-        self.0.destroy_surface(surface)
+        self.0.destroy_surface(surface)?;
+        // The recorder just checked the handle. Drop both records so maps
+        // can cycle without accumulating a history of dead surfaces.
+        self.0.calls.pop();
+        self.0.calls.retain(|c| {
+            !matches!(c, d3d::backend::Recorded::Surface { id, .. } if *id == surface)
+        });
+        Ok(())
     }
     fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
         let r = self.0.upload_texture(texture);
         self.forget(r)
+    }
+    fn uses_texture_placeholders(&self) -> bool {
+        self.1
+    }
+    fn texture_placeholder(&mut self, _: &gfx::texture::TextureDesc) -> Result<u32, String> {
+        Ok(self.0.texture_placeholder_id())
     }
     fn bc_supported(&self) -> bool {
         self.0.bc_supported()
@@ -957,6 +1008,7 @@ impl d3d::backend::Backend for Headless {
     }
     // The native renderer's pass (docs/graphics/native-renderer.md):
     // nothing to draw into headless.
+    #[cfg(feature = "gpu")]
     fn external_attachments(
         &mut self, surfaces: d3d::ExternalSurfaces<Self::Surface>, textures: [Option<&Self::Texture>; 4],
         copy: d3d::TargetCopy,
@@ -969,6 +1021,17 @@ impl d3d::backend::Backend for Headless {
         textures: [Option<&Self::Texture>; 4], plan: &d3d::ExternalPlan, copy: d3d::TargetCopy, pass: d3d::SharedReplacement,
     ) -> Result<Option<Vec<d3d::ExternalRecording>>, String> {
         self.0.prepare_external(surfaces, request, textures, plan, copy, pass)
+    }
+
+    fn queue_external_draw(
+        &mut self, candidate: d3d::backend::QueuedExternalDraw<Self::Surface>,
+        textures: [Option<&Self::Texture>; 4],
+    ) -> bool {
+        self.0.queue_external_draw(candidate, textures)
+    }
+
+    fn reusable_external_attachments(&self) -> bool {
+        self.0.reusable_external_attachments()
     }
 
     fn commit_external(&mut self, recording: d3d::ExternalRecording) {
@@ -1200,11 +1263,14 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
     let device = d3d::runtime_glue::shared(cfg, backend);
     install_occlusion_capture(&device);
-    crate::native_world_glue::install(&device);
-    crate::native_objects_glue::install(&device);
-    crate::native_decals_glue::install(&device);
-    crate::native_particles_glue::install(&device);
-    crate::native_first_person_glue::install(&device);
+    #[cfg(feature = "gpu")]
+    {
+        crate::native_world_glue::install(&device);
+        crate::native_objects_glue::install(&device);
+        crate::native_decals_glue::install(&device);
+        crate::native_particles_glue::install(&device);
+        crate::native_first_person_glue::install(&device);
+    }
     let mut out = None;
     rt.edit_dispatch(|d| {
         out = Some(d3d::register(d, Arc::clone(&device)));
@@ -1227,7 +1293,9 @@ pub fn install_with_report<B: d3d::backend::Backend + Send + 'static>(
         .map(|e| e.0)
         .collect();
     install_write_barrier(rt, &device, &entries)?;
+    #[cfg(feature = "gpu")]
     crate::native_world_layers_glue::install(rt, &device);
+    #[cfg(feature = "gpu")]
     crate::native_residual_glue::install(rt, &device, &r.implemented);
     let vblank: Option<kernel::periodic::Handler> =
         Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
@@ -1588,6 +1656,19 @@ mod tests {
     use super::*;
     use d3d::backend::Backend;
 
+    #[test]
+    fn light_textures_use_handles_without_retaining_payloads() {
+        let mut light = Headless(RecordingBackend::default(), true);
+        let desc = gfx::texture::TextureDesc::new(
+            gfx::D3DFormat::LinA8R8G8B8, gfx::texture::TextureKind::D2, 64, 32, 1, 1,
+        );
+        assert!(light.uses_texture_placeholders());
+        let a = light.texture_placeholder(&desc).unwrap();
+        let b = light.texture_placeholder(&desc).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(light.held(), 0);
+    }
+
     /// A headless run's frame stats name the counters it can't fill and
     /// the switch that fills them; a GPU run, or no frame stats, says
     /// nothing.
@@ -1606,6 +1687,7 @@ mod tests {
         assert_eq!(frame_stats_gpu_note(false, false), None);
     }
 
+    #[cfg(feature = "gpu")]
     /// The A/B compares the E3 view's image with the retail view's of the
     /// same frame only, counts what it compared, and hands back the
     /// retail image when they differ by more than rounding.
@@ -1632,6 +1714,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gpu")]
     /// A frame under a fade to black is all black whatever its alpha; one
     /// lit pixel is not.
     #[test]
@@ -1644,6 +1727,7 @@ mod tests {
         assert!(!all_black(&px));
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_needs_its_switch_and_the_render_thread() {
         assert!(!interpolation_from(false, true, None), "off by default");
@@ -1656,6 +1740,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_runs_on_a_window_or_the_headless_gpu() {
         // A window: the host's render thread decides, H2_BOOT_GFX ignored.
@@ -1668,6 +1753,7 @@ mod tests {
         assert_eq!(interp_render_thread(false, true, false, true), None);
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn in_between_captures_stop_at_their_limit() {
         let (keep, write, skip) = (
@@ -1717,6 +1803,7 @@ mod tests {
         assert_eq!(off.next_between(""), None);
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn in_between_captures_write_only_their_neighbours() {
         // The live bug: one in-between frame, then thousands of guest
@@ -1768,6 +1855,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn interpolation_modes_from_their_switches() {
         use d3d::interp::Mode;
@@ -1840,6 +1928,6 @@ mod tests {
         assert_eq!(b.held(), 1, "only the surface creation is held");
         b.destroy_surface(s).unwrap();
         assert!(b.destroy_surface(s).is_err(), "destroy is still checked");
-        assert_eq!(b.held(), 2);
+        assert_eq!(b.held(), 0);
     }
 }

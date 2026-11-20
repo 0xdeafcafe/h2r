@@ -8,17 +8,22 @@ use feature::{
 use native_render::gels;
 
 #[test]
-fn gels_are_default_off_and_hooks_are_render_context_only() {
+fn the_switch_places_gels_and_hooks_are_render_context_only() {
     let plan = |switches: &str| {
         let mut registry = Registry::new(Switches::parse(switches).unwrap());
         registry.add(&NativeGels).unwrap();
         registry.build(&Base).unwrap()
     };
-    assert!(!plan("").text().contains("native_gels_"));
     assert!(
-        !plan("impl.render.native_lights=on")
+        !plan("impl.render.native_gels=off")
             .text()
             .contains("native_gels_")
+    );
+    assert!(
+        !plan("impl.render.native_gels=off,impl.render.native_lights=on")
+            .text()
+            .contains("native_gels_"),
+        "the lights do not imply the gels"
     );
     let on = plan("impl.render.native_gels=on");
     for name in ["TEMPLATE_PASS", "TEMPLATE_QUAD"] {

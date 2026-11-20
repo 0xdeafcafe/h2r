@@ -63,25 +63,29 @@ fn mainmenu_with(template: &[u8]) -> Vec<u8> {
         };
         let size = pixels.len() as u32;
         let raw = set.add_raw(pixels, 0x200);
-        let mut image = Block::zeroed(rgba_bitmap::IMAGE_LEN);
-        image
-            .put_u32(0, FourCC(*b"bitm").as_u32())
-            .put_u16(4, 8)
-            .put_u16(6, 6)
-            .put_u16(0xc, rgba_bitmap::FORMAT_ARGB8888)
-            .put_u16(0xe, 0x290)
-            .put_u32(0x34, size)
-            .raw(0x1c, RawRef::Local(raw));
-        image.bytes[8] = 1;
-        let mut header = Block::zeroed(rgba_bitmap::HEADER_LEN);
-        header
-            .put_u16(0, 4)
-            .block(0x3c, 0, Block::zeroed(0))
-            .block(0x44, 1, image);
-        set.add_tag(FourCC(*b"bitm"), name, TagPayload::Built(header))
-            .unwrap();
+        add_bitmap(&mut set, name, RawRef::Local(raw), size);
     }
     set.build().unwrap().0
+}
+
+fn add_bitmap(set: &mut TagSet, name: &str, raw: RawRef, size: u32) -> TagId {
+    let mut image = Block::zeroed(rgba_bitmap::IMAGE_LEN);
+    image
+        .put_u32(0, FourCC(*b"bitm").as_u32())
+        .put_u16(4, 8)
+        .put_u16(6, 6)
+        .put_u16(0xc, rgba_bitmap::FORMAT_ARGB8888)
+        .put_u16(0xe, 0x290)
+        .put_u32(0x34, size)
+        .raw(0x1c, raw);
+    image.bytes[8] = 1;
+    let mut header = Block::zeroed(rgba_bitmap::HEADER_LEN);
+    header
+        .put_u16(0, 4)
+        .block(0x3c, 0, Block::zeroed(0))
+        .block(0x44, 1, image);
+    set.add_tag(FourCC(*b"bitm"), name, TagPayload::Built(header))
+        .unwrap()
 }
 
 fn card(map: &str, w: u32, h: u32) -> Card {
@@ -193,6 +197,155 @@ fn the_rewrite_wants_mainmenu_only_and_fills_the_table() {
     let out = r.rewrite(MAINMENU, &mainmenu()).unwrap();
     assert!(Map::from_reader(Cursor::new(out)).is_ok());
     assert_eq!(table.lock().unwrap().keys().collect::<Vec<_>>(), ["a10"]);
+}
+
+#[cfg(feature = "gpu")]
+#[test]
+fn native_bitmap_reads_from_cold_and_cached_mainmenu_resources() {
+    use crate::native_map::open_from_vfs;
+    use crate::native_world_glue::decode_first;
+
+    struct Temp(std::path::PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let dir = Temp(std::env::temp_dir().join(format!(
+        "native-map-resources-{}",
+        std::process::id()
+    )));
+    let disc = dir.0.join("disc");
+    let maps = disc.join("maps");
+    std::fs::create_dir_all(&maps).unwrap();
+
+    let menu = mainmenu();
+    let mut original = Map::from_reader(Cursor::new(menu.as_slice())).unwrap();
+    let template_id = original
+        .tags()
+        .iter()
+        .find(|tag| tag.name.as_deref() == Some(TEMPLATE))
+        .unwrap()
+        .id;
+    let template = Template::read(&mut original, template_id).unwrap();
+    let offset = u32::from_le_bytes(template.image[0x1c..0x20].try_into().unwrap());
+    let size = u32::from_le_bytes(template.image[0x34..0x38].try_into().unwrap());
+    std::fs::write(maps.join("mainmenu.map"), &menu).unwrap();
+
+    let mut level = TagSet::new(CacheType::Campaign, "level", "level");
+    level.add_group(FourCC(*b"bitm"), None, None);
+    let bitmap = add_bitmap(
+        &mut level,
+        "menu_bitmap",
+        RawRef::External {
+            file: map::ResourceFile::MainMenu,
+            offset,
+        },
+        size,
+    );
+    std::fs::write(maps.join("level.map"), level.build().unwrap().0).unwrap();
+
+    let data = dir.0.join("data");
+    let disk_cache = data.join("cache/campaign-cards");
+    let picture = card("level", 8, 6);
+    let check_mount = || {
+        let table = Table::default();
+        let rewrite = CardRewrite::new(vec![picture.clone()], table.clone())
+            .unwrap()
+            .with_cache(&data);
+        let config = vfs::Config::new(data.clone(), 0x4D530064);
+        let mut vfs = crate::map_override::mount(config, &disc, Some(rewrite), None, &[]).unwrap();
+        let source = vfs.file_source(r"\Device\CdRom0\maps\mainmenu.map");
+        assert!(matches!(source, Some(vfs::FileSource::Memory(_))));
+        let vfs = Mutex::new(vfs);
+
+        let (mut level, mut resources) = open_from_vfs(&vfs, "level").unwrap();
+        let image = decode_first(&mut level, &mut resources, bitmap).unwrap();
+        assert_eq!((image.width, image.height), (8, 6));
+        assert_eq!(image.rgba, framed_template());
+
+        let card_id = TagId(table.lock().unwrap()["level"]);
+        let (mut menu, mut resources) = open_from_vfs(&vfs, "mainmenu").unwrap();
+        let image = decode_first(&mut menu, &mut resources, card_id).unwrap();
+        assert_eq!(image.rgba, framed(&picture.rgba, &framed_template()));
+        card_id
+    };
+
+    assert!(!disk_cache.exists());
+    let cold_id = check_mount();
+    let disk_key = cache::key(&menu, std::slice::from_ref(&picture));
+    let cached = cache::load(&disk_cache, disk_key).unwrap();
+    assert_eq!(cached.table["level"], cold_id.0);
+    assert_eq!(check_mount(), cold_id);
+}
+
+#[test]
+fn cached_rewrite_restores_the_map_and_table_and_recovers_from_damage() {
+    let dir = std::env::temp_dir().join(format!("menu-rewrite-{}", std::process::id()));
+    let cache_path = dir.join("cache/campaign-cards");
+    let original = mainmenu();
+    let cards = vec![card("a10", 2, 2), card("b30", 3, 3)];
+    let key = cache::key(&original, &cards);
+    let expected = add_cards(&original, &cards).unwrap();
+    let rewrite = || {
+        let table = Table::default();
+        let mut r = CardRewrite::new(cards.clone(), table.clone())
+            .unwrap()
+            .with_cache(&dir);
+        let bytes = r.rewrite(MAINMENU, &original).unwrap();
+        assert_eq!(bytes, expected.map);
+        assert_eq!(*table.lock().unwrap(), expected.table);
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    rewrite();
+    let saved = std::fs::read(&cache_path).unwrap();
+    assert!(cache::load(&cache_path, cache::key(&original, &cards[..1])).is_none());
+    assert!(cache::load(&cache_path, cache::key(b"changed menu", &cards)).is_none());
+    let hit = cache::load(&cache_path, key).unwrap();
+    assert_eq!(hit.map, expected.map);
+    assert_eq!(hit.table, expected.table);
+    assert_eq!(hit.framed, expected.framed);
+    rewrite();
+
+    for index in [64, saved.len() - 5] {
+        let mut damaged = saved.clone();
+        damaged[index] ^= 1;
+        std::fs::write(&cache_path, damaged).unwrap();
+        assert!(cache::load(&cache_path, key).is_none());
+        rewrite();
+    }
+    std::fs::write(&cache_path, &saved[..40]).unwrap();
+    assert!(cache::load(&cache_path, key).is_none());
+    rewrite();
+    assert_eq!(std::fs::read(&cache_path).unwrap(), saved);
+    // A read-only or unusable cache must still serve the rebuilt map and IDs.
+    std::fs::remove_file(&cache_path).unwrap();
+    std::fs::create_dir(&cache_path).unwrap();
+    rewrite();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn every_rewrite_input_changes_the_cache_key() {
+    let cards = vec![card("a10", 3, 2), card("b30", 2, 3)];
+    let key = cache::key(b"menu", &cards);
+    assert_ne!(key, cache::key(b"Menu", &cards));
+    assert_ne!(key, cache::key(b"menu", &cards[..1]));
+    let mut changed = cards.clone();
+    changed.reverse();
+    assert_ne!(key, cache::key(b"menu", &changed));
+    for change in 0..5 {
+        let mut changed = cards.clone();
+        match change {
+            0 => changed[0].name.push('z'),
+            1 => changed[0].map.push('z'),
+            2 => changed[0].width += 1,
+            3 => changed[0].height += 1,
+            _ => changed[0].rgba[0] ^= 1,
+        }
+        assert_ne!(key, cache::key(b"menu", &changed));
+    }
 }
 
 #[test]

@@ -75,6 +75,13 @@ pub struct HostFile {
     pub len: u64,
 }
 
+/// Read-only backing for a file as the VFS serves it.
+#[derive(Debug)]
+pub enum FileSource {
+    Host(HostFile),
+    Memory(std::sync::Arc<[u8]>),
+}
+
 /// A file the VFS just opened, as [`crate::Vfs::set_open_observer`] reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenedFile {

@@ -1,6 +1,8 @@
 // Wire types for the h2 live service, following docs/live/live-api.md.
 // Optional fields are the ones the doc marks with `?`.
 
+import type { DedicatedHostFields } from "../lib/hosts";
+
 export type Xuid = string;
 export type GameId = string;
 
@@ -274,7 +276,7 @@ export interface GameKindFields {
    *  Absent when none were, and for older games. */
   skulls?: number[] | null;
 }
-export interface GameStarted extends GameKindFields {
+export interface GameStarted extends GameKindFields, DedicatedHostFields {
   game_id: GameId;
   /** The author who started the game, `acct:<xuid>@<server>` (written by the server). */
   host?: string;
@@ -332,7 +334,7 @@ export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: str
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; activity?: string | null; since: string }
 
-export interface GameSummary extends GameKindFields {
+export interface GameSummary extends GameKindFields, DedicatedHostFields {
   game_id: GameId;
   /** The base map's name, also for a modded game. */
   map: string;

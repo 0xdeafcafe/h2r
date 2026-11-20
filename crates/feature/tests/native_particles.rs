@@ -3,8 +3,8 @@ use feature::plan::Base;
 use feature::{Registry, Switches};
 
 #[test]
-fn default_off_and_no_parent_update_skip() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+fn the_switch_off_and_no_parent_update_skip() {
+    let mut r = Registry::new(Switches::parse("impl.render.native_particles=off").unwrap());
     r.add(&NativeParticles).unwrap();
     assert!(!r.build(&Base).unwrap().text().contains("native_particles"));
     let mut r = Registry::new(Switches::parse("impl.render.native_particles=on").unwrap());

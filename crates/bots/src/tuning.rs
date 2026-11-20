@@ -48,6 +48,56 @@ impl Default for PhantomLatency {
     }
 }
 
+/// Which model turns the hand's view of a tracked target into the right
+/// stick (docs/game/bots.md §3.4.1). Everything around it is shared.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AimModel {
+    /// The hand-written tracking in `mind::look`.
+    #[default]
+    Code,
+    /// The hand-weighted network in [`crate::aim_net`].
+    Net,
+}
+
+impl AimModel {
+    pub fn parse(s: &str) -> Option<AimModel> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "code" => AimModel::Code,
+            "net" => AimModel::Net,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AimModel::Code => "code",
+            AimModel::Net => "net",
+        }
+    }
+}
+
+/// `H2_BOT_AIM_MODEL` picks the model for every bot without a tuning that
+/// names one (`code` or `net`; anything else keeps `code`).
+pub const AIM_MODEL_ENV: &str = "H2_BOT_AIM_MODEL";
+
+fn default_aim_model() -> AimModel {
+    static DEFAULT: std::sync::OnceLock<AimModel> = std::sync::OnceLock::new();
+    *DEFAULT.get_or_init(|| {
+        std::env::var(AIM_MODEL_ENV)
+            .ok()
+            .and_then(|v| AimModel::parse(&v))
+            .unwrap_or_default()
+    })
+}
+
+/// The aim model of the brain thinking on this thread: its tuning's, else
+/// the process default ([`AIM_MODEL_ENV`]).
+pub fn aim_model() -> AimModel {
+    current()
+        .and_then(|t| t.aim_model)
+        .unwrap_or_else(default_aim_model)
+}
+
 /// What a bot is tuned by. `None` keeps the built-in value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Tuning {
@@ -78,6 +128,7 @@ pub struct Tuning {
     pub thumb_switch_ticks: Option<u32>,
     pub phantom_ping_ms: Option<f32>,
     pub phantom_jitter_ms: Option<f32>,
+    pub aim_model: Option<AimModel>,
 }
 
 impl Tuning {
@@ -280,6 +331,25 @@ mod tests {
         let r = std::panic::catch_unwind(|| with(Some(t), || -> u32 { panic!("think") }));
         assert!(r.is_err());
         assert!(current().is_none());
+    }
+
+    #[test]
+    fn the_aim_model_is_the_tunings_inside_its_think() {
+        assert_eq!(AimModel::parse(" Net "), Some(AimModel::Net));
+        assert_eq!(AimModel::parse("code"), Some(AimModel::Code));
+        assert_eq!(AimModel::parse("mlp"), None);
+        assert_eq!(AimModel::Net.name(), "net");
+        let net = Tuning {
+            aim_model: Some(AimModel::Net),
+            ..Tuning::default()
+        };
+        assert!(!net.is_empty());
+        assert_eq!(with(Some(net), aim_model), AimModel::Net);
+        let code = Tuning {
+            aim_model: Some(AimModel::Code),
+            ..Tuning::default()
+        };
+        assert_eq!(with(Some(code), aim_model), AimModel::Code);
     }
 
     #[test]

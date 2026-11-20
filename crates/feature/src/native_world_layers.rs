@@ -18,7 +18,7 @@ pub const SWITCH: &str = "impl.render.native_world_layers";
 const SCENE_VIEW: u32 = 0x004b_a050;
 
 pub fn on(switches: &crate::Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 /// Present numbers are 1-based, as in the agent frame recorder.
@@ -66,17 +66,21 @@ impl Feature for NativeWorldLayers {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let objects = b.switches().feature(crate::native_objects::SWITCH, true);
+        let lights = crate::native_lights::on(b.switches());
         if !on(b.switches())
+            && !objects
+            && !lights
             && !crate::native_residual::on(b.switches())
             && compare_frames().is_empty()
         {
             return Ok(());
         }
         b.raw()
-            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", |o| {
+            .observe_before(&points::LAYER_DRAW, "native_world_layers_begin", move |o| {
                 let mut guest = o.guest();
                 let mem = Mem(&mut *guest);
-                let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n));
+                let layer = mem.read_u32(CURRENT_LAYER).filter(|&n| opaque_layer(n) || (lights && matches!(n, 12 | 13)));
                 LAYER.set(layer.map(|number| {
                     let caller_return = mem.read_u32(o.cpu.esp).unwrap_or(0);
                     Layer {

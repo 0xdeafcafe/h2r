@@ -86,6 +86,12 @@ use shaders::vsh::{
 };
 
 use crate::backend::ResolvedDraw;
+use crate::hw::depth_clamp;
+// Keep these names available to existing callers of the GPU provider.
+pub use crate::hw::{
+    CONTROL0_Z_PERSPECTIVE, RS_DEPTHCLIPCONTROL, clamps_depth, draw_clamps_depth, w_buffered,
+    w_clip_range,
+};
 use crate::pipeline_store::{PipelineStore, StoredPipeline, program_id};
 use crate::shader::{PreparedShader, ShaderProvider, VertexProcessing};
 use crate::state::slot;
@@ -972,6 +978,8 @@ impl ShaderProvider for Nv2aShaders {
             signed,
         ) {
             bind_groups.push(gfx::BoundGroup::new(1, g));
+        } else if compiled.dims.iter().any(Option::is_some) {
+            return Err("NV2A texture bind group unavailable".into());
         }
         Ok(PreparedShader {
             id: compiled.id,
@@ -1207,22 +1215,6 @@ fn program_key(
         })
 }
 
-/// `SET_CONTROL0` bit 16 (z-perspective), which D3D's control fragment
-/// (`0x3f6390`) sets when `D3DRS_ZENABLE` is `D3DZB_USEW`: the NV2A then
-/// depth-tests and stores the interpolated w instead of z, and clips w to
-/// `[CLIP_MIN, CLIP_MAX]`. Halo turns it on at boot (`ZEnable(2)` at
-/// `0x1267a`). Before any `SET_CONTROL0` has been seen, the render state
-/// decides.
-pub const CONTROL0_Z_PERSPECTIVE: u32 = 0x1_0000;
-
-/// Whether `draw` is W-buffered (see [`CONTROL0_Z_PERSPECTIVE`]).
-pub fn w_buffered(draw: &ResolvedDraw) -> bool {
-    match draw.hw.control0 {
-        Some(c) => c & CONTROL0_Z_PERSPECTIVE != 0,
-        None => draw.state.render.depth_mode == gfx::state::DepthBufferMode::W,
-    }
-}
-
 /// Whether the vertex stage clips w instead of z: a W-buffered draw of a
 /// vertex program.
 fn w_clipped(vertex: &VertexSource, draw: &ResolvedDraw) -> bool {
@@ -1233,44 +1225,6 @@ fn w_clipped(vertex: &VertexSource, draw: &ResolvedDraw) -> bool {
 fn uses_depth(render: &gfx::state::RenderState) -> bool {
     render.depth_mode != gfx::state::DepthBufferMode::Disabled
         && (render.depth_write || render.depth_func != CompareFunc::Always)
-}
-
-/// `D3DRS_DEPTHCLIPCONTROL` (canonical 82), which D3D and Halo's inlined
-/// copies push to `NV097_SET_ZMIN_MAX_CONTROL` (`0x1D78`): bits 7:4 = 1
-/// (`D3DDCC_DEPTHCLAMP`) clamp out-of-range depth instead of culling it
-/// (xemu's `ZCLAMP_EN`, `pgraph.c` and `glsl/psh.c`).
-pub const RS_DEPTHCLIPCONTROL: u32 = 82;
-
-/// Whether out-of-range depth is clamped, not culled.
-fn depth_clamp(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
-    clamps_depth(raw(table, draw, RS_DEPTHCLIPCONTROL))
-}
-
-/// Whether `draw` clamps out-of-range depth, read with the default
-/// render-state table (the one [`Nv2aShaders`] starts with): for
-/// diagnostics that hold a draw but no provider (`render.frame`).
-pub fn draw_clamps_depth(draw: &ResolvedDraw) -> bool {
-    static TABLE: std::sync::LazyLock<RenderStateTable> =
-        std::sync::LazyLock::new(RenderStateTable::default);
-    depth_clamp(&TABLE, draw)
-}
-
-/// Whether a `D3DRS_DEPTHCLIPCONTROL` value clamps out-of-range depth
-/// (bits 7:4 = 1, `D3DDCC_DEPTHCLAMP`).
-pub fn clamps_depth(depth_clip_control: u32) -> bool {
-    gfx::state::clamps_depth(depth_clip_control)
-}
-
-/// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,
-/// CLIP_MAX]`, or `[0, z_max]` when that is empty or not finite (nothing
-/// pushed yet).
-pub fn w_clip_range(hw: &crate::hw::HwState, z_max: f32) -> [f32; 2] {
-    let (lo, hi) = (hw.clip_min, hw.clip_max);
-    if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo {
-        [lo, hi]
-    } else {
-        [0.0, z_max]
-    }
 }
 
 /// The shadow-map stages of a draw: a depth-format texture (`D24S8`,

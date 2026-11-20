@@ -17,6 +17,8 @@ use engine::points;
 
 use crate::guest;
 
+pub(super) mod match_roster;
+
 pub type R<T> = Result<T, MemFault>;
 
 /// Session offsets (`*SQUAD_SESSION`).
@@ -125,7 +127,10 @@ pub mod at {
     pub const PLAYER_CONFIG: u32 = 0xd4;
     pub const CONFIG_SIZE: usize = 0x90;
     pub const CONFIG_TEAM: usize = 0x7c;
-    pub const CONFIG_NAME_UNITS: usize = 16;
+    // 0x65e37 passes 32 units to the name builder. The look starts at +0x40.
+    pub const CONFIG_NAME_UNITS: usize = engine::view::players::NAME_UNITS;
+    /// The retail profile appearance inside a player configuration (0x18fd94).
+    pub const CONFIG_LOOK: usize = 0x40;
     /// Unit `+0x212`: the current weapon index.
     pub const UNIT_WEAPON: u32 = 0x212;
 }
@@ -618,7 +623,7 @@ pub fn config_in(
     };
     let mut c = [0; CONFIG_SIZE];
     m.read(player(s, slot) + P_REQUESTED, &mut c)?;
-    set_name(&mut c, name);
+    set_identity(&mut c, name);
     if let Some(t) = team {
         c[CONFIG_TEAM] = t;
     }
@@ -769,8 +774,8 @@ pub fn unwait_phantoms(m: &mut dyn GuestMemory) -> R<Option<(u32, u32)>> {
 /// (docs/game/bots.md §8.2.2): the name every console's lobby and the
 /// game's player show. `ports` is the bots' controller ports, as a mask.
 /// Only on the session's host (its own effective configurations are the
-/// ones the clients get), and only the effective name: the host's pass
-/// (`0x65cb0`) keeps an effective name once it has one, so a profile
+/// ones the clients get). Both appearance copies and the effective name
+/// are set. The host's pass (`0x65cb0`) keeps an effective name, so a profile
 /// refreshing the requested one does not undo it. Returns the slots it
 /// marked.
 pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
@@ -798,11 +803,33 @@ pub fn mark_local_bots(m: &mut dyn GuestMemory, ports: u32) -> R<Vec<u32>> {
             }
             name.push(u);
         }
-        if name.is_empty() || name[0] == MARK as u16 {
+        // The effective name can survive a guest-to-account switch.
+        // Prefer the signed-in bot's current profile tag.
+        let source = guest::slot(controller) + guest::SLOT_BLOCK;
+        let profile_tag = m
+            .utf16(
+                source + guest::BLOCK_PROFILE_NAME as u32,
+                guest::BLOCK_PROFILE_NAME_UNITS,
+            )
+            .ok()
+            .filter(|s| !s.is_empty());
+        let tag = match profile_tag {
+            Some(tag) => tag,
+            None if !name.is_empty() => {
+                String::from_utf16_lossy(live_proto::bots::unmarked_units(&name))
+            }
+            None => continue,
+        };
+        let units = marked_name(&tag);
+        let look_at = at + CONFIG_LOOK as u32;
+        let look = guest::bot_look(&tag);
+        let requested = a + P_REQUESTED + CONFIG_LOOK as u32;
+        if name == units && m.bytes(look_at, 8)? == look && m.bytes(requested, 8)? == look {
             continue;
         }
-        let tag = String::from_utf16_lossy(&name);
-        let units = marked_name(&tag);
+        // Retail rebuilds the effective appearance from the requested one.
+        m.write(requested, &look)?;
+        m.write(look_at, &look)?;
         for i in 0..CONFIG_NAME_UNITS as u32 {
             m.set_u16(at + 2 * i, units.get(i as usize).copied().unwrap_or(0))?;
         }
@@ -872,6 +899,9 @@ pub fn player_id(xuid: u64, mac: [u8; 6]) -> [u8; 12] {
     let mut id = [0; 12];
     id[..8].copy_from_slice(&xuid.to_le_bytes());
     id[8..].copy_from_slice(&mac[2..]);
+    // The low two bits are a Live guest number. Each phantom is its
+    // account's primary player, including in the matchmaking party summary.
+    id[8] &= !3;
     id
 }
 
@@ -887,7 +917,7 @@ pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8
         if p.listed(m)? && p.local_user(m)? >= 0 {
             let mut c = [0; CONFIG_SIZE];
             m.read(p.addr + PLAYER_CONFIG, &mut c)?;
-            set_name(&mut c, name);
+            set_identity(&mut c, name);
             if let Some(t) = team {
                 c[CONFIG_TEAM] = t;
             }
@@ -926,32 +956,59 @@ pub fn lobby_host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
     ))
 }
 
-/// The mark before a bot's name: U+2699 GEAR, which our font patch draws
-/// (`font::gear`; docs/game/bots.md §8.2.2). The same as
-/// `live_proto::bots::BOT_MARK`, which takes it off again for the record.
-pub const MARK: char = '\u{2699}';
+pub use live_proto::bots::BOT_MARK as MARK;
 
-/// A bot's name as the game shows it, in the configuration name's 15
-/// units: the [`MARK`], a space, then `tag`. A gamertag is 1 to 15
-/// characters, so the mark always fits: a 14-character tag loses the space
-/// (the gear's own one-pixel gap stays), a 15-character one its last.
+/// Retail display names have 32 UTF-16 units including the terminator.
 pub fn marked_name(tag: &str) -> Vec<u16> {
-    let max = CONFIG_NAME_UNITS - 1;
-    let tag: Vec<u16> = tag.encode_utf16().collect();
-    let mut out = vec![MARK as u16];
-    if tag.len() + 2 <= max {
-        out.push(u16::from(b' '));
-    }
-    let room = max - out.len();
-    out.extend(tag.into_iter().take(room));
-    out
+    let mut units = vec![MARK as u16, u16::from(b' ')];
+    units.extend(tag.trim_start().encode_utf16().take(CONFIG_NAME_UNITS - 3));
+    units
 }
 
-fn set_name(c: &mut [u8; CONFIG_SIZE], name: &str) {
-    c[..CONFIG_NAME_UNITS * 2].fill(0);
-    for (i, u) in marked_name(name).into_iter().enumerate() {
-        c[2 * i..2 * i + 2].copy_from_slice(&u.to_le_bytes());
+// The configuration begins with the wide display name immediately followed
+// by the eight appearance bytes that retail validates at 0x153750.
+fn identity_bytes(name: &str) -> [u8; CONFIG_LOOK + 8] {
+    let mut bytes = [0; CONFIG_LOOK + 8];
+    for (dst, u) in bytes[..CONFIG_LOOK]
+        .chunks_exact_mut(2)
+        .zip(marked_name(name))
+    {
+        dst.copy_from_slice(&u.to_le_bytes());
     }
+    bytes[CONFIG_LOOK..].copy_from_slice(&guest::bot_look(name));
+    bytes
+}
+
+fn set_identity(c: &mut [u8; CONFIG_SIZE], name: &str) {
+    c[..CONFIG_LOOK + 8].copy_from_slice(&identity_bytes(name));
+}
+
+// The host can rebuild a player's effective configuration while the phantom
+// is seated. A reclaimed peer can also carry an earlier profile. Publish the
+// identity in both copies without disturbing team, handicap or ready state.
+pub(super) fn sync_identity(m: &mut dyn GuestMemory, s: u32, p: u32, name: &str) -> R<()> {
+    let slot = m.u32(peer(s, p) + PEER_SLOTS)?;
+    if slot >= MAX || m.u32(s + PLAYER_MASK)? & (1 << slot) == 0 {
+        return Ok(());
+    }
+    let a = player(s, slot);
+    if m.u32(a + P_PEER)? != p {
+        return Ok(());
+    }
+    let want = identity_bytes(name);
+    let mut have = [0; CONFIG_LOOK + 8];
+    let mut changed = false;
+    for at in [a + P_REQUESTED, a + P_EFFECTIVE] {
+        m.read(at, &mut have)?;
+        if have != want {
+            m.write(at, &want)?;
+            changed = true;
+        }
+    }
+    if changed {
+        bump(m, s)?;
+    }
+    Ok(())
 }
 
 /// Adds a peer for machine `mac`, unconnected and with no channel, as
@@ -1092,102 +1149,6 @@ pub fn slot_of(m: &dyn GuestMemory, mac: [u8; 6]) -> R<Option<u32>> {
         }
     }
     Ok(None)
-}
-
-/// One tick's `0x5c` action record (docs/game/bots.md §5.1).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Action {
-    pub flags: u32,
-    /// Absolute world angles, radians: yaw in [0, 2π).
-    pub yaw: f32,
-    pub pitch: f32,
-    /// -1 to 1.
-    pub forward: f32,
-    pub strafe: f32,
-    /// 0 to 1: fire, and the second trigger (grenades).
-    pub trigger: f32,
-    pub trigger2: f32,
-    /// The current weapon index, -1 for none.
-    pub weapon: i8,
-    pub secondary: Option<u8>,
-    pub weapon_set: u16,
-    pub buttons: u16,
-    pub grenade: Option<u8>,
-    pub zoom: Option<u8>,
-}
-
-impl Action {
-    /// The record's bytes, every field the validator (`0x14d0a0`) checks in
-    /// range. Empty selections and object handles use the guest sentinels.
-    pub fn bytes(&self) -> [u8; ACTION_SIZE] {
-        let mut b = [0u8; ACTION_SIZE];
-        let f = |b: &mut [u8; ACTION_SIZE], o: usize, v: f32| {
-            b[o..o + 4].copy_from_slice(&v.to_le_bytes())
-        };
-        b[0..4].copy_from_slice(&self.flags.to_le_bytes());
-        f(&mut b, 0x4, self.yaw.rem_euclid(std::f32::consts::TAU));
-        f(&mut b, 0x8, self.pitch.clamp(-1.5, 1.5));
-        f(&mut b, 0xc, self.forward.clamp(-1.0, 1.0));
-        f(&mut b, 0x10, self.strafe.clamp(-1.0, 1.0));
-        f(&mut b, 0x14, self.trigger.clamp(0.0, 1.0));
-        f(&mut b, 0x18, self.trigger2.clamp(0.0, 1.0));
-        b[0x1c..0x1e].copy_from_slice(&self.buttons.to_le_bytes());
-        b[0x1e..0x20].copy_from_slice(&self.weapon_set.to_le_bytes());
-        b[0x20] = if (0..4).contains(&self.weapon) {
-            self.weapon as u8
-        } else {
-            0xff
-        };
-        b[0x21] = self
-            .secondary
-            .filter(|&s| s < 4 && s != b[0x20])
-            .unwrap_or(0xff);
-        let index = |v: Option<u8>, count: u8| v.filter(|&x| x < count).map_or(u16::MAX, u16::from);
-        b[0x22..0x24].copy_from_slice(&index(self.grenade, 2).to_le_bytes());
-        b[0x24..0x26].copy_from_slice(&index(self.zoom, 4).to_le_bytes());
-        b[0x2c..0x40].fill(0xff);
-        b
-    }
-}
-
-/// Writes `action` into the slot at `slot`, stamped with this tick, as the
-/// server's path of `0x847d0` stores it (without its rounding).
-pub fn write_action(m: &mut dyn GuestMemory, slot: u32, action: &Action) -> R<()> {
-    let Some(tick) = guest::game_tick(m) else {
-        return Ok(());
-    };
-    m.write(slot + SLOT_ACTION, &action.bytes())?;
-    m.set_u32(slot + SLOT_STAMP, tick)
-}
-
-/// Nominal turn rate at full stick, shared with the bot's hand.
-pub const TURN_RATE: f32 = crate::mind::TURN_RATE;
-
-/// A pad as an action, for a player facing `aim` (a unit vector) with
-/// weapon `weapon`, over `dt` seconds. The right stick turns from the
-/// current facing as the brain expects (+x turns right, +y looks up); the
-/// left stick is (right, forward); the right trigger fires and the left
-/// throws. The button adapter fills the discrete controls and selections.
-pub(super) fn motion_from_pad(
-    pad: &input::host::HostPadState,
-    aim: [f32; 3],
-    weapon: i8,
-    dt: f32,
-) -> Action {
-    let (yaw, pitch) = (aim[1].atan2(aim[0]), aim[2].atan2(aim[0].hypot(aim[1])));
-    let (rx, ry) = crate::mind::turn_rate(pad.right_stick);
-    let (lx, ly) = pad.left_stick;
-    Action {
-        yaw: yaw - rx * dt,
-        pitch: pitch + ry * dt,
-        forward: ly,
-        // Default stick layout at 0x21838a: the action's strafe is positive left.
-        strafe: -lx,
-        trigger: pad.right_trigger,
-        trigger2: pad.left_trigger,
-        weapon,
-        ..Action::default()
-    }
 }
 
 /// Player `p`'s unit's facing and current weapon, if it has a unit.

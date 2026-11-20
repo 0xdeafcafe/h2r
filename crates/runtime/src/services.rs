@@ -6,7 +6,7 @@ use crate::{
     tsc::{GuestClock, Tsc},
 };
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 pub struct Runtime {
@@ -18,6 +18,7 @@ pub struct Runtime {
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
+    pub(crate) coverage: OnceLock<crate::coverage::Coverage>,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
@@ -72,8 +73,18 @@ impl Runtime {
             interrupts: Default::default(),
             tsc: Tsc::default(),
             words: Default::default(),
+            coverage: OnceLock::new(),
         })
     }
+    /// Install the generated registry before any execution contexts are built.
+    pub fn enable_guest_coverage(&self, entries: &[crate::H2GenEntry]) {
+        let _ = self.coverage.set(crate::coverage::Coverage::new(entries));
+    }
+
+    pub fn guest_coverage(&self) -> Option<crate::GuestCoverage> {
+        self.coverage.get().map(crate::coverage::Coverage::snapshot)
+    }
+
     /// Install (or with `None` remove) the guest-time source the
     /// time-stamp counter follows; see [`crate::tsc`].
     pub fn set_guest_clock(&self, clock: Option<GuestClock>) {

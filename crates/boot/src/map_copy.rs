@@ -18,7 +18,7 @@
 //! on fresh data spent 1,744 presents copying 838 MiB, and every one of
 //! those frames costs whatever the loading screen costs to draw and show.
 //!
-//! This feature steps the machine up to [`STEPS`] times per loading frame,
+//! This feature batches copy steps between loading frames,
 //! yielding (`SwitchToThread`, as the loop itself does) between steps so the
 //! worker finishes each job. The machine sees the same calls in the same
 //! order with the same results, only with fewer frames drawn between them:
@@ -45,8 +45,20 @@ pub const JOB_DONE: u32 = 0x0055_bd0c;
 pub const SWITCH_TO_THREAD: u32 = 0x002d_2084;
 /// Copy machine steps per loading frame: two per MiB, so about 8 MiB.
 pub const STEPS: u32 = 16;
+/// Destination slot chosen by the guest in state 7.
+const COPY_SLOT: u32 = 0x0055_bd10;
+/// Give the menu and its shared resources up to 64 MiB per loading frame.
+const BOOT_STEPS: u32 = 128;
 /// Yields to wait for one job before leaving the rest to the next frame.
 pub const YIELDS: u32 = 8;
+
+fn step_budget(fast_boot: bool, state: Option<u32>, slot: Option<u32>) -> u32 {
+    if fast_boot && matches!(state, Some(11 | 12)) && matches!(slot, Some(0..=2)) {
+        BOOT_STEPS
+    } else {
+        STEPS
+    }
+}
 
 /// Whether a call to the copy machine returning to `ret` is the loading
 /// screen's.
@@ -92,17 +104,25 @@ impl feature::Feature for MapCopy {
         .doc("docs/runtime/cache-slots.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
+        let fast_boot = b.switches().feature("map-copy.boot", true);
         b.raw().before(
             &engine::points::CACHE_COPY_STEP,
             "several copy steps a loading frame",
-            |c| {
-                let ret = c.ctx.runtime().memory().u32(c.cpu.esp)?;
+            move |c| {
+                let mem = c.ctx.runtime().memory();
+                let ret = mem.u32(c.cpu.esp)?;
                 if !boosted(ret) {
                     return Ok(Flow::Continue);
                 }
+                let budget = step_budget(
+                    fast_boot,
+                    mem.u32(crate::map_slots::STATE).ok(),
+                    mem.u32(COPY_SLOT).ok(),
+                );
+                drop(mem);
                 // The steps it calls return to the body, not to the loop,
                 // so they run the machine itself.
-                c.answer_async(|cx| -> EntryFuture { Box::pin(steps(cx, STEPS, YIELDS)) })
+                c.answer_async(move |cx| -> EntryFuture { Box::pin(steps(cx, budget, YIELDS)) })
             },
         );
         // No state of its own: the copy is the game's, in guest memory.
@@ -274,6 +294,29 @@ mod tests {
         // STEPS a frame now.
         assert_eq!(plain_frames, 42);
         assert_eq!(boosted_frames, 42u32.div_ceil(STEPS));
+    }
+
+    #[test]
+    fn menu_and_shared_payloads_need_fewer_presents_for_the_same_jobs() {
+        for state in [11, 12] {
+            for slot in 0..=2 {
+                assert_eq!(step_budget(true, Some(state), Some(slot)), BOOT_STEPS);
+            }
+        }
+        for (enabled, state, slot) in [
+            (false, Some(11), Some(0)),
+            (true, Some(11), Some(3)),
+            (true, Some(7), Some(2)),
+            (true, None, None),
+        ] {
+            assert_eq!(step_budget(enabled, state, slot), STEPS);
+        }
+        let source = Machine::new(128 * 1024 + 7, 1024);
+        let (previous, old_frames) = load(source.clone(), Some((STEPS, YIELDS)));
+        let budget = step_budget(true, Some(12), Some(2));
+        let (fast, frames) = load(source, Some((budget, YIELDS)));
+        assert_eq!(fast, previous);
+        assert_eq!((old_frames, frames), (17, 3));
     }
 
     #[test]

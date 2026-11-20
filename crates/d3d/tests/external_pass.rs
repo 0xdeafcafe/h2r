@@ -123,6 +123,53 @@ fn the_pass_comes_through_the_render_thread() {
 }
 
 #[test]
+fn native_pass_and_deferred_draw_keep_bound_surfaces_after_settings_changes() {
+    use d3d::{Lighting, ScaledBackend, TargetCopy};
+
+    let Some(reference) = backend() else { return };
+    let display = GfxBackend::new(app::share_context(&reference.ctx));
+    let mut scaled = ScaledBackend::new(reference, display, 4).unwrap();
+    scaled.follow_scale(|| 1);
+    let threaded = ThreadedBackend::new(scaled).unwrap();
+    let (mut d, mut m) = create_copy_swap(threaded, UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    set_states(&mut d, &mut m);
+    d.set_vertex_shader(&mut m, gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE)
+        .unwrap();
+
+    for lighting in [Lighting::Retail, Lighting::E3] {
+        d.backend
+            .with_inner(move |b| b.follow_lighting(move || lighting))
+            .unwrap();
+        d.swap(&mut m, 0).unwrap();
+        assert_eq!(d.back_buffer(), Some(back));
+
+        let got: Got = Arc::default();
+        d.request_external_pass(Box::new(Probe(Arc::clone(&got))));
+        d.drain_until_callback(&mut m).unwrap();
+        inline_quad(&mut m, 0., 0., 8., 8., [0, 255, 0, 255]);
+        d.commit(&mut m).unwrap();
+
+        // Wait for both queued draws. The render thread latches any lookup
+        // of a retired surface, even if the guest got through commit first.
+        let drawn = d.backend
+            .with_surface(back, |b, s| {
+                Ok(pixel(&b.reference_mut().read_color(s.reference)?.0, 4, 4))
+            })
+            .unwrap();
+        assert_eq!(drawn, [0, 255, 0, 255]);
+        let copies: Vec<_> = got.lock().unwrap().iter()
+            .map(|s| (s.copy, s.sizes.1))
+            .collect();
+        let mut expected = vec![(TargetCopy::Reference, (W, H))];
+        if lighting == Lighting::E3 {
+            expected.push((TargetCopy::Display, (W, H)));
+        }
+        assert_eq!(copies, expected);
+    }
+}
+
+#[test]
 fn the_interpolating_backend_passes_it_on() {
     let Some(b) = backend() else { return };
     run(ThreadedBackend::new(InterpBackend::new(b, || 0)).unwrap());
@@ -445,6 +492,84 @@ fn indexed_admission_receives_the_exact_resolved_guest_draw() {
 }
 
 #[test]
+fn indexed_world_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::World);
+}
+
+#[test]
+fn shadow_admission_replays_a_refused_packet_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Shadows);
+}
+
+#[test]
+fn object_admission_replays_refused_packets_in_order_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Objects);
+}
+
+#[test]
+fn light_admission_replays_refused_packets_in_order_without_a_worker_read() {
+    indexed_admission_replays_a_refused_packet(timeline::native::Stage::Lights);
+}
+
+fn indexed_admission_replays_a_refused_packet(stage: timeline::native::Stage) {
+    struct Retained(Arc<d3d::ResolvedDraw>);
+
+    impl ExternalPass for Retained {
+        fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
+            Some(self.0.clone())
+        }
+        fn writes(&self) -> d3d::ExternalWrites {
+            d3d::ExternalWrites { color: true, depth_stencil: false }
+        }
+    }
+
+    struct Admission {
+        stage: timeline::native::Stage,
+        draws: Mutex<Vec<Arc<d3d::ResolvedDraw>>>,
+    }
+    impl d3d::DrawAdmission for Admission {
+        fn admit(&self, s: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn ExternalPass>)> {
+            let draw = Arc::new(s.draw.clone());
+            let mut draws = self.draws.lock().unwrap();
+            draws.push(draw.clone());
+            // An original D3D draw sits between two worker refusals.
+            (draws.len() != 2).then(|| {
+                let pass: Box<dyn ExternalPass> = Box::new(Retained(draw));
+                (d3d::ExternalPlan { stage: self.stage, ..plan(1) }, pass)
+            })
+        }
+    }
+
+    // The recording backend accepts draws, but cannot supply GPU attachments.
+    let mut backend = RecordingBackend::default();
+    backend.external_passes = true;
+    let (mut d, mut m) = create(ThreadedBackend::new(backend).unwrap(), UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0., 0., 32., 32., 0xff009900);
+    bind_quad(&mut d, &mut m);
+    let probe = Arc::new(Admission { stage, draws: Mutex::default() });
+    d.add_draw_admission(probe.clone());
+    let waits = d.backend.waits().reads;
+    for (i, vertices) in [[2, 0, 1], [1, 2, 0], [0, 1, 2]].into_iter().enumerate() {
+        let bytes: Vec<_> = vertices.into_iter().flat_map(u16::to_le_bytes).collect();
+        let at = MISC + i as u32 * 8;
+        m.write(at, &bytes).unwrap();
+        d.draw_indexed_vertices(&mut m, TRIANGLESTRIP, 3, at).unwrap();
+        assert_eq!(d.backend.waits().reads, waits, "{stage:?} draw {i}");
+    }
+    let replay = d.backend.with_inner(|b| {
+        b.draws().into_iter().cloned().collect::<Vec<_>>()
+    }).unwrap();
+    let planned = probe.draws.lock().unwrap();
+    assert_eq!(replay.len(), 3);
+    for (actual, original) in replay.iter().zip(planned.iter()) {
+        assert_eq!(actual, original.as_ref());
+    }
+    assert_eq!(d.stats().external_passes, 0);
+    assert_eq!(d.stats().external_passes_dropped, 2);
+}
+
+#[test]
 fn scoped_acceptance_reports_commit_and_replaces_only_the_first_draw() {
     let Some(b) = backend() else { return };
     let (mut d, mut m) = create(b, UploadPolicy::Always);
@@ -593,6 +718,10 @@ fn a_backend_prepare_error_leaves_the_device_ready_for_the_guest_draw() {
     assert_eq!(d.backend.draws().len(), 1);
 }
 
+fn light_plan() -> d3d::ExternalPlan {
+    d3d::ExternalPlan { stage: timeline::native::Stage::Lights, ..plan(1) }
+}
+
 /// Record a synthetic full-screen triangle. The caller's scissor and
 /// constant blend colour distinguish execution order and scaled copies.
 struct Paint {
@@ -604,6 +733,8 @@ struct Paint {
 }
 
 impl ExternalPass for Paint {
+    fn batch_key(&self) -> Option<u64> { Some(self.run) }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: false }
     }
@@ -674,22 +805,62 @@ fn compatible_lights_share_one_pass_per_copy_and_refusal_keeps_both_pixels() {
     assert_eq!(seen.lock().unwrap().iter().map(|s| s.copy).collect::<Vec<_>>(),
         [d3d::TargetCopy::Reference, d3d::TargetCopy::Display]);
     d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
-    let baseline = GfxBackend::native_bundle_passes();
+    // Finish the clear before counting bundle passes on these two backends.
+    d.backend.reference_mut().flush().unwrap();
+    d.backend.view_mut().flush().unwrap();
+    let passes = |backend: &d3d::ScaledBackend<GfxBackend, GfxBackend>| {
+        [backend.reference().batch_stats().render_passes, backend.view().batch_stats().render_passes]
+    };
+    let baseline = passes(&d.backend);
     let paint = |x, color, refuse_display| Box::new(Paint { run: 17, x, color, refuse_display, bundles: [None, None] });
-    d.prepare_external_pass(&mut m, plan(1), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
-    d.prepare_external_pass(&mut m, plan(1), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
-    assert!(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
+    d.prepare_external_pass(&mut m, light_plan(), paint(0, wgpu::Color::WHITE, false)).unwrap().unwrap().commit();
+    d.prepare_external_pass(&mut m, light_plan(), paint(4, wgpu::Color::BLACK, false)).unwrap().unwrap().commit();
+    assert!(d.prepare_external_pass(&mut m, light_plan(), paint(12, wgpu::Color::WHITE, true)).unwrap().is_none());
     // A bundle can be well formed while its dynamic scissor is invalid for the
     // actual render pass. Catch the validation error before taking the guest draws.
-    assert!(d.prepare_external_pass(&mut m, plan(1), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
-    drop(d.prepare_external_pass(&mut m, plan(1), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
+    assert!(d.prepare_external_pass(&mut m, light_plan(), paint(64, wgpu::Color::WHITE, false)).unwrap().is_none());
+    drop(d.prepare_external_pass(&mut m, light_plan(), paint(12, wgpu::Color::WHITE, false)).unwrap().unwrap());
     let reference = d.backend.reference_mut().read_color(back.reference).unwrap().0;
     let display = d.backend.view_mut().read_color(back.view.unwrap()).unwrap().0;
-    assert_eq!(GfxBackend::native_bundle_passes(), baseline.map(|n| n + 1));
+    assert_eq!(passes(&d.backend), baseline.map(|n| n + 1));
     for (scale, pixels) in [(1usize, reference), (2, display)] {
         for (x, rgba) in [(0, [255; 4]), (3, [255; 4]), (4, [0,0,0,255]), (11, [0,0,0,255]), (12, [0,255,0,255])] {
             let at = x * scale * 4;
             assert_eq!(pixels[at..at+4], rgba, "{scale}x at {x}");
         }
     }
+}
+
+#[test]
+fn consecutive_lights_need_one_worker_wait_and_keep_their_draw_order() {
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    let before = d.backend.waits().reads;
+    for (x, color) in [(0, wgpu::Color::WHITE), (2, wgpu::Color::BLACK), (4, wgpu::Color::WHITE)] {
+        let pass = Paint { run: 17, x, color, refuse_display: false, bundles: [None, None] };
+        d.prepare_external_pass(&mut m, light_plan(), Box::new(pass)).unwrap().unwrap().commit();
+    }
+    assert_eq!(d.backend.waits().reads - before, 1, "one attachment pin for three reservations");
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    for (x, rgba) in [(0, [255; 4]), (2, [0, 0, 0, 255]), (4, [255; 4]), (12, [0, 255, 0, 255])] {
+        assert_eq!(pixels[x * 4..x * 4 + 4], rgba, "pixel {x}");
+    }
+}
+
+#[test]
+fn intervening_d3d_work_revalidates_attachments_even_with_the_same_run_key() {
+    let Some(b) = backend() else { return };
+    let (mut d, mut m) = create(ThreadedBackend::new(b).unwrap(), UploadPolicy::Always);
+    let back = d.back_buffer().unwrap();
+    let paint = |x| Box::new(Paint { run: 17, x, color: wgpu::Color::WHITE, refuse_display: false, bundles: [None, None] });
+    let before = d.backend.waits().reads;
+    d.prepare_external_pass(&mut m, light_plan(), paint(0)).unwrap().unwrap().commit();
+    d.clear(&mut m, 0, 0, 0xf0, 0xff00ff00, 1., 0).unwrap();
+    d.prepare_external_pass(&mut m, light_plan(), paint(4)).unwrap().unwrap().commit();
+    assert_eq!(d.backend.waits().reads - before, 2);
+    let pixels = d.backend.with_surface(back, |b, back| b.read_color(back).map(|(pixels, _)| pixels)).unwrap();
+    assert_eq!(&pixels[..4], &[0, 255, 0, 255], "clear follows the first light");
+    assert_eq!(&pixels[16..20], &[255; 4], "second light follows the clear");
 }

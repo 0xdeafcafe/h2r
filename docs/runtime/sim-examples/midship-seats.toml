@@ -1,0 +1,29 @@
+map = "midship"
+game_type = "slayer"
+team_play = true
+time_limit_s = 300
+max_ticks = 9000
+max_wall_s = 900
+pace = "unpaced"
+
+[[bot]]
+name = "Red 1"
+skill = "legendary"
+team = 0
+
+[[bot]]
+name = "Blue 1"
+skill = "legendary"
+team = 1
+kind = "phantom"
+
+[[bot]]
+name = "Red 2"
+skill = "legendary"
+team = 0
+
+[[bot]]
+name = "Blue 2"
+skill = "legendary"
+team = 1
+kind = "phantom"

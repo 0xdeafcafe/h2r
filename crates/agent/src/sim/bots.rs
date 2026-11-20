@@ -81,7 +81,7 @@ pub trait Bots: Send {
         None
     }
     /// All brain-driven bots on the host.
-    fn clankers(&self) -> Vec<ClankerView> {
+    fn clankers(&self, _guest: Option<&dyn engine::GuestMemory>) -> Vec<ClankerView> {
         Vec::new()
     }
 
@@ -190,7 +190,7 @@ impl Bots for FakeBots {
         self.log().brains.get(&bot).cloned()
     }
 
-    fn clankers(&self) -> Vec<ClankerView> {
+    fn clankers(&self, _guest: Option<&dyn engine::GuestMemory>) -> Vec<ClankerView> {
         self.log().clankers.clone()
     }
 

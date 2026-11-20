@@ -468,6 +468,7 @@ impl d3d::ExternalPass for FirstPersonPass {
         lit.encode(
             target.device,
             target.queue,
+            target.uploads,
             &mut *target.encoder,
             target.color,
             target.color_format,

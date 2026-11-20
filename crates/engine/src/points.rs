@@ -279,6 +279,24 @@ points! { ALL;
     /// Game activation after the scenario's cache is loaded: options in EAX,
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
+    CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    CACHE_BSP_FIXUP @ 0x0012_2b40: [opaque], Optional; "docs/engine/engine-map.md";
+    TAG_LOOKUP @ 0x0012_2c10: [opaque], Optional; "docs/engine/tag_get_checked.md";
+    OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";
+    WORLD_PHYSICS @ 0x001c_3d30: [opaque], Optional; "docs/engine/engine-map.md";
+    OBJECTS_POST_PHYSICS @ 0x000b_7060: [opaque], Optional; "docs/engine/engine-map.md";
+    OBJECTS_FINALIZE @ 0x000b_7150: [opaque], Optional; "docs/engine/engine-map.md";
+    AI_UPDATE @ 0x001c_83c0: [opaque], Optional; "docs/engine/engine-map.md";
+    SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
+    EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
+    PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
+    CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_UPDATE @ 0x0014_79c3: [opaque], Optional; "docs/engine/engine-map.md";
+    UI_RENDER_LAYERS @ 0x0014_7af1: [opaque], Optional; "docs/engine/engine-map.md";
+    NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
+    NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";
     /// The game-end path; the end latch is game globals `+0x1128`.
     GAME_END @ 0x0013_89c0: [opaque]; "docs/live/live-gamestate.md";
     /// A player was killed: `(attacker player, victim player, flag, packed
@@ -362,7 +380,7 @@ points! { ALL;
     RENDER_VIEWS @ 0x0002_b5d0: [opaque]; "docs/engine/engine-map.md";
     /// `render_game_view`: one game view (camera, render state, scene
     /// passes, UI composition).
-    RENDER_GAME_VIEW @ 0x0002_b790: [opaque]; "docs/engine/engine-map.md";
+    RENDER_GAME_VIEW @ 0x0002_b790: [fn(view: stack 0, flags: stack 1) ret 8]; "docs/engine/engine-map.md";
     /// The alternate view path selected by the render view record.
     RENDER_ALTERNATE_VIEW @ 0x0002_c790: [opaque]; "docs/graphics/render-loop.md";
     /// End-of-frame rendering after the view loop, before the final blit.
@@ -663,6 +681,18 @@ points! { ALL;
     /// block definition (`0x38` bytes), a child of the screen in ESI; the
     /// widget in EAX, or 0.
     PANE_BITMAP_ADD @ 0x0022_fa30: [fn(screen: esi, block: stack 0) -> eax ret 4]; "docs/formats/ui.md";
+    /// Builds the wide-name history rows for Recent Players and returns the list.
+    RECENT_PLAYERS_BUILD @ 0x002b_393c: [fn(list: ebx, request: stack 0) -> eax ret 4]; "docs/game/bots.md";
+    /// Retail's lossy wide-to-ASCII conversion, used when packing a Live selection.
+    PLAYER_NAME_TO_ASCII @ 0x0013_fb90: [fn(source: eax, dest: ecx, capacity: edx) ret 0]; "docs/game/bots.md";
+    /// The two retail player-options constructors share the current selected-player record.
+    PLAYER_OPTIONS_CHECK_FRIEND @ 0x002b_70a3: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";
+    PLAYER_OPTIONS_OPEN @ 0x002b_71a6: [fn(request: eax, source: esi) -> eax ret 0]; "docs/game/bots.md";
+    /// List skin by index in the current interface, or null.
+    UI_LIST_SKIN @ 0x0014_837a: [fn(index: stack 0) -> eax ret 4]; "docs/formats/ui.md";
+    PANE_SHADER_ADD @ 0x002b_af38: [fn(screen: esi, block: ebx) -> eax ret 0]; "docs/formats/ui.md";
+    EMBLEM_WIDGET_DRAW @ 0x002b_11c9: [fn(widget: ecx, context: stack 0) ret 4]; "docs/game/bots.md";
+    EMBLEM_WIDGET_SET @ 0x002b_12ca: [fn(widget: eax, team: edx, slot: ecx, profile: stack 0) ret 4]; "docs/game/bots.md";
     /// The current interface's screen tag for a screen id (stdcall): the
     /// `wgit` tag's datum handle, or -1.
     SCREEN_TAG_BY_ID @ 0x0014_8098: [fn(id: stack 0) -> eax ret 4]; "docs/formats/ui.md";
@@ -781,6 +811,8 @@ points! { ALL;
     /// the machine that builds the updates (message `0x28`, `0x180`
     /// bytes, up to four local players).
     SIM_ACTIONS_SEND @ 0x0008_5fc0: [opaque], Optional; "docs/live/live-coop.md";
+    /// Encode a synchronous 0x28 after the sender has admitted it to the channel.
+    SIM_ACTIONS_ENCODE @ 0x000b_2790: [fn(stream: stack 0, size: stack 1, actions: stack 2) ret 12], Optional; "docs/live/live-coop.md";
     /// Synchronous: a peer's actions arrived (from the `0x28` handler
     /// `0x949d0`).
     SIM_ACTIONS_RECEIVE @ 0x0008_5f50: [opaque], Optional; "docs/live/live-coop.md";

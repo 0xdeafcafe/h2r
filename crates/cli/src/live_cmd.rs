@@ -27,6 +27,7 @@ use live_server::ServerIdentity;
 use serde::de::DeserializeOwned;
 
 use crate::live_accounts::{self, LocalAccount};
+pub(crate) use crate::live_accounts::{LIVE_DIR_ENV, accounts_path, live_dir};
 use crate::live_query::path_part;
 
 const USAGE: &str = "usage: h2 live <command> [options]
@@ -115,6 +116,14 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           admin account
   invite list [--as GAMERTAG] [--server URL] [--data DIR]
   invite revoke <jti> --as GAMERTAG [--server URL]
+  frames migrate --dry-run|--apply|--verify [--checkpoint FILE] [--delay-ms N]
+                 [--server URL] [--data DIR | --as GAMERTAG]
+                          plan, publish or verify finished-game replay archives
+  frames status GAME [--server URL] [--data DIR | --as GAMERTAG]
+                          show archive progress and the current rollback digests
+  frames rollback GAME --archive-sha256 HASH --backup-sha256 HASH
+                 [--server URL] [--data DIR | --as GAMERTAG]
+                          restore the matching original replay index
   store copy [--from DB --to DB] [--from-blobs LOC --to-blobs LOC] [--data DIR]
                           move the event log (sqlite://, postgres://, file:)
                           and the blobs (a directory, s3://BUCKET) between
@@ -187,6 +196,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("invite", Some("create")) => crate::live_recovery::invite_create(rest.shift()),
         ("invite", Some("list")) => crate::live_recovery::invite_list(rest.shift()),
         ("invite", Some("revoke")) => crate::live_recovery::invite_revoke(rest.shift()),
+        ("frames", Some("migrate")) => crate::live_frames::migrate(rest.shift()),
+        ("frames", Some("status")) => crate::live_frames::status(rest.shift()),
+        ("frames", Some("rollback")) => crate::live_frames::rollback(rest.shift()),
         ("store", Some("copy")) => store_copy(rest.shift()),
         ("store", Some("check")) => store_check(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
@@ -238,31 +250,6 @@ impl Args {
 
 fn env(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|s| !s.is_empty())
-}
-
-/// Where Live keeps this machine's accounts (`accounts.json`), the
-/// account handed to a game (`play-accounts.json`) and an embedded
-/// server's data: `$H2_LIVE_DIR`, else the application support directory.
-/// `h2 coop test` gives each game its own, so two games on one Mac never
-/// share `play-accounts.json`.
-pub(crate) fn live_dir() -> Result<PathBuf> {
-    live_dir_from(std::env::var_os(LIVE_DIR_ENV), std::env::var_os("HOME"))
-}
-
-/// The variable [`live_dir`] reads first.
-pub(crate) const LIVE_DIR_ENV: &str = "H2_LIVE_DIR";
-
-fn live_dir_from(
-    over: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> Result<PathBuf> {
-    if let Some(dir) = over.filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    let home = home
-        .filter(|h| !h.is_empty())
-        .context("HOME is not set; nowhere to keep live data")?;
-    Ok(PathBuf::from(home).join("Library/Application Support/h2recomp/live"))
 }
 
 pub(crate) fn data_dir(flag: Option<String>) -> Result<PathBuf> {
@@ -733,10 +720,6 @@ fn account_create(mut args: Args) -> Result<()> {
         crate::live_recovery::print_recovery(info);
     }
     Ok(())
-}
-
-pub(crate) fn accounts_path() -> Result<PathBuf> {
-    Ok(live_dir()?.join("accounts.json"))
 }
 
 /// Upserts the account (by xuid) into the local accounts file; other
@@ -1340,19 +1323,6 @@ mod tests {
 
     fn args(s: &[&str]) -> Args {
         Args(s.iter().map(|s| s.to_string()).collect())
-    }
-
-    #[test]
-    fn the_live_directory_is_h2_live_dir_when_set() {
-        assert_eq!(
-            live_dir_from(Some("/x/live".into()), Some("/home/a".into())).unwrap(),
-            PathBuf::from("/x/live")
-        );
-        assert_eq!(
-            live_dir_from(Some("".into()), Some("/home/a".into())).unwrap(),
-            PathBuf::from("/home/a/Library/Application Support/h2recomp/live")
-        );
-        assert!(live_dir_from(None, None).is_err());
     }
 
     #[test]

@@ -319,7 +319,7 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
         "the rest of the name cleared"
     );
     assert_eq!(c[CONFIG_TEAM], 2);
-    assert_eq!(c[0x44], 0x40 + 0x44, "the rest is the host's");
+    assert_eq!(c[0x40..0x48], crate::guest::bot_look("Bolt"));
     assert_eq!(
         config(&g, "Bolt", None).unwrap().unwrap()[CONFIG_TEAM],
         0x40 + CONFIG_TEAM as u8,
@@ -328,20 +328,15 @@ fn the_configuration_is_the_hosts_with_a_name_and_team() {
 }
 
 #[test]
-fn a_bots_name_is_marked_within_fifteen_units() {
-    let s = |units: Vec<u16>| String::from_utf16(&units).unwrap();
-    assert_eq!(s(marked_name("Clanker 12")), "\u{2699} Clanker 12");
-    // The longest that keeps the space: 13 characters.
-    assert_eq!(s(marked_name("Thirteen char")), "\u{2699} Thirteen char");
-    // 14: no space; 15 (the most a gamertag has): no space, its last
-    // character gone. Never more than the 15 units the name holds.
-    assert_eq!(s(marked_name("Fourteen chars")), "\u{2699}Fourteen chars");
-    assert_eq!(s(marked_name("Fifteen chars!!")), "\u{2699}Fifteen chars!");
-    for n in 1..=20 {
-        let m = marked_name(&"x".repeat(n));
-        assert!(m.len() <= CONFIG_NAME_UNITS - 1, "{n}: {}", m.len());
-        assert_eq!(m[0], MARK as u16);
+fn a_bots_name_has_one_space_and_the_full_gamertag() {
+    for tag in ["A", "Thirteen char", "Fourteen chars", "Fifteen chars!!"] {
+        assert_eq!(
+            String::from_utf16(&marked_name(tag)).unwrap(),
+            format!("{MARK} {tag}")
+        );
     }
+    assert_eq!(marked_name("  Bolt"), marked_name("Bolt"));
+    assert_eq!(marked_name(&"x".repeat(40)).len(), CONFIG_NAME_UNITS - 1);
 }
 
 #[test]
@@ -352,83 +347,6 @@ fn the_host_team_is_the_first_local_players() {
     let mut none = FakeGuest::new();
     none.map(points::PLAYERS.base & !0xfff, 0x1000);
     assert_eq!(host_team(&none).unwrap(), None);
-}
-
-#[test]
-fn an_action_passes_the_validators_ranges() {
-    let a = Action {
-        flags: 0,
-        yaw: -0.5,
-        pitch: 3.0,
-        forward: 2.0,
-        strafe: -2.0,
-        trigger: 1.5,
-        trigger2: -1.0,
-        weapon: 1,
-        ..Default::default()
-    };
-    let b = a.bytes();
-    let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
-    assert!(
-        (0.0..std::f32::consts::TAU).contains(&f(4)),
-        "yaw wrapped into [0, 2pi)"
-    );
-    assert!(f(8).abs() <= 1.5);
-    assert_eq!((f(0xc), f(0x10), f(0x14), f(0x18)), (1.0, -1.0, 1.0, 0.0));
-    assert_eq!((b[0x20], b[0x21]), (1, 0xff), "the weapon, no second");
-    assert_eq!(&b[0x22..0x26], &[0xff; 4], "grenade and +0x24 none");
-    assert_eq!(&b[0x26..0x2c], &[0; 6]);
-    assert_eq!(&b[0x2c..0x40], &[0xff; 20], "empty object handles");
-    assert!(b[0x40..].iter().all(|&v| v == 0));
-    assert_eq!(Action { weapon: 9, ..a }.bytes()[0x20], 0xff);
-}
-
-#[test]
-fn the_pad_turns_from_the_current_facing() {
-    let still = motion_from_pad(&HostPadState::default(), [0.0, 1.0, 0.0], 0, 1.0 / 30.0);
-    assert!((still.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-    assert_eq!(still.pitch, 0.0);
-    let pad = HostPadState {
-        right_stick: (1.0, 1.0),
-        left_stick: (1.0, 0.5),
-        right_trigger: 1.0,
-        left_trigger: 0.25,
-        ..Default::default()
-    };
-    let a = motion_from_pad(&pad, [1.0, 0.0, 0.0], 2, 0.5);
-    assert!(
-        (a.yaw + TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
-        "+x turns right (yaw down), as the brain steers"
-    );
-    assert!(
-        (a.pitch - TURN_RATE * 0.5 / 2.0f32.sqrt()).abs() < 1e-6,
-        "+y looks up"
-    );
-    assert_eq!((a.forward, a.strafe), (0.5, -1.0));
-    assert_eq!((a.trigger, a.trigger2, a.weapon), (1.0, 0.25, 2));
-}
-
-#[test]
-fn the_action_goes_in_the_slot_stamped_with_the_tick() {
-    let mut g = hosted();
-    game_makes(&mut g, 1, MAC_A, [1.0, 0.0, 0.0]);
-    let slot = slot_of(&g, MAC_A).unwrap().unwrap();
-    assert_eq!(slot, SIM + SIM_SLOTS + SLOT_SIZE);
-    assert_eq!(slot_of(&g, MAC_B).unwrap(), None);
-    let a = Action {
-        trigger: 1.0,
-        weapon: -1,
-        ..Default::default()
-    };
-    write_action(&mut g, slot, &a).unwrap();
-    assert_eq!(g.u32(slot + SLOT_STAMP).unwrap(), 100);
-    let mut got = [0; ACTION_SIZE];
-    g.read(slot + SLOT_ACTION, &mut got).unwrap();
-    assert_eq!(got, a.bytes());
-    assert_eq!(
-        facing(&g, PLAYERS_DATA + 0x21c).unwrap(),
-        Some(([1.0, 0.0, 0.0], 1))
-    );
 }
 
 /// The run 20261119-005001's game start, as the bots' hook reads it: a
@@ -701,7 +619,6 @@ mod books {
         Identity {
             xuid,
             gamertag: tag.into(),
-            ..Default::default()
         }
     }
 
@@ -901,7 +818,6 @@ mod lobby {
         Identity {
             xuid,
             gamertag: tag.into(),
-            ..Default::default()
         }
     }
 
@@ -1010,7 +926,7 @@ mod lobby {
     fn the_configuration_is_the_hosts_session_players() {
         let g = lobby();
         let c = config_in(&g, S, "Rusty Lugnut", None).unwrap().unwrap();
-        assert_eq!(c[0x40], 0x50, "the host's requested configuration");
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("Rusty Lugnut"));
         assert_eq!(u16::from_le_bytes([c[0], c[1]]), MARK as u16);
         assert_eq!(c[CONFIG_TEAM], 0);
         let c = config_in(&g, S, "Rusty Lugnut", Some(1)).unwrap().unwrap();
@@ -1019,7 +935,7 @@ mod lobby {
         let mut g = hosted();
         g.put_u32(S + PEERS + PEER_SLOTS, u32::MAX);
         let c = config_in(&g, S, "X", None).unwrap().unwrap();
-        assert_eq!(c[0x40], 0x80);
+        assert_eq!(c[0x40..0x48], crate::guest::bot_look("X"));
     }
 
     #[test]
@@ -1109,7 +1025,10 @@ mod lobby {
             MARK as u16,
             "listed by its marked name"
         );
-        assert_eq!(g.u8(cfg + 0x40).unwrap(), 0x50, "the host's look");
+        assert_eq!(
+            g.u8(cfg + 0x40).unwrap(),
+            crate::guest::bot_look("Rusty Lugnut")[0]
+        );
         assert_eq!(
             ph.list()[0].state,
             State::Pending,
@@ -1117,8 +1036,34 @@ mod lobby {
         );
         // The start checks see every peer with the map.
         assert_eq!(l::expected(&l::facts(&g).unwrap()), l::READY);
-        // Nothing more the next frames.
+        // A lobby refresh or a reclaimed peer may carry the host's look.
+        // The next tick repairs both copies without touching the host.
+        let want = crate::guest::bot_look("Rusty Lugnut");
+        let host_look = g
+            .bytes(S + PLAYERS + P_EFFECTIVE + CONFIG_LOOK as u32, 8)
+            .unwrap();
+        for offset in [P_REQUESTED, P_EFFECTIVE] {
+            g.put(
+                S + PLAYERS + PLAYER_SIZE + offset + CONFIG_LOOK as u32,
+                &host_look,
+            );
+        }
         assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        for offset in [P_REQUESTED, P_EFFECTIVE] {
+            assert_eq!(
+                g.bytes(S + PLAYERS + PLAYER_SIZE + offset + CONFIG_LOOK as u32, 8)
+                    .unwrap(),
+                want
+            );
+        }
+        assert_eq!(
+            g.bytes(S + PLAYERS + P_EFFECTIVE + CONFIG_LOOK as u32, 8)
+                .unwrap(),
+            host_look
+        );
+        let revision = g.u32(S + UPDATE).unwrap();
+        assert!(ph.tick(&mut g, 1).unwrap().is_empty());
+        assert_eq!(g.u32(S + UPDATE).unwrap(), revision);
         assert_eq!(g.u32(S + PEER_COUNT).unwrap(), 2);
 
         // The game loads: its first frames are not hosted yet. The
@@ -1346,6 +1291,64 @@ mod lobby {
         assert_eq!(g.u32(p + PEER_HOPPERS + 4 * HOPPER).unwrap(), 1);
         // The party's session is left alone.
         assert_eq!(g.u32(PARTY + PEER_COUNT).unwrap(), 1);
+        assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_full_clankermatch_registers_the_ids_retail_waits_for() {
+        let ph = Phantoms::default();
+        ph.set_match_only(true);
+        let mut g = matchmaking();
+        let party = S + 0x4a00;
+        let host_id = [0x18; 12];
+        g.put_u32(S + MAX_PLAYERS, 8)
+            .put(S + PLAYERS, &host_id)
+            .put_u8(S + 0x49fd, 1)
+            .put_u32(party, 1)
+            .put_u32(party + 0x184, 1)
+            .put(party + 0x188, &host_id);
+        let handles: Vec<_> = (1..8)
+            .map(|n| ph.add(who(n, &format!("Bot {n}")), None, idle()).unwrap())
+            .collect();
+        ph.tick(&mut g, 0).unwrap();
+        assert_eq!(g.u32(S + PLAYER_COUNT).unwrap(), 8);
+        assert_eq!(g.u32(party + 0x184).unwrap(), 8);
+        assert_eq!(g.u32(party).unwrap(), 8);
+        for i in 0..8 {
+            assert_eq!(
+                g.bytes(party + 0x188 + i * 12, 12).unwrap(),
+                g.bytes(S + PLAYERS + i * PLAYER_SIZE, 12).unwrap()
+            );
+            assert_eq!(g.u32(party + 0x2c8 + 4 * i).unwrap(), i);
+            if i > 0 {
+                assert_eq!(
+                    g.bytes(S + PEERS + i * PEER_SIZE + 0xf0, 8).unwrap(),
+                    g.bytes(party + 4 + i * 8, 8).unwrap()
+                );
+            }
+        }
+        let revision = g.u32(S + 0x4978).unwrap();
+        // A real, not-yet-seated reservation behind the bots must survive
+        // compaction, with its original metadata and the new party index.
+        let reserved = [0x34; 12];
+        g.put_u32(party, 9)
+            .put_u32(party + 0x184, 9)
+            .put(party + 4 + 8 * 8, &[0x19; 8])
+            .put(party + 0x188 + 8 * 12, &reserved)
+            .put_u32(party + 0x248 + 8 * 4, 23)
+            .put_u32(party + 0x2c8 + 8 * 4, 8);
+        ph.tick(&mut g, 1).unwrap();
+        assert_eq!(g.u32(S + 0x4978).unwrap(), revision);
+        ph.remove(handles[2]).unwrap();
+        ph.tick(&mut g, 2).unwrap();
+        assert_eq!(g.u32(party + 0x184).unwrap(), 8);
+        assert_eq!(g.u32(party).unwrap(), 8);
+        assert_eq!(g.bytes(party + 0x188 + 7 * 12, 12).unwrap(), reserved);
+        assert_eq!(g.u32(party + 0x248 + 7 * 4).unwrap(), 23);
+        for i in 0..8 {
+            assert_eq!(g.u32(party + 0x2c8 + 4 * i).unwrap(), i);
+        }
+        assert_eq!(g.bytes(party + 0x188, 12).unwrap(), host_id);
         assert_eq!(g.u32(PARTY + PLAYER_COUNT).unwrap(), 1);
     }
 
@@ -1636,7 +1639,6 @@ mod in_game {
                 Identity {
                     xuid: 1,
                     gamertag: "A".into(),
-                    ..Default::default()
                 },
                 None,
                 Box::new(|_: &crate::local::Frame<'_>| HostPadState::default()),
@@ -1662,7 +1664,6 @@ mod in_game {
         let who = |x: u64| Identity {
             xuid: x,
             gamertag: format!("B{x}"),
-            ..Default::default()
         };
         let idle = || -> Box<dyn crate::local::PadSource> {
             Box::new(|_: &crate::local::Frame<'_>| HostPadState::default())
@@ -1714,6 +1715,28 @@ mod in_game {
     }
 
     #[test]
+    fn clanker_appearance_follows_a_local_guest_onto_its_rostered_account() {
+        let mut g = with_local_bot();
+        let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
+        mark_local_bots(&mut g, 0b10).unwrap();
+        let src = guest::slot(1) + guest::SLOT_BLOCK + guest::BLOCK_PROFILE_NAME as u32;
+        g.map(src, 64)
+            .put(src, &guest::profile_name_bytes("Rusty Lugnut"));
+        assert_eq!(mark_local_bots(&mut g, 0b10).unwrap(), vec![1]);
+        assert_eq!(name_at(&g, bot), marked_name("Rusty Lugnut"));
+        assert_eq!(
+            g.bytes(bot - P_EFFECTIVE + P_REQUESTED + CONFIG_LOOK as u32, 8)
+                .unwrap(),
+            guest::bot_look("Rusty Lugnut")
+        );
+        assert_eq!(
+            g.bytes(bot + CONFIG_LOOK as u32, 8).unwrap(),
+            guest::bot_look("Rusty Lugnut")
+        );
+        assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_local_bot_gets_the_bot_mark_on_the_host() {
         let mut g = with_local_bot();
         let before = counters(&g);
@@ -1749,7 +1772,7 @@ mod in_game {
         let mut g = with_local_bot();
         g.put_u32(S + STATE, 6);
         assert!(mark_local_bots(&mut g, 0b10).unwrap().is_empty());
-        // A long name keeps the mark within the 15 units.
+        // The entire 15-character tag fits after the mark and space.
         let mut g = with_local_bot();
         let bot = S + PLAYERS + PLAYER_SIZE + P_EFFECTIVE;
         for (i, u) in "Fifteen Chars!!".encode_utf16().enumerate() {
@@ -1757,7 +1780,7 @@ mod in_game {
         }
         mark_local_bots(&mut g, 0b10).unwrap();
         let n = name_at(&g, bot);
-        assert_eq!(n.len(), 15);
+        assert_eq!(n, marked_name("Fifteen Chars!!"));
         assert_eq!(n[0], MARK as u16);
     }
 }

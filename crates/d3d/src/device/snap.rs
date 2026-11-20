@@ -705,6 +705,7 @@ impl<B: Backend> Device<B> {
             events: _,
             last_stop: _,
             stats: _,
+            queued_external_stats: _,
             hw,
             // Quiesce.
             pending_grid: _,
@@ -713,6 +714,7 @@ impl<B: Backend> Device<B> {
             scoped_admission: _, // Quiesce the call before saving.
             residual: _,
             indexed_geometry: _,
+            indexed_geometry_scope: _,
             swallowing: _,
             swallow_mismatch: _,
             trace: _,

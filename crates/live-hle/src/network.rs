@@ -1,5 +1,13 @@
 //! Guest Winsock and secure-address translation. Copy inputs/check outputs under
 //! the guest lock, then release it before any host wait or network operation.
+pub(crate) mod film;
+
+// Dedicated host transport selection and channel delivery (contract 6).
+mod tunnel;
+
+#[path = "tunnel_host.rs"]
+mod tunnel_host;
+
 use crate::{NetworkConfig, host, qos, qos_memory::QosMemory, traffic};
 use runtime::{Runtime, guest::Access};
 use std::{
@@ -159,7 +167,9 @@ struct Socket {
     host: host::Socket,
     protocol: u32,
     options: Mutex<BTreeMap<(u32, u32), Vec<u8>>>,
-    guest_port: Mutex<u16>,
+    bound: Mutex<Option<SocketAddrV4>>,
+    tunnel_connection: Mutex<Option<tunnel::Connected>>,
+    send_shutdown: AtomicBool,
     pending: Mutex<Option<u32>>,
     nonblocking: AtomicBool,
 }
@@ -169,6 +179,7 @@ struct State {
     wsa: u32,
     next: u32,
     sockets: BTreeMap<u32, Arc<Socket>>,
+    tunnel: Option<tunnel::Route>,
     errors: BTreeMap<u32, u32>,
     keys: BTreeMap<[u8; 8], [u8; 16]>,
     peers: BTreeMap<u32, Peer>,
@@ -180,7 +191,8 @@ struct State {
 }
 pub(crate) struct Network {
     pub config: NetworkConfig,
-    state: Mutex<State>,
+    pub tap: std::sync::OnceLock<Arc<dyn ::film::tape::Tap>>,
+    state: Arc<Mutex<State>>,
     listeners: qos::Listeners,
     pings: qos::Pings,
     asked: qos::Asked,
@@ -204,10 +216,11 @@ impl Network {
     pub fn new(config: NetworkConfig) -> Self {
         Self {
             config,
-            state: Mutex::new(State {
+            tap: Default::default(),
+            state: Arc::new(Mutex::new(State {
                 next: 0x100,
                 ..State::default()
-            }),
+            })),
             listeners: Arc::default(),
             pings: Arc::default(),
             asked: Arc::default(),
@@ -229,6 +242,7 @@ impl Network {
         }
         if (op == NetCleanup && s.net == 0) || (op == WsaCleanup && s.wsa == 0) {
             if op == NetCleanup {
+                s.tunnel = None;
                 s.keys.clear();
                 s.peers.clear();
                 s.traffic.clear();
@@ -251,6 +265,9 @@ impl Network {
     /// Starts the QoS responder if the title has not yet (a co-op host
     /// answers its guest's pings from the lobby on).
     pub fn ensure_responder(&self) -> std::io::Result<()> {
+        if self.tap.get().is_some_and(|t| t.replaying()) {
+            return Ok(());
+        }
         let mut s = lock(&self.state);
         if s.responder.is_none() {
             s.responder = Some(qos::Responder::start(
@@ -280,7 +297,10 @@ impl Network {
         lock(&self.state).qos.release(handle)
     }
     pub fn invoke(&self, op: Op, a: &[u32], thread: u32, rt: &Runtime) -> u32 {
-        let result = self.run(op, a, thread, rt);
+        let result = match self.tap.get() {
+            Some(tap) => self.filmed(tap.as_ref(), op, a, thread, rt),
+            None => self.run(op, a, thread, rt),
+        };
         match result {
             Ok(v) => v,
             Err(e) if op.winsock() => {
@@ -327,9 +347,10 @@ impl Network {
         ip_word(NetworkConfig::shared_ip_in_addr(remote.port()))
     }
     fn source(&self, mut a: SocketAddrV4, socket: &Socket) -> SocketAddrV4 {
-        let guest_port = *lock(&socket.guest_port);
+        let guest_port = lock(&socket.bound).map_or(0, |a| a.port());
         if (1000..=1006).contains(&guest_port) {
             let offset = guest_port - 1000;
+            a = self.tunnel_source(a, offset);
             if let Some(base) = a
                 .port()
                 .checked_sub(offset)
@@ -383,6 +404,10 @@ impl Network {
                 };
             }
         }
+        // Dedicated host tunnel hook. Returning None preserves native XNet.
+        if let Some(result) = tunnel_host::dispatch(self, op, a, rt) {
+            return result;
+        }
         match op {
             Socket => {
                 if a[0] != 2 {
@@ -405,7 +430,9 @@ impl Network {
                     host: native,
                     protocol: a[2],
                     options: Mutex::default(),
-                    guest_port: Mutex::new(0),
+                    bound: Mutex::default(),
+                    tunnel_connection: Mutex::default(),
+                    send_shutdown: AtomicBool::new(false),
                     pending: Mutex::new(None),
                     nonblocking: AtomicBool::new(false),
                 });
@@ -434,13 +461,13 @@ impl Network {
                 let address = sockaddr(rt, a[1], a[2])?;
                 let actual = self.config.local(address);
                 host(socket.host.bind(actual))?;
-                *lock(&socket.guest_port) = address.port();
+                *lock(&socket.bound) = Some(address);
                 Ok(0)
             }
             ConnectSocket => {
                 let socket = self.socket(a[0])?;
                 let target = self.target(sockaddr(rt, a[1], a[2])?);
-                let result = host(socket.host.connect(target));
+                let result = self.connect_transport(&socket, target);
                 if matches!(result, Err(10035 | 10037)) {
                     *lock(&socket.pending) = Some(0);
                 }
@@ -452,6 +479,9 @@ impl Network {
                     return Err(10022);
                 }
                 host(socket.host.shutdown(a[1] as i32))?;
+                if a[1] != 0 {
+                    socket.send_shutdown.store(true, Ordering::Release);
+                }
                 Ok(0)
             }
             Send | SendTo => self.send(op, a, rt),
@@ -632,7 +662,7 @@ impl Network {
             return Ok(data.len() as u32);
         }
         let routed = target.map(|p| self.target(p));
-        let result = host(socket.host.send(&data, routed, a[3] as i32));
+        let result = self.send_transport(&socket, &data, routed, a[3] as i32);
         if let (Some(to), Some(at)) = (target, routed)
             && to != at
         {
@@ -1032,7 +1062,7 @@ impl Network {
         // All guest input is copied and outputs checked before the bounded I/O.
         let results: Vec<_> = targets
             .iter()
-            .map(|&(address, kid)| qos::query_why(address, kid, a[7] as u16))
+            .map(|&(address, kid)| qos::query_why(self.qos_target(address), kid, a[7] as u16))
             .collect();
         self.say_lookup(&targets, &results);
         let infos: Vec<_> = results
@@ -1115,11 +1145,13 @@ pub(crate) fn lookup_line(
     format!("live: join: qos lookup: {}", each.join("; "))
 }
 pub(crate) fn random(len: usize) -> Result<Vec<u8>> {
-    let mut bytes = vec![0; len];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .map_err(|_| 10055u32)?;
-    Ok(bytes)
+    film::state_random(len, || {
+        let mut bytes = vec![0; len];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut bytes))
+            .map_err(|_| 10055u32)?;
+        Ok(bytes)
+    })
 }
 fn pointers(rt: &Runtime, p: u32, count: u32) -> Result<Vec<u32>> {
     Ok(read(rt, p, count as usize * 4)?

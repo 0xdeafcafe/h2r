@@ -1,0 +1,18 @@
+# Retail, Map Pack, and the later Blastacular pair. Missing maps are explicit
+# failures in audit-missing.json. Add maps for any mod a host will serve.
+out = "results/light-host-corpus"
+match = "midship-seats.toml"
+audit = true
+maps = [
+    "ascension", "beavercreek", "burial_mounds", "coagulation", "colossus",
+    "cyclotron", "foundation", "headlong", "lockout", "midship", "waterworks", "zanzibar",
+    "backwash", "containment", "deltatap", "dune", "elongation", "gemini", "triplicate", "turf", "warlock",
+    "derelict", "highplains",
+]
+game_types = ["slayer", "oddball", "juggernaut", "king", "ctf", "assault", "territories"]
+seeds = [20261119, 20261120, 20261121]
+
+[a]
+name = "coverage"
+[a.tuning]
+aggression = 1.0

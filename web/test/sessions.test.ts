@@ -56,6 +56,12 @@ describe("reading sessions", () => {
     expect(parseSessions(undefined)).toEqual([]);
   });
 
+  test("a dedicated session has a region label without a host gamertag", () => {
+    const s = session({ host_gamertag: "", host_lease: "hl-example", dedicated_region: "lhr" });
+    expect(s.host_gamertag).toBe("");
+    expect(sessionRow(s).label).toBe("Dedicated (lhr)");
+  });
+
   test("bad slot numbers count as none", () => {
     const s = session({}, { slots: { public_filled: -2, public_open: "4", private_filled: 2.9, private_open: NaN } });
     expect(s.slots).toEqual({ public_filled: 0, public_open: 0, private_filled: 2, private_open: 0 });

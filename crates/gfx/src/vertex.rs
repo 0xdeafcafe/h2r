@@ -43,6 +43,7 @@ pub enum PrimitiveType {
     Polygon,
 }
 
+#[cfg(feature = "gpu")]
 /// How a guest primitive is submitted to wgpu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostPrimitive {
@@ -87,6 +88,7 @@ impl PrimitiveType {
         }
     }
 
+    #[cfg(feature = "gpu")]
     /// The topology of the *translated* draw (what the pipeline is built for).
     pub fn host_topology(self) -> wgpu::PrimitiveTopology {
         use wgpu::PrimitiveTopology as T;
@@ -119,6 +121,7 @@ impl PrimitiveType {
         }
     }
 
+    #[cfg(feature = "gpu")]
     /// Plans the wgpu submission for `vertex_count` vertices.
     ///
     /// Natively supported types need no indices; the others return an index
@@ -283,6 +286,7 @@ impl VertexDataType {
         }
     }
 
+    #[cfg(feature = "gpu")]
     /// The wgpu vertex format that reads this type directly, if one exists.
     ///
     /// `SHORTn` has no entry even for 2 and 4 components: wgpu would present
@@ -530,6 +534,7 @@ impl VertexLayout {
     }
 }
 
+#[cfg(feature = "gpu")]
 /// A `wgpu::VertexBufferLayout` that owns its attribute list.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OwnedVertexBufferLayout {
@@ -539,6 +544,7 @@ pub struct OwnedVertexBufferLayout {
     pub attributes: Vec<wgpu::VertexAttribute>,
 }
 
+#[cfg(feature = "gpu")]
 impl OwnedVertexBufferLayout {
     /// Borrows as a wgpu layout (per-vertex stepping).
     pub fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
@@ -580,6 +586,7 @@ mod tests {
         assert_eq!(PrimitiveType::LineStrip.primitive_count(0), 0);
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn native_and_rewritten_primitives() {
         use wgpu::PrimitiveTopology as T;
@@ -689,8 +696,11 @@ mod tests {
         assert_eq!(VertexDataType::from_xbox(0x45), Some(VertexDataType::Short4));
         assert_eq!(VertexDataType::Short3.byte_size(), 6);
         assert_eq!(VertexDataType::PByte3.byte_size(), 3);
+        #[cfg(feature = "gpu")]
         assert_eq!(VertexDataType::NormShort4.wgpu_format(), Some(wgpu::VertexFormat::Snorm16x4));
+        #[cfg(feature = "gpu")]
         assert_eq!(VertexDataType::Short4.wgpu_format(), None);
+        #[cfg(feature = "gpu")]
         assert_eq!(VertexDataType::D3dColor.wgpu_format(), Some(wgpu::VertexFormat::Unorm8x4Bgra));
         assert_eq!(VertexDataType::from_xbox(0x02), None);
     }

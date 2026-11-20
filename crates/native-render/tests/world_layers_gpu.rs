@@ -9,6 +9,7 @@ use d3d::backend::{
 use d3d::shader::{CONSTANTS, ShaderInputs, VertexProcessing};
 use d3d::state::StateWords;
 use d3d::{Backend, DrawOutcome, ExternalPass, ExternalPlan, GfxBackend, ResolvedDraw, TargetCopy};
+use gfx::encode::HostPixelOrder;
 use gfx::state::{CompareFunc, CullMode, DepthBufferMode, StencilOp};
 use gfx::surface::SurfaceId;
 use gfx::texture::TextureKind;
@@ -357,4 +358,138 @@ fn world_layers_gpu_mixed_w_depth_stencil_and_texaccum_match_d3d() {
         "layer 3 sampled two distinct layer-1 colors"
     );
     assert_eq!(scene(&mut backend, true), baseline);
+}
+
+#[test]
+fn queued_world_draws_choose_native_or_d3d_in_order_without_waiting() {
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = d3d::ThreadedBackend::new(GfxBackend::new(ctx)).unwrap();
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let cache = Arc::new(Cache::default());
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let mut render = |queued| {
+        backend
+            .clear(color, Some(depth), Clear::all([0.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        let waits = backend.waits().reads;
+        // The second draw overwrites the first and deliberately refuses native
+        // recording. The third writes separate pixels after that fallback.
+        for (i, (x, rgba)) in [
+            (2.0, [1.0, 0.0, 0.0, 1.0]),
+            (2.0, [0.0, 1.0, 0.0, 1.0]),
+            (18.0, [0.0, 0.0, 1.0, 1.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut draw = triangle(x, rgba, 1, false);
+            draw.state.render.depth_func = CompareFunc::Always;
+            if queued {
+                let pass = IndexedPass::new(&draw, cache.clone(), 1, None).unwrap();
+                let results = outcomes.clone();
+                let candidate = d3d::backend::QueuedExternalDraw {
+                    surfaces: ExternalSurfaces {
+                        color,
+                        depth,
+                        sampled: vec![],
+                        slots: vec![],
+                        slot_sizes: vec![],
+                    },
+                    request: ExternalPassRequest {
+                        rect: (0, 0, SIZE, SIZE),
+                        surface_size: (SIZE, SIZE),
+                        z_scale: 16_777_215.0,
+                    },
+                    plan: ExternalPlan {
+                        stage: timeline::native::Stage::World,
+                        view: 0,
+                        ranges: if i == 1 { 2 } else { 1 },
+                        slots: vec![],
+                    },
+                    fallback: pass.resolved_fallback().unwrap(),
+                    fallback_depth: Some(depth),
+                    pass: Arc::new(Mutex::new(Box::new(pass))),
+                    finished: Box::new(move |fallback| {
+                        results.lock().unwrap().push((i, fallback.cloned()));
+                    }),
+                };
+                assert!(backend.queue_external_draw(candidate, [None; 4]));
+            } else {
+                assert_eq!(
+                    backend.draw(color, Some(depth), &draw, [None; 4]),
+                    Ok(DrawOutcome::Drawn)
+                );
+            }
+        }
+        assert_eq!(backend.waits().reads, waits);
+        backend
+            .with_surface(color, |b, s| b.read_color(s).map(|image| image.0))
+            .unwrap()
+    };
+    let baseline = render(false);
+    assert!(baseline.chunks_exact(4).any(|p| p[1] != 0));
+    assert_eq!(render(true), baseline);
+    assert_eq!(
+        *outcomes.lock().unwrap(),
+        [(0, None), (1, Some(Ok(DrawOutcome::Drawn))), (2, None)]
+    );
+}
+
+#[test]
+fn uncached_world_geometry_shares_one_upload_and_one_pass() {
+    let Ok(ctx) = GfxContext::headless() else {
+        return;
+    };
+    let mut backend = GfxBackend::new(ctx);
+    backend.set_merge_passes(true);
+    backend.set_merge_masks(true);
+    let color = backend.create_surface(FORMAT, SIZE, SIZE, false).unwrap();
+    let depth = backend.create_surface(DEPTH, SIZE, SIZE, true).unwrap();
+    let surfaces = ExternalSurfaces {
+        color,
+        depth,
+        sampled: vec![],
+        slots: vec![],
+        slot_sizes: vec![],
+    };
+    let cache = Arc::new(Cache::default());
+    // Churn is scoped to this thread, and pass counts to this backend.
+    let before = gfx::churn::snapshot();
+    let passes = backend.batch_stats().render_passes;
+    backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+    for i in 0..8 {
+        let x = if i % 2 == 0 { 2.0 } else { 18.0 };
+        let mut draw = triangle(x, [1.0, f32::from(i as u8 % 2), 0.0, 1.0], 1, false);
+        draw.state.render.depth_func = CompareFunc::Always;
+        assert!(draw.streams.iter().all(|s| s.data.cache_id().is_none()));
+        assert!(draw.indices.as_ref().unwrap().cache_id().is_none());
+        if i == 7 {
+            // One guest range can have multiple clip pieces and still counts
+            // as one complete reservation with the same staged buffers.
+            draw.clip_rects = vec![
+                PixelRect { x: 16, y: 0, width: 8, height: SIZE },
+                PixelRect { x: 24, y: 0, width: 8, height: SIZE },
+            ];
+        }
+        assert!(record(&mut backend, surfaces.clone(), &draw, [None; 4], &cache));
+    }
+    backend.flush().unwrap();
+    let churn = gfx::churn::snapshot() - before;
+    assert_eq!(churn.buffers_created, 1);
+    assert_eq!(churn.queue_writes, 1);
+    assert_eq!(backend.batch_stats().render_passes - passes, 1);
+    let (pixels, order) = backend.read_color(color).unwrap();
+    let pixel = |x: usize| {
+        let start = 4 * (4 * SIZE as usize + x);
+        let [c0, g, c2, a]: [u8; 4] = pixels[start..start + 4].try_into().unwrap();
+        match order {
+            HostPixelOrder::Bgra8 => [c2, g, c0, a],
+            HostPixelOrder::Rgba8 => [c0, g, c2, a],
+        }
+    };
+    assert_eq!(pixel(4), [255, 0, 0, 255]);
+    assert_eq!(pixel(20), [255, 255, 0, 255]);
 }

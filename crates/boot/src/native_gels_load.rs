@@ -3,15 +3,15 @@
 //! are never approximated here.
 
 use std::collections::HashMap;
-use std::io::BufReader;
 use std::sync::{Arc, Mutex};
 
-use map::{Map, ResourceFile, TagId};
+use map::TagId;
 use native_render::gpu::Image;
 use tags::material::{AnimationKind, ShaderLibrary, TextureSource};
 use tags::shader::PSDEF_SIZE;
 
-use crate::native_world_glue::{StageDecoder, locate, region};
+use crate::native_map;
+use crate::native_world_glue::StageDecoder;
 
 pub struct Asset {
     pub code: Vec<u8>,
@@ -26,22 +26,7 @@ pub struct Asset {
 pub type Assets = HashMap<(u32, u32), Result<Arc<Asset>, String>>;
 
 pub fn load(name: &str, generation: u64) -> Result<Assets, String> {
-    let file = locate(name).ok_or("gel map not found")?;
-    let reader = BufReader::new(std::fs::File::open(&file.path).map_err(|e| e.to_string())?);
-    let mut map = Map::from_region(reader, file.offset, file.len).map_err(|e| e.to_string())?;
-    let mut files = assets::ResourceFiles::new();
-    files
-        .set(ResourceFile::Local, region(&file))
-        .map_err(|e| e.to_string())?;
-    for (which, short) in [
-        (ResourceFile::MainMenu, "mainmenu"),
-        (ResourceFile::Shared, "shared"),
-        (ResourceFile::SinglePlayerShared, "single_player_shared"),
-    ] {
-        if let Some(f) = locate(short) {
-            files.set(which, region(&f)).map_err(|e| e.to_string())?;
-        }
-    }
+    let (mut map, mut files) = native_map::open(name).map_err(|e| e.to_string())?;
     let mut lib = ShaderLibrary::read(&mut map).map_err(|e| e.to_string())?;
     let definitions: Vec<_> = map
         .tags()

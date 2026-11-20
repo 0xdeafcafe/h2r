@@ -15,6 +15,7 @@ mod client;
 mod endpoint;
 pub mod expect;
 pub mod havok;
+pub mod host_lobby;
 pub mod hot;
 mod load;
 mod pad;
@@ -22,6 +23,7 @@ pub mod raw;
 mod render;
 pub mod sim;
 pub mod state;
+pub mod theater;
 pub mod trace;
 pub use client::{CallError, Client};
 pub use endpoint::Endpoint;
@@ -146,6 +148,13 @@ pub mod method {
     pub const SAMPLE_STATUS: &str = "profile.sample.status";
     /// The newest host perf line (`boot::host_perf`).
     pub const HOST_PERF: &str = "host.perf";
+    /// Recent tick cost and process resource use.
+    pub const HOST_METRICS: &str = "host.metrics";
+    pub const HOST_AUDIT: &str = "host.audit";
+    pub const HOST_LOBBY_OPEN: &str = "host.lobby.open";
+    pub const HOST_LOBBY_STATE: &str = "host.lobby.state";
+    pub const HOST_LOBBY_START: &str = "host.lobby.start";
+    pub const HOST_LOBBY_CLOSE: &str = "host.lobby.close";
     /// The fallback interpreter's entry addresses, by instructions
     /// interpreted (`{"top": 20}`): where generated code still stops.
     pub const PROFILE_FALLBACKS: &str = "profile.fallbacks";
@@ -161,6 +170,7 @@ pub mod method {
     /// reasons, the pipelined render, native render paths
     /// ([`crate::RenderStats`]).
     pub const RENDER_STATS: &str = "render.stats";
+    pub const COOP_LOOK: &str = "render.coop_look";
     /// Active mixer voices, bin gains and distance-dependent path parameters.
     pub const AUDIO_VOICES: &str = "audio.voices";
     /// Completed per-light shadow-map comparisons.

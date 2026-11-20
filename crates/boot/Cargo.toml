@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+film = { path = "../film" }
 rustc-hash = "2"
 xbe.workspace = true
 xiso.workspace = true
@@ -33,29 +34,30 @@ settings = { path = "../settings" }
 feature = { path = "../feature" }
 engine = { path = "../engine", features = ["runtime-glue"] }
 toml = "0.9"
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 font = { path = "../font" }
 # Our added game variant choices (variant_options, docs/game/game-options.md).
 variants = { path = "../variants" }
 anyhow.workspace = true
 libloading = "0.8"
-d3d = { path = "../d3d" }
-gfx = { path = "../gfx" }
+d3d = { path = "../d3d", default-features = false }
+gfx = { path = "../gfx", default-features = false }
 png = "0.18"
 # The native post's A/B readback (native_post_glue).
-wgpu = "30"
+wgpu = { version = "30", optional = true }
 # New maps' list previews from mainmenu.map's level pictures (new_maps).
 assets = { path = "../assets" }
-native-render = { path = "../native-render" }
-shaders = { path = "../shaders" }
+native-render = { path = "../native-render", optional = true }
+shaders = { path = "../shaders", optional = true }
 serde.workspace = true
 x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
 # Voice chat's media objects (voice_glue); devices come from the host.
-voice.workspace = true
+voice = { workspace = true, optional = true }
 audio = { path = "../audio", default-features = false }
-bink-hle = { path = "../bink-hle" }
+bink-hle = { path = "../bink-hle", default-features = false }
 # Where `h2 movies` installs (movies_glue).
-movies.workspace = true
+movies = { workspace = true, optional = true }
 xapi = { path = "../xapi" }
 live-hle = { path = "../live-hle" }
 live-telemetry = { path = "../live-telemetry" }
@@ -72,12 +74,12 @@ lockstep = { path = "../lockstep" }
 # Machine snapshots: feature sections' codec (docs/runtime/snapshots.md).
 snapshot = { path = "../snapshot" }
 # The agent API (H2_AGENT; docs/runtime/agent-api.md).
-agent = { path = "../agent" }
+agent = { path = "../agent", default-features = false }
 agent-proto = { path = "../agent-proto" }
 # Our debug menu (debug_menu_glue.rs, docs/runtime/debug-menu.md).
 debug-menu = { path = "../debug-menu" }
 # Hot iteration on the agent (src/hot_glue.rs, docs/graphics/hot-iteration.md).
-hot-render = { path = "../hot-render" }
+hot-render = { path = "../hot-render", optional = true }
 hot-tags = { path = "../hot-tags" }
 # The agent glue's host methods (input.pad, profile.sample.*).
 serde_json.workspace = true
@@ -85,12 +87,23 @@ serde_json.workspace = true
 perf = { path = "../perf", optional = true }
 
 [features]
+default = ["gpu", "movie-playback", "local-io"]
+gpu = ["gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render"]
+movie-playback = ["bink-hle/playback", "dep:movies"]
+local-io = ["dep:voice"]
 perf = ["dep:perf"]
 
 [dev-dependencies]
-shaders = { path = "../shaders" }
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../runtime/test-probe" }
 
-[target.'cfg(unix)'.dev-dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[[example]]
+name = "menu_cpu"
+required-features = ["gpu"]
+
+[[test]]
+name = "headless_interp"
+required-features = ["gpu"]

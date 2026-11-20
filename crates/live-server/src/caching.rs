@@ -120,7 +120,7 @@ pub async fn layer(req: Request, next: Next) -> Response {
 
 /// `auth=1` (or any value but `0`) in a query: the web app's mark on a read
 /// it sends with a token.
-fn has_auth_param(query: Option<&str>) -> bool {
+pub(crate) fn has_auth_param(query: Option<&str>) -> bool {
     query.is_some_and(|q| {
         q.split('&').any(|kv| {
             kv.split_once('=')

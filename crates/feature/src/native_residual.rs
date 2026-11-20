@@ -11,7 +11,7 @@ pub const SWITCH: &str = "impl.render.native_residual";
 pub const ID: &str = "native-residual";
 
 pub fn on(switches: &Switches) -> bool {
-    switches.feature(SWITCH, false)
+    switches.feature(SWITCH, true)
 }
 
 pub fn probe_frames() -> &'static [u64] {

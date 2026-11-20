@@ -1,8 +1,16 @@
 # Bots: Clankers and Clankermatch
 
-Status: design (slice 1). Nothing is built. The decisions below are
-final unless a game run proves one of them wrong. Everything that needs a run
-is listed in §11.
+This document records the original design, implementation traces and
+outstanding game checks. The player-options checks are below. Section 11
+lists the original multiplayer checks.
+
+Navigation generator 5 routes through lifts and teleporters, including
+converted Halo 1 one-way exits. Bots build pickup beliefs from sight and
+dated teammate reports, choose firing positions and investigate sounds.
+Seeded personality traits shape those choices and match events change
+temperament. See [Navigation](#32-navigation),
+[Belief and map knowledge](#belief-and-map-knowledge) and
+[Personality and temperament](#personality-and-temperament).
 
 What we want: multiplayer bots ("Clankers") that play Halo 2 multiplayer by
 the game's own rules. They can be added to a custom game from Game Setup.
@@ -14,6 +22,81 @@ addresses given. **Repo** means it is already in this repository's code or
 docs. **Design** means it is our decision. **Run** means only a game run can
 settle it. No game data is in this document: it has addresses and paraphrase
 only.
+
+## Clanker appearance and Live player options
+
+A Clanker's full gamertag determines its emblem and armour colours across
+local slots, System Link, simulated players and Live rosters. Switching
+controller, host or account XUID keeps the same look for the same name.
+The profile model still comes from the host. Team games can override the
+visible armour colour.
+
+`live_proto::bots::appearance` lowercases the tag, collapses whitespace
+and hashes its UTF-8 bytes with 32-bit FNV-1a and a fixed final mix. The
+low bits select one of 64 foregrounds and 32 backgrounds. The two
+foreground colours come from one brightness group and the two background
+colours from the other, using four different retail palette indices.
+Rusty Lugnut has foreground 1, background 30 and profile colours
+10, 11, 13, 16. The server recomputes looks when projecting every
+`BotIssued`, including old signed events, so existing accounts migrate
+without rewriting their log or changing their personality. The game and
+both Live homes use the pure Rust implementation. The web mock uses a C
+mirror compiled as inline WebAssembly. Rust and browser tests read the
+same 8,192-name fixture and check its fingerprint. After changing
+`web/src/lib/clanker_appearance.c`, regenerate the browser module
+with `python3 scripts/clanker-web-kernel.py` using LLVM clang and wasm-ld.
+The web tests check the source digest.
+
+**Retail trace.** The main-menu tags identify the pregame lobby as
+`0x0e`, the expanded/collapsed Live Y menus as `0x1a/0x1b`, and their
+`player_selected_dialog` as `0x1f`. Zanzibar's in-game Live menu is
+`0x1c` and also has `0x1f`. There is a separately named
+`player_selected_dialog` tag `0x20` in the main menu. The presence of
+that tag alone does not establish a loader for it.
+
+- The friend-list press at `0x2b3870` copies the selected friend (record
+  kind 2), commits it at `0x2b38ed` and opens through `0x2b71f0`.
+  The list handler at `0x2b3e4d` builds kind 1 from the selected row and
+  opens through `0x2b7212`. Another player selection at `0x23403c`
+  copies the XUID and name at `0x234100` and uses `0x2b7223`.
+- Both options loader families reach `0x2b70a3` or `0x2b71a6`.
+  They take the request in EAX, source in ESI, and return the screen in
+  EAX. Their shared constructor `0x2b6106` builds screen 31 with its
+  action list at screen + `0x614`. The list is populated at `0x2b55ae`
+  and its press handler is `0x2b5d3b`.
+- `0x148893` writes the selected-player record at `0x54dc6c`.
+  For kinds 1 and 2, +4 holds the eight-byte XUID, +12 the flags and
+  +16 the ASCII gamertag. Kind 3 has only a name. The hooks leave
+  name-only rows and human accounts on the retail path. A local guest
+  sharing a human XUID must match the bot slot's full 12-byte player id.
+  A guest on another console needs a matching, gear-marked session slot.
+- The card opens on the kit's large dialog and offers Back. Skin 6 of
+  the current interface contains the Y menu's player table. Its nested
+  skin's first shader bitmap uses the medium emblem material in the
+  main menu, shared map and Zanzibar. The card copies that definition
+  and feeds the profile to the retail emblem setter at `0x2b12ca`.
+- The host shows the active brain's difficulty and strongest personality
+  trait. A remote or recent server bot resolves by XUID through
+  `GET /v1/games/bots/{xuid}`, which returns its full tag, seed and last
+  rostered skill. A scripted player with no brain, or a remote player
+  whose details cannot be retrieved, shows “Unavailable”.
+- Mute and feedback are omitted from the card. A Clanker has no voice
+  account to mute and no human player to report. Both server homes
+  refuse friend requests and mailbox writes to either reserved XUID
+  range with HTTP 403. Retail text and voice sends share the HLE outbox,
+  which refuses the entire recipient list if it includes a bot.
+
+**Needs a game run.** The common constructors and record layout are
+confirmed statically. Which handler each retail lobby, in-game, recent
+and friends row exercises still needs input-driven confirmation.
+Select a bot and a human from each available surface, including a
+recent bot that has left the session. Check `h2 agent ui` for
+`dialog.name = clanker_player_options`, the rendered emblem, difficulty
+and style, and return to the invoking list with B or Back. Repeat with a
+remote client, a human guest next to an unleased local bot and two
+controllers. Check the same name after restart and in a non-team System
+Link game against its Live card and web emblem. Use a legacy friends
+entry if available, since new friend requests to bots cannot create one.
 
 ## 1. Decision
 
@@ -133,9 +216,8 @@ What this means for bots:
 - A **local-slot bot** feeds the pad. Steps 1 to 3 then run for it as for a
   human, so nothing else is needed.
 - A **phantom bot** supplies its brain's pad when the host gathers the
-  remote slot for simulation. It uses the Default layout, keeps button
-  history per phantom and writes the same action format as the local
-  builder. See §5.1, “The action from a pad”, for the fields and timing.
+  remote slot for simulation. After uplink delivery the same retail reader, layout mapper and action
+  builder run against a private local-user view of that seat. See §5.1, “The action from a pad”, for the fields and timing.
 
 ### 2.3 Views (traced)
 
@@ -704,9 +786,8 @@ clock and clears the velocity sample.
 The right thumb takes several ticks to cross the stick well. Large flicks
 carry a little past the target before settling. Small correlated errors and
 the occasional larger misread vary by skill. Fast crossings leave more
-tracking lag than slow ones. The local virtual pad uses the game's stick
-response, look acceleration and aim assist at sensitivity 3. Phantom
-actions use a nominal sensitivity-3 curve with a 3 rad/s ceiling.
+tracking lag than slow ones. Both virtual pads use the game's stick response, look acceleration and
+aim assist at sensitivity 3 (§5.1).
 
 At the controller boundary, each stick stays within its unit circle and
 can travel at most 0.45 stick radii per tick. A full reversal takes at
@@ -737,6 +818,167 @@ and its aim searched until it goes off at the target; the bot throws only
 when one does (built: `bots::grenades`, "Built: weapon skill" in §10).
 The numbers in the table are starting points; tuning them needs runs
 (§11).
+
+#### Phantom aim diagnosis and next steps
+
+In the Midship replay on 2026-11-19
+(`531b5da3ceab388417c044afcf18e01a`), four phantoms fired 2,231 shots.
+They dealt positive damage to opponents on 14 bullet hits and 9 melee
+hits. Three local Clankers fired 1,372 shots and landed 236 bullet hits.
+The hits show that phantom actions reached the host.
+
+The integrated phantom adapter turns a half-stick input at about 54°/s.
+The local Midship response is about 9°/s yaw or 5°/s pitch at the same
+deflection before assist. The phantom's aim-assist record was also
+empty. Treat the turn response and assist as separate findings. Match
+the two paths before using their hit rates to tune the brain.
+
+The shared pad-to-action path for local and phantom seats is in progress.
+Clanker Training needs phantom seats before aim tuning so the comparison
+includes the remote action path. Compare the hand-written aim with a
+hand-built aim net in simulation using matched maps, lineups and seeds.
+Record results per seat. [Simulation coverage](../runtime/sim.md#more-than-four)
+
+#### 3.4.1 The aim net (built, not compared in a game yet)
+
+The user asked for a small neural net with hand-written weights for aim
+and tracking, tested in simulation against the code above, the winner to
+stay. `bots::aim_net` is that net. Nothing is trained and there is no ML
+dependency: the weights are `const` arrays built from named constants, so
+each hidden unit has one job.
+
+**The switch.** `aim_model = "code" | "net"` in a bot's tuning
+(`bots::tuning::Tuning::aim_model`, `sim::config::BotParams::aim_model`).
+`H2_BOT_AIM_MODEL=net` sets the default for bots whose tuning does not
+name one. The default is `code`.
+
+**What it replaces.** Only the step that turns the hand's view of a
+tracked target into the stick it wants. With `code` that is the tracking
+lag, the flick offset and `gain × error` through the stick curve. With
+`net` it is one forward pass. Both models share everything around that
+step:
+
+- the view, as late as `perception_ticks` makes it;
+- the hand's wandering error and misreads, from the same seeded process,
+  scaled by `error` and by mood through `human_input::tracking_noise`;
+- the thumb, which moves at most the skill's travel a tick (0.15 easy to
+  0.25 legendary) inside the stick's circle;
+- the controller: motor delay, the 0.45 stick step, the one-thumb rule;
+- target choice, the fire cone, the trigger, movement and the shared
+  action builder.
+
+A look with no tracked target (travel, a glance at a sound, a pilot's
+line) uses the code's curve under either model.
+
+**Inputs (18).** Yaw then pitch where there are two.
+
+| Input | Unit | From |
+|---|---|---|
+| error | rad | aim to the led aim point, before the hand's error |
+| error rate | rad/s | this view's error less the last one's |
+| target rate | rad/s | the target's bearing from the eye, view to view |
+| stick | -1..1 | the thumb now, turn-positive |
+| pending turn | rad | the nominal turn of the last `perception_ticks + motor_ticks` reports: asked for, not in the view yet |
+| since acquired | s | 0..2 |
+| size | rad | 0.25 / distance: the target's apparent half width |
+| looseness | 0..1 | the weapon: sniper 0, precise 0.15, unknown and blast 0.5, spray 0.7, shotgun and sword 1 |
+| gain | 0..1.5 | the skill's `gain`: 0 at easy's 1.6, 1 at legendary's 4.5 |
+| spread | 0..1.5 | the skill's `error` / 0.10 |
+| lead | 0..1 | the skill's `lead` |
+| noise | rad | the hand's wandering error this tick |
+
+The three skill scalars come from the tuned aim table, so `gain`, `error`
+and `lead` in a tuning file move the net as they move the code.
+
+**Hidden units (24, ReLU).** They come in mirrored pairs, one unit a
+direction. Skill enters only through biases: it widens or narrows a dead
+band or a clamp. With `seen = error + noise`,
+`predicted = seen + 0.02 × error rate + 0.12 × target rate − 0.9 × pending`
+and `tolerance = 0.006 × spread + 0.06 × size + 0.004 × looseness`:
+
+| Units | Name | Computes | Job |
+|---|---|---|---|
+| 0, 1 | yaw pull | `±predicted − tolerance` | The PD term. The error rate is the D. The target rate carries the error forward over the view's age, and the pending turn takes off what is already on its way. Out at 3.9 stick/rad. Inside the tolerance the thumb rests. |
+| 2, 3 | yaw boost cap | `2.0 × pull − 0.43 × gain` | Takes the extra 2.0 stick/rad away again once it has given `0.43 × gain` of stick. Easy gets 1.9 stick/rad everywhere; legendary 3.9 for the first 0.2 rad. |
+| 4, 5 | yaw breakout | `±seen − tolerance` | The micro-correction. Out at 8 stick/rad on the error as seen, so a small miss gets a stick past its dead zone at once. |
+| 6, 7 | yaw breakout cap | `8 × breakout − 0.17` | Stops the micro-correction at 0.17 of stick, just past the 0.13 dead zone, where the view creeps. |
+| 8, 9 | yaw lead | `±target rate` | Velocity feed-forward: 0.35 stick per rad/s, so the thumb holds the turn a moving target needs with no error to drive it. |
+| 10, 11 | yaw lead cap | `0.35 × lead unit − 0.6 × lead` | Stops the feed-forward at `0.6 × lead` of stick. Easy keeps up with 0.5 rad/s, legendary with 1.7. |
+| 12, 13 | yaw follow-through | `±stick − 0.5 − 1.2 × since + 0.3 × spread` | The flick overshoot. A thumb already hard over early in an engagement stays over (0.8 out), so the aim carries past and comes back. It fades within 0.4 to 0.7 s and is wider for a wider spread. |
+| 14–21 | pitch pull, boost cap, breakout, breakout cap | as yaw's | The same four pairs on pitch. |
+| 22, 23 | pitch lead | `±target rate` | Pitch feed-forward, 0.25 stick per rad/s, no cap. |
+
+**Outputs (2).** The yaw and pitch turn, each the weighted sum of its
+units clamped to −1..1. The hand maps `[yaw, pitch]` to the right stick
+`(−yaw, pitch)`, keeps it in the unit circle and moves the thumb there.
+No fire gate: the trigger stays with the shared fire cone, so the
+comparison measures aim alone.
+
+The pending-turn input is what separates the two models most. A view is
+`perception_ticks` old and a report lands `motor_ticks` later: five ticks
+at easy and normal, four at heroic, three at legendary. The code aim
+steers on the old view as if it were current. The net subtracts the turn
+it has already asked for. In a scratch model of the nominal stick curve
+with that delay, written while the weights were designed, the code aim
+swung past a still target and at heroic and legendary gain kept swinging.
+No test asserts that and no game run has shown it: the real stick
+response has look acceleration and aim assist that the nominal model
+leaves out. The comparison is what says.
+
+**Tests.** `cargo test -p bots aim_net` covers the network alone: the
+same bits for the same inputs, no stick for no error or inside the dead
+band, sign and axis, saturation, the gain order by skill, each named
+unit's effect, and the table's shape. `cargo test -p bots look` runs both
+models through one kinematic harness (the nominal stick curve, the view
+as late as the skill's delays): determinism, the code aim untouched by
+the switch, the net landing a 0.95 rad flick and settling sooner and
+closer at each higher skill, tracking a strafing and a crossing target,
+and the mood scaling of its error.
+
+**The comparison.**
+
+```sh
+H2_OPT=2 h2 sim batch docs/runtime/sim-examples/aim-net-vs-code.toml --disc disc/halo2.iso --parallel 3 --pace unpaced
+```
+
+Midship and Lockout, four skills, five seeds, two against two, every bot
+at the run's skill. Each match is played twice (`mode = "arm_swap"`): the
+second leg gives every bot the other arm, so each model plays every seat,
+team, spawn and brain seed. 80 matches. Only `aim_model` differs between
+the arms. `compare.txt` under
+`docs/runtime/sim-examples/results/aim-net-vs-code/` has one table over
+all runs and one per skill, with net − code and its 95% interval:
+
+| Row | Meaning | Better |
+|---|---|---|
+| `accuracy` | hits / shots | higher |
+| `kd`, `win`, `kills`, `deaths` | the fights | higher K/D |
+| `ttk_s` | seconds from the killer's first hit of a fight to the kill | lower |
+| `aim_error` | mean angle off the aim point while tracking, rad | lower |
+| `overshoot` | how far past the target a flick of 20° or more goes, as a fraction of the flick | 0.03 to 0.25 reads as a hand |
+| `settle_s` | seconds for such a flick to stay within 0.05 rad | lower |
+| `jitter` | right-stick travel a tick while tracking | lower |
+| `reversals` | changes of the stick's yaw direction a second | lower |
+
+**The decision rule.** Read the per-skill tables.
+
+1. The net wins if, at three skills or more, it is better with the
+   interval clear of zero on at least one of `kd`, `accuracy` and
+   `ttk_s`, worse with the interval clear of zero on none of them at any
+   skill, and no less like a hand: `jitter` and `reversals` not higher
+   with the interval clear of zero, and `overshoot` inside 0.03 to 0.25.
+2. The code wins if the reverse holds.
+3. Anything else is close, and the simpler one stays. That is the code:
+   it is the incumbent and carries no extra state.
+
+Also check that each model's own `accuracy` still rises from easy to
+legendary. A net that makes easy bots sharp has lost the difficulty
+ladder whatever its K/D.
+
+The loser is deleted, not kept behind the switch. If the net wins, the
+default becomes `net`, then the code's tracking lag and flick offset go.
+If the code wins, `bots::aim_net`, the switch and the hand's net state
+go. The aim-motion rows and `arm_swap` stay either way.
 
 ### 3.5 Emotes (the teabag layer)
 
@@ -1557,7 +1799,7 @@ changes:
 
   The brain's aim spring is tuned against that sensitivity.
 - the look at block `+0x118` (colours and emblem) set to the bot's own,
-  by port (stage 7, "Their own look"), so it does not wear the human's.
+  by full gamertag (see “Clanker appearance and Live player options”).
 - The name the game shows comes from slot `+0xc1c` (UTF-16, 32 units,
   `0x1902c1`). The driver writes it after the sign-in.
 
@@ -2326,15 +2568,41 @@ The local interaction finder `0x151110(player, result)` returns the
 12 bytes copied at `+0x28`. These include the interaction kind (i16),
 detail at `+0x2a` (seat for a seat interaction), object datum at `+0x2c`
 and melee target at `+0x30` (`0x151d41`, `0x15166c`, `0x14fd37`).
-An empty target has kind zero and both datums −1. The unused aim block
-`+0x34..+0x57` has its first three datums set to −1, other fields zero,
-as initialized at `0x14d040`.
+An empty target has kind zero and both datums −1.
 
-Yaw and pitch are absolute radians at `+4/+8`. The phantom turns from
-the unit's aim vector at `+0x168` with the bot's stick curve (nominal
-3 rad/s at full deflection). The left stick supplies forward and strafe at `+0xc/+0x10`.
-Default stick layout writes left Y and negated left X at `0x21838a..0x218399`,
-which `0x185e81..0x185ea9` passes to the action builder.
+The separate shot-assist block starts at `+0x34`. The local action builder
+copies nine dwords there at `0x187074..0x187083`. Previously the phantom
+always supplied the empty block from `0x14d040`. Both strengths were
+zero, so the barrel's target check at `0x1a6a8b..0x1a6aa5` skipped
+shot magnetism even when the reticle was close enough for a local player.
+
+Both seats use the retail XInput reader `0x124c00`, profile/layout routines
+`0x190c34` and `0x217c40`, and the full player action builder `0x186ab0`.
+The builder indexes the user's 0x94-byte control history by player +0x28.
+It calls `0x185be0` for look response (including acceleration, slowdown
+and follow) and `0x1a4900` for weapon parameters and target search
+(`0x1a50a0`, `0x1a5370`). It writes yaw/pitch at +4/+8, trigger flags
+at +0 and the selected target and strengths at +0x34..+0x57. The host
+validates the returned record at `0x14d0a0`.
+
+The retail tables have four entries. At remote gather, a second executor
+uses a copy-on-write snapshot of the host world. In that view local user
+and controller zero, the two player maps at `[0x4e8c20]+0xc/+0x1c`,
+and the player's +0x24/+0x28 all refer to the phantom. Its virtual XInput
+handle supplies the arrived pad to `0x409b6c`. The seat brings its own
+raw input, button and control history between ticks. Retail binds the unit
+at `0x1872d0`; `0x1557c0` supplies the unit or vehicle camera origin for
+the observer at `0x4e9c8c`. Only the validated action crosses back to the
+host. A repeated gather in one tick reuses that action. Local bots keep
+their normal retail controller polling. A phantom samples once per game
+tick and advances the button clock by elapsed simulation milliseconds.
+
+The image-backed test `retail_pad_sequence_matches_local_angles_target_and_fire`
+uses `H2_DISC`, its matching `H2_RETAIL_MODULE`, and a multiplayer checkpoint
+in `H2_PAD_CHECKPOINT`. Capture the checkpoint with the agent API's
+`state.save` while port zero is on foot, the menu is closed and an opponent
+is inside the weapon’s assist cone. The test compares the full actions and
+requires movement of the aim angles, a selected target and a fire bit.
 
 **Open, for a run**:
 
@@ -2350,8 +2618,8 @@ which `0x185e81..0x185ea9` passes to the action builder.
   never go through it ("Phantoms in the pregame lobby"). `0x5f970` is a
   channel's teardown, not a ready check, and `0x62e30` is the free-slot
   count, now honoured.
-- Colours and emblem in the configuration ([guess] `+0x40..+0x7b`); a
-  phantom wears the host's until then.
+- The profile appearance starts at configuration `+0x40` (traced at
+  `0x18fd94`). Phantoms set its colours and emblem from their full tag.
 
 **Phantom ping.** Each phantom has a seeded 40–80 ms round-trip ping by
 default. The host samples its pad at 30 Hz and queues the report for
@@ -2363,6 +2631,30 @@ arrived pad. Several packets arriving together can collapse to the newest
 report. A new unit or a break in the stream clears the queue.
 `phantom_ping_ms` sets round-trip time, with 0 for immediate delivery.
 `phantom_jitter_ms` sets the one-way jitter bound.
+
+**Midship replay, 2026-11-19.** In game
+`531b5da3ceab388417c044afcf18e01a`, the 2,672 recorded frames
+attribute 2,231 shots to the four phantoms. Fourteen bullet hits and
+nine melee hits from them dealt positive damage to opposing players.
+The three local bots recorded 1,372 shots and 236 opposing bullet hits.
+A team with no kills has no assisted kills either. The damage reports
+establish that phantom fire reached the host.
+
+The old phantom adapter treated a half-stick on either axis as about
+54°/s. The local Midship table gives about 9°/s yaw or 5°/s pitch
+for that input before aim assist. One phantom's pitch swept from +34°
+at tick 1284 to −26° at 1300 while the human's bearing stayed within
+6° of level. Using the local response removes this excess gain from the
+delayed control loop. Post-change hit rates require another hosted match.
+
+**Training coverage.** A sim match with a `kind = "phantom"` seat hosts
+a private System Link game. Its brain, uplink, remote gather and retail
+action builder run as they do on a normal host. Training waits for every
+configured seat to bind to a player and unit before counting combat.
+The paired Midship example switches transport for each named bot while
+keeping its team, tuning, map and seed. The report compares shots,
+opposing hits and damage dealt and taken per seat.
+[Headless simulation](../runtime/sim.md#more-than-four)
 
 ### 5.2 Why phantoms are needed
 
@@ -3807,8 +4099,9 @@ list for the user to play (§11).
         address")?
      5. Back in the lobby they are gone; the next game they join again.
      6. Send the `bots:` and `clankers:` lines, and anything odd in the
-        turning or lateral movement. Compare full-stick turning with the
-        adapter's nominal 3 rad/s.
+        turning or lateral movement. Compare the initial full-stick turn with
+        the sensitivity-3 rates in §5.1, then check the sustained turn
+        against a local Clanker on the same map.
      7. Also useful: on the host, the session state and the network life
         cycle (`0x527334`) during the game.
    - **Built (6c), the server side, both homes** (`live_server::bots`,
@@ -3870,8 +4163,7 @@ list for the user to play (§11).
      - Until a roster comes, or when none does (refused, Live off, System
        Link, offline), phantoms are host-made, as in 6b. Once it comes,
        they all go and the roster's bots replace them
-       (`clankers::roster_seats`): xuid, gamertag, emblem and colours as
-       the `Identity`; the roster's team when not null; a brain at the
+       (`clankers::roster_seats`): xuid and gamertag as the `Identity`; the roster's team when not null; a brain at the
        nearest named skill (`skill_of`), seeded with the personality's
        seed and taunting at its `taunt` (Taunts off still makes it 0). The
        page's difficulty never changes a roster bot's skill.
@@ -3939,7 +4231,7 @@ list for the user to play (§11).
        true` is accepted only for an xuid the server issued as a bot.
      - The host asks for the roster when the Clankers page wants more bots
        than free ports (or always, with Live on). Each roster entry becomes
-       a `bots::phantom::Identity` (xuid, gamertag, emblem, colours) and a
+       a `bots::phantom::Identity` (xuid and gamertag) and a
        brain at the entry's skill.
      - `sim` can ask the same endpoint for identities and pass them to
        `sim.player.add {kind: phantom, identity}`. The bots crate never
@@ -4094,9 +4386,8 @@ list for the user to play (§11).
      player properties at `+0x40`; `0x1a0540` zeroes them when
      `0x153750` rejects the first 8: four colours below 18, a model below
      4, an emblem foreground below 0x40 and background below 0x20, flags
-     in the low nibble). Each port has its colours and emblem
-     (`guest::BOT_LOOKS`), an armour colour the human wears is moved one
-     on, and the model is the human's.
+     in the low nibble). The gamertag supplies the colours and emblem,
+     and the profile supplies the model.
    - **Nav meshes early.** A map picked in the lobby's map list with
      Clankers on, or Clankers coming on after a map was picked, asks
      `bots::autonav::build_soon` for its mesh (`clankers::map_picked`).
@@ -4115,8 +4406,7 @@ list for the user to play (§11).
        (`guest::slot_held`);
      - the gate: only the bare players screen with an empty slot
        (`bot_glue` tests, `ui_watch` dialog tests);
-     - the look: valid by `0x153750`'s checks, never the human's colours
-       or emblem, distinct per port;
+     - the look: valid by `0x153750`'s checks, repeatable across ports;
      - the page: a row per setting, steps saved in the store, wrapping;
        the row's text in its own slot, not the title's;
      - the row: only a custom game's list, once, beside the Halo 1 row;
@@ -4702,7 +4992,7 @@ list for the user to play (§11).
    - Small right-stick fidgets happen when an actor is standing idle
      and on signed-in local pads in a network pregame lobby or while
      awaiting a unit. They send zero left stick, triggers and buttons.
-     The phantom action adapter applies the turn curve and translates the
+     The retail action builder applies the turn curve and translates the
      hand's button timing as described in §5.1.
    - Seeing a live grenade and getting clear of it is `bots::incoming`
      (named `grenade` on the lane; renamed at the merge so it does not
@@ -4811,8 +5101,8 @@ small surface. Everything in it is controller input.
       multiplayer game, and is idle elsewhere.
 - `bots::phantom::add(Identity, team: Option<u8>, Box<dyn PadSource>)`
   puts a phantom on the books; it joins once a multiplayer game this
-  console hosts runs (§5.1). `Identity` is the roster's xuid, gamertag,
-  emblem and colours (§9.1); emblem and colours are not applied yet.
+  console hosts runs (§5.1). `Identity` carries the roster's XUID and full gamertag.
+  The phantom applies that name's look to its player configuration.
 - `bots::phantom::remove(handle)`, `list() -> Vec<PhantomInfo>` (handle,
   identity, team, machine id, `player: Option<u32>`, `state: Pending |
   Joined | Failed(reason)`) and `player(handle) -> Option<u32>` work on the

@@ -7,7 +7,7 @@ use super::{
     session::{self, at::*},
 };
 use crate::{
-    arms, guest,
+    guest,
     human_input::TICK_MS,
     local::Frame,
     mind::feel::{Rng, reached},
@@ -17,7 +17,7 @@ use engine::entry::{Cx, EntryError, GuestCall, Ret};
 use engine::handle::DatumHandle;
 use engine::memory::{GuestMemory, MemFault};
 use engine::view::{objects, players};
-use input::{AnalogButton, Buttons, host::HostPadState};
+use input::host::HostPadState;
 
 /// Buffered controller reports on the remote action path. Build the guest
 /// action on arrival so its absolute aim and weapon fields use current
@@ -84,252 +84,91 @@ impl Uplink {
 }
 
 #[derive(Clone, Copy, Default)]
-pub(super) struct ButtonState {
+pub(super) struct GatherState {
     sample: Option<(DatumHandle, u32)>,
     accepted: bool,
-    thresholds: [u8; 8],
-    pressure: [u8; 8],
-    x_ticks: u32,
-    y_ticks: u32,
-    zoom_ticks: u32,
-    restore_zoom: Option<u8>,
-    zoom_latched: bool,
-    crouch_down: bool,
-    crouched: bool,
-    jump_down: bool,
-    suppress_jump: bool,
-    grenade_swap_down: bool,
-    suppress_grenade: bool,
 }
 
-fn held(ticks: u32, down: bool) -> u32 {
-    if down { ticks.saturating_add(1) } else { 0 }
+/// The arrived XInput report and the identity for one retail action build.
+#[derive(Clone, Copy)]
+pub struct SeatInput {
+    pub player: DatumHandle,
+    pub player_addr: u32,
+    pub unit: DatumHandle,
+    pub tick: u32,
+    pub dt: f32,
+    pub pad: input::State,
+    pub reset: bool,
 }
 
-// Analog button hysteresis in the XInput reader (0x124c53..0x124cc9).
-fn pressure_down(threshold: &mut u8, previous: u8, pressure: u8) -> bool {
-    *threshold = if previous > *threshold {
-        (*threshold).max(pressure.saturating_sub(32))
-    } else {
-        (*threshold).min(pressure.saturating_add(64))
-    };
-    // The action is for this simulation sample. XInput published its count
-    // for the previous pressure while it read this one.
-    pressure > *threshold
-}
-
-struct Sample {
-    player: DatumHandle,
-    unit: DatumHandle,
-    body: u32,
-    biped: bool,
-    player_flags: u16,
-    tick: u32,
-    dt: f32,
-    pad: HostPadState,
-}
-
-impl ButtonState {
-    async fn action(&mut self, cx: &Cx, sample: Sample) -> Result<session::Action, EntryError> {
-        let Sample {
-            player_flags,
-            unit,
-            body,
-            pad,
-            dt,
-            ..
-        } = sample;
-        let unit = unit.raw();
-        let g = pad.to_gamepad(&Default::default(), false);
-        let mut down = [false; 8];
-        for (i, &pressure) in g.analog.iter().enumerate() {
-            down[i] = pressure_down(&mut self.thresholds[i], self.pressure[i], pressure);
-        }
-        self.pressure = g.analog;
-        let [jump, melee, x, y, swap_grenade, light, lt, rt] = down;
-        let (current, left, mut a) = cx.read(|m| -> Result<_, MemFault> {
-            let aim = m.vec3(body + guest::UNIT_AIM)?;
-            let current = m.u8(body + arms::UNIT_WEAPON_INDEX)?;
-            let left = m.u8(body + arms::UNIT_LEFT_WEAPON_INDEX)?;
-            let requested = m.u8(body + 0x216)?;
-            let primary = if requested < 4 { requested } else { current };
-            let mut a = session::motion_from_pad(&pad, aim, primary as i8, dt);
-            a.weapon_set = m.u16(body + 0x214)?;
-            let secondary = m.u8(body + 0x217)?;
-            a.secondary = (secondary < 4).then_some(secondary);
-            let zoom = m.u8(body + 0x241)?;
-            a.zoom = (zoom < 4).then_some(zoom);
-            Ok((current, left, a))
-        })?;
-        let dual = current < 4 && left < 4;
-
-        if jump {
-            self.suppress_jump |= cx.read(|m| {
-                let state = m.u32(0x0051_0c50)?;
-                Ok::<_, MemFault>(state != 0 && m.u8(state + 5)? != 0)
-            })?;
-            if !self.suppress_jump {
-                a.flags |= 2;
-            }
-            if !self.jump_down {
-                a.buttons |= 0x100;
-            }
-        }
-        self.jump_down = jump;
-        self.suppress_jump &= jump;
-        let crouch = g.buttons.contains(Buttons::LEFT_THUMB);
-        if crouch && !self.crouch_down {
-            let (x, y) = pad.left_stick;
-            self.crouched = x * x + y * y < 0.25
-                || (sample.biped
-                    && cx.call(GuestCall::new(0xe4050).eax(unit)).await?.eax as u8 != 0);
-        }
-        self.crouch_down = crouch;
-        self.crouched &= crouch;
-        if self.crouched {
-            a.flags |= 1;
-        }
-        if melee {
-            a.flags |= 0x30;
-        }
-        if light {
-            a.flags |= 0x0210_0004;
-        }
-        if rt {
-            a.flags |= 0x0001_0040;
-        }
-        if !lt {
-            self.suppress_grenade = false;
-        }
-        if lt && dual {
-            self.suppress_grenade = true;
-        }
-        if lt && (dual || !self.suppress_grenade) {
-            a.flags |= 0x0022_4800;
-            if !dual {
-                a.flags |= 0x0400_0000;
-            }
-        }
-        if g.buttons.contains(Buttons::DPAD_LEFT) {
-            a.flags |= 0x80;
-        }
-        if g.buttons.contains(Buttons::DPAD_RIGHT) {
-            a.flags |= 0x100;
-        }
-
-        let switch_weapon = self.y_ticks != 0 && !y && !dual && player_flags & 0x20 == 0;
-        self.x_ticks = held(self.x_ticks, x);
-        self.y_ticks = held(self.y_ticks, y);
-        if x || y {
-            let seconds = cx.read(|m| {
-                let globals = m.u32(0x004e_034c)?;
-                let control = m.u32(globals + 0xf4)?;
-                m.f32(control + 0x7c)
-            })?;
-            let threshold_ms = (seconds * 1000.) as u32;
-            for (ticks, mask) in [(self.x_ticks, 1), (self.y_ticks, 0x10)] {
-                if ticks != 0 {
-                    a.buttons |= mask;
-                    if (ticks as f32 * dt * 1000.) as u32 >= threshold_ms {
-                        a.buttons |= mask << 1;
-                    }
-                }
-            }
-        }
-        if switch_weapon || a.weapon == -1 {
-            a.weapon = cx
-                .call(GuestCall::new(0xcdeb0).args([
-                    unit,
-                    u32::MAX,
-                    i32::from(a.weapon) as u32,
-                    u32::from(switch_weapon),
-                ]))
-                .await?
-                .eax as i8;
-        }
-
-        // The objective weapon, when carried, takes precedence over a switch.
-        let forced = cx.call(GuestCall::new(0xcfe40).ecx(unit)).await?.eax as u16;
-        if forced < 4 && forced != u16::from(current) {
-            a.weapon = forced as i8;
-            a.secondary = None;
-        }
-
-        let grenade = cx.read(|m| m.u8(body + 0x23d))?;
-        let mut counts = [0; 2];
-        cx.read(|m| m.read(body + arms::UNIT_GRENADES, &mut counts))?;
-        // 0x186cb9 scans both types starting at the current type (or 0
-        // for NONE), preferring the other stocked type on a new press.
-        let start = if grenade < 2 { grenade } else { 0 };
-        let other = start ^ 1;
-        let change = grenade > 1 || (swap_grenade && !self.grenade_swap_down);
-        self.grenade_swap_down = swap_grenade;
-        let order = if change {
-            [other, start]
-        } else {
-            [start, other]
-        };
-        a.grenade = order.into_iter().find(|&g| counts[g as usize] as i8 > 0);
-
-        a.zoom = self.zoom(cx, &sample, &g, current, a.zoom).await?;
-        Ok(a)
-    }
-
-    async fn zoom(
-        &mut self,
-        cx: &Cx,
-        sample: &Sample,
-        g: &input::Gamepad,
-        current: u8,
-        mut zoom: Option<u8>,
-    ) -> Result<Option<u8>, EntryError> {
-        let unit = sample.unit.raw();
-        let click = g.buttons.contains(Buttons::RIGHT_THUMB);
-        let previous_ticks = self.zoom_ticks;
-        self.zoom_ticks = held(previous_ticks, click);
-        if click || zoom.is_some() {
-            if cx.call(GuestCall::new(0xc85c0).eax(unit)).await?.eax as u8 == 0 {
-                zoom = None;
-                self.zoom_latched = false;
-            } else if self.zoom_ticks == 1 {
-                let mut allowed = true;
-                if zoom.is_none() {
-                    allowed = g.analog(AnalogButton::LeftTrigger) <= 127
-                        && g.analog(AnalogButton::RightTrigger) <= 127;
-                    let (x, y) = sample.pad.right_stick;
-                    if allowed && current < 4 && x * x + y * y > 0.64 {
-                        let weapon = cx.read(|m| {
-                            m.u32(sample.body + arms::UNIT_WEAPONS + 4 * u32::from(current))
-                        })?;
-                        allowed = weapon == u32::MAX
-                            || cx.call(GuestCall::new(0x100f70).eax(weapon)).await?.eax as u8 != 0;
-                    }
-                }
-                if allowed {
-                    self.restore_zoom = zoom;
-                    let level = cx
-                        .call(
-                            GuestCall::new(0xc8960)
-                                .eax(unit)
-                                .ecx(zoom.map_or(u32::MAX, u32::from)),
-                        )
-                        .await?
-                        .eax as u16;
-                    zoom = (level < 4).then_some(level as u8);
-                    self.zoom_latched = zoom.is_some();
-                }
-            } else if !click && self.zoom_latched && previous_ticks > 16 {
-                zoom = self.restore_zoom;
-            }
-        }
-        if !click {
-            self.zoom_latched = false;
-        }
-        Ok(zoom)
-    }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AimView {
+    pub tick: u32,
+    pub stick: [f32; 2],
+    pub arrived_stick: [f32; 2],
+    pub trigger: f32,
+    pub arrived_trigger: f32,
+    pub action_deg: Option<[f32; 2]>,
+    pub fire_primary: bool,
+    pub assist_strength: [f32; 2],
+    pub unit_forward: [f32; 3],
+    pub assist_player: Option<u16>,
 }
 
 impl Phantoms {
+    /// Read the last controller sample, the validated slot record and the
+    /// current unit at one agent boundary. A respawn invalidates the sample.
+    pub fn aim_view(&self, m: &dyn GuestMemory, handle: super::PhantomHandle) -> Option<AimView> {
+        let books = self.lock();
+        let p = books.list.iter().find(|p| p.info.handle == handle)?;
+        books.hosted_game?;
+        let (unit, tick) = p.buttons.sample?;
+        let slot = session::slot_of(m, p.info.machine).ok()??;
+        let index = i32::try_from(m.u32(slot).ok()?).ok()?;
+        let player = players::array(m).ok()??.get_absolute(m, index).ok()??;
+        if !p.made
+            || !player.listed(m).ok()?
+            || player.machine(m).ok()? != p.info.machine
+            || player.unit(m).ok()? != Some(unit)
+        {
+            return None;
+        }
+        let (_, body) = objects::get(m, unit).ok()??;
+        let observed = m.vec3(body.addr + guest::UNIT_AIM).ok()?;
+        let sent = p
+            .uplink
+            .in_flight
+            .back()
+            .map_or(p.uplink.arrived, |&(_, pad)| pad);
+        let accepted = p.buttons.accepted && m.u32(slot + SLOT_STAMP).ok()? == tick;
+        let record = slot + SLOT_ACTION;
+        let (action_deg, fire_primary, assist_strength, target) = if accepted {
+            (
+                Some([
+                    m.f32(record + 4).ok()?.to_degrees(),
+                    m.f32(record + 8).ok()?.to_degrees(),
+                ]),
+                m.u32(record).ok()? & 0x40 != 0,
+                [m.f32(record + 0x50).ok()?, m.f32(record + 0x54).ok()?],
+                DatumHandle::from_raw(m.u32(record + 0x3c).ok()?),
+            )
+        } else {
+            (None, false, [0.; 2], None)
+        };
+        Some(AimView {
+            tick,
+            stick: sent.right_stick.into(),
+            arrived_stick: p.uplink.arrived.right_stick.into(),
+            trigger: sent.right_trigger,
+            arrived_trigger: p.uplink.arrived.right_trigger,
+            action_deg,
+            fire_primary,
+            assist_strength,
+            unit_forward: observed,
+            assist_player: target.map(|h| h.index()),
+        })
+    }
+
     /// Only a remote slot of a running match this console hosts can be answered.
     pub fn owns_action_slot(&self, m: &dyn GuestMemory, slot: u32) -> bool {
         if slot == 0 || m.u32(slot + 8) != Ok(4) {
@@ -344,13 +183,21 @@ impl Phantoms {
     }
 
     /// 0x84990(slot, out), only for a slot matched by owns_action_slot.
-    pub async fn slot_action(&self, cx: Cx, slot: u32) -> Result<Ret, EntryError> {
+    pub async fn slot_action(
+        &self,
+        cx: Cx,
+        slot: u32,
+        build: impl FnOnce(SeatInput) -> Result<[u8; ACTION_SIZE], EntryError>,
+    ) -> Result<Ret, EntryError> {
         let out = cx.arg(1)?;
         let input = cx.read(|m| -> Result<_, MemFault> {
             let Some(tick) = guest::game_tick(m) else {
                 return Ok(None);
             };
             let index = m.u32(slot)?;
+            if index >= session::MAX {
+                return Ok(None);
+            }
             let Some(players) = players::array(m)? else {
                 return Ok(None);
             };
@@ -366,7 +213,7 @@ impl Phantoms {
             let Some(unit) = player.unit(m)? else {
                 return Ok(None);
             };
-            let Some((kind, body)) = objects::get(m, unit)? else {
+            let Some(_) = objects::get(m, unit)? else {
                 return Ok(None);
             };
             let mut books = self.lock();
@@ -395,7 +242,7 @@ impl Phantoms {
                 state = p.buttons;
             }
             let dt = m.f32(m.u32(engine::points::GAME_TIME.base)? + 4)?;
-            let player_flags = player.flags(m)?;
+            let player_addr = player.addr;
             let player = DatumHandle::new(player.salt(m)?, index);
             let pad = if let Some(report) = p.uplink.report_at(tick) {
                 report
@@ -412,15 +259,17 @@ impl Phantoms {
                 p.samples = p.samples.saturating_add(1);
                 p.uplink.sample(tick, pad, latency)
             };
-            let sample = Sample {
+            let sample = SeatInput {
                 player,
+                player_addr,
                 unit,
-                body: body.addr,
-                biped: kind == objects::BIPED,
                 tick,
                 dt,
-                player_flags,
-                pad,
+                reset: state.sample.is_none(),
+                pad: input::State {
+                    packet_number: tick,
+                    gamepad: pad.to_gamepad(&Default::default(), false),
+                },
             };
             Ok(Some((p.info.handle, state, Some(sample))))
         })?;
@@ -428,14 +277,9 @@ impl Phantoms {
             return Ok(Ret::new(0, 8));
         };
         if let Some(sample) = sample {
-            let Sample {
-                tick, player, unit, ..
-            } = sample;
-            let a = state.action(&cx, sample).await?;
-            cx.write(|m| m.write(out, &a.bytes()))?;
-            // The same target also supplies melee and sword lunges on ticks without X.
-            cx.call(GuestCall::new(0x151110).args([player.raw(), out + 0x28]))
-                .await?;
+            let (tick, unit) = (sample.tick, sample.unit);
+            let bytes = build(sample)?;
+            cx.write(|m| m.write(out, &bytes))?;
             state.accepted = cx.call(GuestCall::new(0x14d0a0).ecx(out)).await?.eax as u8 != 0;
             if state.accepted {
                 cx.write(|m| -> Result<(), MemFault> {

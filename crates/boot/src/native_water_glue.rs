@@ -118,17 +118,21 @@ pub fn census<R: std::io::Read + std::io::Seek>(map: &mut Map<R>, shaders: &[Tag
                     .enumerate()
                     .filter_map(|(s, t)| t.map(|t| format!("stage {s}: {}", source_of(t.source))))
                     .collect();
-                eprintln!(
-                    "native-water: material {m} (shader {:#010x}) layer {layer} pass {n}: {}",
-                    shader.0,
-                    stages.join(", ")
-                );
+                if feature::native_verbose() {
+                    eprintln!(
+                        "native-water: material {m} (shader {:#010x}) layer {layer} pass {n}: {}",
+                        shader.0,
+                        stages.join(", ")
+                    );
+                }
                 lines += 1;
             }
         }
     }
     if lines == 0 {
         eprintln!("native-water: no material of this world has a pass in layers 6, 18, 19 or 21");
+    } else if !feature::native_verbose() {
+        eprintln!("native-water: {lines} census passes in layers 6, 18, 19 or 21 over {} materials", materials.len());
     }
 }
 
@@ -294,13 +298,15 @@ pub fn upload_water(
         device, queue, water.parts.clone(), programs, water.targets.clone(), water.samples_view,
         stage_image, lightmap_image,
     );
-    eprintln!(
-        "native-water: {} materials' layer-6 passes uploaded, {} parts, targets {:?}, samples the view: {}",
-        set.len(),
-        water.parts.len(),
-        water.targets,
-        water.samples_view
-    );
+    if feature::native_verbose() {
+        eprintln!(
+            "native-water: {} materials' layer-6 passes uploaded, {} parts, targets {:?}, samples the view: {}",
+            set.len(),
+            water.parts.len(),
+            water.targets,
+            water.samples_view
+        );
+    }
     gpu.set_water(set);
 }
 

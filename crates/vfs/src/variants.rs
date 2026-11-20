@@ -27,8 +27,8 @@ use std::{
     },
 };
 
-use crate::map_override::resize;
 use crate::{Backend, BasicInfo, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
+use crate::{content_maps::ContentFiles, map_override::resize};
 
 /// Halo 1's assets or Halo 2's, shared between whoever sets it (the
 /// pregame screen's rows) and the backends that serve by it. Halo 1's by
@@ -93,9 +93,21 @@ impl ContentVariants {
     pub fn register(&self, path: &str, pair: VariantPair) {
         self.lock().insert(path.to_ascii_lowercase(), pair);
     }
+    /// Replace all sandbox paths together.
+    pub fn replace(&self, maps: impl IntoIterator<Item = (String, VariantPair)>) {
+        *self.lock() = maps
+            .into_iter()
+            .map(|(path, pair)| (path.to_ascii_lowercase(), pair))
+            .collect();
+    }
     /// Forget every map (a new install replaces the table).
     pub fn clear(&self) {
         self.lock().clear();
+    }
+    pub fn has_id(&self, id: content::MapId) -> bool {
+        self.lock()
+            .values()
+            .any(|pair| pair.h1.id == Some(id) || pair.h2.id == Some(id))
     }
     pub fn choice(&self) -> &SandboxChoice {
         &self.choice
@@ -121,10 +133,36 @@ struct Served {
     len: u64,
 }
 
+struct ServerPack {
+    mapping: memmap2::Mmap,
+    file: HostFile,
+}
+
+fn map_pack_name(path: &str) -> Option<&str> {
+    let mut components = path.split('\\');
+    let (root, title, content_dir, offer, name) = (
+        components.next()?, components.next()?, components.next()?,
+        components.next()?, components.next()?,
+    );
+    if !root.eq_ignore_ascii_case("TDATA")
+        || content_dir != crate::CONTENT_DIR
+        || components.next().is_some()
+        || !content::map_pack::is_offer(u32::from_str_radix(title, 16).ok()?, u64::from_str_radix(offer, 16).ok()?)
+    {
+        return None;
+    }
+    let (stem, ext) = name.rsplit_once('.')?;
+    (ext.eq_ignore_ascii_case("map") && content::map_pack::is_map(&stem.to_ascii_lowercase()))
+        .then_some(name)
+}
+
 /// [`ContentVariants`] over `inner` (the data partition's host backend).
 pub struct VariantFiles<B> {
     inner: B,
     variants: ContentVariants,
+    packages: Option<ContentFiles>,
+    server_dir: Option<PathBuf>,
+    server_packs: BTreeMap<String, Option<ServerPack>>,
     /// Per lower-case path: handles open, and the variant they read.
     open: BTreeMap<String, (usize, bool)>,
     /// The variant each path was last opened with.
@@ -138,10 +176,63 @@ impl<B: Backend> VariantFiles<B> {
         Self {
             inner,
             variants,
+            packages: None,
+            server_dir: None,
+            server_packs: BTreeMap::new(),
             open: BTreeMap::new(),
             last_opened: BTreeMap::new(),
             files: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn with_packages(
+        mut self,
+        maps: crate::ContentMaps,
+        root: &std::path::Path,
+        server_maps: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.server_dir = server_maps.clone();
+        self.packages = Some(ContentFiles::new(maps, root, server_maps));
+        self
+    }
+
+    fn package(&mut self, path: &str) -> Option<&mut ContentFiles> {
+        self.packages.as_mut().filter(|maps| maps.contains(path))
+    }
+
+    fn server_pack(&mut self, path: &str) -> Option<&ServerPack> {
+        let dir = self.server_dir.as_ref()?;
+        let name = map_pack_name(path)?;
+        let key = path.to_ascii_lowercase();
+        if !self.server_packs.contains_key(&key) {
+            let selected = (|| {
+                let source = dir.join(name.to_ascii_lowercase());
+                let mut file = File::open(&source).ok()?;
+                let size = file.metadata().ok()?.len();
+                let original = self.inner.stat(path).ok()?;
+                let mut header = [0; 0x800];
+                let n = self.inner.read_at(path, 0, &mut header).ok()?;
+                if n != header.len() || !crate::map_override::matching_server_copy(
+                    &mut file, size, original.end_of_file, &header,
+                ) {
+                    eprintln!("map pack: {}: server copy header or length differs", source.display());
+                    return None;
+                }
+                Some(ServerPack {
+                    mapping: crate::disc::map_read_only(&file)?,
+                    file: HostFile { path: source, offset: 0, len: size },
+                })
+            })();
+            self.server_packs.insert(key.clone(), selected);
+        }
+        self.server_packs.get(&key)?.as_ref()
+    }
+
+    fn refuse_package(&mut self, path: &str) -> Result<()> {
+        if self.package(path).is_some() {
+            return Err(Error::AccessDenied);
+        }
+        Ok(())
     }
 
     pub fn into_inner(self) -> B {
@@ -187,6 +278,21 @@ impl<B: Backend> Backend for VariantFiles<B> {
         self.inner.read_only()
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
+        if self.variant(path).is_none()
+            && let Some(p) = self.package(path)
+        {
+            let len = p.served(path)?.len;
+            let mut meta = Metadata {
+                basic: BasicInfo {
+                    attributes: crate::ATTR_READONLY,
+                    ..BasicInfo::default()
+                },
+                end_of_file: 0,
+                allocation_size: 0,
+            };
+            resize(&mut meta, len);
+            return Ok(meta);
+        }
         let mut meta = self.inner.stat(path)?;
         if meta.is_directory() {
             return Ok(meta);
@@ -213,6 +319,18 @@ impl<B: Backend> Backend for VariantFiles<B> {
         Ok(entries)
     }
     fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
+        if self.variant(path).is_none()
+            && let Some(p) = self.package(path)
+        {
+            return p.served(path)?.read_at(offset, buffer);
+        }
+        if let Some(pack) = self.server_pack(path) {
+            let len = pack.file.len.saturating_sub(offset).min(buffer.len() as u64) as usize;
+            if len > 0 {
+                crate::disc::copy_mapped(&pack.mapping, offset, &mut buffer[..len])?;
+            }
+            return Ok(len);
+        }
         let Some(served) = self.served(path) else {
             return self.inner.read_at(path, offset, buffer);
         };
@@ -233,7 +351,11 @@ impl<B: Backend> Backend for VariantFiles<B> {
     }
     fn host_file(&mut self, path: &str) -> Option<HostFile> {
         let Some((_, halo1, pair)) = self.variant(path) else {
-            return self.inner.host_file(path);
+            return match self.package(path) {
+                Some(p) => p.served(path).ok()?.host_file(),
+                None => self.server_pack(path).map(|pack| pack.file.clone())
+                    .or_else(|| self.inner.host_file(path)),
+            };
         };
         let len = self.served(path)?.ok()?.len;
         Some(HostFile {
@@ -245,7 +367,10 @@ impl<B: Backend> Backend for VariantFiles<B> {
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         match self.variant(path) {
             Some((_, halo1, pair)) => pair.pick(halo1).id,
-            None => self.inner.map_id(path),
+            None => match self.package(path) {
+                Some(p) => p.id(path),
+                None => self.inner.map_id(path),
+            },
         }
     }
     fn opened(&mut self, path: &str) {
@@ -253,6 +378,9 @@ impl<B: Backend> Backend for VariantFiles<B> {
             let e = self.open.entry(key.clone()).or_insert((0, halo1));
             e.0 += 1;
             self.last_opened.insert(key, e.1);
+        }
+        if let Some(p) = &mut self.packages {
+            p.opened(path);
         }
         self.inner.opened(path)
     }
@@ -264,14 +392,21 @@ impl<B: Backend> Backend for VariantFiles<B> {
                 self.open.remove(&key);
             }
         }
+        if let Some(p) = &mut self.packages {
+            p.closed(path);
+        }
         self.inner.closed(path)
     }
     fn rescan(&mut self) {
+        if let Some(p) = &mut self.packages {
+            p.prune();
+        }
         self.inner.rescan()
     }
     fn map_changed(&mut self, path: &str) -> bool {
         if self.variants.get(path).is_none() {
-            return self.inner.map_changed(path);
+            return self.packages.as_ref().is_some_and(|p| p.changed(path))
+                || self.inner.map_changed(path);
         }
         let key = path.to_ascii_lowercase();
         if self.open.contains_key(&key) {
@@ -296,21 +431,26 @@ impl<B: Backend> Backend for VariantFiles<B> {
             .create_allocated(path, directory, attributes, allocation, owner)
     }
     fn overwrite_allocated(&mut self, path: &str, allocation: u64, owner: u64) -> Result<()> {
+        self.refuse_package(path)?;
         self.inner.overwrite_allocated(path, allocation, owner)
     }
     fn release_allocation(&mut self, path: &str, owner: u64) -> Result<()> {
         self.inner.release_allocation(path, owner)
     }
     fn write_at(&mut self, path: &str, offset: u64, buffer: &[u8]) -> Result<usize> {
+        self.refuse_package(path)?;
         self.inner.write_at(path, offset, buffer)
     }
     fn set_len(&mut self, path: &str, size: u64) -> Result<()> {
+        self.refuse_package(path)?;
         self.inner.set_len(path, size)
     }
     fn set_basic_info(&mut self, path: &str, basic: BasicInfo) -> Result<()> {
+        self.refuse_package(path)?;
         self.inner.set_basic_info(path, basic)
     }
     fn remove(&mut self, path: &str) -> Result<()> {
+        self.refuse_package(path)?;
         self.files.remove(&path.to_ascii_lowercase());
         self.inner.remove(path)
     }

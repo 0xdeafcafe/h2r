@@ -7,7 +7,9 @@
 #include <setjmp.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#if defined(__APPLE__)
 #include <libkern/OSCacheControl.h>
+#endif
 
 typedef struct __attribute__((aligned(16))) {
     uint32_t xmm[8][4];
@@ -57,7 +59,11 @@ int main(void) {
             if (mprotect(page, size, PROT_READ | PROT_WRITE)) return 6;
             memcpy(page, bytes, len);
             ((uint8_t *)page)[len] = 0xc3; // RET preserves flags and MXCSR.
+#if defined(__APPLE__)
             sys_icache_invalidate(page, size);
+#else
+            __builtin___clear_cache((char *)page, (char *)page + len + 1);
+#endif
             if (mprotect(page, size, PROT_READ | PROT_EXEC)) return 7;
             memcpy(previous, bytes, len);
             previous_len = len;

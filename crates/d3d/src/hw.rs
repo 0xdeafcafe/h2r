@@ -286,6 +286,66 @@ impl HwState {
     }
 }
 
+/// `SET_CONTROL0` bit 16 (z-perspective), which D3D's control fragment
+/// (`0x3f6390`) sets when `D3DRS_ZENABLE` is `D3DZB_USEW`: the NV2A then
+/// depth-tests and stores the interpolated w instead of z, and clips w to
+/// `[CLIP_MIN, CLIP_MAX]`. Halo turns it on at boot (`ZEnable(2)` at
+/// `0x1267a`). Before any `SET_CONTROL0` has been seen, the render state
+/// decides.
+pub const CONTROL0_Z_PERSPECTIVE: u32 = 0x1_0000;
+
+/// Whether `draw` is W-buffered (see [`CONTROL0_Z_PERSPECTIVE`]).
+pub fn w_buffered(draw: &crate::backend::ResolvedDraw) -> bool {
+    match draw.hw.control0 {
+        Some(c) => c & CONTROL0_Z_PERSPECTIVE != 0,
+        None => draw.state.render.depth_mode == gfx::state::DepthBufferMode::W,
+    }
+}
+
+/// `D3DRS_DEPTHCLIPCONTROL` (canonical 82), which D3D and Halo's inlined
+/// copies push to `NV097_SET_ZMIN_MAX_CONTROL` (`0x1D78`): bits 7:4 = 1
+/// (`D3DDCC_DEPTHCLAMP`) clamp out-of-range depth instead of culling it
+/// (xemu's `ZCLAMP_EN`, `pgraph.c` and `glsl/psh.c`).
+pub const RS_DEPTHCLIPCONTROL: u32 = 82;
+
+/// Whether `draw` clamps out-of-range depth, read with the default
+/// render-state table (the shader provider's default): for
+/// diagnostics that hold a draw but no provider (`render.frame`).
+pub fn draw_clamps_depth(draw: &crate::backend::ResolvedDraw) -> bool {
+    static TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
+        std::sync::LazyLock::new(gfx::xdk::RenderStateTable::default);
+    depth_clamp(&TABLE, draw)
+}
+
+pub(crate) fn depth_clamp(
+    table: &gfx::xdk::RenderStateTable,
+    draw: &crate::backend::ResolvedDraw,
+) -> bool {
+    let control = table
+        .canonical_to_guest(RS_DEPTHCLIPCONTROL)
+        .and_then(|g| draw.raw.render.get(g as usize).copied())
+        .unwrap_or(0);
+    clamps_depth(control)
+}
+
+/// Whether a `D3DRS_DEPTHCLIPCONTROL` value clamps out-of-range depth
+/// (bits 7:4 = 1, `D3DDCC_DEPTHCLAMP`).
+pub fn clamps_depth(depth_clip_control: u32) -> bool {
+    gfx::state::clamps_depth(depth_clip_control)
+}
+
+/// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,
+/// CLIP_MAX]`, or `[0, z_max]` when that is empty or not finite (nothing
+/// pushed yet).
+pub fn w_clip_range(hw: &HwState, z_max: f32) -> [f32; 2] {
+    let (lo, hi) = (hw.clip_min, hw.clip_max);
+    if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo {
+        [lo, hi]
+    } else {
+        [0.0, z_max]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

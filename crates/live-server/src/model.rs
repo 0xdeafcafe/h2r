@@ -81,15 +81,22 @@ pub struct Game {
     pub(crate) sim_recorded_bytes: u64,
     pub(crate) sim_recording_limited: bool,
     pub started_at: String,
+    pub(crate) has_host_film: bool,
     pub position: u64,
     pub players: Vec<Player>,
     /// Everyone who was ever in the game (for `recent_games`).
     pub xuids: Vec<Xuid>,
+    // dh-identity: preserve evidence even after an unidentified seat leaves.
+    pub(crate) all_players_identified: bool,
+    pub(crate) ended_by_host: bool,
+    /// The last team of each account that left, for its film result.
+    pub(crate) departed_teams: HashMap<Xuid, i32>,
     pub scoreboard: Vec<PlayerScore>,
     pub teams: Option<Vec<TeamScore>>,
     pub kills: VecDeque<KillRecord>,
     pub last_tick: Option<u64>,
     pub ended: Option<(GameEnded, String)>,
+    pub(crate) recording: crate::replay_archive::Recording,
     /// Unix seconds of the last event or frame; idle games are ended.
     pub last_activity: i64,
     /// A Live co-op campaign game's session, recorded when it starts: a
@@ -124,6 +131,7 @@ impl Game {
         let g = &self.started.game;
         game::GameSummary {
             game_id: self.started.game_id.clone(),
+            dedicated: self.started.dedicated.clone(),
             map: g.map.clone(),
             mode: g.mode.clone(),
             kind: g.kind().into(),
@@ -210,6 +218,7 @@ pub struct State {
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
+    pub(crate) films: crate::films::Films,
     pub outlines: HashMap<String, Outline>,
     /// For each `SignedIn`/`PresenceChanged` event (by log position) set
     /// while its player was in a friends-only or invite-only session: those
@@ -266,10 +275,15 @@ impl State {
 
     /// Games newest first, optionally only live or ended ones.
     pub fn games_newest(&self) -> impl Iterator<Item = &Game> {
+        self.games_before(None)
+    }
+
+    pub(crate) fn games_before(&self, before: Option<u64>) -> impl Iterator<Item = &Game> {
+        use std::ops::Bound::{Excluded, Unbounded};
         self.games_by_position
-            .values()
+            .range((Unbounded, before.map_or(Unbounded, Excluded)))
             .rev()
-            .filter_map(|id| self.games.get(id))
+            .filter_map(|(_, id)| self.games.get(id))
     }
 
     pub fn active_key_count(&self, xuid: Xuid) -> usize {
@@ -396,6 +410,15 @@ impl Model {
         }
     }
 
+    /// A host heartbeat keeps only its own advertisements alive.
+    pub(crate) fn touch_service_sessions(&self, subject: &str, now: i64) {
+        for s in self.state.write().unwrap().sessions.values_mut() {
+            if s.host == subject && s.state == "open" {
+                s.last_activity = s.last_activity.max(now);
+            }
+        }
+    }
+
     /// Notes activity in game `id` at unix second `now`. Frames come 15 a
     /// second and the clock moves once a second: the write lock is taken
     /// only when it moves.
@@ -430,7 +453,10 @@ impl Model {
                 })
                 .flatten();
             let game = Game {
+                all_players_identified: players.iter().all(|p| p.xuid.is_some()),
+                ended_by_host: false,
                 xuids,
+                departed_teams: HashMap::new(),
                 coop,
                 players,
                 started,
@@ -438,12 +464,14 @@ impl Model {
                 sim_recorded_bytes: 0,
                 sim_recording_limited: false,
                 started_at: b.at.clone(),
+                has_host_film: false,
                 position: e.position,
                 scoreboard: Vec::new(),
                 teams: None,
                 kills: VecDeque::new(),
                 last_tick: None,
                 ended: None,
+                recording: crate::replay_archive::Recording { position: e.position, next_version: e.version + 1, ..Default::default() },
                 last_activity: at,
             };
             s.games_by_position.insert(e.position, id.clone());
@@ -454,6 +482,7 @@ impl Model {
             return;
         };
         let Some(g) = s.games.get_mut(id) else { return };
+        g.recording.observe(e);
         g.last_activity = g.last_activity.max(at);
         match b.kind.as_str() {
             crate::sim_runs::REPORT_STORED if g.started.game.sim.is_some() => {
@@ -469,12 +498,18 @@ impl Model {
                 if let Some(x) = d.player.xuid.filter(|x| !g.xuids.contains(x)) {
                     g.xuids.push(x);
                 }
+                g.all_players_identified &= d.player.xuid.is_some();
                 g.players.push(d.player);
             }
             game::PLAYER_LEFT => {
                 let Some(d) = data::<game::PlayerLeft>(e) else {
                     return;
                 };
+                if let Some(player) = g.players.iter().find(|p| p.index == d.index)
+                    && let Some(xuid) = player.xuid
+                {
+                    g.departed_teams.insert(xuid, player.team);
+                }
                 g.players.retain(|p| p.index != d.index);
             }
             game::PLAYER_KILLED => {
@@ -525,6 +560,7 @@ impl Model {
                 if !d.players.is_empty() {
                     g.scoreboard = d.players.clone();
                 }
+                g.ended_by_host = b.author == g.started.host;
                 g.ended = Some((d, b.at.clone()));
             }
             _ => {}
@@ -560,6 +596,10 @@ impl Model {
         }
         if b.stream.starts_with("game-") {
             Self::apply_game(&mut s, e, at);
+            return;
+        }
+        if b.stream == crate::films::STREAM {
+            crate::films::project(&mut s, e);
             return;
         }
         if live_proto::team::Action::is_kind(&b.kind) {
@@ -788,6 +828,24 @@ mod tests {
             self.model.apply(&e);
             self.position
         }
+    }
+
+    #[test]
+    fn clanker_appearance_migrates_legacy_issued_events_on_replay() {
+        use live_proto::bots::{self, Colors, Emblem, Issued, Personality};
+        let xuid = Xuid(bots::SERVER_XUID_MARK | 17);
+        let mut bot = Issued {
+            xuid,
+            gamertag: Gamertag::new("Bolt").unwrap(),
+            persistent: true,
+            emblem: Emblem::default(),
+            colors: Colors::default(),
+            personality: Personality::default(),
+        };
+        let mut log = Log::new();
+        log.push(&bots::bot_stream(xuid), bots::ISSUED, json!(bot));
+        (bot.emblem, bot.colors) = bots::appearance("Bolt");
+        assert_eq!(log.model.read().bots.bot(xuid), Some(&bot));
     }
 
     const X: &str = "0009000000000001";

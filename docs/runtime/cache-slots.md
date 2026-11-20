@@ -129,10 +129,15 @@ installable while the game runs (docs/game/maps.md §3):
 
   Slots 0-1 are on Z:, 2-5 on N:.
 
-So a map whose bytes change under the same `d:\maps\` path within a
-session is served stale while its slot still holds it. For a
-multiplayer map that lasts until another multiplayer map is loaded; for
-a campaign map, through up to two other levels. The game keeps no copy
+If the bytes at a path change within a session, the game can reuse a
+stale copy while the slot still holds that path. Generated mods have
+their own `T:\$c\<offer>\<name>.map` paths, so a mod and its retail
+base already have distinct cache identities.
+[Generated offers](../game/maps.md#package-offers)
+
+Without invalidation, a stale multiplayer copy persists until another
+multiplayer map loads. A campaign copy can survive up to two other
+levels. The game keeps no copy
 of the header outside guest memory during a session, so the on-disk
 slot header does not matter. The record's resident header is the only
 thing checked.
@@ -143,13 +148,14 @@ thing checked.
   copy machine `0x2141f0` also runs, at most every 500 ms.
 - **What it checks.** Only while the copy machine is idle (`0x55bd04` is
   0), and only for slots 3-5 that are not the current map's (`0x55aca8`).
-  For each, it reads the map name in the slot's path and asks
-  `vfs::Vfs::map_changed`.
-- **What it does.** When the map would now come from another package than
-  at the open that filled the slot, it zeroes the slot's 0x800-byte
-  resident header, as state 7 does. The handle at record `+0` is kept.
-  The next request misses, and the map is copied again through the VFS,
-  which now serves the new package.
+  It translates the disc or content path to its VFS name and asks
+  `Vfs::map_changed`.
+- **What it does.** A generated path is stale when its registered source
+  changed or was removed and no open handle holds the old resolution.
+  The hook zeroes the slot's 0x800-byte resident header, as state 7 does.
+  The next request misses. The VFS then resolves the current source if
+  the path is still installed.
+  [VFS content maps](../../crates/vfs/src/content_maps.rs)
 - **What it leaves alone.**
   - Slots 0-2: copies of other maps check their headers as dependencies
     (state 4, `0x214390`).
@@ -163,11 +169,9 @@ in game; see the lane report for the in-game checks.
 
 Known gaps:
 
-- A package for `shared`, `single_player_shared` or `mainmenu` installed
-  mid-session is not picked up until those slots are refilled. Slots 0-1
-  are on Z:, which survives a reboot, so they can stay stale across boots
-  too, whether the change comes from a package or from `H2_MAP_DIR`. This
-  is not new.
+- An explicit `H2_MAP_DIR` override for `shared`, `single_player_shared`
+  or `mainmenu` takes effect when its slot is refilled. Slots 0–1 are on
+  Z:, which survives a reboot.
 - If a map is loaded again straight after itself without the menu in
   between, its slot stays current and is not dropped. The multiplayer
   lobby runs on the main menu (slot 2), so between games slot 3 is not
@@ -209,14 +213,18 @@ in a window where each present is dearer.
 default, `H2_FEATURES=-map-copy` turns it off). When the copy machine is
 called from the loading-screen loop (return address `0x1639c2`), a
 `before` hook answers with an async body that runs the step the loop
-asked for, then up to 15 more, each once the job before it is done,
+asked for, then up to 15 more (127 more when the batch starts in payload
+state 11 or 12 for one of the shared or menu slots 0–2), each once the
+job before it is done,
 yielding with `SwitchToThread` as the loop does (at most 8 yields a job;
 a job still running is left to the next frame). It stops when the machine
 is idle (`0x55bd04` is 0). The machine sees the same calls in the same
 order with the same job results, only with fewer frames drawn between
 them; the game's own flush loop `0x213fa0` steps it back to back with
 nothing drawn. The main loop's call (`0x12b571`) and the flush loop's are
-left alone.
+left alone. `H2_FEATURES=-map-copy.boot` uses the 16-step budget for all
+slots. The title still owns reads, checksums, invalidation, flushes and header
+publication in either mode.
 
 Tests (`map_copy::tests`, a synthetic copy machine and worker): the same
 bytes, checksum and step sequence in 3 frames instead of 42 for 21

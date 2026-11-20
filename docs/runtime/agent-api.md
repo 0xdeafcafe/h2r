@@ -131,9 +131,10 @@ environment variable read at launch (**Code**: no listener outside
   "frame_budget_miss", …])` streams notifications, so a client waits on
   "the skulls page opened" instead of polling.
 - **Headless.** `h2 serve` is `h2 run` with the agent socket on, no window,
-  render optional, and a speed control (`time_scale`, or "as fast as the
-  sim allows"). It is the shared instance agents use; see
-  [the decision](#open-decisions) on who starts it.
+  optional GPU rendering and optional real-time pacing (`H2_BOOT_REALTIME=1`).
+  `h2 serve --system-link --host-light` always paces to real time. It is the
+  shared instance agents use. The [dedicated host guide](../live/dedicated-host.md#light-host)
+  describes the profile and the measurement procedure.
 
 Method names are `domain.verb`. Every reply has the stamp:
 
@@ -151,12 +152,79 @@ Method names are `domain.verb`. Every reply has the stamp:
 | `session.status` | build id, image hash, disc map list, switches, phase, fps right now |
 | `session.claim` / `release` | take or give up control |
 | `session.pause` / `resume` / `step {ticks}` | freeze the sim; step exact ticks (render keeps presenting the paused frame) |
-| `session.speed {time_scale \| "max"}` | headless only: run faster than real time |
 | `session.wait {until: <predicate>, timeout_ticks}` | block until a predicate holds: `{"screen": "skulls"}`, `{"phase": "gameplay"}`, `{"tick": 50000}`, `{"hs_global": ["x", ">", 3]}` |
 | `session.subscribe {events}` | stream events |
 
 `wait` is the replacement for every "sleep and screenshot" loop: it is
 evaluated at the tick boundary, so it never misses a one-tick state.
+
+### `host.metrics`
+
+Read with `h2 agent hostmetrics`. This method takes no parameters. It
+reports the latest complete window of 30 intervals between returns from
+`GAME_TICK` (`0x00137fe0`). The first reading is available after 31 tick
+returns. Until then it returns `UNAVAILABLE`.
+
+| Field | Meaning |
+|---|---|
+| `ticks` | Tick intervals in the sample, currently 30 |
+| `game_cpu_ms_per_tick` | CPU time on the game thread per tick interval, including work between ticks |
+| `process_cpu_ms_per_tick` | CPU time on all process threads per tick interval |
+| `wall_ms_per_tick` | Elapsed wall time per tick interval, including pacing sleeps and any pause or load crossed by the window |
+| `cpu_percent` | Whole-process CPU over the wall interval. 100 means one fully used core |
+| `rss_bytes` | Resident bytes at the end of the interval on macOS and Linux. This includes resident shared pages |
+| `age_ms` | Time since the sample ended |
+| `host_light` | Whether the process uses the light host profile |
+
+A platform counter that is unavailable is returned as `null`. Compare
+active gameplay windows after loading. A stale sample can survive a gap in
+ticks. The CPU fields exclude sleeping. The wall field shows the pace the
+host actually sustained. [Tick sampler](../../crates/boot/src/host_metrics.rs)
+
+### `host.audit`
+
+Set `H2_HOST_AUDIT=/path/to/audit.json` before boot to enable this method.
+`h2 agent hostaudit` takes no parameters. It writes a snapshot to that
+configured path and returns the path, ticks, observed and registered
+function counts, tag range count and inclusive CPU timing. An orderly
+exit writes the final snapshot. Call the method before terminating a
+dedicated process externally. The collector changes dispatch and memory
+watch costs, so use `host.metrics` in an ordinary run for sizing.
+[Report fields and corpus](sim.md#host-audit-corpus)
+
+### `host.lobby`
+
+Start a System Link light host with `H2_HOST_LOBBY=1`. On that process,
+`session.methods` lists these four methods. Each result object also carries
+the agent's usual `at` boundary stamp.
+
+| Method | Parameters | Result fields |
+|---|---|---|
+| `host.lobby.open` | `{"map":"lockout","variant":"team_slayer","max_players":8,"live":false}` | System Link returns an empty object. Live returns the advertised `session_id`. |
+| `host.lobby.state` | `{}` | `{"phase":"lobby","players":[{"slot":3,"peer":1,"name":"Example"}],"ready":true}` |
+| `host.lobby.start` | `{}` | An empty object when retail accepts the start request. Observe `state` for load and play. |
+| `host.lobby.close` | `{}` | An empty object once the network lobby has closed and the host is back at the menu. |
+
+The host looks up `map` by short name, scenario path or English display
+name. The optional `variant` defaults to Slayer. It accepts a disc variant,
+a signed and valid saved variant present at boot, a stock game type or a
+built-in Live playlist variant key. Names are case-insensitive. If a name
+matches two different saved or disc rulesets, open returns `INVALID_PARAMS`.
+
+`max_players` is an integer from 1 to 16. The required `live` boolean
+selects System Link or a Live custom game. Live requires a working
+service identity that can publish sessions. Open waits for retail to
+publish the requested lobby parameters. Repeating the same open in
+pregame returns the existing lobby. Close it before changing parameters.
+
+The phases are `menu`, `lobby`, `loading`, `playing`, and `postgame`. Player
+slots are retail membership slots and can have gaps. Split-screen players
+on a remote console share a peer index. An empty, joinable lobby reports
+`"players":[]` and `"ready":false`. Readiness requires a remote player,
+party leadership, the requested map and limit, loaded maps on every peer,
+and retail's ready-to-start result. Any connection may read state.
+Mutations respect `session.claim` and a concurrent mutation receives
+`BUSY`. [Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby)
 
 ### `ui`: what the menus and HUD show
 
@@ -778,7 +846,10 @@ How it behaves (**Code**, with tests in `crates/agent`):
   any slot), or `null`: `{"id", "name", "window", "slot"}`, with `name`
   the dialog's tag (`dialog_live_signin` for the account picker,
   `confirmation_dialog`, `error_dialog_ok`, ...; `boot::ui_watch::
-  dialog_name`) or `null` for an id not named yet. Dialogs read as
+  dialog_name`) or `null` for an id not named yet. For the Clanker player
+  card, `dialog.name` is `clanker_player_options`, resolved from the
+  active screen's kit class. Its numeric id belongs to the retail base
+  class and can also identify other screens. Dialogs read as
   `"screen": null`, so this is how a driver tells one from another; the
   `ui: screen none` line names it the same way (`, dialog 0x14
   dialog_live_signin (window 3, slot 4)`). The input
@@ -1127,6 +1198,35 @@ adds them; types in `crates/agent-proto/src/render.rs`, logic in
   Without `H2_BOOT_GFX`, with `H2_RENDER_THREAD=0` or under
   `H2_PIPELINE_RENDER`, `interp` stays `null`.
 
+### Co-op look per rendered view
+
+`render.coop_look` is a read-only host method registered with the Live
+co-op prediction feature. With no parameters it returns the most recent
+256 rendered local views, oldest first. Pass `{"after":123}` to read
+samples newer than that cursor. `latest` is the most recent sample
+number, initially zero. A gap in sample numbers means the reader fell
+behind. One frame can contain several local users.
+
+```sh
+h2 agent --socket ~/Library/Caches/h2recomp/coop-bravo.sock render.coop_look
+```
+
+Each entry in `frames` has a monotonic `sample`, the guest render
+`frame`, the local `user` (0–3), and a `status` such as `active`,
+`waiting` (awaiting a baseline), `host`, `setting off`, `cinematic`,
+`dead`, `director`, `vehicle`, or `no local control`. These are guest
+draws. Additional display-rate replays reuse the guest frame.
+
+| Field | Meaning |
+|---|---|
+| `sent` | Latest outgoing retail look, also recorded with the setting off for A/B timing. |
+| `confirmed` | Local player's yaw and pitch from the last applied update carrying that player's action. |
+| `predicted` | Current absolute target from the still-pending sends, or confirmed aim once they have drained. |
+| `camera`, `drawn` | First render camera before and after the adjustment. All aims are `{yaw,pitch}` in radians, or null when unavailable. |
+| `correction_rad` | Largest reconciliation error observed for this draw in radians (Euclidean length of shortest yaw difference and pitch difference). A pending turn's total lead is measured separately by comparing predicted and confirmed. |
+| `update`, `last_send`, `matched_send`, `matched_update` | Last applied update, last sent sequence, and the sequence/update pair most recently matched by quantized aim. Null before the corresponding event. |
+| `pending`, `dropped` | Unmatched sends and the number superseded or expired since this continuous camera began. Identical quantized actions have indistinguishable echoes. |
+
 ### Hitch causes and fallback hits
 
 ```sh
@@ -1282,6 +1382,19 @@ it. The list response's `clankers` array includes brain-driven local and
 phantom bots added by the game, headless matches, and sim. Its entries have
 `name`, `kind`, `brain`, and `port` or `player` once placed or joined.
 Script and recording sources have no brain state.
+
+For a joined phantom, `h2 agent sim list` includes `clankers[].aim` once
+the host has gathered input for its current unit. `tick` is the gather
+tick. `stick` (right, up) and `trigger` are the brain's latest report.
+`arrived_stick` and `arrived_trigger` are the report delivered by the
+uplink for that gather. `action_deg` contains the accepted slot record's
+absolute [yaw, pitch] in degrees, or null if the gather was rejected.
+`fire_primary` is the accepted primary fire bit and `assist_strength` holds
+the two weapon strengths. A rejected gather reports false and zeros.
+`unit_forward` is the unit's actual aiming vector at query time.
+`assist_player` identifies the player controlling the selected aim-assist
+target when one exists. To verify damage, use `h2 agent sim view player`
+to read the target's shield and health.
 
 The `brain` object has `skill`, `personality` and `mood`. Personality
 contains the nine 0–1 traits in [the Clankers trait table](../game/bots.md#personality-and-temperament)
@@ -1551,7 +1664,7 @@ thing: simulated players added to an ordinary run.)
 
 | Method | Access | What |
 |---|---|---|
-| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `playing`, `over`), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
+| `match.status` | read | `match` (the file), `map`, `game_type`, `bots`, `phase` (`waiting` until the match's game starts, `binding` until every distributed seat has a player and unit, `playing`, `over`), `bound_seats` (logical seat to player index for a distributed match), `ticks` (game ticks counted since the start), `max_ticks`, `game_seconds`, `wall_s` (since the boot), `match_s` (since the first tick), `speedup` (game over match wall time), `frames` (`skipped` world frames, `rendered_world` by `render_every`, `other` menu and loading frames, `stub_faults`), `end` (`game_over`, `tick_limit`, `wall_limit`, `stopped`; `null` while it plays) |
 | `match.report` | read | the report as it would be written now (`h2-sim-report/1`, sim.md §6): players, kills so far, a note while the match has not ended (its `result.end` is then `aborted`) |
 | `match.stop` | act | end the match: `end` becomes `stopped` (unless it had ended), the boot loop stops at the next slice and the report is written. `{stopping, end, already_over}` |
 
@@ -1808,3 +1921,38 @@ synthetic packets; nothing here was run against the game):
 - [hs_vm.md](../engine/hs_vm.md)
 - [docs/live](../live/): the Live service, the other reader of
   `live-telemetry`
+
+## Theater transport
+
+The game agent lists the following host methods in `session.methods`.
+In an ordinary CLI-hosted game, `theater.play` with a library ID starts
+an isolated playback process. Subsequent transport requests through that
+game agent go to its player. During startup the caller can retry after a
+temporary unavailable response. The playback process also accepts calls
+directly on its own `--socket` (`H2_AGENT`, else the cache's `theater.sock`).
+
+| Method | Parameters | Result |
+|---|---|---|
+| `theater.play` | `{"id":"film-id","range":[300,900]}` to open, `{}` to resume. Omit `range` for the whole film | `{id, starting:true}` on launch, otherwise transport state |
+| `theater.state` | `{}` | Transport state, or `{id:null}` with no player |
+| `theater.pause` | `{}` | Holds guest execution and reports state |
+| `theater.speed` | `{"speed":0.5}` | Sets host pacing from 0.25 to 4 times realtime |
+| `theater.seek` | `{"tick":900}` | Requests restart and unpaced replay to that tick. Direct socket clients reconnect after the restart |
+| `theater.camera` | `{"mode":"default"}` | Returns state. Other modes return `UNAVAILABLE` with `unavailable until keyframes` |
+
+The rendered player starts at the clip's first tick and loops at its end.
+Its overlay uses the player's agent socket for transport and
+`cheat.set {"name":"hide_hud","value":true}` for the HUD. A paused player
+accepts the HUD setting and applies it when rendering resumes.
+
+Transport state carries `id`, `tick`, `length_ticks`, `paused`, `speed`,
+`seeking` and `camera`, alongside the agent's usual `at` stamp. Tick zero
+is boot. A paused seek holds at its target until play. The HLE compares
+the recorded call index and game-thread hash samples during fast-forward.
+
+```sh
+h2 agent theater.state '{}' --socket "$film_run/play.sock"
+h2 agent theater.pause '{}' --socket "$film_run/play.sock"
+h2 agent theater.seek '{"tick":30}' --socket "$film_run/play.sock"
+h2 agent theater.play '{}' --socket "$film_run/play.sock"
+```

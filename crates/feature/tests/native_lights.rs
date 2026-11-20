@@ -5,7 +5,7 @@ use feature::{Registry, Switches};
 
 #[test]
 fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("").unwrap());
+    let mut r = Registry::new(Switches::parse("impl.render.native_lights=off").unwrap());
     r.add(&NativeLights).unwrap();
     let plan = r.build(&Base).unwrap();
     let text = plan.text();
@@ -45,7 +45,9 @@ fn splitting_requires_both_switches() {
     assert!(!native_lights::split_on(&Switches::parse("impl.render.native_lights=on").unwrap()));
     assert!(native_lights::split_on(&Switches::parse("impl.render.native_lights=on,impl.render.native_lights_split=on").unwrap()));
     // Without the lights, nothing splits.
-    let mut r = Registry::new(Switches::parse("impl.render.native_lights_split=on").unwrap());
+    let mut r = Registry::new(
+        Switches::parse("impl.render.native_lights=off,impl.render.native_lights_split=on").unwrap(),
+    );
     r.add(&NativeLights).unwrap();
     assert!(!r.build(&Base).unwrap().text().contains("native_lights"));
 }

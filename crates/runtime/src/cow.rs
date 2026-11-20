@@ -1,11 +1,11 @@
 //! Guest RAM storage, and copy-on-write copies of it for a second executor
 //! (docs/runtime/second-executor.md, section 2).
 //!
-//! The live RAM is the heap block it always was. A copy is, on macOS, a
-//! second mapping of the same pages made with `mach_vm_remap(copy = TRUE)`:
+//! Linux x86-64 reserves live RAM between two guard pages. Other hosts use
+//! a heap block. On macOS, a snapshot can share the same pages through
+//! `mach_vm_remap(copy = TRUE)`. With that mapping,
 //! the kernel copies a host page on the first write to it from either side,
-//! so each side keeps its own writes. Elsewhere, or when the block is not
-//! page-aligned, a copy is a plain heap copy.
+//! so each side keeps its own writes. Other snapshots copy all RAM bytes.
 
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
@@ -24,7 +24,16 @@ pub enum CopyKind {
 pub(crate) struct Ram {
     ptr: NonNull<u8>,
     len: usize,
-    mapped: bool,
+    backing: Backing,
+}
+
+enum Backing {
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    Heap,
+    #[cfg(target_os = "macos")]
+    MachCopy,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    Guarded { base: NonNull<u8>, size: usize },
 }
 
 // SAFETY: `Ram` owns its block outright (like a `Box<[u8]>`); access goes
@@ -34,18 +43,23 @@ unsafe impl Send for Ram {}
 unsafe impl Sync for Ram {}
 
 impl Ram {
-    /// `len` zeroed bytes on the heap, as `vec![0; len]` (lazily zeroed by
-    /// the allocator for large blocks).
+    /// The live, initially zero physical store.
     pub(crate) fn zeroed(len: usize) -> Self {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            linux::reserve(len, linux::PREFERRED_BASE).expect("reserve guarded guest physical RAM")
+        }
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
         Self::from_box(vec![0u8; len].into_boxed_slice())
     }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     fn from_box(b: Box<[u8]>) -> Self {
         let len = b.len();
         let ptr = NonNull::new(Box::into_raw(b).cast::<u8>()).expect("Box is non-null");
         Self {
             ptr,
             len,
-            mapped: false,
+            backing: Backing::Heap,
         }
     }
     /// A copy of these bytes as they are now; later writes to either side
@@ -55,11 +69,26 @@ impl Ram {
         if let Some(copy) = self.remap() {
             return (copy, CopyKind::Remapped);
         }
-        (Self::from_box(self[..].into()), CopyKind::Copied)
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let copy = {
+            let mut copy = Self::zeroed(self.len);
+            copy.copy_from_slice(self);
+            copy
+        };
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        let copy = Self::from_box(self[..].into());
+        (copy, CopyKind::Copied)
     }
     /// Whether this block is a copy-on-write mapping.
     pub(crate) fn is_mapped(&self) -> bool {
-        self.mapped
+        #[cfg(target_os = "macos")]
+        {
+            matches!(self.backing, Backing::MachCopy)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -75,7 +104,7 @@ impl Ram {
         Some(Self {
             ptr: NonNull::new(target as *mut u8)?,
             len: self.len,
-            mapped: true,
+            backing: Backing::MachCopy,
         })
     }
     #[cfg(not(target_os = "macos"))]
@@ -102,22 +131,102 @@ impl DerefMut for Ram {
 
 impl Drop for Ram {
     fn drop(&mut self) {
-        if self.mapped {
-            #[cfg(target_os = "macos")]
-            // SAFETY: this mapping was made by `remap_copy` with this length
-            // and is used by nothing else once its owner drops.
-            unsafe {
-                mach::deallocate(self.ptr.as_ptr() as usize, self.len);
+        match self.backing {
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            Backing::Heap => {
+                // SAFETY: from_box took this slice out of its Box.
+                unsafe {
+                    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                        self.ptr.as_ptr(),
+                        self.len,
+                    )));
+                }
             }
-        } else {
-            // SAFETY: made by `Box::into_raw` of a `[u8]` of `len` bytes.
-            unsafe {
-                drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
-                    self.ptr.as_ptr(),
-                    self.len,
-                )));
+            #[cfg(target_os = "macos")]
+            Backing::MachCopy => {
+                // SAFETY: remap_copy transferred ownership of this mapping.
+                unsafe { mach::deallocate(self.ptr.as_ptr() as usize, self.len) };
+            }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            Backing::Guarded { base, size } => {
+                // SAFETY: includes both guard pages, exclusively owned by Ram.
+                unsafe { libc::munmap(base.as_ptr().cast(), size) };
             }
         }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod linux {
+    use super::{Backing, NonNull, Ram};
+    use std::{io, ptr};
+
+    pub(super) const PREFERRED_BASE: usize = 0x4000_0000;
+
+    pub(super) fn reserve(len: usize, preferred: usize) -> io::Result<Ram> {
+        // SAFETY: sysconf takes no pointers.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = usize::try_from(page)
+            .ok()
+            .filter(|n| n.is_power_of_two())
+            .ok_or_else(|| io::Error::other("invalid host page size"))?;
+        let data = len.checked_next_multiple_of(page);
+        let size = data
+            .and_then(|n| n.checked_add(page)?.checked_add(page))
+            .filter(|&n| n <= isize::MAX as usize && len > 0)
+            .ok_or_else(|| io::Error::other("invalid RAM size"))?;
+
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE;
+        // Prefer a reproducible low address. Other Guests (or an existing
+        // process mapping) may occupy it. The ABI carries the actual pointer,
+        // so a host with a full low arena can still use the normal address space.
+        let choices = [
+            (preferred as *mut _, libc::MAP_FIXED_NOREPLACE),
+            (ptr::null_mut(), libc::MAP_32BIT),
+            (ptr::null_mut(), 0),
+        ];
+        for (addr, placement) in choices {
+            // SAFETY: anonymous reservation. No choice can replace another mapping.
+            let raw = unsafe { libc::mmap(addr, size, libc::PROT_NONE, flags | placement, -1, 0) };
+            if raw == libc::MAP_FAILED {
+                if placement == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                continue;
+            }
+            // Old kernels can treat NOREPLACE as a hint; retry with MAP_32BIT
+            // if such a kernel placed the reservation elsewhere.
+            if placement == libc::MAP_FIXED_NOREPLACE && raw != addr {
+                unsafe { libc::munmap(raw, size) };
+                continue;
+            }
+            let Some(base) = NonNull::new(raw.cast::<u8>()) else {
+                // SAFETY: this call just reserved the range at zero.
+                unsafe { libc::munmap(raw, size) };
+                continue;
+            };
+            // SAFETY: the first and last host pages stay inaccessible.
+            let ptr = unsafe { base.add(page) };
+            let result = unsafe {
+                libc::mprotect(
+                    ptr.as_ptr().cast(),
+                    size - page * 2,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                )
+            };
+            if result != 0 {
+                let err = io::Error::last_os_error();
+                // SAFETY: the entire reservation is still ours.
+                unsafe { libc::munmap(raw, size) };
+                return Err(err);
+            }
+            return Ok(Ram {
+                ptr,
+                len,
+                backing: Backing::Guarded { base, size },
+            });
+        }
+        Err(io::Error::other("could not map non-null guest RAM"))
     }
 }
 
@@ -209,6 +318,37 @@ mod tests {
     use super::*;
 
     const LEN: usize = 64 * 1024 * 1024;
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn linux_live_ram_has_two_guards_and_collision_preserves_the_first_guest() {
+        let mut first = Ram::zeroed(LEN);
+        first[0] = 0xa5;
+        let Backing::Guarded { base, .. } = first.backing;
+        let mut other = linux::reserve(LEN, base.as_ptr() as usize).unwrap();
+        assert_ne!(first.as_ptr(), other.as_ptr());
+        assert_eq!(other[0], 0);
+        other[LEN - 1] = 0x5a;
+        assert_eq!((first[0], first[LEN - 1]), (0xa5, 0));
+
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let permissions = |addr: usize| {
+            maps.lines().find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let (lo, hi) = fields.next()?.split_once('-')?;
+                let range =
+                    usize::from_str_radix(lo, 16).ok()?..usize::from_str_radix(hi, 16).ok()?;
+                range.contains(&addr).then(|| fields.next().unwrap())
+            })
+        };
+        for ram in [&first, &other] {
+            let start = ram.as_ptr() as usize;
+            assert_eq!(permissions(start - 1), Some("---p"));
+            assert_eq!(permissions(start), Some("rw-p"));
+            assert_eq!(permissions(start + LEN - 1), Some("rw-p"));
+            assert_eq!(permissions(start + LEN), Some("---p"));
+        }
+    }
 
     #[test]
     fn a_copy_keeps_the_bytes_of_its_moment_and_its_own_writes() {

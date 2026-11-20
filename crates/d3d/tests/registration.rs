@@ -175,6 +175,81 @@ fn register_installs_every_entry_but_the_native_helpers() {
 }
 
 #[test]
+fn post_render_state_setters_keep_draws_held_until_a_real_boundary() {
+    use d3d::{
+        ExternalPass, ExternalTarget, GuestMemory, Swallow, SwallowCall, SwallowPass, SwallowRefusal,
+    };
+    use gfx::vertex::{PrimitiveType, fvf};
+
+    struct ColourPass;
+    impl ExternalPass for ColourPass {
+        fn encode(&mut self, _: ExternalTarget<'_>) {}
+        fn colour_only(&self) -> bool {
+            true
+        }
+    }
+    impl SwallowPass for ColourPass {}
+
+    let mut h = harness(None);
+    let entries = abi::entries::<RecordingBackend>();
+    let addr = |name: &str| entries.iter().find(|e| e.name == name).unwrap().addr;
+    h.ok(addr("Direct3D_CreateDevice"), regs(0x40, PP_DEVICE), &[PARAMS]);
+    let call = SwallowCall {
+        entry: 0x2000,
+        esp: STACK + 4,
+        ret: 0x2010,
+    };
+    {
+        let mut guest = h.ctx.runtime().memory();
+        let mut mem = runtime_glue::GuestAdapter::new(&mut guest);
+        mem.write_u32(call.esp, call.ret).unwrap();
+        let mut d = h.device.lock().unwrap();
+        d.backend.external_passes = true;
+        d.set_vertex_shader(&mut mem, fvf::XYZRHW | fvf::DIFFUSE)
+            .unwrap();
+        let plan = Swallow {
+            call: Some(call),
+            end_returns: Vec::new(),
+            headers: Vec::new(),
+            targets: vec![0, 0],
+            primitive: PrimitiveType::QuadList,
+            vertices: 4,
+            shapes: Vec::new(),
+            drop: true,
+            pass: Box::new(ColourPass),
+            capture: None,
+        };
+        assert!(d.swallow(&mut mem, plan).unwrap());
+        // Seed the outer frame's return cookie. The setters below still
+        // run through the runtime's real entry guard.
+        d.swallow_caller(&mem, STACK - 8, HARNESS_EXIT, |token| token == call.ret)
+            .unwrap();
+    }
+
+    h.ok(addr("D3DDevice_SetRenderState_ZEnable"), regs(0, 0), &[0]);
+    h.ok(addr("D3DDevice_SetRenderState_StencilEnable"), regs(0, 0), &[0]);
+    h.ok(addr("D3DDevice_SetRenderState_CullMode"), regs(0, 0), &[0]);
+    {
+        let mut guest = h.ctx.runtime().memory();
+        let mut mem = runtime_glue::GuestAdapter::new(&mut guest);
+        common::inline_quad(&mut mem, 0.0, 0.0, 8.0, 8.0, [255; 4]);
+    }
+    h.ok(addr("D3DDevice_SetRenderState_ZBias"), regs(0, 0), &[0]);
+    {
+        let d = h.device.lock().unwrap();
+        assert!(d.swallowing(), "{:?}", d.swallow_mismatch());
+        assert_eq!(d.stats().swallowed_draws, 1);
+        assert_eq!(d.stats().draws, 0);
+    }
+
+    h.ok(addr("CDevice_KickOff"), regs(0, 0), &[]);
+    let d = h.device.lock().unwrap();
+    assert!(!d.swallowing());
+    assert_eq!(d.stats().swallow_reasons[SwallowRefusal::Dependency.index()], 1);
+    assert_eq!(d.stats().swallow_draws_replayed, 1);
+}
+
+#[test]
 fn halo_boot_device_sequence_runs_through_the_runner() {
     let mut h = harness(None);
     // 0x14850 (in 0x12560) runs the original surface helpers.

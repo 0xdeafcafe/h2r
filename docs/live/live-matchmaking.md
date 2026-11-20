@@ -7,7 +7,8 @@ has Live working in the game (2026-11-17).
 Search returns real sessions, filtered by the decoded procedure-1
 parameters: playlist, the party's level window and room for the party,
 closest mean level first (§7). The game widens its own window and hosts
-when nothing is found, so OptiMatch needs no server matcher. Ranked games
+when nothing is found. Solo clients can opt into the ping-aware server
+queue in [§9](#9-ping-aware-optimatch-assignments). Ranked games
 are ranked by the server from the games log, for the players who
 registered the game's arbitration round (§8.4); comparing arbitration
 reports, and NAT traversal, remain design.
@@ -25,6 +26,16 @@ HTTP service replaces those services; nothing here speaks their wire format.
 
 The in-game custom games browser (the System Link browser's dormant Live
 mode) and session visibility are in [live-custom-games.md](live-custom-games.md).
+
+## Ping-aware host selection (in progress)
+
+SBMM is adding a host-selection step that considers measured RTT as well
+as skill. A proposed group needs an eligible host that every member can
+reach. The server prototype widens the skill and latency windows with
+queue time, then prefers the lowest worst-player RTT. On equal worst
+RTT it prefers a peer host, then the lower median. A dedicated host
+must improve the worst route to displace a peer. The current OptiMatch
+search and join path is described below. [Dedicated host](dedicated-host.md)
 
 ## 1. What the retail game calls
 
@@ -702,10 +713,9 @@ and the editor's playlist tool (`hopper_edit::model`) work the same way:
 What a playlist cannot do yet: **make a game play a custom map.** An
 entry is a map id and a variant; the format has no room for a `MapId`, and
 session setup (`0x00192e60`/`0x00192eb0`) picks an entry and loads
-`maps\<base>.map`. A pinned custom map is played only when the host
-already has it installed as that base map's active package (`active.toml`);
-the server then accepts the session's `map_id` (it is pinned), and joiners
-download it through `MapGate`. A host without it plays the base map. For a
+`maps\<base>.map`. A pin permits a custom content ID in the session
+advertisement. Custom games pick the package's separate slot under Mods.
+For a
 playlist entry to choose a custom map, three pieces are missing:
 
 1. **Data:** a per-entry binding kept by the server beside the file (for
@@ -713,8 +723,8 @@ playlist entry to choose a custom map, three pieces are missing:
    and replayed like `HopperPinsSet`), served with the pins.
 2. **Runtime:** a hook at the host's entry pick (after `0x00192eb0`
    chooses the entry, before the map load) that reads the binding, makes
-   the package ready through `MapGate` (download, base check) and serves it
-   for that load only, rather than the persistent `active.toml` choice.
+   the package ready through `MapGate` (download, base check) and selects
+   its content offer for that game.
 3. **Fallback:** what a host that cannot get the package does (play the
    base, or skip to another entry), and that every peer agrees before the
    load, since lockstep diverges on any byte.
@@ -826,6 +836,13 @@ test `optimatch_searches_find_sessions_in_the_partys_level_window`
 (two synthetic guests through `start_embedded`).
 
 ## 8. Ranks: what the game does, and what the server does
+
+The stats site's **Ranked** page at `/games/halo2/ranks` builds its
+playlist menu from the served hopper file and the Clankermatch marks.
+The menu groups Ranked, Unranked and Clankermatch. The selected playlist
+shows its game types and size rules. The board shows levels and XP
+progress and marks bot accounts. Unranked playlists have no standings
+and can link to recent games. [Ranked page](../../web/src/stats/Ranks.tsx)
 
 ### 8.1 In the retail game (static reading)
 
@@ -939,13 +956,9 @@ owned, with no guest pointers. §8.4 has how the server uses them.
 
 Status: agreed with the coordinator and the bots lane (2026-11-18;
 their side is [bots.md](../game/bots.md) §9.4). The arbitration half is
-built. The bots half is built for matchmaking games; the clanker
-playlist pieces wait on the bots lane's `clankermatch` kind and
-`ranks_as` mark (the list is at the end of "Bots in ranks"). The bots
-lane owns the bot accounts and their events
-(`POST /games/bots`, the roster, `bot: true` on a game's player entries;
-[bots.md](../game/bots.md) §9). This lane owns how bots are ranked and
-how arbitration checks a ranked game.
+built. Clankermatch uses its own game kind and the hopper's
+`ranks_as` mark to resolve the leaderboard. Bot accounts and their
+events are described in [bots.md](../game/bots.md) §9.
 
 The user's rules (2026-11-18):
 
@@ -1124,3 +1137,160 @@ Register, and again for Report.
 If `session` matches neither, the first 8 bytes are not the session id.
 Then rounds cannot be linked this way, and nobody is ranked: send the
 log lines.
+
+## 9. Ping-aware OptiMatch assignments
+
+Enable the queue on each participating game client with
+`H2_LIVE_PING_MATCHMAKING=1`. The HLE uses it for solo OptiMatch searches.
+Parties, Clankermatch and the custom-games browser use their existing
+search paths. The server uses the active hopper's **minimum** player count
+and the entrants' current server ranks for that hopper. Team hoppers fill
+equal-sized teams by distributing the highest-to-lowest ranks in alternating
+team order. The planned teams are in the assignment. The retail title still
+owns the final in-game team placement.
+
+Clients keep the existing XNet QoS responder available and measure each
+candidate's actual round trip at its XNet base port plus two. This uses the
+[co-op echo](live-coop.md#106-ping) with a 450 ms reply window. It leaves the
+title's separate lobby-data lookup intact. Set `H2_LIVE_NAT` to `open`,
+`moderate` or `strict` and `H2_LIVE_UPLOAD_KBPS` to the known upload rate.
+Omit unknown values. The HLE does not infer NAT type or capacity from a
+successful small-packet echo.
+
+A cohort needs one eligible host that every member can reach. The oldest
+matchable ticket starts with a five-level skill spread and a 90 ms RTT
+limit. Every five seconds of wait add three levels and 20 ms, up to 49
+levels and 350 ms. A strict NAT or known upload below 1,000 kbit/s makes a
+candidate ineligible to host. Missing measurements wait for a probe.
+Explicit timeouts exclude that route. When all routes fail or exceed the
+maximum window, the clients continue searching until the search ends.
+
+Once Live has formed a cohort and planned its teams, it minimises worst
+RTT, then median over remote members, then host XUID. A registered
+[dedicated host](dedicated-host.md#routing-assignment-and-arbitration)
+wins over a peer only by improving worst RTT. The chosen peer receives
+the empty search that lets the title advertise its lobby. The other
+clients keep their async searches pending until that advertisement and
+its title QoS lobby data are ready. Opted-out clients continue to search
+the legacy lobby list without discovering queued assignments.
+
+### Joining a dedicated host
+
+The OptiMatch search stays pending while Live reserves and boots a
+dedicated host. The matchmaking screen shows “Starting a dedicated host…”.
+The client allows time for Live’s 60-second boot window and fallback,
+including for a cohort formed near the end of the search. Even if an
+assignment names the local account as a prospective host, `host_lease`
+keeps that console on the join path.
+
+When the queue returns `Queue::Join`, the Live HLE looks up the published
+session. The session’s `matchmaking.host_lease` identifies the lease even
+for clients whose first queue reply is `Queue::Join`. The assignment must
+match the queued hopper, include the client in its roster, and name the
+session’s host XUID. If the session detail has no assignment, a client
+that saw the lease while waiting can use that assignment when the queue
+sets `frames_from_host`. A waiting assignment can carry XUID zero until
+the host publishes. The HLE reads
+`GET /v1/hosts/{lease}` with the roster member’s `read` bearer. The lease’s
+`assignment_id` must match `Assignment.id` and the endpoint’s `session_id`
+must match `Queue::Join.session_id`. The dedicated session can have its own
+ID, leaving the assignment ID available for peer fallback. The matchmaking
+screen then shows `Joining dedicated host (<region>)`. Local hosts without
+a region show `local`.
+
+- With `Udp`, the HLE uses `HostEndpoint.udp` as the game’s base address
+  and keeps the identity bytes from `HostEndpoint.xnaddr`.
+- With `Tunnel`, the HLE opens `HostEndpoint.tunnel_url` on the Live API
+  using a fresh `sessions.relay` bearer. It checks lobby QoS through the
+  tunnel and gives the game the host’s published synthetic XNADDR.
+
+Both routes hand the session to the existing XNKID, QoS and XNet join
+path. The HLE keeps `Queue::Join.frames_from_host` with that published
+session ID so the uploader can leave frame uploads to the dedicated
+host. When a host ends or fails before the join completes, the client
+refreshes the queue for the server’s fallback assignment. A fresh
+assignment without a host lease uses the peer path. If that assignment
+elects this console with `Queue::Host`, the title receives its normal
+empty search and advertises the lobby.
+
+[Dedicated host contracts](dedicated-host-build.md#contracts)
+
+### Queue API
+
+Both the native router and the Worker's LiveHub serve the same routes.
+Each write uses a fresh `sessions.write` token.
+
+- `PUT /v1/matchmaking/queue` refreshes the signed account's ticket with
+  `hopper`, the XNet base `port`, optional `connectivity` and `samples`.
+  The server takes the IPv4 address from the connection. The `probing`
+  response gives each target's XUID, endpoint and ticket generation.
+  Report `target`, `generation` and `rtt_ms` for each target. Use
+  `rtt_ms: null` for a timeout. Replies from a replaced endpoint or
+  expired generation are ignored.
+- An operator can enable a service account as a dedicated candidate with
+  `PUT /v1/matchmaking/dedicated/{xuid}`. That account keeps its endpoint
+  available by refreshing a ticket with `dedicated: true`. It occupies no
+  entrant seat. Dedicated registration lasts one hour and is renewed by the
+  operator. The game HLE queues as a player. A dedicated process must use
+  the service API and bring up a compatible game session when elected.
+- An elected account receives `state: host` and an `assignment` from the
+  queue. It publishes with the normal `POST /v1/sessions` and the header
+  `X-H2-Match: <assignment.id>`. Live checks the publishing identity,
+  probed endpoint, hopper and available seats. Retrying with the same ID
+  returns the existing session. Members receive `state: waiting` until
+  the session is published, then `state: join` and its session ID.
+- Tickets expire after ten seconds without a refresh. An assignment is
+  reserved for sixty seconds. Each hopper admits up to 32 live candidates.
+  Tickets, assignments awaiting publication and dedicated registration
+  are transient, so a restart starts a fresh search. Published sessions
+  retain `matchmaking` in their signed `SessionCreated` event and session
+  detail. It includes the host, whether it was dedicated, the roster,
+  planned teams and the per-member RTT table. A peer host has zero RTT
+  to itself. The public debug record omits network addresses.
+
+### Ad-hoc dedicated hosts
+
+Set `LIVE_DEDICATED=1` in the native server environment or in the Live
+Worker's variables. Set `LIVE_DEDICATED_HOPPERS` to a JSON object keyed
+by hopper index. A hopper is opted in when its entry supplies the map
+scenario and optionally a variant. For example, enable hopper 1 with
+`{"1":{"map":"lockout","variant":"Team Slayer"}}`. The global switch
+and each individual hopper default to off. Choose a map and variant
+supported by the playlist and the host's data bundle.
+
+For regional placement, set `LIVE_HOST_REGIONS` to a JSON object
+mapping provider region codes to IPv4 QoS base endpoints. For example,
+`{"lhr":"192.0.2.10:31000","ams":"192.0.2.20:31000","iad":null}`.
+Each endpoint answers the same UDP echo as a peer at base port plus
+two. Use `null` for a region without a probe. Set
+`LIVE_HOST_DEFAULT_REGION` to a key in that list. If both region
+settings are omitted, Live leaves placement to the provider.
+
+The queue includes configured regional probes in its existing
+`probing` response when there is room within the candidate limit. Live
+uses measurements from the current probe generation. Among regions
+measured successfully by every cohort member, it chooses the lowest
+worst-member RTT. Ties prefer the configured default and then region
+code order. If no region has measurements from every member, Live
+uses the configured default. Regional probes occupy no player seats.
+
+Live reserves a cohort with an eligible peer fallback and requests
+the dedicated host as soon as the cohort forms. The forming request
+waits for the allocation result while other members can keep polling.
+This lets the Worker schedule the first lease sweep even if polling
+stops. The playerless host occupies a machine slot, so an ad-hoc
+assignment can take at most 15 solo entrants. Cohorts reachable only
+through a registered host use the existing registered-host path.
+All ad-hoc members receive `waiting` during boot. Live binds
+`host_lease` before starting the process, so the host can publish its
+lobby under that lease. The dedicated lobby has a session ID distinct
+from the assignment ID.
+After `HostReady` supplies the session ID, the queue sends `join`
+with that ID and `frames_from_host: true`.
+
+If allocation fails, including when the budget is exhausted, or if
+the host fails to register within 60 seconds of cohort formation, the
+same assignment ID, roster, and teams move to the reserved peer. The
+elected peer receives `host` and publishes as usual. The other players
+keep polling the same search and join when the peer's lobby is
+available, with `frames_from_host: false`.

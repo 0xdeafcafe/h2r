@@ -533,7 +533,26 @@ fn temperament_sim_player_list_and_view_expose_current_brain_state() {
             port: Some(1),
             player: None,
             brain: brain.clone(),
+            aim: None,
         });
+        let mut remote = log.clankers[0].clone();
+        remote.name = "Remote Clanker".into();
+        remote.kind = PlayerKind::Phantom;
+        remote.port = None;
+        remote.player = Some("player.2".into());
+        remote.aim = Some(agent_proto::sim::PhantomAim {
+            tick: 100,
+            stick: [0.5, 0.],
+            arrived_stick: [0., 0.],
+            trigger: 1.,
+            arrived_trigger: 0.,
+            action_deg: Some([90., 0.]),
+            fire_primary: false,
+            assist_strength: [0.75, 0.],
+            unit_forward: [0., 1., 0.],
+            assist_player: Some("player.0".into()),
+        });
+        log.clankers.push(remote);
     }
     let added = h.ok(
         &mut game,
@@ -553,6 +572,11 @@ fn temperament_sim_player_list_and_view_expose_current_brain_state() {
     assert_eq!(listed["players"][0]["brain"], updated);
     assert_eq!(listed["clankers"][0]["brain"], updated);
     assert_eq!(listed["clankers"][0]["player"], "player.1");
+    assert!(listed["clankers"][0].get("aim").is_none());
+    let aim = &listed["clankers"][1]["aim"];
+    assert_eq!(aim["tick"], 100);
+    assert_eq!(aim["action_deg"], json!([90.0, 0.0]));
+    assert_eq!(aim["assist_player"], "player.0");
     let view = h.ok(&mut game, method::VIEW, json!({"roots": ["sim"]}));
     assert_eq!(view["sim"]["1"]["brain"], updated);
 }

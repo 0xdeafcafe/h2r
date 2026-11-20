@@ -172,27 +172,26 @@ description updating with the focus, the legend's glyphs drawn as buttons, B
 going back to the screen underneath, and nothing left on screen after it
 closes.
 
-The mod repository's three screens (`boot::mods_screen`, docs/game/maps.md
-§5 "Mod downloads (in game)" and "A mod's page") are list-class screens
-whose rows come from the server, like the co-op friends list; the list
-and a map pack's list (a pack is one row of the list, opening its own:
-Download All, then its maps) are on the level select's layout as the
-campaign picker is (list, bracket, picture, description), and a row's
-state is a mark drawn into the fonts (star, tick, arrow), not a word; a map's page is on the pregame lobby's layout instead
-(docs/game/maps.md "A mod's page"): one action row, and the rest
-(body, a two-column table, a checklist) as panel texts of the class
-(`ListClass::panel`: retail backings and text blocks that belong to no
-row, their strings named by `Rows::panel_text`, set when the pane is
-built and again with the description). Their texts live in the `mod
-texts` id family (256-byte slots: a line and a description per row,
-the page's panel texts, then a line and a description per pack row), written when they change; a row's count
-is fixed when the screen opens. **Information is not a row**: a
-selectable list holds only what A does something with; facts, tables
-and checklists are panel texts (`ScreenSpec::texts`, drawn as `page.*`
-widgets, and `ScreenSpec::panel` for the art under them). Their descriptions are set
-again when a download moves on (`Rows::live_text`'s redraw), and X is
-their action (`ListClass::action_buttons(&[X_BUTTON])`; the list's reads
-the focused row with `list_class::focused_row`).
+The Mods browser and pack use the level-select bracket, list and picture.
+A star marks a new map, a tick marks an installed map, and a down arrow
+shows download progress. A failure says `Failed` on the row. A cold list
+opens with one waiting row. Its class reserves forty slots through
+`Rows::growing_capacity` and adds the returned rows without changing the
+focused handle. Later catalogue updates wait for the next visit. A pack
+has room for Download All and all forty maps. The action count includes
+only maps eligible to start or retry. The browser uses the base map's
+bitmap or the neutral lobby picture. Change Map and the lobby use the
+selected slot's art. [Map selection](map-select.md)
+
+The detail page uses the pregame lobby's action row, status panel, picture
+and table. Facts and changes are `ScreenSpec::texts` over
+`ScreenSpec::panel`. Each fact has separate label and value rectangles.
+The action row retains focus while the download progresses or removal
+awaits confirmation. The Mods classes return a `Rows::focused_footer`
+slot when focus or download state changes. The list class sets it on the
+footer widget when it sets the description. The preview reads the same
+commands from the focused `RowSpec::prompts`. The review records the player
+journeys, findings and integration checks. [Mods UI review](mods-ui-review.md)
 
 The skulls page logs `skulls page: ...` lines (docs/game/skulls.md "What it
 logs"); the sign-in prompt logs `signin prompt: ...` lines (docs/live/live.md).

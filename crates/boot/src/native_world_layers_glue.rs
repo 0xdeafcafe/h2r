@@ -4,15 +4,15 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use d3d::backend::{
-    DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalSlot, ExternalTarget,
-    ExternalWrites, ResolvedDraw,
+    DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPass,
+    ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
 };
 use d3d::shader::VertexProcessing;
 use engine::memory::GuestMemory as _;
 use feature::native_world_layers::{Layer, compare_frames, current};
 use native_render::camera::GuestRead;
 use native_render::world_layers::{
-    DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site,
+    DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
 };
 use native_render::world_layers_gpu::{Cache, IndexedPass};
 
@@ -56,8 +56,10 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
     let switches = feature::Switches::from_env().unwrap_or_default();
     let native = feature::native_world_layers::on(&switches);
     let residual = feature::native_residual::on(&switches);
+    let objects = switches.feature(feature::native_objects::SWITCH, true);
+    let lights = feature::native_lights::on(&switches);
     let frames = compare_frames();
-    if !native && !residual && frames.is_empty() {
+    if !native && !residual && !objects && !lights && frames.is_empty() {
         return;
     }
     if native && let Ok(mut device) = device.lock() {
@@ -78,7 +80,7 @@ pub(crate) fn install<B: d3d::backend::Backend + Send + 'static>(
                     let frame = crate::d3d_diag::presents() + 1;
                     let compare = frames.contains(&frame);
                     let current = current();
-                    if (!native || current.is_none()) && !residual && !compare {
+                    if current.is_none() && !compare && !residual {
                         return None;
                     }
                     let guest = ctx.memory();
@@ -126,11 +128,26 @@ pub(crate) fn indexed_draw() -> Option<DrawContext> {
     DRAW.get()
 }
 
+/// The native model and BSP buffers store complete triangle lists. A
+/// partial emission from the same geometry record cannot use that range.
+pub(crate) fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bool {
+    let Some(indices) = draw.indices.as_deref() else { return false };
+    use gfx::vertex::PrimitiveType::{TriangleList, TriangleStrip};
+    match draw.primitive {
+        TriangleList => indices.len() == expected,
+        TriangleStrip => indices.windows(3).filter(|t| {
+            t[0] != t[1] && t[1] != t[2] && t[0] != t[2]
+        }).count() * 3 == expected,
+        _ => false,
+    }
+}
+
 struct Admission {
     cache: Arc<Cache>,
     owners: Owners,
 }
 
+#[derive(Clone, Copy)]
 enum Owners {
     All,
     World,
@@ -138,9 +155,11 @@ enum Owners {
     None,
 }
 
-impl Admission {
-    fn new() -> Self {
-        let owners = match std::env::var("H2_NATIVE_WORLD_LAYERS_OWNERS")
+impl Owners {
+    fn get() -> Self {
+        use std::sync::OnceLock;
+        static OWNERS: OnceLock<Owners> = OnceLock::new();
+        *OWNERS.get_or_init(|| match std::env::var("H2_NATIVE_WORLD_LAYERS_OWNERS")
             .ok()
             .as_deref()
         {
@@ -153,12 +172,42 @@ impl Admission {
                 );
                 Owners::None
             }
-        };
-        Self {
-            cache: Arc::default(),
-            owners,
-        }
+        })
     }
+
+    fn admits(self, stage: timeline::native::Stage) -> bool {
+        matches!((self, stage),
+            (Self::All, _)
+            | (Self::World, timeline::native::Stage::World)
+            | (Self::Objects, timeline::native::Stage::Objects))
+    }
+}
+
+pub(crate) fn owns_scene_world(switches: &feature::Switches) -> bool {
+    feature::native_world_layers::on(switches) && Owners::get().admits(timeline::native::Stage::World)
+}
+
+impl Admission {
+    fn new() -> Self {
+        Self { cache: Arc::default(), owners: Owners::get() }
+    }
+}
+
+/// Layer 3 can draw a material that never reads the accumulation level.
+fn layer3_texaccum(
+    target: Option<Texaccum>,
+    color_header: u32,
+    textures: [Option<u32>; 4],
+    sampled: [bool; 4],
+) -> Option<Option<Texaccum>> {
+    use native_render::object_program::TEXACCUM_HEADER;
+    if !textures.into_iter().zip(sampled).any(|(header, active)| {
+        active && header == Some(TEXACCUM_HEADER)
+    }) {
+        return Some(None);
+    }
+    let target = target?;
+    (target.texture == TEXACCUM_HEADER && target.surface? != color_header).then_some(Some(target))
 }
 
 impl DrawAdmission for Admission {
@@ -184,21 +233,15 @@ impl DrawAdmission for Admission {
                 None
             }
             3 => {
-                let target = layer.texaccum?;
-                let surface = target.surface?;
-                if surface == snapshot.color_header
-                    || !draw.textures.contains(&Some(target.texture))
-                {
-                    return None;
+                let target = layer3_texaccum(
+                    layer.texaccum, snapshot.color_header, draw.textures, snapshot.sampled_stages,
+                )?;
+                if let Some(target) = target {
+                    // Pin the layer-1 attachment separately from engine
+                    // texture 3. Preflight checks their views on every copy.
+                    slots.push(Some(ExternalSlot { header: target.surface?, written: false }));
                 }
-                // Pin the layer-1 attachment separately from the lookup
-                // for engine texture 3. The GPU preflight checks both
-                // bindings resolve to that exact texture on each copy.
-                slots.push(Some(ExternalSlot {
-                    header: surface,
-                    written: false,
-                }));
-                Some(target)
+                target
             }
             5 | 7 | 8 => None,
             _ => return None,
@@ -207,11 +250,8 @@ impl DrawAdmission for Admission {
             Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
             Owner::Object { .. } => timeline::native::Stage::Objects,
         };
-        match (&self.owners, stage) {
-            (Owners::All, _)
-            | (Owners::World, timeline::native::Stage::World)
-            | (Owners::Objects, timeline::native::Stage::Objects) => {}
-            _ => return None,
+        if !self.owners.admits(stage) {
+            return None;
         }
         let pass = IndexedPass::new(draw, Arc::clone(&self.cache), c.frame, texaccum)?;
         Some((
@@ -243,7 +283,15 @@ struct Replacement {
 }
 
 impl ExternalPass for Replacement {
+    fn uses_validated_resources(&self) -> bool {
+        self.pass.uses_validated_resources()
+    }
+
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
+
+    fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
+        self.pass.resolved_fallback()
+    }
 
     fn writes(&self) -> ExternalWrites {
         self.pass.writes()
@@ -253,14 +301,14 @@ impl ExternalPass for Replacement {
         self.pass.sampled()
     }
 
-    fn prepare_copy(&mut self, target: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        self.pass.prepare_copy(target)
-    }
-
-    fn record_ranges(&mut self, target: ExternalTarget<'_>) -> usize {
+    fn record_draws(
+        &mut self,
+        target: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let draws = self.pass.record_draws(target, request)?;
         let (copy, size) = (target.copy, target.size);
-        let ranges = self.pass.record_ranges(target);
-        if self.context.compare && ranges != 0 {
+        if self.context.compare && draws.is_ok() {
             eprintln!(
                 "native-world-layers: recorded frame={} layer={} view={} geometry={:?} indices={:?} copy={copy:?} size={size:?} guest={:#010x}/{:#010x} samples_texaccum={}",
                 self.context.frame,
@@ -273,7 +321,7 @@ impl ExternalPass for Replacement {
                 self.samples_texaccum,
             );
         }
-        ranges
+        Some(draws)
     }
 }
 
@@ -355,4 +403,23 @@ pub(crate) fn compare_draw(
         state.alpha_func,
         state.alpha_ref,
     );
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn only_live_accumulation_samples_require_a_separate_pinned_level() {
+        let target = Texaccum {
+            texture: native_render::object_program::TEXACCUM_HEADER,
+            surface: Some(20),
+            size: (32, 32),
+        };
+        let textures = [Some(target.texture), Some(30), None, None];
+        assert_eq!(layer3_texaccum(None, 10, textures, [false, true, false, false]), Some(None));
+        assert_eq!(layer3_texaccum(None, 10, textures, [true; 4]), None);
+        assert_eq!(layer3_texaccum(Some(target), 20, textures, [true; 4]), None);
+        assert_eq!(layer3_texaccum(Some(target), 10, textures, [true; 4]), Some(Some(target)));
+    }
 }

@@ -37,40 +37,9 @@
 //! texel times 255 is an integer; `k / 255` stores as `k`).
 
 use crate::context::GfxContext;
-use crate::format::{D3DFormat, Layout, TexelFormat};
+use crate::format::D3DFormat;
 
-/// A 32-bit texel format as a byte permutation: logical red, green, blue
-/// and alpha are bytes `perm[0..4]` of the little-endian guest word, and an
-/// `opaque` format reads alpha as 255 (and writes it as 255).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WordFormat {
-    /// Byte of the guest word for R, G, B, A.
-    pub perm: [u8; 4],
-    /// `X8`: alpha is 255 whatever the word holds.
-    pub opaque: bool,
-}
-
-impl WordFormat {
-    /// The permutation for `format`, if it is one of the 32-bit colour
-    /// formats handled here (`A8R8G8B8`, `X8R8G8B8`, `A8B8G8R8`,
-    /// `B8G8R8A8`, `R8G8B8A8`, swizzled or linear).
-    pub fn of(format: D3DFormat) -> Option<Self> {
-        let (perm, opaque) = match format.texel() {
-            TexelFormat::A8R8G8B8 => ([2, 1, 0, 3], false),
-            TexelFormat::X8R8G8B8 => ([2, 1, 0, 3], true),
-            TexelFormat::A8B8G8R8 => ([0, 1, 2, 3], false),
-            TexelFormat::B8G8R8A8 => ([1, 2, 3, 0], false),
-            TexelFormat::R8G8B8A8 => ([3, 2, 1, 0], false),
-            _ => return None,
-        };
-        matches!(format.layout(), Layout::Swizzled | Layout::Linear)
-            .then_some(Self { perm, opaque })
-    }
-
-    fn packed(self) -> u32 {
-        u32::from_le_bytes(self.perm)
-    }
-}
+pub use crate::format::WordFormat;
 
 /// Where a level's words are in the mirror (or, for a depth alias, in the
 /// depth buffer's memory): from word `base`, swizzled (`pitch_words` 0) or
@@ -494,7 +463,7 @@ impl GuestWords {
             return Err(WordsError::Bounds { need, have });
         }
         let p = Params {
-            perm: wf.packed(),
+            perm: u32::from_le_bytes(wf.perm),
             opaque: wf.opaque as u32,
             ..Params::level(size, layout)
         };
@@ -638,7 +607,7 @@ impl GuestWords {
                 })
         });
         let p = Params {
-            perm: wf.packed(),
+            perm: u32::from_le_bytes(wf.perm),
             opaque: wf.opaque as u32,
             ..Params::level(size, layout)
         };
@@ -899,7 +868,7 @@ impl GuestWords {
         });
         let out_view = out.create_view(&Default::default());
         let p = Params {
-            perm: wf.packed(),
+            perm: u32::from_le_bytes(wf.perm),
             opaque: wf.opaque as u32,
             src_width: dw,
             src_height: dh,

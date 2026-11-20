@@ -5,6 +5,11 @@
  *
  *   sse_harness        binary records on stdin, results on stdout
  *   sse_harness -t     text: "op pred mxcsr a b" in hex per line */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+// glibc exposes sigaction and the named ucontext register fields under C11
+// with feature-test macros set before the first system header.
+#define _GNU_SOURCE
+#endif
 #if !defined(__x86_64__)
 #error "sse_harness.c runs the host's SSE unit and needs x86_64"
 #endif
@@ -18,7 +23,7 @@
 
 #include "protocol.h"
 
-typedef unsigned __int128 u128;
+__extension__ typedef unsigned __int128 u128;
 typedef float v4 __attribute__((vector_size(16)));
 
 static sigjmp_buf jb;
@@ -59,10 +64,9 @@ static u128 fromv(v4 v) { u128 x; memcpy(&x, &v, 16); return x; }
 
 static int run(int op, int pred, uint32_t mxcsr, u128 a, u128 b, uint32_t *mout, u128 *rout) {
     volatile uint32_t mx = mxcsr, mxo = 0;
-    v4 va = tov(a), vb = tov(b);
-    u128 res = 0;
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
+    sigemptyset(&sa.sa_mask);
     sa.sa_sigaction = on_fpe;
     sa.sa_flags = SA_SIGINFO;
     sigaction(SIGFPE, &sa, NULL);
@@ -73,6 +77,8 @@ static int run(int op, int pred, uint32_t mxcsr, u128 a, u128 b, uint32_t *mout,
         *rout = 0;
         return 1;
     }
+    v4 va = tov(a), vb = tov(b);
+    u128 res = 0;
     switch (op) {
     case OP_ADDSS: BIN("addss") break;
     case OP_ADDPS: BIN("addps") break;

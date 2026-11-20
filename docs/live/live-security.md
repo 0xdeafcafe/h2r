@@ -62,14 +62,15 @@ shown `123-456`), the same scheme authenticator apps use.
   server-signed `KeyAdded {kid, jwk, proof, via: "totp"}`; and answers
   `{xuid, gamertag, id}`. No token and no invite: the code is the
   credential.
-- **Guessing.** Wrong codes count per gamertag: after 5, the gamertag is
-  locked for a minute, doubling with every further wrong code up to a day
-  (429 with the time left); a right code clears it; a gamertag quiet for a
-  day starts over. A wrong code's 403 says how many are left before the
-  lock (`wrong code; N tries left`), which the in-game prompt shows. Sign-up and recovery also share the server-wide
-  creation rate limit. With three codes valid at once, the first five
-  guesses succeed with odds of about 1 in 67,000; after that each guess
-  costs exponentially more time.
+- **Guessing.** Wrong codes count per gamertag and client IP. After five
+  attempts, that pair is locked for a minute (429 with the time left).
+  The lock doubles with each further wrong code up to a day. A correct
+  code or a day without failures clears it. A wrong code's 403 says how
+  many tries remain (`wrong code; N tries left`). Recovery has its own
+  bucket of one request per second per IP with a burst of ten across all
+  gamertags. An owner recovering from another IP has their own budget and
+  backoff. With three codes valid at once, five guesses from one IP have
+  odds of about 1 in 67,000 before the backoff begins.
 - **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
   24-byte nonce per value, stored as base64url of nonce and ciphertext with
   its tag) under a key derived from the server key with HKDF-SHA256 (info
@@ -137,9 +138,11 @@ JWT themselves, the way AT Protocol service auth works.
 - **Server check.** Parse header, look up `kid` in memory, verify EdDSA,
   check `aud`, `exp`, `lxm`, and reject a `jti` seen in the last 2 minutes
   (an in-memory set that expires itself). No database call.
-- **WebSockets** send the token as the first message (browsers cannot set
-  headers on a WebSocket); the server closes the socket when the token's
-  `exp` passes unless the client sends a fresh one.
+- **WebSockets** for stream and ingest send the token as the first
+  message when authentication is required. For co-op relay, both homes
+  check the bearer token and session membership before upgrading. The
+  relay rechecks membership and accepts refreshes from the same account.
+  [Relay protocol](live-api.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
@@ -198,6 +201,34 @@ read, including the stream, on a `--private` server).
 The server id is fixed on first start and stored with the server key,
 because every author id contains it.
 
+### Dedicated host identity
+
+Live issues the host process one reusable Ed25519 JWT at boot. The issuer
+is the Live server, the audience is its server ID, and the subject is
+`host:<lease_id>`. The token expires `max_match_s + 300` seconds after
+issuance. Its `lxm` array grants `hosts.register`, `hosts.report`,
+`sessions.publish`, and `telemetry.ingest`. Registration and reporting
+compare the verified subject’s lease ID to the route. Player and operator
+routes keep their existing single-method token checks.
+
+The private JWT also carries `event_key`, the base64url Ed25519 seed for
+this lease’s event batches. Live derives it with HKDF from the server key
+and the lease subject. The host uses the JWT as its HTTP or ingest bearer
+and signs ordinary session and game batch JWSes with the lease key, using
+the JWT subject as event author. Live checks the batch signature, scope
+and resource owner. Session creation and game start also check the active
+lease. The event log retains the signed batches. A hibernating ingest
+socket retains only the subject and expiry. Keep the JWT and its event key
+private for the lifetime of the lease.
+
+A dedicated session carries the service subject in `host` and zero in the
+legacy `host_xuid` field. Host heartbeats refresh its advertisement, and
+only player XUIDs populate presence, session membership and Ranked results.
+Raw events on the `hosts` stream are visible only to admins and the
+operator. Roster members read their lease endpoint through
+`GET /v1/hosts/{lease}`.
+[Ranked admission](dedicated-host.md#routing-assignment-and-arbitration)
+
 ## 4. Base URL and discovery
 
 Every client takes a base URL: `--server`/`H2_LIVE_SERVER` for the CLI and
@@ -240,8 +271,21 @@ Not built yet; the formats above are chosen so it can be.
   (`--tls-cert` and `--tls-key`, rustls) or an explicit `--insecure-http`,
   and clients refuse to send tokens over plain HTTP to a non-loopback host.
 - Request bodies are capped (64 KiB normally, title files 2 MiB because the
-  playlist file inflates to about 1.46 MB, ingest
-  messages 16 KiB), and each author is rate-limited per method in memory.
+  playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
+  cap before authentication and throughout the session on both deployments.
+  Writes have an in-memory budget per author and method. API GET and HEAD
+  requests share a budget of 30 requests per second per client IP with a
+  burst of 120. Both budgets return 429 when exhausted. The native server
+  uses the peer address and trusts `CF-Connecting-IP` from loopback with a
+  Cloudflare tunnel configured. The Worker uses Cloudflare's client IP.
+  IPv6 addresses share limits within their /64 for reads and recovery.
+  Requests with no trusted IP share a fallback bucket.
+- **Map outline writes** require an admin or the operator with a
+  `games.write` token. That role is required for both the first outline
+  and any replacement. [Outline API](live-api.md#map-outline)
+- **Content downloads** check read authorization and the blob's moderation
+  status before streaming it from storage. The server can stream large
+  packages without buffering the full download. [Content API](live-api.md#custom-maps)
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.
 - Postgres credentials come only from the environment or the `--db` URL;
