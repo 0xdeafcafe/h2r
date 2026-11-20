@@ -13,7 +13,7 @@
 //! | every ordinary tag | the schema's depth-first tree ([`tags::schema::transplant::Unpinner`]); local raw resources copied into the new file |
 //! | size-0 aliases | [`TagPayload::Alias`] of their owner |
 //! | `scnr` | built from scratch: the root's scalars and tag references, every root block field zeroed, then each block the converted scenario fills that the schema can copy ([`Relocator::block_field`]); the BSP descriptors' region words become [`FixupKind::Bsp`] |
-//! | `ugh!` | [`h1sounds::gestalt::SoundGestalt`], chunks' local raw copied |
+//! | `ugh!` | [`h1_assets::sounds::gestalt::SoundGestalt`], chunks' local raw copied |
 //! | converted tags (structure, lightmap, collections, objects) | as the conversion built them |
 //!
 //! That set, pruned to what the scenario reaches ([`prune`]), gives the
@@ -24,7 +24,7 @@
 
 use std::io::{Cursor, Read, Seek};
 
-use h1sounds::gestalt::SoundGestalt;
+use h1_assets::sounds::gestalt::SoundGestalt;
 use map::build::{BspField, FixupKind, TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
 use tags::schema::transplant::Unpinner;
@@ -350,7 +350,7 @@ pub fn unpin_all<R: Read + Seek>(
     let mut gestalt = None;
     for slot in &pinned.slots {
         let Some(t) = &slot.tag else { continue };
-        // A gestalt that gained sounds (`h1sounds::install_sounds`) is
+        // A gestalt that gained sounds (`h1_assets::sounds::install_sounds`) is
         // built, but its base chunks still point into the base's file.
         if t.group == ugh
             && let TagPayload::Built(b) = &t.payload
@@ -412,7 +412,7 @@ pub fn unpin_all<R: Read + Seek>(
     // gestalt, where every pointer is a file offset, converted ones
     // included.
     if let Some((id, _)) = &gestalt {
-        use h1sounds::gestalt::{STRIDES, blocks};
+        use h1_assets::sounds::gestalt::{STRIDES, blocks};
         let address = src
             .tag(*id)?
             .location
@@ -668,9 +668,9 @@ fn sound_gestalt<R: Read + Seek>(
     id: TagId,
     mut g: SoundGestalt,
 ) -> Result<usize> {
-    use h1sounds::gestalt::{ChunkPointer, blocks};
+    use h1_assets::sounds::gestalt::{ChunkPointer, blocks};
     const EXTRA_RAW: usize = 8;
-    let extra = |e: &h1sounds::gestalt::Nested| word(&e.bytes, EXTRA_RAW as u32);
+    let extra = |e: &h1_assets::sounds::gestalt::Nested| word(&e.bytes, EXTRA_RAW as u32);
     u.add_starts(g.chunks.iter().filter_map(|c| match c.pointer {
         ChunkPointer::Stored(p) => Some(p),
         ChunkPointer::Local(_) => None,

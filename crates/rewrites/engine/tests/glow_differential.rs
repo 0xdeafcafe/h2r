@@ -31,7 +31,7 @@
 //!
 //! ```sh
 //! H2_XBE=/abs/path/default.xbe cargo test -p engine --features differential \
-//!     --test glow_differential -- --nocapture
+//!     --test it glow_differential:: -- --nocapture
 //! ```
 
 #![cfg(feature = "differential")]

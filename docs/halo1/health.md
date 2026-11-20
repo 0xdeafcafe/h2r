@@ -260,7 +260,7 @@ player is Halo 2's biped.
   (6): every address above, and `every_hud_widget_is_drawn_behind_the_same_gates`
   (HUD_SHOWN before every `nhdt` draw, Blind's byte, one gate, inputs and
   draw per widget, the special type).
-- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test sandbox_disc -- --ignored`:
+- `H1_ISO=... H2_DISC=... cargo test -p h1objects --test it sandbox_disc:: -- --ignored`:
   Blood Gulch in the Halo 1 sandbox: every HUD interface of the player
   names a `*_h1_health` `nhdt` with exactly one body widget, the shield
   meter's gate bytes, the strip bitmap and shader; the strip's image is

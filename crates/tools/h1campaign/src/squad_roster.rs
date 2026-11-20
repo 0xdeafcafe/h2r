@@ -3,8 +3,8 @@
 //! the display name is longer than the Halo 2 scenario string.
 use std::collections::HashSet;
 
-use h1ai::h1::{FiringPosition, H1Ai, Squad, StartingLocation};
-use h1scripts::{
+use crate::ai::h1::{FiringPosition, H1Ai, Squad, StartingLocation};
+use crate::scripts::{
     Tables,
     catalog::types::{AI, FUNCTION_NAME},
 };
@@ -148,8 +148,8 @@ fn select(src: &mut H1Ai, uses: &Uses, groups: usize) -> crate::Result<Selection
 pub(crate) fn prepare(
     src: &mut H1Ai,
     tables: &Tables,
-    requests: &[h1ai::control::Request],
-    options: &mut h1ai::convert::Options,
+    requests: &[crate::ai::control::Request],
+    options: &mut crate::ai::convert::Options,
     followed: Option<&std::collections::BTreeSet<u16>>,
     scripted: bool,
 ) -> crate::Result<Selection> {
@@ -183,7 +183,7 @@ pub(crate) fn prepare(
     // Counted spawns of a platoon address its first source squad, even
     // when that squad starts empty and has no direct script literal.
     for request in requests {
-        if request.operation == h1ai::control::Operation::Spawn && request.reference >> 30 == 1 {
+        if request.operation == crate::ai::control::Operation::Spawn && request.reference >> 30 == 1 {
             let ei = usize::from(request.reference as u16);
             let platoon = i16::from((request.reference >> 16) as u8);
             if let Some(si) = src
@@ -195,12 +195,12 @@ pub(crate) fn prepare(
             }
         }
     }
-    let mut maneuver = h1ai::control::maneuver_targets(src, requests);
+    let mut maneuver = crate::ai::control::maneuver_targets(src, requests);
     if scripted {
-        maneuver.extend(h1ai::control::automatic_migration_targets(src, followed));
+        maneuver.extend(crate::ai::control::automatic_migration_targets(src, followed));
     }
     let destinations: HashSet<u32> = requests.iter()
-        .filter(|r| r.operation == h1ai::control::Operation::Migrate)
+        .filter(|r| r.operation == crate::ai::control::Operation::Migrate)
         .filter_map(|r| r.target)
         .collect();
     for (ei, encounter) in src.encounters.iter().enumerate() {

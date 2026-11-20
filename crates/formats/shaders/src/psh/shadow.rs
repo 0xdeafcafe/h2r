@@ -34,7 +34,7 @@
 //! (wrap, mirror, clamp) is applied to the texel indices; `BORDER` is
 //! treated as clamp. Only mip level 0 is read.
 //!
-//! **Hard shadows** (E3 lighting, docs/graphics/e3-lighting.md phase 1):
+//! **Hard shadows** (E3 lighting, docs/graphics/e3-lighting.md, "The edge"):
 //! [`super::PixelOptions::hard_shadow`] makes a stage compare once, at the
 //! nearest texel, with no percentage-closer filter. When several stages of
 //! the program sample the same shadow map (taps a pass spreads over

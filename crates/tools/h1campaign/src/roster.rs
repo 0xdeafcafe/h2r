@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 
-use h1ai::convert::rebuilds_character;
-use h1ai::h1::{H1Ai, actor, actor_variant};
+use crate::ai::convert::rebuilds_character;
+use crate::ai::h1::{H1Ai, actor, actor_variant};
 use h1map::{Group, H1Map};
 use h1objects::convert::{Converter, local_index};
 use map::build::{Block, TagPayload, TagSet};
@@ -41,7 +41,7 @@ pub(crate) fn prepare(
     conv: &mut Converter<'_>,
     assets: crate::h2assets::Assets,
     retail: Option<&TagSet>,
-    scripts: Option<&h1scripts::Tables>,
+    scripts: Option<&crate::scripts::Tables>,
 ) -> Result<Vec<Variant>> {
     let mut todo = Vec::new();
     for (i, entry) in ai.actor_palette.iter().enumerate() {
@@ -69,7 +69,7 @@ pub(crate) fn prepare(
     }
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let err = |e: h1ai::Error| invalid(format!("AI character: {e}"));
+    let err = |e: crate::ai::Error| invalid(format!("AI character: {e}"));
     while let Some(id) = todo.pop() {
         if !seen.insert(id) {
             continue;

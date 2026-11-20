@@ -2,7 +2,7 @@
 //! `$H2_DISC` where a base map is needed); nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test effects_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it effects_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `halo1_effect_layout_survey`: the Halo 1 `effe` layout

@@ -742,8 +742,8 @@ behaviour follows xemu's `psh_append_shadowmap`:
   indices.
 - `s/q` and `t/q` are multiplied by `tex_scale`, as for colour textures,
   so linear (texel-addressed) shadow maps work.
-- **Hard shadows** (`PixelOptions::hard_shadow`, E3 lighting phase 1,
-  [e3-lighting.md](e3-lighting.md)): a stage with a non-zero mask
+- **Hard shadows** (`PixelOptions::hard_shadow`, the Lighting row on the
+  D3D path, [e3-lighting-setting.md](e3-lighting-setting.md)): a stage with a non-zero mask
   compares once at the nearest texel, whatever its filter, at the mean of
   the coordinates of the stages in its mask (the stages that sample the
   same map), so taps spread over stages collapse to one. Only the

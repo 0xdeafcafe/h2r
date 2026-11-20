@@ -301,7 +301,7 @@ fn stub(key: TagKey) -> LooseTag {
 /// Groups whose tags keep every block inside their own bytes, sharing only
 /// within themselves (`ugh!` not at all: its reader takes no overlap). Our
 /// readers take these tags' bytes alone (`tags::DecodedTag` for bitmaps,
-/// `h1sounds::gestalt::SoundGestalt::decode`), and retail never shares
+/// `h1_assets::sounds::gestalt::SoundGestalt::decode`), and retail never shares
 /// across them (V, 2026-11-18, 05a, Coagulation, 03a and 07a: no `bitm` or
 /// `ugh!` array outside its tag). Every other group shares equal blocks
 /// across tags, as retail does in 25 to 28 groups per map (05a: 377,044

@@ -1,6 +1,6 @@
 # Halo 1 campaign scripts to Halo 2
 
-`crates/tools/h1scripts` reads Halo 1's compiled scripts from a scenario tag,
+`crates/tools/h1campaign` reads Halo 1's compiled scripts from a scenario tag,
 decompiles them to HSC text, maps Halo 1's builtins and types to Halo 2's, and
 compiles the result to Halo 2 syntax nodes and scenario tables for the
 converter. It is step 6 of [campaign.md](campaign.md) (the scripts
@@ -441,7 +441,7 @@ Script atoms of these types index scenario blocks, so the converter writes
 Halo 1's blocks into Halo 2's in Halo 1's order and each atom keeps its
 index. `h1scripts::level` reads and writes them; `h1scripts::seats` builds
 the seat-mapping table. Offsets come from the surveys in
-`crates/tools/h1scripts/tests/survey.rs` (they print offsets, strides and counts
+`crates/tools/h1campaign/tests/scripts/survey.rs` (they print offsets, strides and counts
 only): for every script atom of a type, the block whose element at the
 atom's index holds the atom's token as its name.
 

@@ -3,7 +3,7 @@
 //! for the converter's caches.
 
 use h1map::Tag;
-use h1models::Converted;
+use h1_assets::models::Converted;
 use map::{FourCC, TagId};
 
 use super::Converter;

@@ -1,0 +1,14 @@
+[package]
+name = "h1-contract"
+description = "The names both Halo 1 halves share: what the converters write and the game's Halo 1 hooks read (tag layouts, markers, script slots, function names)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.h2]
+doc = ["halo1/text.md", "halo1/script-builtins.md", "dev/crate-structure.md"]
+
+[dependencies]
+# `FourCC` for the HUD text tag's group.
+map.workspace = true

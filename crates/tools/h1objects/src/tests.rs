@@ -2110,7 +2110,7 @@ fn weapon_class_is_the_one_most_animations_name() {
 /// reaches its farthest vertex, wherever Halo 1's origin is.
 #[test]
 fn model_sphere_centres_the_model_box() {
-    use h1models::h1::{Geometry, Model, Part, Vertex};
+    use h1_assets::models::h1::{Geometry, Model, Part, Vertex};
     let vertex = |position: [f32; 3]| Vertex {
         position,
         normal: [0.0, 0.0, 1.0],
@@ -2514,7 +2514,7 @@ fn the_reserve_maximum_is_the_total_less_the_loaded() {
 #[test]
 fn wheel_nodes_are_the_gripping_points_nodes_and_below() {
     use crate::h1::{MassPoint, POWERED_GROUND_FRICTION, Physics};
-    let node = |name: &str, parent: i16| h1models::h1::Node {
+    let node = |name: &str, parent: i16| h1_assets::models::h1::Node {
         name: name.into(),
         next_sibling: -1,
         first_child: -1,

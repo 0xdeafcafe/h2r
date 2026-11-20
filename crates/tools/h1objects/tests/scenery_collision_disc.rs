@@ -5,7 +5,7 @@
 //! Nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test scenery_collision_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it scenery_collision_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `bloodgulch_boulder_doublewide_is_level_collision`: a point inside

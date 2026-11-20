@@ -1378,7 +1378,7 @@ let ids = tree.install_over(&mut set, &donor_slots)?;      // or tree.install(&m
 
 ```sh
 cargo test -p h1objects                       # synthetic: templates, coll, tree install
-H1_ISO=<halo1 iso> H2_DISC=disc/halo2.iso cargo test -p h1objects --test disc -- --ignored --nocapture
+H1_ISO=<halo1 iso> H2_DISC=disc/halo2.iso cargo test -p h1objects --test it -- disc:: --skip _disc:: --ignored --nocapture
 ```
 
 `tests/collision_disc.rs` (`H2_MAPS=` limits the Halo 2 maps,

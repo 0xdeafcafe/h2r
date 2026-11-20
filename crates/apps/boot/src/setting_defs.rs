@@ -132,7 +132,7 @@ pub const LIGHTING_E3: i64 = 1;
 pub static LIGHTING: Def = Def {
     key: "graphics.lighting",
     label: "Lighting",
-    help: "Retail, or E3: harder, sharper shadows (docs/graphics/e3-lighting.md, phase 1). \
+    help: "Retail, or E3: harder, sharper shadows (docs/graphics/e3-lighting-setting.md). \
            E3 draws the game's shadow maps at the render scale (at least twice the game's \
            size) and compares them with one tap, in the shown image only; the game itself \
            sees retail. A change applies at the next frame.",

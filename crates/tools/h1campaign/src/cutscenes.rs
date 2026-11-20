@@ -6,7 +6,7 @@
 //!   (`custom_animation`, `scenery_animation_start`, ...), converted to
 //!   `jmad` under their Halo 1 names, and each animation name the scripts
 //!   use mapped to the converted animation's
-//!   (`h1scripts::compile::ANIMATION_NAME`).
+//!   (`crate::scripts::compile::ANIMATION_NAME`).
 //! - [`read_recordings`], [`recordings_block`]: Halo 1's recorded
 //!   animations (unit control streams the scripts play on units and
 //!   vehicles with `recording_play` and kin) as Halo 2's scenario block
@@ -15,12 +15,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use h1map::{Group, H1Map};
-use h1scripts::compile::{ANIMATION_NAME, Compiled, Hook};
+use crate::scripts::compile::{ANIMATION_NAME, Compiled, Hook};
 use map::FourCC;
 use map::build::TagSet;
 
 use crate::{Options, Result, invalid};
-use h1scripts::compile::Cutscenes;
+use crate::scripts::compile::Cutscenes;
 
 /// Every campaign level runs the source cutscene guards and tutorial branches.
 pub fn default_for(_level: &str) -> Cutscenes {
@@ -57,13 +57,13 @@ impl Graphs {
     /// (`<graph>|<animation>`) stands for: the name the converted graph
     /// gave that animation, or, for a graph that was not converted or an
     /// animation it lacks, the Halo 1 name mapped the same way
-    /// (`h1models::names::map_name`).
+    /// (`h1_assets::models::names::map_name`).
     pub fn h2_name(&self, token: &str) -> String {
         let (graph, anim) = token.split_once('|').unwrap_or(("", token));
         self.names
             .get(&(graph.to_ascii_lowercase(), anim.to_ascii_lowercase()))
             .cloned()
-            .unwrap_or_else(|| h1models::names::map_name(anim).full())
+            .unwrap_or_else(|| h1_assets::models::names::map_name(anim).full())
     }
 }
 
@@ -121,11 +121,11 @@ pub(crate) fn install_graph_hooks<'a>(
             )
             .into());
         };
-        let graph = h1models::h1::Graph::read(h1, tag.data_address)?;
+        let graph = h1_assets::models::h1::Graph::read(h1, tag.data_address)?;
         for (a, (n, _)) in graph
             .animations
             .iter()
-            .zip(h1models::jmad::animation_names(&graph))
+            .zip(h1_assets::models::jmad::animation_names(&graph))
         {
             out.names.insert(
                 (name.to_ascii_lowercase(), a.name.to_ascii_lowercase()),
@@ -143,7 +143,7 @@ pub(crate) fn install_graph_hooks<'a>(
                 .and_then(|a| model_by_checksum(h1, a.node_list_checksum)),
             false => None,
         };
-        match h1models::graph_from_map(h1, tag, model) {
+        match h1_assets::models::graph_from_map(h1, tag, model) {
             Ok((g, _, conv)) => {
                 out.raw_bytes += conv.raw.iter().map(|r| r.0.len()).sum::<usize>();
                 conv.install(set, &name)
@@ -162,12 +162,12 @@ pub(crate) fn install_video(h1: &H1Map, set: &mut TagSet, c: &mut Compiled) -> R
         .ok_or_else(|| invalid("missing video rasterizer globals"))?;
     let rows = h1.tag_space().block_at(h1.tag_data(globals)?, 0x134, 0x13c)?;
     let raster = rows.first().ok_or_else(|| invalid("missing rasterizer data"))?;
-    for (offset, name) in [0x11c, 0x12c].into_iter().zip(h1scripts::cinematics::VIDEO_BITMAPS) {
+    for (offset, name) in [0x11c, 0x12c].into_iter().zip(crate::scripts::cinematics::VIDEO_BITMAPS) {
         let reference = h1map::TagRef::read(raster, offset)
             .filter(|r| r.group == Group::new(b"bitm"))
             .ok_or_else(|| invalid(format!("missing video bitmap at {offset:#x}")))?;
         let tag = h1.tag(reference.id)?;
-        let (_, converted, _) = h1bitmaps::convert_bitmap(h1, tag)
+        let (_, converted, _) = h1_assets::bitmaps::convert_bitmap(h1, tag)
             .map_err(|e| invalid(format!("{}: {e}", tag.name)))?;
         converted.install(set, name)?;
         // At the front: the perception table's weapon and character rows

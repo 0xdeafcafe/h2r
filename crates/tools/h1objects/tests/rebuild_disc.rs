@@ -3,7 +3,7 @@
 //! discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it -- rebuild_disc:: --skip _rebuild_disc:: --ignored --nocapture
 //! ```
 //!
 //! - `every_scenery_rebuilds_from_its_definition`: every `scen` of the ten
@@ -174,7 +174,7 @@ fn read_back(tree: &Tree, c: &Converted, name: &str) -> Record {
     targets(&r, &c.group.to_string(), &mut named);
     for (p, id) in named {
         // The tag's own datum, filled in at install.
-        if id == h1models::SELF_ID { continue; }
+        if id == h1_assets::models::SELF_ID { continue; }
         if id.0 & 0xffff_0000 == h1objects::convert::sound(0).0 {
             assert!(tree.sounds.get(id.0 as usize & 0xffff).is_some());
             continue;

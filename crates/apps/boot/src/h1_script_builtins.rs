@@ -1,6 +1,6 @@
 //! Halo 1 HaloScript operations without an equivalent retail evaluator.
 //! The converter and runtime share the descriptor assignments in
-//! `h1scripts::unit_builtins`. See docs/halo1/script-builtins.md.
+//! `h1_contract::unit_builtins`. See docs/halo1/script-builtins.md.
 
 use std::sync::{
     Arc, Mutex,
@@ -14,7 +14,7 @@ use engine::{
     points,
 };
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
-use h1scripts::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
+use h1_contract::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
 
 mod action;
 mod countdown;
@@ -199,7 +199,7 @@ fn calls_flashlight_list(call: &mut hooks::Call<'_>, slot: &RuntimeSlot) -> Opti
     let head = crate::h1_ai_control::call_head(call, slot.index)?;
     let mem = call.ctx.runtime().memory();
     let scnr = mem.u32(points::SCENARIO.base).ok()?;
-    let table = scnr.checked_add(h1scripts::compile::field::STRINGS)?;
+    let table = scnr.checked_add(h1_contract::script_fields::STRINGS)?;
     let len = mem.u32(table).ok()?;
     let offset = mem.u32(head + 12).ok()?;
     if len.checked_sub(offset)? <= slot.name.len() as u32 {
@@ -280,7 +280,7 @@ impl Feature for ScriptBuiltins {
         let state = Arc::clone(&self.state);
         b.raw().before(&points::OBJECT_FUNCTION_VALUE, "Draw a countdown digit", move |call| {
             let Some(id) = call.arg_u32("name") else { return Ok(Flow::Continue) };
-            if (id >> 24) as usize != h1convert::shad::COUNTDOWN_DIGITS[0].len() {
+            if (id >> 24) as usize != h1_contract::shader::COUNTDOWN_DIGITS[0].len() {
                 return Ok(Flow::Continue);
             }
             let value = state.countdown.lock().unwrap_or_else(|e| e.into_inner()).shader_value(id);

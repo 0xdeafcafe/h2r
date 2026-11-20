@@ -6,6 +6,73 @@ The page's text was recorded at docs revision `af931e2fe`; the shadow
 prototype is `crates/tools/viewer/src/bin/shadowlab` (last changed at `25c47e967`).
 Both read the owner's disc at run time and write nothing from it into Git.
 
+## 2026-11-20: budget arithmetic for the native design
+
+Read at `00dd7430f`. No run: arithmetic on the 2026-11-16 prototype results
+below, for the "Budget" table on the design page. Every figure is an
+estimate until slice L4 of the design measures a frame on the lab laptop
+(`h2 lab run --env H2_LIGHTING=e3`, the design page's "Slices").
+
+- **Machine factor.** The prototype ran on an M1 Max and the target is an
+  M3. The M3's GPU is taken as half as fast, so prototype times are
+  doubled. That factor is an assumption, not a measurement.
+- **Sun.** The prototype's one-tap sun at 4x cost 1.13 ms against 0.16 ms
+  with no shadow: 0.97 ms for one 8192-square map (2048 times the scale)
+  of four casters and a tap over every pixel. Doubled, 1.9 ms. The
+  design's tiles total at most a 4096-square atlas, a quarter of those
+  texels, and a still caster's tile is not redrawn: 0.4 ms for tiles and
+  0.6 ms for receivers, which are drawn only where a shadow can fall.
+- **Local lights.** The prototype's point light at 4x cost 2.93 ms against
+  0.13 ms: 2.8 ms for six 4096-square faces, 0.47 ms a face. A cone has
+  one face and the design gives it a 1024-square tile, a sixteenth of the
+  texels. Doubled and with the receivers' marks, 0.2 ms a light: 0.8 ms
+  for four.
+- **Lit lights.** Nothing was measured. One additive light pass over the
+  whole 2560x1920 frame is taken as 0.5 ms on the M3; 16 lights at a mean
+  of an eighth of the screen come to 1.0 ms.
+- **Not in the arithmetic.** The prototype shades flat, draws unposed
+  models and has no materials, so alpha-killed casters, skinning and the
+  receivers' real programs are all unmeasured.
+
+## 2026-11-20: Sev's shadow-apply shaders
+
+Method: `777Sev777/Halo-2-Custom-Shaders` at its head `9be89edf` (17 July
+2025), cloned into a temporary directory outside the repository, read and
+deleted. Public, used as reference only; nothing of it is copied here.
+Our tree was at `00dd7430f`. To repeat: clone it the same way
+([pstencil.md](../pstencil.md), "Fetching the study copies") and read the
+eight pixel shaders and the README.
+
+- Eight files: a Retail set and an E3 set, each in a Full and a
+  Performance version, each replacing the kit's two shadow-apply passes
+  (its one-sample and three-sample slots).
+- Every file does the same lookup: the receiver's projected depth, less a
+  small constant bias, compared against the map at a five-by-five grid of
+  texel offsets, each offset jittered by a fixed Poisson set (12 points in
+  Full, 4 in Performance), and the passes averaged. The map is assumed
+  1024 square. So Full makes 300 comparisons a pixel and Performance 100.
+- After the lookup, every file fades the term by a constant, multiplies
+  by a fog term from a second texture, and writes zero where the vertex
+  alpha is at or below half.
+- The two modes differ only after the lookup. The soft mode blends the
+  filtered term with the fade as it is. The sharp mode widens the kernel by
+  a fifth and applies the fade with a gain around half coverage, so a
+  pixel under about half lit goes fully dark and one a little over goes
+  fully lit: a steep ramp across a filtered edge.
+- The E3 set is the same two files in the opposite slots, for that tag set.
+- The README names the sharp mode "Very Sharp, Aliasing-free,
+  Stencil-like", and says the shaders are not a replacement for
+  lightmapping.
+
+What it changes here: pstencil.md had read the sharp mode as a single tap.
+At this head it is not, in any file. The restoration's "stencil-like" edge
+is a filtered edge made steep, which is why it shows no texel steps on a
+1024-square map. The design's Sharp form takes the idea with four
+comparison taps and a ramp one pixel wide. The vertex-alpha gate is
+evidence (**C**, for the MCC port) that the receiver pass switches itself
+off per vertex, which the design relies on for self-shadowing and slice L0
+checks in the Xbox programs.
+
 ## 2026-11-16: the Lighting setting in levels
 
 Method: `h2 run` with `H2_BOOT_GFX` at `H2_RENDER_SCALE=2`, retail and E3

@@ -10,7 +10,7 @@ use engine::points::{
 };
 use engine::tags::{entry_layout, tag_entry_checked};
 use hooks::{Builder, Flow, GuestCall, Ret};
-use h1text::hud::{
+use h1_contract::hud::{
     EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE, PROMPT_SUBJECTS, SWAP_POWERUP,
 };
 
@@ -369,7 +369,7 @@ mod tests {
     use engine::memory::FlatMemory;
     use engine::points::SCENARIO;
     use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
-    use h1text::hud::{GROUP, SCENARIO_HMT, SHARED_MESSAGES, SIZE};
+    use h1_contract::hud::{GROUP, SCENARIO_HMT, SHARED_MESSAGES, SIZE};
 
     const TAG: u32 = 0x0045_1000;
     const USER: u32 = 1;

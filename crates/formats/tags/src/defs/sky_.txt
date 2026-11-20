@@ -1,5 +1,5 @@
 # sky : sky (group word 736b7920). Engine rows from docs/formats/lighting.md (atmosphere
-# table), the rest from docs/halo1/sky.md and the disc (crates/tools/h1sky/src/h2.rs:
+# table), the rest from docs/halo1/sky.md and the disc (crates/tools/h1-assets/src/sky/h2.rs:
 # all 91 retail identities on 28 maps decode).
 group 736b7920 0xac align 4
   0x0 tagref model groups=mode -- render model; E 0x0003ea60 and 0x0003ede0 resolve the datum at +4

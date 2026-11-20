@@ -334,7 +334,7 @@ pub fn parse_bitmap(args: &[String]) -> Result<BitmapArgs, String> {
 }
 
 fn bitmap(args: &[String]) -> Result<()> {
-    use h1bitmaps::BitmapExt;
+    use h1_assets::bitmaps::BitmapExt;
     use h1map::bitmap::{BITM, Bitmap};
     let a = parse_bitmap(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
     let m = match open_source(&a.path, a.map.as_deref())? {
@@ -346,7 +346,7 @@ fn bitmap(args: &[String]) -> Result<()> {
         .with_context(|| format!("no bitm {} (see h2 h1 tags --group bitm)", a.tag))?;
     let bm = Bitmap::read(&m, tag)?;
     let out = OutDir::new_strict(&a.out, a.force)?.protecting(&a.path);
-    let stem = h1models::short_name(&tag.name).replace(' ', "_");
+    let stem = h1_assets::models::short_name(&tag.name).replace(' ', "_");
     println!(
         "{}: {} image(s), {} sequence(s), usage {}",
         tag.name,
@@ -412,7 +412,7 @@ pub fn parse_sound(args: &[String]) -> Result<BitmapArgs, String> {
 }
 
 fn sound(args: &[String]) -> Result<()> {
-    use h1sounds::h1::{SND, Sound};
+    use h1_assets::sounds::h1::{SND, Sound};
     let a = parse_sound(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
     let m = match open_source(&a.path, a.map.as_deref())? {
         Source::Map(_, m) => m,
@@ -423,8 +423,8 @@ fn sound(args: &[String]) -> Result<()> {
         .with_context(|| format!("no snd! {} (see h2 h1 tags --group snd!)", a.tag))?;
     let s = Sound::read(&m, tag)?;
     let out = OutDir::new_strict(&a.out, a.force)?.protecting(&a.path);
-    let stem = h1models::short_name(&tag.name).replace(' ', "_");
-    let class = h1sounds::class::H1_NAMES
+    let stem = h1_assets::models::short_name(&tag.name).replace(' ', "_");
+    let class = h1_assets::sounds::class::H1_NAMES
         .get(usize::from(s.class))
         .copied()
         .flatten()
@@ -439,7 +439,7 @@ fn sound(args: &[String]) -> Result<()> {
         s.compression,
         s.pitch_ranges.len()
     );
-    for (r, p, pcm) in h1sounds::decode_all(&s, m.bytes())? {
+    for (r, p, pcm) in h1_assets::sounds::decode_all(&s, m.bytes())? {
         let range = &s.pitch_ranges[r];
         let path = out.write(&[format!("{stem}.r{r}p{p}.wav")], &pcm.wav())?;
         println!(

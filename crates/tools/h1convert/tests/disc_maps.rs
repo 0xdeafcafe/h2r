@@ -418,7 +418,7 @@ fn check_h1_textures(
         for (i, im) in b.images.iter().enumerate() {
             let got = assets::decode_image(im, files)
                 .unwrap_or_else(|e| panic!("{name}: {bn} [{i}]: {e}"));
-            let want = h1bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap())
+            let want = h1_assets::bitmaps::decode::decode_image(&src.images[i], src.pixels(h1, i).unwrap())
                 .unwrap();
             assert_eq!(got.levels[0].rgba, want[0].rgba, "{name}: {bn} [{i}]");
             images += 1;
@@ -702,7 +702,7 @@ fn check_lightmap(
         let got = assets::decode_image(im, files).unwrap();
         let mut record = src.images[0].clone();
         [record.width, record.height] = [im.dimensions[0], im.dimensions[1]];
-        let want = h1bitmaps::decode::decode_image(&record, &l.bitmap.raw[i].0).unwrap();
+        let want = h1_assets::bitmaps::decode::decode_image(&record, &l.bitmap.raw[i].0).unwrap();
         assert_eq!(
             got.levels[0].rgba, want[0].rgba,
             "{name}: lightmap page {i}"
@@ -1162,7 +1162,7 @@ fn every_map_has_its_halo1_card() {
 }
 
 /// Every image in the map is a texture cache resource (flag `0x200`, as on
-/// every retail image; `h1bitmaps::convert::IMAGE_CACHED`). One without it
+/// every retail image; `h1_assets::bitmaps::convert::IMAGE_CACHED`). One without it
 /// is never loaded and its stage stays empty: the dark lightmap.
 fn check_images(name: &str, m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
     let space = m.metadata_space().unwrap();
@@ -1185,7 +1185,7 @@ fn check_images(name: &str, m: &mut Map<Cursor<Vec<u8>>>) -> Vec<String> {
         let images = word(a + 0x48);
         for k in 0..word(a + 0x44) {
             let flags = at(images + k * 0x74 + 0xe, 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
-            if flags.is_some_and(|f| f & h1bitmaps::convert::IMAGE_CACHED == 0) {
+            if flags.is_some_and(|f| f & h1_assets::bitmaps::convert::IMAGE_CACHED == 0) {
                 bad.push(format!(
                     "{name}: {tag} image {k}: flags {flags:x?}, not a cache resource"
                 ));

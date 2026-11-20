@@ -2,7 +2,7 @@
 //! against the discs. Reads `$H1_ISO` and `$H2_DISC`; nothing is written.
 //!
 //! ```sh
-//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test unit_rebuild_disc -- --ignored --nocapture
+//! H1_ISO=... H2_DISC=... cargo test --release -p h1objects --test it unit_rebuild_disc:: -- --ignored --nocapture
 //! ```
 //!
 //! - `turret_role_is_the_retail_turrets_majority`: the role table
@@ -357,7 +357,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 .object
                 .model
                 .map(|m| {
-                    h1models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default())
+                    h1_assets::models::model_from_map(&h1, h1.tag(m).unwrap(), &Default::default())
                         .unwrap()
                         .0
                         .markers
@@ -370,7 +370,7 @@ fn a10_vehicles_without_templates_are_rebuilt() {
                 let p = format!("{VEHI_SEATS}[{k}]");
                 assert_eq!(
                     text(&r, &format!("{p}.label")),
-                    h1models::names::mode_name(&s.label)
+                    h1_assets::models::names::mode_name(&s.label)
                 );
                 let has = markers.iter().any(|m| m.eq_ignore_ascii_case(&s.marker));
                 assert_eq!(

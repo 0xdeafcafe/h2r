@@ -1,5 +1,6 @@
 //! Shadow technique comparison on tag geometry (docs/graphics/e3-lighting.md,
-//! phase 3): stencil shadow volumes against high-resolution shadow maps,
+//! "What this means for the technique"): stencil shadow volumes against
+//! high-resolution shadow maps,
 //! rendered offscreen with wgpu under a sun and a point light, at several
 //! resolution scales, with GPU timings and closed-mesh statistics.
 //!

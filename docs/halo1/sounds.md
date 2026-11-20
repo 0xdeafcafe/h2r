@@ -1,6 +1,6 @@
 # Halo 1 Xbox sounds (`snd!`) and the Halo 2 sound gestalt
 
-How Halo 1's Xbox maps store sounds, read by `crates/tools/h1sounds` through
+How Halo 1's Xbox maps store sounds, read by `crates/tools/h1-assets` through
 `h1map`'s public API, decoded with the audio crate's Xbox ADPCM decoder (the
 one Halo 2's mixer uses), and converted to Halo 2 `snd!` tags plus their
 entries in the map's `ugh!` sound gestalt. The cache file around them is in
@@ -10,7 +10,7 @@ entries in the map's `ugh!` sound gestalt. The cache file around them is in
 Evidence labels, as in map-format.md:
 
 - **V — verified-on-disc:** checked by the `#[ignore]`d tests in
-  `crates/tools/h1sounds/tests/real_disc.rs` on every map of the owner's Halo 1
+  `crates/tools/h1-assets/tests/sounds/real_disc.rs` on every map of the owner's Halo 1
   disc (24 maps, 15,698 `snd!` tags) and every map of the Halo 2 disc (30).
 - **S — unverified:** the reader relies on the name or meaning but the
   disc doesn't prove it.
