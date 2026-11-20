@@ -6,7 +6,7 @@
 //!
 //! - The object geometry draw `0x0004d0b0` calls `0x0004d9c0`, which hands
 //!   the render record's lighting pointer (`+0x10`, a cache record's
-//!   `+0x44`; [`crate::objects::record_owner`]) to `0x0001bd50`. That stores
+//!   `+0x44`; [`crate::layout::objects::record_owner`]) to `0x0001bd50`. That stores
 //!   it as the current lighting `[0x00485a58]` and marks the engine inputs
 //!   that read it dirty; the shader draw `0x0001bbf0` then evaluates the
 //!   implementation's dirty inputs (`0x0001ae70`): scalars through the
@@ -43,7 +43,7 @@
 //! direction) is the vertex programs' business and not read yet; the port
 //! gives the values the programs get.
 
-use crate::camera::GuestRead;
+use crate::GuestRead;
 
 /// The current lighting pointer the draw sets (`0x0001bd50`).
 pub const CURRENT_LIGHTING: u32 = 0x0048_5a58;
@@ -60,8 +60,8 @@ pub const SCALAR_INPUTS: u32 = 0x0003_36f0;
 /// The vector input evaluator (`EAX` the input, `ESI` the destination).
 pub const VECTOR_INPUTS: u32 = 0x0003_3980;
 /// Bytes of the lighting the inputs read, from `+0`.
-pub const LIGHTING_BYTES: u32 = 0x78;
-const WORDS: usize = (LIGHTING_BYTES / 4) as usize;
+pub const LIGHTING_BYTES: u32 = frame_scene::LIGHTING_BYTES;
+const WORDS: usize = frame_scene::LIGHTING_WORDS;
 
 /// Vector inputs that read the lighting (bit `n`: input `n`).
 pub const LIGHTING_VECTORS: u64 = 1 << 3
@@ -104,58 +104,35 @@ const WALK_STRIDE: u32 = 12;
 /// longer chain is a cycle or garbage).
 const MAX_PARENTS: usize = 64;
 
-/// One object's lighting: a copy of the `0x78` bytes the inputs read,
-/// taken when the hook meets the object (the cache record is relit and
-/// reused after the frame).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lighting {
-    pub words: [u32; WORDS],
-    /// [`root_value`] of the object `+0` names, read with the words;
-    /// `None` when the walk did not finish (unreadable memory, a cycle):
-    /// inputs 40 and 37 are then not given.
-    pub root: Option<u32>,
-}
+/// The lighting copy and the inputs' defaults are the scene's types
+/// ([`frame_scene::Lighting`], [`frame_scene::Defaults`]); these read
+/// them.
+pub use frame_scene::{Defaults, Lighting};
 
-impl Lighting {
+/// Reads an object's [`Lighting`].
+pub trait LightingRead: Sized {
     /// Copies the lighting at `at` (a cache record's `+0x44`) and its
     /// object's [`root_value`].
-    pub fn read(mem: &dyn GuestRead, at: u32) -> Option<Self> {
+    fn read(mem: &dyn GuestRead, at: u32) -> Option<Self>;
+}
+
+impl LightingRead for Lighting {
+    fn read(mem: &dyn GuestRead, at: u32) -> Option<Self> {
         let mut words = [0u32; WORDS];
         for (i, w) in words.iter_mut().enumerate() {
             *w = mem.read_u32(at.checked_add(4 * i as u32)?)?;
         }
         Some(Self { words, root: root_value(mem, words[0]) })
     }
-
-    fn word(&self, offset: u32) -> u32 {
-        self.words[(offset / 4) as usize]
-    }
-
-    fn vector(&self, offset: u32) -> [u32; 3] {
-        [self.word(offset), self.word(offset + 4), self.word(offset + 8)]
-    }
-
-    /// The colour slots in use (`+0x74`).
-    pub fn colour_count(&self) -> u8 {
-        self.word(0x74) as u8
-    }
-
-    /// The byte `+0x76` the build picks the implementation by.
-    pub fn implementation_byte(&self) -> u8 {
-        (self.word(0x74) >> 16) as u8
-    }
 }
 
-/// What the inputs fall back on without a lighting (or past the colour
-/// count), read from the globals at the same time as the lighting.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Defaults {
-    pub vector: [u32; 3],
-    pub colour: [u32; 3],
+/// Reads the inputs' [`Defaults`].
+pub trait DefaultsRead: Sized {
+    fn read(mem: &dyn GuestRead) -> Option<Self>;
 }
 
-impl Defaults {
-    pub fn read(mem: &dyn GuestRead) -> Option<Self> {
+impl DefaultsRead for Defaults {
+    fn read(mem: &dyn GuestRead) -> Option<Self> {
         let three = |at: u32| -> Option<[u32; 3]> {
             Some([mem.read_u32(at)?, mem.read_u32(at.checked_add(4)?)?, mem.read_u32(at.checked_add(8)?)?])
         };
@@ -339,7 +316,7 @@ pub fn reads_lighting(vectors: u64, scalars: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::camera::tests::Mem;
+    use crate::testing::Mem;
 
     const L: u32 = 0x0070_0000;
 

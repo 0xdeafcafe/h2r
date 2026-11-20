@@ -23,6 +23,8 @@ gfx = { path = "../gfx", optional = true }
 d3d = { path = "../d3d", optional = true }
 pollster = { version = "1", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
+frame-scene = { path = "../frame-scene" }
+scene-extract = { path = "../scene-extract" }
 # For tests/object_lighting_differential.rs only.
 analyze = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }

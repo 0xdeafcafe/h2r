@@ -134,6 +134,8 @@ pub mod native_world_glue;
 mod native_world_layers_glue;
 #[cfg(feature = "gpu")]
 mod opaque_streams;
+#[cfg(feature = "gpu")]
+mod scene_glue;
 pub mod new_maps;
 pub mod pad_speaker;
 pub mod precision;

@@ -91,6 +91,9 @@ impl AgentGlue {
         }
         let agent = agent::Agent::new();
         add_host_methods(&agent);
+        // render.scene: the frame step's FrameScene (docs/graphics/framescene.md).
+        #[cfg(feature = "gpu")]
+        crate::scene_glue::install();
         let sim = install_sim(&agent, allow_bot_add);
         // The game's own functions for sim (teleports, give, spawn): a
         // `before` on the tick that makes the calls queued for it.

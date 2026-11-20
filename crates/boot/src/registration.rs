@@ -459,6 +459,11 @@ pub(crate) fn register_late_for_profile(
         // context-only, so the pipelined render runs it on its own thread. It
         // runs after render-timing's. The world reads its map and resources
         // through the VFS (native_map).
+        // The frame step's FrameScene: camera, world and objects extracted
+        // for the native stages (docs/graphics/framescene.md).
+        features
+            .add(&feature::scene_step::FrameSceneStep)
+            .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         features
             .add(&feature::native_world::NativeWorld)
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;

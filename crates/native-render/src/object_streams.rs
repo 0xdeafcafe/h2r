@@ -293,23 +293,9 @@ pub fn expand(declaration: &[Element], streams: &[Option<StreamData<'_>>], count
     Ok(out)
 }
 
-/// The `vrtx` classification `0x0001cb20` picks for a section of geometry
-/// classification `geometry` (the section's u16 at `+0x18`) and node
-/// influences `influences` (its byte `+0x14`), of a tag with `count`
-/// classifications: 0 and 1 and 2 as they are, 3 (weighted nodes) the
-/// influences plus 2 when that is below `count`, else 0; `None` past 3
-/// (the jump table has four entries). The layer-3 draw reads `+0x14`; the
-/// draw modes 4 and 5 read `+0x15` instead (`0x0001cabd`), not taken here.
-pub fn classification(geometry: u16, influences: u8, count: u32) -> Option<u32> {
-    Some(match geometry {
-        0..=2 => u32::from(geometry),
-        3 => {
-            let c = u32::from(influences) + 2;
-            if c < count { c } else { 0 }
-        }
-        _ => return None,
-    })
-}
+/// The `vrtx` classification of a section (moved with the object walk
+/// that reads it).
+pub use scene_extract::layout::object_walk::classification;
 
 #[cfg(test)]
 mod tests {
