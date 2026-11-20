@@ -262,7 +262,7 @@ captures. Keep the other render switches fixed. Compare `H2_FEATURES=render-timi
 against `H2_FEATURES=render-timing,impl.render.native=off`.
 
 Enable `H2_FRAME_STATS=1` for both. Collect the same window with
-`profile.capture` through the [agent API](../runtime/agent-api.md), or
+`profile.capture` through the [agent API](../../runtime/agent-api.md), or
 stream it with `H2_FRAME_STATS_CSV`. Compare the `render` and `d3d`
 phases, layer-3 and shader-begin time, object walk counters, and the same
 view's images. Check biped animation, held weapons and vehicles through
